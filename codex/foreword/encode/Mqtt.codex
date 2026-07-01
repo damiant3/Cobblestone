@@ -1,0 +1,153 @@
+Chapter: Mqtt
+  cites Foreword chapter Maybe
+  cites Foreword chapter Units (Duration)
+
+ MQTT v5.0 protocol types and packet builders for IoT messaging.
+ Implements the wire protocol per OASIS MQTT v5.0 (March 2019).
+ Each builder returns a List Integer (the raw packet bytes).
+ Transport is handled by the caller (TCP, TLS, or WebSocket).
+
+Section: Packet Types
+
+  MqttPacketType =
+    | MqttConnect
+    | MqttConnack
+    | MqttPublish
+    | MqttPuback
+    | MqttSubscribe
+    | MqttSuback
+    | MqttUnsubscribe
+    | MqttUnsuback
+    | MqttPingreq
+    | MqttPingresp
+    | MqttDisconnect
+
+  mqtt-packet-id : MqttPacketType -> Integer
+  mqtt-packet-id (t) =
+   when t
+    is MqttConnect -> 1
+    is MqttConnack -> 2
+    is MqttPublish -> 3
+    is MqttPuback -> 4
+    is MqttSubscribe -> 8
+    is MqttSuback -> 9
+    is MqttUnsubscribe -> 10
+    is MqttUnsuback -> 11
+    is MqttPingreq -> 12
+    is MqttPingresp -> 13
+    is MqttDisconnect -> 14
+
+Section: QoS Levels
+
+  MqttQos =
+    | QosAtMostOnce
+    | QosAtLeastOnce
+    | QosExactlyOnce
+
+  mqtt-qos-value : MqttQos -> Integer
+  mqtt-qos-value (q) =
+   when q
+    is QosAtMostOnce -> 0
+    is QosAtLeastOnce -> 1
+    is QosExactlyOnce -> 2
+
+Section: Variable-Length Encoding
+
+  mqtt-encode-remaining-length : Integer -> List Integer
+  mqtt-encode-remaining-length (len) =
+   mqtt-encode-vbi len []
+
+  mqtt-encode-vbi : Integer, List Integer -> List Integer
+  mqtt-encode-vbi (value) (acc) =
+   let byte = bit-and value 127
+   in let next = bit-shru value 7
+   in if next > 0 then mqtt-encode-vbi next (list-push acc (bit-or byte 128))
+   else list-push acc byte
+
+Section: String Encoding
+
+  mqtt-encode-utf8 : Text -> List Integer
+  mqtt-encode-utf8 (s) =
+   let len = text-length s
+   in let hi = bit-and (bit-shru len 8) 255
+   in let lo = bit-and len 255
+   in [hi, lo] & mqtt-text-bytes s 0 len []
+
+  mqtt-text-bytes : Text, Integer, Integer, List Integer -> List Integer
+  mqtt-text-bytes (s) (i) (len) (acc) =
+   if i >= len then acc
+   else mqtt-text-bytes s (i + 1) len (list-push acc (char-code (char-at s i)))
+
+Section: CONNECT Packet
+
+  MqttConnectConfig = record {
+   client-id : Text,
+   keep-alive : Integer between 0 and 65535,
+   clean-start : Boolean,
+   username : Maybe Text,
+   password : Maybe Text
+  }
+
+  default-mqtt-connect : MqttConnectConfig
+  default-mqtt-connect = MqttConnectConfig {
+   client-id = "codex-iot",
+   keep-alive = 60,
+   clean-start = True,
+   username = None,
+   password = None
+  }
+
+  mqtt-build-connect : MqttConnectConfig -> List Integer
+  mqtt-build-connect (cfg) =
+   let proto-name = mqtt-encode-utf8 "MQTT"
+   in let proto-level = [5]
+   in let flags = mqtt-connect-flags cfg
+   in let keep-alive = [(bit-shru (cfg.keep-alive) 8), bit-and (cfg.keep-alive) 255]
+   in let properties = [0]
+   in let client-id = mqtt-encode-utf8 (cfg.client-id)
+   in let payload = client-id
+   in let var-header = proto-name & proto-level & [flags] & keep-alive & properties
+   in let remaining = var-header & payload
+   in let header = [bit-shl 1 4] & mqtt-encode-remaining-length (list-length remaining)
+   in header & remaining
+
+  mqtt-connect-flags : MqttConnectConfig -> Integer
+  mqtt-connect-flags (cfg) =
+   let clean = if cfg.clean-start then 2 else 0
+   in clean
+
+Section: PUBLISH Packet
+
+  mqtt-build-publish : Text, List Integer, MqttQos, Boolean -> List Integer
+  mqtt-build-publish (topic) (payload) (qos) (retain) =
+   let flags = bit-or (bit-shl (mqtt-qos-value qos) 1) (if retain then 1 else 0)
+   in let header-byte = bit-or (bit-shl 3 4) flags
+   in let topic-bytes = mqtt-encode-utf8 topic
+   in let properties = [0]
+   in let var-header = topic-bytes & properties
+   in let remaining = var-header & payload
+   in [header-byte] & mqtt-encode-remaining-length (list-length remaining) & remaining
+
+Section: SUBSCRIBE Packet
+
+  mqtt-build-subscribe : Integer, Text, MqttQos -> List Integer
+  mqtt-build-subscribe (packet-id) (topic-filter) (qos) =
+   let header-byte = bit-or (bit-shl 8 4) 2
+   in let pid = [(bit-shru packet-id 8), bit-and packet-id 255]
+   in let properties = [0]
+   in let topic-bytes = mqtt-encode-utf8 topic-filter
+   in let sub-options = [mqtt-qos-value qos]
+   in let remaining = pid & properties & topic-bytes & sub-options
+   in [header-byte] & mqtt-encode-remaining-length (list-length remaining) & remaining
+
+Section: PINGREQ Packet
+
+  mqtt-build-pingreq : List Integer
+  mqtt-build-pingreq = [bit-shl 12 4, 0]
+
+Section: DISCONNECT Packet
+
+  mqtt-build-disconnect : List Integer
+  mqtt-build-disconnect = [bit-shl 14 4, 0]
+
+Page 1

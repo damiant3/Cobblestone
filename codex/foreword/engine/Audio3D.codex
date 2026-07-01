@@ -1,0 +1,146 @@
+Chapter: Audio3D
+  cites Math chapter Quaternion
+
+ 3D positional audio. Distance attenuation (inverse-square),
+ stereo panning from listener-relative angle, and Doppler shift.
+ Fixed-point (scale 1000). Integrates with the signal chapter
+ synth and effects chain for output.
+
+ We say:
+
+Section: Listener
+
+  AudioListener = record {
+    al-pos : Vec3,
+    al-forward : Vec3,
+    al-up : Vec3,
+    al-velocity : Vec3
+  }
+
+  listener-new : Vec3 -> AudioListener
+  listener-new (pos) = AudioListener {
+    al-pos = pos,
+    al-forward = vec3-new 0.0 0.0 1000.0,
+    al-up = vec3-new 0.0 1000.0 0.0,
+    al-velocity = vec3-zero
+  }
+
+  listener-at : Vec3, Vec3 -> AudioListener
+  listener-at (pos) (forward) = AudioListener {
+    al-pos = pos,
+    al-forward = forward,
+    al-up = vec3-new 0.0 1000.0 0.0,
+    al-velocity = vec3-zero
+  }
+
+Section: Audio Source
+
+  AudioSource3D = record {
+    as3-pos : Vec3,
+    as3-velocity : Vec3,
+    as3-volume : Integer,
+    as3-min-dist : Integer,
+    as3-max-dist : Integer,
+    as3-playing : Boolean,
+    as3-looping : Boolean
+  }
+
+  audio-source : Vec3, Integer -> AudioSource3D
+  audio-source (pos) (volume) = AudioSource3D {
+    as3-pos = pos,
+    as3-velocity = vec3-zero,
+    as3-volume = volume,
+    as3-min-dist = 1000,
+    as3-max-dist = 50000,
+    as3-playing = False,
+    as3-looping = False
+  }
+
+  audio-play : AudioSource3D -> AudioSource3D
+  audio-play (s) = __record-set s "as3-playing" True
+
+  audio-stop : AudioSource3D -> AudioSource3D
+  audio-stop (s) = __record-set s "as3-playing" False
+
+  audio-set-loop : AudioSource3D, Boolean -> AudioSource3D
+  audio-set-loop (s) (loop) = __record-set s "as3-looping" loop
+
+Section: Spatial Computation
+
+  SpatialAudio = record {
+    spa-volume : Integer,
+    spa-pan : Integer,
+    spa-doppler : Integer
+  }
+
+  audio-spatial : AudioListener, AudioSource3D -> SpatialAudio
+  audio-spatial (listener) (source) =
+    let delta = vec3-subtract (source.as3-pos) (listener.al-pos)
+    in let dist = a3d-vec-len delta
+    in let vol = a3d-attenuation dist (source.as3-min-dist) (source.as3-max-dist) (source.as3-volume)
+    in let pan = a3d-pan listener delta dist
+    in let doppler = a3d-doppler-factor listener source
+    in SpatialAudio { spa-volume = vol, spa-pan = pan, spa-doppler = doppler }
+
+Section: Attenuation
+
+  a3d-attenuation : Integer, Integer, Integer, Integer -> Integer
+  a3d-attenuation (dist) (min-dist) (max-dist) (base-vol) =
+    if dist <= min-dist then base-vol
+    else if dist >= max-dist then 0
+    else let range = max-dist - min-dist
+    in let falloff = (dist - min-dist) * 1000 / range
+    in let factor = 1000 - falloff
+    in base-vol * factor / 1000
+
+Section: Stereo Panning
+
+  a3d-pan : AudioListener, Vec3, Integer -> Integer
+  a3d-pan (listener) (delta) (dist) =
+    if dist == 0 then 500
+    else let right = vec3-cross (listener.al-forward) (listener.al-up)
+    in let dot-right = vec3-dot delta right
+    in let pan = 500 + dot-right * 500 / dist
+    in a3d-clamp pan 0 1000
+
+Section: Doppler
+
+  a3d-doppler-factor : AudioListener, AudioSource3D -> Integer
+  a3d-doppler-factor (listener) (source) =
+    let delta = vec3-subtract (source.as3-pos) (listener.al-pos)
+    in let dist = a3d-vec-len delta
+    in if dist == 0 then 1000
+    else let dir-x = delta.vx * 1000 / dist
+    in let dir-y = delta.vy * 1000 / dist
+    in let dir-z = delta.vz * 1000 / dist
+    in let dir = vec3-new dir-x dir-y dir-z
+    in let vs = vec3-dot (source.as3-velocity) dir
+    in let vl = vec3-dot (listener.al-velocity) dir
+    in let speed = 343000
+    in let num = speed - vl
+    in let den = speed - vs
+    in if den == 0 then 1000
+    else num * 1000 / den
+
+Section: Helpers
+
+  a3d-vec-len : Vec3 -> Integer
+  a3d-vec-len (v) = a3d-isqrt (v.vx * v.vx + v.vy * v.vy + v.vz * v.vz)
+
+  a3d-isqrt : Integer -> Integer
+  a3d-isqrt (n) = if n <= 0 then 0 else a3d-isqrt-loop n (n / 2 + 1)
+
+  a3d-isqrt-loop : Integer, Integer -> Integer
+  a3d-isqrt-loop (n) (guess) =
+    let next = (guess + n / guess) / 2
+    in if next >= guess then guess else a3d-isqrt-loop n next
+
+  a3d-clamp : Integer, Integer, Integer -> Integer
+  a3d-clamp (v) (lo) (hi) = if v < lo then lo else if v > hi then hi else v
+
+Section: Formatting
+
+  format-spatial : SpatialAudio -> Text
+  format-spatial (s) = "vol=" & show (s.spa-volume) & " pan=" & show (s.spa-pan) & " doppler=" & show (s.spa-doppler)
+
+Page 1

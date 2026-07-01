@@ -1,0 +1,379 @@
+Chapter: Groovy Emitter
+  cites Codex chapter Text
+  cites Codex chapter Characters
+  cites Codex chapter Lists
+
+ Generates Groovy source code from the IR.
+
+Section: Keywords and Sanitization
+
+  gvy-keywords : List Text =
+   ["abstract", "as", "assert", "boolean", "break", "byte", "case",
+    "catch", "char", "class", "const", "continue", "def", "default",
+    "do", "double", "else", "enum", "extends", "false", "final",
+    "finally", "float", "for", "goto", "if", "implements", "import",
+    "in", "instanceof", "int", "interface", "long", "native", "new",
+    "null", "package", "private", "protected", "public", "return",
+    "short", "static", "super", "switch", "synchronized", "this",
+    "throw", "throws", "trait", "true", "try", "void", "volatile",
+    "while"]
+
+  gvy-is-keyword : Text, Integer -> Boolean
+  gvy-is-keyword (name) (i) =
+   if i == list-length gvy-keywords then False
+   else if list-at gvy-keywords i == name then True
+   else gvy-is-keyword name (i + 1)
+
+  gvy-sanitize : Text -> Text
+  gvy-sanitize (name) =
+   let s = text-replace name "-" "_"
+   in if gvy-is-keyword s 0 then s & "_v"
+      else s
+
+  gvy-escape : Text -> Text
+  gvy-escape (s) =
+   let s1 = text-replace s "\\" "\\\\"
+   in let s2 = text-replace s1 "\"" "\\\""
+   in text-replace s2 "\n" "\\n"
+
+Section: Arity Map
+
+  ArityEntry = record {
+   name : Text,
+   arity : Integer between 0 and 255,
+   generic-count : Integer between 0 and 255
+  }
+
+  bsearch-arity-pos : List ArityEntry, Text, Integer, Integer -> Integer
+  bsearch-arity-pos (entries) (name) (lo) (hi) =
+   if lo >= hi then lo
+   else let mid = lo + (hi - lo) / 2
+   in let mid-name = (list-at entries mid).name
+   in if text-compare name mid-name <= 0 then bsearch-arity-pos entries name lo mid
+      else bsearch-arity-pos entries name (mid + 1) hi
+
+  sorted-insert-arity : List ArityEntry, ArityEntry -> List ArityEntry
+  sorted-insert-arity (xs) (e) =
+   let len = list-length xs
+   in let pos = bsearch-arity-pos xs (e.name) 0 len
+   in list-insert-at xs pos e
+
+  build-arity-map : List IRDef, Integer, List ArityEntry -> List ArityEntry
+  build-arity-map (defs) (i) (acc) =
+   if i == list-length defs then acc
+   else let d = list-at defs i
+   in build-arity-map defs (i + 1) (sorted-insert-arity acc (ArityEntry {
+    name = d.name,
+    arity = list-length (d.params),
+    generic-count = 0
+   }))
+
+  lookup-arity : List ArityEntry, Text -> Integer
+  lookup-arity (entries) (name) =
+   let len = list-length entries
+   in let pos = bsearch-arity-pos entries name 0 len
+   in if pos >= len then -1
+      else let e = list-at entries pos
+      in if e.name == name then e.arity else -1
+
+Section: Apply Chain
+
+  is-upper-letter : Integer -> Boolean
+  is-upper-letter (code) =
+   if code >= char-code 'E' then code <= char-code 'Z'
+   else False
+
+Section: Type Definition Emission
+
+  emit-gvy-type-defs : List ATypeDef, Integer -> Text
+  emit-gvy-type-defs (tds) (i) =
+   if i == list-length tds then ""
+   else emit-gvy-type-def (list-at tds i) & emit-gvy-type-defs tds (i + 1)
+
+  emit-gvy-type-def : ATypeDef -> Text
+  emit-gvy-type-def (td) =
+   when td
+    is ARecordTypeDef (name) (tparams) (fields) (s) ->
+     "def make_" & gvy-sanitize (name.value) & "(Map m) { m + [_type: \"" & name.value & "\"] }\n"
+    is AVariantTypeDef (name) (tparams) (ctors) (s) ->
+     emit-gvy-ctors ctors 0
+
+  emit-gvy-ctors : List AVariantCtorDef, Integer -> Text
+  emit-gvy-ctors (ctors) (i) =
+   if i == list-length ctors then ""
+   else let c = list-at ctors i
+   in "def make_" & gvy-sanitize (c.name.value) & "(Object... args) { def m = [tag: \"" & c.name.value & "\"]; args.eachWithIndex { v, i -> m[\"field${i}\"] = v }; m }\n" & emit-gvy-ctors ctors (i + 1)
+
+Section: Expression Emission
+
+  emit-gvy-expr : IRExpr, List ArityEntry -> Text
+  emit-gvy-expr (e) (arities) = emit-gvy-expr-at e arities 0
+
+  emit-gvy-expr-at : IRExpr, List ArityEntry, Integer -> Text
+  emit-gvy-expr-at (e) (arities) (depth) =
+   if depth >= 256 then "null"
+   else when e
+    is IrIntLit (n) (sp) -> integer-to-text n & "L"
+    is IrNumLit (n) (sp) -> integer-to-text n & ".0d"
+    is IrTextLit (s) (sp) -> "\"" & gvy-escape s & "\""
+    is IrBoolLit (b) (sp) -> if b then "true" else "false"
+    is IrCharLit (n) (sp) -> integer-to-text n
+    is IrName (n) (ty) (sp) -> emit-gvy-name n arities
+    is IrBinary (op) (l) (r) (ty) (sp) -> emit-gvy-binary op l r arities
+    is IrNegate (operand) (sp) -> "(-" & emit-gvy-expr-at operand arities (depth + 1) & ")"
+    is IrIf (c) (t) (el) (ty) (sp) -> "(" & emit-gvy-expr-at c arities (depth + 1) & " ? " & emit-gvy-expr-at t arities (depth + 1) & " : " & emit-gvy-expr-at el arities (depth + 1) & ")"
+    is IrLet (name) (ty) (val) (body) (sp) -> "({ def " & gvy-sanitize name & " = " & emit-gvy-expr-at val arities (depth + 1) & "; " & emit-gvy-expr-at body arities (depth + 1) & " })()"
+    is IrApply (f) (a) (ty) (sp) -> emit-gvy-apply e arities
+    is IrLambda (params) (body) (ty) (sp) -> "{ " & emit-gvy-lambda-params params 0 & " -> " & emit-gvy-expr body arities & " }"
+    is IrList (elems) (ty) (sp) -> "[" & emit-gvy-list-elems elems 0 arities & "]"
+    is IrMatch (scrut) (branches) (ty) (sp) -> emit-gvy-match scrut branches arities depth
+    is IrAct (stmts) (ty) (sp) -> emit-gvy-act stmts arities
+    is IrHandle (eff) (body) (clauses) (ty) (sp) -> emit-gvy-expr-at body arities (depth + 1)
+    is IrWithTimeout (secs) (effs) (scopes) (body) (ty) (sp) -> emit-gvy-expr-at body arities (depth + 1)
+    is IrRecord (name) (fields) (ty) (sp) -> "make_" & gvy-sanitize name & "([" & emit-gvy-field-vals fields 0 arities & "])"
+    is IrFieldAccess (rec) (field) (ty) (sp) -> emit-gvy-expr-at rec arities (depth + 1) & "['" & gvy-sanitize field & "']"
+    is IrFieldStore (rec) (field) (val) (ty) (sp) -> "({ def _r = " & emit-gvy-expr-at rec arities (depth + 1) & " + ['" & gvy-sanitize field & "': " & emit-gvy-expr-at val arities (depth + 1) & "]; _r })()"
+    is IrFork (body) (ty) (sp) -> emit-gvy-expr-at body arities (depth + 1)
+    is IrAwait (task) (ty) (sp) -> emit-gvy-expr-at task arities (depth + 1)
+    is IrTry (max) (body) (fb) (fail-stmts) (ty) (sp) -> "({ try { " & emit-gvy-act body arities & " } catch(e) { " & emit-gvy-act fb arities & " } })()"
+    is IrError (msg) (ty) (sp) -> "{ throw new Exception(\"" & gvy-escape msg & "\") }()"
+
+  emit-gvy-name : Text, List ArityEntry -> Text
+  emit-gvy-name (n) (arities) =
+   if n == "True" then "true"
+   else if n == "False" then "false"
+   else if n == "Nothing" then "null"
+   else let ar = lookup-arity arities n
+   in if ar == 0 then gvy-sanitize n & "()"
+      else gvy-sanitize n
+
+  emit-gvy-binary : IRBinaryOp, IRExpr, IRExpr, List ArityEntry -> Text
+  emit-gvy-binary (op) (l) (r) (arities) =
+   when op
+    is IrAppendText -> "(" & emit-gvy-expr l arities & " + " & emit-gvy-expr r arities & ")"
+    is IrAppendList -> "(" & emit-gvy-expr l arities & " + " & emit-gvy-expr r arities & ")"
+    is IrConsList -> "[" & emit-gvy-expr l arities & "] + " & emit-gvy-expr r arities
+    is IrDivInt -> "(long)(" & emit-gvy-expr l arities & " / " & emit-gvy-expr r arities & ")"
+    is IrRemInt -> "(" & emit-gvy-expr l arities & " % " & emit-gvy-expr r arities & ")"
+    is IrAnd -> "(" & emit-gvy-expr l arities & " && " & emit-gvy-expr r arities & ")"
+    is IrOr -> "(" & emit-gvy-expr l arities & " || " & emit-gvy-expr r arities & ")"
+    is IrAddVec -> "[" & emit-gvy-expr l arities & ", " & emit-gvy-expr r arities & "].transpose().collect { it[0] + it[1] }"
+    is IrSubVec -> "[" & emit-gvy-expr l arities & ", " & emit-gvy-expr r arities & "].transpose().collect { it[0] - it[1] }"
+    is IrMulVec -> "[" & emit-gvy-expr l arities & ", " & emit-gvy-expr r arities & "].transpose().collect { it[0] * it[1] }"
+    is IrDivVec -> "[" & emit-gvy-expr l arities & ", " & emit-gvy-expr r arities & "].transpose().collect { it[0] / it[1] }"
+    is otherwise -> "(" & emit-gvy-expr l arities & " " & gvy-bin-op op & " " & emit-gvy-expr r arities & ")"
+
+  gvy-bin-op : IRBinaryOp -> Text
+  gvy-bin-op (op) =
+   when op
+    is IrAddInt | IrAddNum | IrAddRealApprox | IrAddRealTrapping | IrAddRealSaturating -> "+"
+    is IrSubInt | IrSubNum | IrSubRealApprox | IrSubRealTrapping | IrSubRealSaturating -> "-"
+    is IrMulInt | IrMulNum | IrMulRealApprox | IrMulRealTrapping | IrMulRealSaturating -> "*"
+    is IrDivInt | IrDivNum | IrDivRealApprox | IrDivRealTrapping | IrDivRealSaturating -> "/"
+    is IrRemInt -> "%"
+    is IrPowInt -> "**"
+    is IrAddVec | IrSubVec | IrMulVec | IrDivVec -> "+"
+    is IrEq | IrApproxEq | IrApproxEqExact -> "=="
+    is IrNotEq -> "!="
+    is IrLt | IrLtVec -> "<"
+    is IrGt | IrGtVec -> ">"
+    is IrLtEq | IrLtEqVec -> "<="
+    is IrGtEq | IrGtEqVec -> ">="
+    is IrAnd -> "&&"
+    is IrOr -> "||"
+    is IrAppendText | IrAppendList | IrConsList -> "+"
+
+  emit-gvy-lambda-params : List IRParam, Integer -> Text
+  emit-gvy-lambda-params (params) (i) =
+   if i == list-length params then ""
+   else if i == list-length params - 1 then gvy-sanitize ((list-at params i).name)
+   else gvy-sanitize ((list-at params i).name) & ", " & emit-gvy-lambda-params params (i + 1)
+
+  emit-gvy-list-elems : List IRExpr, Integer, List ArityEntry -> Text
+  emit-gvy-list-elems (elems) (i) (arities) =
+   if i == list-length elems then ""
+   else if i == list-length elems - 1 then emit-gvy-expr (list-at elems i) arities
+   else emit-gvy-expr (list-at elems i) arities & ", " & emit-gvy-list-elems elems (i + 1) arities
+
+  emit-gvy-field-vals : List IRFieldVal, Integer, List ArityEntry -> Text
+  emit-gvy-field-vals (fields) (i) (arities) =
+   if i == list-length fields then ""
+   else let f = list-at fields i
+   in let sep = if i > 0 then ", " else ""
+   in sep & "'" & gvy-sanitize (f.name) & "': " & emit-gvy-expr (f.value) arities & emit-gvy-field-vals fields (i + 1) arities
+
+  emit-gvy-match : IRExpr, List IRBranch, List ArityEntry, Integer -> Text
+  emit-gvy-match (scrut) (branches) (arities) (depth) =
+   "({ def _s = " & emit-gvy-expr scrut arities & "; " & emit-gvy-match-body branches 0 arities depth & " })()"
+
+  emit-gvy-match-body : List IRBranch, Integer, List ArityEntry, Integer -> Text
+  emit-gvy-match-body (branches) (i) (arities) (depth) =
+   if i == list-length branches then "throw new Exception('Non-exhaustive match')"
+   else let b = list-at branches i
+   in emit-gvy-match-arm (b.pattern) (b.body) branches i arities depth
+
+  emit-gvy-match-arm : IRPat, IRExpr, List IRBranch, Integer, List ArityEntry, Integer -> Text
+  emit-gvy-match-arm (pat) (body) (branches) (i) (arities) (depth) =
+   when pat
+    is IrLitPat (text) (ty) (sp) -> "if (_s == " & text & ") { " & emit-gvy-expr body arities & " } else { " & emit-gvy-match-body branches (i + 1) arities depth & " }"
+    is IrCtorPat (name) (subs) (ty) (sp) -> "if (_s.tag == \"" & name & "\") { " & emit-gvy-ctor-bindings subs 0 & emit-gvy-expr body arities & " } else { " & emit-gvy-match-body branches (i + 1) arities depth & " }"
+    is IrVarPat (name) (ty) (sp) -> "def " & gvy-sanitize name & " = _s; " & emit-gvy-expr body arities
+    is IrWildPat (sp) -> emit-gvy-expr body arities
+    is IrVecPat (pats) (ty) (sp) -> emit-gvy-expr body arities
+
+  emit-gvy-ctor-bindings : List IRPat, Integer -> Text
+  emit-gvy-ctor-bindings (subs) (i) =
+   if i == list-length subs then ""
+   else let sub = list-at subs i
+   in (when sub
+    is IrVarPat (name) (ty) (sp) -> "def " & gvy-sanitize name & " = _s['field" & integer-to-text i & "']; "
+    is IrVecPat (pats) (ty) (sp) -> ""
+    is otherwise -> "") & emit-gvy-ctor-bindings subs (i + 1)
+
+  emit-gvy-act : List IRActStmt, List ArityEntry -> Text
+  emit-gvy-act (stmts) (arities) =
+   "({ " & emit-gvy-act-stmts stmts 0 arities & " })()"
+
+  emit-gvy-act-stmts : List IRActStmt, Integer, List ArityEntry -> Text
+  emit-gvy-act-stmts (stmts) (i) (arities) =
+   if i == list-length stmts then "null"
+   else let s = list-at stmts i
+   in let is-last = i == list-length stmts - 1
+   in (when s
+    is IrDoBind (name) (ty) (val) (sp) -> "def " & gvy-sanitize name & " = " & emit-gvy-expr val arities & "; "
+    is IrDoExec (e) (sp) -> emit-gvy-expr e arities & "; ") & (if is-last then "" else emit-gvy-act-stmts stmts (i + 1) arities)
+
+Section: Apply Emission
+
+  emit-gvy-apply : IRExpr, List ArityEntry -> Text
+  emit-gvy-apply (e) (arities) =
+   let chain = collect-apply-chain e []
+   in let root = chain.root
+   in let args = chain.args
+   in when root
+    is IrName (n) (ty) (sp) ->
+     let bi = gvy-try-builtin n args arities
+     in if text-length bi > 0 then bi
+     else gvy-sanitize n & "(" & emit-gvy-apply-args args arities 0 & ")"
+    is otherwise -> emit-gvy-expr root arities & "(" & emit-gvy-apply-args args arities 0 & ")"
+
+  emit-gvy-apply-args : List IRExpr, List ArityEntry, Integer -> Text
+  emit-gvy-apply-args (args) (arities) (i) =
+   if i == list-length args then ""
+   else if i == list-length args - 1 then emit-gvy-expr (list-at args i) arities
+        else emit-gvy-expr (list-at args i) arities & ", " & emit-gvy-apply-args args arities (i + 1)
+
+  BuiltinEntry = record {
+   name : Text,
+   tag : Integer between 0 and 255
+  }
+
+  --- Sorted builtin table (alphabetical by name).
+  --- Tags: 0=abs 1=char-at 2=char-code 3=char-to-text 4=int-mod
+  ---       5=integer-to-text 6=list-at 7=list-length 8=max 9=min
+  ---       10=negate 11=print-line-uni 12=process-exit 13=read-file
+  ---       14=show 15=substring 16=text-contains 17=text-length
+  ---       18=text-replace 19=text-to-integer 20=write-file
+
+  gvy-builtin-table : List BuiltinEntry =
+   [BuiltinEntry { name = "abs", tag = 0 },
+    BuiltinEntry { name = "char-at", tag = 1 },
+    BuiltinEntry { name = "char-code", tag = 2 },
+    BuiltinEntry { name = "char-to-text", tag = 3 },
+    BuiltinEntry { name = "int-mod", tag = 4 },
+    BuiltinEntry { name = "integer-to-text", tag = 5 },
+    BuiltinEntry { name = "list-at", tag = 6 },
+    BuiltinEntry { name = "list-length", tag = 7 },
+    BuiltinEntry { name = "max", tag = 8 },
+    BuiltinEntry { name = "min", tag = 9 },
+    BuiltinEntry { name = "negate", tag = 10 },
+    BuiltinEntry { name = "print-line-uni", tag = 11 },
+    BuiltinEntry { name = "process-exit", tag = 12 },
+    BuiltinEntry { name = "read-file", tag = 13 },
+    BuiltinEntry { name = "show", tag = 14 },
+    BuiltinEntry { name = "substring", tag = 15 },
+    BuiltinEntry { name = "text-contains", tag = 16 },
+    BuiltinEntry { name = "text-length", tag = 17 },
+    BuiltinEntry { name = "text-replace", tag = 18 },
+    BuiltinEntry { name = "text-to-integer", tag = 19 },
+    BuiltinEntry { name = "write-file", tag = 20 }]
+
+  bsearch-builtin : List BuiltinEntry, Text, Integer, Integer -> Integer
+  bsearch-builtin (tbl) (name) (lo) (hi) =
+   if lo >= hi then -1
+   else let mid = lo + (hi - lo) / 2
+   in let mid-name = (list-at tbl mid).name
+   in if mid-name == name then (list-at tbl mid).tag
+      else if text-compare name mid-name < 0 then bsearch-builtin tbl name lo mid
+      else bsearch-builtin tbl name (mid + 1) hi
+
+  gvy-lookup-builtin : Text -> Integer
+  gvy-lookup-builtin (name) =
+   bsearch-builtin gvy-builtin-table name 0 (list-length gvy-builtin-table)
+
+  gvy-try-builtin : Text, List IRExpr, List ArityEntry -> Text
+  gvy-try-builtin (n) (args) (arities) =
+   let tag = gvy-lookup-builtin n
+   in if tag == -1 then ""
+   else gvy-emit-builtin tag args arities
+
+  gvy-emit-builtin : Integer, List IRExpr, List ArityEntry -> Text
+  gvy-emit-builtin (tag) (args) (arities) =
+   let a0 = emit-gvy-expr (list-at args 0) arities
+   in if tag == 0 then "Math.abs(" & a0 & ")"
+   else if tag == 1 then "(int)" & a0 & ".charAt(" & emit-gvy-expr (list-at args 1) arities & ")"
+   else if tag == 2 then a0
+   else if tag == 3 then "((char)" & a0 & ").toString()"
+   else if tag == 4 then "(" & a0 & " % " & emit-gvy-expr (list-at args 1) arities & ")"
+   else if tag == 5 then "\"${" & a0 & "}\""
+   else if tag == 6 then a0 & "[" & emit-gvy-expr (list-at args 1) arities & "]"
+   else if tag == 7 then a0 & ".size()"
+   else if tag == 8 then "Math.max(" & a0 & ", " & emit-gvy-expr (list-at args 1) arities & ")"
+   else if tag == 9 then "Math.min(" & a0 & ", " & emit-gvy-expr (list-at args 1) arities & ")"
+   else if tag == 10 then "(-" & a0 & ")"
+   else if tag == 11 then "println(" & a0 & ")"
+   else if tag == 12 then "System.exit((int)" & a0 & ")"
+   else if tag == 13 then "new File(" & a0 & ").text"
+   else if tag == 14 then "\"${" & a0 & "}\""
+   else if tag == 15 then a0 & ".substring((int)" & emit-gvy-expr (list-at args 1) arities & ", (int)(" & emit-gvy-expr (list-at args 1) arities & " + " & emit-gvy-expr (list-at args 2) arities & "))"
+   else if tag == 16 then a0 & ".contains(" & emit-gvy-expr (list-at args 1) arities & ")"
+   else if tag == 17 then a0 & ".length()"
+   else if tag == 18 then a0 & ".replace(" & emit-gvy-expr (list-at args 1) arities & ", " & emit-gvy-expr (list-at args 2) arities & ")"
+   else if tag == 19 then "Long.parseLong(" & a0 & ")"
+   else if tag == 20 then "new File(" & a0 & ").text = " & emit-gvy-expr (list-at args 1) arities
+   else ""
+
+Section: Definition Emission
+
+  emit-gvy-def : IRDef, List ArityEntry -> Text
+  emit-gvy-def (d) (arities) =
+   let name = gvy-sanitize (d.name)
+   in "def " & name & "(" & emit-gvy-lambda-params (d.params) 0 & ") {\n    " & emit-gvy-expr (d.body) arities & "\n}\n\n"
+
+  emit-gvy-defs : List IRDef, Integer, List ArityEntry -> Text
+  emit-gvy-defs (defs) (i) (arities) =
+   if i == list-length defs then ""
+   else emit-gvy-def (list-at defs i) arities & emit-gvy-defs defs (i + 1) arities
+
+Section: Chapter Emission
+
+  emit-groovy-chapter : IRChapter, List ATypeDef -> Text
+  emit-groovy-chapter (m) (type-defs) =
+   let arities = build-arity-map (m.defs) 0 []
+   in let types-text = emit-gvy-type-defs type-defs 0
+   in let defs-text = emit-gvy-defs (m.defs) 0 arities
+   in let entry = gvy-emit-entry (m.defs)
+   in types-text & defs-text & entry
+
+  gvy-emit-entry : List IRDef -> Text
+  gvy-emit-entry (defs) = gvy-emit-entry-loop defs 0
+
+  gvy-emit-entry-loop : List IRDef, Integer -> Text
+  gvy-emit-entry-loop (defs) (i) =
+   if i >= list-length defs then ""
+   else let d = list-at defs i
+   in if d.name == opening-entry-point then
+    if list-length (d.params) == 0 then gvy-sanitize opening-entry-point & "()\n" else ""
+   else gvy-emit-entry-loop defs (i + 1)
+
+Page 1

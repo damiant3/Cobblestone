@@ -1,0 +1,79 @@
+Chapter: InitManifestTest
+  cites Sched chapter InitManifest
+  cites Sched chapter TaskQueue
+  cites OS chapter ServiceRegistry
+  cites Observe chapter ConfigStore
+
+Section: Helpers
+  format-step-names : List BootStep, Integer, Integer, Text -> Text
+  format-step-names (steps) (i) (len) (acc) =
+    if i >= len then acc
+    else let sep = if i == 0 then "" else ","
+    in let step = list-at steps i
+    in format-step-names steps (i + 1) len (acc & sep & (step.service).name)
+
+Section: Tests
+  test-manifest : Text =
+    let m0 = manifest-empty
+    in let m1 = manifest-add-service m0 (service-def "identity" TaskCritical 255 RestartAlways)
+    in let m2 = manifest-add-service m1 (service-def-with-deps "trust" TaskCritical 255 RestartAlways ["identity"])
+    in let m3 = manifest-add-service m2 (service-def-with-deps "verifier" TaskHigh 255 RestartAlways ["trust"])
+    in let m4 = manifest-add-service m3 (service-def-with-deps "shell" TaskNormal 255 RestartAlways ["verifier"])
+    in let m5 = manifest-add-service m4 (service-def-with-deps "web" TaskNormal 128 RestartOnFailure ["shell"])
+    in let m6 = manifest-add-service m5 (service-def-with-deps "watchdog" TaskHigh 255 RestartAlways ["shell"])
+    in "services=" & show (m6.count)
+
+  test-boot-plan : Text =
+    let m0 = manifest-empty
+    in let m1 = manifest-add-service m0 (service-def "identity" TaskCritical 255 RestartAlways)
+    in let m2 = manifest-add-service m1 (service-def-with-deps "trust" TaskCritical 255 RestartAlways ["identity"])
+    in let m3 = manifest-add-service m2 (service-def-with-deps "verifier" TaskHigh 255 RestartAlways ["trust"])
+    in let m4 = manifest-add-service m3 (service-def-with-deps "shell" TaskNormal 255 RestartAlways ["verifier"])
+    in let m5 = manifest-add-service m4 (service-def-with-deps "web" TaskNormal 128 RestartOnFailure ["shell"])
+    in let m6 = manifest-add-service m5 (service-def-with-deps "watchdog" TaskHigh 255 RestartAlways ["shell"])
+    in let plan = plan-boot m6
+    in format-boot-plan plan
+
+  test-order : Text =
+    let m0 = manifest-empty
+    in let m1 = manifest-add-service m0 (service-def "identity" TaskCritical 255 RestartAlways)
+    in let m2 = manifest-add-service m1 (service-def-with-deps "trust" TaskCritical 255 RestartAlways ["identity"])
+    in let m3 = manifest-add-service m2 (service-def-with-deps "verifier" TaskHigh 255 RestartAlways ["trust"])
+    in let m4 = manifest-add-service m3 (service-def-with-deps "shell" TaskNormal 255 RestartAlways ["verifier"])
+    in let m5 = manifest-add-service m4 (service-def-with-deps "web" TaskNormal 128 RestartOnFailure ["shell"])
+    in let m6 = manifest-add-service m5 (service-def-with-deps "watchdog" TaskHigh 255 RestartAlways ["shell"])
+    in let plan = plan-boot m6
+    in "order=" & format-step-names (plan.steps) 0 (plan.step-count) ""
+
+  test-execute : Text =
+    let m0 = manifest-empty
+    in let m1 = manifest-add-service m0 (service-def "identity" TaskCritical 255 RestartAlways)
+    in let m2 = manifest-add-service m1 (service-def-with-deps "trust" TaskCritical 255 RestartAlways ["identity"])
+    in let m3 = manifest-add-service m2 (service-def-with-deps "verifier" TaskHigh 255 RestartAlways ["trust"])
+    in let m4 = manifest-add-service m3 (service-def-with-deps "shell" TaskNormal 255 RestartAlways ["verifier"])
+    in let m5 = manifest-add-service m4 (service-def-with-deps "web" TaskNormal 128 RestartOnFailure ["shell"])
+    in let m6 = manifest-add-service m5 (service-def-with-deps "watchdog" TaskHigh 255 RestartAlways ["shell"])
+    in let plan = plan-boot m6
+    in let result = execute-boot-plan plan
+    in "booted=" & show (result.booted) & " tasks=" & show (result.booted)
+
+  test-simple-order : Text =
+    let m0 = manifest-empty
+    in let m1 = manifest-add-service m0 (service-def "a" TaskNormal 0 RestartNever)
+    in let m2 = manifest-add-service m1 (service-def-with-deps "b" TaskNormal 0 RestartNever ["a"])
+    in let m3 = manifest-add-service m2 (service-def-with-deps "c" TaskNormal 0 RestartNever ["b"])
+    in let plan = plan-boot m3
+    in "order=" & format-step-names (plan.steps) 0 (plan.step-count) ""
+
+  test-format-def : Text =
+    let def = service-def "shell" TaskNormal 255 RestartAlways
+    in format-service-def def
+
+  opening : [Console] Nothing = act
+    print-line-uni test-manifest
+    print-line-uni test-boot-plan
+    print-line-uni test-order
+    print-line-uni test-execute
+    print-line-uni test-simple-order
+    print-line-uni test-format-def
+  end

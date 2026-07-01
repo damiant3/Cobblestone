@@ -1,0 +1,242 @@
+Chapter: Opening
+  cites Collab chapter CollabTypes
+  cites Collab chapter CallEngine
+  cites Collab chapter MeetingManager
+  cites Collab chapter ScreenShare
+  cites Collab chapter CollabStore
+  cites Collab chapter CollabTheme
+  cites Collab chapter CallPage
+  cites Foreword chapter Console
+  cites Foreword chapter Maybe
+  cites Foreword chapter Event
+  cites Foreword chapter CCE
+  cites Kernel chapter DiskFacts
+  cites Kernel chapter AppLog
+
+ Entry point for the Codex Collab app. Video calls, screen
+ sharing, meetings, whiteboard, and in-call chat. Integrated
+ with Vision, Helm, Calendar, and Diagram.
+
+Section: App State
+
+  CollabView =
+    | CvHome
+    | CvInCall
+    | CvMeetings
+    | CvHistory
+    | CvContacts
+    | CvSettings
+
+  CollabAppState = record {
+    ca-disk : DiskFactStore,
+    ca-view : CollabView,
+    ca-user : CollabUser,
+    ca-call : Maybe Call,
+    ca-chat : CallChat,
+    ca-share : Maybe ShareSession,
+    ca-whiteboard : Maybe Whiteboard,
+    ca-meetings : MeetingStore,
+    ca-history : List CallRecord,
+    ca-compose : Text,
+    ca-compose-cursor : Integer,
+    ca-source : IntegrationSource
+  }
+
+Section: Entry Point
+
+  opening : [Console] None
+  opening = act
+    let disk = disk-load
+    in let history = collab-load-history disk
+    in let user = CollabUser {
+          cu-id = "local",
+          cu-name = "You",
+          cu-email = "",
+          cu-avatar = "",
+          cu-status = PsOnline,
+          cu-status-text = "",
+          cu-last-active = 0,
+          cu-timezone = 0,
+          cu-favorites = [],
+          cu-favorite-count = 0
+        }
+    in let disk2 = app-log-info disk "collab" ("Collab started, " & show (list-length history) & " call records") 0
+    in let state = CollabAppState {
+          ca-disk = disk2,
+          ca-view = CvHome,
+          ca-user = user,
+          ca-call = None,
+          ca-chat = cc-new,
+          ca-share = None,
+          ca-whiteboard = None,
+          ca-meetings = meeting-store-new,
+          ca-history = history,
+          ca-compose = "",
+          ca-compose-cursor = 0,
+          ca-source = IsDirect
+        }
+    in print-line "Codex Collab v0.1"
+    in print-line ("  History: " & show (list-length history) & " calls")
+    in print-line "  Keys: 1=Home 2=Meetings 3=History 4=Contacts"
+    in print-line "  Ctrl+N=New Call  Ctrl+S=Screen Share  Ctrl+W=Whiteboard"
+    in print-line "  Ctrl+M=Mute  Ctrl+V=Video  Ctrl+H=Hand  Ctrl+R=Record"
+    in collab-event-loop state
+  end
+
+Section: Event Loop
+
+  collab-event-loop : CollabAppState -> [Console] None
+  collab-event-loop (state) = act
+    let scan = uefi-read-key
+    in let ev = if scan == 0
+          then event-timer "tick" 0
+          else event-key-down scan 0 0
+    in let handled = collab-handle-event state ev
+    in collab-event-loop handled
+  end
+
+Section: Event Dispatch
+
+  collab-handle-event : CollabAppState, Event -> CollabAppState
+  collab-handle-event (state) (ev) =
+    when ev.ev-kind
+      is EvKeyDown -> collab-handle-key state ev.ev-key ev.ev-modifiers
+      is otherwise -> state
+
+  collab-handle-key : CollabAppState, Integer, Integer -> CollabAppState
+  collab-handle-key (state) (k) (mods) =
+    let ctrl = int-mod (mods / 1) 2 == 1
+    in if ctrl then collab-ctrl-key state k
+    else when state.ca-view
+      is CvInCall -> collab-in-call-key state k
+      is otherwise -> collab-nav-key state k
+
+  collab-nav-key : CollabAppState, Integer -> CollabAppState
+  collab-nav-key (state) (k) =
+    if k == 49 then __record-set state "ca-view" CvHome
+    else if k == 50 then __record-set state "ca-view" CvMeetings
+    else if k == 51 then __record-set state "ca-view" CvHistory
+    else if k == 52 then __record-set state "ca-view" CvContacts
+    else if k == 53 then __record-set state "ca-view" CvSettings
+    else state
+
+  collab-ctrl-key : CollabAppState, Integer -> CollabAppState
+  collab-ctrl-key (state) (k) =
+    if k == 78 then collab-new-call state
+    else if k == 77 then collab-toggle-mute state
+    else if k == 86 then collab-toggle-video state
+    else if k == 83 then collab-toggle-share state
+    else if k == 87 then collab-toggle-whiteboard state
+    else if k == 72 then collab-toggle-hand state
+    else if k == 82 then collab-toggle-record state
+    else if k == 81 then collab-end-call state
+    else state
+
+Section: Call Management
+
+  collab-new-call : CollabAppState -> CollabAppState
+  collab-new-call (state) =
+    let c = call-new "call-1" CtVideo state.ca-user.cu-id "New Call" 0
+    in let connected = call-connect c
+    in let disk = app-log-info state.ca-disk "collab" "Call started" 0
+    in __record-set (__record-set (__record-set state
+      "ca-call" (Just connected))
+      "ca-view" CvInCall)
+      "ca-disk" disk
+
+  collab-end-call : CollabAppState -> CollabAppState
+  collab-end-call (state) =
+    when state.ca-call
+      is None -> state
+      is Just (c) ->
+        let ended = call-end c 0
+        in let record = CallRecord {
+              cr-id = c.call-id,
+              cr-title = c.call-title,
+              cr-type = c.call-type,
+              cr-participants = [],
+              cr-participant-count = c.call-participant-count,
+              cr-started = c.call-started,
+              cr-duration-sec = 0,
+              cr-has-recording = c.call-recording
+            }
+        in let disk = collab-save-history state.ca-disk (list-push state.ca-history record)
+        in __record-set (__record-set (__record-set (__record-set state
+          "ca-call" None)
+          "ca-view" CvHome)
+          "ca-history" (list-push state.ca-history record))
+          "ca-disk" disk
+
+Section: In-Call Controls
+
+  collab-toggle-mute : CollabAppState -> CollabAppState
+  collab-toggle-mute (state) =
+    when state.ca-call
+      is None -> state
+      is Just (c) -> __record-set state "ca-call" (Just (call-toggle-mute c state.ca-user.cu-id))
+
+  collab-toggle-video : CollabAppState -> CollabAppState
+  collab-toggle-video (state) =
+    when state.ca-call
+      is None -> state
+      is Just (c) -> __record-set state "ca-call" (Just (call-toggle-video c state.ca-user.cu-id))
+
+  collab-toggle-hand : CollabAppState -> CollabAppState
+  collab-toggle-hand (state) =
+    when state.ca-call
+      is None -> state
+      is Just (c) -> __record-set state "ca-call" (Just (call-toggle-hand c state.ca-user.cu-id))
+
+  collab-toggle-record : CollabAppState -> CollabAppState
+  collab-toggle-record (state) =
+    when state.ca-call
+      is None -> state
+      is Just (c) ->
+        let updated = if c.call-recording then call-stop-recording c else call-start-recording c
+        in __record-set state "ca-call" (Just updated)
+
+  collab-toggle-share : CollabAppState -> CollabAppState
+  collab-toggle-share (state) =
+    when state.ca-share
+      is Just (sess) -> __record-set state "ca-share" None
+      is None ->
+        let sess = share-session-new state.ca-user.cu-id SsFullScreen 0
+        in let disk = app-log-info state.ca-disk "collab" "Screen sharing started" 0
+        in __record-set (__record-set state "ca-share" (Just sess)) "ca-disk" disk
+
+  collab-toggle-whiteboard : CollabAppState -> CollabAppState
+  collab-toggle-whiteboard (state) =
+    when state.ca-whiteboard
+      is Just (wb) -> __record-set state "ca-whiteboard" None
+      is None -> __record-set state "ca-whiteboard" (Just (wb-new 1920 1080))
+
+Section: In-Call Key Handling
+
+  collab-in-call-key : CollabAppState, Integer -> CollabAppState
+  collab-in-call-key (state) (k) =
+    if k == 13 then collab-send-chat state
+    else if k == 27 then __record-set state "ca-view" CvHome
+    else if k == 8 then collab-compose-backspace state
+    else if k >= 32 then collab-compose-char state k
+    else state
+
+  collab-compose-char : CollabAppState, Integer -> CollabAppState
+  collab-compose-char (state) (k) =
+    let ch = char-to-text (code-to-char (from-unicode k))
+    in let new-text = text-take state.ca-compose state.ca-compose-cursor & ch & text-drop state.ca-compose state.ca-compose-cursor
+    in __record-set (__record-set state "ca-compose" new-text) "ca-compose-cursor" (state.ca-compose-cursor + 1)
+
+  collab-compose-backspace : CollabAppState -> CollabAppState
+  collab-compose-backspace (state) =
+    if state.ca-compose-cursor == 0 then state
+    else let new-text = text-take state.ca-compose (state.ca-compose-cursor - 1) & text-drop state.ca-compose state.ca-compose-cursor
+    in __record-set (__record-set state "ca-compose" new-text) "ca-compose-cursor" (state.ca-compose-cursor - 1)
+
+  collab-send-chat : CollabAppState -> CollabAppState
+  collab-send-chat (state) =
+    if text-length state.ca-compose == 0 then state
+    else let chat = cc-send state.ca-chat state.ca-user.cu-name state.ca-compose 0
+    in __record-set (__record-set (__record-set state
+      "ca-chat" chat)
+      "ca-compose" "")
+      "ca-compose-cursor" 0

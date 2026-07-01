@@ -1,0 +1,185 @@
+Chapter: PostProcess
+  cites Game chapter Rasterizer
+  cites Game chapter Color
+
+ Post-processing effects applied to the framebuffer after 3D
+ rendering. Bloom (bright-pass + box blur + composite), tone mapping
+ (ACES filmic), and edge-detect anti-aliasing (FXAA-like luminance
+ contrast). All integer/fixed-point arithmetic.
+
+ We say:
+
+Section: Bloom
+
+  BloomConfig = record {
+    bloom-threshold : Integer,
+    bloom-intensity : Integer,
+    bloom-radius : Integer
+  }
+
+  bloom-default : BloomConfig
+  bloom-default = BloomConfig { bloom-threshold = 200, bloom-intensity = 400, bloom-radius = 3 }
+
+  pp-bloom : Framebuf, BloomConfig -> Framebuf
+  pp-bloom (fb) (cfg) =
+    let bright = pp-bright-pass fb (cfg.bloom-threshold)
+    in let blurred = pp-box-blur bright (cfg.bloom-radius)
+    in pp-additive-blend fb blurred (cfg.bloom-intensity)
+
+  pp-bright-pass : Framebuf, Integer -> Framebuf
+  pp-bright-pass (fb) (threshold) = pp-bright-loop fb threshold 0 0 (fb-new (fb.fb-width) (fb.fb-height) 0)
+
+  pp-bright-loop : Framebuf, Integer, Integer, Integer, Framebuf -> Framebuf
+  pp-bright-loop (src) (threshold) (x) (y) (dst) =
+    if y >= src.fb-height then dst
+    else if x >= src.fb-width then pp-bright-loop src threshold 0 (y + 1) dst
+    else let pixel = fb-get src x y
+    in let lum = pp-luminance pixel
+    in let out = if lum > threshold then pixel else 0
+    in pp-bright-loop src threshold (x + 1) y (fb-set dst x y out)
+
+  pp-box-blur : Framebuf, Integer -> Framebuf
+  pp-box-blur (fb) (radius) =
+    let h-pass = pp-blur-h fb radius 0 0 (fb-new (fb.fb-width) (fb.fb-height) 0)
+    in pp-blur-v h-pass radius 0 0 (fb-new (fb.fb-width) (fb.fb-height) 0)
+
+  pp-blur-h : Framebuf, Integer, Integer, Integer, Framebuf -> Framebuf
+  pp-blur-h (src) (radius) (x) (y) (dst) =
+    if y >= src.fb-height then dst
+    else if x >= src.fb-width then pp-blur-h src radius 0 (y + 1) dst
+    else let color = pp-sample-box-h src x y radius
+    in pp-blur-h src radius (x + 1) y (fb-set dst x y color)
+
+  pp-blur-v : Framebuf, Integer, Integer, Integer, Framebuf -> Framebuf
+  pp-blur-v (src) (radius) (x) (y) (dst) =
+    if y >= src.fb-height then dst
+    else if x >= src.fb-width then pp-blur-v src radius 0 (y + 1) dst
+    else let color = pp-sample-box-v src x y radius
+    in pp-blur-v src radius (x + 1) y (fb-set dst x y color)
+
+  pp-sample-box-h : Framebuf, Integer, Integer, Integer -> Integer
+  pp-sample-box-h (fb) (cx) (cy) (radius) =
+    pp-accum-h fb cx cy (0 - radius) radius 0 0 0 0
+
+  pp-accum-h : Framebuf, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  pp-accum-h (fb) (cx) (cy) (dx) (radius) (r-sum) (g-sum) (b-sum) (count) =
+    if dx > radius then
+      if count == 0 then 0
+      else pp-pack (r-sum / count) (g-sum / count) (b-sum / count)
+    else let sx = cx + dx
+    in if sx >= 0 then if sx < fb.fb-width then
+      let pixel = fb-get fb sx cy
+      in pp-accum-h fb cx cy (dx + 1) radius (r-sum + pp-r pixel) (g-sum + pp-g pixel) (b-sum + pp-b pixel) (count + 1)
+    else pp-accum-h fb cx cy (dx + 1) radius r-sum g-sum b-sum count
+    else pp-accum-h fb cx cy (dx + 1) radius r-sum g-sum b-sum count
+
+  pp-sample-box-v : Framebuf, Integer, Integer, Integer -> Integer
+  pp-sample-box-v (fb) (cx) (cy) (radius) =
+    pp-accum-v fb cx cy (0 - radius) radius 0 0 0 0
+
+  pp-accum-v : Framebuf, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  pp-accum-v (fb) (cx) (cy) (dy) (radius) (r-sum) (g-sum) (b-sum) (count) =
+    if dy > radius then
+      if count == 0 then 0
+      else pp-pack (r-sum / count) (g-sum / count) (b-sum / count)
+    else let sy = cy + dy
+    in if sy >= 0 then if sy < fb.fb-height then
+      let pixel = fb-get fb cx sy
+      in pp-accum-v fb cx cy (dy + 1) radius (r-sum + pp-r pixel) (g-sum + pp-g pixel) (b-sum + pp-b pixel) (count + 1)
+    else pp-accum-v fb cx cy (dy + 1) radius r-sum g-sum b-sum count
+    else pp-accum-v fb cx cy (dy + 1) radius r-sum g-sum b-sum count
+
+  pp-additive-blend : Framebuf, Framebuf, Integer -> Framebuf
+  pp-additive-blend (base) (bloom) (intensity) = pp-blend-loop base bloom intensity 0 0
+
+  pp-blend-loop : Framebuf, Framebuf, Integer, Integer, Integer -> Framebuf
+  pp-blend-loop (base) (bloom) (intensity) (x) (y) =
+    if y >= base.fb-height then base
+    else if x >= base.fb-width then pp-blend-loop base bloom intensity 0 (y + 1)
+    else let bp = fb-get base x y
+    in let bl = fb-get bloom x y
+    in let r = pp-clamp8 (pp-r bp + pp-r bl * intensity / 1000)
+    in let g = pp-clamp8 (pp-g bp + pp-g bl * intensity / 1000)
+    in let b = pp-clamp8 (pp-b bp + pp-b bl * intensity / 1000)
+    in pp-blend-loop (fb-set base x y (pp-pack r g b)) bloom intensity (x + 1) y
+
+Section: Tone Mapping (ACES Filmic Approximation)
+
+  pp-tonemap-aces : Framebuf -> Framebuf
+  pp-tonemap-aces (fb) = pp-tonemap-loop fb 0 0
+
+  pp-tonemap-loop : Framebuf, Integer, Integer -> Framebuf
+  pp-tonemap-loop (fb) (x) (y) =
+    if y >= fb.fb-height then fb
+    else if x >= fb.fb-width then pp-tonemap-loop fb 0 (y + 1)
+    else let pixel = fb-get fb x y
+    in let r = pp-aces-channel (pp-r pixel)
+    in let g = pp-aces-channel (pp-g pixel)
+    in let b = pp-aces-channel (pp-b pixel)
+    in pp-tonemap-loop (fb-set fb x y (pp-pack r g b)) (x + 1) y
+
+  pp-aces-channel : Integer -> Integer
+  pp-aces-channel (x) =
+    let a = x * 2430 / 1000 + 510
+    in let b = x * 1330 / 1000 + 200
+    in let num = x * a / 1000
+    in let den = x * b / 1000 + 560
+    in if den == 0 then 0
+    else pp-clamp8 (num * 255 / den)
+
+Section: Edge-Detect Anti-Aliasing (FXAA-like)
+
+  pp-fxaa : Framebuf -> Framebuf
+  pp-fxaa (fb) = pp-fxaa-loop fb 1 1 (fb-new (fb.fb-width) (fb.fb-height) 0)
+
+  pp-fxaa-loop : Framebuf, Integer, Integer, Framebuf -> Framebuf
+  pp-fxaa-loop (src) (x) (y) (dst) =
+    if y >= src.fb-height - 1 then dst
+    else if x >= src.fb-width - 1 then pp-fxaa-loop src 1 (y + 1) dst
+    else let center = pp-luminance (fb-get src x y)
+    in let north = pp-luminance (fb-get src x (y - 1))
+    in let south = pp-luminance (fb-get src x (y + 1))
+    in let west = pp-luminance (fb-get src (x - 1) y)
+    in let east = pp-luminance (fb-get src (x + 1) y)
+    in let contrast = pp-max-val (pp-abs-val (north - south)) (pp-abs-val (west - east))
+    in let pixel = if contrast > 30 then pp-avg4 (fb-get src x (y - 1)) (fb-get src x (y + 1)) (fb-get src (x - 1) y) (fb-get src (x + 1) y) else fb-get src x y
+    in pp-fxaa-loop src (x + 1) y (fb-set dst x y pixel)
+
+  pp-avg4 : Integer, Integer, Integer, Integer -> Integer
+  pp-avg4 (a) (b) (c) (d) =
+    let r = (pp-r a + pp-r b + pp-r c + pp-r d) / 4
+    in let g = (pp-g a + pp-g b + pp-g c + pp-g d) / 4
+    in let bl = (pp-b a + pp-b b + pp-b c + pp-b d) / 4
+    in pp-pack r g bl
+
+Section: Channel Helpers
+
+  pp-luminance : Integer -> Integer
+  pp-luminance (packed) =
+    let r = pp-r packed
+    in let g = pp-g packed
+    in let b = pp-b packed
+    in (r * 299 + g * 587 + b * 114) / 1000
+
+  pp-r : Integer -> Integer
+  pp-r (packed) = bit-and (bit-shru packed 16) 255
+
+  pp-g : Integer -> Integer
+  pp-g (packed) = bit-and (bit-shru packed 8) 255
+
+  pp-b : Integer -> Integer
+  pp-b (packed) = bit-and packed 255
+
+  pp-pack : Integer, Integer, Integer -> Integer
+  pp-pack (r) (g) (b) = bit-or (bit-shl (pp-clamp8 r) 16) (bit-or (bit-shl (pp-clamp8 g) 8) (pp-clamp8 b))
+
+  pp-clamp8 : Integer -> Integer
+  pp-clamp8 (v) = if v < 0 then 0 else if v > 255 then 255 else v
+
+  pp-abs-val : Integer -> Integer
+  pp-abs-val (n) = if n < 0 then 0 - n else n
+
+  pp-max-val : Integer, Integer -> Integer
+  pp-max-val (a) (b) = if a > b then a else b
+
+Page 1

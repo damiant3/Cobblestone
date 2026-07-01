@@ -1,0 +1,203 @@
+Chapter: MeetingManager
+  cites Collab chapter CollabTypes
+  cites Collab chapter CallEngine
+  cites Foreword chapter Maybe
+  cites Foreword chapter ListUtils
+
+ Meeting room management. Schedule, join, manage, and review
+ meetings. Integrates with Calendar for scheduling and Vision
+ for signal-triggered meetings.
+
+Section: Meeting Construction
+
+  meeting-new : Text, Text, Text, MeetingType, Integer, Integer -> MeetingRoom
+  meeting-new (id) (title) (host) (mtype) (start) (end-time) =
+    MeetingRoom {
+      mr-id = id,
+      mr-title = title,
+      mr-type = mtype,
+      mr-host = host,
+      mr-scheduled-start = start,
+      mr-scheduled-end = end-time,
+      mr-actual-start = 0,
+      mr-actual-end = 0,
+      mr-call = None,
+      mr-agenda = [],
+      mr-agenda-count = 0,
+      mr-notes = "",
+      mr-recording-url = "",
+      mr-recurrence = "",
+      mr-password = "",
+      mr-waiting-room = False,
+      mr-allow-screen-share = True,
+      mr-auto-record = False,
+      mr-max-participants = 100
+    }
+
+  meeting-instant : Text, Text, Integer -> MeetingRoom
+  meeting-instant (id) (host) (now) =
+    meeting-new id "Quick Meeting" host MtInstant now (now + 3600)
+
+Section: Meeting Lifecycle
+
+  meeting-start : MeetingRoom, Integer -> MeetingRoom
+  meeting-start (room) (now) =
+    let c = call-new room.mr-id CtVideo room.mr-host room.mr-title now
+    in let connected = call-connect c
+    in __record-set (__record-set room "mr-call" (Just connected)) "mr-actual-start" now
+
+  meeting-end : MeetingRoom, Integer -> MeetingRoom
+  meeting-end (room) (now) =
+    when room.mr-call
+      is None -> room
+      is Just (c) ->
+        let ended = call-end c now
+        in __record-set (__record-set room "mr-call" (Just ended)) "mr-actual-end" now
+
+  meeting-join : MeetingRoom, Text, Text, Integer -> MeetingRoom
+  meeting-join (room) (user-id) (name) (now) =
+    when room.mr-call
+      is None -> room
+      is Just (c) ->
+        let joined = call-join c user-id name PrParticipant now
+        in __record-set room "mr-call" (Just joined)
+
+  meeting-leave : MeetingRoom, Text, Integer -> MeetingRoom
+  meeting-leave (room) (user-id) (now) =
+    when room.mr-call
+      is None -> room
+      is Just (c) ->
+        let left = call-leave c user-id now
+        in __record-set room "mr-call" (Just left)
+
+Section: Agenda Management
+
+  meeting-add-agenda : MeetingRoom, Text, Integer, Text -> MeetingRoom
+  meeting-add-agenda (room) (title) (duration) (presenter) =
+    let item = AgendaItem {
+      ai-title = title,
+      ai-duration-min = duration,
+      ai-presenter = presenter,
+      ai-completed = False,
+      ai-notes = ""
+    }
+    in __record-set (__record-set room
+      "mr-agenda" (list-push room.mr-agenda item))
+      "mr-agenda-count" (room.mr-agenda-count + 1)
+
+  meeting-complete-agenda : MeetingRoom, Integer -> MeetingRoom
+  meeting-complete-agenda (room) (idx) =
+    if idx >= room.mr-agenda-count then room
+    else __record-set room "mr-agenda" (list-map-idx (complete-if-idx idx) room.mr-agenda 0)
+
+  complete-if-idx : Integer, AgendaItem, Integer -> AgendaItem
+  complete-if-idx (target) (item) (i) =
+    if i == target then __record-set item "ai-completed" True else item
+
+  list-map-idx : (AgendaItem, Integer -> AgendaItem), List AgendaItem, Integer -> List AgendaItem
+  list-map-idx (f) (xs) (i) =
+    if list-length xs == 0 then []
+    else let head = f (list-at xs 0) i
+      in head :: list-map-idx f (list-drop xs 1) (i + 1)
+
+  meeting-agenda-progress : MeetingRoom -> Integer
+  meeting-agenda-progress (room) =
+    if room.mr-agenda-count == 0 then 0
+    else agenda-done-count room.mr-agenda 0 room.mr-agenda-count 0 * 100 / room.mr-agenda-count
+
+  agenda-done-count : List AgendaItem, Integer, Integer, Integer -> Integer
+  agenda-done-count (items) (i) (len) (acc) =
+    if i >= len then acc
+    else let item = list-at items i
+    in agenda-done-count items (i + 1) len (acc + (if item.ai-completed then 1 else 0))
+
+Section: Meeting Notes
+
+  meeting-set-notes : MeetingRoom, Text -> MeetingRoom
+  meeting-set-notes (room) (notes) = __record-set room "mr-notes" notes
+
+  meeting-append-note : MeetingRoom, Text -> MeetingRoom
+  meeting-append-note (room) (line) =
+    let sep = if text-length room.mr-notes > 0 then "\n" else ""
+    in __record-set room "mr-notes" (room.mr-notes & sep & line)
+
+Section: Meeting Settings
+
+  meeting-set-password : MeetingRoom, Text -> MeetingRoom
+  meeting-set-password (room) (pw) = __record-set room "mr-password" pw
+
+  meeting-toggle-waiting-room : MeetingRoom -> MeetingRoom
+  meeting-toggle-waiting-room (room) =
+    __record-set room "mr-waiting-room" (if room.mr-waiting-room then False else True)
+
+  meeting-toggle-auto-record : MeetingRoom -> MeetingRoom
+  meeting-toggle-auto-record (room) =
+    __record-set room "mr-auto-record" (if room.mr-auto-record then False else True)
+
+  meeting-set-max : MeetingRoom, Integer -> MeetingRoom
+  meeting-set-max (room) (max-val) = __record-set room "mr-max-participants" max-val
+
+Section: Meeting Store
+
+  MeetingStore = record {
+    ms-meetings : List MeetingRoom,
+    ms-count : Integer,
+    ms-next-id : Integer,
+    ms-history : List CallRecord,
+    ms-history-count : Integer
+  }
+
+  meeting-store-new : MeetingStore
+  meeting-store-new = MeetingStore {
+    ms-meetings = [], ms-count = 0, ms-next-id = 1,
+    ms-history = [], ms-history-count = 0
+  }
+
+  ms-add : MeetingStore, MeetingRoom -> MeetingStore
+  ms-add (store) (room) =
+    __record-set (__record-set (__record-set store
+      "ms-meetings" (list-push store.ms-meetings room))
+      "ms-count" (store.ms-count + 1))
+      "ms-next-id" (store.ms-next-id + 1)
+
+  ms-find : MeetingStore, Text -> Maybe MeetingRoom
+  ms-find (store) (id) = ms-find-loop store.ms-meetings id 0 store.ms-count
+
+  ms-find-loop : List MeetingRoom, Text, Integer, Integer -> Maybe MeetingRoom
+  ms-find-loop (meetings) (id) (i) (len) =
+    if i >= len then None
+    else let m = list-at meetings i
+    in if m.mr-id == id then Just m
+    else ms-find-loop meetings id (i + 1) len
+
+  ms-update : MeetingStore, MeetingRoom -> MeetingStore
+  ms-update (store) (updated) =
+    __record-set store "ms-meetings" (list-map (ms-replace updated) store.ms-meetings)
+
+  ms-replace : MeetingRoom, MeetingRoom -> MeetingRoom
+  ms-replace (updated) (m) =
+    if m.mr-id == updated.mr-id then updated else m
+
+  ms-active : MeetingStore -> List MeetingRoom
+  ms-active (store) = ms-active-loop store.ms-meetings 0 store.ms-count []
+
+  ms-active-loop : List MeetingRoom, Integer, Integer, List MeetingRoom -> List MeetingRoom
+  ms-active-loop (meetings) (i) (len) (acc) =
+    if i >= len then acc
+    else let m = list-at meetings i
+    in when m.mr-call
+      is Just (c) -> if c.call-state == CsConnected
+        then ms-active-loop meetings (i + 1) len (list-push acc m)
+        else ms-active-loop meetings (i + 1) len acc
+      is None -> ms-active-loop meetings (i + 1) len acc
+
+  ms-upcoming : MeetingStore, Integer -> List MeetingRoom
+  ms-upcoming (store) (now) = ms-upcoming-loop store.ms-meetings now 0 store.ms-count []
+
+  ms-upcoming-loop : List MeetingRoom, Integer, Integer, Integer, List MeetingRoom -> List MeetingRoom
+  ms-upcoming-loop (meetings) (now) (i) (len) (acc) =
+    if i >= len then acc
+    else let m = list-at meetings i
+    in if m.mr-scheduled-start > now
+      then ms-upcoming-loop meetings now (i + 1) len (list-push acc m)
+      else ms-upcoming-loop meetings now (i + 1) len acc

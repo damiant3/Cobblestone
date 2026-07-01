@@ -1,0 +1,134 @@
+Chapter: AppLog
+  cites Foreword chapter Maybe
+  cites Foreword chapter FactStore
+  cites Foreword chapter StringUtils
+  cites Foreword chapter Parse
+  cites Kernel chapter DiskFacts
+  cites Kernel chapter AppPersist
+
+ Shared application log. Every app writes structured log entries
+ to DiskFacts (kind 41). Entries accumulate across app sessions
+ and reboots. The CVMM LogViewer reads this log via app-log-read.
+
+ Format per fact: "level|app|message"
+   level: 0=TRACE, 1=DEBUG, 2=INFO, 3=WARN, 4=ERROR, 5=FATAL
+   app: short app name (e.g. "browser", "diagram", "secrets")
+   message: free-text log message
+
+Section: Constants
+
+  pk-app-log : Integer = 41
+
+  al-trace : Integer = 0
+  al-debug : Integer = 1
+  al-info : Integer = 2
+  al-warn : Integer = 3
+  al-error : Integer = 4
+  al-fatal : Integer = 5
+
+Section: Log Entry Type
+
+  AppLogEntry = record {
+    ale-level : Integer,
+    ale-app : Text,
+    ale-message : Text,
+    ale-timestamp : Integer
+  }
+
+Section: Write
+
+  app-log : DiskFactStore, Integer, Text, Text, Integer -> DiskFactStore
+  app-log (store) (level) (app-name) (message) (timestamp) =
+    let content = show level & "|" & app-name & "|" & message
+    in app-write-fact store pk-app-log content timestamp
+
+  app-log-trace : DiskFactStore, Text, Text, Integer -> DiskFactStore
+  app-log-trace (store) (app) (msg) (ts) = app-log store al-trace app msg ts
+
+  app-log-debug : DiskFactStore, Text, Text, Integer -> DiskFactStore
+  app-log-debug (store) (app) (msg) (ts) = app-log store al-debug app msg ts
+
+  app-log-info : DiskFactStore, Text, Text, Integer -> DiskFactStore
+  app-log-info (store) (app) (msg) (ts) = app-log store al-info app msg ts
+
+  app-log-warn : DiskFactStore, Text, Text, Integer -> DiskFactStore
+  app-log-warn (store) (app) (msg) (ts) = app-log store al-warn app msg ts
+
+  app-log-error : DiskFactStore, Text, Text, Integer -> DiskFactStore
+  app-log-error (store) (app) (msg) (ts) = app-log store al-error app msg ts
+
+  app-log-fatal : DiskFactStore, Text, Text, Integer -> DiskFactStore
+  app-log-fatal (store) (app) (msg) (ts) = app-log store al-fatal app msg ts
+
+Section: Read
+
+  app-log-read : DiskFactStore -> List AppLogEntry
+  app-log-read (store) =
+    let texts = app-scan-all store pk-app-log
+    in parse-log-entries texts 0 (list-length texts) []
+
+  app-log-read-app : DiskFactStore, Text -> List AppLogEntry
+  app-log-read-app (store) (app-name) =
+    let all = app-log-read store
+    in filter-by-app all app-name 0 (list-length all) []
+
+  app-log-count : DiskFactStore -> Integer
+  app-log-count (store) =
+    list-length (app-scan-all store pk-app-log)
+
+Section: Text Split
+
+  text-split : Text, Text -> List Text
+  text-split (s) (sep) =
+    if text-length sep == 0 then [s]
+    else text-split-loop s sep 0 0 []
+
+  text-split-loop : Text, Text, Integer, Integer, List Text -> List Text
+  text-split-loop (s) (sep) (start) (i) (acc) =
+    if i > text-length s - text-length sep then acc & [text-substring s start (text-length s - start)]
+    else if text-substring s i (text-length sep) == sep then text-split-loop s sep (i + text-length sep) (i + text-length sep) (acc & [text-substring s start (i - start)])
+    else text-split-loop s sep start (i + 1) acc
+
+Section: Parse
+
+  parse-log-entries : List Text, Integer, Integer, List AppLogEntry -> List AppLogEntry
+  parse-log-entries (texts) (i) (len) (acc) =
+    if i >= len then acc
+    else let parsed = parse-log-entry (list-at texts i)
+    in when parsed
+      is Just (e) -> parse-log-entries texts (i + 1) len (list-push acc e)
+      is None -> parse-log-entries texts (i + 1) len acc
+
+  parse-log-entry : Text -> Maybe AppLogEntry
+  parse-log-entry (txt) =
+    let parts = text-split txt "|"
+    in if list-length parts < 3 then None
+    else Just (AppLogEntry {
+      ale-level = parse-decimal-full (list-at parts 0),
+      ale-app = list-at parts 1,
+      ale-message = list-at parts 2,
+      ale-timestamp = 0
+    })
+
+  filter-by-app : List AppLogEntry, Text, Integer, Integer, List AppLogEntry -> List AppLogEntry
+  filter-by-app (entries) (app) (i) (len) (acc) =
+    if i >= len then acc
+    else let e = list-at entries i
+    in if e.ale-app == app
+      then filter-by-app entries app (i + 1) len (list-push acc e)
+      else filter-by-app entries app (i + 1) len acc
+
+Section: Format
+
+  app-log-level-name : Integer -> Text
+  app-log-level-name (level) =
+    if level == 0 then "TRACE"
+    else if level == 1 then "DEBUG"
+    else if level == 2 then "INFO"
+    else if level == 3 then "WARN"
+    else if level == 4 then "ERROR"
+    else "FATAL"
+
+  format-app-log : AppLogEntry -> Text
+  format-app-log (e) =
+    "[" & app-log-level-name e.ale-level & "] " & e.ale-app & ": " & e.ale-message

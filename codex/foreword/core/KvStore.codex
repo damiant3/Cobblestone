@@ -1,0 +1,92 @@
+Chapter: KvStore
+  cites Foreword chapter Hamt
+  cites Foreword chapter Maybe
+  cites Foreword chapter MathLib
+
+ A KvStore is a record containing kv-data and kv-count.
+ To kv-empty gives a KvStore with no entries.
+ To kv-singleton gives a KvStore with one key-value pair.
+ To kv-get gives the value for the given key as a Maybe, or None when absent.
+ To kv-put gives a new KvStore with the key-value pair inserted or updated.
+ To kv-delete gives a new KvStore with the key removed, unchanged when absent.
+ To kv-has gives True when the key exists in the store.
+ To kv-get-or gives the value for the given key, or the provided default when absent.
+ To kv-put-all gives a new KvStore with all key-value pairs from two parallel lists inserted.
+ To kv-size gives the number of entries in the store.
+ To kv-is-empty gives True when the store contains no entries.
+ To format-kv gives a Text representation of a single key lookup.
+
+ We say:
+
+Section: Types
+  KvStore = record {
+    kv-data : HamtMap Text,
+    kv-count : Integer
+  }
+
+Section: Construction
+  kv-empty : KvStore
+  kv-empty = KvStore { kv-data = hamt-empty, kv-count = 0 }
+
+  kv-singleton : Text, Text -> KvStore
+  kv-singleton (key) (val) = KvStore { kv-data = hamt-set hamt-empty key val, kv-count = 1 }
+
+Section: Operations
+  kv-get : KvStore, Text -> Maybe Text
+  kv-get (store) (key) = hamt-get (store.kv-data) key
+
+  kv-put : KvStore, Text, Text -> KvStore
+  kv-put (store) (key) (val) =
+    let existing = hamt-get (store.kv-data) key
+    in let new-data = hamt-set (store.kv-data) key val
+    in KvStore {
+      kv-data = new-data,
+      kv-count = when existing is Just (v) -> store.kv-count is None -> store.kv-count + 1
+    }
+
+  kv-delete : KvStore, Text -> KvStore
+  kv-delete (store) (key) =
+    let existing = hamt-get (store.kv-data) key
+    in when existing
+      is None -> store
+      is Just (v) -> KvStore { kv-data = hamt-remove (store.kv-data) key, kv-count = store.kv-count - 1 }
+
+  kv-has : KvStore, Text -> Boolean
+  kv-has (store) (key) =
+    let found = hamt-get (store.kv-data) key
+    in when found
+     is Just (v) -> True
+     is None -> False
+
+  kv-get-or : KvStore, Text, Text -> Text
+  kv-get-or (store) (key) (default) =
+    let found = hamt-get (store.kv-data) key
+    in when found
+     is Just (v) -> v
+     is None -> default
+
+Section: Bulk Operations
+  kv-put-all : KvStore, List Text, List Text -> KvStore
+  kv-put-all (store) (keys) (vals) = kv-put-all-loop store keys vals 0 (math-min (list-length keys) (list-length vals))
+
+  kv-put-all-loop : KvStore, List Text, List Text, Integer, Integer -> KvStore
+  kv-put-all-loop (store) (keys) (vals) (i) (n) =
+    if i >= n then store
+    else kv-put-all-loop (kv-put store (list-at keys i) (list-at vals i)) keys vals (i + 1) n
+
+Section: Queries
+  kv-size : KvStore -> Integer
+  kv-size (store) = store.kv-count
+
+  kv-is-empty : KvStore -> Boolean
+  kv-is-empty (store) = store.kv-count == 0
+
+Section: Formatting
+  format-kv : KvStore, Text -> Text
+  format-kv (store) (key) =
+    let found = kv-get store key
+    in when found
+     is Just (v) -> key & "=" & v
+     is None -> key & "=<none>"
+
+Page 1

@@ -1,0 +1,196 @@
+Chapter: MaterialEditor
+
+ Material editing with PBR-inspired properties. Supports
+ albedo, metallic, roughness, emission, and texture assignment.
+ Preview renders a sphere with the material applied.
+ Material properties use Real (0.0 to 1.0).
+
+ We say:
+
+Section: Types
+
+  PbrMaterial = record {
+    pbr-name : Text,
+    pbr-albedo : Integer,
+    pbr-metallic : Real,
+    pbr-roughness : Real,
+    pbr-emission : Integer,
+    pbr-emission-strength : Real,
+    pbr-opacity : Real,
+    pbr-albedo-tex : Integer,
+    pbr-normal-tex : Integer
+  }
+
+  MaterialSlot =
+    | SlotAlbedo
+    | SlotMetallic
+    | SlotRoughness
+    | SlotEmission
+
+  MaterialLibState = record {
+    mls-materials : List PbrMaterial,
+    mls-count : Integer,
+    mls-selected : Integer
+  }
+
+Section: Default Materials
+
+  pbr-default : PbrMaterial
+  pbr-default = PbrMaterial {
+    pbr-name = "Default",
+    pbr-albedo = 12632256,
+    pbr-metallic = 0.0,
+    pbr-roughness = 0.5,
+    pbr-emission = 0,
+    pbr-emission-strength = 0.0,
+    pbr-opacity = 1.0,
+    pbr-albedo-tex = -1,
+    pbr-normal-tex = -1
+  }
+
+  pbr-metal : PbrMaterial
+  pbr-metal = PbrMaterial {
+    pbr-name = "Metal",
+    pbr-albedo = 11184810,
+    pbr-metallic = 0.9,
+    pbr-roughness = 0.2,
+    pbr-emission = 0,
+    pbr-emission-strength = 0.0,
+    pbr-opacity = 1.0,
+    pbr-albedo-tex = -1,
+    pbr-normal-tex = -1
+  }
+
+  pbr-glass : PbrMaterial
+  pbr-glass = PbrMaterial {
+    pbr-name = "Glass",
+    pbr-albedo = 14540253,
+    pbr-metallic = 0.0,
+    pbr-roughness = 0.05,
+    pbr-emission = 0,
+    pbr-emission-strength = 0.0,
+    pbr-opacity = 0.3,
+    pbr-albedo-tex = -1,
+    pbr-normal-tex = -1
+  }
+
+  pbr-emissive : PbrMaterial
+  pbr-emissive = PbrMaterial {
+    pbr-name = "Emissive",
+    pbr-albedo = #FFFFFF,
+    pbr-metallic = 0.0,
+    pbr-roughness = 0.8,
+    pbr-emission = 16776960,
+    pbr-emission-strength = 0.8,
+    pbr-opacity = 1.0,
+    pbr-albedo-tex = -1,
+    pbr-normal-tex = -1
+  }
+
+Section: Construction
+
+  pbr-new : Text, Integer -> PbrMaterial
+  pbr-new (name) (albedo) = PbrMaterial {
+    pbr-name = name,
+    pbr-albedo = albedo,
+    pbr-metallic = 0.0,
+    pbr-roughness = 0.5,
+    pbr-emission = 0,
+    pbr-emission-strength = 0.0,
+    pbr-opacity = 1.0,
+    pbr-albedo-tex = -1,
+    pbr-normal-tex = -1
+  }
+
+  mat-lib-state-new : MaterialLibState
+  mat-lib-state-new = MaterialLibState {
+    mls-materials = [pbr-default],
+    mls-count = 1,
+    mls-selected = 0
+  }
+
+Section: Material Library
+
+  mat-lib-add : MaterialLibState, PbrMaterial -> MaterialLibState
+  mat-lib-add (lib) (mat) = MaterialLibState {
+    mls-materials = list-push (lib.mls-materials) mat,
+    mls-count = lib.mls-count + 1,
+    mls-selected = lib.mls-selected
+  }
+
+  mat-lib-get-selected : MaterialLibState -> PbrMaterial
+  mat-lib-get-selected (lib) = list-at (lib.mls-materials) (lib.mls-selected)
+
+  mat-lib-select : MaterialLibState, Integer -> MaterialLibState
+  mat-lib-select (lib) (idx) =
+    if idx < 0 then lib
+    else if idx >= lib.mls-count then lib
+    else __record-set lib "mls-selected" idx
+
+Section: Material Editing
+
+  pbr-set-albedo : PbrMaterial, Integer -> PbrMaterial
+  pbr-set-albedo (mat) (color) = __record-set mat "pbr-albedo" color
+
+  pbr-set-metallic : PbrMaterial, Real -> PbrMaterial
+  pbr-set-metallic (mat) (val) = __record-set mat "pbr-metallic" (me-clamp-real val 0.0 1.0)
+
+  pbr-set-roughness : PbrMaterial, Real -> PbrMaterial
+  pbr-set-roughness (mat) (val) = __record-set mat "pbr-roughness" (me-clamp-real val 0.0 1.0)
+
+  pbr-set-emission : PbrMaterial, Integer, Real -> PbrMaterial
+  pbr-set-emission (mat) (color) (strength) =
+    __record-set (__record-set mat "pbr-emission" color) "pbr-emission-strength" (me-clamp-real strength 0.0 1.0)
+
+  pbr-set-opacity : PbrMaterial, Real -> PbrMaterial
+  pbr-set-opacity (mat) (val) = __record-set mat "pbr-opacity" (me-clamp-real val 0.0 1.0)
+
+  pbr-set-albedo-tex : PbrMaterial, Integer -> PbrMaterial
+  pbr-set-albedo-tex (mat) (tex-id) = __record-set mat "pbr-albedo-tex" tex-id
+
+Section: Shading
+
+  pbr-shade : PbrMaterial, Integer, Integer -> Integer
+  pbr-shade (mat) (light-intensity) (view-dot-normal) =
+    let base = mat.pbr-albedo
+    in let li = int-to-real light-intensity / 1000.0
+    in let vdn = int-to-real view-dot-normal / 1000.0
+    in let diffuse = li * (1.0 - mat.pbr-metallic)
+    in let specular = me-specular-term mat vdn li
+    in let lighting = diffuse + specular
+    in let lit-r = real-to-int (int-to-real (base / 65536) * lighting)
+    in let lit-g = real-to-int (int-to-real (base / 256 - base / 65536 * 256) * lighting)
+    in let lit-b = real-to-int (int-to-real (base - base / 256 * 256) * lighting)
+    in let er = real-to-int (int-to-real (mat.pbr-emission / 65536) * mat.pbr-emission-strength)
+    in let eg = real-to-int (int-to-real (mat.pbr-emission / 256 - mat.pbr-emission / 65536 * 256) * mat.pbr-emission-strength)
+    in let eb = real-to-int (int-to-real (mat.pbr-emission - mat.pbr-emission / 256 * 256) * mat.pbr-emission-strength)
+    in me-clamp (lit-r + er) 0 255 * 65536 + me-clamp (lit-g + eg) 0 255 * 256 + me-clamp (lit-b + eb) 0 255
+
+  me-specular-term : PbrMaterial, Real, Real -> Real
+  me-specular-term (mat) (vdn) (intensity) =
+    let smooth = 1.0 - mat.pbr-roughness
+    in let power = smooth * smooth
+    in let spec = vdn * vdn * power
+    in spec * intensity * (mat.pbr-metallic + 0.2) / 1.2
+
+Section: Helpers
+
+  me-clamp : Integer, Integer, Integer -> Integer
+  me-clamp (v) (lo) (hi) = if v < lo then lo else if v > hi then hi else v
+
+  me-clamp-real : Real, Real, Real -> Real
+  me-clamp-real (v) (lo) (hi) = if v < lo then lo else if v > hi then hi else v
+
+Section: Info
+
+  pbr-info : PbrMaterial -> Text
+  pbr-info (mat) =
+    mat.pbr-name & " albedo=" & show (mat.pbr-albedo) &
+    " metal=" & show (mat.pbr-metallic) &
+    " rough=" & show (mat.pbr-roughness)
+
+  mat-lib-info : MaterialLibState -> Text
+  mat-lib-info (lib) =
+    show (lib.mls-count) & " materials, selected=" & show (lib.mls-selected)
+
+Page 1

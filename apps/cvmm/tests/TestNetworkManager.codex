@@ -1,0 +1,116 @@
+Chapter: TestNetworkManager
+  cites Cvmm chapter CvmmTypes
+  cites Cvmm chapter NetworkManager
+  cites Foreword chapter Maybe
+
+ Unit tests for the network manager: NIC operations, IP formatting,
+ DNS/route management, and traffic accumulation.
+
+Section: Test Harness
+
+  assert-eq-text : Text, Text, Text -> Text
+  assert-eq-text (label) (expected) (actual) =
+    if expected == actual then "PASS " & label
+    else "FAIL " & label & ": expected \"" & expected & "\" got \"" & actual & "\""
+
+  assert-eq-int : Text, Integer, Integer -> Text
+  assert-eq-int (label) (expected) (actual) =
+    if expected == actual then "PASS " & label
+    else "FAIL " & label & ": expected " & show expected & " got " & show actual
+
+Section: IP Tests
+
+  test-ip-formatting : Text
+  test-ip-formatting =
+    let ip = ip-address-new "192.168.1.100" 24
+    in let t1 = assert-eq-text "ip-cidr" "192.168.1.100/24" (format-ip-cidr ip)
+    in let ip2 = ip-address-new "10.0.0.1" 8
+    in let t2 = assert-eq-text "ip-cidr-8" "10.0.0.1/8" (format-ip-cidr ip2)
+    in t1 & "\n" & t2
+
+Section: NIC Tests
+
+  test-nic-operations : Text
+  test-nic-operations =
+    let n = nic-new "eth0" "Test NIC" NicEthernet "AA:BB:CC:DD:EE:FF"
+    in let t1 = assert-eq-text "nic-no-ip" "no address" (nic-primary-ip n)
+    in let n2 = nic-add-address n (ip-address-new "10.0.0.5" 24)
+    in let t2 = assert-eq-text "nic-with-ip" "10.0.0.5" (nic-primary-ip n2)
+    in let t3 = assert-eq-int "nic-addr-count" 1 (n2.nic-addr-count)
+    in let n3 = nic-add-address n2 (ip-address-new "10.0.0.6" 24)
+    in let t4 = assert-eq-int "nic-two-addrs" 2 (n3.nic-addr-count)
+    in let t5 = assert-eq-text "nic-primary-still-first" "10.0.0.5" (nic-primary-ip n3)
+    in t1 & "\n" & t2 & "\n" & t3 & "\n" & t4 & "\n" & t5
+
+Section: Manager State Tests
+
+  test-manager-state : Text
+  test-manager-state =
+    let st = net-manager-new
+    in let t1 = assert-eq-int "empty-nics" 0 (st.nm-nic-count)
+    in let eth = nic-new "eth0" "Ethernet" NicEthernet "AA:BB:CC:00:11:22"
+    in let eth-ip = nic-add-address eth (ip-address-new "10.0.2.15" 24)
+    in let st2 = nm-add-nic st eth-ip
+    in let t2 = assert-eq-int "one-nic" 1 (st2.nm-nic-count)
+    in let lo = nic-new "lo" "Loopback" NicLoopback "00:00:00:00:00:00"
+    in let lo-ip = nic-add-address lo (ip-address-new "127.0.0.1" 8)
+    in let st3 = nm-add-nic st2 lo-ip
+    in let t3 = assert-eq-int "two-nics" 2 (st3.nm-nic-count)
+    in t1 & "\n" & t2 & "\n" & t3
+
+Section: Find NIC Tests
+
+  test-find-nic : Text
+  test-find-nic =
+    let eth = nic-new "eth0" "Ethernet" NicEthernet "AA:BB:CC:00:11:22"
+    in let st = nm-add-nic net-manager-new eth
+    in let found = nm-find-nic st "eth0"
+    in let t1 = when found
+      is Just (n) -> assert-eq-text "found-name" "Ethernet" (n.nic-name)
+      is None -> "FAIL find-eth0: not found"
+    in let not-found = nm-find-nic st "eth99"
+    in let t2 = when not-found
+      is Just (n) -> "FAIL find-eth99: should not exist"
+      is None -> "PASS find-eth99-missing"
+    in t1 & "\n" & t2
+
+Section: Traffic Tests
+
+  test-traffic : Text
+  test-traffic =
+    let eth = __record-set (__record-set (nic-new "eth0" "Eth" NicEthernet "AA:BB:CC:00:11:22") "nic-rx-bytes" (kilobytes 100)) "nic-tx-bytes" (kilobytes 50)
+    in let lo = __record-set (__record-set (nic-new "lo" "Lo" NicLoopback "00:00:00:00:00:00") "nic-rx-bytes" (kilobytes 10)) "nic-tx-bytes" (kilobytes 10)
+    in let st = nm-add-nic (nm-add-nic net-manager-new eth) lo
+    in let rx = nm-total-rx st
+    in let tx = nm-total-tx st
+    in let t1 = assert-eq-int "total-rx" 112640 (rx.bs-bytes)
+    in let t2 = assert-eq-int "total-tx" 61440 (tx.bs-bytes)
+    in t1 & "\n" & t2
+
+Section: DNS and Route Tests
+
+  test-dns-routes : Text
+  test-dns-routes =
+    let st = net-manager-new
+    in let dns = DnsServer { dns-addr = "8.8.8.8", dns-name = "google", dns-latency-ms = 5, dns-queries = 42, dns-primary = True }
+    in let st2 = nm-add-dns st dns
+    in let t1 = assert-eq-int "one-dns" 1 (st2.nm-dns-count)
+    in let route = RouteEntry { rt-destination = "0.0.0.0/0", rt-gateway = "10.0.2.2", rt-interface = "eth0", rt-metric = 100, rt-type = "default" }
+    in let st3 = nm-add-route st2 route
+    in let t2 = assert-eq-int "one-route" 1 (st3.nm-route-count)
+    in t1 & "\n" & t2
+
+Section: Entry
+
+  opening : [Console] None = act
+    print-line-uni "=== NetworkManager Tests ==="
+    print-line-uni test-ip-formatting
+    print-line-uni test-nic-operations
+    print-line-uni test-manager-state
+    print-line-uni test-find-nic
+    print-line-uni test-traffic
+    print-line-uni test-dns-routes
+    print-line-uni "=== Done ==="
+  end
+
+Page 1

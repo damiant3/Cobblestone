@@ -1,0 +1,336 @@
+Chapter: AppLauncher
+  cites Foreword chapter Maybe
+  cites UI chapter Widget
+  cites UI chapter Layout
+
+ App launcher overlay (start menu). Opens from the taskbar and
+ shows pinned apps, all apps searchable by name, recent apps,
+ and a power menu. Apps are registered in an AppRegistry with
+ id, name, icon, category, and command.
+
+Section: App Category
+
+  AppCategory =
+    | CatSystem
+    | CatProductivity
+    | CatDevelopment
+    | CatMedia
+    | CatGames
+    | CatNetwork
+    | CatSettings
+    | CatOther
+
+  category-label : AppCategory -> Text
+  category-label (c) = when c
+    is CatSystem -> "System"
+    is CatProductivity -> "Productivity"
+    is CatDevelopment -> "Development"
+    is CatMedia -> "Media"
+    is CatGames -> "Games"
+    is CatNetwork -> "Network"
+    is CatSettings -> "Settings"
+    is CatOther -> "Other"
+
+Section: App Entry
+
+  AppEntry = record {
+    ae-id : Text,
+    ae-name : Text,
+    ae-icon : Text,
+    ae-description : Text,
+    ae-category : AppCategory,
+    ae-pinned : Boolean
+  }
+
+  app-entry : Text, Text, Text, Text, AppCategory -> AppEntry
+  app-entry (id) (name) (icon) (desc) (cat) = AppEntry {
+    ae-id = id, ae-name = name, ae-icon = icon, ae-description = desc,
+    ae-category = cat, ae-pinned = False
+  }
+
+Section: Power Action
+
+  PowerAction =
+    | PwrShutdown
+    | PwrRestart
+    | PwrSleep
+    | PwrLock
+    | PwrLogout
+
+  power-action-label : PowerAction -> Text
+  power-action-label (a) = when a
+    is PwrShutdown -> "Shut Down"
+    is PwrRestart -> "Restart"
+    is PwrSleep -> "Sleep"
+    is PwrLock -> "Lock"
+    is PwrLogout -> "Log Out"
+
+  power-action-icon : PowerAction -> Text
+  power-action-icon (a) = when a
+    is PwrShutdown -> "power"
+    is PwrRestart -> "refresh"
+    is PwrSleep -> "clock"
+    is PwrLock -> "lock"
+    is PwrLogout -> "user"
+
+Section: State
+
+  AppLauncherState = record {
+    al-open : Boolean,
+    al-search : Text,
+    al-apps : List AppEntry,
+    al-app-count : Integer,
+    al-recent : List Text,
+    al-recent-count : Integer,
+    al-recent-max : Integer,
+    al-selected : Integer,
+    al-show-power : Boolean
+  }
+
+  app-launcher-new : AppLauncherState
+  app-launcher-new = AppLauncherState {
+    al-open = False,
+    al-search = "",
+    al-apps = al-default-apps,
+    al-app-count = 14,
+    al-recent = [],
+    al-recent-count = 0,
+    al-recent-max = 5,
+    al-selected = 0,
+    al-show-power = False
+  }
+
+Section: Default App Registry
+
+  al-default-apps : List AppEntry
+  al-default-apps = [
+    app-entry "terminal" "Terminal" "terminal" "System terminal emulator" CatSystem,
+    app-entry "file-explorer" "Files" "folder" "File manager" CatSystem,
+    app-entry "settings" "Settings" "gear" "System settings" CatSettings,
+    app-entry "calculator" "Calculator" "grid" "Calculator" CatProductivity,
+    app-entry "calendar" "Calendar" "calendar" "Calendar and events" CatProductivity,
+    app-entry "notes" "Notes" "document" "Text notes" CatProductivity,
+    app-entry "contacts" "Contacts" "user" "Address book" CatProductivity,
+    app-entry "process-mgr" "Processes" "list-view" "Task manager" CatSystem,
+    app-entry "monitor" "Monitor" "eye" "System monitor" CatSystem,
+    app-entry "network-mgr" "Network" "wifi" "Network settings" CatNetwork,
+    app-entry "audio" "Audio" "play" "Audio settings" CatSettings,
+    app-entry "display" "Display" "maximize" "Display settings" CatSettings,
+    app-entry "keyboard-rgb" "Keyboard" "star" "Keyboard RGB settings" CatSettings,
+    app-entry "screensaver" "Screen Saver" "clock" "Screen saver settings" CatSettings
+  ]
+
+Section: Actions
+
+  al-toggle : AppLauncherState -> AppLauncherState
+  al-toggle (st) =
+    if st.al-open then al-close st
+    else __record-set (__record-set st "al-open" True) "al-search" ""
+
+  al-close : AppLauncherState -> AppLauncherState
+  al-close (st) = __record-set (__record-set (__record-set st "al-open" False) "al-search" "") "al-show-power" False
+
+  al-set-search : AppLauncherState, Text -> AppLauncherState
+  al-set-search (st) (query) = __record-set (__record-set st "al-search" query) "al-selected" 0
+
+  al-nav-up : AppLauncherState -> AppLauncherState
+  al-nav-up (st) =
+    let sel = st.al-selected - 1
+    in __record-set st "al-selected" (if sel < 0 then 0 else sel)
+
+  al-nav-down : AppLauncherState -> AppLauncherState
+  al-nav-down (st) =
+    let visible = al-visible-count st
+    in let sel = st.al-selected + 1
+    in __record-set st "al-selected" (if sel >= visible then visible - 1 else sel)
+
+  al-toggle-power : AppLauncherState -> AppLauncherState
+  al-toggle-power (st) = __record-set st "al-show-power" (if st.al-show-power then False else True)
+
+  al-launch : AppLauncherState, Text -> AppLauncherState
+  al-launch (st) (app-id) =
+    let recent = al-add-recent (st.al-recent) app-id (st.al-recent-count) (st.al-recent-max)
+    in let count = list-length recent
+    in al-close (__record-set (__record-set st "al-recent" recent) "al-recent-count" count)
+
+  al-add-recent : List Text, Text, Integer, Integer -> List Text
+  al-add-recent (recent) (id) (count) (max-count) =
+    let filtered = al-remove-from-list recent id 0 count []
+    in let prepended = [id] & filtered
+    in if list-length prepended > max-count then al-take-list prepended max-count 0 []
+    else prepended
+
+  al-remove-from-list : List Text, Text, Integer, Integer, List Text -> List Text
+  al-remove-from-list (items) (exclude) (i) (n) (acc) =
+    if i >= n then acc
+    else let item = list-at items i
+    in if item == exclude then al-remove-from-list items exclude (i + 1) n acc
+    else al-remove-from-list items exclude (i + 1) n (list-push acc item)
+
+  al-take-list : List Text, Integer, Integer, List Text -> List Text
+  al-take-list (items) (n) (i) (acc) =
+    if i >= n then acc
+    else al-take-list items n (i + 1) (list-push acc (list-at items i))
+
+Section: App Registration
+
+  al-register-app : AppLauncherState, AppEntry -> AppLauncherState
+  al-register-app (st) (entry) =
+    __record-set (__record-set st "al-apps" (list-push (st.al-apps) entry)) "al-app-count" (st.al-app-count + 1)
+
+  al-pin-app : AppLauncherState, Text -> AppLauncherState
+  al-pin-app (st) (app-id) =
+    let updated = al-set-pinned (st.al-apps) app-id True 0 (st.al-app-count) []
+    in __record-set st "al-apps" updated
+
+  al-unpin-app : AppLauncherState, Text -> AppLauncherState
+  al-unpin-app (st) (app-id) =
+    let updated = al-set-pinned (st.al-apps) app-id False 0 (st.al-app-count) []
+    in __record-set st "al-apps" updated
+
+  al-set-pinned : List AppEntry, Text, Boolean, Integer, Integer, List AppEntry -> List AppEntry
+  al-set-pinned (apps) (target) (val) (i) (n) (acc) =
+    if i >= n then acc
+    else let app = list-at apps i
+    in let updated = if app.ae-id == target then __record-set app "ae-pinned" val else app
+    in al-set-pinned apps target val (i + 1) n (list-push acc updated)
+
+Section: Queries
+
+  al-visible-apps : AppLauncherState -> List AppEntry
+  al-visible-apps (st) =
+    if text-length (st.al-search) == 0 then st.al-apps
+    else al-filter-apps (st.al-apps) (st.al-search) 0 (st.al-app-count) []
+
+  al-visible-count : AppLauncherState -> Integer
+  al-visible-count (st) = list-length (al-visible-apps st)
+
+  al-filter-apps : List AppEntry, Text, Integer, Integer, List AppEntry -> List AppEntry
+  al-filter-apps (apps) (query) (i) (n) (acc) =
+    if i >= n then acc
+    else let app = list-at apps i
+    in if text-contains (app.ae-name) query then al-filter-apps apps query (i + 1) n (list-push acc app)
+    else if text-contains (app.ae-description) query then al-filter-apps apps query (i + 1) n (list-push acc app)
+    else al-filter-apps apps query (i + 1) n acc
+
+  al-pinned-apps : AppLauncherState -> List AppEntry
+  al-pinned-apps (st) = al-filter-pinned (st.al-apps) 0 (st.al-app-count) []
+
+  al-filter-pinned : List AppEntry, Integer, Integer, List AppEntry -> List AppEntry
+  al-filter-pinned (apps) (i) (n) (acc) =
+    if i >= n then acc
+    else let app = list-at apps i
+    in if app.ae-pinned then al-filter-pinned apps (i + 1) n (list-push acc app)
+    else al-filter-pinned apps (i + 1) n acc
+
+  al-find-app : AppLauncherState, Text -> Maybe AppEntry
+  al-find-app (st) (id) = al-find-loop (st.al-apps) id 0 (st.al-app-count)
+
+  al-find-loop : List AppEntry, Text, Integer, Integer -> Maybe AppEntry
+  al-find-loop (apps) (target) (i) (n) =
+    if i >= n then None
+    else let app = list-at apps i
+    in if app.ae-id == target then Just app
+    else al-find-loop apps target (i + 1) n
+
+Section: Widget Building
+
+  al-widget : AppLauncherState -> WidgetNode
+  al-widget (st) =
+    if st.al-open then al-open-widget st
+    else widget-label "al-closed" ""
+
+  al-open-widget : AppLauncherState -> WidgetNode
+  al-open-widget (st) =
+    let search = widget-input "al-search" (st.al-search) (text-length (st.al-search))
+    in let pinned = al-pinned-section st
+    in let recent = al-recent-section st
+    in let all-apps = al-all-apps-section st
+    in let power = if st.al-show-power then [al-power-section] else []
+    in let power-btn = widget-button "al-power-btn" "Power"
+    in widget-panel "app-launcher" DirColumn 4 ([search, pinned, recent, all-apps] & power & [power-btn])
+
+  al-pinned-section : AppLauncherState -> WidgetNode
+  al-pinned-section (st) =
+    let pinned = al-pinned-apps st
+    in let items = al-app-grid pinned 0 (list-length pinned) []
+    in widget-panel "al-pinned" DirRow 8 items
+
+  al-recent-section : AppLauncherState -> WidgetNode
+  al-recent-section (st) =
+    if st.al-recent-count == 0 then widget-label "al-no-recent" ""
+    else let title = widget-label "al-recent-title" "Recent"
+    in let items = al-recent-items st 0 (st.al-recent-count) []
+    in widget-panel "al-recent" DirColumn 2 ([title] & items)
+
+  al-recent-items : AppLauncherState, Integer, Integer, List WidgetNode -> List WidgetNode
+  al-recent-items (st) (i) (n) (acc) =
+    if i >= n then acc
+    else let id = list-at (st.al-recent) i
+    in let found = al-find-app st id
+    in let item = when found
+      is Just (app) -> widget-button ("al-r-" & app.ae-id) (app.ae-icon & " " & app.ae-name)
+      is None -> widget-label ("al-r-" & id) id
+    in al-recent-items st (i + 1) n (list-push acc item)
+
+  al-all-apps-section : AppLauncherState -> WidgetNode
+  al-all-apps-section (st) =
+    let visible = al-visible-apps st
+    in let items = al-app-list visible (st.al-selected) 0 (list-length visible) []
+    in widget-panel "al-all" DirColumn 1 items
+
+  al-app-list : List AppEntry, Integer, Integer, Integer, List WidgetNode -> List WidgetNode
+  al-app-list (apps) (selected) (i) (n) (acc) =
+    if i >= n then acc
+    else let app = list-at apps i
+    in let btn = widget-button ("al-a-" & app.ae-id) (app.ae-icon & " " & app.ae-name & " -- " & app.ae-description)
+    in let styled = if i == selected then widget-set-state btn state-focused else btn
+    in al-app-list apps selected (i + 1) n (list-push acc styled)
+
+  al-app-grid : List AppEntry, Integer, Integer, List WidgetNode -> List WidgetNode
+  al-app-grid (apps) (i) (n) (acc) =
+    if i >= n then acc
+    else let app = list-at apps i
+    in let btn = widget-button ("al-p-" & app.ae-id) (app.ae-icon & "\n" & app.ae-name)
+    in let sized = widget-set-min btn 64 64
+    in al-app-grid apps (i + 1) n (list-push acc sized)
+
+  al-power-section : WidgetNode
+  al-power-section =
+    widget-panel "al-power" DirRow 4 [
+      widget-button "al-pwr-shutdown" (power-action-icon PwrShutdown & " " & power-action-label PwrShutdown),
+      widget-button "al-pwr-restart" (power-action-icon PwrRestart & " " & power-action-label PwrRestart),
+      widget-button "al-pwr-sleep" (power-action-icon PwrSleep & " " & power-action-label PwrSleep),
+      widget-button "al-pwr-lock" (power-action-icon PwrLock & " " & power-action-label PwrLock),
+      widget-button "al-pwr-logout" (power-action-icon PwrLogout & " " & power-action-label PwrLogout)
+    ]
+
+Section: Keyboard Handling
+
+  al-handle-key : AppLauncherState, Integer -> AppLauncherState
+  al-handle-key (st) (key) =
+    if key == 27 then al-close st
+    else if key == 38 then al-nav-up st
+    else if key == 40 then al-nav-down st
+    else if key == 13 then al-launch-selected st
+    else st
+
+  al-launch-selected : AppLauncherState -> AppLauncherState
+  al-launch-selected (st) =
+    let visible = al-visible-apps st
+    in if st.al-selected >= 0 then
+      if st.al-selected < list-length visible then
+        let app = list-at visible (st.al-selected)
+        in al-launch st (app.ae-id)
+      else st
+    else st
+
+Section: Formatting
+
+  format-app-launcher : AppLauncherState -> Text
+  format-app-launcher (st) =
+    (if st.al-open then "OPEN" else "closed")
+    & " apps=" & show (st.al-app-count) & " recent=" & show (st.al-recent-count)
+    & " search=\"" & st.al-search & "\""
+
+Page 1

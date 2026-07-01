@@ -1,0 +1,148 @@
+Chapter: Memory
+
+ C64 memory map with bank switching. The 6502 processor port at
+ $0001 controls which ROMs and I/O are visible. All memory lives
+ at heap address #A00000 (64 KB). ROM images are loaded from the
+ IDE disk at boot and stored at fixed heap addresses.
+
+Section: Constants
+
+  c64-ram : Integer = #A00000
+  basic-rom : Integer = #A10000
+  kernal-rom : Integer = #A12000
+  char-rom : Integer = #A14000
+  color-ram-base : Integer = #A15000
+
+Section: Bank Configuration
+
+ $0001 bits 0-2 control memory mapping:
+   bit 0: LORAM  (1 = BASIC ROM at $A000-$BFFF)
+   bit 1: HIRAM  (1 = KERNAL ROM at $E000-$FFFF)
+   bit 2: CHAREN (1 = I/O at $D000-$DFFF, 0 = CHAR ROM)
+
+  io-visible : Integer -> Integer
+  io-visible (bank) = bit-and bank 4
+
+  basic-visible : Integer -> Integer
+  basic-visible (bank) = bit-and bank 1
+
+  kernal-visible : Integer -> Integer
+  kernal-visible (bank) = bit-and bank 2
+
+Section: Memory Read
+
+  c64-read : Integer, Integer -> Integer
+  c64-read (addr) (bank) =
+    let a = bit-and addr #FFFF
+    in if a < #A000 then peek-byte c64-ram a
+    else if a < #C000 then c64-read-basic a bank
+    else if a < #D000 then peek-byte c64-ram a
+    else if a < #E000 then c64-read-io a bank
+    else c64-read-kernal a bank
+
+  c64-read-basic : Integer, Integer -> Integer
+  c64-read-basic (addr) (bank) =
+    if basic-visible bank /= 0
+    then peek-byte basic-rom (addr - #A000)
+    else peek-byte c64-ram addr
+
+  c64-read-kernal : Integer, Integer -> Integer
+  c64-read-kernal (addr) (bank) =
+    if kernal-visible bank /= 0
+    then peek-byte kernal-rom (addr - #E000)
+    else peek-byte c64-ram addr
+
+  c64-read-io : Integer, Integer -> Integer
+  c64-read-io (addr) (bank) =
+    if io-visible bank /= 0
+    then c64-read-io-reg addr
+    else peek-byte char-rom (addr - #D000)
+
+  vic-state : Integer = #A17000
+
+  c64-read-io-reg : Integer -> Integer
+  c64-read-io-reg (addr) =
+    if addr < #D400 then peek-byte vic-state (addr - #D000)
+    else if addr < #D800 then 0
+    else if addr < #DC00 then peek-byte color-ram-base (addr - #D800)
+    else if addr < #DD00 then cia1-read (addr - #DC00)
+    else if addr < #DE00 then cia2-read (addr - #DD00)
+    else 0
+
+Section: Memory Write
+
+  c64-write : Integer, Integer, Integer -> Integer
+  c64-write (addr) (val) (bank) =
+    let a = bit-and addr #FFFF
+    in let v = bit-and val #FF
+    in if a < #D000 then poke-byte c64-ram a v
+    else if a < #E000 then c64-write-io a v bank
+    else poke-byte c64-ram a v
+
+  c64-write-io : Integer, Integer, Integer -> Integer
+  c64-write-io (addr) (val) (bank) =
+    if io-visible bank /= 0
+    then c64-write-io-reg addr val
+    else poke-byte c64-ram addr val
+
+  c64-write-io-reg : Integer, Integer -> Integer
+  c64-write-io-reg (addr) (val) =
+    if addr < #D400 then poke-byte vic-state (addr - #D000) val
+    else if addr < #D800 then 0
+    else if addr < #DC00 then poke-byte color-ram-base (addr - #D800) (bit-and val #0F)
+    else if addr < #DD00 then cia1-write (addr - #DC00) val
+    else if addr < #DE00 then cia2-write (addr - #DD00) val
+    else 0
+
+Section: 16-bit Reads
+
+  c64-read-16 : Integer, Integer -> Integer
+  c64-read-16 (addr) (bank) =
+    let lo = c64-read addr bank
+    in let hi = c64-read (addr + 1) bank
+    in bit-or lo (bit-shl hi 8)
+
+Section: IDE Disk ROM Loader
+
+ Load ROMs from the IDE disk. Layout:
+   Sectors 0-15:   BASIC ROM    (8 KB)
+   Sectors 16-31:  KERNAL ROM   (8 KB)
+   Sectors 32-39:  CHARGEN ROM  (4 KB)
+
+  ide-read-sector : Integer, Integer -> Integer
+  ide-read-sector (lba) (dest) =
+    let d0 = port-out-byte #1F6 (bit-or #E0 (bit-and (bit-shru lba 24) #0F))
+    in let d1 = port-out-byte #1F2 1
+    in let d2 = port-out-byte #1F3 (bit-and lba #FF)
+    in let d3 = port-out-byte #1F4 (bit-and (bit-shru lba 8) #FF)
+    in let d4 = port-out-byte #1F5 (bit-and (bit-shru lba 16) #FF)
+    in let d5 = port-out-byte #1F7 #20
+    in let d6 = ide-wait-ready 0
+    in d0 + d1 + d2 + d3 + d4 + d5 + d6 + ide-read-256-words dest 0
+
+  ide-wait-ready : Integer -> Integer
+  ide-wait-ready (dummy) =
+    let status = port-in-byte #1F7
+    in if bit-and status 8 /= 0 then 0
+    else ide-wait-ready 0
+
+  ide-read-256-words : Integer, Integer -> Integer
+  ide-read-256-words (dest) (i) =
+    if i >= 256 then 0
+    else let word = port-in-16 #1F0
+    in let d0 = poke-byte dest (i * 2) (bit-and word #FF)
+    in let d1 = poke-byte dest (i * 2 + 1) (bit-and (bit-shru word 8) #FF)
+    in d0 + d1 + ide-read-256-words dest (i + 1)
+
+  load-roms-from-disk : Integer -> Integer
+  load-roms-from-disk (dummy) =
+    let d0 = load-rom-sectors basic-rom 0 16 0
+    in let d1 = load-rom-sectors kernal-rom 16 16 0
+    in let d2 = load-rom-sectors char-rom 32 8 0
+    in d0 + d1 + d2
+
+  load-rom-sectors : Integer, Integer, Integer, Integer -> Integer
+  load-rom-sectors (dest) (lba) (count) (offset) =
+    if count <= 0 then 0
+    else let d = ide-read-sector lba (dest + offset)
+    in d + load-rom-sectors dest (lba + 1) (count - 1) (offset + 512)

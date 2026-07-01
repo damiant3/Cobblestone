@@ -1,0 +1,597 @@
+Chapter: Ed25519
+  cites Foreword chapter Sha512
+
+ A Ge is a record containing x, y, z, and t coordinates in extended twisted Edwards form, each as a 16-limb field element. The t coordinate satisfies T = X*Y/Z.
+
+ Ed25519 digital signatures operate over Curve25519 in twisted Edwards form.
+ Field elements use a 16-limb signed representation in GF(2^255 - 19).
+
+ Constant-time discipline: all secret-dependent paths use branchless selection
+ (ct-select, fe-ct-select, ge-cswap). Scalar multiplication uses a Montgomery
+ ladder. Comparisons and zero-checks accumulate over all bytes. Carry
+ normalization uses bit-shr (SAR, arithmetic right shift — no IDIV). Borrow
+ and sign flags use bit-shru (SHR, logical right shift) to extract bit 63 as
+ 0 or 1. Codex Integer is a 64-bit machine word; add, sub, mul, and bitwise
+ ops map to constant-time x86 instructions. Safe for network-facing signing.
+
+ To ed25519-sign gives List Integer, producing a 64-byte signature over a message from a private key and public key.
+ To ed25519-verify gives Boolean, True when a signature is valid for the given message and public key.
+ To ed25519-public-key gives List Integer, deriving the 32-byte public key from a 32-byte private key via SHA-512 clamping and base-point scalar multiplication.
+ To ge-to-bytes gives List Integer, encoding a curve point as 32 bytes in compressed Edwards form.
+ To ge-from-bytes gives Ge, decompressing 32 bytes into a curve point.
+ To bytes-to-hex gives Text, encoding a byte list as lowercase hexadecimal text.
+
+ We say:
+
+Section: Constant-Time Utilities
+
+  ct-select : Integer, Integer, Integer -> Integer
+  ct-select (flag) (a) (b) =
+    let mask = -flag
+    in bit-xor b (bit-and mask (bit-xor a b))
+
+  ct-nonzero : Integer -> Integer
+  ct-nonzero (v) =
+    let v1 = bit-or v (bit-shr v 1)
+    in let v2 = bit-or v1 (bit-shr v1 2)
+    in let v3 = bit-or v2 (bit-shr v2 4)
+    in bit-and v3 1
+
+Section: Field Element Helpers — GF(2^255 - 19)
+
+ 16-limb signed representation. Each limb nominally 16 bits. Based on
+ TweetNaCl. Products are at most 2^32; sums of 16 products at most
+ 2^36. All fit in 64-bit signed integers.
+
+  fe-zero : List Integer = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+
+  fe-one : List Integer = [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+
+  fe-copy : List Integer -> List Integer
+  fe-copy (a) = fe-copy-loop a 0 [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+
+  fe-copy-loop : List Integer, Integer, List Integer -> List Integer
+  fe-copy-loop (a) (i) (out) =
+    if i == 16 then out
+    else fe-copy-loop a (i + 1) (list-set-at out i (list-at a i))
+
+  fe-add : List Integer, List Integer -> List Integer
+  fe-add (a) (b) = fe-add-loop a b 0
+
+  fe-add-loop : List Integer, List Integer, Integer -> List Integer
+  fe-add-loop (a) (b) (i) =
+    if i == 16 then a
+    else let v = list-set-at a i (list-at a i + list-at b i)
+    in fe-add-loop v b (i + 1)
+
+  fe-sub : List Integer, List Integer -> List Integer
+  fe-sub (a) (b) = fe-sub-loop a b 0
+
+  fe-sub-loop : List Integer, List Integer, Integer -> List Integer
+  fe-sub-loop (a) (b) (i) =
+    if i == 16 then a
+    else let v = list-set-at a i (list-at a i - list-at b i)
+    in fe-sub-loop v b (i + 1)
+
+  fe-carry : List Integer -> List Integer
+  fe-carry (o) =
+    let wrap-carry = fe-carry-pass o 0 0
+    in let o0 = list-at o 0 + wrap-carry * 38
+    in list-set-at o 0 o0
+
+  fe-carry-pass : List Integer, Integer, Integer -> Integer
+  fe-carry-pass (o) (i) (carry-in) =
+    if i == 16 then carry-in
+    else let v = list-at o i + carry-in
+    in let c = bit-shr v 16
+    in let r = bit-and v 65535
+    in let o2 = list-set-at o i r
+    in fe-carry-pass o2 (i + 1) c
+
+  fe-mul : List Integer, List Integer -> List Integer
+  fe-mul (a) (b) =
+    let t = fe-mul-accum a b 0 [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+    in let t2 = fe-reduce-wrap t 0
+    in fe-carry (fe-carry (fe-trunc16 t2))
+
+  fe-mul-accum : List Integer, List Integer, Integer, List Integer -> List Integer
+  fe-mul-accum (a) (b) (i) (t) =
+    if i == 16 then t
+    else fe-mul-accum a b (i + 1) (fe-mul-inner a b i 0 t)
+
+  fe-mul-inner : List Integer, List Integer, Integer, Integer, List Integer -> List Integer
+  fe-mul-inner (a) (b) (i) (j) (t) =
+    if j == 16 then t
+    else let v = list-at t (i + j) + list-at a i * list-at b j
+    in fe-mul-inner a b i (j + 1) (list-set-at t (i + j) v)
+
+  fe-reduce-wrap : List Integer, Integer -> List Integer
+  fe-reduce-wrap (t) (i) =
+    if i == 15 then t
+    else let v = list-at t i + 38 * list-at t (i + 16)
+    in fe-reduce-wrap (list-set-at t i v) (i + 1)
+
+  fe-trunc16 : List Integer -> List Integer
+  fe-trunc16 (t) = fe-copy-loop t 0 [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+
+  fe-sq : List Integer -> List Integer
+  fe-sq (a) = fe-mul a a
+
+  fe-neg : List Integer -> List Integer
+  fe-neg (a) = fe-sub (fe-copy fe-zero) a
+
+Section: Field Exponentiation and Inversion
+
+  fe-sq-n : List Integer, Integer -> List Integer
+  fe-sq-n (a) (n) =
+    if n <= 0 then a
+    else fe-sq-n (fe-sq a) (n - 1)
+
+  fe-invert : List Integer -> List Integer
+  fe-invert (z) = fe-inv-loop z z 253
+
+  fe-inv-loop : List Integer, List Integer, Integer -> List Integer
+  fe-inv-loop (z) (c) (i) =
+    if i < 0 then c
+    else let c2 = fe-sq c
+    in if i == 2 then fe-inv-loop z c2 (i - 1)
+    else if i == 4 then fe-inv-loop z c2 (i - 1)
+    else fe-inv-loop z (fe-mul c2 z) (i - 1)
+
+Section: Point Arithmetic — Extended Coordinates
+
+  Ge = record {
+    x : List Integer, y : List Integer, z : List Integer, t : List Integer
+  }
+
+  fe-d : List Integer = [30883, 4953, 19914, 30187, 55467, 16705, 2637, 112, 59544, 30585, 16505, 36039, 65139, 11119, 27886, 20995]
+
+  fe-d2 : List Integer = fe-add (fe-copy fe-d) fe-d
+
+  ge-zero : Ge = Ge { x = fe-zero, y = fe-one, z = fe-one, t = fe-zero }
+
+  ge-add : Ge, Ge -> Ge
+  ge-add (p) (q) =
+    let a = fe-mul (fe-sub (fe-copy p.y) p.x) (fe-sub (fe-copy q.y) q.x)
+    in let b = fe-mul (fe-add (fe-copy p.y) p.x) (fe-add (fe-copy q.y) q.x)
+    in let c = fe-mul (fe-mul (fe-copy p.t) q.t) fe-d2
+    in let dd = fe-mul (fe-copy p.z) q.z
+    in let dd2 = fe-carry (fe-add (fe-copy dd) dd)
+    in let e = fe-carry (fe-sub (fe-copy b) a)
+    in let f = fe-carry (fe-sub (fe-copy dd2) c)
+    in let g = fe-carry (fe-add dd2 c)
+    in let h = fe-carry (fe-add b a)
+    in Ge { x = fe-mul (fe-copy e) f, y = fe-mul g h, z = fe-mul f g, t = fe-mul e h }
+
+  ge-double : Ge -> Ge
+  ge-double (p) =
+    let a = fe-sq (fe-copy p.x)
+    in let b = fe-sq (fe-copy p.y)
+    in let c2 = fe-sq (fe-copy p.z)
+    in let c = fe-add (fe-copy c2) c2
+    in let d = fe-neg (fe-copy a)
+    in let e = fe-add (fe-sq (fe-add (fe-copy p.x) p.y)) (fe-sub (fe-sub (fe-copy fe-zero) a) b)
+    in let g = fe-add (fe-copy d) b
+    in let f = fe-sub (fe-copy g) c
+    in let h = fe-sub d b
+    in Ge { x = fe-mul (fe-copy e) f, y = fe-mul g h, z = fe-mul f g, t = fe-mul e h }
+
+Section: Scalar Multiplication
+
+  bit-at : List Integer, Integer -> Integer
+  bit-at (bytes) (i) =
+    let byte-idx = bit-shr i 3
+    in let bit-idx = bit-and i 7
+    in bit-and (bit-shr (list-at bytes byte-idx) bit-idx) 1
+
+  fe-ct-select : Integer, List Integer, List Integer -> List Integer
+  fe-ct-select (flag) (a) (b) = fe-cts-loop flag a b 0
+
+  fe-cts-loop : Integer, List Integer, List Integer, Integer -> List Integer
+  fe-cts-loop (flag) (a) (b) (i) =
+    if i == 16 then b
+    else let v = list-set-at b i (ct-select flag (list-at a i) (list-at b i))
+    in fe-cts-loop flag a v (i + 1)
+
+  ge-cswap : Ge, Ge, Integer -> Ge
+  ge-cswap (p) (q) (b) =
+    Ge { x = fe-ct-select b (q.x) (fe-copy p.x), y = fe-ct-select b (q.y) (fe-copy p.y), z = fe-ct-select b (q.z) (fe-copy p.z), t = fe-ct-select b (q.t) (fe-copy p.t) }
+
+  ge-scalar-mul : List Integer, Ge -> Ge
+  ge-scalar-mul (scalar) (base) =
+    ge-smul-loop scalar base ge-zero 255
+
+  ge-smul-loop : List Integer, Ge, Ge, Integer -> Ge
+  ge-smul-loop (scalar) (q) (p) (i) =
+    if i < 0 then p
+    else let b = bit-at scalar i
+    in let p2 = ge-cswap p q b
+    in let q2 = ge-cswap q p b
+    in let q3 = ge-add q2 p2
+    in let p3 = ge-double p2
+    in let p4 = ge-cswap p3 q3 b
+    in let q4 = ge-cswap q3 p3 b
+    in ge-smul-loop scalar q4 p4 (i - 1)
+
+Section: Point Encoding
+
+  fe-to-bytes : List Integer -> List Integer
+  fe-to-bytes (a) =
+    let t = fe-carry (fe-carry (fe-carry (fe-copy a)))
+    in let t2 = fe-mod-reduce t
+    in let t3 = fe-mod-reduce t2
+    in fe-pack t3 0 [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+
+  fe-mod-reduce : List Integer -> List Integer
+  fe-mod-reduce (t) =
+    let m = fe-mod-sub t 0 0 (fe-copy t)
+    in let raw15 = list-at m 15
+    in let b = bit-shru raw15 63
+    in let m2 = list-set-at m 15 (bit-and raw15 65535)
+    in fe-mod-select t m2 (1 - b)
+
+  fe-mod-sub : List Integer, Integer, Integer, List Integer -> List Integer
+  fe-mod-sub (t) (i) (borrow) (out) =
+    if i == 16 then out
+    else let sub-val = if i == 0 then 65517 else if i == 15 then 32767 else 65535
+    in let v = list-at t i - sub-val - borrow
+    in let next-borrow = bit-shru v 63
+    in let limb = if i == 15 then v else bit-and v 65535
+    in fe-mod-sub t (i + 1) next-borrow (list-set-at out i limb)
+
+  fe-mod-select : List Integer, List Integer, Integer -> List Integer
+  fe-mod-select (a) (b) (flag) = fe-ms-loop a b flag 0
+
+  fe-ms-loop : List Integer, List Integer, Integer, Integer -> List Integer
+  fe-ms-loop (a) (b) (flag) (i) =
+    if i == 16 then a
+    else let v = ct-select flag (list-at b i) (list-at a i)
+    in fe-ms-loop (list-set-at a i v) b flag (i + 1)
+
+  fe-pack : List Integer, Integer, List Integer -> List Integer
+  fe-pack (a) (i) (out) =
+    if i == 16 then out
+    else let v = list-at a i
+    in let o2 = list-set-at out (i * 2) (bit-and v 255)
+    in let o3 = list-set-at o2 (i * 2 + 1) (bit-and (bit-shr v 8) 255)
+    in fe-pack a (i + 1) o3
+
+  ge-to-bytes : Ge -> List Integer
+  ge-to-bytes (p) =
+    let recip = fe-invert (fe-copy p.z)
+    in let x = fe-mul (fe-copy p.x) (fe-copy recip)
+    in let y = fe-mul (fe-copy p.y) recip
+    in let bs = fe-to-bytes y
+    in let x-bytes = fe-to-bytes x
+    in let x-sign = bit-and (list-at x-bytes 0) 1
+    in ed-list-set-at bs 31 (bit-or (list-at bs 31) (bit-shl x-sign 7))
+
+Section: Base Point
+
+  ge-base : Ge = Ge {
+    x = [54554, 36645, 11616, 51542, 42930, 38181, 51040, 26924, 56412, 64982, 57905, 49316, 21502, 52590, 14035, 8553],
+    y = [26200, 26214, 26214, 26214, 26214, 26214, 26214, 26214, 26214, 26214, 26214, 26214, 26214, 26214, 26214, 26214],
+    z = fe-one,
+    t = [56739, 42423, 35507, 28126, 21237, 30545, 40832, 8432, 58237, 25771, 20110, 26346, 30309, 55179, 24335, 26503]
+  }
+
+Section: Scalar Arithmetic mod L
+
+  ed-L : List Integer = [237, 211, 245, 92, 26, 99, 18, 88, 214, 156, 247, 162, 222, 249, 222, 20, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 16]
+
+  asr8 : Integer -> Integer
+  asr8 (v) = bit-shr v 8
+
+  sc-expand : List Integer, Integer, Integer, List Integer -> List Integer
+  sc-expand (bs) (i) (n) (out) =
+    if i >= n then out
+    else sc-expand bs (i + 1) n (list-set-at out i (list-at bs i))
+
+  sc-pad-to-64 : List Integer -> List Integer
+  sc-pad-to-64 (xs) =
+    let len = list-length xs
+    in if len >= 64 then xs
+    else let out = sc-copy-64 sc-zeros-64
+    in sc-pad-copy xs 0 len out
+
+  sc-pad-copy : List Integer, Integer, Integer, List Integer -> List Integer
+  sc-pad-copy (xs) (i) (len) (out) =
+    if i >= len then out
+    else sc-pad-copy xs (i + 1) len (list-set-at out i (list-at xs i))
+
+  ScRedState = record { xs : List Integer, carry : Integer }
+
+  sc-reduce : List Integer -> List Integer
+  sc-reduce (s) =
+    let x = sc-pad-to-64 (sc-expand s 0 (list-length s) (sc-copy-64 sc-zeros-64))
+    in let x2 = sc-reduce-high x 63
+    in let x3 = sc-reduce-final x2
+    in sc-take x3 32
+
+  sc-reduce-high : List Integer, Integer -> List Integer
+  sc-reduce-high (x) (i) =
+    if i < 32 then x
+    else sc-reduce-high (sc-reduce-one x i) (i - 1)
+
+  sc-reduce-one : List Integer, Integer -> List Integer
+  sc-reduce-one (x) (i) =
+    let xi = list-at x i
+    in let r = sc-reduce-inner x xi (i - 32) (i - 12) 0
+    in let x2 = sc-add-at (r.xs) (i - 12) (r.carry)
+    in sc-set-at x2 i 0
+
+  sc-reduce-inner : List Integer, Integer, Integer, Integer, Integer -> ScRedState
+  sc-reduce-inner (x) (xi) (j) (jstop) (carry) =
+    if j >= jstop then ScRedState { xs = x, carry = carry }
+    else let lj = list-at ed-L (j - (jstop - 20))
+    in let v = list-at x j + carry - 16 * xi * lj
+    in let c = asr8 (v + 128)
+    in let v2 = v - bit-shl c 8
+    in sc-reduce-inner (sc-set-at x j v2) xi (j + 1) jstop c
+
+  sc-reduce-final : List Integer -> List Integer
+  sc-reduce-final (x) =
+    let x31top = bit-shr (list-at x 31) 4
+    in let r = sc-final-sub x x31top 0 0
+    in let x2 = sc-final-carry-sub (r.xs) (r.carry) 0
+    in sc-final-normalize x2 0
+
+  sc-final-sub : List Integer, Integer, Integer, Integer -> ScRedState
+  sc-final-sub (x) (top) (j) (carry) =
+    if j >= 32 then ScRedState { xs = x, carry = carry }
+    else let v = list-at x j + carry - top * (list-at ed-L j)
+    in let c = asr8 v
+    in let v2 = v - bit-shl c 8
+    in sc-final-sub (sc-set-at x j v2) top (j + 1) c
+
+  sc-final-carry-sub : List Integer, Integer, Integer -> List Integer
+  sc-final-carry-sub (x) (carry) (j) =
+    if j >= 32 then x
+    else let v = list-at x j - carry * (list-at ed-L j)
+    in sc-final-carry-sub (sc-set-at x j v) carry (j + 1)
+
+  sc-final-normalize : List Integer, Integer -> List Integer
+  sc-final-normalize (x) (j) =
+    if j >= 32 then x
+    else let v = list-at x j
+    in let c = asr8 v
+    in let x2 = sc-set-at x j (v - bit-shl c 8)
+    in let x3 = if j < 31 then sc-add-at x2 (j + 1) c else x2
+    in sc-final-normalize x3 (j + 1)
+
+  sc-set-at : List Integer, Integer, Integer -> List Integer
+  sc-set-at (xs) (i) (v) = list-set-at xs i v
+
+  sc-add-at : List Integer, Integer, Integer -> List Integer
+  sc-add-at (xs) (i) (v) = list-set-at xs i (list-at xs i + v)
+
+  sc-take : List Integer, Integer -> List Integer
+  sc-take (xs) (n) = sc-take-loop xs 0 n [0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]
+
+  sc-take-loop : List Integer, Integer, Integer, List Integer -> List Integer
+  sc-take-loop (xs) (i) (n) (out) =
+    if i >= n then out
+    else sc-take-loop xs (i + 1) n (list-set-at out i (list-at xs i))
+
+  sc-muladd : List Integer, List Integer, List Integer -> List Integer
+  sc-muladd (a) (b) (c) =
+    let product = sc-multiply a b
+    in let summed = sc-add-low product c 0 0
+    in sc-reduce summed
+
+  sc-multiply : List Integer, List Integer -> List Integer
+  sc-multiply (a) (b) =
+    sc-mul-outer a b (sc-copy-64 sc-zeros-64) 0
+
+  sc-copy-64 : List Integer -> List Integer
+  sc-copy-64 (a) = sc-copy-loop a 0 [0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]
+
+  sc-copy-loop : List Integer, Integer, List Integer -> List Integer
+  sc-copy-loop (a) (i) (out) =
+    if i == 64 then out
+    else sc-copy-loop a (i + 1) (list-set-at out i (list-at a i))
+
+  sc-zeros-64 : List Integer = [0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]
+
+  sc-mul-outer : List Integer, List Integer, List Integer, Integer -> List Integer
+  sc-mul-outer (a) (b) (acc) (i) =
+    if i >= 32 then acc
+    else sc-mul-outer a b (sc-mul-inner a b acc i 0) (i + 1)
+
+  sc-mul-inner : List Integer, List Integer, List Integer, Integer, Integer -> List Integer
+  sc-mul-inner (a) (b) (acc) (i) (j) =
+    if j >= 32 then acc
+    else let v = list-at acc (i + j) + list-at a i * list-at b j
+    in sc-mul-inner a b (sc-set-at acc (i + j) v) i (j + 1)
+
+  sc-add-low : List Integer, List Integer, Integer, Integer -> List Integer
+  sc-add-low (x) (c) (j) (carry) =
+    if j >= 32 then x
+    else let v = list-at x j + list-at c j + carry
+    in sc-add-low (sc-set-at x j v) c (j + 1) 0
+
+Section: Hash-to-Bytes Conversion
+
+  sha512-words-to-byte-list : List Integer -> List Integer
+  sha512-words-to-byte-list (ws) =
+    let len = list-length ws
+    in let out = sc-copy-64 sc-zeros-64
+    in sha512-w2b-loop ws 0 len out
+
+  sha512-w2b-loop : List Integer, Integer, Integer, List Integer -> List Integer
+  sha512-w2b-loop (ws) (i) (len) (out) =
+    if i == len then out
+    else let w = list-at ws i
+    in let base = i * 8
+    in let o1 = list-set-at out base (bit-and (bit-shr w 56) 255)
+    in let o2 = list-set-at o1 (base + 1) (bit-and (bit-shr w 48) 255)
+    in let o3 = list-set-at o2 (base + 2) (bit-and (bit-shr w 40) 255)
+    in let o4 = list-set-at o3 (base + 3) (bit-and (bit-shr w 32) 255)
+    in let o5 = list-set-at o4 (base + 4) (bit-and (bit-shr w 24) 255)
+    in let o6 = list-set-at o5 (base + 5) (bit-and (bit-shr w 16) 255)
+    in let o7 = list-set-at o6 (base + 6) (bit-and (bit-shr w 8) 255)
+    in sha512-w2b-loop ws (i + 1) len (list-set-at o7 (base + 7) (bit-and w 255))
+
+Section: Ed25519 Key Generation
+
+  ed25519-clamp : List Integer -> List Integer
+  ed25519-clamp (h) =
+    let h0 = ed-list-set-at h 0 (bit-and (list-at h 0) 248)
+    in let h31 = ed-list-set-at h0 31 (bit-or (bit-and (list-at h0 31) 127) 64)
+    in h31
+
+  ed25519-public-key : List Integer -> List Integer
+  ed25519-public-key (private-key) =
+    let h = sha512-words-to-byte-list (sha512 private-key)
+    in let clamped = ed25519-clamp (ed-list-take h 32)
+    in ge-to-bytes (ge-scalar-mul clamped ge-base)
+
+Section: List Utilities
+
+  ed-list-take : List Integer, Integer -> List Integer
+  ed-list-take (xs) (n) = sc-take xs n
+
+  ed-list-set-at : List Integer, Integer, Integer -> List Integer
+  ed-list-set-at (xs) (i) (v) = list-set-at xs i v
+
+  bytes-to-hex : List Integer -> Text
+  bytes-to-hex (bs) = b2h-loop bs 0 (list-length bs) ""
+
+  b2h-loop : List Integer, Integer, Integer, Text -> Text
+  b2h-loop (bs) (i) (len) (acc) =
+    if i == len then acc
+    else b2h-loop bs (i + 1) len (acc & ed-byte-hex (list-at bs i))
+
+  ed-byte-hex : Integer -> Text
+  ed-byte-hex (b) = ed-nibble (bit-shr b 4) & ed-nibble (bit-and b 15)
+
+  ed-nibble : Integer -> Text
+  ed-nibble (n) =
+    if n == 0 then "0" else if n == 1 then "1" else if n == 2 then "2"
+    else if n == 3 then "3" else if n == 4 then "4" else if n == 5 then "5"
+    else if n == 6 then "6" else if n == 7 then "7" else if n == 8 then "8"
+    else if n == 9 then "9" else if n == 10 then "a" else if n == 11 then "b"
+    else if n == 12 then "c" else if n == 13 then "d" else if n == 14 then "e"
+    else "f"
+
+Section: Point Decompression
+
+  fe-from-bytes : List Integer -> List Integer
+  fe-from-bytes (bs) = fe-unpack bs 0 [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+
+  fe-unpack : List Integer, Integer, List Integer -> List Integer
+  fe-unpack (bs) (i) (out) =
+    if i >= 16 then out
+    else let lo = list-at bs (i * 2)
+    in let hi = list-at bs (i * 2 + 1)
+    in let v = lo + bit-shl hi 8
+    in let v2 = if i == 15 then bit-and v 32767 else v
+    in fe-unpack bs (i + 1) (list-set-at out i v2)
+
+  fe-pow-2523 : List Integer -> List Integer
+  fe-pow-2523 (z) =
+    fe-pow-2523-loop z z 250
+
+  fe-pow-2523-loop : List Integer, List Integer, Integer -> List Integer
+  fe-pow-2523-loop (z) (c) (i) =
+    if i < 0 then c
+    else let c2 = fe-sq c
+    in let c3 = if i == 1 then c2 else fe-mul c2 z
+    in fe-pow-2523-loop z c3 (i - 1)
+
+  fe-sqrt-m1 : List Integer
+  fe-sqrt-m1 =
+    let two = fe-add (fe-copy fe-one) fe-one
+    in let result = fe-pow-2523 (fe-copy two)
+    in fe-mul (fe-sq result) two
+
+  ge-from-bytes : List Integer -> Ge
+  ge-from-bytes (bs) =
+    let sign = bit-and (bit-shr (list-at bs 31) 7) 1
+    in let bs2 = ed-list-set-at (sc-take bs 32) 31 (bit-and (list-at bs 31) 127)
+    in let y = fe-from-bytes bs2
+    in let y2 = fe-sq (fe-copy y)
+    in let u = fe-sub (fe-copy y2) fe-one
+    in let v = fe-add (fe-mul (fe-copy fe-d) y2) fe-one
+    in let v3 = fe-mul (fe-copy v) (fe-sq (fe-copy v))
+    in let v7 = fe-mul (fe-sq (fe-copy v3)) v
+    in let uv7 = fe-mul (fe-copy u) v7
+    in let x-cand = fe-mul (fe-mul (fe-copy u) v3) (fe-pow-2523 uv7)
+    in let check = fe-sub (fe-mul (fe-sq (fe-copy x-cand)) (fe-copy v)) u
+    in let check-bytes = fe-to-bytes check
+    in let check-acc = fe-iz-loop check-bytes 0 32 0
+    in let is-zero = 1 - ct-nonzero check-acc
+    in let x-rotated = fe-mul (fe-copy x-cand) (fe-copy fe-sqrt-m1)
+    in let x-fixed = fe-ct-select is-zero x-cand x-rotated
+    in let x-bytes = fe-to-bytes (fe-copy x-fixed)
+    in let x-sign = bit-and (list-at x-bytes 0) 1
+    in let sign-differ = bit-xor x-sign sign
+    in let x-negated = fe-neg (fe-copy x-fixed)
+    in let x = fe-ct-select sign-differ x-negated x-fixed
+    in Ge { x = fe-copy x, y = fe-copy y, z = fe-copy fe-one, t = fe-mul (fe-copy x) y }
+
+  fe-is-zero : List Integer -> Boolean
+  fe-is-zero (bs) = fe-iz-loop bs 0 32 0 == 0
+
+  fe-iz-loop : List Integer, Integer, Integer, Integer -> Integer
+  fe-iz-loop (bs) (i) (n) (acc) =
+    if i >= n then acc
+    else fe-iz-loop bs (i + 1) n (bit-or acc (list-at bs i))
+
+Section: Ed25519 Signing
+
+  ed25519-sign : List Integer, List Integer, List Integer -> List Integer
+  ed25519-sign (private-key) (public-key) (msg) =
+    let h = sha512-words-to-byte-list (sha512 private-key)
+    in let a = ed25519-clamp (ed-list-take h 32)
+    in let prefix = ed-list-drop h 32
+    in let r-hash = sha512-words-to-byte-list (sha512 (prefix & msg))
+    in let r = sc-reduce r-hash
+    in let big-r = ge-to-bytes (ge-scalar-mul r ge-base)
+    in let k-hash = sha512-words-to-byte-list (sha512 (big-r & public-key & msg))
+    in let k = sc-reduce k-hash
+    in let s = sc-muladd k a r
+    in big-r & s
+
+  ed-list-drop : List Integer, Integer -> List Integer
+  ed-list-drop (xs) (n) =
+    let len = list-length xs
+    in let out-len = len - n
+    in ed-ld-loop xs n len 0 (sc-take xs out-len)
+
+  ed-ld-loop : List Integer, Integer, Integer, Integer, List Integer -> List Integer
+  ed-ld-loop (xs) (src) (len) (dst) (out) =
+    if src >= len then out
+    else ed-ld-loop xs (src + 1) len (dst + 1) (list-set-at out dst (list-at xs src))
+
+Section: Ed25519 Verification
+
+  ed25519-verify : List Integer, List Integer, List Integer -> Boolean
+  ed25519-verify (public-key) (msg) (sig) =
+    let r-bytes = ed-list-take sig 32
+    in let s-bytes = ed-list-drop sig 32
+    in let big-a = ge-from-bytes public-key
+    in let k-hash = sha512-words-to-byte-list (sha512 (r-bytes & public-key & msg))
+    in let k = sc-reduce k-hash
+    in let sb = ge-scalar-mul s-bytes ge-base
+    in let r-pt = ge-from-bytes r-bytes
+    in let ka = ge-scalar-mul k big-a
+    in let rka = ge-add r-pt ka
+    in let sb-bytes = ge-to-bytes sb
+    in let rka-bytes = ge-to-bytes rka
+    in bytes-list-equal sb-bytes rka-bytes 0 32
+
+  ge-sub : Ge, Ge -> Ge
+  ge-sub (p) (q) =
+    ge-add p (Ge { x = fe-neg (fe-copy q.x), y = fe-copy q.y, z = fe-copy q.z, t = fe-neg (fe-copy q.t) })
+
+  bytes-list-equal : List Integer, List Integer, Integer, Integer -> Boolean
+  bytes-list-equal (a) (b) (i) (n) =
+    ble-loop a b i n 0 == 0
+
+  ble-loop : List Integer, List Integer, Integer, Integer, Integer -> Integer
+  ble-loop (a) (b) (i) (n) (acc) =
+    if i >= n then acc
+    else ble-loop a b (i + 1) n (bit-or acc (bit-xor (list-at a i) (list-at b i)))
+
+Page 1

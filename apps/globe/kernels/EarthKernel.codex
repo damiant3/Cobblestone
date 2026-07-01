@@ -1,0 +1,195 @@
+Chapter: EarthKernel
+  cites Gpu chapter DeviceEffect
+
+ GPU kernel: one thread per pixel earth sphere renderer.
+
+Section: Device Math Stubs
+
+  cordic-sin : Real -> Real
+  cordic-sin (x) = x
+
+  cordic-cos : Real -> Real
+  cordic-cos (x) = x
+
+  real-sqrt : Real -> Real
+  real-sqrt (x) = x
+
+  real-abs : Real -> Real
+  real-abs (x) = x
+
+  real-min : Real, Real -> Real
+  real-min (a) (b) = a
+
+  real-max : Real, Real -> Real
+  real-max (a) (b) = a
+
+  atan2-real : Real, Real -> Real
+  atan2-real (y) (x) =
+    let ax = if x < 0.0 then 0.0 - x else x
+    in let ay = if y < 0.0 then 0.0 - y else y
+    in let swap = if ay > ax then 1 else 0
+    in let cx = if swap == 1 then ay else ax
+    in let cy = if swap == 1 then ax else ay
+    in let angle = cordic-iterate cx cy 0.0 0
+    in let a1 = if swap == 1 then 1.5707963267949 - angle else angle
+    in let a2 = if x < 0.0 then 3.14159265358979 - a1 else a1
+    in if y < 0.0 then 0.0 - a2 else a2
+
+  cordic-iterate : Real, Real, Real, Integer -> Real
+  cordic-iterate (cx) (cy) (angle) (i) =
+    if i >= 16 then angle
+    else let atan-table-val = cordic-atan-val i
+    in let power = cordic-power i
+    in if cy > 0.0 then
+      let nx = cx + cy * power
+      in let ny = cy - cx * power
+      in cordic-iterate nx ny (angle + atan-table-val) (i + 1)
+    else
+      let nx = cx - cy * power
+      in let ny = cy + cx * power
+      in cordic-iterate nx ny (angle - atan-table-val) (i + 1)
+
+  cordic-atan-val : Integer -> Real
+  cordic-atan-val (i) =
+    if i == 0 then 0.7853981633974483
+    else if i == 1 then 0.4636476090008061
+    else if i == 2 then 0.24497866312686414
+    else if i == 3 then 0.12435499454676144
+    else if i == 4 then 0.06241880999595735
+    else if i == 5 then 0.031239833430268277
+    else if i == 6 then 0.015623728620476831
+    else if i == 7 then 0.007812341060101111
+    else if i == 8 then 0.0039062301319669718
+    else if i == 9 then 0.0019531225164788188
+    else if i == 10 then 0.0009765621895593195
+    else if i == 11 then 0.0004882812111948983
+    else if i == 12 then 0.00024414062014936177
+    else if i == 13 then 0.00012207031189367021
+    else if i == 14 then 0.00006103515617420877
+    else 0.000030517578115526096
+
+  cordic-power : Integer -> Real
+  cordic-power (i) =
+    if i == 0 then 1.0
+    else if i == 1 then 0.5
+    else if i == 2 then 0.25
+    else if i == 3 then 0.125
+    else if i == 4 then 0.0625
+    else if i == 5 then 0.03125
+    else if i == 6 then 0.015625
+    else if i == 7 then 0.0078125
+    else if i == 8 then 0.00390625
+    else if i == 9 then 0.001953125
+    else if i == 10 then 0.0009765625
+    else if i == 11 then 0.00048828125
+    else if i == 12 then 0.000244140625
+    else if i == 13 then 0.0001220703125
+    else if i == 14 then 0.00006103515625
+    else 0.000030517578125
+
+  __int-to-real : Integer -> Real
+  __int-to-real (n) = 0.0
+
+  __real-to-int : Real -> Integer
+  __real-to-int (r) = 0
+
+Section: Helpers
+
+  clamp-int : Integer, Integer, Integer -> Integer
+  clamp-int (v) (lo) (hi) =
+    if v < lo then lo
+    else if v > hi then hi
+    else v
+
+  earth-sky : Integer, Integer, Integer, Integer -> [Device] Integer
+  earth-sky (framebuf) (gid) (px) (py) =
+    let pixel = 255 * 16777216
+    in device-store framebuf gid pixel
+
+Section: Kernel
+
+  earth-pixel : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> [Device] Integer
+  earth-pixel (framebuf) (tex) (params) (tw) (th) (w) (h) (pixel-count) = act
+    tid <- thread-idx-x
+    bid <- block-idx-x
+    bdim <- block-dim-x
+    let gid = bid * bdim + tid
+    in if gid < pixel-count then earth-pixel-work framebuf tex params tw th w h gid
+    else 0
+  end
+
+  earth-pixel-work : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> [Device] Integer
+  earth-pixel-work (framebuf) (tex) (params) (tw) (th) (w) (h) (gid) = act
+    i-aspect <- device-load params 0
+    i-zoom <- device-load params 1
+    i-cam-pitch <- device-load params 2
+    i-earth-yaw <- device-load params 3
+    i-earth-pitch <- device-load params 4
+    i-sun-x <- device-load params 5
+    i-sun-y <- device-load params 6
+    i-sun-z <- device-load params 7
+    let px = gid - (gid / w) * w
+    in let py = gid / w
+    in let aspect = __int-to-real i-aspect / 1000.0
+    in let zoom = __int-to-real i-zoom / 1000.0
+    in let cam-pitch = __int-to-real i-cam-pitch / 1000.0
+    in let earth-yaw = __int-to-real i-earth-yaw / 1000.0
+    in let earth-pitch = __int-to-real i-earth-pitch / 1000.0
+    in let sun-x = __int-to-real i-sun-x / 1000.0
+    in let sun-y = __int-to-real i-sun-y / 1000.0
+    in let sun-z = __int-to-real i-sun-z / 1000.0
+    in let ndx = (__int-to-real px / __int-to-real w - 0.5) * 2.0 * aspect
+    in let ndy = (0.5 - __int-to-real py / __int-to-real h) * 2.0
+    in let rlen = real-sqrt (ndx * ndx + ndy * ndy + 1.0)
+    in let rdx = ndx / rlen
+    in let rdy = ndy / rlen
+    in let rdz = 1.0 / rlen
+    in let cos-cp = cordic-cos cam-pitch
+    in let sin-cp = cordic-sin cam-pitch
+    in let dx = rdx
+    in let dy = cos-cp * rdy - sin-cp * rdz
+    in let dz = sin-cp * rdy + cos-cp * rdz
+    in let neg-zoom = 0.0 - zoom
+    in let oy = 0.0 - sin-cp * neg-zoom
+    in let oz = cos-cp * neg-zoom
+    in let b = 2.0 * (oy * dy + oz * dz)
+    in let c = oy * oy + oz * oz - 1.0
+    in let disc = b * b - 4.0 * c
+    in if disc < 0.0 then earth-sky framebuf gid px py
+    else let t = (0.0 - b - real-sqrt disc) / 2.0
+    in if t < 0.001 then earth-sky framebuf gid px py
+    else let hx = t * dx
+    in let hy = oy + t * dy
+    in let hz = oz + t * dz
+    in let cos-ey = cordic-cos earth-yaw
+    in let sin-ey = cordic-sin earth-yaw
+    in let cos-ep = cordic-cos earth-pitch
+    in let sin-ep = cordic-sin earth-pitch
+    in let ry = cos-ep * hy - sin-ep * hz
+    in let rz = sin-ep * hy + cos-ep * hz
+    in let gx = cos-ey * hx + sin-ey * rz
+    in let gy = ry
+    in let gz = 0.0 - sin-ey * hx + cos-ey * rz
+    in let lat = atan2-real gy (real-sqrt (gx * gx + gz * gz))
+    in let lon = atan2-real gx gz
+    in let pi = 3.14159265358979
+    in let u = 1.0 - (lon / pi + 1.0) * 0.5
+    in let v = 0.5 - lat / pi
+    in let tx-raw = __real-to-int (u * __int-to-real tw)
+    in let tx-mod = tx-raw - (tx-raw / tw) * tw
+    in let tx-idx = if tx-mod < 0 then tx-mod + tw else tx-mod
+    in let ty-idx = clamp-int (__real-to-int (v * __int-to-real th)) 0 (th - 1)
+    in let ti = (ty-idx * tw + tx-idx) * 3
+    in let raw-u = (hx + 1.0) * 0.5
+    in let raw-v = (hy + 1.0) * 0.5
+    in let rtx = clamp-int (__real-to-int (raw-u * __int-to-real tw)) 0 (tw - 1)
+    in let rty = clamp-int (__real-to-int (raw-v * __int-to-real th)) 0 (th - 1)
+    in let rti = (rty * tw + rtx) * 3
+    in act
+    rr <- device-load tex rti
+    rg <- device-load tex (rti + 1)
+    rb <- device-load tex (rti + 2)
+    let pixel = clamp-int rr 0 255 * 65536 + clamp-int rg 0 255 * 256 + clamp-int rb 0 255 + 255 * 16777216
+    in device-store framebuf gid pixel
+    end
+

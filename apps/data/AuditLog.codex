@@ -1,0 +1,457 @@
+Chapter: AuditLog
+  cites Data chapter Row
+  cites Data chapter Catalog
+  cites Foreword chapter Maybe
+  cites Foreword chapter Hamt
+  cites Foreword chapter Sha256
+
+ Automatic mutation auditing and temporal tables. Every insert,
+ update, and delete is recorded with who, when, what changed, and
+ a cryptographic chain hash for tamper detection. Supports
+ point-in-time queries ("what did this row look like at time T?"),
+ change history for any row, diff between versions, and compliance
+ reporting.
+
+ We say:
+
+Section: Audit Event Types
+
+  AuditAction =
+    | AuditInsert
+    | AuditUpdate
+    | AuditDelete
+    | AuditSchemaChange
+    | AuditGrant
+    | AuditRevoke
+    | AuditLogin
+    | AuditLoginFailed
+
+  audit-action-name : AuditAction -> Text
+  audit-action-name (a) =
+    when a
+      is AuditInsert -> "INSERT"
+      is AuditUpdate -> "UPDATE"
+      is AuditDelete -> "DELETE"
+      is AuditSchemaChange -> "DDL"
+      is AuditGrant -> "GRANT"
+      is AuditRevoke -> "REVOKE"
+      is AuditLogin -> "LOGIN"
+      is AuditLoginFailed -> "LOGIN_FAILED"
+
+Section: Audit Record
+
+  AuditRecord = record {
+    ar-seq : Integer,
+    ar-timestamp : Integer,
+    ar-user : Text,
+    ar-action : AuditAction,
+    ar-table : Text,
+    ar-row-key : Text,
+    ar-before : List ColumnValue,
+    ar-after : List ColumnValue,
+    ar-txn-id : Integer,
+    ar-chain-hash : Text
+  }
+
+Section: Audit Log
+
+  AuditLog = record {
+    al-records : List AuditRecord,
+    al-count : Integer,
+    al-next-seq : Integer,
+    al-last-hash : Text,
+    al-enabled-tables : HamtMap Boolean,
+    al-all-tables : Boolean
+  }
+
+  audit-log-new : AuditLog
+  audit-log-new = AuditLog {
+    al-records = [],
+    al-count = 0,
+    al-next-seq = 1,
+    al-last-hash = "0",
+    al-enabled-tables = hamt-empty,
+    al-all-tables = True
+  }
+
+  audit-enable-table : AuditLog, Text -> AuditLog
+  audit-enable-table (log) (table) = AuditLog {
+    al-records = log.al-records,
+    al-count = log.al-count,
+    al-next-seq = log.al-next-seq,
+    al-last-hash = log.al-last-hash,
+    al-enabled-tables = hamt-set (log.al-enabled-tables) table True,
+    al-all-tables = log.al-all-tables
+  }
+
+  audit-disable-table : AuditLog, Text -> AuditLog
+  audit-disable-table (log) (table) = AuditLog {
+    al-records = log.al-records,
+    al-count = log.al-count,
+    al-next-seq = log.al-next-seq,
+    al-last-hash = log.al-last-hash,
+    al-enabled-tables = hamt-remove (log.al-enabled-tables) table,
+    al-all-tables = log.al-all-tables
+  }
+
+  audit-set-all-tables : AuditLog, Boolean -> AuditLog
+  audit-set-all-tables (log) (enabled) = AuditLog {
+    al-records = log.al-records,
+    al-count = log.al-count,
+    al-next-seq = log.al-next-seq,
+    al-last-hash = log.al-last-hash,
+    al-enabled-tables = log.al-enabled-tables,
+    al-all-tables = enabled
+  }
+
+  audit-is-tracked : AuditLog, Text -> Boolean
+  audit-is-tracked (log) (table) =
+    if log.al-all-tables then True
+    else when (hamt-get (log.al-enabled-tables) table)
+      is Just (v) -> v
+      is None -> False
+
+Section: Record Mutations
+
+  audit-record-insert : AuditLog, Text, Text, Text, List ColumnValue, Integer, Integer -> AuditLog
+  audit-record-insert (log) (user) (table) (row-key) (after) (txn-id) (timestamp) =
+    if audit-is-tracked log table == False then log
+    else audit-append log user AuditInsert table row-key [] after txn-id timestamp
+
+  audit-record-update : AuditLog, Text, Text, Text, List ColumnValue, List ColumnValue, Integer, Integer -> AuditLog
+  audit-record-update (log) (user) (table) (row-key) (before) (after) (txn-id) (timestamp) =
+    if audit-is-tracked log table == False then log
+    else audit-append log user AuditUpdate table row-key before after txn-id timestamp
+
+  audit-record-delete : AuditLog, Text, Text, Text, List ColumnValue, Integer, Integer -> AuditLog
+  audit-record-delete (log) (user) (table) (row-key) (before) (txn-id) (timestamp) =
+    if audit-is-tracked log table == False then log
+    else audit-append log user AuditDelete table row-key before [] txn-id timestamp
+
+  audit-record-ddl : AuditLog, Text, Text, Text, Integer -> AuditLog
+  audit-record-ddl (log) (user) (table) (detail) (timestamp) =
+    audit-append log user AuditSchemaChange table "" [] [] 0 timestamp
+
+  audit-record-login : AuditLog, Text, Boolean, Integer -> AuditLog
+  audit-record-login (log) (user) (success) (timestamp) =
+    let action = if success then AuditLogin else AuditLoginFailed
+    in audit-append log user action "" "" [] [] 0 timestamp
+
+  audit-append : AuditLog, Text, AuditAction, Text, Text, List ColumnValue, List ColumnValue, Integer, Integer -> AuditLog
+  audit-append (log) (user) (action) (table) (row-key) (before) (after) (txn-id) (timestamp) =
+    let chain-input = log.al-last-hash & ":" & show (log.al-next-seq) & ":" & user & ":" & audit-action-name action & ":" & table & ":" & row-key & ":" & show timestamp
+    in let new-hash = sha256-hex chain-input
+    in let rec = AuditRecord {
+      ar-seq = log.al-next-seq,
+      ar-timestamp = timestamp,
+      ar-user = user,
+      ar-action = action,
+      ar-table = table,
+      ar-row-key = row-key,
+      ar-before = before,
+      ar-after = after,
+      ar-txn-id = txn-id,
+      ar-chain-hash = new-hash
+    }
+    in AuditLog {
+      al-records = list-push (log.al-records) rec,
+      al-count = log.al-count + 1,
+      al-next-seq = log.al-next-seq + 1,
+      al-last-hash = new-hash,
+      al-enabled-tables = log.al-enabled-tables,
+      al-all-tables = log.al-all-tables
+    }
+
+Section: Tamper Detection
+
+  audit-verify-chain : AuditLog -> AuditVerifyResult
+  audit-verify-chain (log) =
+    avc-loop (log.al-records) "0" 0 (log.al-count)
+
+  AuditVerifyResult =
+    | AuditChainValid
+    | AuditChainBroken (Integer) (Text)
+
+  avc-loop : List AuditRecord, Text, Integer, Integer -> AuditVerifyResult
+  avc-loop (records) (prev-hash) (i) (len) =
+    if i >= len then AuditChainValid
+    else let rec = list-at records i
+    in let expected-input = prev-hash & ":" & show (rec.ar-seq) & ":" & rec.ar-user & ":" & audit-action-name (rec.ar-action) & ":" & rec.ar-table & ":" & rec.ar-row-key & ":" & show (rec.ar-timestamp)
+    in let expected-hash = sha256-hex expected-input
+    in if expected-hash == rec.ar-chain-hash then avc-loop records (rec.ar-chain-hash) (i + 1) len
+    else AuditChainBroken (rec.ar-seq) ("hash mismatch at seq " & show (rec.ar-seq))
+
+Section: Query Audit History
+
+  audit-history-for-row : AuditLog, Text, Text -> List AuditRecord
+  audit-history-for-row (log) (table) (row-key) =
+    ahfr-loop (log.al-records) table row-key 0 (log.al-count) []
+
+  ahfr-loop : List AuditRecord, Text, Text, Integer, Integer, List AuditRecord -> List AuditRecord
+  ahfr-loop (records) (table) (key) (i) (len) (acc) =
+    if i >= len then acc
+    else let rec = list-at records i
+    in if rec.ar-table == table & rec.ar-row-key == key then ahfr-loop records table key (i + 1) len (list-push acc rec)
+    else ahfr-loop records table key (i + 1) len acc
+
+  audit-history-for-table : AuditLog, Text -> List AuditRecord
+  audit-history-for-table (log) (table) =
+    ahft-loop (log.al-records) table 0 (log.al-count) []
+
+  ahft-loop : List AuditRecord, Text, Integer, Integer, List AuditRecord -> List AuditRecord
+  ahft-loop (records) (table) (i) (len) (acc) =
+    if i >= len then acc
+    else let rec = list-at records i
+    in if rec.ar-table == table then ahft-loop records table (i + 1) len (list-push acc rec)
+    else ahft-loop records table (i + 1) len acc
+
+  audit-by-user : AuditLog, Text -> List AuditRecord
+  audit-by-user (log) (user) =
+    abu-loop (log.al-records) user 0 (log.al-count) []
+
+  abu-loop : List AuditRecord, Text, Integer, Integer, List AuditRecord -> List AuditRecord
+  abu-loop (records) (user) (i) (len) (acc) =
+    if i >= len then acc
+    else let rec = list-at records i
+    in if rec.ar-user == user then abu-loop records user (i + 1) len (list-push acc rec)
+    else abu-loop records user (i + 1) len acc
+
+  audit-by-action : AuditLog, AuditAction -> List AuditRecord
+  audit-by-action (log) (action) =
+    let target = audit-action-name action
+    in aba-loop (log.al-records) target 0 (log.al-count) []
+
+  aba-loop : List AuditRecord, Text, Integer, Integer, List AuditRecord -> List AuditRecord
+  aba-loop (records) (target) (i) (len) (acc) =
+    if i >= len then acc
+    else let rec = list-at records i
+    in if audit-action-name (rec.ar-action) == target then aba-loop records target (i + 1) len (list-push acc rec)
+    else aba-loop records target (i + 1) len acc
+
+  audit-in-range : AuditLog, Integer, Integer -> List AuditRecord
+  audit-in-range (log) (start) (finish) =
+    air-loop (log.al-records) start finish 0 (log.al-count) []
+
+  air-loop : List AuditRecord, Integer, Integer, Integer, Integer, List AuditRecord -> List AuditRecord
+  air-loop (records) (start) (finish) (i) (len) (acc) =
+    if i >= len then acc
+    else let rec = list-at records i
+    in if rec.ar-timestamp >= start & rec.ar-timestamp <= finish then air-loop records start finish (i + 1) len (list-push acc rec)
+    else air-loop records start finish (i + 1) len acc
+
+Section: Point-in-Time Row State
+
+  audit-row-at-time : AuditLog, Text, Text, Integer -> Maybe (List ColumnValue)
+  audit-row-at-time (log) (table) (row-key) (target-time) =
+    let history = audit-history-for-row log table row-key
+    in arat-loop history target-time 0 (list-length history) None
+
+  arat-loop : List AuditRecord, Integer, Integer, Integer, Maybe (List ColumnValue) -> Maybe (List ColumnValue)
+  arat-loop (records) (target) (i) (len) (state) =
+    if i >= len then state
+    else let rec = list-at records i
+    in if rec.ar-timestamp > target then state
+    else let new-state = when (rec.ar-action)
+      is AuditInsert -> Just (rec.ar-after)
+      is AuditUpdate -> Just (rec.ar-after)
+      is AuditDelete -> None
+      is otherwise -> state
+    in arat-loop records target (i + 1) len new-state
+
+Section: Diff Between Versions
+
+  AuditDiff = record {
+    ad-column : Integer,
+    ad-before : ColumnValue,
+    ad-after : ColumnValue
+  }
+
+  audit-diff : AuditRecord -> List AuditDiff
+  audit-diff (rec) =
+    let before-len = list-length (rec.ar-before)
+    in let after-len = list-length (rec.ar-after)
+    in let max-len = if before-len > after-len then before-len else after-len
+    in ad-loop (rec.ar-before) (rec.ar-after) 0 max-len before-len after-len []
+
+  ad-loop : List ColumnValue, List ColumnValue, Integer, Integer, Integer, Integer, List AuditDiff -> List AuditDiff
+  ad-loop (before) (after) (i) (max-len) (blen) (alen) (acc) =
+    if i >= max-len then acc
+    else let bv = if i < blen then list-at before i else ValNull
+    in let av = if i < alen then list-at after i else ValNull
+    in if val-compare bv av /= 0 then
+      ad-loop before after (i + 1) max-len blen alen (list-push acc (AuditDiff { ad-column = i, ad-before = bv, ad-after = av }))
+    else ad-loop before after (i + 1) max-len blen alen acc
+
+Section: Temporal Table
+
+  TemporalRow = record {
+    tr-key : Text,
+    tr-data : List ColumnValue,
+    tr-valid-from : Integer,
+    tr-valid-to : Integer,
+    tr-created-by : Text,
+    tr-is-current : Boolean
+  }
+
+  TemporalTable = record {
+    tt-name : Text,
+    tt-rows : List TemporalRow,
+    tt-count : Integer,
+    tt-current-count : Integer
+  }
+
+  tt-new : Text -> TemporalTable
+  tt-new (name) = TemporalTable { tt-name = name, tt-rows = [], tt-count = 0, tt-current-count = 0 }
+
+  tt-insert : TemporalTable, Text, List ColumnValue, Text, Integer -> TemporalTable
+  tt-insert (tt) (key) (data) (user) (timestamp) =
+    let row = TemporalRow { tr-key = key, tr-data = data, tr-valid-from = timestamp, tr-valid-to = 2147483647, tr-created-by = user, tr-is-current = True }
+    in TemporalTable { tt-name = tt.tt-name, tt-rows = list-push (tt.tt-rows) row, tt-count = tt.tt-count + 1, tt-current-count = tt.tt-current-count + 1 }
+
+  tt-update : TemporalTable, Text, List ColumnValue, Text, Integer -> TemporalTable
+  tt-update (tt) (key) (new-data) (user) (timestamp) =
+    let closed = tt-close-current (tt.tt-rows) key timestamp 0 (tt.tt-count)
+    in let new-row = TemporalRow { tr-key = key, tr-data = new-data, tr-valid-from = timestamp, tr-valid-to = 2147483647, tr-created-by = user, tr-is-current = True }
+    in TemporalTable { tt-name = tt.tt-name, tt-rows = list-push closed new-row, tt-count = tt.tt-count + 1, tt-current-count = tt.tt-current-count }
+
+  tt-delete : TemporalTable, Text, Integer -> TemporalTable
+  tt-delete (tt) (key) (timestamp) =
+    let closed = tt-close-current (tt.tt-rows) key timestamp 0 (tt.tt-count)
+    in TemporalTable { tt-name = tt.tt-name, tt-rows = closed, tt-count = tt.tt-count, tt-current-count = tt.tt-current-count - 1 }
+
+  tt-close-current : List TemporalRow, Text, Integer, Integer, Integer -> List TemporalRow
+  tt-close-current (rows) (key) (timestamp) (i) (len) =
+    if i >= len then rows
+    else let row = list-at rows i
+    in if row.tr-key == key & row.tr-is-current then
+      let closed = TemporalRow { tr-key = row.tr-key, tr-data = row.tr-data, tr-valid-from = row.tr-valid-from, tr-valid-to = timestamp, tr-created-by = row.tr-created-by, tr-is-current = False }
+      in tt-close-current (list-set-at rows i closed) key timestamp (i + 1) len
+    else tt-close-current rows key timestamp (i + 1) len
+
+Section: Temporal Queries
+
+  tt-current : TemporalTable -> List TemporalRow
+  tt-current (tt) = ttc-loop (tt.tt-rows) 0 (tt.tt-count) []
+
+  ttc-loop : List TemporalRow, Integer, Integer, List TemporalRow -> List TemporalRow
+  ttc-loop (rows) (i) (len) (acc) =
+    if i >= len then acc
+    else let row = list-at rows i
+    in if row.tr-is-current then ttc-loop rows (i + 1) len (list-push acc row)
+    else ttc-loop rows (i + 1) len acc
+
+  tt-as-of : TemporalTable, Integer -> List TemporalRow
+  tt-as-of (tt) (timestamp) = ttao-loop (tt.tt-rows) timestamp 0 (tt.tt-count) []
+
+  ttao-loop : List TemporalRow, Integer, Integer, Integer, List TemporalRow -> List TemporalRow
+  ttao-loop (rows) (ts) (i) (len) (acc) =
+    if i >= len then acc
+    else let row = list-at rows i
+    in if row.tr-valid-from <= ts & row.tr-valid-to > ts then ttao-loop rows ts (i + 1) len (list-push acc row)
+    else ttao-loop rows ts (i + 1) len acc
+
+  tt-between : TemporalTable, Integer, Integer -> List TemporalRow
+  tt-between (tt) (start) (finish) = ttb-loop (tt.tt-rows) start finish 0 (tt.tt-count) []
+
+  ttb-loop : List TemporalRow, Integer, Integer, Integer, Integer, List TemporalRow -> List TemporalRow
+  ttb-loop (rows) (start) (finish) (i) (len) (acc) =
+    if i >= len then acc
+    else let row = list-at rows i
+    in if row.tr-valid-from < finish & row.tr-valid-to > start then ttb-loop rows start finish (i + 1) len (list-push acc row)
+    else ttb-loop rows start finish (i + 1) len acc
+
+  tt-history : TemporalTable, Text -> List TemporalRow
+  tt-history (tt) (key) = tth-loop (tt.tt-rows) key 0 (tt.tt-count) []
+
+  tth-loop : List TemporalRow, Text, Integer, Integer, List TemporalRow -> List TemporalRow
+  tth-loop (rows) (key) (i) (len) (acc) =
+    if i >= len then acc
+    else let row = list-at rows i
+    in if row.tr-key == key then tth-loop rows key (i + 1) len (list-push acc row)
+    else tth-loop rows key (i + 1) len acc
+
+Section: Compliance Reporting
+
+  AuditSummary = record {
+    as-total : Integer,
+    as-inserts : Integer,
+    as-updates : Integer,
+    as-deletes : Integer,
+    as-ddl : Integer,
+    as-logins : Integer,
+    as-failed-logins : Integer,
+    as-unique-users : Integer,
+    as-unique-tables : Integer
+  }
+
+  audit-summary : AuditLog -> AuditSummary
+  audit-summary (log) =
+    as-loop (log.al-records) 0 (log.al-count) 0 0 0 0 0 0 hamt-empty hamt-empty
+
+  as-loop : List AuditRecord, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, HamtMap Integer, HamtMap Integer -> AuditSummary
+  as-loop (records) (i) (len) (ins) (upd) (del) (ddl) (login) (fail-login) (users) (tables) =
+    if i >= len then AuditSummary {
+      as-total = len,
+      as-inserts = ins,
+      as-updates = upd,
+      as-deletes = del,
+      as-ddl = ddl,
+      as-logins = login,
+      as-failed-logins = fail-login,
+      as-unique-users = hamt-size users,
+      as-unique-tables = hamt-size tables
+    }
+    else let rec = list-at records i
+    in let new-users = hamt-set users (rec.ar-user) 1
+    in let new-tables = if text-length (rec.ar-table) > 0 then hamt-set tables (rec.ar-table) 1 else tables
+    in when (rec.ar-action)
+      is AuditInsert -> as-loop records (i + 1) len (ins + 1) upd del ddl login fail-login new-users new-tables
+      is AuditUpdate -> as-loop records (i + 1) len ins (upd + 1) del ddl login fail-login new-users new-tables
+      is AuditDelete -> as-loop records (i + 1) len ins upd (del + 1) ddl login fail-login new-users new-tables
+      is AuditSchemaChange -> as-loop records (i + 1) len ins upd del (ddl + 1) login fail-login new-users new-tables
+      is AuditLogin -> as-loop records (i + 1) len ins upd del ddl (login + 1) fail-login new-users new-tables
+      is AuditLoginFailed -> as-loop records (i + 1) len ins upd del ddl login (fail-login + 1) new-users new-tables
+      is otherwise -> as-loop records (i + 1) len ins upd del ddl login fail-login new-users new-tables
+
+  audit-summary-text : AuditSummary -> Text
+  audit-summary-text (s) =
+    "total=" & show (s.as-total)
+    & " ins=" & show (s.as-inserts)
+    & " upd=" & show (s.as-updates)
+    & " del=" & show (s.as-deletes)
+    & " ddl=" & show (s.as-ddl)
+    & " logins=" & show (s.as-logins)
+    & " failed=" & show (s.as-failed-logins)
+    & " users=" & show (s.as-unique-users)
+    & " tables=" & show (s.as-unique-tables)
+
+Section: Retention
+
+  audit-purge-before : AuditLog, Integer -> AuditLog
+  audit-purge-before (log) (cutoff) =
+    let kept = apb-loop (log.al-records) cutoff 0 (log.al-count) []
+    in AuditLog {
+      al-records = kept,
+      al-count = list-length kept,
+      al-next-seq = log.al-next-seq,
+      al-last-hash = log.al-last-hash,
+      al-enabled-tables = log.al-enabled-tables,
+      al-all-tables = log.al-all-tables
+    }
+
+  apb-loop : List AuditRecord, Integer, Integer, Integer, List AuditRecord -> List AuditRecord
+  apb-loop (records) (cutoff) (i) (len) (acc) =
+    if i >= len then acc
+    else let rec = list-at records i
+    in if rec.ar-timestamp >= cutoff then apb-loop records cutoff (i + 1) len (list-push acc rec)
+    else apb-loop records cutoff (i + 1) len acc
+
+Section: Statistics
+
+  audit-stats : AuditLog -> Text
+  audit-stats (log) =
+    "audit: records=" & show (log.al-count)
+    & " seq=" & show (log.al-next-seq)
+    & " chain=" & log.al-last-hash
+
+Page 1

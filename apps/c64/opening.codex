@@ -1,0 +1,252 @@
+Chapter: C64
+  cites Foreword chapter List
+  cites Foreword chapter Console
+
+ Commodore 64 emulator on bare metal. Loads BASIC, KERNAL, and
+ CHARGEN ROMs from IDE disk, boots the 6502 at the KERNAL reset
+ vector, runs with 60 Hz IRQ for keyboard scanning and cursor blink.
+
+Section: Constants
+
+  c64-ram : Integer = #A00000
+  gop-fb : Integer = #BF000000
+  gop-width : Integer = 640
+  gop-height : Integer = 480
+  char-rom : Integer = #A14000
+  color-ram-base : Integer = #A15000
+
+Section: GPU
+
+  gpu-flush : Integer -> Integer
+  gpu-flush (dummy) = port-out-32 #400 0
+
+Section: Memory Init
+
+  init-c64-ram : Integer -> Integer
+  init-c64-ram (dummy) =
+    let d0 = poke-byte c64-ram 0 #2F
+    in let d1 = poke-byte c64-ram 1 #37
+    in let d2 = init-screen-ram 0
+    in let d3 = init-color-ram 0
+    in d0 + d1 + d2 + d3
+
+  init-screen-ram : Integer -> Integer
+  init-screen-ram (i) =
+    if i >= 1000 then 0
+    else let d = poke-byte c64-ram (#0400 + i) 32
+    in d + init-screen-ram (i + 1)
+
+  init-color-ram : Integer -> Integer
+  init-color-ram (i) =
+    if i >= 1000 then 0
+    else let d = poke-byte color-ram-base i 14
+    in d + init-color-ram (i + 1)
+
+Section: VIC-II Minimal Render
+
+ Render 40x25 character screen to GOP at 2x scale.
+ Reads screen RAM at $0400, color RAM, char ROM.
+
+  c64-palette : Integer -> Integer
+  c64-palette (idx) =
+    when bit-and idx 15
+      is 0 -> #FF000000
+      is 1 -> #FFFFFFFF
+      is 2 -> #FF68372B
+      is 3 -> #FF70A4B2
+      is 4 -> #FF6F3D86
+      is 5 -> #FF588D43
+      is 6 -> #FF352879
+      is 7 -> #FFB8C76F
+      is 8 -> #FF6C5EB5
+      is 9 -> #FF444429
+      is 10 -> #FFA9736E
+      is 11 -> #FF444444
+      is 12 -> #FF6C6C6C
+      is 13 -> #FF9AD284
+      is 14 -> #FF6C5EB5
+      is 15 -> #FF959595
+      is otherwise -> #FF000000
+
+  render-frame : Integer -> Integer
+  render-frame (dummy) =
+    let bg = c64-palette (peek-byte vic-state #21)
+    in let border = c64-palette (peek-byte vic-state #20)
+    in let d0 = fill-rect 0 0 gop-width gop-height border
+    in d0 + render-chars bg 0
+
+  render-chars : Integer, Integer -> Integer
+  render-chars (bg) (idx) =
+    if idx >= 1000 then 0
+    else let col = int-mod idx 40
+    in let row = idx / 40
+    in let ch = peek-byte c64-ram (#0400 + idx)
+    in let fg = c64-palette (bit-and (peek-byte color-ram-base idx) 15)
+    in let d = render-one-char col row ch fg bg
+    in d + render-chars bg (idx + 1)
+
+  render-one-char : Integer, Integer, Integer, Integer, Integer -> Integer
+  render-one-char (col) (row) (ch) (fg) (bg) =
+    let px = col * 16
+    in let py = row * 16 + 40
+    in render-glyph-rows ch px py fg bg 0
+
+  render-glyph-rows : Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  render-glyph-rows (ch) (px) (py) (fg) (bg) (r) =
+    if r >= 8 then 0
+    else let bits = peek-byte char-rom (ch * 8 + r)
+    in let y = py + r * 2
+    in let d = render-glyph-bits px y bits fg bg 0
+    in d + render-glyph-rows ch px py fg bg (r + 1)
+
+  render-glyph-bits : Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  render-glyph-bits (px) (y) (bits) (fg) (bg) (b) =
+    if b >= 8 then 0
+    else let color = if bit-and bits (bit-shl 1 (7 - b)) /= 0 then fg else bg
+    in let x = px + b * 2
+    in let off0 = (y * gop-width + x) * 4
+    in let off1 = ((y + 1) * gop-width + x) * 4
+    in let d0 = poke-32 gop-fb off0 color
+    in let d1 = poke-32 gop-fb (off0 + 4) color
+    in let d2 = poke-32 gop-fb off1 color
+    in let d3 = poke-32 gop-fb (off1 + 4) color
+    in d0 + d1 + d2 + d3 + render-glyph-bits px y bits fg bg (b + 1)
+
+  fill-rect : Integer, Integer, Integer, Integer, Integer -> Integer
+  fill-rect (x) (y) (w) (h) (color) =
+    fill-rect-rows x y w h color 0
+
+  fill-rect-rows : Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  fill-rect-rows (x) (y) (w) (h) (color) (row) =
+    if row >= h then 0
+    else let d = fill-rect-cols x (y + row) w color 0
+    in d + fill-rect-rows x y w h color (row + 1)
+
+  fill-rect-cols : Integer, Integer, Integer, Integer, Integer -> Integer
+  fill-rect-cols (x) (y) (w) (color) (col) =
+    if col >= w then 0
+    else let off = (y * gop-width + x + col) * 4
+    in let d = poke-32 gop-fb off color
+    in d + fill-rect-cols x y w color (col + 1)
+
+Section: Main Emulation Loop
+
+ Run CPU for one frame's worth of cycles (19656 cycles at ~1 MHz
+ for 60 Hz NTSC, ~312*63 = 19656 for PAL). Then fire IRQ, render,
+ poll keyboard, sleep 16ms.
+
+  cycles-per-frame : Integer = 19656
+
+  run-frame : CpuState -> CpuState
+  run-frame (s) = run-cycles s cycles-per-frame
+
+  run-cycles : CpuState, Integer -> CpuState
+  run-cycles (s) (remaining) =
+    if remaining <= 0 then s
+    else if s.cpu-halted /= 0 then s
+    else run-cycles (cpu-step s) (remaining - 1)
+
+  run-frame-with-raster : CpuState, Integer -> CpuState
+  run-frame-with-raster (s) (line) =
+    if line >= 312 then s
+    else let d = poke-byte vic-state #12 (bit-and line #FF)
+    in let d2 = if line > 255
+      then poke-byte vic-state #11 (bit-or (peek-byte vic-state #11) #80)
+      else poke-byte vic-state #11 (bit-and (peek-byte vic-state #11) #7F)
+    in let s1 = run-cycles s 63
+    in run-frame-with-raster s1 (line + 1)
+
+  emulation-loop : CpuState, Integer -> CpuState
+  emulation-loop (s) (frames) =
+    if frames >= 36000 then s
+    else if s.cpu-halted /= 0 then s
+    else let d0 = kbd-poll 0
+    in let s1 = run-frame-with-raster s 0
+    in let d-cia = poke-byte cia-state 29 (bit-or (peek-byte cia-state 29) #81)
+    in let s2 = cpu-irq s1
+    in let d1 = render-frame 0
+    in let d2 = gpu-flush 0
+    in let d3 = port-out-byte #E0 16
+    in emulation-loop s2 (frames + 1)
+
+Section: Screen Diagnostics
+
+  hex-digit : Integer -> Integer
+  hex-digit (n) =
+    let d = bit-and n 15
+    in if d < 10 then 48 + d else 1 + d - 10
+
+  write-hex-to-screen : Integer, Integer -> Integer
+  write-hex-to-screen (pos) (val) =
+    let hi = hex-digit (bit-shru val 4)
+    in let lo = hex-digit val
+    in let d0 = poke-byte c64-ram (#07C0 + pos) hi
+    in d0 + poke-byte c64-ram (#07C0 + pos + 1) lo
+
+Section: Diagnostic Render
+
+  diag-render-loop : Integer -> Integer
+  diag-render-loop (frame) =
+    if frame >= 120 then 0
+    else let d = render-frame 0
+    in let d2 = gpu-flush 0
+    in let d3 = port-out-byte #E0 16
+    in d + d2 + d3 + diag-render-loop (frame + 1)
+
+Section: CPU Tests
+
+  setup-carry-test : Integer -> Integer
+  setup-carry-test (dummy) =
+    let base = #C000
+    in let d0 = poke-byte c64-ram base #38
+    in let d1 = poke-byte c64-ram (base + 1) #A9
+    in let d2 = poke-byte c64-ram (base + 2) 0
+    in let d3 = poke-byte c64-ram (base + 3) #A2
+    in let d4 = poke-byte c64-ram (base + 4) 0
+    in let d5 = poke-byte c64-ram (base + 5) #69
+    in let d6 = poke-byte c64-ram (base + 6) 3
+    in let d7 = poke-byte c64-ram (base + 7) #8D
+    in let d8 = poke-byte c64-ram (base + 8) #C0
+    in let d9 = poke-byte c64-ram (base + 9) #07
+    in let d10 = poke-byte c64-ram (base + 10) #B0
+    in let d11 = poke-byte c64-ram (base + 11) 3
+    in let d12 = poke-byte c64-ram (base + 12) #8D
+    in let d13 = poke-byte c64-ram (base + 13) #C1
+    in let d14 = poke-byte c64-ram (base + 14) #07
+    in let d15 = poke-byte c64-ram (base + 15) #00
+    in let cpu = __record-set cpu-new "cpu-pc" base
+    in let final = run-cycles cpu 20
+    in let r0 = peek-byte c64-ram #07C0
+    in let r1 = peek-byte c64-ram #07C1
+    in let diag0 = poke-byte c64-ram #07C0 (48 + r0)
+    in let diag1 = poke-byte c64-ram #07C2 (48 + r1)
+    in diag0 + diag1
+
+Section: Boot Sequence
+
+  boot-c64 : CpuState -> CpuState
+  boot-c64 (s) =
+    let reset-vec = mem-read-16 #FFFC
+    in __record-set s "cpu-pc" reset-vec
+
+Section: Entry Point
+
+  init-vic : Integer -> Integer
+  init-vic (dummy) =
+    let d0 = poke-byte vic-state #11 #1B
+    in let d1 = poke-byte vic-state #16 #C8
+    in let d2 = poke-byte vic-state #18 #15
+    in let d3 = poke-byte vic-state #19 0
+    in let d4 = poke-byte vic-state #20 14
+    in let d5 = poke-byte vic-state #21 6
+    in d0 + d1 + d2 + d3 + d4 + d5
+
+  opening : [Console] Nothing = act
+    let d0 = init-c64-ram 0
+    in let d1 = cia-init 0
+    in let d2 = init-vic 0
+    in let d3 = init-all-roms 0
+    in let cpu = boot-c64 cpu-new
+    in let final = emulation-loop cpu 0
+    in print-line "done"
+  end

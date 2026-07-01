@@ -1,0 +1,150 @@
+Chapter: TestRadio
+  cites Radio chapter RadioTypes
+  cites Radio chapter RadioStation
+  cites Foreword chapter Maybe
+
+ Tests for the radio station app.
+
+Section: Harness
+
+  assert-eq : Text, Text, Text -> Text
+  assert-eq (label) (expected) (actual) =
+    if expected == actual then "PASS " & label
+    else "FAIL " & label & ": expected \"" & expected & "\" got \"" & actual & "\""
+
+  assert-int : Text, Integer, Integer -> Text
+  assert-int (label) (expected) (actual) =
+    if expected == actual then "PASS " & label
+    else "FAIL " & label & ": expected " & show expected & " got " & show actual
+
+  assert-true : Text, Boolean -> Text
+  assert-true (label) (val) = if val then "PASS " & label else "FAIL " & label
+
+  assert-real-near : Text, Real, Real -> Text
+  assert-real-near (label) (expected) (actual) =
+    if expected ~ actual then "PASS " & label
+    else "FAIL " & label & ": expected " & show expected & " got " & show actual
+
+Section: Track Types
+
+  test-track : Text
+  test-track =
+    let t = track-empty
+    in let t1 = assert-eq "empty-title" "" (t.trk-title)
+    in let t2 = assert-eq "empty-state" "empty" (ts-label (t.trk-state))
+    in t1 & "\n" & t2
+
+Section: Deck
+
+  test-deck : Text
+  test-deck =
+    let d = deck-new DeckA
+    in let t1 = assert-eq "deck-id" "A" (deck-label (d.dk-id))
+    in let t2 = assert-real-near "deck-vol" 0.8 (d.dk-volume)
+    in let t3 = assert-real-near "eq-flat" 0.0 ((d.dk-eq).eq-low)
+    in let t4 = assert-real-near "deck-pitch" 0.0 (d.dk-pitch)
+    in t1 & "\n" & t2 & "\n" & t3 & "\n" & t4
+
+Section: Mixer
+
+  test-mixer : Text
+  test-mixer =
+    let m = mixer-new
+    in let t1 = assert-real-near "crossfader" 0.5 (m.mx-crossfader)
+    in let t2 = assert-real-near "master" 0.8 (m.mx-master-vol)
+    in t1 & "\n" & t2
+
+Section: App State
+
+  test-app : Text
+  test-app =
+    let app = radio-app-new "Test FM" "DJ Test"
+    in let t1 = assert-eq "station-name" "Test FM" ((app.ra-station).stn-name)
+    in let t2 = assert-eq "dj-name" "DJ Test" ((app.ra-station).stn-dj-name)
+    in let t3 = assert-true "not-broadcasting" (if (app.ra-station).stn-broadcasting then False else True)
+    in let app2 = ra-toggle-broadcast app
+    in let t4 = assert-true "broadcasting" ((app2.ra-station).stn-broadcasting)
+    in t1 & "\n" & t2 & "\n" & t3 & "\n" & t4
+
+Section: Volume and Crossfader
+
+  test-volume : Text
+  test-volume =
+    let app = radio-app-new "Test FM" "DJ Test"
+    in let app2 = ra-set-volume app DeckA 0.6
+    in let t1 = assert-real-near "vol-set" 0.6 ((app2.ra-deck-a).dk-volume)
+    in let app3 = ra-set-volume app2 DeckA 1.5
+    in let t2 = assert-real-near "vol-clamp-hi" 1.0 ((app3.ra-deck-a).dk-volume)
+    in let app4 = ra-set-volume app3 DeckB (-0.1)
+    in let t3 = assert-real-near "vol-clamp-lo" 0.0 ((app4.ra-deck-b).dk-volume)
+    in let app5 = ra-set-crossfader app4 0.3
+    in let t4 = assert-real-near "xfader" 0.3 ((app5.ra-mixer).mx-crossfader)
+    in t1 & "\n" & t2 & "\n" & t3 & "\n" & t4
+
+Section: Pitch and EQ
+
+  test-pitch-eq : Text
+  test-pitch-eq =
+    let app = radio-app-new "Test FM" "DJ Test"
+    in let app2 = ra-set-pitch app DeckA 0.25
+    in let t1 = assert-real-near "pitch" 0.25 ((app2.ra-deck-a).dk-pitch)
+    in let app3 = ra-set-pitch app2 DeckA 0.75
+    in let t2 = assert-real-near "pitch-clamp" 0.5 ((app3.ra-deck-a).dk-pitch)
+    in let app4 = ra-set-eq-band app3 0 6.0
+    in let t3 = assert-real-near "eq-low-mid" 6.0 (app4.ra-eq-low-mid)
+    in let app5 = ra-set-eq-band app4 1 (-3.0)
+    in let t4 = assert-real-near "eq-high-mid" (-3.0) (app5.ra-eq-high-mid)
+    in t1 & "\n" & t2 & "\n" & t3 & "\n" & t4
+
+Section: Time Format
+
+  test-time : Text
+  test-time =
+    let t1 = assert-eq "zero" "0:00" (format-time 0)
+    in let t2 = assert-eq "one-min" "1:00" (format-time 60000)
+    in let t3 = assert-eq "3:45" "3:45" (format-time 225000)
+    in t1 & "\n" & t2 & "\n" & t3
+
+Section: Presets and Favorites
+
+  test-presets : Text
+  test-presets =
+    let app = radio-app-full "Test FM" "DJ Test"
+    in let t1 = assert-int "preset-count" 8 (app.ra-preset-count)
+    in let t2 = assert-int "library-count" 12 (app.ra-library-count)
+    in let app2 = ra-select-preset app 0
+    in let t3 = assert-int "selected" 0 (app2.ra-selected-preset)
+    in let app3 = ra-toggle-favorite app2 0
+    in let t4 = assert-int "fav-count" 1 (app3.ra-favorites-count)
+    in let t5 = assert-true "is-fav" (ra-is-favorite app3 0)
+    in let app4 = ra-toggle-favorite app3 0
+    in let t6 = assert-int "unfav-count" 0 (app4.ra-favorites-count)
+    in t1 & "\n" & t2 & "\n" & t3 & "\n" & t4 & "\n" & t5 & "\n" & t6
+
+Section: Track Seeking
+
+  test-seek : Text
+  test-seek =
+    let app = radio-app-full "Test FM" "DJ Test"
+    in let app2 = ra-load-from-library app DeckA 0
+    in let app3 = ra-seek-deck app2 DeckA 60000
+    in let t1 = assert-int "seek-pos" 60000 ((app3.ra-deck-a).dk-track.trk-position)
+    in let app4 = ra-seek-deck app3 DeckA 999999
+    in let t2 = assert-int "seek-clamp" (app4.ra-deck-a).dk-track.trk-duration ((app4.ra-deck-a).dk-track.trk-position)
+    in t1 & "\n" & t2
+
+Section: All Tests
+
+  opening : [Console] None = act
+    print-line test-track
+    print-line test-deck
+    print-line test-mixer
+    print-line test-app
+    print-line test-volume
+    print-line test-pitch-eq
+    print-line test-time
+    print-line test-presets
+    print-line test-seek
+  end
+
+Page 1

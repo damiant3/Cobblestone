@@ -1,0 +1,86 @@
+Chapter: WaveformView
+  cites Game chapter Rasterizer
+
+ Waveform visualization: renders audio samples as a waveform
+ display to a Framebuf. Supports zoom and selection overlay.
+
+ We say:
+
+Section: Types
+
+  WaveformStyle = record {
+    wvs-bg : Integer,
+    wvs-wave : Integer,
+    wvs-center : Integer,
+    wvs-select : Integer
+  }
+
+Section: Construction
+
+  waveform-style-default : WaveformStyle
+  waveform-style-default = WaveformStyle {
+    wvs-bg = 1710618,
+    wvs-wave = 3381555,
+    wvs-center = #222222,
+    wvs-select = 4473924
+  }
+
+Section: Render
+
+  waveform-render : List Integer, Integer, Integer, Integer, Integer, Integer, WaveformStyle -> Framebuf
+  waveform-render (samples) (sample-count) (w) (h) (view-start) (view-length) (style) =
+    let fb = fb-new w h (style.wvs-bg)
+    in let center-y = h / 2
+    in let fb2 = fb-hline fb 0 (w - 1) center-y (style.wvs-center)
+    in wf-render-cols fb2 samples sample-count w h center-y view-start view-length style 0
+
+  wf-render-cols : Framebuf, List Integer, Integer, Integer, Integer, Integer, Integer, Integer, WaveformStyle, Integer -> Framebuf
+  wf-render-cols (fb) (samples) (count) (w) (h) (cy) (start) (length) (style) (x) =
+    if x >= w then fb
+    else let sample-pos = start + x * length / w
+    in let val = if sample-pos < 0 then 0
+      else if sample-pos >= count then 0
+      else list-at samples sample-pos
+    in let amplitude = val * (h / 2) / 1000
+    in let y-top = cy - (wf-abs amplitude)
+    in let y-bot = cy + (wf-abs amplitude)
+    in let fb2 = wf-draw-bar fb x y-top y-bot h (style.wvs-wave)
+    in wf-render-cols fb2 samples count w h cy start length style (x + 1)
+
+  wf-draw-bar : Framebuf, Integer, Integer, Integer, Integer, Integer -> Framebuf
+  wf-draw-bar (fb) (x) (y0) (y1) (h) (color) =
+    let top = if y0 < 0 then 0 else y0
+    in let bot = if y1 >= h then h - 1 else y1
+    in wf-bar-loop fb x top bot color
+
+  wf-bar-loop : Framebuf, Integer, Integer, Integer, Integer -> Framebuf
+  wf-bar-loop (fb) (x) (y) (y1) (color) =
+    if y > y1 then fb
+    else wf-bar-loop (fb-set fb x y color) x (y + 1) y1 color
+
+Section: Peak Extraction
+
+  waveform-peaks : List Integer, Integer, Integer -> List Integer
+  waveform-peaks (samples) (count) (bucket-size) =
+    wf-peaks-loop samples count bucket-size 0 []
+
+  wf-peaks-loop : List Integer, Integer, Integer, Integer, List Integer -> List Integer
+  wf-peaks-loop (samples) (count) (bucket) (i) (acc) =
+    if i >= count then acc
+    else let peak = wf-bucket-peak samples count i (i + bucket) 0
+    in wf-peaks-loop samples count bucket (i + bucket) (list-push acc peak)
+
+  wf-bucket-peak : List Integer, Integer, Integer, Integer, Integer -> Integer
+  wf-bucket-peak (samples) (count) (i) (limit) (best) =
+    if i >= limit then best
+    else if i >= count then best
+    else let val = wf-abs (list-at samples i)
+    in let new-best = if val > best then val else best
+    in wf-bucket-peak samples count (i + 1) limit new-best
+
+Section: Helpers
+
+  wf-abs : Integer -> Integer
+  wf-abs (n) = if n < 0 then -n else n
+
+Page 1

@@ -1,0 +1,161 @@
+Chapter: Overlay
+  cites Foreword chapter Maybe
+  cites UI chapter Theme
+  cites UI chapter Widget
+  cites UI chapter Surface
+
+ Overlay stack. Overlays sit above the main compositor and can
+ capture input (modal). Supports tooltips, popups, context menus,
+ notifications, and modal dialogs. Each overlay is a surface +
+ widget tree pair with optional auto-dismiss timer.
+
+Section: Overlay Kind
+  OverlayKind =
+    | OvTooltip
+    | OvPopup
+    | OvContextMenu
+    | OvNotification
+    | OvModal
+
+Section: Overlay
+  Overlay = record {
+    ov-id : Text,
+    ov-kind : OverlayKind,
+    ov-x : Integer,
+    ov-y : Integer,
+    ov-width : Integer between 1 and 32767,
+    ov-height : Integer between 1 and 32767,
+    ov-widget : WidgetNode,
+    ov-modal : Boolean,
+    ov-dismiss-ms : Integer,
+    ov-elapsed : Integer,
+    ov-visible : Boolean,
+    ov-z : Integer between 0 and 9999
+  }
+
+Section: Overlay Stack
+  OverlayStack = record {
+    os-overlays : List Overlay,
+    os-count : Integer
+  }
+
+Section: Construction
+  overlay-tooltip : Text, Integer, Integer, Integer, Integer, WidgetNode -> Overlay
+  overlay-tooltip (id) (x) (y) (w) (h) (content) =
+    Overlay { ov-id = id, ov-kind = OvTooltip, ov-x = x, ov-y = y, ov-width = w, ov-height = h, ov-widget = content, ov-modal = False, ov-dismiss-ms = 3000, ov-elapsed = 0, ov-visible = True, ov-z = 1000 }
+
+  overlay-popup : Text, Integer, Integer, Integer, Integer, WidgetNode -> Overlay
+  overlay-popup (id) (x) (y) (w) (h) (content) =
+    Overlay { ov-id = id, ov-kind = OvPopup, ov-x = x, ov-y = y, ov-width = w, ov-height = h, ov-widget = content, ov-modal = False, ov-dismiss-ms = 0, ov-elapsed = 0, ov-visible = True, ov-z = 900 }
+
+  overlay-context-menu : Text, Integer, Integer, Integer, Integer, WidgetNode -> Overlay
+  overlay-context-menu (id) (x) (y) (w) (h) (content) =
+    Overlay { ov-id = id, ov-kind = OvContextMenu, ov-x = x, ov-y = y, ov-width = w, ov-height = h, ov-widget = content, ov-modal = False, ov-dismiss-ms = 0, ov-elapsed = 0, ov-visible = True, ov-z = 950 }
+
+  overlay-notification : Text, Integer, Integer, Integer, Integer, WidgetNode, Integer -> Overlay
+  overlay-notification (id) (x) (y) (w) (h) (content) (duration) =
+    Overlay { ov-id = id, ov-kind = OvNotification, ov-x = x, ov-y = y, ov-width = w, ov-height = h, ov-widget = content, ov-modal = False, ov-dismiss-ms = duration, ov-elapsed = 0, ov-visible = True, ov-z = 800 }
+
+  overlay-modal : Text, Integer, Integer, Integer, Integer, WidgetNode -> Overlay
+  overlay-modal (id) (x) (y) (w) (h) (content) =
+    Overlay { ov-id = id, ov-kind = OvModal, ov-x = x, ov-y = y, ov-width = w, ov-height = h, ov-widget = content, ov-modal = True, ov-dismiss-ms = 0, ov-elapsed = 0, ov-visible = True, ov-z = 2000 }
+
+  overlay-stack-new : OverlayStack
+  overlay-stack-new = OverlayStack { os-overlays = [], os-count = 0 }
+
+Section: Stack Management
+  overlay-push : OverlayStack, Overlay -> OverlayStack
+  overlay-push (os) (ov) =
+    OverlayStack { os-overlays = list-push (os.os-overlays) ov, os-count = os.os-count + 1 }
+
+  overlay-pop : OverlayStack -> OverlayStack
+  overlay-pop (os) =
+    if os.os-count <= 0 then os
+    else let trimmed = ov-take (os.os-overlays) (os.os-count - 1) 0 []
+    in OverlayStack { os-overlays = trimmed, os-count = os.os-count - 1 }
+
+  ov-take : List Overlay, Integer, Integer, List Overlay -> List Overlay
+  ov-take (overlays) (n) (i) (acc) =
+    if i >= n then acc
+    else ov-take overlays n (i + 1) (list-push acc (list-at overlays i))
+
+  overlay-dismiss : OverlayStack, Text -> OverlayStack
+  overlay-dismiss (os) (id) =
+    let filtered = ov-filter (os.os-overlays) id 0 (os.os-count) []
+    in OverlayStack { os-overlays = filtered, os-count = list-length filtered }
+
+  ov-filter : List Overlay, Text, Integer, Integer, List Overlay -> List Overlay
+  ov-filter (overlays) (id) (i) (n) (acc) =
+    if i >= n then acc
+    else let ov = list-at overlays i
+    in if ov.ov-id == id then ov-filter overlays id (i + 1) n acc
+    else ov-filter overlays id (i + 1) n (list-push acc ov)
+
+Section: Tick
+  overlay-stack-tick : OverlayStack, Integer -> OverlayStack
+  overlay-stack-tick (os) (dt) =
+    let ticked = ov-tick-all (os.os-overlays) dt 0 (os.os-count) []
+    in let alive = ov-remove-expired ticked 0 (list-length ticked) []
+    in OverlayStack { os-overlays = alive, os-count = list-length alive }
+
+  ov-tick-all : List Overlay, Integer, Integer, Integer, List Overlay -> List Overlay
+  ov-tick-all (overlays) (dt) (i) (n) (acc) =
+    if i >= n then acc
+    else let ov = list-at overlays i
+    in let ticked = Overlay {
+      ov-id = ov.ov-id, ov-kind = ov.ov-kind,
+      ov-x = ov.ov-x, ov-y = ov.ov-y, ov-width = ov.ov-width, ov-height = ov.ov-height,
+      ov-widget = ov.ov-widget, ov-modal = ov.ov-modal,
+      ov-dismiss-ms = ov.ov-dismiss-ms, ov-elapsed = ov.ov-elapsed + dt,
+      ov-visible = ov.ov-visible, ov-z = ov.ov-z
+    }
+    in ov-tick-all overlays dt (i + 1) n (list-push acc ticked)
+
+  ov-remove-expired : List Overlay, Integer, Integer, List Overlay -> List Overlay
+  ov-remove-expired (overlays) (i) (n) (acc) =
+    if i >= n then acc
+    else let ov = list-at overlays i
+    in let expired = if ov.ov-dismiss-ms > 0 then ov.ov-elapsed >= ov.ov-dismiss-ms else False
+    in if expired then ov-remove-expired overlays (i + 1) n acc
+    else ov-remove-expired overlays (i + 1) n (list-push acc ov)
+
+Section: Queries
+  overlay-has-modal : OverlayStack -> Boolean
+  overlay-has-modal (os) = ov-any-modal (os.os-overlays) 0 (os.os-count)
+
+  ov-any-modal : List Overlay, Integer, Integer -> Boolean
+  ov-any-modal (overlays) (i) (n) =
+    if i >= n then False
+    else let ov = list-at overlays i
+    in if ov.ov-modal then True
+    else ov-any-modal overlays (i + 1) n
+
+  overlay-top : OverlayStack -> Maybe Overlay
+  overlay-top (os) =
+    if os.os-count <= 0 then None
+    else Just (list-at (os.os-overlays) (os.os-count - 1))
+
+  overlay-find : OverlayStack, Text -> Maybe Overlay
+  overlay-find (os) (id) = ov-find-loop (os.os-overlays) id 0 (os.os-count)
+
+  ov-find-loop : List Overlay, Text, Integer, Integer -> Maybe Overlay
+  ov-find-loop (overlays) (id) (i) (n) =
+    if i >= n then None
+    else let ov = list-at overlays i
+    in if ov.ov-id == id then Just ov
+    else ov-find-loop overlays id (i + 1) n
+
+Section: Formatting
+  overlay-kind-name : OverlayKind -> Text
+  overlay-kind-name (k) = when k
+    is OvTooltip -> "tooltip"
+    is OvPopup -> "popup"
+    is OvContextMenu -> "context-menu"
+    is OvNotification -> "notification"
+    is OvModal -> "modal"
+
+  format-overlay : Overlay -> Text
+  format-overlay (ov) =
+    overlay-kind-name (ov.ov-kind) & "[" & ov.ov-id & "] (" & show (ov.ov-x) & "," & show (ov.ov-y) & " " & show (ov.ov-width) & "x" & show (ov.ov-height) & ")"
+
+Page 1

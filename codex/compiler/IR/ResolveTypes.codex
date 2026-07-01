@@ -1,0 +1,95 @@
+Chapter: Resolve Types
+
+ Resolves ConstructedTy nodes in the IR to their concrete RecordTy or
+ SumTy forms using a sorted list of TypeBindings. Runs after lowering,
+ before emission.
+
+Section: Type Resolution
+
+  strip-fun-args-resolve : CodexType -> CodexType
+  strip-fun-args-resolve (ty) =
+   when ty
+    is FunTy (p) (r) -> strip-fun-args-resolve r
+    is otherwise -> ty
+
+  resolve-ty-deep : List TypeBinding, CodexType -> CodexType
+  resolve-ty-deep (tdefs) (ty) =
+   when ty
+    is ConstructedTy (cname) (cargs) ->
+     if list-length cargs > 0 then deck-record (ConstructedTy cname (for a in cargs -> resolve-ty-deep tdefs a))
+     else let raw = lookup-type-bsearch tdefs (cname.value)
+     in when raw
+      is RecordTy (rn) (ra) (rf) | SumTy (sn) (sa) (sc) -> raw
+      is FunTy (p) (r) -> strip-fun-args-resolve r
+      is otherwise -> deck-record (ConstructedTy cname [])
+    is FunTy (p) (r) -> deck-record (FunTy (resolve-ty-deep tdefs p) (resolve-ty-deep tdefs r))
+    is ListTy (e) -> deck-record (ListTy (resolve-ty-deep tdefs e))
+    is LinkedListTy (e) -> deck-record (LinkedListTy (resolve-ty-deep tdefs e))
+    is ForAllTy (id) (body) -> deck-record (ForAllTy id (resolve-ty-deep tdefs body))
+    is EffectfulTy (effs) (sc) (ret) -> deck-record (EffectfulTy effs sc (resolve-ty-deep tdefs ret))
+    is UnitTy (n) (inner) -> deck-record (UnitTy n (resolve-ty-deep tdefs inner))
+    is VectorTy (vn) (vt) -> deck-record (VectorTy vn (resolve-ty-deep tdefs vt))
+    is VectorMaskTy (n) -> ty
+    is TypeApply (tf) (ta) -> let rf = resolve-ty-deep tdefs tf in let ra = resolve-ty-deep tdefs ta in when rf is TypeCon (rn) -> if rn.value == "List" then deck-record (ListTy ra) else deck-record (ConstructedTy rn [ra]) is otherwise -> deck-record (TypeApply rf ra)
+    is TypeCon (n) -> ty
+    is otherwise -> ty
+
+Section: IR Rewrite
+
+  rewrite-ir-pat : List TypeBinding, IRPat -> IRPat
+  rewrite-ir-pat (tdefs) (p) =
+   when p
+    is IrVarPat (name) (t) (s) -> deck-record (IrVarPat name (resolve-ty-deep tdefs t) s)
+    is IrLitPat (v) (t) (s) -> deck-record (IrLitPat v (resolve-ty-deep tdefs t) s)
+    is IrCtorPat (name) (subs) (t) (s) -> deck-record (IrCtorPat name (for p2 in subs -> rewrite-ir-pat tdefs p2) (resolve-ty-deep tdefs t) s)
+    is IrWildPat (s) -> p
+    is IrVecPat (subs) (t) (s) -> deck-record (IrVecPat (for p2 in subs -> rewrite-ir-pat tdefs p2) (resolve-ty-deep tdefs t) s)
+
+  rewrite-ir-expr : List TypeBinding, IRExpr -> IRExpr
+  rewrite-ir-expr (tdefs) (e) =
+   when e
+    is IrIntLit (v) (s) | IrNumLit (v) (s) | IrTextLit (v) (s) | IrBoolLit (v) (s) | IrCharLit (v) (s) -> e
+    is IrName (n) (t) (s) -> deck-record (IrName n (resolve-ty-deep tdefs t) s)
+    is IrBinary (op) (l) (r) (t) (s) -> deck-record (IrBinary op (rewrite-ir-expr tdefs l) (rewrite-ir-expr tdefs r) (resolve-ty-deep tdefs t) s)
+    is IrNegate (x) (s) -> deck-record (IrNegate (rewrite-ir-expr tdefs x) s)
+    is IrIf (c) (th) (el) (t) (s) -> deck-record (IrIf (rewrite-ir-expr tdefs c) (rewrite-ir-expr tdefs th) (rewrite-ir-expr tdefs el) (resolve-ty-deep tdefs t) s)
+    is IrLet (n) (t) (v) (b) (s) -> deck-record (IrLet n (resolve-ty-deep tdefs t) (rewrite-ir-expr tdefs v) (rewrite-ir-expr tdefs b) s)
+    is IrApply (f) (a) (t) (s) -> deck-record (IrApply (rewrite-ir-expr tdefs f) (rewrite-ir-expr tdefs a) (resolve-ty-deep tdefs t) s)
+    is IrLambda (ps) (b) (t) (s) -> deck-record (IrLambda (for p in ps -> deck-record (IRParam { name = p.name, type-val = resolve-ty-deep tdefs (p.type-val), span = p.span })) (rewrite-ir-expr tdefs b) (resolve-ty-deep tdefs t) s)
+    is IrList (es) (t) (s) -> deck-record (IrList (for x in es -> rewrite-ir-expr tdefs x) (resolve-ty-deep tdefs t) s)
+    is IrMatch (sc) (bs) (t) (s) -> deck-record (IrMatch (rewrite-ir-expr tdefs sc) (for b in bs -> deck-record (IRBranch { pattern = rewrite-ir-pat tdefs (b.pattern), body = rewrite-ir-expr tdefs (b.body), guard = rewrite-ir-expr tdefs (b.guard), span = b.span, alt-group = b.alt-group })) (resolve-ty-deep tdefs t) s)
+    is IrAct (ss) (t) (s) -> deck-record (IrAct (rewrite-ir-act-stmts tdefs ss) (resolve-ty-deep tdefs t) s)
+    is IrHandle (eff) (h) (cs) (t) (s) -> deck-record (IrHandle eff (rewrite-ir-expr tdefs h) (for c in cs -> deck-record (IRHandleClause { op-name = c.op-name, params = c.params, resume-name = c.resume-name, body = rewrite-ir-expr tdefs (c.body), span = c.span })) (resolve-ty-deep tdefs t) s)
+    is IrWithTimeout (secs) (effs) (scopes) (body) (t) (s) -> deck-record (IrWithTimeout secs effs scopes (rewrite-ir-expr tdefs body) (resolve-ty-deep tdefs t) s)
+    is IrRecord (n) (fs) (t) (s) -> deck-record (IrRecord n (for f in fs -> deck-record (IRFieldVal { name = f.name, value = rewrite-ir-expr tdefs (f.value), span = f.span })) (resolve-ty-deep tdefs t) s)
+    is IrFieldAccess (r) (f) (t) (s) -> deck-record (IrFieldAccess (rewrite-ir-expr tdefs r) f (resolve-ty-deep tdefs t) s)
+    is IrFieldStore (r) (f) (v) (t) (s) -> deck-record (IrFieldStore (rewrite-ir-expr tdefs r) f (rewrite-ir-expr tdefs v) (resolve-ty-deep tdefs t) s)
+    is IrFork (body) (t) (s) -> deck-record (IrFork (rewrite-ir-expr tdefs body) (resolve-ty-deep tdefs t) s)
+    is IrAwait (task) (t) (s) -> deck-record (IrAwait (rewrite-ir-expr tdefs task) (resolve-ty-deep tdefs t) s)
+    is IrTry (max) (body) (fb) (fail) (t) (s) -> deck-record (IrTry max (rewrite-ir-act-stmts tdefs body) (rewrite-ir-act-stmts tdefs fb) (rewrite-ir-act-stmts tdefs fail) (resolve-ty-deep tdefs t) s)
+    is IrError (m) (t) (s) -> deck-record (IrError m (resolve-ty-deep tdefs t) s)
+
+  rewrite-ir-act-stmts : List TypeBinding, List IRActStmt -> List IRActStmt
+  rewrite-ir-act-stmts (tdefs) (ss) =
+   for stmt in ss -> when stmt
+    is IrDoBind (n) (t) (v) (sp) -> deck-record (IrDoBind n (resolve-ty-deep tdefs t) (rewrite-ir-expr tdefs v) sp)
+    is IrDoExec (v) (sp) -> deck-record (IrDoExec (rewrite-ir-expr tdefs v) sp)
+
+Section: Definition Rewrite
+
+  rewrite-ir-def : List TypeBinding, IRDef -> IRDef
+  rewrite-ir-def (tdefs) (d) =
+   deck-record (IRDef {
+    name = d.name,
+    params = for p in (d.params) -> deck-record (IRParam { name = p.name, type-val = resolve-ty-deep tdefs (p.type-val), span = p.span }),
+    type-val = resolve-ty-deep tdefs (d.type-val),
+    body = rewrite-ir-expr tdefs (d.body),
+    chapter-slug = d.chapter-slug,
+    is-punctual = d.is-punctual,
+    wcet-budget = d.wcet-budget,
+    span = d.span
+   })
+
+  rewrite-ir-defs : List TypeBinding, List IRDef -> List IRDef
+  rewrite-ir-defs (tdefs) (defs) =
+   for d in defs -> rewrite-ir-def tdefs d

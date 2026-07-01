@@ -1,0 +1,159 @@
+Chapter: ReplayCrf
+  cites Replay chapter ReplayLog
+  cites Net chapter MessageFraming
+  cites Foreword chapter Sha256
+  cites Foreword chapter Maybe
+
+ ReplayCrf reads and writes Codex Replay Format (CRF) files —
+ deterministic recordings of input, time, spawn, schedule, and
+ exit events used for bit-exact process replay.
+
+ We say:
+
+Section: CRF Constants
+  crf-magic : List Integer = [67, 82, 70, 49]
+
+  crf-tag-input : Integer = 0
+  crf-tag-time : Integer = 1
+  crf-tag-spawn : Integer = 2
+  crf-tag-schedule : Integer = 3
+  crf-tag-exit : Integer = 4
+
+Section: Encode Session
+
+  crf-encode : ReplaySession -> List Integer
+  crf-encode (s) =
+    let header = crf-encode-header s
+    in let body = crf-encode-events (s.events) 0 (s.event-count) []
+    in header & frame-le32 (s.event-count) & body
+
+  crf-encode-header : ReplaySession -> List Integer
+  crf-encode-header (s) =
+    crf-magic & frame-encode-text (s.program-hash) & frame-encode-text (s.context-hash)
+
+  crf-encode-events : List ReplayEvent, Integer, Integer, List Integer -> List Integer
+  crf-encode-events (evs) (i) (len) (acc) =
+    if i >= len then acc
+    else let ev = list-at evs i
+    in let encoded = crf-encode-event ev
+    in crf-encode-events evs (i + 1) len (acc & encoded)
+
+  crf-encode-event : ReplayEvent -> List Integer
+  crf-encode-event (ev) = when ev
+    is InputEvent (agent) (cap) (op) (payload) ->
+      [crf-tag-input] & frame-le32 agent & frame-le32 cap & frame-encode-text op & frame-encode-bytes payload
+    is TimeEvent (agent) (cap) (logical-time) ->
+      [crf-tag-time] & frame-le32 agent & frame-le32 cap & frame-le64 logical-time
+    is SpawnEvent (parent) (child) (entry) (caps) ->
+      [crf-tag-spawn] & frame-le32 parent & frame-le32 child & frame-le32 entry & frame-le32 caps
+    is ScheduleEvent (from) (to) (reason) ->
+      [crf-tag-schedule] & frame-le32 from & frame-le32 to & [encode-reason reason]
+    is ExitEvent (agent) (code) ->
+      [crf-tag-exit] & frame-le32 agent & frame-le32 code
+
+  encode-reason : ScheduleReason -> Integer
+  encode-reason (r) = when r
+    is SchedYield -> 0
+    is SchedAwait -> 1
+    is SchedSpawn -> 2
+    is SchedExit -> 3
+    is SchedPreempt -> 4
+    is SchedChanSendBlock -> 5
+    is SchedChanRecvBlock -> 6
+
+Section: Decode Session
+
+  CrfDecodeResult = record {
+    session : ReplaySession,
+    success : Boolean,
+    error : Text
+  }
+
+  crf-decode : List Integer -> CrfDecodeResult
+  crf-decode (bs) =
+    if list-length bs < 4 then CrfDecodeResult { session = session-new "" "", success = False, error = "too short" }
+    else if list-at bs 0 /= 67 then CrfDecodeResult { session = session-new "" "", success = False, error = "bad magic" }
+    else if list-at bs 1 /= 82 then CrfDecodeResult { session = session-new "" "", success = False, error = "bad magic" }
+    else if list-at bs 2 /= 70 then CrfDecodeResult { session = session-new "" "", success = False, error = "bad magic" }
+    else if list-at bs 3 /= 49 then CrfDecodeResult { session = session-new "" "", success = False, error = "bad magic" }
+    else let pr = frame-decode-text bs 4
+    in let cr = frame-decode-text bs (pr.next-offset)
+    in let event-count = frame-read-le32 bs (cr.next-offset)
+    in let events-result = crf-decode-events bs (cr.next-offset + 4) event-count 0 []
+    in CrfDecodeResult {
+      session = ReplaySession { program-hash = pr.value, context-hash = cr.value, events = events-result, event-count = event-count, cursor = 0 },
+      success = True,
+      error = ""
+    }
+
+  crf-decode-events : List Integer, Integer, Integer, Integer, List ReplayEvent -> List ReplayEvent
+  crf-decode-events (bs) (off) (count) (i) (acc) =
+    if i >= count then acc
+    else let dr = crf-decode-event bs off
+    in crf-decode-events bs (dr.next-offset) count (i + 1) (list-push acc (dr.event))
+
+  EventDecodeResult = record {
+    event : ReplayEvent,
+    next-offset : Integer between 0 and 4294967295
+  }
+
+  crf-decode-event : List Integer, Integer -> EventDecodeResult
+  crf-decode-event (bs) (off) =
+    let tag = list-at bs off
+    in if tag == crf-tag-input then decode-input-event bs (off + 1)
+    else if tag == crf-tag-time then decode-time-event bs (off + 1)
+    else if tag == crf-tag-spawn then decode-spawn-event bs (off + 1)
+    else if tag == crf-tag-schedule then decode-schedule-event bs (off + 1)
+    else decode-exit-event bs (off + 1)
+
+  decode-input-event : List Integer, Integer -> EventDecodeResult
+  decode-input-event (bs) (off) =
+    let agent = frame-read-le32 bs off
+    in let cap = frame-read-le32 bs (off + 4)
+    in let tr = frame-decode-text bs (off + 8)
+    in let br = frame-decode-bytes bs (tr.next-offset)
+    in EventDecodeResult { event = InputEvent agent cap (tr.value) (br.value), next-offset = br.next-offset }
+
+  decode-time-event : List Integer, Integer -> EventDecodeResult
+  decode-time-event (bs) (off) =
+    let agent = frame-read-le32 bs off
+    in let cap = frame-read-le32 bs (off + 4)
+    in let logical-time = frame-read-le64 bs (off + 8)
+    in EventDecodeResult { event = TimeEvent agent cap logical-time, next-offset = off + 16 }
+
+  decode-spawn-event : List Integer, Integer -> EventDecodeResult
+  decode-spawn-event (bs) (off) =
+    let parent = frame-read-le32 bs off
+    in let child = frame-read-le32 bs (off + 4)
+    in let entry = frame-read-le32 bs (off + 8)
+    in let caps = frame-read-le32 bs (off + 12)
+    in EventDecodeResult { event = SpawnEvent parent child entry caps, next-offset = off + 16 }
+
+  decode-schedule-event : List Integer, Integer -> EventDecodeResult
+  decode-schedule-event (bs) (off) =
+    let from = frame-read-le32 bs off
+    in let to = frame-read-le32 bs (off + 4)
+    in let reason = decode-reason (list-at bs (off + 8))
+    in EventDecodeResult { event = ScheduleEvent from to reason, next-offset = off + 9 }
+
+  decode-exit-event : List Integer, Integer -> EventDecodeResult
+  decode-exit-event (bs) (off) =
+    let agent = frame-read-le32 bs off
+    in let code = frame-read-le32 bs (off + 4)
+    in EventDecodeResult { event = ExitEvent agent code, next-offset = off + 8 }
+
+  decode-reason : Integer -> ScheduleReason
+  decode-reason (b) =
+    if b == 0 then SchedYield
+    else if b == 1 then SchedAwait
+    else if b == 2 then SchedSpawn
+    else if b == 3 then SchedExit
+    else if b == 4 then SchedPreempt
+    else if b == 5 then SchedChanSendBlock
+    else SchedChanRecvBlock
+
+Section: Queries
+  crf-byte-size : ReplaySession -> Integer
+  crf-byte-size (s) = list-length (crf-encode s)
+
+Page 1

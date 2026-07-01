@@ -1,0 +1,68 @@
+Chapter: Opening
+  cites Diagram chapter Diagram
+  cites Diagram chapter DiagramModel
+  cites Diagram chapter DiagramTheme
+  cites Diagram chapter DiagramPersist
+  cites Foreword chapter Console
+  cites Foreword chapter Maybe
+  cites Foreword chapter Event
+  cites Kernel chapter DiskFacts
+  cites Kernel chapter AppLog
+
+ Entry point for the Codex Diagram app with disk persistence.
+
+Section: Entry Point
+
+  opening : [Console] None
+  opening = act
+    let ds = disk-load
+    in let theme = diagram-theme-default
+    in let state = diagram-app-init 1024 768 theme
+    in let restored = diagram-persist-load ds
+    in let with-saved = when restored
+          is Just (dg) -> __record-set (__record-set state
+            "da-diagram" dg)
+            "da-status" "Loaded from disk"
+          is None -> state
+    in let ds2 = app-log-info ds "diagram" "Diagram started" 0
+    in print-line "Codex Diagram v0.1"
+    in print-line ("  Disk: " & show (disk-fact-count ds2) & " facts")
+    in diagram-run-loop with-saved ds2
+  end
+
+Section: Persistent Event Loop
+
+  PersistState = record {
+    ps-app : DiagramAppState,
+    ps-disk : DiskFactStore
+  }
+
+  diagram-run-loop : DiagramAppState, DiskFactStore -> [Console] None
+  diagram-run-loop (state) (ds) = act
+    let scan = uefi-read-key
+    in let ev = if scan == 0
+          then event-timer "tick" 0
+          else event-key-down scan 0 0
+    in let handled = diagram-handle-event state ev
+    in let after-save = diagram-check-save handled ds ev
+    in diagram-run-loop (after-save.ps-app) (after-save.ps-disk)
+  end
+
+  diagram-check-save : DiagramAppState, DiskFactStore, Event -> PersistState
+  diagram-check-save (state) (ds) (ev) =
+    if is-ctrl-s ev
+    then let ds2 = diagram-persist-save ds state.da-diagram 0
+      in let ds3 = app-log-info ds2 "diagram" "Diagram saved" 0
+      in PersistState {
+        ps-app = __record-set state "da-status" "Saved to disk",
+        ps-disk = ds3
+      }
+    else PersistState { ps-app = state, ps-disk = ds }
+
+  is-ctrl-s : Event -> Boolean
+  is-ctrl-s (ev) =
+    when ev.ev-kind
+      is EvKeyDown ->
+        let ctrl = int-mod (ev.ev-modifiers / 1) 2 == 1
+        in if ctrl then ev.ev-key == 83 else False
+      is otherwise -> False

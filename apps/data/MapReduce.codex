@@ -1,0 +1,156 @@
+Chapter: MapReduce
+  cites Data chapter Row
+  cites Data chapter ColumnStore
+  cites Foreword chapter Hamt
+
+ Map-reduce execution on columnar data. Map emits key-value pairs,
+ shuffle groups by key, reduce aggregates each group. Built on top
+ of the column store for efficient scans.
+
+ We say:
+
+Section: Map-Reduce Types
+
+  MrPair = record {
+    mr-key : Text,
+    mr-value : Integer
+  }
+
+  MrGroup = record {
+    mrg-key : Text,
+    mrg-values : List Integer,
+    mrg-count : Integer
+  }
+
+  MrResult = record {
+    mrr-groups : List MrGroup,
+    mrr-group-count : Integer,
+    mrr-total-pairs : Integer
+  }
+
+Section: Map Phase
+
+  mr-map-column : ColumnarTable, Text, Text -> List MrPair
+  mr-map-column (ct) (key-col) (val-col) =
+    let keys = ct-scan-column ct key-col
+    in let vals = ct-scan-column ct val-col
+    in mr-map-loop keys vals 0 (list-length keys) []
+
+  mr-map-loop : List ColumnValue, List ColumnValue, Integer, Integer, List MrPair -> List MrPair
+  mr-map-loop (keys) (vals) (i) (len) (acc) =
+    if i >= len then acc
+    else let k = val-to-text (list-at keys i)
+    in let v = val-to-integer (list-at vals i)
+    in mr-map-loop keys vals (i + 1) len (list-push acc (MrPair { mr-key = k, mr-value = v }))
+
+  mr-map-count : ColumnarTable, Text -> List MrPair
+  mr-map-count (ct) (key-col) =
+    let keys = ct-scan-column ct key-col
+    in mr-count-loop keys 0 (list-length keys) []
+
+  mr-count-loop : List ColumnValue, Integer, Integer, List MrPair -> List MrPair
+  mr-count-loop (keys) (i) (len) (acc) =
+    if i >= len then acc
+    else let k = val-to-text (list-at keys i)
+    in mr-count-loop keys (i + 1) len (list-push acc (MrPair { mr-key = k, mr-value = 1 }))
+
+Section: Shuffle Phase
+
+  mr-shuffle : List MrPair -> List MrGroup
+  mr-shuffle (pairs) =
+    let grouped = mr-group-pairs pairs 0 (list-length pairs) hamt-empty
+    in mr-groups-to-list grouped
+
+  mr-group-pairs : List MrPair, Integer, Integer, HamtMap (List Integer) -> HamtMap (List Integer)
+  mr-group-pairs (pairs) (i) (len) (acc) =
+    if i >= len then acc
+    else let p = list-at pairs i
+    in let existing = hamt-get acc (p.mr-key)
+    in let updated = when existing
+      is None -> hamt-set acc (p.mr-key) [p.mr-value]
+      is Just (vs) -> hamt-set acc (p.mr-key) (list-push vs (p.mr-value))
+    in mr-group-pairs pairs (i + 1) len updated
+
+  mr-groups-to-list : HamtMap (List Integer) -> List MrGroup
+  mr-groups-to-list (grouped) =
+    let entries = hamt-to-list grouped
+    in mr-entries-to-groups entries 0 (list-length entries) []
+
+  mr-entries-to-groups : List (HamtEntry (List Integer)), Integer, Integer, List MrGroup -> List MrGroup
+  mr-entries-to-groups (entries) (i) (len) (acc) =
+    if i >= len then acc
+    else let e = list-at entries i
+    in let g = MrGroup { mrg-key = e.key, mrg-values = e.value, mrg-count = list-length (e.value) }
+    in mr-entries-to-groups entries (i + 1) len (list-push acc g)
+
+Section: Reduce Phase
+
+  ReduceOp =
+    | ReduceSum
+    | ReduceCount
+    | ReduceMin
+    | ReduceMax
+    | ReduceAvg
+
+  MrReduceResult = record {
+    mrd-key : Text,
+    mrd-value : Integer
+  }
+
+  mr-reduce : List MrGroup, ReduceOp -> List MrReduceResult
+  mr-reduce (groups) (op) = mr-reduce-loop groups op 0 (list-length groups) []
+
+  mr-reduce-loop : List MrGroup, ReduceOp, Integer, Integer, List MrReduceResult -> List MrReduceResult
+  mr-reduce-loop (groups) (op) (i) (len) (acc) =
+    if i >= len then acc
+    else let g = list-at groups i
+    in let val = mr-apply-reduce (g.mrg-values) op (g.mrg-count)
+    in mr-reduce-loop groups op (i + 1) len (list-push acc (MrReduceResult { mrd-key = g.mrg-key, mrd-value = val }))
+
+  mr-apply-reduce : List Integer, ReduceOp, Integer -> Integer
+  mr-apply-reduce (vals) (op) (count) =
+    when op
+      is ReduceSum -> mr-sum-vals vals 0 (list-length vals) 0
+      is ReduceCount -> count
+      is ReduceMin -> mr-min-vals vals 0 (list-length vals) 2147483647
+      is ReduceMax -> mr-max-vals vals 0 (list-length vals) (-2147483647)
+      is ReduceAvg -> if count == 0 then 0 else (mr-sum-vals vals 0 (list-length vals) 0) / count
+
+  mr-sum-vals : List Integer, Integer, Integer, Integer -> Integer
+  mr-sum-vals (vals) (i) (len) (acc) =
+    if i >= len then acc
+    else mr-sum-vals vals (i + 1) len (acc + list-at vals i)
+
+  mr-min-vals : List Integer, Integer, Integer, Integer -> Integer
+  mr-min-vals (vals) (i) (len) (best) =
+    if i >= len then best
+    else let v = list-at vals i
+    in mr-min-vals vals (i + 1) len (if v < best then v else best)
+
+  mr-max-vals : List Integer, Integer, Integer, Integer -> Integer
+  mr-max-vals (vals) (i) (len) (best) =
+    if i >= len then best
+    else let v = list-at vals i
+    in mr-max-vals vals (i + 1) len (if v > best then v else best)
+
+Section: Convenience — Full Pipeline
+
+  mr-sum-by : ColumnarTable, Text, Text -> List MrReduceResult
+  mr-sum-by (ct) (key-col) (val-col) =
+    let pairs = mr-map-column ct key-col val-col
+    in let groups = mr-shuffle pairs
+    in mr-reduce groups ReduceSum
+
+  mr-count-by : ColumnarTable, Text -> List MrReduceResult
+  mr-count-by (ct) (key-col) =
+    let pairs = mr-map-count ct key-col
+    in let groups = mr-shuffle pairs
+    in mr-reduce groups ReduceCount
+
+  mr-avg-by : ColumnarTable, Text, Text -> List MrReduceResult
+  mr-avg-by (ct) (key-col) (val-col) =
+    let pairs = mr-map-column ct key-col val-col
+    in let groups = mr-shuffle pairs
+    in mr-reduce groups ReduceAvg
+
+Page 1

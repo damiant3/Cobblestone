@@ -1,0 +1,104 @@
+Chapter: Geodesic
+  cites Foreword chapter Units (Length, Angle)
+
+ Geodesic calculations. Haversine distance between lat/lon points,
+ bearing, midpoint, destination from bearing+distance. Coordinates
+ in milli-degrees (scale 1000). Distances in meters.
+
+ We say:
+
+Section: Constants
+  earth-radius-m : Integer = 6371000
+
+Section: Types
+  GeoPoint = record { geo-lat : Angle, geo-lon : Angle }
+
+Section: Construction
+  geo-point : Angle, Angle -> GeoPoint
+  geo-point (lat) (lon) = GeoPoint { geo-lat = lat, geo-lon = lon }
+
+Section: Haversine Distance
+  geo-distance : GeoPoint, GeoPoint -> Length
+  geo-distance (a) (b) =
+    let dlat = (b.geo-lat - a.geo-lat) * 1745 / 1000000
+    in let dlon = (b.geo-lon - a.geo-lon) * 1745 / 1000000
+    in let lat1-rad = a.geo-lat * 1745 / 1000000
+    in let lat2-rad = b.geo-lat * 1745 / 1000000
+    in let sin-dlat = geo-sin (dlat / 2)
+    in let sin-dlon = geo-sin (dlon / 2)
+    in let aa = sin-dlat * sin-dlat / 1000 + geo-cos lat1-rad * geo-cos lat2-rad / 1000 * sin-dlon / 1000 * sin-dlon / 1000
+    in let c = 2 * geo-atan2 (geo-isqrt (aa * 1000)) (geo-isqrt ((1000 - aa) * 1000))
+    in earth-radius-m * c / 1000
+
+Section: Bearing
+  geo-bearing : GeoPoint, GeoPoint -> Angle
+  geo-bearing (a) (b) =
+    let lat1 = a.geo-lat * 1745 / 1000000
+    in let lat2 = b.geo-lat * 1745 / 1000000
+    in let dlon = (b.geo-lon - a.geo-lon) * 1745 / 1000000
+    in let y = geo-sin dlon * geo-cos lat2 / 1000
+    in let x = geo-cos lat1 * geo-sin lat2 / 1000 - geo-sin lat1 * geo-cos lat2 / 1000 * geo-cos dlon / 1000
+    in let bearing = geo-atan2 y x
+    in let degrees = bearing * 180000 / 3142
+    in if degrees < 0 then degrees + 360000 else degrees
+
+Section: Midpoint
+  geo-midpoint : GeoPoint, GeoPoint -> GeoPoint
+  geo-midpoint (a) (b) = GeoPoint { geo-lat = (a.geo-lat + b.geo-lat) / 2, geo-lon = (a.geo-lon + b.geo-lon) / 2 }
+
+Section: Bounding Box
+  GeoBounds = record { gb-min-lat : Integer, gb-min-lon : Integer, gb-max-lat : Integer, gb-max-lon : Integer }
+
+  geo-bounds : GeoPoint, Integer -> GeoBounds
+  geo-bounds (center) (radius-m) =
+    let dlat = radius-m * 1000000 / (earth-radius-m * 1745)
+    in let dlon = dlat * 1000 / geo-cos (center.geo-lat * 1745 / 1000000)
+    in GeoBounds { gb-min-lat = center.geo-lat - dlat, gb-min-lon = center.geo-lon - dlon, gb-max-lat = center.geo-lat + dlat, gb-max-lon = center.geo-lon + dlon }
+
+  geo-in-bounds : GeoBounds, GeoPoint -> Boolean
+  geo-in-bounds (bounds) (p) =
+    p.geo-lat >= bounds.gb-min-lat & p.geo-lat <= bounds.gb-max-lat &
+    p.geo-lon >= bounds.gb-min-lon & p.geo-lon <= bounds.gb-max-lon
+
+Section: Trig Approximation
+  geo-sin : Integer -> Integer
+  geo-sin (x) =
+    let x3 = x * x / 1000 * x / 1000
+    in x - x3 / 6
+
+  geo-cos : Integer -> Integer
+  geo-cos (x) =
+    let x2 = x * x / 1000
+    in let x4 = x2 * x2 / 1000
+    in 1000 - x2 / 2 + x4 / 24
+
+  geo-atan2 : Integer, Integer -> Integer
+  geo-atan2 (y) (x) =
+    if x > 0 then geo-atan (y * 1000 / x)
+    else if x < 0 then if y >= 0 then geo-atan (y * 1000 / x) + 3142 else geo-atan (y * 1000 / x) - 3142
+    else if y > 0 then 1571
+    else if y < 0 then 0 - 1571
+    else 0
+
+  geo-atan : Integer -> Integer
+  geo-atan (x) =
+    if x > 1000 then 1571 - 1000 * 1000 / x
+    else if x < 0 - 1000 then 0 - 1571 - 1000 * 1000 / x
+    else x - x * x / 1000 * x / 3000
+
+  geo-isqrt : Integer -> Integer
+  geo-isqrt (n) = if n <= 0 then 0 else geo-isqrt-loop n (n / 2 + 1)
+
+  geo-isqrt-loop : Integer, Integer -> Integer
+  geo-isqrt-loop (n) (guess) =
+    let next = (guess + n / guess) / 2
+    in if next >= guess then guess else geo-isqrt-loop n next
+
+Section: Formatting
+  format-geo : GeoPoint -> Text
+  format-geo (p) = show (p.geo-lat) & "," & show (p.geo-lon)
+
+  format-geo-bounds : GeoBounds -> Text
+  format-geo-bounds (b) = "(" & show (b.gb-min-lat) & "," & show (b.gb-min-lon) & ")-(" & show (b.gb-max-lat) & "," & show (b.gb-max-lon) & ")"
+
+Page 1

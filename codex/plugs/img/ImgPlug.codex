@@ -1,0 +1,111 @@
+Chapter: ImgPlug
+  cites Codex chapter General
+  cites Codex chapter Text
+  cites Codex chapter Characters
+  cites Codex chapter Lists
+  cites Net chapter NetIO
+  cites Net chapter NetworkStack
+  cites Net chapter TcpTransport
+  cites Kernel chapter Ne2k
+
+ Plug entry. Connects to host TCP server on port 9100,
+ receives PE + CDX bytes (+ optional source text),
+ builds a GPT disk image with FAT filesystem,
+ sends it back.
+
+ Wire protocol (tag=5):
+   Byte 0: fs-type (0=FAT32, 1=FAT16)
+   Bytes 1-4: total-sectors (LE)
+   Bytes 5-8: PE size (LE)
+   Bytes 9-12: CDX size (LE)
+   Bytes 13-16: source size (LE, 0 if none)
+   Then: PE bytes, CDX bytes, source bytes (if any)
+
+Section: Network Config
+
+  local-mac : List Integer = [82, 84, 0, 18, 52, 86]
+  local-ip : List Integer = [10, 0, 2, 15]
+  gateway-ip : List Integer = [10, 0, 2, 2]
+  host-ip : List Integer = [127, 0, 0, 1]
+
+Section: Streaming Send
+
+  spin-wait : Integer, Integer -> Integer
+  spin-wait (i) (n) =
+   if i >= n then 0
+   else spin-wait (i + 1) n
+
+  send-buf-loop : TcpTransportState, Integer, Integer, Integer -> TcpTransportState
+  send-buf-loop (ts) (buf) (off) (remaining) =
+   if remaining <= 0 then ts
+   else let chunk = if remaining > 1400 then 1400 else remaining
+   in let hp = __heap-save
+   in let bs = __buf-read-bytes buf off chunk
+   in let r = net-send (ts.session) bs
+   in let restored = __heap-restore hp
+   in let ts1 = TcpTransportState { session = r.session, recv-buf = ts.recv-buf, messages-sent = ts.messages-sent, messages-received = ts.messages-received }
+   in let ts2 = flush-transport-outbox ts1
+   in let w = spin-wait 0 10000000
+   in send-buf-loop ts2 buf (off + chunk) (remaining - chunk)
+
+Section: Drain
+
+  drain-wait : TcpTransportState, Integer -> Integer
+  drain-wait (ts) (tries) =
+   if tries > 5000000 then 0
+   else let frame = ne2k-recv-frame
+   in if list-length frame == 0 then drain-wait ts (tries + 1)
+   else 0
+
+Section: Read Helpers
+
+  img-read-i32 : List Integer, Integer -> Integer
+  img-read-i32 (bs) (off) =
+   list-at bs off + list-at bs (off + 1) * 256 + list-at bs (off + 2) * 65536 + list-at bs (off + 3) * 16777216
+
+Section: Body
+
+  opening : [Console, FileSystem] Nothing = act
+   let sess = net-session-new local-mac local-ip gateway-ip 49152 9100 host-ip 1000
+   in let ts = transport-new sess
+   in let ts1 = net-io-connect ts
+   in let recv = net-io-recv-loop ts1 0
+   in if recv.has-message then
+    let payload = recv.body
+    in let fs-type = list-at payload 0
+    in let total-sectors = img-read-i32 payload 1
+    in let pe-size = img-read-i32 payload 5
+    in let cdx-size = img-read-i32 payload 9
+    in let src-size = img-read-i32 payload 13
+    in let hdr-len = 17
+    in let payload-buf = __heap-save
+    in let pa = __heap-advance (list-length payload)
+    in let pw = __buf-write-bytes payload-buf 0 payload
+    in let img-bytes = total-sectors * gpt-sector-size
+    in let img-buf = __heap-save
+    in let img-advance = __heap-advance img-bytes
+    in let w0 = gpt-write-all img-buf total-sectors
+    in let hp1 = __heap-save
+    in let efi-bytes = __buf-read-bytes payload-buf hdr-len pe-size
+    in let cdx-bytes = __buf-read-bytes payload-buf (hdr-len + pe-size) cdx-size
+    in if fs-type == 0 then
+     let lay = fat32-compute-layout total-sectors
+     in let w1 = fat32-write-all img-buf lay efi-bytes cdx-bytes
+     in let restored = __heap-restore hp1
+     in let ts5 = send-buf-loop (recv.transport) img-buf 0 img-bytes
+     in let ts6 = net-io-close ts5
+     in let drained = drain-wait ts6 0
+     in act print-line-uni ("OK img=" & show (img-bytes + drained - drained) & " fat32 sectors=" & show total-sectors) end
+    else
+     let lay = fat16w-compute-layout total-sectors
+     in let source = if src-size > 0 then bytes-to-text-range ((__buf-read-bytes payload-buf (hdr-len + pe-size + cdx-size) src-size)) 0 src-size else ""
+     in let w1 = fat16w-write-all img-buf lay efi-bytes cdx-bytes source
+     in let restored = __heap-restore hp1
+     in let ts5 = send-buf-loop (recv.transport) img-buf 0 img-bytes
+     in let ts6 = net-io-close ts5
+     in let drained = drain-wait ts6 0
+     in act print-line-uni ("OK img=" & show (img-bytes + drained - drained) & " fat16 sectors=" & show total-sectors) end
+   else act print-line-uni "FAIL" end
+  end
+
+Page 1

@@ -1,0 +1,156 @@
+Chapter: VicII
+  cites Foreword chapter List
+
+ Minimal VIC-II: reads screen RAM ($0400) and color RAM ($D800),
+ renders 40x25 characters to the GOP framebuffer at 2x scale.
+ Uses the C64 character ROM font (embedded in CharRom).
+
+Section: Constants
+
+  gop-fb : Integer = #BF000000
+  gop-width : Integer = 640
+  gop-height : Integer = 480
+
+  c64-screen-w : Integer = 320
+  c64-screen-h : Integer = 200
+  c64-cols : Integer = 40
+  c64-rows : Integer = 25
+
+  screen-ram : Integer = #0400
+  color-ram : Integer = #D800
+  bg-color-reg : Integer = #D021
+
+  border-x : Integer = 0
+  border-y : Integer = 40
+
+Section: C64 Palette (Pepto)
+
+  c64-color : Integer -> Integer
+  c64-color (idx) =
+    when bit-and idx 15
+      is 0 -> #000000
+      is 1 -> #FFFFFF
+      is 2 -> #68372B
+      is 3 -> #70A4B2
+      is 4 -> #6F3D86
+      is 5 -> #588D43
+      is 6 -> #352879
+      is 7 -> #B8C76F
+      is 8 -> #6C5EB5
+      is 9 -> #444429
+      is 10 -> #A9736E
+      is 11 -> #444444
+      is 12 -> #6C6C6C
+      is 13 -> #9AD284
+      is 14 -> #6C5EB5
+      is 15 -> #959595
+      is otherwise -> #000000
+
+  c64-color-argb : Integer -> Integer
+  c64-color-argb (idx) = bit-or #FF000000 (c64-color idx)
+
+Section: Character ROM
+
+ The C64 character generator ROM. 256 characters, 8 bytes each.
+ Each byte is one row of the character (MSB = leftmost pixel).
+ This is the standard uppercase/graphics set (ROM A).
+ We embed the printable ASCII range (32-127) for Phase 1.
+
+  char-rom-base : Integer = #B00000
+
+  char-rom-init : Integer -> Integer
+  char-rom-init (dummy) =
+    let base = char-rom-base
+    in let d0 = poke-byte base 0 0
+    in let d1 = poke-byte base 1 0
+    in let d2 = poke-byte base 2 0
+    in let d3 = poke-byte base 3 0
+    in let d4 = poke-byte base 4 0
+    in let d5 = poke-byte base 5 0
+    in let d6 = poke-byte base 6 0
+    in let d7 = poke-byte base 7 0
+    in let at = 8
+    in let d10 = poke-byte base (at + 0) #3C
+    in let d11 = poke-byte base (at + 1) #66
+    in let d12 = poke-byte base (at + 2) #6E
+    in let d13 = poke-byte base (at + 3) #6E
+    in let d14 = poke-byte base (at + 4) #60
+    in let d15 = poke-byte base (at + 5) #62
+    in let d16 = poke-byte base (at + 6) #3C
+    in let d17 = poke-byte base (at + 7) #00
+    in d0 + d17
+
+Section: Render Character
+
+  render-char : Integer, Integer, Integer, Integer -> Integer
+  render-char (col) (row) (ch) (fg-color) =
+    let bg = c64-color-argb (peek-byte #A00000 (bit-and (bg-color-reg - #D000) #FF + #D000))
+    in let fg = c64-color-argb fg-color
+    in let glyph-base = ch * 8
+    in let px = col * 8 * 2 + border-x
+    in let py = row * 8 * 2 + border-y
+    in render-char-rows glyph-base px py fg bg 0
+
+  render-char-rows : Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  render-char-rows (glyph) (px) (py) (fg) (bg) (row) =
+    if row >= 8 then 0
+    else let bits = peek-byte char-rom-base (glyph + row)
+    in let y = py + row * 2
+    in let d = render-char-bits px y bits fg bg 0
+    in d + render-char-rows glyph px py fg bg (row + 1)
+
+  render-char-bits : Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  render-char-bits (px) (y) (bits) (fg) (bg) (bit) =
+    if bit >= 8 then 0
+    else let color = if bit-and bits (bit-shl 1 (7 - bit)) /= 0 then fg else bg
+    in let x = px + bit * 2
+    in let off0 = (y * gop-width + x) * 4
+    in let off1 = ((y + 1) * gop-width + x) * 4
+    in let d0 = poke-32 gop-fb off0 color
+    in let d1 = poke-32 gop-fb (off0 + 4) color
+    in let d2 = poke-32 gop-fb off1 color
+    in let d3 = poke-32 gop-fb (off1 + 4) color
+    in d0 + d1 + d2 + d3 + render-char-bits px y bits fg bg (bit + 1)
+
+Section: Render Screen
+
+  render-screen : Integer -> Integer
+  render-screen (dummy) =
+    render-screen-loop 0
+
+  render-screen-loop : Integer -> Integer
+  render-screen-loop (idx) =
+    if idx >= 1000 then 0
+    else let col = int-mod idx 40
+    in let row = idx / 40
+    in let ch = peek-byte #A00000 (screen-ram + idx)
+    in let fg = bit-and (peek-byte #A00000 (color-ram + idx)) 15
+    in let d = render-char col row ch fg
+    in d + render-screen-loop (idx + 1)
+
+Section: Fill Border
+
+  fill-border : Integer -> Integer
+  fill-border (border-color) =
+    let c = c64-color-argb border-color
+    in fill-border-top c 0
+
+  fill-border-top : Integer, Integer -> Integer
+  fill-border-top (c) (y) =
+    if y >= border-y then fill-border-bottom c 0
+    else let d = fill-hline c y 0
+    in d + fill-border-top c (y + 1)
+
+  fill-border-bottom : Integer, Integer -> Integer
+  fill-border-bottom (c) (y) =
+    let start = border-y + c64-screen-h * 2
+    in if y >= gop-height - start then 0
+    else let d = fill-hline c (start + y) 0
+    in d + fill-border-bottom c (y + 1)
+
+  fill-hline : Integer, Integer, Integer -> Integer
+  fill-hline (c) (y) (x) =
+    if x >= gop-width then 0
+    else let off = (y * gop-width + x) * 4
+    in let d = poke-32 gop-fb off c
+    in d + fill-hline c y (x + 1)

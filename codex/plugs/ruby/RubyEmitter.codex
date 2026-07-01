@@ -1,0 +1,424 @@
+Chapter: Ruby Emitter
+  cites Codex chapter Text
+  cites Codex chapter Characters
+  cites Codex chapter Lists
+  cites Foreword chapter Sort
+
+ Generates Ruby source code from the IR.
+
+Section: Keywords and Sanitization
+
+  rb-keywords : List Text =
+   ["alias", "and", "begin", "break", "case",
+    "class", "def", "defined?", "do", "else",
+    "elsif", "end", "ensure", "false", "for",
+    "if", "in", "module", "next", "nil",
+    "not", "or", "redo", "rescue", "retry",
+    "return", "self", "super", "then", "true",
+    "undef", "unless", "until", "when", "while",
+    "yield"]
+
+  is-rb-keyword-loop : List Text, Text, Integer, Integer -> Boolean
+  is-rb-keyword-loop (kws) (name) (i) (len) =
+   if i == len then False
+   else if list-at kws i == name then True
+   else is-rb-keyword-loop kws name (i + 1) len
+
+  is-rb-keyword : Text -> Boolean
+  is-rb-keyword (name) = is-rb-keyword-loop rb-keywords name 0 (list-length rb-keywords)
+
+  rb-sanitize : Text -> Text
+  rb-sanitize (name) =
+   let s = text-replace name "-" "_"
+   in if is-rb-keyword s then s & "_"
+      else s
+
+  rb-escape-text : Text -> Text
+  rb-escape-text (s) =
+   let s1 = text-replace s "\\" "\\\\"
+   in let s2 = text-replace s1 "\"" "\\\""
+   in let s3 = text-replace s2 "\n" "\\n"
+   in s3
+
+  rb-indent : Integer -> Text
+  rb-indent (n) =
+   if n <= 0 then ""
+   else "  " & rb-indent (n - 1)
+
+Section: Arity Map
+
+  ArityEntry = record {
+   name : Text,
+   arity : Integer between 0 and 255,
+   generic-count : Integer between 0 and 255
+  }
+
+  bsearch-arity-pos : List ArityEntry, Text, Integer, Integer -> Integer
+  bsearch-arity-pos (entries) (name) (lo) (hi) =
+   if lo >= hi then lo
+   else let mid = lo + (hi - lo) / 2
+   in let mid-name = (list-at entries mid).name
+   in if text-compare name mid-name <= 0 then bsearch-arity-pos entries name lo mid
+      else bsearch-arity-pos entries name (mid + 1) hi
+
+  sorted-insert-arity : List ArityEntry, ArityEntry -> List ArityEntry
+  sorted-insert-arity (xs) (e) =
+   let len = list-length xs
+   in let pos = bsearch-arity-pos xs (e.name) 0 len
+   in list-insert-at xs pos e
+
+  build-arity-map : List IRDef, Integer, List ArityEntry -> List ArityEntry
+  build-arity-map (defs) (i) (acc) =
+   if i == list-length defs then acc
+   else let d = list-at defs i
+   in build-arity-map defs (i + 1) (sorted-insert-arity acc (ArityEntry {
+    name = d.name,
+    arity = list-length (d.params),
+    generic-count = 0
+   }))
+
+  lookup-arity : List ArityEntry, Text -> Integer
+  lookup-arity (entries) (name) =
+   let len = list-length entries
+   in let pos = bsearch-arity-pos entries name 0 len
+   in if pos >= len then -1
+      else let e = list-at entries pos
+      in if e.name == name then e.arity else -1
+
+Section: Builtin Dispatch
+
+  RbBuiltinEmitter = record {
+   name : Text,
+   emit : List IRExpr, List ArityEntry -> Text
+  }
+
+  bsearch-rb-emitter-pos : List RbBuiltinEmitter, Text, Integer, Integer -> Integer
+  bsearch-rb-emitter-pos (entries) (name) (lo) (hi) =
+   if lo >= hi then lo
+   else let mid = lo + (hi - lo) / 2
+   in let mid-name = (list-at entries mid).name
+   in if text-compare name mid-name <= 0 then bsearch-rb-emitter-pos entries name lo mid
+      else bsearch-rb-emitter-pos entries name (mid + 1) hi
+
+  sort-rb-emitters : List RbBuiltinEmitter -> List RbBuiltinEmitter
+  sort-rb-emitters (xs) = sort-by xs (\a b -> text-compare (a.name) (b.name))
+
+  rb-builtin-emitters : List RbBuiltinEmitter = sort-rb-emitters [
+   RbBuiltinEmitter { name = "abs", emit = \args arities -> "(" & emit-rb-expr (list-at args 0) arities & ").abs" },
+   RbBuiltinEmitter { name = "char-at", emit = \args arities -> emit-rb-expr (list-at args 0) arities & "[" & emit-rb-expr (list-at args 1) arities & "]" },
+   RbBuiltinEmitter { name = "char-code-at", emit = \args arities -> emit-rb-expr (list-at args 0) arities & "[" & emit-rb-expr (list-at args 1) arities & "].ord" },
+   RbBuiltinEmitter { name = "file-exists", emit = \args arities -> "File.exist?(" & emit-rb-expr (list-at args 0) arities & ")" },
+   RbBuiltinEmitter { name = "int-mod", emit = \args arities -> "(" & emit-rb-expr (list-at args 0) arities & " % " & emit-rb-expr (list-at args 1) arities & ")" },
+   RbBuiltinEmitter { name = "integer-to-text", emit = \args arities -> "(" & emit-rb-expr (list-at args 0) arities & ").to_s" },
+   RbBuiltinEmitter { name = "list-at", emit = \args arities -> emit-rb-expr (list-at args 0) arities & "[" & emit-rb-expr (list-at args 1) arities & "]" },
+   RbBuiltinEmitter { name = "list-length", emit = \args arities -> emit-rb-expr (list-at args 0) arities & ".length" },
+   RbBuiltinEmitter { name = "list-snoc", emit = \args arities -> "(" & emit-rb-expr (list-at args 0) arities & " + [" & emit-rb-expr (list-at args 1) arities & "])" },
+   RbBuiltinEmitter { name = "max", emit = \args arities -> "[" & emit-rb-expr (list-at args 0) arities & ", " & emit-rb-expr (list-at args 1) arities & "].max" },
+   RbBuiltinEmitter { name = "min", emit = \args arities -> "[" & emit-rb-expr (list-at args 0) arities & ", " & emit-rb-expr (list-at args 1) arities & "].min" },
+   RbBuiltinEmitter { name = "negate", emit = \args arities -> "(-(" & emit-rb-expr (list-at args 0) arities & "))" },
+   RbBuiltinEmitter { name = "print-error-uni", emit = \args arities -> "$stderr.puts(" & emit-rb-expr (list-at args 0) arities & ")" },
+   RbBuiltinEmitter { name = "print-line-uni", emit = \args arities -> "puts " & emit-rb-expr (list-at args 0) arities },
+   RbBuiltinEmitter { name = "read-file", emit = \args arities -> "File.read(" & emit-rb-expr (list-at args 0) arities & ")" },
+   RbBuiltinEmitter { name = "read-line", emit = \args arities -> "gets.chomp" },
+   RbBuiltinEmitter { name = "show", emit = \args arities -> "(" & emit-rb-expr (list-at args 0) arities & ").to_s" },
+   RbBuiltinEmitter { name = "substring", emit = \args arities -> emit-rb-expr (list-at args 0) arities & "[" & emit-rb-expr (list-at args 1) arities & ", " & emit-rb-expr (list-at args 2) arities & "]" },
+   RbBuiltinEmitter { name = "text-compare", emit = \args arities -> "(" & emit-rb-expr (list-at args 0) arities & " <=> " & emit-rb-expr (list-at args 1) arities & ")" },
+   RbBuiltinEmitter { name = "text-contains", emit = \args arities -> emit-rb-expr (list-at args 0) arities & ".include?(" & emit-rb-expr (list-at args 1) arities & ")" },
+   RbBuiltinEmitter { name = "text-length", emit = \args arities -> emit-rb-expr (list-at args 0) arities & ".length" },
+   RbBuiltinEmitter { name = "text-replace", emit = \args arities -> emit-rb-expr (list-at args 0) arities & ".gsub(" & emit-rb-expr (list-at args 1) arities & ", " & emit-rb-expr (list-at args 2) arities & ")" },
+   RbBuiltinEmitter { name = "text-split", emit = \args arities -> emit-rb-expr (list-at args 0) arities & ".split(" & emit-rb-expr (list-at args 1) arities & ")" },
+   RbBuiltinEmitter { name = "text-starts-with", emit = \args arities -> emit-rb-expr (list-at args 0) arities & ".start_with?(" & emit-rb-expr (list-at args 1) arities & ")" },
+   RbBuiltinEmitter { name = "text-to-integer", emit = \args arities -> "(" & emit-rb-expr (list-at args 0) arities & ").to_i" },
+   RbBuiltinEmitter { name = "write-file", emit = \args arities -> "File.write(" & emit-rb-expr (list-at args 0) arities & ", " & emit-rb-expr (list-at args 1) arities & ")" }
+  ]
+
+  is-rb-builtin-name : Text -> Boolean
+  is-rb-builtin-name (n) =
+   let len = list-length rb-builtin-emitters
+   in let pos = bsearch-rb-emitter-pos rb-builtin-emitters n 0 len
+   in if pos >= len then False
+      else (list-at rb-builtin-emitters pos).name == n
+
+  emit-rb-builtin : Text, List IRExpr, List ArityEntry -> Text
+  emit-rb-builtin (n) (args) (arities) =
+   let len = list-length rb-builtin-emitters
+   in let pos = bsearch-rb-emitter-pos rb-builtin-emitters n 0 len
+   in if pos >= len then ""
+      else let entry = list-at rb-builtin-emitters pos
+      in if entry.name == n then entry.emit args arities
+         else ""
+
+Section: Apply Chain
+
+  is-upper-letter : Integer -> Boolean
+  is-upper-letter (code) =
+   if code >= char-code 'E' then code <= char-code 'Z'
+   else False
+
+Section: Type Definition Emission
+
+  emit-rb-type-defs : List ATypeDef, Integer -> Text
+  emit-rb-type-defs (tds) (i) =
+   if i == list-length tds then ""
+   else emit-rb-type-def (list-at tds i) & emit-rb-type-defs tds (i + 1)
+
+  emit-rb-type-def : ATypeDef -> Text
+  emit-rb-type-def (td) =
+   when td
+    is ARecordTypeDef (name) (tparams) (fields) (s) ->
+     emit-rb-record-type (name.value) fields
+    is AVariantTypeDef (name) (tparams) (ctors) (s) ->
+     if is-tup-type (name.value) then ""
+     else emit-rb-sum-type ctors
+
+  emit-rb-sum-type : List AVariantCtorDef -> Text
+  emit-rb-sum-type (ctors) =
+   emit-rb-sum-type-loop ctors 0 (list-length ctors)
+
+  emit-rb-sum-type-loop : List AVariantCtorDef, Integer, Integer -> Text
+  emit-rb-sum-type-loop (ctors) (i) (len) =
+   if i == len then ""
+   else let c = list-at ctors i
+   in emit-rb-ctor c & emit-rb-sum-type-loop ctors (i + 1) len
+
+  emit-rb-ctor : AVariantCtorDef -> Text
+  emit-rb-ctor (c) =
+   let name = rb-sanitize (c.name.value)
+   in name & " = Struct.new(:tag" & emit-rb-ctor-fields (c.fields) 0 & ")\n"
+
+  emit-rb-ctor-fields : List ATypeExpr, Integer -> Text
+  emit-rb-ctor-fields (fields) (i) =
+   if i == list-length fields then ""
+   else ", :field" & integer-to-text i & emit-rb-ctor-fields fields (i + 1)
+
+  emit-rb-record-type : Text, List ARecordFieldDef -> Text
+  emit-rb-record-type (name) (fields) =
+   let sname = rb-sanitize name
+   in sname & " = Struct.new(" & emit-rb-record-field-names fields 0 & ")\n\n"
+
+  emit-rb-record-field-names : List ARecordFieldDef, Integer -> Text
+  emit-rb-record-field-names (fields) (i) =
+   if i == list-length fields then ""
+   else let f = list-at fields i
+   in let sep = if i > 0 then ", " else ""
+   in sep & ":" & rb-sanitize (f.name.value) & emit-rb-record-field-names fields (i + 1)
+
+Section: Expression Emission
+
+  rb-max-depth : Integer = 256
+
+  emit-rb-expr : IRExpr, List ArityEntry -> Text
+  emit-rb-expr (e) (arities) = emit-rb-expr-at e arities 0
+
+  emit-rb-expr-at : IRExpr, List ArityEntry, Integer -> Text
+  emit-rb-expr-at (e) (arities) (depth) =
+   if depth >= rb-max-depth then "nil"
+   else when e
+    is IrIntLit (n) (sp) -> integer-to-text n
+    is IrNumLit (n) (sp) -> integer-to-text n & ".to_f"
+    is IrTextLit (s) (sp) -> "\"" & rb-escape-text s & "\""
+    is IrBoolLit (b) (sp) -> if b then "true" else "false"
+    is IrCharLit (n) (sp) -> integer-to-text n
+    is IrName (n) (ty) (sp) -> emit-rb-name n ty arities
+    is IrBinary (op) (l) (r) (ty) (sp) -> emit-rb-binary op l r arities
+    is IrNegate (operand) (sp) -> "(-" & emit-rb-expr-at operand arities (depth + 1) & ")"
+    is IrIf (c) (t) (el) (ty) (sp) -> "(" & emit-rb-expr-at c arities (depth + 1) & " ? " & emit-rb-expr-at t arities (depth + 1) & " : " & emit-rb-expr-at el arities (depth + 1) & ")"
+    is IrLet (name) (ty) (val) (body) (sp) -> "(lambda { |" & rb-sanitize name & "| " & emit-rb-expr-at body arities (depth + 1) & " }.call(" & emit-rb-expr-at val arities (depth + 1) & "))"
+    is IrApply (f) (a) (ty) (sp) -> emit-rb-apply e arities
+    is IrLambda (params) (body) (ty) (sp) -> "lambda { |" & emit-rb-lambda-params params 0 & "| " & emit-rb-expr body arities & " }"
+    is IrList (elems) (ty) (sp) -> "[" & emit-rb-list-elems elems 0 arities & "]"
+    is IrMatch (scrut) (branches) (ty) (sp) -> emit-rb-match scrut branches arities
+    is IrAct (stmts) (ty) (sp) -> emit-rb-act stmts arities
+    is IrHandle (eff) (body) (clauses) (ty) (sp) -> emit-rb-expr-at body arities (depth + 1)
+    is IrWithTimeout (secs) (effs) (scopes) (body) (ty) (sp) -> emit-rb-expr-at body arities (depth + 1)
+    is IrRecord (name) (fields) (ty) (sp) -> emit-rb-record name fields arities
+    is IrFieldAccess (rec) (field) (ty) (sp) -> emit-rb-expr-at rec arities (depth + 1) & "." & rb-sanitize field
+    is IrFieldStore (rec) (field) (val) (ty) (sp) -> emit-rb-expr-at rec arities (depth + 1) & ".tap { |_r| _r." & rb-sanitize field & " = " & emit-rb-expr-at val arities (depth + 1) & " }"
+    is IrFork (body) (ty) (sp) -> "Thread.new { " & emit-rb-expr-at body arities (depth + 1) & " }"
+    is IrAwait (task) (ty) (sp) -> emit-rb-expr-at task arities (depth + 1) & ".value"
+    is IrTry (max) (body) (fb) (fail-stmts) (ty) (sp) -> "begin; " & emit-rb-act body arities & "; rescue; " & emit-rb-act fb arities & "; end"
+    is IrError (msg) (ty) (sp) -> "raise \"" & rb-escape-text msg & "\""
+
+  emit-rb-name : Text, CodexType, List ArityEntry -> Text
+  emit-rb-name (n) (ty) (arities) =
+   if n == "read-line" then "gets.chomp"
+   else if n == "show" then "method(:to_s)"
+   else if n == "negate" then "lambda { |x| -x }"
+   else if n == "True" then "true"
+   else if n == "False" then "false"
+   else if n == "Nothing" then "nil"
+   else if is-rb-builtin-name n then rb-sanitize n
+   else rb-sanitize n
+
+  emit-rb-binary : IRBinaryOp, IRExpr, IRExpr, List ArityEntry -> Text
+  emit-rb-binary (op) (l) (r) (arities) =
+   when op
+    is IrAppendText -> "(" & emit-rb-expr l arities & " + " & emit-rb-expr r arities & ")"
+    is IrAppendList -> "(" & emit-rb-expr l arities & " + " & emit-rb-expr r arities & ")"
+    is IrConsList -> "[" & emit-rb-expr l arities & "] + " & emit-rb-expr r arities
+    is IrDivInt -> "(" & emit-rb-expr l arities & " / " & emit-rb-expr r arities & ")"
+    is IrRemInt -> "(" & emit-rb-expr l arities & " % " & emit-rb-expr r arities & ")"
+    is IrPowInt -> "(" & emit-rb-expr l arities & " ** " & emit-rb-expr r arities & ")"
+    is IrAnd -> "(" & emit-rb-expr l arities & " && " & emit-rb-expr r arities & ")"
+    is IrOr -> "(" & emit-rb-expr l arities & " || " & emit-rb-expr r arities & ")"
+    is IrAddVec -> emit-rb-expr l arities & ".zip(" & emit-rb-expr r arities & ").map { |a, b| a + b }"
+    is IrSubVec -> emit-rb-expr l arities & ".zip(" & emit-rb-expr r arities & ").map { |a, b| a - b }"
+    is IrMulVec -> emit-rb-expr l arities & ".zip(" & emit-rb-expr r arities & ").map { |a, b| a * b }"
+    is IrDivVec -> emit-rb-expr l arities & ".zip(" & emit-rb-expr r arities & ").map { |a, b| a / b }"
+    is otherwise -> "(" & emit-rb-expr l arities & " " & rb-bin-op-symbol op & " " & emit-rb-expr r arities & ")"
+
+  rb-bin-op-symbol : IRBinaryOp -> Text
+  rb-bin-op-symbol (op) =
+   when op
+    is IrAddInt | IrAddNum | IrAddVec | IrAddRealApprox | IrAddRealTrapping | IrAddRealSaturating -> "+"
+    is IrSubInt | IrSubNum | IrSubVec | IrSubRealApprox | IrSubRealTrapping | IrSubRealSaturating -> "-"
+    is IrMulInt | IrMulNum | IrMulVec | IrMulRealApprox | IrMulRealTrapping | IrMulRealSaturating -> "*"
+    is IrDivInt -> "/"
+    is IrRemInt -> "%"
+    is IrPowInt -> "**"
+    is IrDivNum | IrDivVec | IrDivRealApprox | IrDivRealTrapping | IrDivRealSaturating -> "/"
+    is IrEq -> "=="
+    is IrNotEq -> "!="
+    is IrLt | IrLtVec -> "<"
+    is IrGt | IrGtVec -> ">"
+    is IrLtEq | IrLtEqVec -> "<="
+    is IrGtEq | IrGtEqVec -> ">="
+    is IrApproxEq -> "=="
+    is IrApproxEqExact -> "=="
+    is IrAnd -> "&&"
+    is IrOr -> "||"
+    is IrAppendText -> "+"
+    is IrAppendList -> "+"
+    is IrConsList -> "+"
+
+  emit-rb-lambda-params : List IRParam, Integer -> Text
+  emit-rb-lambda-params (params) (i) =
+   if i == list-length params then ""
+   else if i == list-length params - 1 then rb-sanitize ((list-at params i).name)
+   else rb-sanitize ((list-at params i).name) & ", " & emit-rb-lambda-params params (i + 1)
+
+  emit-rb-list-elems : List IRExpr, Integer, List ArityEntry -> Text
+  emit-rb-list-elems (elems) (i) (arities) =
+   if i == list-length elems then ""
+   else if i == list-length elems - 1 then emit-rb-expr (list-at elems i) arities
+   else emit-rb-expr (list-at elems i) arities & ", " & emit-rb-list-elems elems (i + 1) arities
+
+  emit-rb-record : Text, List IRFieldVal, List ArityEntry -> Text
+  emit-rb-record (name) (fields) (arities) =
+   rb-sanitize name & ".new(" & emit-rb-record-vals fields 0 arities & ")"
+
+  emit-rb-record-vals : List IRFieldVal, Integer, List ArityEntry -> Text
+  emit-rb-record-vals (fields) (i) (arities) =
+   if i == list-length fields then ""
+   else let f = list-at fields i
+   in let sep = if i > 0 then ", " else ""
+   in sep & emit-rb-expr (f.value) arities & emit-rb-record-vals fields (i + 1) arities
+
+  emit-rb-match : IRExpr, List IRBranch, List ArityEntry -> Text
+  emit-rb-match (scrut) (branches) (arities) =
+   "(lambda { |_s| case _s; " & emit-rb-match-arms branches 0 arities & " end }.call(" & emit-rb-expr scrut arities & "))"
+
+  emit-rb-match-arms : List IRBranch, Integer, List ArityEntry -> Text
+  emit-rb-match-arms (branches) (i) (arities) =
+   if i == list-length branches then ""
+   else let b = list-at branches i
+   in emit-rb-match-arm (b.pattern) (b.body) arities & emit-rb-match-arms branches (i + 1) arities
+
+  emit-rb-match-arm : IRPat, IRExpr, List ArityEntry -> Text
+  emit-rb-match-arm (pat) (body) (arities) =
+   when pat
+    is IrLitPat (text) (ty) (sp) -> "when " & text & " then " & emit-rb-expr body arities & "; "
+    is IrCtorPat (name) (subs) (ty) (sp) -> if is-mktup-name name then "else " & emit-rb-tup-pat-names subs 0 & " = *_s; " & emit-rb-expr body arities & "; " else "when " & rb-sanitize name & " then " & emit-rb-expr body arities & "; "
+    is IrVarPat (name) (ty) (sp) -> "else " & emit-rb-expr body arities & "; "
+    is IrWildPat (sp) -> "else " & emit-rb-expr body arities & "; "
+    is IrVecPat (pats) (ty) (sp) -> "else " & emit-rb-expr body arities & "; "
+
+  emit-rb-act : List IRActStmt, List ArityEntry -> Text
+  emit-rb-act (stmts) (arities) =
+   "lambda { " & emit-rb-act-stmts stmts 0 arities & " }.call"
+
+  emit-rb-act-stmts : List IRActStmt, Integer, List ArityEntry -> Text
+  emit-rb-act-stmts (stmts) (i) (arities) =
+   if i == list-length stmts then ""
+   else let s = list-at stmts i
+   in let sep = if i > 0 then "; " else ""
+   in sep & (when s
+    is IrDoBind (name) (ty) (val) (sp) -> rb-sanitize name & " = " & emit-rb-expr val arities
+    is IrDoExec (e) (sp) -> emit-rb-expr e arities) & emit-rb-act-stmts stmts (i + 1) arities
+
+Section: Apply Emission
+
+  emit-rb-apply : IRExpr, List ArityEntry -> Text
+  emit-rb-apply (e) (arities) =
+   let chain = collect-apply-chain e []
+   in let root = chain.root
+   in let args = chain.args
+   in when root
+    is IrName (n) (ty) (sp) ->
+     if is-rb-builtin-name n then emit-rb-builtin n args arities
+     else if is-mktup-name n then "[" & emit-rb-apply-args args arities 0 & "]"
+     else rb-sanitize n & "(" & emit-rb-apply-args args arities 0 & ")"
+    is otherwise -> emit-rb-expr-curried e arities
+
+  emit-rb-apply-args : List IRExpr, List ArityEntry, Integer -> Text
+  emit-rb-apply-args (args) (arities) (i) =
+   if i == list-length args then ""
+   else if i == list-length args - 1 then emit-rb-expr (list-at args i) arities
+   else emit-rb-expr (list-at args i) arities & ", " & emit-rb-apply-args args arities (i + 1)
+
+  emit-rb-expr-curried : IRExpr, List ArityEntry -> Text
+  emit-rb-expr-curried (e) (arities) =
+   when e
+    is IrApply (f) (a) (ty) (sp) -> emit-rb-expr f arities & ".call(" & emit-rb-expr a arities & ")"
+    is otherwise -> emit-rb-expr e arities
+
+Section: Definition Emission
+
+  emit-rb-def : IRDef, List ArityEntry -> Text
+  emit-rb-def (d) (arities) =
+   let name = rb-sanitize (d.name)
+   in let params-text = emit-rb-def-params (d.params) 0
+   in "def " & name & "(" & params-text & ")\n  " & emit-rb-expr (d.body) arities & "\nend\n\n"
+
+  emit-rb-def-params : List IRParam, Integer -> Text
+  emit-rb-def-params (params) (i) =
+   if i == list-length params then ""
+   else if i == list-length params - 1 then rb-sanitize ((list-at params i).name)
+   else rb-sanitize ((list-at params i).name) & ", " & emit-rb-def-params params (i + 1)
+
+  emit-rb-defs : List IRDef, Integer, List ArityEntry -> Text
+  emit-rb-defs (defs) (i) (arities) =
+   if i == list-length defs then ""
+   else emit-rb-def (list-at defs i) arities & emit-rb-defs defs (i + 1) arities
+
+Section: Chapter Emission
+
+  emit-ruby-chapter : IRChapter, List ATypeDef -> Text
+  emit-ruby-chapter (m) (type-defs) =
+   let arities = build-arity-map (m.defs) 0 []
+   in let types-text = emit-rb-type-defs type-defs 0
+   in let defs-text = emit-rb-defs (m.defs) 0 arities
+   in types-text & defs-text & rb-sanitize opening-entry-point & "\n"
+
+Section: Tuple Helpers
+
+  is-mktup-name : Text -> Boolean
+  is-mktup-name (n) =
+   n == "MkTup2" | n == "MkTup3" | n == "MkTup4" | n == "MkTup5"
+
+  is-tup-type : Text -> Boolean
+  is-tup-type (n) =
+   n == "Tup2" | n == "Tup3" | n == "Tup4" | n == "Tup5"
+
+  emit-rb-tup-pat-names : List IRPat, Integer -> Text
+  emit-rb-tup-pat-names (subs) (i) =
+   if i == list-length subs then ""
+   else let sep = if i > 0 then ", " else ""
+   in let sub = list-at subs i
+   in sep & (when sub
+    is IrVarPat (name) (ty) (sp) -> rb-sanitize name
+    is IrWildPat (sp) -> "_"
+    is IrVecPat (pats) (ty) (sp) -> "_"
+    is otherwise -> "_") & emit-rb-tup-pat-names subs (i + 1)
+
+Page 1

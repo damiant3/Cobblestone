@@ -1,0 +1,112 @@
+Chapter: SceneMaterial
+
+ PBR-lite material system. Albedo color, metallic, roughness,
+ emission, and optional texture reference. All intensity values
+ are Real (0.0 = none, 1.0 = full).
+
+ We say:
+
+Section: Types
+
+  SparkMaterial = record {
+    mat-name : Text,
+    mat-albedo : Integer,
+    mat-metallic : Real,
+    mat-roughness : Real,
+    mat-emission : Real,
+    mat-opacity : Real,
+    mat-texture-id : Integer
+  }
+
+  MaterialLibrary = record {
+    ml-materials : List SparkMaterial,
+    ml-count : Integer
+  }
+
+Section: Construction
+
+  material-default : SparkMaterial
+  material-default = SparkMaterial {
+    mat-name = "Default",
+    mat-albedo = #808080,
+    mat-metallic = 0.0,
+    mat-roughness = 0.5,
+    mat-emission = 0.0,
+    mat-opacity = 1.0,
+    mat-texture-id = -1
+  }
+
+  material-new : Text, Integer -> SparkMaterial
+  material-new (name) (color) = SparkMaterial {
+    mat-name = name,
+    mat-albedo = color,
+    mat-metallic = 0.0,
+    mat-roughness = 0.5,
+    mat-emission = 0.0,
+    mat-opacity = 1.0,
+    mat-texture-id = -1
+  }
+
+  material-metallic : Text, Integer, Real -> SparkMaterial
+  material-metallic (name) (color) (metal) = SparkMaterial {
+    mat-name = name,
+    mat-albedo = color,
+    mat-metallic = metal,
+    mat-roughness = 0.3,
+    mat-emission = 0.0,
+    mat-opacity = 1.0,
+    mat-texture-id = -1
+  }
+
+  material-emissive : Text, Integer, Real -> SparkMaterial
+  material-emissive (name) (color) (emit) = SparkMaterial {
+    mat-name = name,
+    mat-albedo = color,
+    mat-metallic = 0.0,
+    mat-roughness = 0.5,
+    mat-emission = emit,
+    mat-opacity = 1.0,
+    mat-texture-id = -1
+  }
+
+Section: Library
+
+  material-lib-new : MaterialLibrary
+  material-lib-new = MaterialLibrary {
+    ml-materials = [material-default],
+    ml-count = 1
+  }
+
+  material-lib-add : MaterialLibrary, SparkMaterial -> MaterialLibrary
+  material-lib-add (lib) (mat) = MaterialLibrary {
+    ml-materials = list-push (lib.ml-materials) mat,
+    ml-count = lib.ml-count + 1
+  }
+
+  material-lib-get : MaterialLibrary, Integer -> SparkMaterial
+  material-lib-get (lib) (i) =
+    if i < 0 then material-default
+    else if i >= lib.ml-count then material-default
+    else list-at (lib.ml-materials) i
+
+Section: Shading
+
+  material-shade-color : SparkMaterial, Real -> Integer
+  material-shade-color (mat) (light-intensity) =
+    let base = mat.mat-albedo
+    in let r = real-to-int (real-from-int (base / 65536) * light-intensity)
+    in let g = real-to-int (real-from-int (base / 256 - base / 65536 * 256) * light-intensity)
+    in let b = real-to-int (real-from-int (base - base / 256 * 256) * light-intensity)
+    in let er = real-to-int (mat.mat-emission * 255.0)
+    in let cr = mat-clamp (r + er) 0 255
+    in let cg = mat-clamp (g + er / 3) 0 255
+    in let cb = mat-clamp (b + er / 5) 0 255
+    in cr * 65536 + cg * 256 + cb
+
+  mat-clamp : Integer, Integer, Integer -> Integer
+  mat-clamp (val) (lo) (hi) =
+    if val < lo then lo
+    else if val > hi then hi
+    else val
+
+Page 1

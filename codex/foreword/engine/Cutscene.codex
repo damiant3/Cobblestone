@@ -1,0 +1,136 @@
+Chapter: Cutscene
+  cites Engine chapter Scene3D
+  cites Engine chapter SplinePath
+  cites Engine chapter FacialAnim
+  cites Engine chapter AnimBlend
+  cites Engine chapter Skinning
+  cites Foreword chapter Maybe
+
+ Cutscene sequencer. Drives camera, skeletal animation, facial
+ blend shapes, audio cues, particle bursts, dialogue text, and
+ scene events on a shared timeline. Tracks run in parallel.
+ Supports play, pause, skip, and callback markers.
+ Fixed-point (scale 1000 for time in milliseconds).
+
+ We say:
+
+Section: Track Types
+
+  CutsceneTrack =
+    | TrkCamera (Spline3D)
+    | TrkAnimation (Integer) (AnimClip)
+    | TrkFacial (Integer) (List BlendWeight) (Integer)
+    | TrkViseme (Integer) (VisemeTrack)
+    | TrkDialogue (Text) (Text)
+    | TrkAudioCue (Text)
+    | TrkParticleBurst (Integer) (Integer) (Integer)
+    | TrkEvent (Text)
+    | TrkFade (Integer) (Integer)
+
+Section: Timed Track
+
+  TimedTrack = record {
+    tt-start : Integer,
+    tt-end : Integer,
+    tt-track : CutsceneTrack
+  }
+
+Section: Cutscene
+
+  CutsceneData = record {
+    cs-name : Text,
+    cs-tracks : List TimedTrack,
+    cs-track-count : Integer,
+    cs-duration : Integer,
+    cs-skippable : Boolean
+  }
+
+  cs-new : Text, Boolean -> CutsceneData
+  cs-new (name) (skippable) = CutsceneData { cs-name = name, cs-tracks = [], cs-track-count = 0, cs-duration = 0, cs-skippable = skippable }
+
+  cs-add-track : CutsceneData, Integer, Integer, CutsceneTrack -> CutsceneData
+  cs-add-track (cs) (start) (duration) (track) =
+    let tt = TimedTrack { tt-start = start, tt-end = start + duration, tt-track = track }
+    in let new-dur = if start + duration > cs.cs-duration then start + duration else cs.cs-duration
+    in CutsceneData { cs-name = cs.cs-name, cs-tracks = list-push (cs.cs-tracks) tt, cs-track-count = cs.cs-track-count + 1, cs-duration = new-dur, cs-skippable = cs.cs-skippable }
+
+Section: Playback State
+
+  CutsceneState = record {
+    css-data : CutsceneData,
+    css-time : Integer,
+    css-playing : Boolean,
+    css-paused : Boolean,
+    css-finished : Boolean
+  }
+
+  css-play : CutsceneData -> CutsceneState
+  css-play (data) = CutsceneState { css-data = data, css-time = 0, css-playing = True, css-paused = False, css-finished = False }
+
+  css-tick : CutsceneState, Integer -> CutsceneState
+  css-tick (st) (dt) =
+    if st.css-paused then st
+    else if st.css-finished then st
+    else let new-time = st.css-time + dt
+    in if new-time >= st.css-data.cs-duration then CutsceneState { css-data = st.css-data, css-time = st.css-data.cs-duration, css-playing = False, css-paused = False, css-finished = True }
+    else CutsceneState { css-data = st.css-data, css-time = new-time, css-playing = True, css-paused = False, css-finished = False }
+
+  css-pause : CutsceneState -> CutsceneState
+  css-pause (st) = __record-set st "css-paused" True
+
+  css-resume : CutsceneState -> CutsceneState
+  css-resume (st) = __record-set st "css-paused" False
+
+  css-skip : CutsceneState -> CutsceneState
+  css-skip (st) =
+    if st.css-data.cs-skippable then CutsceneState { css-data = st.css-data, css-time = st.css-data.cs-duration, css-playing = False, css-paused = False, css-finished = True }
+    else st
+
+Section: Active Track Query
+
+  CutsceneEvent = record {
+    ce-track : CutsceneTrack,
+    ce-local-t : Integer,
+    ce-duration : Integer
+  }
+
+  css-active-tracks : CutsceneState -> List CutsceneEvent
+  css-active-tracks (st) = css-collect (st.css-data.cs-tracks) (st.css-time) 0 (st.css-data.cs-track-count) []
+
+  css-collect : List TimedTrack, Integer, Integer, Integer, List CutsceneEvent -> List CutsceneEvent
+  css-collect (tracks) (time) (i) (n) (acc) =
+    if i >= n then acc
+    else let tt = list-at tracks i
+    in if time >= tt.tt-start then if time < tt.tt-end then
+      let local = time - tt.tt-start
+      in let dur = tt.tt-end - tt.tt-start
+      in let ev = CutsceneEvent { ce-track = tt.tt-track, ce-local-t = local, ce-duration = dur }
+      in css-collect tracks time (i + 1) n (list-push acc ev)
+    else css-collect tracks time (i + 1) n acc
+    else css-collect tracks time (i + 1) n acc
+
+Section: Convenience Builders
+
+  cs-add-camera-pan : CutsceneData, Integer, Integer, Spline3D -> CutsceneData
+  cs-add-camera-pan (cs) (start) (dur) (path) = cs-add-track cs start dur (TrkCamera path)
+
+  cs-add-dialogue : CutsceneData, Integer, Integer, Text, Text -> CutsceneData
+  cs-add-dialogue (cs) (start) (dur) (speaker) (line) = cs-add-track cs start dur (TrkDialogue speaker line)
+
+  cs-add-fade-in : CutsceneData, Integer, Integer -> CutsceneData
+  cs-add-fade-in (cs) (start) (dur) = cs-add-track cs start dur (TrkFade 1000 0)
+
+  cs-add-fade-out : CutsceneData, Integer, Integer -> CutsceneData
+  cs-add-fade-out (cs) (start) (dur) = cs-add-track cs start dur (TrkFade 0 1000)
+
+Section: Formatting
+
+  format-cutscene : CutsceneData -> Text
+  format-cutscene (cs) = "Cutscene(\"" & cs.cs-name & "\" " & show (cs.cs-track-count) & " tracks, " & show (cs.cs-duration) & "ms)"
+
+  format-cutscene-state : CutsceneState -> Text
+  format-cutscene-state (st) =
+    let status = if st.css-finished then "finished" else if st.css-paused then "paused" else if st.css-playing then "playing" else "stopped"
+    in format-cutscene (st.css-data) & " " & status & " t=" & show (st.css-time)
+
+Page 1

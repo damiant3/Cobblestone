@@ -1,0 +1,140 @@
+Chapter: NetIO
+  cites Kernel chapter Ne2k
+  cites Net chapter NetworkStack
+  cites Net chapter TcpTransport
+  cites Net chapter MessageFraming
+
+ I/O loop binding: flushes outbox frames to the NE2000 NIC and
+ polls for inbound frames.
+
+Section: Flush Outbox
+
+  flush-outbox-loop : NetSession, Integer, Integer -> Integer
+  flush-outbox-loop (sess) (i) (count) =
+   if i >= count then 0
+   else let frame = net-outbox-frame sess i
+   in let sent = ne2k-send-frame frame
+   in let rest = flush-outbox-loop sess (i + 1) count
+   in sent + rest
+
+  flush-transport-outbox : TcpTransportState -> TcpTransportState
+  flush-transport-outbox (ts) =
+   let count = net-outbox-count (ts.session)
+   in let flushed = flush-outbox-loop (ts.session) 0 count
+   in let cleared = set-outbox (ts.session) []
+   in TcpTransportState { session = cleared, recv-buf = [], recv-base = ts.recv-base, recv-len = ts.recv-len, recv-cap = ts.recv-cap, messages-sent = ts.messages-sent, messages-received = ts.messages-received }
+
+Section: Listen and Accept
+
+  net-io-listen : TcpTransportState -> TcpTransportState
+  net-io-listen (ts) =
+   let r = net-listen (ts.session)
+   in TcpTransportState { session = r.session, recv-buf = ts.recv-buf, recv-base = ts.recv-base, recv-len = ts.recv-len, recv-cap = ts.recv-cap, messages-sent = ts.messages-sent, messages-received = ts.messages-received }
+
+  net-io-accept : TcpTransportState, Integer -> TcpTransportState
+  net-io-accept (ts) (tries) =
+   if tries > 50000000 then ts
+   else let hp = __heap-save
+   in let frame = ne2k-recv-frame
+   in if list-length frame == 0 then let restored = __heap-restore hp
+     in net-io-accept ts (tries + 1)
+   else let r = transport-process-frame ts frame
+   in let ts1 = flush-transport-outbox (r.transport)
+   in when (ts1.session).conn.state
+    is TcpEstablished -> ts1
+    is otherwise -> net-io-accept ts1 (tries + 1)
+
+Section: Connect and Wait
+
+  net-io-connect : TcpTransportState -> TcpTransportState
+  net-io-connect (ts) =
+   let ts1 = transport-connect ts
+   in let ts2 = flush-transport-outbox ts1
+   in net-io-wait-established ts2 0
+
+  net-io-wait-established : TcpTransportState, Integer -> TcpTransportState
+  net-io-wait-established (ts) (tries) =
+   if tries > 10000 then ts
+   else let hp = __heap-save
+   in let frame = ne2k-recv-frame
+   in if list-length frame == 0 then let restored = __heap-restore hp
+     in net-io-wait-established ts (tries + 1)
+   else let r = transport-process-frame ts frame
+   in let ts1 = flush-transport-outbox (r.transport)
+   in when (ts1.session).conn.state
+    is TcpEstablished -> ts1
+    is otherwise -> net-io-wait-established ts1 (tries + 1)
+
+Section: Send
+
+  net-mss : Integer = 1400
+
+  net-io-send-chunk : TcpTransportState, List Integer, Integer, Integer -> TcpTransportState
+  net-io-send-chunk (ts) (data) (off) (total) =
+   if off >= total then ts
+   else let stop = if off + net-mss > total then total else off + net-mss
+   in let chunk = transport-slice data off stop
+   in let r = net-send (ts.session) chunk
+   in let ts1 = TcpTransportState { session = r.session, recv-buf = ts.recv-buf, messages-sent = ts.messages-sent, messages-received = ts.messages-received }
+   in let ts2 = flush-transport-outbox ts1
+   in net-io-send-chunk ts2 data (off + net-mss) total
+
+  net-io-send : TcpTransportState, Integer, List Integer -> TcpTransportState
+  net-io-send (ts) (tag) (body) =
+   let framed = frame-encode tag body
+   in net-io-send-chunk ts framed 0 (list-length framed)
+
+  net-io-send-raw : TcpTransportState, List Integer -> TcpTransportState
+  net-io-send-raw (ts) (data) = net-io-send-chunk ts data 0 (list-length data)
+
+Section: Receive
+
+  net-io-recv-loop : TcpTransportState, Integer -> TransportRecvResult
+  net-io-recv-loop (ts) (tries) =
+   if tries > 50000000 then TransportRecvResult { transport = ts, tag = 0, body = [], has-message = False }
+   else let hp = __heap-save
+   in let frame = ne2k-recv-frame
+   in if list-length frame == 0 then let restored = __heap-restore hp
+     in net-io-recv-loop ts (tries + 1)
+   else let r = transport-process-frame ts frame
+   in let ts1 = flush-transport-outbox (r.transport)
+   in if r.has-message then TransportRecvResult { transport = ts1, tag = r.tag, body = r.body, has-message = True }
+   else net-io-recv-loop ts1 (tries + 1)
+
+Section: Receive Raw (no framing)
+
+  RawRecvResult = record {
+    transport : TcpTransportState,
+    data : List Integer,
+    has-data : Boolean
+  }
+
+  net-io-recv-raw : TcpTransportState, Integer -> RawRecvResult
+  net-io-recv-raw (ts) (tries) =
+   if tries > 50000000 then RawRecvResult { transport = ts, data = [], has-data = False }
+   else let hp = __heap-save
+   in let frame = ne2k-recv-frame
+   in if list-length frame == 0 then let restored = __heap-restore hp
+     in net-io-recv-raw ts (tries + 1)
+   else let r = net-process-frame (ts.session) frame
+   in let ts1 = flush-transport-outbox (TcpTransportState { session = r.session, recv-buf = ts.recv-buf, recv-base = ts.recv-base, recv-len = ts.recv-len, recv-cap = ts.recv-cap, messages-sent = ts.messages-sent, messages-received = ts.messages-received })
+   in if list-length (r.data) > 0 then RawRecvResult { transport = ts1, data = r.data, has-data = True }
+   else net-io-recv-raw ts1 (tries + 1)
+
+Section: Poll One
+
+  net-io-poll-one : TcpTransportState, Integer -> List Integer
+  net-io-poll-one (ts) (tries) =
+   if tries > 5000000 then []
+   else let frame = ne2k-recv-frame
+   in if list-length frame > 0 then frame
+   else net-io-poll-one ts (tries + 1)
+
+Section: Close
+
+  net-io-close : TcpTransportState -> TcpTransportState
+  net-io-close (ts) =
+   let ts1 = transport-close ts
+   in flush-transport-outbox ts1
+
+Page 1

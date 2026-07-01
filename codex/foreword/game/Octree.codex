@@ -1,0 +1,170 @@
+Chapter: Octree
+
+ 3D spatial partitioning tree. Each node subdivides into 8 octants.
+ Inspired by the octet fixed lattice pattern — recursive subdivision
+ with venue leaves that hold spatial objects. Flat-array backed for
+ bare-metal efficiency. Fixed-point coordinates (scale 1000).
+
+ We say:
+
+Section: Types
+  OctBounds = record {
+    min-x : Integer, min-y : Integer, min-z : Integer,
+    max-x : Integer, max-y : Integer, max-z : Integer
+  }
+
+  OctObject = record {
+    obj-id : Integer,
+    ox : Integer, oy : Integer, oz : Integer
+  }
+
+  OctNode = record {
+    bounds : OctBounds,
+    objects : List OctObject,
+    children : List Integer,
+    is-leaf : Boolean,
+    obj-count : Integer between 0 and 65535,
+    depth : Integer between 0 and 16
+  }
+
+  Octree = record {
+    nodes : List OctNode,
+    node-count : Integer,
+    max-depth : Integer between 1 and 16,
+    max-objects : Integer between 1 and 64
+  }
+
+Section: Construction
+  oct-new : OctBounds, Integer, Integer -> Octree
+  oct-new (bounds) (max-depth) (max-objects) =
+    let root = OctNode { bounds = bounds, objects = [], children = [], is-leaf = True, obj-count = 0, depth = 0 }
+    in Octree { nodes = [root], node-count = 1, max-depth = max-depth, max-objects = max-objects }
+
+  oct-bounds : Integer, Integer, Integer, Integer, Integer, Integer -> OctBounds
+  oct-bounds (x0) (y0) (z0) (x1) (y1) (z1) = OctBounds { min-x = x0, min-y = y0, min-z = z0, max-x = x1, max-y = y1, max-z = z1 }
+
+Section: Bounds Helpers
+  oct-contains : OctBounds, Integer, Integer, Integer -> Boolean
+  oct-contains (b) (x) (y) (z) =
+    x >= b.min-x & x < b.max-x & y >= b.min-y & y < b.max-y & z >= b.min-z & z < b.max-z
+
+  oct-mid-x : OctBounds -> Integer
+  oct-mid-x (b) = (b.min-x + b.max-x) / 2
+
+  oct-mid-y : OctBounds -> Integer
+  oct-mid-y (b) = (b.min-y + b.max-y) / 2
+
+  oct-mid-z : OctBounds -> Integer
+  oct-mid-z (b) = (b.min-z + b.max-z) / 2
+
+  oct-octant-bounds : OctBounds, Integer -> OctBounds
+  oct-octant-bounds (b) (idx) =
+    let mx = oct-mid-x b
+    in let my = oct-mid-y b
+    in let mz = oct-mid-z b
+    in if idx == 0 then oct-bounds (b.min-x) (b.min-y) (b.min-z) mx my mz
+    else if idx == 1 then oct-bounds mx (b.min-y) (b.min-z) (b.max-x) my mz
+    else if idx == 2 then oct-bounds (b.min-x) my (b.min-z) mx (b.max-y) mz
+    else if idx == 3 then oct-bounds mx my (b.min-z) (b.max-x) (b.max-y) mz
+    else if idx == 4 then oct-bounds (b.min-x) (b.min-y) mz mx my (b.max-z)
+    else if idx == 5 then oct-bounds mx (b.min-y) mz (b.max-x) my (b.max-z)
+    else if idx == 6 then oct-bounds (b.min-x) my mz mx (b.max-y) (b.max-z)
+    else oct-bounds mx my mz (b.max-x) (b.max-y) (b.max-z)
+
+  oct-which-octant : OctBounds, Integer, Integer, Integer -> Integer
+  oct-which-octant (b) (x) (y) (z) =
+    let mx = oct-mid-x b
+    in let my = oct-mid-y b
+    in let mz = oct-mid-z b
+    in let ix = if x >= mx then 1 else 0
+    in let iy = if y >= my then 2 else 0
+    in let iz = if z >= mz then 4 else 0
+    in ix + iy + iz
+
+Section: Insert
+  oct-insert : Octree, OctObject -> Octree
+  oct-insert (tree) (obj) = oct-insert-at tree 0 obj
+
+  oct-insert-at : Octree, Integer, OctObject -> Octree
+  oct-insert-at (tree) (node-idx) (obj) =
+    let node = list-at (tree.nodes) node-idx
+    in if node.is-leaf then
+      if node.obj-count < tree.max-objects then oct-add-to-leaf tree node-idx obj
+      else if node.depth >= tree.max-depth then oct-add-to-leaf tree node-idx obj
+      else let tree2 = oct-subdivide tree node-idx
+      in oct-insert-at tree2 node-idx obj
+    else let octant = oct-which-octant (node.bounds) (obj.ox) (obj.oy) (obj.oz)
+    in let child-idx = list-at (node.children) octant
+    in oct-insert-at tree child-idx obj
+
+  oct-add-to-leaf : Octree, Integer, OctObject -> Octree
+  oct-add-to-leaf (tree) (node-idx) (obj) =
+    let node = list-at (tree.nodes) node-idx
+    in let updated = OctNode { bounds = node.bounds, objects = list-push (node.objects) obj, children = node.children, is-leaf = True, obj-count = node.obj-count + 1, depth = node.depth }
+    in Octree { nodes = list-set-at (tree.nodes) node-idx updated, node-count = tree.node-count, max-depth = tree.max-depth, max-objects = tree.max-objects }
+
+  oct-subdivide : Octree, Integer -> Octree
+  oct-subdivide (tree) (node-idx) =
+    let node = list-at (tree.nodes) node-idx
+    in let base-idx = tree.node-count
+    in let child-indices = [base-idx, base-idx + 1, base-idx + 2, base-idx + 3, base-idx + 4, base-idx + 5, base-idx + 6, base-idx + 7]
+    in let new-nodes = oct-create-children (node.bounds) (node.depth + 1) 0 []
+    in let updated = OctNode { bounds = node.bounds, objects = [], children = child-indices, is-leaf = False, obj-count = 0, depth = node.depth }
+    in let nodes2 = list-set-at (tree.nodes) node-idx updated
+    in let nodes3 = nodes2 & new-nodes
+    in let tree2 = Octree { nodes = nodes3, node-count = tree.node-count + 8, max-depth = tree.max-depth, max-objects = tree.max-objects }
+    in oct-reinsert-objects tree2 node-idx (node.objects) 0 (node.obj-count)
+
+  oct-create-children : OctBounds, Integer, Integer, List OctNode -> List OctNode
+  oct-create-children (parent-bounds) (child-depth) (i) (acc) =
+    if i >= 8 then acc
+    else let cb = oct-octant-bounds parent-bounds i
+    in oct-create-children parent-bounds child-depth (i + 1) (list-push acc (OctNode { bounds = cb, objects = [], children = [], is-leaf = True, obj-count = 0, depth = child-depth }))
+
+  oct-reinsert-objects : Octree, Integer, List OctObject, Integer, Integer -> Octree
+  oct-reinsert-objects (tree) (node-idx) (objs) (i) (len) =
+    if i >= len then tree
+    else oct-reinsert-objects (oct-insert-at tree node-idx (list-at objs i)) node-idx objs (i + 1) len
+
+Section: Query
+  oct-query-range : Octree, OctBounds -> List OctObject
+  oct-query-range (tree) (range) = oct-query-node tree 0 range []
+
+  oct-query-node : Octree, Integer, OctBounds, List OctObject -> List OctObject
+  oct-query-node (tree) (node-idx) (range) (acc) =
+    let node = list-at (tree.nodes) node-idx
+    in if oct-bounds-overlap (node.bounds) range == False then acc
+    else if node.is-leaf then oct-filter-objects (node.objects) range 0 (node.obj-count) acc
+    else oct-query-children tree (node.children) range 0 8 acc
+
+  oct-bounds-overlap : OctBounds, OctBounds -> Boolean
+  oct-bounds-overlap (a) (b) =
+    a.min-x < b.max-x & a.max-x > b.min-x & a.min-y < b.max-y & a.max-y > b.min-y & a.min-z < b.max-z & a.max-z > b.min-z
+
+  oct-filter-objects : List OctObject, OctBounds, Integer, Integer, List OctObject -> List OctObject
+  oct-filter-objects (objs) (range) (i) (len) (acc) =
+    if i >= len then acc
+    else let obj = list-at objs i
+    in if oct-contains range (obj.ox) (obj.oy) (obj.oz) then oct-filter-objects objs range (i + 1) len (list-push acc obj)
+    else oct-filter-objects objs range (i + 1) len acc
+
+  oct-query-children : Octree, List Integer, OctBounds, Integer, Integer, List OctObject -> List OctObject
+  oct-query-children (tree) (children) (range) (i) (limit) (acc) =
+    if i >= limit then acc
+    else let child-idx = list-at children i
+    in oct-query-children tree children range (i + 1) limit (oct-query-node tree child-idx range acc)
+
+Section: Queries
+  oct-total-objects : Octree -> Integer
+  oct-total-objects (tree) = oct-count-all (tree.nodes) 0 (tree.node-count) 0
+
+  oct-count-all : List OctNode, Integer, Integer, Integer -> Integer
+  oct-count-all (nodes) (i) (len) (acc) =
+    if i >= len then acc
+    else let node = list-at nodes i
+    in oct-count-all nodes (i + 1) len (acc + node.obj-count)
+
+  oct-num-nodes : Octree -> Integer
+  oct-num-nodes (tree) = tree.node-count
+
+Page 1

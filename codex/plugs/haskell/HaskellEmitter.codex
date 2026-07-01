@@ -1,0 +1,414 @@
+Chapter: Haskell Emitter
+  cites Codex chapter Text
+  cites Codex chapter Characters
+  cites Codex chapter Lists
+  cites Foreword chapter Sort
+
+ Generates Haskell source code from the IR.
+
+Section: Keywords and Sanitization
+
+  hs-keywords : List Text =
+   ["as", "case", "class", "data", "default",
+    "deriving", "do", "else", "forall", "foreign",
+    "hiding", "if", "import", "in", "infix",
+    "infixl", "infixr", "instance", "let", "module",
+    "newtype", "of", "qualified", "then", "type",
+    "where", "True", "False", "Nothing", "Just"]
+
+  is-hs-keyword-loop : List Text, Text, Integer, Integer -> Boolean
+  is-hs-keyword-loop (kws) (name) (i) (len) =
+   if i == len then False
+   else if list-at kws i == name then True
+   else is-hs-keyword-loop kws name (i + 1) len
+
+  is-hs-keyword : Text -> Boolean
+  is-hs-keyword (name) = is-hs-keyword-loop hs-keywords name 0 (list-length hs-keywords)
+
+  hs-sanitize : Text -> Text
+  hs-sanitize (name) =
+   let s = text-replace name "-" "_"
+   in if is-hs-keyword s then s & "'"
+      else s
+
+  hs-escape-text : Text -> Text
+  hs-escape-text (s) =
+   let s1 = text-replace s "\\" "\\\\"
+   in let s2 = text-replace s1 "\"" "\\\""
+   in let s3 = text-replace s2 "\n" "\\n"
+   in s3
+
+  hs-indent : Integer -> Text
+  hs-indent (n) =
+   if n <= 0 then ""
+   else "  " & hs-indent (n - 1)
+
+Section: Arity Map
+
+  ArityEntry = record {
+   name : Text,
+   arity : Integer between 0 and 255,
+   generic-count : Integer between 0 and 255
+  }
+
+  bsearch-arity-pos : List ArityEntry, Text, Integer, Integer -> Integer
+  bsearch-arity-pos (entries) (name) (lo) (hi) =
+   if lo >= hi then lo
+   else let mid = lo + (hi - lo) / 2
+   in let mid-name = (list-at entries mid).name
+   in if text-compare name mid-name <= 0 then bsearch-arity-pos entries name lo mid
+      else bsearch-arity-pos entries name (mid + 1) hi
+
+  sorted-insert-arity : List ArityEntry, ArityEntry -> List ArityEntry
+  sorted-insert-arity (xs) (e) =
+   let len = list-length xs
+   in let pos = bsearch-arity-pos xs (e.name) 0 len
+   in list-insert-at xs pos e
+
+  build-arity-map : List IRDef, Integer, List ArityEntry -> List ArityEntry
+  build-arity-map (defs) (i) (acc) =
+   if i == list-length defs then acc
+   else let d = list-at defs i
+   in build-arity-map defs (i + 1) (sorted-insert-arity acc (ArityEntry {
+    name = d.name,
+    arity = list-length (d.params),
+    generic-count = 0
+   }))
+
+  lookup-arity : List ArityEntry, Text -> Integer
+  lookup-arity (entries) (name) =
+   let len = list-length entries
+   in let pos = bsearch-arity-pos entries name 0 len
+   in if pos >= len then -1
+      else let e = list-at entries pos
+      in if e.name == name then e.arity else -1
+
+Section: Apply Chain
+
+  is-upper-letter : Integer -> Boolean
+  is-upper-letter (code) =
+   if code >= char-code 'E' then code <= char-code 'Z'
+   else False
+
+Section: Type Definition Emission
+
+  emit-hs-type-defs : List ATypeDef, Integer -> Text
+  emit-hs-type-defs (tds) (i) =
+   if i == list-length tds then ""
+   else emit-hs-type-def (list-at tds i) & emit-hs-type-defs tds (i + 1)
+
+  emit-hs-type-def : ATypeDef -> Text
+  emit-hs-type-def (td) =
+   when td
+    is ARecordTypeDef (name) (tparams) (fields) (s) ->
+     emit-hs-record-type (name.value) fields
+    is AVariantTypeDef (name) (tparams) (ctors) (s) ->
+     if is-tup-type (name.value) then ""
+     else emit-hs-sum-type (name.value) ctors
+
+  emit-hs-sum-type : Text, List AVariantCtorDef -> Text
+  emit-hs-sum-type (name) (ctors) =
+   "data " & hs-sanitize name & " = " & emit-hs-ctors ctors 0 (list-length ctors) & "\n  deriving (Show, Eq)\n\n"
+
+  emit-hs-ctors : List AVariantCtorDef, Integer, Integer -> Text
+  emit-hs-ctors (ctors) (i) (len) =
+   if i == len then ""
+   else let c = list-at ctors i
+   in let prefix = if i > 0 then " | " else ""
+   in let fields = if list-length (c.fields) == 0 then ""
+      else emit-hs-ctor-fields (c.fields) 0
+   in prefix & hs-sanitize (c.name.value) & fields & emit-hs-ctors ctors (i + 1) len
+
+  emit-hs-ctor-fields : List ATypeExpr, Integer -> Text
+  emit-hs-ctor-fields (fields) (i) =
+   if i == list-length fields then ""
+   else " String" & emit-hs-ctor-fields fields (i + 1)
+
+  emit-hs-record-type : Text, List ARecordFieldDef -> Text
+  emit-hs-record-type (name) (fields) =
+   let sname = hs-sanitize name
+   in "data " & sname & " = " & sname & " { " & emit-hs-record-fields fields 0 & " }\n  deriving (Show, Eq)\n\n"
+
+  emit-hs-record-fields : List ARecordFieldDef, Integer -> Text
+  emit-hs-record-fields (fields) (i) =
+   if i == list-length fields then ""
+   else let f = list-at fields i
+   in let sep = if i > 0 then ", " else ""
+   in sep & hs-sanitize (f.name.value) & " :: String" & emit-hs-record-fields fields (i + 1)
+
+Section: Expression Emission
+
+  hs-max-depth : Integer = 256
+
+  emit-hs-expr : IRExpr, List ArityEntry -> Text
+  emit-hs-expr (e) (arities) = emit-hs-expr-at e arities 0
+
+  emit-hs-expr-at : IRExpr, List ArityEntry, Integer -> Text
+  emit-hs-expr-at (e) (arities) (depth) =
+   if depth >= hs-max-depth then "undefined"
+   else when e
+    is IrIntLit (n) (sp) -> integer-to-text n
+    is IrNumLit (n) (sp) -> "(" & integer-to-text n & " :: Double)"
+    is IrTextLit (s) (sp) -> "\"" & hs-escape-text s & "\""
+    is IrBoolLit (b) (sp) -> if b then "True" else "False"
+    is IrCharLit (n) (sp) -> integer-to-text n
+    is IrName (n) (ty) (sp) -> emit-hs-name n ty arities
+    is IrBinary (op) (l) (r) (ty) (sp) -> emit-hs-binary op l r arities
+    is IrNegate (operand) (sp) -> "(negate " & emit-hs-expr-at operand arities (depth + 1) & ")"
+    is IrIf (c) (t) (el) (ty) (sp) -> "(if " & emit-hs-expr-at c arities (depth + 1) & " then " & emit-hs-expr-at t arities (depth + 1) & " else " & emit-hs-expr-at el arities (depth + 1) & ")"
+    is IrLet (name) (ty) (val) (body) (sp) -> "(let " & hs-sanitize name & " = " & emit-hs-expr-at val arities (depth + 1) & " in " & emit-hs-expr-at body arities (depth + 1) & ")"
+    is IrApply (f) (a) (ty) (sp) -> emit-hs-apply e arities
+    is IrLambda (params) (body) (ty) (sp) -> "(\\" & emit-hs-lambda-params params 0 & " -> " & emit-hs-expr body arities & ")"
+    is IrList (elems) (ty) (sp) -> "[" & emit-hs-list-elems elems 0 arities & "]"
+    is IrMatch (scrut) (branches) (ty) (sp) -> emit-hs-match scrut branches arities
+    is IrAct (stmts) (ty) (sp) -> emit-hs-act stmts arities
+    is IrHandle (eff) (body) (clauses) (ty) (sp) -> emit-hs-expr-at body arities (depth + 1)
+    is IrWithTimeout (secs) (effs) (scopes) (body) (ty) (sp) -> emit-hs-expr-at body arities (depth + 1)
+    is IrRecord (name) (fields) (ty) (sp) -> emit-hs-record name fields arities
+    is IrFieldAccess (rec) (field) (ty) (sp) -> "(" & hs-sanitize field & " " & emit-hs-expr-at rec arities (depth + 1) & ")"
+    is IrFieldStore (rec) (field) (val) (ty) (sp) -> "(" & emit-hs-expr-at rec arities (depth + 1) & " { " & hs-sanitize field & " = " & emit-hs-expr-at val arities (depth + 1) & " })"
+    is IrFork (body) (ty) (sp) -> emit-hs-expr-at body arities (depth + 1)
+    is IrAwait (task) (ty) (sp) -> emit-hs-expr-at task arities (depth + 1)
+    is IrTry (max) (body) (fb) (fail-stmts) (ty) (sp) -> emit-hs-expr-at (IrAct body (VoidTy) sp) arities (depth + 1)
+    is IrError (msg) (ty) (sp) -> "(error \"" & hs-escape-text msg & "\")"
+
+  emit-hs-name : Text, CodexType, List ArityEntry -> Text
+  emit-hs-name (n) (ty) (arities) =
+   if n == "read-line" then "getLine"
+   else if n == "show" then "show"
+   else if n == "True" then "True"
+   else if n == "False" then "False"
+   else if n == "Nothing" then "Nothing"
+   else hs-sanitize n
+
+  emit-hs-binary : IRBinaryOp, IRExpr, IRExpr, List ArityEntry -> Text
+  emit-hs-binary (op) (l) (r) (arities) =
+   when op
+    is IrAppendText | IrAppendList -> "(" & emit-hs-expr l arities & " ++ " & emit-hs-expr r arities & ")"
+    is IrConsList -> "(" & emit-hs-expr l arities & " : " & emit-hs-expr r arities & ")"
+    is IrDivInt -> "(div " & emit-hs-expr l arities & " " & emit-hs-expr r arities & ")"
+    is IrRemInt -> "(rem " & emit-hs-expr l arities & " " & emit-hs-expr r arities & ")"
+    is IrPowInt -> "(" & emit-hs-expr l arities & " ^ " & emit-hs-expr r arities & ")"
+    is IrAnd -> "(" & emit-hs-expr l arities & " && " & emit-hs-expr r arities & ")"
+    is IrOr -> "(" & emit-hs-expr l arities & " || " & emit-hs-expr r arities & ")"
+    is IrAddVec -> "(zipWith (+) " & emit-hs-expr l arities & " " & emit-hs-expr r arities & ")"
+    is IrSubVec -> "(zipWith (-) " & emit-hs-expr l arities & " " & emit-hs-expr r arities & ")"
+    is IrMulVec -> "(zipWith (*) " & emit-hs-expr l arities & " " & emit-hs-expr r arities & ")"
+    is IrDivVec -> "(zipWith (/) " & emit-hs-expr l arities & " " & emit-hs-expr r arities & ")"
+    is otherwise -> "(" & emit-hs-expr l arities & " " & hs-bin-op-symbol op & " " & emit-hs-expr r arities & ")"
+
+  hs-bin-op-symbol : IRBinaryOp -> Text
+  hs-bin-op-symbol (op) =
+   when op
+    is IrAddInt | IrAddNum | IrAddVec | IrAddRealApprox | IrAddRealTrapping | IrAddRealSaturating -> "+"
+    is IrSubInt | IrSubNum | IrSubVec | IrSubRealApprox | IrSubRealTrapping | IrSubRealSaturating -> "-"
+    is IrMulInt | IrMulNum | IrMulVec | IrMulRealApprox | IrMulRealTrapping | IrMulRealSaturating -> "*"
+    is IrDivInt -> "`div`"
+    is IrRemInt -> "`rem`"
+    is IrPowInt -> "^"
+    is IrDivNum | IrDivVec | IrDivRealApprox | IrDivRealTrapping | IrDivRealSaturating -> "/"
+    is IrEq | IrApproxEq | IrApproxEqExact -> "=="
+    is IrNotEq -> "/="
+    is IrLt | IrLtVec -> "<"
+    is IrGt | IrGtVec -> ">"
+    is IrLtEq | IrLtEqVec -> "<="
+    is IrGtEq | IrGtEqVec -> ">="
+    is IrAnd -> "&&"
+    is IrOr -> "||"
+    is IrAppendText | IrAppendList -> "++"
+    is IrConsList -> ":"
+
+  emit-hs-lambda-params : List IRParam, Integer -> Text
+  emit-hs-lambda-params (params) (i) =
+   if i == list-length params then ""
+   else hs-sanitize ((list-at params i).name) & " " & emit-hs-lambda-params params (i + 1)
+
+  emit-hs-list-elems : List IRExpr, Integer, List ArityEntry -> Text
+  emit-hs-list-elems (elems) (i) (arities) =
+   if i == list-length elems then ""
+   else if i == list-length elems - 1 then emit-hs-expr (list-at elems i) arities
+   else emit-hs-expr (list-at elems i) arities & ", " & emit-hs-list-elems elems (i + 1) arities
+
+  emit-hs-record : Text, List IRFieldVal, List ArityEntry -> Text
+  emit-hs-record (name) (fields) (arities) =
+   hs-sanitize name & " { " & emit-hs-record-vals fields 0 arities & " }"
+
+  emit-hs-record-vals : List IRFieldVal, Integer, List ArityEntry -> Text
+  emit-hs-record-vals (fields) (i) (arities) =
+   if i == list-length fields then ""
+   else let f = list-at fields i
+   in let sep = if i > 0 then ", " else ""
+   in sep & hs-sanitize (f.name) & " = " & emit-hs-expr (f.value) arities & emit-hs-record-vals fields (i + 1) arities
+
+  emit-hs-match : IRExpr, List IRBranch, List ArityEntry -> Text
+  emit-hs-match (scrut) (branches) (arities) =
+   "(case " & emit-hs-expr scrut arities & " of { " & emit-hs-match-arms branches 0 arities & " })"
+
+  emit-hs-match-arms : List IRBranch, Integer, List ArityEntry -> Text
+  emit-hs-match-arms (branches) (i) (arities) =
+   if i == list-length branches then ""
+   else let b = list-at branches i
+   in let sep = if i > 0 then "; " else ""
+   in sep & emit-hs-pat (b.pattern) & " -> " & emit-hs-expr (b.body) arities & emit-hs-match-arms branches (i + 1) arities
+
+  emit-hs-pat : IRPat -> Text
+  emit-hs-pat (pat) =
+   when pat
+    is IrLitPat (text) (ty) (sp) -> text
+    is IrCtorPat (name) (subs) (ty) (sp) ->
+     if is-mktup-name name then "(" & emit-hs-tup-pats subs 0 & ")"
+     else hs-sanitize name & emit-hs-sub-pats subs 0
+    is IrVarPat (name) (ty) (sp) -> hs-sanitize name
+    is IrWildPat (sp) -> "_"
+    is IrVecPat (pats) (ty) (sp) -> "_"
+
+  emit-hs-sub-pats : List IRPat, Integer -> Text
+  emit-hs-sub-pats (subs) (i) =
+   if i == list-length subs then ""
+   else " " & emit-hs-pat (list-at subs i) & emit-hs-sub-pats subs (i + 1)
+
+  emit-hs-act : List IRActStmt, List ArityEntry -> Text
+  emit-hs-act (stmts) (arities) =
+   "(do { " & emit-hs-act-stmts stmts 0 arities & " })"
+
+  emit-hs-act-stmts : List IRActStmt, Integer, List ArityEntry -> Text
+  emit-hs-act-stmts (stmts) (i) (arities) =
+   if i == list-length stmts then ""
+   else let s = list-at stmts i
+   in let sep = if i > 0 then "; " else ""
+   in sep & (when s
+    is IrDoBind (name) (ty) (val) (sp) -> hs-sanitize name & " <- " & emit-hs-expr val arities
+    is IrDoExec (e) (sp) -> emit-hs-expr e arities) & emit-hs-act-stmts stmts (i + 1) arities
+
+Section: Builtin Emitter
+
+  HsBuiltinEmitter = record {
+   name : Text,
+   emit : List IRExpr, List ArityEntry -> Text
+  }
+
+  bsearch-hs-builtin-pos : List HsBuiltinEmitter, Text, Integer, Integer -> Integer
+  bsearch-hs-builtin-pos (entries) (name) (lo) (hi) =
+   if lo >= hi then lo
+   else let mid = lo + (hi - lo) / 2
+   in let mid-name = (list-at entries mid).name
+   in if text-compare name mid-name <= 0 then bsearch-hs-builtin-pos entries name lo mid
+      else bsearch-hs-builtin-pos entries name (mid + 1) hi
+
+  sort-hs-builtins : List HsBuiltinEmitter -> List HsBuiltinEmitter
+  sort-hs-builtins (xs) = sort-by xs (\a b -> text-compare (a.name) (b.name))
+
+  hs-builtin-emitters : List HsBuiltinEmitter =
+   sort-hs-builtins [
+    HsBuiltinEmitter { name = "abs", emit = \args arities -> "(abs " & emit-hs-expr (list-at args 0) arities & ")" },
+    HsBuiltinEmitter { name = "char-at", emit = \args arities -> "(" & emit-hs-expr (list-at args 0) arities & " !! " & emit-hs-expr (list-at args 1) arities & ")" },
+    HsBuiltinEmitter { name = "char-code-at", emit = \args arities -> "(Data.Char.ord (" & emit-hs-expr (list-at args 0) arities & " !! " & emit-hs-expr (list-at args 1) arities & "))" },
+    HsBuiltinEmitter { name = "file-exists", emit = \args arities -> "(System.Directory.doesFileExist " & emit-hs-expr (list-at args 0) arities & ")" },
+    HsBuiltinEmitter { name = "int-mod", emit = \args arities -> "(mod " & emit-hs-expr (list-at args 0) arities & " " & emit-hs-expr (list-at args 1) arities & ")" },
+    HsBuiltinEmitter { name = "integer-to-text", emit = \args arities -> "(show " & emit-hs-expr (list-at args 0) arities & ")" },
+    HsBuiltinEmitter { name = "list-at", emit = \args arities -> "(" & emit-hs-expr (list-at args 0) arities & " !! " & emit-hs-expr (list-at args 1) arities & ")" },
+    HsBuiltinEmitter { name = "list-length", emit = \args arities -> "(length " & emit-hs-expr (list-at args 0) arities & ")" },
+    HsBuiltinEmitter { name = "list-snoc", emit = \args arities -> "(" & emit-hs-expr (list-at args 0) arities & " ++ [" & emit-hs-expr (list-at args 1) arities & "])" },
+    HsBuiltinEmitter { name = "max", emit = \args arities -> "(max " & emit-hs-expr (list-at args 0) arities & " " & emit-hs-expr (list-at args 1) arities & ")" },
+    HsBuiltinEmitter { name = "min", emit = \args arities -> "(min " & emit-hs-expr (list-at args 0) arities & " " & emit-hs-expr (list-at args 1) arities & ")" },
+    HsBuiltinEmitter { name = "negate", emit = \args arities -> "(negate " & emit-hs-expr (list-at args 0) arities & ")" },
+    HsBuiltinEmitter { name = "print-error-uni", emit = \args arities -> "(System.IO.hPutStrLn System.IO.stderr " & emit-hs-expr (list-at args 0) arities & ")" },
+    HsBuiltinEmitter { name = "print-line-uni", emit = \args arities -> "(putStrLn " & emit-hs-expr (list-at args 0) arities & ")" },
+    HsBuiltinEmitter { name = "read-file", emit = \args arities -> "(readFile " & emit-hs-expr (list-at args 0) arities & ")" },
+    HsBuiltinEmitter { name = "read-line", emit = \args arities -> "getLine" },
+    HsBuiltinEmitter { name = "show", emit = \args arities -> "(show " & emit-hs-expr (list-at args 0) arities & ")" },
+    HsBuiltinEmitter { name = "substring", emit = \args arities -> "(take " & emit-hs-expr (list-at args 2) arities & " (drop " & emit-hs-expr (list-at args 1) arities & " " & emit-hs-expr (list-at args 0) arities & "))" },
+    HsBuiltinEmitter { name = "text-compare", emit = \args arities -> "(compare " & emit-hs-expr (list-at args 0) arities & " " & emit-hs-expr (list-at args 1) arities & ")" },
+    HsBuiltinEmitter { name = "text-contains", emit = \args arities -> "(Data.List.isInfixOf " & emit-hs-expr (list-at args 1) arities & " " & emit-hs-expr (list-at args 0) arities & ")" },
+    HsBuiltinEmitter { name = "text-length", emit = \args arities -> "(length " & emit-hs-expr (list-at args 0) arities & ")" },
+    HsBuiltinEmitter { name = "text-replace", emit = \args arities -> "(Data.Text.unpack (Data.Text.replace (Data.Text.pack " & emit-hs-expr (list-at args 1) arities & ") (Data.Text.pack " & emit-hs-expr (list-at args 2) arities & ") (Data.Text.pack " & emit-hs-expr (list-at args 0) arities & ")))" },
+    HsBuiltinEmitter { name = "text-split", emit = \args arities -> "(Data.List.Split.splitOn " & emit-hs-expr (list-at args 1) arities & " " & emit-hs-expr (list-at args 0) arities & ")" },
+    HsBuiltinEmitter { name = "text-starts-with", emit = \args arities -> "(Data.List.isPrefixOf " & emit-hs-expr (list-at args 1) arities & " " & emit-hs-expr (list-at args 0) arities & ")" },
+    HsBuiltinEmitter { name = "text-to-integer", emit = \args arities -> "(read " & emit-hs-expr (list-at args 0) arities & " :: Int)" },
+    HsBuiltinEmitter { name = "write-file", emit = \args arities -> "(writeFile " & emit-hs-expr (list-at args 0) arities & " " & emit-hs-expr (list-at args 1) arities & ")" }
+   ]
+
+  lookup-hs-builtin : Text, List IRExpr, List ArityEntry -> Text
+  lookup-hs-builtin (name) (args) (arities) =
+   let len = list-length hs-builtin-emitters
+   in let pos = bsearch-hs-builtin-pos hs-builtin-emitters name 0 len
+   in if pos >= len then ""
+      else let e = list-at hs-builtin-emitters pos
+      in if e.name == name then e.emit args arities else ""
+
+Section: Apply Emission
+
+  emit-hs-apply : IRExpr, List ArityEntry -> Text
+  emit-hs-apply (e) (arities) =
+   let chain = collect-apply-chain e []
+   in let root = chain.root
+   in let args = chain.args
+   in when root
+    is IrName (n) (ty) (sp) ->
+     if is-mktup-name n then "(" & emit-hs-tup-args args arities 0 & ")"
+     else let builtin = lookup-hs-builtin n args arities
+     in if text-length builtin > 0 then builtin
+     else "(" & hs-sanitize n & " " & emit-hs-apply-args args arities 0 & ")"
+    is otherwise -> emit-hs-expr-curried e arities
+
+  emit-hs-apply-args : List IRExpr, List ArityEntry, Integer -> Text
+  emit-hs-apply-args (args) (arities) (i) =
+   if i == list-length args then ""
+   else if i == list-length args - 1 then emit-hs-expr (list-at args i) arities
+   else emit-hs-expr (list-at args i) arities & " " & emit-hs-apply-args args arities (i + 1)
+
+  emit-hs-expr-curried : IRExpr, List ArityEntry -> Text
+  emit-hs-expr-curried (e) (arities) =
+   when e
+    is IrApply (f) (a) (ty) (sp) -> "(" & emit-hs-expr f arities & " " & emit-hs-expr a arities & ")"
+    is otherwise -> emit-hs-expr e arities
+
+Section: Definition Emission
+
+  emit-hs-def : IRDef, List ArityEntry -> Text
+  emit-hs-def (d) (arities) =
+   let name = hs-sanitize (d.name)
+   in let params-text = emit-hs-def-params (d.params) 0
+   in name & " " & params-text & "= " & emit-hs-expr (d.body) arities & "\n\n"
+
+  emit-hs-def-params : List IRParam, Integer -> Text
+  emit-hs-def-params (params) (i) =
+   if i == list-length params then ""
+   else hs-sanitize ((list-at params i).name) & " " & emit-hs-def-params params (i + 1)
+
+  emit-hs-defs : List IRDef, Integer, List ArityEntry -> Text
+  emit-hs-defs (defs) (i) (arities) =
+   if i == list-length defs then ""
+   else emit-hs-def (list-at defs i) arities & emit-hs-defs defs (i + 1) arities
+
+Section: Chapter Emission
+
+  emit-haskell-chapter : IRChapter, List ATypeDef -> Text
+  emit-haskell-chapter (m) (type-defs) =
+   let arities = build-arity-map (m.defs) 0 []
+   in let header = "import Data.Map (Map)\nimport qualified Data.Map as Map\nimport qualified Data.List\nimport qualified Data.List.Split\nimport qualified Data.Text\nimport qualified Data.Char\nimport qualified System.IO\nimport qualified System.Directory\n\n"
+   in let types-text = emit-hs-type-defs type-defs 0
+   in let defs-text = emit-hs-defs (m.defs) 0 arities
+   in header & types-text & defs-text & "main :: IO ()\nmain = " & hs-sanitize opening-entry-point & "\n"
+
+  emit-hs-tup-args : List IRExpr, List ArityEntry, Integer -> Text
+  emit-hs-tup-args (args) (arities) (i) =
+   if i == list-length args then ""
+   else let sep = if i > 0 then ", " else ""
+   in sep & emit-hs-expr (list-at args i) arities & emit-hs-tup-args args arities (i + 1)
+
+  emit-hs-tup-pats : List IRPat, Integer -> Text
+  emit-hs-tup-pats (subs) (i) =
+   if i == list-length subs then ""
+   else let sep = if i > 0 then ", " else ""
+   in sep & emit-hs-pat (list-at subs i) & emit-hs-tup-pats subs (i + 1)
+
+  is-mktup-name : Text -> Boolean
+  is-mktup-name (n) =
+   n == "MkTup2" | n == "MkTup3" | n == "MkTup4" | n == "MkTup5"
+
+  is-tup-type : Text -> Boolean
+  is-tup-type (n) =
+   n == "Tup2" | n == "Tup3" | n == "Tup4" | n == "Tup5"
+
+Page 1

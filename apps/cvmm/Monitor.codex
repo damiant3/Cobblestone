@@ -1,0 +1,676 @@
+Chapter: Monitor
+  cites Cvmm chapter CvmmTypes
+  cites UI chapter Widget
+  cites UI chapter Layout
+  cites UI chapter DataTable
+  cites UI chapter Dropdown
+  cites UI chapter FilterableList
+  cites UI chapter DetailPane
+  cites UI chapter StatusBadge
+  cites UI chapter SearchBar
+  cites UI chapter CommandPalette
+  cites UI chapter SettingsPanel
+  cites UI chapter Validation
+  cites Foreword chapter Maybe
+
+ Composable monitoring dashboard. A MonitorLayout is a grid of panels,
+ each bound to a data source and rendered with a chosen visualization.
+ Users pick from a catalog of panel types, place them on the grid,
+ resize them, and save the layout. Multiple layouts can be saved and
+ switched between. Think Grafana: the same CPU data can show as a
+ gauge, a sparkline, a number, or a table depending on the panel type.
+
+ The key abstraction: a DataSource knows how to fetch a value. A
+ PanelViz knows how to render it. A MonitorPanel binds them together
+ and adds position/size on the grid. A MonitorLayout is just a list
+ of panels. The monitor is the composition engine.
+
+Section: Data Sources
+
+  DataSourceKind =
+    | DsCpuPercent
+    | DsMemPercent
+    | DsMemUsed
+    | DsMemTotal
+    | DsDiskPercent
+    | DsDiskUsed
+    | DsDiskTotal
+    | DsUptime
+    | DsProcessCount
+    | DsProcessTopCpu (Integer)
+    | DsProcessTopMem (Integer)
+    | DsServiceRunning
+    | DsServiceTotal
+    | DsServiceList
+    | DsPortListeners
+    | DsPortConnections
+    | DsPortActiveConns
+    | DsNicCount
+    | DsNicRxRate (Text)
+    | DsNicTxRate (Text)
+    | DsNicRxTotal
+    | DsNicTxTotal
+    | DsFleetTotal
+    | DsFleetHealthy
+    | DsFleetNodes
+    | DsLogErrors
+    | DsLogWarnings
+    | DsLogRecent (Integer)
+    | DsLogStream
+    | DsUsbDevices
+    | DsGpuUtil
+    | DsGpuTemp
+    | DsGpuVram
+    | DsServerCount
+    | DsServerHealthy
+    | DsServerRequests
+    | DsDeployActive
+    | DsTerminalScreen
+    | DsCustom (Text)
+
+  ds-kind-label : DataSourceKind -> Text
+  ds-kind-label (k) = when k
+    is DsCpuPercent -> "CPU %"
+    is DsMemPercent -> "Memory %"
+    is DsMemUsed -> "Memory Used"
+    is DsMemTotal -> "Memory Total"
+    is DsDiskPercent -> "Disk %"
+    is DsDiskUsed -> "Disk Used"
+    is DsDiskTotal -> "Disk Total"
+    is DsUptime -> "Uptime"
+    is DsProcessCount -> "Process Count"
+    is DsProcessTopCpu (n) -> "Top " & show n & " CPU"
+    is DsProcessTopMem (n) -> "Top " & show n & " Memory"
+    is DsServiceRunning -> "Services Running"
+    is DsServiceTotal -> "Services Total"
+    is DsServiceList -> "Service List"
+    is DsPortListeners -> "Port Listeners"
+    is DsPortConnections -> "Connections"
+    is DsPortActiveConns -> "Active Connections"
+    is DsNicCount -> "NIC Count"
+    is DsNicRxRate (nic) -> nic & " RX/s"
+    is DsNicTxRate (nic) -> nic & " TX/s"
+    is DsNicRxTotal -> "Total RX"
+    is DsNicTxTotal -> "Total TX"
+    is DsFleetTotal -> "Fleet Total"
+    is DsFleetHealthy -> "Fleet Healthy"
+    is DsFleetNodes -> "Fleet Nodes"
+    is DsLogErrors -> "Log Errors"
+    is DsLogWarnings -> "Log Warnings"
+    is DsLogRecent (n) -> "Last " & show n & " Logs"
+    is DsLogStream -> "Log Stream"
+    is DsUsbDevices -> "USB Devices"
+    is DsGpuUtil -> "GPU Utilization"
+    is DsGpuTemp -> "GPU Temperature"
+    is DsGpuVram -> "GPU VRAM"
+    is DsServerCount -> "Server Count"
+    is DsServerHealthy -> "Servers Healthy"
+    is DsServerRequests -> "Server Requests"
+    is DsDeployActive -> "Active Deployments"
+    is DsTerminalScreen -> "Terminal"
+    is DsCustom (name) -> name
+
+  ds-kind-category : DataSourceKind -> Text
+  ds-kind-category (k) = when k
+    is DsCpuPercent -> "System"
+    is DsMemPercent -> "System"
+    is DsMemUsed -> "System"
+    is DsMemTotal -> "System"
+    is DsDiskPercent -> "System"
+    is DsDiskUsed -> "System"
+    is DsDiskTotal -> "System"
+    is DsUptime -> "System"
+    is DsProcessCount -> "Processes"
+    is DsProcessTopCpu (n) -> "Processes"
+    is DsProcessTopMem (n) -> "Processes"
+    is DsServiceRunning -> "Services"
+    is DsServiceTotal -> "Services"
+    is DsServiceList -> "Services"
+    is DsPortListeners -> "Network"
+    is DsPortConnections -> "Network"
+    is DsPortActiveConns -> "Network"
+    is DsNicCount -> "Network"
+    is DsNicRxRate (nic) -> "Network"
+    is DsNicTxRate (nic) -> "Network"
+    is DsNicRxTotal -> "Network"
+    is DsNicTxTotal -> "Network"
+    is DsFleetTotal -> "Fleet"
+    is DsFleetHealthy -> "Fleet"
+    is DsFleetNodes -> "Fleet"
+    is DsLogErrors -> "Logs"
+    is DsLogWarnings -> "Logs"
+    is DsLogRecent (n) -> "Logs"
+    is DsLogStream -> "Logs"
+    is DsUsbDevices -> "Hardware"
+    is DsGpuUtil -> "Hardware"
+    is DsGpuTemp -> "Hardware"
+    is DsGpuVram -> "Hardware"
+    is DsServerCount -> "Servers"
+    is DsServerHealthy -> "Servers"
+    is DsServerRequests -> "Servers"
+    is DsDeployActive -> "Deploy"
+    is DsTerminalScreen -> "Terminal"
+    is DsCustom (name) -> "Custom"
+
+Section: Data Values
+
+  DataValue =
+    | DvInteger (Integer)
+    | DvPercent (Integer)
+    | DvBytes (ByteSize)
+    | DvText (Text)
+    | DvDuration (Integer)
+    | DvList (List DataRow)
+    | DvStatus (ResourceStatus)
+    | DvEmpty
+
+  DataRow = record {
+    dr-label : Text,
+    dr-value : DataValue,
+    dr-sub : Text
+  }
+
+  dv-to-text : DataValue -> Text
+  dv-to-text (v) = when v
+    is DvInteger (n) -> show n
+    is DvPercent (n) -> show n & "%"
+    is DvBytes (sz) -> format-bytes sz
+    is DvText (s) -> s
+    is DvDuration (secs) -> format-uptime (Uptime { ut-seconds = secs })
+    is DvList (rows) -> show (list-length rows) & " items"
+    is DvStatus (s) -> status-label s
+    is DvEmpty -> ""
+
+  dv-to-integer : DataValue -> Integer
+  dv-to-integer (v) = when v
+    is DvInteger (n) -> n
+    is DvPercent (n) -> n
+    is DvBytes (sz) -> sz.bs-bytes
+    is DvDuration (s) -> s
+    is otherwise -> 0
+
+Section: Visualizations
+
+  PanelViz =
+    | VizGauge
+    | VizNumber
+    | VizSparkline
+    | VizBar
+    | VizTable
+    | VizLogTail
+    | VizStatus
+    | VizText
+    | VizPieChart
+    | VizHeatMap
+    | VizTerminal
+
+  viz-label : PanelViz -> Text
+  viz-label (v) = when v
+    is VizGauge -> "Gauge"
+    is VizNumber -> "Number"
+    is VizSparkline -> "Sparkline"
+    is VizBar -> "Bar"
+    is VizTable -> "Table"
+    is VizLogTail -> "Log Tail"
+    is VizStatus -> "Status"
+    is VizText -> "Text"
+    is VizPieChart -> "Pie Chart"
+    is VizHeatMap -> "Heat Map"
+    is VizTerminal -> "Terminal"
+
+  viz-accepts-list : PanelViz -> Boolean
+  viz-accepts-list (v) = when v
+    is VizTable -> True
+    is VizLogTail -> True
+    is VizBar -> True
+    is VizHeatMap -> True
+    is otherwise -> False
+
+Section: Panel
+
+  MonitorPanel = record {
+    mp-id : Text,
+    mp-title : Text,
+    mp-source : DataSourceKind,
+    mp-viz : PanelViz,
+    mp-row : Integer,
+    mp-col : Integer,
+    mp-width : Integer,
+    mp-height : Integer,
+    mp-refresh-ms : Integer,
+    mp-threshold-warn : Integer,
+    mp-threshold-crit : Integer,
+    mp-color-override : Integer,
+    mp-visible : Boolean,
+    mp-last-value : DataValue,
+    mp-sparkline-history : List Integer,
+    mp-sparkline-len : Integer,
+    mp-sparkline-max : Integer
+  }
+
+  monitor-panel-new : Text, Text, DataSourceKind, PanelViz -> MonitorPanel
+  monitor-panel-new (id) (title) (source) (viz) = MonitorPanel {
+    mp-id = id,
+    mp-title = title,
+    mp-source = source,
+    mp-viz = viz,
+    mp-row = 0,
+    mp-col = 0,
+    mp-width = 1,
+    mp-height = 1,
+    mp-refresh-ms = 2000,
+    mp-threshold-warn = 75,
+    mp-threshold-crit = 90,
+    mp-color-override = 0,
+    mp-visible = True,
+    mp-last-value = DvEmpty,
+    mp-sparkline-history = [],
+    mp-sparkline-len = 0,
+    mp-sparkline-max = 60
+  }
+
+  mp-set-position : MonitorPanel, Integer, Integer -> MonitorPanel
+  mp-set-position (p) (row) (col) =
+    __record-set (__record-set p "mp-row" row) "mp-col" col
+
+  mp-set-size : MonitorPanel, Integer, Integer -> MonitorPanel
+  mp-set-size (p) (w) (h) =
+    __record-set (__record-set p "mp-width" w) "mp-height" h
+
+  mp-set-thresholds : MonitorPanel, Integer, Integer -> MonitorPanel
+  mp-set-thresholds (p) (warn) (crit) =
+    __record-set (__record-set p "mp-threshold-warn" warn) "mp-threshold-crit" crit
+
+  mp-update-value : MonitorPanel, DataValue -> MonitorPanel
+  mp-update-value (p) (val) =
+    let new-hist = if p.mp-sparkline-len >= p.mp-sparkline-max then
+      list-push (mp-drop-oldest-spark (p.mp-sparkline-history) (p.mp-sparkline-len)) (dv-to-integer val)
+    else list-push (p.mp-sparkline-history) (dv-to-integer val)
+    in let new-len = if p.mp-sparkline-len >= p.mp-sparkline-max then p.mp-sparkline-len else p.mp-sparkline-len + 1
+    in __record-set (__record-set (__record-set p "mp-last-value" val) "mp-sparkline-history" new-hist) "mp-sparkline-len" new-len
+
+  mp-drop-oldest-spark : List Integer, Integer -> List Integer
+  mp-drop-oldest-spark (hist) (len) =
+    if len <= 1 then []
+    else mp-drop-spark-loop hist 1 len []
+
+  mp-drop-spark-loop : List Integer, Integer, Integer, List Integer -> List Integer
+  mp-drop-spark-loop (hist) (i) (n) (acc) =
+    if i >= n then acc
+    else mp-drop-spark-loop hist (i + 1) n (list-push acc (list-at hist i))
+
+  mp-value-state : MonitorPanel -> Integer
+  mp-value-state (p) =
+    let val = dv-to-integer (p.mp-last-value)
+    in if val >= p.mp-threshold-crit then 2
+    else if val >= p.mp-threshold-warn then 1
+    else 0
+
+Section: Layout
+
+  MonitorLayout = record {
+    ml-id : Text,
+    ml-name : Text,
+    ml-panels : List MonitorPanel,
+    ml-panel-count : Integer,
+    ml-grid-cols : Integer,
+    ml-grid-rows : Integer,
+    ml-refresh-ms : Integer,
+    ml-auto-refresh : Boolean
+  }
+
+  monitor-layout-new : Text, Text -> MonitorLayout
+  monitor-layout-new (id) (name) = MonitorLayout {
+    ml-id = id,
+    ml-name = name,
+    ml-panels = [],
+    ml-panel-count = 0,
+    ml-grid-cols = 4,
+    ml-grid-rows = 6,
+    ml-refresh-ms = 2000,
+    ml-auto-refresh = True
+  }
+
+  ml-add-panel : MonitorLayout, MonitorPanel -> MonitorLayout
+  ml-add-panel (layout) (panel) =
+    __record-set (__record-set layout "ml-panels" (list-push (layout.ml-panels) panel)) "ml-panel-count" (layout.ml-panel-count + 1)
+
+  ml-remove-panel : MonitorLayout, Text -> MonitorLayout
+  ml-remove-panel (layout) (panel-id) =
+    let filtered = ml-filter-panels (layout.ml-panels) panel-id 0 (layout.ml-panel-count) []
+    in __record-set (__record-set layout "ml-panels" filtered) "ml-panel-count" (list-length filtered)
+
+  ml-filter-panels : List MonitorPanel, Text, Integer, Integer, List MonitorPanel -> List MonitorPanel
+  ml-filter-panels (panels) (id) (i) (n) (acc) =
+    if i >= n then acc
+    else let p = list-at panels i
+    in if p.mp-id == id then ml-filter-panels panels id (i + 1) n acc
+    else ml-filter-panels panels id (i + 1) n (list-push acc p)
+
+  ml-find-panel : MonitorLayout, Text -> Maybe MonitorPanel
+  ml-find-panel (layout) (id) = ml-find-loop (layout.ml-panels) id 0 (layout.ml-panel-count)
+
+  ml-find-loop : List MonitorPanel, Text, Integer, Integer -> Maybe MonitorPanel
+  ml-find-loop (panels) (id) (i) (n) =
+    if i >= n then None
+    else let p = list-at panels i
+    in if p.mp-id == id then Just p
+    else ml-find-loop panels id (i + 1) n
+
+  ml-update-panel : MonitorLayout, Text, DataValue -> MonitorLayout
+  ml-update-panel (layout) (panel-id) (val) =
+    let updated = ml-update-loop (layout.ml-panels) panel-id val 0 (layout.ml-panel-count) []
+    in __record-set layout "ml-panels" updated
+
+  ml-update-loop : List MonitorPanel, Text, DataValue, Integer, Integer, List MonitorPanel -> List MonitorPanel
+  ml-update-loop (panels) (id) (val) (i) (n) (acc) =
+    if i >= n then acc
+    else let p = list-at panels i
+    in if p.mp-id == id then ml-update-loop panels id val (i + 1) n (list-push acc (mp-update-value p val))
+    else ml-update-loop panels id val (i + 1) n (list-push acc p)
+
+  ml-move-panel : MonitorLayout, Text, Integer, Integer -> MonitorLayout
+  ml-move-panel (layout) (panel-id) (row) (col) =
+    let updated = ml-move-loop (layout.ml-panels) panel-id row col 0 (layout.ml-panel-count) []
+    in __record-set layout "ml-panels" updated
+
+  ml-move-loop : List MonitorPanel, Text, Integer, Integer, Integer, Integer, List MonitorPanel -> List MonitorPanel
+  ml-move-loop (panels) (id) (row) (col) (i) (n) (acc) =
+    if i >= n then acc
+    else let p = list-at panels i
+    in if p.mp-id == id then ml-move-loop panels id row col (i + 1) n (list-push acc (mp-set-position p row col))
+    else ml-move-loop panels id row col (i + 1) n (list-push acc p)
+
+  ml-resize-panel : MonitorLayout, Text, Integer, Integer -> MonitorLayout
+  ml-resize-panel (layout) (panel-id) (w) (h) =
+    let updated = ml-resize-loop (layout.ml-panels) panel-id w h 0 (layout.ml-panel-count) []
+    in __record-set layout "ml-panels" updated
+
+  ml-resize-loop : List MonitorPanel, Text, Integer, Integer, Integer, Integer, List MonitorPanel -> List MonitorPanel
+  ml-resize-loop (panels) (id) (w) (h) (i) (n) (acc) =
+    if i >= n then acc
+    else let p = list-at panels i
+    in if p.mp-id == id then ml-resize-loop panels id w h (i + 1) n (list-push acc (mp-set-size p w h))
+    else ml-resize-loop panels id w h (i + 1) n (list-push acc p)
+
+Section: Monitor State
+
+  MonitorState = record {
+    mon-layouts : List MonitorLayout,
+    mon-layout-count : Integer,
+    mon-active-layout : Text,
+    mon-editing : Boolean,
+    mon-catalog-open : Boolean,
+    mon-drag-panel : Text,
+    mon-next-panel-id : Integer
+  }
+
+  monitor-new : MonitorState
+  monitor-new = MonitorState {
+    mon-layouts = [],
+    mon-layout-count = 0,
+    mon-active-layout = "",
+    mon-editing = False,
+    mon-catalog-open = False,
+    mon-drag-panel = "",
+    mon-next-panel-id = 1
+  }
+
+Section: Monitor Actions
+
+  mon-add-layout : MonitorState, MonitorLayout -> MonitorState
+  mon-add-layout (st) (layout) =
+    let new-layouts = list-push (st.mon-layouts) layout
+    in MonitorState {
+      mon-layouts = new-layouts,
+      mon-layout-count = st.mon-layout-count + 1,
+      mon-active-layout = if st.mon-layout-count == 0 then layout.ml-id else st.mon-active-layout,
+      mon-editing = st.mon-editing,
+      mon-catalog-open = st.mon-catalog-open,
+      mon-drag-panel = st.mon-drag-panel,
+      mon-next-panel-id = st.mon-next-panel-id
+    }
+
+  mon-switch-layout : MonitorState, Text -> MonitorState
+  mon-switch-layout (st) (id) = __record-set st "mon-active-layout" id
+
+  mon-toggle-edit : MonitorState -> MonitorState
+  mon-toggle-edit (st) = __record-set st "mon-editing" (if st.mon-editing then False else True)
+
+  mon-toggle-catalog : MonitorState -> MonitorState
+  mon-toggle-catalog (st) = __record-set st "mon-catalog-open" (if st.mon-catalog-open then False else True)
+
+  mon-active : MonitorState -> Maybe MonitorLayout
+  mon-active (st) = mon-find-layout (st.mon-layouts) (st.mon-active-layout) 0 (st.mon-layout-count)
+
+  mon-find-layout : List MonitorLayout, Text, Integer, Integer -> Maybe MonitorLayout
+  mon-find-layout (layouts) (id) (i) (n) =
+    if i >= n then None
+    else let l = list-at layouts i
+    in if l.ml-id == id then Just l
+    else mon-find-layout layouts id (i + 1) n
+
+  mon-add-panel-to-active : MonitorState, DataSourceKind, PanelViz, Text -> MonitorState
+  mon-add-panel-to-active (st) (source) (viz) (title) =
+    let panel-id = "panel-" & show (st.mon-next-panel-id)
+    in let panel = monitor-panel-new panel-id title source viz
+    in let updated = mon-update-active-layout st (\layout -> ml-add-panel layout panel)
+    in __record-set updated "mon-next-panel-id" (st.mon-next-panel-id + 1)
+
+  mon-remove-panel-from-active : MonitorState, Text -> MonitorState
+  mon-remove-panel-from-active (st) (panel-id) =
+    mon-update-active-layout st (\layout -> ml-remove-panel layout panel-id)
+
+  mon-update-active-layout : MonitorState, (MonitorLayout -> MonitorLayout) -> MonitorState
+  mon-update-active-layout (st) (f) =
+    let updated = mon-map-layout (st.mon-layouts) (st.mon-active-layout) f 0 (st.mon-layout-count) []
+    in __record-set st "mon-layouts" updated
+
+  mon-map-layout : List MonitorLayout, Text, (MonitorLayout -> MonitorLayout), Integer, Integer, List MonitorLayout -> List MonitorLayout
+  mon-map-layout (layouts) (id) (f) (i) (n) (acc) =
+    if i >= n then acc
+    else let l = list-at layouts i
+    in if l.ml-id == id then mon-map-layout layouts id f (i + 1) n (list-push acc (f l))
+    else mon-map-layout layouts id f (i + 1) n (list-push acc l)
+
+Section: Preset Layouts
+
+  mon-preset-system : MonitorLayout
+  mon-preset-system =
+    let layout = monitor-layout-new "system" "System Overview"
+    in let cpu = mp-set-position (monitor-panel-new "p-cpu" "CPU" DsCpuPercent VizGauge) 0 0
+    in let mem = mp-set-position (monitor-panel-new "p-mem" "Memory" DsMemPercent VizGauge) 0 1
+    in let disk = mp-set-position (monitor-panel-new "p-disk" "Disk" DsDiskPercent VizGauge) 0 2
+    in let uptime = mp-set-position (monitor-panel-new "p-uptime" "Uptime" DsUptime VizNumber) 0 3
+    in let procs = mp-set-size (mp-set-position (monitor-panel-new "p-procs" "Top CPU Processes" (DsProcessTopCpu 5) VizTable) 1 0) 2 2
+    in let svcs = mp-set-size (mp-set-position (monitor-panel-new "p-svcs" "Services" DsServiceList VizTable) 1 2) 2 2
+    in let logs = mp-set-size (mp-set-position (monitor-panel-new "p-logs" "Recent Logs" (DsLogRecent 20) VizLogTail) 3 0) 4 1
+    in let net-rx = mp-set-position (monitor-panel-new "p-netrx" "Network RX" DsNicRxTotal VizSparkline) 3 2
+    in let net-tx = mp-set-position (monitor-panel-new "p-nettx" "Network TX" DsNicTxTotal VizSparkline) 3 3
+    in ml-add-panel (ml-add-panel (ml-add-panel (ml-add-panel (ml-add-panel (ml-add-panel (ml-add-panel (ml-add-panel (ml-add-panel layout cpu) mem) disk) uptime) procs) svcs) logs) net-rx) net-tx
+
+  mon-preset-network : MonitorLayout
+  mon-preset-network =
+    let layout = monitor-layout-new "network" "Network Monitor"
+    in let nics = mp-set-size (mp-set-position (monitor-panel-new "n-nics" "Interfaces" DsNicCount VizNumber) 0 0) 1 1
+    in let listeners = mp-set-size (mp-set-position (monitor-panel-new "n-listen" "Listeners" DsPortListeners VizTable) 0 1) 2 2
+    in let active = mp-set-position (monitor-panel-new "n-active" "Active Conns" DsPortActiveConns VizNumber) 0 3
+    in let rx = mp-set-size (mp-set-position (monitor-panel-new "n-rx" "RX Total" DsNicRxTotal VizSparkline) 2 0) 2 1
+    in let tx = mp-set-size (mp-set-position (monitor-panel-new "n-tx" "TX Total" DsNicTxTotal VizSparkline) 2 1) 2 1
+    in let conns = mp-set-size (mp-set-position (monitor-panel-new "n-conns" "Connections" DsPortConnections VizTable) 2 2) 2 2
+    in ml-add-panel (ml-add-panel (ml-add-panel (ml-add-panel (ml-add-panel (ml-add-panel layout nics) listeners) active) rx) tx) conns
+
+  mon-preset-fleet : MonitorLayout
+  mon-preset-fleet =
+    let layout = monitor-layout-new "fleet" "Fleet Dashboard"
+    in let total = mp-set-position (monitor-panel-new "f-total" "Total Nodes" DsFleetTotal VizNumber) 0 0
+    in let healthy = mp-set-position (monitor-panel-new "f-healthy" "Healthy" DsFleetHealthy VizNumber) 0 1
+    in let servers = mp-set-position (monitor-panel-new "f-servers" "Servers" DsServerCount VizNumber) 0 2
+    in let deploys = mp-set-position (monitor-panel-new "f-deploy" "Active Deploys" DsDeployActive VizNumber) 0 3
+    in let nodes = mp-set-size (mp-set-position (monitor-panel-new "f-nodes" "Fleet Nodes" DsFleetNodes VizTable) 1 0) 4 3
+    in let log = mp-set-size (mp-set-position (monitor-panel-new "f-log" "Fleet Log" DsLogStream VizLogTail) 1 3) 4 1
+    in ml-add-panel (ml-add-panel (ml-add-panel (ml-add-panel (ml-add-panel (ml-add-panel layout total) healthy) servers) deploys) nodes) log
+
+Section: Catalog
+
+  CatalogEntry = record {
+    ce-source : DataSourceKind,
+    ce-viz : PanelViz,
+    ce-default-title : Text,
+    ce-category : Text,
+    ce-description : Text
+  }
+
+  monitor-catalog : List CatalogEntry
+  monitor-catalog = [
+    CatalogEntry { ce-source = DsCpuPercent, ce-viz = VizGauge, ce-default-title = "CPU", ce-category = "System", ce-description = "CPU utilization gauge" },
+    CatalogEntry { ce-source = DsCpuPercent, ce-viz = VizSparkline, ce-default-title = "CPU History", ce-category = "System", ce-description = "CPU utilization over time" },
+    CatalogEntry { ce-source = DsMemPercent, ce-viz = VizGauge, ce-default-title = "Memory", ce-category = "System", ce-description = "Memory utilization gauge" },
+    CatalogEntry { ce-source = DsMemUsed, ce-viz = VizNumber, ce-default-title = "Memory Used", ce-category = "System", ce-description = "Memory used in bytes" },
+    CatalogEntry { ce-source = DsDiskPercent, ce-viz = VizGauge, ce-default-title = "Disk", ce-category = "System", ce-description = "Disk utilization gauge" },
+    CatalogEntry { ce-source = DsUptime, ce-viz = VizNumber, ce-default-title = "Uptime", ce-category = "System", ce-description = "System uptime" },
+    CatalogEntry { ce-source = DsProcessCount, ce-viz = VizNumber, ce-default-title = "Processes", ce-category = "Processes", ce-description = "Running process count" },
+    CatalogEntry { ce-source = DsProcessTopCpu 5, ce-viz = VizTable, ce-default-title = "Top CPU", ce-category = "Processes", ce-description = "Top 5 processes by CPU" },
+    CatalogEntry { ce-source = DsProcessTopMem 5, ce-viz = VizTable, ce-default-title = "Top Memory", ce-category = "Processes", ce-description = "Top 5 processes by memory" },
+    CatalogEntry { ce-source = DsServiceRunning, ce-viz = VizNumber, ce-default-title = "Running Services", ce-category = "Services", ce-description = "Count of running services" },
+    CatalogEntry { ce-source = DsServiceList, ce-viz = VizTable, ce-default-title = "Service List", ce-category = "Services", ce-description = "All services with status" },
+    CatalogEntry { ce-source = DsPortListeners, ce-viz = VizTable, ce-default-title = "Listeners", ce-category = "Network", ce-description = "Open port listeners" },
+    CatalogEntry { ce-source = DsPortActiveConns, ce-viz = VizNumber, ce-default-title = "Active Conns", ce-category = "Network", ce-description = "Active TCP connections" },
+    CatalogEntry { ce-source = DsNicRxTotal, ce-viz = VizSparkline, ce-default-title = "Network RX", ce-category = "Network", ce-description = "Total bytes received" },
+    CatalogEntry { ce-source = DsNicTxTotal, ce-viz = VizSparkline, ce-default-title = "Network TX", ce-category = "Network", ce-description = "Total bytes sent" },
+    CatalogEntry { ce-source = DsFleetTotal, ce-viz = VizNumber, ce-default-title = "Fleet Total", ce-category = "Fleet", ce-description = "Total fleet nodes" },
+    CatalogEntry { ce-source = DsFleetHealthy, ce-viz = VizNumber, ce-default-title = "Fleet Healthy", ce-category = "Fleet", ce-description = "Healthy fleet nodes" },
+    CatalogEntry { ce-source = DsFleetNodes, ce-viz = VizTable, ce-default-title = "Fleet Nodes", ce-category = "Fleet", ce-description = "Fleet node table" },
+    CatalogEntry { ce-source = DsLogRecent 20, ce-viz = VizLogTail, ce-default-title = "Recent Logs", ce-category = "Logs", ce-description = "Last 20 log entries" },
+    CatalogEntry { ce-source = DsLogStream, ce-viz = VizLogTail, ce-default-title = "Log Stream", ce-category = "Logs", ce-description = "Live log stream" },
+    CatalogEntry { ce-source = DsLogErrors, ce-viz = VizNumber, ce-default-title = "Log Errors", ce-category = "Logs", ce-description = "Error count" },
+    CatalogEntry { ce-source = DsGpuUtil, ce-viz = VizGauge, ce-default-title = "GPU", ce-category = "Hardware", ce-description = "GPU utilization" },
+    CatalogEntry { ce-source = DsGpuTemp, ce-viz = VizNumber, ce-default-title = "GPU Temp", ce-category = "Hardware", ce-description = "GPU temperature" },
+    CatalogEntry { ce-source = DsUsbDevices, ce-viz = VizTable, ce-default-title = "USB Devices", ce-category = "Hardware", ce-description = "Connected USB devices" },
+    CatalogEntry { ce-source = DsTerminalScreen, ce-viz = VizTerminal, ce-default-title = "Terminal", ce-category = "Terminal", ce-description = "Serial console" }
+  ]
+
+Section: Widget Building
+
+  mon-panel-widget : MonitorPanel -> WidgetNode
+  mon-panel-widget (p) =
+    let title = widget-label (p.mp-id & "-title") (p.mp-title)
+    in let value-text = dv-to-text (p.mp-last-value)
+    in let body = when p.mp-viz
+      is VizGauge -> widget-gauge (p.mp-id & "-gauge") (dv-to-integer (p.mp-last-value)) 100
+      is VizNumber -> widget-label (p.mp-id & "-num") value-text
+      is VizSparkline -> widget-custom (p.mp-id & "-spark") "sparkline" (p.mp-width * 200) 60
+      is VizBar -> widget-gauge (p.mp-id & "-bar") (dv-to-integer (p.mp-last-value)) 100
+      is VizTable -> widget-label (p.mp-id & "-table") value-text
+      is VizLogTail -> widget-label (p.mp-id & "-log") value-text
+      is VizStatus -> widget-label (p.mp-id & "-status") value-text
+      is VizText -> widget-label (p.mp-id & "-text") value-text
+      is VizPieChart -> widget-custom (p.mp-id & "-pie") "piechart" 120 120
+      is VizHeatMap -> widget-custom (p.mp-id & "-heat") "heatmap" (p.mp-width * 200) 120
+      is VizTerminal -> widget-custom (p.mp-id & "-term") "terminal" (p.mp-width * 200) (p.mp-height * 120)
+    in let state = mp-value-state p
+    in let panel = widget-panel p.mp-id DirColumn 4 [title, body]
+    in widget-set-state panel state
+
+  mon-layout-widget : MonitorLayout -> WidgetNode
+  mon-layout-widget (layout) =
+    let title = widget-label (layout.ml-id & "-title") (layout.ml-name)
+    in let panels = mon-layout-panels (layout.ml-panels) 0 (layout.ml-panel-count) []
+    in widget-panel ("layout-" & layout.ml-id) DirColumn 8 ([title] & panels)
+
+  mon-layout-panels : List MonitorPanel, Integer, Integer, List WidgetNode -> List WidgetNode
+  mon-layout-panels (panels) (i) (n) (acc) =
+    if i >= n then acc
+    else let p = list-at panels i
+    in if p.mp-visible then mon-layout-panels panels (i + 1) n (list-push acc (mon-panel-widget p))
+    else mon-layout-panels panels (i + 1) n acc
+
+  mon-catalog-widget : List CatalogEntry -> WidgetNode
+  mon-catalog-widget (entries) =
+    let rows = mon-catalog-rows entries 0 (list-length entries) []
+    in widget-panel "catalog" DirColumn 2 rows
+
+  mon-catalog-rows : List CatalogEntry, Integer, Integer, List WidgetNode -> List WidgetNode
+  mon-catalog-rows (entries) (i) (n) (acc) =
+    if i >= n then acc
+    else let e = list-at entries i
+    in let row = widget-panel ("cat-" & show i) DirRow 8 [
+      widget-label ("cat-title-" & show i) (e.ce-default-title),
+      widget-label ("cat-cat-" & show i) (e.ce-category),
+      widget-label ("cat-desc-" & show i) (e.ce-description),
+      widget-button ("cat-add-" & show i) "Add"
+    ]
+    in mon-catalog-rows entries (i + 1) n (list-push acc row)
+
+  mon-widget : MonitorState -> WidgetNode
+  mon-widget (st) =
+    let toolbar = widget-toolbar "mon-toolbar" [
+      widget-button "mon-edit" (if st.mon-editing then "Done" else "Edit"),
+      widget-button "mon-catalog" (if st.mon-catalog-open then "Close Catalog" else "Add Panel"),
+      widget-button "mon-new-layout" "New Layout"
+    ]
+    in let tabs = mon-layout-tabs (st.mon-layouts) (st.mon-active-layout) 0 (st.mon-layout-count) []
+    in let tab-bar = widget-panel "mon-tabs" DirRow 4 tabs
+    in let body = when mon-active st
+      is Just (layout) -> mon-layout-widget layout
+      is None -> widget-label "mon-empty" "No layouts. Create one or load a preset."
+    in let catalog = if st.mon-catalog-open then mon-catalog-widget monitor-catalog else widget-label "mon-no-cat" ""
+    in widget-panel "monitor" DirColumn 4 [toolbar, tab-bar, body, catalog]
+
+  mon-layout-tabs : List MonitorLayout, Text, Integer, Integer, List WidgetNode -> List WidgetNode
+  mon-layout-tabs (layouts) (active) (i) (n) (acc) =
+    if i >= n then acc
+    else let l = list-at layouts i
+    in let btn = widget-button ("tab-" & l.ml-id) (l.ml-name)
+    in let styled = if l.ml-id == active then widget-set-state btn 4 else btn
+    in mon-layout-tabs layouts active (i + 1) n (list-push acc styled)
+
+Section: JSON
+
+  monitor-panel-to-json : MonitorPanel -> Text
+  monitor-panel-to-json (p) =
+    "{\"id\":\"" & p.mp-id
+    & "\",\"title\":\"" & p.mp-title
+    & "\",\"source\":\"" & ds-kind-label (p.mp-source)
+    & "\",\"viz\":\"" & viz-label (p.mp-viz)
+    & "\",\"row\":" & show (p.mp-row)
+    & ",\"col\":" & show (p.mp-col)
+    & ",\"width\":" & show (p.mp-width)
+    & ",\"height\":" & show (p.mp-height)
+    & ",\"value\":\"" & dv-to-text (p.mp-last-value)
+    & "\",\"state\":" & show (mp-value-state p)
+    & "}"
+
+  monitor-layout-to-json : MonitorLayout -> Text
+  monitor-layout-to-json (layout) =
+    "{\"id\":\"" & layout.ml-id
+    & "\",\"name\":\"" & layout.ml-name
+    & "\",\"cols\":" & show (layout.ml-grid-cols)
+    & ",\"rows\":" & show (layout.ml-grid-rows)
+    & ",\"panelCount\":" & show (layout.ml-panel-count)
+    & ",\"panels\":" & mon-panels-json (layout.ml-panels) 0 (layout.ml-panel-count) ""
+    & "}"
+
+  mon-panels-json : List MonitorPanel, Integer, Integer, Text -> Text
+  mon-panels-json (panels) (i) (n) (acc) =
+    if i >= n then "[" & acc & "]"
+    else let sep = if i == 0 then "" else ","
+    in mon-panels-json panels (i + 1) n (acc & sep & monitor-panel-to-json (list-at panels i))
+
+  monitor-state-to-json : MonitorState -> Text
+  monitor-state-to-json (st) =
+    "{\"activeLayout\":\"" & st.mon-active-layout
+    & "\",\"layoutCount\":" & show (st.mon-layout-count)
+    & ",\"editing\":" & if st.mon-editing then "true" else "false"
+    & ",\"catalogOpen\":" & if st.mon-catalog-open then "true" else "false"
+    & "}"
+
+  catalog-entry-to-json : CatalogEntry -> Text
+  catalog-entry-to-json (e) =
+    "{\"source\":\"" & ds-kind-label (e.ce-source)
+    & "\",\"viz\":\"" & viz-label (e.ce-viz)
+    & "\",\"title\":\"" & e.ce-default-title
+    & "\",\"category\":\"" & e.ce-category
+    & "\",\"description\":\"" & e.ce-description & "\"}"
+
+Page 1

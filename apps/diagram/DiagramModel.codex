@@ -1,0 +1,396 @@
+Chapter: DiagramModel
+  cites Foreword chapter Maybe
+  cites Math chapter Geometry
+  cites Foreword chapter ListUtils
+
+ The core data model for diagrams. A diagram is a graph of
+ nodes and edges. Each node has a shape, position, size, label,
+ and style. Each edge connects two nodes with routing and style.
+
+Section: Diagram Types
+
+  DiagramType =
+    | Flowchart
+    | EntityRelationship
+    | UmlClass
+    | UmlSequence
+    | NetworkTopology
+    | MindMap
+    | StateMachine
+    | Freeform
+
+Section: Shape Types
+
+  ShapeType =
+    | ShapeRect
+    | ShapeRoundRect
+    | ShapeDiamond
+    | ShapeOval
+    | ShapeParallelogram
+    | ShapeHexagon
+    | ShapeCylinder
+    | ShapeCircle
+    | ShapeTriangle
+    | ShapeCloud
+    | ShapeActor
+    | ShapeDocument
+    | ShapeCompartmentBox (Integer)
+
+Section: Edge Styles
+
+  EdgeEndType =
+    | EndNone
+    | EndArrow
+    | EndHollowArrow
+    | EndFilledDiamond
+    | EndHollowDiamond
+    | EndCircle
+    | EndCrow
+    | EndMany
+
+  EdgeLineType =
+    | LineSolid
+    | LineDashed
+    | LineDotted
+
+  EdgeRouting =
+    | RouteStraight
+    | RouteOrthogonal
+    | RouteBezier
+    | RouteStepwise
+
+Section: Port Model
+
+  PortSide =
+    | PortTop
+    | PortBottom
+    | PortLeft
+    | PortRight
+
+  Port = record {
+    port-id   : Integer,
+    port-side : PortSide,
+    port-pos  : Integer
+  }
+
+Section: Style Records
+
+  NodeStyle = record {
+    ns-fill-color   : Integer,
+    ns-stroke-color : Integer,
+    ns-stroke-width : Integer,
+    ns-text-color   : Integer,
+    ns-font-size    : Integer,
+    ns-corner-radius : Integer,
+    ns-opacity      : Integer
+  }
+
+  EdgeStyle = record {
+    es-line-color : Integer,
+    es-line-width : Integer,
+    es-line-type  : EdgeLineType,
+    es-src-end    : EdgeEndType,
+    es-tgt-end    : EdgeEndType,
+    es-label-bg   : Integer
+  }
+
+Section: Node Properties
+
+  NodeProp = record {
+    np-key   : Text,
+    np-value : Text
+  }
+
+Section: Core Records
+
+  DiagramNode = record {
+    dn-id       : Integer,
+    dn-shape    : ShapeType,
+    dn-x        : Integer,
+    dn-y        : Integer,
+    dn-width    : Integer,
+    dn-height   : Integer,
+    dn-label    : Text,
+    dn-sublabel : Text,
+    dn-style    : NodeStyle,
+    dn-ports    : List Port,
+    dn-props    : List NodeProp,
+    dn-locked   : Boolean
+  }
+
+  DiagramEdge = record {
+    de-id       : Integer,
+    de-source   : Integer,
+    de-target   : Integer,
+    de-src-port : Integer,
+    de-tgt-port : Integer,
+    de-label    : Text,
+    de-style    : EdgeStyle,
+    de-routing  : EdgeRouting,
+    de-points   : List Vec2
+  }
+
+  Diagram = record {
+    dg-nodes    : List DiagramNode,
+    dg-edges    : List DiagramEdge,
+    dg-name     : Text,
+    dg-type     : DiagramType,
+    dg-next-id  : Integer,
+    dg-grid     : Integer,
+    dg-snap     : Boolean
+  }
+
+Section: Default Styles
+
+  default-node-style : NodeStyle
+  default-node-style =
+    NodeStyle {
+      ns-fill-color = #FFFFFF,
+      ns-stroke-color = #333333,
+      ns-stroke-width = 2,
+      ns-text-color = #1E1E2E,
+      ns-font-size = 14,
+      ns-corner-radius = 4,
+      ns-opacity = 255
+    }
+
+  default-edge-style : EdgeStyle
+  default-edge-style =
+    EdgeStyle {
+      es-line-color = #333333,
+      es-line-width = 2,
+      es-line-type = LineSolid,
+      es-src-end = EndNone,
+      es-tgt-end = EndArrow,
+      es-label-bg = #FFFFFF
+    }
+
+Section: Diagram Construction
+
+  diagram-new : Text, DiagramType -> Diagram
+  diagram-new (name) (dtype) =
+    Diagram {
+      dg-nodes = [],
+      dg-edges = [],
+      dg-name = name,
+      dg-type = dtype,
+      dg-next-id = 1,
+      dg-grid = 20,
+      dg-snap = True
+    }
+
+  diagram-add-node : Diagram, ShapeType, Integer, Integer, Integer, Integer, Text -> Diagram
+  diagram-add-node (dg) (shape) (x) (y) (w) (h) (label) =
+    let id = dg.dg-next-id
+    in let node = DiagramNode {
+      dn-id = id,
+      dn-shape = shape,
+      dn-x = x,
+      dn-y = y,
+      dn-width = w,
+      dn-height = h,
+      dn-label = label,
+      dn-sublabel = "",
+      dn-style = default-node-style,
+      dn-ports = default-ports,
+      dn-props = [],
+      dn-locked = False
+    }
+    in __record-set (__record-set dg
+      "dg-nodes" (list-push dg.dg-nodes node))
+      "dg-next-id" (id + 1)
+
+  diagram-add-edge : Diagram, Integer, Integer, Text -> Diagram
+  diagram-add-edge (dg) (src) (tgt) (label) =
+    let id = dg.dg-next-id
+    in let edge = DiagramEdge {
+      de-id = id,
+      de-source = src,
+      de-target = tgt,
+      de-src-port = 0,
+      de-tgt-port = 0,
+      de-label = label,
+      de-style = default-edge-style,
+      de-routing = RouteStraight,
+      de-points = []
+    }
+    in __record-set (__record-set dg
+      "dg-edges" (list-push dg.dg-edges edge))
+      "dg-next-id" (id + 1)
+
+  default-ports : List Port
+  default-ports = [
+    Port { port-id = 0, port-side = PortTop, port-pos = 50 },
+    Port { port-id = 1, port-side = PortBottom, port-pos = 50 },
+    Port { port-id = 2, port-side = PortLeft, port-pos = 50 },
+    Port { port-id = 3, port-side = PortRight, port-pos = 50 }
+  ]
+
+Section: Node Operations
+
+  diagram-find-node : Diagram, Integer -> Maybe DiagramNode
+  diagram-find-node (dg) (id) =
+    find-node-in dg.dg-nodes id
+
+  find-node-in : List DiagramNode, Integer -> Maybe DiagramNode
+  find-node-in (nodes) (id) =
+    if list-length nodes == 0 then None
+    else let head = list-at nodes 0
+        in if head.dn-id == id then Just head
+        else find-node-in (list-drop nodes 1) id
+
+  diagram-move-node : Diagram, Integer, Integer, Integer -> Diagram
+  diagram-move-node (dg) (id) (x) (y) =
+    let snapped-x = if dg.dg-snap then snap-to-grid x dg.dg-grid else x
+    in let snapped-y = if dg.dg-snap then snap-to-grid y dg.dg-grid else y
+    in __record-set dg "dg-nodes" (update-node-pos dg.dg-nodes id snapped-x snapped-y)
+
+  update-node-pos : List DiagramNode, Integer, Integer, Integer -> List DiagramNode
+  update-node-pos (nodes) (id) (x) (y) =
+    list-map (move-one-node id x y) nodes
+
+  move-one-node : Integer, Integer, Integer, DiagramNode -> DiagramNode
+  move-one-node (id) (x) (y) (n) =
+    if n.dn-id == id
+    then __record-set (__record-set n "dn-x" x) "dn-y" y
+    else n
+
+  diagram-resize-node : Diagram, Integer, Integer, Integer -> Diagram
+  diagram-resize-node (dg) (id) (w) (h) =
+    __record-set dg "dg-nodes" (list-map (resize-one-node id w h) dg.dg-nodes)
+
+  resize-one-node : Integer, Integer, Integer, DiagramNode -> DiagramNode
+  resize-one-node (id) (w) (h) (n) =
+    if n.dn-id == id
+    then __record-set (__record-set n "dn-width" w) "dn-height" h
+    else n
+
+  diagram-set-label : Diagram, Integer, Text -> Diagram
+  diagram-set-label (dg) (id) (label) =
+    __record-set dg "dg-nodes" (list-map (label-one-node id label) dg.dg-nodes)
+
+  label-one-node : Integer, Text, DiagramNode -> DiagramNode
+  label-one-node (id) (label) (n) =
+    if n.dn-id == id then __record-set n "dn-label" label else n
+
+  diagram-delete-node : Diagram, Integer -> Diagram
+  diagram-delete-node (dg) (id) =
+    let nodes = list-filter dg.dg-nodes (node-id-neq id)
+    in let edges = list-filter dg.dg-edges (edge-not-connected id)
+    in __record-set (__record-set dg "dg-nodes" nodes) "dg-edges" edges
+
+  node-id-neq : Integer, DiagramNode -> Boolean
+  node-id-neq (id) (n) = n.dn-id /= id
+
+  edge-not-connected : Integer, DiagramEdge -> Boolean
+  edge-not-connected (id) (e) =
+    e.de-source /= id & e.de-target /= id
+
+Section: Edge Operations
+
+  diagram-delete-edge : Diagram, Integer -> Diagram
+  diagram-delete-edge (dg) (id) =
+    __record-set dg "dg-edges" (list-filter dg.dg-edges (edge-id-neq id))
+
+  edge-id-neq : Integer, DiagramEdge -> Boolean
+  edge-id-neq (id) (e) = e.de-id /= id
+
+  diagram-set-edge-label : Diagram, Integer, Text -> Diagram
+  diagram-set-edge-label (dg) (id) (label) =
+    __record-set dg "dg-edges" (list-map (label-one-edge id label) dg.dg-edges)
+
+  label-one-edge : Integer, Text, DiagramEdge -> DiagramEdge
+  label-one-edge (id) (label) (e) =
+    if e.de-id == id then __record-set e "de-label" label else e
+
+Section: Hit Testing
+
+  node-at-point : Diagram, Integer, Integer -> Maybe DiagramNode
+  node-at-point (dg) (x) (y) =
+    node-at-point-in dg.dg-nodes x y
+
+  node-at-point-in : List DiagramNode, Integer, Integer -> Maybe DiagramNode
+  node-at-point-in (nodes) (x) (y) =
+    if list-length nodes == 0 then None
+    else let last-idx = list-length nodes - 1
+        in let node = list-at nodes last-idx
+        in if point-in-node node x y
+          then Just node
+          else node-at-point-in (list-take nodes last-idx) x y
+
+  point-in-node : DiagramNode, Integer, Integer -> Boolean
+  point-in-node (n) (px) (py) =
+    px >= n.dn-x & px <= n.dn-x + n.dn-width
+    & py >= n.dn-y & py <= n.dn-y + n.dn-height
+
+  edge-at-point : Diagram, Integer, Integer -> Maybe DiagramEdge
+  edge-at-point (dg) (x) (y) =
+    edge-at-point-in dg.dg-edges dg.dg-nodes x y
+
+  edge-at-point-in : List DiagramEdge, List DiagramNode, Integer, Integer -> Maybe DiagramEdge
+  edge-at-point-in (edges) (nodes) (x) (y) =
+    if list-length edges == 0 then None
+    else let head = list-at edges 0
+        in let src = find-node-in nodes head.de-source
+        in let tgt = find-node-in nodes head.de-target
+        in if edge-near-point src tgt x y 5
+          then Just head
+          else edge-at-point-in (list-drop edges 1) nodes x y
+
+  edge-near-point : Maybe DiagramNode, Maybe DiagramNode, Integer, Integer, Integer -> Boolean
+  edge-near-point (src) (tgt) (px) (py) (threshold) =
+    when src
+      is None -> False
+      is Just (s) -> when tgt
+        is None -> False
+        is Just (t) ->
+          let sx = s.dn-x + s.dn-width / 2
+          in let sy = s.dn-y + s.dn-height / 2
+          in let tx = t.dn-x + t.dn-width / 2
+          in let ty = t.dn-y + t.dn-height / 2
+          in let seg = seg2-new (vec2-new sx sy) (vec2-new tx ty)
+          in let pt = vec2-new px py
+          in let dist = seg2-distance seg pt
+          in dist <= threshold
+
+Section: Port Positions
+
+  port-position : DiagramNode, Port -> Vec2
+  port-position (n) (p) =
+    when p.port-side
+      is PortTop -> vec2-new (n.dn-x + n.dn-width * p.port-pos / 100) n.dn-y
+      is PortBottom -> vec2-new (n.dn-x + n.dn-width * p.port-pos / 100) (n.dn-y + n.dn-height)
+      is PortLeft -> vec2-new n.dn-x (n.dn-y + n.dn-height * p.port-pos / 100)
+      is PortRight -> vec2-new (n.dn-x + n.dn-width) (n.dn-y + n.dn-height * p.port-pos / 100)
+
+  node-center : DiagramNode -> Vec2
+  node-center (n) =
+    vec2-new (n.dn-x + n.dn-width / 2) (n.dn-y + n.dn-height / 2)
+
+Section: Grid
+
+  snap-to-grid : Integer, Integer -> Integer
+  snap-to-grid (val) (grid) =
+    if grid <= 0 then val
+    else let half = grid / 2
+    in ((val + half) / grid) * grid
+
+Section: Queries
+
+  diagram-node-count : Diagram -> Integer
+  diagram-node-count (dg) = list-length dg.dg-nodes
+
+  diagram-edge-count : Diagram -> Integer
+  diagram-edge-count (dg) = list-length dg.dg-edges
+
+  diagram-type-name : DiagramType -> Text
+  diagram-type-name (dt) =
+    when dt
+      is Flowchart -> "Flowchart"
+      is EntityRelationship -> "ERD"
+      is UmlClass -> "UML Class"
+      is UmlSequence -> "UML Sequence"
+      is NetworkTopology -> "Network"
+      is MindMap -> "Mind Map"
+      is StateMachine -> "State Machine"
+      is Freeform -> "Freeform"

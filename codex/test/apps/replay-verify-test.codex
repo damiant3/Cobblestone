@@ -1,0 +1,82 @@
+Chapter: ReplayVerifyTest
+  cites Replay chapter ReplayVerifier
+  cites Replay chapter ReplayLog
+  cites Foreword chapter Maybe
+
+Section: Helpers
+  show-bool : Boolean -> Text
+  show-bool (b) = if b then "True" else "False"
+
+Section: Test Data
+  test-session : ReplaySession =
+    let s0 = session-new "prog1" "ctx1"
+    in let s1 = record-input s0 5 3 "recv" [10, 20, 30]
+    in let s2 = record-schedule s1 2 7 SchedChanSendBlock
+    in record-exit s2 1 0
+
+  expected-events : List ReplayEvent =
+    [InputEvent 5 3 "recv" [10, 20, 30], ScheduleEvent 2 7 SchedChanSendBlock, ExitEvent 1 0]
+
+  bad-events : List ReplayEvent =
+    [InputEvent 5 3 "recv" [10, 20, 30], ExitEvent 99 0, ExitEvent 1 0]
+
+Section: Tests
+  test-header-ok : Text =
+    let r = verify-replay-header test-session "prog1" "ctx1"
+    in "valid=" & show-bool (r.valid)
+
+  test-header-fail : Text =
+    let r = verify-replay-header test-session "wrong" "ctx1"
+    in "valid=" & show-bool (r.valid) & " err=" & r.error
+
+  test-sequence-ok : Text =
+    let r = verify-event-sequence test-session expected-events
+    in "valid=" & show-bool (r.valid) & " consumed=" & show (r.events-consumed)
+
+  test-sequence-fail : Text =
+    let r = verify-event-sequence test-session bad-events
+    in "valid=" & show-bool (r.valid) & " consumed=" & show (r.events-consumed)
+
+  test-schedule-trace-ok : Text =
+    let s = session-new "p" "c"
+    in let s1 = record-input s 1 0 "x" []
+    in let s2 = record-input s1 2 0 "y" []
+    in let s3 = record-schedule s2 0 10 SchedYield
+    in let s4 = record-schedule s3 0 20 SchedAwait
+    in let s5 = record-exit s4 1 0
+    in let r = verify-schedule-trace s5 [10, 20]
+    in "valid=" & show-bool (r.valid) & " consumed=" & show (r.events-consumed)
+
+  test-schedule-trace-fail : Text =
+    let s = session-new "p" "c"
+    in let s1 = record-input s 1 0 "x" []
+    in let s2 = record-schedule s1 0 10 SchedYield
+    in let r = verify-schedule-trace s2 [99]
+    in "valid=" & show-bool (r.valid) & " consumed=" & show (r.events-consumed)
+
+  test-exhausted : Text =
+    let s = session-new "p" "c"
+    in let s1 = record-exit s 0 0
+    in let b = verify-exhausted s1
+    in let r1 = replay-next s1
+    in let a = verify-exhausted (r1.session)
+    in "before=" & show-bool (b.valid) & " after=" & show-bool (a.valid)
+
+  test-full-ok : Text =
+    let s = session-new "p" "c"
+    in let s1 = record-input s 1 0 "x" []
+    in let s2 = record-exit s1 1 0
+    in let evs = [InputEvent 1 0 "x" [], ExitEvent 1 0]
+    in let r = verify-replay-full s2 "p" "c" evs
+    in "valid=" & show-bool (r.valid) & " consumed=" & show (r.events-consumed)
+
+  opening : [Console] Nothing = act
+    print-line-uni test-header-ok
+    print-line-uni test-header-fail
+    print-line-uni test-sequence-ok
+    print-line-uni test-sequence-fail
+    print-line-uni test-schedule-trace-ok
+    print-line-uni test-schedule-trace-fail
+    print-line-uni test-exhausted
+    print-line-uni test-full-ok
+  end

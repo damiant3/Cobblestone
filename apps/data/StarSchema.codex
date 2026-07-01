@@ -1,0 +1,498 @@
+Chapter: StarSchema
+  cites Data chapter Catalog
+  cites Data chapter Schema
+  cites Data chapter Row
+  cites Data chapter Executor
+  cites Data chapter ColumnStore
+  cites Data chapter MapReduce
+  cites Foreword chapter Maybe
+  cites Foreword chapter Hamt
+  cites Foreword chapter Tuple
+
+ Automatic ETL from OLTP normalized schemas to star/snowflake
+ analytical schemas. Detects fact and dimension tables from foreign
+ key relationships and column patterns. Materializes star schema
+ views on-demand at query time — no batch ETL pipeline needed.
+ The first analytical query triggers denormalization; subsequent
+ queries hit the materialized columnar store until invalidated.
+
+ We say:
+
+Section: Schema Classification
+
+  TableRole =
+    | RoleFact
+    | RoleDimension
+    | RoleBridge
+    | RoleUnclassified
+
+  table-role-name : TableRole -> Text
+  table-role-name (r) =
+    when r
+      is RoleFact -> "fact"
+      is RoleDimension -> "dimension"
+      is RoleBridge -> "bridge"
+      is RoleUnclassified -> "unclassified"
+
+  ClassifiedTable = record {
+    ct-name : Text,
+    ct-role : TableRole,
+    ct-fk-count : Integer,
+    ct-numeric-count : Integer,
+    ct-text-count : Integer
+  }
+
+  classify-table : TableDef -> ClassifiedTable
+  classify-table (tdef) =
+    let fk-count = count-fk-columns (tdef.columns) 0 (tdef.col-count) 0
+    in let num-count = count-typed-columns (tdef.columns) ColInteger 0 (tdef.col-count) 0
+    in let text-count = count-typed-columns (tdef.columns) ColText 0 (tdef.col-count) 0
+    in let role = if fk-count >= 2 then if num-count >= 2 then RoleFact else RoleBridge
+       else if text-count > num-count then RoleDimension
+       else RoleUnclassified
+    in ClassifiedTable {
+      ct-name = tdef.table-name,
+      ct-role = role,
+      ct-fk-count = fk-count,
+      ct-numeric-count = num-count,
+      ct-text-count = text-count
+    }
+
+  count-fk-columns : List ColumnDef, Integer, Integer, Integer -> Integer
+  count-fk-columns (cols) (i) (len) (acc) =
+    if i >= len then acc
+    else let cd = list-at cols i
+    in let is-fk = text-ends-with (cd.col-name) "-id"
+    in count-fk-columns cols (i + 1) len (if is-fk then acc + 1 else acc)
+
+  text-ends-with : Text, Text -> Boolean
+  text-ends-with (s) (suffix) =
+    let slen = text-length s
+    in let suflen = text-length suffix
+    in if suflen > slen then False
+    else tew-loop s suffix (slen - suflen) 0 suflen
+
+  tew-loop : Text, Text, Integer, Integer, Integer -> Boolean
+  tew-loop (s) (suffix) (base) (i) (len) =
+    if i >= len then True
+    else if text-char-at s (base + i) /= text-char-at suffix i then False
+    else tew-loop s suffix base (i + 1) len
+
+  count-typed-columns : List ColumnDef, ColumnType, Integer, Integer, Integer -> Integer
+  count-typed-columns (cols) (ct) (i) (len) (acc) =
+    if i >= len then acc
+    else let cd = list-at cols i
+    in let match = col-type-matches (cd.col-type) ct
+    in count-typed-columns cols ct (i + 1) len (if match then acc + 1 else acc)
+
+  col-type-matches : ColumnType, ColumnType -> Boolean
+  col-type-matches (a) (b) =
+    when a
+      is ColInteger -> when b is ColInteger -> True is otherwise -> False
+      is ColText -> when b is ColText -> True is otherwise -> False
+      is ColBoolean -> when b is ColBoolean -> True is otherwise -> False
+
+Section: Foreign Key Detection
+
+  FkRelation = record {
+    fk-from-table : Text,
+    fk-from-col : Text,
+    fk-to-table : Text,
+    fk-to-col : Text
+  }
+
+  detect-foreign-keys : Catalog -> List FkRelation
+  detect-foreign-keys (cat) =
+    let entries = hamt-to-list (cat.tables)
+    in detect-fk-loop entries cat 0 (list-length entries) []
+
+  detect-fk-loop : List (HamtEntry CatalogTable), Catalog, Integer, Integer, List FkRelation -> List FkRelation
+  detect-fk-loop (entries) (cat) (i) (len) (acc) =
+    if i >= len then acc
+    else let e = list-at entries i
+    in let ct = e.value
+    in let fks = detect-fk-for-table ct cat
+    in detect-fk-loop entries cat (i + 1) len (acc & fks)
+
+  detect-fk-for-table : CatalogTable, Catalog -> List FkRelation
+  detect-fk-for-table (ct) (cat) =
+    detect-fk-cols (ct.cat-table-def.columns) (ct.cat-table-name) cat 0 (ct.cat-table-def.col-count) []
+
+  detect-fk-cols : List ColumnDef, Text, Catalog, Integer, Integer, List FkRelation -> List FkRelation
+  detect-fk-cols (cols) (table-name) (cat) (i) (len) (acc) =
+    if i >= len then acc
+    else let cd = list-at cols i
+    in if text-ends-with (cd.col-name) "-id" then
+      let ref-table = fk-infer-target (cd.col-name) cat
+      in when ref-table
+        is None -> detect-fk-cols cols table-name cat (i + 1) len acc
+        is Just (target) ->
+          let fk = FkRelation { fk-from-table = table-name, fk-from-col = cd.col-name, fk-to-table = target, fk-to-col = "id" }
+          in detect-fk-cols cols table-name cat (i + 1) len (list-push acc fk)
+    else detect-fk-cols cols table-name cat (i + 1) len acc
+
+  fk-infer-target : Text, Catalog -> Maybe Text
+  fk-infer-target (col-name) (cat) =
+    let base = text-strip-suffix col-name "-id"
+    in if catalog-table-exists cat base then Just base
+    else let plural = base & "s"
+    in if catalog-table-exists cat plural then Just plural
+    else None
+
+  text-strip-suffix : Text, Text -> Text
+  text-strip-suffix (s) (suffix) =
+    let slen = text-length s
+    in let suflen = text-length suffix
+    in if suflen >= slen then s
+    else tss-loop s 0 (slen - suflen) ""
+
+  tss-loop : Text, Integer, Integer, Text -> Text
+  tss-loop (s) (i) (len) (acc) =
+    if i >= len then acc
+    else tss-loop s (i + 1) len (acc & text-from-char (text-char-at s i))
+
+Section: Star Schema Definition
+
+  StarSchema = record {
+    ss-name : Text,
+    ss-fact-table : Text,
+    ss-dimensions : List DimensionLink,
+    ss-measures : List Text,
+    ss-materialized : Boolean
+  }
+
+  DimensionLink = record {
+    dl-dim-table : Text,
+    dl-join-col : Text,
+    dl-dim-key : Text,
+    dl-attributes : List Text
+  }
+
+  star-schema-name : StarSchema -> Text
+  star-schema-name (ss) = "star_" & ss.ss-fact-table
+
+Section: Automatic Star Schema Discovery
+
+  discover-star-schemas : Catalog -> List StarSchema
+  discover-star-schemas (cat) =
+    let entries = hamt-to-list (cat.tables)
+    in let classified = classify-all entries 0 (list-length entries) []
+    in let facts = filter-by-role classified RoleFact 0 (list-length classified) []
+    in let fks = detect-foreign-keys cat
+    in build-stars facts fks cat 0 (list-length facts) []
+
+  classify-all : List (HamtEntry CatalogTable), Integer, Integer, List ClassifiedTable -> List ClassifiedTable
+  classify-all (entries) (i) (len) (acc) =
+    if i >= len then acc
+    else let e = list-at entries i
+    in classify-all entries (i + 1) len (list-push acc (classify-table (e.value).cat-table-def))
+
+  filter-by-role : List ClassifiedTable, TableRole, Integer, Integer, List ClassifiedTable -> List ClassifiedTable
+  filter-by-role (tables) (role) (i) (len) (acc) =
+    if i >= len then acc
+    else let ct = list-at tables i
+    in let match = when (ct.ct-role)
+      is RoleFact -> when role is RoleFact -> True is otherwise -> False
+      is RoleDimension -> when role is RoleDimension -> True is otherwise -> False
+      is RoleBridge -> when role is RoleBridge -> True is otherwise -> False
+      is RoleUnclassified -> when role is RoleUnclassified -> True is otherwise -> False
+    in filter-by-role tables role (i + 1) len (if match then list-push acc ct else acc)
+
+  build-stars : List ClassifiedTable, List FkRelation, Catalog, Integer, Integer, List StarSchema -> List StarSchema
+  build-stars (facts) (fks) (cat) (i) (len) (acc) =
+    if i >= len then acc
+    else let fact = list-at facts i
+    in let dims = find-dimensions (fact.ct-name) fks cat 0 (list-length fks) []
+    in let measures = find-measures (fact.ct-name) cat
+    in let star = StarSchema {
+      ss-name = "star_" & fact.ct-name,
+      ss-fact-table = fact.ct-name,
+      ss-dimensions = dims,
+      ss-measures = measures,
+      ss-materialized = False
+    }
+    in build-stars facts fks cat (i + 1) len (list-push acc star)
+
+  find-dimensions : Text, List FkRelation, Catalog, Integer, Integer, List DimensionLink -> List DimensionLink
+  find-dimensions (fact-table) (fks) (cat) (i) (len) (acc) =
+    if i >= len then acc
+    else let fk = list-at fks i
+    in if fk.fk-from-table == fact-table then
+      let attrs = dim-attributes (fk.fk-to-table) cat
+      in let dl = DimensionLink { dl-dim-table = fk.fk-to-table, dl-join-col = fk.fk-from-col, dl-dim-key = fk.fk-to-col, dl-attributes = attrs }
+      in find-dimensions fact-table fks cat (i + 1) len (list-push acc dl)
+    else find-dimensions fact-table fks cat (i + 1) len acc
+
+  dim-attributes : Text, Catalog -> List Text
+  dim-attributes (table) (cat) =
+    let entry = catalog-get-table cat table
+    in when entry
+      is None -> []
+      is Just (e) -> dim-attr-cols (e.cat-table-def.columns) 0 (e.cat-table-def.col-count) []
+
+  dim-attr-cols : List ColumnDef, Integer, Integer, List Text -> List Text
+  dim-attr-cols (cols) (i) (len) (acc) =
+    if i >= len then acc
+    else let cd = list-at cols i
+    in if text-ends-with (cd.col-name) "-id" then dim-attr-cols cols (i + 1) len acc
+    else dim-attr-cols cols (i + 1) len (list-push acc (cd.col-name))
+
+  find-measures : Text, Catalog -> List Text
+  find-measures (table) (cat) =
+    let entry = catalog-get-table cat table
+    in when entry
+      is None -> []
+      is Just (e) -> find-measure-cols (e.cat-table-def.columns) 0 (e.cat-table-def.col-count) []
+
+  find-measure-cols : List ColumnDef, Integer, Integer, List Text -> List Text
+  find-measure-cols (cols) (i) (len) (acc) =
+    if i >= len then acc
+    else let cd = list-at cols i
+    in if text-ends-with (cd.col-name) "-id" then find-measure-cols cols (i + 1) len acc
+    else let is-measure = when (cd.col-type)
+      is ColInteger -> True
+      is otherwise -> False
+    in find-measure-cols cols (i + 1) len (if is-measure then list-push acc (cd.col-name) else acc)
+
+Section: On-Demand Materialization
+
+  MaterializedStar = record {
+    ms-schema : StarSchema,
+    ms-store : ColumnarTable,
+    ms-row-count : Integer,
+    ms-version : Integer
+  }
+
+  StarCache = record {
+    sc-stars : HamtMap MaterializedStar,
+    sc-count : Integer,
+    sc-materializations : Integer,
+    sc-cache-hits : Integer
+  }
+
+  star-cache-new : StarCache
+  star-cache-new = StarCache { sc-stars = hamt-empty, sc-count = 0, sc-materializations = 0, sc-cache-hits = 0 }
+
+  star-query : StarCache, Catalog, Text -> (StarCache, ColumnarTable)
+  star-query (cache) (cat) (fact-table) =
+    let key = "star_" & fact-table
+    in let cached = hamt-get (cache.sc-stars) key
+    in when cached
+      is Just (ms) ->
+        let new-cache = StarCache {
+          sc-stars = cache.sc-stars,
+          sc-count = cache.sc-count,
+          sc-materializations = cache.sc-materializations,
+          sc-cache-hits = cache.sc-cache-hits + 1
+        }
+        in (new-cache, ms.ms-store)
+      is None ->
+        let stars = discover-star-schemas cat
+        in let star = find-star stars fact-table 0 (list-length stars)
+        in when star
+          is None -> (cache, ct-new key (schema-new [] []))
+          is Just (ss) ->
+            let materialized = materialize-star ss cat
+            in let ms = MaterializedStar {
+              ms-schema = ss,
+              ms-store = materialized,
+              ms-row-count = ct-count materialized,
+              ms-version = cache.sc-materializations + 1
+            }
+            in let new-cache = StarCache {
+              sc-stars = hamt-set (cache.sc-stars) key ms,
+              sc-count = cache.sc-count + 1,
+              sc-materializations = cache.sc-materializations + 1,
+              sc-cache-hits = cache.sc-cache-hits
+            }
+            in (new-cache, materialized)
+
+  find-star : List StarSchema, Text, Integer, Integer -> Maybe StarSchema
+  find-star (stars) (fact-table) (i) (len) =
+    if i >= len then None
+    else let ss = list-at stars i
+    in if ss.ss-fact-table == fact-table then Just ss
+    else find-star stars fact-table (i + 1) len
+
+Section: Materialize Star View
+
+  materialize-star : StarSchema, Catalog -> ColumnarTable
+  materialize-star (ss) (cat) =
+    let fact-rows = (catalog-scan cat (ss.ss-fact-table)).rows
+    in let denormalized = denorm-all-rows fact-rows (ss.ss-dimensions) cat 0 (list-length fact-rows) []
+    in let star-schema = build-star-row-schema ss cat
+    in ct-bulk-load (ct-new (star-schema-name ss) star-schema) denormalized
+
+  denorm-all-rows : List RowData, List DimensionLink, Catalog, Integer, Integer, List RowData -> List RowData
+  denorm-all-rows (fact-rows) (dims) (cat) (i) (len) (acc) =
+    if i >= len then acc
+    else let frow = list-at fact-rows i
+    in let expanded = denorm-one-row frow dims cat 0 (list-length dims)
+    in denorm-all-rows fact-rows dims cat (i + 1) len (list-push acc expanded)
+
+  denorm-one-row : RowData, List DimensionLink, Catalog, Integer, Integer -> RowData
+  denorm-one-row (frow) (dims) (cat) (i) (len) =
+    if i >= len then frow
+    else let dl = list-at dims i
+    in let fk-val = row-get-by-name frow (dl.dl-join-col)
+    in let dim-row = lookup-dimension cat (dl.dl-dim-table) (dl.dl-dim-key) fk-val
+    in let merged = merge-dim-attrs frow dim-row (dl.dl-attributes) (dl.dl-dim-table)
+    in denorm-one-row merged dims cat (i + 1) len
+
+  lookup-dimension : Catalog, Text, Text, ColumnValue -> Maybe RowData
+  lookup-dimension (cat) (table) (key-col) (key-val) =
+    let scan = catalog-scan cat table
+    in lookup-dim-loop (scan.rows) key-col key-val 0 (scan.scan-count)
+
+  lookup-dim-loop : List RowData, Text, ColumnValue, Integer, Integer -> Maybe RowData
+  lookup-dim-loop (rows) (key-col) (key-val) (i) (len) =
+    if i >= len then None
+    else let row = list-at rows i
+    in let v = row-get-by-name row key-col
+    in if val-compare v key-val == 0 then Just row
+    else lookup-dim-loop rows key-col key-val (i + 1) len
+
+  merge-dim-attrs : RowData, Maybe RowData, List Text, Text -> RowData
+  merge-dim-attrs (frow) (dim-row) (attrs) (dim-table) =
+    when dim-row
+      is None -> merge-null-attrs frow attrs dim-table 0 (list-length attrs)
+      is Just (dr) -> merge-real-attrs frow dr attrs dim-table 0 (list-length attrs)
+
+  merge-real-attrs : RowData, RowData, List Text, Text, Integer, Integer -> RowData
+  merge-real-attrs (frow) (drow) (attrs) (prefix) (i) (len) =
+    if i >= len then frow
+    else let attr = list-at attrs i
+    in let val = row-get-by-name drow attr
+    in let col-name = prefix & "_" & attr
+    in let new-schema = schema-add-col (frow.schema) col-name (attr-type drow attr)
+    in let new-row = row-new new-schema (frow.values & [val])
+    in merge-real-attrs new-row drow attrs prefix (i + 1) len
+
+  merge-null-attrs : RowData, List Text, Text, Integer, Integer -> RowData
+  merge-null-attrs (frow) (attrs) (prefix) (i) (len) =
+    if i >= len then frow
+    else let attr = list-at attrs i
+    in let col-name = prefix & "_" & attr
+    in let new-schema = schema-add-col (frow.schema) col-name ColText
+    in let new-row = row-new new-schema (frow.values & [ValNull])
+    in merge-null-attrs new-row attrs prefix (i + 1) len
+
+  attr-type : RowData, Text -> ColumnType
+  attr-type (row) (attr) =
+    let idx = row-find-col (row.schema.col-names) attr 0 (row.schema.col-count)
+    in if idx < 0 then ColText
+    else list-at (row.schema.col-types) idx
+
+  build-star-row-schema : StarSchema, Catalog -> RowSchema
+  build-star-row-schema (ss) (cat) =
+    let fact-entry = catalog-get-table cat (ss.ss-fact-table)
+    in when fact-entry
+      is None -> schema-new [] []
+      is Just (e) ->
+        let base = table-schema (e.cat-table-def)
+        in build-star-schema-dims base (ss.ss-dimensions) cat 0 (list-length (ss.ss-dimensions))
+
+  build-star-schema-dims : RowSchema, List DimensionLink, Catalog, Integer, Integer -> RowSchema
+  build-star-schema-dims (schema) (dims) (cat) (i) (len) =
+    if i >= len then schema
+    else let dl = list-at dims i
+    in let expanded = add-dim-cols-to-schema schema (dl.dl-attributes) (dl.dl-dim-table) cat 0 (list-length (dl.dl-attributes))
+    in build-star-schema-dims expanded dims cat (i + 1) len
+
+  add-dim-cols-to-schema : RowSchema, List Text, Text, Catalog, Integer, Integer -> RowSchema
+  add-dim-cols-to-schema (schema) (attrs) (prefix) (cat) (i) (len) =
+    if i >= len then schema
+    else let attr = list-at attrs i
+    in let col-name = prefix & "_" & attr
+    in let ct = infer-dim-col-type cat prefix attr
+    in add-dim-cols-to-schema (schema-add-col schema col-name ct) attrs prefix cat (i + 1) len
+
+  infer-dim-col-type : Catalog, Text, Text -> ColumnType
+  infer-dim-col-type (cat) (table) (col) =
+    let entry = catalog-get-table cat table
+    in when entry
+      is None -> ColText
+      is Just (e) ->
+        let idx = find-col-idx (e.cat-table-def.columns) col 0 (e.cat-table-def.col-count)
+        in if idx < 0 then ColText
+        else (list-at (e.cat-table-def.columns) idx).col-type
+
+  find-col-idx : List ColumnDef, Text, Integer, Integer -> Integer
+  find-col-idx (cols) (name) (i) (len) =
+    if i >= len then -1
+    else if (list-at cols i).col-name == name then i
+    else find-col-idx cols name (i + 1) len
+
+Section: Invalidation
+
+  star-cache-invalidate : StarCache, Text -> StarCache
+  star-cache-invalidate (cache) (table-name) =
+    let entries = hamt-to-list (cache.sc-stars)
+    in let invalidated = sc-invalidate-loop entries table-name 0 (list-length entries) (cache.sc-stars)
+    in StarCache {
+      sc-stars = invalidated,
+      sc-count = cache.sc-count,
+      sc-materializations = cache.sc-materializations,
+      sc-cache-hits = cache.sc-cache-hits
+    }
+
+  sc-invalidate-loop : List (HamtEntry MaterializedStar), Text, Integer, Integer, HamtMap MaterializedStar -> HamtMap MaterializedStar
+  sc-invalidate-loop (entries) (table) (i) (len) (stars) =
+    if i >= len then stars
+    else let e = list-at entries i
+    in let ms = e.value
+    in if star-touches-table (ms.ms-schema) table then sc-invalidate-loop entries table (i + 1) len (hamt-remove stars (e.key))
+    else sc-invalidate-loop entries table (i + 1) len stars
+
+  star-touches-table : StarSchema, Text -> Boolean
+  star-touches-table (ss) (table) =
+    if ss.ss-fact-table == table then True
+    else star-dim-touches (ss.ss-dimensions) table 0 (list-length (ss.ss-dimensions))
+
+  star-dim-touches : List DimensionLink, Text, Integer, Integer -> Boolean
+  star-dim-touches (dims) (table) (i) (len) =
+    if i >= len then False
+    else if (list-at dims i).dl-dim-table == table then True
+    else star-dim-touches dims table (i + 1) len
+
+Section: Analytical Query Helpers
+
+  star-sum-by : StarCache, Catalog, Text, Text, Text -> (StarCache, List MrReduceResult)
+  star-sum-by (cache) (cat) (fact-table) (dim-col) (measure-col) =
+    let result = star-query cache cat fact-table
+    in let new-cache = when result is (c, ct) -> c
+    in let store = when result is (c, ct) -> ct
+    in let results = mr-sum-by store dim-col measure-col
+    in (new-cache, results)
+
+  star-count-by : StarCache, Catalog, Text, Text -> (StarCache, List MrReduceResult)
+  star-count-by (cache) (cat) (fact-table) (dim-col) =
+    let result = star-query cache cat fact-table
+    in let new-cache = when result is (c, ct) -> c
+    in let store = when result is (c, ct) -> ct
+    in let results = mr-count-by store dim-col
+    in (new-cache, results)
+
+  star-avg-by : StarCache, Catalog, Text, Text, Text -> (StarCache, List MrReduceResult)
+  star-avg-by (cache) (cat) (fact-table) (dim-col) (measure-col) =
+    let result = star-query cache cat fact-table
+    in let new-cache = when result is (c, ct) -> c
+    in let store = when result is (c, ct) -> ct
+    in let results = mr-avg-by store dim-col measure-col
+    in (new-cache, results)
+
+Section: Statistics
+
+  star-cache-stats : StarCache -> Text
+  star-cache-stats (cache) =
+    "stars=" & show (cache.sc-count)
+    & " materializations=" & show (cache.sc-materializations)
+    & " cache-hits=" & show (cache.sc-cache-hits)
+
+  star-schema-stats : StarSchema -> Text
+  star-schema-stats (ss) =
+    "fact=" & ss.ss-fact-table
+    & " dims=" & show (list-length (ss.ss-dimensions))
+    & " measures=" & show (list-length (ss.ss-measures))
+
+Page 1

@@ -1,0 +1,1138 @@
+Chapter: Opening
+  cites Codex chapter Console
+  cites Codex chapter Files
+  cites Codex chapter Text
+  cites Codex chapter Lists
+  cites Codex chapter Runtime
+  cites Codex chapter Phase Allocator (phase-start, phase-measure, phase-compact, phase-compact-poison, PhaseStart, PhaseMetrics)
+  cites Foreword chapter Maybe
+  cites Foreword chapter Fat16
+
+ Entry point for the Codex compiler.
+
+  cites Emit chapter Codex Emitter (emit-codex-text-chapter, emit-type-defs, emit-def)
+  cites Emit chapter IR Text Emitter (emit-ir-chapter, ir-prune-unreachable)
+  cites Emit chapter Emit Allocator (emit-build)
+  cites Emit chapter X86-64 Code Generator (x86-64-emit-cdx, x86-64-emit-cdx-with-exit-mode, X86_64ExitMode, ExitRepl, Exit, X86_64WatchdogMode, WatchdogProgress, WatchdogPet, pmap-self-test, pmap-escape-count, utf8-to-cce)
+  cites Semantics chapter Name Resolution (resolve-chapter, check-entry-point-duplicate, check-duplicate-cites, count-typecheck-units)
+
+Section: Compile Flags
+
+  CompileFlags = record {
+   prose : Boolean,
+   escape-check : Boolean,
+   poison-compact : Boolean,
+   survey : SurveyConfig
+  }
+
+  compile-flags-default : CompileFlags
+  compile-flags-default = CompileFlags { prose = False, escape-check = False, poison-compact = False, survey = survey-config-default }
+
+  poison-lex : Integer = 161
+  poison-parse : Integer = 162
+  poison-desugar : Integer = 163
+  poison-scope : Integer = 164
+  poison-check : Integer = 165
+  poison-lower : Integer = 166
+  poison-resolve : Integer = 167
+  poison-lift : Integer = 168
+  poison-frontend : Integer = 169
+
+  poison-phase-label : Integer -> Text
+  poison-phase-label (byte) =
+   if byte == 161 then "LEX"
+   else if byte == 162 then "PARSE"
+   else if byte == 163 then "DESUGAR"
+   else if byte == 164 then "SCOPE"
+   else if byte == 165 then "CHECK"
+   else if byte == 166 then "LOWER"
+   else if byte == 167 then "RESOLVE"
+   else if byte == 168 then "LIFT"
+   else if byte == 169 then "FRONTEND"
+   else ""
+
+  compact-phase : CompileFlags, Integer -> Nothing
+  compact-phase (flags) (byte) =
+   if flags.poison-compact then phase-compact-poison byte
+   else phase-compact
+
+Section: Compile Target
+
+ The transpile / codegen target. Every compile mode reads the same
+ frontend IR; only the final emit phase is target-specific.
+
+  CompileTarget =
+   | CtCodexText
+   | CtX86_64Bare
+   | CtCdx
+
+Section: Frontend
+
+ Two frontend builders: compile-frontend (TEXT/IR/MEASURE — LOWER on
+ deck, no RESOLVE/LIFT) and compile-frontend-cdx (CDX — LOWER on
+ deck, then RESOLVE on deck, then LIFT on deck). Both paths wrap
+ lower-chapter in deck-record; rewrite-ir-defs does not deep-copy
+ all referenced type data, so bivy placement is unsafe (CL 2968).
+
+  CompileFrontend = record {
+   type-defs : List ATypeDef,
+   text-meta : IRTextMeta,
+   ir : IRChapter,
+   cdx-ir : IRChapter,
+   sorted-type-defs : List TypeBinding,
+   renames : List RenameEntry,
+   bag : DiagnosticBag,
+   heap-marks : List Integer,
+   phase-metrics : List PhaseMetrics
+  }
+
+  LexResult = record {
+   tokens : List Token,
+   bag : DiagnosticBag,
+   heap-marks : List Integer,
+   phase-metrics : List PhaseMetrics
+  }
+
+  ParseResult = record {
+   doc : Document,
+   colliding : SkipListText,
+   assignments : List ChapterAssignment,
+   parse-bag : DiagnosticBag,
+   heap-marks : List Integer,
+   phase-metrics : List PhaseMetrics
+  }
+
+  ScopeResult = record {
+   scoped : AChapter,
+   ctor-names : List Text,
+   renames : List RenameEntry,
+   colliding : SkipListText,
+   assignments : List ChapterAssignment,
+   resolve-bag : DiagnosticBag,
+   heap-marks : List Integer,
+   phase-metrics : List PhaseMetrics
+  }
+
+  CompileChecked = record {
+   scoped : AChapter,
+   all-bindings : List TypeBinding,
+   ust : UnificationState,
+   ctor-names : List Text,
+   renames : List RenameEntry,
+   colliding : SkipListText,
+   assignments : List ChapterAssignment,
+   bag : DiagnosticBag,
+   heap-marks : List Integer,
+   phase-metrics : List PhaseMetrics
+  }
+
+  halted-frontend : DiagnosticBag, List Integer -> CompileFrontend
+  halted-frontend (bag) (marks) =
+   let blank-name = Name { value = "" }
+   in let blank-ir = IRChapter {
+       name = blank-name,
+       defs = [],
+       effect-op-names = [],
+       span = synthetic-span
+      }
+   in CompileFrontend {
+    type-defs = [],
+    text-meta = IRTextMeta { chapter-title = "", prose = "", section-titles = [], ctor-names = [] },
+    ir = blank-ir,
+    cdx-ir = blank-ir,
+    sorted-type-defs = [],
+    renames = [],
+    bag = bag,
+    heap-marks = marks,
+    phase-metrics = []
+   }
+
+  halted-checked : DiagnosticBag, List Integer -> CompileChecked
+  halted-checked (bag) (marks) =
+   CompileChecked {
+    scoped = AChapter {
+      name = Name { value = "" },
+      defs = [],
+      type-defs = [],
+      effect-defs = [],
+      class-defs = [],
+      instance-defs = [],
+      citations = [],
+      chapter-title = "",
+      prose = "",
+      section-titles = [],
+      rt-names = [],
+      rt-budgets = [],
+      conversions = [],
+      span = synthetic-span
+    },
+    all-bindings = [],
+    ust = empty-unification-state,
+    ctor-names = [],
+    renames = [],
+    colliding = skip-list-text-empty,
+    assignments = [],
+    bag = bag,
+    heap-marks = marks,
+    phase-metrics = []
+   }
+
+  check-deck-overflow : Integer, Integer -> Integer
+  check-deck-overflow (usage) (budget) =
+   if usage > budget then 1 else 0
+
+  deck-overflow-bag : Text -> DiagnosticBag
+  deck-overflow-bag (phase-name) =
+   bag-from-list [make-error cdx-deck-overflow ("Deck overflow in " & phase-name & "; survey multiplier too low for this input") synthetic-span]
+
+  no-overflow-bag : DiagnosticBag = bag-from-list []
+
+  serial-byte : Integer -> Integer
+  serial-byte (b) = port-out-byte 1016 b
+
+  serial-hex-digit : Integer -> Integer
+  serial-hex-digit (d) =
+   if d < 10 then serial-byte (48 + d)
+   else serial-byte (87 + d)
+
+  serial-hex-loop : Integer, Integer -> Integer
+  serial-hex-loop (val) (shift) =
+   if shift < 0 then 0
+   else let d = bit-and (bit-shru val shift) 15
+   in let w = serial-hex-digit d
+   in serial-hex-loop val (shift - 4)
+
+  serial-hex : Integer -> Integer
+  serial-hex (val) = serial-hex-loop val 60
+
+  serial-newline : Integer = serial-byte 10
+
+  scan-deck-dangling : Integer, Integer, Integer, Integer, Integer -> Integer
+  scan-deck-dangling (addr) (deck-end) (bivy-lo) (bivy-hi) (count) =
+   if addr >= deck-end then count
+   else let val = peek-qword addr 0
+   in if val >= bivy-lo
+      then if val < bivy-hi
+           then scan-deck-dangling (addr + 8) deck-end bivy-lo bivy-hi (count + 1)
+           else scan-deck-dangling (addr + 8) deck-end bivy-lo bivy-hi count
+      else scan-deck-dangling (addr + 8) deck-end bivy-lo bivy-hi count
+
+  check-escape-invariant : PhaseMetrics, Text -> DiagnosticBag
+  check-escape-invariant (m) (phase-name) =
+   let violations = scan-deck-dangling (m.deck-origin) (m.deck-end) (m.bivy-origin) (m.bivy-hwm) 0
+   in if violations > 0
+      then bag-from-list [make-warning cdx-escape-violation ("Escape invariant: " & show violations & " deck pointer(s) target bivy in " & phase-name) synthetic-span]
+      else bag-from-list []
+
+  escape-check-bag : Boolean, PhaseMetrics, Text -> DiagnosticBag
+  escape-check-bag (enabled) (m) (phase-name) =
+   if enabled then check-escape-invariant m phase-name
+   else bag-from-list []
+
+  precise-escape-bag : Boolean, Integer, Text, PhaseMetrics, Text -> DiagnosticBag
+  precise-escape-bag (enabled) (root-addr) (type-name) (m) (phase-name) =
+   if enabled then
+    let escaped = pmap-escape-count root-addr type-name (m.bivy-origin) (m.bivy-hwm)
+    in bag-from-list [make-warning cdx-escape-violation ("PRECISE escape (" & phase-name & "/" & type-name & "): " & show escaped & " ptr(s) into bivy") synthetic-span]
+   else bag-from-list []
+
+  pmap-selftest-bag : Boolean -> DiagnosticBag
+  pmap-selftest-bag (enabled) =
+   if enabled then pmap-selftest-result pmap-self-test
+   else bag-from-list []
+
+  pmap-selftest-result : Integer -> DiagnosticBag
+  pmap-selftest-result (r) =
+   if r == 3 then bag-from-list []
+   else bag-from-list [make-warning cdx-escape-violation ("pmap-walk self-test FAILED: got " & show r & " (expect 3)") synthetic-span]
+
+  compile-lex : Text, Integer, CompileFlags -> LexResult
+  compile-lex (source) (h0) (flags) =
+   let mountain-base = init-phase-allocator
+   in let lex-deck-height = text-length source * (flags.survey.lex-mul) + survey-lex-base
+   in let lex-base = build lex-deck-height
+   in let lex-phase = phase-start
+   in let tok-result = tokenize-into source 1 (flags.prose)
+   in let tokens = tok-result.tokens
+   in let lex-errors = tok-result.errors
+   in let lex-bag = deck-record (bag-from-list lex-errors)
+   in if bag-has-errors lex-bag
+      then LexResult { tokens = [], bag = lex-bag, heap-marks = [h0], phase-metrics = [] }
+      else let lex-metrics = phase-measure lex-phase
+   in let lex-ov = check-deck-overflow (lex-metrics.deck-end - lex-metrics.deck-origin) lex-deck-height
+   in let lex-ov-bag = if lex-ov == 1 then deck-overflow-bag "LEX" else no-overflow-bag
+   in let lex-esc-bag = escape-check-bag (flags.escape-check) lex-metrics "LEX"
+   in let lex-bag2 = deck-record (bag-merge-all [lex-bag, lex-ov-bag, lex-esc-bag])
+   in let result = deck-record (LexResult { tokens = tokens, bag = lex-bag2, heap-marks = [h0], phase-metrics = [lex-metrics] })
+   in let sealed = compact-phase flags poison-lex
+   in result
+
+ The parse phase historically never compacted: the Document lived in
+ its bivy, so the entire parse scratch region stayed buried under
+ every later phase. compile-parse now uses the reservation pattern
+ from the LOWER rewrite: a keep deck is reserved FIRST, a bounded
+ scratch deck is built above it, and scan/parse run there exactly as
+ before. The deck is then pointed back at the reservation and the
+ survivors are copied in: copy-sx-document rebuilds the CST (sharing
+ lexer tokens from the LEX deck below, rebuilding parser-synthesized
+ nodes and scratch texts), the assignments are re-recorded with their
+ texts rematerialized, and the colliding set is rebuilt through its
+ list round-trip. One phase-compact then reclaims the scratch deck,
+ the bivy, and the unused tail of the reservation. The scratch deck
+ must sit strictly below the bivy, and the keep deck strictly below
+ the scratch, or deck-exit rewinds R10 over live allocations. The
+ error path returns scratch references without compacting -- the
+ compile halts there, so nothing above it ever allocates.
+
+  compile-parse : List Token, Text, Integer, List PhaseMetrics, CompileFlags -> ParseResult
+  compile-parse (tokens) (source) (h0) (prior-metrics) (flags) =
+   let h1 = __heap-save
+   in let parse-keep-height = list-length tokens * survey-parse-keep-mul * (flags.survey.headroom) / 100 + survey-parse-base
+   in let parse-base = build parse-keep-height
+   in let parse-scratch-height = list-length tokens * (flags.survey.parse-mul) + survey-parse-base
+   in let scratch-base = build parse-scratch-height
+   in let parse-phase = phase-start
+   in let st = make-parse-state tokens source
+   in let scan = scan-document st
+   in let h2 = __heap-save
+   in let assignments-s = deck-record (build-all-assignments source (scan.def-headers) 0 [])
+   in let colliding-s = deck-record (find-colliding-names assignments-s)
+   in let h3 = __heap-save
+   in let entry-dup-bag = bag-from-list (check-entry-point-duplicate assignments-s)
+   in let doc = parse-document (make-parse-state tokens source)
+   in let prose-diags = if flags.prose then check-prose-consistency doc & check-prose-banned doc else []
+   in let h4 = __heap-save
+   in let parse-bag = deck-record (bag-merge-all [doc.parse-bag, entry-dup-bag, bag-from-list prose-diags])
+   in if bag-has-errors parse-bag
+      then ParseResult { doc = doc, colliding = colliding-s, assignments = assignments-s, parse-bag = parse-bag, heap-marks = [h0, h1, h2, h3, h4], phase-metrics = prior-metrics }
+      else let parse-metrics = phase-measure parse-phase
+   in let parse-ov = check-deck-overflow (parse-metrics.deck-end - parse-metrics.deck-origin) parse-scratch-height
+   in let dset-keep = __deck-set parse-base
+   in let keep-phase = phase-start
+   in let doc2 = deck-record (copy-sx-document parse-base doc)
+   in let assignments = deck-record (for a in assignments-s -> deck-record (ChapterAssignment { def-name = copy-sx-text parse-base (a.def-name), chapter-slug = copy-sx-text parse-base (a.chapter-slug) }))
+   in let colliding-names = skip-list-text-to-list colliding-s
+   in let colliding = deck-record (skip-list-text-from-list (copy-sx-texts parse-base colliding-names))
+   in let parse-bag-d = deck-record (copy-sx-bag parse-base parse-bag)
+   in let keep-metrics = phase-measure keep-phase
+   in let keep-ov = check-deck-overflow (keep-metrics.deck-end - keep-metrics.deck-origin) parse-keep-height
+   in let parse-metrics-d = deck-record (PhaseMetrics {
+    bivy-origin = parse-metrics.bivy-origin,
+    bivy-hwm = parse-metrics.bivy-hwm,
+    deck-origin = parse-metrics.deck-origin,
+    deck-end = parse-metrics.deck-end
+   })
+   in let scratch-top = if parse-metrics.deck-end > parse-metrics.bivy-hwm then parse-metrics.deck-end else parse-metrics.bivy-hwm
+   in let keep-esc-metrics = PhaseMetrics {
+    bivy-origin = parse-metrics.deck-origin,
+    bivy-hwm = scratch-top,
+    deck-origin = keep-metrics.deck-origin,
+    deck-end = keep-metrics.deck-end
+   }
+   in let keep-esc-bag = deck-record (escape-check-bag (flags.escape-check) keep-esc-metrics "PARSE")
+   in let parse-precise-bag = deck-record (precise-escape-bag (flags.escape-check) (address-of doc2) "Document" keep-esc-metrics "PARSE")
+   in let parse-ov-bag = if parse-ov == 1 then deck-overflow-bag "PARSE" else no-overflow-bag
+   in let keep-ov-bag = if keep-ov == 1 then deck-overflow-bag "PARSE-KEEP" else no-overflow-bag
+   in let parse-bag2 = deck-record (bag-merge-all [parse-bag-d, parse-ov-bag, keep-ov-bag, keep-esc-bag, parse-precise-bag])
+   in let parse-phase-metrics = deck-record (list-push prior-metrics parse-metrics-d)
+   in let result = deck-record (ParseResult { doc = doc2, colliding = colliding, assignments = assignments, parse-bag = parse-bag2, heap-marks = [h0, h1, h2, h3, h4], phase-metrics = parse-phase-metrics })
+   in let sealed = compact-phase flags poison-parse
+   in result
+
+  compile-desugar-and-scope : Text, ParseResult, Text, CompileFlags, Integer, Integer -> ScopeResult
+  compile-desugar-and-scope (source) (pr) (chapter-name) (flags) (fk-base) (fk-height) =
+   let desugar-deck-height = text-length source * (flags.survey.desugar-mul) + survey-desugar-base
+   in let desugar-base = build desugar-deck-height
+   in let desugar-phase = phase-start
+   in let ast = desugar-document source (pr.doc) chapter-name
+   in let desugar-metrics = phase-measure desugar-phase
+   in let desugar-ov = check-deck-overflow (desugar-metrics.deck-end - desugar-metrics.deck-origin) desugar-deck-height
+   in let dset-keep = __deck-set fk-base
+   in let keep-phase = phase-start
+   in let ast2 = deck-record (copy-as-chapter fk-base ast)
+   in let assignments = deck-record (for a in (pr.assignments) -> deck-record (ChapterAssignment { def-name = copy-sx-text fk-base (a.def-name), chapter-slug = copy-sx-text fk-base (a.chapter-slug) }))
+   in let colliding-names = skip-list-text-to-list (pr.colliding)
+   in let colliding = deck-record (skip-list-text-from-list (copy-sx-texts fk-base colliding-names))
+   in let parse-bag-d = deck-record (copy-sx-bag fk-base (pr.parse-bag))
+   in let heap-marks-d = deck-record (for h in (pr.heap-marks) -> h)
+   in let desugar-metrics-d = deck-record (PhaseMetrics { bivy-origin = desugar-metrics.bivy-origin, bivy-hwm = desugar-metrics.bivy-hwm, deck-origin = desugar-metrics.deck-origin, deck-end = desugar-metrics.deck-end })
+   in let phase-metrics-d = deck-record (for m in (pr.phase-metrics) -> deck-record (PhaseMetrics { bivy-origin = m.bivy-origin, bivy-hwm = m.bivy-hwm, deck-origin = m.deck-origin, deck-end = m.deck-end }))
+   in let keep-metrics = phase-measure keep-phase
+   in let keep-ov = check-deck-overflow (keep-metrics.deck-end - keep-metrics.deck-origin) fk-height
+   in let desugar-ov-bag = deck-record (if desugar-ov == 1 then deck-overflow-bag "DESUGAR" else no-overflow-bag)
+   in let keep-ov-bag = deck-record (if keep-ov == 1 then deck-overflow-bag "DESUGAR-KEEP" else no-overflow-bag)
+   in let desugar-esc-bag = deck-record (escape-check-bag (flags.escape-check) desugar-metrics "DESUGAR")
+   in let desugar-sealed = compact-phase flags poison-desugar
+   in let h5 = __heap-save
+   in let scope-deck-height = text-length source * (flags.survey.scope-mul) + survey-scope-base
+   in let scope-base = build scope-deck-height
+   in let scope-phase = phase-start
+   in let scoped = scope-achapter ast2 colliding assignments
+   in let h6 = __heap-save
+   in let cite-bag = deck-record (check-duplicate-cites (scoped.citations))
+   in let resolve-result = resolve-chapter scoped colliding assignments
+   in let resolve-bag = deck-record (bag-merge-all [parse-bag-d, cite-bag, resolve-result.bag, desugar-ov-bag, keep-ov-bag, desugar-esc-bag, pmap-selftest-bag (flags.escape-check)])
+   in let scope-metrics = phase-measure scope-phase
+   in let scope-ov = check-deck-overflow (scope-metrics.deck-end - scope-metrics.deck-origin) scope-deck-height
+   in let scope-ov-bag = if scope-ov == 1 then deck-overflow-bag "SCOPE" else no-overflow-bag
+   in let scope-esc-bag = escape-check-bag (flags.escape-check) scope-metrics "SCOPE"
+   in let scope-precise-bag = precise-escape-bag (flags.escape-check) (address-of scoped) "AChapter" scope-metrics "SCOPE"
+   in let resolve-bag2 = deck-record (bag-merge-all [resolve-bag, scope-ov-bag, scope-esc-bag, scope-precise-bag])
+   in let hm1 = deck-record (list-push heap-marks-d h5)
+   in let scope-heap-marks = deck-record (list-push hm1 h6)
+   in let pm1 = deck-record (list-push phase-metrics-d desugar-metrics-d)
+   in let scope-phase-metrics = deck-record (list-push pm1 scope-metrics)
+   in let global-renames = deck-record (build-global-rename-table assignments colliding)
+   in let result = deck-record (ScopeResult {
+    scoped = scoped,
+    ctor-names = resolve-result.ctor-names,
+    renames = global-renames,
+    colliding = colliding,
+    assignments = assignments,
+    resolve-bag = resolve-bag2,
+    heap-marks = scope-heap-marks,
+    phase-metrics = scope-phase-metrics
+   })
+   in let sealed = compact-phase flags poison-scope
+   in result
+
+  compile-type-check : ScopeResult, Integer, CompileFlags -> CompileChecked
+  compile-type-check (sr) (source-len) (flags) =
+   let check-units = count-typecheck-units (sr.scoped.type-defs) 0 (list-length (sr.scoped.type-defs)) 0
+   in let check-deck-height = (source-len * (flags.survey.check-mul) + check-units * (flags.survey.check-unit-mul)) * (flags.survey.headroom) / 100 + survey-check-base
+   in let check-base = build check-deck-height
+   in let check-phase = phase-start
+   in let check-result = deck-record (check-chapter (sr.scoped) (sr.renames) (sr.colliding) (sr.assignments))
+   in let h8 = __heap-save
+   in let cap-diags = deck-record (check-opening-capabilities (check-result.types))
+   in let check-bag0 = deck-record (bag-merge-all [sr.resolve-bag, check-result.state.bag, bag-from-list cap-diags])
+   in let check-metrics = phase-measure check-phase
+   in let check-ov = check-deck-overflow (check-metrics.deck-end - check-metrics.deck-origin) check-deck-height
+   in let check-ov-bag = if check-ov == 1 then deck-overflow-bag "CHECK" else no-overflow-bag
+   in let check-esc-bag = escape-check-bag (flags.escape-check) check-metrics "CHECK"
+   in let check-bag = deck-record (bag-merge-all [check-bag0, check-ov-bag, check-esc-bag])
+   in let check-heap-marks = deck-record (list-push (sr.heap-marks) h8)
+   in let check-phase-metrics = deck-record (list-push (sr.phase-metrics) check-metrics)
+   in if bag-has-errors check-bag
+      then halted-checked check-bag check-heap-marks
+      else let resolved-env = deck-record (for b in (check-result.env.bindings) -> deck-record (TypeBinding { name = b.name, bound-type = deep-resolve (check-result.state) (b.bound-type) }))
+      in let sorted-all = deck-record (sort-bindings (check-result.types & resolved-env))
+      in let sorted-et = sort-expr-types (check-result.state.expr-types)
+      in let pre-sorted-ust = deck-record (UnificationState {
+       substitutions = check-result.state.substitutions,
+       next-id = check-result.state.next-id,
+       bag = check-result.state.bag,
+       expr-types = sorted-et
+      })
+      in let result = deck-record (CompileChecked {
+       scoped = sr.scoped,
+       all-bindings = sorted-all,
+       ust = pre-sorted-ust,
+       ctor-names = sr.ctor-names,
+       renames = sr.renames,
+       colliding = sr.colliding,
+       assignments = sr.assignments,
+       bag = check-bag,
+       heap-marks = check-heap-marks,
+       phase-metrics = check-phase-metrics
+      })
+   in let sealed = compact-phase flags poison-check
+   in result
+
+  compile-checked : Text, Text, CompileFlags -> CompileChecked
+  compile-checked (source) (chapter-name) (flags) =
+   let fk-height = text-length source * survey-frontend-keep-mul * (flags.survey.headroom) / 100 + survey-frontend-keep-base
+   in let fk-base = build fk-height
+   in let h0 = __heap-save
+   in let lr = compile-lex source h0 flags
+   in if bag-has-errors (lr.bag)
+      then halted-checked (lr.bag) (lr.heap-marks)
+      else let pr = compile-parse (lr.tokens) source h0 (lr.phase-metrics) flags
+   in if bag-has-errors (pr.parse-bag)
+      then halted-checked (pr.parse-bag) (pr.heap-marks)
+      else let sr = compile-desugar-and-scope source pr chapter-name flags fk-base fk-height
+   in if bag-has-errors (sr.resolve-bag)
+      then halted-checked (sr.resolve-bag) (sr.heap-marks)
+      else compile-type-check sr (text-length source) flags
+
+  compile-frontend : Text, Text, CompileFlags -> CompileFrontend
+  compile-frontend (source) (chapter-name) (flags) =
+   let checked = compile-checked source chapter-name flags
+   in if bag-has-errors (checked.bag) then halted-frontend (checked.bag) (checked.heap-marks)
+   else let lower-deck-height = list-length (checked.scoped.defs) * (flags.survey.lower-mul) * (flags.survey.headroom) / 100 + survey-lower-base
+   in let lower-base = build lower-deck-height
+   in let lower-phase = phase-start
+   in let ir = deck-record (lower-chapter (checked.scoped) (checked.all-bindings) (checked.ust) (checked.ctor-names) (checked.renames) (checked.colliding) (checked.assignments))
+   in let tm = deck-record (IRTextMeta {
+    chapter-title = checked.scoped.chapter-title,
+    prose = checked.scoped.prose,
+    section-titles = checked.scoped.section-titles,
+    ctor-names = checked.ctor-names
+   })
+   in let lower-metrics = phase-measure lower-phase
+   in let lower-ov = check-deck-overflow (lower-metrics.deck-end - lower-metrics.deck-origin) lower-deck-height
+   in let lower-sealed = compact-phase flags poison-lower
+   in let blank-ir = IRChapter { name = ir.name, defs = [], effect-op-names = ir.effect-op-names, span = ir.span }
+   in let pm1 = deck-record (list-push (checked.phase-metrics) lower-metrics)
+   in let lower-ov-bag = if lower-ov == 1 then deck-overflow-bag "LOWER" else no-overflow-bag
+   in let lower-esc-bag = escape-check-bag (flags.escape-check) lower-metrics "LOWER"
+   in let fe-bag = deck-record (bag-merge-all [checked.bag, lower-ov-bag, lower-esc-bag])
+   in let result = deck-record (CompileFrontend {
+    type-defs = checked.scoped.type-defs,
+    text-meta = tm,
+    ir = ir,
+    cdx-ir = blank-ir,
+    sorted-type-defs = [],
+    renames = checked.renames,
+    bag = fe-bag,
+    heap-marks = checked.heap-marks,
+    phase-metrics = pm1
+   })
+   in let sealed = compact-phase flags poison-frontend
+   in result
+
+  compile-frontend-cdx : Text, Text, CompileFlags -> CompileFrontend
+  compile-frontend-cdx (source) (chapter-name) (flags) =
+   let checked = compile-checked source chapter-name flags
+   in if bag-has-errors (checked.bag) then halted-frontend (checked.bag) (checked.heap-marks)
+   else let lower-deck-height = list-length (checked.scoped.defs) * (flags.survey.lower-mul) * (flags.survey.headroom) / 100 + survey-lower-base
+   in let lower-base = build lower-deck-height
+   in let lower-phase = phase-start
+   in let ir-raw = deck-record (lower-chapter (checked.scoped) (checked.all-bindings) (checked.ust) (checked.ctor-names) (checked.renames) (checked.colliding) (checked.assignments))
+   in let ir = deck-record (inline-leaf-calls-in-chapter (fold-constants-in-chapter ir-raw))
+   in let lower-metrics = phase-measure lower-phase
+   in let lower-ov = check-deck-overflow (lower-metrics.deck-end - lower-metrics.deck-origin) lower-deck-height
+   in let lower-sealed = compact-phase flags poison-lower
+   in let resolve-deck-height = list-length (ir.defs) * (flags.survey.resolve-mul) * (flags.survey.headroom) / 100 + survey-resolve-base
+   in let resolve-base = build resolve-deck-height
+   in let resolve-phase = phase-start
+   in let type-map = deck-record (build-type-def-map (checked.scoped.type-defs) 0 (list-length (checked.scoped.type-defs)) [])
+   in let stds = deck-record (sort-bindings (type-map & checked.all-bindings))
+   in let resolved-defs = deck-record (rewrite-ir-defs stds (ir.defs))
+   in let resolve-metrics = phase-measure resolve-phase
+   in let resolve-ov = check-deck-overflow (resolve-metrics.deck-end - resolve-metrics.deck-origin) resolve-deck-height
+   in let lift-deck-height = list-length resolved-defs * (flags.survey.lift-mul) * (flags.survey.headroom) / 100 + survey-lift-base
+   in let lift-base = build lift-deck-height
+   in let lift-phase = phase-start
+   in let cdx-chapter = deck-record (lift-lambdas (IRChapter {
+    name = ir.name,
+    defs = resolved-defs,
+    effect-op-names = ir.effect-op-names,
+    span = ir.span
+   }))
+   in let lift-metrics = phase-measure lift-phase
+   in let lift-ov = check-deck-overflow (lift-metrics.deck-end - lift-metrics.deck-origin) lift-deck-height
+   in let tm = deck-record (IRTextMeta {
+    chapter-title = checked.scoped.chapter-title,
+    prose = checked.scoped.prose,
+    section-titles = checked.scoped.section-titles,
+    ctor-names = checked.ctor-names
+   })
+   in let blank-ir = IRChapter { name = ir.name, defs = [], effect-op-names = ir.effect-op-names, span = ir.span }
+   in let pm1 = deck-record (list-push (checked.phase-metrics) lower-metrics)
+   in let pm2 = deck-record (list-push pm1 resolve-metrics)
+   in let pm3 = deck-record (list-push pm2 lift-metrics)
+   in let lower-ov-bag = if lower-ov == 1 then deck-overflow-bag "LOWER" else no-overflow-bag
+   in let resolve-ov-bag = if resolve-ov == 1 then deck-overflow-bag "RESOLVE" else no-overflow-bag
+   in let lift-ov-bag = if lift-ov == 1 then deck-overflow-bag "LIFT" else no-overflow-bag
+   in let lower-esc-bag = escape-check-bag (flags.escape-check) lower-metrics "LOWER"
+   in let resolve-esc-bag = escape-check-bag (flags.escape-check) resolve-metrics "RESOLVE"
+   in let lift-esc-bag = escape-check-bag (flags.escape-check) lift-metrics "LIFT"
+   in let fe-bag = deck-record (bag-merge-all [checked.bag, lower-ov-bag, resolve-ov-bag, lift-ov-bag, lower-esc-bag, resolve-esc-bag, lift-esc-bag])
+   in let result = deck-record (CompileFrontend {
+    type-defs = checked.scoped.type-defs,
+    text-meta = tm,
+    ir = blank-ir,
+    cdx-ir = cdx-chapter,
+    sorted-type-defs = stds,
+    renames = checked.renames,
+    bag = fe-bag,
+    heap-marks = checked.heap-marks,
+    phase-metrics = pm3
+   })
+   in let sealed = compact-phase flags poison-frontend
+   in result
+
+Section: Library Loading
+
+ Scans the user source for library cite declarations (Foreword, Kernel,
+ OS, Works), reads each chapter file from its quire directory, and
+ renames chapter headers to "Quire--Name" so they coexist with the
+ citing chapter in a single preconcatenated source.
+
+  ForewordLoadResult = record {
+   prefix : Text,
+   bag : DiagnosticBag
+  }
+
+  is-library-quire : Text -> Boolean
+  is-library-quire (q) =
+   if q == "Foreword" then True
+   else if q == "Kernel" then True
+   else if q == "OS" then True
+   else if q == "Works" then True
+   else if q == "Trust" then True
+   else if q == "Net" then True
+   else if q == "Verify" then True
+   else if q == "Replay" then True
+   else if q == "Sched" then True
+   else if q == "Observe" then True
+   else if q == "Game" then True
+   else if q == "Signal" then True
+   else if q == "Compress" then True
+   else if q == "Encode" then True
+   else if q == "Math" then True
+   else if q == "Sim" then True
+   else if q == "AI" then True
+   else if q == "UI" then True
+   else if q == "Punctual" then True
+   else if q == "Dev" then True
+   else False
+
+  quire-to-dir : Text -> Text
+  quire-to-dir (q) =
+   if q == "Foreword" then "foreword/"
+   else if q == "Kernel" then "kernel/"
+   else if q == "OS" then "os/"
+   else if q == "Works" then "works/"
+   else if q == "Trust" then "os.trust/"
+   else if q == "Net" then "os.net/"
+   else if q == "Verify" then "os.verify/"
+   else if q == "Replay" then "os.replay/"
+   else if q == "Sched" then "os.sched/"
+   else if q == "Observe" then "os.observe/"
+   else if q == "Game" then "foreword.game/"
+   else if q == "Signal" then "foreword.signal/"
+   else if q == "Compress" then "foreword.compress/"
+   else if q == "Encode" then "foreword.encode/"
+   else if q == "Math" then "foreword.math/"
+   else if q == "Sim" then "foreword.sim/"
+   else if q == "AI" then "foreword.ai/"
+   else if q == "UI" then "foreword.ui/"
+   else if q == "Punctual" then "foreword.punctual/"
+   else if q == "Dev" then "os.dev/"
+   else "foreword/"
+
+  filter-library-cites : List CitesDecl, Integer, Integer, List CitesDecl -> List CitesDecl
+  filter-library-cites (citations) (i) (len) (acc) =
+   if i == len then acc
+   else let c = list-at citations i
+   in if is-library-quire (token-text (c.quire))
+      then filter-library-cites citations (i + 1) len (list-push acc c)
+      else filter-library-cites citations (i + 1) len acc
+
+  dedup-library-cites : List CitesDecl, Integer, Integer, List CitesDecl, List Text -> List CitesDecl
+  dedup-library-cites (cs) (i) (len) (acc) (seen) =
+   if i == len then acc
+   else let c = list-at cs i
+   in let key = token-text (c.quire) & ":" & c.chapter-name
+   in if text-set-has seen key
+      then dedup-library-cites cs (i + 1) len acc seen
+      else dedup-library-cites cs (i + 1) len (list-push acc c) (text-set-insert seen key)
+
+  load-and-advance-library : List CitesDecl, Integer, Integer, List Text, DiagnosticBag, Text, Text, Text, Boolean -> [FileSystem] ForewordLoadResult
+  load-and-advance-library (fwc) (i) (len) (chunks) (bag) (quire) (name) (path) (found) =
+   if found then act
+     content <- read-file-uni path
+     read-and-rename-library fwc (i + 1) len (list-push chunks (text-replace content ("Chapter: " & name) ("Chapter: " & quire & "--" & name) & "\n\n")) bag
+   end
+   else let cite = list-at fwc i
+   in let missing-bag = bag-add bag (make-error cdx-missing-cite ("Cited " & quire & " chapter '" & name & "' not found (expected " & path & ")") (span-at (cite.quire.line) (cite.quire.column) (cite.quire.offset) (cite.quire.length) (cite.quire.file-id)))
+   in read-and-rename-library fwc (i + 1) len chunks missing-bag
+
+  read-and-rename-library : List CitesDecl, Integer, Integer, List Text, DiagnosticBag -> [FileSystem] ForewordLoadResult
+  read-and-rename-library (fwc) (i) (len) (chunks) (bag) =
+   if i == len then ForewordLoadResult { prefix = text-concat-list chunks, bag = bag }
+   else let cite = list-at fwc i
+   in let name = cite.chapter-name
+   in let quire = token-text (cite.quire)
+   in let path = quire-to-dir quire & name & ".codex"
+   in act
+     found <- file-exists path
+     load-and-advance-library fwc i len chunks bag quire name path found
+   end
+
+  load-cited-foreword : Text -> [FileSystem] ForewordLoadResult
+  load-cited-foreword (source) =
+   let tok-result = tokenize source 1
+   in let doc = parse-document (make-parse-state (tok-result.tokens) source)
+   in let lib-cites = filter-library-cites (doc.citations) 0 (list-length (doc.citations)) []
+   in let uniq = dedup-library-cites lib-cites 0 (list-length lib-cites) [] []
+   in read-and-rename-library uniq 0 (list-length uniq) [] empty-bag
+
+Section: Disk Foreword Loading
+
+  DiskLoadState = record {
+   dls-seen : List Text,
+   dls-chunks : List Text
+  }
+
+  disk-extract-cites : Text -> List CitesDecl
+  disk-extract-cites (source) =
+   let tok-result = tokenize source 1
+   in let doc = parse-document (make-parse-state (tok-result.tokens) source)
+   in filter-library-cites (doc.citations) 0 (list-length (doc.citations)) []
+
+  disk-load-cite : Fat16Volume, DiskLoadState, Text, Text -> DiskLoadState
+  disk-load-cite (vol) (st) (quire) (name) =
+   let key = quire & ":" & name
+   in if text-set-has (st.dls-seen) key then st
+   else let seen2 = text-set-insert (st.dls-seen) key
+   in let path = quire-to-dir quire & name & ".codex"
+   in when fat16-read-text vol path
+     is Just (content) ->
+       let deps = disk-extract-cites content
+       in let st2 = disk-load-cites-list vol (DiskLoadState { dls-seen = seen2, dls-chunks = st.dls-chunks }) deps 0 (list-length deps)
+       in let renamed = text-replace content ("Chapter: " & name) ("Chapter: " & quire & "--" & name)
+       in DiskLoadState { dls-seen = st2.dls-seen, dls-chunks = list-push (st2.dls-chunks) (renamed & "\n\n") }
+     is None -> DiskLoadState { dls-seen = seen2, dls-chunks = st.dls-chunks }
+
+  disk-load-cites-list : Fat16Volume, DiskLoadState, List CitesDecl, Integer, Integer -> DiskLoadState
+  disk-load-cites-list (vol) (st) (cite-list) (i) (len) =
+   if i >= len then st
+   else let c = list-at cite-list i
+   in let st2 = disk-load-cite vol st (token-text (c.quire)) (c.chapter-name)
+   in disk-load-cites-list vol st2 cite-list (i + 1) len
+
+  disk-resolve-forewords : Fat16Volume, Text -> Text
+  disk-resolve-forewords (vol) (source) =
+   let cite-list = disk-extract-cites source
+   in let st = disk-load-cites-list vol (DiskLoadState { dls-seen = [], dls-chunks = [] }) cite-list 0 (list-length cite-list)
+   in text-concat-list (st.dls-chunks)
+
+Section: Text Compilation
+
+ Transpile targets (Codex text) share this path. Binary targets go
+ through compile-frontend because their result is bytes, not text. heap-marks exposes phase-boundary heap
+ positions (frontend + pre-emit + post-emit) so callers can report
+ measurements without a parallel pipeline.
+
+  compile-text : CompileFrontend, CompileTarget -> Text
+  compile-text (fe) (target) =
+   if bag-has-errors (fe.bag) then ""
+   else emit-for-text-target target (fe.ir) (fe.text-meta) (fe.type-defs) (fe.renames)
+
+  emit-for-text-target : CompileTarget, IRChapter, IRTextMeta, List ATypeDef, List RenameEntry -> Text
+  emit-for-text-target (target) (ir) (meta) (type-defs) (renames) =
+   when target
+    is CtCodexText -> emit-codex-text-chapter ir meta type-defs renames
+    is CtX86_64Bare | CtCdx -> ""
+
+Section: Binary Compilation
+
+ x86-64 bare-metal. Output is bytes, not text. Future binary targets
+ (CDX, riscv-bare, ...) will dispatch from here once we have more than
+ one.
+
+  compile-to-cdx : CompileFrontend -> EmitChapterResult
+  compile-to-cdx (fe) = compile-to-cdx-with-exit-mode fe Exit False
+
+  compile-to-cdx-with-exit-mode : CompileFrontend, X86_64ExitMode, Boolean -> EmitChapterResult
+  compile-to-cdx-with-exit-mode (fe) (exit-mode) (poison) =
+   if bag-has-errors (fe.bag) then EmitChapterResult { header-bytes = [], content-buf = 0, content-len = 0, tail-bytes = [], bag = fe.bag, symbol-map = [] }
+   else let emit-result = x86-64-emit-cdx-with-exit-mode (fe.cdx-ir) (fe.sorted-type-defs) exit-mode poison False
+    in EmitChapterResult {
+     header-bytes = emit-result.header-bytes,
+     content-buf = emit-result.content-buf,
+     content-len = emit-result.content-len,
+     tail-bytes = emit-result.tail-bytes,
+     bag = bag-merge-all [fe.bag, emit-result.bag],
+     symbol-map = emit-result.symbol-map
+    }
+
+Section: Measurement
+
+ Phase labels line up 1:1 with CompileFrontend.heap-marks (plus two
+ emit-phase marks appended by the caller). format-heap-marks renders
+ them for MEASURE mode output.
+
+  phase-labels : List Text
+  phase-labels =
+   ["h0-start", "h1-tokenize", "h2-scan", "h3-assignments",
+    "h4-parse", "h5-desugar", "h6-scope", "h7-resolve",
+    "h8-check", "h9-lower", "h10-ctors",
+    "h-pre-emit", "h-post-emit"]
+
+  phase-metric-names : List Text
+  phase-metric-names = ["lex", "parse", "desugar", "scope", "check", "lower", "resolve", "lift"]
+
+  format-phase-metrics-wd : List PhaseMetrics -> Text
+  format-phase-metrics-wd (metrics) =
+   format-phase-metrics-loop metrics phase-metric-names 0 (list-length metrics) ""
+
+  format-phase-metrics-loop : List PhaseMetrics, List Text, Integer, Integer, Text -> Text
+  format-phase-metrics-loop (metrics) (names) (i) (len) (acc) =
+   if i >= len then acc
+   else let m = list-at metrics i
+   in let name = if i < list-length names then list-at names i else "?"
+   in let deck-usage = m.deck-end - m.deck-origin
+   in let bivy-usage = m.bivy-hwm - m.bivy-origin
+   in let line = "WD:PM-" & name & ":deck-origin=" & integer-to-text (m.deck-origin) & ",deck-end=" & integer-to-text (m.deck-end) & ",deck-usage=" & integer-to-text deck-usage & ",bivy-hwm=" & integer-to-text (m.bivy-hwm) & ",bivy-usage=" & integer-to-text bivy-usage & "\n"
+   in format-phase-metrics-loop metrics names (i + 1) len (acc & line)
+
+  format-heap-marks : List Integer -> Text
+  format-heap-marks (marks) =
+   text-concat-list (format-heap-marks-prefix marks phase-labels "PHASE-" 0 (list-length marks) [])
+
+  format-heap-marks-wd : List Integer -> Text
+  format-heap-marks-wd (marks) =
+   text-concat-list (format-heap-marks-prefix marks phase-labels "WD:PHASE-" 0 (list-length marks) [])
+
+  format-heap-marks-prefix : List Integer, List Text, Text, Integer, Integer, List Text -> List Text
+  format-heap-marks-prefix (marks) (labels) (pfx) (i) (len) (acc) =
+   if i == len then acc
+   else let label = if i < list-length labels then list-at labels i else "h?"
+    in format-heap-marks-prefix marks labels pfx (i + 1) len (list-push acc (pfx & label & ":" & integer-to-text (list-at marks i) & "\n"))
+
+Section: Expr-Type Pre-Resolution
+
+  resolve-all-expr-types : UnificationState, List ExprTypeEntry, Integer, Integer, List ExprTypeEntry -> List ExprTypeEntry
+  resolve-all-expr-types (st) (entries) (i) (len) (acc) =
+   if i >= len then acc
+   else let e = list-at entries i
+   in let resolved = deck-record (ExprTypeEntry { key = e.key, ty = deep-resolve st (e.ty) })
+   in resolve-all-expr-types st entries (i + 1) len (list-push acc resolved)
+
+  resolve-all-bindings : UnificationState, List TypeBinding, Integer, Integer, List TypeBinding -> List TypeBinding
+  resolve-all-bindings (st) (bindings) (i) (len) (acc) =
+   if i >= len then acc
+   else let b = list-at bindings i
+   in let resolved = deck-record (TypeBinding { name = b.name, bound-type = deep-resolve st (b.bound-type) })
+   in resolve-all-bindings st bindings (i + 1) len (list-push acc resolved)
+
+Section: Codegen Diagnostics
+
+  print-codegen-errors : List Diagnostic, Integer, Integer -> [Console] Nothing
+  print-codegen-errors (errs) (i) (len) =
+   if i == len then print-line-uni ""
+   else act
+    print-line-uni (diagnostic-display (list-at errs i) empty-file-table)
+    print-codegen-errors errs (i + 1) len
+   end
+
+  print-codegen-error-header : List Diagnostic -> [Console] Nothing
+  print-codegen-error-header (errs) =
+   let n = list-length errs
+   in if n == 0 then print-line-uni ""
+   else act
+    print-line-uni ("CODEGEN-ERRORS:" & integer-to-text n)
+    print-codegen-errors errs 0 n
+   end
+
+  print-bag-notices : DiagnosticBag -> [Console] Nothing
+  print-bag-notices (bag) =
+   print-notices-loop (bag.diagnostics) 0 (list-length (bag.diagnostics))
+
+  print-notices-loop : List Diagnostic, Integer, Integer -> [Console] Nothing
+  print-notices-loop (ds) (i) (len) =
+   if i == len then print-line-uni ""
+   else let d = list-at ds i
+   in if d.severity > sev-error then act
+     print-line-uni (diagnostic-display d empty-file-table)
+     print-notices-loop ds (i + 1) len
+    end
+    else print-notices-loop ds (i + 1) len
+
+Section: Streaming Emission
+
+ Per-definition emit with heap strikes between definitions.
+ Uses pre-lowered IR from compile-frontend, matching the CDX path.
+
+  emit-streaming-ir-defs : List IRDef, List Text, List RenameEntry, Integer, Integer -> [Console] Nothing
+  emit-streaming-ir-defs (ir-defs) (ctor-names) (renames) (i) (len) =
+   if i == len then print-line-uni ""
+   else let h = __heap-save
+   in let text = emit-def (list-at ir-defs i) ctor-names renames
+   in act
+    print-line-uni text
+    let restored = __heap-restore h
+    in emit-streaming-ir-defs ir-defs ctor-names renames (i + 1) len
+   end
+
+  emit-text-streaming : Text, CompileFlags -> [Console] Nothing
+  emit-text-streaming (source) (flags) =
+   let fe = compile-frontend source "Program" flags
+   in let emit-deck = emit-build (list-length (fe.ir.defs) * 65536 + 8388608)
+   in if bag-has-errors (fe.bag) then act
+    print-codegen-error-header (bag-errors (fe.bag))
+    print-line-uni (format-heap-marks-wd (fe.heap-marks))
+    print-line-uni "CODEGEN-HALTED: errors in bag; no text emitted"
+   end
+   else let wd-marks = format-heap-marks-wd (fe.heap-marks) & format-phase-metrics-wd (fe.phase-metrics)
+   in let ir-defs = fe.ir.defs
+   in let len = list-length ir-defs
+   in if len == 0
+      then let header = if fe.text-meta.chapter-title == "" then ""
+           else "Chapter: " & fe.text-meta.chapter-title & "\n\n"
+             & if fe.text-meta.prose == "" then "" else " " & fe.text-meta.prose & "\n\n"
+      in let type-defs-text = emit-type-defs (fe.type-defs) 0
+      in act
+       print-line-uni wd-marks
+       print-line-uni (header & type-defs-text)
+      end
+   else let h-emit = __heap-save
+   in let header = if fe.text-meta.chapter-title == "" then ""
+      else "Chapter: " & fe.text-meta.chapter-title & "\n\n"
+        & if fe.text-meta.prose == "" then "" else " " & fe.text-meta.prose & "\n\n"
+   in let type-defs-text = emit-type-defs (fe.type-defs) 0
+   in let first-text = emit-def (list-at ir-defs 0) (fe.text-meta.ctor-names) (fe.renames)
+   in act
+    print-line-uni wd-marks
+    print-line-uni (header & type-defs-text & first-text)
+    let restored = __heap-restore h-emit
+    in emit-streaming-ir-defs ir-defs (fe.text-meta.ctor-names) (fe.renames) 1 len
+   end
+
+Section: Entry Point
+
+  emit-cdx : Text, Text, CompileFlags -> [Console, FileSystem] Nothing
+  emit-cdx (source) (mode) (flags) =
+   let exit-mode = if has-mode-flag mode "repl" then ExitRepl else Exit
+   in let is-repl = has-mode-flag mode "repl"
+   in let poison = has-mode-flag mode "poison"
+   in let debug = has-mode-flag mode "debug"
+   in act
+    if debug then print-line-uni ("DBG:frontend src=" & show (text-length source))
+    else print-line-uni ""
+    let fe = compile-frontend-cdx source "Codex_Codex" flags
+    in act
+     if debug then act
+      print-line-uni ("DBG:emit defs=" & show (list-length (fe.cdx-ir.defs)))
+      dbg-print-def-names (fe.cdx-ir.defs) 0 (list-length (fe.cdx-ir.defs))
+     end
+     else print-line-uni ""
+     let result = compile-to-cdx-with-exit-mode fe exit-mode poison
+     in act
+      print-codegen-error-header (bag-errors (result.bag))
+      print-bag-notices (result.bag)
+      if is-repl then emit-binary-tail result
+      else emit-binary-tail-with-map result
+     end
+    end
+   end
+
+  emit-binary-size : EmitChapterResult -> Integer
+  emit-binary-size (result) =
+   list-length (result.header-bytes) + result.content-len + list-length (result.tail-bytes)
+
+  write-binary-buf-chunks : Integer, Integer, Integer -> [FileSystem] Nothing
+  write-binary-buf-chunks (buf) (off) (remaining) =
+   if remaining == 0 then write-binary []
+   else let chunk = if remaining > 65536 then 65536 else remaining
+   in let hp = __heap-save
+   in let data = __buf-read-bytes buf off chunk
+   in act
+    write-binary data
+    let restored = __heap-restore hp
+    in write-binary-buf-chunks buf (off + chunk) (remaining - chunk)
+   end
+
+  emit-binary-tail : EmitChapterResult -> [Console, FileSystem] Nothing
+  emit-binary-tail (result) =
+   if bag-has-errors (result.bag) then print-line-uni "CODEGEN-HALTED: errors in bag; no binary emitted"
+   else act
+    print-line-uni ("SIZE:" & integer-to-text (emit-binary-size result))
+    write-binary (result.header-bytes)
+    write-binary-buf-chunks (result.content-buf) 0 (result.content-len)
+    write-binary (result.tail-bytes)
+   end
+
+  emit-binary-tail-with-map : EmitChapterResult -> [Console, FileSystem] Nothing
+  emit-binary-tail-with-map (result) =
+   if bag-has-errors (result.bag) then print-line-uni "CODEGEN-HALTED: errors in bag; no binary emitted"
+   else act
+    print-line-uni ("SIZE:" & integer-to-text (emit-binary-size result))
+    write-binary (result.header-bytes)
+    write-binary-buf-chunks (result.content-buf) 0 (result.content-len)
+    write-binary (result.tail-bytes)
+    emit-symbol-map (result.symbol-map) 0 (list-length (result.symbol-map))
+   end
+
+  emit-symbol-map : List Text, Integer, Integer -> [Console] Nothing
+  emit-symbol-map (lines) (i) (len) =
+   if len == 0 then print-line-uni "MAP:0"
+   else act
+    print-line-uni ("MAP:" & show len)
+    emit-map-lines lines i len
+   end
+
+  emit-map-lines : List Text, Integer, Integer -> [Console] Nothing
+  emit-map-lines (lines) (i) (len) =
+   if i >= len then print-line-uni "MAP-END"
+   else act
+    print-line-uni (list-at lines i)
+    emit-map-lines lines (i + 1) len
+   end
+
+  emit-text : CompileTarget, Text, CompileFlags -> [Console] Nothing
+  emit-text (target) (source) (flags) =
+   let fe = compile-frontend source "Program" flags
+   in let h-pre-emit = __heap-save
+   in let text = compile-text fe target
+   in let h-post-emit = __heap-save
+   in act
+    print-codegen-error-header (bag-errors (fe.bag))
+    if bag-has-errors (fe.bag) then print-line-uni "CODEGEN-HALTED: errors in bag; no text emitted"
+    else print-line-uni text
+    print-line-uni (format-heap-marks-wd (fe.heap-marks & [h-pre-emit, h-post-emit]))
+   end
+
+  emit-ir-uni : Text, CompileFlags -> [Console] Nothing
+  emit-ir-uni (source) (flags) =
+   let fe = compile-frontend source "Program" flags
+   in let h-pre-emit = __heap-save
+   in act
+    print-codegen-error-header (bag-errors (fe.bag))
+    if bag-has-errors (fe.bag) then print-line-uni "CODEGEN-HALTED: errors in bag; no IR emitted"
+    else act
+     print-line-uni "IR-BEGIN"
+     print-line-uni (emit-ir-chapter (ir-prune-unreachable (fe.ir) "opening") (fe.text-meta) (fe.type-defs))
+     print-line-uni "IR-END"
+    end
+    let h-post-emit = __heap-save
+    in print-line-uni (format-heap-marks-wd (fe.heap-marks & [h-pre-emit, h-post-emit]))
+   end
+
+ Emit the IR S-expression chapter as the SIZE-framed wire format the
+ emit plugs consume. Streams one def at a time via print-uni (no
+ trailing LF), reclaiming heap between defs so large programs with
+ many imported chapters do not exhaust the bump allocator.
+
+  emit-ir-cce : Text, CompileFlags -> [Console] Nothing
+  emit-ir-cce (source) (flags) =
+   let fe = compile-frontend source "Program" flags
+   in let h-pre-emit = __heap-save
+   in act
+    print-codegen-error-header (bag-errors (fe.bag))
+    if bag-has-errors (fe.bag) then print-line-uni "CODEGEN-HALTED: errors in bag; no IR emitted"
+    else act
+     let ir-text = emit-ir-chapter (ir-prune-unreachable (fe.ir) "opening") (fe.text-meta) (fe.type-defs)
+     in print-line-uni ("SIZE:" & show (text-length ir-text))
+     print-line ir-text
+    end
+    let h-post-emit = __heap-save
+    in print-line-uni (format-heap-marks-wd (fe.heap-marks & [h-pre-emit, h-post-emit]))
+   end
+
+  emit-measure : Text, CompileFlags -> [Console] Nothing
+  emit-measure (source) (flags) =
+   let fe = compile-frontend source "Program" flags
+   in let h-pre-emit = __heap-save
+   in let text = compile-text fe CtCodexText
+   in let h-post-emit = __heap-save
+   in print-line-uni (format-heap-marks (fe.heap-marks & [h-pre-emit, h-post-emit]) & "EMIT-BYTES:" & integer-to-text (text-length text) & "\n")
+
+  parse-mode-cmd : Text -> Text
+  parse-mode-cmd (mode) =
+   let parts = text-split mode " "
+   in if list-length parts == 0 then mode
+      else list-at parts 0
+
+  has-mode-flag : Text, Text -> Boolean
+  has-mode-flag (mode) (flag) =
+   let parts = text-split mode " "
+   in has-flag-loop parts flag 1 (list-length parts)
+
+  has-flag-loop : List Text, Text, Integer, Integer -> Boolean
+  has-flag-loop (parts) (flag) (i) (len) =
+   if i >= len then False
+   else if list-at parts i == flag then True
+   else has-flag-loop parts flag (i + 1) len
+
+  dbg-print-def-names : List IRDef, Integer, Integer -> [Console] Nothing
+  dbg-print-def-names (defs) (i) (len) = act
+   if i >= len then print-line-uni ""
+   else let d = list-at defs i
+   in act
+    print-line-uni ("DBG:def " & show i & " " & d.name)
+    dbg-print-def-names defs (i + 1) len
+   end
+  end
+
+  parse-mode-flags : Text -> CompileFlags
+  parse-mode-flags (mode) =
+   CompileFlags { prose = has-mode-flag mode "prose", escape-check = has-mode-flag mode "escape-check", poison-compact = has-mode-flag mode "poison-compact", survey = parse-survey-config mode }
+
+  parse-survey-config : Text -> SurveyConfig
+  parse-survey-config (mode) =
+   find-survey-token (text-split mode " ") 0
+
+  find-survey-token : List Text, Integer -> SurveyConfig
+  find-survey-token (parts) (i) =
+   if i >= list-length parts then survey-config-default
+   else let p = list-at parts i
+   in if text-starts-with p "survey=" then apply-survey-pairs (text-split (survey-token-value p) ",") 0 survey-config-default
+      else find-survey-token parts (i + 1)
+
+  survey-token-value : Text -> Text
+  survey-token-value (p) =
+   let kv = text-split p "="
+   in if list-length kv >= 2 then list-at kv 1 else ""
+
+  apply-survey-pairs : List Text, Integer, SurveyConfig -> SurveyConfig
+  apply-survey-pairs (pairs) (i) (cfg) =
+   if i >= list-length pairs then cfg
+   else apply-survey-pairs pairs (i + 1) (apply-survey-pair (list-at pairs i) cfg)
+
+  apply-survey-pair : Text, SurveyConfig -> SurveyConfig
+  apply-survey-pair (pair) (cfg) =
+   let kv = text-split pair ":"
+   in if list-length kv == 2 then set-survey-field cfg (list-at kv 0) (text-to-integer (list-at kv 1))
+      else cfg
+
+  set-survey-field : SurveyConfig, Text, Integer -> SurveyConfig
+  set-survey-field (cfg) (name) (val) =
+   if name == "lex-mul" then let __seq = cfg.lex-mul = val in cfg
+   else if name == "parse-mul" then let __seq = cfg.parse-mul = val in cfg
+   else if name == "desugar-mul" then let __seq = cfg.desugar-mul = val in cfg
+   else if name == "scope-mul" then let __seq = cfg.scope-mul = val in cfg
+   else if name == "check-mul" then let __seq = cfg.check-mul = val in cfg
+   else if name == "check-unit-mul" then let __seq = cfg.check-unit-mul = val in cfg
+   else if name == "lower-mul" then let __seq = cfg.lower-mul = val in cfg
+   else if name == "resolve-mul" then let __seq = cfg.resolve-mul = val in cfg
+   else if name == "lift-mul" then let __seq = cfg.lift-mul = val in cfg
+   else if name == "headroom" then let __seq = cfg.headroom = val in cfg
+   else cfg
+
+  disk-partition-start : Integer = 2048
+
+  emit-from-disk : Text -> [Console, FileSystem] Nothing
+  emit-from-disk (mode) = act
+   path-result <- read-line
+   when path-result
+    is Just (path) ->
+      let vol = fat16-init disk-partition-start
+      in when fat16-read-text vol path
+        is Just (source) ->
+          let foreword-prefix = disk-resolve-forewords vol source
+          in let full = foreword-prefix & source
+          in let flags = parse-mode-flags mode
+          in emit-cdx full mode flags
+        is None -> print-line-uni ("DISK: file not found: " & path)
+    is None -> print-line-uni "DISK: no path on stdin"
+  end
+
+  dispatch-on-mode : Text -> [Console, FileSystem] Nothing
+  dispatch-on-mode (mode) = act
+   let cmd = parse-mode-cmd mode
+   in if cmd == "DISK" then emit-from-disk mode
+   else act
+    source-raw <- read-file-uni mode
+    let source = utf8-to-cce source-raw
+    in let flags = parse-mode-flags mode
+    in if cmd == "CDX" then emit-cdx source mode flags
+       else if cmd == "IR-UNI" then emit-ir-uni source flags
+       else if cmd == "IR-CCE" then emit-ir-cce source flags
+       else if cmd == "MEASURE" then emit-measure source flags
+       else emit-text-streaming source flags
+   end
+  end
+
+  opening : [Console, FileSystem] Nothing = act
+   mode-result <- read-line
+   when mode-result
+    is Just (mode) -> dispatch-on-mode mode
+    is None -> print-line-uni "Codex: no input mode on stdin"
+  end
+
+Page 1

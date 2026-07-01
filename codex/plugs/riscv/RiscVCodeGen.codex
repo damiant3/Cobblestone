@@ -1,0 +1,1738 @@
+Chapter: RISC-V Code Generator
+  cites Foreword chapter RiscVEncoder
+  cites Plug chapter Plug Types
+  cites Plug chapter Plug Chain (FuncEntry, FuncTable, bare-metal-load-addr)
+  cites Foreword chapter CCE (cce-to-unicode-table)
+
+ RISC-V RV64IM code generator for the plug pipeline.
+ Receives parsed IR, emits machine code bytes and metadata
+ in the wire format for chaining to ELF plugs.
+ Transliterated from old/src/Codex.Emit.RiscV/RiscVCodeGen.cs.
+
+Section: Register Constants
+
+  rv-heap-reg : Integer = 9
+
+Section: Architecture Profile
+
+  RvArchProfile = record {
+   name : Text,
+   clock-hz : Integer,
+   cycles-alu : Integer,
+   cycles-mul : Integer,
+   cycles-div : Integer,
+   cycles-load : Integer,
+   cycles-store : Integer,
+   cycles-branch : Integer,
+   cycles-branch-not : Integer
+  }
+
+  rv-esp32-c6 : RvArchProfile = RvArchProfile {
+   name = "ESP32-C6 (RV32IMC @ 160 MHz)",
+   clock-hz = 160000000,
+   cycles-alu = 1,
+   cycles-mul = 5,
+   cycles-div = 35,
+   cycles-load = 2,
+   cycles-store = 1,
+   cycles-branch = 3,
+   cycles-branch-not = 1
+  }
+
+Section: Codegen State
+
+  RvLocal = record {
+   name : Text,
+   reg : Integer between 0 and 255
+  }
+
+  RvTcoState = record {
+   active : Boolean,
+   in-tail-pos : Boolean,
+   loop-top : Integer,
+   param-locals : List Integer,
+   temp-locals : List Integer,
+   current-func : Text,
+   saved-next-local : Integer,
+   saved-next-temp : Integer,
+   result-dest : Integer
+  }
+
+  RvEffectOpAddr = record {
+   eoa-name : Text,
+   eoa-addr : Integer
+  }
+
+  rv-code-buf-size : Integer = 8388608
+
+  RvState = record {
+   code-buf : Integer,
+   code-pos : Integer,
+   data : List Integer,
+   insn-count : Integer,
+   func-names : List Text,
+   func-offsets : List Integer,
+   func-arities : List Integer,
+   call-patches : List RvCallPatch,
+   func-addr-fixups : List RvFuncAddrFixup,
+   rodata-fixups : List RvRodataFixup,
+   locals : List RvLocal,
+   next-temp : Integer,
+   next-local : Integer,
+   spill-count : Integer,
+   peak-local : Integer,
+   prologue-index : Integer,
+   current-func : Text,
+   effect-op-addrs : List RvEffectOpAddr,
+   handler-table-base : Integer,
+   tco : RvTcoState,
+   string-offsets : List RvStringEntry,
+   type-defs : List ATypeDef,
+   learned-fields : List RvLearnedField,
+   wcet-reports : List Text,
+   state-local : Integer,
+   memo-next-slot : Integer
+  }
+
+  RvLearnedField = record {
+   ftype : Text,
+   fname : Text,
+   findex : Integer
+  }
+
+  RvCallPatch = record {
+   insn-index : Integer,
+   target : Text
+  }
+
+  RvFuncAddrFixup = record {
+   insn-index : Integer,
+   rd : Integer,
+   target : Text
+  }
+
+  RvRodataFixup = record {
+   insn-index : Integer,
+   rd : Integer,
+   rodata-offset : Integer
+  }
+
+  RvStringEntry = record {
+   value : Text,
+   offset : Integer
+  }
+
+  RvEmitResult = record {
+   state : RvState,
+   reg : Integer
+  }
+
+Section: State Constructors
+
+  default-rv-tco : RvTcoState
+  default-rv-tco = RvTcoState {
+   active = False,
+   in-tail-pos = False,
+   loop-top = 0,
+   param-locals = [],
+   temp-locals = [],
+   current-func = "",
+   saved-next-local = 0,
+   saved-next-temp = 0,
+   result-dest = 0 - 1
+  }
+
+  empty-rv-state : RvState
+  empty-rv-state = RvState {
+   code-buf = alloc-bytes rv-code-buf-size,
+   code-pos = 0,
+   data = [],
+   insn-count = 0,
+   func-names = [],
+   func-offsets = [],
+   func-arities = [],
+   call-patches = [],
+   func-addr-fixups = [],
+   rodata-fixups = [],
+   locals = [],
+   next-temp = rv-t3,
+   next-local = rv-s2,
+   spill-count = 0,
+   peak-local = rv-s2,
+   prologue-index = 0 - 1,
+   current-func = "",
+   effect-op-addrs = [],
+   handler-table-base = 0,
+   tco = default-rv-tco,
+   string-offsets = [],
+   type-defs = [],
+   learned-fields = [],
+   wcet-reports = [],
+   state-local = (-1),
+   memo-next-slot = 0
+  }
+
+Section: Emit Helpers
+
+  rv-push-all : List Integer, List Integer, Integer -> List Integer
+  rv-push-all (dst) (src) (i) =
+   if i >= list-length src then dst
+   else rv-push-all (list-push dst (list-at src i)) src (i + 1)
+
+  rv-emit : RvState, List Integer -> RvState
+  rv-emit (st) (insn-bytes) =
+   let pos = st.code-pos
+   in let w0 = __buf-write-byte (st.code-buf) pos (list-at insn-bytes 0)
+   in let w1 = __buf-write-byte (st.code-buf) (pos + 1) (list-at insn-bytes 1)
+   in let w2 = __buf-write-byte (st.code-buf) (pos + 2) (list-at insn-bytes 2)
+   in let w3 = __buf-write-byte (st.code-buf) (pos + 3) (list-at insn-bytes 3)
+   in __record-set (__record-set st "code-pos" (pos + 4)) "insn-count" (st.insn-count + 1)
+
+  rv-record-func : RvState, Text -> RvState
+  rv-record-func (st) (name) =
+   let st1 = __record-set st "func-names" (list-push (st.func-names) name)
+   in let st2 = __record-set st1 "func-offsets" (list-push (st.func-offsets) (st.insn-count))
+   in __record-set st2 "func-arities" (list-push (st.func-arities) 0)
+
+  rv-record-func-at : RvState, Text, Integer -> RvState
+  rv-record-func-at (st) (name) (offset) =
+   let st1 = __record-set st "func-names" (list-push (st.func-names) name)
+   in let st2 = __record-set st1 "func-offsets" (list-push (st.func-offsets) offset)
+   in __record-set st2 "func-arities" (list-push (st.func-arities) 0)
+
+  rv-set-last-arity : RvState, Integer -> RvState
+  rv-set-last-arity (st) (arity) =
+   let idx = list-length (st.func-arities) - 1
+   in if idx < 0 then st
+   else __record-set st "func-arities" (list-set-at (st.func-arities) idx arity)
+
+  rv-find-func-arity : List Text, List Integer, Text, Integer -> Integer
+  rv-find-func-arity (names) (arities) (target) (i) =
+   if i >= list-length names then 0
+   else if list-at names i == target then list-at arities i
+   else rv-find-func-arity names arities target (i + 1)
+
+  rv-add-call-patch : RvState, Text -> RvState
+  rv-add-call-patch (st) (target) =
+   __record-set st "call-patches" (list-push (st.call-patches) (RvCallPatch { insn-index = st.insn-count, target = target }))
+
+  rv-add-func-addr-fixup : RvState, Integer, Text -> RvState
+  rv-add-func-addr-fixup (st) (rd) (target) =
+   __record-set st "func-addr-fixups" (list-push (st.func-addr-fixups) (RvFuncAddrFixup { insn-index = st.insn-count, rd = rd, target = target }))
+
+  rv-add-rodata-fixup : RvState, Integer, Integer -> RvState
+  rv-add-rodata-fixup (st) (rd) (rodata-offset) =
+   __record-set st "rodata-fixups" (list-push (st.rodata-fixups) (RvRodataFixup { insn-index = st.insn-count, rd = rd, rodata-offset = rodata-offset }))
+
+Section: Register Allocation
+
+  rv-spill-base : Integer = 64
+
+  rv-temp-regs : List Integer = [rv-t3, rv-t4, rv-t5, rv-t6]
+
+  rv-alloc-temp : RvState -> RvEmitResult
+  rv-alloc-temp (st) =
+   let idx = int-mod (st.next-temp - rv-t3) 4
+   in let reg = list-at rv-temp-regs idx
+   in RvEmitResult {
+    state = __record-set st "next-temp" (st.next-temp + 1),
+    reg = reg
+   }
+
+  rv-alloc-local : RvState -> RvEmitResult
+  rv-alloc-local (st) =
+   let nl = st.next-local
+   in let pk = if nl + 1 > st.peak-local then nl + 1 else st.peak-local
+   in if nl <= rv-s11
+   then RvEmitResult {
+    state = __record-set (__record-set st "next-local" (nl + 1)) "peak-local" pk,
+    reg = nl
+   }
+   else let slot = rv-spill-base + st.spill-count
+   in RvEmitResult {
+    state = __record-set (__record-set (__record-set st "next-local" (nl + 1)) "peak-local" pk) "spill-count" (st.spill-count + 1),
+    reg = slot
+   }
+
+  rv-is-temp-reg : Integer -> Boolean
+  rv-is-temp-reg (r) =
+   if r == 28 then True
+   else if r == 29 then True
+   else if r == 30 then True
+   else if r == 31 then True
+   else False
+
+  rv-retarget-last-rd : RvState, Integer -> RvState
+  rv-retarget-last-rd (st) (new-rd) =
+   let pos = (st.insn-count - 1) * 4
+   in let b0 = peek-byte (st.code-buf) pos
+   in let b1 = peek-byte (st.code-buf) (pos + 1)
+   in let new-b0 = bit-or (bit-and b0 127) (bit-shl (bit-and new-rd 1) 7)
+   in let new-b1 = bit-or (bit-and b1 240) (bit-and (bit-shru new-rd 1) 15)
+   in let w0 = __buf-write-byte (st.code-buf) pos new-b0
+   in let w1 = __buf-write-byte (st.code-buf) (pos + 1) new-b1
+   in st
+
+  rv-can-retarget-last : RvState, Integer -> Boolean
+  rv-can-retarget-last (st) (value-reg) =
+   if value-reg < 18 then rv-is-temp-reg value-reg
+   else let pos = (st.insn-count - 1) * 4
+   in let b0 = peek-byte (st.code-buf) pos
+   in let b1 = peek-byte (st.code-buf) (pos + 1)
+   in let last-rd = bit-or (bit-shru (bit-and b0 128) 7) (bit-shl (bit-and b1 15) 1)
+   in last-rd == value-reg
+
+  rv-emit-li-t2 : RvState, Integer -> RvState
+  rv-emit-li-t2 (st) (value) =
+   if value < 2048 then rv-emit st (rv-addi rv-t2 rv-zero value)
+   else let hl = rv-split-hi20-lo12 value
+   in rv-emit (rv-emit st (rv-lui rv-t2 (hl.hi))) (rv-addi rv-t2 rv-t2 (hl.lo))
+
+  rv-store-local : RvState, Integer, Integer -> RvState
+  rv-store-local (st) (local) (value-reg) =
+   if local < rv-spill-base then
+    if local == value-reg then st
+    else rv-emit st (rv-mv local value-reg)
+   else let offset = (local - rv-spill-base) * 8 + 112
+   in if offset > 2040 then
+    let st1 = rv-emit-li-t2 st offset
+    in let st2 = rv-emit st1 (rv-add rv-t2 rv-sp rv-t2)
+    in rv-emit st2 (rv-sd rv-t2 value-reg 0)
+   else rv-emit st (rv-sd rv-sp value-reg offset)
+
+  rv-load-local : RvState, Integer -> RvEmitResult
+  rv-load-local (st) (local) =
+   if local < rv-spill-base then RvEmitResult { state = st, reg = local }
+   else let tr = rv-alloc-temp st
+   in let offset = (local - rv-spill-base) * 8 + 112
+   in if offset > 2040 then
+    let st1 = rv-emit-li-t2 (tr.state) offset
+    in let st2 = rv-emit st1 (rv-add rv-t2 rv-sp rv-t2)
+    in RvEmitResult {
+     state = rv-emit st2 (rv-ld (tr.reg) rv-t2 0),
+     reg = tr.reg
+    }
+   else RvEmitResult {
+    state = rv-emit (tr.state) (rv-ld (tr.reg) rv-sp offset),
+    reg = tr.reg
+   }
+
+  rv-is-stable-reg : Integer -> Boolean
+  rv-is-stable-reg (r) = if r >= 18 then r < 28 else False
+
+  rv-is-frameless-mode : RvState -> Boolean
+  rv-is-frameless-mode (st) =
+   if st.tco.active then
+    let pl = st.tco.param-locals
+    in if list-length pl > 0 then list-at pl 0 == rv-a0 else False
+   else False
+
+  rv-save-if-needed : RvState, Integer -> RvEmitResult
+  rv-save-if-needed (st) (value-reg) =
+   if rv-is-stable-reg value-reg then RvEmitResult { state = st, reg = value-reg }
+   else if rv-is-frameless-mode st then RvEmitResult { state = st, reg = value-reg }
+   else let loc = rv-alloc-local st
+   in RvEmitResult { state = rv-store-local (loc.state) (loc.reg) (value-reg), reg = loc.reg }
+
+  rv-reload-if-needed : RvState, Integer -> RvEmitResult
+  rv-reload-if-needed (st) (reg) =
+   if rv-is-stable-reg reg then RvEmitResult { state = st, reg = reg }
+   else rv-load-local st reg
+
+  rv-bind-local : RvState, Text, Integer -> RvState
+  rv-bind-local (st) (name) (reg) =
+   __record-set st "locals" (list-push (st.locals) (RvLocal { name = name, reg = reg }))
+
+  rv-lookup-local : List RvLocal, Text, Integer -> Integer
+  rv-lookup-local (locals) (name) (i) =
+   let len = list-length locals
+   in if len == 0 then 0 - 1
+   else rv-lookup-local-rev locals name (len - 1)
+
+  rv-lookup-local-rev : List RvLocal, Text, Integer -> Integer
+  rv-lookup-local-rev (locals) (name) (i) =
+   if i < 0 then 0 - 1
+   else if (list-at locals i).name == name then (list-at locals i).reg
+   else rv-lookup-local-rev locals name (i - 1)
+
+Section: Function Emission
+
+  rv-reset-func-state : RvState, Text -> RvState
+  rv-reset-func-state (st) (name) =
+   let st1 = rv-record-func st name
+   in let st2 = __record-set st1 "current-func" name
+   in let st3 = __record-set st2 "locals" []
+   in let st4 = __record-set st3 "next-temp" rv-t3
+   in let st5 = __record-set st4 "next-local" rv-s2
+   in let st5a = __record-set st5 "peak-local" rv-s2
+   in let st6 = __record-set st5a "spill-count" 0
+   in __record-set st6 "prologue-index" (st1.insn-count)
+
+  rv-result-is-stable : IRExpr -> Boolean
+  rv-result-is-stable (e) =
+   when e
+    is IrName (n) (t) (s) -> True
+    is IrIf (c) (th) (el) (t) (s) -> True
+    is IrLet (n) (t) (v) (b) (s) -> rv-result-is-stable b
+    is otherwise -> False
+
+  rv-count-ir-locals : IRExpr, Text -> Integer
+  rv-count-ir-locals (e) (fname) =
+   when e
+    is IrIntLit (v) (s) -> 0
+    is IrBoolLit (v) (s) -> 0
+    is IrTextLit (v) (s) -> 0
+    is IrCharLit (v) (s) -> 0
+    is IrNumLit (v) (s) -> 0
+    is IrName (n) (t) (s) -> 0
+    is IrNegate (x) (s) -> rv-count-ir-locals x fname
+    is IrBinary (op) (l) (r) (t) (s) ->
+     let left-save = if rv-result-is-stable l then 0 else 1
+     in let use-imm = if rv-is-imm-eligible op then rv-small-imm r > 0 else False
+     in if use-imm then rv-count-ir-locals l fname
+     else left-save + rv-count-ir-locals l fname + rv-count-ir-locals r fname
+    is IrIf (c) (th) (el) (t) (s) ->
+     let tco-el = rv-has-tail-call el fname
+     in let res-cost = if tco-el then 0 else 1
+     in res-cost + rv-count-ir-locals c fname + rv-count-ir-locals th fname + rv-count-ir-locals el fname
+    is IrLet (n) (t) (v) (b) (s) ->
+     let val-save = if rv-result-is-stable v then 0 else 1
+     in val-save + rv-count-ir-locals v fname + rv-count-ir-locals b fname
+    is IrApply (f) (a) (t) (s) ->
+     when f
+      is IrName (n) (ft) (fs) ->
+       if n == fname then 0
+       else rv-count-ir-locals a fname
+      is IrApply (f2) (a2) (t2) (s2) ->
+       when f2
+        is IrName (n2) (ft2) (fs2) ->
+         if n2 == fname then 0
+         else 2 + rv-count-ir-locals f fname + rv-count-ir-locals a fname
+        is _ -> 2 + rv-count-ir-locals f fname + rv-count-ir-locals a fname
+      is _ -> 2 + rv-count-ir-locals f fname + rv-count-ir-locals a fname
+    is IrRecord (n) (fields) (t) (s) -> list-length fields
+    is IrFieldAccess (rec) (f) (t) (s) -> rv-count-ir-locals rec fname
+    is IrFieldStore (rec) (f) (v) (t) (s) -> 1 + rv-count-ir-locals rec fname + rv-count-ir-locals v fname
+    is IrList (elems) (t) (s) -> 1
+    is IrLambda (params) (body) (t) (s) -> 2
+    is IrMatch (scrut) (branches) (t) (s) -> 2 + rv-count-ir-locals scrut fname
+    is IrAct (stmts) (t) (s) -> list-length stmts + 1
+    is otherwise -> 1
+
+  rv-count-dest-savings : IRExpr, Text -> Integer
+  rv-count-dest-savings (e) (fname) =
+   when e
+    is IrIf (c) (th) (el) (t) (s) ->
+     let tco-el = rv-has-tail-call el fname
+     in let self-saving = if tco-el then 0 else 1
+     in self-saving + rv-count-dest-savings th fname + rv-count-dest-savings el fname
+    is IrLet (n) (t) (v) (b) (s) -> rv-count-dest-savings b fname
+    is otherwise -> 0
+
+  rv-compute-save-count : Integer -> Integer
+  rv-compute-save-count (n) = if n > 10 then 10 else if n < 0 then 0 else n
+
+  rv-emit-prologue : RvState, Integer -> RvState
+  rv-emit-prologue (st) (save-regs) =
+   let st0a = rv-emit st (rv-addi rv-sp rv-sp (0 - 112))
+   in let st0b = rv-emit st0a rv-nop
+   in let st0c = rv-emit st0b rv-nop
+   in let st2 = rv-emit st0c (rv-sd rv-sp rv-ra 104)
+   in let st3 = if save-regs > 0 then rv-emit st2 (rv-sd rv-sp rv-s2 80) else st2
+   in let st4 = if save-regs > 1 then rv-emit st3 (rv-sd rv-sp rv-s3 72) else st3
+   in let st5 = if save-regs > 2 then rv-emit st4 (rv-sd rv-sp rv-s4 64) else st4
+   in let st6 = if save-regs > 3 then rv-emit st5 (rv-sd rv-sp rv-s5 56) else st5
+   in let st7 = if save-regs > 4 then rv-emit st6 (rv-sd rv-sp rv-s6 48) else st6
+   in let st8 = if save-regs > 5 then rv-emit st7 (rv-sd rv-sp rv-s7 40) else st7
+   in let st9 = if save-regs > 6 then rv-emit st8 (rv-sd rv-sp rv-s8 32) else st8
+   in let st10 = if save-regs > 7 then rv-emit st9 (rv-sd rv-sp rv-s9 24) else st9
+   in let st11 = if save-regs > 8 then rv-emit st10 (rv-sd rv-sp rv-s10 16) else st10
+   in if save-regs > 9 then rv-emit st11 (rv-sd rv-sp rv-s11 8) else st11
+
+  rv-emit-epilogue : RvState, Integer, Integer -> RvState
+  rv-emit-epilogue (st) (frame-size) (save-regs) =
+   let st1 = if save-regs > 9 then rv-emit st (rv-ld rv-s11 rv-sp 8) else st
+   in let st2 = if save-regs > 8 then rv-emit st1 (rv-ld rv-s10 rv-sp 16) else st1
+   in let st3 = if save-regs > 7 then rv-emit st2 (rv-ld rv-s9 rv-sp 24) else st2
+   in let st4 = if save-regs > 6 then rv-emit st3 (rv-ld rv-s8 rv-sp 32) else st3
+   in let st5 = if save-regs > 5 then rv-emit st4 (rv-ld rv-s7 rv-sp 40) else st4
+   in let st6 = if save-regs > 4 then rv-emit st5 (rv-ld rv-s6 rv-sp 48) else st5
+   in let st7 = if save-regs > 3 then rv-emit st6 (rv-ld rv-s5 rv-sp 56) else st6
+   in let st8 = if save-regs > 2 then rv-emit st7 (rv-ld rv-s4 rv-sp 64) else st7
+   in let st9 = if save-regs > 1 then rv-emit st8 (rv-ld rv-s3 rv-sp 72) else st8
+   in let st10 = if save-regs > 0 then rv-emit st9 (rv-ld rv-s2 rv-sp 80) else st9
+   in let st11 = rv-emit st10 (rv-ld rv-ra rv-sp 104)
+   in let st12 = if frame-size > 2040 then
+    let hl = rv-split-hi20-lo12 frame-size
+    in let st11a = rv-emit st11 (rv-lui rv-t2 (hl.hi))
+    in let st11b = rv-emit st11a (rv-addi rv-t2 rv-t2 (hl.lo))
+    in rv-emit st11b (rv-add rv-sp rv-sp rv-t2)
+   else rv-emit st11 (rv-addi rv-sp rv-sp frame-size)
+   in rv-emit st12 rv-ret
+
+  rv-emit-epilogue-ra : RvState, Integer, Integer, Boolean -> RvState
+  rv-emit-epilogue-ra (st) (frame-size) (save-regs) (skip-ra) =
+   let st1 = if save-regs > 9 then rv-emit st (rv-ld rv-s11 rv-sp 8) else st
+   in let st2 = if save-regs > 8 then rv-emit st1 (rv-ld rv-s10 rv-sp 16) else st1
+   in let st3 = if save-regs > 7 then rv-emit st2 (rv-ld rv-s9 rv-sp 24) else st2
+   in let st4 = if save-regs > 6 then rv-emit st3 (rv-ld rv-s8 rv-sp 32) else st3
+   in let st5 = if save-regs > 5 then rv-emit st4 (rv-ld rv-s7 rv-sp 40) else st4
+   in let st6 = if save-regs > 4 then rv-emit st5 (rv-ld rv-s6 rv-sp 48) else st5
+   in let st7 = if save-regs > 3 then rv-emit st6 (rv-ld rv-s5 rv-sp 56) else st6
+   in let st8 = if save-regs > 2 then rv-emit st7 (rv-ld rv-s4 rv-sp 64) else st7
+   in let st9 = if save-regs > 1 then rv-emit st8 (rv-ld rv-s3 rv-sp 72) else st8
+   in let st10 = if save-regs > 0 then rv-emit st9 (rv-ld rv-s2 rv-sp 80) else st9
+   in let st11 = if skip-ra then st10 else rv-emit st10 (rv-ld rv-ra rv-sp 104)
+   in let st12 = if frame-size > 2040 then
+    let hl = rv-split-hi20-lo12 frame-size
+    in let st11a = rv-emit st11 (rv-lui rv-t2 (hl.hi))
+    in let st11b = rv-emit st11a (rv-addi rv-t2 rv-t2 (hl.lo))
+    in rv-emit st11b (rv-add rv-sp rv-sp rv-t2)
+   else rv-emit st11 (rv-addi rv-sp rv-sp frame-size)
+   in rv-emit st12 rv-ret
+
+  rv-compute-frame-size : Integer -> Integer
+  rv-compute-frame-size (spill-count) =
+   let raw = 112 + spill-count * 8
+   in if int-mod raw 16 == 0 then raw else raw + 8
+
+  rv-emit-compact-prologue : RvState, Integer -> RvState
+  rv-emit-compact-prologue (st) (save-regs) =
+   let st0a = rv-emit st (rv-addi rv-sp rv-sp (0 - 112))
+   in let st2 = rv-emit st0a (rv-sd rv-sp rv-ra 104)
+   in let st3 = if save-regs > 0 then rv-emit st2 (rv-sd rv-sp rv-s2 80) else st2
+   in let st4 = if save-regs > 1 then rv-emit st3 (rv-sd rv-sp rv-s3 72) else st3
+   in let st5 = if save-regs > 2 then rv-emit st4 (rv-sd rv-sp rv-s4 64) else st4
+   in let st6 = if save-regs > 3 then rv-emit st5 (rv-sd rv-sp rv-s5 56) else st5
+   in let st7 = if save-regs > 4 then rv-emit st6 (rv-sd rv-sp rv-s6 48) else st6
+   in let st8 = if save-regs > 5 then rv-emit st7 (rv-sd rv-sp rv-s7 40) else st7
+   in let st9 = if save-regs > 6 then rv-emit st8 (rv-sd rv-sp rv-s8 32) else st8
+   in let st10 = if save-regs > 7 then rv-emit st9 (rv-sd rv-sp rv-s9 24) else st9
+   in let st11 = if save-regs > 8 then rv-emit st10 (rv-sd rv-sp rv-s10 16) else st10
+   in if save-regs > 9 then rv-emit st11 (rv-sd rv-sp rv-s11 8) else st11
+
+  rv-nop-compact-saves : RvState, Integer, Integer -> RvState
+  rv-nop-compact-saves (st) (actual-saves) (max-saves) =
+   rv-nop-compact-loop st actual-saves max-saves
+
+  rv-nop-compact-loop : RvState, Integer, Integer -> RvState
+  rv-nop-compact-loop (st) (i) (max-saves) =
+   if i >= max-saves then st
+   else let idx = st.prologue-index + 2 + i
+   in rv-nop-compact-loop (rv-patch-insn st idx rv-nop) (i + 1) max-saves
+
+  rv-nop-unused-saves : RvState, Integer -> RvState
+  rv-nop-unused-saves (st) (actual-saves) =
+   rv-nop-saves-loop st actual-saves 10
+
+  rv-nop-saves-loop : RvState, Integer, Integer -> RvState
+  rv-nop-saves-loop (st) (i) (max-saves) =
+   if i >= max-saves then st
+   else let idx = st.prologue-index + 4 + i
+   in rv-nop-saves-loop (rv-patch-insn st idx rv-nop) (i + 1) max-saves
+
+Section: NOP Compaction
+
+  rv-is-nop-word : RvState, Integer -> Boolean
+  rv-is-nop-word (st) (idx) =
+   let p = idx * 4
+   in if peek-byte (st.code-buf) p /= #13 then False
+   else if peek-byte (st.code-buf) (p + 1) /= 0 then False
+   else if peek-byte (st.code-buf) (p + 2) /= 0 then False
+   else peek-byte (st.code-buf) (p + 3) == 0
+
+  rv-cp-has : Integer, List RvCallPatch, Integer -> Boolean
+  rv-cp-has (idx) (ps) (i) =
+   if i >= list-length ps then False
+   else if (list-at ps i).insn-index == idx then True
+   else rv-cp-has idx ps (i + 1)
+
+  rv-fa-has : Integer, List RvFuncAddrFixup, Integer -> Boolean
+  rv-fa-has (idx) (fs) (i) =
+   if i >= list-length fs then False
+   else if (list-at fs i).insn-index == idx then True
+   else rv-fa-has idx fs (i + 1)
+
+  rv-rf-has : Integer, List RvRodataFixup, Integer -> Boolean
+  rv-rf-has (idx) (fs) (i) =
+   if i >= list-length fs then False
+   else if (list-at fs i).insn-index == idx then True
+   else rv-rf-has idx fs (i + 1)
+
+  rv-idx-is-placeholder : Integer, RvState -> Boolean
+  rv-idx-is-placeholder (idx) (st) =
+   rv-cp-has idx (st.call-patches) 0 | rv-fa-has idx (st.func-addr-fixups) 0 | rv-fa-has (idx - 1) (st.func-addr-fixups) 0 | rv-rf-has idx (st.rodata-fixups) 0
+
+  rv-gather-nops : RvState, Integer, Integer, List Integer -> List Integer
+  rv-gather-nops (st) (i) (stop) (acc) =
+   if i >= stop then acc
+   else if rv-is-nop-word st i then
+    if rv-idx-is-placeholder i st then rv-gather-nops st (i + 1) stop acc
+    else rv-gather-nops st (i + 1) stop (list-push acc i)
+   else rv-gather-nops st (i + 1) stop acc
+
+  rv-cnt-before : List Integer, Integer, Integer, Integer -> Integer
+  rv-cnt-before (ns) (tgt) (i) (c) =
+   if i >= list-length ns then c
+   else if list-at ns i >= tgt then c
+   else rv-cnt-before ns tgt (i + 1) (c + 1)
+
+  rv-is-b-type : Integer -> Boolean
+  rv-is-b-type (opcode7) = opcode7 == #63
+
+  rv-is-j-type : Integer -> Boolean
+  rv-is-j-type (opcode7) = opcode7 == #6F
+
+  rv-decode-b-imm : Integer, Integer, Integer, Integer -> Integer
+  rv-decode-b-imm (b0) (b1) (b2) (b3) =
+   let imm11 = bit-and (bit-shru b0 7) 1
+   in let imm4to1 = bit-and b1 #F
+   in let imm10to5 = bit-and (bit-shru b3 1) #3F
+   in let imm12 = bit-and (bit-shru b3 7) 1
+   in let raw = bit-or (bit-or (bit-or (bit-shl imm12 12) (bit-shl imm11 11)) (bit-shl imm10to5 5)) (bit-shl imm4to1 1)
+   in if imm12 == 1 then raw - #2000 else raw
+
+  rv-encode-b-imm : RvState, Integer, Integer -> RvState
+  rv-encode-b-imm (st) (pos) (imm) =
+   let u = if imm < 0 then imm + #2000 else imm
+   in let b0-old = peek-byte (st.code-buf) pos
+   in let b1-old = peek-byte (st.code-buf) (pos + 1)
+   in let b3-old = peek-byte (st.code-buf) (pos + 3)
+   in let imm12 = bit-and (bit-shru u 12) 1
+   in let imm11 = bit-and (bit-shru u 11) 1
+   in let imm10to5 = bit-and (bit-shru u 5) #3F
+   in let imm4to1 = bit-and (bit-shru u 1) #F
+   in let nb0 = bit-or (bit-and b0-old #7F) (bit-shl imm11 7)
+   in let nb1 = bit-or (bit-and b1-old #F0) imm4to1
+   in let nb3 = bit-or (bit-shl imm12 7) (bit-or (bit-shl imm10to5 1) (bit-and b3-old 1))
+   in let w0 = __buf-write-byte (st.code-buf) pos nb0
+   in let w1 = __buf-write-byte (st.code-buf) (pos + 1) nb1
+   in let w3 = __buf-write-byte (st.code-buf) (pos + 3) nb3
+   in st
+
+  rv-decode-j-imm : Integer, Integer, Integer, Integer -> Integer
+  rv-decode-j-imm (b0) (b1) (b2) (b3) =
+   let imm19to12 = bit-or (bit-shl (bit-and b2 #F) 4) (bit-and (bit-shru b1 4) #F)
+   in let imm11 = bit-and (bit-shru b2 4) 1
+   in let imm10to1 = bit-or (bit-shl (bit-and b3 #7F) 3) (bit-and (bit-shru b2 5) 7)
+   in let imm20 = bit-and (bit-shru b3 7) 1
+   in let raw = bit-or (bit-or (bit-or (bit-shl imm20 20) (bit-shl imm19to12 12)) (bit-shl imm11 11)) (bit-shl imm10to1 1)
+   in if imm20 == 1 then raw - #200000 else raw
+
+  rv-encode-j-imm : RvState, Integer, Integer -> RvState
+  rv-encode-j-imm (st) (pos) (imm) =
+   let u = if imm < 0 then imm + #200000 else imm
+   in let b1-old = peek-byte (st.code-buf) (pos + 1)
+   in let imm20 = bit-and (bit-shru u 20) 1
+   in let imm19to12 = bit-and (bit-shru u 12) #FF
+   in let imm11 = bit-and (bit-shru u 11) 1
+   in let imm10to1 = bit-and (bit-shru u 1) #3FF
+   in let nb1 = bit-or (bit-and b1-old #F) (bit-shl (bit-and imm19to12 #F) 4)
+   in let nb2 = bit-or (bit-or (bit-and (bit-shru imm19to12 4) #F) (bit-shl imm11 4)) (bit-shl (bit-and imm10to1 7) 5)
+   in let nb3 = bit-or (bit-and (bit-shru imm10to1 3) #7F) (bit-shl imm20 7)
+   in let w1 = __buf-write-byte (st.code-buf) (pos + 1) nb1
+   in let w2 = __buf-write-byte (st.code-buf) (pos + 2) nb2
+   in let w3 = __buf-write-byte (st.code-buf) (pos + 3) nb3
+   in st
+
+  rv-fix-branches : RvState, List Integer, Integer, Integer -> RvState
+  rv-fix-branches (st) (nops) (i) (stop) =
+   if i >= stop then st
+   else let p = i * 4
+   in let b0 = peek-byte (st.code-buf) p
+   in let opcode7 = bit-and b0 #7F
+   in if rv-is-b-type opcode7 then
+    let b1 = peek-byte (st.code-buf) (p + 1)
+    in let b2 = peek-byte (st.code-buf) (p + 2)
+    in let b3 = peek-byte (st.code-buf) (p + 3)
+    in let old-imm = rv-decode-b-imm b0 b1 b2 b3
+    in let tgt-byte = i * 4 + old-imm
+    in let tgt-idx = tgt-byte / 4
+    in let delta = rv-cnt-before nops tgt-idx 0 0 - rv-cnt-before nops i 0 0
+    in let st1 = rv-encode-b-imm st p (old-imm - delta * 4)
+    in rv-fix-branches st1 nops (i + 1) stop
+   else if rv-is-j-type opcode7 then
+    if rv-idx-is-placeholder i st then rv-fix-branches st nops (i + 1) stop
+    else let b1 = peek-byte (st.code-buf) (p + 1)
+    in let b2 = peek-byte (st.code-buf) (p + 2)
+    in let b3 = peek-byte (st.code-buf) (p + 3)
+    in let old-imm = rv-decode-j-imm b0 b1 b2 b3
+    in let tgt-byte = i * 4 + old-imm
+    in let tgt-idx = tgt-byte / 4
+    in let delta = rv-cnt-before nops tgt-idx 0 0 - rv-cnt-before nops i 0 0
+    in let st1 = rv-encode-j-imm st p (old-imm - delta * 4)
+    in rv-fix-branches st1 nops (i + 1) stop
+   else rv-fix-branches st nops (i + 1) stop
+
+  rv-slide-insns : RvState, List Integer, Integer, Integer, Integer -> RvState
+  rv-slide-insns (st) (nops) (src) (dst) (stop) =
+   if src >= stop then __record-set (__record-set st "insn-count" dst) "code-pos" (dst * 4)
+   else if rv-cnt-before nops (src + 1) 0 0 > rv-cnt-before nops src 0 0 then
+    rv-slide-insns st nops (src + 1) dst stop
+   else if src == dst then rv-slide-insns st nops (src + 1) (dst + 1) stop
+   else let sp2 = src * 4
+   in let dp = dst * 4
+   in let w0 = __buf-write-byte (st.code-buf) dp (peek-byte (st.code-buf) sp2)
+   in let w1 = __buf-write-byte (st.code-buf) (dp + 1) (peek-byte (st.code-buf) (sp2 + 1))
+   in let w2 = __buf-write-byte (st.code-buf) (dp + 2) (peek-byte (st.code-buf) (sp2 + 2))
+   in let w3 = __buf-write-byte (st.code-buf) (dp + 3) (peek-byte (st.code-buf) (sp2 + 3))
+   in rv-slide-insns st nops (src + 1) (dst + 1) stop
+
+  rv-adjust-patches : List RvCallPatch, List Integer, Integer, List RvCallPatch -> List RvCallPatch
+  rv-adjust-patches (ps) (nops) (i) (acc) =
+   if i >= list-length ps then acc
+   else let p = list-at ps i
+   in let delta = rv-cnt-before nops (p.insn-index) 0 0
+   in let p2 = RvCallPatch { insn-index = p.insn-index - delta, target = p.target }
+   in rv-adjust-patches ps nops (i + 1) (list-push acc p2)
+
+  rv-adjust-func-fixups : List RvFuncAddrFixup, List Integer, Integer, List RvFuncAddrFixup -> List RvFuncAddrFixup
+  rv-adjust-func-fixups (fs) (nops) (i) (acc) =
+   if i >= list-length fs then acc
+   else let f = list-at fs i
+   in let delta = rv-cnt-before nops (f.insn-index) 0 0
+   in let f2 = RvFuncAddrFixup { insn-index = f.insn-index - delta, rd = f.rd, target = f.target }
+   in rv-adjust-func-fixups fs nops (i + 1) (list-push acc f2)
+
+  rv-adjust-rodata-fixups : List RvRodataFixup, List Integer, Integer, List RvRodataFixup -> List RvRodataFixup
+  rv-adjust-rodata-fixups (fs) (nops) (i) (acc) =
+   if i >= list-length fs then acc
+   else let f = list-at fs i
+   in let delta = rv-cnt-before nops (f.insn-index) 0 0
+   in let f2 = RvRodataFixup { insn-index = f.insn-index - delta, rd = f.rd, rodata-offset = f.rodata-offset }
+   in rv-adjust-rodata-fixups fs nops (i + 1) (list-push acc f2)
+
+  rv-adjust-func-offsets : List Integer, List Integer, Integer, List Integer -> List Integer
+  rv-adjust-func-offsets (offs) (nops) (i) (acc) =
+   if i >= list-length offs then acc
+   else let off = list-at offs i
+   in let delta = rv-cnt-before nops off 0 0
+   in rv-adjust-func-offsets offs nops (i + 1) (list-push acc (off - delta))
+
+  rv-compact-nops : RvState -> RvState
+  rv-compact-nops (st) =
+   let nops = rv-gather-nops st 0 (st.insn-count) []
+   in if list-length nops == 0 then st
+   else let st1 = rv-fix-branches st nops 0 (st.insn-count)
+   in let st2 = rv-slide-insns st1 nops 0 0 (st1.insn-count)
+   in let st3 = __record-set st2 "call-patches" (rv-adjust-patches (st2.call-patches) nops 0 [])
+   in let st4 = __record-set st3 "func-addr-fixups" (rv-adjust-func-fixups (st3.func-addr-fixups) nops 0 [])
+   in let st5 = __record-set st4 "rodata-fixups" (rv-adjust-rodata-fixups (st4.rodata-fixups) nops 0 [])
+   in __record-set st5 "func-offsets" (rv-adjust-func-offsets (st5.func-offsets) nops 0 [])
+
+Section: Call Emission
+
+  rv-emit-call-to : RvState, Text -> RvState
+  rv-emit-call-to (st) (target) =
+   let st1 = rv-add-call-patch st target
+   in rv-emit st1 rv-nop
+
+  rv-emit-load-func-addr : RvState, Integer, Text -> RvState
+  rv-emit-load-func-addr (st) (rd) (target) =
+   let st1 = rv-add-func-addr-fixup st rd target
+   in let st2 = rv-emit st1 rv-nop
+   in rv-emit st2 rv-nop
+
+  rv-emit-li : RvState, Integer, Integer -> RvState
+  rv-emit-li (st) (rd) (value) =
+   let insns = rv-li rd value
+   in rv-emit-insn-list st insns 0
+
+  rv-emit-block : RvState, List Integer -> RvState
+  rv-emit-block (st) (bytes) =
+   rv-emit-insn-list st bytes 0
+
+  rv-emit-insn-list : RvState, List Integer, Integer -> RvState
+  rv-emit-insn-list (st) (insns) (i) =
+   if i >= list-length insns then st
+   else let chunk = [list-at insns i, list-at insns (i + 1), list-at insns (i + 2), list-at insns (i + 3)]
+   in rv-emit-insn-list (rv-emit st chunk) insns (i + 4)
+
+Section: Expression Emission
+
+  rv-emit-expr : RvState, IRExpr -> RvEmitResult
+  rv-emit-expr (st) (expr) =
+   when expr
+    is IrIntLit (value) (s) -> rv-emit-int-lit st value
+    is IrBoolLit (value) (s) -> rv-emit-int-lit st (if value then 1 else 0)
+    is IrTextLit (value) (s) -> rv-emit-text-lit st value
+    is IrName (name) (ty) (s) -> rv-emit-name st name ty
+    is IrBinary (op) (left) (right) (ty) (s) -> rv-emit-binary st op left right ty
+    is IrNegate (operand) (s) -> rv-emit-negate st operand
+    is IrIf (cond) (th) (el) (ty) (s) -> rv-emit-if st cond th el
+    is IrLet (name) (ty) (value) (body) (s) -> rv-emit-let st name value body
+    is IrApply (func) (arg) (ty) (s) -> rv-emit-apply st expr ty
+    is IrAct (stmts) (ty) (s) -> rv-emit-act st stmts
+    is IrRecord (name) (fields) (ty) (s) -> rv-emit-record st fields ty
+    is IrFieldAccess (rec) (field) (ty) (s) -> rv-emit-field-access st rec field ty
+    is IrMatch (scrut) (branches) (ty) (s) -> rv-emit-match st scrut branches
+    is IrList (elems) (ty) (s) -> rv-emit-list st elems
+    is IrCharLit (value) (s) -> rv-emit-int-lit st value
+    is IrNumLit (value) (s) -> rv-emit-int-lit st value
+    is IrFieldStore (rec) (field) (val) (ty) (s) -> rv-emit-field-store st rec field val ty
+    is IrWithTimeout (secs) (effs) (scopes) (body) (ty) (s) -> rv-emit-expr st body
+    is IrHandle (eff) (body) (clauses) (ty) (s) -> rv-emit-handle st eff body clauses ty
+    is IrTry (max) (body) (fb) (fail-stmts) (ty) (s) -> rv-emit-try st max body fb
+    is IrFork (body) (ty) (s) -> rv-emit-fork st body
+    is IrAwait (task) (ty) (s) -> rv-emit-await st task
+    is IrLambda (params) (body) (lty) (s) -> rv-emit-lambda st params body
+    is IrError (msg) (ty) (s) -> rv-emit-int-lit st 0
+    is otherwise -> rv-emit-int-lit st 0
+
+  rv-emit-int-lit : RvState, Integer -> RvEmitResult
+  rv-emit-int-lit (st) (value) =
+   let dest = st.tco.result-dest
+   in if dest >= 0 then RvEmitResult { state = rv-emit-li st dest value, reg = dest }
+   else let tr = rv-alloc-temp st
+   in RvEmitResult {
+    state = rv-emit-li (tr.state) (tr.reg) value,
+    reg = tr.reg
+   }
+
+  rv-emit-text-lit : RvState, Text -> RvEmitResult
+  rv-emit-text-lit (st) (value) =
+   let existing = rv-find-string (st.string-offsets) value 0
+   in let rodata-offset = if existing >= 0 then existing else list-length (st.data)
+   in let st1 = if existing >= 0 then st
+    else let len-bytes = write-i64-le (text-length value)
+    in let text-bytes = text-to-ascii-bytes value
+    in let padded = rv-pad-to-8 (len-bytes & text-bytes)
+    in __record-set (__record-set st "data" (rv-push-all (st.data) padded 0)) "string-offsets" (list-push (st.string-offsets) (RvStringEntry { value = value, offset = rodata-offset }))
+   in let tr = rv-alloc-temp st1
+   in let st2 = rv-add-rodata-fixup (tr.state) (tr.reg) rodata-offset
+   in RvEmitResult {
+    state = rv-emit (rv-emit st2 rv-nop) rv-nop,
+    reg = tr.reg
+   }
+
+  rv-find-string : List RvStringEntry, Text, Integer -> Integer
+  rv-find-string (entries) (value) (i) =
+   if i >= list-length entries then 0 - 1
+   else if (list-at entries i).value == value then (list-at entries i).offset
+   else rv-find-string entries value (i + 1)
+
+  rv-pad-to-8 : List Integer -> List Integer
+  rv-pad-to-8 (bs) =
+   let r = int-mod (list-length bs) 8
+   in if r == 0 then bs
+   else rv-pad-zeros bs (8 - r)
+
+  rv-pad-zeros : List Integer, Integer -> List Integer
+  rv-pad-zeros (bs) (n) =
+   if n <= 0 then bs
+   else rv-pad-zeros (list-push bs 0) (n - 1)
+
+  text-to-ascii-bytes : Text -> List Integer
+  text-to-ascii-bytes (s) = text-to-ascii-bytes-loop s 0 (text-length s) []
+
+  text-to-ascii-bytes-loop : Text, Integer, Integer, List Integer -> List Integer
+  text-to-ascii-bytes-loop (s) (i) (len) (acc) =
+   if i >= len then acc
+   else let cce = char-code (char-at s i)
+   in text-to-ascii-bytes-loop s (i + 1) len (list-push acc (bit-and cce 255))
+
+  write-i64-le : Integer -> List Integer
+  write-i64-le (v) =
+   [bit-and v 255, bit-and (bit-shru v 8) 255, bit-and (bit-shru v 16) 255, bit-and (bit-shru v 24) 255,
+    bit-and (bit-shru v 32) 255, bit-and (bit-shru v 40) 255, bit-and (bit-shru v 48) 255, bit-and (bit-shru v 56) 255]
+
+  write-i32-le : Integer -> List Integer
+  write-i32-le (v) =
+   [bit-and v 255, bit-and (bit-shru v 8) 255, bit-and (bit-shru v 16) 255, bit-and (bit-shru v 24) 255]
+
+  write-i16-le : Integer -> List Integer
+  write-i16-le (v) =
+   [bit-and v 255, bit-and (bit-shru v 8) 255]
+
+Section: Name Emission
+
+  rv-emit-name : RvState, Text, CodexType -> RvEmitResult
+  rv-emit-name (st) (name) (ty) =
+   let local-reg = rv-lookup-local (st.locals) name 0
+   in if local-reg >= 0 then rv-load-local st local-reg
+   else let eoa = rv-find-effect-op-addr (st.effect-op-addrs) name 0
+   in if eoa >= 0 then
+    let runtime-known = rv-find-func-offset (st.func-names) (st.func-offsets) name 0
+    in if runtime-known >= 0 then
+     let tr = rv-alloc-temp st
+     in let st1 = rv-emit-call-to (tr.state) name
+     in RvEmitResult { state = rv-emit st1 (rv-mv (tr.reg) rv-a0), reg = tr.reg }
+    else rv-emit-load-handler st eoa
+   else when ty
+    is SumTy (sname) (targs) (ctors) ->
+     let tag = rv-resolve-ctor-tag st ty name
+     in if tag >= 0 then rv-emit-nullary-ctor st tag
+     else let tr = rv-alloc-temp st
+     in let st1 = rv-emit-call-to (tr.state) name
+     in RvEmitResult {
+      state = rv-emit st1 (rv-mv (tr.reg) rv-a0),
+      reg = tr.reg
+     }
+    is ConstructedTy (tname) (targs) ->
+     let tag = rv-resolve-ctor-tag st ty name
+     in if tag >= 0 then rv-emit-nullary-ctor st tag
+     else let tr = rv-alloc-temp st
+     in let st1 = rv-emit-call-to (tr.state) name
+     in RvEmitResult {
+      state = rv-emit st1 (rv-mv (tr.reg) rv-a0),
+      reg = tr.reg
+     }
+    is FunTy (pt) (rt) -> rv-emit-partial-application st name []
+    is otherwise ->
+     let tr = rv-alloc-temp st
+     in let st1 = rv-emit-call-to (tr.state) name
+     in RvEmitResult {
+      state = rv-emit st1 (rv-mv (tr.reg) rv-a0),
+      reg = tr.reg
+     }
+
+Section: Binary Emission
+
+  rv-is-imm-eligible : IRBinaryOp -> Boolean
+  rv-is-imm-eligible (op) =
+   when op
+    is IrAddInt -> True
+    is IrSubInt -> True
+    is IrAnd -> True
+    is IrOr -> True
+    is otherwise -> False
+
+  rv-emit-binary-imm : RvState, IRBinaryOp, IRExpr, Integer -> RvEmitResult
+  rv-emit-binary-imm (st) (op) (left) (imm) =
+   let dest = st.tco.result-dest
+   in let st0 = rv-set-result-dest st (0 - 1)
+   in let lr = rv-emit-expr st0 left
+   in if dest >= 0 then
+    when op
+     is IrAddInt -> RvEmitResult { state = rv-emit (lr.state) (rv-addi dest (lr.reg) imm), reg = dest }
+     is IrSubInt -> RvEmitResult { state = rv-emit (lr.state) (rv-addi dest (lr.reg) (0 - imm)), reg = dest }
+     is IrAnd -> RvEmitResult { state = rv-emit (lr.state) (rv-andi dest (lr.reg) imm), reg = dest }
+     is IrOr -> RvEmitResult { state = rv-emit (lr.state) (rv-ori dest (lr.reg) imm), reg = dest }
+     is otherwise -> RvEmitResult { state = lr.state, reg = dest }
+   else let rd = rv-alloc-temp (lr.state)
+   in when op
+    is IrAddInt -> RvEmitResult { state = rv-emit (rd.state) (rv-addi (rd.reg) (lr.reg) imm), reg = rd.reg }
+    is IrSubInt -> RvEmitResult { state = rv-emit (rd.state) (rv-addi (rd.reg) (lr.reg) (0 - imm)), reg = rd.reg }
+    is IrAnd -> RvEmitResult { state = rv-emit (rd.state) (rv-andi (rd.reg) (lr.reg) imm), reg = rd.reg }
+    is IrOr -> RvEmitResult { state = rv-emit (rd.state) (rv-ori (rd.reg) (lr.reg) imm), reg = rd.reg }
+    is otherwise -> RvEmitResult { state = rd.state, reg = rd.reg }
+
+  rv-small-imm : IRExpr -> Integer
+  rv-small-imm (e) =
+   when e
+    is IrIntLit (v) (s) -> if v >= 0 then if v <= 2047 then v + 1 else 0 else 0
+    is _ -> 0
+
+  rv-is-pow2 : Integer -> Boolean
+  rv-is-pow2 (n) = if n <= 0 then False else bit-and n (n - 1) == 0
+
+  rv-log2 : Integer -> Integer
+  rv-log2 (n) = if n <= 1 then 0 else 1 + rv-log2 (bit-shru n 1)
+
+  rv-pow2-lit : IRExpr -> Integer
+  rv-pow2-lit (e) =
+   when e
+    is IrIntLit (v) (s) -> if rv-is-pow2 v then v else 0
+    is _ -> 0
+
+  rv-emit-rem-pow2 : RvState, IRExpr, Integer -> RvEmitResult
+  rv-emit-rem-pow2 (st) (left) (n) =
+   let dest = st.tco.result-dest
+   in let st0 = rv-set-result-dest st (0 - 1)
+   in let lr = rv-emit-expr st0 left
+   in let mask = n - 1
+   in if dest >= 0 then RvEmitResult { state = rv-emit (lr.state) (rv-andi dest (lr.reg) mask), reg = dest }
+   else let rd = rv-alloc-temp (lr.state)
+   in RvEmitResult { state = rv-emit (rd.state) (rv-andi (rd.reg) (lr.reg) mask), reg = rd.reg }
+
+  rv-emit-mul-pow2 : RvState, IRExpr, Integer -> RvEmitResult
+  rv-emit-mul-pow2 (st) (left) (n) =
+   let dest = st.tco.result-dest
+   in let st0 = rv-set-result-dest st (0 - 1)
+   in let lr = rv-emit-expr st0 left
+   in let shift = rv-log2 n
+   in if dest >= 0 then RvEmitResult { state = rv-emit (lr.state) (rv-slli dest (lr.reg) shift), reg = dest }
+   else let rd = rv-alloc-temp (lr.state)
+   in RvEmitResult { state = rv-emit (rd.state) (rv-slli (rd.reg) (lr.reg) shift), reg = rd.reg }
+
+  rv-emit-div-pow2 : RvState, IRExpr, Integer -> RvEmitResult
+  rv-emit-div-pow2 (st) (left) (n) =
+   let dest = st.tco.result-dest
+   in let st0 = rv-set-result-dest st (0 - 1)
+   in let lr = rv-emit-expr st0 left
+   in let shift = rv-log2 n
+   in if dest >= 0 then RvEmitResult { state = rv-emit (lr.state) (rv-srai dest (lr.reg) shift), reg = dest }
+   else let rd = rv-alloc-temp (lr.state)
+   in RvEmitResult { state = rv-emit (rd.state) (rv-srai (rd.reg) (lr.reg) shift), reg = rd.reg }
+
+  rv-is-text-type : CodexType -> Boolean
+  rv-is-text-type (ty) =
+   when ty
+    is TextTy -> True
+    is otherwise -> False
+
+  rv-is-real-type : CodexType -> Boolean
+  rv-is-real-type (ty) =
+   when ty
+    is RealTy -> True
+    is RealTrappingTy -> True
+    is RealSaturatingTy -> True
+    is otherwise -> False
+
+  rv-emit-sum-eq : RvState, Integer, Integer, Integer -> RvEmitResult
+  rv-emit-sum-eq (st) (rd) (l-reg) (r-reg) =
+   let ll = rv-alloc-local st
+   in let st0a = rv-store-local (ll.state) (ll.reg) l-reg
+   in let rl = rv-alloc-local st0a
+   in let st0b = rv-store-local (rl.state) (rl.reg) r-reg
+   in let acc = rv-alloc-local st0b
+   in let lt = rv-alloc-temp (acc.state)
+   in let lp = rv-load-local (lt.state) (ll.reg)
+   in let st1 = rv-emit (lp.state) (rv-ld (lt.reg) (lp.reg) 0)
+   in let rt = rv-alloc-temp st1
+   in let rp = rv-load-local (rt.state) (rl.reg)
+   in let st2 = rv-emit (rp.state) (rv-ld (rt.reg) (rp.reg) 0)
+   in let dt = rv-alloc-temp st2
+   in let st3 = rv-emit (dt.state) (rv-sub (dt.reg) (lt.reg) (rt.reg))
+   in let st4 = rv-emit st3 (rv-sltu (dt.reg) rv-zero (dt.reg))
+   in let st4a = rv-store-local st4 (acc.reg) (dt.reg)
+   in let lf1 = rv-alloc-temp st4a
+   in let lp1 = rv-load-local (lf1.state) (ll.reg)
+   in let st5 = rv-emit (lp1.state) (rv-ld (lf1.reg) (lp1.reg) 8)
+   in let rf1 = rv-alloc-temp st5
+   in let rp1 = rv-load-local (rf1.state) (rl.reg)
+   in let st6 = rv-emit (rp1.state) (rv-ld (rf1.reg) (rp1.reg) 8)
+   in let t1 = rv-alloc-temp st6
+   in let st7 = rv-emit (t1.state) (rv-sub (t1.reg) (lf1.reg) (rf1.reg))
+   in let st8 = rv-emit st7 (rv-sltu (t1.reg) rv-zero (t1.reg))
+   in let av = rv-load-local st8 (acc.reg)
+   in let st9 = rv-emit (av.state) (rv-or (t1.reg) (av.reg) (t1.reg))
+   in let st9a = rv-store-local st9 (acc.reg) (t1.reg)
+   in let lf2 = rv-alloc-temp st9a
+   in let lp2 = rv-load-local (lf2.state) (ll.reg)
+   in let st10 = rv-emit (lp2.state) (rv-ld (lf2.reg) (lp2.reg) 16)
+   in let rf2 = rv-alloc-temp st10
+   in let rp2 = rv-load-local (rf2.state) (rl.reg)
+   in let st11 = rv-emit (rp2.state) (rv-ld (rf2.reg) (rp2.reg) 16)
+   in let t2 = rv-alloc-temp st11
+   in let st12 = rv-emit (t2.state) (rv-sub (t2.reg) (lf2.reg) (rf2.reg))
+   in let st13 = rv-emit st12 (rv-sltu (t2.reg) rv-zero (t2.reg))
+   in let av2 = rv-load-local st13 (acc.reg)
+   in let st14 = rv-emit (av2.state) (rv-or rd (av2.reg) (t2.reg))
+   in RvEmitResult { state = rv-emit st14 (rv-xori rd rd 1), reg = rd }
+
+  rv-is-sum-type : CodexType -> Boolean
+  rv-is-sum-type (ty) =
+   when ty
+    is SumTy (n) (ta) (cs) -> True
+    is ConstructedTy (n) (ta) -> True
+    is otherwise -> False
+
+  rv-emit-binary : RvState, IRBinaryOp, IRExpr, IRExpr, CodexType -> RvEmitResult
+  rv-emit-binary (st) (op) (left) (right) (ty) =
+   let checkpoint = st.next-local
+   in let res = rv-emit-binary-inner st op left right ty
+   in if rv-is-frameless-mode st then res
+   else RvEmitResult { state = __record-set (res.state) "next-local" checkpoint, reg = res.reg }
+
+  rv-emit-binary-inner : RvState, IRBinaryOp, IRExpr, IRExpr, CodexType -> RvEmitResult
+  rv-emit-binary-inner (st) (op) (left) (right) (ty) =
+   let p2 = rv-pow2-lit right
+   in if p2 > 1 then
+    when op
+     is IrRemInt -> rv-emit-rem-pow2 st left p2
+     is IrDivInt -> rv-emit-div-pow2 st left p2
+     is IrMulInt -> rv-emit-mul-pow2 st left p2
+     is otherwise ->
+      let imm-val = rv-small-imm right
+      in if imm-val > 0 then
+       if rv-is-imm-eligible op then rv-emit-binary-imm st op left (imm-val - 1)
+       else rv-emit-binary-reg st op left right ty
+      else rv-emit-binary-reg st op left right ty
+   else let p2l = rv-pow2-lit left
+   in if p2l > 1 then
+    when op
+     is IrMulInt -> rv-emit-mul-pow2 st right p2l
+     is otherwise ->
+      let imm-val = rv-small-imm right
+      in if imm-val > 0 then
+       if rv-is-imm-eligible op then rv-emit-binary-imm st op left (imm-val - 1)
+       else rv-emit-binary-reg st op left right ty
+      else rv-emit-binary-reg st op left right ty
+   else let imm-val = rv-small-imm right
+   in if imm-val > 0 then
+    if rv-is-imm-eligible op then rv-emit-binary-imm st op left (imm-val - 1)
+    else rv-emit-binary-reg st op left right ty
+   else rv-emit-binary-reg st op left right ty
+
+  rv-right-is-simple : IRExpr -> Boolean
+  rv-right-is-simple (e) =
+   when e
+    is IrName (n) (t) (s) -> True
+    is IrIntLit (v) (s) -> True
+    is IrBoolLit (v) (s) -> True
+    is IrCharLit (v) (s) -> True
+    is otherwise -> False
+
+  rv-emit-binary-reg : RvState, IRBinaryOp, IRExpr, IRExpr, CodexType -> RvEmitResult
+  rv-emit-binary-reg (st) (op) (left) (right) (ty) =
+   let dest = st.tco.result-dest
+   in let st-nd = rv-set-result-dest st (0 - 1)
+   in let lr = rv-emit-expr st-nd left
+   in let skip-save = rv-right-is-simple right
+   in let saved = if skip-save then RvEmitResult { state = lr.state, reg = lr.reg } else rv-save-if-needed (lr.state) (lr.reg)
+   in let rr = rv-emit-expr (saved.state) right
+   in let ll = if skip-save then RvEmitResult { state = rr.state, reg = lr.reg } else rv-reload-if-needed (rr.state) (saved.reg)
+   in let left-reg = ll.reg
+   in let right-reg = rr.reg
+   in let rd-alloc = if dest >= 0 then RvEmitResult { state = ll.state, reg = dest }
+    else rv-alloc-temp (ll.state)
+   in let st2 = rd-alloc.state
+   in let rd = rd-alloc.reg
+   in when op
+    is IrAddInt -> RvEmitResult { state = rv-emit st2 (rv-add rd left-reg right-reg), reg = rd }
+    is IrSubInt -> RvEmitResult { state = rv-emit st2 (rv-sub rd left-reg right-reg), reg = rd }
+    is IrMulInt -> RvEmitResult { state = rv-emit st2 (rv-mul rd left-reg right-reg), reg = rd }
+    is IrDivInt -> RvEmitResult { state = rv-emit st2 (rv-div rd left-reg right-reg), reg = rd }
+    is IrRemInt -> RvEmitResult { state = rv-emit st2 (rv-rem rd left-reg right-reg), reg = rd }
+    is IrEq ->
+     if rv-is-text-type (ir-expr-type left) then
+      let st3 = if right-reg == rv-a0 then
+        rv-emit (rv-emit st2 (rv-mv rv-a1 right-reg)) (rv-mv rv-a0 left-reg)
+       else rv-emit (rv-emit st2 (rv-mv rv-a0 left-reg)) (rv-mv rv-a1 right-reg)
+      in let st4 = rv-emit-call-to st3 "__str_eq"
+      in RvEmitResult { state = rv-emit st4 (rv-mv rd rv-a0), reg = rd }
+     else if rv-is-sum-type (ir-expr-type left) then rv-emit-sum-eq st2 rd left-reg right-reg
+     else let st3 = rv-emit st2 (rv-sub rd left-reg right-reg)
+     in let st4 = rv-emit st3 (rv-sltu rd rv-zero rd)
+     in RvEmitResult { state = rv-emit st4 (rv-xori rd rd 1), reg = rd }
+    is IrNotEq ->
+     if rv-is-text-type (ir-expr-type left) then
+      let st3 = if right-reg == rv-a0 then
+        rv-emit (rv-emit st2 (rv-mv rv-a1 right-reg)) (rv-mv rv-a0 left-reg)
+       else rv-emit (rv-emit st2 (rv-mv rv-a0 left-reg)) (rv-mv rv-a1 right-reg)
+      in let st4 = rv-emit-call-to st3 "__str_eq"
+      in let st5 = rv-emit st4 (rv-sltu rd rv-zero rv-a0)
+      in RvEmitResult { state = rv-emit st5 (rv-xori rd rd 1), reg = rd }
+     else if rv-is-sum-type (ir-expr-type left) then
+      let neq = rv-emit-sum-eq st2 rd left-reg right-reg
+      in RvEmitResult { state = rv-emit (neq.state) (rv-xori rd (neq.reg) 1), reg = rd }
+     else let st3 = rv-emit st2 (rv-sub rd left-reg right-reg)
+     in RvEmitResult { state = rv-emit st3 (rv-sltu rd rv-zero rd), reg = rd }
+    is IrLt ->
+     if rv-is-real-type (ir-expr-type left) then rv-emit-real-comparison st2 left-reg right-reg rv-flt-d
+     else RvEmitResult { state = rv-emit st2 (rv-slt rd left-reg right-reg), reg = rd }
+    is IrGt ->
+     if rv-is-real-type (ir-expr-type left) then rv-emit-real-comparison st2 right-reg left-reg rv-flt-d
+     else RvEmitResult { state = rv-emit st2 (rv-slt rd right-reg left-reg), reg = rd }
+    is IrLtEq ->
+     if rv-is-real-type (ir-expr-type left)
+      then let cmp = rv-emit-real-comparison st2 right-reg left-reg rv-flt-d
+      in RvEmitResult { state = rv-emit (cmp.state) (rv-xori (cmp.reg) (cmp.reg) 1), reg = cmp.reg }
+     else let st3 = rv-emit st2 (rv-slt rd right-reg left-reg)
+     in RvEmitResult { state = rv-emit st3 (rv-xori rd rd 1), reg = rd }
+    is IrGtEq ->
+     if rv-is-real-type (ir-expr-type left)
+      then let cmp = rv-emit-real-comparison st2 left-reg right-reg rv-flt-d
+      in RvEmitResult { state = rv-emit (cmp.state) (rv-xori (cmp.reg) (cmp.reg) 1), reg = cmp.reg }
+     else let st3 = rv-emit st2 (rv-slt rd left-reg right-reg)
+     in RvEmitResult { state = rv-emit st3 (rv-xori rd rd 1), reg = rd }
+    is IrAddNum -> rv-emit-real-arith st2 left-reg right-reg rv-fadd-d
+    is IrSubNum -> rv-emit-real-arith st2 left-reg right-reg rv-fsub-d
+    is IrMulNum -> rv-emit-real-arith st2 left-reg right-reg rv-fmul-d
+    is IrDivNum -> rv-emit-real-arith st2 left-reg right-reg rv-fdiv-d
+    is IrAddRealApprox -> rv-emit-real-approx-arith st2 left-reg right-reg rv-fadd-s
+    is IrSubRealApprox -> rv-emit-real-approx-arith st2 left-reg right-reg rv-fsub-s
+    is IrMulRealApprox -> rv-emit-real-approx-arith st2 left-reg right-reg rv-fmul-s
+    is IrDivRealApprox -> rv-emit-real-approx-arith st2 left-reg right-reg rv-fdiv-s
+    is IrAddRealTrapping -> rv-emit-real-arith st2 left-reg right-reg rv-fadd-d
+    is IrSubRealTrapping -> rv-emit-real-arith st2 left-reg right-reg rv-fsub-d
+    is IrMulRealTrapping -> rv-emit-real-arith st2 left-reg right-reg rv-fmul-d
+    is IrDivRealTrapping -> rv-emit-real-arith st2 left-reg right-reg rv-fdiv-d
+    is IrAddRealSaturating -> rv-emit-real-saturating-arith st2 left-reg right-reg rv-fadd-d
+    is IrSubRealSaturating -> rv-emit-real-saturating-arith st2 left-reg right-reg rv-fsub-d
+    is IrMulRealSaturating -> rv-emit-real-saturating-arith st2 left-reg right-reg rv-fmul-d
+    is IrDivRealSaturating -> rv-emit-real-saturating-arith st2 left-reg right-reg rv-fdiv-d
+    is IrApproxEq -> rv-emit-real-comparison st2 left-reg right-reg rv-feq-d
+    is IrApproxEqExact -> rv-emit-real-comparison st2 left-reg right-reg rv-feq-d
+    is IrPowInt ->
+     let st3 = if right-reg == rv-a0
+      then rv-emit (rv-emit st2 (rv-mv rv-a1 right-reg)) (rv-mv rv-a0 left-reg)
+      else rv-emit (rv-emit st2 (rv-mv rv-a0 left-reg)) (rv-mv rv-a1 right-reg)
+     in let st5 = rv-emit-call-to st3 "__int_pow"
+     in RvEmitResult { state = rv-emit st5 (rv-mv rd rv-a0), reg = rd }
+    is IrAnd -> RvEmitResult { state = rv-emit st2 (rv-and rd left-reg right-reg), reg = rd }
+    is IrOr -> RvEmitResult { state = rv-emit st2 (rv-or rd left-reg right-reg), reg = rd }
+    is IrAppendText ->
+     let st3 = if right-reg == rv-a0
+      then rv-emit (rv-emit st2 (rv-mv rv-a1 right-reg)) (rv-mv rv-a0 left-reg)
+      else rv-emit (rv-emit st2 (rv-mv rv-a0 left-reg)) (rv-mv rv-a1 right-reg)
+     in let st5 = rv-emit-call-to st3 "__str_concat"
+     in RvEmitResult { state = rv-emit st5 (rv-mv rd rv-a0), reg = rd }
+    is IrConsList ->
+     let st3 = if right-reg == rv-a0
+      then rv-emit (rv-emit st2 (rv-mv rv-a1 right-reg)) (rv-mv rv-a0 left-reg)
+      else rv-emit (rv-emit st2 (rv-mv rv-a0 left-reg)) (rv-mv rv-a1 right-reg)
+     in let st5 = rv-emit-call-to st3 "__list_cons"
+     in RvEmitResult { state = rv-emit st5 (rv-mv rd rv-a0), reg = rd }
+    is IrAppendList ->
+     let st3 = if right-reg == rv-a0
+      then rv-emit (rv-emit st2 (rv-mv rv-a1 right-reg)) (rv-mv rv-a0 left-reg)
+      else rv-emit (rv-emit st2 (rv-mv rv-a0 left-reg)) (rv-mv rv-a1 right-reg)
+     in let st5 = rv-emit-call-to st3 "__list_append"
+     in RvEmitResult { state = rv-emit st5 (rv-mv rd rv-a0), reg = rd }
+    is IrAddVec -> if rv-is-vec-f32 ty then rv-emit-vec-f32-binop st2 left-reg right-reg ty rv-fadd-s
+     else if rv-is-vec-real ty then rv-emit-vec-fp-binop st2 left-reg right-reg rd rv-fadd-d
+     else rv-emit-vec-binop st2 left-reg right-reg rd rv-add
+    is IrSubVec -> if rv-is-vec-f32 ty then rv-emit-vec-f32-binop st2 left-reg right-reg ty rv-fsub-s
+     else if rv-is-vec-real ty then rv-emit-vec-fp-binop st2 left-reg right-reg rd rv-fsub-d
+     else rv-emit-vec-binop st2 left-reg right-reg rd rv-sub
+    is IrMulVec -> if rv-is-vec-f32 ty then rv-emit-vec-f32-binop st2 left-reg right-reg ty rv-fmul-s
+     else if rv-is-vec-real ty then rv-emit-vec-fp-binop st2 left-reg right-reg rd rv-fmul-d
+     else rv-emit-vec-binop st2 left-reg right-reg rd rv-mul
+    is IrDivVec -> if rv-is-vec-f32 ty then rv-emit-vec-f32-binop st2 left-reg right-reg ty rv-fdiv-s
+     else if rv-is-vec-real ty then rv-emit-vec-fp-binop st2 left-reg right-reg rd rv-fdiv-d
+     else rv-emit-vec-binop st2 left-reg right-reg rd rv-div
+    is IrLtVec -> if rv-is-vec-f32 ty then rv-emit-vec-f32-cmpop st2 left-reg right-reg ty rv-flt-s
+     else if rv-is-vec-real ty then rv-emit-vec-fp-cmpop st2 left-reg right-reg rd rv-flt-d
+     else rv-emit-vec-cmpop st2 left-reg right-reg rd rv-slt
+    is IrGtVec -> if rv-is-vec-f32 ty then rv-emit-vec-f32-cmpop st2 right-reg left-reg ty rv-flt-s
+     else if rv-is-vec-real ty then rv-emit-vec-fp-cmpop st2 right-reg left-reg rd rv-flt-d
+     else rv-emit-vec-cmpop st2 right-reg left-reg rd rv-slt
+    is IrLtEqVec -> if rv-is-vec-f32 ty then rv-emit-vec-f32-cmpop-inv st2 right-reg left-reg ty rv-flt-s
+     else if rv-is-vec-real ty then rv-emit-vec-fp-cmpop-inv st2 right-reg left-reg rd rv-flt-d
+     else rv-emit-vec-cmpop-inv st2 right-reg left-reg rd rv-slt
+    is IrGtEqVec -> if rv-is-vec-f32 ty then rv-emit-vec-f32-cmpop-inv st2 left-reg right-reg ty rv-flt-s
+     else if rv-is-vec-real ty then rv-emit-vec-fp-cmpop-inv st2 left-reg right-reg rd rv-flt-d
+     else rv-emit-vec-cmpop-inv st2 left-reg right-reg rd rv-slt
+    is otherwise -> RvEmitResult { state = st2, reg = rd }
+
+Section: Real Arithmetic
+
+  rv-emit-real-arith : RvState, Integer, Integer, (Integer, Integer, Integer -> List Integer) -> RvEmitResult
+  rv-emit-real-arith (st) (l-reg) (r-reg) (fp-op) =
+   let rd = rv-alloc-temp st
+   in let st1 = rv-emit (rd.state) (rv-fmv-d-x rv-ft0 l-reg)
+   in let st2 = rv-emit st1 (rv-fmv-d-x rv-ft1 r-reg)
+   in let st3 = rv-emit st2 (fp-op rv-ft0 rv-ft0 rv-ft1)
+   in RvEmitResult { state = rv-emit st3 (rv-fmv-x-d (rd.reg) rv-ft0), reg = rd.reg }
+
+  rv-emit-real-approx-arith : RvState, Integer, Integer, (Integer, Integer, Integer -> List Integer) -> RvEmitResult
+  rv-emit-real-approx-arith (st) (l-reg) (r-reg) (fp-op) =
+   let rd = rv-alloc-temp st
+   in let st1 = rv-emit (rd.state) (rv-fmv-w-x rv-ft0 l-reg)
+   in let st2 = rv-emit st1 (rv-fmv-w-x rv-ft1 r-reg)
+   in let st3 = rv-emit st2 (fp-op rv-ft0 rv-ft0 rv-ft1)
+   in RvEmitResult { state = rv-emit st3 (rv-fmv-x-w (rd.reg) rv-ft0), reg = rd.reg }
+
+  rv-emit-real-saturating-arith : RvState, Integer, Integer, (Integer, Integer, Integer -> List Integer) -> RvEmitResult
+  rv-emit-real-saturating-arith (st) (l-reg) (r-reg) (fp-op) =
+   let rd = rv-alloc-temp st
+   in let st1 = rv-emit (rd.state) (rv-fmv-d-x rv-ft0 l-reg)
+   in let st2 = rv-emit st1 (rv-fmv-d-x rv-ft1 r-reg)
+   in let st3 = rv-emit st2 (fp-op rv-ft0 rv-ft0 rv-ft1)
+   in let st4 = rv-emit st3 (rv-feq-d rv-t0 rv-ft0 rv-ft0)
+   in let st5 = rv-emit st4 (rv-bne rv-t0 rv-zero 8)
+   in let st6 = rv-emit st5 (rv-fmv-d-x rv-ft0 rv-zero)
+   in RvEmitResult { state = rv-emit st6 (rv-fmv-x-d (rd.reg) rv-ft0), reg = rd.reg }
+
+  rv-emit-real-comparison : RvState, Integer, Integer, (Integer, Integer, Integer -> List Integer) -> RvEmitResult
+  rv-emit-real-comparison (st) (l-reg) (r-reg) (cmp-op) =
+   let rd = rv-alloc-temp st
+   in let st1 = rv-emit (rd.state) (rv-fmv-d-x rv-ft0 l-reg)
+   in let st2 = rv-emit st1 (rv-fmv-d-x rv-ft1 r-reg)
+   in RvEmitResult { state = rv-emit st2 (cmp-op (rd.reg) rv-ft0 rv-ft1), reg = rd.reg }
+
+  rv-emit-real-from-int : RvState, IRExpr -> RvEmitResult
+  rv-emit-real-from-int (st) (arg) =
+   let vr = rv-emit-expr st arg
+   in let rd = rv-alloc-temp (vr.state)
+   in let st1 = rv-emit (rd.state) (rv-fcvt-d-l rv-ft0 (vr.reg))
+   in RvEmitResult { state = rv-emit st1 (rv-fmv-x-d (rd.reg) rv-ft0), reg = rd.reg }
+
+  rv-emit-real-to-int : RvState, IRExpr -> RvEmitResult
+  rv-emit-real-to-int (st) (arg) =
+   let vr = rv-emit-expr st arg
+   in let rd = rv-alloc-temp (vr.state)
+   in let st1 = rv-emit (rd.state) (rv-fmv-d-x rv-ft0 (vr.reg))
+   in RvEmitResult { state = rv-emit st1 (rv-fcvt-l-d (rd.reg) rv-ft0), reg = rd.reg }
+
+  rv-emit-real-approx-from-int : RvState, IRExpr -> RvEmitResult
+  rv-emit-real-approx-from-int (st) (arg) =
+   let vr = rv-emit-expr st arg
+   in let rd = rv-alloc-temp (vr.state)
+   in let st1 = rv-emit (rd.state) (rv-fcvt-s-l rv-ft0 (vr.reg))
+   in RvEmitResult { state = rv-emit st1 (rv-fmv-x-w (rd.reg) rv-ft0), reg = rd.reg }
+
+  rv-emit-real-approx-to-int : RvState, IRExpr -> RvEmitResult
+  rv-emit-real-approx-to-int (st) (arg) =
+   let vr = rv-emit-expr st arg
+   in let rd = rv-alloc-temp (vr.state)
+   in let st1 = rv-emit (rd.state) (rv-fmv-w-x rv-ft0 (vr.reg))
+   in RvEmitResult { state = rv-emit st1 (rv-fcvt-l-s (rd.reg) rv-ft0), reg = rd.reg }
+
+  rv-emit-to-real-approx : RvState, IRExpr -> RvEmitResult
+  rv-emit-to-real-approx (st) (arg) =
+   let vr = rv-emit-expr st arg
+   in let rd = rv-alloc-temp (vr.state)
+   in let st1 = rv-emit (rd.state) (rv-fmv-d-x rv-ft0 (vr.reg))
+   in let st2 = rv-emit st1 (rv-fcvt-s-d rv-ft0 rv-ft0)
+   in RvEmitResult { state = rv-emit st2 (rv-fmv-x-w (rd.reg) rv-ft0), reg = rd.reg }
+
+  rv-emit-from-real-approx : RvState, IRExpr -> RvEmitResult
+  rv-emit-from-real-approx (st) (arg) =
+   let vr = rv-emit-expr st arg
+   in let rd = rv-alloc-temp (vr.state)
+   in let st1 = rv-emit (rd.state) (rv-fmv-w-x rv-ft0 (vr.reg))
+   in let st2 = rv-emit st1 (rv-fcvt-d-s rv-ft0 rv-ft0)
+   in RvEmitResult { state = rv-emit st2 (rv-fmv-x-d (rd.reg) rv-ft0), reg = rd.reg }
+
+  rv-emit-suggested-vector-width : RvState, IRExpr -> RvEmitResult
+  rv-emit-suggested-vector-width (st) (arg) =
+   let ty = ir-expr-type arg
+   in when ty
+    is RealApproxTy -> rv-emit-int-lit st 4
+    is otherwise -> rv-emit-int-lit st 2
+
+  rv-emit-show-real-approx : RvState, IRExpr -> RvEmitResult
+  rv-emit-show-real-approx (st) (arg) =
+   let vr = rv-emit-expr st arg
+   in let rd = rv-alloc-temp (vr.state)
+   in let st1 = rv-emit (rd.state) (rv-fmv-w-x rv-ft0 (vr.reg))
+   in let st2 = rv-emit st1 (rv-fcvt-d-s rv-ft0 rv-ft0)
+   in let st3 = rv-emit st2 (rv-fmv-x-d rv-a0 rv-ft0)
+   in let st4 = rv-emit-call-to st3 "__real_to_text"
+   in RvEmitResult { state = rv-emit st4 (rv-mv (rd.reg) rv-a0), reg = rd.reg }
+
+  rv-emit-vec-splat : RvState, IRExpr, CodexType -> RvEmitResult
+  rv-emit-vec-splat (st) (val-expr) (ty) =
+   let lanes = rv-vec-lane-count ty
+   in let vr = rv-emit-expr st val-expr
+   in let ptr-r = rv-alloc-temp (vr.state)
+   in let st1 = rv-emit (ptr-r.state) (rv-mv (ptr-r.reg) rv-heap-reg)
+   in let st2 = rv-emit st1 (rv-addi rv-heap-reg rv-heap-reg (lanes * 8))
+   in let st3 = rv-emit-vec-splat-stores st2 (ptr-r.reg) (vr.reg) 0 lanes
+   in RvEmitResult { state = st3, reg = ptr-r.reg }
+
+  rv-emit-vec-splat-stores : RvState, Integer, Integer, Integer, Integer -> RvState
+  rv-emit-vec-splat-stores (st) (ptr) (val) (i) (n) =
+   if i >= n then st
+   else let st1 = rv-emit st (rv-sd ptr val (i * 8))
+   in rv-emit-vec-splat-stores st1 ptr val (i + 1) n
+
+  rv-vec-lane-count : CodexType -> Integer
+  rv-vec-lane-count (ty) =
+   when ty
+    is VectorTy (n) (et) -> n
+    is otherwise -> 2
+
+  rv-is-vec-real : CodexType -> Boolean
+  rv-is-vec-real (ty) =
+   when ty
+    is VectorTy (n) (et) ->
+     when et
+      is RealTy -> True
+      is RealTrappingTy -> True
+      is RealSaturatingTy -> True
+      is RealApproxTy -> True
+      is otherwise -> False
+    is otherwise -> False
+
+  rv-is-vec-f32 : CodexType -> Boolean
+  rv-is-vec-f32 (ty) =
+   when ty
+    is VectorTy (n) (et) ->
+     when et
+      is RealApproxTy -> True
+      is otherwise -> False
+    is otherwise -> False
+    is otherwise -> False
+
+  rv-emit-vec-binop : RvState, Integer, Integer, Integer, (Integer, Integer, Integer -> List Integer) -> RvEmitResult
+  rv-emit-vec-binop (st) (l-ptr) (r-ptr) (rd) (op) =
+   let ptr-r = rv-alloc-temp st
+   in let st1 = rv-emit (ptr-r.state) (rv-mv (ptr-r.reg) rv-heap-reg)
+   in let st2 = rv-emit st1 (rv-addi rv-heap-reg rv-heap-reg 16)
+   in let la = rv-alloc-temp st2
+   in let st3 = rv-emit (la.state) (rv-ld (la.reg) l-ptr 0)
+   in let ra = rv-alloc-temp st3
+   in let st4 = rv-emit (ra.state) (rv-ld (ra.reg) r-ptr 0)
+   in let st5 = rv-emit st4 (op rd (la.reg) (ra.reg))
+   in let st6 = rv-emit st5 (rv-sd (ptr-r.reg) rd 0)
+   in let st7 = rv-emit st6 (rv-ld (la.reg) l-ptr 8)
+   in let st8 = rv-emit st7 (rv-ld (ra.reg) r-ptr 8)
+   in let st9 = rv-emit st8 (op rd (la.reg) (ra.reg))
+   in let st10 = rv-emit st9 (rv-sd (ptr-r.reg) rd 8)
+   in RvEmitResult { state = st10, reg = ptr-r.reg }
+
+  rv-emit-vec-fp-binop : RvState, Integer, Integer, Integer, (Integer, Integer, Integer -> List Integer) -> RvEmitResult
+  rv-emit-vec-fp-binop (st) (l-ptr) (r-ptr) (rd) (fp-op) =
+   let ptr-r = rv-alloc-temp st
+   in let st1 = rv-emit (ptr-r.state) (rv-mv (ptr-r.reg) rv-heap-reg)
+   in let st2 = rv-emit st1 (rv-addi rv-heap-reg rv-heap-reg 16)
+   in let st3 = rv-emit st2 (rv-fld rv-ft0 l-ptr 0)
+   in let st4 = rv-emit st3 (rv-fld rv-ft1 r-ptr 0)
+   in let st5 = rv-emit st4 (fp-op rv-ft0 rv-ft0 rv-ft1)
+   in let st6 = rv-emit st5 (rv-fsd (ptr-r.reg) rv-ft0 0)
+   in let st7 = rv-emit st6 (rv-fld rv-ft0 l-ptr 8)
+   in let st8 = rv-emit st7 (rv-fld rv-ft1 r-ptr 8)
+   in let st9 = rv-emit st8 (fp-op rv-ft0 rv-ft0 rv-ft1)
+   in let st10 = rv-emit st9 (rv-fsd (ptr-r.reg) rv-ft0 8)
+   in RvEmitResult { state = st10, reg = ptr-r.reg }
+
+  rv-emit-vec-fp-cmpop : RvState, Integer, Integer, Integer, (Integer, Integer, Integer -> List Integer) -> RvEmitResult
+  rv-emit-vec-fp-cmpop (st) (l-ptr) (r-ptr) (rd) (cmp-op) =
+   let st1 = rv-emit st (rv-fld rv-ft0 l-ptr 0)
+   in let st2 = rv-emit st1 (rv-fld rv-ft1 r-ptr 0)
+   in let st3 = rv-emit st2 (cmp-op rd rv-ft0 rv-ft1)
+   in let st4 = rv-emit st3 (rv-fld rv-ft0 l-ptr 8)
+   in let st5 = rv-emit st4 (rv-fld rv-ft1 r-ptr 8)
+   in let r2 = rv-alloc-temp st5
+   in let st6 = rv-emit (r2.state) (cmp-op (r2.reg) rv-ft0 rv-ft1)
+   in let st7 = rv-emit st6 (rv-slli (r2.reg) (r2.reg) 1)
+   in RvEmitResult { state = rv-emit st7 (rv-or rd rd (r2.reg)), reg = rd }
+
+  rv-emit-vec-fp-cmpop-inv : RvState, Integer, Integer, Integer, (Integer, Integer, Integer -> List Integer) -> RvEmitResult
+  rv-emit-vec-fp-cmpop-inv (st) (l-ptr) (r-ptr) (rd) (cmp-op) =
+   let r = rv-emit-vec-fp-cmpop st l-ptr r-ptr rd cmp-op
+   in RvEmitResult { state = rv-emit (r.state) (rv-xori rd (r.reg) 3), reg = rd }
+
+  rv-emit-vec-f32-binop : RvState, Integer, Integer, CodexType, (Integer, Integer, Integer -> List Integer) -> RvEmitResult
+  rv-emit-vec-f32-binop (st) (l-ptr) (r-ptr) (ty) (fp-op) =
+   let lanes = rv-vec-lane-count ty
+   in let ll = rv-alloc-local st
+   in let st0a = rv-store-local (ll.state) (ll.reg) l-ptr
+   in let rl = rv-alloc-local st0a
+   in let st0b = rv-store-local (rl.state) (rl.reg) r-ptr
+   in let out-loc = rv-alloc-local st0b
+   in let st1 = rv-emit (out-loc.state) (rv-mv (out-loc.reg) rv-heap-reg)
+   in let st2 = rv-emit st1 (rv-addi rv-heap-reg rv-heap-reg (lanes * 8))
+   in let st3 = rv-emit-vec-f32-binop-lane st2 (ll.reg) (rl.reg) (out-loc.reg) fp-op 0 lanes
+   in RvEmitResult { state = st3, reg = out-loc.reg }
+
+  rv-emit-vec-f32-binop-lane : RvState, Integer, Integer, Integer, (Integer, Integer, Integer -> List Integer), Integer, Integer -> RvState
+  rv-emit-vec-f32-binop-lane (st) (l-ptr) (r-ptr) (out-ptr) (fp-op) (i) (n) =
+   if i >= n then st
+   else let st1 = rv-emit st (rv-ld rv-t3 l-ptr (i * 8))
+   in let st2 = rv-emit st1 (rv-fmv-w-x rv-ft0 rv-t3)
+   in let st3 = rv-emit st2 (rv-ld rv-t3 r-ptr (i * 8))
+   in let st4 = rv-emit st3 (rv-fmv-w-x rv-ft1 rv-t3)
+   in let st5 = rv-emit st4 (fp-op rv-ft0 rv-ft0 rv-ft1)
+   in let st6 = rv-emit st5 (rv-fmv-x-w rv-t3 rv-ft0)
+   in let st7 = rv-emit st6 (rv-sd out-ptr rv-t3 (i * 8))
+   in rv-emit-vec-f32-binop-lane st7 l-ptr r-ptr out-ptr fp-op (i + 1) n
+
+  rv-emit-vec-f32-cmpop : RvState, Integer, Integer, CodexType, (Integer, Integer, Integer -> List Integer) -> RvEmitResult
+  rv-emit-vec-f32-cmpop (st) (l-ptr) (r-ptr) (ty) (cmp-op) =
+   let lanes = rv-vec-lane-count ty
+   in let ll = rv-alloc-local st
+   in let st0a = rv-store-local (ll.state) (ll.reg) l-ptr
+   in let rl = rv-alloc-local st0a
+   in let st0b = rv-store-local (rl.state) (rl.reg) r-ptr
+   in let rd = rv-alloc-local st0b
+   in let st1 = rv-emit (rd.state) (rv-addi (rd.reg) rv-zero 0)
+   in let st2 = rv-emit-vec-f32-cmpop-lane st1 (ll.reg) (rl.reg) (rd.reg) cmp-op 0 lanes
+   in RvEmitResult { state = st2, reg = rd.reg }
+
+  rv-emit-vec-f32-cmpop-lane : RvState, Integer, Integer, Integer, (Integer, Integer, Integer -> List Integer), Integer, Integer -> RvState
+  rv-emit-vec-f32-cmpop-lane (st) (l-ptr) (r-ptr) (rd) (cmp-op) (i) (n) =
+   if i >= n then st
+   else let st1 = rv-emit st (rv-ld rv-t3 l-ptr (i * 8))
+   in let st2 = rv-emit st1 (rv-fmv-w-x rv-ft0 rv-t3)
+   in let st3 = rv-emit st2 (rv-ld rv-t3 r-ptr (i * 8))
+   in let st4 = rv-emit st3 (rv-fmv-w-x rv-ft1 rv-t3)
+   in let st5 = rv-emit st4 (cmp-op rv-t4 rv-ft0 rv-ft1)
+   in let st6 = rv-emit st5 (rv-slli rv-t4 rv-t4 i)
+   in let st7 = rv-emit st6 (rv-or rd rd rv-t4)
+   in rv-emit-vec-f32-cmpop-lane st7 l-ptr r-ptr rd cmp-op (i + 1) n
+
+  rv-emit-vec-f32-cmpop-inv : RvState, Integer, Integer, CodexType, (Integer, Integer, Integer -> List Integer) -> RvEmitResult
+  rv-emit-vec-f32-cmpop-inv (st) (l-ptr) (r-ptr) (ty) (cmp-op) =
+   let r = rv-emit-vec-f32-cmpop st l-ptr r-ptr ty cmp-op
+   in let lanes = rv-vec-lane-count ty
+   in let mask = if lanes == 2 then 3 else if lanes == 4 then 15 else 255
+   in RvEmitResult { state = rv-emit (r.state) (rv-xori (r.reg) (r.reg) mask), reg = r.reg }
+
+  rv-emit-vec-cmpop : RvState, Integer, Integer, Integer, (Integer, Integer, Integer -> List Integer) -> RvEmitResult
+  rv-emit-vec-cmpop (st) (l-ptr) (r-ptr) (rd) (cmp) =
+   let la = rv-alloc-temp st
+   in let st1 = rv-emit (la.state) (rv-ld (la.reg) l-ptr 0)
+   in let ra = rv-alloc-temp st1
+   in let st2 = rv-emit (ra.state) (rv-ld (ra.reg) r-ptr 0)
+   in let st3 = rv-emit st2 (cmp rd (la.reg) (ra.reg))
+   in let st4 = rv-emit st3 (rv-ld (la.reg) l-ptr 8)
+   in let st5 = rv-emit st4 (rv-ld (ra.reg) r-ptr 8)
+   in let r2 = rv-alloc-temp st5
+   in let st6 = rv-emit (r2.state) (cmp (r2.reg) (la.reg) (ra.reg))
+   in let st7 = rv-emit st6 (rv-slli (r2.reg) (r2.reg) 1)
+   in RvEmitResult { state = rv-emit st7 (rv-or rd rd (r2.reg)), reg = rd }
+
+  rv-emit-vec-cmpop-inv : RvState, Integer, Integer, Integer, (Integer, Integer, Integer -> List Integer) -> RvEmitResult
+  rv-emit-vec-cmpop-inv (st) (l-ptr) (r-ptr) (rd) (cmp) =
+   let r = rv-emit-vec-cmpop st l-ptr r-ptr rd cmp
+   in RvEmitResult { state = rv-emit (r.state) (rv-xori rd (r.reg) 3), reg = rd }
+
+  rv-emit-vec-select : RvState, List IRExpr -> RvEmitResult
+  rv-emit-vec-select (st) (args) =
+   let mr = rv-emit-expr st (list-at args 0)
+   in let s0 = rv-save-if-needed (mr.state) (mr.reg)
+   in let ar = rv-emit-expr (s0.state) (list-at args 1)
+   in let s1 = rv-save-if-needed (ar.state) (ar.reg)
+   in let br = rv-emit-expr (s1.state) (list-at args 2)
+   in let m0 = rv-reload-if-needed (br.state) (s0.reg)
+   in let a0 = rv-reload-if-needed (m0.state) (s1.reg)
+   in let ptr-r = rv-alloc-temp (a0.state)
+   in let st1 = rv-emit (ptr-r.state) (rv-mv (ptr-r.reg) rv-heap-reg)
+   in let st2 = rv-emit st1 (rv-addi rv-heap-reg rv-heap-reg 16)
+   in let t0 = rv-alloc-temp st2
+   in let st3 = rv-emit (t0.state) (rv-andi (t0.reg) (m0.reg) 1)
+   in let beq0 = st3.insn-count
+   in let st4 = rv-emit st3 rv-nop
+   in let st5 = rv-emit st4 (rv-ld (t0.reg) (a0.reg) 0)
+   in let j0 = st5.insn-count
+   in let st6 = rv-emit st5 rv-nop
+   in let else0 = st6.insn-count
+   in let st7 = rv-emit st6 (rv-ld (t0.reg) (br.reg) 0)
+   in let end0 = st7.insn-count
+   in let st8 = rv-patch-insn st7 beq0 (rv-beq (t0.reg) rv-zero ((else0 - beq0) * 4))
+   in let st9 = rv-patch-insn st8 j0 (rv-j ((end0 - j0) * 4))
+   in let st10 = rv-emit st9 (rv-sd (ptr-r.reg) (t0.reg) 0)
+   in let st11 = rv-emit st10 (rv-andi (t0.reg) (m0.reg) 2)
+   in let beq1 = st11.insn-count
+   in let st12 = rv-emit st11 rv-nop
+   in let st13 = rv-emit st12 (rv-ld (t0.reg) (a0.reg) 8)
+   in let j1 = st13.insn-count
+   in let st14 = rv-emit st13 rv-nop
+   in let else1 = st14.insn-count
+   in let st15 = rv-emit st14 (rv-ld (t0.reg) (br.reg) 8)
+   in let end1 = st15.insn-count
+   in let st16 = rv-patch-insn st15 beq1 (rv-beq (t0.reg) rv-zero ((else1 - beq1) * 4))
+   in let st17 = rv-patch-insn st16 j1 (rv-j ((end1 - j1) * 4))
+   in let st18 = rv-emit st17 (rv-sd (ptr-r.reg) (t0.reg) 8)
+   in RvEmitResult { state = st18, reg = ptr-r.reg }
+
+  rv-emit-vec-extract : RvState, IRExpr, IRExpr -> RvEmitResult
+  rv-emit-vec-extract (st) (vec-expr) (idx-expr) =
+   let vr = rv-emit-expr st vec-expr
+   in let ir = rv-emit-expr (vr.state) idx-expr
+   in let tr = rv-alloc-temp (ir.state)
+   in let shift = rv-alloc-temp (tr.state)
+   in let st1 = rv-emit (shift.state) (rv-slli (shift.reg) (ir.reg) 3)
+   in let st2 = rv-emit st1 (rv-add (tr.reg) (vr.reg) (shift.reg))
+   in RvEmitResult { state = rv-emit st2 (rv-ld (tr.reg) (tr.reg) 0), reg = tr.reg }
+
+  rv-emit-vec-reduce-add : RvState, IRExpr -> RvEmitResult
+  rv-emit-vec-reduce-add (st) (vec-expr) =
+   let ty = ir-expr-type vec-expr
+   in let is-f32 = rv-is-vec-f32 ty
+   in let is-real = rv-is-vec-real ty
+   in let vr = rv-emit-expr st vec-expr
+   in if is-f32 then rv-emit-vec-reduce-add-f32 (vr.state) (vr.reg) (rv-vec-lane-count ty)
+   else if is-real then rv-emit-vec-reduce-add-fp (vr.state) (vr.reg)
+   else let a = rv-alloc-temp (vr.state)
+   in let st1 = rv-emit (a.state) (rv-ld (a.reg) (vr.reg) 0)
+   in let b = rv-alloc-temp st1
+   in let st2 = rv-emit (b.state) (rv-ld (b.reg) (vr.reg) 8)
+   in let rd = rv-alloc-temp st2
+   in RvEmitResult { state = rv-emit (rd.state) (rv-add (rd.reg) (a.reg) (b.reg)), reg = rd.reg }
+
+  rv-emit-vec-reduce-add-fp : RvState, Integer -> RvEmitResult
+  rv-emit-vec-reduce-add-fp (st) (ptr-reg) =
+   let st1 = rv-emit st (rv-fld rv-ft0 ptr-reg 0)
+   in let st2 = rv-emit st1 (rv-fld rv-ft1 ptr-reg 8)
+   in let st3 = rv-emit st2 (rv-fadd-d rv-ft0 rv-ft0 rv-ft1)
+   in let rd = rv-alloc-temp st3
+   in RvEmitResult { state = rv-emit (rd.state) (rv-fmv-x-d (rd.reg) rv-ft0), reg = rd.reg }
+
+  rv-emit-vec-reduce-add-f32 : RvState, Integer, Integer -> RvEmitResult
+  rv-emit-vec-reduce-add-f32 (st) (ptr-reg) (lanes) =
+   let pl = rv-alloc-local st
+   in let st0 = rv-store-local (pl.state) (pl.reg) ptr-reg
+   in let st1 = rv-emit st0 (rv-ld rv-t3 (pl.reg) 0)
+   in let st2 = rv-emit st1 (rv-fmv-w-x rv-ft0 rv-t3)
+   in let st3 = rv-emit-vec-reduce-f32-lanes st2 (pl.reg) 1 lanes
+   in let rd = rv-alloc-temp st3
+   in RvEmitResult { state = rv-emit (rd.state) (rv-fmv-x-w (rd.reg) rv-ft0), reg = rd.reg }
+
+  rv-emit-vec-reduce-f32-lanes : RvState, Integer, Integer, Integer -> RvState
+  rv-emit-vec-reduce-f32-lanes (st) (ptr-reg) (i) (n) =
+   if i >= n then st
+   else let st1 = rv-emit st (rv-ld rv-t3 ptr-reg (i * 8))
+   in let st2 = rv-emit st1 (rv-fmv-w-x rv-ft1 rv-t3)
+   in let st3 = rv-emit st2 (rv-fadd-s rv-ft0 rv-ft0 rv-ft1)
+   in rv-emit-vec-reduce-f32-lanes st3 ptr-reg (i + 1) n
+
+  rv-emit-mask-any : RvState, IRExpr -> RvEmitResult
+  rv-emit-mask-any (st) (arg) =
+   let mr = rv-emit-expr st arg
+   in let tr = rv-alloc-temp (mr.state)
+   in let st1 = rv-emit (tr.state) (rv-sltu (tr.reg) rv-zero (mr.reg))
+   in RvEmitResult { state = st1, reg = tr.reg }
+
+  rv-emit-mask-all : RvState, IRExpr -> RvEmitResult
+  rv-emit-mask-all (st) (arg) =
+   let mr = rv-emit-expr st arg
+   in let tr = rv-alloc-temp (mr.state)
+   in let st1 = rv-emit (tr.state) (rv-xori (tr.reg) (mr.reg) 3)
+   in let st2 = rv-emit st1 (rv-sltu (tr.reg) rv-zero (tr.reg))
+   in let st3 = rv-emit st2 (rv-xori (tr.reg) (tr.reg) 1)
+   in RvEmitResult { state = st3, reg = tr.reg }
+
+  rv-emit-mask-none : RvState, IRExpr -> RvEmitResult
+  rv-emit-mask-none (st) (arg) =
+   let mr = rv-emit-expr st arg
+   in let tr = rv-alloc-temp (mr.state)
+   in let st1 = rv-emit (tr.state) (rv-slti (tr.reg) (mr.reg) 1)
+   in RvEmitResult { state = st1, reg = tr.reg }
+
+  rv-emit-mask-count : RvState, IRExpr -> RvEmitResult
+  rv-emit-mask-count (st) (arg) =
+   let mr = rv-emit-expr st arg
+   in let tr = rv-alloc-temp (mr.state)
+   in let t2 = rv-alloc-temp (tr.state)
+   in let st1 = rv-emit (t2.state) (rv-andi (tr.reg) (mr.reg) 1)
+   in let st2 = rv-emit st1 (rv-srli (t2.reg) (mr.reg) 1)
+   in let st3 = rv-emit st2 (rv-andi (t2.reg) (t2.reg) 1)
+   in let st4 = rv-emit st3 (rv-add (tr.reg) (tr.reg) (t2.reg))
+   in RvEmitResult { state = st4, reg = tr.reg }
+
+  rv-emit-address-of : RvState, IRExpr -> RvEmitResult
+  rv-emit-address-of (st) (arg) =
+   let vr = rv-emit-expr st arg
+   in let tr = rv-alloc-temp (vr.state)
+   in let st1 = rv-emit (tr.state) (rv-mv (tr.reg) rv-heap-reg)
+   in let st2 = rv-emit st1 (rv-addi rv-heap-reg rv-heap-reg 8)
+   in let st3 = rv-emit st2 (rv-sd (tr.reg) (vr.reg) 0)
+   in RvEmitResult { state = st3, reg = tr.reg }
+
+  rv-emit-fork : RvState, IRExpr -> RvEmitResult
+  rv-emit-fork (st) (body) =
+   let br = when body
+    is IrLambda (params) (lbody) (lty) (lsp) -> rv-emit-expr st lbody
+    is IrName (n) (fty) (s) ->
+     let fr = rv-emit-expr st body
+     in let cl-loc = rv-alloc-local (fr.state)
+     in let st0 = rv-store-local (cl-loc.state) (cl-loc.reg) (fr.reg)
+     in let st1 = rv-emit st0 (rv-mv rv-a0 rv-zero)
+     in let cl = rv-load-local st1 (cl-loc.reg)
+     in let st2 = rv-emit (cl.state) (rv-mv rv-t2 (cl.reg))
+     in let st3 = rv-emit st2 (rv-ld rv-t1 rv-t2 0)
+     in let st4 = rv-emit st3 (rv-jalr rv-ra rv-t1 0)
+     in RvEmitResult { state = st4, reg = rv-a0 }
+    is otherwise ->
+     let fr = rv-emit-expr st body
+     in let cl-loc = rv-alloc-local (fr.state)
+     in let st0 = rv-store-local (cl-loc.state) (cl-loc.reg) (fr.reg)
+     in let st1 = rv-emit st0 (rv-mv rv-a0 rv-zero)
+     in let cl = rv-load-local st1 (cl-loc.reg)
+     in let st2 = rv-emit (cl.state) (rv-mv rv-t2 (cl.reg))
+     in let st3 = rv-emit st2 (rv-ld rv-t1 rv-t2 0)
+     in let st4 = rv-emit st3 (rv-jalr rv-ra rv-t1 0)
+     in RvEmitResult { state = st4, reg = rv-a0 }
+   in let tr = rv-alloc-temp (br.state)
+   in let st1 = rv-emit (tr.state) (rv-mv (tr.reg) rv-heap-reg)
+   in let st2 = rv-emit st1 (rv-addi rv-heap-reg rv-heap-reg 8)
+   in let st3 = rv-emit st2 (rv-sd (tr.reg) (br.reg) 0)
+   in RvEmitResult { state = st3, reg = tr.reg }
+
+  rv-emit-await : RvState, IRExpr -> RvEmitResult
+  rv-emit-await (st) (task) =
+   let tr = rv-emit-expr st task
+   in let rd = rv-alloc-temp (tr.state)
+   in RvEmitResult { state = rv-emit (rd.state) (rv-ld (rd.reg) (tr.reg) 0), reg = rd.reg }
+
+  rv-emit-two-arg-binop : RvState, IRExpr, IRExpr, (Integer, Integer, Integer -> List Integer) -> RvEmitResult
+  rv-emit-two-arg-binop (st) (left) (right) (op) =
+   let lr = rv-emit-expr st left
+   in let saved = rv-save-if-needed (lr.state) (lr.reg)
+   in let rr = rv-emit-expr (saved.state) right
+   in let ll = rv-reload-if-needed (rr.state) (saved.reg)
+   in let rd = rv-alloc-temp (ll.state)
+   in RvEmitResult { state = rv-emit (rd.state) (op (rd.reg) (ll.reg) (rr.reg)), reg = rd.reg }
+
+  rv-emit-memory-fence : RvState, IRExpr -> RvEmitResult
+  rv-emit-memory-fence (st) (arg) =
+   let vr = rv-emit-expr st arg
+   in RvEmitResult { state = rv-emit (vr.state) rv-fence, reg = vr.reg }
+
+  rv-emit-atomic-load : RvState, IRExpr -> RvEmitResult
+  rv-emit-atomic-load (st) (addr-expr) =
+   let ar = rv-emit-expr st addr-expr
+   in let tr = rv-alloc-temp (ar.state)
+   in let st1 = rv-emit (tr.state) (rv-ld (tr.reg) (ar.reg) 0)
+   in RvEmitResult { state = rv-emit st1 rv-fence, reg = tr.reg }
+
+  rv-emit-atomic-store : RvState, IRExpr, IRExpr -> RvEmitResult
+  rv-emit-atomic-store (st) (addr-expr) (val-expr) =
+   let ar = rv-emit-expr st addr-expr
+   in let sr = rv-save-if-needed (ar.state) (ar.reg)
+   in let vr = rv-emit-expr (sr.state) val-expr
+   in let lr = rv-reload-if-needed (vr.state) (sr.reg)
+   in let st1 = rv-emit (lr.state) rv-fence
+   in let st2 = rv-emit st1 (rv-sd (lr.reg) (vr.reg) 0)
+   in RvEmitResult { state = st2, reg = vr.reg }
+
+  rv-emit-atomic-cas : RvState, IRExpr, IRExpr, IRExpr -> RvEmitResult
+  rv-emit-atomic-cas (st) (addr-expr) (expected-expr) (new-expr) =
+   let ar = rv-emit-expr st addr-expr
+   in let sl1 = rv-alloc-local (ar.state)
+   in let st1 = rv-store-local (sl1.state) (sl1.reg) (ar.reg)
+   in let er = rv-emit-expr st1 expected-expr
+   in let sl2 = rv-alloc-local (er.state)
+   in let st2 = rv-store-local (sl2.state) (sl2.reg) (er.reg)
+   in let nr = rv-emit-expr st2 new-expr
+   in let sl3 = rv-alloc-local (nr.state)
+   in let st3 = rv-store-local (sl3.state) (sl3.reg) (nr.reg)
+   in let la = rv-load-local st3 (sl1.reg)
+   in let le = rv-load-local (la.state) (sl2.reg)
+   in let ln = rv-load-local (le.state) (sl3.reg)
+   in let addr-r = la.reg
+   in let exp-r = le.reg
+   in let new-r = ln.reg
+   in let tr = rv-alloc-temp (ln.state)
+   in let rd = tr.reg
+   in let retry-idx = (tr.state).insn-count
+   in let st4 = rv-emit (tr.state) (rv-lr-d rd addr-r)
+   in let bne-idx = st4.insn-count
+   in let st5 = rv-emit st4 rv-nop
+   in let st6 = rv-emit st5 (rv-sc-d rd new-r addr-r)
+   in let bne-retry = st6.insn-count
+   in let st7 = rv-emit st6 rv-nop
+   in let st8 = rv-emit st7 rv-fence
+   in let st9 = rv-emit-li st8 rd 1
+   in let j-end-idx = st9.insn-count
+   in let st10 = rv-emit st9 rv-nop
+   in let fail-idx = st10.insn-count
+   in let st11 = rv-emit-li st10 rd 0
+   in let end-idx = st11.insn-count
+   in let st12 = rv-patch-insn st11 bne-idx (rv-bne rd exp-r ((fail-idx - bne-idx) * 4))
+   in let st13 = rv-patch-insn st12 bne-retry (rv-bne rd rv-zero ((retry-idx - bne-retry) * 4))
+   in let st14 = rv-patch-insn st13 j-end-idx (rv-j ((end-idx - j-end-idx) * 4))
+   in RvEmitResult { state = st14, reg = rd }
+
+  rv-emit-atomic-add : RvState, IRExpr, IRExpr -> RvEmitResult
+  rv-emit-atomic-add (st) (addr-expr) (val-expr) =
+   let ar = rv-emit-expr st addr-expr
+   in let sr = rv-save-if-needed (ar.state) (ar.reg)
+   in let vr = rv-emit-expr (sr.state) val-expr
+   in let lr = rv-reload-if-needed (vr.state) (sr.reg)
+   in let addr-r = lr.reg
+   in let val-r = vr.reg
+   in let tr = rv-alloc-temp (lr.state)
+   in let rd = tr.reg
+   in RvEmitResult { state = rv-emit (tr.state) (rv-amoadd-d rd val-r addr-r), reg = rd }
+
+  rv-emit-atomic-exchange : RvState, IRExpr, IRExpr -> RvEmitResult
+  rv-emit-atomic-exchange (st) (addr-expr) (val-expr) =
+   let ar = rv-emit-expr st addr-expr
+   in let sr = rv-save-if-needed (ar.state) (ar.reg)
+   in let vr = rv-emit-expr (sr.state) val-expr
+   in let lr = rv-reload-if-needed (vr.state) (sr.reg)
+   in let addr-r = lr.reg
+   in let val-r = vr.reg
+   in let tr = rv-alloc-temp (lr.state)
+   in let rd = tr.reg
+   in RvEmitResult { state = rv-emit (tr.state) (rv-amoswap-d rd val-r addr-r), reg = rd }
+
+
+Page 1 of 3

@@ -1,0 +1,262 @@
+Chapter: SchematicAnnotate
+  cites Foreword chapter List
+  cites Foreword chapter Maybe
+
+ Reference designator assignment and renumbering for schematic symbols.
+ Given a list of placed symbols with positions, assigns sequential
+ reference numbers per prefix (R, C, U, etc) sorted by the chosen
+ annotation mode. Supports per-sheet, left-to-right, top-to-bottom,
+ and positional ordering.
+
+ We say:
+
+Section: Annotation Mode
+
+  AnnotateMode =
+    | AnnotateBySheet
+    | AnnotateByPosition
+    | AnnotateByXThenY
+    | AnnotateByYThenX
+
+Section: Annotation Entry
+
+ An entry represents one symbol to be annotated. The ref-prefix is
+ the letter portion of the reference designator (R, C, U). The
+ current-number is the existing numeric suffix, or 0 if unassigned.
+
+  AnnotateEntry = record {
+    ae-ref-prefix : Text,
+    ae-current-number : Integer,
+    ae-x : Integer,
+    ae-y : Integer,
+    ae-sheet-id : Text
+  }
+
+Section: Assignment Record
+
+  AnnotateAssignment = record {
+    aa-old-ref : Text,
+    aa-new-ref : Text,
+    aa-x : Integer,
+    aa-y : Integer
+  }
+
+Section: Next Number Tracking
+
+  NextNumber = record {
+    nn-prefix : Text,
+    nn-next : Integer
+  }
+
+Section: Result
+
+  AnnotateResult = record {
+    ar-assignments : List AnnotateAssignment,
+    ar-renamed-count : Integer,
+    ar-next-numbers : List NextNumber
+  }
+
+  empty-annotate-result : AnnotateResult
+  empty-annotate-result = AnnotateResult {
+    ar-assignments = [],
+    ar-renamed-count = 0,
+    ar-next-numbers = []
+  }
+
+Section: Text Helpers
+
+ Extract the prefix and number from a reference designator by
+ checking known prefixes. Supports two-letter prefixes (SW, FB, TP)
+ and single-letter prefixes (R, C, U, L, D, Q, J, K, Y, X, F, P).
+
+  extract-prefix : Text -> Text
+  extract-prefix (ref) =
+    if text-starts-with ref "SW" then "SW"
+    else if text-starts-with ref "FB" then "FB"
+    else if text-starts-with ref "TP" then "TP"
+    else if text-starts-with ref "BT" then "BT"
+    else if text-starts-with ref "FL" then "FL"
+    else if text-length ref >= 1 then substring ref 0 1
+    else ""
+
+  extract-number : Text -> Integer
+  extract-number (ref) =
+    let plen = text-length (extract-prefix ref)
+    in let num-text = substring ref plen (text-length ref - plen)
+    in parse-int-simple num-text
+
+  parse-int-simple : Text -> Integer
+  parse-int-simple (s) =
+    if s == "" then 0
+    else if s == "0" then 0
+    else if s == "1" then 1
+    else if s == "2" then 2
+    else if s == "3" then 3
+    else if s == "4" then 4
+    else if s == "5" then 5
+    else if s == "6" then 6
+    else if s == "7" then 7
+    else if s == "8" then 8
+    else if s == "9" then 9
+    else 0
+
+  next-ref : Text, Integer -> Text
+  next-ref (prefix) (num) = prefix & (show num)
+
+Section: Sorting
+
+ Insertion sort for annotation entries. The comparison function is
+ determined by the annotation mode.
+
+  compare-by-sheet : AnnotateEntry, AnnotateEntry -> Integer
+  compare-by-sheet (a) (b) =
+    if a.ae-sheet-id < b.ae-sheet-id then 1
+    else if a.ae-sheet-id > b.ae-sheet-id then 0
+    else if a.ae-x < b.ae-x then 1
+    else if a.ae-x > b.ae-x then 0
+    else if a.ae-y < b.ae-y then 1
+    else 0
+
+  compare-by-position : AnnotateEntry, AnnotateEntry -> Integer
+  compare-by-position (a) (b) =
+    if a.ae-x < b.ae-x then 1
+    else if a.ae-x > b.ae-x then 0
+    else if a.ae-y < b.ae-y then 1
+    else 0
+
+  compare-by-x-then-y : AnnotateEntry, AnnotateEntry -> Integer
+  compare-by-x-then-y (a) (b) =
+    if a.ae-x < b.ae-x then 1
+    else if a.ae-x > b.ae-x then 0
+    else if a.ae-y < b.ae-y then 1
+    else 0
+
+  compare-by-y-then-x : AnnotateEntry, AnnotateEntry -> Integer
+  compare-by-y-then-x (a) (b) =
+    if a.ae-y < b.ae-y then 1
+    else if a.ae-y > b.ae-y then 0
+    else if a.ae-x < b.ae-x then 1
+    else 0
+
+  insert-sorted-cmp : AnnotateEntry, AnnotateEntry, AnnotateMode -> Integer
+  insert-sorted-cmp (a) (b) (mode) = when mode
+    is AnnotateBySheet -> compare-by-sheet a b
+    is AnnotateByPosition -> compare-by-position a b
+    is AnnotateByXThenY -> compare-by-x-then-y a b
+    is AnnotateByYThenX -> compare-by-y-then-x a b
+
+  insert-sorted-find : AnnotateEntry, List AnnotateEntry, AnnotateMode, Integer, Integer -> Integer
+  insert-sorted-find (entry) (sorted) (mode) (i) (n) =
+    if i >= n then n
+    else if insert-sorted-cmp entry (list-at sorted i) mode == 1 then i
+    else insert-sorted-find entry sorted mode (i + 1) n
+
+  insert-sorted-copy : List AnnotateEntry, Integer, Integer, List AnnotateEntry -> List AnnotateEntry
+  insert-sorted-copy (src) (i) (stop) (acc) =
+    if i >= stop then acc
+    else insert-sorted-copy src (i + 1) stop (list-push acc (list-at src i))
+
+  insert-sorted : AnnotateEntry, List AnnotateEntry, AnnotateMode -> List AnnotateEntry
+  insert-sorted (entry) (sorted) (mode) =
+    let n = list-length sorted in let pos = insert-sorted-find entry sorted mode 0 n in let prefix = insert-sorted-copy sorted 0 pos [] in insert-sorted-copy sorted pos n (list-push prefix entry)
+
+  sort-entries-loop : List AnnotateEntry, List AnnotateEntry, AnnotateMode -> List AnnotateEntry
+  sort-entries-loop (remaining) (sorted) (mode) = sort-entries-idx remaining sorted mode 0 (list-length remaining)
+
+  sort-entries-idx : List AnnotateEntry, List AnnotateEntry, AnnotateMode, Integer, Integer -> List AnnotateEntry
+  sort-entries-idx (remaining) (sorted) (mode) (i) (n) =
+    if i >= n then sorted
+    else sort-entries-idx remaining (insert-sorted (list-at remaining i) sorted mode) mode (i + 1) n
+
+  sort-entries : List AnnotateEntry, AnnotateMode -> List AnnotateEntry
+  sort-entries (entries) (mode) = sort-entries-loop entries [] mode
+
+Section: Next Number Lookup
+
+  find-next-for-prefix : List NextNumber, Text -> Integer
+  find-next-for-prefix (nns) (prefix) = find-next-for-prefix-loop nns prefix 0 (list-length nns)
+
+  find-next-for-prefix-loop : List NextNumber, Text, Integer, Integer -> Integer
+  find-next-for-prefix-loop (nns) (prefix) (i) (n) =
+    if i >= n then 1
+    else let nn = list-at nns i in if nn.nn-prefix == prefix then nn.nn-next else find-next-for-prefix-loop nns prefix (i + 1) n
+
+  update-next-find-pos : List NextNumber, Text, Integer, Integer -> Integer
+  update-next-find-pos (nns) (prefix) (i) (n) =
+    if i >= n then n
+    else let nn = list-at nns i in if nn.nn-prefix == prefix then i else update-next-find-pos nns prefix (i + 1) n
+
+  update-next-rebuild : List NextNumber, Text, Integer, Integer, Integer, Integer, List NextNumber -> List NextNumber
+  update-next-rebuild (nns) (prefix) (val) (pos) (i) (n) (acc) =
+    if i >= n then acc
+    else if i == pos then update-next-rebuild nns prefix val pos (i + 1) n (list-push acc (NextNumber { nn-prefix = prefix, nn-next = val }))
+    else update-next-rebuild nns prefix val pos (i + 1) n (list-push acc (list-at nns i))
+
+  update-next-for-prefix : List NextNumber, Text, Integer -> List NextNumber
+  update-next-for-prefix (nns) (prefix) (val) =
+    let n = list-length nns in let pos = update-next-find-pos nns prefix 0 n in if pos >= n then list-push nns (NextNumber { nn-prefix = prefix, nn-next = val }) else update-next-rebuild nns prefix val pos 0 n []
+
+Section: Sequential Annotation
+
+ Walk sorted entries, assigning the next available number for each
+ prefix. Tracks the running next-number per prefix and accumulates
+ assignments.
+
+  annotate-step : List AnnotateEntry, List NextNumber, List AnnotateAssignment, Integer, Integer, Integer -> AnnotateResult
+  annotate-step (entries) (nexts) (assignments) (renamed) (i) (n) =
+    let entry = list-at entries i
+    in let prefix = entry.ae-ref-prefix
+    in let num = find-next-for-prefix nexts prefix
+    in let old-ref = next-ref prefix entry.ae-current-number
+    in let new-ref = next-ref prefix num
+    in let assignment = AnnotateAssignment { aa-old-ref = old-ref, aa-new-ref = new-ref, aa-x = entry.ae-x, aa-y = entry.ae-y }
+    in let did-rename = if old-ref == new-ref then 0 else 1
+    in let new-nexts = update-next-for-prefix nexts prefix (num + 1)
+    in annotate-loop-idx entries new-nexts (list-push assignments assignment) (renamed + did-rename) (i + 1) n
+
+  annotate-loop-idx : List AnnotateEntry, List NextNumber, List AnnotateAssignment, Integer, Integer, Integer -> AnnotateResult
+  annotate-loop-idx (entries) (nexts) (assignments) (renamed) (i) (n) =
+    if i >= n then AnnotateResult { ar-assignments = assignments, ar-renamed-count = renamed, ar-next-numbers = nexts }
+    else annotate-step entries nexts assignments renamed i n
+
+  annotate-loop : List AnnotateEntry, List NextNumber, List AnnotateAssignment, Integer -> AnnotateResult
+  annotate-loop (entries) (nexts) (assignments) (renamed) =
+    annotate-loop-idx entries nexts assignments renamed 0 (list-length entries)
+
+  annotate-sequential : List AnnotateEntry, AnnotateMode -> AnnotateResult
+  annotate-sequential (entries) (mode) =
+    let sorted = sort-entries entries mode
+    in annotate-loop sorted [] [] 0
+
+Section: Renumber From Base
+
+ Renumber all entries starting from a given base number, ignoring
+ prefix grouping. Each entry gets base + its position in the sorted
+ list.
+
+  renumber-step : List AnnotateEntry, Integer, List NextNumber, List AnnotateAssignment, Integer, Integer, Integer -> AnnotateResult
+  renumber-step (entries) (num) (nexts) (assignments) (renamed) (i) (n) =
+    let entry = list-at entries i
+    in let prefix = entry.ae-ref-prefix
+    in let old-ref = next-ref prefix entry.ae-current-number
+    in let cur-next = find-next-for-prefix nexts prefix
+    in let use-num = if cur-next > num then cur-next else num
+    in let new-ref = next-ref prefix use-num
+    in let assignment = AnnotateAssignment { aa-old-ref = old-ref, aa-new-ref = new-ref, aa-x = entry.ae-x, aa-y = entry.ae-y }
+    in let did-rename = if old-ref == new-ref then 0 else 1
+    in let new-nexts = update-next-for-prefix nexts prefix (use-num + 1)
+    in renumber-loop-idx entries num new-nexts (list-push assignments assignment) (renamed + did-rename) (i + 1) n
+
+  renumber-loop-idx : List AnnotateEntry, Integer, List NextNumber, List AnnotateAssignment, Integer, Integer, Integer -> AnnotateResult
+  renumber-loop-idx (entries) (num) (nexts) (assignments) (renamed) (i) (n) =
+    if i >= n then AnnotateResult { ar-assignments = assignments, ar-renamed-count = renamed, ar-next-numbers = nexts }
+    else renumber-step entries num nexts assignments renamed i n
+
+  renumber-loop : List AnnotateEntry, Integer, List NextNumber, List AnnotateAssignment, Integer -> AnnotateResult
+  renumber-loop (entries) (num) (nexts) (assignments) (renamed) =
+    renumber-loop-idx entries num nexts assignments renamed 0 (list-length entries)
+
+  renumber-from : List AnnotateEntry, Integer -> AnnotateResult
+  renumber-from (entries) (base) =
+    let sorted = sort-entries entries AnnotateByPosition
+    in renumber-loop sorted base [] [] 0

@@ -1,0 +1,161 @@
+Chapter: Drag
+  cites UI chapter Event
+  cites Foreword chapter Maybe
+
+ Drag-and-drop semantics — drag sources, drop zones, drag state
+ tracking, and transfer data. Tracks the lifecycle from mouse-down
+ through mouse-move to mouse-up, with configurable thresholds and
+ visual feedback hooks.
+
+ To drag-start gives a new drag state from a source widget.
+ To drag-move gives updated drag state from mouse movement.
+ To drag-end gives the drop result when the mouse is released.
+ To drag-cancel gives an aborted drag state.
+ To drop-zone-new gives a new drop zone configuration.
+
+ We say:
+
+Section: Types
+
+  DragPhase =
+    | DragIdle
+    | DragPending (Integer) (Integer)
+    | DragActive (Integer) (Integer)
+    | DragEnded
+
+  DragData =
+    | DragText (Text)
+    | DragWidget (Text)
+    | DragBytes (List Integer) (Text)
+    | DragNone
+
+  DragState = record {
+    ds-phase : DragPhase,
+    ds-source-id : Text,
+    ds-data : DragData,
+    ds-start-x : Integer,
+    ds-start-y : Integer,
+    ds-current-x : Integer,
+    ds-current-y : Integer,
+    ds-over-zone : Text,
+    ds-threshold : Integer
+  }
+
+  DropZone = record {
+    dz-id : Text,
+    dz-x : Integer,
+    dz-y : Integer,
+    dz-width : Integer,
+    dz-height : Integer,
+    dz-accept-types : List Text
+  }
+
+  DropResult =
+    | Dropped (Text) (DragData)
+    | Cancelled
+    | NoTarget
+
+Section: Construction
+
+  drag-idle : DragState
+  drag-idle = DragState {
+    ds-phase = DragIdle,
+    ds-source-id = "",
+    ds-data = DragNone,
+    ds-start-x = 0,
+    ds-start-y = 0,
+    ds-current-x = 0,
+    ds-current-y = 0,
+    ds-over-zone = "",
+    ds-threshold = 5
+  }
+
+  drop-zone-new : Text, Integer, Integer, Integer, Integer -> DropZone
+  drop-zone-new (id) (x) (y) (w) (h) = DropZone {
+    dz-id = id,
+    dz-x = x,
+    dz-y = y,
+    dz-width = w,
+    dz-height = h,
+    dz-accept-types = []
+  }
+
+  drop-zone-accept : DropZone, List Text -> DropZone
+  drop-zone-accept (dz) (types) = __record-set dz "dz-accept-types" types
+
+Section: Lifecycle
+
+  drag-start : Text, DragData, Integer, Integer -> DragState
+  drag-start (source-id) (data) (x) (y) = DragState {
+    ds-phase = DragPending x y,
+    ds-source-id = source-id,
+    ds-data = data,
+    ds-start-x = x,
+    ds-start-y = y,
+    ds-current-x = x,
+    ds-current-y = y,
+    ds-over-zone = "",
+    ds-threshold = 5
+  }
+
+  drag-move : DragState, Integer, Integer, List DropZone -> DragState
+  drag-move (ds) (x) (y) (zones) =
+    let phase = drag-check-threshold ds x y
+    in let zone = drag-find-zone zones x y 0 (list-length zones)
+    in __record-set (__record-set (__record-set (__record-set ds "ds-phase" phase) "ds-current-x" x) "ds-current-y" y) "ds-over-zone" zone
+
+  drag-check-threshold : DragState, Integer, Integer -> DragPhase
+  drag-check-threshold (ds) (x) (y) = when ds.ds-phase
+    is DragPending (sx) (sy) ->
+      let dx = if x > sx then x - sx else sx - x
+      in let dy = if y > sy then y - sy else sy - y
+      in if dx + dy > ds.ds-threshold then DragActive x y
+      else DragPending sx sy
+    is DragActive (ax) (ay) -> DragActive x y
+    is otherwise -> ds.ds-phase
+
+  drag-end : DragState -> DropResult
+  drag-end (ds) = when ds.ds-phase
+    is DragActive (x) (y) ->
+      if text-length (ds.ds-over-zone) > 0 then Dropped (ds.ds-over-zone) (ds.ds-data)
+      else NoTarget
+    is otherwise -> Cancelled
+
+  drag-cancel : DragState -> DragState
+  drag-cancel (ds) = __record-set ds "ds-phase" DragEnded
+
+Section: Zone Hit Testing
+
+  drag-find-zone : List DropZone, Integer, Integer, Integer, Integer -> Text
+  drag-find-zone (zones) (x) (y) (i) (len) =
+    if i >= len then ""
+    else let z = list-at zones i
+    in if drag-point-in-zone z x y then z.dz-id
+    else drag-find-zone zones x y (i + 1) len
+
+  drag-point-in-zone : DropZone, Integer, Integer -> Boolean
+  drag-point-in-zone (z) (x) (y) =
+    if x < z.dz-x then False
+    else if x >= z.dz-x + z.dz-width then False
+    else if y < z.dz-y then False
+    else y < z.dz-y + z.dz-height
+
+Section: Queries
+
+  drag-is-active : DragState -> Boolean
+  drag-is-active (ds) = when ds.ds-phase
+    is DragActive (x) (y) -> True
+    is otherwise -> False
+
+  drag-is-idle : DragState -> Boolean
+  drag-is-idle (ds) = when ds.ds-phase
+    is DragIdle -> True
+    is otherwise -> False
+
+  drag-offset-x : DragState -> Integer
+  drag-offset-x (ds) = ds.ds-current-x - ds.ds-start-x
+
+  drag-offset-y : DragState -> Integer
+  drag-offset-y (ds) = ds.ds-current-y - ds.ds-start-y
+
+Page 1

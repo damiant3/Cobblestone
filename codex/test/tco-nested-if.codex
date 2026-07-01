@@ -1,0 +1,35 @@
+Chapter: TcoNestedIf
+
+ Regression guard for the x86 codegen jmp-end elision bug (CL 6430).
+ emit-if-to-local elided an if's terminating jmp when last-was-jmp saw a
+ trailing jmp, which is unsound when the then-branch is a nested if whose
+ else path ends in a tail-call jmp. Inside a tail-self-recursive if-chain
+ the whole arm was silently skipped. Here ptl's s==6 arm body is a bare
+ nested-if whose else is a tail self-call; its then path (mark 15) must
+ run, the arm after it must stay reachable, and the base case must hold.
+
+Section: Main
+
+  mark : Integer -> Integer
+  mark (x) = x
+
+  ptl : Integer, Integer -> Integer
+  ptl (n) (s) =
+   if n <= 0 then 999
+   else if s == 1 then ptl (n - 1) s
+   else if s == 2 then ptl (n - 1) s
+   else if s == 3 then ptl (n - 1) s
+   else if s == 4 then ptl (n - 1) s
+   else if s == 5 then ptl (n - 1) s
+   else if s == 6 then
+    if n == 3 then mark 15
+    else ptl (n - 1) s
+   else if s == 7 then mark 17
+   else 400
+
+  opening : [Console] Nothing
+  opening = act
+   print-line-uni ("arm-then: " & integer-to-text (ptl 3 6))
+   print-line-uni ("after-arm: " & integer-to-text (ptl 1 7))
+   print-line-uni ("base: " & integer-to-text (ptl 0 6))
+  end

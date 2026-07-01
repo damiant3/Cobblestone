@@ -1,0 +1,67 @@
+Chapter: TcpTest
+  cites Net chapter Tcp
+  cites Net chapter Ethernet
+
+Section: Helpers
+  show-bool : Boolean -> Text
+  show-bool (b) = if b then "True" else "False"
+
+  action-name : TcpAction -> Text
+  action-name (a) = when a
+    is ActSend (data) -> "send"
+    is ActEstablished -> "established"
+    is ActData (data) -> "data"
+    is ActDataAck (data) (ack) -> "data"
+    is ActClosed -> "closed"
+    is ActError (msg) -> "error"
+    is ActNone -> "none"
+
+  action-data-bytes : TcpAction -> List Integer
+  action-data-bytes (a) = when a
+    is ActDataAck (data) (ack) -> data
+    is ActData (data) -> data
+    is ActSend (data) -> data
+    is otherwise -> []
+
+Section: Body
+  opening : [Console] Nothing =
+    let local-ip = [10, 0, 0, 1]
+    in let remote-ip = [10, 0, 0, 2]
+    in let conn = tcp-new-connection 8080 local-ip 80 remote-ip 1000
+    in let s1 = tcp-step conn EvConnect
+    in let s1c = s1.conn
+    in let syn-seg = tcp-parse (action-data-bytes (s1.action))
+    in let synack = TcpSegment { src-port = 80, dst-port = 8080, seq-num = 5000, ack-num = 1001, flags = bit-or tcp-flag-syn tcp-flag-ack, window = 8192, payload = [] }
+    in let s2 = tcp-step s1c (EvSegment synack)
+    in let s2c = s2.conn
+    in let s3 = tcp-step s2c (EvSend [65, 66])
+    in let s3c = s3.conn
+    in let data-seg = TcpSegment { src-port = 80, dst-port = 8080, seq-num = 5001, ack-num = 1003, flags = bit-or tcp-flag-ack tcp-flag-psh, window = 8192, payload = [65, 66, 67] }
+    in let s4 = tcp-step s3c (EvSegment data-seg)
+    in let s4c = s4.conn
+    in let recv-data = action-data-bytes (s4.action)
+    in let s5 = tcp-step s4c EvClose
+    in let s5c = s5.conn
+    in let fin-ack-seg = TcpSegment { src-port = 80, dst-port = 8080, seq-num = 5004, ack-num = 1004, flags = bit-or tcp-flag-fin tcp-flag-ack, window = 8192, payload = [] }
+    in let s6 = tcp-step s5c (EvSegment fin-ack-seg)
+    in let s6c = s6.conn
+    in act
+      print-line-uni ("1-state=" & tcp-state-name (s1c.state))
+      print-line-uni ("1-action=" & action-name (s1.action))
+      print-line-uni ("1-syn=" & show-bool (tcp-has-flag syn-seg tcp-flag-syn))
+      print-line-uni ("2-state=" & tcp-state-name (s2c.state))
+      print-line-uni ("2-recv-next=" & show (s2c.recv-next))
+      print-line-uni ("3-state=" & tcp-state-name (s3c.state))
+      print-line-uni ("3-seq=" & show (s2c.send-next))
+      print-line-uni ("3-payload=2")
+      print-line-uni ("3-send-next=" & show (s3c.send-next))
+      print-line-uni ("4-action=" & action-name (s4.action))
+      print-line-uni ("4-data=" & show (list-at recv-data 0) & " " & show (list-at recv-data 1) & " " & show (list-at recv-data 2))
+      print-line-uni ("4-recv-next=" & show (s4c.recv-next))
+      print-line-uni ("5-state=" & tcp-state-name (s5c.state))
+      print-line-uni ("5-action=" & action-name (s5.action))
+      print-line-uni ("6-state=" & tcp-state-name (s6c.state))
+      print-line-uni ("6-action=" & action-name (s6.action))
+    end
+
+Page 1

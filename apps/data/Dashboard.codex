@@ -1,0 +1,407 @@
+Chapter: Dashboard
+  cites Data chapter RuntimeDb
+  cites Data chapter DbAdmin
+  cites Data chapter Catalog
+  cites Data chapter Row
+  cites Data chapter Executor
+  cites Data chapter Deadlock
+  cites Data chapter Security
+  cites Data chapter SystemDb
+  cites Data chapter AuditLog
+  cites Data chapter ChangeStream
+  cites Data chapter DbBoot
+  cites Works chapter Http
+  cites Foreword chapter Maybe
+
+ Unified system dashboard. Combines the Codex OS status view, the
+ DB admin panel, and the RuntimeDb diagnostics into one web app.
+ Single dark-themed interface for everything: system overview,
+ services, config, policies, security, DB tables, queries, metrics,
+ audit trail, firewall, and health.
+
+ We say:
+
+Section: Dashboard State
+
+  DashState = record {
+    ds-runtime : RuntimeDb,
+    ds-admin : AdminState,
+    ds-boot : DbBootState,
+    ds-auth-token : Text,
+    ds-authenticated : Boolean,
+    ds-active-page : Text
+  }
+
+  dash-new : RuntimeDb, AdminState, DbBootState -> DashState
+  dash-new (rdb) (admin) (boot) = DashState {
+    ds-runtime = rdb,
+    ds-admin = admin,
+    ds-boot = boot,
+    ds-auth-token = "",
+    ds-authenticated = False,
+    ds-active-page = "overview"
+  }
+
+Section: CSS
+
+  dash-css : Text
+  dash-css =
+    "<style>"
+    & ":root{--bg:#0d1117;--surface:#161b22;--border:#30363d;--text:#c9d1d9;--text-dim:#8b949e;--accent:#58a6ff;--green:#3fb950;--red:#f85149;--yellow:#d29922;--purple:#bc8cff}"
+    & "*{box-sizing:border-box;margin:0;padding:0}"
+    & "body{font-family:'Cascadia Code','Fira Code',monospace;background:var(--bg);color:var(--text)}"
+    & "a{color:var(--accent);text-decoration:none} a:hover{text-decoration:underline}"
+    & ".topbar{background:var(--surface);border-bottom:1px solid var(--border);padding:12px 24px;display:flex;align-items:center;gap:16px}"
+    & ".topbar h1{font-size:16px;color:var(--accent);font-weight:600}"
+    & ".topbar .pill{font-size:11px;padding:2px 8px;border-radius:12px;background:#0d332133;color:var(--green);border:1px solid #3fb95044}"
+    & ".topbar .node{margin-left:auto;color:var(--text-dim);font-size:12px}"
+    & ".sidebar{position:fixed;left:0;top:44px;bottom:0;width:200px;background:var(--surface);border-right:1px solid var(--border);padding:8px 0;overflow-y:auto}"
+    & ".sidebar a{display:block;padding:8px 16px;color:var(--text-dim);font-size:12px;border-left:2px solid transparent}"
+    & ".sidebar a:hover{color:var(--text);background:#1c2128;text-decoration:none}"
+    & ".sidebar a.active{color:var(--text);border-left-color:var(--accent);background:#1c2128}"
+    & ".sidebar .section-label{padding:16px 16px 4px;font-size:10px;color:var(--text-dim);text-transform:uppercase;letter-spacing:1px}"
+    & ".main{margin-left:200px;padding:24px;margin-top:44px}"
+    & ".grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px;margin-bottom:16px}"
+    & ".card{background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:16px;margin-bottom:12px}"
+    & ".card h2{color:var(--accent);font-size:13px;text-transform:uppercase;letter-spacing:1px;margin-bottom:10px}"
+    & ".metric{text-align:center} .metric .val{font-size:28px;font-weight:700;color:#f0f6fc} .metric .lbl{font-size:10px;color:var(--text-dim);text-transform:uppercase;letter-spacing:1px;margin-top:2px}"
+    & "table{width:100%;border-collapse:collapse;font-size:12px} th{text-align:left;padding:6px 10px;color:var(--text-dim);border-bottom:1px solid var(--border);font-weight:500} td{padding:6px 10px;border-bottom:1px solid #21262d} tr:hover td{background:#1c2128}"
+    & ".tag{display:inline-block;padding:1px 6px;border-radius:10px;font-size:10px;font-weight:500}"
+    & ".tag-g{background:#0d3321;color:var(--green)} .tag-r{background:#3d0f0f;color:var(--red)} .tag-y{background:#3d2e00;color:var(--yellow)} .tag-b{background:#0c2d6b;color:var(--accent)} .tag-p{background:#2a1a4e;color:var(--purple)}"
+    & ".btn{background:#238636;color:#fff;border:1px solid #2ea043;border-radius:6px;padding:6px 14px;font-family:inherit;font-size:12px;cursor:pointer} .btn:hover{background:#2ea043}"
+    & ".btn-d{background:#da3633;border-color:#f85149} .btn-d:hover{background:#f85149}"
+    & ".btn-s{background:var(--surface);color:var(--text);border-color:var(--border)} .btn-s:hover{background:#1c2128}"
+    & "pre{background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:10px;overflow-x:auto;font-size:11px;line-height:1.5}"
+    & ".footer{padding:20px;color:#484f58;font-size:10px;text-align:center;border-top:1px solid #21262d;margin-top:32px}"
+    & ".dash-pill-paused{background:#3d2e0033;color:#d29922;border-color:#d2992244}"
+    & ".dash-pill-stopped{background:#3d0f0f33;color:#f85149;border-color:#f8514944}"
+    & "</style><meta http-equiv='refresh' content='15'>"
+
+Section: Layout
+
+  dash-page : DashState, Text, Text -> Text
+  dash-page (state) (title) (body) =
+    "<!DOCTYPE html><html><head><meta charset='utf-8'><title>Codex System - " & title & "</title>" & dash-css & "</head><body>"
+    & dash-topbar state
+    & dash-sidebar (state.ds-active-page)
+    & "<div class='main'>" & body & "</div>"
+    & "<div class='footer'>Codex System Dashboard &mdash; unified admin &mdash; v" & show (state.ds-runtime.rdb-version) & "</div>"
+    & "</body></html>"
+
+  dash-topbar : DashState -> Text
+  dash-topbar (state) =
+    let svc-pill = when (state.ds-boot.dbs-service-state)
+      is SvcRunning -> "<span class='pill'>" & "running" & "</span>"
+      is SvcPaused -> "<span class='pill dash-pill-paused'>" & "paused" & "</span>"
+      is SvcStopped -> "<span class='pill dash-pill-stopped'>" & "stopped" & "</span>"
+    in "<div class='topbar'><h1>Codex</h1>" & svc-pill & "<span class='node'>node " & show (state.ds-boot.dbs-config.dbc-node-id) & " &middot; " & state.ds-boot.dbs-config.dbc-name & "</span></div>"
+
+  dash-sidebar : Text -> Text
+  dash-sidebar (active) =
+    "<div class='sidebar'>"
+    & "<div class='section-label'>System</div>"
+    & sl "Overview" "/dash" active
+    & sl "Services" "/dash/services" active
+    & sl "Apps" "/dash/apps" active
+    & sl "Config" "/dash/config" active
+    & sl "Policies" "/dash/policies" active
+    & sl "Features" "/dash/features" active
+    & "<div class='section-label'>Database</div>"
+    & sl "Tables" "/dash/tables" active
+    & sl "Query" "/dash/query" active
+    & sl "Transactions" "/dash/txn" active
+    & sl "Locks" "/dash/locks" active
+    & sl "Indexes" "/dash/indexes" active
+    & sl "Plans" "/dash/plans" active
+    & "<div class='section-label'>Security</div>"
+    & sl "Users" "/dash/users" active
+    & sl "Firewall" "/dash/firewall" active
+    & sl "Audit" "/dash/audit" active
+    & sl "Deny List" "/dash/deny" active
+    & "<div class='section-label'>Operations</div>"
+    & sl "Metrics" "/dash/metrics" active
+    & sl "Replication" "/dash/replication" active
+    & sl "Backup" "/dash/backup" active
+    & sl "Proxy" "/dash/proxy" active
+    & "</div>"
+
+  sl : Text, Text, Text -> Text
+  sl (label) (href) (active) =
+    let cls = if label == active then " class='active'" else ""
+    in "<a href='" & href & "'" & cls & ">" & label & "</a>"
+
+Section: Overview Page
+
+  dash-overview : DashState -> Text
+  dash-overview (state) =
+    let rdb = state.ds-runtime
+    in let srv = state.ds-boot.dbs-server
+    in let mgr = srv.db-txn-mgr
+    in let fw = rdb.rdb-sysdb.sdb-firewall
+    in dash-page state "Overview" (
+      "<div class='grid'>"
+      & mc "Tables" (show (srv.db-catalog.table-count))
+      & mc "Services" (show (list-length (rdb-list-services rdb)))
+      & mc "Apps" (show (list-length (rdb-list-apps rdb)))
+      & mc "Policies" (show (list-length (rdb-list-policies rdb)))
+      & mc "Queries" (show (state.ds-boot.dbs-total-queries))
+      & mc "TXN Committed" (show (mgr.committed-count))
+      & mc "FW Rules" (show (fw.af-firewall.fw-rule-count))
+      & mc "Blocked" (show (fw.af-firewall.fw-blocked-requests))
+      & mc "Audit Records" (show (rdb.rdb-audit.al-count))
+      & mc "Auto Denies" (show (fw.af-auto-denies))
+      & mc "DB Version" (show (rdb.rdb-version))
+      & mc "Anomalies" (show (list-length (fw.af-anomaly-log)))
+      & "</div>"
+      & "<div class='card'><h2>Service Controls</h2><p>"
+      & "<a href='/dash/svc/pause'><button class='btn btn-s'>Pause</button></a> "
+      & "<a href='/dash/svc/resume'><button class='btn'>Resume</button></a> "
+      & "<a href='/dash/svc/stop'><button class='btn btn-d'>Stop</button></a></p></div>"
+      & "<div class='card'><h2>System Health</h2><pre>"
+      & rdb-stats rdb & "\n"
+      & db-health (state.ds-boot) & "\n"
+      & audit-stats (rdb.rdb-audit)
+      & "</pre></div>"
+    )
+
+  mc : Text, Text -> Text
+  mc (label) (value) = "<div class='card metric'><div class='val'>" & value & "</div><div class='lbl'>" & label & "</div></div>"
+
+Section: Services Page
+
+  dash-services : DashState -> Text
+  dash-services (state) =
+    let services = rdb-list-services (state.ds-runtime)
+    in dash-page state "Services" (
+      "<div class='card'><h2>Registered Services (" & show (list-length services) & ")</h2>"
+      & "<table><tr><th>Name</th><th>Address</th><th>Port</th><th>Status</th><th>Version</th><th>Capabilities</th></tr>"
+      & drs-loop services 0 (list-length services)
+      & "</table></div>"
+    )
+
+  drs-loop : List RowData, Integer, Integer -> Text
+  drs-loop (rows) (i) (len) =
+    if i >= len then ""
+    else let r = list-at rows i
+    in let status = val-to-text (row-get-by-name r "status")
+    in let stag = if status == "running" then "<span class='tag tag-g'>running</span>" else "<span class='tag tag-y'>" & status & "</span>"
+    in "<tr><td><strong>" & val-to-text (row-get-by-name r "service-name") & "</strong></td><td>" & val-to-text (row-get-by-name r "address") & "</td><td>" & val-to-text (row-get-by-name r "port") & "</td><td>" & stag & "</td><td>" & val-to-text (row-get-by-name r "version") & "</td><td>" & val-to-text (row-get-by-name r "capabilities") & "</td></tr>"
+    & drs-loop rows (i + 1) len
+
+Section: Config Page
+
+  dash-config : DashState -> Text
+  dash-config (state) =
+    let all-config = execute (state.ds-runtime.rdb-catalog) (RelScan "sys_config")
+    in dash-page state "Config" (
+      "<div class='card'><h2>Configuration (" & show (all-config.qr-count) & " entries)</h2>"
+      & "<table><tr><th>Namespace</th><th>Key</th><th>Value</th><th>Updated By</th></tr>"
+      & drc-loop (all-config.qr-rows) 0 (all-config.qr-count)
+      & "</table></div>"
+    )
+
+  drc-loop : List RowData, Integer, Integer -> Text
+  drc-loop (rows) (i) (len) =
+    if i >= len then ""
+    else let r = list-at rows i
+    in "<tr><td><span class='tag tag-b'>" & val-to-text (row-get-by-name r "namespace") & "</span></td><td>" & val-to-text (row-get-by-name r "key") & "</td><td><strong>" & val-to-text (row-get-by-name r "value") & "</strong></td><td>" & val-to-text (row-get-by-name r "updated-by") & "</td></tr>"
+    & drc-loop rows (i + 1) len
+
+Section: Policies Page
+
+  dash-policies : DashState -> Text
+  dash-policies (state) =
+    let policies = rdb-list-policies (state.ds-runtime)
+    in dash-page state "Policies" (
+      "<div class='card'><h2>Active Policies (" & show (list-length policies) & ")</h2>"
+      & "<table><tr><th>ID</th><th>Name</th><th>Scope</th><th>Effect</th><th>Priority</th></tr>"
+      & drp-loop policies 0 (list-length policies)
+      & "</table></div>"
+    )
+
+  drp-loop : List RowData, Integer, Integer -> Text
+  drp-loop (rows) (i) (len) =
+    if i >= len then ""
+    else let r = list-at rows i
+    in let fx = val-to-text (row-get-by-name r "effect")
+    in let etag = if fx == "allow" then "<span class='tag tag-g'>ALLOW</span>" else "<span class='tag tag-r'>DENY</span>"
+    in "<tr><td>" & val-to-text (row-get-by-name r "policy-id") & "</td><td>" & val-to-text (row-get-by-name r "name") & "</td><td><span class='tag tag-b'>" & val-to-text (row-get-by-name r "scope") & "</span></td><td>" & etag & "</td><td>" & val-to-text (row-get-by-name r "priority") & "</td></tr>"
+    & drp-loop rows (i + 1) len
+
+Section: Firewall Page
+
+  dash-firewall : DashState -> Text
+  dash-firewall (state) =
+    let fw = state.ds-runtime.rdb-sysdb.sdb-firewall
+    in let deadlock = check-deadlocks (state.ds-boot.dbs-server.db-lock-table)
+    in dash-page state "Firewall" (
+      "<div class='grid'>"
+      & mc "Rules" (show (fw.af-firewall.fw-rule-count))
+      & mc "Denied" (show (fw.af-firewall.fw-deny-count))
+      & mc "Blocked Reqs" (show (fw.af-firewall.fw-blocked-requests))
+      & mc "Auto Denies" (show (fw.af-auto-denies))
+      & "</div>"
+      & "<div class='card'><h2>Anomaly Log (last 20)</h2>"
+      & drf-anomaly-loop (fw.af-anomaly-log) 0 (if list-length (fw.af-anomaly-log) > 20 then 20 else list-length (fw.af-anomaly-log))
+      & "</div>"
+      & "<div class='card'><h2>Deny List</h2>"
+      & drf-deny-table (state.ds-runtime)
+      & "</div>"
+    )
+
+  drf-anomaly-loop : List Anomaly, Integer, Integer -> Text
+  drf-anomaly-loop (anomalies) (i) (len) =
+    if len == 0 then "<p>No anomalies detected</p>"
+    else if i >= len then ""
+    else let a = list-at anomalies i
+    in "<p><span class='tag tag-r'>" & anomaly-name (a.an-type) & "</span> " & a.an-addr & " score=" & show (a.an-score) & " " & a.an-detail & "</p>"
+    & drf-anomaly-loop anomalies (i + 1) len
+
+  drf-deny-table : RuntimeDb -> Text
+  drf-deny-table (rdb) =
+    let qr = execute (rdb.rdb-catalog) (RelScan "sys_deny_list")
+    in if qr.qr-count == 0 then "<p>Deny list is empty</p>"
+    else "<table><tr><th>Address</th><th>Reason</th><th>Source</th><th>Auto</th><th>Expires</th></tr>"
+    & drf-deny-loop (qr.qr-rows) 0 (qr.qr-count)
+    & "</table>"
+
+  drf-deny-loop : List RowData, Integer, Integer -> Text
+  drf-deny-loop (rows) (i) (len) =
+    if i >= len then ""
+    else let r = list-at rows i
+    in let auto-tag = if val-to-boolean (row-get-by-name r "auto") then "<span class='tag tag-y'>auto</span>" else "<span class='tag tag-b'>manual</span>"
+    in "<tr><td>" & val-to-text (row-get-by-name r "address") & "</td><td>" & val-to-text (row-get-by-name r "reason") & "</td><td>" & val-to-text (row-get-by-name r "source-app") & "</td><td>" & auto-tag & "</td><td>" & val-to-text (row-get-by-name r "expires-at") & "</td></tr>"
+    & drf-deny-loop rows (i + 1) len
+
+Section: Audit Page
+
+  dash-audit : DashState -> Text
+  dash-audit (state) =
+    let log = state.ds-runtime.rdb-audit
+    in let summary = audit-summary log
+    in let chain = audit-verify-chain log
+    in let chain-tag = when chain is AuditChainValid -> "<span class='tag tag-g'>VALID</span>" is AuditChainBroken (seq) (msg) -> "<span class='tag tag-r'>BROKEN at " & show seq & "</span>"
+    in dash-page state "Audit" (
+      "<div class='grid'>"
+      & mc "Total" (show (summary.as-total))
+      & mc "Inserts" (show (summary.as-inserts))
+      & mc "Updates" (show (summary.as-updates))
+      & mc "Deletes" (show (summary.as-deletes))
+      & mc "Logins" (show (summary.as-logins))
+      & mc "Failed" (show (summary.as-failed-logins))
+      & mc "Users" (show (summary.as-unique-users))
+      & mc "Tables" (show (summary.as-unique-tables))
+      & "</div>"
+      & "<div class='card'><h2>Chain Integrity</h2><p>" & chain-tag & "</p></div>"
+      & "<div class='card'><h2>Recent Audit Records</h2>"
+      & dra-loop (log.al-records) 0 (if log.al-count > 50 then 50 else log.al-count)
+      & "</div>"
+    )
+
+  dra-loop : List AuditRecord, Integer, Integer -> Text
+  dra-loop (records) (i) (len) =
+    if len == 0 then "<p>No audit records</p>"
+    else if i >= len then ""
+    else let r = list-at records i
+    in let action-tag = when (r.ar-action)
+      is AuditInsert -> "<span class='tag tag-g'>INSERT</span>"
+      is AuditUpdate -> "<span class='tag tag-b'>UPDATE</span>"
+      is AuditDelete -> "<span class='tag tag-r'>DELETE</span>"
+      is AuditSchemaChange -> "<span class='tag tag-p'>DDL</span>"
+      is AuditLogin -> "<span class='tag tag-g'>LOGIN</span>"
+      is AuditLoginFailed -> "<span class='tag tag-r'>LOGIN_FAIL</span>"
+      is otherwise -> "<span class='tag tag-y'>OTHER</span>"
+    in "<p>#" & show (r.ar-seq) & " " & action-tag & " " & r.ar-user & " " & r.ar-table & " " & r.ar-row-key & "</p>"
+    & dra-loop records (i + 1) len
+
+Section: Feature Flags Page
+
+  dash-features : DashState -> Text
+  dash-features (state) =
+    let qr = execute (state.ds-runtime.rdb-catalog) (RelScan "sys_features")
+    in dash-page state "Features" (
+      "<div class='card'><h2>Feature Flags (" & show (qr.qr-count) & ")</h2>"
+      & (if qr.qr-count == 0 then "<p>No feature flags configured</p>"
+         else "<table><tr><th>Flag</th><th>Enabled</th><th>Rollout</th><th>Scope</th></tr>"
+         & drf-loop (qr.qr-rows) 0 (qr.qr-count)
+         & "</table>")
+      & "</div>"
+    )
+
+  drf-loop : List RowData, Integer, Integer -> Text
+  drf-loop (rows) (i) (len) =
+    if i >= len then ""
+    else let r = list-at rows i
+    in let enabled = val-to-boolean (row-get-by-name r "enabled")
+    in let etag = if enabled then "<span class='tag tag-g'>ON</span>" else "<span class='tag tag-r'>OFF</span>"
+    in "<tr><td>" & val-to-text (row-get-by-name r "flag-name") & "</td><td>" & etag & "</td><td>" & val-to-text (row-get-by-name r "rollout-pct") & "%</td><td>" & val-to-text (row-get-by-name r "scope") & "</td></tr>"
+    & drf-loop rows (i + 1) len
+
+Section: Apps Page
+
+  dash-apps : DashState -> Text
+  dash-apps (state) =
+    let apps = rdb-list-apps (state.ds-runtime)
+    in dash-page state "Apps" (
+      "<div class='card'><h2>Registered Apps (" & show (list-length apps) & ")</h2>"
+      & (if list-length apps == 0 then "<p>No apps registered</p>"
+         else "<table><tr><th>App</th><th>Version</th><th>Status</th><th>Owner</th></tr>"
+         & dra-apps-loop apps 0 (list-length apps)
+         & "</table>")
+      & "</div>"
+    )
+
+  dra-apps-loop : List RowData, Integer, Integer -> Text
+  dra-apps-loop (rows) (i) (len) =
+    if i >= len then ""
+    else let r = list-at rows i
+    in let status = val-to-text (row-get-by-name r "status")
+    in let stag = if status == "running" then "<span class='tag tag-g'>running</span>" else if status == "starting" then "<span class='tag tag-y'>starting</span>" else "<span class='tag tag-r'>" & status & "</span>"
+    in "<tr><td><strong>" & val-to-text (row-get-by-name r "app-name") & "</strong></td><td>" & val-to-text (row-get-by-name r "version") & "</td><td>" & stag & "</td><td>" & val-to-text (row-get-by-name r "owner") & "</td></tr>"
+    & dra-apps-loop rows (i + 1) len
+
+Section: Router
+
+  dash-route : DashState, Text -> Text
+  dash-route (state) (path) =
+    if path == "/dash" then dash-overview state
+    else if path == "/dash/" then dash-overview state
+    else if path == "/dash/services" then dash-services state
+    else if path == "/dash/apps" then dash-apps state
+    else if path == "/dash/config" then dash-config state
+    else if path == "/dash/policies" then dash-policies state
+    else if path == "/dash/features" then dash-features state
+    else if path == "/dash/firewall" then dash-firewall state
+    else if path == "/dash/audit" then dash-audit state
+    else if path == "/dash/deny" then dash-firewall state
+    else if path == "/dash/tables" then page-tables (state.ds-admin)
+    else if path == "/dash/query" then page-query (state.ds-admin)
+    else if path == "/dash/txn" then page-txn (state.ds-admin)
+    else if path == "/dash/locks" then page-locks (state.ds-admin)
+    else if path == "/dash/indexes" then page-indexes (state.ds-admin)
+    else if path == "/dash/plans" then page-plans (state.ds-admin)
+    else if path == "/dash/users" then page-security (state.ds-admin)
+    else if path == "/dash/replication" then page-replication (state.ds-admin)
+    else if path == "/dash/backup" then page-backup (state.ds-admin)
+    else if path == "/dash/proxy" then dash-overview state
+    else if path == "/dash/metrics" then dash-overview state
+    else if text-starts-with path "/dash/table/" then page-table-detail (state.ds-admin) (dash-strip-prefix path 12)
+    else dash-page state "Not Found" ("<div class='card'><h2>404</h2><p>" & path & "</p></div>")
+
+  dash-strip-prefix : Text, Integer -> Text
+  dash-strip-prefix (t) (n) = dsp-loop t n (text-length t) ""
+
+  dsp-loop : Text, Integer, Integer, Text -> Text
+  dsp-loop (t) (i) (len) (acc) =
+    if i >= len then acc
+    else dsp-loop t (i + 1) len (acc & text-from-char (text-char-at t i))
+
+Section: HTTP Handler
+
+  dash-handle-http : DashState, List Integer -> HttpResponse
+  dash-handle-http (state) (req-bytes) =
+    let req = http-parse-request req-bytes
+    in if req.valid == False then http-error "malformed request"
+    else http-html (dash-route state (req.path))
+
+Page 1

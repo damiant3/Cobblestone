@@ -1,0 +1,169 @@
+Chapter: WorkflowBridge
+  cites Tracker chapter IssueTypes
+  cites Tracker chapter IssueStore
+  cites Wflow chapter ProcessTypes
+  cites Wflow chapter ProcessEngine
+  cites Foreword chapter Maybe
+
+ Bridge between the issue tracker and the workflow engine. Models
+ issue status transitions as a workflow process so every change
+ goes through the engine's transition evaluator, condition system,
+ and audit trail. An issue lifecycle is a ProcessDef; each status
+ is a step; transitions are conditional (e.g. review requires
+ assignee, done requires all docs verified).
+
+ We say:
+
+Section: Issue Workflow Process Definition
+  issue-process-def : ProcessDef
+  issue-process-def = ProcessDef {
+    pd-id = "issue-lifecycle",
+    pd-name = "Issue Lifecycle",
+    pd-version = 1,
+    pd-description = "Standard issue tracking workflow: backlog through done",
+    pd-category = "tracker",
+    pd-steps = [
+      issue-step "backlog" "Backlog" HumanTask,
+      issue-step "todo" "Todo" HumanTask,
+      issue-step "in-progress" "In Progress" HumanTask,
+      issue-step "in-review" "In Review" ApprovalGate,
+      issue-step "done" "Done" AutomatedAction,
+      issue-step "cancelled" "Cancelled" AutomatedAction
+    ],
+    pd-transitions = [
+      always-transition "t-backlog-todo" "backlog" "todo",
+      always-transition "t-todo-progress" "todo" "in-progress",
+      always-transition "t-progress-review" "in-progress" "in-review",
+      transition "t-review-done" "in-review" "done" (IsSet "approved") "Approved",
+      transition "t-review-progress" "in-review" "in-progress" (IsNotSet "approved") "Needs work",
+      always-transition "t-any-cancel" "backlog" "cancelled",
+      always-transition "t-todo-cancel" "todo" "cancelled",
+      always-transition "t-progress-cancel" "in-progress" "cancelled"
+    ],
+    pd-start-step = "backlog",
+    pd-roles = [
+      RoleDef { role-id = "reporter", role-name = "Reporter", role-description = "Creates issues" },
+      RoleDef { role-id = "assignee", role-name = "Assignee", role-description = "Works on issues" },
+      RoleDef { role-id = "reviewer", role-name = "Reviewer", role-description = "Reviews completed work" }
+    ],
+    pd-sla-defaults = SlaDef { sla-deadline-secs = 1209600, sla-warn-secs = 604800, sla-escalation-role = "lead" },
+    pd-data-schema = [
+      FieldSpec { fs-id = "title", fs-label = "Title", fs-type = InputText, fs-required = True, fs-default = "", fs-validation = "", fs-group = "basics", fs-help-text = "", fs-options = [] },
+      FieldSpec { fs-id = "description", fs-label = "Description", fs-type = InputTextArea, fs-required = False, fs-default = "", fs-validation = "", fs-group = "basics", fs-help-text = "", fs-options = [] },
+      FieldSpec { fs-id = "priority", fs-label = "Priority", fs-type = InputSelect, fs-required = True, fs-default = "medium", fs-validation = "", fs-group = "basics", fs-help-text = "", fs-options = ["urgent", "high", "medium", "low", "none"] },
+      FieldSpec { fs-id = "approved", fs-label = "Approved", fs-type = InputCheckbox, fs-required = False, fs-default = "", fs-validation = "", fs-group = "review", fs-help-text = "", fs-options = [] }
+    ],
+    pd-active = True
+  }
+
+  issue-step : Text, Text, StepType -> StepDef
+  issue-step (id) (name) (stype) = StepDef {
+    sd-id = id, sd-name = name, sd-type = stype,
+    sd-description = "", sd-form = None, sd-assignment = Unassigned,
+    sd-sla = None, sd-actions = [], sd-required-docs = [],
+    sd-x = 0, sd-y = 0
+  }
+
+Section: Engine Integration
+  TrackerEngine = record {
+    te-engine : EngineState,
+    te-store : IssueStoreState,
+    te-instances : List ProcessInstance
+  }
+
+  tracker-engine-init : TrackerEngine
+  tracker-engine-init =
+    let eng = engine-init
+    in let eng2 = register-def eng issue-process-def
+    in let store = issue-store-new "tracker"
+    in TrackerEngine { te-engine = eng2, te-store = store, te-instances = [] }
+
+Section: Issue Operations (through workflow engine)
+  te-create-issue : TrackerEngine, Issue, Integer -> TrackerEngine
+  te-create-issue (te) (issue) (ts) =
+    let store2 = iss-add-issue (te.te-store) issue
+    in let data = [
+      DataEntry { de-key = "title", de-value = issue.issue-title },
+      DataEntry { de-key = "priority", de-value = issue-priority-name (issue.issue-priority) },
+      DataEntry { de-key = "assignee", de-value = issue.issue-assignee }
+    ]
+    in let (eng2, maybe-inst) = start-process (te.te-engine) "issue-lifecycle" (issue.issue-key & ": " & issue.issue-title) data ts
+    in when maybe-inst
+      is Just (inst) -> TrackerEngine { te-engine = eng2, te-store = store2, te-instances = list-push (te.te-instances) inst }
+      is None -> TrackerEngine { te-engine = eng2, te-store = store2, te-instances = te.te-instances }
+
+  te-advance-issue : TrackerEngine, Integer, Text, Integer -> TrackerEngine
+  te-advance-issue (te) (issue-id) (user-id) (ts) =
+    let inst-idx = te-find-instance (te.te-instances) issue-id 0
+    in if inst-idx < 0 then te
+    else let inst = list-at (te.te-instances) inst-idx
+    in let step-data = [DataEntry { de-key = "advanced-by", de-value = user-id }]
+    in let (eng2, inst2) = complete-step (te.te-engine) inst issue-process-def user-id step-data ts
+    in let new-status = te-step-to-status (inst2.pi-current-step)
+    in let store2 = iss-update-status (te.te-store) issue-id new-status
+    in let instances2 = list-set-at (te.te-instances) inst-idx inst2
+    in TrackerEngine { te-engine = eng2, te-store = store2, te-instances = instances2 }
+
+  te-find-instance : List ProcessInstance, Integer, Integer -> Integer
+  te-find-instance (instances) (issue-id) (i) =
+    if i >= list-length instances then 0 - 1
+    else let inst = list-at instances i
+    in let key = "CDX-" & show (issue-id + 128)
+    in if text-contains (inst.pi-name) key then i
+    else te-find-instance instances issue-id (i + 1)
+
+Section: Status Mapping
+  te-status-to-step : IssueStatus -> Text
+  te-status-to-step (s) =
+    when s
+      is StatusBacklog -> "backlog"
+      is StatusTodo -> "todo"
+      is StatusInProgress -> "in-progress"
+      is StatusInReview -> "in-review"
+      is StatusDone -> "done"
+      is StatusCancelled -> "cancelled"
+
+  te-step-to-status : Text -> IssueStatus
+  te-step-to-status (step) =
+    if step == "backlog" then StatusBacklog
+    else if step == "todo" then StatusTodo
+    else if step == "in-progress" then StatusInProgress
+    else if step == "in-review" then StatusInReview
+    else if step == "done" then StatusDone
+    else StatusCancelled
+
+Section: Audit Trail Access
+  te-issue-history : TrackerEngine, Integer -> List StepEvent
+  te-issue-history (te) (issue-id) =
+    let idx = te-find-instance (te.te-instances) issue-id 0
+    in if idx < 0 then []
+    else (list-at (te.te-instances) idx).pi-history
+
+  te-issue-current-step : TrackerEngine, Integer -> Text
+  te-issue-current-step (te) (issue-id) =
+    let idx = te-find-instance (te.te-instances) issue-id 0
+    in if idx < 0 then "unknown"
+    else (list-at (te.te-instances) idx).pi-current-step
+
+Section: Queries (delegated to IssueStore)
+  te-all-issues : TrackerEngine -> QueryResult
+  te-all-issues (te) = iss-all-issues (te.te-store)
+
+  te-issues-by-status : TrackerEngine, IssueStatus -> QueryResult
+  te-issues-by-status (te) (status) = iss-issues-by-status (te.te-store) status
+
+  te-issues-by-project : TrackerEngine, Text -> QueryResult
+  te-issues-by-project (te) (project) = iss-issues-by-project (te.te-store) project
+
+  te-count : TrackerEngine -> Integer
+  te-count (te) = iss-count (te.te-store)
+
+  te-count-open : TrackerEngine -> Integer
+  te-count-open (te) = iss-count-open (te.te-store)
+
+Section: Formatting
+  format-tracker-engine : TrackerEngine -> Text
+  format-tracker-engine (te) =
+    "issues=" & show (te-count te) & " processes=" & show (list-length (te.te-instances)) & " open=" & show (te-count-open te)
+
+Page 1

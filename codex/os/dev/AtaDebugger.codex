@@ -1,0 +1,115 @@
+Chapter: AtaDebugger
+  cites Dev chapter HexFormat
+  cites Kernel chapter Console
+  cites Kernel chapter Keyboard
+
+ The AtaDebugger provides interactive ATA disk inspection:
+ read sectors, write sectors, identify drives, and flush caches,
+ displaying results in hex via the kernel console.
+
+ We say:
+
+Section: ATA Constants
+  ata-cmd-read : Integer = 32
+  ata-cmd-write : Integer = 48
+  ata-cmd-identify : Integer = 236
+  ata-cmd-flush : Integer = 231
+
+Section: ATA Helpers
+  ata-wait-ready : Integer
+  ata-wait-ready =
+    ata-wait-ready-loop 0
+
+  ata-wait-ready-loop : Integer -> Integer
+  ata-wait-ready-loop (n) =
+    if n > 100000 then 0 - 1
+    else let s = port-in-byte 1014
+    in if bit-and s 128 /= 0 then ata-wait-ready-loop (n + 1)
+    else if bit-and s 64 /= 0 then s
+    else ata-wait-ready-loop (n + 1)
+
+  ata-wait-drq : Integer
+  ata-wait-drq =
+    ata-wait-drq-loop 0
+
+  ata-wait-drq-loop : Integer -> Integer
+  ata-wait-drq-loop (n) =
+    if n > 100000 then 0 - 1
+    else let s = port-in-byte 503
+    in if bit-and s 128 /= 0 then ata-wait-drq-loop (n + 1)
+    else if bit-and s 8 /= 0 then s
+    else ata-wait-drq-loop (n + 1)
+
+  ata-setup-lba : Integer -> Integer
+  ata-setup-lba (lba) =
+    let rdy = ata-wait-ready
+    in let w1 = port-out-byte 502 224
+    in let w2 = port-out-byte 498 1
+    in let w3 = port-out-byte 499 (bit-and lba 255)
+    in let w4 = port-out-byte 500 (bit-and (bit-shru lba 8) 255)
+    in let w5 = port-out-byte 501 (bit-and (bit-shru lba 16) 255)
+    in 0
+
+  ata-read-data-byte : Integer
+  ata-read-data-byte = port-in-byte 496
+
+Section: ATA Step-Through Read
+  ata-step-read : Integer, ConsoleState, KbState -> ConsoleState
+  ata-step-read (lba) (con) (kb) =
+    let s0 = port-in-byte 1014
+    in let con1 = console-write-text con ("[1] PRE: #" & byte-to-hex s0 & " " & ata-decode-status s0)
+    in let con2 = console-write-char con1 1
+    in let setup = ata-setup-lba lba
+    in let wcmd = port-out-byte 503 ata-cmd-read
+    in let drq = ata-wait-drq
+    in let s1 = port-in-byte 1014
+    in let con3 = console-write-text con2 ("[2] DRQ: #" & byte-to-hex s1 & " " & ata-decode-status s1)
+    in let con4 = console-write-char con3 1
+    in let p0 = ata-read-data-byte
+    in let p1 = ata-read-data-byte
+    in let p2 = ata-read-data-byte
+    in let p3 = ata-read-data-byte
+    in let con5 = console-write-text con4 ("[3] PROBE: " & byte-to-hex p0 & " " & byte-to-hex p1 & " " & byte-to-hex p2 & " " & byte-to-hex p3)
+    in let con6 = console-write-char con5 1
+    in let buf = alloc-bytes 512
+    in let wb0 = poke-byte buf 0 p0
+    in let wb1 = poke-byte buf 1 p1
+    in let wb2 = poke-byte buf 2 p2
+    in let wb3 = poke-byte buf 3 p3
+    in let filled = ata-read-remaining buf 4 508
+    in let s2 = port-in-byte 503
+    in let con7 = console-write-text con6 ("[4] BUF: " & hex-dump-line buf 0 0)
+    in let con8 = console-write-char con7 1
+    in console-write-text con8 ("[5] POST: #" & byte-to-hex s2 & " " & ata-decode-status s2)
+
+  ata-read-remaining : Integer, Integer, Integer -> Integer
+  ata-read-remaining (buf) (off) (count) =
+    if count <= 0 then 0
+    else let b = ata-read-data-byte
+    in let w = poke-byte buf off b
+    in ata-read-remaining buf (off + 1) (count - 1)
+
+Section: ATA Traced Read
+  ata-traced-read : Integer, ConsoleState -> ConsoleState
+  ata-traced-read (lba) (con) =
+    let s0 = port-in-byte 1014
+    in let buf = block-read-sector lba
+    in let s1 = port-in-byte 503
+    in let con1 = console-write-text con ("read LBA " & show lba & ": pre=#" & byte-to-hex s0 & " post=#" & byte-to-hex s1)
+    in let con2 = console-write-char con1 1
+    in let con3 = console-write-text con2 (hex-dump-line buf 0 0)
+    in let con4 = console-write-char con3 1
+    in console-write-text con4 (hex-dump-line buf 0 16)
+
+Section: ATA Verify
+  ata-verify-sector : Integer, ConsoleState -> ConsoleState
+  ata-verify-sector (lba) (con) =
+    let buf = block-read-sector lba
+    in let s = port-in-byte 503
+    in let con1 = console-write-text con ("Sector " & show lba & " post=#" & byte-to-hex s)
+    in let con2 = console-write-char con1 1
+    in let con3 = console-write-text con2 (hex-dump-line buf 0 0)
+    in let con4 = console-write-char con3 1
+    in console-write-text con4 (hex-dump-line buf 0 16)
+
+Page 1

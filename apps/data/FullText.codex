@@ -1,0 +1,521 @@
+Chapter: FullText
+  cites Data chapter Row
+  cites Foreword chapter Maybe
+  cites Foreword chapter Hamt
+  cites Foreword chapter Sort
+
+ Full-text search engine. Inverted index maps terms to document IDs.
+ Supports tokenization, stop-word filtering, TF-IDF scoring, BM25
+ ranking, phrase search, boolean queries (AND/OR/NOT), prefix
+ matching, and faceted search.
+
+ We say:
+
+Section: Document
+
+  FtDoc = record {
+    ft-id : Integer,
+    ft-fields : HamtMap Text,
+    ft-source-table : Text,
+    ft-source-row : Integer
+  }
+
+  ft-doc : Integer, Text, Integer -> FtDoc
+  ft-doc (id) (table) (row) = FtDoc { ft-id = id, ft-fields = hamt-empty, ft-source-table = table, ft-source-row = row }
+
+  ft-doc-set : FtDoc, Text, Text -> FtDoc
+  ft-doc-set (doc) (field) (value) = FtDoc { ft-id = doc.ft-id, ft-fields = hamt-set (doc.ft-fields) field value, ft-source-table = doc.ft-source-table, ft-source-row = doc.ft-source-row }
+
+  ft-doc-get : FtDoc, Text -> Text
+  ft-doc-get (doc) (field) =
+    let found = hamt-get (doc.ft-fields) field
+    in when found is Just (v) -> v is None -> ""
+
+Section: Tokenizer
+
+  ft-tokenize : Text -> List Text
+  ft-tokenize (text) = ft-tok-loop text 0 (text-length text) "" []
+
+  ft-tok-loop : Text, Integer, Integer, Text, List Text -> List Text
+  ft-tok-loop (text) (i) (len) (current) (acc) =
+    if i >= len then if text-length current > 0 then list-push acc (ft-lowercase current) else acc
+    else let ch = text-char-at text i
+    in if ft-is-separator ch then
+      if text-length current > 0 then ft-tok-loop text (i + 1) len "" (list-push acc (ft-lowercase current))
+      else ft-tok-loop text (i + 1) len "" acc
+    else ft-tok-loop text (i + 1) len (current & text-from-char ch) acc
+
+  ft-is-separator : Integer -> Boolean
+  ft-is-separator (ch) =
+    ch == 32 | ch == 44 | ch == 46 | ch == 33 | ch == 63 | ch == 59 | ch == 58 | ch == 10 | ch == 13 | ch == 9 | ch == 40 | ch == 41 | ch == 91 | ch == 93 | ch == 34 | ch == 39 | ch == 45
+
+  ft-lowercase : Text -> Text
+  ft-lowercase (t) = ft-lc-loop t 0 (text-length t) ""
+
+  ft-lc-loop : Text, Integer, Integer, Text -> Text
+  ft-lc-loop (t) (i) (len) (acc) =
+    if i >= len then acc
+    else let ch = text-char-at t i
+    in let lc = if ch >= 65 & ch <= 90 then ch + 32 else ch
+    in ft-lc-loop t (i + 1) len (acc & text-from-char lc)
+
+Section: Stop Words
+
+  ft-is-stop-word : Text -> Boolean
+  ft-is-stop-word (w) =
+    w == "the" | w == "a" | w == "an" | w == "is" | w == "are" | w == "was" | w == "were" | w == "be" | w == "been" | w == "being" | w == "have" | w == "has" | w == "had" | w == "do" | w == "does" | w == "did" | w == "will" | w == "would" | w == "could" | w == "should" | w == "may" | w == "might" | w == "shall" | w == "can" | w == "to" | w == "of" | w == "in" | w == "for" | w == "on" | w == "with" | w == "at" | w == "by" | w == "from" | w == "as" | w == "into" | w == "through" | w == "during" | w == "before" | w == "after" | w == "and" | w == "but" | w == "or" | w == "not" | w == "no" | w == "nor" | w == "so" | w == "yet" | w == "both" | w == "either" | w == "neither" | w == "it" | w == "its" | w == "this" | w == "that" | w == "these" | w == "those"
+
+  ft-remove-stops : List Text -> List Text
+  ft-remove-stops (tokens) = ft-stop-loop tokens 0 (list-length tokens) []
+
+  ft-stop-loop : List Text, Integer, Integer, List Text -> List Text
+  ft-stop-loop (tokens) (i) (len) (acc) =
+    if i >= len then acc
+    else let t = list-at tokens i
+    in if ft-is-stop-word t then ft-stop-loop tokens (i + 1) len acc
+    else if text-length t < 2 then ft-stop-loop tokens (i + 1) len acc
+    else ft-stop-loop tokens (i + 1) len (list-push acc t)
+
+Section: Inverted Index
+
+  Posting = record {
+    post-doc-id : Integer,
+    post-freq : Integer,
+    post-positions : List Integer
+  }
+
+  InvertedIndex = record {
+    ii-postings : HamtMap (List Posting),
+    ii-doc-count : Integer,
+    ii-term-count : Integer,
+    ii-doc-lengths : HamtMap Integer
+  }
+
+  ii-new : InvertedIndex
+  ii-new = InvertedIndex { ii-postings = hamt-empty, ii-doc-count = 0, ii-term-count = 0, ii-doc-lengths = hamt-empty }
+
+  ii-index-doc : InvertedIndex, Integer, Text -> InvertedIndex
+  ii-index-doc (idx) (doc-id) (text) =
+    let tokens = ft-remove-stops (ft-tokenize text)
+    in let doc-len = list-length tokens
+    in let idx2 = ii-add-tokens idx doc-id tokens 0 doc-len
+    in InvertedIndex {
+      ii-postings = idx2.ii-postings,
+      ii-doc-count = idx2.ii-doc-count + 1,
+      ii-term-count = idx2.ii-term-count,
+      ii-doc-lengths = hamt-set (idx2.ii-doc-lengths) (show doc-id) doc-len
+    }
+
+  ii-add-tokens : InvertedIndex, Integer, List Text, Integer, Integer -> InvertedIndex
+  ii-add-tokens (idx) (doc-id) (tokens) (i) (len) =
+    if i >= len then idx
+    else let term = list-at tokens i
+    in let idx2 = ii-add-posting idx term doc-id i
+    in ii-add-tokens idx2 doc-id tokens (i + 1) len
+
+  ii-add-posting : InvertedIndex, Text, Integer, Integer -> InvertedIndex
+  ii-add-posting (idx) (term) (doc-id) (pos) =
+    let existing = hamt-get (idx.ii-postings) term
+    in let new-postings = when existing
+      is None ->
+        let p = Posting { post-doc-id = doc-id, post-freq = 1, post-positions = [pos] }
+        in hamt-set (idx.ii-postings) term [p]
+      is Just (posts) ->
+        let updated = ii-update-posting posts doc-id pos 0 (list-length posts) False
+        in hamt-set (idx.ii-postings) term (updated.up-posts)
+    in let new-count = when existing is None -> idx.ii-term-count + 1 is Just (p) -> idx.ii-term-count
+    in InvertedIndex { ii-postings = new-postings, ii-doc-count = idx.ii-doc-count, ii-term-count = new-count, ii-doc-lengths = idx.ii-doc-lengths }
+
+  UpdatePostingResult = record { up-posts : List Posting, up-found : Boolean }
+
+  ii-update-posting : List Posting, Integer, Integer, Integer, Integer, Boolean -> UpdatePostingResult
+  ii-update-posting (posts) (doc-id) (pos) (i) (len) (found) =
+    if i >= len then
+      if found then UpdatePostingResult { up-posts = posts, up-found = True }
+      else UpdatePostingResult { up-posts = list-push posts (Posting { post-doc-id = doc-id, post-freq = 1, post-positions = [pos] }), up-found = False }
+    else let p = list-at posts i
+    in if p.post-doc-id == doc-id then
+      let updated = Posting { post-doc-id = doc-id, post-freq = p.post-freq + 1, post-positions = list-push (p.post-positions) pos }
+      in UpdatePostingResult { up-posts = list-set-at posts i updated, up-found = True }
+    else ii-update-posting posts doc-id pos (i + 1) len found
+
+Section: Term Lookup
+
+  ii-search-term : InvertedIndex, Text -> List Posting
+  ii-search-term (idx) (term) =
+    let found = hamt-get (idx.ii-postings) (ft-lowercase term)
+    in when found is Just (posts) -> posts is None -> []
+
+  ii-doc-freq : InvertedIndex, Text -> Integer
+  ii-doc-freq (idx) (term) = list-length (ii-search-term idx term)
+
+Section: TF-IDF Scoring
+
+  TfIdfScore = record {
+    tfi-doc-id : Integer,
+    tfi-score : Integer
+  }
+
+  ii-tfidf : InvertedIndex, Text -> List TfIdfScore
+  ii-tfidf (idx) (query) =
+    let terms = ft-remove-stops (ft-tokenize query)
+    in let scores = tfidf-score-terms idx terms 0 (list-length terms) hamt-empty
+    in tfidf-to-sorted-list scores
+
+  tfidf-score-terms : InvertedIndex, List Text, Integer, Integer, HamtMap Integer -> HamtMap Integer
+  tfidf-score-terms (idx) (terms) (i) (len) (scores) =
+    if i >= len then scores
+    else let term = list-at terms i
+    in let posts = ii-search-term idx term
+    in let df = list-length posts
+    in let idf = if df == 0 then 0 else (idx.ii-doc-count * 1000) / df
+    in let updated = tfidf-add-posts posts idf scores 0 (list-length posts)
+    in tfidf-score-terms idx terms (i + 1) len updated
+
+  tfidf-add-posts : List Posting, Integer, HamtMap Integer, Integer, Integer -> HamtMap Integer
+  tfidf-add-posts (posts) (idf) (scores) (i) (len) =
+    if i >= len then scores
+    else let p = list-at posts i
+    in let tf = p.post-freq * 1000
+    in let score = (tf * idf) / 1000
+    in let key = show (p.post-doc-id)
+    in let existing = when (hamt-get scores key) is Just (s) -> s is None -> 0
+    in tfidf-add-posts posts idf (hamt-set scores key (existing + score)) (i + 1) len
+
+  tfidf-to-sorted-list : HamtMap Integer -> List TfIdfScore
+  tfidf-to-sorted-list (scores) =
+    let entries = hamt-to-list scores
+    in let results = tfidf-convert entries 0 (list-length entries) []
+    in sort-by results tfidf-cmp
+
+  tfidf-convert : List (HamtEntry Integer), Integer, Integer, List TfIdfScore -> List TfIdfScore
+  tfidf-convert (entries) (i) (len) (acc) =
+    if i >= len then acc
+    else let e = list-at entries i
+    in tfidf-convert entries (i + 1) len (list-push acc (TfIdfScore { tfi-doc-id = ft-text-to-int (e.key), tfi-score = e.value }))
+
+  tfidf-cmp : TfIdfScore, TfIdfScore -> Integer
+  tfidf-cmp (a) (b) = b.tfi-score - a.tfi-score
+
+  ft-text-to-int : Text -> Integer
+  ft-text-to-int (t) = ftti-loop t 0 (text-length t) 0
+
+  ftti-loop : Text, Integer, Integer, Integer -> Integer
+  ftti-loop (t) (i) (len) (acc) =
+    if i >= len then acc
+    else let ch = text-char-at t i
+    in if ch >= 48 & ch <= 57 then ftti-loop t (i + 1) len (acc * 10 + ch - 48)
+    else acc
+
+Section: BM25 Scoring
+
+  Bm25Score = record {
+    bm-doc-id : Integer,
+    bm-score : Integer
+  }
+
+  bm25-k1 : Integer = 1200
+  bm25-b : Integer = 750
+
+  ii-bm25 : InvertedIndex, Text -> List Bm25Score
+  ii-bm25 (idx) (query) =
+    let terms = ft-remove-stops (ft-tokenize query)
+    in let avg-dl = if idx.ii-doc-count == 0 then 1 else bm25-total-length idx / idx.ii-doc-count
+    in let scores = bm25-score-terms idx terms avg-dl 0 (list-length terms) hamt-empty
+    in bm25-to-sorted-list scores
+
+  bm25-total-length : InvertedIndex -> Integer
+  bm25-total-length (idx) =
+    let entries = hamt-to-list (idx.ii-doc-lengths)
+    in bm25-sum-lengths entries 0 (list-length entries) 0
+
+  bm25-sum-lengths : List (HamtEntry Integer), Integer, Integer, Integer -> Integer
+  bm25-sum-lengths (entries) (i) (len) (acc) =
+    if i >= len then acc
+    else bm25-sum-lengths entries (i + 1) len (acc + (list-at entries i).value)
+
+  bm25-score-terms : InvertedIndex, List Text, Integer, Integer, Integer, HamtMap Integer -> HamtMap Integer
+  bm25-score-terms (idx) (terms) (avg-dl) (i) (len) (scores) =
+    if i >= len then scores
+    else let term = list-at terms i
+    in let posts = ii-search-term idx term
+    in let df = list-length posts
+    in let idf = bm25-idf (idx.ii-doc-count) df
+    in let updated = bm25-add-posts idx posts idf avg-dl scores 0 (list-length posts)
+    in bm25-score-terms idx terms avg-dl (i + 1) len updated
+
+  bm25-idf : Integer, Integer -> Integer
+  bm25-idf (n) (df) =
+    if df == 0 then 0
+    else let num = n - df + 1
+    in if num <= 0 then 0
+    else (num * 1000) / (df + 1)
+
+  bm25-add-posts : InvertedIndex, List Posting, Integer, Integer, HamtMap Integer, Integer, Integer -> HamtMap Integer
+  bm25-add-posts (idx) (posts) (idf) (avg-dl) (scores) (i) (len) =
+    if i >= len then scores
+    else let p = list-at posts i
+    in let dl = when (hamt-get (idx.ii-doc-lengths) (show (p.post-doc-id))) is Just (l) -> l is None -> 1
+    in let tf = p.post-freq
+    in let num = tf * (bm25-k1 + 1000)
+    in let denom = tf * 1000 + bm25-k1 * (1000 - bm25-b + (bm25-b * dl * 1000) / (if avg-dl == 0 then 1 else avg-dl * 1000))
+    in let score = if denom == 0 then 0 else (idf * num) / denom
+    in let key = show (p.post-doc-id)
+    in let existing = when (hamt-get scores key) is Just (s) -> s is None -> 0
+    in bm25-add-posts idx posts idf avg-dl (hamt-set scores key (existing + score)) (i + 1) len
+
+  bm25-to-sorted-list : HamtMap Integer -> List Bm25Score
+  bm25-to-sorted-list (scores) =
+    let entries = hamt-to-list scores
+    in let results = bm25-convert entries 0 (list-length entries) []
+    in sort-by results bm25-cmp
+
+  bm25-convert : List (HamtEntry Integer), Integer, Integer, List Bm25Score -> List Bm25Score
+  bm25-convert (entries) (i) (len) (acc) =
+    if i >= len then acc
+    else let e = list-at entries i
+    in bm25-convert entries (i + 1) len (list-push acc (Bm25Score { bm-doc-id = ft-text-to-int (e.key), bm-score = e.value }))
+
+  bm25-cmp : Bm25Score, Bm25Score -> Integer
+  bm25-cmp (a) (b) = b.bm-score - a.bm-score
+
+Section: Boolean Queries
+
+  FtQuery =
+    | FtTerm (Text)
+    | FtPhrase (List Text)
+    | FtAnd (FtQuery) (FtQuery)
+    | FtOr (FtQuery) (FtQuery)
+    | FtNot (FtQuery)
+    | FtPrefix (Text)
+
+  ft-eval : InvertedIndex, FtQuery -> List Integer
+  ft-eval (idx) (query) =
+    when query
+      is FtTerm (term) -> ft-posting-doc-ids (ii-search-term idx (ft-lowercase term))
+      is FtPhrase (words) -> ft-eval-phrase idx words
+      is FtAnd (a) (b) -> ft-intersect-ids (ft-eval idx a) (ft-eval idx b)
+      is FtOr (a) (b) -> ft-union-ids (ft-eval idx a) (ft-eval idx b)
+      is FtNot (inner) -> ft-subtract-ids (ft-all-doc-ids idx) (ft-eval idx inner)
+      is FtPrefix (prefix) -> ft-eval-prefix idx prefix
+
+  ft-posting-doc-ids : List Posting -> List Integer
+  ft-posting-doc-ids (posts) = ft-pid-loop posts 0 (list-length posts) []
+
+  ft-pid-loop : List Posting, Integer, Integer, List Integer -> List Integer
+  ft-pid-loop (posts) (i) (len) (acc) =
+    if i >= len then acc
+    else ft-pid-loop posts (i + 1) len (list-push acc (list-at posts i).post-doc-id)
+
+  ft-all-doc-ids : InvertedIndex -> List Integer
+  ft-all-doc-ids (idx) =
+    let entries = hamt-to-list (idx.ii-doc-lengths)
+    in ft-all-ids-loop entries 0 (list-length entries) []
+
+  ft-all-ids-loop : List (HamtEntry Integer), Integer, Integer, List Integer -> List Integer
+  ft-all-ids-loop (entries) (i) (len) (acc) =
+    if i >= len then acc
+    else ft-all-ids-loop entries (i + 1) len (list-push acc (ft-text-to-int (list-at entries i).key))
+
+  ft-intersect-ids : List Integer, List Integer -> List Integer
+  ft-intersect-ids (a) (b) =
+    let set = ft-to-set b 0 (list-length b) hamt-empty
+    in ft-filter-in a set 0 (list-length a) []
+
+  ft-to-set : List Integer, Integer, Integer, HamtMap Integer -> HamtMap Integer
+  ft-to-set (ids) (i) (len) (set) =
+    if i >= len then set
+    else ft-to-set ids (i + 1) len (hamt-set set (show (list-at ids i)) 1)
+
+  ft-filter-in : List Integer, HamtMap Integer, Integer, Integer, List Integer -> List Integer
+  ft-filter-in (ids) (set) (i) (len) (acc) =
+    if i >= len then acc
+    else let id = list-at ids i
+    in let found = hamt-get set (show id)
+    in when found
+      is Just (v) -> ft-filter-in ids set (i + 1) len (list-push acc id)
+      is None -> ft-filter-in ids set (i + 1) len acc
+
+  ft-union-ids : List Integer, List Integer -> List Integer
+  ft-union-ids (a) (b) =
+    let set = ft-to-set a 0 (list-length a) hamt-empty
+    in let combined = ft-add-new b set 0 (list-length b) a
+    in combined
+
+  ft-add-new : List Integer, HamtMap Integer, Integer, Integer, List Integer -> List Integer
+  ft-add-new (ids) (set) (i) (len) (acc) =
+    if i >= len then acc
+    else let id = list-at ids i
+    in let found = hamt-get set (show id)
+    in when found
+      is Just (v) -> ft-add-new ids set (i + 1) len acc
+      is None -> ft-add-new ids set (i + 1) len (list-push acc id)
+
+  ft-subtract-ids : List Integer, List Integer -> List Integer
+  ft-subtract-ids (all) (exclude) =
+    let set = ft-to-set exclude 0 (list-length exclude) hamt-empty
+    in ft-filter-out all set 0 (list-length all) []
+
+  ft-filter-out : List Integer, HamtMap Integer, Integer, Integer, List Integer -> List Integer
+  ft-filter-out (ids) (set) (i) (len) (acc) =
+    if i >= len then acc
+    else let id = list-at ids i
+    in let found = hamt-get set (show id)
+    in when found
+      is Just (v) -> ft-filter-out ids set (i + 1) len acc
+      is None -> ft-filter-out ids set (i + 1) len (list-push acc id)
+
+Section: Phrase Search
+
+  ft-eval-phrase : InvertedIndex, List Text -> List Integer
+  ft-eval-phrase (idx) (words) =
+    if list-length words == 0 then []
+    else let first-posts = ii-search-term idx (list-at words 0)
+    in ft-phrase-check first-posts idx words 0 (list-length first-posts) []
+
+  ft-phrase-check : List Posting, InvertedIndex, List Text, Integer, Integer, List Integer -> List Integer
+  ft-phrase-check (first-posts) (idx) (words) (i) (len) (acc) =
+    if i >= len then acc
+    else let p = list-at first-posts i
+    in if ft-has-phrase-at idx (p.post-doc-id) words (p.post-positions) then
+      ft-phrase-check first-posts idx words (i + 1) len (list-push acc (p.post-doc-id))
+    else ft-phrase-check first-posts idx words (i + 1) len acc
+
+  ft-has-phrase-at : InvertedIndex, Integer, List Text, List Integer -> Boolean
+  ft-has-phrase-at (idx) (doc-id) (words) (start-positions) =
+    ft-check-starts idx doc-id words start-positions 0 (list-length start-positions)
+
+  ft-check-starts : InvertedIndex, Integer, List Text, List Integer, Integer, Integer -> Boolean
+  ft-check-starts (idx) (doc-id) (words) (starts) (i) (len) =
+    if i >= len then False
+    else let start-pos = list-at starts i
+    in if ft-verify-phrase idx doc-id words start-pos 1 (list-length words) then True
+    else ft-check-starts idx doc-id words starts (i + 1) len
+
+  ft-verify-phrase : InvertedIndex, Integer, List Text, Integer, Integer, Integer -> Boolean
+  ft-verify-phrase (idx) (doc-id) (words) (base-pos) (wi) (wlen) =
+    if wi >= wlen then True
+    else let word = list-at words wi
+    in let posts = ii-search-term idx word
+    in if ft-has-position posts doc-id (base-pos + wi) then ft-verify-phrase idx doc-id words base-pos (wi + 1) wlen
+    else False
+
+  ft-has-position : List Posting, Integer, Integer -> Boolean
+  ft-has-position (posts) (doc-id) (pos) = ft-hp-loop posts doc-id pos 0 (list-length posts)
+
+  ft-hp-loop : List Posting, Integer, Integer, Integer, Integer -> Boolean
+  ft-hp-loop (posts) (doc-id) (pos) (i) (len) =
+    if i >= len then False
+    else let p = list-at posts i
+    in if p.post-doc-id == doc-id then ft-pos-in-list (p.post-positions) pos 0 (list-length (p.post-positions))
+    else ft-hp-loop posts doc-id pos (i + 1) len
+
+  ft-pos-in-list : List Integer, Integer, Integer, Integer -> Boolean
+  ft-pos-in-list (positions) (target) (i) (len) =
+    if i >= len then False
+    else if list-at positions i == target then True
+    else ft-pos-in-list positions target (i + 1) len
+
+Section: Prefix Search
+
+  ft-eval-prefix : InvertedIndex, Text -> List Integer
+  ft-eval-prefix (idx) (prefix) =
+    let lc-prefix = ft-lowercase prefix
+    in let entries = hamt-to-list (idx.ii-postings)
+    in ft-prefix-scan entries lc-prefix 0 (list-length entries) hamt-empty
+
+  ft-prefix-scan : List (HamtEntry (List Posting)), Text, Integer, Integer, HamtMap Integer -> List Integer
+  ft-prefix-scan (entries) (prefix) (i) (len) (seen) =
+    if i >= len then ft-set-to-list seen
+    else let e = list-at entries i
+    in if text-starts-with (e.key) prefix then
+      let ids = ft-posting-doc-ids (e.value)
+      in let new-seen = ft-add-to-set ids seen 0 (list-length ids)
+      in ft-prefix-scan entries prefix (i + 1) len new-seen
+    else ft-prefix-scan entries prefix (i + 1) len seen
+
+  ft-add-to-set : List Integer, HamtMap Integer, Integer, Integer -> HamtMap Integer
+  ft-add-to-set (ids) (set) (i) (len) =
+    if i >= len then set
+    else ft-add-to-set ids (hamt-set set (show (list-at ids i)) 1) (i + 1) len
+
+  ft-set-to-list : HamtMap Integer -> List Integer
+  ft-set-to-list (set) =
+    let entries = hamt-to-list set
+    in ft-stl-loop entries 0 (list-length entries) []
+
+  ft-stl-loop : List (HamtEntry Integer), Integer, Integer, List Integer -> List Integer
+  ft-stl-loop (entries) (i) (len) (acc) =
+    if i >= len then acc
+    else ft-stl-loop entries (i + 1) len (list-push acc (ft-text-to-int (list-at entries i).key))
+
+Section: Document Store
+
+  FtStore = record {
+    fts-docs : HamtMap FtDoc,
+    fts-index : InvertedIndex,
+    fts-doc-count : Integer,
+    fts-next-id : Integer
+  }
+
+  ft-store-new : FtStore
+  ft-store-new = FtStore { fts-docs = hamt-empty, fts-index = ii-new, fts-doc-count = 0, fts-next-id = 1 }
+
+  ft-store-add : FtStore, FtDoc, List Text -> FtStore
+  ft-store-add (store) (doc) (index-fields) =
+    let text = ft-concat-fields doc index-fields 0 (list-length index-fields) ""
+    in let idx = ii-index-doc (store.fts-index) (doc.ft-id) text
+    in FtStore {
+      fts-docs = hamt-set (store.fts-docs) (show (doc.ft-id)) doc,
+      fts-index = idx,
+      fts-doc-count = store.fts-doc-count + 1,
+      fts-next-id = if doc.ft-id >= store.fts-next-id then doc.ft-id + 1 else store.fts-next-id
+    }
+
+  ft-concat-fields : FtDoc, List Text, Integer, Integer, Text -> Text
+  ft-concat-fields (doc) (fields) (i) (len) (acc) =
+    if i >= len then acc
+    else let field = list-at fields i
+    in let val = ft-doc-get doc field
+    in let sep = if i > 0 then " " else ""
+    in ft-concat-fields doc fields (i + 1) len (acc & sep & val)
+
+  ft-store-search : FtStore, Text -> List FtDoc
+  ft-store-search (store) (query) =
+    let scores = ii-bm25 (store.fts-index) query
+    in ft-resolve-docs (store.fts-docs) scores 0 (list-length scores) []
+
+  ft-resolve-docs : HamtMap FtDoc, List Bm25Score, Integer, Integer, List FtDoc -> List FtDoc
+  ft-resolve-docs (docs) (scores) (i) (len) (acc) =
+    if i >= len then acc
+    else let s = list-at scores i
+    in let found = hamt-get docs (show (s.bm-doc-id))
+    in when found
+      is Just (doc) -> ft-resolve-docs docs scores (i + 1) len (list-push acc doc)
+      is None -> ft-resolve-docs docs scores (i + 1) len acc
+
+  ft-store-bool-search : FtStore, FtQuery -> List FtDoc
+  ft-store-bool-search (store) (query) =
+    let ids = ft-eval (store.fts-index) query
+    in ft-resolve-by-ids (store.fts-docs) ids 0 (list-length ids) []
+
+  ft-resolve-by-ids : HamtMap FtDoc, List Integer, Integer, Integer, List FtDoc -> List FtDoc
+  ft-resolve-by-ids (docs) (ids) (i) (len) (acc) =
+    if i >= len then acc
+    else let found = hamt-get docs (show (list-at ids i))
+    in when found
+      is Just (doc) -> ft-resolve-by-ids docs ids (i + 1) len (list-push acc doc)
+      is None -> ft-resolve-by-ids docs ids (i + 1) len acc
+
+Section: Statistics
+
+  ft-stats : FtStore -> Text
+  ft-stats (store) =
+    "docs=" & show (store.fts-doc-count)
+    & " terms=" & show (store.fts-index.ii-term-count)
+
+  ii-stats : InvertedIndex -> Text
+  ii-stats (idx) =
+    "docs=" & show (idx.ii-doc-count) & " terms=" & show (idx.ii-term-count)
+
+Page 1

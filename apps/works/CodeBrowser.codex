@@ -1,0 +1,326 @@
+Chapter: CodeBrowser
+  cites Works chapter Annotation
+  cites Works chapter AnnotationStore
+  cites Foreword chapter Trie
+  cites Foreword chapter TextSearch
+  cites Foreword chapter Maybe
+  cites UI chapter Overlay
+  cites UI chapter Widget
+  cites Trust chapter TrustLattice
+
+ Code browser for the dev console. CodeBrowser indexes all function
+ and type definitions by name via a prefix trie, enabling instant
+ search and autocomplete. CodeBrowser loads source from the embedded
+ filesystem on the boot image.
+
+ We say:
+
+Section: Definition Index
+
+  DefLocation = record {
+    chapter : Text,
+    name : Text,
+    line : Integer,
+    kind : DefKind
+  }
+
+  DefKind =
+    | DefFunction
+    | DefType
+    | DefEffect
+    | DefSection
+
+  def-kind-label : DefKind -> Text
+  def-kind-label (k) = when k
+    is DefFunction -> "fn"
+    is DefType -> "type"
+    is DefEffect -> "effect"
+    is DefSection -> "section"
+
+Section: Source Index
+
+  SourceIndex = record {
+    name-trie : Trie,
+    locations : List DefLocation,
+    chapter-names : List Text,
+    chapter-starts : List Integer,
+    source-lines : List Text,
+    source-line-count : Integer,
+    total-defs : Integer
+  }
+
+  empty-source-index : SourceIndex = SourceIndex {
+    name-trie = trie-empty,
+    locations = [],
+    chapter-names = [],
+    chapter-starts = [],
+    source-lines = [],
+    source-line-count = 0,
+    total-defs = 0
+  }
+
+  index-add-def : SourceIndex, DefLocation -> SourceIndex
+  index-add-def (idx) (loc) =
+    let pos = idx.total-defs
+    in SourceIndex {
+      name-trie = trie-insert (idx.name-trie) (loc.name) pos,
+      locations = list-snoc (idx.locations) loc,
+      chapter-names = idx.chapter-names,
+      chapter-starts = idx.chapter-starts,
+      source-lines = idx.source-lines,
+      source-line-count = idx.source-line-count,
+      total-defs = pos + 1
+    }
+
+Section: Chapter Line Ranges
+
+  chapter-start-line : SourceIndex, Integer -> Integer
+  chapter-start-line (idx) (chapter-idx) =
+    if chapter-idx < 0 then 0
+    else if chapter-idx >= list-length (idx.chapter-starts) then 0
+    else list-at (idx.chapter-starts) chapter-idx
+
+  chapter-end-line : SourceIndex, Integer -> Integer
+  chapter-end-line (idx) (chapter-idx) =
+    if chapter-idx + 1 < list-length (idx.chapter-starts)
+    then list-at (idx.chapter-starts) (chapter-idx + 1)
+    else idx.source-line-count
+
+  chapter-count : SourceIndex -> Integer
+  chapter-count (idx) = list-length (idx.chapter-names)
+
+  chapter-line-count : SourceIndex, Integer -> Integer
+  chapter-line-count (idx) (chapter-idx) =
+    chapter-end-line idx chapter-idx - chapter-start-line idx chapter-idx
+
+  chapter-name-at : SourceIndex, Integer -> Text
+  chapter-name-at (idx) (chapter-idx) =
+    if chapter-idx < 0 then ""
+    else if chapter-idx >= list-length (idx.chapter-names) then ""
+    else list-at (idx.chapter-names) chapter-idx
+
+  find-chapter-by-name : SourceIndex, Text -> Integer
+  find-chapter-by-name (idx) (name) =
+    find-chapter-scan (idx.chapter-names) name 0 (list-length (idx.chapter-names))
+
+  find-chapter-scan : List Text, Text, Integer, Integer -> Integer
+  find-chapter-scan (names) (target) (i) (len) =
+    if i >= len then 0 - 1
+    else if list-at names i == target then i
+    else find-chapter-scan names target (i + 1) len
+
+  source-line-at : SourceIndex, Integer -> Text
+  source-line-at (idx) (line) =
+    if line < 0 then ""
+    else if line >= idx.source-line-count then ""
+    else list-at (idx.source-lines) line
+
+Section: Indexing Source Files
+
+  index-source-file : SourceIndex, Text, Text -> SourceIndex
+  index-source-file (idx) (chapter-name) (content) =
+    let lines = text-split content "\n"
+    in index-lines idx chapter-name lines 0 (list-length lines)
+
+  index-lines : SourceIndex, Text, List Text, Integer, Integer -> SourceIndex
+  index-lines (idx) (chapter) (lines) (i) (len) =
+    if i >= len then idx
+    else let line = list-at lines i
+    in let idx2 = try-index-line idx chapter line (i + 1)
+    in index-lines idx2 chapter lines (i + 1) len
+
+  try-index-line : SourceIndex, Text, Text, Integer -> SourceIndex
+  try-index-line (idx) (chapter) (line) (line-num) =
+    if text-starts-with line "  " then
+      if text-contains line " : " then
+        let name = extract-def-name line
+        in if text-length name > 0 then
+          let kind = if text-contains line " -> " then DefFunction else DefType
+          in index-add-def idx (DefLocation { chapter = chapter, name = name, line = line-num, kind = kind })
+        else idx
+      else if text-starts-with line "  " then
+        if text-contains line " =" then
+          let name = extract-def-name line
+          in if text-length name > 0 then
+            if text-contains line " |" then index-add-def idx (DefLocation { chapter = chapter, name = name, line = line-num, kind = DefType })
+            else idx
+          else idx
+        else idx
+      else idx
+    else if text-starts-with line "Section: " then
+      let sec-name = substring line 9 (text-length line - 9)
+      in index-add-def idx (DefLocation { chapter = chapter, name = sec-name, line = line-num, kind = DefSection })
+    else idx
+
+  extract-def-name : Text -> Text
+  extract-def-name (line) =
+    let trimmed = text-trim line
+    in let parts = text-split trimmed " "
+    in if list-length parts >= 1 then list-at parts 0 else ""
+
+  text-trim : Text -> Text
+  text-trim (s) = text-trim-left (text-trim-right s)
+
+  text-trim-left : Text -> Text
+  text-trim-left (s) =
+    let len = text-length s
+    in let start = cb-scan-fwd s 0 len
+    in if start == 0 then s
+    else if start >= len then ""
+    else substring s start (len - start)
+
+  text-trim-right : Text -> Text
+  text-trim-right (s) =
+    let len = text-length s
+    in if len == 0 then s
+    else let stop = cb-scan-back s (len - 1)
+    in if stop < 0 then ""
+    else if stop == len - 1 then s
+    else substring s 0 (stop + 1)
+
+  cb-scan-fwd : Text, Integer, Integer -> Integer
+  cb-scan-fwd (s) (i) (len) =
+    if i >= len then i
+    else if char-code (char-at s i) == 32 then cb-scan-fwd s (i + 1) len
+    else i
+
+  cb-scan-back : Text, Integer -> Integer
+  cb-scan-back (s) (i) =
+    if i < 0 then i
+    else if char-code (char-at s i) == 32 then cb-scan-back s (i - 1)
+    else i
+
+Section: Search
+
+  SearchResult = record {
+    location : DefLocation,
+    context : Text
+  }
+
+  search-by-prefix : SourceIndex, Text -> List SearchResult
+  search-by-prefix (idx) (prefix) =
+    let matches = trie-prefix-keys (idx.name-trie) prefix
+    in resolve-search-results idx matches 0 (list-length matches) []
+
+  search-by-substring : SourceIndex, Text -> List SearchResult
+  search-by-substring (idx) (query) =
+    substring-search-loop idx query 0 (idx.total-defs) []
+
+  substring-search-loop : SourceIndex, Text, Integer, Integer, List SearchResult -> List SearchResult
+  substring-search-loop (idx) (query) (i) (len) (acc) =
+    if i >= len then acc
+    else let loc = list-at (idx.locations) i
+    in if text-contains (loc.name) query then
+      substring-search-loop idx query (i + 1) len (list-push acc (SearchResult { location = loc, context = loc.name }))
+    else substring-search-loop idx query (i + 1) len acc
+
+  resolve-search-results : SourceIndex, List Text, Integer, Integer, List SearchResult -> List SearchResult
+  resolve-search-results (idx) (names) (i) (len) (acc) =
+    if i >= len then acc
+    else let name = list-at names i
+    in let maybe-pos = trie-lookup (idx.name-trie) name
+    in when maybe-pos
+      is Just (pos) ->
+        let loc = list-at (idx.locations) pos
+        in resolve-search-results idx names (i + 1) len (list-push acc (SearchResult { location = loc, context = loc.name }))
+      is None -> resolve-search-results idx names (i + 1) len acc
+
+Section: Result Formatting
+
+  format-search-result : SearchResult -> Text
+  format-search-result (r) =
+    def-kind-label (r.location.kind) & " " & r.location.name
+    & " (" & r.location.chapter & ":" & show (r.location.line) & ")"
+
+  format-search-results : List SearchResult -> Text
+  format-search-results (rs) = format-results-loop rs 0 (list-length rs) ""
+
+  format-results-loop : List SearchResult, Integer, Integer, Text -> Text
+  format-results-loop (rs) (i) (len) (acc) =
+    if i >= len then acc
+    else let sep = if i == 0 then "" else "\n"
+    in format-results-loop rs (i + 1) len (acc & sep & format-search-result (list-at rs i))
+
+Section: Annotation Lookup
+
+ Bridges a CodeBrowser DefLocation to an AnnotationTarget so the
+ Reader can pull annotations attached to the definition currently
+ on screen. Read-only — H1 does not author or filter.
+
+  def-to-target : DefLocation -> AnnotationTarget
+  def-to-target (loc) = make-target (loc.chapter) (loc.name)
+
+  annotations-for-def : AnnotationFact, DefLocation -> List Annotation
+  annotations-for-def (af) (loc) =
+    af-annotations-for af (def-to-target loc)
+
+  annotation-count-for-def : AnnotationFact, DefLocation -> Integer
+  annotation-count-for-def (af) (loc) =
+    list-length (annotations-for-def af loc)
+
+Section: Annotation Bubble
+
+ Builds an Overlay tooltip listing the annotations that target a
+ definition. The bubble is a vertical panel of labels, one per
+ annotation, formatted as "[kind] body  -- author". The caller
+ supplies screen coordinates; trust filtering and per-kind styling
+ are deferred to later H phases.
+
+  format-annotation-line : Annotation -> Text
+  format-annotation-line (a) =
+    "[" & annotation-kind-name (a.kind) & "] " & a.body
+    & "  -- " & a.author
+
+  build-annotation-labels : List Annotation, Integer, Integer, List WidgetNode -> List WidgetNode
+  build-annotation-labels (anns) (i) (n) (acc) =
+    if i >= n then acc
+    else let a = list-at anns i
+    in let label-id = "ann-line-" & show i
+    in let label = widget-label label-id (format-annotation-line a)
+    in build-annotation-labels anns (i + 1) n (list-push acc label)
+
+  annotations-bubble-widget : DefLocation, List Annotation -> WidgetNode
+  annotations-bubble-widget (loc) (anns) =
+    let id = "ann-bubble::" & loc.chapter & "::" & loc.name
+    in let labels = build-annotation-labels anns 0 (list-length anns) []
+    in widget-panel id DirColumn 2 labels
+
+  show-annotations-overlay : OverlayStack, DefLocation, List Annotation, Integer, Integer -> OverlayStack
+  show-annotations-overlay (os) (loc) (anns) (x) (y) =
+    if list-length anns == 0 then os
+    else let id = "ann::" & loc.chapter & "::" & loc.name
+    in let widget = annotations-bubble-widget loc anns
+    in let h = 20 * list-length anns + 8
+    in overlay-push os (overlay-tooltip id x y 320 h widget)
+
+  show-annotations-for-def : OverlayStack, AnnotationFact, DefLocation, Integer, Integer -> OverlayStack
+  show-annotations-for-def (os) (af) (loc) (x) (y) =
+    show-annotations-overlay os loc (annotations-for-def af loc) x y
+
+Section: Annotation Trust Filter
+
+ H3: filter the read path by TrustLattice score. Annotations
+ from authors below the threshold are dropped from the bubble.
+ The default threshold matches TrustLattice's
+ trust-default-threshold (5000); the H6 TrustExplorer surfaces
+ a per-user dial. Verifier hookup (signature check) is H5.
+
+  trusted-annotations-for-def : AnnotationFact, TrustLattice, Integer, DefLocation -> List Annotation
+  trusted-annotations-for-def (af) (lat) (threshold) (loc) =
+    let raw = annotations-for-def af loc
+    in filter-by-trust raw lat threshold 0 (list-length raw) []
+
+  filter-by-trust : List Annotation, TrustLattice, Integer, Integer, Integer, List Annotation -> List Annotation
+  filter-by-trust (anns) (lat) (threshold) (i) (n) (acc) =
+    if i >= n then acc
+    else let a = list-at anns i
+    in let score = lattice-trust-score lat (a.author)
+    in if score >= threshold then
+      filter-by-trust anns lat threshold (i + 1) n (list-push acc a)
+    else filter-by-trust anns lat threshold (i + 1) n acc
+
+  show-trusted-annotations-for-def : OverlayStack, AnnotationFact, TrustLattice, Integer, DefLocation, Integer, Integer -> OverlayStack
+  show-trusted-annotations-for-def (os) (af) (lat) (threshold) (loc) (x) (y) =
+    show-annotations-overlay os loc (trusted-annotations-for-def af lat threshold loc) x y
+
+Page 1

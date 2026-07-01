@@ -1,0 +1,169 @@
+Chapter: ElfPlug
+  cites Codex chapter General
+  cites Codex chapter Text
+  cites Codex chapter Characters
+  cites Codex chapter Lists
+  cites Net chapter NetIO
+  cites Net chapter NetworkStack
+  cites Net chapter TcpTransport
+  cites Kernel chapter Ne2k
+  cites Foreword chapter CCE
+
+ Plug entry. Connects to host TCP server on port 9100,
+ receives x86 output (machine code + metadata), builds an
+ ELF binary with DWARF debug info, sends it back.
+
+Section: Network Config
+
+  local-mac : List Integer = [82, 84, 0, 18, 52, 86]
+  local-ip : List Integer = [10, 0, 2, 15]
+  gateway-ip : List Integer = [10, 0, 2, 2]
+  host-ip : List Integer = [127, 0, 0, 1]
+
+Section: Streaming Send
+
+  spin-wait : Integer, Integer -> Integer
+  spin-wait (i) (n) =
+   if i >= n then 0
+   else spin-wait (i + 1) n
+
+  send-bytes-loop : TcpTransportState, List Integer, Integer, Integer -> TcpTransportState
+  send-bytes-loop (ts) (bs) (off) (len) =
+   if off >= len then ts
+   else let stop = if off + 1400 > len then len else off + 1400
+   in let chunk = slice-bytes bs off stop
+   in let r = net-send (ts.session) chunk
+   in let ts1 = TcpTransportState { session = r.session, recv-buf = ts.recv-buf, messages-sent = ts.messages-sent, messages-received = ts.messages-received }
+   in let ts2 = flush-transport-outbox ts1
+   in let w = spin-wait 0 10000000
+   in send-bytes-loop ts2 bs stop len
+
+  send-bytes : TcpTransportState, List Integer -> TcpTransportState
+  send-bytes (ts) (bs) = send-bytes-loop ts bs 0 (list-length bs)
+
+Section: Drain
+
+  drain-wait : TcpTransportState, Integer -> Integer
+  drain-wait (ts) (tries) =
+   if tries > 5000000 then 0
+   else let frame = ne2k-recv-frame
+   in if list-length frame == 0 then drain-wait ts (tries + 1)
+   else 0
+
+Section: Function Table from Buffer
+
+  parse-func-table-from-buf : Integer, Integer, Integer -> FuncTable
+  parse-func-table-from-buf (buf) (off) (count) =
+   parse-func-table-buf-loop buf off count 0 [] []
+
+  parse-func-table-buf-loop : Integer, Integer, Integer, Integer, List Text, List Integer -> FuncTable
+  parse-func-table-buf-loop (buf) (off) (count) (i) (names) (offsets) =
+   if i >= count then FuncTable { names = names, offsets = offsets }
+   else let len-bytes = __buf-read-bytes buf off 2
+   in let name-len = list-at len-bytes 0 + list-at len-bytes 1 * 256
+   in let name-bytes = __buf-read-bytes buf (off + 2) name-len
+   in let name = bytes-to-text-range name-bytes 0 name-len
+   in let off-bytes = __buf-read-bytes buf (off + 2 + name-len) 4
+   in let func-off = list-at off-bytes 0 + list-at off-bytes 1 * 256 + list-at off-bytes 2 * 65536 + list-at off-bytes 3 * 16777216
+   in parse-func-table-buf-loop buf (off + 2 + name-len + 4) count (i + 1) (list-push names name) (list-push offsets func-off)
+
+Section: Buffer Copy
+
+  buf-copy-chunk-size : Integer = 4096
+
+  buf-copy-chunked : Integer, Integer, Integer, Integer, Integer -> Integer
+  buf-copy-chunked (dst) (dst-off) (src) (src-off) (remaining) =
+   if remaining <= 0 then 0
+   else let chunk = if remaining > buf-copy-chunk-size then buf-copy-chunk-size else remaining
+   in let hp = __heap-save
+   in let bs = __buf-read-bytes src src-off chunk
+   in let w = __buf-write-bytes dst dst-off bs
+   in let restored = __heap-restore hp
+   in buf-copy-chunked dst (dst-off + chunk) src (src-off + chunk) (remaining - chunk)
+
+Section: ELF Builder (buffer-based)
+
+  build-elf-from-payload : Integer, Integer, Integer, Integer, Integer, List Text, List Integer, List Integer -> List Integer
+  build-elf-from-payload (payload-buf) (code-len) (data-len) (code-off) (data-off) (func-names) (func-offsets) (cce-table) =
+   let load-addr = bare-metal-load-addr
+   in let headers-end = elf32-header-size + elf32-phdr-size * 2
+   in let note-offset = align-up headers-end 4
+   in let text-start = align-up (note-offset + 20) 16
+   in let text-end = text-start + code-len
+   in let rodata-start = align-up text-end 8
+   in let loadable-end = rodata-start + data-len
+   in let entry = load-addr + 32
+   in let seg-filesz = loadable-end - text-start
+   in let seg-memsz = seg-filesz + bare-metal-ram-size - bare-metal-heap-base
+   in let debug-info-off = align-up loadable-end 8
+   in let debug-info-len = dwarf-info-length func-names func-offsets
+   in let debug-abbrev-off = debug-info-off + debug-info-len
+   in let debug-abbrev-len = list-length dwarf-abbrev-bytes
+   in let shstrtab = build-shstrtab
+   in let shstrtab-off = debug-abbrev-off + debug-abbrev-len
+   in let shstrtab-len = list-length (shstrtab.bytes)
+   in let shoff = align-up (shstrtab-off + shstrtab-len) 8
+   in let shent-size = 40
+   in let sh-num = 6
+   in let data-vaddr = load-addr + (rodata-start - text-start)
+   in let file-size = shoff + shent-size * sh-num
+   in let elf-buf = __heap-save
+   in let ha = __heap-advance file-size
+   in let hdr = elf32-header-bytes-shdrs entry elf32-header-size 2 shoff sh-num 5
+   in let bw0 = __buf-write-bytes elf-buf 0 hdr
+   in let ph1 = phdr-32 pt-load text-start load-addr load-addr seg-filesz seg-memsz pf-rwx elf-page-size
+   in let bw1 = __buf-write-bytes elf-buf elf32-header-size ph1
+   in let ph2 = phdr-32 pt-note note-offset 0 0 20 20 pf-r 4
+   in let bw2 = __buf-write-bytes elf-buf (elf32-header-size + elf32-phdr-size) ph2
+   in let note = pvh-note entry
+   in let bw3 = __buf-write-bytes elf-buf note-offset note
+   in let bw4 = buf-copy-chunked elf-buf text-start payload-buf code-off code-len
+   in let bw5 = buf-copy-chunked elf-buf rodata-start payload-buf data-off data-len
+   in let bw6 = dwarf-info-write elf-buf debug-info-off func-names func-offsets load-addr code-len cce-table
+   in let bw7 = __buf-write-bytes elf-buf debug-abbrev-off dwarf-abbrev-bytes
+   in let bw8 = __buf-write-bytes elf-buf shstrtab-off (shstrtab.bytes)
+   in let sh-null = elf32-shent 0 0 0 0 0 0 0 0 0 0
+   in let sh-text = elf32-shent (shstrtab.text-off) 1 6 load-addr text-start code-len 0 0 16 0
+   in let sh-rodata = elf32-shent (shstrtab.rodata-off) 1 2 data-vaddr rodata-start data-len 0 0 8 0
+   in let sh-di = elf32-shent (shstrtab.debug-info-off) 1 0 0 debug-info-off debug-info-len 0 0 1 0
+   in let sh-da = elf32-shent (shstrtab.debug-abbrev-off) 1 0 0 debug-abbrev-off debug-abbrev-len 0 0 1 0
+   in let sh-ss = elf32-shent (shstrtab.shstrtab-off) 3 0 0 shstrtab-off shstrtab-len 0 0 1 0
+   in let bw9 = __buf-write-bytes elf-buf shoff sh-null
+   in let bwa = __buf-write-bytes elf-buf (shoff + shent-size) sh-text
+   in let bwb = __buf-write-bytes elf-buf (shoff + shent-size * 2) sh-rodata
+   in let bwc = __buf-write-bytes elf-buf (shoff + shent-size * 3) sh-di
+   in let bwd = __buf-write-bytes elf-buf (shoff + shent-size * 4) sh-da
+   in let bwe = __buf-write-bytes elf-buf (shoff + shent-size * 5) sh-ss
+   in __buf-read-bytes elf-buf 0 file-size
+
+Section: Body
+
+  opening : [Console, FileSystem] Nothing = act
+   let cce-table = build-cce-to-ascii-table cce-to-unicode-table
+   in let sess = net-session-new local-mac local-ip gateway-ip 49152 9100 host-ip 1000
+   in let ts = transport-new sess
+   in let ts1 = net-io-connect ts
+   in let recv = net-io-recv-loop ts1 0
+   in if recv.has-message then
+    let payload = recv.body
+    in let payload-len = list-length payload
+    in let payload-buf = __heap-save
+    in let pa = __heap-advance payload-len
+    in let pw = __buf-write-bytes payload-buf 0 payload
+    in let hp = __heap-save
+    in let hdr-bytes = __buf-read-bytes payload-buf 0 12
+    in let code-len = read-i32-le hdr-bytes 0
+    in let data-len = read-i32-le hdr-bytes 4
+    in let func-count = read-i32-le hdr-bytes 8
+    in let hr = __heap-restore hp
+    in let code-off = 12
+    in let data-off = code-off + code-len
+    in let func-off = data-off + data-len
+    in let funcs = parse-func-table-from-buf payload-buf func-off func-count
+    in let elf-bytes = build-elf-from-payload payload-buf code-len data-len code-off data-off (funcs.names) (funcs.offsets) cce-table
+    in let ts5 = send-bytes (recv.transport) elf-bytes
+    in let ts6 = net-io-close ts5
+    in let drained = drain-wait ts6 0
+    in act print-line-uni ("OK elf=" & show (list-length elf-bytes + drained - drained) & " code=" & show code-len & " data=" & show data-len & " funcs=" & show func-count) end
+   else act print-line-uni "FAIL" end
+  end

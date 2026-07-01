@@ -1,0 +1,231 @@
+Chapter: FontAiTrainer
+  cites Gpu chapter GpuEffect
+  cites Foreword chapter Console
+  cites Foreword chapter List
+
+ MLP training engine for font generation. The MLP maps glyph
+ features (102 inputs: one-hot char + weight + italic + class)
+ to contour coordinates (119 outputs: advance + bbox + points).
+ Training runs on the GPU via kernel launches compiled from
+ MlpKernels.codex through the PTX plug.
+
+Section: Architecture
+
+  mlp-input-dim : Integer
+  mlp-input-dim = 102
+
+  mlp-hidden1 : Integer
+  mlp-hidden1 = 256
+
+  mlp-hidden2 : Integer
+  mlp-hidden2 = 128
+
+  mlp-output-dim : Integer
+  mlp-output-dim = 119
+
+  mlp-w1-size : Integer
+  mlp-w1-size = mlp-hidden1 * mlp-input-dim
+
+  mlp-w2-size : Integer
+  mlp-w2-size = mlp-hidden2 * mlp-hidden1
+
+  mlp-w3-size : Integer
+  mlp-w3-size = mlp-output-dim * mlp-hidden2
+
+  mlp-total-params : Integer
+  mlp-total-params = mlp-w1-size + mlp-hidden1 + mlp-w2-size + mlp-hidden2 + mlp-w3-size + mlp-output-dim
+
+Section: GPU Buffer Layout
+
+ All weight and activation buffers live on the GPU. Each buffer
+ is an array of 64-bit integers (s64 in PTX). The training loop
+ copies input batches to the GPU, launches forward and backward
+ kernels, then runs the Adam update kernel.
+
+  GpuMlp = record {
+   gm-w1 : Integer,
+   gm-b1 : Integer,
+   gm-w2 : Integer,
+   gm-b2 : Integer,
+   gm-w3 : Integer,
+   gm-b3 : Integer,
+   gm-h1 : Integer,
+   gm-h2 : Integer,
+   gm-out : Integer,
+   gm-input : Integer,
+   gm-target : Integer,
+   gm-grad-out : Integer,
+   gm-grad-h2 : Integer,
+   gm-grad-h1 : Integer,
+   gm-gw1 : Integer,
+   gm-gb1 : Integer,
+   gm-gw2 : Integer,
+   gm-gb2 : Integer,
+   gm-gw3 : Integer,
+   gm-gb3 : Integer,
+   gm-mw1 : Integer,
+   gm-vw1 : Integer,
+   gm-mb1 : Integer,
+   gm-vb1 : Integer,
+   gm-mw2 : Integer,
+   gm-vw2 : Integer,
+   gm-mb2 : Integer,
+   gm-vb2 : Integer,
+   gm-mw3 : Integer,
+   gm-vw3 : Integer,
+   gm-mb3 : Integer,
+   gm-vb3 : Integer
+  }
+
+  gpu-mlp-alloc : [Gpu] GpuMlp
+  gpu-mlp-alloc = act
+   w1 <- gpu-alloc mlp-w1-size
+   b1 <- gpu-alloc mlp-hidden1
+   w2 <- gpu-alloc mlp-w2-size
+   b2 <- gpu-alloc mlp-hidden2
+   w3 <- gpu-alloc mlp-w3-size
+   b3 <- gpu-alloc mlp-output-dim
+   h1 <- gpu-alloc mlp-hidden1
+   h2 <- gpu-alloc mlp-hidden2
+   out <- gpu-alloc mlp-output-dim
+   inp <- gpu-alloc mlp-input-dim
+   tgt <- gpu-alloc mlp-output-dim
+   go <- gpu-alloc mlp-output-dim
+   gh2 <- gpu-alloc mlp-hidden2
+   gh1 <- gpu-alloc mlp-hidden1
+   gw1 <- gpu-alloc mlp-w1-size
+   gb1 <- gpu-alloc mlp-hidden1
+   gw2 <- gpu-alloc mlp-w2-size
+   gb2 <- gpu-alloc mlp-hidden2
+   gw3 <- gpu-alloc mlp-w3-size
+   gb3 <- gpu-alloc mlp-output-dim
+   mw1 <- gpu-alloc mlp-w1-size
+   vw1 <- gpu-alloc mlp-w1-size
+   mb1 <- gpu-alloc mlp-hidden1
+   vb1 <- gpu-alloc mlp-hidden1
+   mw2 <- gpu-alloc mlp-w2-size
+   vw2 <- gpu-alloc mlp-w2-size
+   mb2 <- gpu-alloc mlp-hidden2
+   vb2 <- gpu-alloc mlp-hidden2
+   mw3 <- gpu-alloc mlp-w3-size
+   vw3 <- gpu-alloc mlp-w3-size
+   mb3 <- gpu-alloc mlp-output-dim
+   vb3 <- gpu-alloc mlp-output-dim
+   GpuMlp {
+    gm-w1 = w1, gm-b1 = b1, gm-w2 = w2, gm-b2 = b2, gm-w3 = w3, gm-b3 = b3,
+    gm-h1 = h1, gm-h2 = h2, gm-out = out, gm-input = inp, gm-target = tgt,
+    gm-grad-out = go, gm-grad-h2 = gh2, gm-grad-h1 = gh1,
+    gm-gw1 = gw1, gm-gb1 = gb1, gm-gw2 = gw2, gm-gb2 = gb2, gm-gw3 = gw3, gm-gb3 = gb3,
+    gm-mw1 = mw1, gm-vw1 = vw1, gm-mb1 = mb1, gm-vb1 = vb1,
+    gm-mw2 = mw2, gm-vw2 = vw2, gm-mb2 = mb2, gm-vb2 = vb2,
+    gm-mw3 = mw3, gm-vw3 = vw3, gm-mb3 = mb3, gm-vb3 = vb3
+   }
+  end
+
+Section: Training Step
+
+ One training step: copy input and target to GPU, run forward
+ pass, compute loss gradient, run backward pass, update weights.
+
+  gpu-mlp-forward : GpuMlp -> [Gpu] Integer
+  gpu-mlp-forward (m) = act
+   gpu-launch "kernel_matmul_relu" 1 mlp-hidden1 [m.gm-w1, m.gm-input, m.gm-b1, m.gm-h1, mlp-hidden1, mlp-input-dim]
+   gpu-launch "kernel_matmul_relu" 1 mlp-hidden2 [m.gm-w2, m.gm-h1, m.gm-b2, m.gm-h2, mlp-hidden2, mlp-hidden1]
+   gpu-launch "kernel_matmul" 1 mlp-output-dim [m.gm-w3, m.gm-h2, m.gm-b3, m.gm-out, mlp-output-dim, mlp-hidden2]
+   gpu-sync
+   0
+  end
+
+  gpu-mlp-backward : GpuMlp, Integer -> [Gpu] Integer
+  gpu-mlp-backward (m) (batch-size) = act
+   gpu-launch "kernel_mse_grad" 1 mlp-output-dim [m.gm-out, m.gm-target, m.gm-grad-out, mlp-output-dim]
+   gpu-launch "kernel_matmul_transpose" 1 mlp-hidden2 [m.gm-w3, m.gm-grad-out, m.gm-grad-h2, mlp-output-dim, mlp-hidden2]
+   gpu-launch "kernel_relu_grad" 1 mlp-hidden2 [m.gm-grad-h2, m.gm-h2, m.gm-grad-h2, mlp-hidden2]
+   gpu-launch "kernel_matmul_transpose" 1 mlp-hidden1 [m.gm-w2, m.gm-grad-h2, m.gm-grad-h1, mlp-hidden2, mlp-hidden1]
+   gpu-launch "kernel_relu_grad" 1 mlp-hidden1 [m.gm-grad-h1, m.gm-h1, m.gm-grad-h1, mlp-hidden1]
+   gpu-launch "kernel_outer_product_add" 1 (mlp-output-dim * mlp-hidden2) [m.gm-gw3, m.gm-grad-out, m.gm-h2, mlp-output-dim, mlp-hidden2]
+   gpu-launch "kernel_bias_grad_add" 1 mlp-output-dim [m.gm-gb3, m.gm-grad-out, mlp-output-dim]
+   gpu-launch "kernel_outer_product_add" 1 (mlp-hidden2 * mlp-hidden1) [m.gm-gw2, m.gm-grad-h2, m.gm-h1, mlp-hidden2, mlp-hidden1]
+   gpu-launch "kernel_bias_grad_add" 1 mlp-hidden2 [m.gm-gb2, m.gm-grad-h2, mlp-hidden2]
+   gpu-launch "kernel_outer_product_add" 1 (mlp-hidden1 * mlp-input-dim) [m.gm-gw1, m.gm-grad-h1, m.gm-input, mlp-hidden1, mlp-input-dim]
+   gpu-launch "kernel_bias_grad_add" 1 mlp-hidden1 [m.gm-gb1, m.gm-grad-h1, mlp-hidden1]
+   gpu-sync
+   0
+  end
+
+  gpu-mlp-adam-step : GpuMlp, Integer -> [Gpu] Integer
+  gpu-mlp-adam-step (m) (batch-size) = act
+   gpu-launch "kernel_adam_update" 1 mlp-w1-size [m.gm-w1, m.gm-gw1, m.gm-mw1, m.gm-vw1, mlp-w1-size, batch-size]
+   gpu-launch "kernel_adam_update" 1 mlp-hidden1 [m.gm-b1, m.gm-gb1, m.gm-mb1, m.gm-vb1, mlp-hidden1, batch-size]
+   gpu-launch "kernel_adam_update" 1 mlp-w2-size [m.gm-w2, m.gm-gw2, m.gm-mw2, m.gm-vw2, mlp-w2-size, batch-size]
+   gpu-launch "kernel_adam_update" 1 mlp-hidden2 [m.gm-b2, m.gm-gb2, m.gm-mb2, m.gm-vb2, mlp-hidden2, batch-size]
+   gpu-launch "kernel_adam_update" 1 mlp-w3-size [m.gm-w3, m.gm-gw3, m.gm-mw3, m.gm-vw3, mlp-w3-size, batch-size]
+   gpu-launch "kernel_adam_update" 1 mlp-output-dim [m.gm-b3, m.gm-gb3, m.gm-mb3, m.gm-vb3, mlp-output-dim, batch-size]
+   gpu-sync
+   0
+  end
+
+  gpu-mlp-zero-grads : GpuMlp -> [Gpu] Integer
+  gpu-mlp-zero-grads (m) = act
+   gpu-launch "kernel_zero_fill" 1 mlp-w1-size [m.gm-gw1, mlp-w1-size]
+   gpu-launch "kernel_zero_fill" 1 mlp-hidden1 [m.gm-gb1, mlp-hidden1]
+   gpu-launch "kernel_zero_fill" 1 mlp-w2-size [m.gm-gw2, mlp-w2-size]
+   gpu-launch "kernel_zero_fill" 1 mlp-hidden2 [m.gm-gb2, mlp-hidden2]
+   gpu-launch "kernel_zero_fill" 1 mlp-w3-size [m.gm-gw3, mlp-w3-size]
+   gpu-launch "kernel_zero_fill" 1 mlp-output-dim [m.gm-gb3, mlp-output-dim]
+   gpu-sync
+   0
+  end
+
+Section: Training Loop
+
+  gpu-mlp-train-sample : GpuMlp, List Integer, List Integer, Integer -> [Gpu] Integer
+  gpu-mlp-train-sample (m) (input) (target) (batch-size) = act
+   gpu-copy-to (m.gm-input) input
+   gpu-copy-to (m.gm-target) target
+   gpu-mlp-forward m
+   gpu-mlp-backward m batch-size
+   0
+  end
+
+  gpu-mlp-train-epoch : GpuMlp, List (List Integer), List (List Integer), Integer, Integer, Integer -> [Gpu] Integer
+  gpu-mlp-train-epoch (m) (inputs) (targets) (n) (batch-size) (i) =
+   if i >= n then act
+    gpu-mlp-adam-step m batch-size
+    gpu-mlp-zero-grads m
+    gpu-sync
+    0
+   end
+   else act
+    sample-done <- gpu-mlp-train-sample m (list-at inputs i) (list-at targets i) batch-size
+    let next-i = i + 1
+    in let at-batch-end = next-i - (next-i / batch-size) * batch-size
+    in if at-batch-end == 0 then act
+      gpu-mlp-adam-step m batch-size
+      gpu-mlp-zero-grads m
+      gpu-mlp-train-epoch m inputs targets n batch-size next-i
+     end
+    else gpu-mlp-train-epoch m inputs targets n batch-size next-i
+   end
+
+Section: Feature Building
+
+ Build the 102-element input vector for a glyph. One-hot encoding
+ for the character (95 slots for ASCII 32-126), plus weight,
+ italic flag, and 5 character class features.
+
+  build-glyph-input : Integer, Integer, Integer -> List Integer
+  build-glyph-input (codepoint) (weight) (italic) =
+   let gi = codepoint - 32
+   in let one-hot = build-one-hot 95 gi 0 []
+   in let fu = if codepoint >= 65 then if codepoint <= 90 then 1 else 0 else 0
+   in let fl = if codepoint >= 97 then if codepoint <= 122 then 1 else 0 else 0
+   in let fd = if codepoint >= 48 then if codepoint <= 57 then 1 else 0 else 0
+   in let fp = if fu == 0 then if fl == 0 then if fd == 0 then if codepoint /= 32 then 1 else 0 else 0 else 0 else 0
+   in let fde = if codepoint == 103 then 1 else if codepoint == 106 then 1 else if codepoint == 112 then 1 else if codepoint == 113 then 1 else if codepoint == 121 then 1 else 0
+   in one-hot & [weight, italic, fu, fl, fd, fp, fde]
+
+  build-one-hot : Integer, Integer, Integer, List Integer -> List Integer
+  build-one-hot (n) (idx) (i) (acc) =
+   if i >= n then acc
+   else build-one-hot n idx (i + 1) (list-push acc (if i == idx then 1000 else 0))

@@ -1,0 +1,88 @@
+Chapter: SimDb
+  cites Data chapter Catalog
+  cites Data chapter Schema
+  cites Data chapter Row
+  cites Foreword chapter Maybe
+
+ Test results database. Stores simulation results in a Codex DB
+ table. Uses direct catalog operations (insert, scan) without the
+ RelAlgebra/Executor query pipeline.
+
+ We say:
+
+Section: Schema
+
+  sim-results-table : TableDef
+  sim-results-table = table-def-with-pk "sim_results" [col-def-not-null "run_id" ColInteger, col-def-not-null "config" ColText, col-def-not-null "games" ColInteger, col-def-not-null "p0_wins" ColInteger, col-def-not-null "p1_wins" ColInteger, col-def-not-null "draws" ColInteger, col-def-not-null "fp_pct" ColInteger, col-def-not-null "avg_turns" ColInteger, col-def-not-null "screw" ColInteger, col-def-not-null "flood" ColInteger, col-def "fairness" ColText, col-def "deck_type" ColText, col-def "turn_cap" ColInteger] ["run_id"]
+
+Section: Database Init
+
+  sim-db-new : Catalog
+  sim-db-new =
+    let cat0 = catalog-new
+    in let cr = catalog-create-table cat0 sim-results-table
+    in cr.cat
+
+Section: Insert Result
+
+  SimInsert = record {
+    run-id : Integer,
+    config-name : Text,
+    games : Integer,
+    p0-wins : Integer,
+    p1-wins : Integer,
+    draws : Integer,
+    fp-pct : Integer,
+    avg-turns : Integer,
+    screw : Integer,
+    flood : Integer,
+    fairness-label : Text,
+    deck-type : Text,
+    turn-cap : Integer
+  }
+
+  insert-sim-result : Catalog, SimInsert -> Catalog
+  insert-sim-result (cat) (si) =
+    let s = table-schema sim-results-table
+    in let row = row-new s [ValInteger (si.run-id), ValText (si.config-name), ValInteger (si.games), ValInteger (si.p0-wins), ValInteger (si.p1-wins), ValInteger (si.draws), ValInteger (si.fp-pct), ValInteger (si.avg-turns), ValInteger (si.screw), ValInteger (si.flood), ValText (si.fairness-label), ValText (si.deck-type), ValInteger (si.turn-cap)]
+    in let r = catalog-insert-row cat "sim_results" row
+    in r.cir-cat
+
+  make-sim-insert : Integer, Text, SimAggregate, Text, RuleSet -> SimInsert
+  make-sim-insert (run-id) (config-name) (agg) (deck-type) (rules) =
+    let n = if agg.total-games == 0 then 1 else agg.total-games
+    in SimInsert { run-id = run-id, config-name = config-name, games = agg.total-games, p0-wins = agg.p0-wins, p1-wins = agg.p1-wins, draws = agg.draws, fp-pct = agg.first-player-wins * 100 / n, avg-turns = agg.total-turns / n, screw = agg.total-screw, flood = agg.total-flood, fairness-label = fairness-name (rules.fairness), deck-type = deck-type, turn-cap = rules.turn-cap }
+
+Section: Scan Results
+
+  scan-all-results : Catalog -> List RowData
+  scan-all-results (cat) =
+    let sr = catalog-scan cat "sim_results"
+    in sr.rows
+
+  format-all-results : Catalog -> Text
+  format-all-results (cat) =
+    let rows = scan-all-results cat
+    in let count = list-length rows
+    in "sim_results (" & show count & " rows):\n" & format-db-rows rows 0 count ""
+
+  format-db-rows : List RowData, Integer, Integer, Text -> Text
+  format-db-rows (rows) (i) (len) (acc) =
+    if i >= len then acc
+    else let row = list-at rows i
+    in let line = "  " & format-db-vals (row.values) 0 (list-length (row.values)) ""
+    in format-db-rows rows (i + 1) len (acc & line & "\n")
+
+  format-db-vals : List ColumnValue, Integer, Integer, Text -> Text
+  format-db-vals (vals) (i) (len) (acc) =
+    if i >= len then acc
+    else let v = list-at vals i
+    in let sep = if i > 0 then " | " else ""
+    in let t = when v
+      is ValInteger (n) -> show n
+      is ValText (s) -> s
+      is ValBoolean (b) -> if b then "T" else "F"
+      is ValNull -> "-"
+    in format-db-vals vals (i + 1) len (acc & sep & t)
+
+Page 1

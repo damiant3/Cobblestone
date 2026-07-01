@@ -1,0 +1,61 @@
+Chapter: PostSubmitScanScript
+
+  cites Foreword chapter Console
+  cites Foreword chapter Maybe
+  cites Shell chapter ShellTypes
+  cites Shell chapter ShellBuild
+  cites Shell chapter PowerShellEmit
+
+ Generates post-submit-scan.ps1 from the Shell DSL.
+ Post-submit hook: scan source tree and record facts after p4 submit.
+ Compile with: -Survey "lower-mul:500000"
+
+ We say:
+
+Section: Parameters
+
+  pss-params : List ShellParam = [sh-param-default "Cl" SptInt (SeInt 0), sh-switch "Submit"]
+
+Section: S01 -- Preamble
+
+  s01 : List ShellCmd = [ScSetStrictMode, ScSetErrorStop, ScBlank, ScAssign "Repo" (SeRaw "(Resolve-Path (Join-Path $PSScriptRoot '..')).Path"), ScAssign "OutDir" (SeRaw "Join-Path $Repo 'build' 'output'"), ScAssign "ManifestPath" (SeRaw "Join-Path $OutDir 'source-facts.manifest'"), ScBlank, ScEcho (SeLit "=== Post-Submit Source Scan ===")]
+
+Section: S02 -- Show CL
+
+  s02 : List ShellCmd = [ScIf (SeIntGt (SeVar "Cl") (SeInt 0)) [ScEcho (SeRaw "\"  CL: $Cl\"")] []]
+
+Section: S03 -- Run scan
+
+  s03 : List ShellCmd = [ScAssign "scanStart" (SeRaw "Get-Date"), ScRaw "& (Join-Path $PSScriptRoot 'scan-source-facts.ps1') -Root $Repo -OutFile $ManifestPath", ScAssign "scanEnd" (SeRaw "Get-Date"), ScAssign "elapsed" (SeRaw "($scanEnd - $scanStart).TotalSeconds")]
+
+Section: S04 -- Report
+
+  s04 : List ShellCmd = [ScAssign "lineCount" (SeRaw "(Get-Content $ManifestPath | Measure-Object -Line).Lines"), ScAssign "hash" (SeRaw "(Get-FileHash -Algorithm SHA256 $ManifestPath).Hash.ToLower()"), ScBlank, ScEcho (SeRaw "\"  Manifest: $ManifestPath\""), ScEcho (SeRaw "\"  Files: $lineCount\""), ScEcho (SeRaw "\"  SHA-256: $hash\""), ScEcho (SeRaw "\"  Elapsed: $([math]::Round($elapsed, 1))s\"")]
+
+Section: S05 -- Tag CL
+
+  s05 : List ShellCmd =
+    let tag-body = [ScAssign "tagFile" (SeRaw "Join-Path $OutDir \"source-facts-cl$Cl.manifest\""), ScCopy (SeVar "ManifestPath") (SeVar "tagFile"), ScEcho (SeRaw "\"  Tagged: $tagFile\"")]
+    in [ScIf (SeIntGt (SeVar "Cl") (SeInt 0)) tag-body []]
+
+Section: S06 -- Submit to depot
+
+  s06 : List ShellCmd =
+    let submit-body = [ScAssign "depotManifest" (SeRaw "Join-Path $Repo 'seed' 'source-facts.manifest'"), ScCopy (SeVar "ManifestPath") (SeVar "depotManifest"), ScAssign "opened" (SeRaw "& p4 opened $depotManifest 2>&1"), ScIf (SeMatch (SeVar "opened") "not opened") [ScRaw "& p4 edit $depotManifest 2>&1 | Out-Null"] [], ScEcho (SeLit "  Depot: seed/source-facts.manifest ready for submit")]
+    in [ScIf (SeVar "Submit") submit-body []]
+
+Section: S07 -- Done
+
+  s07 : List ShellCmd = [ScEcho (SeLit "=== Scan Complete ===")]
+
+Section: Assembly
+
+  pss-body : List ShellCmd = [ScSequence s01, ScBlank, ScSequence s02, ScBlank, ScSequence s03, ScBlank, ScSequence s04, ScBlank, ScSequence s05, ScBlank, ScSequence s06, ScBlank, ScSequence s07]
+
+  pss-script : ShellScript = sh-script "post-submit-scan" "Post-submit hook: scan source tree and record facts" pss-params pss-body
+
+  opening : [Console] Nothing = act
+    print-line-uni (emit-powershell pss-script)
+  end
+
+Page 1

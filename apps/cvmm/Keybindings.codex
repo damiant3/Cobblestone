@@ -1,0 +1,181 @@
+Chapter: Keybindings
+  cites Cvmm chapter CvmmTypes
+  cites Cvmm chapter Command
+  cites Foreword chapter Maybe
+
+ Keyboard shortcut registry. Maps key combinations to commands.
+ Shortcuts are scoped: global shortcuts fire everywhere, view
+ shortcuts fire only when a specific view is active, and panel
+ shortcuts fire within a focused panel. Modifier keys (ctrl, alt,
+ shift, meta) compose with a base key to form a chord.
+
+Section: Key Chord
+
+  Modifier =
+    | ModCtrl
+    | ModAlt
+    | ModShift
+    | ModMeta
+
+  modifier-label : Modifier -> Text
+  modifier-label (m) = when m
+    is ModCtrl -> "Ctrl"
+    is ModAlt -> "Alt"
+    is ModShift -> "Shift"
+    is ModMeta -> "Meta"
+
+  KeyChord = record {
+    kc-key : Text,
+    kc-ctrl : Boolean,
+    kc-alt : Boolean,
+    kc-shift : Boolean,
+    kc-meta : Boolean
+  }
+
+  key-chord : Text -> KeyChord
+  key-chord (k) = KeyChord { kc-key = k, kc-ctrl = False, kc-alt = False, kc-shift = False, kc-meta = False }
+
+  ctrl-key : Text -> KeyChord
+  ctrl-key (k) = KeyChord { kc-key = k, kc-ctrl = True, kc-alt = False, kc-shift = False, kc-meta = False }
+
+  alt-key : Text -> KeyChord
+  alt-key (k) = KeyChord { kc-key = k, kc-ctrl = False, kc-alt = True, kc-shift = False, kc-meta = False }
+
+  ctrl-shift-key : Text -> KeyChord
+  ctrl-shift-key (k) = KeyChord { kc-key = k, kc-ctrl = True, kc-alt = False, kc-shift = True, kc-meta = False }
+
+  format-chord : KeyChord -> Text
+  format-chord (kc) =
+    let parts = chord-mod-parts kc
+    in parts & kc.kc-key
+
+  chord-mod-parts : KeyChord -> Text
+  chord-mod-parts (kc) =
+    let ctrl = if kc.kc-ctrl then "Ctrl+" else ""
+    in let alt = if kc.kc-alt then "Alt+" else ""
+    in let shift = if kc.kc-shift then "Shift+" else ""
+    in let meta = if kc.kc-meta then "Meta+" else ""
+    in ctrl & alt & shift & meta
+
+  chords-match : KeyChord, KeyChord -> Boolean
+  chords-match (a) (b) =
+    if a.kc-key /= b.kc-key then False
+    else if a.kc-ctrl /= b.kc-ctrl then False
+    else if a.kc-alt /= b.kc-alt then False
+    else if a.kc-shift /= b.kc-shift then False
+    else a.kc-meta == b.kc-meta
+
+Section: Shortcut Scope
+
+  ShortcutScope =
+    | ScopeGlobal
+    | ScopeView (Text)
+    | ScopePanel (Text)
+
+  scope-label : ShortcutScope -> Text
+  scope-label (s) = when s
+    is ScopeGlobal -> "global"
+    is ScopeView (v) -> "view:" & v
+    is ScopePanel (p) -> "panel:" & p
+
+Section: Shortcut
+
+  Shortcut = record {
+    sc-id : Text,
+    sc-chord : KeyChord,
+    sc-command : CommandKind,
+    sc-scope : ShortcutScope,
+    sc-description : Text,
+    sc-enabled : Boolean
+  }
+
+  shortcut-new : Text, KeyChord, CommandKind, ShortcutScope, Text -> Shortcut
+  shortcut-new (id) (chord) (cmd) (scope) (desc) = Shortcut {
+    sc-id = id,
+    sc-chord = chord,
+    sc-command = cmd,
+    sc-scope = scope,
+    sc-description = desc,
+    sc-enabled = True
+  }
+
+Section: Shortcut Registry
+
+  ShortcutRegistry = record {
+    sr-shortcuts : List Shortcut,
+    sr-count : Integer
+  }
+
+  shortcut-registry-new : ShortcutRegistry
+  shortcut-registry-new = ShortcutRegistry { sr-shortcuts = [], sr-count = 0 }
+
+  sr-add : ShortcutRegistry, Shortcut -> ShortcutRegistry
+  sr-add (reg) (sc) =
+    __record-set (__record-set reg "sr-shortcuts" (list-push (reg.sr-shortcuts) sc)) "sr-count" (reg.sr-count + 1)
+
+  sr-remove : ShortcutRegistry, Text -> ShortcutRegistry
+  sr-remove (reg) (id) =
+    let filtered = sr-filter (reg.sr-shortcuts) id 0 (reg.sr-count) []
+    in __record-set (__record-set reg "sr-shortcuts" filtered) "sr-count" (list-length filtered)
+
+  sr-filter : List Shortcut, Text, Integer, Integer, List Shortcut -> List Shortcut
+  sr-filter (scs) (id) (i) (n) (acc) =
+    if i >= n then acc
+    else let sc = list-at scs i
+    in if sc.sc-id == id then sr-filter scs id (i + 1) n acc
+    else sr-filter scs id (i + 1) n (list-push acc sc)
+
+  sr-match : ShortcutRegistry, KeyChord, Text -> Maybe Shortcut
+  sr-match (reg) (chord) (active-view) =
+    sr-match-loop (reg.sr-shortcuts) chord active-view 0 (reg.sr-count)
+
+  sr-match-loop : List Shortcut, KeyChord, Text, Integer, Integer -> Maybe Shortcut
+  sr-match-loop (scs) (chord) (active-view) (i) (n) =
+    if i >= n then None
+    else let sc = list-at scs i
+    in if sc.sc-enabled then
+      if chords-match (sc.sc-chord) chord then
+        if sr-scope-matches (sc.sc-scope) active-view then Just sc
+        else sr-match-loop scs chord active-view (i + 1) n
+      else sr-match-loop scs chord active-view (i + 1) n
+    else sr-match-loop scs chord active-view (i + 1) n
+
+  sr-scope-matches : ShortcutScope, Text -> Boolean
+  sr-scope-matches (scope) (active-view) = when scope
+    is ScopeGlobal -> True
+    is ScopeView (v) -> v == active-view
+    is ScopePanel (p) -> True
+
+  sr-for-scope : ShortcutRegistry, ShortcutScope -> List Shortcut
+  sr-for-scope (reg) (scope) =
+    let target = scope-label scope
+    in sr-scope-loop (reg.sr-shortcuts) target 0 (reg.sr-count) []
+
+  sr-scope-loop : List Shortcut, Text, Integer, Integer, List Shortcut -> List Shortcut
+  sr-scope-loop (scs) (target) (i) (n) (acc) =
+    if i >= n then acc
+    else let sc = list-at scs i
+    in if scope-label (sc.sc-scope) == target then sr-scope-loop scs target (i + 1) n (list-push acc sc)
+    else sr-scope-loop scs target (i + 1) n acc
+
+Section: Default Shortcuts
+
+  default-shortcuts : ShortcutRegistry
+  default-shortcuts =
+    let reg = shortcut-registry-new
+    in let r1 = sr-add reg (shortcut-new "undo" (ctrl-key "z") (CmdCustom "undo" "") ScopeGlobal "Undo last action")
+    in let r2 = sr-add r1 (shortcut-new "redo" (ctrl-shift-key "z") (CmdCustom "redo" "") ScopeGlobal "Redo last undone action")
+    in let r3 = sr-add r2 (shortcut-new "nav-dash" (alt-key "1") (CmdNavigate "Dashboard") ScopeGlobal "Go to Dashboard")
+    in let r4 = sr-add r3 (shortcut-new "nav-files" (alt-key "2") (CmdNavigate "Files") ScopeGlobal "Go to Files")
+    in let r5 = sr-add r4 (shortcut-new "nav-procs" (alt-key "3") (CmdNavigate "Processes") ScopeGlobal "Go to Processes")
+    in let r6 = sr-add r5 (shortcut-new "nav-svcs" (alt-key "4") (CmdNavigate "Services") ScopeGlobal "Go to Services")
+    in let r7 = sr-add r6 (shortcut-new "nav-net" (alt-key "5") (CmdNavigate "Network") ScopeGlobal "Go to Network")
+    in let r8 = sr-add r7 (shortcut-new "nav-mon" (alt-key "6") (CmdNavigate "Monitor") ScopeGlobal "Go to Monitor")
+    in let r9 = sr-add r8 (shortcut-new "nav-logs" (alt-key "7") (CmdNavigate "Logs") ScopeGlobal "Go to Logs")
+    in let r10 = sr-add r9 (shortcut-new "nav-term" (alt-key "8") (CmdNavigate "Terminal") ScopeGlobal "Go to Terminal")
+    in let r11 = sr-add r10 (shortcut-new "toggle-sidebar" (ctrl-key "b") (CmdCustom "toggle-sidebar" "") ScopeGlobal "Toggle sidebar")
+    in let r12 = sr-add r11 (shortcut-new "search" (ctrl-key "k") (CmdCustom "search" "") ScopeGlobal "Focus search")
+    in let r13 = sr-add r12 (shortcut-new "refresh" (ctrl-key "r") (CmdCustom "refresh" "") ScopeGlobal "Refresh current view")
+    in r13
+
+Page 1

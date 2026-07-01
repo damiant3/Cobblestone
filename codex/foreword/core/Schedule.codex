@@ -1,0 +1,272 @@
+Chapter: Schedule
+  cites Foreword chapter Maybe
+  cites Foreword chapter CCE
+
+ A Sched is one of EveryN, DailyAt, WeeklyOn, MonthlyOn, Between, AndSched, or NotSched.
+ To every-seconds gives a Sched that fires at the given interval in seconds.
+ To every-minutes gives a Sched that fires at the given interval in minutes.
+ To every-hours gives a Sched that fires at the given interval in hours.
+ To daily-at gives a Sched that fires once per day at the given hour and minute.
+ To weekly-on gives a Sched that fires once per week on the given day, hour, and minute.
+ To monthly-on gives a Sched that fires once per month on the given day, hour, and minute.
+ To between-hours gives a Sched that restricts an inner schedule to a range of hours.
+ To sched-and gives a Sched requiring both inner schedules to match.
+ To sched-not gives a Sched that inverts the match of an inner schedule.
+ To sched-matches gives True when the schedule fires at the given time components.
+ To sched-next gives the number of minutes until the next match, or negative one after scanning 1440 minutes.
+ To schedule gives a Maybe Sched parsed from a plain-English description, or None on failure.
+ To format-sched gives a Text representation of a Sched.
+
+ We say:
+
+Section: Types
+  Sched =
+    | EveryN (Integer) (Integer)
+    | DailyAt (Integer) (Integer)
+    | WeeklyOn (Integer) (Integer) (Integer)
+    | MonthlyOn (Integer) (Integer) (Integer)
+    | Between (Integer) (Integer) (Sched)
+    | AndSched (Sched) (Sched)
+    | NotSched (Sched)
+
+Section: Construction
+  every-seconds : Integer -> Sched
+  every-seconds (n) = EveryN n 0
+
+  every-minutes : Integer -> Sched
+  every-minutes (n) = EveryN (n * 60) 0
+
+  every-hours : Integer -> Sched
+  every-hours (n) = EveryN (n * 3600) 0
+
+  daily-at : Integer, Integer -> Sched
+  daily-at (hour) (minute) = DailyAt hour minute
+
+  weekly-on : Integer, Integer, Integer -> Sched
+  weekly-on (day) (hour) (minute) = WeeklyOn day hour minute
+
+  monthly-on : Integer, Integer, Integer -> Sched
+  monthly-on (day) (hour) (minute) = MonthlyOn day hour minute
+
+  between-hours : Integer, Integer, Sched -> Sched
+  between-hours (start-hour) (end-hour) (inner) = Between (start-hour * 3600) (end-hour * 3600) inner
+
+  sched-and : Sched, Sched -> Sched
+  sched-and (a) (b) = AndSched a b
+
+  sched-not : Sched -> Sched
+  sched-not (s) = NotSched s
+
+Section: Evaluation
+  sched-matches : Sched, Integer, Integer, Integer, Integer, Integer -> Boolean
+  sched-matches (sched) (epoch) (day-of-week) (day-of-month) (hour) (minute) =
+    when sched
+      is EveryN (interval) (offset) -> sched-every-match epoch interval offset
+      is DailyAt (h) (m) -> hour == h & minute == m
+      is WeeklyOn (d) (h) (m) -> day-of-week == d & hour == h & minute == m
+      is MonthlyOn (d) (h) (m) -> day-of-month == d & hour == h & minute == m
+      is Between (start) (stop) (inner) ->
+        let time-of-day = hour * 3600 + minute * 60
+        in if time-of-day >= start then if time-of-day < stop then sched-matches inner epoch day-of-week day-of-month hour minute else False
+        else False
+      is AndSched (a) (b) -> sched-matches a epoch day-of-week day-of-month hour minute & sched-matches b epoch day-of-week day-of-month hour minute
+      is NotSched (s) -> if sched-matches s epoch day-of-week day-of-month hour minute then False else True
+
+  sched-every-match : Integer, Integer, Integer -> Boolean
+  sched-every-match (epoch) (interval) (offset) =
+    if interval <= 0 then False
+    else (epoch - offset) - (epoch - offset) / interval * interval == 0
+
+Section: Next Occurrence
+  sched-next : Sched, Integer, Integer, Integer, Integer, Integer -> Integer
+  sched-next (sched) (epoch) (dow) (dom) (hour) (minute) =
+    sched-search sched epoch dow dom hour minute 0 1440
+
+  sched-search : Sched, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  sched-search (sched) (epoch) (dow) (dom) (hour) (minute) (offset) (max-minutes) =
+    if offset >= max-minutes then 0 - 1
+    else let new-minute = minute + offset
+    in let new-hour = hour + new-minute / 60
+    in let adj-minute = new-minute - new-minute / 60 * 60
+    in let adj-hour = new-hour - new-hour / 24 * 24
+    in let new-epoch = epoch + offset * 60
+    in if sched-matches sched new-epoch dow dom adj-hour adj-minute then offset
+    else sched-search sched epoch dow dom hour minute (offset + 1) max-minutes
+
+Section: Formatting
+  format-sched : Sched -> Text
+  format-sched (sched) =
+    when sched
+      is EveryN (n) (off) -> "every " & show n & "s"
+      is DailyAt (h) (m) -> "daily at " & sched-format-time h m
+      is WeeklyOn (d) (h) (m) -> "weekly " & sched-day-name d & " " & sched-format-time h m
+      is MonthlyOn (d) (h) (m) -> "monthly " & show d & "th " & sched-format-time h m
+      is Between (s) (e) (inner) -> format-sched inner & " between " & sched-format-hour (s / 3600) & " and " & sched-format-hour (e / 3600)
+      is AndSched (a) (b) -> format-sched a & " and " & format-sched b
+      is NotSched (s) -> "not(" & format-sched s & ")"
+
+  sched-format-time : Integer, Integer -> Text
+  sched-format-time (h) (m) =
+    let display-h = sched-to-12h h
+    in let ampm = if h < 12 then "am" else "pm"
+    in if m == 0 then show display-h & ampm
+    else show display-h & ":" & sched-pad2 m & ampm
+
+  sched-to-12h : Integer -> Integer
+  sched-to-12h (h) =
+    if h == 0 then 12
+    else if h <= 12 then h
+    else h - 12
+
+  sched-format-hour : Integer -> Text
+  sched-format-hour (h) = sched-format-time h 0
+
+  sched-pad2 : Integer -> Text
+  sched-pad2 (n) = if n < 10 then "0" & show n else show n
+
+  sched-day-name : Integer -> Text
+  sched-day-name (d) =
+    if d == 0 then "Sun" else if d == 1 then "Mon" else if d == 2 then "Tue"
+    else if d == 3 then "Wed" else if d == 4 then "Thu" else if d == 5 then "Fri"
+    else "Sat"
+
+Section: English Parser
+  schedule : Text -> Maybe Sched
+  schedule (text) =
+    let words = text-split text " "
+    in let n = list-length words
+    in if n == 0 then None
+    else let first = list-at words 0
+    in if first == "every" then sched-parse-every words n
+    else if first == "daily" then sched-parse-daily words n
+    else if first == "weekly" then sched-parse-weekly words n
+    else if first == "monthly" then sched-parse-monthly words n
+    else None
+
+  sched-parse-every : List Text, Integer -> Maybe Sched
+  sched-parse-every (words) (n) =
+    if n < 3 then None
+    else let amount = sched-parse-int (list-at words 1)
+    in let time-unit = list-at words 2
+    in let base = if time-unit == "seconds" then Just (every-seconds amount)
+      else if time-unit == "second" then Just (every-seconds amount)
+      else if time-unit == "minutes" then Just (every-minutes amount)
+      else if time-unit == "minute" then Just (every-minutes amount)
+      else if time-unit == "hours" then Just (every-hours amount)
+      else if time-unit == "hour" then Just (every-hours amount)
+      else None
+    in when base
+      is None -> None
+      is Just (sched) ->
+        if n >= 6 then if list-at words 3 == "between" then
+          let start = sched-parse-hour-ampm (list-at words 4) (if n >= 6 then list-at words 5 else "")
+          in let stop-idx = if n >= 6 then if list-at words 5 == "and" then 6 else 5 else 5
+          in let stop-ampm = if n > stop-idx + 1 then list-at words (stop-idx + 1) else ""
+          in let stop = if stop-idx < n then sched-parse-hour-ampm (list-at words stop-idx) stop-ampm else 24
+          in Just (between-hours start stop sched)
+        else Just sched
+        else Just sched
+
+  sched-parse-daily : List Text, Integer -> Maybe Sched
+  sched-parse-daily (words) (n) =
+    if n < 3 then None
+    else if list-at words 1 /= "at" then None
+    else let ampm = if n >= 4 then list-at words 3 else ""
+    in let time = sched-parse-time-ampm (list-at words 2) ampm
+    in Just (daily-at (time.sched-time-hour) (time.sched-time-minute))
+
+  sched-parse-weekly : List Text, Integer -> Maybe Sched
+  sched-parse-weekly (words) (n) =
+    if n < 5 then None
+    else if list-at words 1 /= "on" then None
+    else let day = sched-parse-day-name (list-at words 2)
+    in if list-at words 3 /= "at" then None
+    else let ampm = if n >= 6 then list-at words 5 else ""
+    in let time = sched-parse-time-ampm (list-at words 4) ampm
+    in Just (weekly-on day (time.sched-time-hour) (time.sched-time-minute))
+
+  sched-parse-monthly : List Text, Integer -> Maybe Sched
+  sched-parse-monthly (words) (n) =
+    if n < 5 then None
+    else if list-at words 1 /= "on" then None
+    else let day = sched-parse-int (list-at words 2)
+    in if list-at words 3 /= "at" then None
+    else let ampm = if n >= 6 then list-at words 5 else ""
+    in let time = sched-parse-time-ampm (list-at words 4) ampm
+    in Just (monthly-on day (time.sched-time-hour) (time.sched-time-minute))
+
+Section: Parse Helpers
+  SchedTime = record { sched-time-hour : Integer, sched-time-minute : Integer }
+
+  sched-parse-time : Text -> SchedTime
+  sched-parse-time (s) = sched-parse-time-ampm s ""
+
+  sched-parse-time-ampm : Text, Text -> SchedTime
+  sched-parse-time-ampm (s) (ampm-word) =
+    let stripped = sched-strip-ampm s
+    in let ampm = sched-detect-ampm s ampm-word
+    in let parts = text-split (stripped.sched-stripped-text) ":"
+    in let raw-h = if list-length parts >= 2 then sched-parse-int (list-at parts 0) else sched-parse-int (stripped.sched-stripped-text)
+    in let raw-m = if list-length parts >= 2 then sched-parse-int (list-at parts 1) else 0
+    in let h = sched-apply-ampm raw-h ampm
+    in SchedTime { sched-time-hour = h, sched-time-minute = raw-m }
+
+  StrippedText = record { sched-stripped-text : Text, sched-stripped-ampm : Integer }
+
+  sched-strip-ampm : Text -> StrippedText
+  sched-strip-ampm (s) =
+    let len = text-length s
+    in if len >= 2 then
+      let last2 = sched-last-n s 2
+      in if last2 == "am" then StrippedText { sched-stripped-text = sched-drop-last s 2, sched-stripped-ampm = 1 }
+      else if last2 == "pm" then StrippedText { sched-stripped-text = sched-drop-last s 2, sched-stripped-ampm = 2 }
+      else StrippedText { sched-stripped-text = s, sched-stripped-ampm = 0 }
+    else StrippedText { sched-stripped-text = s, sched-stripped-ampm = 0 }
+
+  sched-detect-ampm : Text, Text -> Integer
+  sched-detect-ampm (time-str) (ampm-word) =
+    let from-str = (sched-strip-ampm time-str).sched-stripped-ampm
+    in if from-str > 0 then from-str
+    else if ampm-word == "am" then 1
+    else if ampm-word == "pm" then 2
+    else 0
+
+  sched-apply-ampm : Integer, Integer -> Integer
+  sched-apply-ampm (h) (ampm) =
+    if ampm == 0 then h
+    else if ampm == 1 then if h == 12 then 0 else h
+    else if h == 12 then 12 else h + 12
+
+  sched-last-n : Text, Integer -> Text
+  sched-last-n (s) (n) = substring s (text-length s - n) n
+
+  sched-drop-last : Text, Integer -> Text
+  sched-drop-last (s) (n) = substring s 0 (text-length s - n)
+
+  sched-parse-int : Text -> Integer
+  sched-parse-int (s) = sched-atoi s 0 (text-length s) 0
+
+  sched-atoi : Text, Integer, Integer, Integer -> Integer
+  sched-atoi (s) (i) (len) (acc) =
+    if i >= len then acc
+    else let c = char-at s i
+    in if is-digit c then sched-atoi s (i + 1) len (acc * 10 + digit-value c)
+    else acc
+
+  sched-parse-hour-ampm : Text, Text -> Integer
+  sched-parse-hour-ampm (s) (ampm-word) =
+    let time = sched-parse-time-ampm s ampm-word
+    in time.sched-time-hour
+
+  sched-parse-day-name : Text -> Integer
+  sched-parse-day-name (name) =
+    if name == "sunday" then 0 else if name == "sun" then 0
+    else if name == "monday" then 1 else if name == "mon" then 1
+    else if name == "tuesday" then 2 else if name == "tue" then 2
+    else if name == "wednesday" then 3 else if name == "wed" then 3
+    else if name == "thursday" then 4 else if name == "thu" then 4
+    else if name == "friday" then 5 else if name == "fri" then 5
+    else if name == "saturday" then 6 else if name == "sat" then 6
+    else 0
+
+Page 1

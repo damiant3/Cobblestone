@@ -1,0 +1,154 @@
+Chapter: SaveSlot
+  cites Foreword chapter Maybe
+  cites Foreword chapter Sha256
+
+ Game save/load with versioned slots. Each save slot stores a
+ header (name, timestamp, version) and an opaque payload. The
+ header includes a SHA-256 checksum of the payload for integrity
+ verification on load.
+
+ To save-slot-new gives an empty save slot.
+ To save-slot-write gives a slot with saved data.
+ To save-slot-read gives the payload if the checksum verifies.
+ To save-slot-list gives metadata for all occupied slots.
+
+ We say:
+
+Section: Types
+
+  SaveHeader = record {
+    sh-name : Text,
+    sh-version : Integer between 0 and 65535,
+    sh-timestamp : Integer,
+    sh-checksum : List Integer,
+    sh-payload-size : Integer
+  }
+
+  SaveSlot = record {
+    ss-header : Maybe SaveHeader,
+    ss-payload : List Integer,
+    ss-occupied : Boolean
+  }
+
+  SaveManager = record {
+    sm-slots : List SaveSlot,
+    sm-max-slots : Integer between 1 and 255,
+    sm-current-version : Integer between 0 and 65535
+  }
+
+  SaveResult =
+    | SaveOk
+    | SaveSlotFull
+    | SaveInvalidSlot
+
+  LoadResult =
+    | LoadOk (List Integer)
+    | LoadCorrupt
+    | LoadEmpty
+    | LoadVersionMismatch (Integer)
+
+Section: Construction
+
+  save-slot-empty : SaveSlot = SaveSlot {
+    ss-header = None,
+    ss-payload = [],
+    ss-occupied = False
+  }
+
+  save-manager-new : Integer, Integer -> SaveManager
+  save-manager-new (max-slots) (version) = SaveManager {
+    sm-slots = ss-init-slots max-slots 0 [],
+    sm-max-slots = max-slots,
+    sm-current-version = version
+  }
+
+  ss-init-slots : Integer, Integer, List SaveSlot -> List SaveSlot
+  ss-init-slots (n) (i) (acc) =
+    if i >= n then acc
+    else ss-init-slots n (i + 1) (list-push acc save-slot-empty)
+
+Section: Write
+
+  save-slot-write : SaveManager, Integer, Text, Integer, List Integer -> SaveManager
+  save-slot-write (mgr) (slot-idx) (name) (timestamp) (payload) =
+    if slot-idx < 0 then mgr
+    else if slot-idx >= mgr.sm-max-slots then mgr
+    else let checksum = ss-hash-payload payload
+    in let header = SaveHeader {
+      sh-name = name,
+      sh-version = mgr.sm-current-version,
+      sh-timestamp = timestamp,
+      sh-checksum = checksum,
+      sh-payload-size = list-length payload
+    }
+    in let slot = SaveSlot { ss-header = Just header, ss-payload = payload, ss-occupied = True }
+    in __record-set mgr "sm-slots" (list-set-at (mgr.sm-slots) slot-idx slot)
+
+Section: Read
+
+  save-slot-read : SaveManager, Integer -> LoadResult
+  save-slot-read (mgr) (slot-idx) =
+    if slot-idx < 0 then LoadEmpty
+    else if slot-idx >= mgr.sm-max-slots then LoadEmpty
+    else let slot = list-at (mgr.sm-slots) slot-idx
+    in if slot.ss-occupied == False then LoadEmpty
+    else when slot.ss-header
+      is None -> LoadEmpty
+      is Just (h) -> ss-verify-and-load slot h (mgr.sm-current-version)
+
+  ss-verify-and-load : SaveSlot, SaveHeader, Integer -> LoadResult
+  ss-verify-and-load (slot) (header) (current-version) =
+    let actual = ss-hash-payload (slot.ss-payload)
+    in if ss-checksum-match actual (header.sh-checksum) 0 (list-length actual) 0 == False then LoadCorrupt
+    else if header.sh-version > current-version then LoadVersionMismatch (header.sh-version)
+    else LoadOk (slot.ss-payload)
+
+  ss-checksum-match : List Integer, List Integer, Integer, Integer, Integer -> Boolean
+  ss-checksum-match (a) (b) (i) (len) (diff) =
+    if i >= len then diff == 0
+    else ss-checksum-match a b (i + 1) len (bit-or diff (bit-xor (list-at a i) (list-at b i)))
+
+Section: Delete
+
+  save-slot-delete : SaveManager, Integer -> SaveManager
+  save-slot-delete (mgr) (slot-idx) =
+    if slot-idx < 0 then mgr
+    else if slot-idx >= mgr.sm-max-slots then mgr
+    else __record-set mgr "sm-slots" (list-set-at (mgr.sm-slots) slot-idx save-slot-empty)
+
+Section: Queries
+
+  save-slot-list : SaveManager -> List (Maybe SaveHeader)
+  save-slot-list (mgr) = ss-headers (mgr.sm-slots) 0 (mgr.sm-max-slots) []
+
+  ss-headers : List SaveSlot, Integer, Integer, List (Maybe SaveHeader) -> List (Maybe SaveHeader)
+  ss-headers (slots) (i) (len) (acc) =
+    if i >= len then acc
+    else ss-headers slots (i + 1) len (list-push acc ((list-at slots i).ss-header))
+
+  save-slot-occupied : SaveManager, Integer -> Boolean
+  save-slot-occupied (mgr) (idx) =
+    if idx < 0 then False
+    else if idx >= mgr.sm-max-slots then False
+    else (list-at (mgr.sm-slots) idx).ss-occupied
+
+  save-slot-count : SaveManager -> Integer
+  save-slot-count (mgr) = ss-count-loop (mgr.sm-slots) 0 (mgr.sm-max-slots) 0
+
+  ss-count-loop : List SaveSlot, Integer, Integer, Integer -> Integer
+  ss-count-loop (slots) (i) (len) (acc) =
+    if i >= len then acc
+    else ss-count-loop slots (i + 1) len (acc + if (list-at slots i).ss-occupied then 1 else 0)
+
+Section: Hashing
+
+  ss-hash-payload : List Integer -> List Integer
+  ss-hash-payload (payload) = ss-words-to-bytes (sha256 payload) 0 8 []
+
+  ss-words-to-bytes : List Integer, Integer, Integer, List Integer -> List Integer
+  ss-words-to-bytes (ws) (i) (len) (acc) =
+    if i >= len then acc
+    else let w = list-at ws i
+    in ss-words-to-bytes ws (i + 1) len (list-push (list-push (list-push (list-push acc (bit-and (bit-shru w 24) 255)) (bit-and (bit-shru w 16) 255)) (bit-and (bit-shru w 8) 255)) (bit-and w 255))
+
+Page 1

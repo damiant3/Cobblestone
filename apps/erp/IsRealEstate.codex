@@ -1,0 +1,190 @@
+Chapter: IsRealEstate
+  cites ERP chapter ErpTypes
+  cites ERP chapter FinGL
+  cites Foreword chapter Maybe
+  cites Foreword chapter List
+
+ Real Estate Management: property master, lease contracts, rental
+ accounting, tenant management, space allocation, CAM reconciliation,
+ and property valuation.
+
+Section: Property
+
+  Property = record {
+    prop-id : Text,
+    prop-name : Text,
+    prop-address : Text,
+    prop-type : PropertyType,
+    prop-total-sqft : Integer,
+    prop-leasable-sqft : Integer,
+    prop-year-built : Integer,
+    prop-purchase-price : Integer,
+    prop-current-value : Integer,
+    prop-company : Text,
+    prop-manager : Text,
+    prop-status : PropertyStatus
+  }
+
+  PropertyType =
+    | Office
+    | Retail
+    | Industrial
+    | Residential
+    | MixedUse
+    | Land
+
+  PropertyStatus =
+    | PropActive
+    | PropUnderRenovation
+    | PropVacant
+    | PropForSale
+    | PropSold
+
+  Unit = record {
+    unit-id : Text,
+    unit-property-id : Text,
+    unit-floor : Integer,
+    unit-number : Text,
+    unit-sqft : Integer,
+    unit-type : Text,
+    unit-status : UnitStatus,
+    unit-base-rent : Integer,
+    unit-current-tenant : Text
+  }
+
+  UnitStatus =
+    | UnitOccupied
+    | UnitVacant
+    | UnitUnderReno
+    | UnitNotAvailable
+
+  occupancy-rate : Integer, Integer -> Integer
+  occupancy-rate (occupied-sqft) (total-sqft) =
+    if total-sqft == 0 then 0 else occupied-sqft * 100 / total-sqft
+
+Section: Lease Contracts
+
+  Lease = record {
+    lease-id : Text,
+    lease-property-id : Text,
+    lease-unit-id : Text,
+    lease-tenant-id : Text,
+    lease-type : LeaseType,
+    lease-start : Integer,
+    lease-end : Integer,
+    lease-base-rent : Integer,
+    lease-rent-frequency : Text,
+    lease-escalation-pct : Integer,
+    lease-escalation-freq : Integer,
+    lease-security-deposit : Integer,
+    lease-cam-share-pct : Integer,
+    lease-status : LeaseStatus,
+    lease-options : List LeaseOption
+  }
+
+  LeaseType =
+    | GrossLease
+    | NetLease
+    | TripleNet
+    | ModifiedGross
+    | PercentageLease (Integer)
+
+  LeaseStatus =
+    | LeaseActive
+    | LeaseExpired
+    | LeaseTerminated
+    | LeasePending
+    | LeaseRenewal
+
+  LeaseOption =
+    | RenewalOption (Integer) (Integer)
+    | ExpansionOption (Text)
+    | PurchaseOption (Integer)
+    | TerminationOption (Integer) (Integer)
+    | RightOfFirstRefusal
+
+  Tenant = record {
+    ten-id : Text,
+    ten-name : Text,
+    ten-contact : Text,
+    ten-phone : Text,
+    ten-email : Text,
+    ten-industry : Text,
+    ten-credit-rating : Text,
+    ten-lease-ids : List Text
+  }
+
+Section: Rent Calculation
+
+  RentCharge = record {
+    rc-lease-id : Text,
+    rc-period : Integer,
+    rc-base-rent : Integer,
+    rc-cam-charge : Integer,
+    rc-tax-charge : Integer,
+    rc-insurance-charge : Integer,
+    rc-percentage-rent : Integer,
+    rc-total : Integer
+  }
+
+  calc-rent : Lease, Integer, Integer, Integer, Integer -> RentCharge
+  calc-rent (lease) (period) (cam-pool) (tax-pool) (ins-pool) =
+    let base = lease.lease-base-rent
+    in let cam = cam-pool * lease.lease-cam-share-pct / 100
+    in let tax = tax-pool * lease.lease-cam-share-pct / 100
+    in let ins = ins-pool * lease.lease-cam-share-pct / 100
+    in let pct-rent = when lease.lease-type
+      is PercentageLease (bps) -> base * bps / 10000
+      is otherwise -> 0
+    in RentCharge {
+      rc-lease-id = lease.lease-id, rc-period = period,
+      rc-base-rent = base, rc-cam-charge = cam,
+      rc-tax-charge = tax, rc-insurance-charge = ins,
+      rc-percentage-rent = pct-rent,
+      rc-total = base + cam + tax + ins + pct-rent
+    }
+
+  escalate-rent : Integer, Integer, Integer -> Integer
+  escalate-rent (current-rent) (pct-bps) (years) =
+    escalate-loop current-rent pct-bps years 0
+
+  escalate-loop : Integer, Integer, Integer, Integer -> Integer
+  escalate-loop (rent) (pct) (total) (i) =
+    if i >= total then rent
+    else escalate-loop (rent + rent * pct / 10000) pct total (i + 1)
+
+Section: CAM Reconciliation
+
+  CamReconciliation = record {
+    camr-property-id : Text,
+    camr-year : Integer,
+    camr-actual-expenses : Integer,
+    camr-budgeted-expenses : Integer,
+    camr-total-collected : Integer,
+    camr-variance : Integer,
+    camr-tenant-adjustments : List TenantAdjustment
+  }
+
+  TenantAdjustment = record {
+    ta-tenant-id : Text,
+    ta-share-pct : Integer,
+    ta-collected : Integer,
+    ta-actual-share : Integer,
+    ta-adjustment : Integer
+  }
+
+Section: Property Valuation
+
+  ValuationMethod =
+    | CapRate (Integer)
+    | ComparableSales
+    | ReplacementCost
+    | DiscountedCashFlow (Integer) (Integer)
+
+  property-value-cap-rate : Integer, Integer -> Integer
+  property-value-cap-rate (noi) (cap-rate-bps) =
+    if cap-rate-bps == 0 then 0
+    else noi * 10000 / cap-rate-bps
+
+  noi : Integer, Integer -> Integer
+  noi (gross-income) (operating-expenses) = gross-income - operating-expenses

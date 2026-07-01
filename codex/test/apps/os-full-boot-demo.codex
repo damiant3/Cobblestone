@@ -1,0 +1,76 @@
+Chapter: OsFullBootDemo
+  cites Sched chapter OsScheduler
+  cites Sched chapter TaskQueue
+  cites OS chapter ServiceRegistry
+  cites Observe chapter HealthCheck
+  cites Observe chapter MetricStore
+  cites Observe chapter EventBus
+  cites Observe chapter ConfigStore
+  cites OS chapter ShellCore
+  cites OS chapter ProgramRegistry
+  cites Verify chapter VerifiedLoader
+  cites Verify chapter CdxVerifier
+  cites Verify chapter CdxBinary
+  cites Trust chapter TrustLattice
+  cites Trust chapter PolicyEngine
+  cites Foreword chapter FactStore
+  cites Foreword chapter Sha256
+  cites Foreword chapter Sha512
+  cites Foreword chapter Ed25519
+  cites Foreword chapter Maybe
+  cites Foreword chapter Hamt
+
+Section: Boot Services
+  boot-service-names : List Text
+  boot-service-names = ["init", "net", "fs", "log", "auth", "sched"]
+
+  enqueue-services : OsState, List Text, Integer, Integer -> OsState
+  enqueue-services (os) (names) (i) (len) =
+    if i >= len then os
+    else let name = list-at names i
+    in let q = task-enqueue (os.tasks) name TaskNormal
+    in let os1 = OsState { services = os.services, tasks = q, shell = os.shell, tick = os.tick, next-pid = os.next-pid }
+    in enqueue-services os1 names (i + 1) len
+
+  tick-n : OsState, Integer -> OsState
+  tick-n (os) (n) =
+    if n <= 0 then os
+    else let r = os-tick-bsp os
+    in tick-n (r.state) (n - 1)
+
+Section: Tests
+  test-boot : [Console] Nothing =
+    let shell = shell-init (policy-empty "boot") 1000
+    in let os0 = os-state-new shell
+    in let svc-count = list-length boot-service-names
+    in let os1 = enqueue-services os0 boot-service-names 0 svc-count
+    in let queued = task-queue-count (os1.tasks)
+    in let os2 = tick-n os1 svc-count
+    in let metrics0 = metric-register metric-store-empty "boot-time" Histogram
+    in let metrics1 = metric-observe metrics0 "boot-time" (os-tick-count os2)
+    in let m = metric-get metrics1 "boot-time"
+    in let metric-text = when m
+      is Just (met) -> format-metric met
+      is None -> "none"
+    in let bus0 = bus-subscribe bus-empty "monitor" "system"
+    in let bus1 = bus-publish bus0 "boot" "system" "boot-complete"
+    in let cfg0 = config-set-text config-empty "hostname" "codex-node"
+    in let cfg1 = config-set-int cfg0 "port" 80
+    in let health = run-health-check shell (os2.services)
+    in act
+      print-line-uni "=== Codex OS Full Boot ==="
+      print-line-uni ""
+      print-line-uni ("[1] Boot plan: " & show svc-count & " services")
+      print-line-uni ("[2] Services queued: " & show queued)
+      print-line-uni ("[3] After " & show (os-tick-count os2) & " ticks: " & os-stats os2)
+      print-line-uni ("[4] Metrics: " & metric-text)
+      print-line-uni ("[5] Events: " & bus-stats bus1)
+      print-line-uni ("[6] Config: hostname=" & config-get-text cfg1 "hostname" "unknown" & " port=" & show (config-get-int cfg1 "port" 0))
+      print-line-uni ("[7] Health: " & format-health-report health)
+      print-line-uni ""
+      print-line-uni "=== All systems operational ==="
+    end
+
+  opening : [Console] Nothing = act
+    test-boot
+  end

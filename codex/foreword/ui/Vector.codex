@@ -1,0 +1,199 @@
+Chapter: Vector
+  cites Foreword chapter Maybe
+  cites Math chapter Cordic
+
+ Vector graphics primitives — paths, line segments, bezier curves,
+ arcs, fills, and strokes. A vector path is a list of path commands
+ that can be rasterized to pixels or exported as SVG-like output.
+ Uses fixed-point scale-1000 arithmetic for coordinates.
+
+ To vec-path-new gives an empty path.
+ To vec-move-to gives a path with a move command.
+ To vec-line-to gives a path with a line command.
+ To vec-bezier-to gives a path with a cubic bezier command.
+ To vec-arc-to gives a path with an arc command.
+ To vec-close gives a closed path.
+ To vec-rasterize gives a list of pixel coordinates from a path.
+
+ We say:
+
+Section: Types
+
+  PathCmd =
+    | PcMoveTo (Integer) (Integer)
+    | PcLineTo (Integer) (Integer)
+    | PcBezierTo (Integer) (Integer) (Integer) (Integer) (Integer) (Integer)
+    | PcArcTo (Integer) (Integer) (Integer) (Integer) (Integer)
+    | PcClose
+
+  VecPath = record {
+    vp-commands : List PathCmd,
+    vp-count : Integer
+  }
+
+  VecStyle = record {
+    vs-stroke-color : Integer between 0 and 16777215,
+    vs-fill-color : Integer between 0 and 16777215,
+    vs-stroke-width : Integer between 0 and 1000,
+    vs-filled : Boolean,
+    vs-stroked : Boolean
+  }
+
+  VecPixel = record {
+    vpx-x : Integer,
+    vpx-y : Integer,
+    vpx-color : Integer
+  }
+
+Section: Construction
+
+  vec-path-new : VecPath
+  vec-path-new = VecPath { vp-commands = [], vp-count = 0 }
+
+  vec-move-to : VecPath, Integer, Integer -> VecPath
+  vec-move-to (p) (x) (y) = VecPath {
+    vp-commands = list-push (p.vp-commands) (PcMoveTo x y),
+    vp-count = p.vp-count + 1
+  }
+
+  vec-line-to : VecPath, Integer, Integer -> VecPath
+  vec-line-to (p) (x) (y) = VecPath {
+    vp-commands = list-push (p.vp-commands) (PcLineTo x y),
+    vp-count = p.vp-count + 1
+  }
+
+  vec-bezier-to : VecPath, Integer, Integer, Integer, Integer, Integer, Integer -> VecPath
+  vec-bezier-to (p) (cx1) (cy1) (cx2) (cy2) (x) (y) = VecPath {
+    vp-commands = list-push (p.vp-commands) (PcBezierTo cx1 cy1 cx2 cy2 x y),
+    vp-count = p.vp-count + 1
+  }
+
+  vec-arc-to : VecPath, Integer, Integer, Integer, Integer, Integer -> VecPath
+  vec-arc-to (p) (cx) (cy) (rx) (ry) (angle) = VecPath {
+    vp-commands = list-push (p.vp-commands) (PcArcTo cx cy rx ry angle),
+    vp-count = p.vp-count + 1
+  }
+
+  vec-close : VecPath -> VecPath
+  vec-close (p) = VecPath {
+    vp-commands = list-push (p.vp-commands) PcClose,
+    vp-count = p.vp-count + 1
+  }
+
+Section: Style
+
+  vec-style-default : VecStyle = VecStyle {
+    vs-stroke-color = 0,
+    vs-fill-color = 0,
+    vs-stroke-width = 1000,
+    vs-filled = False,
+    vs-stroked = True
+  }
+
+  vec-style-fill : Integer -> VecStyle
+  vec-style-fill (color) = VecStyle {
+    vs-stroke-color = 0,
+    vs-fill-color = color,
+    vs-stroke-width = 0,
+    vs-filled = True,
+    vs-stroked = False
+  }
+
+  vec-style-stroke : Integer, Integer -> VecStyle
+  vec-style-stroke (color) (width) = VecStyle {
+    vs-stroke-color = color,
+    vs-fill-color = 0,
+    vs-stroke-width = width,
+    vs-filled = False,
+    vs-stroked = True
+  }
+
+Section: Shapes
+
+  vec-rect : Integer, Integer, Integer, Integer -> VecPath
+  vec-rect (x) (y) (w) (h) =
+    let p = vec-move-to vec-path-new x y
+    in let p2 = vec-line-to p (x + w) y
+    in let p3 = vec-line-to p2 (x + w) (y + h)
+    in let p4 = vec-line-to p3 x (y + h)
+    in vec-close p4
+
+  vec-circle : Integer, Integer, Integer, Integer -> VecPath
+  vec-circle (cx) (cy) (r) (segments) =
+    vec-circle-loop vec-path-new cx cy r segments 0 True
+
+  vec-circle-loop : VecPath, Integer, Integer, Integer, Integer, Integer, Boolean -> VecPath
+  vec-circle-loop (p) (cx) (cy) (r) (segments) (i) (first) =
+    if i > segments then vec-close p
+    else let angle = i * 6283 / segments
+    in let px = cx + r * cordic-cos angle / 1000
+    in let py = cy + r * cordic-sin angle / 1000
+    in if first then vec-circle-loop (vec-move-to p px py) cx cy r segments (i + 1) False
+    else vec-circle-loop (vec-line-to p px py) cx cy r segments (i + 1) False
+
+  vec-line : Integer, Integer, Integer, Integer -> VecPath
+  vec-line (x1) (y1) (x2) (y2) =
+    vec-line-to (vec-move-to vec-path-new x1 y1) x2 y2
+
+Section: Rasterization (Bresenham Line)
+
+  vec-rasterize : VecPath, VecStyle -> List VecPixel
+  vec-rasterize (path) (style) =
+    vec-raster-cmds (path.vp-commands) style 0 (path.vp-count) 0 0 0 0 []
+
+  vec-raster-cmds : List PathCmd, VecStyle, Integer, Integer, Integer, Integer, Integer, Integer, List VecPixel -> List VecPixel
+  vec-raster-cmds (cmds) (style) (i) (len) (cx) (cy) (sx) (sy) (acc) =
+    if i >= len then acc
+    else let cmd = list-at cmds i
+    in when cmd
+      is PcMoveTo (x) (y) -> vec-raster-cmds cmds style (i + 1) len x y x y acc
+      is PcLineTo (x) (y) ->
+        let pixels = bresenham cx cy x y (style.vs-stroke-color) []
+        in vec-raster-cmds cmds style (i + 1) len x y sx sy (acc & pixels)
+      is PcClose ->
+        let pixels = bresenham cx cy sx sy (style.vs-stroke-color) []
+        in vec-raster-cmds cmds style (i + 1) len sx sy sx sy (acc & pixels)
+      is otherwise -> vec-raster-cmds cmds style (i + 1) len cx cy sx sy acc
+
+  bresenham : Integer, Integer, Integer, Integer, Integer, List VecPixel -> List VecPixel
+  bresenham (x0) (y0) (x1) (y1) (color) (acc) =
+    let dx = if x1 > x0 then x1 - x0 else x0 - x1
+    in let dy = if y1 > y0 then y1 - y0 else y0 - y1
+    in let sx = if x0 < x1 then 1 else 0 - 1
+    in let sy = if y0 < y1 then 1 else 0 - 1
+    in bresenham-loop x0 y0 x1 y1 dx dy sx sy (dx - dy) color acc
+
+  bresenham-loop : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, List VecPixel -> List VecPixel
+  bresenham-loop (x) (y) (x1) (y1) (dx) (dy) (sx) (sy) (err) (color) (acc) =
+    let acc2 = list-push acc (VecPixel { vpx-x = x, vpx-y = y, vpx-color = color })
+    in if x == x1 then if y == y1 then acc2
+      else bresenham-step x y x1 y1 dx dy sx sy err color acc2
+    else bresenham-step x y x1 y1 dx dy sx sy err color acc2
+
+  bresenham-step : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, List VecPixel -> List VecPixel
+  bresenham-step (x) (y) (x1) (y1) (dx) (dy) (sx) (sy) (err) (color) (acc) =
+    let e2 = err * 2
+    in let x2 = if e2 > 0 - dy then x + sx else x
+    in let y2 = if e2 < dx then y + sy else y
+    in let err2 = err + (if e2 > 0 - dy then 0 - dy else 0) + (if e2 < dx then dx else 0)
+    in bresenham-loop x2 y2 x1 y1 dx dy sx sy err2 color acc
+
+Section: Queries
+
+  vec-path-length : VecPath -> Integer
+  vec-path-length (p) = p.vp-count
+
+  vec-bounds : VecPath -> List Integer
+  vec-bounds (p) =
+    vec-bounds-loop (p.vp-commands) 0 (p.vp-count) 999999 999999 (0 - 999999) (0 - 999999)
+
+  vec-bounds-loop : List PathCmd, Integer, Integer, Integer, Integer, Integer, Integer -> List Integer
+  vec-bounds-loop (cmds) (i) (len) (min-x) (min-y) (max-x) (max-y) =
+    if i >= len then [min-x, min-y, max-x, max-y]
+    else let cmd = list-at cmds i
+    in when cmd
+      is PcMoveTo (x) (y) -> vec-bounds-loop cmds (i + 1) len (if x < min-x then x else min-x) (if y < min-y then y else min-y) (if x > max-x then x else max-x) (if y > max-y then y else max-y)
+      is PcLineTo (x) (y) -> vec-bounds-loop cmds (i + 1) len (if x < min-x then x else min-x) (if y < min-y then y else min-y) (if x > max-x then x else max-x) (if y > max-y then y else max-y)
+      is otherwise -> vec-bounds-loop cmds (i + 1) len min-x min-y max-x max-y
+
+Page 1

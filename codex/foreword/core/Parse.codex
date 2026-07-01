@@ -1,0 +1,85 @@
+Chapter: Parse
+  cites Foreword chapter CCE
+
+ Numeric parsing primitives for text-to-integer conversion.
+ Converts CCE characters to Unicode code points for range checks since
+ CCE letter ordering is frequency-based, not alphabetical.
+
+ To parse-decimal gives Integer, parsing a decimal number from text starting at an offset.
+ To parse-hex gives Integer, parsing a hexadecimal number from text starting at an offset.
+ To parse-decimal-full gives Integer, parsing the entire text as a decimal number.
+ To parse-hex-full gives Integer, parsing the entire text as a hexadecimal number.
+ To is-hex-digit gives Boolean, True when a character is a valid hex digit.
+ To hex-digit-value gives Integer, the numeric value of a hex digit character.
+
+ We say:
+
+Section: Hex Character Support
+
+  is-hex-digit : Char -> Boolean
+  is-hex-digit (c) =
+    if is-digit c then True
+    else let u = to-unicode (char-code c)
+    in if u >= 97 then u <= 102
+    else if u >= 65 then u <= 70
+    else False
+
+  hex-digit-value : Char -> Integer
+  hex-digit-value (c) =
+    if is-digit c then digit-value c
+    else let u = to-unicode (char-code c)
+    in if u >= 97 then u - 87
+    else u - 55
+
+Section: Decimal Parsing
+
+  parse-decimal : Text, Integer -> Integer
+  parse-decimal (s) (start) =
+    let len = text-length s
+    in if start >= len then 0
+    else if to-unicode (char-code (char-at s start)) == 45 then negate (parse-decimal-loop s (start + 1) len 0)
+    else parse-decimal-loop s start len 0
+
+  parse-decimal-loop : Text, Integer, Integer, Integer -> Integer
+  parse-decimal-loop (s) (i) (len) (acc) =
+    if i >= len then acc
+    else let c = char-at s i
+    in if is-digit c then parse-decimal-loop s (i + 1) len (acc * 10 + digit-value c)
+    else acc
+
+  parse-decimal-full : Text -> Integer
+  parse-decimal-full (s) = parse-decimal s 0
+
+  text-to-integer : Text -> Integer
+  text-to-integer (s) = parse-decimal s 0
+
+  text-to-int : Text -> Integer
+  text-to-int (s) = parse-decimal s 0
+
+Section: Hexadecimal Parsing
+
+  parse-hex : Text, Integer -> Integer
+  parse-hex (s) (start) =
+    let len = text-length s
+    in parse-hex-loop s start len 0
+
+  parse-hex-loop : Text, Integer, Integer, Integer -> Integer
+  parse-hex-loop (s) (i) (len) (acc) =
+    if i >= len then acc
+    else let c = char-at s i
+    in if is-hex-digit c then parse-hex-loop s (i + 1) len (acc * 16 + hex-digit-value c)
+    else acc
+
+  parse-hex-full : Text -> Integer
+  parse-hex-full (s) =
+    let len = text-length s
+    in if len >= 2 then
+      if to-unicode (char-code (char-at s 0)) == 48 then
+        let u1 = to-unicode (char-code (char-at s 1))
+        in if u1 == 120 then parse-hex s 2
+        else if u1 == 88 then parse-hex s 2
+        else parse-hex s 0
+      else parse-hex s 0
+    else parse-hex s 0
+
+Page 1

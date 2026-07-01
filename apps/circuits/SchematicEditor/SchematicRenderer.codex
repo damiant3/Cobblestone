@@ -1,0 +1,249 @@
+Chapter: SchematicRenderer
+  cites Foreword chapter List
+
+ Renders schematic sheets to a framebuffer. Draws wires, junctions,
+ symbols, labels, power symbols, buses, and no-connect markers. All
+ coordinates are in nanometers internally; the renderer applies a
+ view transform (pan + zoom) to convert to screen pixels.
+
+Section: View Transform
+
+  SchematicView = record {
+    sv-pan-x : Integer,
+    sv-pan-y : Integer,
+    sv-zoom-num : Integer,
+    sv-zoom-den : Integer,
+    sv-screen-w : Integer,
+    sv-screen-h : Integer
+  }
+
+  default-schematic-view : Integer, Integer -> SchematicView
+  default-schematic-view (w) (h) = SchematicView {
+    sv-pan-x = 0,
+    sv-pan-y = 0,
+    sv-zoom-num = 1,
+    sv-zoom-den = 100000,
+    sv-screen-w = w,
+    sv-screen-h = h
+  }
+
+  view-to-screen-x : SchematicView, Integer -> Integer
+  view-to-screen-x (v) (wx) =
+    (wx - v.sv-pan-x) * v.sv-zoom-num / v.sv-zoom-den + v.sv-screen-w / 2
+
+  view-to-screen-y : SchematicView, Integer -> Integer
+  view-to-screen-y (v) (wy) =
+    (wy - v.sv-pan-y) * v.sv-zoom-num / v.sv-zoom-den + v.sv-screen-h / 2
+
+  screen-to-world-x : SchematicView, Integer -> Integer
+  screen-to-world-x (v) (sx) =
+    (sx - v.sv-screen-w / 2) * v.sv-zoom-den / v.sv-zoom-num + v.sv-pan-x
+
+  screen-to-world-y : SchematicView, Integer -> Integer
+  screen-to-world-y (v) (sy) =
+    (sy - v.sv-screen-h / 2) * v.sv-zoom-den / v.sv-zoom-num + v.sv-pan-y
+
+  view-zoom-in : SchematicView -> SchematicView
+  view-zoom-in (v) = SchematicView {
+    sv-pan-x = v.sv-pan-x,
+    sv-pan-y = v.sv-pan-y,
+    sv-zoom-num = v.sv-zoom-num * 12 / 10,
+    sv-zoom-den = v.sv-zoom-den,
+    sv-screen-w = v.sv-screen-w,
+    sv-screen-h = v.sv-screen-h
+  }
+
+  view-zoom-out : SchematicView -> SchematicView
+  view-zoom-out (v) = SchematicView {
+    sv-pan-x = v.sv-pan-x,
+    sv-pan-y = v.sv-pan-y,
+    sv-zoom-num = v.sv-zoom-num * 10 / 12,
+    sv-zoom-den = v.sv-zoom-den,
+    sv-screen-w = v.sv-screen-w,
+    sv-screen-h = v.sv-screen-h
+  }
+
+  view-pan : SchematicView, Integer, Integer -> SchematicView
+  view-pan (v) (dx) (dy) = SchematicView {
+    sv-pan-x = v.sv-pan-x + dx * v.sv-zoom-den / v.sv-zoom-num,
+    sv-pan-y = v.sv-pan-y + dy * v.sv-zoom-den / v.sv-zoom-num,
+    sv-zoom-num = v.sv-zoom-num,
+    sv-zoom-den = v.sv-zoom-den,
+    sv-screen-w = v.sv-screen-w,
+    sv-screen-h = v.sv-screen-h
+  }
+
+Section: Grid
+
+  GridStyle =
+    | GridDots
+    | GridLines
+    | GridCrosses
+    | GridNone
+
+  SchematicGrid = record {
+    sg-spacing : Integer,
+    sg-style : GridStyle,
+    sg-color : Integer,
+    sg-visible : Integer
+  }
+
+  default-grid : SchematicGrid
+  default-grid = SchematicGrid {
+    sg-spacing = 1270000,
+    sg-style = GridDots,
+    sg-color = #333333,
+    sg-visible = 1
+  }
+
+  snap-to-grid : Integer, Integer -> Integer
+  snap-to-grid (coord) (grid-size) =
+    if grid-size <= 0 then coord
+    else let half = grid-size / 2
+    in if coord >= 0 then (coord + half) / grid-size * grid-size
+    else (coord - half) / grid-size * grid-size
+
+Section: Color Scheme
+
+  SchematicColors = record {
+    sc-background : Integer,
+    sc-wire : Integer,
+    sc-bus : Integer,
+    sc-junction : Integer,
+    sc-no-connect : Integer,
+    sc-label : Integer,
+    sc-global-label : Integer,
+    sc-power : Integer,
+    sc-symbol-body : Integer,
+    sc-symbol-pin : Integer,
+    sc-symbol-text : Integer,
+    sc-ref-des : Integer,
+    sc-value : Integer,
+    sc-grid : Integer,
+    sc-selection : Integer,
+    sc-cursor : Integer,
+    sc-erc-error : Integer,
+    sc-erc-warning : Integer
+  }
+
+  dark-schematic-colors : SchematicColors
+  dark-schematic-colors = SchematicColors {
+    sc-background = #1E1E1E,
+    sc-wire = #00CC00,
+    sc-bus = #0088CC,
+    sc-junction = #00CC00,
+    sc-no-connect = #CC0000,
+    sc-label = #00CCCC,
+    sc-global-label = #CC8800,
+    sc-power = #CC0000,
+    sc-symbol-body = #CC8800,
+    sc-symbol-pin = #00CC00,
+    sc-symbol-text = #CCCCCC,
+    sc-ref-des = #00CCCC,
+    sc-value = #CCCC00,
+    sc-grid = #333333,
+    sc-selection = #4488FF,
+    sc-cursor = #FFFFFF,
+    sc-erc-error = #FF0000,
+    sc-erc-warning = #FFAA00
+  }
+
+  light-schematic-colors : SchematicColors
+  light-schematic-colors = SchematicColors {
+    sc-background = #FFFFFF,
+    sc-wire = #008800,
+    sc-bus = #0000CC,
+    sc-junction = #008800,
+    sc-no-connect = #CC0000,
+    sc-label = #006666,
+    sc-global-label = #884400,
+    sc-power = #CC0000,
+    sc-symbol-body = #884400,
+    sc-symbol-pin = #008800,
+    sc-symbol-text = #000000,
+    sc-ref-des = #006666,
+    sc-value = #666600,
+    sc-grid = #DDDDDD,
+    sc-selection = #2244CC,
+    sc-cursor = #000000,
+    sc-erc-error = #FF0000,
+    sc-erc-warning = #CC8800
+  }
+
+Section: Render State
+
+  SchematicRenderState = record {
+    srs-view : SchematicView,
+    srs-grid : SchematicGrid,
+    srs-colors : SchematicColors,
+    srs-show-pin-names : Integer,
+    srs-show-pin-numbers : Integer,
+    srs-show-ref-des : Integer,
+    srs-show-values : Integer,
+    srs-show-grid : Integer,
+    srs-show-ratsnest : Integer,
+    srs-highlight-net : Integer
+  }
+
+  default-render-state : Integer, Integer -> SchematicRenderState
+  default-render-state (w) (h) = SchematicRenderState {
+    srs-view = default-schematic-view w h,
+    srs-grid = default-grid,
+    srs-colors = dark-schematic-colors,
+    srs-show-pin-names = 1,
+    srs-show-pin-numbers = 1,
+    srs-show-ref-des = 1,
+    srs-show-values = 1,
+    srs-show-grid = 1,
+    srs-show-ratsnest = 0,
+    srs-highlight-net = -1
+  }
+
+Section: Wire Rendering Helpers
+
+ Wire hop-over detection. When two wires cross without a junction,
+ one wire is drawn with a small arc to indicate no connection.
+
+  HopOver = record {
+    ho-x : Integer,
+    ho-y : Integer,
+    ho-radius : Integer,
+    ho-wire-index : Integer
+  }
+
+  wire-is-horizontal : Integer, Integer, Integer, Integer -> Integer
+  wire-is-horizontal (x1) (y1) (x2) (y2) = if y1 == y2 then 1 else 0
+
+  wire-is-vertical : Integer, Integer, Integer, Integer -> Integer
+  wire-is-vertical (x1) (y1) (x2) (y2) = if x1 == x2 then 1 else 0
+
+Section: Symbol Rendering Helpers
+
+  SymbolTransform = record {
+    st-origin-x : Integer,
+    st-origin-y : Integer,
+    st-rotation : Integer,
+    st-mirror : Integer
+  }
+
+  transform-point : SymbolTransform, Integer, Integer -> Integer
+  transform-point (xf) (lx) (ly) =
+    if xf.st-rotation == 0 then
+      if xf.st-mirror == 0 then xf.st-origin-x + lx
+      else xf.st-origin-x - lx
+    else if xf.st-rotation == 90 then
+      if xf.st-mirror == 0 then xf.st-origin-x - ly
+      else xf.st-origin-x + ly
+    else if xf.st-rotation == 180 then
+      if xf.st-mirror == 0 then xf.st-origin-x - lx
+      else xf.st-origin-x + lx
+    else
+      if xf.st-mirror == 0 then xf.st-origin-x + ly
+      else xf.st-origin-x - ly
+
+  transform-point-y : SymbolTransform, Integer, Integer -> Integer
+  transform-point-y (xf) (lx) (ly) =
+    if xf.st-rotation == 0 then xf.st-origin-y + ly
+    else if xf.st-rotation == 90 then xf.st-origin-y + lx
+    else if xf.st-rotation == 180 then xf.st-origin-y - ly
+    else xf.st-origin-y - lx

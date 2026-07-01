@@ -1,0 +1,172 @@
+Chapter: BoardMesh
+  cites Foreword chapter List
+
+ Converts PCB board data into 3D mesh geometry for rendering. Each
+ copper layer is extruded into a thin slab, vias become cylinders,
+ the board substrate is a thick slab between copper layers. Component
+ 3D models are placed at their footprint coordinates.
+
+Section: Vertex
+
+  Vertex3D = record {
+    v3-x : Integer,
+    v3-y : Integer,
+    v3-z : Integer
+  }
+
+  vertex-3d : Integer, Integer, Integer -> Vertex3D
+  vertex-3d (x) (y) (z) = Vertex3D { v3-x = x, v3-y = y, v3-z = z }
+
+Section: Triangle
+
+  Triangle3D = record {
+    tri-a : Vertex3D,
+    tri-b : Vertex3D,
+    tri-c : Vertex3D,
+    tri-color : Integer,
+    tri-normal-x : Integer,
+    tri-normal-y : Integer,
+    tri-normal-z : Integer
+  }
+
+Section: Mesh
+
+  Mesh3D = record {
+    m3-name : Text,
+    m3-triangles : List Triangle3D,
+    m3-triangle-count : Integer
+  }
+
+  empty-mesh : Text -> Mesh3D
+  empty-mesh (name) = Mesh3D {
+    m3-name = name,
+    m3-triangles = [],
+    m3-triangle-count = 0
+  }
+
+  mesh-add-triangle : Mesh3D, Triangle3D -> Mesh3D
+  mesh-add-triangle (m) (t) = Mesh3D {
+    m3-name = m.m3-name,
+    m3-triangles = list-push m.m3-triangles t,
+    m3-triangle-count = m.m3-triangle-count + 1
+  }
+
+Section: Layer Extrusion
+
+ Each copper layer is at a specific Z height determined by the
+ stack-up. The substrate fills the gap between copper layers.
+
+  LayerZ = record {
+    lz-layer-id : Integer,
+    lz-z-bottom : Integer,
+    lz-z-top : Integer,
+    lz-color : Integer
+  }
+
+  compute-layer-z : Integer, Integer, Integer, Integer -> LayerZ
+  compute-layer-z (layer-id) (layer-index) (copper-thickness) (dielectric-thickness) =
+    let z-base = layer-index * (copper-thickness + dielectric-thickness)
+    in LayerZ {
+      lz-layer-id = layer-id,
+      lz-z-bottom = z-base,
+      lz-z-top = z-base + copper-thickness,
+      lz-color = if layer-id == 0 then #CC0000
+        else if layer-id == 31 then #0000CC
+        else #00CC00
+    }
+
+Section: Board Slab
+
+ Generate two triangles forming a rectangular slab for a board
+ outline or track segment at a given Z height.
+
+  make-quad : Integer, Integer, Integer, Integer, Integer, Integer, Integer -> List Triangle3D
+  make-quad (x1) (y1) (x2) (y2) (z) (thickness) (color) =
+    let v0 = vertex-3d x1 y1 z
+    in let v1 = vertex-3d x2 y1 z
+    in let v2 = vertex-3d x2 y2 z
+    in let v3 = vertex-3d x1 y2 z
+    in let t0 = Triangle3D {
+      tri-a = v0, tri-b = v1, tri-c = v2,
+      tri-color = color,
+      tri-normal-x = 0, tri-normal-y = 0, tri-normal-z = 1000
+    }
+    in let t1 = Triangle3D {
+      tri-a = v0, tri-b = v2, tri-c = v3,
+      tri-color = color,
+      tri-normal-x = 0, tri-normal-y = 0, tri-normal-z = 1000
+    }
+    in [t0, t1]
+
+Section: Via Cylinder
+
+ Approximate a via as an 8-sided polygon extruded vertically.
+
+  via-segment-count : Integer
+  via-segment-count = 8
+
+Section: Board Scene
+
+ The complete 3D scene of a board: substrate mesh, per-layer copper
+ meshes, via meshes, and component model references.
+
+  ComponentModel3D = record {
+    cm3-ref : Text,
+    cm3-model-path : Text,
+    cm3-x : Integer,
+    cm3-y : Integer,
+    cm3-z : Integer,
+    cm3-rotation-x : Integer,
+    cm3-rotation-y : Integer,
+    cm3-rotation-z : Integer,
+    cm3-scale : Integer
+  }
+
+  BoardScene = record {
+    bs-substrate : Mesh3D,
+    bs-copper-layers : List Mesh3D,
+    bs-via-mesh : Mesh3D,
+    bs-component-models : List ComponentModel3D,
+    bs-board-width : Integer,
+    bs-board-height : Integer,
+    bs-total-thickness : Integer
+  }
+
+  empty-board-scene : Integer, Integer, Integer -> BoardScene
+  empty-board-scene (w) (h) (thickness) = BoardScene {
+    bs-substrate = empty-mesh "substrate",
+    bs-copper-layers = [],
+    bs-via-mesh = empty-mesh "vias",
+    bs-component-models = [],
+    bs-board-width = w,
+    bs-board-height = h,
+    bs-total-thickness = thickness
+  }
+
+  scene-add-copper-layer : BoardScene, Mesh3D -> BoardScene
+  scene-add-copper-layer (sc) (layer) = BoardScene {
+    bs-substrate = sc.bs-substrate,
+    bs-copper-layers = list-push sc.bs-copper-layers layer,
+    bs-via-mesh = sc.bs-via-mesh,
+    bs-component-models = sc.bs-component-models,
+    bs-board-width = sc.bs-board-width,
+    bs-board-height = sc.bs-board-height,
+    bs-total-thickness = sc.bs-total-thickness
+  }
+
+  scene-add-component-model : BoardScene, ComponentModel3D -> BoardScene
+  scene-add-component-model (sc) (cm) = BoardScene {
+    bs-substrate = sc.bs-substrate,
+    bs-copper-layers = sc.bs-copper-layers,
+    bs-via-mesh = sc.bs-via-mesh,
+    bs-component-models = list-push sc.bs-component-models cm,
+    bs-board-width = sc.bs-board-width,
+    bs-board-height = sc.bs-board-height,
+    bs-total-thickness = sc.bs-total-thickness
+  }
+
+  scene-component-count : BoardScene -> Integer
+  scene-component-count (sc) = list-length sc.bs-component-models
+
+  scene-copper-layer-count : BoardScene -> Integer
+  scene-copper-layer-count (sc) = list-length sc.bs-copper-layers

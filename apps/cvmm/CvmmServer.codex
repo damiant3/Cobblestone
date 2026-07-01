@@ -1,0 +1,240 @@
+Chapter: CvmmServer
+  cites Net chapter WebServer
+  cites Cvmm chapter CvmmTypes
+  cites Cvmm chapter CvmmState
+  cites Cvmm chapter CvmmRoutes
+  cites Cvmm chapter CvmmShell
+  cites Cvmm chapter CvmmDashboard
+  cites Cvmm chapter FileExplorer
+  cites Cvmm chapter DriveManager
+  cites Cvmm chapter UsbManager
+  cites Cvmm chapter ProcessManager
+  cites Cvmm chapter ServiceManager
+  cites Cvmm chapter PortMonitor
+  cites Cvmm chapter NetworkManager
+  cites Cvmm chapter DisplayManager
+  cites Cvmm chapter ServerManager
+  cites Cvmm chapter FleetManager
+  cites Cvmm chapter DeployManager
+  cites Cvmm chapter LogViewer
+  cites Cvmm chapter Terminal
+  cites Cvmm chapter Monitor
+
+ CVMM entry point. Boots the web server, initializes all manager
+ states with mock data for the VM environment, and enters the
+ request loop. Each request dispatches through CvmmRoutes to the
+ appropriate manager.
+
+Section: Mock Data
+
+  mock-explorer : ExplorerState
+  mock-explorer =
+    let root-entries = [
+      file-entry-new "codex" "/codex" FkDirectory 0,
+      file-entry-new "boot" "/boot" FkDirectory 0,
+      file-entry-new "dev" "/dev" FkDirectory 0,
+      file-entry-new "tmp" "/tmp" FkDirectory 0,
+      file-entry-new "home" "/home" FkDirectory 0,
+      file-entry-new "kernel.cdx" "/kernel.cdx" FkFile 2162688,
+      file-entry-new "config.json" "/config.json" FkFile 1024,
+      file-entry-new ".hidden" "/.hidden" FkFile 64
+    ]
+    in explorer-navigate explorer-new "/" root-entries
+
+  mock-drives : DriveManagerState
+  mock-drives =
+    let disk0 = physical-disk-new "disk0" "Codex Virtual IDE" BusIde 536870912
+    in let disk0-parts = __record-set disk0 "pd-partition-count" 2
+    in let p0 = Partition {
+      pt-id = "disk0p0", pt-disk-id = "disk0", pt-index = 0, pt-label = "boot",
+      pt-fs-type = FsFat32, pt-capacity = bytes 104857600, pt-used = bytes 31457280,
+      pt-mount-point = "/boot", pt-mounted = True, pt-bootable = True
+    }
+    in let p1 = Partition {
+      pt-id = "disk0p1", pt-disk-id = "disk0", pt-index = 1, pt-label = "root",
+      pt-fs-type = FsCdxFs, pt-capacity = bytes 429496729, pt-used = bytes 214748364,
+      pt-mount-point = "/", pt-mounted = True, pt-bootable = False
+    }
+    in dm-add-partition (dm-add-partition (dm-add-disk drive-manager-new disk0-parts) p0) p1
+
+  mock-usb : UsbManagerState
+  mock-usb =
+    let xhci = usb-device-new "xhci0" "xHCI Host Controller" UcHub SpeedSuper
+    in let kbd = __record-set (usb-device-new "kbd0" "Codex HID Keyboard" UcHid SpeedLow) "usb-parent-id" "xhci0"
+    in let msc = __record-set (usb-device-new "msc0" "Codex Mass Storage" UcMassStorage SpeedHigh) "usb-parent-id" "xhci0"
+    in let cam = __record-set (usb-device-new "cam0" "Codex UVC Camera" UcVideo SpeedHigh) "usb-parent-id" "xhci0"
+    in let st1 = um-add-device usb-manager-new xhci
+    in let st2 = um-add-device st1 kbd
+    in let st3 = um-add-device st2 msc
+    in let st4 = um-add-device st3 cam
+    in __record-set st4 "um-host-controllers" 1
+
+  mock-processes : ProcessManagerState
+  mock-processes =
+    let procs = [
+      ProcessEntry { proc-pid = 1, proc-name = "kernel", proc-state = ProcRunning, proc-cpu-percent = 5, proc-mem-bytes = megabytes 16, proc-threads = 4, proc-priority = PrioRealtime, proc-parent-pid = 0, proc-user = "system", proc-uptime = 3600, proc-open-files = 0, proc-affinity = 15 },
+      ProcessEntry { proc-pid = 2, proc-name = "scheduler", proc-state = ProcRunning, proc-cpu-percent = 2, proc-mem-bytes = megabytes 4, proc-threads = 1, proc-priority = PrioRealtime, proc-parent-pid = 1, proc-user = "system", proc-uptime = 3600, proc-open-files = 0, proc-affinity = 15 },
+      ProcessEntry { proc-pid = 10, proc-name = "net-stack", proc-state = ProcRunning, proc-cpu-percent = 8, proc-mem-bytes = megabytes 32, proc-threads = 2, proc-priority = PrioHigh, proc-parent-pid = 1, proc-user = "system", proc-uptime = 3590, proc-open-files = 12, proc-affinity = 15 },
+      ProcessEntry { proc-pid = 20, proc-name = "cvmm-server", proc-state = ProcRunning, proc-cpu-percent = 12, proc-mem-bytes = megabytes 64, proc-threads = 1, proc-priority = PrioNormal, proc-parent-pid = 1, proc-user = "system", proc-uptime = 3580, proc-open-files = 4, proc-affinity = 15 },
+      ProcessEntry { proc-pid = 30, proc-name = "usb-driver", proc-state = ProcSleeping, proc-cpu-percent = 0, proc-mem-bytes = megabytes 8, proc-threads = 1, proc-priority = PrioNormal, proc-parent-pid = 1, proc-user = "system", proc-uptime = 3590, proc-open-files = 3, proc-affinity = 15 },
+      ProcessEntry { proc-pid = 40, proc-name = "display-srv", proc-state = ProcRunning, proc-cpu-percent = 15, proc-mem-bytes = megabytes 128, proc-threads = 2, proc-priority = PrioHigh, proc-parent-pid = 1, proc-user = "system", proc-uptime = 3570, proc-open-files = 2, proc-affinity = 15 }
+    ]
+    in pm-update-processes proc-manager-new procs
+
+  mock-services : ServiceManagerState
+  mock-services =
+    let sched = __record-set (__record-set (service-new "sched" "Scheduler" SvcTypeSystem) "svc-state" SvcRunning) "svc-uptime" 3600
+    in let net = __record-set (__record-set (__record-set (__record-set (service-new "net" "Network Stack" SvcTypeNetwork) "svc-state" SvcRunning) "svc-uptime" 3590) "svc-dependencies" ["sched"]) "svc-dep-count" 1
+    in let usb-svc = __record-set (__record-set (__record-set (__record-set (service-new "usb" "USB Driver" SvcTypeSystem) "svc-state" SvcRunning) "svc-uptime" 3590) "svc-dependencies" ["sched"]) "svc-dep-count" 1
+    in let display = __record-set (__record-set (__record-set (__record-set (service-new "display" "Display Server" SvcTypeSystem) "svc-state" SvcRunning) "svc-uptime" 3570) "svc-dependencies" ["sched", "usb"]) "svc-dep-count" 2
+    in let web = __record-set (__record-set (__record-set (__record-set (__record-set (service-new "web" "CVMM Web Server" SvcTypeSystem) "svc-state" SvcRunning) "svc-uptime" 3580) "svc-dependencies" ["net"]) "svc-dep-count" 1) "svc-description" "Management dashboard on port 2682"
+    in let dhcp = __record-set (__record-set (__record-set (service-new "dhcp" "DHCP Client" SvcTypeNetwork) "svc-state" SvcStopped) "svc-dependencies" ["net"]) "svc-dep-count" 1
+    in let dns-svc = __record-set (__record-set (__record-set (__record-set (service-new "dns" "DNS Resolver" SvcTypeNetwork) "svc-state" SvcRunning) "svc-uptime" 3585) "svc-dependencies" ["net"]) "svc-dep-count" 1
+    in let fleet-svc = __record-set (__record-set (__record-set (__record-set (service-new "fleet" "Fleet Agent" SvcTypeNetwork) "svc-state" SvcRunning) "svc-uptime" 3560) "svc-dependencies" ["net", "dns"]) "svc-dep-count" 2
+    in sm-add-service (sm-add-service (sm-add-service (sm-add-service (sm-add-service (sm-add-service (sm-add-service (sm-add-service svc-manager-new sched) net) usb-svc) display) web) dhcp) dns-svc) fleet-svc
+
+  mock-ports : PortMonitorState
+  mock-ports =
+    let web-listener = PortListener {
+      pl-port = 9100, pl-protocol = ProtoTcp, pl-bind-addr = "0.0.0.0",
+      pl-service-id = "web", pl-service-name = "CVMM Web Server",
+      pl-pid = 20, pl-connections = 2, pl-bytes-in = kilobytes 512, pl-bytes-out = megabytes 8
+    }
+    in let fleet-listener = PortListener {
+      pl-port = 9200, pl-protocol = ProtoTcp, pl-bind-addr = "0.0.0.0",
+      pl-service-id = "fleet", pl-service-name = "Fleet Agent",
+      pl-pid = 50, pl-connections = 0, pl-bytes-in = kilobytes 32, pl-bytes-out = kilobytes 64
+    }
+    in let dns-listener = PortListener {
+      pl-port = 53, pl-protocol = ProtoUdp, pl-bind-addr = "0.0.0.0",
+      pl-service-id = "dns", pl-service-name = "DNS Resolver",
+      pl-pid = 45, pl-connections = 0, pl-bytes-in = kilobytes 128, pl-bytes-out = kilobytes 128
+    }
+    in let conn1 = NetConnection {
+      nc-id = "c1", nc-local-port = 9100, nc-remote-addr = "10.0.2.2",
+      nc-remote-port = 52431, nc-protocol = ProtoTcp, nc-state = ConnEstablished,
+      nc-bytes-in = kilobytes 256, nc-bytes-out = megabytes 4,
+      nc-pid = 20, nc-duration = 120
+    }
+    in let conn2 = NetConnection {
+      nc-id = "c2", nc-local-port = 9100, nc-remote-addr = "10.0.2.2",
+      nc-remote-port = 52432, nc-protocol = ProtoTcp, nc-state = ConnTimeWait,
+      nc-bytes-in = kilobytes 128, nc-bytes-out = megabytes 2,
+      nc-pid = 20, nc-duration = 45
+    }
+    in let fw-allow = FirewallRule {
+      fw-id = "fw1", fw-name = "Allow Web", fw-action = FwAllow,
+      fw-direction = FwInbound, fw-protocol = ProtoTcp,
+      fw-port = 9100, fw-remote-addr = "*", fw-enabled = True, fw-hit-count = 1024
+    }
+    in let fw-deny = FirewallRule {
+      fw-id = "fw2", fw-name = "Deny External SSH", fw-action = FwDeny,
+      fw-direction = FwInbound, fw-protocol = ProtoTcp,
+      fw-port = 22, fw-remote-addr = "*", fw-enabled = True, fw-hit-count = 37
+    }
+    in let st0 = portmon-add-listener (portmon-add-listener (portmon-add-listener port-monitor-new web-listener) fleet-listener) dns-listener
+    in let st1 = portmon-add-connection (portmon-add-connection st0 conn1) conn2
+    in portmon-add-rule (portmon-add-rule st1 fw-allow) fw-deny
+
+  mock-network : NetworkManagerState
+  mock-network =
+    let ne2k = nic-new "eth0" "NE2000" NicEthernet "52:54:00:12:34:56"
+    in let ne2k-ip = nic-add-address ne2k (ip-address-new "10.0.2.15" 24)
+    in let lo = nic-new "lo" "Loopback" NicLoopback "00:00:00:00:00:00"
+    in let lo-ip = nic-add-address lo (ip-address-new "127.0.0.1" 8)
+    in let st = nm-add-nic (nm-add-nic net-manager-new ne2k-ip) lo-ip
+    in let dns = DnsServer { dns-addr = "10.0.2.3", dns-name = "gateway", dns-latency-ms = 1, dns-queries = 0, dns-primary = True }
+    in let route = RouteEntry { rt-destination = "0.0.0.0/0", rt-gateway = "10.0.2.2", rt-interface = "eth0", rt-metric = 100, rt-type = "default" }
+    in nm-add-route (nm-add-dns st dns) route
+
+  mock-display : DisplayManagerState
+  mock-display =
+    let vga = gpu-new "gpu0" "Bochs VBE" GpuVirtual 16777216
+    in let mon = display-monitor-new "mon0" "Virtual Display" ConnVirtual
+    in let mon-primary = __record-set mon "mon-primary" True
+    in disp-add-monitor (disp-add-gpu display-manager-new vga) mon-primary
+
+  mock-logs : LogViewerState
+  mock-logs =
+    let lv = log-viewer-new
+    in let lv1 = lv-append lv 0 SrcKernel LogInfo "Codex OS booting"
+    in let lv2 = lv-append lv1 1 SrcKernel LogInfo "Memory: 2048 MB detected"
+    in let lv3 = lv-append lv2 2 SrcKernel LogInfo "CPU: x86-64 identified"
+    in let lv4 = lv-append lv3 3 SrcScheduler LogInfo "Preemptive scheduler started"
+    in let lv5 = lv-append lv4 4 SrcNetwork LogInfo "NE2K NIC initialized at 10.0.2.15"
+    in let lv6 = lv-append lv5 5 SrcUsb LogInfo "xHCI controller found, 3 devices"
+    in let lv7 = lv-append lv6 6 SrcDisplay LogInfo "Bochs VBE 1024x768 initialized"
+    in let lv8 = lv-append lv7 7 (SrcService "web") LogInfo "CVMM web server listening on :9100"
+    in let lv9 = lv-append lv8 8 (SrcService "fleet") LogInfo "Fleet agent started, discovery active"
+    in let lv10 = lv-append lv9 9 SrcNetwork LogWarn "DNS resolution slow (>100ms)"
+    in let lv11 = lv-append lv10 10 (SrcService "dhcp") LogDebug "DHCP client not started (static config)"
+    in lv11
+
+  mock-terminal : TerminalState
+  mock-terminal =
+    let t = terminal-new 25 80
+    in let t1 = term-writeln t "Codex OS v0.1 (bare-metal x86-64)"
+    in let t2 = term-writeln t1 "Kernel: Codex.cdx 2126879 bytes"
+    in let t3 = term-writeln t2 "Memory: 2048 MB"
+    in let t4 = term-writeln t3 "NIC: NE2K 10.0.2.15/24"
+    in let t5 = term-writeln t4 "USB: xHCI (3 devices)"
+    in let t6 = term-writeln t5 "Display: Bochs VBE 1024x768"
+    in let t7 = term-writeln t6 ""
+    in let t8 = term-writeln t7 "Type 'help' for available commands."
+    in let t9 = term-write t8 "codex> "
+    in t9
+
+  mock-views : ManagerViews
+  mock-views = ManagerViews {
+    mv-file = mock-explorer,
+    mv-drive = mock-drives,
+    mv-usb = mock-usb,
+    mv-proc = mock-processes,
+    mv-service = mock-services,
+    mv-port = mock-ports,
+    mv-net = mock-network,
+    mv-display = mock-display,
+    mv-server = server-manager-new,
+    mv-fleet = fleet-manager-new,
+    mv-deploy = deploy-manager-new,
+    mv-log = mock-logs,
+    mv-terminal = mock-terminal,
+    mv-mesh-group = group-new "codex-mesh" "local",
+    mv-mesh-health = health-checker-new
+  }
+
+Section: Summary from Views
+
+  summary-from-views : ManagerViews -> SystemSummary
+  summary-from-views (v) = SystemSummary {
+    sys-hostname = "codex-vm",
+    sys-device = DeviceId { dev-uuid = "local", dev-name = "codex-vm", dev-kind = DevVirtualMachine },
+    sys-status = StatusOnline,
+    sys-uptime = Uptime { ut-seconds = 3600 },
+    sys-cpu-percent = (v.mv-proc).pm-total-cpu,
+    sys-mem-used = (v.mv-proc).pm-total-mem,
+    sys-mem-total = megabytes 2048,
+    sys-disk-used = bytes 246205644,
+    sys-disk-total = bytes 536870912,
+    sys-process-count = (v.mv-proc).pm-count,
+    sys-service-count = (v.mv-service).sm-count,
+    sys-port-count = (v.mv-port).pm-listener-count,
+    sys-nic-count = (v.mv-net).nm-nic-count,
+    sys-fleet-count = (v.mv-fleet).fm-node-count
+  }
+
+Section: Entry
+
+  route : ManagerViews, AppState, Text -> Text
+  route (views) (st) (path) = cvmm-route st views path
+
+  opening : [Console] Nothing =
+    let views = mock-views
+    in let summary = summary-from-views views
+    in let st = __record-set app-state-new "app-summary" summary
+    in act
+      r <- web-serve-framed (\path -> route views st path)
+      print-line-uni "CVMM SHUTDOWN"
+    end
+
+Page 1

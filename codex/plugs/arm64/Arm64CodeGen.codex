@@ -1,0 +1,1726 @@
+Chapter: Arm64 Code Generator
+  cites Foreword chapter Arm64Encoder
+  cites Plug chapter Plug Types
+  cites Plug chapter Plug Chain (FuncEntry, FuncTable, bare-metal-load-addr)
+  cites Foreword chapter CCE (cce-to-unicode-table)
+
+ ARM64 (AArch64) code generator for the plug pipeline.
+ Receives parsed IR, emits machine code bytes and metadata
+ in the x86-output wire format for chaining to ELF/PE plugs.
+ Transliterated from old/src/Codex.Emit.Arm64/Arm64CodeGen.cs.
+
+Section: Register Constants
+
+  a64-x0 : Integer = 0
+  a64-x1 : Integer = 1
+  a64-x2 : Integer = 2
+  a64-x3 : Integer = 3
+  a64-x4 : Integer = 4
+  a64-x5 : Integer = 5
+  a64-x6 : Integer = 6
+  a64-x7 : Integer = 7
+  a64-x8 : Integer = 8
+  a64-x9 : Integer = 9
+  a64-x10 : Integer = 10
+  a64-x11 : Integer = 11
+  a64-x12 : Integer = 12
+  a64-x13 : Integer = 13
+  a64-x14 : Integer = 14
+  a64-x15 : Integer = 15
+  a64-x19 : Integer = 19
+  a64-x20 : Integer = 20
+  a64-x21 : Integer = 21
+  a64-x22 : Integer = 22
+  a64-x23 : Integer = 23
+  a64-x24 : Integer = 24
+  a64-x25 : Integer = 25
+  a64-x26 : Integer = 26
+  a64-x27 : Integer = 27
+  a64-x28 : Integer = 28
+  a64-fp : Integer = 29
+  a64-lr : Integer = 30
+  a64-sp : Integer = 31
+  a64-xzr : Integer = 31
+  a64-heap-reg : Integer = 28
+  a64-try-fail-flag-addr : Integer = #40000010
+
+Section: Architecture Profile
+
+  A64ArchProfile = record {
+   name : Text,
+   clock-hz : Integer,
+   cycles-alu : Integer,
+   cycles-mul : Integer,
+   cycles-div : Integer,
+   cycles-load : Integer,
+   cycles-store : Integer,
+   cycles-branch : Integer,
+   cycles-branch-not : Integer
+  }
+
+  a64-cortex-a72 : A64ArchProfile = A64ArchProfile {
+   name = "Cortex-A72 (ARMv8-A)",
+   clock-hz = 1500000000,
+   cycles-alu = 1,
+   cycles-mul = 3,
+   cycles-div = 12,
+   cycles-load = 4,
+   cycles-store = 1,
+   cycles-branch = 1,
+   cycles-branch-not = 0
+  }
+
+Section: Codegen State
+
+  A64Local = record {
+   name : Text,
+   reg : Integer between 0 and 255
+  }
+
+  A64TcoState = record {
+   active : Boolean,
+   in-tail-pos : Boolean,
+   loop-top : Integer,
+   param-locals : List Integer,
+   temp-locals : List Integer,
+   current-func : Text,
+   saved-next-local : Integer,
+   saved-next-temp : Integer,
+   effect-op-addrs : List A64EffectOpAddr
+  }
+
+  A64EffectOpAddr = record {
+   eoa-name : Text,
+   eoa-addr : Integer
+  }
+
+  A64Extra = record {
+   effect-op-addrs : List A64EffectOpAddr,
+   handler-table-base : Integer,
+   type-defs : List ATypeDef,
+   learned-fields : List A64LearnedField,
+   wcet-reports : List Text,
+   state-local : Integer
+  }
+
+  A64State = record {
+   code-buf : Integer,
+   code-pos : Integer,
+   data : List Integer,
+   insn-count : Integer,
+   func-names : List Text,
+   func-offsets : List Integer,
+   func-arities : List Integer,
+   call-patches : List A64CallPatch,
+   func-addr-fixups : List A64FuncAddrFixup,
+   rodata-fixups : List A64RodataFixup,
+   locals : List A64Local,
+   next-temp : Integer,
+   next-local : Integer,
+   peak-local : Integer,
+   spill-count : Integer,
+   prologue-index : Integer,
+   extra : A64Extra,
+   current-func : Text,
+   tco : A64TcoState,
+   string-offsets : List A64StringEntry
+  }
+
+  A64CallPatch = record {
+   insn-index : Integer,
+   target : Text
+  }
+
+  A64FuncAddrFixup = record {
+   insn-index : Integer,
+   rd : Integer,
+   target : Text
+  }
+
+  A64RodataFixup = record {
+   insn-index : Integer,
+   rd : Integer,
+   rodata-offset : Integer
+  }
+
+  A64StringEntry = record {
+   value : Text,
+   offset : Integer
+  }
+
+  A64LearnedField = record {
+   ftype : Text,
+   fname : Text,
+   findex : Integer
+  }
+
+  A64EmitResult = record {
+   state : A64State,
+   reg : Integer
+  }
+
+Section: State Constructors
+
+  default-a64-tco : A64TcoState
+  default-a64-tco = A64TcoState {
+   active = False,
+   in-tail-pos = False,
+   loop-top = 0,
+   param-locals = [],
+   temp-locals = [],
+   current-func = "",
+   saved-next-local = 0,
+   saved-next-temp = 0,
+   effect-op-addrs = []
+  }
+
+  a64-code-buf-size : Integer = 16777216
+
+  mutable A64EffectCell = record {
+   eff-cell-addrs : List A64EffectOpAddr
+  }
+
+  a64-effect-cell : A64EffectCell = A64EffectCell { eff-cell-addrs = [] }
+
+  a64-store-effect-addrs : List A64EffectOpAddr -> List A64EffectOpAddr
+  a64-store-effect-addrs (addrs) =
+   let stored = a64-effect-cell.eff-cell-addrs = addrs
+   in addrs
+
+  a64-load-effect-addrs : List A64EffectOpAddr
+  a64-load-effect-addrs = a64-effect-cell.eff-cell-addrs
+
+  make-a64-state : A64State
+  make-a64-state =
+   let buf = alloc-bytes a64-code-buf-size
+   in A64State {
+    code-buf = buf,
+    code-pos = 0,
+    data = [],
+    insn-count = 0,
+    func-names = [],
+    func-offsets = [],
+    func-arities = [],
+    call-patches = [],
+    func-addr-fixups = [],
+    rodata-fixups = [],
+    locals = [],
+    next-temp = a64-x12,
+    next-local = a64-x19,
+    peak-local = a64-x19,
+    spill-count = 0,
+    prologue-index = 0 - 1,
+    extra = A64Extra {
+     effect-op-addrs = [],
+     handler-table-base = 0,
+     type-defs = [],
+     learned-fields = [],
+     wcet-reports = [],
+     state-local = 0 - 1
+    },
+    current-func = "",
+    tco = default-a64-tco,
+    string-offsets = []
+   }
+
+Section: Emit Helpers
+
+  a64-emit : A64State, List Integer -> A64State
+  a64-emit (st) (insn-bytes) =
+   let pos = st.code-pos
+   in let w0 = __buf-write-byte (st.code-buf) pos (list-at insn-bytes 0)
+   in let w1 = __buf-write-byte (st.code-buf) (pos + 1) (list-at insn-bytes 1)
+   in let w2 = __buf-write-byte (st.code-buf) (pos + 2) (list-at insn-bytes 2)
+   in let w3 = __buf-write-byte (st.code-buf) (pos + 3) (list-at insn-bytes 3)
+   in __record-set (__record-set st "code-pos" (pos + 4)) "insn-count" (st.insn-count + 1)
+
+  a64-emit-block : A64State, List Integer, Integer, Integer -> A64State
+  a64-emit-block (st) (bytes) (i) (len) =
+   if i >= len then st
+   else let insn = [list-at bytes i, list-at bytes (i + 1), list-at bytes (i + 2), list-at bytes (i + 3)]
+   in a64-emit-block (a64-emit st insn) bytes (i + 4) len
+
+  a64-record-func : A64State, Text -> A64State
+  a64-record-func (st) (name) =
+   let st1 = __record-set st "func-names" (list-push (st.func-names) name)
+   in let st2 = __record-set st1 "func-offsets" (list-push (st.func-offsets) (st.insn-count))
+   in __record-set st2 "func-arities" (list-push (st2.func-arities) 0)
+
+  a64-record-func-with-arity : A64State, Text, Integer -> A64State
+  a64-record-func-with-arity (st) (name) (arity) =
+   let st1 = __record-set st "func-names" (list-push (st.func-names) name)
+   in let st2 = __record-set st1 "func-offsets" (list-push (st.func-offsets) (st.insn-count))
+   in __record-set st2 "func-arities" (list-push (st2.func-arities) arity)
+
+  a64-find-func-arity : List Text, List Integer, Text, Integer -> Integer
+  a64-find-func-arity (names) (arities) (target) (i) =
+   if i >= list-length names then 0
+   else if list-at names i == target then list-at arities i
+   else a64-find-func-arity names arities target (i + 1)
+
+  a64-add-call-patch : A64State, Text -> A64State
+  a64-add-call-patch (st) (target) =
+   __record-set st "call-patches" (list-push (st.call-patches) (A64CallPatch { insn-index = st.insn-count, target = target }))
+
+  a64-add-func-addr-fixup : A64State, Integer, Text -> A64State
+  a64-add-func-addr-fixup (st) (rd) (target) =
+   __record-set st "func-addr-fixups" (list-push (st.func-addr-fixups) (A64FuncAddrFixup { insn-index = st.insn-count, rd = rd, target = target }))
+
+  a64-add-rodata-fixup : A64State, Integer, Integer -> A64State
+  a64-add-rodata-fixup (st) (rd) (rodata-offset) =
+   __record-set st "rodata-fixups" (list-push (st.rodata-fixups) (A64RodataFixup { insn-index = st.insn-count, rd = rd, rodata-offset = rodata-offset }))
+
+Section: Register Allocation
+
+  a64-spill-base : Integer = 64
+
+  a64-alloc-temp : A64State -> A64EmitResult
+  a64-alloc-temp (st) =
+   let reg = a64-x12 + int-mod (st.next-temp - a64-x12) 4
+   in A64EmitResult {
+    state = __record-set st "next-temp" (st.next-temp + 1),
+    reg = reg
+   }
+
+  a64-update-peak : A64State -> A64State
+  a64-update-peak (st) =
+   if st.next-local > st.peak-local then __record-set st "peak-local" (st.next-local)
+   else st
+
+  a64-alloc-local : A64State -> A64EmitResult
+  a64-alloc-local (st) =
+   let nl = if st.next-local == a64-x12 then 16 else st.next-local
+   in if nl <= a64-x27
+   then let st1 = __record-set st "next-local" (nl + 1)
+   in A64EmitResult {
+    state = a64-update-peak st1,
+    reg = nl
+   }
+   else let slot = a64-spill-base + st.spill-count
+   in let st1 = __record-set (__record-set st "next-local" (nl + 1)) "spill-count" (st.spill-count + 1)
+   in A64EmitResult {
+    state = a64-update-peak st1,
+    reg = slot
+   }
+
+  a64-is-temp-reg : Integer -> Boolean
+  a64-is-temp-reg (r) = if r >= 12 then r < 16 else False
+
+  a64-retarget-last-rd : A64State, Integer -> A64State
+  a64-retarget-last-rd (st) (new-rd) =
+   let pos = (st.insn-count - 1) * 4
+   in let byte0 = peek-byte (st.code-buf) pos
+   in let patched = bit-or (bit-and byte0 #E0) new-rd
+   in let w = __buf-write-byte (st.code-buf) pos patched
+   in st
+
+  a64-can-retarget-last : A64State, Integer -> Boolean
+  a64-can-retarget-last (st) (value-reg) = False
+
+  a64-is-mov-temp-to-local : Integer, Integer, Integer, Integer -> Boolean
+  a64-is-mov-temp-to-local (b0) (b1) (b2) (b3) =
+   if b3 /= #AA then False
+   else if b1 /= 3 then False
+   else if bit-and b0 #E0 /= #E0 then False
+   else a64-is-temp-reg (bit-and b2 31)
+
+  a64-is-dp-byte3 : Integer -> Boolean
+  a64-is-dp-byte3 (b3) =
+   if b3 == #91 then True
+   else if b3 == #D1 then True
+   else if b3 == #8B then True
+   else if b3 == #CB then True
+   else if b3 == #9B then True
+   else if b3 == #9A then True
+   else if b3 == #8A then True
+   else if b3 == #CA then True
+   else False
+
+  a64-peephole-mov-elim : A64State, Integer, Integer -> A64State
+  a64-peephole-mov-elim (st) (i) (stop) =
+   if i >= stop then st
+   else if i < 1 then a64-peephole-mov-elim st (i + 1) stop
+   else let pos = i * 4
+   in let b0 = peek-byte (st.code-buf) pos
+   in let b1 = peek-byte (st.code-buf) (pos + 1)
+   in let b2 = peek-byte (st.code-buf) (pos + 2)
+   in let b3 = peek-byte (st.code-buf) (pos + 3)
+   in if a64-is-mov-temp-to-local b0 b1 b2 b3 then
+    let mov-rd = bit-and b0 31
+    in let mov-rm = bit-and b2 31
+    in let prev-pos = (i - 1) * 4
+    in let pb0 = peek-byte (st.code-buf) prev-pos
+    in let pb3 = peek-byte (st.code-buf) (prev-pos + 3)
+    in if bit-and pb0 31 == mov-rm then
+     if a64-is-dp-byte3 pb3 then
+      let w = __buf-write-byte (st.code-buf) prev-pos (bit-or (bit-and pb0 #E0) mov-rd)
+      in let st1 = a64-patch-insn st i arm64-nop
+      in a64-peephole-mov-elim st1 (i + 1) stop
+     else a64-peephole-mov-elim st (i + 1) stop
+    else a64-peephole-mov-elim st (i + 1) stop
+   else a64-peephole-mov-elim st (i + 1) stop
+
+Section: NOP Compaction
+
+  a64-is-nop-word : A64State, Integer -> Boolean
+  a64-is-nop-word (st) (idx) =
+   let p = idx * 4
+   in if peek-byte (st.code-buf) p /= #1F then False
+   else if peek-byte (st.code-buf) (p + 1) /= #20 then False
+   else if peek-byte (st.code-buf) (p + 2) /= #03 then False
+   else peek-byte (st.code-buf) (p + 3) == #D5
+
+  a64-idx-is-placeholder : Integer, List A64CallPatch, List A64RodataFixup, List A64FuncAddrFixup -> Boolean
+  a64-idx-is-placeholder (idx) (cps) (rfs) (fafs) =
+   a64-cp-has idx cps 0 | a64-rf-has idx rfs 0 | a64-fa-has idx fafs 0 | a64-fa-has (idx - 1) fafs 0
+
+  a64-cp-has : Integer, List A64CallPatch, Integer -> Boolean
+  a64-cp-has (idx) (ps) (i) =
+   if i >= list-length ps then False
+   else if (list-at ps i).insn-index == idx then True
+   else a64-cp-has idx ps (i + 1)
+
+  a64-rf-has : Integer, List A64RodataFixup, Integer -> Boolean
+  a64-rf-has (idx) (fs) (i) =
+   if i >= list-length fs then False
+   else if (list-at fs i).insn-index == idx then True
+   else a64-rf-has idx fs (i + 1)
+
+  a64-fa-has : Integer, List A64FuncAddrFixup, Integer -> Boolean
+  a64-fa-has (idx) (fs) (i) =
+   if i >= list-length fs then False
+   else if (list-at fs i).insn-index == idx then True
+   else a64-fa-has idx fs (i + 1)
+
+  a64-gather-nops : A64State, Integer, Integer, List Integer -> List Integer
+  a64-gather-nops (st) (i) (stop) (acc) =
+   if i >= stop then acc
+   else if a64-is-nop-word st i then
+    if a64-idx-is-placeholder i (st.call-patches) (st.rodata-fixups) (st.func-addr-fixups) then
+     a64-gather-nops st (i + 1) stop acc
+    else a64-gather-nops st (i + 1) stop (list-push acc i)
+   else a64-gather-nops st (i + 1) stop acc
+
+  a64-cnt-before : List Integer, Integer, Integer, Integer -> Integer
+  a64-cnt-before (ns) (tgt) (i) (c) =
+   if i >= list-length ns then c
+   else if list-at ns i >= tgt then c
+   else a64-cnt-before ns tgt (i + 1) (c + 1)
+
+  a64-prev-is-uncond-branch : A64State, Integer -> Boolean
+  a64-prev-is-uncond-branch (st) (idx) =
+   if idx <= 0 then False
+   else let p = (idx - 1) * 4
+   in let b3 = peek-byte (st.code-buf) (p + 3)
+   in if bit-and b3 #FC /= #14 then False
+   else let b0 = peek-byte (st.code-buf) p
+   in let b1 = peek-byte (st.code-buf) (p + 1)
+   in let b2 = peek-byte (st.code-buf) (p + 2)
+   in let raw = bit-or (bit-or (bit-or b0 (bit-shl b1 8)) (bit-shl b2 16)) (bit-shl (bit-and b3 3) 24)
+   in raw >= #2000000
+
+  a64-is-pc-rel-branch : Integer -> Boolean
+  a64-is-pc-rel-branch (b3) =
+   if bit-and b3 #FC == #14 then True
+   else if b3 == #54 then True
+   else if b3 == #B4 then True
+   else if b3 == #B5 then True
+   else if b3 == #34 then True
+   else if b3 == #35 then True
+   else if b3 == #36 then True
+   else if b3 == #37 then True
+   else False
+
+  a64-is-tbz-tbnz : Integer -> Boolean
+  a64-is-tbz-tbnz (b3) = b3 == #36 | b3 == #37
+
+  a64-decode-br-imm : Integer, Integer, Integer, Integer -> Integer
+  a64-decode-br-imm (b0) (b1) (b2) (b3) =
+   if bit-and b3 #FC == #14 then
+    let raw = bit-or (bit-or (bit-or b0 (bit-shl b1 8)) (bit-shl b2 16)) (bit-shl (bit-and b3 3) 24)
+    in if raw >= #2000000 then raw - #4000000 else raw
+   else if a64-is-tbz-tbnz b3 then
+    let raw = bit-and (bit-or (bit-or (bit-shru b0 5) (bit-shl b1 3)) (bit-shl b2 11)) #3FFF
+    in if raw >= #2000 then raw - #4000 else raw
+   else let raw = bit-and (bit-or (bit-or (bit-shru b0 5) (bit-shl b1 3)) (bit-shl b2 11)) #7FFFF
+   in if raw >= #40000 then raw - #80000 else raw
+
+  a64-encode-br-imm : A64State, Integer, Integer, Integer, Integer -> A64State
+  a64-encode-br-imm (st) (pos) (b0) (b3) (imm) =
+   if bit-and b3 #FC == #14 then
+    let u = if imm < 0 then imm + #4000000 else imm
+    in let w0 = __buf-write-byte (st.code-buf) pos (bit-and u #FF)
+    in let w1 = __buf-write-byte (st.code-buf) (pos + 1) (bit-and (bit-shru u 8) #FF)
+    in let w2 = __buf-write-byte (st.code-buf) (pos + 2) (bit-and (bit-shru u 16) #FF)
+    in let w3 = __buf-write-byte (st.code-buf) (pos + 3) (bit-or (bit-and b3 #FC) (bit-and (bit-shru u 24) 3))
+    in st
+   else if a64-is-tbz-tbnz b3 then
+    let u = if imm < 0 then imm + #4000 else imm
+    in let sh = bit-shl u 5
+    in let w0 = __buf-write-byte (st.code-buf) pos (bit-or (bit-and b0 #1F) (bit-and sh #FF))
+    in let w1 = __buf-write-byte (st.code-buf) (pos + 1) (bit-and (bit-shru sh 8) #FF)
+    in let w2 = __buf-write-byte (st.code-buf) (pos + 2) (bit-and (bit-shru sh 16) #FF)
+    in st
+   else let u = if imm < 0 then imm + #80000 else imm
+   in let sh = bit-shl u 5
+   in let w0 = __buf-write-byte (st.code-buf) pos (bit-or (bit-and b0 #1F) (bit-and sh #FF))
+   in let w1 = __buf-write-byte (st.code-buf) (pos + 1) (bit-and (bit-shru sh 8) #FF)
+   in let w2 = __buf-write-byte (st.code-buf) (pos + 2) (bit-and (bit-shru sh 16) #FF)
+   in st
+
+  a64-is-adr-insn : Integer -> Boolean
+  a64-is-adr-insn (b3) = bit-and b3 #9F == #10
+
+  a64-decode-adr-imm : Integer, Integer, Integer, Integer -> Integer
+  a64-decode-adr-imm (b0) (b1) (b2) (b3) =
+   let immlo = bit-and (bit-shru b3 5) 3
+   in let immhi = bit-and (bit-or (bit-or (bit-shru b0 5) (bit-shl b1 3)) (bit-shl b2 11)) #7FFFF
+   in let raw = bit-or (bit-shl immhi 2) immlo
+   in if raw >= #100000 then raw - #200000 else raw
+
+  a64-fix-branches : A64State, List Integer, Integer, Integer -> A64State
+  a64-fix-branches (st) (nops) (i) (stop) =
+   if i >= stop then st
+   else let p = i * 4
+   in let b3 = peek-byte (st.code-buf) (p + 3)
+   in if a64-is-pc-rel-branch b3 then
+    let b0 = peek-byte (st.code-buf) p
+    in let b1 = peek-byte (st.code-buf) (p + 1)
+    in let b2 = peek-byte (st.code-buf) (p + 2)
+    in let old-imm = a64-decode-br-imm b0 b1 b2 b3
+    in let tgt = i + old-imm
+    in let delta = a64-cnt-before nops tgt 0 0 - a64-cnt-before nops i 0 0
+    in let st1 = a64-encode-br-imm st p b0 b3 (old-imm - delta)
+    in a64-fix-branches st1 nops (i + 1) stop
+   else if a64-is-adr-insn b3 then
+    let b0 = peek-byte (st.code-buf) p
+    in let b1 = peek-byte (st.code-buf) (p + 1)
+    in let b2 = peek-byte (st.code-buf) (p + 2)
+    in let old-byte-off = a64-decode-adr-imm b0 b1 b2 b3
+    in let tgt = i + old-byte-off / 4
+    in let delta = a64-cnt-before nops tgt 0 0 - a64-cnt-before nops i 0 0
+    in let new-byte-off = old-byte-off - delta * 4
+    in let adr-insn = a64-encode-adr-signed (bit-and b0 #1F) new-byte-off
+    in let w0 = __buf-write-byte (st.code-buf) p (list-at adr-insn 0)
+    in let w1 = __buf-write-byte (st.code-buf) (p + 1) (list-at adr-insn 1)
+    in let w2 = __buf-write-byte (st.code-buf) (p + 2) (list-at adr-insn 2)
+    in let w3 = __buf-write-byte (st.code-buf) (p + 3) (list-at adr-insn 3)
+    in a64-fix-branches st nops (i + 1) stop
+   else a64-fix-branches st nops (i + 1) stop
+
+  a64-slide-insns : A64State, List Integer, Integer, Integer, Integer -> A64State
+  a64-slide-insns (st) (nops) (src) (dst) (stop) =
+   if src >= stop then __record-set (__record-set st "insn-count" dst) "code-pos" (dst * 4)
+   else if a64-cnt-before nops (src + 1) 0 0 > a64-cnt-before nops src 0 0 then
+    a64-slide-insns st nops (src + 1) dst stop
+   else if src == dst then a64-slide-insns st nops (src + 1) (dst + 1) stop
+   else let sp = src * 4
+   in let dp = dst * 4
+   in let w0 = __buf-write-byte (st.code-buf) dp (peek-byte (st.code-buf) sp)
+   in let w1 = __buf-write-byte (st.code-buf) (dp + 1) (peek-byte (st.code-buf) (sp + 1))
+   in let w2 = __buf-write-byte (st.code-buf) (dp + 2) (peek-byte (st.code-buf) (sp + 2))
+   in let w3 = __buf-write-byte (st.code-buf) (dp + 3) (peek-byte (st.code-buf) (sp + 3))
+   in a64-slide-insns st nops (src + 1) (dst + 1) stop
+
+  a64-shift-patches : List A64CallPatch, List Integer, Integer, Integer, Integer, List A64CallPatch -> List A64CallPatch
+  a64-shift-patches (ps) (nops) (fs) (fe) (i) (acc) =
+   if i >= list-length ps then acc
+   else let p = list-at ps i
+   in let s = if p.insn-index < fs then 0 else if p.insn-index < fe then a64-cnt-before nops (p.insn-index) 0 0 else list-length nops
+   in a64-shift-patches ps nops fs fe (i + 1) (list-push acc (A64CallPatch { insn-index = p.insn-index - s, target = p.target }))
+
+  a64-shift-rodata : List A64RodataFixup, List Integer, Integer, Integer, Integer, List A64RodataFixup -> List A64RodataFixup
+  a64-shift-rodata (fs) (nops) (fst) (fe) (i) (acc) =
+   if i >= list-length fs then acc
+   else let f = list-at fs i
+   in let s = if f.insn-index < fst then 0 else if f.insn-index < fe then a64-cnt-before nops (f.insn-index) 0 0 else list-length nops
+   in a64-shift-rodata fs nops fst fe (i + 1) (list-push acc (A64RodataFixup { insn-index = f.insn-index - s, rd = f.rd, rodata-offset = f.rodata-offset }))
+
+  a64-shift-faddrs : List A64FuncAddrFixup, List Integer, Integer, Integer, Integer, List A64FuncAddrFixup -> List A64FuncAddrFixup
+  a64-shift-faddrs (fs) (nops) (fst) (fe) (i) (acc) =
+   if i >= list-length fs then acc
+   else let f = list-at fs i
+   in let s = if f.insn-index < fst then 0 else if f.insn-index < fe then a64-cnt-before nops (f.insn-index) 0 0 else list-length nops
+   in a64-shift-faddrs fs nops fst fe (i + 1) (list-push acc (A64FuncAddrFixup { insn-index = f.insn-index - s, rd = f.rd, target = f.target }))
+
+  a64-shift-offsets : List Integer, List Integer, Integer, Integer, Integer, List Integer -> List Integer
+  a64-shift-offsets (offs) (nops) (fst) (fe) (i) (acc) =
+   if i >= list-length offs then acc
+   else let o = list-at offs i
+   in let s = if o < fst then 0 else if o < fe then a64-cnt-before nops o 0 0 else list-length nops
+   in a64-shift-offsets offs nops fst fe (i + 1) (list-push acc (o - s))
+
+  a64-compact-function : A64State, Integer, Integer -> A64State
+  a64-compact-function (st) (fst) (fe) =
+   let nops = a64-gather-nops st fst fe []
+   in if list-length nops == 0 then st
+   else let st1 = a64-fix-branches st nops fst fe
+   in let st2 = a64-slide-insns st1 nops fst fst fe
+   in let st3 = __record-set st2 "call-patches" (a64-shift-patches (st2.call-patches) nops fst fe 0 [])
+   in let st4 = __record-set st3 "rodata-fixups" (a64-shift-rodata (st3.rodata-fixups) nops fst fe 0 [])
+   in let st5 = __record-set st4 "func-addr-fixups" (a64-shift-faddrs (st4.func-addr-fixups) nops fst fe 0 [])
+   in __record-set st5 "func-offsets" (a64-shift-offsets (st5.func-offsets) nops fst fe 0 [])
+
+  a64-store-local : A64State, Integer, Integer -> A64State
+  a64-store-local (st) (local) (value-reg) =
+   if local < a64-spill-base then
+    if local == value-reg then st
+    else a64-emit st (arm64-mov local value-reg)
+   else let offset = (local - a64-spill-base) * 8 + 96
+   in a64-emit st (arm64-str value-reg a64-sp offset)
+
+  a64-load-local : A64State, Integer -> A64EmitResult
+  a64-load-local (st) (local) =
+   if local < a64-spill-base then A64EmitResult { state = st, reg = local }
+   else let tr = a64-alloc-temp st
+   in let offset = (local - a64-spill-base) * 8 + 96
+   in A64EmitResult {
+    state = a64-emit (tr.state) (arm64-ldr (tr.reg) a64-sp offset),
+    reg = tr.reg
+   }
+
+  a64-is-stable-reg : Integer -> Boolean
+  a64-is-stable-reg (r) = if r >= 19 then r < 28 else False
+
+  a64-save-if-needed : A64State, Integer -> A64EmitResult
+  a64-save-if-needed (st) (value-reg) =
+   if a64-is-stable-reg value-reg then A64EmitResult { state = st, reg = value-reg }
+   else let loc = a64-alloc-local st
+   in A64EmitResult { state = a64-store-local (loc.state) (loc.reg) (value-reg), reg = loc.reg }
+
+  a64-reload-if-needed : A64State, Integer -> A64EmitResult
+  a64-reload-if-needed (st) (reg) =
+   if a64-is-stable-reg reg then A64EmitResult { state = st, reg = reg }
+   else a64-load-local st reg
+
+  a64-bind-local : A64State, Text, Integer -> A64State
+  a64-bind-local (st) (name) (reg) =
+   __record-set st "locals" (list-push (st.locals) (A64Local { name = name, reg = reg }))
+
+  a64-lookup-local : List A64Local, Text, Integer -> Integer
+  a64-lookup-local (locals) (name) (i) =
+   let len = list-length locals
+   in if len == 0 then 0 - 1
+   else a64-lookup-local-rev locals name (len - 1)
+
+  a64-lookup-local-rev : List A64Local, Text, Integer -> Integer
+  a64-lookup-local-rev (locals) (name) (i) =
+   if i < 0 then 0 - 1
+   else if (list-at locals i).name == name then (list-at locals i).reg
+   else a64-lookup-local-rev locals name (i - 1)
+
+Section: Function Emission
+
+  a64-reset-func-state : A64State, Text, Integer -> A64State
+  a64-reset-func-state (st) (name) (arity) =
+   let st1 = a64-record-func-with-arity st name arity
+   in let st2 = __record-set st1 "current-func" name
+   in let st3 = __record-set st2 "locals" []
+   in let st4 = __record-set st3 "next-temp" a64-x12
+   in let st5 = __record-set st4 "next-local" a64-x19
+   in let st6 = __record-set st5 "peak-local" a64-x19
+   in let st7 = __record-set st6 "spill-count" 0
+   in __record-set st7 "prologue-index" (st1.insn-count)
+
+  a64-result-is-stable : IRExpr -> Boolean
+  a64-result-is-stable (e) =
+   when e
+    is IrName (n) (t) (s) -> True
+    is IrIf (c) (th) (el) (t) (s) -> True
+    is IrLet (n) (t) (v) (b) (s) -> a64-result-is-stable b
+    is otherwise -> False
+
+  a64-count-ir-locals : IRExpr, Text -> Integer
+  a64-count-ir-locals (e) (fname) =
+   when e
+    is IrIntLit (v) (s) -> 0
+    is IrBoolLit (v) (s) -> 0
+    is IrTextLit (v) (s) -> 0
+    is IrCharLit (v) (s) -> 0
+    is IrNumLit (v) (s) -> 0
+    is IrName (n) (t) (s) -> 0
+    is IrNegate (x) (s) -> a64-count-ir-locals x fname
+    is IrBinary (op) (l) (r) (t) (s) ->
+     let left-save = if a64-result-is-stable l then 0 else 1
+     in let use-imm = if a64-is-imm-eligible op then a64-small-imm r > 0 else False
+     in if use-imm then a64-count-ir-locals l fname
+     else left-save + a64-count-ir-locals l fname + a64-count-ir-locals r fname
+    is IrIf (c) (th) (el) (t) (s) ->
+     let tco-el = a64-has-tail-call el fname
+     in let res-cost = if tco-el then 0 else 1
+     in res-cost + a64-count-ir-locals c fname + a64-count-ir-locals th fname + a64-count-ir-locals el fname
+    is IrLet (n) (t) (v) (b) (s) ->
+     let val-save = if a64-result-is-stable v then 0 else 1
+     in val-save + a64-count-ir-locals v fname + a64-count-ir-locals b fname
+    is IrApply (f) (a) (t) (s) ->
+     when f
+      is IrName (n) (ft) (fs) ->
+       if n == fname then 1 + a64-count-ir-locals a fname
+       else 1 + a64-count-ir-locals a fname
+      is IrApply (f2) (a2) (t2) (s2) ->
+       when f2
+        is IrName (n2) (ft2) (fs2) ->
+         if n2 == fname then 2 + a64-count-ir-locals a fname + a64-count-ir-locals a2 fname
+         else 2 + a64-count-ir-locals f fname + a64-count-ir-locals a fname
+        is _ -> 2 + a64-count-ir-locals f fname + a64-count-ir-locals a fname
+      is _ -> 2 + a64-count-ir-locals f fname + a64-count-ir-locals a fname
+    is IrRecord (n) (fields) (t) (s) -> list-length fields + a64-count-field-locals fields fname 0
+    is IrFieldAccess (rec) (f) (t) (s) -> a64-count-ir-locals rec fname
+    is IrFieldStore (rec) (f) (v) (t) (s) -> 1 + a64-count-ir-locals rec fname + a64-count-ir-locals v fname
+    is IrList (elems) (t) (s) -> 1 + a64-count-elem-locals elems fname 0
+    is IrLambda (params) (body) (t) (s) -> 2
+    is IrMatch (scrut) (branches) (t) (s) -> 2 + a64-count-ir-locals scrut fname + a64-count-branch-locals branches fname 0
+    is IrAct (stmts) (t) (s) -> list-length stmts + 1 + a64-count-act-locals stmts fname 0
+    is IrHandle (eff) (body) (clauses) (ty) (s) -> 4 + a64-count-ir-locals body fname
+    is IrTry (max) (body) (fb) (fail) (ty) (s) -> 4 + a64-count-act-locals body fname 0
+    is IrFork (body) (ty) (s) -> 2 + a64-count-ir-locals body fname
+    is otherwise -> 1
+
+  a64-count-field-locals : List IRFieldVal, Text, Integer -> Integer
+  a64-count-field-locals (fields) (fname) (i) =
+   if i >= list-length fields then 0
+   else a64-count-ir-locals ((list-at fields i).value) fname + a64-count-field-locals fields fname (i + 1)
+
+  a64-count-elem-locals : List IRExpr, Text, Integer -> Integer
+  a64-count-elem-locals (elems) (fname) (i) =
+   if i >= list-length elems then 0
+   else a64-count-ir-locals (list-at elems i) fname + a64-count-elem-locals elems fname (i + 1)
+
+  a64-count-branch-locals : List IRBranch, Text, Integer -> Integer
+  a64-count-branch-locals (branches) (fname) (i) =
+   if i >= list-length branches then 0
+   else let b = list-at branches i
+   in let body-cost = a64-count-ir-locals (b.body) fname
+   in let rest = a64-count-branch-locals branches fname (i + 1)
+   in if body-cost > rest then body-cost else rest
+
+  a64-count-act-locals : List IRActStmt, Text, Integer -> Integer
+  a64-count-act-locals (stmts) (fname) (i) =
+   if i >= list-length stmts then 0
+   else let stmt-cost = when list-at stmts i
+    is IrDoExec (expr) (s) -> a64-count-ir-locals expr fname
+    is IrDoBind (name) (ty) (expr) (s) -> 1 + a64-count-ir-locals expr fname
+   in let rest = a64-count-act-locals stmts fname (i + 1)
+   in stmt-cost + rest
+
+  a64-compute-save-pairs : Integer -> Integer
+  a64-compute-save-pairs (n) =
+   if n <= 0 then 0
+   else if n <= 2 then 1
+   else if n <= 4 then 2
+   else if n <= 6 then 3
+   else if n <= 8 then 4
+   else 5
+
+  arm64-stp-pre : Integer, Integer, Integer, Integer -> List Integer
+  arm64-stp-pre (rt1) (rt2) (rn) (offset) =
+   let imm7 = bit-and (offset / 8) 127
+   in arm64-encode (bit-or (bit-or (bit-or (bit-or #A9800000 (bit-shl imm7 15)) (bit-shl rt2 10)) (bit-shl rn 5)) rt1)
+
+  arm64-ldp-post : Integer, Integer, Integer, Integer -> List Integer
+  arm64-ldp-post (rt1) (rt2) (rn) (offset) =
+   let imm7 = bit-and (offset / 8) 127
+   in arm64-encode (bit-or (bit-or (bit-or (bit-or #A8C00000 (bit-shl imm7 15)) (bit-shl rt2 10)) (bit-shl rn 5)) rt1)
+
+  a64-emit-prologue : A64State, Integer -> A64State
+  a64-emit-prologue (st) (save-pairs) =
+   let st0 = a64-emit st (arm64-sub-imm a64-sp a64-sp 96)
+   in let st1 = a64-emit st0 (arm64-stp a64-fp a64-lr a64-sp 0)
+   in let st2 = a64-emit st1 (arm64-stp a64-x19 a64-x20 a64-sp 16)
+   in let st3 = a64-emit st2 (arm64-stp a64-x21 a64-x22 a64-sp 32)
+   in let st4 = a64-emit st3 (arm64-stp a64-x23 a64-x24 a64-sp 48)
+   in let st5 = a64-emit st4 (arm64-stp a64-x25 a64-x26 a64-sp 64)
+   in a64-emit st5 (arm64-stp a64-x27 a64-x27 a64-sp 80)
+
+  a64-nop-unused-saves : A64State, Integer, Integer -> A64State
+  a64-nop-unused-saves (st) (prologue-start) (actual-pairs) =
+   let st1 = if actual-pairs < 2 then a64-patch-insn st (prologue-start + 3) arm64-nop else st
+   in let st2 = if actual-pairs < 3 then a64-patch-insn st1 (prologue-start + 4) arm64-nop else st1
+   in let st3 = if actual-pairs < 4 then a64-patch-insn st2 (prologue-start + 5) arm64-nop else st2
+   in if actual-pairs < 5 then a64-patch-insn st3 (prologue-start + 6) arm64-nop else st3
+
+  a64-emit-epilogue : A64State, Integer, Integer -> A64State
+  a64-emit-epilogue (st) (frame-size) (ignored-pairs) =
+   let save-pairs = a64-compute-save-pairs (st.peak-local - a64-x19)
+   in let st1 = if save-pairs >= 5 then a64-emit st (arm64-ldp a64-x27 a64-x27 a64-sp 80) else st
+   in let st2 = if save-pairs >= 4 then a64-emit st1 (arm64-ldp a64-x25 a64-x26 a64-sp 64) else st1
+   in let st3 = if save-pairs >= 3 then a64-emit st2 (arm64-ldp a64-x23 a64-x24 a64-sp 48) else st2
+   in let st4 = if save-pairs >= 2 then a64-emit st3 (arm64-ldp a64-x21 a64-x22 a64-sp 32) else st3
+   in let st5 = a64-emit st4 (arm64-ldp a64-x19 a64-x20 a64-sp 16)
+   in if frame-size <= 504 then
+    let st6 = a64-emit st5 (arm64-ldp-post a64-fp a64-lr a64-sp frame-size)
+    in a64-emit st6 arm64-ret
+   else let st6 = a64-emit st5 (arm64-ldp a64-fp a64-lr a64-sp 0)
+   in let st7 = a64-emit-add-sp st6 frame-size
+   in a64-emit st7 arm64-ret
+
+  a64-emit-add-sp : A64State, Integer -> A64State
+  a64-emit-add-sp (st) (imm) =
+   if imm <= 4095 then a64-emit st (arm64-add-imm a64-sp a64-sp imm)
+   else let st1 = a64-emit-li st a64-x9 imm
+   in a64-emit st1 (arm64-add a64-sp a64-sp a64-x9)
+
+  a64-emit-li : A64State, Integer, Integer -> A64State
+  a64-emit-li (st) (rd) (value) =
+   let insns = arm64-li rd value
+   in a64-emit-insn-list st insns 0
+
+  a64-emit-insn-list : A64State, List Integer, Integer -> A64State
+  a64-emit-insn-list (st) (insns) (i) =
+   if i >= list-length insns then st
+   else let chunk = [list-at insns i, list-at insns (i + 1), list-at insns (i + 2), list-at insns (i + 3)]
+   in a64-emit-insn-list (a64-emit st chunk) insns (i + 4)
+
+  a64-compute-frame-size : Integer -> Integer
+  a64-compute-frame-size (spill-count) =
+   let raw = 96 + spill-count * 8
+   in if int-mod raw 16 == 0 then raw else raw + 8
+
+Section: Call Emission
+
+  a64-emit-call-to : A64State, Text -> A64State
+  a64-emit-call-to (st) (target) =
+   let st1 = a64-add-call-patch st target
+   in a64-emit st1 arm64-nop
+
+  a64-emit-load-func-addr : A64State, Integer, Text -> A64State
+  a64-emit-load-func-addr (st) (rd) (target) =
+   let st1 = a64-add-func-addr-fixup st rd target
+   in let st2 = a64-emit st1 arm64-nop
+   in a64-emit st2 arm64-nop
+
+Section: Expression Emission
+
+  a64-emit-expr : A64State, IRExpr -> A64EmitResult
+  a64-emit-expr (st) (expr) =
+   when expr
+    is IrIntLit (value) (s) -> a64-emit-int-lit st value
+    is IrBoolLit (value) (s) -> a64-emit-int-lit st (if value then 1 else 0)
+    is IrTextLit (value) (s) -> a64-emit-text-lit st value
+    is IrName (name) (ty) (s) -> a64-emit-name st name ty
+    is IrBinary (op) (left) (right) (ty) (s) -> a64-emit-binary st op left right ty
+    is IrNegate (operand) (s) -> a64-emit-negate st operand
+    is IrIf (cond) (th) (el) (ty) (s) -> a64-emit-if st cond th el
+    is IrLet (name) (ty) (value) (body) (s) -> a64-emit-let st name value body
+    is IrApply (func) (arg) (ty) (s) -> a64-emit-apply st expr ty
+    is IrAct (stmts) (ty) (s) -> a64-emit-act st stmts
+    is IrRecord (name) (fields) (ty) (s) -> a64-emit-record st fields ty
+    is IrFieldAccess (rec) (field) (ty) (s) -> a64-emit-field-access st rec field ty
+    is IrMatch (scrut) (branches) (ty) (s) -> a64-emit-match st scrut branches
+    is IrList (elems) (ty) (s) -> a64-emit-list st elems
+    is IrCharLit (value) (s) -> a64-emit-int-lit st value
+    is IrNumLit (value) (s) -> a64-emit-int-lit st value
+    is IrFieldStore (rec) (field) (val) (ty) (s) -> a64-emit-field-store st rec field val ty
+    is IrWithTimeout (secs) (effs) (scopes) (body) (ty) (s) -> a64-emit-expr st body
+    is IrHandle (eff) (body) (clauses) (ty) (s) -> a64-emit-handle st eff body clauses ty
+    is IrTry (max) (body) (fb) (fail) (ty) (s) -> a64-emit-try st max body fb fail
+    is IrFork (body) (ty) (s) -> a64-emit-fork st body
+    is IrAwait (task) (ty) (s) -> a64-emit-await st task
+    is IrLambda (params) (body) (lty) (s) -> a64-emit-lambda st params body
+    is IrError (msg) (ty) (s) -> a64-emit-int-lit st 0
+    is otherwise -> a64-emit-int-lit st 0
+
+  a64-emit-int-lit : A64State, Integer -> A64EmitResult
+  a64-emit-int-lit (st) (value) =
+   let tr = a64-alloc-temp st
+   in A64EmitResult {
+    state = a64-emit-li (tr.state) (tr.reg) value,
+    reg = tr.reg
+   }
+
+  a64-next-data-offset : List A64StringEntry -> Integer
+  a64-next-data-offset (entries) =
+   a64-last-string-end entries 0 0
+
+  a64-emit-text-lit : A64State, Text -> A64EmitResult
+  a64-emit-text-lit (st) (value) =
+   let existing = a64-find-string (st.string-offsets) value 0
+   in let rodata-offset = if existing >= 0 then existing
+    else a64-next-data-offset (st.string-offsets)
+   in let st1 = if existing >= 0 then st
+    else let off = a64-next-data-offset (st.string-offsets)
+    in let len-bytes = write-i64-le (text-length value)
+    in let text-bytes = text-to-ascii-bytes value
+    in let padded = a64-pad-to-8 (len-bytes & text-bytes)
+    in __record-set (__record-set st "data" (st.data & padded)) "string-offsets" (list-push (st.string-offsets) (A64StringEntry { value = value, offset = off }))
+   in let tr = a64-alloc-temp st1
+   in let st2 = a64-add-rodata-fixup (tr.state) (tr.reg) rodata-offset
+   in A64EmitResult {
+    state = a64-emit st2 arm64-nop,
+    reg = tr.reg
+   }
+
+  a64-find-string : List A64StringEntry, Text, Integer -> Integer
+  a64-find-string (entries) (value) (i) =
+   if i >= list-length entries then 0 - 1
+   else if (list-at entries i).value == value then (list-at entries i).offset
+   else a64-find-string entries value (i + 1)
+
+  a64-pad-to-8 : List Integer -> List Integer
+  a64-pad-to-8 (bs) =
+   let r = int-mod (list-length bs) 8
+   in if r == 0 then bs
+   else a64-pad-zeros bs (8 - r)
+
+  a64-pad-zeros : List Integer, Integer -> List Integer
+  a64-pad-zeros (bs) (n) =
+   if n <= 0 then bs
+   else a64-pad-zeros (list-push bs 0) (n - 1)
+
+  text-to-ascii-bytes : Text -> List Integer
+  text-to-ascii-bytes (s) = text-to-ascii-bytes-loop s 0 (text-length s) []
+
+  text-to-ascii-bytes-loop : Text, Integer, Integer, List Integer -> List Integer
+  text-to-ascii-bytes-loop (s) (i) (len) (acc) =
+   if i >= len then acc
+   else let cce = char-code (char-at s i)
+   in text-to-ascii-bytes-loop s (i + 1) len (list-push acc (bit-and cce 255))
+
+  write-i64-le : Integer -> List Integer
+  write-i64-le (v) =
+   [bit-and v 255, bit-and (bit-shru v 8) 255, bit-and (bit-shru v 16) 255, bit-and (bit-shru v 24) 255,
+    bit-and (bit-shru v 32) 255, bit-and (bit-shru v 40) 255, bit-and (bit-shru v 48) 255, bit-and (bit-shru v 56) 255]
+
+  write-i32-le : Integer -> List Integer
+  write-i32-le (v) =
+   [bit-and v 255, bit-and (bit-shru v 8) 255, bit-and (bit-shru v 16) 255, bit-and (bit-shru v 24) 255]
+
+  write-i16-le : Integer -> List Integer
+  write-i16-le (v) =
+   [bit-and v 255, bit-and (bit-shru v 8) 255]
+
+Section: Name Emission
+
+  a64-emit-name : A64State, Text, CodexType -> A64EmitResult
+  a64-emit-name (st) (name) (ty) =
+   let local-reg = a64-lookup-local (st.locals) name 0
+   in if local-reg >= 0 then a64-load-local st local-reg
+   else let eoa = a64-find-effect-op-addr ((st.extra).effect-op-addrs) name 0
+   in if eoa >= 0 then a64-emit-effect-op-call st eoa []
+   else when ty
+    is SumTy (sname) (targs) (ctors) ->
+     let tag = a64-resolve-ctor-tag st ty name
+     in if tag >= 0 then a64-emit-nullary-ctor st tag
+     else let tr = a64-alloc-temp st
+     in let st1 = a64-emit-call-to (tr.state) name
+     in A64EmitResult {
+      state = a64-emit st1 (arm64-mov (tr.reg) a64-x0),
+      reg = tr.reg
+     }
+    is ConstructedTy (tname) (targs) ->
+     let tag = a64-find-ctor-in-type-defs ((st.extra).type-defs) (tname.value) name 0
+     in if tag >= 0 then a64-emit-nullary-ctor st tag
+     else let tr = a64-alloc-temp st
+     in let st1 = a64-emit-call-to (tr.state) name
+     in A64EmitResult {
+      state = a64-emit st1 (arm64-mov (tr.reg) a64-x0),
+      reg = tr.reg
+     }
+    is FunTy (pt) (rt) -> a64-emit-partial-application st name [] (1 + a64-type-arity rt)
+    is otherwise ->
+     let tr = a64-alloc-temp st
+     in let st1 = a64-emit-call-to (tr.state) name
+     in A64EmitResult {
+      state = a64-emit st1 (arm64-mov (tr.reg) a64-x0),
+      reg = tr.reg
+     }
+
+Section: Binary Emission
+
+  a64-csinc-eq : Integer -> List Integer
+  a64-csinc-eq (rd) = [(bit-and (#9A9F17E0 + rd) 255), (bit-and (bit-shru (#9A9F17E0 + rd) 8) 255), (bit-and (bit-shru (#9A9F17E0 + rd) 16) 255), (bit-and (bit-shru (#9A9F17E0 + rd) 24) 255)]
+
+  a64-csinc-ne : Integer -> List Integer
+  a64-csinc-ne (rd) = [(bit-and (#9A9F07E0 + rd) 255), (bit-and (bit-shru (#9A9F07E0 + rd) 8) 255), (bit-and (bit-shru (#9A9F07E0 + rd) 16) 255), (bit-and (bit-shru (#9A9F07E0 + rd) 24) 255)]
+
+  a64-csinc-lt : Integer -> List Integer
+  a64-csinc-lt (rd) = [(bit-and (#9A9FA7E0 + rd) 255), (bit-and (bit-shru (#9A9FA7E0 + rd) 8) 255), (bit-and (bit-shru (#9A9FA7E0 + rd) 16) 255), (bit-and (bit-shru (#9A9FA7E0 + rd) 24) 255)]
+
+  a64-csinc-gt : Integer -> List Integer
+  a64-csinc-gt (rd) = [(bit-and (#9A9FD7E0 + rd) 255), (bit-and (bit-shru (#9A9FD7E0 + rd) 8) 255), (bit-and (bit-shru (#9A9FD7E0 + rd) 16) 255), (bit-and (bit-shru (#9A9FD7E0 + rd) 24) 255)]
+
+  a64-csinc-le : Integer -> List Integer
+  a64-csinc-le (rd) = [(bit-and (#9A9FC7E0 + rd) 255), (bit-and (bit-shru (#9A9FC7E0 + rd) 8) 255), (bit-and (bit-shru (#9A9FC7E0 + rd) 16) 255), (bit-and (bit-shru (#9A9FC7E0 + rd) 24) 255)]
+
+  a64-csinc-ge : Integer -> List Integer
+  a64-csinc-ge (rd) = [(bit-and (#9A9FB7E0 + rd) 255), (bit-and (bit-shru (#9A9FB7E0 + rd) 8) 255), (bit-and (bit-shru (#9A9FB7E0 + rd) 16) 255), (bit-and (bit-shru (#9A9FB7E0 + rd) 24) 255)]
+
+  a64-is-imm-eligible : IRBinaryOp -> Boolean
+  a64-is-imm-eligible (op) =
+   when op
+    is IrAddInt -> True
+    is IrSubInt -> True
+    is otherwise -> False
+
+  a64-emit-binary-imm : A64State, IRBinaryOp, IRExpr, Integer -> A64EmitResult
+  a64-emit-binary-imm (st) (op) (left) (imm) =
+   let lr = a64-emit-expr st left
+   in let rd = a64-alloc-temp (lr.state)
+   in when op
+    is IrAddInt -> A64EmitResult { state = a64-emit (rd.state) (arm64-add-imm (rd.reg) (lr.reg) imm), reg = rd.reg }
+    is IrSubInt -> A64EmitResult { state = a64-emit (rd.state) (arm64-sub-imm (rd.reg) (lr.reg) imm), reg = rd.reg }
+    is otherwise -> A64EmitResult { state = rd.state, reg = rd.reg }
+
+  a64-small-imm : IRExpr -> Integer
+  a64-small-imm (e) =
+   when e
+    is IrIntLit (v) (s) -> if v >= 0 then if v <= 4095 then v + 1 else 0 else 0
+    is _ -> 0
+
+  a64-emit-binary : A64State, IRBinaryOp, IRExpr, IRExpr, CodexType -> A64EmitResult
+  a64-emit-binary (st) (op) (left) (right) (ty) =
+   let mul-shift = when op is IrMulInt -> a64-mul-shift-amount right is otherwise -> 0
+   in if mul-shift > 0 then
+    let lr = a64-emit-expr st left
+    in let rd = a64-alloc-temp (lr.state)
+    in A64EmitResult { state = a64-emit (rd.state) (arm64-lsl-imm (rd.reg) (lr.reg) mul-shift), reg = rd.reg }
+   else let mul-shift-l = when op is IrMulInt -> a64-mul-shift-amount left is otherwise -> 0
+   in if mul-shift-l > 0 then
+    let rr = a64-emit-expr st right
+    in let rd = a64-alloc-temp (rr.state)
+    in A64EmitResult { state = a64-emit (rd.state) (arm64-lsl-imm (rd.reg) (rr.reg) mul-shift-l), reg = rd.reg }
+   else if when op is IrMulInt -> a64-is-mul-by-3 left right is otherwise -> False then
+    let operand = a64-mul-by-3-operand left right
+    in let or = a64-emit-expr st operand
+    in let rd = a64-alloc-temp (or.state)
+    in A64EmitResult { state = a64-emit (rd.state) (arm64-add-shifted (rd.reg) (or.reg) (or.reg) 1), reg = rd.reg }
+   else let imm-val = a64-small-imm right
+   in if imm-val > 0 then
+    if a64-is-imm-eligible op then a64-emit-binary-imm st op left (imm-val - 1)
+    else a64-emit-binary-reg st op left right ty
+   else a64-emit-binary-reg st op left right ty
+
+  a64-is-text-type : CodexType -> Boolean
+  a64-is-text-type (ty) =
+   when ty
+    is TextTy -> True
+    is otherwise -> False
+
+  a64-sum-max-fields : List SumCtor, Integer, Integer -> Integer
+  a64-sum-max-fields (ctors) (i) (max) =
+   if i >= list-length ctors then max
+   else let c = list-at ctors i
+   in let n = list-length (c.fields)
+   in a64-sum-max-fields ctors (i + 1) (if n > max then n else max)
+
+  a64-max-fields-for-type : CodexType, List ATypeDef -> Integer
+  a64-max-fields-for-type (ty) (defs) =
+   when ty
+    is SumTy (n) (ta) (cs) -> a64-sum-max-fields cs 0 0
+    is ConstructedTy (tname) (args) -> a64-max-fields-from-defs defs (tname.value) 0
+    is otherwise -> 2
+
+  a64-max-fields-from-defs : List ATypeDef, Text, Integer -> Integer
+  a64-max-fields-from-defs (defs) (type-name) (i) =
+   if i >= list-length defs then 2
+   else when list-at defs i
+    is AVariantTypeDef (dn) (tparams) (vctors) (sp) ->
+     if dn.value == type-name then a64-variant-max-fields vctors 0 0
+     else a64-max-fields-from-defs defs type-name (i + 1)
+    is otherwise -> a64-max-fields-from-defs defs type-name (i + 1)
+
+  a64-variant-max-fields : List AVariantCtorDef, Integer, Integer -> Integer
+  a64-variant-max-fields (ctors) (i) (max) =
+   if i >= list-length ctors then max
+   else let c = list-at ctors i
+   in let n = list-length (c.fields)
+   in a64-variant-max-fields ctors (i + 1) (if n > max then n else max)
+
+  a64-emit-sum-eq : A64State, Integer, Integer, Integer, Integer -> A64EmitResult
+  a64-emit-sum-eq (st) (rd) (l-reg) (r-reg) (max-fields) =
+   let ll = a64-alloc-local st
+   in let st0a = a64-store-local (ll.state) (ll.reg) l-reg
+   in let rl = a64-alloc-local st0a
+   in let st0b = a64-store-local (rl.state) (rl.reg) r-reg
+   in let lp = a64-load-local st0b (ll.reg)
+   in let lt = a64-alloc-temp (lp.state)
+   in let st1 = a64-emit (lt.state) (arm64-ldr (lt.reg) (lp.reg) 0)
+   in let rp = a64-load-local st1 (rl.reg)
+   in let rt = a64-alloc-temp (rp.state)
+   in let st2 = a64-emit (rt.state) (arm64-ldr (rt.reg) (rp.reg) 0)
+   in let st3 = a64-emit st2 (arm64-cmp (lt.reg) (rt.reg))
+   in let ne-tag = (st3).insn-count
+   in let st4 = a64-emit st3 (arm64-b-cond 1 0)
+   in if max-fields == 0 then
+    let st5 = a64-emit st4 (a64-csinc-eq rd)
+    in let eq-end = st5.insn-count
+    in let st6 = a64-emit st5 (arm64-b 0)
+    in let ne-label = st6.insn-count
+    in let st7 = a64-emit-li st6 rd 0
+    in let done-label = st7.insn-count
+    in let st8 = a64-patch-insn st7 ne-tag (arm64-b-cond 1 ((ne-label - ne-tag) * 4))
+    in A64EmitResult { state = a64-patch-insn st8 eq-end (arm64-b ((done-label - eq-end) * 4)), reg = rd }
+   else let lp1 = a64-load-local st4 (ll.reg)
+   in let lf1 = a64-alloc-temp (lp1.state)
+   in let st5 = a64-emit (lf1.state) (arm64-ldr (lf1.reg) (lp1.reg) 8)
+   in let rp1 = a64-load-local st5 (rl.reg)
+   in let rf1 = a64-alloc-temp (rp1.state)
+   in let st6 = a64-emit (rf1.state) (arm64-ldr (rf1.reg) (rp1.reg) 8)
+   in let st7 = a64-emit st6 (arm64-cmp (lf1.reg) (rf1.reg))
+   in if max-fields <= 1 then
+    let st8 = a64-emit st7 (a64-csinc-eq rd)
+    in let eq-end = st8.insn-count
+    in let st9 = a64-emit st8 (arm64-b 0)
+    in let ne-label = st9.insn-count
+    in let st10 = a64-emit-li st9 rd 0
+    in let done-label = st10.insn-count
+    in let st11 = a64-patch-insn st10 ne-tag (arm64-b-cond 1 ((ne-label - ne-tag) * 4))
+    in A64EmitResult { state = a64-patch-insn st11 eq-end (arm64-b ((done-label - eq-end) * 4)), reg = rd }
+   else let ne-f1 = (st7).insn-count
+   in let st8 = a64-emit st7 (arm64-b-cond 1 0)
+   in let lp2 = a64-load-local st8 (ll.reg)
+   in let lf2 = a64-alloc-temp (lp2.state)
+   in let st9 = a64-emit (lf2.state) (arm64-ldr (lf2.reg) (lp2.reg) 16)
+   in let rp2 = a64-load-local st9 (rl.reg)
+   in let rf2 = a64-alloc-temp (rp2.state)
+   in let st10 = a64-emit (rf2.state) (arm64-ldr (rf2.reg) (rp2.reg) 16)
+   in let st11 = a64-emit st10 (arm64-cmp (lf2.reg) (rf2.reg))
+   in let st12 = a64-emit st11 (a64-csinc-eq rd)
+   in let eq-end = (st12).insn-count
+   in let st13 = a64-emit st12 (arm64-b 0)
+   in let ne-label = (st13).insn-count
+   in let st14 = a64-emit-li st13 rd 0
+   in let done-label = (st14).insn-count
+   in let st15 = a64-patch-insn st14 ne-tag (arm64-b-cond 1 ((ne-label - ne-tag) * 4))
+   in let st16 = a64-patch-insn st15 ne-f1 (arm64-b-cond 1 ((ne-label - ne-f1) * 4))
+   in let st17 = a64-patch-insn st16 eq-end (arm64-b ((done-label - eq-end) * 4))
+   in A64EmitResult { state = st17, reg = rd }
+
+  a64-is-sum-type : CodexType -> Boolean
+  a64-is-sum-type (ty) =
+   when ty
+    is SumTy (n) (ta) (cs) -> True
+    is ConstructedTy (n) (ta) -> True
+    is otherwise -> False
+
+  a64-right-is-simple : IRExpr -> Boolean
+  a64-right-is-simple (e) =
+   when e
+    is IrName (n) (t) (s) -> True
+    is IrIntLit (v) (s) -> True
+    is IrBoolLit (v) (s) -> True
+    is IrCharLit (v) (s) -> True
+    is otherwise -> False
+
+  a64-emit-binary-reg : A64State, IRBinaryOp, IRExpr, IRExpr, CodexType -> A64EmitResult
+  a64-emit-binary-reg (st) (op) (left) (right) (ty) =
+   let lr = a64-emit-expr st left
+   in if a64-right-is-simple right then
+    let rr = a64-emit-expr (lr.state) right
+    in let rd-r = a64-alloc-temp (rr.state)
+    in let st2 = rd-r.state
+    in let left-reg = lr.reg
+    in let right-reg = rr.reg
+    in let rd = rd-r.reg
+    in a64-emit-binary-op st2 op rd left-reg right-reg left right ty
+   else let pre-save-nl = lr.state.next-local
+   in let saved = a64-save-if-needed (lr.state) (lr.reg)
+   in let rr = a64-emit-expr (saved.state) right
+   in let ll = a64-reload-if-needed (rr.state) (saved.reg)
+   in let st-recycled = __record-set (ll.state) "next-local" pre-save-nl
+   in let rd-r = a64-alloc-temp st-recycled
+   in let st2 = rd-r.state
+   in let left-reg = ll.reg
+   in let right-reg = rr.reg
+   in let rd = rd-r.reg
+   in a64-emit-binary-op st2 op rd left-reg right-reg left right ty
+
+  a64-emit-binary-op : A64State, IRBinaryOp, Integer, Integer, Integer, IRExpr, IRExpr, CodexType -> A64EmitResult
+  a64-emit-binary-op (st2) (op) (rd) (left-reg) (right-reg) (left) (right) (ty) =
+   when op
+    is IrAddInt -> A64EmitResult { state = a64-emit st2 (arm64-add rd left-reg right-reg), reg = rd }
+    is IrSubInt -> A64EmitResult { state = a64-emit st2 (arm64-sub rd left-reg right-reg), reg = rd }
+    is IrMulInt -> A64EmitResult { state = a64-emit st2 (arm64-mul rd left-reg right-reg), reg = rd }
+    is IrDivInt -> A64EmitResult { state = a64-emit st2 (arm64-sdiv rd left-reg right-reg), reg = rd }
+    is IrRemInt ->
+     let st3 = a64-emit st2 (arm64-sdiv rd left-reg right-reg)
+     in A64EmitResult { state = a64-emit st3 (arm64-msub rd rd right-reg left-reg), reg = rd }
+    is IrEq ->
+     if a64-is-text-type (ir-expr-type left) then
+      let st3 = if right-reg == a64-x0 then
+        let s = a64-emit st2 (arm64-mov a64-x1 right-reg)
+        in a64-emit s (arm64-mov a64-x0 left-reg)
+       else let s = a64-emit st2 (arm64-mov a64-x0 left-reg)
+        in a64-emit s (arm64-mov a64-x1 right-reg)
+      in let st4 = a64-emit-call-to st3 "__str_eq"
+      in A64EmitResult { state = a64-emit st4 (arm64-mov rd a64-x0), reg = rd }
+     else if a64-is-sum-type (ir-expr-type left) then a64-emit-sum-eq st2 rd left-reg right-reg (a64-max-fields-for-type (ir-expr-type left) (st2.extra).type-defs)
+     else let st3 = a64-emit st2 (arm64-cmp left-reg right-reg)
+     in A64EmitResult { state = a64-emit st3 (a64-csinc-eq rd), reg = rd }
+    is IrNotEq ->
+     if a64-is-text-type (ir-expr-type left) then
+      let st3 = if right-reg == a64-x0 then
+        let s = a64-emit st2 (arm64-mov a64-x1 right-reg)
+        in a64-emit s (arm64-mov a64-x0 left-reg)
+       else let s = a64-emit st2 (arm64-mov a64-x0 left-reg)
+        in a64-emit s (arm64-mov a64-x1 right-reg)
+      in let st4 = a64-emit-call-to st3 "__str_eq"
+      in let st5 = a64-emit st4 (arm64-cmp a64-x0 a64-xzr)
+      in A64EmitResult { state = a64-emit st5 (a64-csinc-eq rd), reg = rd }
+     else if a64-is-sum-type (ir-expr-type left) then
+      let eq = a64-emit-sum-eq st2 rd left-reg right-reg (a64-max-fields-for-type (ir-expr-type left) (st2.extra).type-defs)
+      in let st3 = a64-emit (eq.state) (arm64-cmp (eq.reg) a64-xzr)
+      in A64EmitResult { state = a64-emit st3 (a64-csinc-eq rd), reg = rd }
+     else let st3 = a64-emit st2 (arm64-cmp left-reg right-reg)
+     in A64EmitResult { state = a64-emit st3 (a64-csinc-ne rd), reg = rd }
+    is IrLt ->
+     if a64-is-vec-type (ir-expr-type left) then a64-emit-vec-cmp st2 left-reg right-reg 10 (ir-expr-type left)
+     else let st3 = a64-emit st2 (arm64-cmp left-reg right-reg)
+     in A64EmitResult { state = a64-emit st3 (a64-csinc-lt rd), reg = rd }
+    is IrGt ->
+     if a64-is-vec-type (ir-expr-type left) then a64-emit-vec-cmp st2 left-reg right-reg 13 (ir-expr-type left)
+     else let st3 = a64-emit st2 (arm64-cmp left-reg right-reg)
+     in A64EmitResult { state = a64-emit st3 (a64-csinc-gt rd), reg = rd }
+    is IrLtEq ->
+     if a64-is-vec-type (ir-expr-type left) then a64-emit-vec-cmp st2 left-reg right-reg 12 (ir-expr-type left)
+     else let st3 = a64-emit st2 (arm64-cmp left-reg right-reg)
+     in A64EmitResult { state = a64-emit st3 (a64-csinc-le rd), reg = rd }
+    is IrGtEq ->
+     if a64-is-vec-type (ir-expr-type left) then a64-emit-vec-cmp st2 left-reg right-reg 11 (ir-expr-type left)
+     else let st3 = a64-emit st2 (arm64-cmp left-reg right-reg)
+     in A64EmitResult { state = a64-emit st3 (a64-csinc-ge rd), reg = rd }
+    is IrAddNum -> a64-emit-real-arith st2 left-reg right-reg arm64-fadd-d
+    is IrSubNum -> a64-emit-real-arith st2 left-reg right-reg arm64-fsub-d
+    is IrMulNum -> a64-emit-real-arith st2 left-reg right-reg arm64-fmul-d
+    is IrDivNum -> a64-emit-real-arith st2 left-reg right-reg arm64-fdiv-d
+    is IrAddRealApprox -> a64-emit-real-arith st2 left-reg right-reg arm64-fadd-s
+    is IrSubRealApprox -> a64-emit-real-arith st2 left-reg right-reg arm64-fsub-s
+    is IrMulRealApprox -> a64-emit-real-arith st2 left-reg right-reg arm64-fmul-s
+    is IrDivRealApprox -> a64-emit-real-arith st2 left-reg right-reg arm64-fdiv-s
+    is IrAddRealTrapping -> a64-emit-real-arith st2 left-reg right-reg arm64-fadd-d
+    is IrSubRealTrapping -> a64-emit-real-arith st2 left-reg right-reg arm64-fsub-d
+    is IrMulRealTrapping -> a64-emit-real-arith st2 left-reg right-reg arm64-fmul-d
+    is IrDivRealTrapping -> a64-emit-real-arith st2 left-reg right-reg arm64-fdiv-d
+    is IrAddRealSaturating -> a64-emit-real-saturating-arith st2 left-reg right-reg arm64-fadd-d
+    is IrSubRealSaturating -> a64-emit-real-saturating-arith st2 left-reg right-reg arm64-fsub-d
+    is IrMulRealSaturating -> a64-emit-real-saturating-arith st2 left-reg right-reg arm64-fmul-d
+    is IrDivRealSaturating -> a64-emit-real-saturating-arith st2 left-reg right-reg arm64-fdiv-d
+    is IrApproxEq -> a64-emit-real-comparison st2 left-reg right-reg 1
+    is IrApproxEqExact -> a64-emit-real-comparison st2 left-reg right-reg 1
+    is IrAnd -> A64EmitResult { state = a64-emit st2 (arm64-and rd left-reg right-reg), reg = rd }
+    is IrOr -> A64EmitResult { state = a64-emit st2 (arm64-or rd left-reg right-reg), reg = rd }
+    is IrAppendText ->
+     let st3 = if right-reg == a64-x0 then
+       let s = a64-emit st2 (arm64-mov a64-x1 right-reg)
+       in a64-emit s (arm64-mov a64-x0 left-reg)
+      else let s = a64-emit st2 (arm64-mov a64-x0 left-reg)
+       in a64-emit s (arm64-mov a64-x1 right-reg)
+     in let st4 = a64-emit-call-to st3 "__str_concat"
+     in A64EmitResult { state = a64-emit st4 (arm64-mov rd a64-x0), reg = rd }
+    is IrConsList ->
+     let st3 = if right-reg == a64-x0 then
+       let s = a64-emit st2 (arm64-mov a64-x1 right-reg)
+       in a64-emit s (arm64-mov a64-x0 left-reg)
+      else let s = a64-emit st2 (arm64-mov a64-x0 left-reg)
+       in a64-emit s (arm64-mov a64-x1 right-reg)
+     in let st4 = a64-emit-call-to st3 "list-cons"
+     in A64EmitResult { state = a64-emit st4 (arm64-mov rd a64-x0), reg = rd }
+    is IrAppendList ->
+     let st3 = if right-reg == a64-x0 then
+       let s = a64-emit st2 (arm64-mov a64-x1 right-reg)
+       in a64-emit s (arm64-mov a64-x0 left-reg)
+      else let s = a64-emit st2 (arm64-mov a64-x0 left-reg)
+       in a64-emit s (arm64-mov a64-x1 right-reg)
+     in let st4 = a64-emit-call-to st3 "list-append"
+     in A64EmitResult { state = a64-emit st4 (arm64-mov rd a64-x0), reg = rd }
+    is IrAddVec -> a64-emit-vec-binop st2 left-reg right-reg 0 ty
+    is IrSubVec -> a64-emit-vec-binop st2 left-reg right-reg 1 ty
+    is IrMulVec -> a64-emit-vec-binop st2 left-reg right-reg 2 ty
+    is IrDivVec -> a64-emit-vec-binop st2 left-reg right-reg 3 ty
+    is IrLtVec -> a64-emit-vec-cmp st2 left-reg right-reg 10 ty
+    is IrGtVec -> a64-emit-vec-cmp st2 left-reg right-reg 13 ty
+    is IrLtEqVec -> a64-emit-vec-cmp st2 left-reg right-reg 12 ty
+    is IrGtEqVec -> a64-emit-vec-cmp st2 left-reg right-reg 11 ty
+    is otherwise -> A64EmitResult { state = st2, reg = rd }
+
+Section: Real Arithmetic
+
+  a64-emit-real-op : A64State, Integer, Integer, Integer -> A64EmitResult
+  a64-emit-real-op (st) (l-reg) (r-reg) (op-tag) =
+   let rd = a64-alloc-temp st
+   in let st1 = a64-emit (rd.state) (arm64-fmov-to-fp 0 l-reg)
+   in let st2 = a64-emit st1 (arm64-fmov-to-fp 1 r-reg)
+   in let fp-insn = if op-tag == 0 then arm64-fadd-d 0 0 1
+    else if op-tag == 1 then arm64-fsub-d 0 0 1
+    else if op-tag == 2 then arm64-fmul-d 0 0 1
+    else arm64-fdiv-d 0 0 1
+   in let st3 = a64-emit st2 fp-insn
+   in A64EmitResult { state = a64-emit st3 (arm64-fmov-from-fp (rd.reg) 0), reg = rd.reg }
+
+  a64-emit-real-approx-op : A64State, Integer, Integer, Integer -> A64EmitResult
+  a64-emit-real-approx-op (st) (l-reg) (r-reg) (op-tag) =
+   let rd = a64-alloc-temp st
+   in let st1 = a64-emit (rd.state) (arm64-fmov-to-fp 0 l-reg)
+   in let st2 = a64-emit st1 (arm64-fmov-to-fp 1 r-reg)
+   in let fp-insn = if op-tag == 0 then arm64-fadd-s 0 0 1
+    else if op-tag == 1 then arm64-fsub-s 0 0 1
+    else if op-tag == 2 then arm64-fmul-s 0 0 1
+    else arm64-fdiv-s 0 0 1
+   in let st3 = a64-emit st2 fp-insn
+   in A64EmitResult { state = a64-emit st3 (arm64-fmov-from-fp (rd.reg) 0), reg = rd.reg }
+
+  a64-emit-real-arith : A64State, Integer, Integer, (Integer, Integer, Integer -> List Integer) -> A64EmitResult
+  a64-emit-real-arith (st) (l-reg) (r-reg) (fp-op) =
+   let rd = a64-alloc-temp st
+   in let st1 = a64-emit (rd.state) (arm64-fmov-to-fp 0 l-reg)
+   in let st2 = a64-emit st1 (arm64-fmov-to-fp 1 r-reg)
+   in let st3 = a64-emit st2 (fp-op 0 0 1)
+   in A64EmitResult { state = a64-emit st3 (arm64-fmov-from-fp (rd.reg) 0), reg = rd.reg }
+
+  a64-emit-real-saturating-arith : A64State, Integer, Integer, (Integer, Integer, Integer -> List Integer) -> A64EmitResult
+  a64-emit-real-saturating-arith (st) (l-reg) (r-reg) (fp-op) =
+   let rd = a64-alloc-temp st
+   in let st1 = a64-emit (rd.state) (arm64-fmov-to-fp 0 l-reg)
+   in let st2 = a64-emit st1 (arm64-fmov-to-fp 1 r-reg)
+   in let st3 = a64-emit st2 (fp-op 0 0 1)
+   in let st4 = a64-emit st3 (arm64-fcmp-d 0 0)
+   in let st5 = a64-emit st4 (arm64-b-cond 7 12)
+   in let st6 = a64-emit st5 (arm64-movz 9 0 0)
+   in let st7 = a64-emit st6 (arm64-fmov-to-fp 0 9)
+   in A64EmitResult { state = a64-emit st7 (arm64-fmov-from-fp (rd.reg) 0), reg = rd.reg }
+
+  a64-emit-real-comparison : A64State, Integer, Integer, Integer -> A64EmitResult
+  a64-emit-real-comparison (st) (l-reg) (r-reg) (cond) =
+   let rd = a64-alloc-temp st
+   in let st1 = a64-emit (rd.state) (arm64-fmov-to-fp 0 l-reg)
+   in let st2 = a64-emit st1 (arm64-fmov-to-fp 1 r-reg)
+   in let st3 = a64-emit st2 (arm64-fcmp-d 0 1)
+   in A64EmitResult { state = a64-emit st3 (arm64-csinc (rd.reg) a64-xzr a64-xzr cond), reg = rd.reg }
+
+  a64-emit-real-from-int : A64State, IRExpr -> A64EmitResult
+  a64-emit-real-from-int (st) (arg) =
+   let vr = a64-emit-expr st arg
+   in let rd = a64-alloc-temp (vr.state)
+   in let st1 = a64-emit (rd.state) (arm64-scvtf-d 0 (vr.reg))
+   in A64EmitResult { state = a64-emit st1 (arm64-fmov-from-fp (rd.reg) 0), reg = rd.reg }
+
+  a64-emit-real-to-int : A64State, IRExpr -> A64EmitResult
+  a64-emit-real-to-int (st) (arg) =
+   let vr = a64-emit-expr st arg
+   in let rd = a64-alloc-temp (vr.state)
+   in let st1 = a64-emit (rd.state) (arm64-fmov-to-fp 0 (vr.reg))
+   in A64EmitResult { state = a64-emit st1 (arm64-fcvtzs-dx (rd.reg) 0), reg = rd.reg }
+
+  a64-emit-real-approx-from-int : A64State, IRExpr -> A64EmitResult
+  a64-emit-real-approx-from-int (st) (arg) =
+   let vr = a64-emit-expr st arg
+   in let rd = a64-alloc-temp (vr.state)
+   in let st1 = a64-emit (rd.state) (arm64-scvtf-s 0 (vr.reg))
+   in A64EmitResult { state = a64-emit st1 (arm64-fmov-from-fp (rd.reg) 0), reg = rd.reg }
+
+  a64-emit-real-approx-to-int : A64State, IRExpr -> A64EmitResult
+  a64-emit-real-approx-to-int (st) (arg) =
+   let vr = a64-emit-expr st arg
+   in let rd = a64-alloc-temp (vr.state)
+   in let st1 = a64-emit (rd.state) (arm64-fmov-to-fp 0 (vr.reg))
+   in A64EmitResult { state = a64-emit st1 (arm64-fcvtzs-sx (rd.reg) 0), reg = rd.reg }
+
+  a64-emit-to-real-approx : A64State, IRExpr -> A64EmitResult
+  a64-emit-to-real-approx (st) (arg) =
+   let vr = a64-emit-expr st arg
+   in let rd = a64-alloc-temp (vr.state)
+   in let st1 = a64-emit (rd.state) (arm64-fmov-to-fp 1 (vr.reg))
+   in let st2 = a64-emit st1 (arm64-fcvt-sd 0 1)
+   in A64EmitResult { state = a64-emit st2 (arm64-fmov-from-fp (rd.reg) 0), reg = rd.reg }
+
+  a64-emit-from-real-approx : A64State, IRExpr -> A64EmitResult
+  a64-emit-from-real-approx (st) (arg) =
+   let vr = a64-emit-expr st arg
+   in let rd = a64-alloc-temp (vr.state)
+   in let st1 = a64-emit (rd.state) (arm64-fmov-to-fp 0 (vr.reg))
+   in let st2 = a64-emit st1 (arm64-fcvt-ds 0 0)
+   in A64EmitResult { state = a64-emit st2 (arm64-fmov-from-fp (rd.reg) 0), reg = rd.reg }
+
+  a64-emit-suggested-vector-width : A64State, IRExpr -> A64EmitResult
+  a64-emit-suggested-vector-width (st) (arg) =
+   let ty = ir-expr-type arg
+   in when ty
+    is RealApproxTy -> a64-emit-int-lit st 4
+    is otherwise -> a64-emit-int-lit st 2
+
+  a64-emit-show-real-approx : A64State, IRExpr -> A64EmitResult
+  a64-emit-show-real-approx (st) (arg) =
+   let vr = a64-emit-expr st arg
+   in let rd = a64-alloc-temp (vr.state)
+   in let st1 = a64-emit (rd.state) (arm64-fmov-to-fp 0 (vr.reg))
+   in let st2 = a64-emit st1 (arm64-fcvt-ds 0 0)
+   in let st3 = a64-emit st2 (arm64-fmov-from-fp a64-x0 0)
+   in let st4 = a64-emit-call-to st3 "__real_to_text"
+   in A64EmitResult { state = a64-emit st4 (arm64-mov (rd.reg) a64-x0), reg = rd.reg }
+
+  a64-emit-vec-splat : A64State, IRExpr, CodexType -> A64EmitResult
+  a64-emit-vec-splat (st) (val-expr) (ty) =
+   let lanes = a64-vec-lane-count ty
+   in let vr = a64-emit-expr st val-expr
+   in let ptr-r = a64-alloc-temp (vr.state)
+   in let st1 = a64-emit (ptr-r.state) (arm64-mov (ptr-r.reg) a64-heap-reg)
+   in let st2 = a64-emit st1 (arm64-add-imm a64-heap-reg a64-heap-reg (lanes * 8))
+   in let st3 = a64-emit-vec-splat-stores st2 (ptr-r.reg) (vr.reg) 0 lanes
+   in A64EmitResult { state = st3, reg = ptr-r.reg }
+
+  a64-emit-vec-splat-stores : A64State, Integer, Integer, Integer, Integer -> A64State
+  a64-emit-vec-splat-stores (st) (ptr) (val) (i) (n) =
+   if i >= n then st
+   else let st1 = a64-emit st (arm64-str val ptr (i * 8))
+   in a64-emit-vec-splat-stores st1 ptr val (i + 1) n
+
+  a64-is-vec-type : CodexType -> Boolean
+  a64-is-vec-type (ty) =
+   when ty
+    is VectorTy (n) (et) -> True
+    is otherwise -> False
+
+  a64-vec-lane-count : CodexType -> Integer
+  a64-vec-lane-count (ty) =
+   when ty
+    is VectorTy (n) (et) -> n
+    is otherwise -> 2
+
+  a64-type-arity : CodexType -> Integer
+  a64-type-arity (ty) =
+   when ty
+    is FunTy (pt) (rt) -> 1 + a64-type-arity rt
+    is otherwise -> 0
+
+  a64-emit-vec-extract : A64State, IRExpr, IRExpr -> A64EmitResult
+  a64-emit-vec-extract (st) (vec-expr) (idx-expr) =
+   let vr = a64-emit-expr st vec-expr
+   in let ir = a64-emit-expr (vr.state) idx-expr
+   in let tr = a64-alloc-temp (ir.state)
+   in let shift = a64-alloc-temp (tr.state)
+   in let st1 = a64-emit (shift.state) (arm64-lsl-imm (shift.reg) (ir.reg) 3)
+   in let st2 = a64-emit st1 (arm64-add (tr.reg) (vr.reg) (shift.reg))
+   in A64EmitResult { state = a64-emit st2 (arm64-ldr (tr.reg) (tr.reg) 0), reg = tr.reg }
+
+  a64-emit-vec-reduce-add : A64State, IRExpr -> A64EmitResult
+  a64-emit-vec-reduce-add (st) (vec-expr) =
+   let vr = a64-emit-expr st vec-expr
+   in let a = a64-alloc-temp (vr.state)
+   in let st1 = a64-emit (a.state) (arm64-ldr (a.reg) (vr.reg) 0)
+   in let b = a64-alloc-temp st1
+   in let st2 = a64-emit (b.state) (arm64-ldr (b.reg) (vr.reg) 8)
+   in let st3 = a64-emit st2 (arm64-fmov-to-fp 0 (a.reg))
+   in let st4 = a64-emit st3 (arm64-fmov-to-fp 1 (b.reg))
+   in let st5 = a64-emit st4 (arm64-fadd-d 0 0 1)
+   in let rd = a64-alloc-temp st5
+   in A64EmitResult { state = a64-emit (rd.state) (arm64-fmov-from-fp (rd.reg) 0), reg = rd.reg }
+
+  a64-emit-address-of : A64State, IRExpr -> A64EmitResult
+  a64-emit-address-of (st) (arg) =
+   let vr = a64-emit-expr st arg
+   in let tr = a64-alloc-temp (vr.state)
+   in let st1 = a64-emit (tr.state) (arm64-mov (tr.reg) a64-heap-reg)
+   in let st2 = a64-emit st1 (arm64-add-imm a64-heap-reg a64-heap-reg 8)
+   in let st3 = a64-emit st2 (arm64-str (vr.reg) (tr.reg) 0)
+   in A64EmitResult { state = st3, reg = tr.reg }
+
+  a64-emit-vec-select : A64State, IRExpr, IRExpr, IRExpr, CodexType -> A64EmitResult
+  a64-emit-vec-select (st) (mask-expr) (a-expr) (b-expr) (ty) =
+   let lanes = a64-vec-lane-count ty
+   in let mr = a64-emit-expr st mask-expr
+   in let ms = a64-save-if-needed (mr.state) (mr.reg)
+   in let ar = a64-emit-expr (ms.state) a-expr
+   in let as1 = a64-save-if-needed (ar.state) (ar.reg)
+   in let br = a64-emit-expr (as1.state) b-expr
+   in let bs = a64-save-if-needed (br.state) (br.reg)
+   in let ptr-r = a64-alloc-local (bs.state)
+   in let st1 = a64-emit (ptr-r.state) (arm64-mov (ptr-r.reg) a64-heap-reg)
+   in let st1a = a64-store-local st1 (ptr-r.reg) (ptr-r.reg)
+   in let st2 = a64-emit st1a (arm64-add-imm a64-heap-reg a64-heap-reg (lanes * 8))
+   in let ml = a64-reload-if-needed st2 (ms.reg)
+   in let al = a64-reload-if-needed (ml.state) (as1.reg)
+   in let bl = a64-reload-if-needed (al.state) (bs.reg)
+   in a64-emit-vec-select-lanes (bl.state) (ml.reg) (al.reg) (bl.reg) (ptr-r.reg) 0 lanes
+
+  a64-emit-vec-select-lanes : A64State, Integer, Integer, Integer, Integer, Integer, Integer -> A64EmitResult
+  a64-emit-vec-select-lanes (st) (mask-reg) (a-ptr) (b-ptr) (out-local) (i) (n) =
+   if i >= n then a64-load-local st out-local
+   else let bit-r = a64-alloc-temp st
+   in let st1 = a64-emit-li (bit-r.state) (bit-r.reg) (bit-shl 1 i)
+   in let st2 = a64-emit st1 (arm64-and (bit-r.reg) mask-reg (bit-r.reg))
+   in let val-r = a64-alloc-temp st2
+   in let cbz-index = st2.insn-count
+   in let st3 = a64-emit st2 arm64-nop
+   in let st4 = a64-emit st3 (arm64-ldr (val-r.reg) a-ptr (i * 8))
+   in let jmp-index = st4.insn-count
+   in let st5 = a64-emit st4 arm64-nop
+   in let else-label = st5.insn-count
+   in let st6 = a64-emit st5 (arm64-ldr (val-r.reg) b-ptr (i * 8))
+   in let end-label = st6.insn-count
+   in let st7 = a64-patch-insn st6 cbz-index (arm64-cbz (bit-r.reg) ((else-label - cbz-index) * 4))
+   in let st8 = a64-patch-insn st7 jmp-index (arm64-b ((end-label - jmp-index) * 4))
+   in let ol = a64-load-local st8 out-local
+   in let st9 = a64-emit (ol.state) (arm64-str (val-r.reg) (ol.reg) (i * 8))
+   in a64-emit-vec-select-lanes st9 mask-reg a-ptr b-ptr out-local (i + 1) n
+
+  a64-fp-op-insn : Integer, Integer, Integer, Integer -> List Integer
+  a64-fp-op-insn (opcode) (fd) (fn) (fm) =
+   if opcode == 0 then arm64-fadd-d fd fn fm
+   else if opcode == 1 then arm64-fsub-d fd fn fm
+   else if opcode == 2 then arm64-fmul-d fd fn fm
+   else arm64-fdiv-d fd fn fm
+
+  a64-fp-op-insn-s : Integer, Integer, Integer, Integer -> List Integer
+  a64-fp-op-insn-s (opcode) (fd) (fn) (fm) =
+   if opcode == 0 then arm64-fadd-s fd fn fm
+   else if opcode == 1 then arm64-fsub-s fd fn fm
+   else if opcode == 2 then arm64-fmul-s fd fn fm
+   else arm64-fdiv-s fd fn fm
+
+  a64-vec-is-f32 : CodexType -> Boolean
+  a64-vec-is-f32 (ty) =
+   when ty
+    is VectorTy (n) (et) -> when et
+     is RealApproxTy -> True
+     is otherwise -> False
+    is otherwise -> False
+
+  a64-emit-vec-binop : A64State, Integer, Integer, Integer, CodexType -> A64EmitResult
+  a64-emit-vec-binop (st) (l-ptr) (r-ptr) (opcode) (ty) =
+   let lanes = a64-vec-lane-count ty
+   in let is-f32 = a64-vec-is-f32 ty
+   in let out-loc = a64-alloc-local st
+   in let st1 = a64-emit (out-loc.state) (arm64-mov (out-loc.reg) a64-heap-reg)
+   in let st2 = a64-emit st1 (arm64-add-imm a64-heap-reg a64-heap-reg (lanes * 8))
+   in a64-emit-vec-binop-lanes st2 l-ptr r-ptr (out-loc.reg) opcode 0 lanes is-f32
+
+  a64-emit-vec-binop-lanes : A64State, Integer, Integer, Integer, Integer, Integer, Integer, Boolean -> A64EmitResult
+  a64-emit-vec-binop-lanes (st) (l-ptr) (r-ptr) (out-ptr) (opcode) (i) (n) (is-f32) =
+   if i >= n then A64EmitResult { state = st, reg = out-ptr }
+   else let t1 = a64-alloc-temp st
+   in let st1 = a64-emit (t1.state) (arm64-ldr (t1.reg) l-ptr (i * 8))
+   in let t2 = a64-alloc-temp st1
+   in let st2 = a64-emit (t2.state) (arm64-ldr (t2.reg) r-ptr (i * 8))
+   in if is-f32 then
+    let st3 = a64-emit st2 (arm64-fmov-to-fp-s 0 (t1.reg))
+    in let st4 = a64-emit st3 (arm64-fmov-to-fp-s 1 (t2.reg))
+    in let st5 = a64-emit st4 (a64-fp-op-insn-s opcode 0 0 1)
+    in let st6 = a64-emit st5 (arm64-fmov-from-fp-s (t1.reg) 0)
+    in let st7 = a64-emit st6 (arm64-str (t1.reg) out-ptr (i * 8))
+    in a64-emit-vec-binop-lanes st7 l-ptr r-ptr out-ptr opcode (i + 1) n is-f32
+   else let st3 = a64-emit st2 (arm64-fmov-to-fp 0 (t1.reg))
+   in let st4 = a64-emit st3 (arm64-fmov-to-fp 1 (t2.reg))
+   in let st5 = a64-emit st4 (a64-fp-op-insn opcode 0 0 1)
+   in let st6 = a64-emit st5 (arm64-fmov-from-fp (t1.reg) 0)
+   in let st7 = a64-emit st6 (arm64-str (t1.reg) out-ptr (i * 8))
+   in a64-emit-vec-binop-lanes st7 l-ptr r-ptr out-ptr opcode (i + 1) n is-f32
+
+  a64-emit-vec-cmp : A64State, Integer, Integer, Integer, CodexType -> A64EmitResult
+  a64-emit-vec-cmp (st) (l-ptr) (r-ptr) (cond) (ty) =
+   let lanes = a64-vec-lane-count ty
+   in let ll = a64-alloc-local st
+   in let st0a = a64-store-local (ll.state) (ll.reg) l-ptr
+   in let rl = a64-alloc-local st0a
+   in let st0b = a64-store-local (rl.state) (rl.reg) r-ptr
+   in let result-loc = a64-alloc-local st0b
+   in let st0c = a64-emit-li (result-loc.state) (result-loc.reg) 0
+   in let st1 = a64-store-local st0c (result-loc.reg) (result-loc.reg)
+   in let is-f32 = a64-vec-is-f32 ty
+   in a64-emit-vec-cmp-lanes st1 (ll.reg) (rl.reg) (result-loc.reg) cond 0 lanes is-f32
+
+  a64-emit-vec-cmp-lanes : A64State, Integer, Integer, Integer, Integer, Integer, Integer, Boolean -> A64EmitResult
+  a64-emit-vec-cmp-lanes (st) (l-ptr) (r-ptr) (result-reg) (cond) (i) (n) (is-f32) =
+   if i >= n then A64EmitResult { state = st, reg = result-reg }
+   else let t1 = a64-alloc-temp st
+   in let st1 = a64-emit (t1.state) (arm64-ldr (t1.reg) l-ptr (i * 8))
+   in let t2 = a64-alloc-temp st1
+   in let st2 = a64-emit (t2.state) (arm64-ldr (t2.reg) r-ptr (i * 8))
+   in let st3 = if is-f32 then a64-emit st2 (arm64-fmov-to-fp-s 0 (t1.reg))
+     else a64-emit st2 (arm64-fmov-to-fp 0 (t1.reg))
+   in let st4 = if is-f32 then a64-emit st3 (arm64-fmov-to-fp-s 1 (t2.reg))
+     else a64-emit st3 (arm64-fmov-to-fp 1 (t2.reg))
+   in let st5 = if is-f32 then a64-emit st4 (arm64-fcmp-s 0 1)
+     else a64-emit st4 (arm64-fcmp-d 0 1)
+   in let bit-r = a64-alloc-temp st5
+   in let st6 = a64-emit (bit-r.state) (arm64-csinc (bit-r.reg) a64-xzr a64-xzr cond)
+   in let st7 = a64-emit st6 (arm64-lsl-imm (bit-r.reg) (bit-r.reg) i)
+   in let st8 = a64-emit st7 (arm64-or result-reg result-reg (bit-r.reg))
+   in a64-emit-vec-cmp-lanes st8 l-ptr r-ptr result-reg cond (i + 1) n is-f32
+
+  a64-emit-mask-any : A64State, IRExpr -> A64EmitResult
+  a64-emit-mask-any (st) (arg) =
+   let vr = a64-emit-expr st arg
+   in let rd = a64-alloc-temp (vr.state)
+   in let st1 = a64-emit (rd.state) (arm64-cmp (vr.reg) a64-xzr)
+   in A64EmitResult { state = a64-emit st1 (a64-csinc-ne (rd.reg)), reg = rd.reg }
+
+  a64-emit-mask-all : A64State, IRExpr -> A64EmitResult
+  a64-emit-mask-all (st) (arg) =
+   let vr = a64-emit-expr st arg
+   in let rd = a64-alloc-temp (vr.state)
+   in let tr = a64-alloc-temp (rd.state)
+   in let st1 = a64-emit-li (tr.state) (tr.reg) 3
+   in let st2 = a64-emit st1 (arm64-cmp (vr.reg) (tr.reg))
+   in A64EmitResult { state = a64-emit st2 (a64-csinc-eq (rd.reg)), reg = rd.reg }
+
+  a64-emit-mask-none : A64State, IRExpr -> A64EmitResult
+  a64-emit-mask-none (st) (arg) =
+   let vr = a64-emit-expr st arg
+   in let rd = a64-alloc-temp (vr.state)
+   in let st1 = a64-emit (rd.state) (arm64-cmp (vr.reg) a64-xzr)
+   in A64EmitResult { state = a64-emit st1 (a64-csinc-eq (rd.reg)), reg = rd.reg }
+
+  a64-emit-mask-count : A64State, IRExpr -> A64EmitResult
+  a64-emit-mask-count (st) (arg) =
+   let vr = a64-emit-expr st arg
+   in let rd = a64-alloc-temp (vr.state)
+   in let t1 = a64-alloc-temp (rd.state)
+   in let st1 = a64-emit-li (t1.state) (t1.reg) 1
+   in let st2 = a64-emit st1 (arm64-and (rd.reg) (vr.reg) (t1.reg))
+   in let t2 = a64-alloc-temp st2
+   in let st3 = a64-emit (t2.state) (arm64-lsr-imm (t2.reg) (vr.reg) 1)
+   in let st4 = a64-emit st3 (arm64-and (t2.reg) (t2.reg) (t1.reg))
+   in A64EmitResult { state = a64-emit st4 (arm64-add (rd.reg) (rd.reg) (t2.reg)), reg = rd.reg }
+
+  a64-emit-fork : A64State, IRExpr -> A64EmitResult
+  a64-emit-fork (st) (body) =
+   let br = when body
+    is IrLambda (params) (lbody) (lty) (lsp) ->
+     let st1 = a64-bind-fork-params st params 0
+     in a64-emit-expr st1 lbody
+    is IrName (name) (ty) (s) ->
+     let st1 = a64-emit-call-to st name
+     in A64EmitResult { state = st1, reg = a64-x0 }
+    is otherwise ->
+     let er = a64-emit-expr st body
+     in if a64-fork-body-is-fun body then
+      let st-c = a64-emit (er.state) (arm64-mov a64-x11 (er.reg))
+      in let st-c2 = a64-emit st-c (arm64-ldr a64-x9 a64-x11 0)
+      in A64EmitResult { state = a64-emit st-c2 (arm64-blr a64-x9), reg = a64-x0 }
+     else er
+   in let tr = a64-alloc-temp (br.state)
+   in let st1 = a64-emit (tr.state) (arm64-mov (tr.reg) a64-heap-reg)
+   in let st2 = a64-emit st1 (arm64-add-imm a64-heap-reg a64-heap-reg 8)
+   in let st3 = a64-emit st2 (arm64-str (br.reg) (tr.reg) 0)
+   in A64EmitResult { state = st3, reg = tr.reg }
+
+  a64-fork-body-is-fun : IRExpr -> Boolean
+  a64-fork-body-is-fun (expr) =
+   when ir-expr-type expr
+    is FunTy (p) (r) -> True
+    is EffectfulTy (effs) (scopes) (ret) -> when ret
+     is FunTy (p2) (r2) -> True
+     is otherwise -> False
+    is otherwise -> False
+
+  a64-bind-fork-params : A64State, List IRParam, Integer -> A64State
+  a64-bind-fork-params (st) (params) (i) =
+   if i >= list-length params then st
+   else let loc = a64-alloc-local st
+   in let st1 = a64-emit (loc.state) (arm64-mov (loc.reg) a64-xzr)
+   in let st2 = a64-bind-local st1 ((list-at params i).name) (loc.reg)
+   in a64-bind-fork-params st2 params (i + 1)
+
+  a64-emit-await : A64State, IRExpr -> A64EmitResult
+  a64-emit-await (st) (task) =
+   let tr = a64-emit-expr st task
+   in let rd = a64-alloc-temp (tr.state)
+   in A64EmitResult { state = a64-emit (rd.state) (arm64-ldr (rd.reg) (tr.reg) 0), reg = rd.reg }
+
+  a64-emit-memory-fence : A64State, IRExpr -> A64EmitResult
+  a64-emit-memory-fence (st) (arg) =
+   let vr = a64-emit-expr st arg
+   in A64EmitResult { state = a64-emit (vr.state) arm64-dmb-ish, reg = vr.reg }
+
+  a64-emit-atomic-load : A64State, IRExpr -> A64EmitResult
+  a64-emit-atomic-load (st) (addr-expr) =
+   let ar = a64-emit-expr st addr-expr
+   in let tr = a64-alloc-temp (ar.state)
+   in A64EmitResult { state = a64-emit (tr.state) (arm64-ldar (tr.reg) (ar.reg)), reg = tr.reg }
+
+  a64-emit-atomic-store : A64State, IRExpr, IRExpr -> A64EmitResult
+  a64-emit-atomic-store (st) (addr-expr) (val-expr) =
+   let ar = a64-emit-expr st addr-expr
+   in let sr = a64-save-if-needed (ar.state) (ar.reg)
+   in let vr = a64-emit-expr (sr.state) val-expr
+   in let lr = a64-reload-if-needed (vr.state) (sr.reg)
+   in let st1 = a64-emit (lr.state) (arm64-stlr (vr.reg) (lr.reg))
+   in A64EmitResult { state = st1, reg = vr.reg }
+
+  a64-emit-atomic-cas : A64State, IRExpr, IRExpr, IRExpr -> A64EmitResult
+  a64-emit-atomic-cas (st) (addr-expr) (expected-expr) (new-expr) =
+   let ar = a64-emit-expr st addr-expr
+   in let sl1 = a64-alloc-local (ar.state)
+   in let st1 = a64-store-local (sl1.state) (sl1.reg) (ar.reg)
+   in let er = a64-emit-expr st1 expected-expr
+   in let sl2 = a64-alloc-local (er.state)
+   in let st2 = a64-store-local (sl2.state) (sl2.reg) (er.reg)
+   in let nr = a64-emit-expr st2 new-expr
+   in let sl3 = a64-alloc-local (nr.state)
+   in let st3 = a64-store-local (sl3.state) (sl3.reg) (nr.reg)
+   in let la = a64-load-local st3 (sl1.reg)
+   in let le = a64-load-local (la.state) (sl2.reg)
+   in let ln = a64-load-local (le.state) (sl3.reg)
+   in let addr-r = la.reg
+   in let exp-r = le.reg
+   in let new-r = ln.reg
+   in let tr = a64-alloc-temp (ln.state)
+   in let rd = tr.reg
+   in let ws = a64-alloc-temp (tr.state)
+   in let loop-idx = (ws.state).insn-count
+   in let st4 = a64-emit (ws.state) (arm64-ldxr rd addr-r)
+   in let st5 = a64-emit st4 (arm64-cmp rd exp-r)
+   in let bne-idx = st5.insn-count
+   in let st6 = a64-emit st5 arm64-nop
+   in let st7 = a64-emit st6 (arm64-stxr (ws.reg) new-r addr-r)
+   in let st8 = a64-emit st7 (arm64-cbnz (ws.reg) ((loop-idx - st7.insn-count) * 4))
+   in let ok-idx = st8.insn-count
+   in let st10 = a64-emit-li st8 rd 1
+   in let b-end-idx = st10.insn-count
+   in let st11 = a64-emit st10 arm64-nop
+   in let fail-idx = st11.insn-count
+   in let st12 = a64-emit-li st11 rd 0
+   in let end-idx = st12.insn-count
+   in let st13 = a64-patch-insn st12 bne-idx (arm64-b-cond 1 ((fail-idx - bne-idx) * 4))
+   in let st14 = a64-patch-insn st13 b-end-idx (arm64-b ((end-idx - b-end-idx) * 4))
+   in A64EmitResult { state = st14, reg = rd }
+
+  a64-emit-atomic-add : A64State, IRExpr, IRExpr -> A64EmitResult
+  a64-emit-atomic-add (st) (addr-expr) (val-expr) =
+   let ar = a64-emit-expr st addr-expr
+   in let sr = a64-save-if-needed (ar.state) (ar.reg)
+   in let vr = a64-emit-expr (sr.state) val-expr
+   in let lr = a64-reload-if-needed (vr.state) (sr.reg)
+   in let addr-r = lr.reg
+   in let val-r = vr.reg
+   in let tr = a64-alloc-temp (lr.state)
+   in let rd = tr.reg
+   in let ws = a64-alloc-temp (tr.state)
+   in let tmp = a64-alloc-temp (ws.state)
+   in let loop-idx = (tmp.state).insn-count
+   in let st1 = a64-emit (tmp.state) (arm64-ldxr rd addr-r)
+   in let st2 = a64-emit st1 (arm64-add (tmp.reg) rd val-r)
+   in let st3 = a64-emit st2 (arm64-stxr (ws.reg) (tmp.reg) addr-r)
+   in let st4 = a64-emit st3 (arm64-cbnz (ws.reg) ((loop-idx - st3.insn-count) * 4))
+   in A64EmitResult { state = st4, reg = rd }
+
+  a64-emit-atomic-exchange : A64State, IRExpr, IRExpr -> A64EmitResult
+  a64-emit-atomic-exchange (st) (addr-expr) (val-expr) =
+   let ar = a64-emit-expr st addr-expr
+   in let sr = a64-save-if-needed (ar.state) (ar.reg)
+   in let vr = a64-emit-expr (sr.state) val-expr
+   in let lr = a64-reload-if-needed (vr.state) (sr.reg)
+   in let addr-r = lr.reg
+   in let val-r = vr.reg
+   in let tr = a64-alloc-temp (lr.state)
+   in let rd = tr.reg
+   in let ws = a64-alloc-temp (tr.state)
+   in let loop-idx = (ws.state).insn-count
+   in let st1 = a64-emit (ws.state) (arm64-ldxr rd addr-r)
+   in let st2 = a64-emit st1 (arm64-stxr (ws.reg) val-r addr-r)
+   in let st3 = a64-emit st2 (arm64-cbnz (ws.reg) ((loop-idx - st2.insn-count) * 4))
+   in A64EmitResult { state = st3, reg = rd }
+
+  a64-emit-int-mod : A64State, IRExpr, IRExpr -> A64EmitResult
+  a64-emit-int-mod (st) (dividend) (divisor) =
+   let lr = a64-emit-expr st dividend
+   in let saved = a64-save-if-needed (lr.state) (lr.reg)
+   in let rr = a64-emit-expr (saved.state) divisor
+   in let ll = a64-reload-if-needed (rr.state) (saved.reg)
+   in let rd = a64-alloc-temp (ll.state)
+   in let st1 = a64-emit (rd.state) (arm64-sdiv (rd.reg) (ll.reg) (rr.reg))
+   in let st2 = a64-emit st1 (arm64-msub (rd.reg) (rd.reg) (rr.reg) (ll.reg))
+   in A64EmitResult { state = st2, reg = rd.reg }
+
+
+Page 1 of 3

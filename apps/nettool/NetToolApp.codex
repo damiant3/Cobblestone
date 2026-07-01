@@ -1,0 +1,233 @@
+Chapter: NetToolApp
+  cites Nettool chapter PacketAnalyzer
+  cites Nettool chapter PortScanner
+  cites Nettool chapter GroupAdmin
+  cites Net chapter GroupMembership
+  cites UI chapter Theme
+  cites UI chapter Widget
+  cites UI chapter Layout
+  cites WebApp chapter WebRuntime
+  cites WebApp chapter WebTheme
+  cites WebApp chapter WebWidgets
+
+ Network admin toolkit entry point. Tabbed interface: Packet Capture,
+ Port Scanner, Network Map, Group Admin, Service Registry. Each tab
+ owns its state and renders its widget. The toolbar provides global
+ controls (interface selection, capture start/stop).
+
+Section: App State
+
+  NetToolView =
+    | NtPackets
+    | NtScanner
+    | NtNetmap
+    | NtGroup
+    | NtServices
+
+  nt-view-label : NetToolView -> Text
+  nt-view-label (v) = when v
+    is NtPackets -> "Packet Capture"
+    is NtScanner -> "Port Scanner"
+    is NtNetmap -> "Network Map"
+    is NtGroup -> "Group Admin"
+    is NtServices -> "Service Registry"
+
+  NetToolState = record {
+    nt-view : NetToolView,
+    nt-capture : CaptureState,
+    nt-scan : ScanState,
+    nt-netmap : NetworkMap,
+    nt-group : GroupState,
+    nt-interface : Text,
+    nt-target : Text
+  }
+
+  nettool-new : Text -> NetToolState
+  nettool-new (self-id) = NetToolState {
+    nt-view = NtPackets,
+    nt-capture = capture-new "eth0",
+    nt-scan = scan-new (profile-common-ports "10.0.2.2"),
+    nt-netmap = netmap-new "10.0.2.0/24",
+    nt-group = group-new "codex-mesh" self-id,
+    nt-interface = "eth0",
+    nt-target = "10.0.2.2"
+  }
+
+  nt-set-view : NetToolState, NetToolView -> NetToolState
+  nt-set-view (st) (v) = __record-set st "nt-view" v
+
+Section: Packet Capture Widget
+
+  pkt-row-widget : CapturedPacket -> WidgetNode
+  pkt-row-widget (p) =
+    let id-lbl = widget-label ("pkt-id-" & show (p.cp-id)) (show (p.cp-id))
+    in let src = widget-label ("pkt-src-" & show (p.cp-id)) (p.cp-src-addr)
+    in let dst = widget-label ("pkt-dst-" & show (p.cp-id)) (p.cp-dst-addr)
+    in let proto = widget-label ("pkt-proto-" & show (p.cp-id)) (p.cp-protocol)
+    in let len = widget-label ("pkt-len-" & show (p.cp-id)) (show (p.cp-length) & "b")
+    in let info = widget-label ("pkt-info-" & show (p.cp-id)) (p.cp-info)
+    in widget-panel ("pkt-" & show (p.cp-id)) DirRow 8 [id-lbl, src, dst, proto, len, info]
+
+  capture-widget : CaptureState -> WidgetNode
+  capture-widget (st) =
+    let title = widget-label "cap-title" "Packet Capture"
+    in let status = widget-label "cap-status" (if st.cap-capturing then "CAPTURING on " & st.cap-interface else "Stopped")
+    in let stats = widget-label "cap-stats" (show (st.cap-count) & " packets, " & show (st.cap-bytes-total) & " bytes")
+    in let filter-lbl = widget-label "cap-filter-lbl" ("Filter: " & filt-label (st.cap-filter))
+    in let filter-input = widget-input "cap-filter-input" "" 0
+    in let start-btn = widget-button "cap-start" (if st.cap-capturing then "Stop" else "Start")
+    in let clear-btn = widget-button "cap-clear" "Clear"
+    in let toolbar = widget-toolbar "cap-toolbar" [start-btn, clear-btn, filter-input]
+    in let visible = cap-visible st
+    in let rows = pkt-rows visible 0 (list-length visible) []
+    in widget-panel "capture-view" DirColumn 4 ([title, status, stats, filter-lbl, toolbar] & rows)
+
+  pkt-rows : List CapturedPacket, Integer, Integer, List WidgetNode -> List WidgetNode
+  pkt-rows (pkts) (i) (n) (acc) =
+    if i >= n then acc
+    else pkt-rows pkts (i + 1) n (list-push acc (pkt-row-widget (list-at pkts i)))
+
+Section: Port Scanner Widget
+
+  scan-result-row : ScanResult -> WidgetNode
+  scan-result-row (r) =
+    let port = widget-label ("sr-port-" & show (r.scr-port)) (show (r.scr-port))
+    in let proto = widget-label ("sr-proto-" & show (r.scr-port)) (r.scr-protocol)
+    in let status = widget-label ("sr-status-" & show (r.scr-port)) (ps-label (r.scr-status))
+    in let svc = widget-label ("sr-svc-" & show (r.scr-port)) (r.scr-service)
+    in let banner = widget-label ("sr-banner-" & show (r.scr-port)) (r.scr-banner)
+    in let lat = widget-label ("sr-lat-" & show (r.scr-port)) (show (r.scr-latency-ms) & "ms")
+    in let row = widget-panel ("sr-" & show (r.scr-port)) DirRow 8 [port, proto, status, svc, banner, lat]
+    in when r.scr-status
+      is PsOpen -> widget-set-state row 4
+      is PsFiltered -> widget-set-state row 1
+      is otherwise -> row
+
+  scanner-widget : ScanState -> WidgetNode
+  scanner-widget (st) =
+    let title = widget-label "scan-title" "Port Scanner"
+    in let target = widget-label "scan-target" ("Target: " & (st.ss-profile).sp-target)
+    in let progress = widget-gauge "scan-progress" (ss-progress-pct st) 100
+    in let stats = widget-label "scan-stats" (show (st.ss-open-count) & " open, " & show (st.ss-closed-count) & " closed, " & show (st.ss-filtered-count) & " filtered")
+    in let target-input = widget-input "scan-target-input" (st.ss-profile).sp-target (text-length (st.ss-profile).sp-target)
+    in let scan-btn = widget-button "scan-start" (if st.ss-scanning then "Stop" else "Scan")
+    in let profile-btns = widget-toolbar "scan-profiles" [
+      widget-button "scan-quick" "Quick",
+      widget-button "scan-common" "Common",
+      widget-button "scan-full" "Full"
+    ]
+    in let toolbar = widget-toolbar "scan-toolbar" [target-input, scan-btn]
+    in let open-results = ss-open-results st
+    in let rows = scan-rows open-results 0 (list-length open-results) []
+    in widget-panel "scanner-view" DirColumn 4 ([title, target, toolbar, profile-btns, progress, stats] & rows)
+
+  scan-rows : List ScanResult, Integer, Integer, List WidgetNode -> List WidgetNode
+  scan-rows (results) (i) (n) (acc) =
+    if i >= n then acc
+    else scan-rows results (i + 1) n (list-push acc (scan-result-row (list-at results i)))
+
+Section: Network Map Widget
+
+  host-row-widget : DiscoveredHost -> WidgetNode
+  host-row-widget (h) =
+    let addr = widget-label ("host-" & h.dh-address) (h.dh-address)
+    in let hostname = widget-label ("hn-" & h.dh-address) (h.dh-hostname)
+    in let mac = widget-label ("mac-" & h.dh-address) (h.dh-mac)
+    in let os = widget-label ("os-" & h.dh-address) (h.dh-os-guess)
+    in let ports = widget-label ("ports-" & h.dh-address) (show (h.dh-open-ports) & " ports")
+    in let lat = widget-label ("lat-" & h.dh-address) (show (h.dh-latency-ms) & "ms")
+    in widget-panel ("host-" & h.dh-address) DirRow 8 [addr, hostname, mac, os, ports, lat]
+
+  netmap-widget : NetworkMap -> WidgetNode
+  netmap-widget (nm) =
+    let title = widget-label "nm-title" "Network Map"
+    in let subnet = widget-label "nm-subnet" ("Subnet: " & nm.nm-subnet)
+    in let summary = widget-label "nm-summary" (show (nm.nm-host-count) & " hosts discovered")
+    in let scan-btn = widget-button "nm-scan" "Scan Subnet"
+    in let rows = nm-host-rows (nm.nm-hosts) 0 (nm.nm-host-count) []
+    in widget-panel "netmap-view" DirColumn 4 ([title, subnet, summary, scan-btn] & rows)
+
+  nm-host-rows : List DiscoveredHost, Integer, Integer, List WidgetNode -> List WidgetNode
+  nm-host-rows (hosts) (i) (n) (acc) =
+    if i >= n then acc
+    else nm-host-rows hosts (i + 1) n (list-push acc (host-row-widget (list-at hosts i)))
+
+Section: Top-Level Widget
+
+  nettool-widget : NetToolState -> WidgetNode
+  nettool-widget (st) =
+    let tabs = widget-tabs "nt-tabs" ["Packets", "Scanner", "Network Map", "Group", "Services"] (when st.nt-view is NtPackets -> 0 is NtScanner -> 1 is NtNetmap -> 2 is NtGroup -> 3 is NtServices -> 4)
+    in let body = when st.nt-view
+      is NtPackets -> capture-widget (st.nt-capture)
+      is NtScanner -> scanner-widget (st.nt-scan)
+      is NtNetmap -> netmap-widget (st.nt-netmap)
+      is NtGroup -> grp-admin-widget (st.nt-group)
+      is NtServices -> grp-service-table (st.nt-group)
+    in widget-panel "nettool" DirColumn 4 [tabs, body]
+
+Section: Theme
+
+  nettool-theme : Theme
+  nettool-theme =
+    let p = Palette { pal-bg = #0d1117, pal-fg = #e6edf3, pal-primary = #58a6ff, pal-secondary = #161b22, pal-accent = #3fb950, pal-muted = #8b949e, pal-error = #f85149, pal-success = #3fb950, pal-warning = #d29922, pal-border = #30363d }
+    in let base = ws (p.pal-bg) (p.pal-fg) (bdr 0 0 CornerSharp) (eu 0) (eu 0)
+    in let btn = ws (p.pal-secondary) (p.pal-fg) (bdr 0 0 (CornerRound 6)) (exy 12 8) (eu 0)
+    in let lbl = ws 0 (p.pal-fg) bn ez (eu 0)
+    in Theme { th-name = "nettool-dark", th-palette = p, th-panel = ss-flat base, th-button = StateStyles { ss-normal = btn, ss-hover = btn, ss-pressed = btn, ss-disabled = btn, ss-focused = btn }, th-label = ss-flat lbl, th-input = ss-flat base, th-gauge = ss-flat base, th-separator = ss-flat base }
+
+  nettool-css : Text
+  nettool-css =
+    "*{margin:0;padding:0;box-sizing:border-box}body{background:#0d1117;color:#e6edf3;font-family:system-ui,sans-serif;min-height:100vh}#app{display:contents}"
+    & ".nt-app{padding:16px 24px}"
+    & ".nt-tabs{display:flex;gap:4px;margin-bottom:16px;border-bottom:1px solid #30363d;padding-bottom:8px}"
+    & ".nt-tab{padding:6px 16px;border-radius:6px;cursor:pointer;font-size:13px;color:#8b949e}"
+    & ".nt-tab:hover{color:#e6edf3;background:#161b22}"
+    & ".nt-tab.active{color:#58a6ff;background:#161b22}"
+    & ".nt-panel{background:#161b22;border:1px solid #30363d;border-radius:8px;padding:16px}"
+    & ".nt-toolbar{display:flex;gap:8px;margin-bottom:12px;align-items:center}"
+    & ".nt-row{display:grid;grid-template-columns:60px 1fr 1fr 100px 80px 1fr;gap:8px;padding:6px 0;border-bottom:1px solid #21262d;font-size:13px;font-variant-numeric:tabular-nums}"
+    & ".nt-hdr{color:#8b949e;font-size:11px;text-transform:uppercase}"
+    & ".nt-status{font-size:12px;color:#8b949e;margin-bottom:8px}"
+    & ".nt-open{color:#3fb950}.nt-closed{color:#f85149}.nt-filtered{color:#d29922}"
+
+Section: Web Render
+
+  nettool-page-tree : Integer -> WidgetNode
+  nettool-page-tree (x) =
+    let tab = state-get "nt-tab"
+    in let st = nettool-new "local"
+    in let st2 = nt-set-view st (if tab == 1 then NtScanner else if tab == 2 then NtNetmap else if tab == 3 then NtGroup else if tab == 4 then NtServices else NtPackets)
+    in widget-box "nt-app" "nt-app" [nettool-widget st2]
+
+  render-nettool : Integer -> Integer
+  render-nettool (x) = mount-widget-themed nettool-theme (nettool-page-tree 0)
+
+Section: Handlers
+
+  nettool-click : Text -> Integer
+  nettool-click (id) =
+    if id == "nt-tabs-0" then let s = state-set-render "nt-tab" 0 in 0
+    else if id == "nt-tabs-1" then let s = state-set-render "nt-tab" 1 in 0
+    else if id == "nt-tabs-2" then let s = state-set-render "nt-tab" 2 in 0
+    else if id == "nt-tabs-3" then let s = state-set-render "nt-tab" 3 in 0
+    else if id == "nt-tabs-4" then let s = state-set-render "nt-tab" 4 in 0
+    else if id == "cap-start" then let s = state-set-render "nt-capturing" 1 in 0
+    else if id == "cap-clear" then let s = state-set-render "nt-capturing" 0 in 0
+    else if id == "scan-start" then let s = state-set-render "nt-scanning" 1 in 0
+    else if id == "nm-scan" then let s = state-set-render "nt-scanning" 1 in 0
+    else 0
+
+Section: Entry
+
+  opening : [Console] Integer
+  opening = act
+    let t = inject-app-style nettool-theme nettool-css
+    in let tab = state-set "nt-tab" 0
+    in let cap = state-set "nt-capturing" 0
+    in let scn = state-set "nt-scanning" 0
+    in let s = set-render render-nettool
+    in let h = register-handlers no-pick nettool-click
+    in render-nettool 0
+  end
+
+Page 1

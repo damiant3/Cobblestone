@@ -1,0 +1,192 @@
+Chapter: Forensics
+  cites Foreword chapter Maybe
+
+ The Forensics chapter records agent reasoning chains from percept
+ to belief to policy to action, forming the audit trail for every
+ agent decision.
+
+ We say:
+
+Section: Reasoning Chain
+
+ Every agent decision produces a chain of links explaining how
+ percepts led to beliefs, beliefs matched policies, policies
+ authorized actions. The chain is the forensic record — the chain answers
+ "why did the agent do that?"
+
+  ForensicLink =
+    | FPercept (Text) (Integer)
+    | FBelief (Text) (Integer) (List Integer)
+    | FPolicy (Text) (Boolean) (Text)
+    | FAction (Text) (Text) (Text)
+    | FAnomaly (Text) (Text) (Text)
+
+  ForensicChain = record {
+    agent : Text,
+    timestamp : Integer,
+    links : List ForensicLink,
+    summary : Text
+  }
+
+Section: Chain Construction
+
+  chain-empty : Text, Integer -> ForensicChain
+  chain-empty (agent) (ts) = ForensicChain {
+    agent = agent, timestamp = ts, links = [], summary = ""
+  }
+
+  chain-add-percept : ForensicChain, Text, Integer -> ForensicChain
+  chain-add-percept (c) (source) (confidence) =
+    ForensicChain { agent = c.agent, timestamp = c.timestamp,
+      links = list-push (c.links) (FPercept source confidence), summary = c.summary }
+
+  chain-add-belief : ForensicChain, Text, Integer, List Integer -> ForensicChain
+  chain-add-belief (c) (description) (confidence) (derived-from) =
+    ForensicChain { agent = c.agent, timestamp = c.timestamp,
+      links = list-push (c.links) (FBelief description confidence derived-from), summary = c.summary }
+
+  chain-add-policy : ForensicChain, Text, Boolean, Text -> ForensicChain
+  chain-add-policy (c) (rule) (matched) (scope) =
+    ForensicChain { agent = c.agent, timestamp = c.timestamp,
+      links = list-push (c.links) (FPolicy rule matched scope), summary = c.summary }
+
+  chain-add-action : ForensicChain, Text, Text, Text -> ForensicChain
+  chain-add-action (c) (fx) (target) (result) =
+    ForensicChain { agent = c.agent, timestamp = c.timestamp,
+      links = list-push (c.links) (FAction fx target result), summary = c.summary }
+
+  chain-add-anomaly : ForensicChain, Text, Text, Text -> ForensicChain
+  chain-add-anomaly (c) (expected) (observed) (gap) =
+    ForensicChain { agent = c.agent, timestamp = c.timestamp,
+      links = list-push (c.links) (FAnomaly expected observed gap), summary = c.summary }
+
+  chain-set-summary : ForensicChain, Text -> ForensicChain
+  chain-set-summary (c) (s) =
+    ForensicChain { agent = c.agent, timestamp = c.timestamp, links = c.links, summary = s }
+
+Section: Chain Queries
+
+  chain-length : ForensicChain -> Integer
+  chain-length (c) = list-length (c.links)
+
+  chain-has-anomaly : ForensicChain -> Boolean
+  chain-has-anomaly (c) = chain-has-anomaly-loop (c.links) 0 (list-length (c.links))
+
+  chain-has-anomaly-loop : List ForensicLink, Integer, Integer -> Boolean
+  chain-has-anomaly-loop (links) (i) (len) =
+    if i == len then False
+    else when list-at links i
+      is FAnomaly (e) (o) (g) -> True
+      is otherwise -> chain-has-anomaly-loop links (i + 1) len
+
+  chain-action-count : ForensicChain -> Integer
+  chain-action-count (c) = chain-action-count-loop (c.links) 0 (list-length (c.links)) 0
+
+  chain-action-count-loop : List ForensicLink, Integer, Integer, Integer -> Integer
+  chain-action-count-loop (links) (i) (len) (count) =
+    if i == len then count
+    else when list-at links i
+      is FAction (e) (t) (r) -> chain-action-count-loop links (i + 1) len (count + 1)
+      is otherwise -> chain-action-count-loop links (i + 1) len count
+
+Section: Rendering
+
+  link-type-name : ForensicLink -> Text
+  link-type-name (link) = when link
+    is FPercept (s) (c) -> "Percept"
+    is FBelief (d) (c) (refs) -> "Belief"
+    is FPolicy (r) (m) (s) -> "Policy"
+    is FAction (e) (t) (r) -> "Action"
+    is FAnomaly (e) (o) (g) -> "Anomaly"
+
+  render-chain : ForensicChain -> Text
+  render-chain (c) =
+    "Agent: " & c.agent & " | Links: " & show (chain-length c)
+    & " | Actions: " & show (chain-action-count c)
+    & " | Anomalies: " & show (chain-has-anomaly c)
+    & " | Summary: " & c.summary
+
+Section: Confidence Thresholds
+
+  confidence-default-threshold : Integer = 80
+
+  chain-min-confidence : ForensicChain -> Integer
+  chain-min-confidence (c) = chain-min-confidence-loop (c.links) 0 (list-length (c.links)) 100
+
+  chain-min-confidence-loop : List ForensicLink, Integer, Integer, Integer -> Integer
+  chain-min-confidence-loop (links) (i) (len) (best) =
+    if i >= len then best
+    else let conf = link-confidence (list-at links i)
+    in let next = if conf >= 0 & conf < best then conf else best
+    in chain-min-confidence-loop links (i + 1) len next
+
+  link-confidence : ForensicLink -> Integer
+  link-confidence (link) = when link
+    is FPercept (s) (c) -> c
+    is FBelief (d) (c) (refs) -> c
+    is FPolicy (r) (m) (s) -> -1
+    is FAction (e) (t) (r) -> -1
+    is FAnomaly (e) (o) (g) -> 0
+
+  chain-below-threshold : ForensicChain, Integer -> Boolean
+  chain-below-threshold (c) (threshold) =
+    chain-min-confidence c < threshold
+
+Section: Escalation Assessment
+
+  EscalationLevel =
+    | NoEscalation
+    | Advisory
+    | Escalate
+    | SafeMode
+
+  assess-chain : ForensicChain, Integer -> EscalationLevel
+  assess-chain (c) (threshold) =
+    if chain-has-anomaly c then SafeMode
+    else let min-conf = chain-min-confidence c
+    in if min-conf < threshold / 2 then Escalate
+    else if min-conf < threshold then Advisory
+    else NoEscalation
+
+  escalation-name : EscalationLevel -> Text
+  escalation-name (level) = when level
+    is NoEscalation -> "none"
+    is Advisory -> "advisory"
+    is Escalate -> "escalate"
+    is SafeMode -> "safe-mode"
+
+  should-escalate : EscalationLevel -> Boolean
+  should-escalate (level) = when level
+    is NoEscalation -> False
+    is Advisory -> False
+    is Escalate -> True
+    is SafeMode -> True
+
+  should-enter-safe-mode : EscalationLevel -> Boolean
+  should-enter-safe-mode (level) = when level
+    is SafeMode -> True
+    is otherwise -> False
+
+Section: Anomaly Counting
+
+  chain-anomaly-count : ForensicChain -> Integer
+  chain-anomaly-count (c) = chain-anomaly-count-loop (c.links) 0 (list-length (c.links)) 0
+
+  chain-anomaly-count-loop : List ForensicLink, Integer, Integer, Integer -> Integer
+  chain-anomaly-count-loop (links) (i) (len) (count) =
+    if i >= len then count
+    else when list-at links i
+      is FAnomaly (e) (o) (g) -> chain-anomaly-count-loop links (i + 1) len (count + 1)
+      is otherwise -> chain-anomaly-count-loop links (i + 1) len count
+
+  chain-percept-count : ForensicChain -> Integer
+  chain-percept-count (c) = chain-percept-count-loop (c.links) 0 (list-length (c.links)) 0
+
+  chain-percept-count-loop : List ForensicLink, Integer, Integer, Integer -> Integer
+  chain-percept-count-loop (links) (i) (len) (count) =
+    if i >= len then count
+    else when list-at links i
+      is FPercept (s) (c) -> chain-percept-count-loop links (i + 1) len (count + 1)
+      is otherwise -> chain-percept-count-loop links (i + 1) len count
+
+Page 1

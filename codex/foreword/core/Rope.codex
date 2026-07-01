@@ -1,0 +1,102 @@
+Chapter: Rope
+
+ Rope data structure for efficient string concatenation. Instead of
+ copying, ropes build a binary tree of text fragments stored in a flat
+ node arena. Flattening is deferred until needed. Concatenation is O(1);
+ flattening is O(n). Suitable for text editors and log builders.
+
+ A RopeNode is one of:
+   RopeLeaf (text, length)            -- a leaf holding a text fragment.
+   RopeConcat (left, right, length)   -- an interior node joining two subtrees.
+
+ A Rope is a record containing:
+   rope-nodes -- flat arena of RopeNode values.
+   rope-root  -- index of the root node in the arena.
+   rope-count -- total number of nodes allocated.
+
+ To rope-empty gives Rope,
+   creating an empty rope with a single leaf holding empty text.
+
+ To rope-from gives Rope,
+   creating a rope containing a single text fragment.
+
+ To rope-concat gives Rope,
+   concatenating two ropes in O(1) by creating a new interior node.
+
+ To rope-flatten gives Text,
+   collecting all leaf fragments into a single text string.
+
+ To rope-length gives Integer,
+   returning the total character length of the rope.
+
+ To rope-node-count gives Integer,
+   returning the number of nodes in the arena.
+
+ We say:
+
+Section: Type
+  RopeNode =
+    | RopeLeaf (Text) (Integer)
+    | RopeConcat (Integer) (Integer) (Integer)
+
+  Rope = record {
+    rope-nodes : List RopeNode,
+    rope-root : Integer,
+    rope-count : Integer
+  }
+
+Section: Construction
+  rope-empty : Rope
+  rope-empty = Rope { rope-nodes = [RopeLeaf "" 0], rope-root = 0, rope-count = 1 }
+
+  rope-from : Text -> Rope
+  rope-from (s) = Rope { rope-nodes = [RopeLeaf s (text-length s)], rope-root = 0, rope-count = 1 }
+
+Section: Concatenation
+  rope-concat : Rope, Rope -> Rope
+  rope-concat (a) (b) =
+    let len-a = rope-length-at a (a.rope-root)
+    in let len-b = rope-length-at b (b.rope-root)
+    in let offset = a.rope-count
+    in let b-shifted = rope-shift-nodes (b.rope-nodes) offset 0 (b.rope-count) []
+    in let merged = a.rope-nodes & b-shifted
+    in let new-root = list-length merged
+    in let concat-node = RopeConcat (a.rope-root) (b.rope-root + offset) (len-a + len-b)
+    in Rope { rope-nodes = list-push merged concat-node, rope-root = new-root, rope-count = new-root + 1 }
+
+  rope-shift-nodes : List RopeNode, Integer, Integer, Integer, List RopeNode -> List RopeNode
+  rope-shift-nodes (nodes) (offset) (i) (len) (acc) =
+    if i >= len then acc
+    else let node = list-at nodes i
+    in rope-shift-nodes nodes offset (i + 1) len (list-push acc (when node
+      is RopeLeaf (s) (l) -> RopeLeaf s l
+      is RopeConcat (left) (right) (l) -> RopeConcat (left + offset) (right + offset) l))
+
+Section: Flatten
+  rope-flatten : Rope -> Text
+  rope-flatten (r) = rope-collect r (r.rope-root) ""
+
+  rope-collect : Rope, Integer, Text -> Text
+  rope-collect (r) (idx) (acc) =
+    let node = list-at (r.rope-nodes) idx
+    in when node
+      is RopeLeaf (s) (l) -> acc & s
+      is RopeConcat (left) (right) (l) ->
+        let acc2 = rope-collect r left acc
+        in rope-collect r right acc2
+
+Section: Queries
+  rope-length : Rope -> Integer
+  rope-length (r) = rope-length-at r (r.rope-root)
+
+  rope-length-at : Rope, Integer -> Integer
+  rope-length-at (r) (idx) =
+    let node = list-at (r.rope-nodes) idx
+    in when node
+      is RopeLeaf (s) (l) -> l
+      is RopeConcat (left) (right) (l) -> l
+
+  rope-node-count : Rope -> Integer
+  rope-node-count (r) = r.rope-count
+
+Page 1

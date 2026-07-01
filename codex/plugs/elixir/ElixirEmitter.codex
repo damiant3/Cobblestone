@@ -1,0 +1,361 @@
+Chapter: Elixir Emitter
+  cites Codex chapter Text
+  cites Codex chapter Characters
+  cites Codex chapter Lists
+
+ Generates Elixir source code from the IR.
+
+Section: Keywords and Sanitization
+
+  ex-keywords : List Text =
+   ["after", "and", "catch", "cond", "def",
+    "defcallback", "defdelegate", "defexception", "defguard",
+    "defimpl", "defmacro", "defmodule", "defoverridable",
+    "defp", "defprotocol", "defstruct", "do", "else",
+    "end", "false", "fn", "for", "if",
+    "import", "in", "nil", "not", "or",
+    "quote", "raise", "receive", "require", "rescue",
+    "retry", "return", "true", "try", "unless",
+    "unquote", "use", "when", "with"]
+
+  is-ex-keyword-loop : List Text, Text, Integer, Integer -> Boolean
+  is-ex-keyword-loop (kws) (name) (i) (len) =
+   if i == len then False
+   else if list-at kws i == name then True
+   else is-ex-keyword-loop kws name (i + 1) len
+
+  is-ex-keyword : Text -> Boolean
+  is-ex-keyword (name) = is-ex-keyword-loop ex-keywords name 0 (list-length ex-keywords)
+
+  ex-sanitize : Text -> Text
+  ex-sanitize (name) =
+   let s = text-replace name "-" "_"
+   in if is-ex-keyword s then "_" & s
+      else s
+
+  ex-escape-text : Text -> Text
+  ex-escape-text (s) =
+   let s1 = text-replace s "\\" "\\\\"
+   in let s2 = text-replace s1 "\"" "\\\""
+   in let s3 = text-replace s2 "\n" "\\n"
+   in s3
+
+Section: Arity Map
+
+  ArityEntry = record {
+   name : Text,
+   arity : Integer between 0 and 255,
+   generic-count : Integer between 0 and 255
+  }
+
+  bsearch-arity-pos : List ArityEntry, Text, Integer, Integer -> Integer
+  bsearch-arity-pos (entries) (name) (lo) (hi) =
+   if lo >= hi then lo
+   else let mid = lo + (hi - lo) / 2
+   in let mid-name = (list-at entries mid).name
+   in if text-compare name mid-name <= 0 then bsearch-arity-pos entries name lo mid
+      else bsearch-arity-pos entries name (mid + 1) hi
+
+  sorted-insert-arity : List ArityEntry, ArityEntry -> List ArityEntry
+  sorted-insert-arity (xs) (e) =
+   let len = list-length xs
+   in let pos = bsearch-arity-pos xs (e.name) 0 len
+   in list-insert-at xs pos e
+
+  build-arity-map : List IRDef, Integer, List ArityEntry -> List ArityEntry
+  build-arity-map (defs) (i) (acc) =
+   if i == list-length defs then acc
+   else let d = list-at defs i
+   in build-arity-map defs (i + 1) (sorted-insert-arity acc (ArityEntry {
+    name = d.name,
+    arity = list-length (d.params),
+    generic-count = 0
+   }))
+
+  lookup-arity : List ArityEntry, Text -> Integer
+  lookup-arity (entries) (name) =
+   let len = list-length entries
+   in let pos = bsearch-arity-pos entries name 0 len
+   in if pos >= len then -1
+      else let e = list-at entries pos
+      in if e.name == name then e.arity else -1
+
+Section: Apply Chain
+
+  is-upper-letter : Integer -> Boolean
+  is-upper-letter (code) =
+   if code >= char-code 'E' then code <= char-code 'Z'
+   else False
+
+Section: Type Definition Emission
+
+  emit-ex-type-defs : List ATypeDef, Integer -> Text
+  emit-ex-type-defs (tds) (i) =
+   if i == list-length tds then ""
+   else emit-ex-type-def (list-at tds i) & emit-ex-type-defs tds (i + 1)
+
+  emit-ex-type-def : ATypeDef -> Text
+  emit-ex-type-def (td) =
+   when td
+    is ARecordTypeDef (name) (tparams) (fields) (s) ->
+     emit-ex-record-type (name.value) fields
+    is AVariantTypeDef (name) (tparams) (ctors) (s) ->
+     emit-ex-sum-type ctors
+
+  emit-ex-sum-type : List AVariantCtorDef -> Text
+  emit-ex-sum-type (ctors) =
+   emit-ex-sum-type-loop ctors 0 (list-length ctors)
+
+  emit-ex-sum-type-loop : List AVariantCtorDef, Integer, Integer -> Text
+  emit-ex-sum-type-loop (ctors) (i) (len) =
+   if i == len then ""
+   else let c = list-at ctors i
+   in "# variant: " & c.name.value & "\n" & emit-ex-sum-type-loop ctors (i + 1) len
+
+  emit-ex-record-type : Text, List ARecordFieldDef -> Text
+  emit-ex-record-type (name) (fields) =
+   "# record: " & name & "\n"
+
+Section: Expression Emission
+
+  ex-max-depth : Integer = 256
+
+  emit-ex-expr : IRExpr, List ArityEntry -> Text
+  emit-ex-expr (e) (arities) = emit-ex-expr-at e arities 0
+
+  emit-ex-expr-at : IRExpr, List ArityEntry, Integer -> Text
+  emit-ex-expr-at (e) (arities) (depth) =
+   if depth >= ex-max-depth then "nil"
+   else when e
+    is IrIntLit (n) (sp) -> integer-to-text n
+    is IrNumLit (n) (sp) -> integer-to-text n & ".0"
+    is IrTextLit (s) (sp) -> "\"" & ex-escape-text s & "\""
+    is IrBoolLit (b) (sp) -> if b then "true" else "false"
+    is IrCharLit (n) (sp) -> integer-to-text n
+    is IrName (n) (ty) (sp) -> emit-ex-name n ty arities
+    is IrBinary (op) (l) (r) (ty) (sp) -> emit-ex-binary op l r arities
+    is IrNegate (operand) (sp) -> "(-" & emit-ex-expr-at operand arities (depth + 1) & ")"
+    is IrIf (c) (t) (el) (ty) (sp) -> "(if " & emit-ex-expr-at c arities (depth + 1) & ", do: " & emit-ex-expr-at t arities (depth + 1) & ", else: " & emit-ex-expr-at el arities (depth + 1) & ")"
+    is IrLet (name) (ty) (val) (body) (sp) -> "(fn -> " & ex-sanitize name & " = " & emit-ex-expr-at val arities (depth + 1) & "; " & emit-ex-expr-at body arities (depth + 1) & " end).()"
+    is IrApply (f) (a) (ty) (sp) -> emit-ex-apply e arities
+    is IrLambda (params) (body) (ty) (sp) -> "fn " & emit-ex-lambda-params params 0 & " -> " & emit-ex-expr body arities & " end"
+    is IrList (elems) (ty) (sp) -> "[" & emit-ex-list-elems elems 0 arities & "]"
+    is IrMatch (scrut) (branches) (ty) (sp) -> emit-ex-match scrut branches arities
+    is IrAct (stmts) (ty) (sp) -> emit-ex-act stmts arities
+    is IrHandle (eff) (body) (clauses) (ty) (sp) -> emit-ex-expr-at body arities (depth + 1)
+    is IrWithTimeout (secs) (effs) (scopes) (body) (ty) (sp) -> emit-ex-expr-at body arities (depth + 1)
+    is IrRecord (name) (fields) (ty) (sp) -> emit-ex-record name fields arities
+    is IrFieldAccess (rec) (field) (ty) (sp) -> emit-ex-expr-at rec arities (depth + 1) & "[:" & ex-sanitize field & "]"
+    is IrFieldStore (rec) (field) (val) (ty) (sp) -> "Map.put(" & emit-ex-expr-at rec arities (depth + 1) & ", :" & ex-sanitize field & ", " & emit-ex-expr-at val arities (depth + 1) & ")"
+    is IrFork (body) (ty) (sp) -> "Task.async(fn -> " & emit-ex-expr-at body arities (depth + 1) & " end)"
+    is IrAwait (task) (ty) (sp) -> "Task.await(" & emit-ex-expr-at task arities (depth + 1) & ")"
+    is IrTry (max) (body) (fb) (fail-stmts) (ty) (sp) -> "try do " & emit-ex-act body arities & " rescue _ -> " & emit-ex-act fb arities & " end"
+    is IrError (msg) (ty) (sp) -> "raise \"" & ex-escape-text msg & "\""
+
+  emit-ex-name : Text, CodexType, List ArityEntry -> Text
+  emit-ex-name (n) (ty) (arities) =
+   if n == "True" then "true"
+   else if n == "False" then "false"
+   else if n == "Nothing" then "nil"
+   else ex-sanitize n
+
+  emit-ex-binary : IRBinaryOp, IRExpr, IRExpr, List ArityEntry -> Text
+  emit-ex-binary (op) (l) (r) (arities) =
+   when op
+    is IrAppendText -> "(" & emit-ex-expr l arities & " <> " & emit-ex-expr r arities & ")"
+    is IrAppendList -> "(" & emit-ex-expr l arities & " ++ " & emit-ex-expr r arities & ")"
+    is IrConsList -> "[" & emit-ex-expr l arities & " | " & emit-ex-expr r arities & "]"
+    is IrDivInt -> "div(" & emit-ex-expr l arities & ", " & emit-ex-expr r arities & ")"
+    is IrRemInt -> "rem(" & emit-ex-expr l arities & ", " & emit-ex-expr r arities & ")"
+    is IrAnd -> "(" & emit-ex-expr l arities & " and " & emit-ex-expr r arities & ")"
+    is IrOr -> "(" & emit-ex-expr l arities & " or " & emit-ex-expr r arities & ")"
+    is IrAddVec -> "Enum.zip_with(" & emit-ex-expr l arities & ", " & emit-ex-expr r arities & ", &Kernel.+/2)"
+    is IrSubVec -> "Enum.zip_with(" & emit-ex-expr l arities & ", " & emit-ex-expr r arities & ", &Kernel.-/2)"
+    is IrMulVec -> "Enum.zip_with(" & emit-ex-expr l arities & ", " & emit-ex-expr r arities & ", &Kernel.*/2)"
+    is IrDivVec -> "Enum.zip_with(" & emit-ex-expr l arities & ", " & emit-ex-expr r arities & ", &Kernel.//2)"
+    is otherwise -> "(" & emit-ex-expr l arities & " " & ex-bin-op-symbol op & " " & emit-ex-expr r arities & ")"
+
+  ex-bin-op-symbol : IRBinaryOp -> Text
+  ex-bin-op-symbol (op) =
+   when op
+    is IrAddInt | IrAddNum | IrAddVec | IrAddRealApprox | IrAddRealTrapping | IrAddRealSaturating -> "+"
+    is IrSubInt | IrSubNum | IrSubVec | IrSubRealApprox | IrSubRealTrapping | IrSubRealSaturating -> "-"
+    is IrMulInt | IrMulNum | IrMulVec | IrMulRealApprox | IrMulRealTrapping | IrMulRealSaturating -> "*"
+    is IrDivInt -> "div"
+    is IrRemInt -> "rem"
+    is IrPowInt -> "**"
+    is IrDivNum | IrDivVec | IrDivRealApprox | IrDivRealTrapping | IrDivRealSaturating -> "/"
+    is IrEq | IrApproxEq | IrApproxEqExact -> "=="
+    is IrNotEq -> "!="
+    is IrLt | IrLtVec -> "<"
+    is IrGt | IrGtVec -> ">"
+    is IrLtEq | IrLtEqVec -> "<="
+    is IrGtEq | IrGtEqVec -> ">="
+    is IrAnd -> "and"
+    is IrOr -> "or"
+    is IrAppendText -> "<>"
+    is IrAppendList -> "++"
+    is IrConsList -> "|"
+
+  emit-ex-lambda-params : List IRParam, Integer -> Text
+  emit-ex-lambda-params (params) (i) =
+   if i == list-length params then ""
+   else if i == list-length params - 1 then ex-sanitize ((list-at params i).name)
+   else ex-sanitize ((list-at params i).name) & ", " & emit-ex-lambda-params params (i + 1)
+
+  emit-ex-list-elems : List IRExpr, Integer, List ArityEntry -> Text
+  emit-ex-list-elems (elems) (i) (arities) =
+   if i == list-length elems then ""
+   else if i == list-length elems - 1 then emit-ex-expr (list-at elems i) arities
+   else emit-ex-expr (list-at elems i) arities & ", " & emit-ex-list-elems elems (i + 1) arities
+
+  emit-ex-record : Text, List IRFieldVal, List ArityEntry -> Text
+  emit-ex-record (name) (fields) (arities) =
+   "%{" & emit-ex-record-vals fields 0 arities & "}"
+
+  emit-ex-record-vals : List IRFieldVal, Integer, List ArityEntry -> Text
+  emit-ex-record-vals (fields) (i) (arities) =
+   if i == list-length fields then ""
+   else let f = list-at fields i
+   in let sep = if i > 0 then ", " else ""
+   in sep & ex-sanitize (f.name) & ": " & emit-ex-expr (f.value) arities & emit-ex-record-vals fields (i + 1) arities
+
+  emit-ex-match : IRExpr, List IRBranch, List ArityEntry -> Text
+  emit-ex-match (scrut) (branches) (arities) =
+   "case " & emit-ex-expr scrut arities & " do " & emit-ex-match-arms branches 0 arities & " end"
+
+  emit-ex-match-arms : List IRBranch, Integer, List ArityEntry -> Text
+  emit-ex-match-arms (branches) (i) (arities) =
+   if i == list-length branches then ""
+   else let b = list-at branches i
+   in emit-ex-match-arm (b.pattern) (b.body) arities & emit-ex-match-arms branches (i + 1) arities
+
+  emit-ex-match-arm : IRPat, IRExpr, List ArityEntry -> Text
+  emit-ex-match-arm (pat) (body) (arities) =
+   when pat
+    is IrLitPat (text) (ty) (sp) -> text & " -> " & emit-ex-expr body arities & "; "
+    is IrCtorPat (name) (subs) (ty) (sp) -> "%{tag: \"" & name & "\"} -> " & emit-ex-expr body arities & "; "
+    is IrVarPat (name) (ty) (sp) -> ex-sanitize name & " -> " & emit-ex-expr body arities & "; "
+    is IrWildPat (sp) -> "_ -> " & emit-ex-expr body arities & "; "
+    is IrVecPat (pats) (ty) (sp) -> "_ -> " & emit-ex-expr body arities & "; "
+
+  emit-ex-act : List IRActStmt, List ArityEntry -> Text
+  emit-ex-act (stmts) (arities) =
+   "(fn -> " & emit-ex-act-stmts stmts 0 arities & " end).()"
+
+  emit-ex-act-stmts : List IRActStmt, Integer, List ArityEntry -> Text
+  emit-ex-act-stmts (stmts) (i) (arities) =
+   if i == list-length stmts then ""
+   else let s = list-at stmts i
+   in (when s
+    is IrDoBind (name) (ty) (val) (sp) -> ex-sanitize name & " = " & emit-ex-expr val arities & "; "
+    is IrDoExec (e) (sp) -> emit-ex-expr e arities & "; ") & emit-ex-act-stmts stmts (i + 1) arities
+
+Section: Builtin Table
+
+  ex-builtin-names : List Text
+  ex-builtin-names = ["abs", "char-at", "char-code-at", "file-exists",
+   "int-mod", "integer-to-text", "list-at", "list-length", "list-snoc",
+   "max", "min", "negate", "print-error-uni", "print-line-uni",
+   "read-file", "read-line", "show", "substring", "text-compare",
+   "text-contains", "text-length", "text-replace", "text-split",
+   "text-starts-with", "text-to-integer", "write-file"]
+
+  ex-bsearch-builtin : List Text, Text, Integer, Integer -> Integer
+  ex-bsearch-builtin (names) (target) (lo) (hi) =
+   if lo >= hi then -1
+   else let mid = lo + (hi - lo) / 2
+   in let cmp = text-compare target (list-at names mid)
+   in if cmp == 0 then mid
+      else if cmp < 0 then ex-bsearch-builtin names target lo mid
+      else ex-bsearch-builtin names target (mid + 1) hi
+
+  emit-ex-builtin-by-idx : Integer, Text, List IRExpr, List ArityEntry -> Text
+  emit-ex-builtin-by-idx (idx) (n) (args) (arities) =
+   if idx == 0 then "abs(" & emit-ex-expr (list-at args 0) arities & ")"
+   else if idx == 1 then "String.at(" & emit-ex-expr (list-at args 0) arities & ", " & emit-ex-expr (list-at args 1) arities & ")"
+   else if idx == 2 then "(fn s, i -> :binary.at(s, i) end).(" & emit-ex-expr (list-at args 0) arities & ", " & emit-ex-expr (list-at args 1) arities & ")"
+   else if idx == 3 then "File.exists?(" & emit-ex-expr (list-at args 0) arities & ")"
+   else if idx == 4 then "rem(" & emit-ex-expr (list-at args 0) arities & ", " & emit-ex-expr (list-at args 1) arities & ")"
+   else if idx == 5 then "Integer.to_string(" & emit-ex-expr (list-at args 0) arities & ")"
+   else if idx == 6 then "Enum.at(" & emit-ex-expr (list-at args 0) arities & ", " & emit-ex-expr (list-at args 1) arities & ")"
+   else if idx == 7 then "length(" & emit-ex-expr (list-at args 0) arities & ")"
+   else if idx == 8 then emit-ex-expr (list-at args 0) arities & " ++ [" & emit-ex-expr (list-at args 1) arities & "]"
+   else if idx == 9 then "max(" & emit-ex-expr (list-at args 0) arities & ", " & emit-ex-expr (list-at args 1) arities & ")"
+   else if idx == 10 then "min(" & emit-ex-expr (list-at args 0) arities & ", " & emit-ex-expr (list-at args 1) arities & ")"
+   else if idx == 11 then "(-" & emit-ex-expr (list-at args 0) arities & ")"
+   else if idx == 12 then "IO.puts(:stderr, " & emit-ex-expr (list-at args 0) arities & ")"
+   else if idx == 13 then "IO.puts(" & emit-ex-expr (list-at args 0) arities & ")"
+   else if idx == 14 then "File.read!(" & emit-ex-expr (list-at args 0) arities & ")"
+   else if idx == 15 then "IO.gets(\"\") |> String.trim()"
+   else if idx == 16 then "inspect(" & emit-ex-expr (list-at args 0) arities & ")"
+   else if idx == 17 then "String.slice(" & emit-ex-expr (list-at args 0) arities & ", " & emit-ex-expr (list-at args 1) arities & ", " & emit-ex-expr (list-at args 2) arities & ")"
+   else if idx == 18 then "(case String.compare(" & emit-ex-expr (list-at args 0) arities & ", " & emit-ex-expr (list-at args 1) arities & ") do :lt -> -1; :eq -> 0; :gt -> 1 end)"
+   else if idx == 19 then "String.contains?(" & emit-ex-expr (list-at args 0) arities & ", " & emit-ex-expr (list-at args 1) arities & ")"
+   else if idx == 20 then "String.length(" & emit-ex-expr (list-at args 0) arities & ")"
+   else if idx == 21 then "String.replace(" & emit-ex-expr (list-at args 0) arities & ", " & emit-ex-expr (list-at args 1) arities & ", " & emit-ex-expr (list-at args 2) arities & ")"
+   else if idx == 22 then "String.split(" & emit-ex-expr (list-at args 0) arities & ", " & emit-ex-expr (list-at args 1) arities & ")"
+   else if idx == 23 then "String.starts_with?(" & emit-ex-expr (list-at args 0) arities & ", " & emit-ex-expr (list-at args 1) arities & ")"
+   else if idx == 24 then "String.to_integer(" & emit-ex-expr (list-at args 0) arities & ")"
+   else "File.write!(" & emit-ex-expr (list-at args 0) arities & ", " & emit-ex-expr (list-at args 1) arities & ")"
+
+Section: Apply Emission
+
+  emit-ex-apply-named : Text, CodexType, List IRExpr, List ArityEntry, IRExpr -> Text
+  emit-ex-apply-named (n) (ty) (args) (arities) (original) =
+   let idx = ex-bsearch-builtin ex-builtin-names n 0 (list-length ex-builtin-names)
+   in if idx >= 0 then emit-ex-builtin-by-idx idx n args arities
+   else if text-length n > 0 then if is-upper-letter (char-code (char-at n 0)) then ex-sanitize n & ".(" & emit-ex-apply-args args arities 0 & ")"
+        else ex-sanitize n & ".(" & emit-ex-apply-args args arities 0 & ")"
+   else emit-ex-expr-curried original arities
+
+  emit-ex-apply : IRExpr, List ArityEntry -> Text
+  emit-ex-apply (e) (arities) =
+   let chain = collect-apply-chain e []
+   in let root = chain.root
+   in let args = chain.args
+   in when root
+    is IrName (n) (ty) (sp) -> emit-ex-apply-named n ty args arities e
+    is otherwise -> emit-ex-expr-curried e arities
+
+  emit-ex-apply-args : List IRExpr, List ArityEntry, Integer -> Text
+  emit-ex-apply-args (args) (arities) (i) =
+   if i == list-length args then ""
+   else if i == list-length args - 1 then emit-ex-expr (list-at args i) arities
+   else emit-ex-expr (list-at args i) arities & ", " & emit-ex-apply-args args arities (i + 1)
+
+  emit-ex-expr-curried : IRExpr, List ArityEntry -> Text
+  emit-ex-expr-curried (e) (arities) =
+   when e
+    is IrApply (f) (a) (ty) (sp) -> emit-ex-expr f arities & ".(" & emit-ex-expr a arities & ")"
+    is otherwise -> emit-ex-expr e arities
+
+Section: Definition Emission
+
+  emit-ex-def : IRDef, List ArityEntry -> Text
+  emit-ex-def (d) (arities) =
+   let name = ex-sanitize (d.name)
+   in let params-text = emit-ex-def-params (d.params) 0
+   in name & " = fn " & params-text & " -> " & emit-ex-expr (d.body) arities & " end\n\n"
+
+  emit-ex-def-params : List IRParam, Integer -> Text
+  emit-ex-def-params (params) (i) =
+   if i == list-length params then ""
+   else if i == list-length params - 1 then ex-sanitize ((list-at params i).name)
+   else ex-sanitize ((list-at params i).name) & ", " & emit-ex-def-params params (i + 1)
+
+  emit-ex-defs : List IRDef, Integer, List ArityEntry -> Text
+  emit-ex-defs (defs) (i) (arities) =
+   if i == list-length defs then ""
+   else emit-ex-def (list-at defs i) arities & emit-ex-defs defs (i + 1) arities
+
+Section: Chapter Emission
+
+  emit-elixir-chapter : IRChapter, List ATypeDef -> Text
+  emit-elixir-chapter (m) (type-defs) =
+   let arities = build-arity-map (m.defs) 0 []
+   in let types-text = emit-ex-type-defs type-defs 0
+   in let defs-text = emit-ex-defs (m.defs) 0 arities
+   in types-text & defs-text & ex-sanitize opening-entry-point & ".()\n"
+
+Page 1

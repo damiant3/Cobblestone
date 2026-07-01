@@ -1,0 +1,59 @@
+Chapter: BuildAppsScript
+
+  cites Foreword chapter Console
+  cites Foreword chapter Maybe
+  cites Shell chapter ShellTypes
+  cites Shell chapter ShellBuild
+  cites Shell chapter PowerShellEmit
+
+ Generates build-apps.ps1 -- discovers and builds all standalone app
+ pages through the HTML plug.
+ Compile with: -Survey "lower-mul:500000"
+
+ We say:
+
+Section: Parameters
+
+  buildapps-params : List ShellParam = [sh-param-default "Only" SptString (SeLit "")]
+
+Section: S01 -- Preamble
+
+  s01 : List ShellCmd = [ScSetStrictMode, ScSetErrorStop, ScBlank, ScAssign "Repo" (SeRaw "(Resolve-Path (Join-Path $PSScriptRoot '..')).Path"), ScAssign "BundleScript" (SeRaw "Join-Path $Repo 'build\\bundle-app.ps1'"), ScAssign "HtmlRunScript" (SeRaw "Join-Path $Repo 'codex\\plugs\\html\\run.ps1'"), ScAssign "PlugCdx" (SeRaw "Join-Path $Repo 'codex\\plugs\\html\\build-output\\html-plug.cdx'")]
+
+Section: S02 -- Skip Table
+
+  s02 : List ShellCmd = [ScComment "Known-bad apps excluded from the build", ScAssign "Skip" (SeRaw "@{ 'fishtank' = 'compiler GPF compiling FishTankPage to IR (pre-existing, 2026-06-10)' }")]
+
+Section: S03 -- Discover Apps
+
+  s03 : List ShellCmd = [ScAssign "apps" (SeRaw "@()"), ScForEach "html" (SeRaw "Get-ChildItem (Join-Path $Repo 'apps\\*\\web\\*.html')") [ScAssign "base" (SeProperty (SeVar "html") "BaseName"), ScAssign "appDir" (SeProperty (SeProperty (SeVar "html") "Directory") "Parent"), ScRaw "$pages = @(Get-ChildItem (Join-Path $appDir.FullName '*Page.codex') | Where-Object { ($_.BaseName -replace 'WebPage$|Page$','').ToLower() -eq $base })", ScIf (SeRaw "$pages.Count -gt 1") [ScRaw "$pages = @($pages | Where-Object { $_.BaseName -match 'WebPage$' })"] [], ScIf (SeRaw "$pages.Count -ne 1") [ScRaw "Write-Warning \"skip $($html.FullName): no unique Page chapter\"", ScContinue] [], ScIf (SeRaw "$Skip.ContainsKey($base)") [ScRaw "Write-Warning \"skip ${base}: $($Skip[$base])\"", ScContinue] [], ScRaw "$apps += @{ Name = $base; Src = $pages[0].FullName; Out = $html.FullName }"]]
+
+Section: S04 -- Filter and Validate
+
+  s04 : List ShellCmd = [ScIf (SeVar "Only") [ScRaw "$OnlyList = $Only -split ','", ScRaw "$apps = @($apps | Where-Object { $OnlyList -contains $_.Name })"] [], ScIf (SeRaw "$apps.Count -eq 0") [ScWriteError (SeLit "no apps discovered"), ScExit (SeInt 2)] [], ScRaw "Write-Host \"discovered $($apps.Count) apps: $(($apps | ForEach-Object { $_.Name }) -join ', ')\""]
+
+Section: S05 -- Ensure Plug
+
+  s05 : List ShellCmd =
+    let rebuild = [ScRaw "Write-Host '[build-apps] html plug missing; rebuilding...' -ForegroundColor Yellow", ScRaw "& pwsh -NoProfile -File (Join-Path $Repo 'codex\\plugs\\html\\build.ps1')", ScIf (SeOr (SeRaw "$LASTEXITCODE -ne 0") (SeNot (SeFileExists (SeVar "PlugCdx")))) [ScWriteError (SeLit "html plug rebuild failed"), ScExit (SeInt 3)] []]
+    in [ScIf (SeNot (SeRaw "Test-Path -PathType Leaf $PlugCdx")) rebuild []]
+
+Section: S06 -- Build Loop
+
+  s06 : List ShellCmd = [ScAssign "failed" (SeInt 0), ScForEach "app" (SeVar "apps") [ScAssign "bundleDir" (SeRaw "Join-Path $Repo \"build-output\\apps\\$($app.Name)\""), ScRaw "New-Item -ItemType Directory -Force $bundleDir | Out-Null", ScAssign "bundled" (SeRaw "Join-Path $bundleDir \"$($app.Name)-bundle.codex\""), ScAssign "rendered" (SeRaw "Join-Path $bundleDir \"$($app.Name)-rendered.html\""), ScBlank, ScRaw "Write-Host \"[$($app.Name)] bundling...\" -ForegroundColor Cyan", ScRaw "& pwsh -NoProfile -File $BundleScript -Src $app.Src -Out $bundled", ScIf (SeRaw "$LASTEXITCODE -ne 0") [ScRaw "Write-Host \"[$($app.Name)] FAIL: bundle\" -ForegroundColor Red", ScRaw "$failed++", ScContinue] [], ScBlank, ScRaw "Write-Host \"[$($app.Name)] compiling...\" -ForegroundColor Cyan", ScRaw "& pwsh -NoProfile -File $HtmlRunScript -Src $bundled -Out $rendered", ScIf (SeRaw "$LASTEXITCODE -ne 0") [ScRaw "Write-Host \"[$($app.Name)] FAIL: compile\" -ForegroundColor Red", ScRaw "$failed++", ScContinue] [], ScBlank, ScRaw "$new = [System.IO.File]::ReadAllText($rendered) -replace \"`r`n\",\"`n\" -replace \"`n\",\"`r`n\"", ScRaw "$cur = if (Test-Path $app.Out) { [System.IO.File]::ReadAllText($app.Out) } else { '' }", ScIf (SeStringEq (SeVar "new") (SeVar "cur")) [ScRaw "Write-Host \"[$($app.Name)] unchanged\" -ForegroundColor DarkGray", ScContinue] [], ScIf (SeRaw "(Get-Item $app.Out).IsReadOnly") [ScRaw "& p4 edit $app.Out | Out-Null", ScIf (SeRaw "(Get-Item $app.Out).IsReadOnly") [ScRaw "Write-Host \"[$($app.Name)] FAIL: p4 edit (still read-only)\" -ForegroundColor Red", ScRaw "$failed++", ScContinue] []] [], ScDotNetCall "System.IO.File" "WriteAllText" [SeRaw "$app.Out", SeVar "new", SeRaw "[System.Text.UTF8Encoding]::new($false)"], ScRaw "Write-Host \"[$($app.Name)] OK: $($app.Out)\" -ForegroundColor Green"]]
+
+Section: S07 -- Summary
+
+  s07 : List ShellCmd = [ScEcho (SeLit ""), ScIf (SeRaw "$failed -gt 0") [ScRaw "Write-Host \"$failed app(s) failed\" -ForegroundColor Red", ScExit (SeInt 1)] [ScRaw "Write-Host \"All $($apps.Count) apps built\" -ForegroundColor Green"]]
+
+Section: Assembly
+
+  buildapps-body : List ShellCmd = [ScSequence s01, ScBlank, ScSequence s02, ScBlank, ScSequence s03, ScBlank, ScSequence s04, ScBlank, ScSequence s05, ScBlank, ScSequence s06, ScBlank, ScSequence s07]
+
+  buildapps-script : ShellScript = sh-script "build-apps" "Build all standalone app pages through the HTML plug" buildapps-params buildapps-body
+
+  opening : [Console] Nothing = act
+    print-line-uni (emit-powershell buildapps-script)
+  end
+
+Page 1

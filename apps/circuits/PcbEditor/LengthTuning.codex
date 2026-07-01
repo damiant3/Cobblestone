@@ -1,0 +1,120 @@
+Chapter: LengthTuning
+  cites Foreword chapter List
+
+ Serpentine and trombone length tuning for matched-length and
+ time-domain tuned nets. Generates meander patterns to add length
+ to traces that are shorter than their target.
+
+Section: Tuning Target
+
+  TuningMode =
+    | TuneSingleLength (Integer)
+    | TuneDiffPairSkew (Integer)
+    | TuneTimeDomain (Integer)
+    | TuneGroupMatch (Text)
+
+  TuningProfile = record {
+    tp-name : Text,
+    tp-mode : TuningMode,
+    tp-min-amplitude : Integer,
+    tp-max-amplitude : Integer,
+    tp-spacing : Integer,
+    tp-corner-style : Integer,
+    tp-layer : Integer
+  }
+
+Section: Meander Segment
+
+  MeanderDirection =
+    | MeanderLeft
+    | MeanderRight
+
+  MeanderSegment = record {
+    ms-x : Integer,
+    ms-y : Integer,
+    ms-amplitude : Integer,
+    ms-half-period : Integer,
+    ms-direction : MeanderDirection,
+    ms-width : Integer,
+    ms-layer : Integer,
+    ms-net : Integer
+  }
+
+Section: Tuning Result
+
+  TuningResult = record {
+    tr-net-name : Text,
+    tr-current-length : Integer,
+    tr-target-length : Integer,
+    tr-added-length : Integer,
+    tr-meanders : List MeanderSegment,
+    tr-meander-count : Integer,
+    tr-achieved : Integer
+  }
+
+  tuning-deficit : Integer, Integer -> Integer
+  tuning-deficit (current) (target) =
+    if target > current then target - current else 0
+
+  tuning-surplus : Integer, Integer -> Integer
+  tuning-surplus (current) (target) =
+    if current > target then current - target else 0
+
+Section: Meander Generation
+
+ Calculate the number of meander periods needed to add a given
+ length. Each full period adds approximately 2 * amplitude of
+ extra trace length.
+
+  meanders-needed : Integer, Integer -> Integer
+  meanders-needed (deficit) (amplitude) =
+    if amplitude <= 0 then 0
+    else let per-meander = amplitude * 2
+    in (deficit + per-meander - 1) / per-meander
+
+  generate-meanders : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> TuningResult
+  generate-meanders (start-x) (start-y) (deficit) (amplitude) (spacing) (width) (layer) (net) (max-count) =
+    let count = meanders-needed deficit amplitude
+    in let actual-count = if count > max-count then max-count else count
+    in let added = actual-count * amplitude * 2
+    in generate-meanders-loop start-x start-y amplitude spacing width layer net actual-count 0 MeanderLeft []
+
+  generate-meanders-loop : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, MeanderDirection, List MeanderSegment -> TuningResult
+  generate-meanders-loop (x) (y) (amplitude) (spacing) (width) (layer) (net) (total) (index) (dir) (acc) =
+    if index >= total then TuningResult {
+      tr-net-name = "",
+      tr-current-length = 0,
+      tr-target-length = 0,
+      tr-added-length = total * amplitude * 2,
+      tr-meanders = acc,
+      tr-meander-count = total,
+      tr-achieved = 1
+    }
+    else let seg = MeanderSegment {
+      ms-x = x + index * spacing,
+      ms-y = y,
+      ms-amplitude = amplitude,
+      ms-half-period = spacing / 2,
+      ms-direction = dir,
+      ms-width = width,
+      ms-layer = layer,
+      ms-net = net
+    }
+    in let next-dir = when dir
+      is MeanderLeft -> MeanderRight
+      is MeanderRight -> MeanderLeft
+    in generate-meanders-loop x y amplitude spacing width layer net total (index + 1) next-dir (list-push acc seg)
+
+Section: Differential Pair Skew
+
+ For differential pairs, the shorter trace needs meanders to match
+ the longer trace. The skew is the length difference.
+
+  diff-pair-skew : Integer, Integer -> Integer
+  diff-pair-skew (length-p) (length-n) =
+    if length-p > length-n then length-p - length-n
+    else length-n - length-p
+
+  diff-pair-needs-tuning : Integer, Integer, Integer -> Integer
+  diff-pair-needs-tuning (length-p) (length-n) (max-skew) =
+    if diff-pair-skew length-p length-n > max-skew then 1 else 0

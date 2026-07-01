@@ -1,0 +1,347 @@
+Chapter: Calendar
+  cites Cvmm chapter CvmmTypes
+  cites Cvmm chapter ProductivityDb
+  cites Data chapter Row
+  cites UI chapter Widget
+  cites UI chapter Layout
+  cites UI chapter DetailPane
+  cites UI chapter Dropdown
+  cites UI chapter FilterableList
+  cites UI chapter SearchBar
+  cites UI chapter Markdown
+  cites UI chapter Validation
+  cites Foreword chapter Maybe
+
+ Calendar with month/week/day views, multiple named calendars with
+ color coding, recurring events, and reminders. DB-backed through
+ the events and calendars tables. Date math is epoch-based (seconds
+ since epoch, no timezone library yet — UTC offset from Clock).
+
+Section: Date Helpers
+
+  epoch-day : Integer -> Integer
+  epoch-day (epoch) = epoch / 86400
+
+  day-of-week : Integer -> Integer
+  day-of-week (epoch) =
+    let day = epoch-day epoch
+    in let dow = (day + 4) - ((day + 4) / 7) * 7
+    in dow
+
+  dow-label : Integer -> Text
+  dow-label (d) =
+    if d == 0 then "Sun" else if d == 1 then "Mon" else if d == 2 then "Tue"
+    else if d == 3 then "Wed" else if d == 4 then "Thu" else if d == 5 then "Fri"
+    else "Sat"
+
+  dow-full : Integer -> Text
+  dow-full (d) =
+    if d == 0 then "Sunday" else if d == 1 then "Monday" else if d == 2 then "Tuesday"
+    else if d == 3 then "Wednesday" else if d == 4 then "Thursday" else if d == 5 then "Friday"
+    else "Saturday"
+
+  days-in-month : Integer, Integer -> Integer
+  days-in-month (month) (year) =
+    if month == 2 then if cal-is-leap year then 29 else 28
+    else if month == 4 then 30
+    else if month == 6 then 30
+    else if month == 9 then 30
+    else if month == 11 then 30
+    else 31
+
+  cal-is-leap : Integer -> Boolean
+  cal-is-leap (y) =
+    if (y - (y / 4) * 4) /= 0 then False
+    else if (y - (y / 100) * 100) /= 0 then True
+    else (y - (y / 400) * 400) == 0
+
+  month-label : Integer -> Text
+  month-label (m) =
+    if m == 1 then "January" else if m == 2 then "February" else if m == 3 then "March"
+    else if m == 4 then "April" else if m == 5 then "May" else if m == 6 then "June"
+    else if m == 7 then "July" else if m == 8 then "August" else if m == 9 then "September"
+    else if m == 10 then "October" else if m == 11 then "November" else "December"
+
+  month-short : Integer -> Text
+  month-short (m) =
+    if m == 1 then "Jan" else if m == 2 then "Feb" else if m == 3 then "Mar"
+    else if m == 4 then "Apr" else if m == 5 then "May" else if m == 6 then "Jun"
+    else if m == 7 then "Jul" else if m == 8 then "Aug" else if m == 9 then "Sep"
+    else if m == 10 then "Oct" else if m == 11 then "Nov" else "Dec"
+
+Section: Event (in-memory view)
+
+  CalEvent = record {
+    ev-id : Integer,
+    ev-title : Text,
+    ev-description : Text,
+    ev-start : Integer,
+    ev-end : Integer,
+    ev-all-day : Boolean,
+    ev-location : Text,
+    ev-calendar : Text,
+    ev-color : Text,
+    ev-recurrence : Text,
+    ev-reminder-min : Integer
+  }
+
+  event-duration-min : CalEvent -> Integer
+  event-duration-min (e) =
+    if e.ev-all-day then 1440
+    else (e.ev-end - e.ev-start) / 60
+
+  event-is-on-day : CalEvent, Integer -> Boolean
+  event-is-on-day (e) (day-epoch) =
+    let event-day = epoch-day (e.ev-start)
+    in let target-day = epoch-day day-epoch
+    in event-day == target-day
+
+  events-on-day : List CalEvent, Integer, Integer, Integer, List CalEvent -> List CalEvent
+  events-on-day (events) (day-epoch) (i) (n) (acc) =
+    if i >= n then acc
+    else let e = list-at events i
+    in if event-is-on-day e day-epoch then events-on-day events day-epoch (i + 1) n (list-push acc e)
+    else events-on-day events day-epoch (i + 1) n acc
+
+Section: Calendar App State
+
+  CalView =
+    | CalMonth
+    | CalWeek
+    | CalDay
+    | CalAgenda
+
+  CalendarAppState = record {
+    ca-view : CalView,
+    ca-year : Integer,
+    ca-month : Integer,
+    ca-day : Integer,
+    ca-today-year : Integer,
+    ca-today-month : Integer,
+    ca-today-day : Integer,
+    ca-selected-event : Integer,
+    ca-calendars : List Text,
+    ca-calendar-count : Integer,
+    ca-visible-calendars : List Text,
+    ca-events : List CalEvent,
+    ca-event-count : Integer
+  }
+
+  calendar-app-new : Integer, Integer, Integer -> CalendarAppState
+  calendar-app-new (year) (month) (day) = CalendarAppState {
+    ca-view = CalMonth,
+    ca-year = year,
+    ca-month = month,
+    ca-day = day,
+    ca-today-year = year,
+    ca-today-month = month,
+    ca-today-day = day,
+    ca-selected-event = -1,
+    ca-calendars = ["Personal", "Work", "Family"],
+    ca-calendar-count = 3,
+    ca-visible-calendars = ["Personal", "Work", "Family"],
+    ca-events = [],
+    ca-event-count = 0
+  }
+
+  ca-set-view : CalendarAppState, CalView -> CalendarAppState
+  ca-set-view (st) (v) = __record-set st "ca-view" v
+
+  ca-next-month : CalendarAppState -> CalendarAppState
+  ca-next-month (st) =
+    if st.ca-month >= 12 then __record-set (__record-set st "ca-month" 1) "ca-year" (st.ca-year + 1)
+    else __record-set st "ca-month" (st.ca-month + 1)
+
+  ca-prev-month : CalendarAppState -> CalendarAppState
+  ca-prev-month (st) =
+    if st.ca-month <= 1 then __record-set (__record-set st "ca-month" 12) "ca-year" (st.ca-year - 1)
+    else __record-set st "ca-month" (st.ca-month - 1)
+
+  ca-select-day : CalendarAppState, Integer -> CalendarAppState
+  ca-select-day (st) (day) = __record-set st "ca-day" day
+
+Section: Widget Building
+
+  cal-month-header : CalendarAppState -> WidgetNode
+  cal-month-header (st) =
+    let prev = widget-button "cal-prev" "<"
+    in let title = widget-label "cal-month-title" (month-label (st.ca-month) & " " & show (st.ca-year))
+    in let next = widget-button "cal-next" ">"
+    in let view-btns = widget-toolbar "cal-views" [
+      widget-button "cal-v-month" "Month",
+      widget-button "cal-v-week" "Week",
+      widget-button "cal-v-day" "Day",
+      widget-button "cal-v-agenda" "Agenda"
+    ]
+    in let new-btn = widget-button "cal-new" "New Event"
+    in widget-panel "cal-header" DirRow 8 [prev, title, next, view-btns, new-btn]
+
+  cal-day-cell : CalendarAppState, Integer, Integer -> WidgetNode
+  cal-day-cell (st) (day) (event-count) =
+    let is-today = if st.ca-year == st.ca-today-year then if st.ca-month == st.ca-today-month then day == st.ca-today-day else False else False
+    in let is-selected = day == st.ca-day
+    in let label = widget-label ("day-" & show day) (show day)
+    in let dots = if event-count > 0 then [widget-custom ("dot-" & show day) "event-dot" 6 6] else []
+    in let cell = widget-panel ("cell-" & show day) DirColumn 2 ([label] & dots)
+    in let sized = widget-set-min cell 36 36
+    in if is-selected then widget-set-state sized state-pressed
+    else if is-today then widget-set-state sized state-focused
+    else sized
+
+  cal-blank-cell : Integer -> WidgetNode
+  cal-blank-cell (idx) = widget-set-min (widget-label ("blank-" & show idx) "") 36 36
+
+  cal-dow-header : WidgetNode
+  cal-dow-header =
+    let days = [
+      widget-set-min (widget-label "dow-0" "Sun") 36 20,
+      widget-set-min (widget-label "dow-1" "Mon") 36 20,
+      widget-set-min (widget-label "dow-2" "Tue") 36 20,
+      widget-set-min (widget-label "dow-3" "Wed") 36 20,
+      widget-set-min (widget-label "dow-4" "Thu") 36 20,
+      widget-set-min (widget-label "dow-5" "Fri") 36 20,
+      widget-set-min (widget-label "dow-6" "Sat") 36 20
+    ]
+    in widget-panel "dow-header" DirRow 2 days
+
+  cal-first-dow : Integer, Integer -> Integer
+  cal-first-dow (month) (year) =
+    let y = if month <= 2 then year - 1 else year
+    in let m = if month <= 2 then month + 12 else month
+    in let q = 1
+    in let k = y - (y / 100) * 100
+    in let j = y / 100
+    in let h = (q + (13 * (m + 1)) / 5 + k + k / 4 + j / 4 + 5 * j) - ((q + (13 * (m + 1)) / 5 + k + k / 4 + j / 4 + 5 * j) / 7) * 7
+    in let dow = h - 1
+    in if dow < 0 then dow + 7 else dow
+
+  cal-month-grid : CalendarAppState -> WidgetNode
+  cal-month-grid (st) =
+    let dim = days-in-month (st.ca-month) (st.ca-year)
+    in let first-dow = cal-first-dow (st.ca-month) (st.ca-year)
+    in let weeks = cal-build-weeks st 1 dim first-dow 0 []
+    in widget-panel "month-grid" DirColumn 2 [cal-dow-header, widget-panel "weeks" DirColumn 1 weeks]
+
+  cal-build-weeks : CalendarAppState, Integer, Integer, Integer, Integer, List WidgetNode -> List WidgetNode
+  cal-build-weeks (st) (cur-day) (max-day) (first-dow) (week) (acc) =
+    if cur-day > max-day then
+      if week > 0 then acc
+      else acc
+    else let row = cal-build-week-row st cur-day max-day first-dow week
+    in let days-in-row = if week == 0 then 7 - first-dow else 7
+    in let next-day = cur-day + days-in-row
+    in let clamped = if next-day > max-day + 1 then max-day + 1 else next-day
+    in cal-build-weeks st clamped max-day first-dow (week + 1) (list-push acc row)
+
+  cal-build-week-row : CalendarAppState, Integer, Integer, Integer, Integer -> WidgetNode
+  cal-build-week-row (st) (start-day) (max-day) (first-dow) (week) =
+    let offset = if week == 0 then first-dow else 0
+    in let blanks = cal-blank-cells offset 0 []
+    in let day-count = 7 - offset
+    in let cells = cal-day-cells st start-day max-day day-count 0 []
+    in let actual-cells = blanks & cells
+    in let trail = cal-trail-blanks (list-length actual-cells) (week * 7 + offset)
+    in widget-panel ("week-" & show week) DirRow 2 (actual-cells & trail)
+
+  cal-blank-cells : Integer, Integer, List WidgetNode -> List WidgetNode
+  cal-blank-cells (n) (i) (acc) =
+    if i >= n then acc
+    else cal-blank-cells n (i + 1) (list-push acc (cal-blank-cell i))
+
+  cal-day-cells : CalendarAppState, Integer, Integer, Integer, Integer, List WidgetNode -> List WidgetNode
+  cal-day-cells (st) (start) (max-day) (count) (i) (acc) =
+    if i >= count then acc
+    else let day = start + i
+    in if day > max-day then acc
+    else cal-day-cells st start max-day count (i + 1) (list-push acc (cal-day-cell st day 0))
+
+  cal-trail-blanks : Integer, Integer -> List WidgetNode
+  cal-trail-blanks (filled) (base) =
+    if filled >= 7 then []
+    else cal-blank-cells (7 - filled) base []
+
+  cal-event-row : CalEvent -> WidgetNode
+  cal-event-row (e) =
+    let title = widget-label ("ev-t-" & show (e.ev-id)) (e.ev-title)
+    in let time-lbl = widget-label ("ev-time-" & show (e.ev-id)) (if e.ev-all-day then "All day" else show (event-duration-min e) & "m")
+    in let loc = widget-label ("ev-loc-" & show (e.ev-id)) (e.ev-location)
+    in let cal-name = widget-label ("ev-cal-" & show (e.ev-id)) (e.ev-calendar)
+    in widget-panel ("event-" & show (e.ev-id)) DirRow 8 [title, time-lbl, loc, cal-name]
+
+  cal-widget : CalendarAppState -> WidgetNode
+  cal-widget (st) =
+    let header = cal-month-header st
+    in let body = when st.ca-view
+      is CalMonth -> cal-month-grid st
+      is CalWeek -> cal-week-view st
+      is CalDay -> cal-day-view st
+      is CalAgenda -> cal-agenda-view st
+    in widget-panel "calendar-app" DirColumn 4 [header, body]
+
+Section: Week View
+
+  cal-week-view : CalendarAppState -> WidgetNode
+  cal-week-view (st) =
+    let dow-of-selected = cal-first-dow (st.ca-month) (st.ca-year)
+    in let time-gutter = cal-time-gutter 0 24 []
+    in let day-cols = cal-week-day-cols st 0 7 []
+    in let gutter-col = widget-panel "gutter-col" DirColumn 0 time-gutter
+    in let body = widget-panel "week-body" DirRow 2 ([gutter-col] & day-cols)
+    in widget-panel "week-view" DirColumn 2 [cal-dow-header, body]
+
+  cal-time-gutter : Integer, Integer, List WidgetNode -> List WidgetNode
+  cal-time-gutter (hour) (max-hour) (acc) =
+    if hour >= max-hour then acc
+    else let label = if hour < 10 then "0" & show hour & ":00" else show hour & ":00"
+    in let lbl = widget-set-min (widget-label ("time-" & show hour) label) 48 20
+    in cal-time-gutter (hour + 1) max-hour (list-push acc lbl)
+
+  cal-week-day-cols : CalendarAppState, Integer, Integer, List WidgetNode -> List WidgetNode
+  cal-week-day-cols (st) (i) (n) (acc) =
+    if i >= n then acc
+    else let col = cal-week-day-col st i
+    in cal-week-day-cols st (i + 1) n (list-push acc col)
+
+  cal-week-day-col : CalendarAppState, Integer -> WidgetNode
+  cal-week-day-col (st) (day-offset) =
+    let slots = cal-hour-slots ("wd-" & show day-offset) 0 24 []
+    in let col = widget-panel ("week-day-" & show day-offset) DirColumn 0 slots
+    in widget-set-flex col 1
+
+  cal-hour-slots : Text, Integer, Integer, List WidgetNode -> List WidgetNode
+  cal-hour-slots (prefix) (hour) (max-hour) (acc) =
+    if hour >= max-hour then acc
+    else let slot = widget-set-min (widget-label (prefix & "-h" & show hour) "") 0 20
+    in cal-hour-slots prefix (hour + 1) max-hour (list-push acc slot)
+
+Section: Day View
+
+  cal-day-view : CalendarAppState -> WidgetNode
+  cal-day-view (st) =
+    let title = widget-label "day-title" (dow-full (day-of-week 0) & ", " & month-label (st.ca-month) & " " & show (st.ca-day) & ", " & show (st.ca-year))
+    in let gutter = cal-time-gutter 0 24 []
+    in let gutter-panel = widget-panel "day-gutter" DirColumn 0 gutter
+    in let slots = cal-hour-slots "day" 0 24 []
+    in let slot-panel = widget-panel "day-slots" DirColumn 0 slots
+    in let slot-flex = widget-set-flex slot-panel 1
+    in let body = widget-panel "day-body" DirRow 2 [gutter-panel, slot-flex]
+    in widget-panel "day-view" DirColumn 4 [title, body]
+
+Section: Agenda View
+
+  cal-agenda-view : CalendarAppState -> WidgetNode
+  cal-agenda-view (st) =
+    let title = widget-label "agenda-title" ("Upcoming Events -- " & month-label (st.ca-month) & " " & show (st.ca-year))
+    in let event-rows = cal-agenda-events st 0 (st.ca-event-count) []
+    in let events-panel = if st.ca-event-count == 0 then
+      widget-label "no-events" "No events this month"
+    else widget-panel "agenda-events" DirColumn 2 event-rows
+    in widget-panel "agenda-view" DirColumn 4 [title, events-panel]
+
+  cal-agenda-events : CalendarAppState, Integer, Integer, List WidgetNode -> List WidgetNode
+  cal-agenda-events (st) (i) (n) (acc) =
+    if i >= n then acc
+    else let e = list-at (st.ca-events) i
+    in cal-agenda-events st (i + 1) n (list-push acc (cal-event-row e))
+
+Page 1

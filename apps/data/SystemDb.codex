@@ -1,0 +1,602 @@
+Chapter: SystemDb
+  cites Data chapter Catalog
+  cites Data chapter ChangeStream
+  cites Data chapter FullText
+  cites Foreword chapter Maybe
+  cites Foreword chapter Hamt
+  cites Foreword chapter Tuple
+
+ Shared system database for cross-app diagnostics, centralized
+ logging, adaptive firewall, deny/allow lists, rate limiting,
+ and anomaly detection. All apps write here; all apps read the
+ same deny list and config. One truth.
+
+ We say:
+
+Section: Log Levels
+
+  LogLevel =
+    | LvTrace
+    | LvDebug
+    | LvInfo
+    | LvWarn
+    | LvError
+    | LvFatal
+
+  log-level-name : LogLevel -> Text
+  log-level-name (lv) =
+    when lv
+      is LvTrace -> "TRACE"
+      is LvDebug -> "DEBUG"
+      is LvInfo -> "INFO"
+      is LvWarn -> "WARN"
+      is LvError -> "ERROR"
+      is LvFatal -> "FATAL"
+
+  log-level-severity : LogLevel -> Integer
+  log-level-severity (lv) =
+    when lv
+      is LvTrace -> 0
+      is LvDebug -> 1
+      is LvInfo -> 2
+      is LvWarn -> 3
+      is LvError -> 4
+      is LvFatal -> 5
+
+Section: Log Entry
+
+  SysLogEntry = record {
+    sle-timestamp : Integer,
+    sle-app : Text,
+    sle-level : LogLevel,
+    sle-source-addr : Text,
+    sle-message : Text,
+    sle-request-id : Text,
+    sle-latency-us : Integer
+  }
+
+Section: Connection Tracking
+
+  ConnRecord = record {
+    cr-addr : Text,
+    cr-first-seen : Integer,
+    cr-last-seen : Integer,
+    cr-request-count : Integer,
+    cr-error-count : Integer,
+    cr-bytes-in : Integer,
+    cr-bytes-out : Integer
+  }
+
+  conn-new : Text, Integer -> ConnRecord
+  conn-new (addr) (time) = ConnRecord {
+    cr-addr = addr,
+    cr-first-seen = time,
+    cr-last-seen = time,
+    cr-request-count = 1,
+    cr-error-count = 0,
+    cr-bytes-in = 0,
+    cr-bytes-out = 0
+  }
+
+  conn-update : ConnRecord, Integer, Integer, Integer, Boolean -> ConnRecord
+  conn-update (cr) (time) (bytes-in) (bytes-out) (is-error) = ConnRecord {
+    cr-addr = cr.cr-addr,
+    cr-first-seen = cr.cr-first-seen,
+    cr-last-seen = time,
+    cr-request-count = cr.cr-request-count + 1,
+    cr-error-count = if is-error then cr.cr-error-count + 1 else cr.cr-error-count,
+    cr-bytes-in = cr.cr-bytes-in + bytes-in,
+    cr-bytes-out = cr.cr-bytes-out + bytes-out
+  }
+
+Section: Deny / Allow Lists
+
+  ListAction =
+    | ActionDeny
+    | ActionAllow
+    | ActionRateLimit (Integer)
+    | ActionChallenge
+
+  FwRule = record {
+    fw-addr : Text,
+    fw-action : ListAction,
+    fw-reason : Text,
+    fw-added-at : Integer,
+    fw-expires-at : Integer,
+    fw-auto : Boolean
+  }
+
+  fw-deny : Text, Text, Integer, Integer -> FwRule
+  fw-deny (addr) (reason) (added) (ttl) = FwRule { fw-addr = addr, fw-action = ActionDeny, fw-reason = reason, fw-added-at = added, fw-expires-at = added + ttl, fw-auto = False }
+
+  fw-auto-deny : Text, Text, Integer, Integer -> FwRule
+  fw-auto-deny (addr) (reason) (added) (ttl) = FwRule { fw-addr = addr, fw-action = ActionDeny, fw-reason = reason, fw-added-at = added, fw-expires-at = added + ttl, fw-auto = True }
+
+  fw-allow : Text, Text, Integer -> FwRule
+  fw-allow (addr) (reason) (added) = FwRule { fw-addr = addr, fw-action = ActionAllow, fw-reason = reason, fw-added-at = added, fw-expires-at = 0, fw-auto = False }
+
+  fw-rate-limit : Text, Integer, Text, Integer, Integer -> FwRule
+  fw-rate-limit (addr) (max-rps) (reason) (added) (ttl) = FwRule { fw-addr = addr, fw-action = ActionRateLimit max-rps, fw-reason = reason, fw-added-at = added, fw-expires-at = added + ttl, fw-auto = True }
+
+  fw-action-name : ListAction -> Text
+  fw-action-name (a) =
+    when a
+      is ActionDeny -> "DENY"
+      is ActionAllow -> "ALLOW"
+      is ActionRateLimit (n) -> "RATE-LIMIT(" & show n & ")"
+      is ActionChallenge -> "CHALLENGE"
+
+Section: Firewall Table
+
+  Firewall = record {
+    fw-rules : HamtMap FwRule,
+    fw-rule-count : Integer,
+    fw-deny-count : Integer,
+    fw-blocked-requests : Integer
+  }
+
+  fw-new : Firewall
+  fw-new = Firewall { fw-rules = hamt-empty, fw-rule-count = 0, fw-deny-count = 0, fw-blocked-requests = 0 }
+
+  fw-add-rule : Firewall, FwRule -> Firewall
+  fw-add-rule (fw) (rule) =
+    let is-deny = when (rule.fw-action) is ActionDeny -> True is otherwise -> False
+    in Firewall {
+      fw-rules = hamt-set (fw.fw-rules) (rule.fw-addr) rule,
+      fw-rule-count = fw.fw-rule-count + 1,
+      fw-deny-count = if is-deny then fw.fw-deny-count + 1 else fw.fw-deny-count,
+      fw-blocked-requests = fw.fw-blocked-requests
+    }
+
+  fw-remove-rule : Firewall, Text -> Firewall
+  fw-remove-rule (fw) (addr) =
+    Firewall { fw-rules = hamt-remove (fw.fw-rules) addr, fw-rule-count = fw.fw-rule-count - 1, fw-deny-count = fw.fw-deny-count, fw-blocked-requests = fw.fw-blocked-requests }
+
+  FwDecision =
+    | FwAllow
+    | FwDeny (Text)
+    | FwRateLimit (Integer)
+    | FwChallenge
+
+  fw-check : Firewall, Text, Integer -> FwDecision
+  fw-check (fw) (addr) (now) =
+    let found = hamt-get (fw.fw-rules) addr
+    in when found
+      is None -> FwAllow
+      is Just (rule) ->
+        if rule.fw-expires-at > 0 & now > rule.fw-expires-at then FwAllow
+        else when (rule.fw-action)
+          is ActionDeny -> FwDeny (rule.fw-reason)
+          is ActionAllow -> FwAllow
+          is ActionRateLimit (max-rps) -> FwRateLimit max-rps
+          is ActionChallenge -> FwChallenge
+
+  fw-record-block : Firewall -> Firewall
+  fw-record-block (fw) = Firewall { fw-rules = fw.fw-rules, fw-rule-count = fw.fw-rule-count, fw-deny-count = fw.fw-deny-count, fw-blocked-requests = fw.fw-blocked-requests + 1 }
+
+  fw-expire-rules : Firewall, Integer -> Firewall
+  fw-expire-rules (fw) (now) =
+    let entries = hamt-to-list (fw.fw-rules)
+    in fw-expire-loop entries now 0 (list-length entries) fw
+
+  fw-expire-loop : List (HamtEntry FwRule), Integer, Integer, Integer, Firewall -> Firewall
+  fw-expire-loop (entries) (now) (i) (len) (fw) =
+    if i >= len then fw
+    else let e = list-at entries i
+    in let rule = e.value
+    in if rule.fw-expires-at > 0 & now > rule.fw-expires-at then fw-expire-loop entries now (i + 1) len (fw-remove-rule fw (rule.fw-addr))
+    else fw-expire-loop entries now (i + 1) len fw
+
+Section: Anomaly Detection
+
+  AnomalyType =
+    | AnomalyRateSpike
+    | AnomalyErrorBurst
+    | AnomalyNewSource
+    | AnomalyScanPattern
+    | AnomalyLargePayload
+
+  anomaly-name : AnomalyType -> Text
+  anomaly-name (a) =
+    when a
+      is AnomalyRateSpike -> "rate-spike"
+      is AnomalyErrorBurst -> "error-burst"
+      is AnomalyNewSource -> "new-source"
+      is AnomalyScanPattern -> "scan-pattern"
+      is AnomalyLargePayload -> "large-payload"
+
+  Anomaly = record {
+    an-type : AnomalyType,
+    an-addr : Text,
+    an-score : Integer,
+    an-timestamp : Integer,
+    an-detail : Text
+  }
+
+  AnomalyConfig = record {
+    ac-rate-threshold : Integer,
+    ac-error-threshold : Integer,
+    ac-window-seconds : Integer,
+    ac-auto-deny-score : Integer,
+    ac-auto-deny-ttl : Integer
+  }
+
+  default-anomaly-config : AnomalyConfig
+  default-anomaly-config = AnomalyConfig {
+    ac-rate-threshold = 100,
+    ac-error-threshold = 20,
+    ac-window-seconds = 60,
+    ac-auto-deny-score = 80,
+    ac-auto-deny-ttl = 3600
+  }
+
+Section: Rate Tracking
+
+  RateTracker = record {
+    rt-windows : HamtMap RateWindow,
+    rt-window-size : Integer
+  }
+
+  RateWindow = record {
+    rw-addr : Text,
+    rw-count : Integer,
+    rw-error-count : Integer,
+    rw-window-start : Integer
+  }
+
+  rt-new : Integer -> RateTracker
+  rt-new (window-size) = RateTracker { rt-windows = hamt-empty, rt-window-size = window-size }
+
+  rt-record : RateTracker, Text, Integer, Boolean -> RateTracker
+  rt-record (rt) (addr) (now) (is-error) =
+    let found = hamt-get (rt.rt-windows) addr
+    in let window = when found
+      is None -> RateWindow { rw-addr = addr, rw-count = 1, rw-error-count = if is-error then 1 else 0, rw-window-start = now }
+      is Just (rw) ->
+        if now - rw.rw-window-start > rt.rt-window-size then RateWindow { rw-addr = addr, rw-count = 1, rw-error-count = if is-error then 1 else 0, rw-window-start = now }
+        else RateWindow { rw-addr = addr, rw-count = rw.rw-count + 1, rw-error-count = if is-error then rw.rw-error-count + 1 else rw.rw-error-count, rw-window-start = rw.rw-window-start }
+    in RateTracker { rt-windows = hamt-set (rt.rt-windows) addr window, rt-window-size = rt.rt-window-size }
+
+  rt-get-rate : RateTracker, Text -> Integer
+  rt-get-rate (rt) (addr) =
+    let found = hamt-get (rt.rt-windows) addr
+    in when found is Just (rw) -> rw.rw-count is None -> 0
+
+  rt-get-error-rate : RateTracker, Text -> Integer
+  rt-get-error-rate (rt) (addr) =
+    let found = hamt-get (rt.rt-windows) addr
+    in when found is Just (rw) -> rw.rw-error-count is None -> 0
+
+Section: Anomaly Scoring
+
+  score-connection : ConnRecord, RateTracker, AnomalyConfig, Integer -> List Anomaly
+  score-connection (cr) (rt) (config) (now) =
+    let rate = rt-get-rate rt (cr.cr-addr)
+    in let error-rate = rt-get-error-rate rt (cr.cr-addr)
+    in let anomalies = if rate > config.ac-rate-threshold then
+      [Anomaly { an-type = AnomalyRateSpike, an-addr = cr.cr-addr, an-score = (rate * 100) / config.ac-rate-threshold, an-timestamp = now, an-detail = "rate=" & show rate }]
+      else []
+    in let anomalies2 = if error-rate > config.ac-error-threshold then
+      list-push anomalies (Anomaly { an-type = AnomalyErrorBurst, an-addr = cr.cr-addr, an-score = (error-rate * 100) / config.ac-error-threshold, an-timestamp = now, an-detail = "errors=" & show error-rate })
+      else anomalies
+    in anomalies2
+
+  anomaly-total-score : List Anomaly -> Integer
+  anomaly-total-score (anomalies) = ats-loop anomalies 0 (list-length anomalies) 0
+
+  ats-loop : List Anomaly, Integer, Integer, Integer -> Integer
+  ats-loop (anomalies) (i) (len) (acc) =
+    if i >= len then acc
+    else ats-loop anomalies (i + 1) len (acc + (list-at anomalies i).an-score)
+
+Section: Adaptive Firewall
+
+  AdaptiveFirewall = record {
+    af-firewall : Firewall,
+    af-tracker : RateTracker,
+    af-connections : HamtMap ConnRecord,
+    af-config : AnomalyConfig,
+    af-anomaly-log : List Anomaly,
+    af-auto-denies : Integer
+  }
+
+  af-new : AnomalyConfig -> AdaptiveFirewall
+  af-new (config) = AdaptiveFirewall {
+    af-firewall = fw-new,
+    af-tracker = rt-new (config.ac-window-seconds),
+    af-connections = hamt-empty,
+    af-config = config,
+    af-anomaly-log = [],
+    af-auto-denies = 0
+  }
+
+  af-default : AdaptiveFirewall
+  af-default = af-new default-anomaly-config
+
+  AfCheckResult = record {
+    afcr-decision : FwDecision,
+    afcr-firewall : AdaptiveFirewall
+  }
+
+  af-check-request : AdaptiveFirewall, Text, Integer, Integer, Integer, Boolean -> AfCheckResult
+  af-check-request (af) (addr) (now) (bytes-in) (bytes-out) (is-error) =
+    let decision = fw-check (af.af-firewall) addr now
+    in when decision
+      is FwDeny (reason) -> AfCheckResult {
+        afcr-decision = FwDeny reason,
+        afcr-firewall = AdaptiveFirewall {
+          af-firewall = fw-record-block (af.af-firewall),
+          af-tracker = af.af-tracker,
+          af-connections = af.af-connections,
+          af-config = af.af-config,
+          af-anomaly-log = af.af-anomaly-log,
+          af-auto-denies = af.af-auto-denies
+        }
+      }
+      is otherwise ->
+        let tracker2 = rt-record (af.af-tracker) addr now is-error
+        in let conn = af-update-conn (af.af-connections) addr now bytes-in bytes-out is-error
+        in let cr = when (hamt-get conn addr) is Just (c) -> c is None -> conn-new addr now
+        in let anomalies = score-connection cr tracker2 (af.af-config) now
+        in let total = anomaly-total-score anomalies
+        in if total >= af.af-config.ac-auto-deny-score then
+          let rule = fw-auto-deny addr ("anomaly score " & show total) now (af.af-config.ac-auto-deny-ttl)
+          in AfCheckResult {
+            afcr-decision = FwDeny ("auto-blocked: score " & show total),
+            afcr-firewall = AdaptiveFirewall {
+              af-firewall = fw-add-rule (af.af-firewall) rule,
+              af-tracker = tracker2,
+              af-connections = conn,
+              af-config = af.af-config,
+              af-anomaly-log = af.af-anomaly-log & anomalies,
+              af-auto-denies = af.af-auto-denies + 1
+            }
+          }
+        else AfCheckResult {
+          afcr-decision = decision,
+          afcr-firewall = AdaptiveFirewall {
+            af-firewall = af.af-firewall,
+            af-tracker = tracker2,
+            af-connections = conn,
+            af-config = af.af-config,
+            af-anomaly-log = if list-length anomalies > 0 then af.af-anomaly-log & anomalies else af.af-anomaly-log,
+            af-auto-denies = af.af-auto-denies
+          }
+        }
+
+  af-update-conn : HamtMap ConnRecord, Text, Integer, Integer, Integer, Boolean -> HamtMap ConnRecord
+  af-update-conn (conns) (addr) (now) (bytes-in) (bytes-out) (is-error) =
+    let found = hamt-get conns addr
+    in when found
+      is None -> hamt-set conns addr (conn-new addr now)
+      is Just (cr) -> hamt-set conns addr (conn-update cr now bytes-in bytes-out is-error)
+
+  af-add-manual-deny : AdaptiveFirewall, Text, Text, Integer, Integer -> AdaptiveFirewall
+  af-add-manual-deny (af) (addr) (reason) (now) (ttl) =
+    let rule = fw-deny addr reason now ttl
+    in AdaptiveFirewall {
+      af-firewall = fw-add-rule (af.af-firewall) rule,
+      af-tracker = af.af-tracker,
+      af-connections = af.af-connections,
+      af-config = af.af-config,
+      af-anomaly-log = af.af-anomaly-log,
+      af-auto-denies = af.af-auto-denies
+    }
+
+  af-add-allow : AdaptiveFirewall, Text, Text, Integer -> AdaptiveFirewall
+  af-add-allow (af) (addr) (reason) (now) =
+    let rule = fw-allow addr reason now
+    in AdaptiveFirewall {
+      af-firewall = fw-add-rule (af.af-firewall) rule,
+      af-tracker = af.af-tracker,
+      af-connections = af.af-connections,
+      af-config = af.af-config,
+      af-anomaly-log = af.af-anomaly-log,
+      af-auto-denies = af.af-auto-denies
+    }
+
+  af-expire : AdaptiveFirewall, Integer -> AdaptiveFirewall
+  af-expire (af) (now) = AdaptiveFirewall {
+    af-firewall = fw-expire-rules (af.af-firewall) now,
+    af-tracker = af.af-tracker,
+    af-connections = af.af-connections,
+    af-config = af.af-config,
+    af-anomaly-log = af.af-anomaly-log,
+    af-auto-denies = af.af-auto-denies
+  }
+
+Section: System Log Store
+
+  SysDb = record {
+    sdb-logs : List SysLogEntry,
+    sdb-log-count : Integer,
+    sdb-firewall : AdaptiveFirewall,
+    sdb-connections : HamtMap ConnRecord,
+    sdb-conn-count : Integer,
+    sdb-app-registry : HamtMap Text,
+    sdb-app-count : Integer,
+    sdb-search : FtStore,
+    sdb-alerts : List Anomaly,
+    sdb-config : HamtMap Text
+  }
+
+  sysdb-new : SysDb
+  sysdb-new = SysDb {
+    sdb-logs = [],
+    sdb-log-count = 0,
+    sdb-firewall = af-default,
+    sdb-connections = hamt-empty,
+    sdb-conn-count = 0,
+    sdb-app-registry = hamt-empty,
+    sdb-app-count = 0,
+    sdb-search = ft-store-new,
+    sdb-alerts = [],
+    sdb-config = hamt-empty
+  }
+
+Section: App Registration
+
+  sysdb-register-app : SysDb, Text -> SysDb
+  sysdb-register-app (db) (app-name) = SysDb {
+    sdb-logs = db.sdb-logs,
+    sdb-log-count = db.sdb-log-count,
+    sdb-firewall = db.sdb-firewall,
+    sdb-connections = db.sdb-connections,
+    sdb-conn-count = db.sdb-conn-count,
+    sdb-app-registry = hamt-set (db.sdb-app-registry) app-name "active",
+    sdb-app-count = db.sdb-app-count + 1,
+    sdb-search = db.sdb-search,
+    sdb-alerts = db.sdb-alerts,
+    sdb-config = db.sdb-config
+  }
+
+Section: Logging
+
+  sysdb-log : SysDb, SysLogEntry -> SysDb
+  sysdb-log (db) (entry) =
+    let doc = ft-doc (db.sdb-log-count) "sys_log" (db.sdb-log-count)
+    in let doc2 = ft-doc-set (ft-doc-set (ft-doc-set doc "app" (entry.sle-app)) "message" (entry.sle-message)) "addr" (entry.sle-source-addr)
+    in let search2 = ft-store-add (db.sdb-search) doc2 ["app", "message"]
+    in SysDb {
+      sdb-logs = list-push (db.sdb-logs) entry,
+      sdb-log-count = db.sdb-log-count + 1,
+      sdb-firewall = db.sdb-firewall,
+      sdb-connections = db.sdb-connections,
+      sdb-conn-count = db.sdb-conn-count,
+      sdb-app-registry = db.sdb-app-registry,
+      sdb-app-count = db.sdb-app-count,
+      sdb-search = search2,
+      sdb-alerts = db.sdb-alerts,
+      sdb-config = db.sdb-config
+    }
+
+  sysdb-log-info : SysDb, Text, Text, Text -> SysDb
+  sysdb-log-info (db) (app) (addr) (msg) =
+    sysdb-log db (SysLogEntry { sle-timestamp = 0, sle-app = app, sle-level = LvInfo, sle-source-addr = addr, sle-message = msg, sle-request-id = "", sle-latency-us = 0 })
+
+  sysdb-log-error : SysDb, Text, Text, Text -> SysDb
+  sysdb-log-error (db) (app) (addr) (msg) =
+    sysdb-log db (SysLogEntry { sle-timestamp = 0, sle-app = app, sle-level = LvError, sle-source-addr = addr, sle-message = msg, sle-request-id = "", sle-latency-us = 0 })
+
+  sysdb-log-warn : SysDb, Text, Text, Text -> SysDb
+  sysdb-log-warn (db) (app) (addr) (msg) =
+    sysdb-log db (SysLogEntry { sle-timestamp = 0, sle-app = app, sle-level = LvWarn, sle-source-addr = addr, sle-message = msg, sle-request-id = "", sle-latency-us = 0 })
+
+Section: Query Logs
+
+  sysdb-logs-by-app : SysDb, Text -> List SysLogEntry
+  sysdb-logs-by-app (db) (app) = slba-loop (db.sdb-logs) app 0 (db.sdb-log-count) []
+
+  slba-loop : List SysLogEntry, Text, Integer, Integer, List SysLogEntry -> List SysLogEntry
+  slba-loop (logs) (app) (i) (len) (acc) =
+    if i >= len then acc
+    else let e = list-at logs i
+    in if e.sle-app == app then slba-loop logs app (i + 1) len (list-push acc e)
+    else slba-loop logs app (i + 1) len acc
+
+  sysdb-logs-by-level : SysDb, LogLevel -> List SysLogEntry
+  sysdb-logs-by-level (db) (level) =
+    let sev = log-level-severity level
+    in slbl-loop (db.sdb-logs) sev 0 (db.sdb-log-count) []
+
+  slbl-loop : List SysLogEntry, Integer, Integer, Integer, List SysLogEntry -> List SysLogEntry
+  slbl-loop (logs) (min-sev) (i) (len) (acc) =
+    if i >= len then acc
+    else let e = list-at logs i
+    in if log-level-severity (e.sle-level) >= min-sev then slbl-loop logs min-sev (i + 1) len (list-push acc e)
+    else slbl-loop logs min-sev (i + 1) len acc
+
+  sysdb-logs-by-addr : SysDb, Text -> List SysLogEntry
+  sysdb-logs-by-addr (db) (addr) = slbaddr-loop (db.sdb-logs) addr 0 (db.sdb-log-count) []
+
+  slbaddr-loop : List SysLogEntry, Text, Integer, Integer, List SysLogEntry -> List SysLogEntry
+  slbaddr-loop (logs) (addr) (i) (len) (acc) =
+    if i >= len then acc
+    else let e = list-at logs i
+    in if e.sle-source-addr == addr then slbaddr-loop logs addr (i + 1) len (list-push acc e)
+    else slbaddr-loop logs addr (i + 1) len acc
+
+  sysdb-search-logs : SysDb, Text -> List FtDoc
+  sysdb-search-logs (db) (query) = ft-store-search (db.sdb-search) query
+
+Section: Firewall Integration
+
+  sysdb-check-request : SysDb, Text, Integer, Integer, Integer, Boolean -> (SysDb, FwDecision)
+  sysdb-check-request (db) (addr) (now) (bytes-in) (bytes-out) (is-error) =
+    let result = af-check-request (db.sdb-firewall) addr now bytes-in bytes-out is-error
+    in let new-db = SysDb {
+      sdb-logs = db.sdb-logs,
+      sdb-log-count = db.sdb-log-count,
+      sdb-firewall = result.afcr-firewall,
+      sdb-connections = db.sdb-connections,
+      sdb-conn-count = db.sdb-conn-count,
+      sdb-app-registry = db.sdb-app-registry,
+      sdb-app-count = db.sdb-app-count,
+      sdb-search = db.sdb-search,
+      sdb-alerts = db.sdb-alerts,
+      sdb-config = db.sdb-config
+    }
+    in (new-db, result.afcr-decision)
+
+  sysdb-deny : SysDb, Text, Text, Integer, Integer -> SysDb
+  sysdb-deny (db) (addr) (reason) (now) (ttl) = SysDb {
+    sdb-logs = db.sdb-logs,
+    sdb-log-count = db.sdb-log-count,
+    sdb-firewall = af-add-manual-deny (db.sdb-firewall) addr reason now ttl,
+    sdb-connections = db.sdb-connections,
+    sdb-conn-count = db.sdb-conn-count,
+    sdb-app-registry = db.sdb-app-registry,
+    sdb-app-count = db.sdb-app-count,
+    sdb-search = db.sdb-search,
+    sdb-alerts = db.sdb-alerts,
+    sdb-config = db.sdb-config
+  }
+
+  sysdb-allow : SysDb, Text, Text, Integer -> SysDb
+  sysdb-allow (db) (addr) (reason) (now) = SysDb {
+    sdb-logs = db.sdb-logs,
+    sdb-log-count = db.sdb-log-count,
+    sdb-firewall = af-add-allow (db.sdb-firewall) addr reason now,
+    sdb-connections = db.sdb-connections,
+    sdb-conn-count = db.sdb-conn-count,
+    sdb-app-registry = db.sdb-app-registry,
+    sdb-app-count = db.sdb-app-count,
+    sdb-search = db.sdb-search,
+    sdb-alerts = db.sdb-alerts,
+    sdb-config = db.sdb-config
+  }
+
+Section: Shared Config
+
+  sysdb-set-config : SysDb, Text, Text -> SysDb
+  sysdb-set-config (db) (key) (value) = SysDb {
+    sdb-logs = db.sdb-logs,
+    sdb-log-count = db.sdb-log-count,
+    sdb-firewall = db.sdb-firewall,
+    sdb-connections = db.sdb-connections,
+    sdb-conn-count = db.sdb-conn-count,
+    sdb-app-registry = db.sdb-app-registry,
+    sdb-app-count = db.sdb-app-count,
+    sdb-search = db.sdb-search,
+    sdb-alerts = db.sdb-alerts,
+    sdb-config = hamt-set (db.sdb-config) key value
+  }
+
+  sysdb-get-config : SysDb, Text -> Text
+  sysdb-get-config (db) (key) =
+    let found = hamt-get (db.sdb-config) key
+    in when found is Just (v) -> v is None -> ""
+
+Section: Statistics
+
+  sysdb-stats : SysDb -> Text
+  sysdb-stats (db) =
+    "logs=" & show (db.sdb-log-count)
+    & " apps=" & show (db.sdb-app-count)
+    & " fw-rules=" & show (db.sdb-firewall.af-firewall.fw-rule-count)
+    & " fw-blocked=" & show (db.sdb-firewall.af-firewall.fw-blocked-requests)
+    & " auto-denies=" & show (db.sdb-firewall.af-auto-denies)
+    & " anomalies=" & show (list-length (db.sdb-firewall.af-anomaly-log))
+    & " " & ft-stats (db.sdb-search)
+
+Page 1

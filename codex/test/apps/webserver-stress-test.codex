@@ -1,0 +1,125 @@
+Chapter: WebserverStressTest
+  cites Foreword chapter LoadTest
+  cites Foreword chapter CCE
+  cites Works chapter Http
+  cites Net chapter Router
+
+ Stress-tests the HTTP request/response pipeline. Each scenario
+ builds synthetic HTTP requests, parses them, matches routes, and
+ encodes responses. Tests the handler path in isolation — no
+ network I/O, no shell state.
+
+ We say:
+
+Section: Test Fixtures
+
+  test-router : Router
+  test-router =
+    let r = router-empty
+    in let r1 = router-get r "/" "status"
+    in let r2 = router-get r1 "/health" "health"
+    in let r3 = router-get r2 "/info" "info"
+    in let r4 = router-get r3 "/api/*" "api"
+    in r4
+
+  dispatch-local : RouteHandler -> HttpResponse
+  dispatch-local (h) =
+    if h.service == "status" then http-html "<h1>OK</h1>"
+    else if h.service == "health" then http-plain "healthy"
+    else if h.service == "info" then http-plain "info"
+    else http-plain ("handled by " & h.service)
+
+  handle-request : List Integer -> HttpResponse
+  handle-request (req-bytes) =
+    let req = http-parse-request req-bytes
+    in if req.valid == False then http-error "malformed request"
+    else let m = router-match test-router (req.method) (req.path)
+    in if m.matched == False then http-not-found
+    else dispatch-local (m.handler)
+
+Section: Scenario Handlers
+
+  handle-get-root : Integer, Integer -> LoadStep
+  handle-get-root (i) (payload-size) =
+    let req = load-http-get "/"
+    in let resp = handle-request req
+    in let resp-bytes = list-length (http-encode resp)
+    in if resp.status == "200 OK" then load-step-ok resp-bytes
+    else load-step-fail
+
+  handle-get-health : Integer, Integer -> LoadStep
+  handle-get-health (i) (payload-size) =
+    let req = load-http-get "/health"
+    in let resp = handle-request req
+    in let resp-bytes = list-length (http-encode resp)
+    in if resp.status == "200 OK" then load-step-ok resp-bytes
+    else load-step-fail
+
+  handle-get-404 : Integer, Integer -> LoadStep
+  handle-get-404 (i) (payload-size) =
+    let req = load-http-get "/no-such-page"
+    in let resp = handle-request req
+    in let resp-bytes = list-length (http-encode resp)
+    in if resp.status == "404 Not Found" then load-step-ok resp-bytes
+    else load-step-fail
+
+  handle-route-fanout : Integer, Integer -> LoadStep
+  handle-route-fanout (i) (payload-size) =
+    let r = i - (i / 4) * 4
+    in let path = if r == 0 then "/"
+                  else if r == 1 then "/health"
+                  else if r == 2 then "/info"
+                  else "/api/data"
+    in let req = load-http-get path
+    in let resp = handle-request req
+    in let resp-bytes = list-length (http-encode resp)
+    in if resp.status == "200 OK" then load-step-ok resp-bytes
+    else load-step-fail
+
+  handle-malformed : Integer, Integer -> LoadStep
+  handle-malformed (i) (payload-size) =
+    let req = load-payload payload-size
+    in let resp = handle-request req
+    in let resp-bytes = list-length (http-encode resp)
+    in if resp.status == "500 Internal Server Error" then load-step-ok resp-bytes
+    else load-step-fail
+
+  handle-large-payload : Integer, Integer -> LoadStep
+  handle-large-payload (i) (payload-size) =
+    let req = load-http-post "/" payload-size
+    in let resp = handle-request req
+    in let resp-bytes = list-length (http-encode resp)
+    in load-step-ok resp-bytes
+
+Section: Entry
+
+  opening : [Console] Nothing = act
+    print-line-uni "webserver-stress-test"
+    let r1 = load-run-fold (load-scenario "get-root-10000" 10000 0) handle-get-root
+    in act
+      print-line-uni (load-report r1)
+      let r2 = load-run-fold (load-scenario "get-health-10000" 10000 0) handle-get-health
+      in act
+        print-line-uni (load-report r2)
+        let r3 = load-run-fold (load-scenario "get-404-5000" 5000 0) handle-get-404
+        in act
+          print-line-uni (load-report r3)
+          let r4 = load-run-fold (load-scenario "route-fanout-10000" 10000 0) handle-route-fanout
+          in act
+            print-line-uni (load-report r4)
+            let r5 = load-run-fold (load-scenario "malformed-5000" 5000 16) handle-malformed
+            in act
+              print-line-uni (load-report r5)
+              let r6 = load-run-fold (load-scenario "post-256b-1000" 1000 256) handle-large-payload
+              in act
+                print-line-uni (load-report r6)
+                print-line-uni ("total: " & show (r1.lr-completed + r2.lr-completed + r3.lr-completed + r4.lr-completed + r5.lr-completed + r6.lr-completed) & " requests")
+              end
+            end
+          end
+        end
+      end
+    end
+  end
+
+Page 1

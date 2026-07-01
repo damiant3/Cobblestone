@@ -1,0 +1,97 @@
+Chapter: ElasticBloom
+
+  cites Foreword chapter Maybe
+  cites Foreword chapter MathLib
+  cites Foreword chapter BloomFilter
+  cites Foreword chapter ElasticHash
+
+ A hash map combining a Bloom filter negative-path accelerator with an
+ elastic hash table. The Bloom filter gates every lookup: if it reports
+ absent, the multi-level probe is skipped entirely, turning the miss
+ path from O(num-levels) hash computations into k bit checks.
+
+ Insertions write to both structures. Lookups check the Bloom filter
+ first, then fall through to the elastic table only on a probable hit.
+ False positives from the Bloom filter cost one elastic probe sequence;
+ false negatives never occur, so a Bloom "no" is authoritative.
+
+ An ElasticBloomMap is a record containing:
+   filter -- Bloom filter for fast negative answers.
+   table  -- ElasticTable backing store.
+
+ To eb-new gives ElasticBloomMap, creating an empty map sized for the
+ given expected entry count. The Bloom filter is sized at 10 bits per
+ expected entry with 7 hash functions (~0.8% false positive rate).
+
+ To eb-get gives Maybe a, checking the Bloom filter first. Returns None
+ immediately when the filter reports absent.
+
+ To eb-put gives ElasticBloomMap, inserting into both the filter and the
+ table.
+
+ To eb-has gives Boolean, True when the key is probably present. This is
+ the fast path: Bloom-only, no table probe. False positives are possible.
+
+ To eb-has-exact gives Boolean, True when the key is definitely present.
+ Checks the Bloom filter, then confirms in the table.
+
+ To eb-size gives Integer, the number of entries inserted.
+
+ To eb-capacity gives Integer, the total slot count of the backing table.
+
+ We say:
+
+Section: Types
+
+  ElasticBloomMap a = record {
+    filter : BloomFilter,
+    table : ElasticTable a
+  }
+
+Section: Construction
+
+  eb-new : Integer -> ElasticBloomMap a
+  eb-new (expected) =
+    let safe = if expected < 8 then 8 else expected
+    in let bloom-bits = math-min 65535 (safe * 10)
+    in ElasticBloomMap {
+      filter = bloom-new bloom-bits 7,
+      table = elastic-new safe
+    }
+
+Section: Lookup
+
+  eb-get : ElasticBloomMap a, Text -> Maybe a
+  eb-get (m) (key) =
+    if bloom-contains-text (m.filter) key
+      then elastic-get (m.table) key
+      else None
+
+  eb-has : ElasticBloomMap a, Text -> Boolean
+  eb-has (m) (key) =
+    bloom-contains-text (m.filter) key
+
+  eb-has-exact : ElasticBloomMap a, Text -> Boolean
+  eb-has-exact (m) (key) =
+    if bloom-contains-text (m.filter) key
+      then elastic-has (m.table) key
+      else False
+
+Section: Insert
+
+  eb-put : ElasticBloomMap a, Text, a -> ElasticBloomMap a
+  eb-put (m) (key) (value) =
+    ElasticBloomMap {
+      filter = bloom-add-text (m.filter) key,
+      table = elastic-put (m.table) key value
+    }
+
+Section: Queries
+
+  eb-size : ElasticBloomMap a -> Integer
+  eb-size (m) = elastic-size (m.table)
+
+  eb-capacity : ElasticBloomMap a -> Integer
+  eb-capacity (m) = elastic-capacity (m.table)
+
+Page 1

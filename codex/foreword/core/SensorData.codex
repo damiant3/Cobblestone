@@ -1,0 +1,128 @@
+Chapter: SensorData
+  cites Foreword chapter Maybe
+
+ Structured sensor data types for IoT telemetry. Each record
+ carries a timestamp, sensor identifier, and typed value.
+ Designed for serialization to CBOR/JSON via the encode quire.
+
+Section: Sensor Types
+
+  SensorKind =
+    | Temperature
+    | Humidity
+    | Pressure
+    | Light
+    | Accelerometer
+    | Gyroscope
+    | Magnetometer
+    | Gps
+    | Battery
+    | Custom (Text)
+
+  sensor-kind-name : SensorKind -> Text
+  sensor-kind-name (k) =
+   when k
+    is Temperature -> "temperature"
+    is Humidity -> "humidity"
+    is Pressure -> "pressure"
+    is Light -> "light"
+    is Accelerometer -> "accelerometer"
+    is Gyroscope -> "gyroscope"
+    is Magnetometer -> "magnetometer"
+    is Gps -> "gps"
+    is Battery -> "battery"
+    is Custom (name) -> name
+
+Section: Sensor Values
+
+  SensorValue =
+    | IntValue (Integer)
+    | FixedValue (Integer) (Integer)
+    | BoolValue (Boolean)
+    | Vec3Value (Integer) (Integer) (Integer)
+
+  sensor-value-to-text : SensorValue -> Text
+  sensor-value-to-text (v) =
+   when v
+    is IntValue (n) -> show n
+    is FixedValue (whole) (frac) -> show whole & "." & show frac
+    is BoolValue (b) -> if b then "true" else "false"
+    is Vec3Value (x) (y) (z) -> show x & "," & show y & "," & show z
+
+Section: Sensor Reading
+
+  SensorReading = record {
+   kind : SensorKind,
+   value : SensorValue,
+   timestamp : Integer,
+   device-id : Text
+  }
+
+  make-reading : SensorKind, SensorValue, Integer, Text -> SensorReading
+  make-reading (kind) (value) (ts) (dev) =
+   SensorReading {
+    kind = kind,
+    value = value,
+    timestamp = ts,
+    device-id = dev
+   }
+
+  format-reading : SensorReading -> Text
+  format-reading (r) =
+   r.device-id & "/" & sensor-kind-name (r.kind) & "=" & sensor-value-to-text (r.value) & "@" & show (r.timestamp)
+
+Section: Time Series
+
+  TimeSeriesEntry = record {
+   timestamp : Integer,
+   value : Integer
+  }
+
+  ts-min : List TimeSeriesEntry -> Integer
+  ts-min (entries) = ts-min-loop entries 0 (list-length entries) 2147483647
+
+  ts-min-loop : List TimeSeriesEntry, Integer, Integer, Integer -> Integer
+  ts-min-loop (entries) (i) (len) (best) =
+   if i >= len then best
+   else let v = (list-at entries i).value
+   in ts-min-loop entries (i + 1) len (if v < best then v else best)
+
+  ts-max : List TimeSeriesEntry -> Integer
+  ts-max (entries) = ts-max-loop entries 0 (list-length entries) (0 - 2147483647)
+
+  ts-max-loop : List TimeSeriesEntry, Integer, Integer, Integer -> Integer
+  ts-max-loop (entries) (i) (len) (best) =
+   if i >= len then best
+   else let v = (list-at entries i).value
+   in ts-max-loop entries (i + 1) len (if v > best then v else best)
+
+  ts-sum : List TimeSeriesEntry -> Integer
+  ts-sum (entries) = ts-sum-loop entries 0 (list-length entries) 0
+
+  ts-sum-loop : List TimeSeriesEntry, Integer, Integer, Integer -> Integer
+  ts-sum-loop (entries) (i) (len) (acc) =
+   if i >= len then acc
+   else ts-sum-loop entries (i + 1) len (acc + (list-at entries i).value)
+
+  ts-average : List TimeSeriesEntry -> Integer
+  ts-average (entries) =
+   let len = list-length entries
+   in if len == 0 then 0 else ts-sum entries / len
+
+Section: Alert Thresholds
+
+  AlertCondition =
+    | AboveThreshold (Integer)
+    | BelowThreshold (Integer)
+    | OutsideRange (Integer) (Integer)
+    | RateOfChange (Integer)
+
+  check-alert : AlertCondition, Integer -> Boolean
+  check-alert (condition) (value) =
+   when condition
+    is AboveThreshold (limit) -> value > limit
+    is BelowThreshold (limit) -> value < limit
+    is OutsideRange (lo) (hi) -> value < lo | value > hi
+    is RateOfChange (max-delta) -> False
+
+Page 1

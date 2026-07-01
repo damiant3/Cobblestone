@@ -1,0 +1,242 @@
+Chapter: MintAuthority
+  cites CodexMagic chapter ChainCore
+  cites CodexMagic chapter TransactionValidator
+
+ ManaCoin mint authority. Only the platform can create new coins.
+ Minting happens when a player pays real money - we mint on demand.
+ Burns happen constantly (packs, trades, fees). We monitor the
+ supply and can adjust pricing to keep the economy healthy.
+
+ Running out of coins is impossible (we mint on demand).
+ Hyperinflation is prevented by burns.
+
+ We say:
+
+Section: Mint Authority State
+
+  MintAuthorityState = record {
+    platform-key : Integer,
+    total-minted : Integer,
+    total-burned : Integer,
+    circulating : Integer,
+    mint-events : List MintEvent,
+    burn-events : List BurnEvent,
+    rate-usd-to-coin : Integer,
+    daily-mint-total : Integer,
+    daily-burn-total : Integer,
+    last-reset-day : Integer,
+    suspicious-accounts : List Integer
+  }
+
+  MintEvent = record {
+    event-id : Integer,
+    account : Integer,
+    amount : Integer,
+    usd-paid : Integer,
+    timestamp : Integer,
+    tx-hash : Hash256
+  }
+
+  BurnEvent = record {
+    event-id : Integer,
+    account : Integer,
+    amount : Integer,
+    burn-reason : BurnReason,
+    timestamp : Integer
+  }
+
+  BurnReason =
+    | BurnPackCrack
+    | BurnTradeRake
+    | BurnExchangeFee
+    | BurnDungeonEntry
+    | BurnConversionFee
+    | BurnBridgeFee
+    | BurnPenalty
+
+  burn-reason-name : BurnReason -> Text
+  burn-reason-name (r) =
+    when r
+      is BurnPackCrack -> "Pack Crack"
+      is BurnTradeRake -> "Trade Rake"
+      is BurnExchangeFee -> "Exchange Fee"
+      is BurnDungeonEntry -> "Dungeon Entry"
+      is BurnConversionFee -> "Conversion Fee"
+      is BurnBridgeFee -> "Bridge Fee"
+      is BurnPenalty -> "Penalty"
+
+Section: Initialization
+
+  mint-authority-new : Integer, Integer -> MintAuthorityState
+  mint-authority-new (platform-key) (usd-rate) =
+    MintAuthorityState {
+      platform-key = platform-key,
+      total-minted = 0,
+      total-burned = 0,
+      circulating = 0,
+      mint-events = [],
+      burn-events = [],
+      rate-usd-to-coin = usd-rate,
+      daily-mint-total = 0,
+      daily-burn-total = 0,
+      last-reset-day = 0,
+      suspicious-accounts = []
+    }
+
+Section: Mint Operations
+
+  MintResult = record {
+    authority : MintAuthorityState,
+    chain : ChainState,
+    success : Boolean,
+    reason : Text,
+    coins-minted : Integer
+  }
+
+  mint-for-purchase : MintAuthorityState, ChainState, Integer, Integer, Integer -> MintResult
+  mint-for-purchase (auth) (chain) (account) (usd-amount) (timestamp) =
+    let coins = usd-amount * auth.rate-usd-to-coin
+    in if coins <= 0 then MintResult { authority = auth, chain = chain, success = False, reason = "Invalid amount", coins-minted = 0 }
+    else if is-suspicious auth account then MintResult { authority = auth, chain = chain, success = False, reason = "Account flagged", coins-minted = 0 }
+    else let nonce = get-nonce chain (auth.platform-key)
+    in let tx = sign-transaction (auth.platform-key) account coins TxMint nonce timestamp (auth.platform-key)
+    in let submit = submit-validated chain tx (auth.platform-key)
+    in if submit.accepted == False then MintResult { authority = auth, chain = submit.chain, success = False, reason = submit.reason, coins-minted = 0 }
+    else let event = MintEvent { event-id = list-length (auth.mint-events), account = account, amount = coins, usd-paid = usd-amount, timestamp = timestamp, tx-hash = tx.tx-hash }
+    in let auth2 = MintAuthorityState {
+      platform-key = auth.platform-key,
+      total-minted = auth.total-minted + coins,
+      total-burned = auth.total-burned,
+      circulating = auth.circulating + coins,
+      mint-events = list-push (auth.mint-events) event,
+      burn-events = auth.burn-events,
+      rate-usd-to-coin = auth.rate-usd-to-coin,
+      daily-mint-total = auth.daily-mint-total + coins,
+      daily-burn-total = auth.daily-burn-total,
+      last-reset-day = auth.last-reset-day,
+      suspicious-accounts = auth.suspicious-accounts
+    }
+    in MintResult { authority = auth2, chain = submit.chain, success = True, reason = "", coins-minted = coins }
+
+Section: Burn Operations
+
+  BurnResult = record {
+    authority : MintAuthorityState,
+    chain : ChainState,
+    success : Boolean
+  }
+
+  burn-coins : MintAuthorityState, ChainState, Integer, Integer, BurnReason, Integer -> BurnResult
+  burn-coins (auth) (chain) (account) (amount) (reason) (timestamp) =
+    let bal = get-balance chain account
+    in if bal < amount then BurnResult { authority = auth, chain = chain, success = False }
+    else let nonce = get-nonce chain account
+    in let tx = sign-transaction account 0 amount TxBurn nonce timestamp account
+    in let submit = submit-validated chain tx (auth.platform-key)
+    in if submit.accepted == False then BurnResult { authority = auth, chain = submit.chain, success = False }
+    else let event = BurnEvent { event-id = list-length (auth.burn-events), account = account, amount = amount, burn-reason = reason, timestamp = timestamp }
+    in let auth2 = MintAuthorityState {
+      platform-key = auth.platform-key,
+      total-minted = auth.total-minted,
+      total-burned = auth.total-burned + amount,
+      circulating = auth.circulating - amount,
+      mint-events = auth.mint-events,
+      burn-events = list-push (auth.burn-events) event,
+      rate-usd-to-coin = auth.rate-usd-to-coin,
+      daily-mint-total = auth.daily-mint-total,
+      daily-burn-total = auth.daily-burn-total + amount,
+      last-reset-day = auth.last-reset-day,
+      suspicious-accounts = auth.suspicious-accounts
+    }
+    in BurnResult { authority = auth2, chain = submit.chain, success = True }
+
+Section: Supply Dashboard
+
+  SupplyStats = record {
+    total-minted : Integer,
+    total-burned : Integer,
+    circulating : Integer,
+    burn-rate-daily : Integer,
+    mint-rate-daily : Integer,
+    net-flow-daily : Integer,
+    health : SupplyHealth
+  }
+
+  SupplyHealth =
+    | HealthHealthy
+    | HealthInflating
+    | HealthDeflating
+    | HealthCritical
+
+  supply-health-name : SupplyHealth -> Text
+  supply-health-name (h) =
+    when h
+      is HealthHealthy -> "Healthy"
+      is HealthInflating -> "Inflating"
+      is HealthDeflating -> "Deflating"
+      is HealthCritical -> "Critical"
+
+  compute-supply-stats : MintAuthorityState -> SupplyStats
+  compute-supply-stats (auth) =
+    let net = auth.daily-mint-total - auth.daily-burn-total
+    in let health = if auth.circulating <= 0 then HealthCritical
+      else if net > auth.circulating / 10 then HealthInflating
+      else if net < 0 - (auth.circulating / 10) then HealthDeflating
+      else HealthHealthy
+    in SupplyStats {
+      total-minted = auth.total-minted,
+      total-burned = auth.total-burned,
+      circulating = auth.circulating,
+      burn-rate-daily = auth.daily-burn-total,
+      mint-rate-daily = auth.daily-mint-total,
+      net-flow-daily = net,
+      health = health
+    }
+
+Section: Rate Adjustment
+
+  set-usd-rate : MintAuthorityState, Integer -> MintAuthorityState
+  set-usd-rate (auth) (new-rate) =
+    MintAuthorityState { platform-key = auth.platform-key, total-minted = auth.total-minted, total-burned = auth.total-burned, circulating = auth.circulating, mint-events = auth.mint-events, burn-events = auth.burn-events, rate-usd-to-coin = new-rate, daily-mint-total = auth.daily-mint-total, daily-burn-total = auth.daily-burn-total, last-reset-day = auth.last-reset-day, suspicious-accounts = auth.suspicious-accounts }
+
+  reset-daily-counters : MintAuthorityState, Integer -> MintAuthorityState
+  reset-daily-counters (auth) (day) =
+    MintAuthorityState { platform-key = auth.platform-key, total-minted = auth.total-minted, total-burned = auth.total-burned, circulating = auth.circulating, mint-events = auth.mint-events, burn-events = auth.burn-events, rate-usd-to-coin = auth.rate-usd-to-coin, daily-mint-total = 0, daily-burn-total = 0, last-reset-day = day, suspicious-accounts = auth.suspicious-accounts }
+
+Section: Anti-Abuse
+
+  is-suspicious : MintAuthorityState, Integer -> Boolean
+  is-suspicious (auth) (account) =
+    list-has-int (auth.suspicious-accounts) account 0 (list-length (auth.suspicious-accounts))
+
+  flag-account : MintAuthorityState, Integer -> MintAuthorityState
+  flag-account (auth) (account) =
+    MintAuthorityState { platform-key = auth.platform-key, total-minted = auth.total-minted, total-burned = auth.total-burned, circulating = auth.circulating, mint-events = auth.mint-events, burn-events = auth.burn-events, rate-usd-to-coin = auth.rate-usd-to-coin, daily-mint-total = auth.daily-mint-total, daily-burn-total = auth.daily-burn-total, last-reset-day = auth.last-reset-day, suspicious-accounts = list-push (auth.suspicious-accounts) account }
+
+  list-has-int : List Integer, Integer, Integer, Integer -> Boolean
+  list-has-int (xs) (target) (i) (len) =
+    if i >= len then False
+    else if list-at xs i == target then True
+    else list-has-int xs target (i + 1) len
+
+Section: Burn Sinks - Standard burn amounts
+
+  pack-crack-burn : Integer
+  pack-crack-burn = 100
+
+  trade-rake-divisor : Integer
+  trade-rake-divisor = 6
+
+  exchange-fee-pct : Integer
+  exchange-fee-pct = 5
+
+  dungeon-entry-platform-pct : Integer
+  dungeon-entry-platform-pct = 15
+
+  conversion-fee : Integer
+  conversion-fee = 25
+
+  bridge-fee-pct : Integer
+  bridge-fee-pct = 3
+
+Page 1

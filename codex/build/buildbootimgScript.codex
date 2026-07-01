@@ -1,0 +1,62 @@
+Chapter: BuildBootImgScript
+
+  cites Foreword chapter Console
+  cites Foreword chapter Maybe
+  cites Shell chapter ShellTypes
+  cites Shell chapter ShellBuild
+  cites Shell chapter PowerShellEmit
+
+ Generates build-boot-img.ps1 from the Shell DSL.
+ Compile with: -Survey "lower-mul:500000"
+
+ We say:
+
+Section: Parameters
+
+  boot-img-params : List ShellParam = []
+
+Section: S01 -- Preamble
+
+  s01 : List ShellCmd =
+    let fail-seed = [ScEcho (SeRaw "\"FAIL: $Seed missing\""), ScExit (SeInt 1)]
+    in [ScSetErrorStop, ScSetStrictMode, ScBlank, ScAssign "Repo" (SeRaw "(Resolve-Path (Join-Path $PSScriptRoot '..')).Path"), ScAssign "Seed" (SeRaw "Join-Path $Repo 'seed\\Codex.cdx'"), ScAssign "ImgOut" (SeRaw "Join-Path $Repo 'seed\\Codex.img'"), ScBlank, ScIf (SeNot (SeFileExists (SeVar "Seed"))) fail-seed [], ScBlank, ScAssign "BuildOut" (SeRaw "Join-Path $Repo 'build-output'"), ScIf (SeNot (SeDirExists (SeVar "BuildOut"))) [ScMkdir (SeVar "BuildOut")] [], ScBlank, ScEcho (SeLit "=== Build Boot IMG ===")]
+
+Section: S02 -- Bundle
+
+  s02 : List ShellCmd =
+    let fail-bundle = [ScEcho (SeLit "FAIL: bundle failed"), ScExit (SeInt 1)]
+    in [ScComment "Step 1: Bundle boot source with all dependencies", ScAssign "bundleScript" (SeRaw "Join-Path $PSScriptRoot 'bundle-app.ps1'"), ScAssign "compileScript" (SeRaw "Join-Path $PSScriptRoot 'compile.ps1'"), ScAssign "BootSource" (SeRaw "Join-Path $Repo 'apps\\works\\UefiBoot.codex'"), ScAssign "BundledSource" (SeRaw "Join-Path $BuildOut 'boot-bundled.codex'"), ScAssign "BootCdx" (SeRaw "Join-Path $BuildOut 'boot.cdx'"), ScAssign "BootLog" (SeRaw "Join-Path $BuildOut 'img-compile.log'"), ScEcho (SeRaw "\"  Bundling $BootSource...\""), ScRaw "& pwsh -NoProfile -File $bundleScript -Src $BootSource -Out $BundledSource", ScIf (SeOr (SeNot (SeExitCodeEq 0)) (SeNot (SeFileExists (SeVar "BundledSource")))) fail-bundle []]
+
+Section: S03 -- Compile CDX
+
+  s03 : List ShellCmd =
+    let fail-compile = [ScEcho (SeLit "FAIL: CDX compile failed"), ScRaw "Get-Content $BootLog -ErrorAction SilentlyContinue | Select-Object -First 15 | ForEach-Object { Write-Host \"  $_\" }", ScExit (SeInt 1)]
+    in [ScComment "Step 2: Compile bundled source to CDX", ScEcho (SeLit "  Compiling bundled source -> CDX (UEFI mode)..."), ScRaw "& pwsh -NoProfile -File $compileScript -Src $BundledSource -Out $BootCdx -Log $BootLog -Uefi", ScIf (SeOr (SeNot (SeExitCodeEq 0)) (SeNot (SeFileExists (SeVar "BootCdx")))) fail-compile []]
+
+Section: S04 -- CDX to PE
+
+  s04 : List ShellCmd =
+    let fail-pe = [ScEcho (SeLit "FAIL: PE conversion failed"), ScExit (SeInt 1)]
+    in [ScComment "Step 3: Convert CDX to PE", ScAssign "PeScript" (SeRaw "Join-Path $PSScriptRoot 'cdx-to-pe.ps1'"), ScAssign "BootPe" (SeRaw "Join-Path $BuildOut 'boot.efi'"), ScEcho (SeLit "  Converting CDX -> PE..."), ScRaw "& pwsh -NoProfile -File $PeScript -CdxInput $BootCdx -Out $BootPe -HeapPages 131072", ScIf (SeOr (SeNot (SeExitCodeEq 0)) (SeNot (SeFileExists (SeVar "BootPe")))) fail-pe []]
+
+Section: S05 -- Build GPT Image
+
+  s05 : List ShellCmd =
+    let fail-img = [ScEcho (SeLit "FAIL: IMG build failed"), ScExit (SeInt 1)]
+    in [ScComment "Step 4: Build GPT FAT16 disk image", ScAssign "ImgScript" (SeRaw "Join-Path $PSScriptRoot 'build-img.ps1'"), ScAssign "SourceFile" (SeRaw "Join-Path $BuildOut 'Codex.codex'"), ScEcho (SeLit "  Building GPT disk image..."), ScIf (SeFileExists (SeVar "SourceFile")) [ScRaw "& pwsh -NoProfile -File $ImgScript -PeInput $BootPe -Out $ImgOut -Source $SourceFile"] [ScRaw "& pwsh -NoProfile -File $ImgScript -PeInput $BootPe -Out $ImgOut"], ScIf (SeOr (SeNot (SeExitCodeEq 0)) (SeNot (SeFileExists (SeVar "ImgOut")))) fail-img []]
+
+Section: S06 -- Done
+
+  s06 : List ShellCmd = [ScAssign "totalSize" (SeProperty (SeRaw "Get-Item $ImgOut") "Length"), ScEcho (SeRaw "\"Done: $ImgOut ($([math]::Round($totalSize / 1MB, 1)) MB)\"")]
+
+Section: Assembly
+
+  boot-img-body : List ShellCmd = [ScSequence s01, ScBlank, ScSequence s02, ScBlank, ScSequence s03, ScBlank, ScSequence s04, ScBlank, ScSequence s05, ScBlank, ScSequence s06]
+
+  boot-img-script : ShellScript = sh-script "build-boot-img" "Build a bootable GPT disk image from UefiBoot.codex" boot-img-params boot-img-body
+
+  opening : [Console] Nothing = act
+    print-line-uni (emit-powershell boot-img-script)
+  end
+
+Page 1

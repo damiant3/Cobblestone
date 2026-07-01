@@ -1,0 +1,233 @@
+Chapter: Statistics
+  cites Mathbook chapter Expr
+  cites Foreword chapter Maybe
+
+ Descriptive and basic inferential statistics. Operates on lists
+ of integers (fixed-point scale 1000 where needed). Mean, median,
+ mode, variance, standard deviation, percentiles, correlation,
+ linear regression, and probability distributions.
+
+Section: Descriptive
+
+  stat-sum : List Integer, Integer, Integer, Integer -> Integer
+  stat-sum (xs) (i) (n) (acc) =
+    if i >= n then acc
+    else stat-sum xs (i + 1) n (acc + list-at xs i)
+
+  stat-mean : List Integer -> Integer
+  stat-mean (xs) =
+    let n = list-length xs
+    in if n == 0 then 0
+    else stat-sum xs 0 n 0 / n
+
+  stat-min : List Integer -> Integer
+  stat-min (xs) =
+    if list-length xs == 0 then 0
+    else stat-min-loop xs 1 (list-length xs) (list-at xs 0)
+
+  stat-min-loop : List Integer, Integer, Integer, Integer -> Integer
+  stat-min-loop (xs) (i) (n) (best) =
+    if i >= n then best
+    else let v = list-at xs i
+    in stat-min-loop xs (i + 1) n (if v < best then v else best)
+
+  stat-max : List Integer -> Integer
+  stat-max (xs) =
+    if list-length xs == 0 then 0
+    else stat-max-loop xs 1 (list-length xs) (list-at xs 0)
+
+  stat-max-loop : List Integer, Integer, Integer, Integer -> Integer
+  stat-max-loop (xs) (i) (n) (best) =
+    if i >= n then best
+    else let v = list-at xs i
+    in stat-max-loop xs (i + 1) n (if v > best then v else best)
+
+  stat-range : List Integer -> Integer
+  stat-range (xs) = stat-max xs - stat-min xs
+
+  stat-variance : List Integer -> Integer
+  stat-variance (xs) =
+    let n = list-length xs
+    in if n <= 1 then 0
+    else let m = stat-mean xs
+    in let sq-sum = stat-sq-sum xs m 0 n 0
+    in sq-sum / (n - 1)
+
+  stat-sq-sum : List Integer, Integer, Integer, Integer, Integer -> Integer
+  stat-sq-sum (xs) (mean) (i) (n) (acc) =
+    if i >= n then acc
+    else let d = list-at xs i - mean
+    in stat-sq-sum xs mean (i + 1) n (acc + d * d)
+
+  stat-stddev : List Integer -> Integer
+  stat-stddev (xs) = stat-isqrt (stat-variance xs)
+
+  stat-isqrt : Integer -> Integer
+  stat-isqrt (n) =
+    if n <= 0 then 0
+    else stat-isqrt-loop n (n / 2 + 1)
+
+  stat-isqrt-loop : Integer, Integer -> Integer
+  stat-isqrt-loop (n) (guess) =
+    let next = (guess + n / guess) / 2
+    in if next >= guess then guess
+    else stat-isqrt-loop n next
+
+Section: Sorting (for median/percentile)
+
+  stat-sort : List Integer -> List Integer
+  stat-sort (xs) = stat-isort xs 1 (list-length xs)
+
+  stat-isort : List Integer, Integer, Integer -> List Integer
+  stat-isort (xs) (i) (n) =
+    if i >= n then xs
+    else stat-isort (stat-insert xs i) (i + 1) n
+
+  stat-insert : List Integer, Integer -> List Integer
+  stat-insert (xs) (i) =
+    if i <= 0 then xs
+    else if list-at xs i < list-at xs (i - 1) then stat-insert (stat-swap xs i (i - 1)) (i - 1)
+    else xs
+
+  stat-swap : List Integer, Integer, Integer -> List Integer
+  stat-swap (xs) (a) (b) =
+    let va = list-at xs a
+    in list-set-at (list-set-at xs a (list-at xs b)) b va
+
+Section: Order Statistics
+
+  stat-median : List Integer -> Integer
+  stat-median (xs) =
+    let sorted = stat-sort xs
+    in let n = list-length sorted
+    in if n == 0 then 0
+    else let mid = n / 2
+    in if n - (n / 2) * 2 == 1 then list-at sorted mid
+    else (list-at sorted (mid - 1) + list-at sorted mid) / 2
+
+  stat-percentile : List Integer, Integer -> Integer
+  stat-percentile (xs) (p) =
+    let sorted = stat-sort xs
+    in let n = list-length sorted
+    in if n == 0 then 0
+    else let idx = p * (n - 1) / 100
+    in list-at sorted idx
+
+  stat-quartile-1 : List Integer -> Integer
+  stat-quartile-1 (xs) = stat-percentile xs 25
+
+  stat-quartile-3 : List Integer -> Integer
+  stat-quartile-3 (xs) = stat-percentile xs 75
+
+  stat-iqr : List Integer -> Integer
+  stat-iqr (xs) = stat-quartile-3 xs - stat-quartile-1 xs
+
+Section: Correlation and Regression
+
+  stat-covariance : List Integer, List Integer -> Integer
+  stat-covariance (xs) (ys) =
+    let n = list-length xs
+    in if n <= 1 then 0
+    else let mx = stat-mean xs
+    in let my = stat-mean ys
+    in stat-cov-sum xs ys mx my 0 n 0 / (n - 1)
+
+  stat-cov-sum : List Integer, List Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  stat-cov-sum (xs) (ys) (mx) (my) (i) (n) (acc) =
+    if i >= n then acc
+    else let dx = list-at xs i - mx
+    in let dy = list-at ys i - my
+    in stat-cov-sum xs ys mx my (i + 1) n (acc + dx * dy)
+
+  stat-correlation : List Integer, List Integer -> Integer
+  stat-correlation (xs) (ys) =
+    let cov = stat-covariance xs ys
+    in let sx = stat-stddev xs
+    in let sy = stat-stddev ys
+    in if sx == 0 then 0
+    else if sy == 0 then 0
+    else cov * 1000 / (sx * sy)
+
+  LinearRegression = record { lr-slope : Integer, lr-intercept : Integer, lr-r-squared : Integer }
+
+  stat-linear-regression : List Integer, List Integer -> LinearRegression
+  stat-linear-regression (xs) (ys) =
+    let n = list-length xs
+    in if n <= 1 then LinearRegression { lr-slope = 0, lr-intercept = 0, lr-r-squared = 0 }
+    else let mx = stat-mean xs
+    in let my = stat-mean ys
+    in let cov = stat-covariance xs ys
+    in let vx = stat-variance xs
+    in let slope = if vx == 0 then 0 else cov * 1000 / vx
+    in let intercept = my * 1000 - slope * mx
+    in let r = stat-correlation xs ys
+    in LinearRegression { lr-slope = slope, lr-intercept = intercept, lr-r-squared = r * r / 1000 }
+
+Section: Frequency
+
+  FreqEntry = record { freq-value : Integer, freq-count : Integer }
+
+  stat-frequency : List Integer -> List FreqEntry
+  stat-frequency (xs) =
+    let sorted = stat-sort xs
+    in stat-freq-loop sorted 0 (list-length sorted) []
+
+  stat-freq-loop : List Integer, Integer, Integer, List FreqEntry -> List FreqEntry
+  stat-freq-loop (sorted) (i) (n) (acc) =
+    if i >= n then acc
+    else let v = list-at sorted i
+    in let counted = stat-count-run sorted v i n 0
+    in stat-freq-loop sorted (i + counted) n (list-push acc (FreqEntry { freq-value = v, freq-count = counted }))
+
+  stat-count-run : List Integer, Integer, Integer, Integer, Integer -> Integer
+  stat-count-run (sorted) (val) (i) (n) (count) =
+    if i >= n then count
+    else if list-at sorted i == val then stat-count-run sorted val (i + 1) n (count + 1)
+    else count
+
+  stat-mode : List Integer -> Integer
+  stat-mode (xs) =
+    let freq = stat-frequency xs
+    in stat-mode-loop freq 0 (list-length freq) 0 0
+
+  stat-mode-loop : List FreqEntry, Integer, Integer, Integer, Integer -> Integer
+  stat-mode-loop (freq) (i) (n) (best-val) (best-count) =
+    if i >= n then best-val
+    else let f = list-at freq i
+    in if f.freq-count > best-count then stat-mode-loop freq (i + 1) n (f.freq-value) (f.freq-count)
+    else stat-mode-loop freq (i + 1) n best-val best-count
+
+Section: Summary Record
+
+  StatSummary = record {
+    ss-count : Integer,
+    ss-mean : Integer,
+    ss-median : Integer,
+    ss-mode : Integer,
+    ss-min : Integer,
+    ss-max : Integer,
+    ss-range : Integer,
+    ss-variance : Integer,
+    ss-stddev : Integer,
+    ss-q1 : Integer,
+    ss-q3 : Integer,
+    ss-iqr : Integer
+  }
+
+  stat-summarize : List Integer -> StatSummary
+  stat-summarize (xs) = StatSummary {
+    ss-count = list-length xs,
+    ss-mean = stat-mean xs,
+    ss-median = stat-median xs,
+    ss-mode = stat-mode xs,
+    ss-min = stat-min xs,
+    ss-max = stat-max xs,
+    ss-range = stat-range xs,
+    ss-variance = stat-variance xs,
+    ss-stddev = stat-stddev xs,
+    ss-q1 = stat-quartile-1 xs,
+    ss-q3 = stat-quartile-3 xs,
+    ss-iqr = stat-iqr xs
+  }
+
+Page 1

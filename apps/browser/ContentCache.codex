@@ -1,0 +1,114 @@
+Chapter: ContentCache
+  cites Foreword chapter Maybe
+  cites Foreword chapter Sha256
+  cites Browser chapter ContentAddress
+  cites Foreword chapter ListUtils
+  cites Foreword chapter StringUtils
+
+ Content-addressed page cache. Pages are cached by their
+ content hash — a cache hit requires no network fetch and no
+ recompilation. Eviction is LRU.
+
+Section: Types
+
+  CacheEntry = record {
+    ce-hash       : ContentHash,
+    ce-bytes      : List Integer,
+    ce-is-source  : Boolean,
+    ce-access-tick : Integer
+  }
+
+  ContentCacheState = record {
+    cc-entries    : List CacheEntry,
+    cc-max-entries : Integer,
+    cc-tick       : Integer
+  }
+
+Section: Construction
+
+  cache-new : Integer -> ContentCacheState
+  cache-new (max-entries) =
+    ContentCacheState {
+      cc-entries = [],
+      cc-max-entries = max-entries,
+      cc-tick = 0
+    }
+
+Section: Lookup
+
+  cache-lookup : ContentCacheState, ContentHash -> Maybe CacheEntry
+  cache-lookup (cache) (hash) =
+    cache-find cache.cc-entries hash
+
+  cache-find : List CacheEntry, ContentHash -> Maybe CacheEntry
+  cache-find (entries) (hash) =
+    if list-length entries == 0 then None
+    else let head = list-at entries 0
+        in if content-hash-eq head.ce-hash hash
+          then Just head
+          else cache-find (list-drop entries 1) hash
+
+  cache-hit : ContentCacheState, ContentHash -> ContentCacheState
+  cache-hit (cache) (hash) =
+    let tick = cache.cc-tick + 1
+    in __record-set (__record-set cache
+      "cc-entries" (cache-touch cache.cc-entries hash tick))
+      "cc-tick" tick
+
+  cache-touch : List CacheEntry, ContentHash, Integer -> List CacheEntry
+  cache-touch (entries) (hash) (tick) =
+    list-map (cache-touch-one hash tick) entries
+
+  cache-touch-one : ContentHash, Integer, CacheEntry -> CacheEntry
+  cache-touch-one (hash) (tick) (entry) =
+    if content-hash-eq entry.ce-hash hash
+    then __record-set entry "ce-access-tick" tick
+    else entry
+
+Section: Insert
+
+  cache-put : ContentCacheState, ContentHash, List Integer, Boolean -> ContentCacheState
+  cache-put (cache) (hash) (bytes) (is-source) =
+    let tick = cache.cc-tick + 1
+    in let entry = CacheEntry {
+      ce-hash = hash,
+      ce-bytes = bytes,
+      ce-is-source = is-source,
+      ce-access-tick = tick
+    }
+    in let entries = list-push cache.cc-entries entry
+    in let trimmed = if list-length entries > cache.cc-max-entries
+          then cache-evict-lru entries
+          else entries
+    in __record-set (__record-set cache
+      "cc-entries" trimmed)
+      "cc-tick" tick
+
+Section: Eviction
+
+  cache-evict-lru : List CacheEntry -> List CacheEntry
+  cache-evict-lru (entries) =
+    let oldest = cache-find-oldest entries 0 0 999999999
+    in cache-remove-at entries oldest
+
+  cache-find-oldest : List CacheEntry, Integer, Integer, Integer -> Integer
+  cache-find-oldest (entries) (idx) (oldest-idx) (oldest-tick) =
+    if idx >= list-length entries
+    then oldest-idx
+    else let e = list-at entries idx
+      in if e.ce-access-tick < oldest-tick
+        then cache-find-oldest entries (idx + 1) idx e.ce-access-tick
+        else cache-find-oldest entries (idx + 1) oldest-idx oldest-tick
+
+  cache-remove-at : List CacheEntry, Integer -> List CacheEntry
+  cache-remove-at (entries) (idx) =
+    list-take entries idx & list-drop entries (idx + 1)
+
+Section: Statistics
+
+  cache-size : ContentCacheState -> Integer
+  cache-size (cache) = list-length cache.cc-entries
+
+  cache-is-full : ContentCacheState -> Boolean
+  cache-is-full (cache) =
+    list-length cache.cc-entries >= cache.cc-max-entries

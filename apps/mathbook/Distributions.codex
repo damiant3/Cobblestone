@@ -1,0 +1,225 @@
+Chapter: Distributions
+  cites Mathbook chapter Expr
+  cites Mathbook chapter Statistics
+  cites Mathbook chapter NumberTheory
+
+ Probability distributions. Discrete: Bernoulli, Binomial, Poisson,
+ Geometric, Uniform. Continuous (approximated via fixed-point):
+ Normal (CDF table), Exponential, Uniform. Hypothesis testing:
+ z-test, t-test statistic, chi-squared statistic, p-value lookup.
+ Confidence intervals.
+
+Section: Discrete Distributions
+
+  dist-bernoulli-mean : Integer -> Integer
+  dist-bernoulli-mean (p-x1000) = p-x1000
+
+  dist-bernoulli-var : Integer -> Integer
+  dist-bernoulli-var (p-x1000) = p-x1000 * (1000 - p-x1000) / 1000
+
+  dist-binomial-pmf : Integer, Integer, Integer -> Integer
+  dist-binomial-pmf (n) (k) (p-x1000) =
+    let coeff = nt-binomial n k
+    in let pk = dist-pow-x1000 p-x1000 k
+    in let qnk = dist-pow-x1000 (1000 - p-x1000) (n - k)
+    in coeff * pk / 1000 * qnk / 1000
+
+  dist-pow-x1000 : Integer, Integer -> Integer
+  dist-pow-x1000 (base) (exp) =
+    if exp <= 0 then 1000
+    else base * dist-pow-x1000 base (exp - 1) / 1000
+
+  dist-binomial-mean : Integer, Integer -> Integer
+  dist-binomial-mean (n) (p-x1000) = n * p-x1000 / 1000
+
+  dist-binomial-var : Integer, Integer -> Integer
+  dist-binomial-var (n) (p-x1000) = n * p-x1000 / 1000 * (1000 - p-x1000) / 1000
+
+  dist-poisson-pmf : Integer, Integer -> Integer
+  dist-poisson-pmf (k) (lambda-x1000) =
+    let num = dist-pow-x1000 lambda-x1000 k
+    in let den = nt-factorial k * 1000
+    in let exp-neg = 1000 - lambda-x1000 + lambda-x1000 * lambda-x1000 / 2000
+    in num * exp-neg / den
+
+  dist-geometric-pmf : Integer, Integer -> Integer
+  dist-geometric-pmf (k) (p-x1000) =
+    if k < 1 then 0
+    else dist-pow-x1000 (1000 - p-x1000) (k - 1) * p-x1000 / 1000
+
+  dist-geometric-mean : Integer -> Integer
+  dist-geometric-mean (p-x1000) =
+    if p-x1000 == 0 then 0
+    else 1000000 / p-x1000
+
+  dist-uniform-discrete-mean : Integer, Integer -> Integer
+  dist-uniform-discrete-mean (a) (b) = (a + b) / 2
+
+  dist-uniform-discrete-var : Integer, Integer -> Integer
+  dist-uniform-discrete-var (a) (b) =
+    let range = b - a + 1
+    in (range * range - 1) / 12
+
+Section: Normal Distribution (lookup table approximation)
+
+  dist-normal-pdf-x1000 : Integer -> Integer
+  dist-normal-pdf-x1000 (z-x100) =
+    let z2 = z-x100 * z-x100 / 10000
+    in 399 * (1000 - z2 * 500 / 1000 + z2 * z2 * 125 / 1000000) / 1000
+
+  dist-normal-cdf-approx : Integer -> Integer
+  dist-normal-cdf-approx (z-x100) =
+    if z-x100 <= (-300) then 1
+    else if z-x100 <= (-200) then 23
+    else if z-x100 <= (-150) then 67
+    else if z-x100 <= (-100) then 159
+    else if z-x100 <= (-50) then 309
+    else if z-x100 <= 0 then 500
+    else if z-x100 <= 50 then 691
+    else if z-x100 <= 100 then 841
+    else if z-x100 <= 150 then 933
+    else if z-x100 <= 200 then 977
+    else if z-x100 <= 300 then 999
+    else 999
+
+  dist-normal-mean : Integer, Integer -> Integer
+  dist-normal-mean (mu) (sigma) = mu
+
+  dist-normal-var : Integer, Integer -> Integer
+  dist-normal-var (mu) (sigma) = sigma * sigma
+
+Section: Exponential Distribution
+
+  dist-exp-mean : Integer -> Integer
+  dist-exp-mean (lambda-x1000) =
+    if lambda-x1000 == 0 then 0
+    else 1000000 / lambda-x1000
+
+  dist-exp-var : Integer -> Integer
+  dist-exp-var (lambda-x1000) =
+    if lambda-x1000 == 0 then 0
+    else 1000000000 / (lambda-x1000 * lambda-x1000)
+
+  dist-exp-cdf : Integer, Integer -> Integer
+  dist-exp-cdf (x-x1000) (lambda-x1000) =
+    let exponent = lambda-x1000 * x-x1000 / 1000000
+    in 1000 - (1000 - exponent + exponent * exponent / 2000)
+
+Section: Hypothesis Testing
+
+  HypResult = record {
+    hyp-test-stat : Integer,
+    hyp-p-value : Integer,
+    hyp-reject : Boolean,
+    hyp-alpha : Integer,
+    hyp-test-name : Text
+  }
+
+  dist-z-test : Integer, Integer, Integer, Integer, Integer -> HypResult
+  dist-z-test (sample-mean-x1000) (pop-mean-x1000) (pop-sigma-x1000) (n) (alpha-x1000) =
+    let se = pop-sigma-x1000 / stat-isqrt (n * 1000)
+    in let z = if se == 0 then 0 else (sample-mean-x1000 - pop-mean-x1000) * 100 / se
+    in let abs-z = if z < 0 then negate z else z
+    in let p = 2 * (1000 - dist-normal-cdf-approx abs-z)
+    in HypResult {
+      hyp-test-stat = z,
+      hyp-p-value = p,
+      hyp-reject = p < alpha-x1000,
+      hyp-alpha = alpha-x1000,
+      hyp-test-name = "z-test"
+    }
+
+  dist-t-statistic : Integer, Integer, Integer, Integer -> Integer
+  dist-t-statistic (sample-mean) (hyp-mean) (sample-sd) (n) =
+    let se = sample-sd * 1000 / stat-isqrt (n * 1000)
+    in if se == 0 then 0
+    else (sample-mean - hyp-mean) * 1000 / se
+
+  dist-chi-squared : List Integer, List Integer -> Integer
+  dist-chi-squared (observed) (expected) =
+    dist-chi-loop observed expected 0 (list-length observed) 0
+
+  dist-chi-loop : List Integer, List Integer, Integer, Integer, Integer -> Integer
+  dist-chi-loop (obs) (exp) (i) (n) (acc) =
+    if i >= n then acc
+    else let o = list-at obs i
+    in let e = list-at exp i
+    in let diff = o - e
+    in let term = if e == 0 then 0 else diff * diff * 1000 / e
+    in dist-chi-loop obs exp (i + 1) n (acc + term)
+
+Section: Confidence Interval
+
+  ConfInterval = record {
+    ci-lower : Integer,
+    ci-upper : Integer,
+    ci-center : Integer,
+    ci-margin : Integer,
+    ci-level : Integer
+  }
+
+  dist-confidence-interval : Integer, Integer, Integer, Integer -> ConfInterval
+  dist-confidence-interval (mean-x1000) (sigma-x1000) (n) (z-x100) =
+    let se = sigma-x1000 / stat-isqrt (n * 1000)
+    in let margin = z-x100 * se / 100
+    in ConfInterval {
+      ci-lower = mean-x1000 - margin,
+      ci-upper = mean-x1000 + margin,
+      ci-center = mean-x1000,
+      ci-margin = margin,
+      ci-level = if z-x100 == 196 then 950 else if z-x100 == 258 then 990 else if z-x100 == 164 then 900 else 0
+    }
+
+  ci-95 : Integer, Integer, Integer -> ConfInterval
+  ci-95 (mean) (sigma) (n) = dist-confidence-interval mean sigma n 196
+
+  ci-99 : Integer, Integer, Integer -> ConfInterval
+  ci-99 (mean) (sigma) (n) = dist-confidence-interval mean sigma n 258
+
+Section: Regression Diagnostics
+
+  RegressionDiag = record {
+    rd-r-squared : Integer,
+    rd-adj-r-squared : Integer,
+    rd-residual-se : Integer,
+    rd-f-statistic : Integer,
+    rd-n : Integer,
+    rd-p : Integer
+  }
+
+  regression-diagnostics : List Integer, List Integer, LinearRegression -> RegressionDiag
+  regression-diagnostics (xs) (ys) (reg) =
+    let n = list-length xs
+    in let r2 = reg.lr-r-squared
+    in let adj-r2 = if n <= 2 then r2 else 1000 - (1000 - r2) * (n - 1) / (n - 2)
+    in let ss-res = rd-ss-residual xs ys reg 0 n 0
+    in let res-se = stat-isqrt (if n <= 2 then 0 else ss-res / (n - 2))
+    in let ss-tot = stat-variance ys * (n - 1)
+    in let f-stat = if ss-res == 0 then 0 else (ss-tot - ss-res) * (n - 2) / ss-res
+    in RegressionDiag {
+      rd-r-squared = r2,
+      rd-adj-r-squared = adj-r2,
+      rd-residual-se = res-se,
+      rd-f-statistic = f-stat,
+      rd-n = n,
+      rd-p = 1
+    }
+
+  rd-ss-residual : List Integer, List Integer, LinearRegression, Integer, Integer, Integer -> Integer
+  rd-ss-residual (xs) (ys) (reg) (i) (n) (acc) =
+    if i >= n then acc
+    else let predicted = (reg.lr-slope * list-at xs i + reg.lr-intercept) / 1000
+    in let residual = list-at ys i - predicted
+    in rd-ss-residual xs ys reg (i + 1) n (acc + residual * residual)
+
+  rd-residuals : List Integer, List Integer, LinearRegression -> List Integer
+  rd-residuals (xs) (ys) (reg) = rd-res-loop xs ys reg 0 (list-length xs) []
+
+  rd-res-loop : List Integer, List Integer, LinearRegression, Integer, Integer, List Integer -> List Integer
+  rd-res-loop (xs) (ys) (reg) (i) (n) (acc) =
+    if i >= n then acc
+    else let predicted = (reg.lr-slope * list-at xs i + reg.lr-intercept) / 1000
+    in let residual = list-at ys i - predicted
+    in rd-res-loop xs ys reg (i + 1) n (list-push acc residual)
+
+Page 1

@@ -1,0 +1,308 @@
+Chapter: SysIntegration
+  cites Data chapter RuntimeDb
+  cites Data chapter SystemDb
+  cites Data chapter AuditLog
+  cites Data chapter ChangeStream
+  cites Data chapter Catalog
+  cites OS chapter ServiceRegistry
+  cites Observe chapter Journal
+  cites Observe chapter MetricStore
+  cites Observe chapter HealthCheck
+  cites Observe chapter ConfigStore
+  cites Trust chapter PolicyEngine
+  cites Trust chapter CapabilityAudit
+  cites Trust chapter TrustLattice
+  cites Net chapter NetworkConfig
+  cites Works chapter WebServer
+  cites Foreword chapter Maybe
+  cites Foreword chapter Tuple
+
+ Integration layer bridging the OS subsystems with SystemDb. The OS
+ modules cannot import apps/data (dependency order), so this module
+ sits above both and wires them together. All OS events — service
+ lifecycle, journal logs, metrics, health checks, policy decisions,
+ capability grants, network events — flow through here into the
+ central RuntimeDb.
+
+ We say:
+
+Section: Integrated System State
+
+  IntegratedSystem = record {
+    is-runtime : RuntimeDb,
+    is-journal : Journal,
+    is-metrics : MetricStore,
+    is-services : ServiceRegistry,
+    is-config : ConfigStore,
+    is-middleware-counts : Integer
+  }
+
+  isys-new : IntegratedSystem
+  isys-new = IntegratedSystem {
+    is-runtime = rdb-new,
+    is-journal = journal-new LogDebug,
+    is-metrics = metric-store-empty,
+    is-services = service-registry-empty,
+    is-config = config-store-empty,
+    is-middleware-counts = 0
+  }
+
+Section: Journal Bridge — OS logs flow into SystemDb
+
+  isys-log : IntegratedSystem, LogLevel, Text, Text, Integer -> IntegratedSystem
+  isys-log (sys) (level) (source) (msg) (timestamp) =
+    let j2 = journal-log (sys.is-journal) level source msg timestamp
+    in let sdb-level = journal-level-to-sysdb level
+    in let rdb2 = when sdb-level
+      is LvInfo -> sysdb-log-info (sys.is-runtime.rdb-sysdb) source "" msg
+      is LvWarn -> sysdb-log-warn (sys.is-runtime.rdb-sysdb) source "" msg
+      is LvError -> sysdb-log-error (sys.is-runtime.rdb-sysdb) source "" msg
+      is otherwise -> sys.is-runtime.rdb-sysdb
+    in let rdb3 = rdb-record-metric (rdb-with-sysdb (sys.is-runtime) rdb2) ("log." & format-level level) 1 timestamp
+    in IntegratedSystem { is-runtime = rdb3, is-journal = j2, is-metrics = sys.is-metrics, is-services = sys.is-services, is-config = sys.is-config, is-middleware-counts = sys.is-middleware-counts }
+
+  rdb-with-sysdb : RuntimeDb, SysDb -> RuntimeDb
+  rdb-with-sysdb (rdb) (sysdb) = RuntimeDb { rdb-catalog = rdb.rdb-catalog, rdb-sysdb = sysdb, rdb-audit = rdb.rdb-audit, rdb-stream = rdb.rdb-stream, rdb-metrics = rdb.rdb-metrics, rdb-security = rdb.rdb-security, rdb-version = rdb.rdb-version }
+
+  isys-log-info : IntegratedSystem, Text, Text, Integer -> IntegratedSystem
+  isys-log-info (sys) (source) (msg) (ts) = isys-log sys LogInfo source msg ts
+
+  isys-log-warn : IntegratedSystem, Text, Text, Integer -> IntegratedSystem
+  isys-log-warn (sys) (source) (msg) (ts) = isys-log sys LogWarn source msg ts
+
+  isys-log-error : IntegratedSystem, Text, Text, Integer -> IntegratedSystem
+  isys-log-error (sys) (source) (msg) (ts) = isys-log sys LogError source msg ts
+
+  isys-log-fatal : IntegratedSystem, Text, Text, Integer -> IntegratedSystem
+  isys-log-fatal (sys) (source) (msg) (ts) = isys-log sys LogFatal source msg ts
+
+  journal-level-to-sysdb : LogLevel -> LogLevel
+  journal-level-to-sysdb (l) =
+    when l
+      is LogDebug -> LvDebug
+      is LogInfo -> LvInfo
+      is LogWarn -> LvWarn
+      is LogError -> LvError
+      is LogFatal -> LvFatal
+
+Section: Service Registry Bridge
+
+  isys-register-service : IntegratedSystem, Text, Integer, Integer, Text, Integer -> IntegratedSystem
+  isys-register-service (sys) (name) (pid) (caps) (version) (timestamp) =
+    let reg2 = service-register (sys.is-services) name pid caps
+    in let rdb2 = rdb-register-service (sys.is-runtime) name "local" 0 version "" timestamp
+    in let rdb3 = rdb-record-metric rdb2 "services.registered" 1 timestamp
+    in let sys2 = isys-log (IntegratedSystem { is-runtime = rdb3, is-journal = sys.is-journal, is-metrics = sys.is-metrics, is-services = reg2, is-config = sys.is-config, is-middleware-counts = sys.is-middleware-counts }) LogInfo "service-registry" ("registered: " & name & " pid=" & show pid) timestamp
+    in sys2
+
+  isys-service-failed : IntegratedSystem, Text, Text, Integer -> IntegratedSystem
+  isys-service-failed (sys) (name) (reason) (timestamp) =
+    let reg2 = service-mark-failed (sys.is-services) name reason
+    in let rdb2 = rdb-record-metric (sys.is-runtime) "services.failed" 1 timestamp
+    in let sys2 = isys-log (IntegratedSystem { is-runtime = rdb2, is-journal = sys.is-journal, is-metrics = sys.is-metrics, is-services = reg2, is-config = sys.is-config, is-middleware-counts = sys.is-middleware-counts }) LogError "service-registry" ("failed: " & name & " reason=" & reason) timestamp
+    in sys2
+
+  isys-service-stopped : IntegratedSystem, Text, Integer -> IntegratedSystem
+  isys-service-stopped (sys) (name) (timestamp) =
+    let reg2 = service-mark-stopped (sys.is-services) name
+    in let rdb2 = rdb-record-metric (sys.is-runtime) "services.stopped" 1 timestamp
+    in isys-log (IntegratedSystem { is-runtime = rdb2, is-journal = sys.is-journal, is-metrics = sys.is-metrics, is-services = reg2, is-config = sys.is-config, is-middleware-counts = sys.is-middleware-counts }) LogInfo "service-registry" ("stopped: " & name) timestamp
+
+  isys-service-restarted : IntegratedSystem, Text, Integer, Integer -> IntegratedSystem
+  isys-service-restarted (sys) (name) (new-pid) (timestamp) =
+    let reg2 = service-mark-restarted (sys.is-services) name new-pid
+    in let rdb2 = rdb-record-metric (sys.is-runtime) "services.restarted" 1 timestamp
+    in isys-log (IntegratedSystem { is-runtime = rdb2, is-journal = sys.is-journal, is-metrics = sys.is-metrics, is-services = reg2, is-config = sys.is-config, is-middleware-counts = sys.is-middleware-counts }) LogWarn "service-registry" ("restarted: " & name & " new-pid=" & show new-pid) timestamp
+
+Section: Metric Bridge — OS metrics flow into SystemDb time-series
+
+  isys-metric-increment : IntegratedSystem, Text, Integer -> IntegratedSystem
+  isys-metric-increment (sys) (name) (timestamp) =
+    let m2 = metric-increment (sys.is-metrics) name
+    in let rdb2 = rdb-record-metric (sys.is-runtime) name 1 timestamp
+    in IntegratedSystem { is-runtime = rdb2, is-journal = sys.is-journal, is-metrics = m2, is-services = sys.is-services, is-config = sys.is-config, is-middleware-counts = sys.is-middleware-counts }
+
+  isys-metric-set : IntegratedSystem, Text, Integer, Integer -> IntegratedSystem
+  isys-metric-set (sys) (name) (value) (timestamp) =
+    let m2 = metric-set (sys.is-metrics) name value
+    in let rdb2 = rdb-record-metric (sys.is-runtime) name value timestamp
+    in IntegratedSystem { is-runtime = rdb2, is-journal = sys.is-journal, is-metrics = m2, is-services = sys.is-services, is-config = sys.is-config, is-middleware-counts = sys.is-middleware-counts }
+
+  isys-heartbeat : IntegratedSystem, Text, Integer -> IntegratedSystem
+  isys-heartbeat (sys) (service-name) (timestamp) =
+    let rdb2 = rdb-heartbeat (sys.is-runtime) service-name timestamp
+    in IntegratedSystem { is-runtime = rdb2, is-journal = sys.is-journal, is-metrics = sys.is-metrics, is-services = sys.is-services, is-config = sys.is-config, is-middleware-counts = sys.is-middleware-counts }
+
+Section: Health Check Bridge
+
+  isys-report-health : IntegratedSystem, HealthReport, Integer -> IntegratedSystem
+  isys-report-health (sys) (report) (timestamp) =
+    let sys2 = isys-metric-set sys "health.healthy" (report.healthy-count) timestamp
+    in let sys3 = isys-metric-set sys2 "health.total" (report.check-count) timestamp
+    in isys-report-checks sys3 (report.checks) 0 (report.check-count) timestamp
+
+  isys-report-checks : IntegratedSystem, List HealthResult, Integer, Integer, Integer -> IntegratedSystem
+  isys-report-checks (sys) (checks) (i) (len) (timestamp) =
+    if i >= len then sys
+    else let check = list-at checks i
+    in let sys2 = when (check.status)
+      is Healthy -> isys-metric-set sys ("health." & check.name) 1 timestamp
+      is Degraded (reason) -> isys-log (isys-metric-set sys ("health." & check.name) 0 timestamp) LogWarn "health-check" (check.name & " degraded: " & reason) timestamp
+      is Critical (reason) -> isys-log (isys-metric-set sys ("health." & check.name) (-1) timestamp) LogError "health-check" (check.name & " critical: " & reason) timestamp
+    in isys-report-checks sys2 checks (i + 1) len timestamp
+
+Section: Policy Decision Audit
+
+  isys-audit-policy-decision : IntegratedSystem, Text, Text, Text, Integer -> IntegratedSystem
+  isys-audit-policy-decision (sys) (scope) (request) (decision) (timestamp) =
+    let audit2 = audit-record-insert (sys.is-runtime.rdb-audit) "policy-engine" "sys_policies" (scope & ":" & request) [ValText decision] 0 timestamp
+    in let rdb2 = rdb-with-audit (sys.is-runtime) audit2
+    in let rdb3 = rdb-record-metric rdb2 ("policy." & decision) 1 timestamp
+    in IntegratedSystem { is-runtime = rdb3, is-journal = sys.is-journal, is-metrics = sys.is-metrics, is-services = sys.is-services, is-config = sys.is-config, is-middleware-counts = sys.is-middleware-counts }
+
+  rdb-with-audit : RuntimeDb, AuditLog -> RuntimeDb
+  rdb-with-audit (rdb) (audit) = RuntimeDb { rdb-catalog = rdb.rdb-catalog, rdb-sysdb = rdb.rdb-sysdb, rdb-audit = audit, rdb-stream = rdb.rdb-stream, rdb-metrics = rdb.rdb-metrics, rdb-security = rdb.rdb-security, rdb-version = rdb.rdb-version }
+
+Section: Capability Audit Bridge
+
+  isys-audit-grant : IntegratedSystem, Text, Text, Text, Integer -> IntegratedSystem
+  isys-audit-grant (sys) (app) (capability) (granted-by) (timestamp) =
+    let rdb2 = rdb-grant-capability (sys.is-runtime) app capability granted-by timestamp 0 "global"
+    in isys-log (IntegratedSystem { is-runtime = rdb2, is-journal = sys.is-journal, is-metrics = sys.is-metrics, is-services = sys.is-services, is-config = sys.is-config, is-middleware-counts = sys.is-middleware-counts }) LogInfo "capability" ("grant " & capability & " to " & app & " by " & granted-by) timestamp
+
+  isys-audit-revoke : IntegratedSystem, Text, Text, Text, Integer -> IntegratedSystem
+  isys-audit-revoke (sys) (app) (capability) (revoked-by) (timestamp) =
+    let audit2 = audit-record-ddl (sys.is-runtime.rdb-audit) revoked-by "sys_capabilities" ("revoke " & capability & " from " & app) timestamp
+    in let rdb2 = rdb-with-audit (sys.is-runtime) audit2
+    in isys-log (IntegratedSystem { is-runtime = rdb2, is-journal = sys.is-journal, is-metrics = sys.is-metrics, is-services = sys.is-services, is-config = sys.is-config, is-middleware-counts = sys.is-middleware-counts }) LogWarn "capability" ("revoke " & capability & " from " & app & " by " & revoked-by) timestamp
+
+Section: Access Control Audit
+
+  isys-audit-access : IntegratedSystem, Text, Text, Text, Boolean, Integer -> IntegratedSystem
+  isys-audit-access (sys) (user) (resource) (action) (allowed) (timestamp) =
+    let decision = if allowed then "allow" else "deny"
+    in let level = if allowed then LogInfo else LogWarn
+    in let audit2 = audit-record-insert (sys.is-runtime.rdb-audit) user "access-control" (resource & ":" & action) [ValText decision] 0 timestamp
+    in let rdb2 = rdb-with-audit (sys.is-runtime) audit2
+    in let rdb3 = rdb-record-metric rdb2 ("access." & decision) 1 timestamp
+    in isys-log (IntegratedSystem { is-runtime = rdb3, is-journal = sys.is-journal, is-metrics = sys.is-metrics, is-services = sys.is-services, is-config = sys.is-config, is-middleware-counts = sys.is-middleware-counts }) level "access-control" (user & " " & decision & " " & action & " on " & resource) timestamp
+
+Section: Network Firewall Bridge
+
+  isys-check-connection : IntegratedSystem, Text, Integer, Integer -> (IntegratedSystem, Boolean)
+  isys-check-connection (sys) (addr) (now) (bytes) =
+    let result = sysdb-check-request (sys.is-runtime.rdb-sysdb) addr now bytes 0 False
+    in let sysdb2 = when result is (db, d) -> db
+    in let decision = when result is (db, d) -> d
+    in let allowed = when decision is FwAllow -> True is FwRateLimit (n) -> True is otherwise -> False
+    in let rdb2 = rdb-with-sysdb (sys.is-runtime) sysdb2
+    in let rdb3 = rdb-record-metric rdb2 (if allowed then "net.allowed" else "net.blocked") 1 now
+    in let sys2 = if allowed then IntegratedSystem { is-runtime = rdb3, is-journal = sys.is-journal, is-metrics = sys.is-metrics, is-services = sys.is-services, is-config = sys.is-config, is-middleware-counts = sys.is-middleware-counts }
+       else isys-log (IntegratedSystem { is-runtime = rdb3, is-journal = sys.is-journal, is-metrics = sys.is-metrics, is-services = sys.is-services, is-config = sys.is-config, is-middleware-counts = sys.is-middleware-counts }) LogWarn "firewall" ("blocked: " & addr) now
+    in (sys2, allowed)
+
+  isys-deny-address : IntegratedSystem, Text, Text, Text, Integer, Integer -> IntegratedSystem
+  isys-deny-address (sys) (addr) (reason) (source-app) (now) (ttl) =
+    let rdb2 = rdb-add-deny (sys.is-runtime) addr reason source-app now ttl False
+    in isys-log (IntegratedSystem { is-runtime = rdb2, is-journal = sys.is-journal, is-metrics = sys.is-metrics, is-services = sys.is-services, is-config = sys.is-config, is-middleware-counts = sys.is-middleware-counts }) LogWarn "firewall" ("deny " & addr & " reason=" & reason & " by " & source-app) now
+
+Section: HTTP Request Bridge
+
+  isys-http-request : IntegratedSystem, Text, Text, Integer, Boolean, Integer -> IntegratedSystem
+  isys-http-request (sys) (client-addr) (path) (status) (is-error) (timestamp) =
+    let rdb2 = rdb-record-metric (sys.is-runtime) "http.requests" 1 timestamp
+    in let rdb3 = if is-error then rdb-record-metric rdb2 "http.errors" 1 timestamp else rdb2
+    in let rdb4 = rdb-record-metric rdb3 ("http.status." & show status) 1 timestamp
+    in let sysdb2 = sysdb-log-info (rdb4.rdb-sysdb) "http" client-addr (path & " " & show status)
+    in let rdb5 = rdb-with-sysdb rdb4 sysdb2
+    in IntegratedSystem { is-runtime = rdb5, is-journal = sys.is-journal, is-metrics = metric-increment (sys.is-metrics) "http.requests", is-services = sys.is-services, is-config = sys.is-config, is-middleware-counts = sys.is-middleware-counts + 1 }
+
+Section: Login Audit Bridge
+
+  isys-audit-login : IntegratedSystem, Text, Boolean, Integer -> IntegratedSystem
+  isys-audit-login (sys) (user) (success) (timestamp) =
+    let audit2 = audit-record-login (sys.is-runtime.rdb-audit) user success timestamp
+    in let rdb2 = rdb-with-audit (sys.is-runtime) audit2
+    in let metric-name = if success then "auth.login.ok" else "auth.login.fail"
+    in let rdb3 = rdb-record-metric rdb2 metric-name 1 timestamp
+    in let level = if success then LogInfo else LogWarn
+    in isys-log (IntegratedSystem { is-runtime = rdb3, is-journal = sys.is-journal, is-metrics = sys.is-metrics, is-services = sys.is-services, is-config = sys.is-config, is-middleware-counts = sys.is-middleware-counts }) level "auth" ((if success then "login: " else "login-failed: ") & user) timestamp
+
+Section: Config Bridge — OS ConfigStore backed by RuntimeDb
+
+  isys-set-config : IntegratedSystem, Text, Text, Text, Text, Integer -> IntegratedSystem
+  isys-set-config (sys) (namespace) (key) (value) (user) (timestamp) =
+    let cfg2 = config-set (sys.is-config) (namespace & "." & key) value
+    in let rdb2 = rdb-set-config (sys.is-runtime) namespace key value user timestamp
+    in isys-log (IntegratedSystem { is-runtime = rdb2, is-journal = sys.is-journal, is-metrics = sys.is-metrics, is-services = sys.is-services, is-config = cfg2, is-middleware-counts = sys.is-middleware-counts }) LogInfo "config" ("set " & namespace & "." & key & "=" & value & " by " & user) timestamp
+
+  isys-get-config : IntegratedSystem, Text, Text -> Text
+  isys-get-config (sys) (namespace) (key) =
+    let rdb-val = rdb-get-config (sys.is-runtime) namespace key
+    in if text-length rdb-val > 0 then rdb-val
+    else config-get (sys.is-config) (namespace & "." & key)
+
+  isys-get-config-or : IntegratedSystem, Text, Text, Text -> Text
+  isys-get-config-or (sys) (namespace) (key) (default) =
+    let v = isys-get-config sys namespace key
+    in if text-length v == 0 then default else v
+
+Section: Feature Flag Bridge
+
+  isys-check-feature : IntegratedSystem, Text -> Boolean
+  isys-check-feature (sys) (flag) = rdb-check-feature (sys.is-runtime) flag
+
+  isys-set-feature : IntegratedSystem, Text, Boolean, Text, Integer -> IntegratedSystem
+  isys-set-feature (sys) (flag) (enabled) (user) (timestamp) =
+    let rdb2 = rdb-set-feature (sys.is-runtime) flag enabled 100 "global" user timestamp
+    in isys-log (IntegratedSystem { is-runtime = rdb2, is-journal = sys.is-journal, is-metrics = sys.is-metrics, is-services = sys.is-services, is-config = sys.is-config, is-middleware-counts = sys.is-middleware-counts }) LogInfo "features" ("set " & flag & "=" & show enabled & " by " & user) timestamp
+
+Section: Capability Check Bridge
+
+  isys-check-capability : IntegratedSystem, Text, Text, Integer -> Boolean
+  isys-check-capability (sys) (app) (capability) (now) =
+    rdb-check-capability (sys.is-runtime) app capability now
+
+Section: Quota Bridge
+
+  isys-check-quota : IntegratedSystem, Text, Text -> Boolean
+  isys-check-quota (sys) (app) (resource) =
+    rdb-check-quota (sys.is-runtime) app resource
+
+  isys-set-quota : IntegratedSystem, Text, Text, Integer, Text, Text, Integer -> IntegratedSystem
+  isys-set-quota (sys) (app) (resource) (limit) (metric-unit) (user) (timestamp) =
+    let rdb2 = rdb-set-quota (sys.is-runtime) app resource limit metric-unit user timestamp
+    in isys-log (IntegratedSystem { is-runtime = rdb2, is-journal = sys.is-journal, is-metrics = sys.is-metrics, is-services = sys.is-services, is-config = sys.is-config, is-middleware-counts = sys.is-middleware-counts }) LogInfo "quotas" ("set " & app & "." & resource & "=" & show limit & " " & metric-unit & " by " & user) timestamp
+
+Section: Event Emission
+
+  isys-emit-event : IntegratedSystem, Integer, Text, Text, Text, Text, Integer -> IntegratedSystem
+  isys-emit-event (sys) (event-id) (event-type) (source) (target) (payload) (timestamp) =
+    let rdb2 = rdb-emit-event (sys.is-runtime) event-id event-type source target payload timestamp
+    in let rdb3 = rdb-record-metric rdb2 ("events." & event-type) 1 timestamp
+    in IntegratedSystem { is-runtime = rdb3, is-journal = sys.is-journal, is-metrics = sys.is-metrics, is-services = sys.is-services, is-config = sys.is-config, is-middleware-counts = sys.is-middleware-counts }
+
+Section: Deny List Check (for apps)
+
+  isys-is-denied : IntegratedSystem, Text, Integer -> Boolean
+  isys-is-denied (sys) (addr) (now) = rdb-is-denied (sys.is-runtime) addr now
+
+Section: OS Scheduler Tick
+
+  isys-tick : IntegratedSystem, Integer, Integer, Integer -> IntegratedSystem
+  isys-tick (sys) (tick-count) (dispatched) (timestamp) =
+    let rdb2 = rdb-record-metric (sys.is-runtime) "scheduler.tick" tick-count timestamp
+    in let rdb3 = rdb-record-metric rdb2 "scheduler.dispatched" dispatched timestamp
+    in IntegratedSystem { is-runtime = rdb3, is-journal = sys.is-journal, is-metrics = sys.is-metrics, is-services = sys.is-services, is-config = sys.is-config, is-middleware-counts = sys.is-middleware-counts }
+
+Section: Full System Stats
+
+  isys-stats : IntegratedSystem -> Text
+  isys-stats (sys) =
+    "system: "
+    & "services=" & show (service-count (sys.is-services))
+    & " journal=" & show (journal-count (sys.is-journal))
+    & " http=" & show (sys.is-middleware-counts)
+    & " " & rdb-stats (sys.is-runtime)
+
+Page 1

@@ -1,0 +1,125 @@
+Chapter: Handshake
+  cites Foreword chapter Maybe
+  cites Net chapter MessageFraming
+  cites Foreword chapter ProofOfWork
+  cites Trust chapter TrustLattice
+
+ The Handshake protocol authenticates two trust network peers
+ via proof-of-work challenge, Ed25519 key exchange, and mutual
+ trust-score verification before establishing a session.
+
+ We say:
+
+Section: Handshake Messages
+
+  HelloMsg = record {
+    public-key : List Integer,
+    pow-nonce : List Integer,
+    pow-difficulty : Integer between 0 and 4294967295
+  }
+
+  ChallengeMsg = record {
+    nonce : List Integer
+  }
+
+  ProveMsg = record {
+    signed-nonce : List Integer
+  }
+
+  AcceptMsg = record {
+    trust-score : Integer between 0 and 65535
+  }
+
+  RejectMsg = record {
+    reason : Text
+  }
+
+Section: Handshake State Machine
+
+  HandshakeState =
+    | HsIdle
+    | HsAwaitChallenge (List Integer)
+    | HsAwaitProve (List Integer) (List Integer)
+    | HsCompleted (Integer)
+    | HsFailed (Text)
+
+  HandshakeResult = record {
+    state : HandshakeState,
+    outbound : List Integer
+  }
+
+Section: Receiver Side
+
+  hs-receive-hello : HelloMsg, List Integer, TrustLattice, Integer -> HandshakeResult
+  hs-receive-hello (hello) (challenge-nonce) (lattice) (required-difficulty) =
+    if hello.pow-difficulty < required-difficulty
+      then HandshakeResult {
+        state = HsFailed "insufficient difficulty",
+        outbound = frame-encode tag-reject (frame-encode-text "insufficient proof-of-work difficulty")
+      }
+    else if pow-check (hello.public-key) (hello.pow-nonce) (hello.pow-difficulty)
+      then HandshakeResult {
+        state = HsAwaitProve challenge-nonce (hello.public-key),
+        outbound = frame-encode tag-challenge (frame-encode-bytes challenge-nonce)
+      }
+    else HandshakeResult {
+      state = HsFailed "invalid proof-of-work",
+      outbound = frame-encode tag-reject (frame-encode-text "invalid proof-of-work")
+    }
+
+  hs-receive-prove : List Integer, List Integer, TrustLattice -> HandshakeResult
+  hs-receive-prove (expected-nonce) (peer-key) (lattice) =
+    let key-hex = bytes-to-hex-hs peer-key 0 (list-length peer-key) ""
+    in let score = lattice-trust-score lattice key-hex
+    in HandshakeResult {
+      state = HsCompleted score,
+      outbound = frame-encode tag-accept (frame-le32 score)
+    }
+
+Section: Initiator Side
+
+  hs-create-hello : List Integer, Integer, Integer -> HelloMsg
+  hs-create-hello (public-key) (difficulty) (max-attempts) =
+    let nonce = pow-solve public-key difficulty max-attempts
+    in HelloMsg { public-key = public-key, pow-nonce = nonce, pow-difficulty = difficulty }
+
+Section: State Queries
+
+  hs-is-completed : HandshakeState -> Boolean
+  hs-is-completed (s) = when s
+    is HsCompleted (score) -> True
+    is otherwise -> False
+
+  hs-is-failed : HandshakeState -> Boolean
+  hs-is-failed (s) = when s
+    is HsFailed (reason) -> True
+    is otherwise -> False
+
+  hs-trust-score : HandshakeState -> Integer
+  hs-trust-score (s) = when s
+    is HsCompleted (score) -> score
+    is otherwise -> 0
+
+  hs-failure-reason : HandshakeState -> Text
+  hs-failure-reason (s) = when s
+    is HsFailed (reason) -> reason
+    is otherwise -> ""
+
+Section: Hex Helper
+
+  bytes-to-hex-hs : List Integer, Integer, Integer, Text -> Text
+  bytes-to-hex-hs (bs) (i) (len) (acc) =
+    if i == len then acc
+    else let b = list-at bs i
+    in bytes-to-hex-hs bs (i + 1) len (acc & hs-nibble (bit-shru b 4) & hs-nibble (bit-and b 15))
+
+  hs-nibble : Integer -> Text
+  hs-nibble (n) =
+    if n == 0 then "0" else if n == 1 then "1" else if n == 2 then "2"
+    else if n == 3 then "3" else if n == 4 then "4" else if n == 5 then "5"
+    else if n == 6 then "6" else if n == 7 then "7" else if n == 8 then "8"
+    else if n == 9 then "9" else if n == 10 then "a" else if n == 11 then "b"
+    else if n == 12 then "c" else if n == 13 then "d" else if n == 14 then "e"
+    else "f"
+
+Page 1

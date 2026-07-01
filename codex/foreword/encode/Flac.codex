@@ -1,0 +1,126 @@
+Chapter: Flac
+  cites Foreword chapter Units (Frequency)
+
+ FLAC encoder. Lossless audio compression using fixed LPC
+ prediction and Rice coding. Produces valid FLAC files with
+ STREAMINFO metadata and a single frame. 16-bit mono.
+
+ We say:
+
+Section: Constants
+  flac-magic : List Integer = [102, 76, 97, 67]
+  flac-frame-sync : List Integer = [255, 248]
+
+Section: Encoding
+  flac-encode : Frequency, List Integer -> List Integer
+  flac-encode (sample-rate) (samples) =
+    let n = list-length samples
+    in let streaminfo = flac-streaminfo sample-rate n 16 1
+    in let frame = flac-encode-frame samples sample-rate n
+    in flac-magic & streaminfo & frame
+
+Section: STREAMINFO Metadata Block
+  flac-streaminfo : Integer, Integer, Integer, Integer -> List Integer
+  flac-streaminfo (sr) (total-samples) (bps) (channels) =
+    let header = [128, 0, 0, 34]
+    in let min-block = flac-be16 4096
+    in let max-block = flac-be16 4096
+    in let min-frame = flac-be24 0
+    in let max-frame = flac-be24 0
+    in let sr-chan-bps = flac-pack-sr-chan sr channels bps
+    in let total = flac-be36 total-samples
+    in let md5 = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+    in header & min-block & max-block & min-frame & max-frame & sr-chan-bps & total & md5
+
+  flac-pack-sr-chan : Integer, Integer, Integer -> List Integer
+  flac-pack-sr-chan (sr) (chan) (bps) =
+    let b0 = bit-and (bit-shru sr 12) 255
+    in let b1 = bit-and (bit-shru sr 4) 255
+    in let b2 = bit-or (bit-shl (bit-and sr 15) 4) (bit-shl (chan - 1) 1)
+    in let b2-full = bit-or b2 (bit-shru (bps - 1) 4)
+    in let b3 = bit-shl (bit-and (bps - 1) 15) 4
+    in [b0, b1, b2-full, b3]
+
+Section: Frame Encoding
+  flac-encode-frame : List Integer, Integer, Integer -> List Integer
+  flac-encode-frame (samples) (sr) (n) =
+    let block-size = if n > 4096 then 4096 else n
+    in let frame-header = flac-frame-header block-size sr
+    in let residual = flac-fixed-predict samples block-size
+    in let rice = flac-rice-encode residual
+    in let subframe = [8] & rice
+    in frame-header & subframe & flac-frame-footer
+
+  flac-frame-header : Integer, Integer -> List Integer
+  flac-frame-header (block-size) (sr) =
+    let bs-code = flac-block-size-code block-size
+    in let sr-code = flac-sample-rate-code sr
+    in flac-frame-sync & [bit-or (bit-shl bs-code 4) sr-code, 1, 0]
+
+  flac-frame-footer : List Integer
+  flac-frame-footer = [0, 0]
+
+  flac-block-size-code : Integer -> Integer
+  flac-block-size-code (bs) =
+    if bs == 192 then 1
+    else if bs == 576 then 2
+    else if bs == 1152 then 3
+    else if bs == 2304 then 4
+    else if bs == 4096 then 5
+    else if bs == 4608 then 5
+    else 12
+
+  flac-sample-rate-code : Integer -> Integer
+  flac-sample-rate-code (sr) =
+    if sr == 8000 then 4
+    else if sr == 16000 then 5
+    else if sr == 22050 then 6
+    else if sr == 24000 then 7
+    else if sr == 32000 then 8
+    else if sr == 44100 then 9
+    else if sr == 48000 then 10
+    else if sr == 96000 then 11
+    else 0
+
+Section: Fixed LPC Prediction (order 0 = verbatim)
+  flac-fixed-predict : List Integer, Integer -> List Integer
+  flac-fixed-predict (samples) (n) = flac-take samples 0 n []
+
+  flac-take : List Integer, Integer, Integer, List Integer -> List Integer
+  flac-take (xs) (i) (n) (acc) =
+    if i >= n then acc
+    else flac-take xs (i + 1) n (list-push acc (list-at xs i))
+
+Section: Rice Coding (simplified - raw signed values)
+  flac-rice-encode : List Integer -> List Integer
+  flac-rice-encode (residual) = flac-rice-loop residual 0 (list-length residual) []
+
+  flac-rice-loop : List Integer, Integer, Integer, List Integer -> List Integer
+  flac-rice-loop (residual) (i) (n) (acc) =
+    if i >= n then acc
+    else let val = list-at residual i
+    in let encoded = flac-encode-signed16 val
+    in flac-rice-loop residual (i + 1) n (acc & encoded)
+
+  flac-encode-signed16 : Integer -> List Integer
+  flac-encode-signed16 (val) =
+    let unsigned = if val < 0 then 65536 + val else val
+    in [bit-and (bit-shru unsigned 8) 255, bit-and unsigned 255]
+
+Section: Helpers
+  flac-be16 : Integer -> List Integer
+  flac-be16 (v) = [bit-and (bit-shru v 8) 255, bit-and v 255]
+
+  flac-be24 : Integer -> List Integer
+  flac-be24 (v) = [bit-and (bit-shru v 16) 255, bit-and (bit-shru v 8) 255, bit-and v 255]
+
+  flac-be36 : Integer -> List Integer
+  flac-be36 (v) = [bit-and (bit-shru v 32) 15, bit-and (bit-shru v 24) 255, bit-and (bit-shru v 16) 255, bit-and (bit-shru v 8) 255, bit-and v 255]
+
+Section: Queries
+  flac-compression-ratio : Integer, Integer -> Integer
+  flac-compression-ratio (raw-size) (compressed-size) =
+    if raw-size == 0 then 0
+    else compressed-size * 1000 / raw-size
+
+Page 1

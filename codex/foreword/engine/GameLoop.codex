@@ -1,0 +1,117 @@
+Chapter: GameLoop
+
+ Fixed-timestep game loop. Physics and game logic update at a fixed
+ rate (default 60 Hz) regardless of render frame rate. The accumulator
+ pattern ensures deterministic simulation. Frame timing reads the
+ hardware tick counter directly (HPET via kernel metadata cell).
+
+ We say:
+
+Section: Configuration
+
+  GameConfig = record {
+    gc-target-fps : Integer between 15 and 240,
+    gc-fixed-dt : Integer,
+    gc-max-frame-skip : Integer between 1 and 10,
+    gc-width : Integer,
+    gc-height : Integer
+  }
+
+  gc-default : GameConfig
+  gc-default = GameConfig {
+    gc-target-fps = 60,
+    gc-fixed-dt = 16,
+    gc-max-frame-skip = 5,
+    gc-width = 640,
+    gc-height = 480
+  }
+
+  gc-720p : GameConfig
+  gc-720p = GameConfig {
+    gc-target-fps = 60,
+    gc-fixed-dt = 16,
+    gc-max-frame-skip = 5,
+    gc-width = 1024,
+    gc-height = 768
+  }
+
+Section: Frame State
+
+  GamePhase =
+    | PhaseInput
+    | PhaseUpdate
+    | PhaseRender
+    | PhasePresent
+
+  EngineFrame = record {
+    fs-tick : Integer,
+    fs-prev-tick : Integer,
+    fs-dt-actual : Integer,
+    fs-accumulator : Integer,
+    fs-frame-count : Integer,
+    fs-update-count : Integer,
+    fs-running : Boolean
+  }
+
+  frame-init : EngineFrame
+  frame-init = EngineFrame {
+    fs-tick = 0,
+    fs-prev-tick = 0,
+    fs-dt-actual = 16,
+    fs-accumulator = 0,
+    fs-frame-count = 0,
+    fs-update-count = 0,
+    fs-running = True
+  }
+
+Section: Frame Timing
+
+  frame-begin : EngineFrame, Integer -> EngineFrame
+  frame-begin (fs) (current-tick) =
+    let dt = current-tick - fs.fs-prev-tick
+    in let clamped = if dt > 100 then 100 else if dt < 1 then 1 else dt
+    in EngineFrame {
+      fs-tick = current-tick,
+      fs-prev-tick = current-tick,
+      fs-dt-actual = clamped,
+      fs-accumulator = fs.fs-accumulator + clamped,
+      fs-frame-count = fs.fs-frame-count + 1,
+      fs-update-count = fs.fs-update-count,
+      fs-running = fs.fs-running
+    }
+
+  frame-should-update : EngineFrame, Integer -> Boolean
+  frame-should-update (fs) (fixed-dt) = fs.fs-accumulator >= fixed-dt
+
+  frame-consume-update : EngineFrame, Integer -> EngineFrame
+  frame-consume-update (fs) (fixed-dt) = EngineFrame {
+    fs-tick = fs.fs-tick,
+    fs-prev-tick = fs.fs-prev-tick,
+    fs-dt-actual = fs.fs-dt-actual,
+    fs-accumulator = fs.fs-accumulator - fixed-dt,
+    fs-frame-count = fs.fs-frame-count,
+    fs-update-count = fs.fs-update-count + 1,
+    fs-running = fs.fs-running
+  }
+
+  frame-interp-alpha : EngineFrame, Integer -> Integer
+  frame-interp-alpha (fs) (fixed-dt) =
+    if fixed-dt == 0 then 1000
+    else fs.fs-accumulator * 1000 / fixed-dt
+
+  frame-stop : EngineFrame -> EngineFrame
+  frame-stop (fs) = __record-set fs "fs-running" False
+
+Section: Timing Helpers
+
+  frame-fps : EngineFrame -> Integer
+  frame-fps (fs) =
+    if fs.fs-dt-actual == 0 then 0
+    else 1000 / fs.fs-dt-actual
+
+Section: Formatting
+
+  format-frame : EngineFrame -> Text
+  format-frame (fs) = "frame=" & show (fs.fs-frame-count) & " dt=" & show (fs.fs-dt-actual) & "ms fps=" & show (frame-fps fs) & " updates=" & show (fs.fs-update-count)
+
+Page 1

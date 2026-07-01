@@ -1,0 +1,38 @@
+Chapter: PerfMonitor
+  cites Dev chapter HexFormat
+  cites Kernel chapter Console
+
+ The PerfMonitor reads tick count, heap high-water mark, and
+ stack minimum RSP from known memory addresses and displays
+ the performance snapshot on the console.
+
+ We say:
+
+Section: Known Addresses
+  tick-count-addr : Integer = 28672
+  heap-hwm-addr : Integer = 28728
+  stack-min-rsp-addr : Integer = 28736
+  stack-top : Integer = 1073741824
+
+Section: Performance Snapshot
+  perf-snapshot : ConsoleState -> ConsoleState
+  perf-snapshot (con) =
+    let ticks = peek-byte tick-count-addr 0 + bit-shl (peek-byte tick-count-addr 1) 8 + bit-shl (peek-byte tick-count-addr 2) 16 + bit-shl (peek-byte tick-count-addr 3) 24
+    in let hwm-lo = peek-byte heap-hwm-addr 0 + bit-shl (peek-byte heap-hwm-addr 1) 8 + bit-shl (peek-byte heap-hwm-addr 2) 16 + bit-shl (peek-byte heap-hwm-addr 3) 24
+    in let srsp-lo = peek-byte stack-min-rsp-addr 0 + bit-shl (peek-byte stack-min-rsp-addr 1) 8 + bit-shl (peek-byte stack-min-rsp-addr 2) 16 + bit-shl (peek-byte stack-min-rsp-addr 3) 24
+    in let stack-used = stack-top - srsp-lo
+    in let con1 = console-write-text con ("Ticks:      " & show ticks)
+    in let con2 = console-write-char con1 1
+    in let con3 = console-write-text con2 ("Heap HWM:   #" & u32-to-hex hwm-lo & " (" & show (hwm-lo / 1024) & " KB)")
+    in let con4 = console-write-char con3 1
+    in console-write-text con4 ("Stack used: " & show (stack-used / 1024) & " KB (min RSP #" & u32-to-hex srsp-lo & ")")
+
+  perf-heap : ConsoleState -> ConsoleState
+  perf-heap (con) =
+    let probe = alloc-bytes 0
+    in let hwm-lo = peek-byte heap-hwm-addr 0 + bit-shl (peek-byte heap-hwm-addr 1) 8 + bit-shl (peek-byte heap-hwm-addr 2) 16 + bit-shl (peek-byte heap-hwm-addr 3) 24
+    in let con1 = console-write-text con ("Heap current: #" & u32-to-hex probe)
+    in let con2 = console-write-char con1 1
+    in console-write-text con2 ("Heap HWM:     #" & u32-to-hex hwm-lo)
+
+Page 1

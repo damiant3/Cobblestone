@@ -1,0 +1,395 @@
+Chapter: Notification
+  cites UI chapter Widget
+  cites UI chapter Layout
+  cites UI chapter Overlay
+
+ System notification manager. Captures hardware events (battery,
+ USB, network, disk), software events (updates, errors, tasks),
+ and user alerts into a unified notification stream. Each
+ notification has a severity, icon, source, timestamp, and
+ auto-dismiss duration. The manager builds overlay widgets for
+ toast display and maintains a scrollable history.
+
+Section: Severity
+
+  NotifSeverity =
+    | SevInfo
+    | SevSuccess
+    | SevWarning
+    | SevError
+    | SevCritical
+
+  notif-severity-label : NotifSeverity -> Text
+  notif-severity-label (s) = when s
+    is SevInfo -> "info"
+    is SevSuccess -> "success"
+    is SevWarning -> "warning"
+    is SevError -> "error"
+    is SevCritical -> "critical"
+
+  notif-severity-icon : NotifSeverity -> Text
+  notif-severity-icon (s) = when s
+    is SevInfo -> "info"
+    is SevSuccess -> "check"
+    is SevWarning -> "warning"
+    is SevError -> "close"
+    is SevCritical -> "warning"
+
+  notif-severity-duration : NotifSeverity -> Integer
+  notif-severity-duration (s) = when s
+    is SevInfo -> 4000
+    is SevSuccess -> 3000
+    is SevWarning -> 6000
+    is SevError -> 8000
+    is SevCritical -> 0
+
+Section: Source Category
+
+  NotifSource =
+    | NsBattery
+    | NsUsb
+    | NsNetwork
+    | NsDisk
+    | NsKeyboard
+    | NsSystem
+    | NsApp (Text)
+    | NsSecurity
+
+  notif-source-label : NotifSource -> Text
+  notif-source-label (s) = when s
+    is NsBattery -> "Battery"
+    is NsUsb -> "USB"
+    is NsNetwork -> "Network"
+    is NsDisk -> "Disk"
+    is NsKeyboard -> "Keyboard"
+    is NsSystem -> "System"
+    is NsApp (name) -> name
+    is NsSecurity -> "Security"
+
+  notif-source-icon : NotifSource -> Text
+  notif-source-icon (s) = when s
+    is NsBattery -> "power"
+    is NsUsb -> "link"
+    is NsNetwork -> "wifi"
+    is NsDisk -> "save"
+    is NsKeyboard -> "terminal"
+    is NsSystem -> "gear"
+    is NsApp (name) -> "grid"
+    is NsSecurity -> "shield"
+
+Section: Notification
+
+  SystemNotification = record {
+    notif-id : Integer,
+    notif-severity : NotifSeverity,
+    notif-source : NotifSource,
+    notif-title : Text,
+    notif-body : Text,
+    notif-timestamp : Integer,
+    notif-read : Boolean,
+    notif-dismissed : Boolean,
+    notif-action-label : Text,
+    notif-action-id : Text
+  }
+
+  notification-new : Integer, NotifSeverity, NotifSource, Text, Text, Integer -> SystemNotification
+  notification-new (id) (severity) (source) (title) (body) (timestamp) = SystemNotification {
+    notif-id = id,
+    notif-severity = severity,
+    notif-source = source,
+    notif-title = title,
+    notif-body = body,
+    notif-timestamp = timestamp,
+    notif-read = False,
+    notif-dismissed = False,
+    notif-action-label = "",
+    notif-action-id = ""
+  }
+
+  notification-with-action : SystemNotification, Text, Text -> SystemNotification
+  notification-with-action (n) (label) (action-id) =
+    __record-set (__record-set n "notif-action-label" label) "notif-action-id" action-id
+
+Section: Manager State
+
+  NotificationManager = record {
+    nm-notifications : List SystemNotification,
+    nm-count : Integer,
+    nm-next-id : Integer,
+    nm-max-history : Integer,
+    nm-unread-count : Integer,
+    nm-toast-x : Integer,
+    nm-toast-y : Integer,
+    nm-toast-width : Integer,
+    nm-toast-gap : Integer,
+    nm-muted : Boolean
+  }
+
+  notification-manager-new : Integer, Integer -> NotificationManager
+  notification-manager-new (screen-w) (screen-h) = NotificationManager {
+    nm-notifications = [],
+    nm-count = 0,
+    nm-next-id = 1,
+    nm-max-history = 100,
+    nm-unread-count = 0,
+    nm-toast-x = screen-w - 320,
+    nm-toast-y = 8,
+    nm-toast-width = 300,
+    nm-toast-gap = 4,
+    nm-muted = False
+  }
+
+Section: Push Notification
+
+  nm-push : NotificationManager, NotifSeverity, NotifSource, Text, Text, Integer -> NotificationManager
+  nm-push (mgr) (severity) (source) (title) (body) (timestamp) =
+    let notif = notification-new (mgr.nm-next-id) severity source title body timestamp
+    in let notifs = list-push (mgr.nm-notifications) notif
+    in let trimmed = if mgr.nm-count >= mgr.nm-max-history then nm-drop-oldest notifs (mgr.nm-count + 1) else notifs
+    in let count = if mgr.nm-count >= mgr.nm-max-history then mgr.nm-max-history else mgr.nm-count + 1
+    in NotificationManager {
+      nm-notifications = trimmed,
+      nm-count = count,
+      nm-next-id = mgr.nm-next-id + 1,
+      nm-max-history = mgr.nm-max-history,
+      nm-unread-count = mgr.nm-unread-count + 1,
+      nm-toast-x = mgr.nm-toast-x,
+      nm-toast-y = mgr.nm-toast-y,
+      nm-toast-width = mgr.nm-toast-width,
+      nm-toast-gap = mgr.nm-toast-gap,
+      nm-muted = mgr.nm-muted
+    }
+
+  nm-drop-oldest : List SystemNotification, Integer -> List SystemNotification
+  nm-drop-oldest (notifs) (count) =
+    if count <= 1 then []
+    else nm-drop-loop notifs 1 count []
+
+  nm-drop-loop : List SystemNotification, Integer, Integer, List SystemNotification ->List SystemNotification
+  nm-drop-loop (notifs) (i) (n) (acc) =
+    if i >= n then acc
+    else nm-drop-loop notifs (i + 1) n (list-push acc (list-at notifs i))
+
+Section: Convenience Pushers
+
+  nm-info : NotificationManager, NotifSource, Text, Text, Integer -> NotificationManager
+  nm-info (mgr) (src) (title) (body) (ts) = nm-push mgr SevInfo src title body ts
+
+  nm-success : NotificationManager, NotifSource, Text, Text, Integer -> NotificationManager
+  nm-success (mgr) (src) (title) (body) (ts) = nm-push mgr SevSuccess src title body ts
+
+  nm-warning : NotificationManager, NotifSource, Text, Text, Integer -> NotificationManager
+  nm-warning (mgr) (src) (title) (body) (ts) = nm-push mgr SevWarning src title body ts
+
+  nm-error : NotificationManager, NotifSource, Text, Text, Integer -> NotificationManager
+  nm-error (mgr) (src) (title) (body) (ts) = nm-push mgr SevError src title body ts
+
+  nm-critical : NotificationManager, NotifSource, Text, Text, Integer -> NotificationManager
+  nm-critical (mgr) (src) (title) (body) (ts) = nm-push mgr SevCritical src title body ts
+
+Section: Hardware Event Helpers
+
+  nm-battery-low : NotificationManager, Integer, Integer -> NotificationManager
+  nm-battery-low (mgr) (percent) (ts) =
+    let sev = if percent <= 5 then SevCritical else if percent <= 15 then SevWarning else SevInfo
+    in nm-push mgr sev NsBattery "Battery Low" (show percent & "% remaining") ts
+
+  nm-usb-connected : NotificationManager, Text, Integer -> NotificationManager
+  nm-usb-connected (mgr) (device-name) (ts) =
+    nm-push mgr SevInfo NsUsb "Device Connected" (device-name & " is ready") ts
+
+  nm-usb-disconnected : NotificationManager, Text, Integer -> NotificationManager
+  nm-usb-disconnected (mgr) (device-name) (ts) =
+    nm-push mgr SevInfo NsUsb "Device Removed" (device-name & " disconnected") ts
+
+  nm-network-up : NotificationManager, Text, Integer -> NotificationManager
+  nm-network-up (mgr) (iface) (ts) =
+    nm-push mgr SevSuccess NsNetwork "Connected" (iface & " is online") ts
+
+  nm-network-down : NotificationManager, Text, Integer -> NotificationManager
+  nm-network-down (mgr) (iface) (ts) =
+    nm-push mgr SevWarning NsNetwork "Disconnected" (iface & " went offline") ts
+
+  nm-disk-full : NotificationManager, Text, Integer, Integer -> NotificationManager
+  nm-disk-full (mgr) (drive) (percent) (ts) =
+    nm-push mgr SevWarning NsDisk "Disk Space Low" (drive & " is " & show percent & "% full") ts
+
+  nm-keyboard-connected : NotificationManager, Text, Integer -> NotificationManager
+  nm-keyboard-connected (mgr) (name) (ts) =
+    nm-push mgr SevInfo NsKeyboard "Keyboard Ready" (name & " connected with RGB support") ts
+
+  nm-security-alert : NotificationManager, Text, Integer -> NotificationManager
+  nm-security-alert (mgr) (message) (ts) =
+    nm-push mgr SevCritical NsSecurity "Security Alert" message ts
+
+Section: Read / Dismiss
+
+  nm-mark-read : NotificationManager, Integer -> NotificationManager
+  nm-mark-read (mgr) (notif-id) =
+    let updated = nm-mark-loop (mgr.nm-notifications) notif-id 0 (mgr.nm-count) []
+    in let unread = nm-count-unread updated 0 (mgr.nm-count)
+    in __record-set (__record-set mgr "nm-notifications" updated) "nm-unread-count" unread
+
+  nm-mark-loop : List SystemNotification, Integer, Integer, Integer, List SystemNotification ->List SystemNotification
+  nm-mark-loop (notifs) (target) (i) (n) (acc) =
+    if i >= n then acc
+    else let notif = list-at notifs i
+    in let updated = if notif.notif-id == target then __record-set notif "notif-read" True else notif
+    in nm-mark-loop notifs target (i + 1) n (list-push acc updated)
+
+  nm-mark-all-read : NotificationManager -> NotificationManager
+  nm-mark-all-read (mgr) =
+    let updated = nm-mark-all-loop (mgr.nm-notifications) 0 (mgr.nm-count) []
+    in __record-set (__record-set mgr "nm-notifications" updated) "nm-unread-count" 0
+
+  nm-mark-all-loop : List SystemNotification, Integer, Integer, List SystemNotification ->List SystemNotification
+  nm-mark-all-loop (notifs) (i) (n) (acc) =
+    if i >= n then acc
+    else nm-mark-all-loop notifs (i + 1) n (list-push acc (__record-set (list-at notifs i) "notif-read" True))
+
+  nm-dismiss : NotificationManager, Integer -> NotificationManager
+  nm-dismiss (mgr) (notif-id) =
+    let updated = nm-dismiss-loop (mgr.nm-notifications) notif-id 0 (mgr.nm-count) []
+    in __record-set (__record-set mgr "nm-notifications" updated) "nm-unread-count" (nm-count-unread updated 0 (list-length updated))
+
+  nm-dismiss-loop : List SystemNotification, Integer, Integer, Integer, List SystemNotification ->List SystemNotification
+  nm-dismiss-loop (notifs) (target) (i) (n) (acc) =
+    if i >= n then acc
+    else let notif = list-at notifs i
+    in let updated = if notif.notif-id == target then __record-set notif "notif-dismissed" True else notif
+    in nm-dismiss-loop notifs target (i + 1) n (list-push acc updated)
+
+  nm-clear-all : NotificationManager -> NotificationManager
+  nm-clear-all (mgr) =
+    NotificationManager {
+      nm-notifications = [], nm-count = 0, nm-next-id = mgr.nm-next-id,
+      nm-max-history = mgr.nm-max-history, nm-unread-count = 0,
+      nm-toast-x = mgr.nm-toast-x, nm-toast-y = mgr.nm-toast-y,
+      nm-toast-width = mgr.nm-toast-width, nm-toast-gap = mgr.nm-toast-gap,
+      nm-muted = mgr.nm-muted
+    }
+
+  nm-toggle-mute : NotificationManager -> NotificationManager
+  nm-toggle-mute (mgr) = __record-set mgr "nm-muted" (if mgr.nm-muted then False else True)
+
+Section: Queries
+
+  nm-count-unread : List SystemNotification, Integer, Integer -> Integer
+  nm-count-unread (notifs) (i) (n) =
+    if i >= n then 0
+    else let notif = list-at notifs i
+    in let inc = if notif.notif-read then 0 else 1
+    in inc + nm-count-unread notifs (i + 1) n
+
+  nm-recent : NotificationManager, Integer -> List SystemNotification
+  nm-recent (mgr) (max-items) =
+    let start = if mgr.nm-count > max-items then mgr.nm-count - max-items else 0
+    in nm-slice (mgr.nm-notifications) start (mgr.nm-count) []
+
+  nm-slice : List SystemNotification, Integer, Integer, List SystemNotification ->List SystemNotification
+  nm-slice (notifs) (i) (n) (acc) =
+    if i >= n then acc
+    else nm-slice notifs (i + 1) n (list-push acc (list-at notifs i))
+
+  nm-by-source : NotificationManager, NotifSource -> List SystemNotification
+  nm-by-source (mgr) (src) =
+    let src-label = notif-source-label src
+    in nm-filter-source (mgr.nm-notifications) src-label 0 (mgr.nm-count) []
+
+  nm-filter-source : List SystemNotification, Text, Integer, Integer, List SystemNotification ->List SystemNotification
+  nm-filter-source (notifs) (src) (i) (n) (acc) =
+    if i >= n then acc
+    else let notif = list-at notifs i
+    in if notif-source-label (notif.notif-source) == src then nm-filter-source notifs src (i + 1) n (list-push acc notif)
+    else nm-filter-source notifs src (i + 1) n acc
+
+Section: Toast Widget Building
+
+  nm-toast-overlays : NotificationManager -> List Overlay
+  nm-toast-overlays (mgr) =
+    if mgr.nm-muted then []
+    else let active = nm-active-toasts (mgr.nm-notifications) (mgr.nm-count) 0 5
+    in nm-build-toasts mgr active 0 (list-length active) 0 []
+
+  nm-active-toasts : List SystemNotification, Integer, Integer, Integer -> List SystemNotification
+  nm-active-toasts (notifs) (total) (taken) (max-toasts) =
+    if taken >= max-toasts then []
+    else if total <= 0 then []
+    else let idx = total - 1 - taken
+    in if idx < 0 then []
+    else let notif = list-at notifs idx
+    in if notif.notif-dismissed then nm-active-toasts notifs total (taken + 1) max-toasts
+    else [notif] & nm-active-toasts notifs total (taken + 1) max-toasts
+
+  nm-build-toasts : NotificationManager, List SystemNotification, Integer, Integer, Integer, List Overlay -> List Overlay
+  nm-build-toasts (mgr) (notifs) (i) (n) (y-offset) (acc) =
+    if i >= n then acc
+    else let notif = list-at notifs i
+    in let widget = nm-toast-widget notif
+    in let toast-height = 60
+    in let y = mgr.nm-toast-y + y-offset
+    in let duration = notif-severity-duration (notif.notif-severity)
+    in let ov = overlay-notification ("toast-" & show (notif.notif-id)) (mgr.nm-toast-x) y (mgr.nm-toast-width) toast-height widget duration
+    in nm-build-toasts mgr notifs (i + 1) n (y-offset + toast-height + mgr.nm-toast-gap) (list-push acc ov)
+
+  nm-toast-widget : SystemNotification ->WidgetNode
+  nm-toast-widget (notif) =
+    let icon = widget-label ("notif-icon-" & show (notif.notif-id)) (notif-source-icon (notif.notif-source))
+    in let title = widget-label ("notif-title-" & show (notif.notif-id)) (notif.notif-title)
+    in let body = widget-label ("notif-body-" & show (notif.notif-id)) (notif.notif-body)
+    in let source = widget-label ("notif-src-" & show (notif.notif-id)) (notif-source-label (notif.notif-source))
+    in let header = widget-panel ("notif-hdr-" & show (notif.notif-id)) DirRow 4 [icon, title, source]
+    in let toast = widget-panel ("notif-" & show (notif.notif-id)) DirColumn 2 [header, body]
+    in nm-style-by-severity toast (notif.notif-severity)
+
+  nm-style-by-severity : WidgetNode, NotifSeverity -> WidgetNode
+  nm-style-by-severity (w) (sev) = when sev
+    is SevInfo -> widget-set-state w state-normal
+    is SevSuccess -> widget-set-state w state-focused
+    is SevWarning -> widget-set-state w state-hover
+    is SevError -> widget-set-state w state-pressed
+    is SevCritical -> widget-set-state w state-pressed
+
+Section: History Widget
+
+  nm-history-widget : NotificationManager -> WidgetNode
+  nm-history-widget (mgr) =
+    let title = widget-label "notif-hist-title" ("Notifications (" & show (mgr.nm-unread-count) & " unread)")
+    in let clear-btn = widget-button "notif-clear" "Clear All"
+    in let mute-btn = widget-button "notif-mute" (if mgr.nm-muted then "Unmute" else "Mute")
+    in let read-btn = widget-button "notif-read-all" "Mark All Read"
+    in let toolbar = widget-panel "notif-toolbar" DirRow 4 [clear-btn, read-btn, mute-btn]
+    in let items = nm-history-items mgr 0 (mgr.nm-count) []
+    in let items-panel = widget-panel "notif-items" DirColumn 2 items
+    in widget-panel "notif-history" DirColumn 4 [title, toolbar, items-panel]
+
+  nm-history-items : NotificationManager, Integer, Integer, List WidgetNode -> List WidgetNode
+  nm-history-items (mgr) (i) (n) (acc) =
+    if i >= n then acc
+    else let notif = list-at (mgr.nm-notifications) (n - 1 - i)
+    in let row = nm-history-row notif
+    in nm-history-items mgr (i + 1) n (list-push acc row)
+
+  nm-history-row : SystemNotification ->WidgetNode
+  nm-history-row (notif) =
+    let sev = widget-label ("nh-sev-" & show (notif.notif-id)) (notif-severity-label (notif.notif-severity))
+    in let src = widget-label ("nh-src-" & show (notif.notif-id)) (notif-source-label (notif.notif-source))
+    in let title = widget-label ("nh-title-" & show (notif.notif-id)) (notif.notif-title)
+    in let body = widget-label ("nh-body-" & show (notif.notif-id)) (notif.notif-body)
+    in let unread = if notif.notif-read then "" else "*"
+    in let marker = widget-label ("nh-mark-" & show (notif.notif-id)) unread
+    in let row = widget-panel ("nh-row-" & show (notif.notif-id)) DirRow 4 [marker, sev, src, title, body]
+    in if notif.notif-dismissed then widget-set-state row state-disabled else row
+
+Section: Formatting
+
+  format-notification : SystemNotification ->Text
+  format-notification (n) =
+    "[" & notif-severity-label (n.notif-severity) & "] " & notif-source-label (n.notif-source) & ": " & n.notif-title & " -- " & n.notif-body
+
+  format-notification-manager : NotificationManager -> Text
+  format-notification-manager (mgr) =
+    let muted-txt = if mgr.nm-muted then "yes" else "no"
+    in "notifications=" & show (mgr.nm-count) & " unread=" & show (mgr.nm-unread-count) & " muted=" & muted-txt
+
+Page 1

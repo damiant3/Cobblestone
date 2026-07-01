@@ -1,0 +1,124 @@
+Chapter: Water
+  cites Engine chapter Mesh
+  cites Game chapter Rasterizer
+  cites Game chapter Color
+  cites Math chapter Quaternion
+
+ Water surface rendering. Animated displacement waves on a grid
+ mesh using superimposed sine waves (Gerstner-like). Depth-based
+ color blending (shallow=transparent, deep=dark). Specular
+ reflection highlights from sun direction. Fixed-point (scale 1000).
+
+ We say:
+
+Section: Wave Parameters
+
+  WaveParams = record {
+    wv-amplitude : Integer,
+    wv-frequency : Integer,
+    wv-speed : Integer,
+    wv-dir-x : Integer,
+    wv-dir-z : Integer
+  }
+
+  wave-default : WaveParams
+  wave-default = WaveParams { wv-amplitude = 50, wv-frequency = 200, wv-speed = 500, wv-dir-x = 1000, wv-dir-z = 0 }
+
+Section: Water Config
+
+  WaterConfig = record {
+    wc-grid-size : Integer,
+    wc-spacing : Integer,
+    wc-base-y : Integer,
+    wc-shallow-color : Rgb,
+    wc-deep-color : Rgb,
+    wc-depth-range : Integer,
+    wc-waves : List WaveParams,
+    wc-wave-count : Integer,
+    wc-spec-power : Integer
+  }
+
+  wc-default : WaterConfig
+  wc-default = WaterConfig {
+    wc-grid-size = 17,
+    wc-spacing = 200,
+    wc-base-y = 0,
+    wc-shallow-color = rgb 100 180 220,
+    wc-deep-color = rgb 20 60 100,
+    wc-depth-range = 3000,
+    wc-waves = [wave-default, WaveParams { wv-amplitude = 30, wv-frequency = 350, wv-speed = 300, wv-dir-x = 700, wv-dir-z = 700 }, WaveParams { wv-amplitude = 20, wv-frequency = 500, wv-speed = 700, wv-dir-x = 0, wv-dir-z = 1000 }],
+    wc-wave-count = 3,
+    wc-spec-power = 32
+  }
+
+Section: Wave Height
+
+  water-height : WaterConfig, Integer, Integer, Integer -> Integer
+  water-height (cfg) (x) (z) (time) =
+    water-sum-waves (cfg.wc-waves) x z time 0 (cfg.wc-wave-count) (cfg.wc-base-y)
+
+  water-sum-waves : List WaveParams, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  water-sum-waves (waves) (x) (z) (time) (i) (n) (accum) =
+    if i >= n then accum
+    else let w = list-at waves i
+    in let dot = x * w.wv-dir-x / 1000 + z * w.wv-dir-z / 1000
+    in let phase = dot * w.wv-frequency / 1000 + time * w.wv-speed / 1000
+    in let height = w.wv-amplitude * water-sin-approx phase / 1000
+    in water-sum-waves waves x z time (i + 1) n (accum + height)
+
+Section: Water Mesh Generation
+
+  water-build-mesh : WaterConfig, Integer -> Mesh
+  water-build-mesh (cfg) (time) =
+    let size = cfg.wc-grid-size
+    in let verts = water-build-verts cfg time size 0 0 []
+    in let indices = mfh-build-indices size 0 0 []
+    in mesh-new verts indices
+
+  water-build-verts : WaterConfig, Integer, Integer, Integer, Integer, List Vertex -> List Vertex
+  water-build-verts (cfg) (time) (size) (x) (z) (acc) =
+    if z >= size then acc
+    else if x >= size then water-build-verts cfg time size 0 (z + 1) acc
+    else let wx = x * cfg.wc-spacing - size * cfg.wc-spacing / 2
+    in let wz = z * cfg.wc-spacing - size * cfg.wc-spacing / 2
+    in let wy = water-height cfg wx wz time
+    in let u = x * 1000 / (size - 1)
+    in let v = z * 1000 / (size - 1)
+    in let packed = rgb-to-packed (cfg.wc-shallow-color)
+    in let vert = vertex wx wy wz 0 1000 0 u v packed
+    in water-build-verts cfg time size (x + 1) z (list-push acc vert)
+
+Section: Depth-Based Color
+
+  water-color-at-depth : WaterConfig, Integer -> Integer
+  water-color-at-depth (cfg) (depth) =
+    if depth <= 0 then rgb-to-packed (cfg.wc-shallow-color)
+    else if depth >= cfg.wc-depth-range then rgb-to-packed (cfg.wc-deep-color)
+    else let t = depth * 1000 / cfg.wc-depth-range
+    in let inv = 1000 - t
+    in let r = cfg.wc-shallow-color.cr * inv / 1000 + cfg.wc-deep-color.cr * t / 1000
+    in let g = cfg.wc-shallow-color.cg * inv / 1000 + cfg.wc-deep-color.cg * t / 1000
+    in let b = cfg.wc-shallow-color.cb * inv / 1000 + cfg.wc-deep-color.cb * t / 1000
+    in bit-or (bit-shl r 16) (bit-or (bit-shl g 8) b)
+
+Section: Trig Helpers
+
+  water-sin-approx : Integer -> Integer
+  water-sin-approx (x) =
+    let normalized = water-imod x 6283
+    in let adj = if normalized > 3141 then normalized - 6283 else normalized
+    in let x3 = adj * adj / 1000 * adj / 1000
+    in adj - x3 / 6
+
+  water-imod : Integer, Integer -> Integer
+  water-imod (a) (b) =
+    if b == 0 then 0
+    else let m = a - (a / b) * b
+    in if m < 0 then m + b else m
+
+Section: Formatting
+
+  format-water : WaterConfig -> Text
+  format-water (cfg) = "Water(" & show (cfg.wc-grid-size) & "x" & show (cfg.wc-grid-size) & " waves=" & show (cfg.wc-wave-count) & ")"
+
+Page 1

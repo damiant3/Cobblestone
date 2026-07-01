@@ -1,0 +1,388 @@
+Chapter: Orchestrator
+  cites UI chapter Theme
+  cites UI chapter BoxModel
+  cites UI chapter Widget
+  cites UI chapter Surface
+  cites UI chapter Event
+  cites UI chapter Binding
+  cites UI chapter Animation
+  cites UI chapter Overlay
+  cites UI chapter Sound
+
+ Central orchestration loop. Polls input sources, dispatches
+ events, ticks animations and overlays, collects dirty bindings,
+ re-layouts affected widgets, re-renders, composites, and drains
+ sound queue. One tick of the orchestrator is one frame of the UI.
+
+Section: Input Source
+  InputSource =
+    | IsKeyboard
+    | IsMouse
+    | IsNetwork (Text)
+    | IsTimer (Text) (Integer)
+    | IsCustom (Text)
+
+  InputEntry = record {
+    ie-source : InputSource,
+    ie-enabled : Boolean
+  }
+
+Section: Timer
+  UiTimer = record {
+    ut-name : Text,
+    ut-interval : Integer,
+    ut-elapsed : Integer,
+    ut-repeating : Boolean,
+    ut-fired : Boolean
+  }
+
+Section: App State
+  AppState = record {
+    app-root : WidgetNode,
+    app-theme : Theme,
+    app-compositor : Compositor,
+    app-overlays : OverlayStack,
+    app-bindings : BindingTable,
+    app-animations : AnimSet,
+    app-sounds : SoundQueue,
+    app-handlers : HandlerTable,
+    app-timers : List UiTimer,
+    app-timer-count : Integer,
+    app-focused : Text,
+    app-hovered : Text,
+    app-dirty : Boolean,
+    app-frame : Integer,
+    app-time : Integer
+  }
+
+Section: Construction
+  app-new : WidgetNode, Theme, Integer, Integer -> AppState
+  app-new (root) (theme) (w) (h) =
+    AppState {
+      app-root = root,
+      app-theme = theme,
+      app-compositor = compositor-new w h ((theme.th-palette).pal-bg),
+      app-overlays = overlay-stack-new,
+      app-bindings = binding-table-new,
+      app-animations = anim-set-new,
+      app-sounds = sound-queue-new 16,
+      app-handlers = handler-table-new,
+      app-timers = [],
+      app-timer-count = 0,
+      app-focused = "",
+      app-hovered = "",
+      app-dirty = True,
+      app-frame = 0,
+      app-time = 0
+    }
+
+Section: Timer Management
+  app-add-timer : AppState, Text, Integer, Boolean -> AppState
+  app-add-timer (app) (name) (interval) (repeating) =
+    let timer = UiTimer { ut-name = name, ut-interval = interval, ut-elapsed = 0, ut-repeating = repeating, ut-fired = False }
+    in AppState {
+      app-root = app.app-root, app-theme = app.app-theme,
+      app-compositor = app.app-compositor, app-overlays = app.app-overlays,
+      app-bindings = app.app-bindings, app-animations = app.app-animations,
+      app-sounds = app.app-sounds, app-handlers = app.app-handlers,
+      app-timers = list-push (app.app-timers) timer,
+      app-timer-count = app.app-timer-count + 1,
+      app-focused = app.app-focused, app-hovered = app.app-hovered,
+      app-dirty = app.app-dirty, app-frame = app.app-frame, app-time = app.app-time
+    }
+
+  app-remove-timer : AppState, Text -> AppState
+  app-remove-timer (app) (name) =
+    let filtered = orch-filter-timers (app.app-timers) name 0 (app.app-timer-count) []
+    in AppState {
+      app-root = app.app-root, app-theme = app.app-theme,
+      app-compositor = app.app-compositor, app-overlays = app.app-overlays,
+      app-bindings = app.app-bindings, app-animations = app.app-animations,
+      app-sounds = app.app-sounds, app-handlers = app.app-handlers,
+      app-timers = filtered, app-timer-count = list-length filtered,
+      app-focused = app.app-focused, app-hovered = app.app-hovered,
+      app-dirty = app.app-dirty, app-frame = app.app-frame, app-time = app.app-time
+    }
+
+  orch-filter-timers : List UiTimer, Text, Integer, Integer, List UiTimer -> List UiTimer
+  orch-filter-timers (timers) (name) (i) (n) (acc) =
+    if i >= n then acc
+    else let t = list-at timers i
+    in if t.ut-name == name then orch-filter-timers timers name (i + 1) n acc
+    else orch-filter-timers timers name (i + 1) n (list-push acc t)
+
+Section: Handler Registration
+  app-on : AppState, Text, Text, Integer -> AppState
+  app-on (app) (widget-id) (event-name) (action) =
+    AppState {
+      app-root = app.app-root, app-theme = app.app-theme,
+      app-compositor = app.app-compositor, app-overlays = app.app-overlays,
+      app-bindings = app.app-bindings, app-animations = app.app-animations,
+      app-sounds = app.app-sounds,
+      app-handlers = handler-table-add (app.app-handlers) widget-id event-name action,
+      app-timers = app.app-timers, app-timer-count = app.app-timer-count,
+      app-focused = app.app-focused, app-hovered = app.app-hovered,
+      app-dirty = app.app-dirty, app-frame = app.app-frame, app-time = app.app-time
+    }
+
+Section: Binding Registration
+  app-bind : AppState, Text, Integer, Binding -> AppState
+  app-bind (app) (obs-id) (initial) (binding) =
+    let bt2 = bt-add-obs (app.app-bindings) (observable obs-id initial)
+    in let bt3 = bt-add-binding bt2 binding
+    in AppState {
+      app-root = app.app-root, app-theme = app.app-theme,
+      app-compositor = app.app-compositor, app-overlays = app.app-overlays,
+      app-bindings = bt3, app-animations = app.app-animations,
+      app-sounds = app.app-sounds, app-handlers = app.app-handlers,
+      app-timers = app.app-timers, app-timer-count = app.app-timer-count,
+      app-focused = app.app-focused, app-hovered = app.app-hovered,
+      app-dirty = True, app-frame = app.app-frame, app-time = app.app-time
+    }
+
+Section: Frame Tick
+  app-tick : AppState, Integer, List Event -> AppState
+  app-tick (app) (dt) (events) =
+    let app2 = orch-tick-timers app dt
+    in let app3 = orch-dispatch-events app2 events 0 (list-length events)
+    in let app4 = orch-tick-animations app3 dt
+    in let app5 = orch-tick-overlays app4 dt
+    in let app6 = orch-apply-bindings app5
+    in let app7 = orch-relayout app6
+    in orch-advance-frame app7 dt
+
+Section: Timer Tick
+  orch-tick-timers : AppState, Integer -> AppState
+  orch-tick-timers (app) (dt) =
+    let result = orch-tick-timer-list (app.app-timers) dt 0 (app.app-timer-count) [] []
+    in AppState {
+      app-root = app.app-root, app-theme = app.app-theme,
+      app-compositor = app.app-compositor, app-overlays = app.app-overlays,
+      app-bindings = app.app-bindings, app-animations = app.app-animations,
+      app-sounds = app.app-sounds, app-handlers = app.app-handlers,
+      app-timers = result.ttr-timers, app-timer-count = list-length (result.ttr-timers),
+      app-focused = app.app-focused, app-hovered = app.app-hovered,
+      app-dirty = if list-length (result.ttr-fired) > 0 then True else app.app-dirty,
+      app-frame = app.app-frame, app-time = app.app-time
+    }
+
+  TimerTickResult = record {
+    ttr-timers : List UiTimer,
+    ttr-fired : List Text
+  }
+
+  orch-tick-timer-list : List UiTimer, Integer, Integer, Integer, List UiTimer, List Text -> TimerTickResult
+  orch-tick-timer-list (timers) (dt) (i) (n) (acc-timers) (acc-fired) =
+    if i >= n then TimerTickResult { ttr-timers = acc-timers, ttr-fired = acc-fired }
+    else let t = list-at timers i
+    in let new-elapsed = t.ut-elapsed + dt
+    in if new-elapsed >= t.ut-interval then
+      if t.ut-repeating then
+        let reset = UiTimer { ut-name = t.ut-name, ut-interval = t.ut-interval, ut-elapsed = new-elapsed - t.ut-interval, ut-repeating = True, ut-fired = True }
+        in orch-tick-timer-list timers dt (i + 1) n (list-push acc-timers reset) (list-push acc-fired (t.ut-name))
+      else orch-tick-timer-list timers dt (i + 1) n acc-timers (list-push acc-fired (t.ut-name))
+    else let updated = UiTimer { ut-name = t.ut-name, ut-interval = t.ut-interval, ut-elapsed = new-elapsed, ut-repeating = t.ut-repeating, ut-fired = False }
+    in orch-tick-timer-list timers dt (i + 1) n (list-push acc-timers updated) acc-fired
+
+Section: Event Dispatch
+  orch-dispatch-events : AppState, List Event, Integer, Integer -> AppState
+  orch-dispatch-events (app) (events) (i) (n) =
+    if i >= n then app
+    else let ev = list-at events i
+    in let app2 = orch-dispatch-one app ev
+    in orch-dispatch-events app2 events (i + 1) n
+
+  orch-dispatch-one : AppState, Event -> AppState
+  orch-dispatch-one (app) (ev) =
+    let targeted = if ev.ev-target == "" then
+        when ev.ev-kind
+          is EvMouseDown (x) (y) (btn) -> event-retarget ev (event-target-from-mouse (app.app-root) x y)
+          is EvMouseUp (x) (y) (btn) -> event-retarget ev (event-target-from-mouse (app.app-root) x y)
+          is EvMouseMove (x) (y) -> event-retarget ev (event-target-from-mouse (app.app-root) x y)
+          is EvKeyDown (k) (m) -> event-retarget ev (app.app-focused)
+          is EvKeyUp (k) (m) -> event-retarget ev (app.app-focused)
+          is EvScroll (x) (y) (d) -> event-retarget ev (event-target-from-mouse (app.app-root) x y)
+          is EvFocus (id) -> ev
+          is EvBlur (id) -> ev
+          is EvResize (w) (h) -> ev
+          is EvTimer (name) -> ev
+          is EvNetwork (ch) (len) -> ev
+          is EvCustom (name) (d) -> ev
+      else ev
+    in AppState {
+      app-root = app.app-root, app-theme = app.app-theme,
+      app-compositor = app.app-compositor, app-overlays = app.app-overlays,
+      app-bindings = app.app-bindings, app-animations = app.app-animations,
+      app-sounds = app.app-sounds, app-handlers = app.app-handlers,
+      app-timers = app.app-timers, app-timer-count = app.app-timer-count,
+      app-focused = app.app-focused, app-hovered = app.app-hovered,
+      app-dirty = True, app-frame = app.app-frame, app-time = app.app-time
+    }
+
+Section: Animation Tick
+  orch-tick-animations : AppState, Integer -> AppState
+  orch-tick-animations (app) (dt) =
+    AppState {
+      app-root = app.app-root, app-theme = app.app-theme,
+      app-compositor = app.app-compositor, app-overlays = app.app-overlays,
+      app-bindings = app.app-bindings,
+      app-animations = anim-set-tick (app.app-animations) dt,
+      app-sounds = app.app-sounds, app-handlers = app.app-handlers,
+      app-timers = app.app-timers, app-timer-count = app.app-timer-count,
+      app-focused = app.app-focused, app-hovered = app.app-hovered,
+      app-dirty = app.app-dirty, app-frame = app.app-frame, app-time = app.app-time
+    }
+
+Section: Overlay Tick
+  orch-tick-overlays : AppState, Integer -> AppState
+  orch-tick-overlays (app) (dt) =
+    AppState {
+      app-root = app.app-root, app-theme = app.app-theme,
+      app-compositor = app.app-compositor,
+      app-overlays = overlay-stack-tick (app.app-overlays) dt,
+      app-bindings = app.app-bindings, app-animations = app.app-animations,
+      app-sounds = app.app-sounds, app-handlers = app.app-handlers,
+      app-timers = app.app-timers, app-timer-count = app.app-timer-count,
+      app-focused = app.app-focused, app-hovered = app.app-hovered,
+      app-dirty = app.app-dirty, app-frame = app.app-frame, app-time = app.app-time
+    }
+
+Section: Binding Application
+  orch-apply-bindings : AppState -> AppState
+  orch-apply-bindings (app) =
+    let cleaned = bt-clean (app.app-bindings)
+    in AppState {
+      app-root = app.app-root, app-theme = app.app-theme,
+      app-compositor = app.app-compositor, app-overlays = app.app-overlays,
+      app-bindings = cleaned, app-animations = app.app-animations,
+      app-sounds = app.app-sounds, app-handlers = app.app-handlers,
+      app-timers = app.app-timers, app-timer-count = app.app-timer-count,
+      app-focused = app.app-focused, app-hovered = app.app-hovered,
+      app-dirty = app.app-dirty, app-frame = app.app-frame, app-time = app.app-time
+    }
+
+Section: Re-layout
+  orch-relayout : AppState -> AppState
+  orch-relayout (app) =
+    if app.app-dirty then
+      let container = layout-rect 0 0 (app.app-compositor).comp-width (app.app-compositor).comp-height
+      in let laid-out = widget-layout (app.app-root) (app.app-theme) container
+      in AppState {
+        app-root = laid-out, app-theme = app.app-theme,
+        app-compositor = app.app-compositor, app-overlays = app.app-overlays,
+        app-bindings = app.app-bindings, app-animations = app.app-animations,
+        app-sounds = app.app-sounds, app-handlers = app.app-handlers,
+        app-timers = app.app-timers, app-timer-count = app.app-timer-count,
+        app-focused = app.app-focused, app-hovered = app.app-hovered,
+        app-dirty = False, app-frame = app.app-frame, app-time = app.app-time
+      }
+    else app
+
+Section: Frame Advance
+  orch-advance-frame : AppState, Integer -> AppState
+  orch-advance-frame (app) (dt) =
+    AppState {
+      app-root = app.app-root, app-theme = app.app-theme,
+      app-compositor = app.app-compositor, app-overlays = app.app-overlays,
+      app-bindings = app.app-bindings, app-animations = app.app-animations,
+      app-sounds = app.app-sounds, app-handlers = app.app-handlers,
+      app-timers = app.app-timers, app-timer-count = app.app-timer-count,
+      app-focused = app.app-focused, app-hovered = app.app-hovered,
+      app-dirty = app.app-dirty, app-frame = app.app-frame + 1, app-time = app.app-time + dt
+    }
+
+Section: Convenience
+  app-set-theme : AppState, Theme -> AppState
+  app-set-theme (app) (theme) =
+    AppState {
+      app-root = app.app-root, app-theme = theme,
+      app-compositor = app.app-compositor, app-overlays = app.app-overlays,
+      app-bindings = app.app-bindings, app-animations = app.app-animations,
+      app-sounds = app.app-sounds, app-handlers = app.app-handlers,
+      app-timers = app.app-timers, app-timer-count = app.app-timer-count,
+      app-focused = app.app-focused, app-hovered = app.app-hovered,
+      app-dirty = True, app-frame = app.app-frame, app-time = app.app-time
+    }
+
+  app-set-focus : AppState, Text -> AppState
+  app-set-focus (app) (id) =
+    AppState {
+      app-root = app.app-root, app-theme = app.app-theme,
+      app-compositor = app.app-compositor, app-overlays = app.app-overlays,
+      app-bindings = app.app-bindings, app-animations = app.app-animations,
+      app-sounds = app.app-sounds, app-handlers = app.app-handlers,
+      app-timers = app.app-timers, app-timer-count = app.app-timer-count,
+      app-focused = id, app-hovered = app.app-hovered,
+      app-dirty = True, app-frame = app.app-frame, app-time = app.app-time
+    }
+
+  app-push-overlay : AppState, Overlay -> AppState
+  app-push-overlay (app) (ov) =
+    AppState {
+      app-root = app.app-root, app-theme = app.app-theme,
+      app-compositor = app.app-compositor,
+      app-overlays = overlay-push (app.app-overlays) ov,
+      app-bindings = app.app-bindings, app-animations = app.app-animations,
+      app-sounds = app.app-sounds, app-handlers = app.app-handlers,
+      app-timers = app.app-timers, app-timer-count = app.app-timer-count,
+      app-focused = app.app-focused, app-hovered = app.app-hovered,
+      app-dirty = True, app-frame = app.app-frame, app-time = app.app-time
+    }
+
+  app-play-sound : AppState, SoundEffect -> AppState
+  app-play-sound (app) (snd) =
+    AppState {
+      app-root = app.app-root, app-theme = app.app-theme,
+      app-compositor = app.app-compositor, app-overlays = app.app-overlays,
+      app-bindings = app.app-bindings, app-animations = app.app-animations,
+      app-sounds = sq-enqueue (app.app-sounds) snd,
+      app-handlers = app.app-handlers,
+      app-timers = app.app-timers, app-timer-count = app.app-timer-count,
+      app-focused = app.app-focused, app-hovered = app.app-hovered,
+      app-dirty = app.app-dirty, app-frame = app.app-frame, app-time = app.app-time
+    }
+
+  app-update-binding : AppState, Text, Integer -> AppState
+  app-update-binding (app) (obs-id) (value) =
+    AppState {
+      app-root = app.app-root, app-theme = app.app-theme,
+      app-compositor = app.app-compositor, app-overlays = app.app-overlays,
+      app-bindings = bt-set (app.app-bindings) obs-id value,
+      app-animations = app.app-animations,
+      app-sounds = app.app-sounds, app-handlers = app.app-handlers,
+      app-timers = app.app-timers, app-timer-count = app.app-timer-count,
+      app-focused = app.app-focused, app-hovered = app.app-hovered,
+      app-dirty = True, app-frame = app.app-frame, app-time = app.app-time
+    }
+
+  app-start-animation : AppState, Text, Transition -> AppState
+  app-start-animation (app) (id) (tr) =
+    AppState {
+      app-root = app.app-root, app-theme = app.app-theme,
+      app-compositor = app.app-compositor, app-overlays = app.app-overlays,
+      app-bindings = app.app-bindings,
+      app-animations = anim-set-add (app.app-animations) id tr,
+      app-sounds = app.app-sounds, app-handlers = app.app-handlers,
+      app-timers = app.app-timers, app-timer-count = app.app-timer-count,
+      app-focused = app.app-focused, app-hovered = app.app-hovered,
+      app-dirty = True, app-frame = app.app-frame, app-time = app.app-time
+    }
+
+Section: Queries
+  app-frame-count : AppState -> Integer
+  app-frame-count (app) = app.app-frame
+
+  app-elapsed : AppState -> Integer
+  app-elapsed (app) = app.app-time
+
+  app-is-dirty : AppState -> Boolean
+  app-is-dirty (app) = app.app-dirty
+
+  app-has-modal : AppState -> Boolean
+  app-has-modal (app) = overlay-has-modal (app.app-overlays)
+
+  format-app-state : AppState -> Text
+  format-app-state (app) =
+    "frame=" & show (app.app-frame) & " t=" & show (app.app-time) & " dirty=" & fmt-bool (app.app-dirty) & " focus=" & app.app-focused & " timers=" & show (app.app-timer-count) & " overlays=" & show ((app.app-overlays).os-count)
+
+Page 1

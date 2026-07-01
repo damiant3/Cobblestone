@@ -1,0 +1,366 @@
+Chapter: Clan
+  cites CodexMagic chapter Auth
+  cites CodexMagic chapter ServerUtil
+  cites Foreword chapter Maybe
+  cites CodexMagic chapter GameState
+
+ Core clan data structures, membership management, and role-based
+ access control. A clan is a player-run organization with its own
+ economy, library, formats, and tournaments.
+
+ We say:
+
+Section: Clan Identity
+
+  ClanId = record {
+    id : Integer,
+    tag : Text,
+    name : Text
+  }
+
+  Clan = record {
+    clan-id : Integer,
+    name : Text,
+    tag : Text,
+    founder : Integer,
+    officers : List Integer,
+    members : List Integer,
+    member-count : Integer,
+    created-at : Integer,
+    rank : ClanRank,
+    reputation : Integer,
+    tournament-wins : Integer,
+    challenges-issued : Integer,
+    challenges-won : Integer,
+    challenges-lost : Integer,
+    age-class : ClanAgeClass,
+    size-class : ClanSize,
+    format-prefs : List FormatPreference,
+    approved : Boolean,
+    instance-key : PublicKey
+  }
+
+Section: Roles
+
+  ClanRole =
+    | RoleFounder
+    | RoleOfficer
+    | RoleVeteran
+    | RoleMember
+    | RoleRecruit
+    | RoleNone
+
+  role-name : ClanRole -> Text
+  role-name (r) =
+    when r
+      is RoleFounder -> "Founder"
+      is RoleOfficer -> "Officer"
+      is RoleVeteran -> "Veteran"
+      is RoleMember -> "Member"
+      is RoleRecruit -> "Recruit"
+      is RoleNone -> "None"
+
+  role-rank : ClanRole -> Integer
+  role-rank (r) =
+    when r
+      is RoleFounder -> 5
+      is RoleOfficer -> 4
+      is RoleVeteran -> 3
+      is RoleMember -> 2
+      is RoleRecruit -> 1
+      is RoleNone -> 0
+
+  can-edit-rules : ClanRole -> Boolean
+  can-edit-rules (r) = role-rank r >= 4
+
+  can-run-tournament : ClanRole -> Boolean
+  can-run-tournament (r) = role-rank r >= 3
+
+  can-issue-challenge : ClanRole -> Boolean
+  can-issue-challenge (r) = role-rank r >= 3
+
+  can-checkout-library : ClanRole -> Boolean
+  can-checkout-library (r) = role-rank r >= 2
+
+  can-mint-coin : ClanRole -> Boolean
+  can-mint-coin (r) = role-rank r >= 4
+
+  can-invite : ClanRole -> Boolean
+  can-invite (r) = role-rank r >= 3
+
+  can-kick : ClanRole -> Boolean
+  can-kick (r) = role-rank r >= 4
+
+Section: Clan Rank
+
+  ClanRank =
+    | ClanUnranked
+    | ClanBronze
+    | ClanSilver
+    | ClanGold
+    | ClanPlatinum
+    | ClanDiamond
+    | ClanChampion
+
+  clan-rank-name : ClanRank -> Text
+  clan-rank-name (r) =
+    when r
+      is ClanUnranked -> "Unranked"
+      is ClanBronze -> "Bronze"
+      is ClanSilver -> "Silver"
+      is ClanGold -> "Gold"
+      is ClanPlatinum -> "Platinum"
+      is ClanDiamond -> "Diamond"
+      is ClanChampion -> "Champion"
+
+  compute-clan-rank : Integer -> ClanRank
+  compute-clan-rank (rep) =
+    if rep >= 10000 then ClanChampion
+    else if rep >= 5000 then ClanDiamond
+    else if rep >= 2500 then ClanPlatinum
+    else if rep >= 1000 then ClanGold
+    else if rep >= 400 then ClanSilver
+    else if rep >= 100 then ClanBronze
+    else ClanUnranked
+
+Section: Age Classification
+
+  ClanAgeClass =
+    | KidsClan
+    | TeenClan
+    | AdultClan
+    | MixedClan
+    | FamilyClan
+
+  age-class-name : ClanAgeClass -> Text
+  age-class-name (ac) =
+    when ac
+      is KidsClan -> "Kids"
+      is TeenClan -> "Teen"
+      is AdultClan -> "Adult"
+      is MixedClan -> "Mixed"
+      is FamilyClan -> "Family"
+
+Section: Size Classification
+
+  ClanSize =
+    | ClanMicro
+    | ClanSmall
+    | ClanMedium
+    | ClanLarge
+    | ClanMassive
+
+  compute-clan-size : Integer -> ClanSize
+  compute-clan-size (count) =
+    if count >= 1000 then ClanMassive
+    else if count >= 201 then ClanLarge
+    else if count >= 51 then ClanMedium
+    else if count >= 11 then ClanSmall
+    else ClanMicro
+
+  clan-size-name : ClanSize -> Text
+  clan-size-name (s) =
+    when s
+      is ClanMicro -> "Micro"
+      is ClanSmall -> "Small"
+      is ClanMedium -> "Medium"
+      is ClanLarge -> "Large"
+      is ClanMassive -> "Massive"
+
+Section: Format Preferences
+
+  FormatPreference =
+    | PrefConstructed
+    | PrefLimited
+    | PrefCasual
+    | PrefCompetitive
+    | PrefBrewer
+    | PrefCollector
+
+Section: Clan Creation
+
+  clan-new : Integer, Text, Text, Integer, Integer, PublicKey -> Clan
+  clan-new (id) (name) (tag) (founder) (time) (instance-key) =
+    Clan {
+      clan-id = id,
+      name = name,
+      tag = tag,
+      founder = founder,
+      officers = [],
+      members = [founder],
+      member-count = 1,
+      created-at = time,
+      rank = ClanUnranked,
+      reputation = 0,
+      tournament-wins = 0,
+      challenges-issued = 0,
+      challenges-won = 0,
+      challenges-lost = 0,
+      age-class = AdultClan,
+      size-class = ClanMicro,
+      format-prefs = [],
+      approved = False,
+      instance-key = instance-key
+    }
+
+Section: Membership
+
+  ClanMember = record {
+    account-id : Integer,
+    role : ClanRole,
+    joined-at : Integer,
+    clan-coin-balance : Integer
+  }
+
+  clan-add-member : Clan, Integer -> Clan
+  clan-add-member (clan) (account-id) =
+    let new-members = list-push (clan.members) account-id
+    in let new-count = clan.member-count + 1
+    in Clan {
+      clan-id = clan.clan-id,
+      name = clan.name,
+      tag = clan.tag,
+      founder = clan.founder,
+      officers = clan.officers,
+      members = new-members,
+      member-count = new-count,
+      created-at = clan.created-at,
+      rank = clan.rank,
+      reputation = clan.reputation,
+      tournament-wins = clan.tournament-wins,
+      challenges-issued = clan.challenges-issued,
+      challenges-won = clan.challenges-won,
+      challenges-lost = clan.challenges-lost,
+      age-class = clan.age-class,
+      size-class = compute-clan-size new-count,
+      format-prefs = clan.format-prefs,
+      approved = clan.approved,
+      instance-key = clan.instance-key
+    }
+
+  clan-remove-member : Clan, Integer -> Clan
+  clan-remove-member (clan) (account-id) =
+    let new-members = remove-from-list (clan.members) account-id 0 (list-length (clan.members)) []
+    in let new-count = list-length new-members
+    in Clan {
+      clan-id = clan.clan-id,
+      name = clan.name,
+      tag = clan.tag,
+      founder = clan.founder,
+      officers = remove-from-list (clan.officers) account-id 0 (list-length (clan.officers)) [],
+      members = new-members,
+      member-count = new-count,
+      created-at = clan.created-at,
+      rank = clan.rank,
+      reputation = clan.reputation,
+      tournament-wins = clan.tournament-wins,
+      challenges-issued = clan.challenges-issued,
+      challenges-won = clan.challenges-won,
+      challenges-lost = clan.challenges-lost,
+      age-class = clan.age-class,
+      size-class = compute-clan-size new-count,
+      format-prefs = clan.format-prefs,
+      approved = clan.approved,
+      instance-key = clan.instance-key
+    }
+
+  clan-promote-officer : Clan, Integer -> Clan
+  clan-promote-officer (clan) (account-id) =
+    Clan {
+      clan-id = clan.clan-id,
+      name = clan.name,
+      tag = clan.tag,
+      founder = clan.founder,
+      officers = list-push (clan.officers) account-id,
+      members = clan.members,
+      member-count = clan.member-count,
+      created-at = clan.created-at,
+      rank = clan.rank,
+      reputation = clan.reputation,
+      tournament-wins = clan.tournament-wins,
+      challenges-issued = clan.challenges-issued,
+      challenges-won = clan.challenges-won,
+      challenges-lost = clan.challenges-lost,
+      age-class = clan.age-class,
+      size-class = clan.size-class,
+      format-prefs = clan.format-prefs,
+      approved = clan.approved,
+      instance-key = clan.instance-key
+    }
+
+  is-member : Clan, Integer -> Boolean
+  is-member (clan) (account-id) = int-list-has (clan.members) account-id
+
+  is-officer : Clan, Integer -> Boolean
+  is-officer (clan) (account-id) = int-list-has (clan.officers) account-id
+
+  get-member-role : Clan, Integer -> ClanRole
+  get-member-role (clan) (account-id) =
+    if account-id == clan.founder then RoleFounder
+    else if is-officer clan account-id then RoleOfficer
+    else if is-member clan account-id then RoleMember
+    else RoleNone
+
+Section: Reputation
+
+  clan-add-reputation : Clan, Integer -> Clan
+  clan-add-reputation (clan) (amount) =
+    let new-rep = clan.reputation + amount
+    in Clan {
+      clan-id = clan.clan-id,
+      name = clan.name,
+      tag = clan.tag,
+      founder = clan.founder,
+      officers = clan.officers,
+      members = clan.members,
+      member-count = clan.member-count,
+      created-at = clan.created-at,
+      rank = compute-clan-rank new-rep,
+      reputation = new-rep,
+      tournament-wins = clan.tournament-wins,
+      challenges-issued = clan.challenges-issued,
+      challenges-won = clan.challenges-won,
+      challenges-lost = clan.challenges-lost,
+      age-class = clan.age-class,
+      size-class = clan.size-class,
+      format-prefs = clan.format-prefs,
+      approved = clan.approved,
+      instance-key = clan.instance-key
+    }
+
+Section: Approval
+
+  clan-approve : Clan -> Clan
+  clan-approve (clan) =
+    Clan {
+      clan-id = clan.clan-id,
+      name = clan.name,
+      tag = clan.tag,
+      founder = clan.founder,
+      officers = clan.officers,
+      members = clan.members,
+      member-count = clan.member-count,
+      created-at = clan.created-at,
+      rank = clan.rank,
+      reputation = clan.reputation,
+      tournament-wins = clan.tournament-wins,
+      challenges-issued = clan.challenges-issued,
+      challenges-won = clan.challenges-won,
+      challenges-lost = clan.challenges-lost,
+      age-class = clan.age-class,
+      size-class = clan.size-class,
+      format-prefs = clan.format-prefs,
+      approved = True,
+      instance-key = clan.instance-key
+    }
+
+Section: Utility
+
+  remove-from-list : List Integer, Integer, Integer, Integer, List Integer -> List Integer
+  remove-from-list (xs) (target) (i) (len) (acc) =
+    if i >= len then acc
+    else let x = list-at xs i
+    in if x == target then remove-from-list xs target (i + 1) len acc
+    else remove-from-list xs target (i + 1) len (list-push acc x)
+
+Page 1

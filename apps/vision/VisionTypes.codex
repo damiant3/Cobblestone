@@ -1,0 +1,378 @@
+Chapter: VisionTypes
+  cites Foreword chapter Maybe
+
+ Core data types for the Vision organizational intelligence
+ platform. Signals carry ideas with explicit weight. Holds
+ track cascade handoffs. Responses flow structured replies
+ back up the chain.
+
+Section: Signal Weight
+
+  SignalWeight =
+    | Musing
+    | Suggestion
+    | Directive
+    | Mandate
+
+  weight-label : SignalWeight -> Text
+  weight-label (w) = when w
+    is Musing -> "Musing"
+    is Suggestion -> "Suggestion"
+    is Directive -> "Directive"
+    is Mandate -> "Mandate"
+
+  weight-ordinal : SignalWeight -> Integer
+  weight-ordinal (w) = when w
+    is Musing -> 0
+    is Suggestion -> 1
+    is Directive -> 2
+    is Mandate -> 3
+
+  weight-color : SignalWeight -> Integer
+  weight-color (w) = when w
+    is Musing -> #8b949e
+    is Suggestion -> #58a6ff
+    is Directive -> #ffd700
+    is Mandate -> #f85149
+
+Section: Signal State
+
+  SignalState =
+    | SigNew
+    | SigPickedUp
+    | SigPushed
+    | SigResponded
+    | SigClosed
+    | SigExpired
+
+  sig-state-label : SignalState -> Text
+  sig-state-label (s) = when s
+    is SigNew -> "New"
+    is SigPickedUp -> "Picked Up"
+    is SigPushed -> "Pushed"
+    is SigResponded -> "Responded"
+    is SigClosed -> "Closed"
+    is SigExpired -> "Expired"
+
+Section: Signal
+
+  SignalType =
+    | SigCascade
+    | SigOpen
+
+  Signal = record {
+    sig-id : Integer,
+    sig-author : Text,
+    sig-weight : SignalWeight,
+    sig-domain : Text,
+    sig-content : Text,
+    sig-state : SignalState,
+    sig-type : SignalType,
+    sig-created : Integer,
+    sig-response-window : Integer,
+    sig-closed-at : Integer,
+    sig-parent-signal : Integer,
+    sig-escalated-from : SignalWeight,
+    sig-tags : List Text,
+    sig-tag-count : Integer,
+    sig-hold-count : Integer,
+    sig-response-count : Integer,
+    sig-slots : List OpenSlot,
+    sig-slot-count : Integer
+  }
+
+Section: Hold
+
+  HoldAction =
+    | HoldAssessing
+    | HoldPushedDown
+    | HoldResponded
+    | HoldPassed
+    | HoldEscalated
+
+  hold-action-label : HoldAction -> Text
+  hold-action-label (a) = when a
+    is HoldAssessing -> "Assessing"
+    is HoldPushedDown -> "Pushed Down"
+    is HoldResponded -> "Responded"
+    is HoldPassed -> "Passed"
+    is HoldEscalated -> "Escalated"
+
+  Hold = record {
+    hld-id : Integer,
+    hld-signal-id : Integer,
+    hld-holder : Text,
+    hld-tier : Integer,
+    hld-action : HoldAction,
+    hld-pushed-to : Text,
+    hld-response-id : Integer,
+    hld-deadline : Integer,
+    hld-picked-up : Integer,
+    hld-completed : Integer
+  }
+
+Section: Response
+
+  ResponseKind =
+    | RspAnalysis
+    | RspProposal
+    | RspEstimate
+    | RspDeclined
+    | RspEscalation
+    | RspCompletion
+
+  rsp-kind-label : ResponseKind -> Text
+  rsp-kind-label (k) = when k
+    is RspAnalysis -> "Analysis"
+    is RspProposal -> "Proposal"
+    is RspEstimate -> "Estimate"
+    is RspDeclined -> "Declined"
+    is RspEscalation -> "Escalation"
+    is RspCompletion -> "Completion"
+
+  Response = record {
+    rsp-id : Integer,
+    rsp-signal-id : Integer,
+    rsp-hold-id : Integer,
+    rsp-author : Text,
+    rsp-kind : ResponseKind,
+    rsp-summary : Text,
+    rsp-detail : Text,
+    rsp-cost : Text,
+    rsp-timeline : Text,
+    rsp-confidence : Integer,
+    rsp-created : Integer
+  }
+
+Section: Person
+
+  PersonRole =
+    | RoleExec
+    | RoleVP
+    | RoleDirector
+    | RoleLead
+    | RoleIC
+
+  role-label : PersonRole -> Text
+  role-label (r) = when r
+    is RoleExec -> "Executive"
+    is RoleVP -> "VP"
+    is RoleDirector -> "Director"
+    is RoleLead -> "Lead"
+    is RoleIC -> "IC"
+
+  role-tier : PersonRole -> Integer
+  role-tier (r) = when r
+    is RoleExec -> 0
+    is RoleVP -> 1
+    is RoleDirector -> 2
+    is RoleLead -> 3
+    is RoleIC -> 4
+
+  Person = record {
+    per-id : Text,
+    per-name : Text,
+    per-role : PersonRole,
+    per-reports-to : Text,
+    per-domain : Text,
+    per-domains : List Text
+  }
+
+Section: Domain
+
+  Domain = record {
+    dom-id : Text,
+    dom-name : Text,
+    dom-parent : Text,
+    dom-owner : Text,
+    dom-keywords : List Text
+  }
+
+Section: Open Signal
+
+  OpenSlot = record {
+    os-name : Text,
+    os-capacity : Integer,
+    os-volunteers : List Text,
+    os-vol-count : Integer
+  }
+
+  slot-is-full : OpenSlot -> Boolean
+  slot-is-full (s) =
+    if s.os-capacity == 0 then False
+    else s.os-vol-count >= s.os-capacity
+
+  slot-new : Text, Integer -> OpenSlot
+  slot-new (name) (capacity) = OpenSlot {
+    os-name = name,
+    os-capacity = capacity,
+    os-volunteers = [],
+    os-vol-count = 0
+  }
+
+  slot-volunteer : OpenSlot, Text -> OpenSlot
+  slot-volunteer (s) (person-id) =
+    if slot-is-full s then s
+    else __record-set (__record-set s
+      "os-volunteers" (list-push s.os-volunteers person-id))
+      "os-vol-count" (s.os-vol-count + 1)
+
+  slot-withdraw : OpenSlot, Text -> OpenSlot
+  slot-withdraw (s) (person-id) =
+    let filtered = slot-remove-vol s.os-volunteers person-id 0 s.os-vol-count []
+    in __record-set (__record-set s "os-volunteers" filtered) "os-vol-count" (list-length filtered)
+
+  slot-remove-vol : List Text, Text, Integer, Integer, List Text -> List Text
+  slot-remove-vol (vols) (id) (i) (len) (acc) =
+    if i >= len then acc
+    else let v = list-at vols i
+    in if v == id then slot-remove-vol vols id (i + 1) len acc
+    else slot-remove-vol vols id (i + 1) len (list-push acc v)
+
+Section: Cascade Audit
+
+  CascadeEvent =
+    | CeSignalCreated
+    | CePickedUp
+    | CePushedDown
+    | CeResponded
+    | CePassed
+    | CeEscalated
+    | CeNudgeSent
+    | CeExpired
+    | CeClosed
+
+  ce-label : CascadeEvent -> Text
+  ce-label (e) = when e
+    is CeSignalCreated -> "Signal created"
+    is CePickedUp -> "Picked up"
+    is CePushedDown -> "Pushed down"
+    is CeResponded -> "Response submitted"
+    is CePassed -> "Passed"
+    is CeEscalated -> "Escalated"
+    is CeNudgeSent -> "Nudge sent"
+    is CeExpired -> "Expired"
+    is CeClosed -> "Closed"
+
+  AuditEntry = record {
+    ae-signal-id : Integer,
+    ae-actor : Text,
+    ae-event : CascadeEvent,
+    ae-detail : Text,
+    ae-timestamp : Integer
+  }
+
+Section: Filter and Sort Options
+
+  SignalFilter = record {
+    sf-weight-min : Integer,
+    sf-domain : Text,
+    sf-author : Text,
+    sf-state : Text,
+    sf-text-search : Text,
+    sf-show-closed : Boolean
+  }
+
+  filter-empty : SignalFilter
+  filter-empty = SignalFilter {
+    sf-weight-min = 0,
+    sf-domain = "",
+    sf-author = "",
+    sf-state = "",
+    sf-text-search = "",
+    sf-show-closed = False
+  }
+
+  SignalSort =
+    | SortByWeight
+    | SortByAge
+    | SortByDomain
+    | SortByAuthor
+
+Section: Portfolio
+
+  ProjectStatus =
+    | ProjPlanning
+    | ProjActive
+    | ProjBlocked
+    | ProjComplete
+    | ProjCancelled
+
+  proj-status-label : ProjectStatus -> Text
+  proj-status-label (s) = when s
+    is ProjPlanning -> "Planning"
+    is ProjActive -> "Active"
+    is ProjBlocked -> "Blocked"
+    is ProjComplete -> "Complete"
+    is ProjCancelled -> "Cancelled"
+
+  RiskLevel =
+    | RiskLow
+    | RiskMedium
+    | RiskHigh
+    | RiskCritical
+
+  risk-label : RiskLevel -> Text
+  risk-label (r) = when r
+    is RiskLow -> "Low"
+    is RiskMedium -> "Medium"
+    is RiskHigh -> "High"
+    is RiskCritical -> "Critical"
+
+  Milestone = record {
+    ms-id : Integer,
+    ms-project-id : Integer,
+    ms-name : Text,
+    ms-due : Integer,
+    ms-completed : Integer,
+    ms-status : ProjectStatus
+  }
+
+  ProjectRisk = record {
+    pr-id : Integer,
+    pr-project-id : Integer,
+    pr-description : Text,
+    pr-level : RiskLevel,
+    pr-probability : Integer,
+    pr-impact : Integer,
+    pr-mitigation : Text
+  }
+
+  Dependency = record {
+    dep-from-project : Integer,
+    dep-from-milestone : Integer,
+    dep-to-project : Integer,
+    dep-to-milestone : Integer,
+    dep-description : Text
+  }
+
+  Project = record {
+    proj-id : Integer,
+    proj-name : Text,
+    proj-domain : Text,
+    proj-owner : Text,
+    proj-status : ProjectStatus,
+    proj-milestones : List Milestone,
+    proj-milestone-count : Integer,
+    proj-risks : List ProjectRisk,
+    proj-risk-count : Integer,
+    proj-created : Integer,
+    proj-updated : Integer
+  }
+
+Section: Notification
+
+  NudgeReason =
+    | NudgeOverdue
+    | NudgeApproachingDeadline
+    | NudgeNewSignal
+    | NudgeMandateCascade
+
+  Nudge = record {
+    ndg-signal-id : Integer,
+    ndg-hold-id : Integer,
+    ndg-target : Text,
+    ndg-reason : NudgeReason,
+    ndg-days-overdue : Integer,
+    ndg-created : Integer
+  }

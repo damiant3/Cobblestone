@@ -1,0 +1,365 @@
+Chapter: D Emitter
+  cites Codex chapter Text
+  cites Codex chapter Characters
+  cites Codex chapter Lists
+  cites Foreword chapter Sort
+
+ Generates D language source code from the IR.
+
+Section: Keywords and Sanitization
+
+  d-keywords : List Text =
+   ["abstract", "alias", "align", "asm", "assert", "auto", "body",
+    "bool", "break", "byte", "case", "cast", "catch", "char", "class",
+    "const", "continue", "debug", "default", "delegate", "delete", "do",
+    "double", "else", "enum", "export", "extern", "false", "final",
+    "finally", "float", "for", "foreach", "function", "goto", "if",
+    "immutable", "import", "in", "int", "interface", "invariant",
+    "is", "lazy", "long", "mixin", "module", "new", "nothrow", "null",
+    "out", "override", "package", "pragma", "private", "protected",
+    "public", "pure", "real", "ref", "return", "scope", "shared",
+    "short", "static", "struct", "super", "switch", "template",
+    "this", "throw", "true", "try", "typeid", "typeof", "ubyte",
+    "uint", "ulong", "union", "unittest", "ushort", "version",
+    "void", "while", "with"]
+
+  d-is-keyword : Text, Integer -> Boolean
+  d-is-keyword (name) (i) =
+   if i == list-length d-keywords then False
+   else if list-at d-keywords i == name then True
+   else d-is-keyword name (i + 1)
+
+  d-sanitize : Text -> Text
+  d-sanitize (name) =
+   let s = text-replace name "-" "_"
+   in if d-is-keyword s 0 then s & "_v"
+      else s
+
+  d-escape : Text -> Text
+  d-escape (s) =
+   let s1 = text-replace s "\\" "\\\\"
+   in let s2 = text-replace s1 "\"" "\\\""
+   in text-replace s2 "\n" "\\n"
+
+  d-indent : Integer -> Text
+  d-indent (n) = if n <= 0 then "" else "    " & d-indent (n - 1)
+
+Section: Arity Map
+
+  ArityEntry = record {
+   name : Text,
+   arity : Integer between 0 and 255,
+   generic-count : Integer between 0 and 255
+  }
+
+  bsearch-arity-pos : List ArityEntry, Text, Integer, Integer -> Integer
+  bsearch-arity-pos (entries) (name) (lo) (hi) =
+   if lo >= hi then lo
+   else let mid = lo + (hi - lo) / 2
+   in let mid-name = (list-at entries mid).name
+   in if text-compare name mid-name <= 0 then bsearch-arity-pos entries name lo mid
+      else bsearch-arity-pos entries name (mid + 1) hi
+
+  sorted-insert-arity : List ArityEntry, ArityEntry -> List ArityEntry
+  sorted-insert-arity (xs) (e) =
+   let len = list-length xs
+   in let pos = bsearch-arity-pos xs (e.name) 0 len
+   in list-insert-at xs pos e
+
+  build-arity-map : List IRDef, Integer, List ArityEntry -> List ArityEntry
+  build-arity-map (defs) (i) (acc) =
+   if i == list-length defs then acc
+   else let d = list-at defs i
+   in build-arity-map defs (i + 1) (sorted-insert-arity acc (ArityEntry {
+    name = d.name,
+    arity = list-length (d.params),
+    generic-count = 0
+   }))
+
+  lookup-arity : List ArityEntry, Text -> Integer
+  lookup-arity (entries) (name) =
+   let len = list-length entries
+   in let pos = bsearch-arity-pos entries name 0 len
+   in if pos >= len then -1
+      else let e = list-at entries pos
+      in if e.name == name then e.arity else -1
+
+Section: Apply Chain
+
+  is-upper-letter : Integer -> Boolean
+  is-upper-letter (code) =
+   if code >= char-code 'E' then code <= char-code 'Z'
+   else False
+
+Section: Type Definition Emission
+
+  emit-d-type-defs : List ATypeDef, Integer -> Text
+  emit-d-type-defs (tds) (i) =
+   if i == list-length tds then ""
+   else emit-d-type-def (list-at tds i) & emit-d-type-defs tds (i + 1)
+
+  emit-d-type-def : ATypeDef -> Text
+  emit-d-type-def (td) =
+   when td
+    is ARecordTypeDef (name) (tparams) (fields) (s) ->
+     "struct " & d-sanitize (name.value) & " {\n" & emit-d-record-fields fields 0 & "}\n\n"
+    is AVariantTypeDef (name) (tparams) (ctors) (s) ->
+     emit-d-ctors ctors 0
+
+  emit-d-record-fields : List ARecordFieldDef, Integer -> Text
+  emit-d-record-fields (fields) (i) =
+   if i == list-length fields then ""
+   else let f = list-at fields i
+   in "    Variant " & d-sanitize (f.name.value) & ";\n" & emit-d-record-fields fields (i + 1)
+
+  emit-d-ctors : List AVariantCtorDef, Integer -> Text
+  emit-d-ctors (ctors) (i) =
+   if i == list-length ctors then ""
+   else let c = list-at ctors i
+   in "struct " & d-sanitize (c.name.value) & " {\n    string tag = \"" & c.name.value & "\";\n" & emit-d-ctor-fields (c.fields) 0 & "}\n" & emit-d-ctors ctors (i + 1)
+
+  emit-d-ctor-fields : List ATypeExpr, Integer -> Text
+  emit-d-ctor-fields (fields) (i) =
+   if i == list-length fields then ""
+   else "    Variant field" & integer-to-text i & ";\n" & emit-d-ctor-fields fields (i + 1)
+
+Section: Expression Emission
+
+  emit-d-expr : IRExpr, List ArityEntry -> Text
+  emit-d-expr (e) (arities) = emit-d-expr-at e arities 0
+
+  emit-d-expr-at : IRExpr, List ArityEntry, Integer -> Text
+  emit-d-expr-at (e) (arities) (depth) =
+   if depth >= 256 then "null"
+   else when e
+    is IrIntLit (n) (sp) -> integer-to-text n & "L"
+    is IrNumLit (n) (sp) -> integer-to-text n & ".0"
+    is IrTextLit (s) (sp) -> "\"" & d-escape s & "\""
+    is IrBoolLit (b) (sp) -> if b then "true" else "false"
+    is IrCharLit (n) (sp) -> integer-to-text n
+    is IrName (n) (ty) (sp) -> emit-d-name n arities
+    is IrBinary (op) (l) (r) (ty) (sp) -> emit-d-binary op l r arities
+    is IrNegate (operand) (sp) -> "(-" & emit-d-expr-at operand arities (depth + 1) & ")"
+    is IrIf (c) (t) (el) (ty) (sp) -> "(" & emit-d-expr-at c arities (depth + 1) & " ? " & emit-d-expr-at t arities (depth + 1) & " : " & emit-d-expr-at el arities (depth + 1) & ")"
+    is IrLet (name) (ty) (val) (body) (sp) -> "((() { auto " & d-sanitize name & " = " & emit-d-expr-at val arities (depth + 1) & "; return " & emit-d-expr-at body arities (depth + 1) & "; })()"
+    is IrApply (f) (a) (ty) (sp) -> emit-d-apply e arities
+    is IrLambda (params) (body) (ty) (sp) -> "((" & emit-d-lambda-params params 0 & ") { return " & emit-d-expr body arities & "; }"
+    is IrList (elems) (ty) (sp) -> "[" & emit-d-list-elems elems 0 arities & "]"
+    is IrMatch (scrut) (branches) (ty) (sp) -> emit-d-match scrut branches arities depth
+    is IrAct (stmts) (ty) (sp) -> emit-d-act stmts arities
+    is IrHandle (eff) (body) (clauses) (ty) (sp) -> emit-d-expr-at body arities (depth + 1)
+    is IrWithTimeout (secs) (effs) (scopes) (body) (ty) (sp) -> emit-d-expr-at body arities (depth + 1)
+    is IrRecord (name) (fields) (ty) (sp) -> d-sanitize name & "(" & emit-d-field-vals fields 0 arities & ")"
+    is IrFieldAccess (rec) (field) (ty) (sp) -> emit-d-expr-at rec arities (depth + 1) & "." & d-sanitize field
+    is IrFieldStore (rec) (field) (val) (ty) (sp) -> "((() { auto _r = " & emit-d-expr-at rec arities (depth + 1) & "; _r." & d-sanitize field & " = " & emit-d-expr-at val arities (depth + 1) & "; return _r; })()"
+    is IrFork (body) (ty) (sp) -> emit-d-expr-at body arities (depth + 1)
+    is IrAwait (task) (ty) (sp) -> emit-d-expr-at task arities (depth + 1)
+    is IrTry (max) (body) (fb) (fail-stmts) (ty) (sp) -> "((() { try { return " & emit-d-act body arities & "; } catch (Exception e) { return " & emit-d-act fb arities & "; } })()"
+    is IrError (msg) (ty) (sp) -> "(() { throw new Exception(\"" & d-escape msg & "\"); return null; })()"
+
+  emit-d-name : Text, List ArityEntry -> Text
+  emit-d-name (n) (arities) =
+   if n == "True" then "true"
+   else if n == "False" then "false"
+   else if n == "Nothing" then "null"
+   else let ar = lookup-arity arities n
+   in if ar == 0 then d-sanitize n & "()"
+      else d-sanitize n
+
+  emit-d-binary : IRBinaryOp, IRExpr, IRExpr, List ArityEntry -> Text
+  emit-d-binary (op) (l) (r) (arities) =
+   when op
+    is IrAppendText -> "(" & emit-d-expr l arities & " ~ " & emit-d-expr r arities & ")"
+    is IrAppendList -> "(" & emit-d-expr l arities & " ~ " & emit-d-expr r arities & ")"
+    is IrConsList -> "[" & emit-d-expr l arities & "] ~ " & emit-d-expr r arities
+    is IrDivInt -> "(" & emit-d-expr l arities & " / " & emit-d-expr r arities & ")"
+    is IrRemInt -> "(" & emit-d-expr l arities & " % " & emit-d-expr r arities & ")"
+    is IrAnd -> "(" & emit-d-expr l arities & " && " & emit-d-expr r arities & ")"
+    is IrOr -> "(" & emit-d-expr l arities & " || " & emit-d-expr r arities & ")"
+    is otherwise -> "(" & emit-d-expr l arities & " " & d-bin-op op & " " & emit-d-expr r arities & ")"
+
+  d-bin-op : IRBinaryOp -> Text
+  d-bin-op (op) =
+   when op
+    is IrAddInt | IrAddNum | IrAddVec | IrAddRealApprox | IrAddRealTrapping | IrAddRealSaturating -> "+"
+    is IrSubInt | IrSubNum | IrSubVec | IrSubRealApprox | IrSubRealTrapping | IrSubRealSaturating -> "-"
+    is IrMulInt | IrMulNum | IrMulVec | IrMulRealApprox | IrMulRealTrapping | IrMulRealSaturating -> "*"
+    is IrDivInt | IrDivNum | IrDivVec | IrDivRealApprox | IrDivRealTrapping | IrDivRealSaturating -> "/"
+    is IrRemInt -> "%"
+    is IrPowInt -> "^^"
+    is IrEq -> "=="
+    is IrNotEq -> "!="
+    is IrLt | IrLtVec -> "<"
+    is IrGt | IrGtVec -> ">"
+    is IrLtEq | IrLtEqVec -> "<="
+    is IrGtEq | IrGtEqVec -> ">="
+    is IrApproxEq | IrApproxEqExact -> "=="
+    is IrAnd -> "&&"
+    is IrOr -> "||"
+    is IrAppendText | IrAppendList | IrConsList -> "~"
+
+  emit-d-lambda-params : List IRParam, Integer -> Text
+  emit-d-lambda-params (params) (i) =
+   if i == list-length params then ""
+   else if i == list-length params - 1 then "Variant " & d-sanitize ((list-at params i).name)
+   else "Variant " & d-sanitize ((list-at params i).name) & ", " & emit-d-lambda-params params (i + 1)
+
+  emit-d-list-elems : List IRExpr, Integer, List ArityEntry -> Text
+  emit-d-list-elems (elems) (i) (arities) =
+   if i == list-length elems then ""
+   else if i == list-length elems - 1 then emit-d-expr (list-at elems i) arities
+   else emit-d-expr (list-at elems i) arities & ", " & emit-d-list-elems elems (i + 1) arities
+
+  emit-d-field-vals : List IRFieldVal, Integer, List ArityEntry -> Text
+  emit-d-field-vals (fields) (i) (arities) =
+   if i == list-length fields then ""
+   else let f = list-at fields i
+   in let sep = if i > 0 then ", " else ""
+   in sep & emit-d-expr (f.value) arities & emit-d-field-vals fields (i + 1) arities
+
+  emit-d-match : IRExpr, List IRBranch, List ArityEntry, Integer -> Text
+  emit-d-match (scrut) (branches) (arities) (depth) =
+   "((() { auto _s = " & emit-d-expr scrut arities & "; " & emit-d-match-body branches 0 arities depth & " })()"
+
+  emit-d-match-body : List IRBranch, Integer, List ArityEntry, Integer -> Text
+  emit-d-match-body (branches) (i) (arities) (depth) =
+   if i == list-length branches then "throw new Exception(\"Non-exhaustive match\");"
+   else let b = list-at branches i
+   in emit-d-match-arm (b.pattern) (b.body) branches i arities depth
+
+  emit-d-match-arm : IRPat, IRExpr, List IRBranch, Integer, List ArityEntry, Integer -> Text
+  emit-d-match-arm (pat) (body) (branches) (i) (arities) (depth) =
+   when pat
+    is IrLitPat (text) (ty) (sp) -> "if (_s == " & text & ") return " & emit-d-expr body arities & "; " & emit-d-match-body branches (i + 1) arities depth
+    is IrCtorPat (name) (subs) (ty) (sp) -> "if (_s.tag == \"" & name & "\") { " & emit-d-ctor-bindings subs 0 & "return " & emit-d-expr body arities & "; } " & emit-d-match-body branches (i + 1) arities depth
+    is IrVarPat (name) (ty) (sp) -> "auto " & d-sanitize name & " = _s; return " & emit-d-expr body arities & ";"
+    is IrVecPat (pats) (ty) (sp) -> "return " & emit-d-expr body arities & ";"
+    is IrWildPat (sp) -> "return " & emit-d-expr body arities & ";"
+
+  emit-d-ctor-bindings : List IRPat, Integer -> Text
+  emit-d-ctor-bindings (subs) (i) =
+   if i == list-length subs then ""
+   else let sub = list-at subs i
+   in (when sub
+    is IrVarPat (name) (ty) (sp) -> "auto " & d-sanitize name & " = _s.field" & integer-to-text i & "; "
+    is otherwise -> "") & emit-d-ctor-bindings subs (i + 1)
+
+  emit-d-act : List IRActStmt, List ArityEntry -> Text
+  emit-d-act (stmts) (arities) =
+   "((() { " & emit-d-act-stmts stmts 0 arities & " })()"
+
+  emit-d-act-stmts : List IRActStmt, Integer, List ArityEntry -> Text
+  emit-d-act-stmts (stmts) (i) (arities) =
+   if i == list-length stmts then "return null;"
+   else let s = list-at stmts i
+   in let is-last = i == list-length stmts - 1
+   in (when s
+    is IrDoBind (name) (ty) (val) (sp) -> "auto " & d-sanitize name & " = " & emit-d-expr val arities & "; "
+    is IrDoExec (e) (sp) -> if is-last then "return " & emit-d-expr e arities & ";" else emit-d-expr e arities & "; ") & (if is-last then "" else emit-d-act-stmts stmts (i + 1) arities)
+
+Section: Apply Emission
+
+  emit-d-apply : IRExpr, List ArityEntry -> Text
+  emit-d-apply (e) (arities) =
+   let chain = collect-apply-chain e []
+   in let root = chain.root
+   in let args = chain.args
+   in when root
+    is IrName (n) (ty) (sp) ->
+     let bi = d-try-builtin n args arities
+     in if text-length bi > 0 then bi
+     else d-sanitize n & "(" & emit-d-apply-args args arities 0 & ")"
+    is otherwise -> emit-d-expr root arities & "(" & emit-d-apply-args args arities 0 & ")"
+
+  emit-d-apply-args : List IRExpr, List ArityEntry, Integer -> Text
+  emit-d-apply-args (args) (arities) (i) =
+   if i == list-length args then ""
+   else if i == list-length args - 1 then emit-d-expr (list-at args i) arities
+        else emit-d-expr (list-at args i) arities & ", " & emit-d-apply-args args arities (i + 1)
+
+  DBuiltinEmitter = record {
+   name : Text,
+   emit : List IRExpr, List ArityEntry -> Text
+  }
+
+  bsearch-d-emitter-pos : List DBuiltinEmitter, Text, Integer, Integer -> Integer
+  bsearch-d-emitter-pos (entries) (name) (lo) (hi) =
+   if lo >= hi then lo
+   else let mid = lo + (hi - lo) / 2
+   in let mid-name = (list-at entries mid).name
+   in if text-compare name mid-name <= 0 then bsearch-d-emitter-pos entries name lo mid
+      else bsearch-d-emitter-pos entries name (mid + 1) hi
+
+  sort-d-emitters : List DBuiltinEmitter -> List DBuiltinEmitter
+  sort-d-emitters (xs) = sort-by xs (\a b -> text-compare (a.name) (b.name))
+
+  d-builtin-emitters : List DBuiltinEmitter = sort-d-emitters [
+   DBuiltinEmitter { name = "char-at", emit = \args arities -> "cast(long)" & emit-d-expr (list-at args 0) arities & "[cast(size_t)" & emit-d-expr (list-at args 1) arities & "]" },
+   DBuiltinEmitter { name = "char-code", emit = \args arities -> emit-d-expr (list-at args 0) arities },
+   DBuiltinEmitter { name = "char-to-text", emit = \args arities -> "to!string(cast(char)" & emit-d-expr (list-at args 0) arities & ")" },
+   DBuiltinEmitter { name = "int-mod", emit = \args arities -> "(" & emit-d-expr (list-at args 0) arities & " % " & emit-d-expr (list-at args 1) arities & ")" },
+   DBuiltinEmitter { name = "integer-to-text", emit = \args arities -> "to!string(" & emit-d-expr (list-at args 0) arities & ")" },
+   DBuiltinEmitter { name = "list-at", emit = \args arities -> emit-d-expr (list-at args 0) arities & "[cast(size_t)" & emit-d-expr (list-at args 1) arities & "]" },
+   DBuiltinEmitter { name = "list-length", emit = \args arities -> "cast(long)" & emit-d-expr (list-at args 0) arities & ".length" },
+   DBuiltinEmitter { name = "negate", emit = \args arities -> "(-" & emit-d-expr (list-at args 0) arities & ")" },
+   DBuiltinEmitter { name = "print-line-uni", emit = \args arities -> "writeln(" & emit-d-expr (list-at args 0) arities & ")" },
+   DBuiltinEmitter { name = "process-exit", emit = \args arities -> "exit(cast(int)" & emit-d-expr (list-at args 0) arities & ")" },
+   DBuiltinEmitter { name = "read-file", emit = \args arities -> "readText(" & emit-d-expr (list-at args 0) arities & ")" },
+   DBuiltinEmitter { name = "show", emit = \args arities -> "to!string(" & emit-d-expr (list-at args 0) arities & ")" },
+   DBuiltinEmitter { name = "substring", emit = \args arities -> emit-d-expr (list-at args 0) arities & "[cast(size_t)" & emit-d-expr (list-at args 1) arities & " .. cast(size_t)(" & emit-d-expr (list-at args 1) arities & " + " & emit-d-expr (list-at args 2) arities & ")]" },
+   DBuiltinEmitter { name = "text-contains", emit = \args arities -> "(" & emit-d-expr (list-at args 0) arities & ".canFind(" & emit-d-expr (list-at args 1) arities & "))" },
+   DBuiltinEmitter { name = "text-length", emit = \args arities -> "cast(long)" & emit-d-expr (list-at args 0) arities & ".length" },
+   DBuiltinEmitter { name = "text-to-integer", emit = \args arities -> "to!long(" & emit-d-expr (list-at args 0) arities & ")" },
+   DBuiltinEmitter { name = "write-file", emit = \args arities -> "std.file.write(" & emit-d-expr (list-at args 0) arities & ", " & emit-d-expr (list-at args 1) arities & ")" }
+  ]
+
+  d-try-builtin : Text, List IRExpr, List ArityEntry -> Text
+  d-try-builtin (n) (args) (arities) =
+   let len = list-length d-builtin-emitters
+   in let pos = bsearch-d-emitter-pos d-builtin-emitters n 0 len
+   in if pos >= len then ""
+      else let entry = list-at d-builtin-emitters pos
+      in if entry.name == n then entry.emit args arities
+         else ""
+
+Section: Definition Emission
+
+  emit-d-def : IRDef, List ArityEntry -> Text
+  emit-d-def (d) (arities) =
+   let name = d-sanitize (d.name)
+   in "auto " & name & "(" & emit-d-def-params (d.params) 0 & ") {\n    return " & emit-d-expr (d.body) arities & ";\n}\n\n"
+
+  emit-d-def-params : List IRParam, Integer -> Text
+  emit-d-def-params (params) (i) =
+   if i == list-length params then ""
+   else if i == list-length params - 1 then "Variant " & d-sanitize ((list-at params i).name)
+   else "Variant " & d-sanitize ((list-at params i).name) & ", " & emit-d-def-params params (i + 1)
+
+  emit-d-defs : List IRDef, Integer, List ArityEntry -> Text
+  emit-d-defs (defs) (i) (arities) =
+   if i == list-length defs then ""
+   else emit-d-def (list-at defs i) arities & emit-d-defs defs (i + 1) arities
+
+Section: Chapter Emission
+
+  emit-d-chapter : IRChapter, List ATypeDef -> Text
+  emit-d-chapter (m) (type-defs) =
+   let arities = build-arity-map (m.defs) 0 []
+   in let header = "import std.stdio;\nimport std.conv;\nimport std.variant;\nimport std.file;\nimport std.algorithm;\n\n"
+   in let types-text = emit-d-type-defs type-defs 0
+   in let defs-text = emit-d-defs (m.defs) 0 arities
+   in let entry = d-emit-entry (m.defs)
+   in header & types-text & defs-text & "void main() {\n    " & entry & "}\n"
+
+  d-emit-entry : List IRDef -> Text
+  d-emit-entry (defs) = d-emit-entry-loop defs 0
+
+  d-emit-entry-loop : List IRDef, Integer -> Text
+  d-emit-entry-loop (defs) (i) =
+   if i >= list-length defs then ""
+   else let d = list-at defs i
+   in if d.name == opening-entry-point then
+    if list-length (d.params) == 0 then d-sanitize opening-entry-point & "();\n" else ""
+   else d-emit-entry-loop defs (i + 1)
+
+Page 1

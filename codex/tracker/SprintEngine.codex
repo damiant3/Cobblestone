@@ -1,0 +1,105 @@
+Chapter: SprintEngine
+  cites Tracker chapter IssueTypes
+  cites Tracker chapter IssueStore
+
+ Sprint/cycle management engine. Handles cycle creation, issue
+ assignment to cycles, auto-carryover of incomplete issues to the
+ next cycle, velocity tracking, and burndown computation.
+
+ We say:
+
+Section: Sprint Operations
+  sprint-create : IssueStoreState, Text, Text, Text -> IssueStoreState
+  sprint-create (store) (name) (start) (end) =
+    let id-result = iss-gen-id store
+    in let store2 = id-result
+    in let id = store2.iss-next-id - 1
+    in let cycle = Cycle { cycle-id = id, cycle-name = name, cycle-start = start, cycle-end = end, cycle-active = True }
+    in iss-add-cycle store2 cycle
+
+  sprint-close : IssueStoreState, Integer -> IssueStoreState
+  sprint-close (store) (cycle-id) =
+    let srv = iss-update-field (store.iss-db) cycle-id "active" (ValBoolean False)
+    in __record-set store "iss-db" srv
+
+Section: Cycle Assignment
+  sprint-assign-issue : IssueStoreState, Integer, Text -> IssueStoreState
+  sprint-assign-issue (store) (issue-id) (cycle-name) =
+    let srv = iss-update-field (store.iss-db) issue-id "cycle" (ValText cycle-name)
+    in __record-set store "iss-db" srv
+
+  sprint-unassign-issue : IssueStoreState, Integer -> IssueStoreState
+  sprint-unassign-issue (store) (issue-id) =
+    let srv = iss-update-field (store.iss-db) issue-id "cycle" (ValText "")
+    in __record-set store "iss-db" srv
+
+Section: Auto-Carryover
+  sprint-carryover : IssueStoreState, Text, Text -> IssueStoreState
+  sprint-carryover (store) (old-cycle) (new-cycle) =
+    let open-issues = iss-issues-by-cycle store old-cycle
+    in sprint-carryover-loop store (open-issues.qr-rows) new-cycle 0 (open-issues.qr-count)
+
+  sprint-carryover-loop : IssueStoreState, List RowData, Text, Integer, Integer -> IssueStoreState
+  sprint-carryover-loop (store) (rows) (new-cycle) (i) (n) =
+    if i >= n then store
+    else let row = list-at rows i
+    in let status = issue-status-from-id (iss-row-int row "status")
+    in if issue-status-is-open status then
+      let id = iss-row-int row "id"
+      in let store2 = sprint-assign-issue store id new-cycle
+      in sprint-carryover-loop store2 rows new-cycle (i + 1) n
+    else sprint-carryover-loop store rows new-cycle (i + 1) n
+
+Section: Velocity Metrics
+  SprintMetrics = record {
+    sm-total : Integer,
+    sm-done : Integer,
+    sm-in-progress : Integer,
+    sm-todo : Integer,
+    sm-backlog : Integer,
+    sm-points-total : Integer,
+    sm-points-done : Integer,
+    sm-velocity-pct : Integer
+  }
+
+  sprint-metrics : IssueStoreState, Text -> SprintMetrics
+  sprint-metrics (store) (cycle-name) =
+    let all = iss-issues-by-cycle store cycle-name
+    in let total = all.qr-count
+    in let done = sprint-count-status (all.qr-rows) 4 0 total
+    in let prog = sprint-count-status (all.qr-rows) 2 0 total
+    in let todo = sprint-count-status (all.qr-rows) 1 0 total
+    in let back = sprint-count-status (all.qr-rows) 0 0 total
+    in let pts-total = sprint-sum-field (all.qr-rows) "estimate" 0 total
+    in let pts-done = sprint-sum-done-points (all.qr-rows) 0 total
+    in let pct = if total == 0 then 0 else done * 100 / total
+    in SprintMetrics { sm-total = total, sm-done = done, sm-in-progress = prog, sm-todo = todo, sm-backlog = back, sm-points-total = pts-total, sm-points-done = pts-done, sm-velocity-pct = pct }
+
+  sprint-count-status : List RowData, Integer, Integer, Integer -> Integer
+  sprint-count-status (rows) (target) (i) (n) =
+    if i >= n then 0
+    else let row = list-at rows i
+    in let s = iss-row-int row "status"
+    in let match = if s == target then 1 else 0
+    in match + sprint-count-status rows target (i + 1) n
+
+  sprint-sum-field : List RowData, Text, Integer, Integer -> Integer
+  sprint-sum-field (rows) (field) (i) (n) =
+    if i >= n then 0
+    else let row = list-at rows i
+    in (iss-row-int row field) + sprint-sum-field rows field (i + 1) n
+
+  sprint-sum-done-points : List RowData, Integer, Integer -> Integer
+  sprint-sum-done-points (rows) (i) (n) =
+    if i >= n then 0
+    else let row = list-at rows i
+    in let s = iss-row-int row "status"
+    in let pts = if s == 4 then iss-row-int row "estimate" else 0
+    in pts + sprint-sum-done-points rows (i + 1) n
+
+Section: Formatting
+  format-sprint-metrics : SprintMetrics -> Text
+  format-sprint-metrics (m) =
+    "total=" & show (m.sm-total) & " done=" & show (m.sm-done) & " progress=" & show (m.sm-in-progress) & " todo=" & show (m.sm-todo) & " velocity=" & show (m.sm-velocity-pct) & "% pts=" & show (m.sm-points-done) & "/" & show (m.sm-points-total)
+
+Page 1

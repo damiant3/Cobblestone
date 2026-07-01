@@ -1,0 +1,129 @@
+Chapter: VerifierPhase5Test
+  cites Verify chapter CdxVerifier
+  cites Verify chapter CdxBinary
+  cites Trust chapter TrustLattice
+  cites Trust chapter PolicyEngine
+  cites Foreword chapter Ed25519
+  cites Foreword chapter Sha256
+  cites Foreword chapter Sha512
+  cites Foreword chapter Maybe
+  cites Foreword chapter Hamt
+  cites Foreword chapter FactStore
+
+Section: Helpers
+  show-bool : Boolean -> Text
+  show-bool (b) = if b then "True" else "False"
+
+  test-sk : List Integer = [157, 97, 177, 157, 239, 253, 90, 96, 186, 132, 74, 244, 146, 236, 44, 196, 68, 73, 197, 105, 123, 50, 105, 25, 112, 59, 172, 3, 28, 174, 127, 96]
+
+  phase-name : VerifyPhase -> Text
+  phase-name (p) = when p
+    is PhaseIntegrity -> "integrity"
+    is PhaseAuthor -> "author"
+    is PhaseCapabilities -> "capabilities"
+    is PhaseEffects -> "effects"
+    is PhaseProofs -> "proofs"
+
+  make-proof-hash : Text -> Text
+  make-proof-hash (content) = fact-content-hash content
+
+Section: Body
+  opening : [Console] Nothing =
+    let proof-fact1 = fact-create ProofFact "termination-proof" "author" 0
+    in let proof-fact2 = fact-create ProofFact "memory-safety-proof" "author" 0
+    in let def-fact = fact-create DefinitionFact "some-definition" "author" 0
+    in let store0 = fact-store-empty
+    in let store1 = fact-store store0 proof-fact1
+    in let store2 = fact-store store1 proof-fact2
+    in let store3 = fact-store store2 def-fact
+    in let pe1 = CdxProofEntry { kind = cdx-proof-termination, hash-bytes = text-to-hash-bytes (proof-fact1.hash) }
+    in let pe2 = CdxProofEntry { kind = cdx-proof-memory-safety, hash-bytes = text-to-hash-bytes (proof-fact2.hash) }
+    in let all-proofs-bin = cdx-encode-signed-with-proofs (CdxBinaryParts {
+      flags = cdx-flag-bare-metal,
+      capabilities = [],
+      effects = [],
+      text-bytes = [144, 195],
+      rodata-bytes = [],
+      entry-offset = 0,
+      stack-size = 65536,
+      heap-size = 65536,
+      trust-threshold = 0
+    }) test-sk [pe1, pe2]
+    in let r-all = verify-proofs all-proofs-bin store2 100
+    in let pe-missing = CdxProofEntry { kind = cdx-proof-memory-safety, hash-bytes = text-to-hash-bytes "0000000000000000000000000000000000000000000000000000000000000000" }
+    in let missing-bin = cdx-encode-signed-with-proofs (CdxBinaryParts {
+      flags = cdx-flag-bare-metal,
+      capabilities = [],
+      effects = [],
+      text-bytes = [144, 195],
+      rodata-bytes = [],
+      entry-offset = 0,
+      stack-size = 65536,
+      heap-size = 65536,
+      trust-threshold = 0
+    }) test-sk [pe-missing]
+    in let r-missing = verify-proofs missing-bin store2 100
+    in let pe-wrong = CdxProofEntry { kind = cdx-proof-termination, hash-bytes = text-to-hash-bytes (def-fact.hash) }
+    in let wrong-bin = cdx-encode-signed-with-proofs (CdxBinaryParts {
+      flags = cdx-flag-bare-metal,
+      capabilities = [],
+      effects = [],
+      text-bytes = [144, 195],
+      rodata-bytes = [],
+      entry-offset = 0,
+      stack-size = 65536,
+      heap-size = 65536,
+      trust-threshold = 0
+    }) test-sk [pe-wrong]
+    in let r-wrong = verify-proofs wrong-bin store3 100
+    in let no-proofs-bin = cdx-encode-signed (CdxBinaryParts {
+      flags = cdx-flag-bare-metal,
+      capabilities = [],
+      effects = [],
+      text-bytes = [144, 195],
+      rodata-bytes = [],
+      entry-offset = 0,
+      stack-size = 65536,
+      heap-size = 65536,
+      trust-threshold = 0
+    }) test-sk
+    in let r-none = verify-proofs no-proofs-bin store2 100
+    in let fuel-bin = cdx-encode-signed-with-proofs (CdxBinaryParts {
+      flags = cdx-flag-bare-metal,
+      capabilities = [],
+      effects = [],
+      text-bytes = [144, 195],
+      rodata-bytes = [],
+      entry-offset = 0,
+      stack-size = 65536,
+      heap-size = 65536,
+      trust-threshold = 0
+    }) test-sk [pe1, pe2]
+    in let r-fuel = verify-proofs fuel-bin store2 0
+    in act
+      print-line-uni ("all-proofs: " & show-bool (r-all.accepted) & " " & phase-name (r-all.phase))
+      print-line-uni ("missing: " & show-bool (r-missing.accepted) & " " & phase-name (r-missing.phase) & " " & r-missing.reason)
+      print-line-uni ("wrong-kind: " & show-bool (r-wrong.accepted) & " " & phase-name (r-wrong.phase) & " " & r-wrong.reason)
+      print-line-uni ("no-proofs: " & show-bool (r-none.accepted) & " " & phase-name (r-none.phase))
+      print-line-uni ("no-fuel: " & show-bool (r-fuel.accepted) & " " & phase-name (r-fuel.phase) & " " & r-fuel.reason)
+    end
+
+  text-to-hash-bytes : Text -> List Integer
+  text-to-hash-bytes (hex) = hex-to-bytes-loop hex 0 64 []
+
+  hex-to-bytes-loop : Text, Integer, Integer, List Integer -> List Integer
+  hex-to-bytes-loop (hex) (i) (len) (acc) =
+    if i >= len then acc
+    else if i + 1 >= text-length hex then list-push acc 0
+    else let hi = hex-nibble (char-code (char-at hex i))
+    in let lo = hex-nibble (char-code (char-at hex (i + 1)))
+    in hex-to-bytes-loop hex (i + 2) len (list-push acc (hi * 16 + lo))
+
+  hex-nibble : Integer -> Integer
+  hex-nibble (c) =
+    if c >= 48 & c <= 57 then c - 48
+    else if c >= 97 & c <= 102 then c - 87
+    else if c >= 65 & c <= 70 then c - 55
+    else 0
+
+Page 1

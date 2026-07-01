@@ -1,0 +1,186 @@
+Chapter: ModelRegistry
+  cites AI chapter SafeTensors
+  cites Encode chapter Json
+  cites Foreword chapter Maybe
+
+ Model registry for discovering and cataloging AI models on disk.
+ Scans a directory tree for SafeTensors files, reads their headers,
+ identifies model type (SD 1.5, SDXL, FLUX, LoRA, VAE, text encoder,
+ image-to-3D), and builds a searchable catalog.
+
+ Model type detection uses tensor name patterns:
+   - SD 1.5 UNet: "model.diffusion_model." prefix, 320-channel first block
+   - SDXL UNet: "model.diffusion_model." prefix, 640-channel first block
+   - CLIP text encoder: "text_model.encoder.layers." prefix
+   - VAE: "encoder." and "decoder." prefixes
+   - LoRA: ".lora_down.weight" / ".lora_up.weight" suffixes
+   - 3D recon: "triplane_proj." or "encoder.layers." + "decoder." combo
+
+ We say:
+
+Section: Types
+  ModelType =
+    | ModelSD15
+    | ModelSDXL
+    | ModelFlux
+    | ModelLoRA
+    | ModelVAE
+    | ModelTextEncoder
+    | ModelImageTo3d
+    | ModelUnknown
+
+  ModelEntry = record {
+    me-name : Text,
+    me-path : Text,
+    me-type : ModelType,
+    me-format : Text,
+    me-tensor-count : Integer,
+    me-file-size : Integer
+  }
+
+  ModelCatalog = record {
+    mc-entries : List ModelEntry,
+    mc-count : Integer
+  }
+
+Section: Construction
+  catalog-new : ModelCatalog
+  catalog-new = ModelCatalog { mc-entries = [], mc-count = 0 }
+
+  catalog-add : ModelCatalog, ModelEntry -> ModelCatalog
+  catalog-add (cat) (entry) =
+    ModelCatalog { mc-entries = list-push (cat.mc-entries) entry, mc-count = cat.mc-count + 1 }
+
+Section: Model Type Detection
+  detect-model-type : SafeTensorFile -> ModelType
+  detect-model-type (file) =
+    if file.st-tensor-count == 0 then ModelUnknown
+    else if detect-is-lora file then ModelLoRA
+    else if detect-is-vae file then ModelVAE
+    else if detect-is-text-encoder file then ModelTextEncoder
+    else if detect-is-3d-recon file then ModelImageTo3d
+    else if detect-is-sdxl file then ModelSDXL
+    else if detect-is-sd15 file then ModelSD15
+    else ModelUnknown
+
+  detect-is-lora : SafeTensorFile -> Boolean
+  detect-is-lora (file) = detect-has-pattern file ".lora_down.weight" 0
+
+  detect-is-vae : SafeTensorFile -> Boolean
+  detect-is-vae (file) =
+    let has-encoder = detect-has-prefix file "encoder." 0
+    in let has-decoder = detect-has-prefix file "decoder." 0
+    in if has-encoder then if has-decoder then True else False else False
+
+  detect-is-text-encoder : SafeTensorFile -> Boolean
+  detect-is-text-encoder (file) = detect-has-prefix file "text_model.encoder.layers." 0
+
+  detect-is-3d-recon : SafeTensorFile -> Boolean
+  detect-is-3d-recon (file) = detect-has-prefix file "triplane_proj." 0
+
+  detect-is-sdxl : SafeTensorFile -> Boolean
+  detect-is-sdxl (file) =
+    let has-unet = detect-has-prefix file "model.diffusion_model." 0
+    in if has-unet == False then False
+    else detect-has-prefix file "conditioner." 0
+
+  detect-is-sd15 : SafeTensorFile -> Boolean
+  detect-is-sd15 (file) = detect-has-prefix file "model.diffusion_model." 0
+
+Section: Pattern Matching on Tensor Names
+  detect-has-prefix : SafeTensorFile, Text, Integer -> Boolean
+  detect-has-prefix (file) (prefix) (i) =
+    if i >= file.st-tensor-count then False
+    else let meta = list-at (file.st-tensors) i
+    in if text-starts-with (meta.stm-name) prefix then True
+    else detect-has-prefix file prefix (i + 1)
+
+  detect-has-pattern : SafeTensorFile, Text, Integer -> Boolean
+  detect-has-pattern (file) (pattern) (i) =
+    if i >= file.st-tensor-count then False
+    else let meta = list-at (file.st-tensors) i
+    in if text-contains (meta.stm-name) pattern then True
+    else detect-has-pattern file pattern (i + 1)
+
+Section: Entry Construction
+  model-entry-from-file : List Integer, Text, Text -> ModelEntry
+  model-entry-from-file (data) (name) (path) =
+    let file = st-parse-file data
+    in let mtype = if file.st-valid then detect-model-type file else ModelUnknown
+    in ModelEntry {
+      me-name = name,
+      me-path = path,
+      me-type = mtype,
+      me-format = "safetensors",
+      me-tensor-count = file.st-tensor-count,
+      me-file-size = list-length data
+    }
+
+Section: Catalog Queries
+  catalog-find-by-type : ModelCatalog, ModelType -> List ModelEntry
+  catalog-find-by-type (cat) (mtype) =
+    catalog-filter-type (cat.mc-entries) mtype 0 (cat.mc-count) []
+
+  catalog-filter-type : List ModelEntry, ModelType, Integer, Integer, List ModelEntry -> List ModelEntry
+  catalog-filter-type (entries) (mtype) (i) (n) (acc) =
+    if i >= n then acc
+    else let entry = list-at entries i
+    in if model-type-eq (entry.me-type) mtype then catalog-filter-type entries mtype (i + 1) n (list-push acc entry)
+    else catalog-filter-type entries mtype (i + 1) n acc
+
+  model-type-eq : ModelType, ModelType -> Boolean
+  model-type-eq (a) (b) =
+    model-type-id a == model-type-id b
+
+  model-type-id : ModelType -> Integer
+  model-type-id (mt) =
+    when mt
+      is ModelSD15 -> 1
+      is ModelSDXL -> 2
+      is ModelFlux -> 3
+      is ModelLoRA -> 4
+      is ModelVAE -> 5
+      is ModelTextEncoder -> 6
+      is ModelImageTo3d -> 7
+      is ModelUnknown -> 0
+
+  catalog-find-by-name : ModelCatalog, Text -> Maybe ModelEntry
+  catalog-find-by-name (cat) (name) =
+    catalog-name-search (cat.mc-entries) name 0 (cat.mc-count)
+
+  catalog-name-search : List ModelEntry, Text, Integer, Integer -> Maybe ModelEntry
+  catalog-name-search (entries) (name) (i) (n) =
+    if i >= n then None
+    else let entry = list-at entries i
+    in if entry.me-name == name then Just entry
+    else if text-contains (entry.me-name) name then Just entry
+    else catalog-name-search entries name (i + 1) n
+
+Section: Queries
+  model-type-name : ModelType -> Text
+  model-type-name (mt) =
+    when mt
+      is ModelSD15 -> "SD 1.5"
+      is ModelSDXL -> "SDXL"
+      is ModelFlux -> "FLUX"
+      is ModelLoRA -> "LoRA"
+      is ModelVAE -> "VAE"
+      is ModelTextEncoder -> "Text Encoder"
+      is ModelImageTo3d -> "Image-to-3D"
+      is ModelUnknown -> "Unknown"
+
+  format-model-entry : ModelEntry -> Text
+  format-model-entry (entry) =
+    entry.me-name & " [" & model-type-name (entry.me-type) & "] " & show (entry.me-tensor-count) & " tensors"
+
+  format-catalog : ModelCatalog -> Text
+  format-catalog (cat) =
+    show (cat.mc-count) & " model(s)" & format-catalog-entries (cat.mc-entries) 0 (cat.mc-count) ""
+
+  format-catalog-entries : List ModelEntry, Integer, Integer, Text -> Text
+  format-catalog-entries (entries) (i) (n) (acc) =
+    if i >= n then acc
+    else let entry = list-at entries i
+    in format-catalog-entries entries (i + 1) n (acc & "\n  " & format-model-entry entry)
+
+Page 1

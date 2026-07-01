@@ -1,0 +1,227 @@
+Chapter: ShapeBuilder
+  cites Math chapter Quaternion
+  cites Math chapter Geometry
+  cites Game chapter Rasterizer
+  cites Spark chapter Mesh
+
+ Procedural shape construction for 2D and 3D geometry.
+ Builds meshes from path outlines, extrusion, lathe
+ revolution, and boolean-like merge operations.
+
+ We say:
+
+Section: Types
+
+  PathPoint = record {
+    pp-x : Integer,
+    pp-y : Integer
+  }
+
+  ShapePath = record {
+    shp-points : List PathPoint,
+    shp-count : Integer,
+    shp-closed : Boolean
+  }
+
+  ExtrudeConfig = record {
+    ex-depth : Real,
+    ex-segments : Integer,
+    ex-taper : Real,
+    ex-twist : Real
+  }
+
+  LatheConfig = record {
+    lt-segments : Integer,
+    lt-angle : Real
+  }
+
+Section: Path Construction
+
+  path-new : ShapePath
+  path-new = ShapePath { shp-points = [], shp-count = 0, shp-closed = False }
+
+  path-add : ShapePath, Integer, Integer -> ShapePath
+  path-add (p) (x) (y) = ShapePath {
+    shp-points = list-push (p.shp-points) (PathPoint { pp-x = x, pp-y = y }),
+    shp-count = p.shp-count + 1,
+    shp-closed = p.shp-closed
+  }
+
+  path-close : ShapePath -> ShapePath
+  path-close (p) = __record-set p "shp-closed" True
+
+  path-rect : Integer, Integer, Integer, Integer -> ShapePath
+  path-rect (x) (y) (w) (h) =
+    let p = path-add (path-add (path-add (path-add path-new x y) (x + w) y) (x + w) (y + h)) x (y + h)
+    in path-close p
+
+  path-circle-approx : Integer, Integer, Integer, Integer -> ShapePath
+  path-circle-approx (cx) (cy) (radius) (segments) =
+    shp-circle-loop cx cy radius segments 0 path-new
+
+  shp-circle-loop : Integer, Integer, Integer, Integer, Integer, ShapePath -> ShapePath
+  shp-circle-loop (cx) (cy) (r) (segs) (i) (p) =
+    if i >= segs then path-close p
+    else let angle = real-from-int i * 6.283 / real-from-int segs
+    in let x = cx + real-to-int (real-from-int r * shp-cos-approx angle)
+    in let y = cy + real-to-int (real-from-int r * shp-sin-approx angle)
+    in shp-circle-loop cx cy r segs (i + 1) (path-add p x y)
+
+Section: Extrusion
+
+  extrude-default : ExtrudeConfig
+  extrude-default = ExtrudeConfig {
+    ex-depth = 1.0,
+    ex-segments = 1,
+    ex-taper = 1.0,
+    ex-twist = 0.0
+  }
+
+  shape-extrude : ShapePath, ExtrudeConfig -> TriMesh
+  shape-extrude (path) (cfg) =
+    shp-extrude-build path cfg 0 tri-mesh-empty
+
+  shp-extrude-build : ShapePath, ExtrudeConfig, Integer, TriMesh -> TriMesh
+  shp-extrude-build (path) (cfg) (seg) (mesh) =
+    if seg >= cfg.ex-segments then mesh
+    else let z0 = real-from-int seg * cfg.ex-depth / real-from-int cfg.ex-segments
+    in let z1 = real-from-int (seg + 1) * cfg.ex-depth / real-from-int cfg.ex-segments
+    in let scale0 = 1.0 + (cfg.ex-taper - 1.0) * real-from-int seg / real-from-int cfg.ex-segments
+    in let scale1 = 1.0 + (cfg.ex-taper - 1.0) * real-from-int (seg + 1) / real-from-int cfg.ex-segments
+    in let mesh2 = shp-extrude-ring path mesh z0 z1 scale0 scale1 0
+    in shp-extrude-build path cfg (seg + 1) mesh2
+
+  shp-extrude-ring : ShapePath, TriMesh, Real, Real, Real, Real, Integer -> TriMesh
+  shp-extrude-ring (path) (mesh) (z0) (z1) (s0) (s1) (i) =
+    if i >= path.shp-count then mesh
+    else let next = if i + 1 >= path.shp-count then 0 else i + 1
+    in let p0 = list-at (path.shp-points) i
+    in let p1 = list-at (path.shp-points) next
+    in let v0 = vec3-new (real-from-int p0.pp-x * s0) (real-from-int p0.pp-y * s0) z0
+    in let v1 = vec3-new (real-from-int p1.pp-x * s0) (real-from-int p1.pp-y * s0) z0
+    in let v2 = vec3-new (real-from-int p1.pp-x * s1) (real-from-int p1.pp-y * s1) z1
+    in let v3 = vec3-new (real-from-int p0.pp-x * s1) (real-from-int p0.pp-y * s1) z1
+    in let uv0 = vec2-new 0.0 0.0
+    in let norm = vec3-new 0.0 0.0 1.0
+    in let base = mesh.tm-vert-count
+    in let m2 = tri-mesh-add-vert mesh v0 uv0 norm
+    in let m3 = tri-mesh-add-vert m2 v1 uv0 norm
+    in let m4 = tri-mesh-add-vert m3 v2 uv0 norm
+    in let m5 = tri-mesh-add-vert m4 v3 uv0 norm
+    in let m6 = tri-mesh-add-face m5 base (base + 1) (base + 2)
+    in let m7 = tri-mesh-add-face m6 base (base + 2) (base + 3)
+    in shp-extrude-ring path m7 z0 z1 s0 s1 (i + 1)
+
+Section: Lathe Revolution
+
+  lathe-default : LatheConfig
+  lathe-default = LatheConfig { lt-segments = 12, lt-angle = 6.283 }
+
+  shape-lathe : ShapePath, LatheConfig -> TriMesh
+  shape-lathe (path) (cfg) =
+    shp-lathe-build path cfg 0 tri-mesh-empty
+
+  shp-lathe-build : ShapePath, LatheConfig, Integer, TriMesh -> TriMesh
+  shp-lathe-build (path) (cfg) (seg) (mesh) =
+    if seg >= cfg.lt-segments then mesh
+    else let a0 = real-from-int seg * cfg.lt-angle / real-from-int cfg.lt-segments
+    in let a1 = real-from-int (seg + 1) * cfg.lt-angle / real-from-int cfg.lt-segments
+    in let mesh2 = shp-lathe-ring path mesh a0 a1 0
+    in shp-lathe-build path cfg (seg + 1) mesh2
+
+  shp-lathe-ring : ShapePath, TriMesh, Real, Real, Integer -> TriMesh
+  shp-lathe-ring (path) (mesh) (a0) (a1) (i) =
+    if i >= path.shp-count - 1 then mesh
+    else let p0 = list-at (path.shp-points) i
+    in let p1 = list-at (path.shp-points) (i + 1)
+    in let cos0 = shp-cos-approx a0
+    in let sin0 = shp-sin-approx a0
+    in let cos1 = shp-cos-approx a1
+    in let sin1 = shp-sin-approx a1
+    in let v0 = vec3-new (real-from-int p0.pp-x * cos0) (real-from-int p0.pp-y) (real-from-int p0.pp-x * sin0)
+    in let v1 = vec3-new (real-from-int p1.pp-x * cos0) (real-from-int p1.pp-y) (real-from-int p1.pp-x * sin0)
+    in let v2 = vec3-new (real-from-int p1.pp-x * cos1) (real-from-int p1.pp-y) (real-from-int p1.pp-x * sin1)
+    in let v3 = vec3-new (real-from-int p0.pp-x * cos1) (real-from-int p0.pp-y) (real-from-int p0.pp-x * sin1)
+    in let uv0 = vec2-new 0.0 0.0
+    in let norm = vec3-new 0.0 1.0 0.0
+    in let base = mesh.tm-vert-count
+    in let m2 = tri-mesh-add-vert mesh v0 uv0 norm
+    in let m3 = tri-mesh-add-vert m2 v1 uv0 norm
+    in let m4 = tri-mesh-add-vert m3 v2 uv0 norm
+    in let m5 = tri-mesh-add-vert m4 v3 uv0 norm
+    in let m6 = tri-mesh-add-face m5 base (base + 1) (base + 2)
+    in let m7 = tri-mesh-add-face m6 base (base + 2) (base + 3)
+    in shp-lathe-ring path m7 a0 a1 (i + 1)
+
+Section: 2D Rasterization
+
+  path-fill : Framebuf, ShapePath, Integer -> Framebuf
+  path-fill (fb) (path) (color) =
+    if path.shp-count < 3 then fb
+    else shp-fill-scanline fb path color 0 (fb.fb-height)
+
+  shp-fill-scanline : Framebuf, ShapePath, Integer, Integer, Integer -> Framebuf
+  shp-fill-scanline (fb) (path) (color) (y) (max-y) =
+    if y >= max-y then fb
+    else let crossings = shp-count-crossings path y 0 0
+    in let fb2 = if crossings > 0 then shp-fill-row fb path color y else fb
+    in shp-fill-scanline fb2 path color (y + 1) max-y
+
+  shp-count-crossings : ShapePath, Integer, Integer, Integer -> Integer
+  shp-count-crossings (path) (y) (i) (count) =
+    if i >= path.shp-count then count
+    else let p0 = list-at (path.shp-points) i
+    in let p1 = list-at (path.shp-points) (if i + 1 >= path.shp-count then 0 else i + 1)
+    in let crosses = if p0.pp-y <= y then if p1.pp-y > y then 1 else 0
+      else if p1.pp-y <= y then 1 else 0
+    in shp-count-crossings path y (i + 1) (count + crosses)
+
+  shp-fill-row : Framebuf, ShapePath, Integer, Integer -> Framebuf
+  shp-fill-row (fb) (path) (color) (y) =
+    shp-fill-row-loop fb path color y 0 (fb.fb-width) False
+
+  shp-fill-row-loop : Framebuf, ShapePath, Integer, Integer, Integer, Integer, Boolean -> Framebuf
+  shp-fill-row-loop (fb) (path) (color) (y) (x) (w) (inside) =
+    if x >= w then fb
+    else let crosses = shp-point-crossings path x y 0 0
+    in let now-inside = if crosses - crosses / 2 * 2 == 1 then if inside then False else True else inside
+    in let fb2 = if now-inside then fb-set fb x y color else fb
+    in shp-fill-row-loop fb2 path color y (x + 1) w now-inside
+
+  shp-point-crossings : ShapePath, Integer, Integer, Integer, Integer -> Integer
+  shp-point-crossings (path) (x) (y) (i) (count) =
+    if i >= path.shp-count then count
+    else let p0 = list-at (path.shp-points) i
+    in let p1 = list-at (path.shp-points) (if i + 1 >= path.shp-count then 0 else i + 1)
+    in let crosses = if p0.pp-y <= y then
+        if p1.pp-y > y then
+          let edge-x = p0.pp-x + (y - p0.pp-y) * (p1.pp-x - p0.pp-x) / (p1.pp-y - p0.pp-y + 1)
+          in if edge-x <= x then 1 else 0
+        else 0
+      else if p1.pp-y <= y then
+        let edge-x = p1.pp-x + (y - p1.pp-y) * (p0.pp-x - p1.pp-x) / (p0.pp-y - p1.pp-y + 1)
+        in if edge-x <= x then 1 else 0
+      else 0
+    in shp-point-crossings path x y (i + 1) (count + crosses)
+
+Section: Trig Helpers
+
+  shp-sin-approx : Real -> Real
+  shp-sin-approx (rad) =
+    let x = rad
+    in let x3 = x * x * x
+    in x - x3 / 6.0
+
+  shp-cos-approx : Real -> Real
+  shp-cos-approx (rad) =
+    let x2 = rad * rad
+    in let x4 = x2 * x2
+    in 1.0 - x2 / 2.0 + x4 / 24.0
+
+Section: Info
+
+  path-info : ShapePath -> Text
+  path-info (p) =
+    show (p.shp-count) & " points" & (if p.shp-closed then " closed" else " open")
+
+Page 1

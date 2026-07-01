@@ -1,0 +1,124 @@
+Chapter: CalcApp
+  cites Guios chapter GuiDisplay
+  cites Guios chapter GuiTimer
+  cites Guios chapter GopRender
+  cites UI chapter Widget
+  cites UI chapter Layout
+  cites UI chapter Theme
+
+ Bare-metal calculator. Uses scancodes for reliable input.
+ State in MutWheel meta buffer (zero-alloc).
+
+Section: Operators
+  op-none : Integer = 0
+  op-add : Integer = 1
+  op-sub : Integer = 2
+  op-mul : Integer = 3
+  op-div : Integer = 4
+  op-mod : Integer = 5
+
+Section: Scancode Dispatch
+  calc-key : MutWheel, Integer -> Integer
+  calc-key (w) (sc) =
+    if sc == 2 then calc-digit w 1
+    else if sc == 3 then calc-digit w 2
+    else if sc == 4 then calc-digit w 3
+    else if sc == 5 then calc-digit w 4
+    else if sc == 6 then calc-digit w 5
+    else if sc == 7 then calc-digit w 6
+    else if sc == 8 then calc-digit w 7
+    else if sc == 9 then calc-digit w 8
+    else if sc == 10 then calc-digit w 9
+    else if sc == 11 then calc-digit w 0
+    else if sc == 12 then calc-set-op w op-sub
+    else if sc == 13 then calc-set-op w op-add
+    else if sc == 28 then calc-equals w
+    else if sc == 53 then calc-set-op w op-div
+    else if sc == 55 then calc-set-op w op-mul
+    else if sc == 46 then calc-clear w
+    else 0
+
+Section: Operations
+  calc-digit : MutWheel, Integer -> Integer
+  calc-digit (w) (d) =
+    let cur = mw-get-calc-cur w
+    in mw-set-calc-cur w (cur * 10 + d)
+
+  calc-set-op : MutWheel, Integer -> Integer
+  calc-set-op (w) (new-op) =
+    let d = calc-eval w
+    in mw-set-calc-op w new-op
+
+  calc-eval : MutWheel -> Integer
+  calc-eval (w) =
+    let acc = mw-get-calc-acc w
+    in let cur = mw-get-calc-cur w
+    in let op = mw-get-calc-op w
+    in let result = if op == op-add then acc + cur
+      else if op == op-sub then acc - cur
+      else if op == op-mul then acc * cur
+      else if op == op-div then if cur /= 0 then acc / cur else 0
+      else cur
+    in let d1 = mw-set-calc-acc w result
+    in mw-set-calc-cur w 0
+
+  calc-equals : MutWheel -> Integer
+  calc-equals (w) =
+    let d = calc-eval w
+    in mw-set-calc-op w op-none
+
+  calc-clear : MutWheel -> Integer
+  calc-clear (w) =
+    let d1 = mw-set-calc-acc w 0
+    in let d2 = mw-set-calc-cur w 0
+    in mw-set-calc-op w op-none
+
+Section: Operator Symbol
+  op-sym : Integer -> Text
+  op-sym (op) =
+    if op == op-add then "+"
+    else if op == op-sub then "-"
+    else if op == op-mul then "*"
+    else if op == op-div then "/"
+    else ""
+
+Section: Widget Tree
+  calc-btn-widget : Text -> WidgetNode
+  calc-btn-widget (label) = widget-set-min (widget-button ("calc-" & label) label) 0 40
+
+  calc-row : Text, Text, Text, Text -> WidgetNode
+  calc-row (a) (b) (c) (d) =
+    widget-panel ("cr-" & a) DirRow 6 [calc-btn-widget a, calc-btn-widget b, calc-btn-widget c, calc-btn-widget d]
+
+  calc-tree : MutWheel -> WidgetNode
+  calc-tree (w) =
+    let acc = mw-get-calc-acc w
+    in let cur = mw-get-calc-cur w
+    in let op = mw-get-calc-op w
+    in let display-val = if cur > 0 then cur else acc
+    in let display-text = if op /= op-none then show acc & " " & op-sym op & " " & show cur
+      else "= " & show acc
+    in let display = widget-panel "calc-disp" DirColumn 2 [
+      widget-set-min (widget-label "calc-val" (show display-val)) 0 24,
+      widget-label "calc-expr" display-text
+    ]
+    in let keypad = widget-panel "calc-pad" DirColumn 6 [
+      calc-row "7" "8" "9" "/",
+      calc-row "4" "5" "6" "*",
+      calc-row "1" "2" "3" "-",
+      widget-panel "cr-0" DirRow 6 [calc-btn-widget "0", calc-btn-widget "=", calc-btn-widget "+"]
+    ]
+    in let help = widget-label "calc-help" "Keys: 0-9 + - * / Enter=  C=clear"
+    in widget-panel "calc-root" DirColumn 8 [display, widget-separator "calc-sep", keypad, widget-separator "calc-sep2", help]
+
+Section: Render
+  calc-draw : GopBuf, MutWheel, Integer, Integer, Integer -> Integer
+  calc-draw (gb) (w) (x) (y) (ww) =
+    let tree = calc-tree w
+    in let bounds = layout-rect x y (ww - 4) 400
+    in let laid-out = widget-layout tree theme-terminal bounds
+    in gop-render-tree laid-out theme-terminal gb w
+
+
+
+Page 1

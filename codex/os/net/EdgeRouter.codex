@@ -1,0 +1,297 @@
+Chapter: EdgeRouter
+  cites Net chapter GroupMembership
+  cites Net chapter MeshRoles
+  cites Foreword chapter RateLimiter
+  cites Foreword chapter Maybe
+
+ Semantic edge layer. The front line of the mesh — edge nodes receive
+ all inbound traffic and apply security rules before routing to
+ service nodes. Handles DDoS mitigation (rate limiting per source IP),
+ session affinity (sticky sessions by cookie or IP), request
+ classification (which service handles this path), health-based
+ routing (skip unhealthy backends), and circuit breaking (stop
+ sending to a backend that keeps failing).
+
+Section: Rate Limiter (delegates to foreword TokenBucket)
+
+  KeyedBucket = record {
+    kb-key : Text,
+    kb-bucket : TokenBucket
+  }
+
+  PerKeyRateLimiter = record {
+    rl-buckets : List KeyedBucket,
+    rl-bucket-count : Integer,
+    rl-default-capacity : Integer,
+    rl-default-rate : Integer,
+    rl-blocked-count : Integer,
+    rl-allowed-count : Integer
+  }
+
+  rate-limiter-new : Integer, Integer -> PerKeyRateLimiter
+  rate-limiter-new (capacity) (refill-rate) = PerKeyRateLimiter {
+    rl-buckets = [], rl-bucket-count = 0,
+    rl-default-capacity = capacity,
+    rl-default-rate = refill-rate,
+    rl-blocked-count = 0, rl-allowed-count = 0
+  }
+
+  rl-check : PerKeyRateLimiter, Text, Integer, Integer -> PerKeyRateLimiter
+  rl-check (st) (key) (cost) (now) =
+    let found = rl-find-key (st.rl-buckets) key 0 (st.rl-bucket-count)
+    in when found
+      is Just (idx) ->
+        let kb = list-at (st.rl-buckets) idx
+        in if tb-can-consume (kb.kb-bucket) cost now then
+          let consumed = tb-try-consume (kb.kb-bucket) cost now
+          in let updated = KeyedBucket { kb-key = key, kb-bucket = consumed }
+          in __record-set (__record-set st "rl-buckets" (list-set-at (st.rl-buckets) idx updated)) "rl-allowed-count" (st.rl-allowed-count + 1)
+        else __record-set st "rl-blocked-count" (st.rl-blocked-count + 1)
+      is None ->
+        let bucket = tb-new (st.rl-default-capacity) (st.rl-default-rate)
+        in let kb = KeyedBucket { kb-key = key, kb-bucket = bucket }
+        in __record-set (__record-set (__record-set st "rl-buckets" (list-push (st.rl-buckets) kb)) "rl-bucket-count" (st.rl-bucket-count + 1)) "rl-allowed-count" (st.rl-allowed-count + 1)
+
+  rl-find-key : List KeyedBucket, Text, Integer, Integer -> Maybe Integer
+  rl-find-key (buckets) (key) (i) (n) =
+    if i >= n then None
+    else if (list-at buckets i).kb-key == key then Just i
+    else rl-find-key buckets key (i + 1) n
+
+  rl-block-rate : PerKeyRateLimiter -> Integer
+  rl-block-rate (st) =
+    let total = st.rl-blocked-count + st.rl-allowed-count
+    in if total == 0 then 0
+    else st.rl-blocked-count * 1000 / total
+
+Section: Circuit Breaker
+
+  BreakerState =
+    | BrkClosed
+    | BrkOpen (Integer)
+    | BrkHalfOpen
+
+  brk-label : BreakerState -> Text
+  brk-label (s) = when s
+    is BrkClosed -> "closed"
+    is BrkOpen (until) -> "open"
+    is BrkHalfOpen -> "half-open"
+
+  CircuitBreaker = record {
+    cb-backend : Text,
+    cb-state : BreakerState,
+    cb-failure-count : Integer,
+    cb-success-count : Integer,
+    cb-failure-threshold : Integer,
+    cb-success-threshold : Integer,
+    cb-timeout-sec : Integer,
+    cb-last-failure : Integer,
+    cb-total-requests : Integer
+  }
+
+  breaker-new : Text -> CircuitBreaker
+  breaker-new (backend) = CircuitBreaker {
+    cb-backend = backend, cb-state = BrkClosed,
+    cb-failure-count = 0, cb-success-count = 0,
+    cb-failure-threshold = 5, cb-success-threshold = 3,
+    cb-timeout-sec = 30, cb-last-failure = 0,
+    cb-total-requests = 0
+  }
+
+  brk-record-success : CircuitBreaker -> CircuitBreaker
+  brk-record-success (cb) =
+    let new-succ = cb.cb-success-count + 1
+    in let new-state = when cb.cb-state
+      is BrkHalfOpen -> if new-succ >= cb.cb-success-threshold then BrkClosed else BrkHalfOpen
+      is otherwise -> cb.cb-state
+    in __record-set (__record-set (__record-set (__record-set cb "cb-success-count" new-succ) "cb-failure-count" 0) "cb-state" new-state) "cb-total-requests" (cb.cb-total-requests + 1)
+
+  brk-record-failure : CircuitBreaker, Integer -> CircuitBreaker
+  brk-record-failure (cb) (now) =
+    let new-fail = cb.cb-failure-count + 1
+    in let new-state = when cb.cb-state
+      is BrkClosed -> if new-fail >= cb.cb-failure-threshold then BrkOpen (now + cb.cb-timeout-sec) else BrkClosed
+      is BrkHalfOpen -> BrkOpen (now + cb.cb-timeout-sec)
+      is BrkOpen (until) -> BrkOpen until
+    in __record-set (__record-set (__record-set (__record-set cb "cb-failure-count" new-fail) "cb-state" new-state) "cb-last-failure" now) "cb-total-requests" (cb.cb-total-requests + 1)
+
+  brk-should-allow : CircuitBreaker, Integer -> Boolean
+  brk-should-allow (cb) (now) = when cb.cb-state
+    is BrkClosed -> True
+    is BrkHalfOpen -> True
+    is BrkOpen (until) -> now >= until
+
+  brk-try-half-open : CircuitBreaker, Integer -> CircuitBreaker
+  brk-try-half-open (cb) (now) = when cb.cb-state
+    is BrkOpen (until) -> if now >= until then __record-set (__record-set cb "cb-state" BrkHalfOpen) "cb-success-count" 0 else cb
+    is otherwise -> cb
+
+Section: Route Table
+
+  RouteRule = record {
+    rr-path-prefix : Text,
+    rr-service : Text,
+    rr-version : Text,
+    rr-strip-prefix : Boolean,
+    rr-timeout-ms : Integer,
+    rr-retries : Integer,
+    rr-weight : Integer,
+    rr-canary-pct : Integer,
+    rr-auth-required : Boolean,
+    rr-rate-limit : Integer
+  }
+
+  route-rule-new : Text, Text -> RouteRule
+  route-rule-new (prefix) (service) = RouteRule {
+    rr-path-prefix = prefix, rr-service = service,
+    rr-version = "", rr-strip-prefix = True,
+    rr-timeout-ms = 5000, rr-retries = 1,
+    rr-weight = 100, rr-canary-pct = 0,
+    rr-auth-required = False, rr-rate-limit = 0
+  }
+
+  rr-matches : RouteRule, Text -> Boolean
+  rr-matches (rule) (path) = text-starts-with path (rule.rr-path-prefix)
+
+  RouteTable = record {
+    rt-rules : List RouteRule,
+    rt-rule-count : Integer,
+    rt-default-service : Text
+  }
+
+  route-table-new : Text -> RouteTable
+  route-table-new (default-svc) = RouteTable {
+    rt-rules = [], rt-rule-count = 0,
+    rt-default-service = default-svc
+  }
+
+  rt-add-rule : RouteTable, RouteRule -> RouteTable
+  rt-add-rule (rt) (rule) =
+    __record-set (__record-set rt "rt-rules" (list-push (rt.rt-rules) rule)) "rt-rule-count" (rt.rt-rule-count + 1)
+
+  rt-resolve : RouteTable, Text -> Text
+  rt-resolve (rt) (path) = rt-match-loop (rt.rt-rules) path 0 (rt.rt-rule-count) (rt.rt-default-service)
+
+  rt-match-loop : List RouteRule, Text, Integer, Integer, Text -> Text
+  rt-match-loop (rules) (path) (i) (n) (default-svc) =
+    if i >= n then default-svc
+    else let rule = list-at rules i
+    in if rr-matches rule path then rule.rr-service
+    else rt-match-loop rules path (i + 1) n default-svc
+
+Section: Session Affinity
+
+  SessionAffinity =
+    | AffinityNone
+    | AffinityIp
+    | AffinityCookie (Text)
+    | AffinityHeader (Text)
+
+  affinity-label : SessionAffinity -> Text
+  affinity-label (a) = when a
+    is AffinityNone -> "none"
+    is AffinityIp -> "ip"
+    is AffinityCookie (name) -> "cookie:" & name
+    is AffinityHeader (name) -> "header:" & name
+
+  StickySession = record {
+    ss-key : Text,
+    ss-backend : Text,
+    ss-created : Integer,
+    ss-last-used : Integer,
+    ss-request-count : Integer
+  }
+
+  SessionTable = record {
+    stbl-sessions : List StickySession,
+    stbl-count : Integer,
+    stbl-max : Integer,
+    stbl-affinity : SessionAffinity,
+    stbl-ttl-sec : Integer
+  }
+
+  session-table-new : SessionAffinity, Integer -> SessionTable
+  session-table-new (affinity) (max-sessions) = SessionTable {
+    stbl-sessions = [], stbl-count = 0,
+    stbl-max = max-sessions,
+    stbl-affinity = affinity,
+    stbl-ttl-sec = 3600
+  }
+
+  stbl-find : SessionTable, Text -> Maybe StickySession
+  stbl-find (tbl) (key) = stbl-find-loop (tbl.stbl-sessions) key 0 (tbl.stbl-count)
+
+  stbl-find-loop : List StickySession, Text, Integer, Integer -> Maybe StickySession
+  stbl-find-loop (sessions) (key) (i) (n) =
+    if i >= n then None
+    else let s = list-at sessions i
+    in if s.ss-key == key then Just s
+    else stbl-find-loop sessions key (i + 1) n
+
+  stbl-set : SessionTable, Text, Text, Integer -> SessionTable
+  stbl-set (tbl) (key) (backend) (now) =
+    let existing = stbl-find tbl key
+    in when existing
+      is Just (s) ->
+        let updated = stbl-update (tbl.stbl-sessions) key backend now 0 (tbl.stbl-count) []
+        in __record-set tbl "stbl-sessions" updated
+      is None ->
+        let sess = StickySession { ss-key = key, ss-backend = backend, ss-created = now, ss-last-used = now, ss-request-count = 1 }
+        in __record-set (__record-set tbl "stbl-sessions" (list-push (tbl.stbl-sessions) sess)) "stbl-count" (tbl.stbl-count + 1)
+
+  stbl-update : List StickySession, Text, Text, Integer, Integer, Integer, List StickySession -> List StickySession
+  stbl-update (sessions) (key) (backend) (now) (i) (n) (acc) =
+    if i >= n then acc
+    else let s = list-at sessions i
+    in if s.ss-key == key then stbl-update sessions key backend now (i + 1) n (list-push acc (StickySession { ss-key = key, ss-backend = backend, ss-created = s.ss-created, ss-last-used = now, ss-request-count = s.ss-request-count + 1 }))
+    else stbl-update sessions key backend now (i + 1) n (list-push acc s)
+
+Section: Edge Router State
+
+  EdgeRouterState = record {
+    er-route-table : RouteTable,
+    er-rate-limiter : RateLimiterState,
+    er-breakers : List CircuitBreaker,
+    er-breaker-count : Integer,
+    er-sessions : SessionTable,
+    er-total-requests : Integer,
+    er-total-blocked : Integer,
+    er-total-routed : Integer,
+    er-total-errors : Integer
+  }
+
+  edge-router-new : EdgeRouterState
+  edge-router-new = EdgeRouterState {
+    er-route-table = route-table-new "default",
+    er-rate-limiter = rate-limiter-new 100 10,
+    er-breakers = [], er-breaker-count = 0,
+    er-sessions = session-table-new AffinityNone 10000,
+    er-total-requests = 0, er-total-blocked = 0,
+    er-total-routed = 0, er-total-errors = 0
+  }
+
+  er-add-route : EdgeRouterState, RouteRule -> EdgeRouterState
+  er-add-route (st) (rule) =
+    __record-set st "er-route-table" (rt-add-rule (st.er-route-table) rule)
+
+  er-find-breaker : EdgeRouterState, Text -> Maybe CircuitBreaker
+  er-find-breaker (st) (backend) = er-brk-loop (st.er-breakers) backend 0 (st.er-breaker-count)
+
+  er-brk-loop : List CircuitBreaker, Text, Integer, Integer -> Maybe CircuitBreaker
+  er-brk-loop (brks) (backend) (i) (n) =
+    if i >= n then None
+    else let b = list-at brks i
+    in if b.cb-backend == backend then Just b
+    else er-brk-loop brks backend (i + 1) n
+
+  er-block-pct : EdgeRouterState -> Integer
+  er-block-pct (st) =
+    if st.er-total-requests == 0 then 0
+    else st.er-total-blocked * 100 / st.er-total-requests
+
+  er-error-pct : EdgeRouterState -> Integer
+  er-error-pct (st) =
+    if st.er-total-routed == 0 then 0
+    else st.er-total-errors * 100 / st.er-total-routed
+
+Page 1

@@ -1,0 +1,363 @@
+Chapter: Notebook
+  cites Mathbook chapter Expr
+  cites Mathbook chapter Parser
+  cites Mathbook chapter Printer
+  cites Mathbook chapter Simplify
+  cites Mathbook chapter Calculus
+  cites Mathbook chapter NumberTheory
+  cites Mathbook chapter Solver
+  cites Mathbook chapter Plotting
+  cites Mathbook chapter Statistics
+  cites UI chapter Widget
+  cites UI chapter Layout
+  cites UI chapter Editor
+  cites UI chapter Markdown
+  cites UI chapter DataTable
+  cites UI chapter Validation
+  cites UI chapter CommandPalette
+  cites UI chapter SearchBar
+  cites UI chapter StatusBadge
+
+ Interactive math notebook. A notebook is a list of cells. Each cell
+ has an input expression, an output result, and a display mode (text,
+ LaTeX, plot). Cells execute top-to-bottom. Variables defined in one
+ cell are visible to later cells. The notebook maintains a symbol
+ table of bindings. This is the Mathematica notebook interface.
+
+Section: Cell Types
+
+  CellKind =
+    | CellExpr
+    | CellPlot
+    | CellText
+    | CellTable
+
+  ck-label : CellKind -> Text
+  ck-label (k) = when k
+    is CellExpr -> "expr"
+    is CellPlot -> "plot"
+    is CellText -> "text"
+    is CellTable -> "table"
+
+  OutputMode =
+    | OutText
+    | OutLatex
+    | OutPlot
+    | OutTable
+    | OutNone
+
+Section: Symbol Table
+
+  Binding = record { bind-name : Text, bind-value : Expr }
+
+  SymbolTable = record {
+    st-bindings : List Binding,
+    st-count : Integer
+  }
+
+  symtab-new : SymbolTable
+  symtab-new = SymbolTable { st-bindings = [], st-count = 0 }
+
+  symtab-set : SymbolTable, Text, Expr -> SymbolTable
+  symtab-set (st) (name) (val) =
+    let updated = symtab-update-loop (st.st-bindings) name val 0 (st.st-count) [] False
+    in if updated.su-found then __record-set st "st-bindings" (updated.su-bindings)
+    else SymbolTable { st-bindings = list-push (st.st-bindings) (Binding { bind-name = name, bind-value = val }), st-count = st.st-count + 1 }
+
+  SymtabUpdate = record { su-bindings : List Binding, su-found : Boolean }
+
+  symtab-update-loop : List Binding, Text, Expr, Integer, Integer, List Binding, Boolean -> SymtabUpdate
+  symtab-update-loop (binds) (name) (val) (i) (n) (acc) (found) =
+    if i >= n then SymtabUpdate { su-bindings = acc, su-found = found }
+    else let b = list-at binds i
+    in if b.bind-name == name then symtab-update-loop binds name val (i + 1) n (list-push acc (Binding { bind-name = name, bind-value = val })) True
+    else symtab-update-loop binds name val (i + 1) n (list-push acc b) found
+
+  symtab-get : SymbolTable, Text -> Maybe Expr
+  symtab-get (st) (name) = symtab-lookup (st.st-bindings) name 0 (st.st-count)
+
+  symtab-lookup : List Binding, Text, Integer, Integer -> Maybe Expr
+  symtab-lookup (binds) (name) (i) (n) =
+    if i >= n then None
+    else let b = list-at binds i
+    in if b.bind-name == name then Just (b.bind-value)
+    else symtab-lookup binds name (i + 1) n
+
+  symtab-apply : SymbolTable, Expr -> Expr
+  symtab-apply (st) (e) = symtab-apply-loop (st.st-bindings) e 0 (st.st-count)
+
+  symtab-apply-loop : List Binding, Expr, Integer, Integer -> Expr
+  symtab-apply-loop (binds) (e) (i) (n) =
+    if i >= n then e
+    else let b = list-at binds i
+    in symtab-apply-loop binds (ex-subst e (b.bind-name) (b.bind-value)) (i + 1) n
+
+Section: Cell
+
+  CellResult = record {
+    cr-output : Expr,
+    cr-display : Text,
+    cr-latex : Text,
+    cr-mode : OutputMode,
+    cr-error : Text,
+    cr-elapsed-ms : Integer
+  }
+
+  result-empty : CellResult
+  result-empty = CellResult { cr-output = ExUndefined, cr-display = "", cr-latex = "", cr-mode = OutNone, cr-error = "", cr-elapsed-ms = 0 }
+
+  result-expr : Expr -> CellResult
+  result-expr (e) = CellResult { cr-output = e, cr-display = ex-print e, cr-latex = ex-latex e, cr-mode = OutLatex, cr-error = "", cr-elapsed-ms = 0 }
+
+  result-text : Text -> CellResult
+  result-text (s) = CellResult { cr-output = ExUndefined, cr-display = s, cr-latex = "", cr-mode = OutText, cr-error = "", cr-elapsed-ms = 0 }
+
+  result-error : Text -> CellResult
+  result-error (msg) = CellResult { cr-output = ExUndefined, cr-display = "", cr-latex = "", cr-mode = OutNone, cr-error = msg, cr-elapsed-ms = 0 }
+
+  NotebookCell = record {
+    nc-id : Integer,
+    nc-kind : CellKind,
+    nc-input : Text,
+    nc-expr : Expr,
+    nc-result : CellResult,
+    nc-collapsed : Boolean,
+    nc-focused : Boolean
+  }
+
+  cell-new : Integer, CellKind, Text -> NotebookCell
+  cell-new (id) (kind) (input) = NotebookCell {
+    nc-id = id, nc-kind = kind, nc-input = input,
+    nc-expr = ExUndefined, nc-result = result-empty,
+    nc-collapsed = False, nc-focused = False
+  }
+
+Section: Evaluation (command dispatch)
+
+  eval-cell : NotebookCell, SymbolTable -> CellResult
+  eval-cell (cell) (env) = when cell.nc-kind
+    is CellExpr -> eval-text-cell (cell.nc-input) env
+    is CellText -> result-text (cell.nc-input)
+    is CellPlot -> result-text "[plot]"
+    is CellTable -> result-text "[table]"
+
+  eval-text-cell : Text, SymbolTable -> CellResult
+  eval-text-cell (input) (env) =
+    let parsed = parse-expr input
+    in if parsed.po-ok then
+      let expanded = symtab-apply env (parsed.po-expr)
+      in let dispatched = eval-dispatch expanded
+      in let simplified = simplify dispatched
+      in let with-nt = nt-gcd-expr simplified
+      in let final = simplify with-nt
+      in result-expr final
+    else result-error (parsed.po-error)
+
+  eval-dispatch : Expr -> Expr
+  eval-dispatch (e) = when e
+    is ExDeriv (body) (var) -> differentiate (eval-dispatch body) var
+    is ExIntegral (body) (var) -> integrate (eval-dispatch body) var
+    is ExDefIntegral (body) (var) (lo) (hi) ->
+      let anti = integrate (eval-dispatch body) var
+      in ex-sub (ex-subst anti var (eval-dispatch hi)) (ex-subst anti var (eval-dispatch lo))
+    is ExSum (body) (var) (lo) (hi) ->
+      eval-sum-loop (eval-dispatch body) var (ex-to-int (eval-dispatch lo)) (ex-to-int (eval-dispatch hi)) (ExInt 0)
+    is ExProd (body) (var) (lo) (hi) ->
+      eval-prod-loop (eval-dispatch body) var (ex-to-int (eval-dispatch lo)) (ex-to-int (eval-dispatch hi)) (ExInt 1)
+    is ExAdd (a) (b) -> ExAdd (eval-dispatch a) (eval-dispatch b)
+    is ExSub (a) (b) -> ExSub (eval-dispatch a) (eval-dispatch b)
+    is ExMul (a) (b) -> ExMul (eval-dispatch a) (eval-dispatch b)
+    is ExDiv (a) (b) -> ExDiv (eval-dispatch a) (eval-dispatch b)
+    is ExPow (a) (b) -> ExPow (eval-dispatch a) (eval-dispatch b)
+    is ExNeg (a) -> ExNeg (eval-dispatch a)
+    is ExFn (name) (args) -> ExFn name (eval-dispatch-list args 0 (list-length args) [])
+    is otherwise -> e
+
+  eval-dispatch-list : List Expr, Integer, Integer, List Expr -> List Expr
+  eval-dispatch-list (args) (i) (n) (acc) =
+    if i >= n then acc
+    else eval-dispatch-list args (i + 1) n (list-push acc (eval-dispatch (list-at args i)))
+
+  eval-sum-loop : Expr, Text, Integer, Integer, Expr -> Expr
+  eval-sum-loop (body) (var) (i) (hi) (acc) =
+    if i > hi then acc
+    else let term = simplify (ex-subst body var (ExInt i))
+    in eval-sum-loop body var (i + 1) hi (ex-add acc term)
+
+  eval-prod-loop : Expr, Text, Integer, Integer, Expr -> Expr
+  eval-prod-loop (body) (var) (i) (hi) (acc) =
+    if i > hi then acc
+    else let term = simplify (ex-subst body var (ExInt i))
+    in eval-prod-loop body var (i + 1) hi (ex-mul acc term)
+
+  eval-assign-cell : Text, SymbolTable -> CellResult
+  eval-assign-cell (input) (env) =
+    let parsed = parse-input input
+    in if parsed.ar-ok then
+      if parsed.ar-is-assign then
+        let expanded = symtab-apply env (parsed.ar-expr)
+        in let dispatched = eval-dispatch expanded
+        in let simplified = simplify dispatched
+        in result-expr simplified
+      else eval-text-cell input env
+    else result-error (parsed.ar-error)
+
+Section: Notebook State
+
+  NotebookState = record {
+    nb-cells : List NotebookCell,
+    nb-cell-count : Integer,
+    nb-focused-cell : Integer,
+    nb-env : SymbolTable,
+    nb-next-id : Integer,
+    nb-title : Text,
+    nb-modified : Boolean
+  }
+
+  notebook-new : Text -> NotebookState
+  notebook-new (title) = NotebookState {
+    nb-cells = [], nb-cell-count = 0,
+    nb-focused-cell = -1,
+    nb-env = symtab-new,
+    nb-next-id = 1,
+    nb-title = title,
+    nb-modified = False
+  }
+
+  nb-add-cell : NotebookState, CellKind, Text -> NotebookState
+  nb-add-cell (st) (kind) (input) =
+    let cell = cell-new (st.nb-next-id) kind input
+    in NotebookState {
+      nb-cells = list-push (st.nb-cells) cell,
+      nb-cell-count = st.nb-cell-count + 1,
+      nb-focused-cell = st.nb-cell-count,
+      nb-env = st.nb-env,
+      nb-next-id = st.nb-next-id + 1,
+      nb-title = st.nb-title,
+      nb-modified = True
+    }
+
+  nb-delete-cell : NotebookState, Integer -> NotebookState
+  nb-delete-cell (st) (idx) =
+    if idx < 0 then st
+    else if idx >= st.nb-cell-count then st
+    else let filtered = nb-remove-at (st.nb-cells) idx 0 (st.nb-cell-count) []
+    in __record-set (__record-set (__record-set st "nb-cells" filtered) "nb-cell-count" (st.nb-cell-count - 1)) "nb-modified" True
+
+  nb-remove-at : List NotebookCell, Integer, Integer, Integer, List NotebookCell -> List NotebookCell
+  nb-remove-at (cells) (target) (i) (n) (acc) =
+    if i >= n then acc
+    else if i == target then nb-remove-at cells target (i + 1) n acc
+    else nb-remove-at cells target (i + 1) n (list-push acc (list-at cells i))
+
+  nb-focus : NotebookState, Integer -> NotebookState
+  nb-focus (st) (idx) = __record-set st "nb-focused-cell" idx
+
+  nb-eval-cell : NotebookState, Integer -> NotebookState
+  nb-eval-cell (st) (idx) =
+    if idx < 0 then st
+    else if idx >= st.nb-cell-count then st
+    else let cell = list-at (st.nb-cells) idx
+    in let parsed = parse-input (cell.nc-input)
+    in if parsed.ar-ok & parsed.ar-is-assign then
+      let expanded = symtab-apply (st.nb-env) (parsed.ar-expr)
+      in let dispatched = eval-dispatch expanded
+      in let simplified = simplify dispatched
+      in let result = result-expr simplified
+      in let updated-cell = __record-set (__record-set cell "nc-result" result) "nc-expr" (parsed.ar-expr)
+      in let updated-cells = list-set-at (st.nb-cells) idx updated-cell
+      in let new-env = symtab-set (st.nb-env) (parsed.ar-name) simplified
+      in __record-set (__record-set st "nb-cells" updated-cells) "nb-env" new-env
+    else let result = eval-cell cell (st.nb-env)
+    in let updated-cell = __record-set cell "nc-result" result
+    in let updated-cells = list-set-at (st.nb-cells) idx updated-cell
+    in __record-set st "nb-cells" updated-cells
+
+  nb-eval-all : NotebookState -> NotebookState
+  nb-eval-all (st) = nb-eval-loop st 0 (st.nb-cell-count)
+
+  nb-eval-loop : NotebookState, Integer, Integer -> NotebookState
+  nb-eval-loop (st) (i) (n) =
+    if i >= n then st
+    else nb-eval-loop (nb-eval-cell st i) (i + 1) n
+
+  nb-set-var : NotebookState, Text, Expr -> NotebookState
+  nb-set-var (st) (name) (val) =
+    __record-set st "nb-env" (symtab-set (st.nb-env) name val)
+
+Section: Widget Building
+
+  nb-cell-widget : NotebookCell, Integer -> WidgetNode
+  nb-cell-widget (cell) (idx) =
+    let id-str = show (cell.nc-id)
+    in let in-label = widget-label ("ci-" & id-str) ("[" & show (idx + 1) & "]")
+    in let input-field = widget-input ("cin-" & id-str) (cell.nc-input) (text-length (cell.nc-input))
+    in let output = if text-length (cell.nc-result).cr-error > 0 then
+      widget-label ("cerr-" & id-str) ("Error: " & (cell.nc-result).cr-error)
+    else if text-length (cell.nc-result).cr-display > 0 then
+      widget-label ("cout-" & id-str) ((cell.nc-result).cr-display)
+    else widget-label ("cout-" & id-str) ""
+    in let run-btn = widget-button ("crun-" & id-str) "Run"
+    in let del-btn = widget-button ("cdel-" & id-str) "X"
+    in let input-row = widget-panel ("cin-row-" & id-str) DirRow 4 [in-label, input-field, run-btn, del-btn]
+    in let state = if cell.nc-focused then 4 else 0
+    in widget-set-state (widget-panel ("cell-" & id-str) DirColumn 2 [input-row, output]) state
+
+  notebook-widget : NotebookState -> WidgetNode
+  notebook-widget (st) =
+    let title = widget-label "nb-title" (st.nb-title)
+    in let env-count = widget-label "nb-env" (show (st.nb-env).st-count & " bindings")
+    in let run-all = widget-button "nb-run-all" "Run All"
+    in let add-expr = widget-button "nb-add-expr" "+ Expression"
+    in let add-text = widget-button "nb-add-text" "+ Text"
+    in let add-plot = widget-button "nb-add-plot" "+ Plot"
+    in let toolbar = widget-toolbar "nb-toolbar" [run-all, add-expr, add-text, add-plot, env-count]
+    in let cells = nb-cell-widgets (st.nb-cells) 0 (st.nb-cell-count) []
+    in widget-panel "notebook" DirColumn 8 ([title, toolbar] & cells)
+
+  nb-cell-widgets : List NotebookCell, Integer, Integer, List WidgetNode -> List WidgetNode
+  nb-cell-widgets (cells) (i) (n) (acc) =
+    if i >= n then acc
+    else nb-cell-widgets cells (i + 1) n (list-push acc (nb-cell-widget (list-at cells i) i))
+
+Section: Rich Cell Rendering (Editor + Markdown + DataTable)
+  nb-rich-cell : Cell, Integer -> WidgetNode
+  nb-rich-cell (cell) (idx) =
+    when cell.cell-type
+      is CellExpr -> nb-expr-editor cell idx
+      is CellText -> nb-text-md cell idx
+      is CellTable -> nb-table-view cell idx
+      is CellPlot -> nb-cell-widget cell idx
+
+  nb-expr-editor : Cell, Integer -> WidgetNode
+  nb-expr-editor (cell) (idx) =
+    let ed = editor-with-text ("cell-ed-" & show idx) (cell.cell-input)
+    in let ed2 = __record-set ed "ed-show-line-numbers" True
+    in let output-lbl = widget-label ("cell-out-" & show idx) (cell.cell-output)
+    in widget-panel ("cell-" & show idx) DirColumn 2 [
+      editor-widget ed2,
+      output-lbl
+    ]
+
+  nb-text-md : Cell, Integer -> WidgetNode
+  nb-text-md (cell) (idx) =
+    let doc = md-parse (cell.cell-input)
+    in md-document-to-widget doc ("cell-md-" & show idx)
+
+  nb-table-view : Cell, Integer -> WidgetNode
+  nb-table-view (cell) (idx) =
+    let dt = nb-parse-table-cell cell idx
+    in data-table-widget dt
+
+  nb-parse-table-cell : Cell, Integer -> DataTableState
+  nb-parse-table-cell (cell) (idx) =
+    let cols = [table-column "col0" "X" 80, table-column "col1" "Y" 80, table-column "col2" "Result" 100]
+    in data-table-new ("cell-tbl-" & show idx) cols []
+
+Section: Cell Input Validation
+  nb-cell-validation : FormValidation
+  nb-cell-validation = form-validation [
+    field-validation "expr" [VrRequired, VrMinLength 1]
+  ]
+
+Page 1

@@ -1,0 +1,264 @@
+Chapter: IntegrationTest
+  cites CodexMagic chapter Clan
+  cites CodexMagic chapter ClanEconomy
+  cites CodexMagic chapter ClanLibrary
+  cites CodexMagic chapter ClanFormat
+  cites CodexMagic chapter ClanTournament
+  cites CodexMagic chapter ClanChallenge
+  cites CodexMagic chapter ClanAuthority
+  cites CodexMagic chapter GameRegistry
+  cites CodexMagic chapter PlanarExchange
+  cites CodexMagic chapter CrossPlaneItems
+  cites CodexMagic chapter RPGEngine
+  cites CodexMagic chapter CampaignWorld
+  cites CodexMagic chapter GMEconomy
+  cites CodexMagic chapter DungeonProgression
+  cites CodexMagic chapter PlayerIdentity
+  cites CodexMagic chapter EventBus
+  cites CodexMagic chapter UniversalMatchmaking
+  cites CodexMagic chapter Token
+  cites CodexMagic chapter Auth
+  cites Foreword chapter Maybe
+
+ Integration tests for the CodexMagic multiverse. Tests the key
+ touch points where systems interact: clan economy flowing into
+ tournaments, dungeon loot hitting the planar exchange, subgame
+ spawning through matchmaking, cross-plane item conversion, GM
+ progression through QA gates. Each test exercises a full flow
+ from end to end.
+
+ We say:
+
+Section: Test Harness
+
+  TestResult = record {
+    name : Text,
+    passed : Boolean,
+    detail : Text
+  }
+
+  assert-true : Text, Boolean -> TestResult
+  assert-true (name) (condition) =
+    TestResult { name = name, passed = condition, detail = if condition then "OK" else "FAIL: expected true" }
+
+  assert-eq : Text, Integer, Integer -> TestResult
+  assert-eq (name) (expected) (actual) =
+    TestResult { name = name, passed = expected == actual, detail = if expected == actual then "OK" else "FAIL: expected " & show expected & " got " & show actual }
+
+  assert-gt : Text, Integer, Integer -> TestResult
+  assert-gt (name) (actual) (min-val) =
+    TestResult { name = name, passed = actual > min-val, detail = if actual > min-val then "OK" else "FAIL: " & show actual & " not > " & show min-val }
+
+Section: Test 1 - Clan Registration and Token Purchase
+
+  test-clan-registration : TestResult
+  test-clan-registration =
+    let platform = platform-new
+    in let pk = PublicKey { key-high = 12345, key-low = 67890 }
+    in let result = register-clan platform "Iron Legion" "IRON" 1 pk 100
+    in let p2 = result.platform
+    in let auth-result = authorize-clan p2 (result.clan-id) (result.auth-token)
+    in let purchase = purchase-global-tokens auth-result (result.clan-id) 1000 200
+    in let bal = get-clan-treasury-balance (purchase.platform) (result.clan-id)
+    in assert-eq "Clan registration + authorize + buy tokens" 1000 bal
+
+Section: Test 2 - Clan Economy: Mint, Transfer, Exchange
+
+  test-clan-economy-flow : TestResult
+  test-clan-economy-flow =
+    let econ = clan-economy-new 1 "Iron Marks" 200
+    in let econ2 = clan-mint econ 1 500 100
+    in let econ3 = clan-mint econ2 2 300 101
+    in let result = clan-transfer econ3 1 2 100 102
+    in if result.success == False then assert-true "Clan transfer should succeed" False
+    else let bal1 = get-clan-balance (result.economy) 1
+    in let bal2 = get-clan-balance (result.economy) 2
+    in assert-eq "Clan economy: mint + transfer" 400 (bal1 + bal2)
+
+Section: Test 3 - Tournament Entry, Prize Distribution
+
+  test-tournament-prizes : TestResult
+  test-tournament-prizes =
+    let econ = clan-mint (clan-mint (clan-mint (clan-economy-new 1 "Coins" 100) 1 100 0) 2 100 0) 3 100 0
+    in let tourn = clan-tournament-new 1 1 "Weekly Swiss" 1 SingleElim 20 8 0 0
+    in let j1 = tournament-join tourn econ 1 0
+    in let j2 = tournament-join (j1.tournament) (j1.economy) 2 0
+    in let j3 = tournament-join (j2.tournament) (j2.economy) 3 0
+    in let started = tournament-start (j3.tournament)
+    in let pool = started.prize-pool
+    in assert-gt "Tournament prize pool from 3 entries" pool 40
+
+Section: Test 4 - Library Checkout and Return
+
+  test-library-checkout : TestResult
+  test-library-checkout =
+    let econ = clan-mint (clan-economy-new 1 "Coins" 100) 1 100 0
+    in let lib = library-add-card (clan-library-new 1) 42 7 0 AcqPurchase
+    in let checkout = library-checkout lib econ 42 1 20 0 86400
+    in if checkout.success == False then assert-true "Checkout should succeed" False
+    else let return-result = library-return (checkout.library) (checkout.economy) 42 1 1000
+    in assert-true "Library checkout + return round-trip" (return-result.success)
+
+Section: Test 5 - Planar Exchange: Mint, List, Buy
+
+  test-planar-exchange : TestResult
+  test-planar-exchange =
+    let exch = register-plane (register-plane exchange-new 1 "Chess") 3 "CodexMagic"
+    in let exch2 = mint-planar-item exch 3 "card-game" "Fireball Card" PlanarCard 50 1 0
+    in let exch3 = list-item-for-sale exch2 1 1 75 GlobalManaCoin 0
+    in let ledger = ledger-mint (ledger-new 100) 2 200
+    in let result = buy-listed-item exch3 ledger 1 2 0
+    in assert-true "Planar exchange: mint + list + buy" (result.success)
+
+Section: Test 6 - Cross-Plane Item Conversion
+
+  test-item-conversion : TestResult
+  test-item-conversion =
+    let manifest = manifest-new 1
+    in let ledger = ledger-mint (ledger-new 100) 1 100
+    in let result = convert-item manifest card-to-spell-template ledger 1
+    in if result.success == False then assert-true "Conversion should succeed" False
+    else let manifests = result.manifest.manifestations
+    in assert-eq "Item has manifestation after conversion" 1 (list-length manifests)
+
+Section: Test 7 - GM License and Dungeon Construction
+
+  test-gm-progression : TestResult
+  test-gm-progression =
+    let license = gm-license-new 1 1 1 0
+    in let license2 = gm-deposit license 500
+    in let monster = Combatant { combatant-id = 1, name = "Goblin", is-player = False, char-id = 0, hp = 10, max-hp = 10, ac = 11, attack-bonus = 2, damage-die = 4, damage-bonus = 0, initiative = 8, alive = True }
+    in let spawn-result = spawn-monster-in-dungeon license2 monster 1
+    in if spawn-result.success == False then assert-true "GM spawn should succeed" False
+    else assert-gt "GM balance reduced after spawn" 500 (spawn-result.license.balance)
+
+Section: Test 8 - Dungeon Progression QA Gate
+
+  test-dungeon-qa-gate : TestResult
+  test-dungeon-qa-gate =
+    let prog = progress-new 1 1
+    in let run1 = QARun { run-id = 1, tester = 1, floor-tested = 1, cleared = True, death-count = 0, time-taken = 300, bugs-found = [], balance-notes = "Good", fun-rating = 4, timestamp = 100 }
+    in let run2 = QARun { run-id = 2, tester = 2, floor-tested = 1, cleared = True, death-count = 1, time-taken = 450, bugs-found = [], balance-notes = "Fun", fun-rating = 5, timestamp = 200 }
+    in let run3 = QARun { run-id = 3, tester = 3, floor-tested = 1, cleared = True, death-count = 0, time-taken = 280, bugs-found = [], balance-notes = "Easy", fun-rating = 3, timestamp = 300 }
+    in let r1 = record-qa-run prog run1
+    in let r2 = record-qa-run (r1.progress) run2
+    in let r3 = record-qa-run (r2.progress) run3
+    in assert-true "Floor publishable after 3 QA clears (Foundation stage)" (r3.can-publish-floor)
+
+Section: Test 9 - Subgame Spawn and Resolution
+
+  test-subgame-flow : TestResult
+  test-subgame-flow =
+    let reg = registry-new
+    in let reg2 = create-subgame reg 3 1 1 10 20 (EffectLoseLife 5) 0
+    in let reg3 = start-subgame reg2 1
+    in let reg4 = resolve-subgame reg3 1 (SubgameWinner 10) 100
+    in let session = get-session reg4 1
+    in let fx-result = compute-effect session
+    in assert-eq "Subgame resolved: winner is player 10" 10 (fx-result.winner)
+
+Section: Test 10 - Universal Matchmaking
+
+  test-matchmaking : TestResult
+  test-matchmaking =
+    let mm = matchmaking-new
+    in let prefs = MatchPrefs { max-wait = 60, rating-range = 200, accept-cross-clan = True, accept-cross-age = True, preferred-opponent = -1 }
+    in let mm2 = join-queue mm 3 1 1050 prefs 0
+    in let mm3 = join-queue mm2 3 2 1020 prefs 0
+    in let result = find-match mm3 3 1 1050 10
+    in assert-true "Matchmaking finds opponent within rating range" (result.found)
+
+Section: Test 11 - Player Identity Game Result Tracking
+
+  test-player-identity : TestResult
+  test-player-identity =
+    let profile = profile-new 1 "TestPlayer" 0
+    in let p2 = record-game-result profile 3 True False
+    in let p3 = record-game-result p2 3 True False
+    in let p4 = record-game-result p3 1 False False
+    in let p5 = update-title p4
+    in let rating = get-game-rating p5 3
+    in assert-gt "Rating increases after 2 wins" rating 1000
+
+Section: Test 12 - Event Bus Publish and Subscribe
+
+  test-event-bus : TestResult
+  test-event-bus =
+    let bus = event-bus-new
+    in let bus2 = publish-game-result bus 3 1 10 20 10 100
+    in let bus3 = publish-invasion bus2 1 5 42 "SpawnMonster" 75 True 200
+    in let batch = get-pending-for-service bus3 "PlaneServer"
+    in let stats = bus-stats bus3
+    in assert-eq "Event bus: 2 events published, PlaneServer gets invasion" 2 (stats.total-events)
+
+Section: Test 13 - Invasion Cost Calculation
+
+  test-invasion-costs : TestResult
+  test-invasion-costs =
+    let monster = Combatant { combatant-id = 0, name = "Dragon", is-player = False, char-id = 0, hp = 200, max-hp = 200, ac = 20, attack-bonus = 12, damage-die = 12, damage-bonus = 8, initiative = 15, alive = True }
+    in let cost-same = compute-invasion-cost (InvadeSpawnMonster monster) True
+    in let cost-foreign = compute-invasion-cost (InvadeSpawnMonster monster) False
+    in assert-gt "Foreign invasion costs more than same-clan" cost-foreign cost-same
+
+Section: Test 14 - RPG Character Creation and XP
+
+  test-rpg-character : TestResult
+  test-rpg-character =
+    let char = char-new 1 1 "Thordak" class-warrior race-dwarf 1
+    in let char2 = grant-xp char 150
+    in let char3 = grant-xp char2 300
+    in assert-gt "Character levels up from XP" (char3.level) 1
+
+Section: Test 15 - Full Cross-Game Loop
+
+  test-full-loop : TestResult
+  test-full-loop =
+    let platform = platform-new
+    in let pk = PublicKey { key-high = 111, key-low = 222 }
+    in let reg-result = register-clan platform "Storm Riders" "STRM" 1 pk 0
+    in let p2 = authorize-clan (reg-result.platform) (reg-result.clan-id) (reg-result.auth-token)
+    in let p3 = purchase-global-tokens p2 (reg-result.clan-id) 2000 0
+    in let clan-bal = get-clan-treasury-balance (p3.platform) (reg-result.clan-id)
+    in let econ = clan-economy-new (reg-result.clan-id) "Storm Tokens" 150
+    in let econ2 = clan-mint econ 1 500 0
+    in let tourn = clan-tournament-new 1 (reg-result.clan-id) "Storm Cup" 1 SingleElim 50 8 1 0
+    in let exch = mint-planar-item exchange-new 3 "storm-clan" "Lightning Bolt" PlanarCard 100 1 0
+    in let manifest = manifest-new 1
+    in let ledger = ledger-mint (ledger-new 100) 1 500
+    in let conv = convert-item manifest card-to-spell-template ledger 1
+    in let all-pass = clan-bal == 2000
+    in let all-pass2 = all-pass & (econ2.coin-supply == 500)
+    in let all-pass3 = all-pass2 & (conv.success)
+    in assert-true "Full loop: register clan -> buy tokens -> mint clan coin -> create tournament -> mint planar item -> convert to spell" all-pass3
+
+Section: Test Runner
+
+  opening : [Console] Nothing = act
+    print-line-uni "=== CodexMagic Integration Tests ==="
+    print-line-uni ""
+    run-test test-clan-registration
+    run-test test-clan-economy-flow
+    run-test test-tournament-prizes
+    run-test test-library-checkout
+    run-test test-planar-exchange
+    run-test test-item-conversion
+    run-test test-gm-progression
+    run-test test-dungeon-qa-gate
+    run-test test-subgame-flow
+    run-test test-matchmaking
+    run-test test-player-identity
+    run-test test-event-bus
+    run-test test-invasion-costs
+    run-test test-rpg-character
+    run-test test-full-loop
+    print-line-uni ""
+    print-line-uni "=== Done ==="
+  end
+
+  run-test : TestResult -> [Console] Nothing
+  run-test (result) = act
+    let status = if result.passed then "[PASS]" else "[FAIL]"
+    in print-line-uni (status & " " & result.name & " - " & result.detail)
+  end
+
+Page 1

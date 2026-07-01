@@ -1,0 +1,84 @@
+Chapter: ProcessGroupTest
+  cites Sched chapter ProcessGroup
+  cites OS chapter ServiceRegistry
+  cites Foreword chapter Maybe
+  cites Foreword chapter Hamt
+
+Section: Helpers
+  show-bool : Boolean -> Text
+  show-bool (b) = if b then "True" else "False"
+
+Section: Tests
+
+  test-empty : Text =
+    "groups=" & show (group-count group-registry-empty)
+
+  test-create : Text =
+    let r0 = group-create group-registry-empty "team-a" 1
+    in let r1 = group-create r0 "team-b" 2
+    in "groups=" & show (group-count r1)
+
+  test-add-members : Text =
+    let r0 = group-create group-registry-empty "team" 1
+    in let r1 = group-add-member r0 "team" "x" 2 "worker"
+    in let r2 = group-add-member r1 "team" "y" 3 "worker"
+    in let r3 = group-add-member r2 "team" "z" 4 "worker"
+    in let g = group-lookup r3 "team"
+    in when g
+      is Just (grp) -> format-group grp
+      is None -> "not found"
+
+  test-remove-member : Text =
+    let r0 = group-create group-registry-empty "team" 1
+    in let r1 = group-add-member r0 "team" "x" 2 "worker"
+    in let r2 = group-add-member r1 "team" "y" 3 "worker"
+    in let r3 = group-remove-member r2 "team" "x"
+    in let g = group-lookup r3 "team"
+    in when g
+      is Just (grp) -> "members=" & show (group-member-count grp) & " has-x=" & show-bool (group-has-member grp "x") & " has-y=" & show-bool (group-has-member grp "y")
+      is None -> "not found"
+
+  test-find-by-role : Text =
+    let r0 = group-create group-registry-empty "services" 1
+    in let r1 = group-add-member r0 "services" "db" 5 "database"
+    in let r2 = group-add-member r1 "services" "web" 6 "frontend"
+    in let g = group-lookup r2 "services"
+    in when g
+      is Just (grp) ->
+        let db-found = group-find-by-role grp "database"
+        in let cache-found = group-find-by-role grp "cache"
+        in let db-text = when db-found
+          is Just (m) -> "db=" & m.name & " pid=" & show (m.pid) & " role=" & m.role
+          is None -> "db=none"
+        in let cache-text = when cache-found
+          is Just (m) -> "cache=" & m.name
+          is None -> "cache=none"
+        in db-text & " " & cache-text
+      is None -> "not found"
+
+  test-delete-group : Text =
+    let r0 = group-create group-registry-empty "a" 1
+    in let r1 = group-create r0 "b" 2
+    in let r2 = group-delete r1 "a"
+    in let exists = when (group-lookup r2 "a")
+      is Just (g) -> True
+      is None -> False
+    in "groups=" & show (group-count r2) & " has-a=" & show-bool (exists)
+
+  test-duplicate-create : Text =
+    let r0 = group-create group-registry-empty "team" 1
+    in let r1 = group-create r0 "team" 99
+    in let g = group-lookup r1 "team"
+    in when g
+      is Just (grp) -> "groups=" & show (group-count r1) & " leader=" & show (grp.leader-pid)
+      is None -> "not found"
+
+  opening : [Console] Nothing = act
+    print-line-uni test-empty
+    print-line-uni test-create
+    print-line-uni test-add-members
+    print-line-uni test-remove-member
+    print-line-uni test-find-by-role
+    print-line-uni test-delete-group
+    print-line-uni test-duplicate-create
+  end

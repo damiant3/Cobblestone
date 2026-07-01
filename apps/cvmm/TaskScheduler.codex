@@ -1,0 +1,268 @@
+Chapter: TaskScheduler
+  cites Cvmm chapter CvmmTypes
+  cites Cvmm chapter ResourceModel
+  cites UI chapter Widget
+  cites UI chapter Layout
+  cites Foreword chapter Maybe
+
+ Scheduled task manager. Cron-style recurring jobs and one-shot
+ timers. Each task has a schedule expression, an action to execute,
+ a run history, and enable/disable state. The scheduler evaluates
+ which tasks are due and fires them. This is the crontab of
+ codex.OS, but with a proper GUI.
+
+Section: Schedule Expression
+
+  ScheduleExpr =
+    | SchedOnce (Integer)
+    | SchedInterval (Integer)
+    | SchedDaily (Integer) (Integer)
+    | SchedWeekly (Integer) (Integer) (Integer)
+    | SchedCron (Text)
+
+  sched-expr-label : ScheduleExpr -> Text
+  sched-expr-label (s) = when s
+    is SchedOnce (at) -> "once at " & show at
+    is SchedInterval (secs) -> "every " & format-uptime (Uptime { ut-seconds = secs })
+    is SchedDaily (hour) (minute) -> "daily at " & show hour & ":" & sched-pad-min minute
+    is SchedWeekly (day) (hour) (minute) -> "weekly day " & show day & " at " & show hour & ":" & sched-pad-min minute
+    is SchedCron (expr) -> expr
+
+  sched-pad-min : Integer -> Text
+  sched-pad-min (m) = if m < 10 then "0" & show m else show m
+
+  sched-next-run : ScheduleExpr, Integer -> Integer
+  sched-next-run (expr) (now) = when expr
+    is SchedOnce (at) -> at
+    is SchedInterval (secs) -> now + secs
+    is SchedDaily (hour) (minute) -> now + 86400
+    is SchedWeekly (day) (hour) (minute) -> now + 604800
+    is SchedCron (e) -> now + 3600
+
+Section: Task Action
+
+  TaskAction =
+    | TaRunCommand (Text)
+    | TaRunScript (Text)
+    | TaRestartService (Text)
+    | TaHttpRequest (Text) (Text)
+    | TaNotify (Text) (Text)
+    | TaBackup (Text) (Text)
+    | TaCleanup (Text) (Integer)
+    | TaCustom (Text)
+
+  task-action-label : TaskAction -> Text
+  task-action-label (a) = when a
+    is TaRunCommand (cmd) -> "run: " & cmd
+    is TaRunScript (path) -> "script: " & path
+    is TaRestartService (svc) -> "restart: " & svc
+    is TaHttpRequest (method) (url) -> method & " " & url
+    is TaNotify (title) (body) -> "notify: " & title
+    is TaBackup (src) (dst) -> "backup: " & src & " -> " & dst
+    is TaCleanup (path) (max-age) -> "cleanup: " & path & " older than " & show max-age & "s"
+    is TaCustom (desc) -> desc
+
+Section: Run History
+
+  TaskRunResult =
+    | RunSuccess (Integer)
+    | RunFailure (Text) (Integer)
+    | RunSkipped (Text)
+    | RunTimeout
+
+  run-result-label : TaskRunResult -> Text
+  run-result-label (r) = when r
+    is RunSuccess (duration) -> "ok (" & show duration & "ms)"
+    is RunFailure (msg) (duration) -> "fail: " & msg
+    is RunSkipped (reason) -> "skipped: " & reason
+    is RunTimeout -> "timeout"
+
+  TaskRun = record {
+    tr-id : Integer,
+    tr-started : Integer,
+    tr-result : TaskRunResult,
+    tr-output : Text
+  }
+
+Section: Scheduled Task
+
+  ScheduledTask = record {
+    st-id : Text,
+    st-name : Text,
+    st-description : Text,
+    st-schedule : ScheduleExpr,
+    st-action : TaskAction,
+    st-enabled : Boolean,
+    st-next-run : Integer,
+    st-last-run : Integer,
+    st-run-count : Integer,
+    st-fail-count : Integer,
+    st-history : List TaskRun,
+    st-history-count : Integer,
+    st-max-history : Integer,
+    st-timeout-ms : Integer,
+    st-retry-count : Integer,
+    st-retry-delay-ms : Integer
+  }
+
+  sched-task-new : Text, Text, ScheduleExpr, TaskAction -> ScheduledTask
+  sched-task-new (id) (name) (schedule) (action) = ScheduledTask {
+    st-id = id,
+    st-name = name,
+    st-description = "",
+    st-schedule = schedule,
+    st-action = action,
+    st-enabled = True,
+    st-next-run = 0,
+    st-last-run = 0,
+    st-run-count = 0,
+    st-fail-count = 0,
+    st-history = [],
+    st-history-count = 0,
+    st-max-history = 50,
+    st-timeout-ms = 30000,
+    st-retry-count = 0,
+    st-retry-delay-ms = 5000
+  }
+
+  sched-task-toggle : ScheduledTask -> ScheduledTask
+  sched-task-toggle (t) = __record-set t "st-enabled" (if t.st-enabled then False else True)
+
+  sched-task-record-run : ScheduledTask, Integer, TaskRunResult, Text -> ScheduledTask
+  sched-task-record-run (t) (started) (result) (output) =
+    let run = TaskRun { tr-id = t.st-run-count + 1, tr-started = started, tr-result = result, tr-output = output }
+    in let new-hist = if t.st-history-count >= t.st-max-history then
+      list-push (sched-drop-oldest (t.st-history) (t.st-history-count)) run
+    else list-push (t.st-history) run
+    in let fail-delta = when result
+      is RunFailure (msg) (dur) -> 1
+      is RunTimeout -> 1
+      is otherwise -> 0
+    in ScheduledTask {
+      st-id = t.st-id, st-name = t.st-name, st-description = t.st-description,
+      st-schedule = t.st-schedule, st-action = t.st-action, st-enabled = t.st-enabled,
+      st-next-run = sched-next-run (t.st-schedule) started,
+      st-last-run = started,
+      st-run-count = t.st-run-count + 1,
+      st-fail-count = t.st-fail-count + fail-delta,
+      st-history = new-hist,
+      st-history-count = if t.st-history-count >= t.st-max-history then t.st-history-count else t.st-history-count + 1,
+      st-max-history = t.st-max-history,
+      st-timeout-ms = t.st-timeout-ms,
+      st-retry-count = t.st-retry-count,
+      st-retry-delay-ms = t.st-retry-delay-ms
+    }
+
+  sched-drop-oldest : List TaskRun, Integer -> List TaskRun
+  sched-drop-oldest (runs) (count) =
+    if count <= 1 then []
+    else sched-drop-loop runs 1 count []
+
+  sched-drop-loop : List TaskRun, Integer, Integer, List TaskRun -> List TaskRun
+  sched-drop-loop (runs) (i) (n) (acc) =
+    if i >= n then acc
+    else sched-drop-loop runs (i + 1) n (list-push acc (list-at runs i))
+
+  sched-task-is-due : ScheduledTask, Integer -> Boolean
+  sched-task-is-due (t) (now) =
+    if t.st-enabled then now >= t.st-next-run else False
+
+  sched-task-success-rate : ScheduledTask -> Integer
+  sched-task-success-rate (t) =
+    if t.st-run-count == 0 then 100
+    else (t.st-run-count - t.st-fail-count) * 100 / t.st-run-count
+
+Section: Scheduler State
+
+  SchedulerState = record {
+    scs-tasks : List ScheduledTask,
+    scs-count : Integer,
+    scs-selected : Text,
+    scs-running : Integer,
+    scs-next-id : Integer
+  }
+
+  scheduler-new : SchedulerState
+  scheduler-new = SchedulerState {
+    scs-tasks = [],
+    scs-count = 0,
+    scs-selected = "",
+    scs-running = 0,
+    scs-next-id = 1
+  }
+
+  scs-add : SchedulerState, ScheduledTask -> SchedulerState
+  scs-add (st) (task) =
+    __record-set (__record-set st "scs-tasks" (list-push (st.scs-tasks) task)) "scs-count" (st.scs-count + 1)
+
+  scs-remove : SchedulerState, Text -> SchedulerState
+  scs-remove (st) (id) =
+    let filtered = scs-filter (st.scs-tasks) id 0 (st.scs-count) []
+    in __record-set (__record-set st "scs-tasks" filtered) "scs-count" (list-length filtered)
+
+  scs-filter : List ScheduledTask, Text, Integer, Integer, List ScheduledTask -> List ScheduledTask
+  scs-filter (tasks) (id) (i) (n) (acc) =
+    if i >= n then acc
+    else let t = list-at tasks i
+    in if t.st-id == id then scs-filter tasks id (i + 1) n acc
+    else scs-filter tasks id (i + 1) n (list-push acc t)
+
+  scs-find : SchedulerState, Text -> Maybe ScheduledTask
+  scs-find (st) (id) = scs-find-loop (st.scs-tasks) id 0 (st.scs-count)
+
+  scs-find-loop : List ScheduledTask, Text, Integer, Integer -> Maybe ScheduledTask
+  scs-find-loop (tasks) (id) (i) (n) =
+    if i >= n then None
+    else let t = list-at tasks i
+    in if t.st-id == id then Just t
+    else scs-find-loop tasks id (i + 1) n
+
+  scs-due-tasks : SchedulerState, Integer -> List ScheduledTask
+  scs-due-tasks (st) (now) =
+    scs-due-loop (st.scs-tasks) now 0 (st.scs-count) []
+
+  scs-due-loop : List ScheduledTask, Integer, Integer, Integer, List ScheduledTask -> List ScheduledTask
+  scs-due-loop (tasks) (now) (i) (n) (acc) =
+    if i >= n then acc
+    else let t = list-at tasks i
+    in if sched-task-is-due t now then scs-due-loop tasks now (i + 1) n (list-push acc t)
+    else scs-due-loop tasks now (i + 1) n acc
+
+  scs-enabled-count : SchedulerState -> Integer
+  scs-enabled-count (st) = scs-enabled-loop (st.scs-tasks) 0 (st.scs-count) 0
+
+  scs-enabled-loop : List ScheduledTask, Integer, Integer, Integer -> Integer
+  scs-enabled-loop (tasks) (i) (n) (acc) =
+    if i >= n then acc
+    else let delta = if (list-at tasks i).st-enabled then 1 else 0
+    in scs-enabled-loop tasks (i + 1) n (acc + delta)
+
+Section: Widget Building
+
+  scs-task-row : ScheduledTask -> WidgetNode
+  scs-task-row (t) =
+    let name = widget-label (t.st-id & "-name") (t.st-name)
+    in let sched = widget-label (t.st-id & "-sched") (sched-expr-label (t.st-schedule))
+    in let action = widget-label (t.st-id & "-action") (task-action-label (t.st-action))
+    in let enabled = widget-label (t.st-id & "-enabled") (if t.st-enabled then "enabled" else "disabled")
+    in let runs = widget-label (t.st-id & "-runs") (show (t.st-run-count) & " runs")
+    in let rate = widget-gauge (t.st-id & "-rate") (sched-task-success-rate t) 100
+    in let toggle = widget-button (t.st-id & "-toggle") (if t.st-enabled then "Disable" else "Enable")
+    in let run-now = widget-button (t.st-id & "-run") "Run Now"
+    in widget-panel t.st-id DirRow 8 [name, sched, action, enabled, runs, rate, toggle, run-now]
+
+  scs-widget : SchedulerState -> WidgetNode
+  scs-widget (st) =
+    let title = widget-label "scs-title" "Task Scheduler"
+    in let enabled = scs-enabled-count st
+    in let summary = widget-label "scs-summary" (show enabled & "/" & show (st.scs-count) & " enabled, " & show (st.scs-running) & " running")
+    in let add-btn = widget-button "scs-add" "New Task"
+    in let rows = scs-rows (st.scs-tasks) 0 (st.scs-count) []
+    in widget-panel "scheduler" DirColumn 4 ([title, summary, add-btn] & rows)
+
+  scs-rows : List ScheduledTask, Integer, Integer, List WidgetNode -> List WidgetNode
+  scs-rows (tasks) (i) (n) (acc) =
+    if i >= n then acc
+    else scs-rows tasks (i + 1) n (list-push acc (scs-task-row (list-at tasks i)))
+
+Page 1

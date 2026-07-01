@@ -1,0 +1,136 @@
+Chapter: UsbAudio
+  cites Kernel chapter Usb
+  cites Foreword chapter Maybe
+
+ USB Audio Class driver. Discovers USB audio devices, parses
+ audio-specific descriptors, manages streaming endpoints for
+ PCM audio output. Supports USB Audio Class 1.0.
+
+ We say:
+
+Section: Audio Descriptor Types
+  uac-desc-header : Integer = 1
+  uac-desc-input-terminal : Integer = 2
+  uac-desc-output-terminal : Integer = 3
+  uac-desc-feature-unit : Integer = 6
+  uac-desc-format-type : Integer = 2
+  uac-cs-interface : Integer = 36
+  uac-cs-endpoint : Integer = 37
+
+Section: Terminal Types
+  uac-terminal-usb-streaming : Integer = 257
+  uac-terminal-speaker : Integer = 769
+  uac-terminal-headphones : Integer = 770
+  uac-terminal-microphone : Integer = 513
+
+Section: Audio Stream State
+  UsbAudioDevice = record {
+    uad-slot : Integer,
+    uad-stream-ep : Integer,
+    uad-sample-rate : Integer,
+    uad-channels : Integer,
+    uad-bit-depth : Integer,
+    uad-max-packet : Integer,
+    uad-found : Boolean
+  }
+
+  usb-audio-not-found : UsbAudioDevice
+  usb-audio-not-found = UsbAudioDevice { uad-slot = 0, uad-stream-ep = 0, uad-sample-rate = 0, uad-channels = 0, uad-bit-depth = 0, uad-max-packet = 0, uad-found = False }
+
+Section: Device Detection
+  usb-audio-detect : UsbInterface, List Integer, Integer -> Maybe UsbAudioDevice
+  usb-audio-detect (iface) (config-desc) (slot) =
+    if iface.if-class == usb-class-audio then
+      if iface.if-subclass == usb-subclass-audio-streaming then
+        Just (UsbAudioDevice { uad-slot = slot, uad-stream-ep = 0, uad-sample-rate = 44100, uad-channels = 2, uad-bit-depth = 16, uad-max-packet = 192, uad-found = True })
+      else None
+    else None
+
+Section: Audio Format
+  AudioFormat = record {
+    afmt-sample-rate : Integer,
+    afmt-channels : Integer,
+    afmt-bit-depth : Integer,
+    afmt-bytes-per-sample : Integer
+  }
+
+  audio-format-cd : AudioFormat
+  audio-format-cd = AudioFormat { afmt-sample-rate = 44100, afmt-channels = 2, afmt-bit-depth = 16, afmt-bytes-per-sample = 4 }
+
+  audio-format-48k : AudioFormat
+  audio-format-48k = AudioFormat { afmt-sample-rate = 48000, afmt-channels = 2, afmt-bit-depth = 16, afmt-bytes-per-sample = 4 }
+
+  audio-format-hires : AudioFormat
+  audio-format-hires = AudioFormat { afmt-sample-rate = 96000, afmt-channels = 2, afmt-bit-depth = 24, afmt-bytes-per-sample = 6 }
+
+Section: PCM Frame Building
+  usb-audio-frame : List Integer, List Integer, AudioFormat -> List Integer
+  usb-audio-frame (left) (right) (fmt) =
+    usb-interleave left right fmt 0 (uaf-min (list-length left) (list-length right)) []
+
+  usb-interleave : List Integer, List Integer, AudioFormat, Integer, Integer, List Integer -> List Integer
+  usb-interleave (left) (right) (fmt) (i) (n) (acc) =
+    if i >= n then acc
+    else let l-pcm = uaf-to-pcm (list-at left i) (fmt.afmt-bit-depth)
+    in let r-pcm = uaf-to-pcm (list-at right i) (fmt.afmt-bit-depth)
+    in let l-bytes = uaf-pcm-bytes l-pcm (fmt.afmt-bit-depth)
+    in let r-bytes = uaf-pcm-bytes r-pcm (fmt.afmt-bit-depth)
+    in usb-interleave left right fmt (i + 1) n (acc & l-bytes & r-bytes)
+
+  uaf-to-pcm : Integer, Integer -> Integer
+  uaf-to-pcm (fixed) (bits) =
+    if bits == 16 then let scaled = fixed * 32767 / 1000 in if scaled > 32767 then 32767 else if scaled < 0 - 32768 then 0 - 32768 else scaled
+    else if bits == 24 then let scaled = fixed * 8388607 / 1000 in if scaled > 8388607 then 8388607 else if scaled < 0 - 8388608 then 0 - 8388608 else scaled
+    else fixed
+
+  uaf-pcm-bytes : Integer, Integer -> List Integer
+  uaf-pcm-bytes (pcm) (bits) =
+    let unsigned = if pcm < 0 then (if bits == 16 then 65536 else 16777216) + pcm else pcm
+    in if bits == 16 then [bit-and unsigned 255, bit-and (bit-shru unsigned 8) 255]
+    else [bit-and unsigned 255, bit-and (bit-shru unsigned 8) 255, bit-and (bit-shru unsigned 16) 255]
+
+Section: Isochronous Transfer Scheduling
+  UsbAudioBuffer = record {
+    uab-frames : List (List Integer),
+    uab-frame-size : Integer,
+    uab-frames-per-ms : Integer,
+    uab-total-frames : Integer
+  }
+
+  usb-audio-buffer : AudioFormat, Integer -> UsbAudioBuffer
+  usb-audio-buffer (fmt) (duration-ms) =
+    let samples-per-ms = fmt.afmt-sample-rate / 1000
+    in let frame-size = samples-per-ms * fmt.afmt-bytes-per-sample
+    in UsbAudioBuffer { uab-frames = [], uab-frame-size = frame-size, uab-frames-per-ms = samples-per-ms, uab-total-frames = duration-ms }
+
+Section: Volume Control
+  usb-audio-set-volume : Integer -> List Integer
+  usb-audio-set-volume (volume-pct) =
+    let db-val = if volume-pct >= 100 then 0
+      else if volume-pct <= 0 then 0 - 32768
+      else (volume-pct - 100) * 256
+    in usb-le16-encode db-val
+
+Section: Queries
+  usb-audio-bytes-per-second : AudioFormat -> Integer
+  usb-audio-bytes-per-second (fmt) = fmt.afmt-sample-rate * fmt.afmt-bytes-per-sample
+
+  usb-audio-latency-ms : AudioFormat, Integer -> Integer
+  usb-audio-latency-ms (fmt) (buffer-frames) =
+    buffer-frames * 1000 / fmt.afmt-sample-rate
+
+Section: Helpers
+  uaf-min : Integer, Integer -> Integer
+  uaf-min (a) (b) = if a < b then a else b
+
+Section: Formatting
+  format-usb-audio : UsbAudioDevice -> Text
+  format-usb-audio (dev) =
+    if dev.uad-found then "USB Audio: " & show (dev.uad-sample-rate) & "Hz " & show (dev.uad-channels) & "ch " & show (dev.uad-bit-depth) & "bit EP" & show (dev.uad-stream-ep)
+    else "USB Audio: not found"
+
+  format-audio-format : AudioFormat -> Text
+  format-audio-format (fmt) =
+    show (fmt.afmt-sample-rate) & "Hz " & show (fmt.afmt-channels) & "ch " & show (fmt.afmt-bit-depth) & "bit (" & show (usb-audio-bytes-per-second fmt) & " B/s)"
+
+Page 1

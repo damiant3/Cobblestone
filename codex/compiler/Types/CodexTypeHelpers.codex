@@ -1,0 +1,81 @@
+Chapter: CodexType Helpers
+
+ Shared CodexType transformations used across the type checker, IR
+ lowering, and emitters. Each helper has one canonical definition;
+ duplicates in IR/LoweringTypes, TypeCheckerInference,
+ and X86_64Compound were consolidated here.
+
+Section: Function-Type Peeling
+  peel-fun-param : CodexType -> CodexType
+  peel-fun-param (ty) =
+   when ty
+    is FunTy (p) (r) -> p
+    is ForAllTy (id) (body) -> peel-fun-param body
+    is otherwise -> ErrorTy
+
+  peel-fun-return : CodexType -> CodexType
+  peel-fun-return (ty) =
+   when ty
+    is FunTy (p) (r) -> r
+    is ForAllTy (id) (body) -> peel-fun-return body
+    is otherwise -> ErrorTy
+
+  strip-fun-args : CodexType -> CodexType
+  strip-fun-args (ty) =
+   when ty
+    is FunTy (p) (r) -> strip-fun-args r
+    is ForAllTy (id) (body) -> strip-fun-args body
+    is otherwise -> ty
+
+  strip-forall-ty : CodexType -> CodexType
+  strip-forall-ty (ty) =
+   when ty
+    is ForAllTy (id) (body) -> strip-forall-ty body
+    is otherwise -> ty
+
+Section: Hardware Integer Width
+  HwIntWidth =
+   | HwU8
+   | HwU16
+   | HwU32
+   | HwU64
+   | HwI8
+   | HwI16
+   | HwI32
+   | HwI64
+
+  hw-width-bytes : HwIntWidth -> Integer
+  hw-width-bytes (w) =
+   when w
+    is HwU8  | HwI8  -> 1
+    is HwU16 | HwI16 -> 2
+    is HwU32 | HwI32 -> 4
+    is HwU64 | HwI64 -> 8
+
+  hw-width-signed : HwIntWidth -> Boolean
+  hw-width-signed (w) =
+   when w
+    is HwU8 | HwU16 | HwU32 | HwU64 -> False
+    is HwI8 | HwI16 | HwI32 | HwI64 -> True
+
+  bounds-to-hw-width : Integer, Integer -> HwIntWidth
+  bounds-to-hw-width (lo) (hi) =
+   if lo >= 0 then
+    if hi <= 255                  then HwU8
+    else if hi <= 65535           then HwU16
+    else if hi <= 4294967295      then HwU32
+    else                               HwU64
+   else
+    if lo >= (0 - 128)        & hi <= 127        then HwI8
+    else if lo >= (0 - 32768) & hi <= 32767      then HwI16
+    else if lo >= (0 - 2147483648) & hi <= 2147483647 then HwI32
+    else                                              HwI64
+
+  integer-ty-hw-width : CodexType -> HwIntWidth
+  integer-ty-hw-width (ty) =
+   when ty
+    is IntegerTy (lo) (hi) (mode) -> bounds-to-hw-width lo hi
+    is UnitTy (name) (inner) -> integer-ty-hw-width inner
+    is otherwise -> HwI64
+
+Page 1

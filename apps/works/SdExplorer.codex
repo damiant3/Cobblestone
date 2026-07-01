@@ -1,0 +1,462 @@
+Chapter: SdExplorer
+  cites Foreword chapter CCE
+  cites Foreword chapter Sha256
+  cites Foreword chapter Maybe
+
+ SD parameter explorer server. Runs bare-metal in the VM, handles
+ request lines on serial, responds with JSON. The PowerShell bridge
+ handles HTTP, file I/O, and SD API proxying.
+
+ Protocol:
+   Request:  METHOD /path?key=val&key=val
+   Response: STATUS content-type BODY
+   Special:  CONFIG model|sampler|lora|upscaler NAME  (bridge feeds these at boot)
+
+ We say:
+
+Section: Response Helpers
+
+  respond-json : Text -> [Console] Integer
+  respond-json (body) = act
+    print-line-uni ("200 application/json " & body)
+    0
+  end
+
+  respond-error : Text -> [Console] Integer
+  respond-error (msg) = act
+    print-line-uni ("400 application/json {\"error\":\"" & msg & "\"}")
+    0
+  end
+
+  respond-not-found : [Console] Integer
+  respond-not-found = act
+    print-line-uni "404 text/plain Not Found"
+    0
+  end
+
+Section: String Helpers
+
+  text-take : Text, Integer -> Text
+  text-take (s) (n) = text-take-loop s n 0 ""
+
+  text-take-loop : Text, Integer, Integer, Text -> Text
+  text-take-loop (s) (n) (i) (acc) =
+    if i >= n then acc
+    else if i >= text-length s then acc
+    else text-take-loop s n (i + 1) (acc & char-to-text (char-at s i))
+
+  text-drop : Text, Integer -> Text
+  text-drop (s) (n) = text-drop-loop s n 0 (text-length s) ""
+
+  text-drop-loop : Text, Integer, Integer, Integer, Text -> Text
+  text-drop-loop (s) (start) (i) (len) (acc) =
+    if i >= len then acc
+    else if i < start then text-drop-loop s start (i + 1) len acc
+    else text-drop-loop s start (i + 1) len (acc & char-to-text (char-at s i))
+
+Section: Request Parsing
+
+  extract-path : Text -> Text
+  extract-path (line) =
+    let parts = text-split line " "
+    in if list-length parts < 2 then "/"
+    else let full = list-at parts 1
+    in let qpos = find-char full 63 0
+    in if qpos < 0 then full
+    else text-take full qpos
+
+  extract-query-param : Text, Text -> Text
+  extract-query-param (line) (key) =
+    let parts = text-split line " "
+    in if list-length parts < 2 then ""
+    else let full = list-at parts 1
+    in let qpos = find-char full 63 0
+    in if qpos < 0 then ""
+    else let qs = text-drop full (qpos + 1)
+    in find-param-value qs key
+
+  find-char : Text, Integer, Integer -> Integer
+  find-char (s) (target) (i) =
+    if i >= text-length s then (-1)
+    else if to-unicode (char-code (char-at s i)) == target then i
+    else find-char s target (i + 1)
+
+  find-param-value : Text, Text -> Text
+  find-param-value (qs) (key) =
+    let pairs = text-split qs "&"
+    in find-in-pairs pairs key 0
+
+  find-in-pairs : List Text, Text, Integer -> Text
+  find-in-pairs (pairs) (key) (i) =
+    if i >= list-length pairs then ""
+    else let pair = list-at pairs i
+    in let eqpos = find-char pair 61 0
+    in if eqpos < 0 then find-in-pairs pairs key (i + 1)
+    else let k = text-take pair eqpos
+    in if k == key then text-drop pair (eqpos + 1)
+    else find-in-pairs pairs key (i + 1)
+
+  parse-int : Text, Integer -> Integer
+  parse-int (s) (default-val) =
+    if text-length s == 0 then default-val
+    else parse-int-loop s 0 0
+
+  parse-int-loop : Text, Integer, Integer -> Integer
+  parse-int-loop (s) (i) (acc) =
+    if i >= text-length s then acc
+    else let c = to-unicode (char-code (char-at s i))
+    in if c >= 48 then
+      if c <= 57 then parse-int-loop s (i + 1) (acc * 10 + c - 48)
+      else acc
+    else acc
+
+Section: JSON Helpers
+
+  jstr : Text -> Text
+  jstr (s) = "\"" & json-escape s 0 (text-length s) "" & "\""
+
+  json-escape : Text, Integer, Integer, Text -> Text
+  json-escape (s) (i) (len) (acc) =
+    if i >= len then acc
+    else let c = to-unicode (char-code (char-at s i))
+    in if c == 34 then json-escape s (i + 1) len (acc & "\\\"")
+    else if c == 92 then json-escape s (i + 1) len (acc & "\\\\")
+    else json-escape s (i + 1) len (acc & char-to-text (char-at s i))
+
+  jbool : Boolean -> Text
+  jbool (b) = if b then "true" else "false"
+
+Section: Configuration
+
+  SdModel = record {
+    title : Text,
+    name : Text
+  }
+
+  SdLora = record {
+    name : Text
+  }
+
+  ExplorerConfig = record {
+    models : List SdModel,
+    num-models : Integer,
+    samplers : List Text,
+    num-samplers : Integer,
+    loras : List SdLora,
+    num-loras : Integer,
+    upscalers : List Text,
+    num-upscalers : Integer,
+    current-model : Text
+  }
+
+  config-new : ExplorerConfig
+  config-new = ExplorerConfig {
+    models = [], num-models = 0,
+    samplers = [], num-samplers = 0,
+    loras = [], num-loras = 0,
+    upscalers = [], num-upscalers = 0,
+    current-model = ""
+  }
+
+  config-add-model : ExplorerConfig, Text, Text -> ExplorerConfig
+  config-add-model (cfg) (title) (name) =
+    ExplorerConfig {
+      models = list-push (cfg.models) (SdModel { title = title, name = name }),
+      num-models = cfg.num-models + 1,
+      samplers = cfg.samplers, num-samplers = cfg.num-samplers,
+      loras = cfg.loras, num-loras = cfg.num-loras,
+      upscalers = cfg.upscalers, num-upscalers = cfg.num-upscalers,
+      current-model = cfg.current-model
+    }
+
+  config-add-sampler : ExplorerConfig, Text -> ExplorerConfig
+  config-add-sampler (cfg) (s) =
+    ExplorerConfig {
+      models = cfg.models, num-models = cfg.num-models,
+      samplers = list-push (cfg.samplers) s, num-samplers = cfg.num-samplers + 1,
+      loras = cfg.loras, num-loras = cfg.num-loras,
+      upscalers = cfg.upscalers, num-upscalers = cfg.num-upscalers,
+      current-model = cfg.current-model
+    }
+
+  config-add-lora : ExplorerConfig, Text -> ExplorerConfig
+  config-add-lora (cfg) (name) =
+    ExplorerConfig {
+      models = cfg.models, num-models = cfg.num-models,
+      samplers = cfg.samplers, num-samplers = cfg.num-samplers,
+      loras = list-push (cfg.loras) (SdLora { name = name }), num-loras = cfg.num-loras + 1,
+      upscalers = cfg.upscalers, num-upscalers = cfg.num-upscalers,
+      current-model = cfg.current-model
+    }
+
+  config-add-upscaler : ExplorerConfig, Text -> ExplorerConfig
+  config-add-upscaler (cfg) (name) =
+    ExplorerConfig {
+      models = cfg.models, num-models = cfg.num-models,
+      samplers = cfg.samplers, num-samplers = cfg.num-samplers,
+      loras = cfg.loras, num-loras = cfg.num-loras,
+      upscalers = list-push (cfg.upscalers) name, num-upscalers = cfg.num-upscalers + 1,
+      current-model = cfg.current-model
+    }
+
+  config-set-current-model : ExplorerConfig, Text -> ExplorerConfig
+  config-set-current-model (cfg) (m) =
+    ExplorerConfig {
+      models = cfg.models, num-models = cfg.num-models,
+      samplers = cfg.samplers, num-samplers = cfg.num-samplers,
+      loras = cfg.loras, num-loras = cfg.num-loras,
+      upscalers = cfg.upscalers, num-upscalers = cfg.num-upscalers,
+      current-model = m
+    }
+
+Section: Explorer State
+
+  ExplorerState = record {
+    config : ExplorerConfig,
+    images-served : Integer,
+    prompts-seen : Integer
+  }
+
+  explorer-new : ExplorerState
+  explorer-new = ExplorerState {
+    config = config-new,
+    images-served = 0,
+    prompts-seen = 0
+  }
+
+Section: Cache Key
+
+  sanitize : Text -> Text
+  sanitize (s) = sanitize-loop s 0 (text-length s) ""
+
+  sanitize-loop : Text, Integer, Integer, Text -> Text
+  sanitize-loop (s) (i) (len) (acc) =
+    if i >= len then acc
+    else let c = to-unicode (char-code (char-at s i))
+    in if c == 32 then sanitize-loop s (i + 1) len (acc & "_")
+    else if c == 43 then sanitize-loop s (i + 1) len (acc & "p")
+    else if c >= 48 then
+      if c <= 57 then sanitize-loop s (i + 1) len (acc & char-to-text (char-at s i))
+      else if c >= 65 then
+        if c <= 122 then sanitize-loop s (i + 1) len (acc & char-to-text (char-at s i))
+        else sanitize-loop s (i + 1) len acc
+      else sanitize-loop s (i + 1) len acc
+    else sanitize-loop s (i + 1) len acc
+
+  make-cache-key : Text, Text, Integer, Integer, Text, Integer -> Text
+  make-cache-key (model-short) (sampler) (steps) (cfg) (lora-short) (seed) =
+    sanitize model-short & "_"
+    & sanitize sampler & "_"
+    & "s" & show steps & "_"
+    & "c" & show cfg & "_"
+    & "lora_" & sanitize lora-short & "_"
+    & "seed" & show seed & ".png"
+
+  prompt-hash : Text -> Text
+  prompt-hash (prompt) = text-take (sha256-to-hex (sha256 (text-to-bytes prompt))) 12
+
+Section: Config Bootstrap
+
+  BootResult = record {
+    config : ExplorerConfig,
+    done : Boolean
+  }
+
+  bootstrap-config : ExplorerConfig -> [Console] ExplorerConfig
+  bootstrap-config (cfg) = act
+    line-result <- read-line
+    when line-result
+      is Just (line) ->
+        let br = apply-config-line cfg line
+        in if br.done then br.config
+        else act
+          nc <- bootstrap-config (br.config)
+          nc
+        end
+      is None -> cfg
+  end
+
+  apply-config-line : ExplorerConfig, Text -> BootResult
+  apply-config-line (cfg) (line) =
+    if line == "CONFIG-END" then BootResult { config = cfg, done = True }
+    else if text-starts-with line "CONFIG model " then
+      BootResult { config = apply-model cfg (text-drop line 13), done = False }
+    else if text-starts-with line "CONFIG sampler " then
+      BootResult { config = config-add-sampler cfg (text-drop line 15), done = False }
+    else if text-starts-with line "CONFIG lora " then
+      BootResult { config = config-add-lora cfg (text-drop line 12), done = False }
+    else if text-starts-with line "CONFIG upscaler " then
+      BootResult { config = config-add-upscaler cfg (text-drop line 16), done = False }
+    else if text-starts-with line "CONFIG current " then
+      BootResult { config = config-set-current-model cfg (text-drop line 15), done = False }
+    else BootResult { config = cfg, done = False }
+
+  apply-model : ExplorerConfig, Text -> ExplorerConfig
+  apply-model (cfg) (value) =
+    let tab = find-char value 9 0
+    in if tab < 0 then config-add-model cfg value value
+    else let title = text-take value tab
+    in let name = text-drop value (tab + 1)
+    in config-add-model cfg title name
+
+Section: Request Dispatch
+
+  dispatch : ExplorerState, Text -> [Console] ExplorerState
+  dispatch (state) (line) =
+    let path = extract-path line
+    in if path == "/api/config" then handle-config state
+    else if path == "/api/cache-key" then handle-cache-key state line
+    else if path == "/api/prompt-hash" then handle-prompt-hash state line
+    else if path == "/api/status" then handle-status state
+    else act
+      pm0 <- respond-not-found
+      state
+    end
+
+Section: Config Handler
+
+  handle-config : ExplorerState -> [Console] ExplorerState
+  handle-config (state) =
+    let cfg = state.config
+    in let models-json = json-model-array (cfg.models) 0 (cfg.num-models)
+    in let samplers-json = json-str-array (cfg.samplers) 0 (cfg.num-samplers)
+    in let loras-json = json-lora-array (cfg.loras) 0 (cfg.num-loras)
+    in let upscalers-json = json-str-array (cfg.upscalers) 0 (cfg.num-upscalers)
+    in let steps-json = json-int-array [4, 8, 12, 15, 20, 25, 30, 40] 0 8
+    in let cfg-json = json-int-array [1, 2, 3, 4, 5, 7, 9, 12] 0 8
+    in let body = "{\"models\":" & models-json
+      & ",\"samplers\":" & samplers-json
+      & ",\"loras\":" & loras-json
+      & ",\"upscalers\":" & upscalers-json
+      & ",\"current_model\":" & jstr (cfg.current-model)
+      & ",\"steps_options\":" & steps-json
+      & ",\"cfg_options\":" & cfg-json & "}"
+    in act
+      pm0 <- respond-json body
+      state
+    end
+
+Section: Cache Key Handler
+
+  handle-cache-key : ExplorerState, Text -> [Console] ExplorerState
+  handle-cache-key (state) (line) =
+    let ms = extract-query-param line "model_short"
+    in let sa = extract-query-param line "sampler"
+    in let st = parse-int (extract-query-param line "steps") 8
+    in let cf = parse-int (extract-query-param line "cfg") 2
+    in let ls = extract-query-param line "lora_short"
+    in let se = parse-int (extract-query-param line "seed") 424242
+    in let ph = extract-query-param line "prompt_hash"
+    in let ls2 = if text-length ls == 0 then "none" else ls
+    in let fname = make-cache-key ms sa st cf ls2 se
+    in act
+      pm0 <- respond-json ("{\"file\":" & jstr fname & ",\"cache_url\":\"/cache/" & ph & "/" & fname & "\"}")
+      state
+    end
+
+Section: Prompt Hash Handler
+
+  handle-prompt-hash : ExplorerState, Text -> [Console] ExplorerState
+  handle-prompt-hash (state) (line) =
+    let prompt = extract-query-param line "prompt"
+    in let ph = prompt-hash prompt
+    in act
+      pm0 <- respond-json ("{\"hash\":" & jstr ph & "}")
+      ExplorerState {
+        config = state.config,
+        images-served = state.images-served,
+        prompts-seen = state.prompts-seen + 1
+      }
+    end
+
+Section: Status Handler
+
+  handle-status : ExplorerState -> [Console] ExplorerState
+  handle-status (state) =
+    let body = "{\"images_served\":" & show (state.images-served)
+      & ",\"prompts_seen\":" & show (state.prompts-seen)
+      & ",\"models\":" & show (state.config.num-models)
+      & ",\"current_model\":" & jstr (state.config.current-model) & "}"
+    in act
+      pm0 <- respond-json body
+      state
+    end
+
+Section: JSON Array Builders
+
+  json-model-array : List SdModel, Integer, Integer -> Text
+  json-model-array (xs) (i) (len) =
+    if len == 0 then "[]"
+    else "[" & json-model-loop xs i len ""
+
+  json-model-loop : List SdModel, Integer, Integer, Text -> Text
+  json-model-loop (xs) (i) (len) (acc) =
+    if i >= len then acc & "]"
+    else let sep = if i == 0 then "" else ","
+    in let m = list-at xs i
+    in json-model-loop xs (i + 1) len (acc & sep & "{\"title\":" & jstr (m.title) & ",\"name\":" & jstr (m.name) & "}")
+
+  json-lora-array : List SdLora, Integer, Integer -> Text
+  json-lora-array (xs) (i) (len) =
+    if len == 0 then "[]"
+    else "[" & json-lora-loop xs i len ""
+
+  json-lora-loop : List SdLora, Integer, Integer, Text -> Text
+  json-lora-loop (xs) (i) (len) (acc) =
+    if i >= len then acc & "]"
+    else let sep = if i == 0 then "" else ","
+    in let l = list-at xs i
+    in json-lora-loop xs (i + 1) len (acc & sep & "{\"name\":" & jstr (l.name) & "}")
+
+  json-str-array : List Text, Integer, Integer -> Text
+  json-str-array (xs) (i) (len) =
+    if len == 0 then "[]"
+    else "[" & json-str-loop xs i len ""
+
+  json-str-loop : List Text, Integer, Integer, Text -> Text
+  json-str-loop (xs) (i) (len) (acc) =
+    if i >= len then acc & "]"
+    else let sep = if i == 0 then "" else ","
+    in json-str-loop xs (i + 1) len (acc & sep & jstr (list-at xs i))
+
+  json-int-array : List Integer, Integer, Integer -> Text
+  json-int-array (xs) (i) (len) =
+    if len == 0 then "[]"
+    else "[" & json-int-loop xs i len ""
+
+  json-int-loop : List Integer, Integer, Integer, Text -> Text
+  json-int-loop (xs) (i) (len) (acc) =
+    if i >= len then acc & "]"
+    else let sep = if i == 0 then "" else ","
+    in json-int-loop xs (i + 1) len (acc & sep & show (list-at xs i))
+
+Section: Server Loop
+
+  server-loop : ExplorerState -> [Console] ExplorerState
+  server-loop (state) = act
+    line-result <- read-line
+    when line-result
+      is Just (line) -> act
+        ns <- dispatch state line
+        server-loop ns
+      end
+      is None -> state
+  end
+
+  start-server : ExplorerConfig -> [Console] Integer
+  start-server (cfg) =
+    let state = ExplorerState { config = cfg, images-served = 0, prompts-seen = 0 }
+    in act
+      ns <- server-loop state
+      0
+    end
+
+  opening : [Console] Integer
+  opening = act
+    print-line-uni "READY"
+    cfg <- bootstrap-config config-new
+    r <- start-server cfg
+    0
+  end
+
+Page 1

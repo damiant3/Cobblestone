@@ -1,0 +1,421 @@
+Chapter: Go Emitter
+  cites Codex chapter Text
+  cites Codex chapter Characters
+  cites Codex chapter Lists
+  cites Foreword chapter Sort
+
+ Generates Go source code from the IR.
+
+Section: Sanitization
+
+  go-sanitize : Text -> Text
+  go-sanitize (name) =
+   text-replace (text-replace name "-" "_") "'" ""
+
+  go-escape : Text -> Text
+  go-escape (s) =
+   let s1 = text-replace s "\\" "\\\\"
+   in let s2 = text-replace s1 "\"" "\\\""
+   in let s3 = text-replace s2 "\n" "\\n"
+   in s3
+
+  go-indent : Integer -> Text
+  go-indent (n) =
+   if n <= 0 then ""
+   else "    " & go-indent (n - 1)
+
+Section: Arity Map
+
+  ArityEntry = record {
+   name : Text,
+   arity : Integer between 0 and 255,
+   generic-count : Integer between 0 and 255
+  }
+
+  bsearch-arity-pos : List ArityEntry, Text, Integer, Integer -> Integer
+  bsearch-arity-pos (entries) (name) (lo) (hi) =
+   if lo >= hi then lo
+   else let mid = lo + (hi - lo) / 2
+   in let mid-name = (list-at entries mid).name
+   in if text-compare name mid-name <= 0 then bsearch-arity-pos entries name lo mid
+      else bsearch-arity-pos entries name (mid + 1) hi
+
+  sorted-insert-arity : List ArityEntry, ArityEntry -> List ArityEntry
+  sorted-insert-arity (xs) (e) =
+   let len = list-length xs
+   in let pos = bsearch-arity-pos xs (e.name) 0 len
+   in list-insert-at xs pos e
+
+  build-arity-map : List IRDef, Integer, List ArityEntry -> List ArityEntry
+  build-arity-map (defs) (i) (acc) =
+   if i == list-length defs then acc
+   else let d = list-at defs i
+   in build-arity-map defs (i + 1) (sorted-insert-arity acc (ArityEntry {
+    name = d.name,
+    arity = list-length (d.params),
+    generic-count = 0
+   }))
+
+  lookup-arity : List ArityEntry, Text -> Integer
+  lookup-arity (entries) (name) =
+   let len = list-length entries
+   in let pos = bsearch-arity-pos entries name 0 len
+   in if pos >= len then 0
+      else let e = list-at entries pos
+      in if e.name == name then e.arity else 0
+
+Section: Expression Emission
+
+  emit-go-expr : IRExpr, List ArityEntry, Integer -> Text
+  emit-go-expr (e) (arities) (indent) =
+   when e
+    is IrIntLit (n) (sp) -> integer-to-text n
+    is IrNumLit (n) (sp) -> "math.Float64frombits(uint64(" & show n & "))"
+    is IrTextLit (s) (sp) -> "\"" & go-escape s & "\""
+    is IrBoolLit (b) (sp) -> if b then "true" else "false"
+    is IrCharLit (n) (sp) -> "rune(" & show n & ")"
+    is IrName (n) (ty) (sp) -> go-sanitize n
+    is IrBinary (op) (l) (r) (ty) (sp) -> emit-go-binary op l r arities indent
+    is IrNegate (x) (sp) -> "(-(" & emit-go-expr x arities indent & "))"
+    is IrIf (c) (t) (el) (ty) (sp) -> "func() interface{} { if " & emit-go-expr c arities indent & ".(bool) { return " & emit-go-expr t arities indent & " }; return " & emit-go-expr el arities indent & " }()"
+    is IrLet (name) (ty) (val) (body) (sp) -> "func() interface{} { " & go-sanitize name & " := " & emit-go-expr val arities indent & "; return " & emit-go-expr body arities indent & " }()"
+    is IrApply (f) (a) (ty) (sp) -> emit-go-apply e arities indent
+    is IrLambda (params) (body) (ty) (sp) -> "func(" & emit-go-lambda-params params 0 & ") interface{} { return " & emit-go-expr body arities indent & " }"
+    is IrList (elems) (ty) (sp) -> "[]interface{}{" & emit-go-list-elems elems arities indent 0 & "}"
+    is IrMatch (scrut) (branches) (ty) (sp) -> emit-go-match scrut branches arities indent
+    is IrAct (stmts) (ty) (sp) -> emit-go-act stmts arities indent
+    is IrRecord (name) (fields) (ty) (sp) -> "map[string]interface{}{\"_type\": \"" & name & "\"" & emit-go-record-fields fields arities indent 0 & "}"
+    is IrFieldAccess (rec) (field) (ty) (sp) -> emit-go-expr rec arities indent & ".(map[string]interface{})[\"" & go-sanitize field & "\"]"
+    is IrFieldStore (rec) (field) (val) (ty) (sp) -> "func() interface{} { _r := " & emit-go-expr rec arities indent & ".(map[string]interface{}); _r[\"" & go-sanitize field & "\"] = " & emit-go-expr val arities indent & "; return _r }()"
+    is IrFork (body) (ty) (sp) -> "func() interface{} { ch := make(chan interface{}, 1); go func() { ch <- " & emit-go-expr body arities indent & " }(); return ch }()"
+    is IrAwait (task) (ty) (sp) -> "<-(" & emit-go-expr task arities indent & ".(chan interface{}))"
+    is IrHandle (eff) (body) (clauses) (ty) (sp) -> emit-go-expr body arities indent
+    is IrWithTimeout (secs) (effs) (scopes) (body) (ty) (sp) -> emit-go-expr body arities indent
+    is IrTry (max) (body) (fb) (fail) (ty) (sp) -> emit-go-act body arities indent
+    is IrError (msg) (ty) (sp) -> "func() interface{} { panic(\"" & go-escape msg & "\") }()"
+
+Section: Binary Operators
+
+  go-vec-ewise : Text, Text, Text -> Text
+  go-vec-ewise (lhs) (rhs) (opsym) =
+   "func() interface{} { _l := " & lhs & ".([]interface{}); _r := " & rhs & ".([]interface{}); _v := make([]interface{}, len(_l)); for _i := range _l { _v[_i] = _l[_i].(float64) " & opsym & " _r[_i].(float64) }; return _v }()"
+
+  emit-go-binary : IRBinaryOp, IRExpr, IRExpr, List ArityEntry, Integer -> Text
+  emit-go-binary (op) (l) (r) (arities) (indent) =
+   let lhs = emit-go-expr l arities indent
+   in let rhs = emit-go-expr r arities indent
+   in when op
+    is IrAddInt -> "(" & lhs & ".(int) + " & rhs & ".(int))"
+    is IrSubInt -> "(" & lhs & ".(int) - " & rhs & ".(int))"
+    is IrMulInt -> "(" & lhs & ".(int) * " & rhs & ".(int))"
+    is IrDivInt -> "(" & lhs & ".(int) / " & rhs & ".(int))"
+    is IrRemInt -> "(" & lhs & ".(int) % " & rhs & ".(int))"
+    is IrPowInt -> "int(math.Pow(float64(" & lhs & ".(int)), float64(" & rhs & ".(int))))"
+    is IrAddNum | IrAddRealApprox | IrAddRealTrapping | IrAddRealSaturating -> "(" & lhs & ".(float64) + " & rhs & ".(float64))"
+    is IrSubNum | IrSubRealApprox | IrSubRealTrapping | IrSubRealSaturating -> "(" & lhs & ".(float64) - " & rhs & ".(float64))"
+    is IrMulNum | IrMulRealApprox | IrMulRealTrapping | IrMulRealSaturating -> "(" & lhs & ".(float64) * " & rhs & ".(float64))"
+    is IrDivNum | IrDivRealApprox | IrDivRealTrapping | IrDivRealSaturating -> "(" & lhs & ".(float64) / " & rhs & ".(float64))"
+    is IrAddVec -> go-vec-ewise lhs rhs "+"
+    is IrSubVec -> go-vec-ewise lhs rhs "-"
+    is IrMulVec -> go-vec-ewise lhs rhs "*"
+    is IrDivVec -> go-vec-ewise lhs rhs "/"
+    is IrEq -> "(" & lhs & " == " & rhs & ")"
+    is IrNotEq -> "(" & lhs & " != " & rhs & ")"
+    is IrLt | IrLtVec -> "(" & lhs & ".(int) < " & rhs & ".(int))"
+    is IrGt | IrGtVec -> "(" & lhs & ".(int) > " & rhs & ".(int))"
+    is IrLtEq | IrLtEqVec -> "(" & lhs & ".(int) <= " & rhs & ".(int))"
+    is IrGtEq | IrGtEqVec -> "(" & lhs & ".(int) >= " & rhs & ".(int))"
+    is IrApproxEq -> "(" & lhs & " == " & rhs & ")"
+    is IrApproxEqExact -> "(" & lhs & " == " & rhs & ")"
+    is IrAnd -> "(" & lhs & ".(bool) && " & rhs & ".(bool))"
+    is IrOr -> "(" & lhs & ".(bool) || " & rhs & ".(bool))"
+    is IrAppendText -> "(" & lhs & ".(string) + " & rhs & ".(string))"
+    is IrAppendList -> "append(" & lhs & ".([]interface{}), " & rhs & ".([]interface{})...)"
+    is IrConsList -> "append([]interface{}{" & lhs & "}, " & rhs & ".([]interface{})...)"
+
+Section: Builtin Emitter
+
+  GoBuiltinEmitter = record {
+   name : Text,
+   emit : List IRExpr, List ArityEntry, Integer -> Text
+  }
+
+  bsearch-go-builtin-pos : List GoBuiltinEmitter, Text, Integer, Integer -> Integer
+  bsearch-go-builtin-pos (entries) (name) (lo) (hi) =
+   if lo >= hi then lo
+   else let mid = lo + (hi - lo) / 2
+   in let mid-name = (list-at entries mid).name
+   in if text-compare name mid-name <= 0 then bsearch-go-builtin-pos entries name lo mid
+      else bsearch-go-builtin-pos entries name (mid + 1) hi
+
+  sort-go-builtins : List GoBuiltinEmitter -> List GoBuiltinEmitter
+  sort-go-builtins (xs) = xs
+
+  go-builtin-emitters : List GoBuiltinEmitter =
+   sort-go-builtins [
+    GoBuiltinEmitter { name = "abs", emit = \args arities indent ->
+     "func() interface{} { _v := " & emit-go-expr (list-at args 0) arities indent & ".(int); if _v < 0 { return -_v }; return _v }()" },
+    GoBuiltinEmitter { name = "char-at", emit = \args arities indent ->
+     "string(" & emit-go-expr (list-at args 0) arities indent & ".(string)[" & emit-go-expr (list-at args 1) arities indent & ".(int)])" },
+    GoBuiltinEmitter { name = "char-code-at", emit = \args arities indent ->
+     "int(" & emit-go-expr (list-at args 0) arities indent & ".(string)[" & emit-go-expr (list-at args 1) arities indent & ".(int)])" },
+    GoBuiltinEmitter { name = "file-exists", emit = \args arities indent ->
+     "func() interface{} { _, _e := os.Stat(" & emit-go-expr (list-at args 0) arities indent & ".(string)); return _e == nil }()" },
+    GoBuiltinEmitter { name = "int-mod", emit = \args arities indent ->
+     "(" & emit-go-expr (list-at args 0) arities indent & ".(int) % " & emit-go-expr (list-at args 1) arities indent & ".(int))" },
+    GoBuiltinEmitter { name = "integer-to-text", emit = \args arities indent ->
+     "fmt.Sprintf(\"%v\", " & emit-go-expr (list-at args 0) arities indent & ")" },
+    GoBuiltinEmitter { name = "list-at", emit = \args arities indent ->
+     emit-go-expr (list-at args 0) arities indent & ".([]interface{})[" & emit-go-expr (list-at args 1) arities indent & ".(int)]" },
+    GoBuiltinEmitter { name = "list-length", emit = \args arities indent ->
+     "len(" & emit-go-expr (list-at args 0) arities indent & ".([]interface{}))" },
+    GoBuiltinEmitter { name = "list-snoc", emit = \args arities indent ->
+     "append(" & emit-go-expr (list-at args 0) arities indent & ".([]interface{}), " & emit-go-expr (list-at args 1) arities indent & ")" },
+    GoBuiltinEmitter { name = "max", emit = \args arities indent ->
+     "func() interface{} { _a := " & emit-go-expr (list-at args 0) arities indent & ".(int); _b := " & emit-go-expr (list-at args 1) arities indent & ".(int); if _a > _b { return _a }; return _b }()" },
+    GoBuiltinEmitter { name = "min", emit = \args arities indent ->
+     "func() interface{} { _a := " & emit-go-expr (list-at args 0) arities indent & ".(int); _b := " & emit-go-expr (list-at args 1) arities indent & ".(int); if _a < _b { return _a }; return _b }()" },
+    GoBuiltinEmitter { name = "negate", emit = \args arities indent ->
+     "(-((" & emit-go-expr (list-at args 0) arities indent & ").(int)))" },
+    GoBuiltinEmitter { name = "print-error-uni", emit = \args arities indent ->
+     "func() interface{} { fmt.Fprintln(os.Stderr, " & emit-go-expr (list-at args 0) arities indent & "); return nil }()" },
+    GoBuiltinEmitter { name = "print-line-uni", emit = \args arities indent ->
+     "func() interface{} { fmt.Println(" & emit-go-expr (list-at args 0) arities indent & "); return nil }()" },
+    GoBuiltinEmitter { name = "read-file", emit = \args arities indent ->
+     "func() interface{} { _b, _ := os.ReadFile(" & emit-go-expr (list-at args 0) arities indent & ".(string)); return string(_b) }()" },
+    GoBuiltinEmitter { name = "read-line", emit = \args arities indent ->
+     "func() interface{} { _r := bufio.NewReader(os.Stdin); _s, _ := _r.ReadString('\\n'); return strings.TrimRight(_s, \"\\n\") }()" },
+    GoBuiltinEmitter { name = "show", emit = \args arities indent ->
+     "fmt.Sprintf(\"%v\", " & emit-go-expr (list-at args 0) arities indent & ")" },
+    GoBuiltinEmitter { name = "substring", emit = \args arities indent ->
+     "func() interface{} { _s := " & emit-go-expr (list-at args 0) arities indent & ".(string); _start := " & emit-go-expr (list-at args 1) arities indent & ".(int); _len := " & emit-go-expr (list-at args 2) arities indent & ".(int); return _s[_start:_start+_len] }()" },
+    GoBuiltinEmitter { name = "text-compare", emit = \args arities indent ->
+     "strings.Compare(" & emit-go-expr (list-at args 0) arities indent & ".(string), " & emit-go-expr (list-at args 1) arities indent & ".(string))" },
+    GoBuiltinEmitter { name = "text-contains", emit = \args arities indent ->
+     "strings.Contains(" & emit-go-expr (list-at args 0) arities indent & ".(string), " & emit-go-expr (list-at args 1) arities indent & ".(string))" },
+    GoBuiltinEmitter { name = "text-length", emit = \args arities indent ->
+     "len(" & emit-go-expr (list-at args 0) arities indent & ".(string))" },
+    GoBuiltinEmitter { name = "text-replace", emit = \args arities indent ->
+     "strings.ReplaceAll(" & emit-go-expr (list-at args 0) arities indent & ".(string), " & emit-go-expr (list-at args 1) arities indent & ".(string), " & emit-go-expr (list-at args 2) arities indent & ".(string))" },
+    GoBuiltinEmitter { name = "text-split", emit = \args arities indent ->
+     "func() interface{} { _parts := strings.Split(" & emit-go-expr (list-at args 0) arities indent & ".(string), " & emit-go-expr (list-at args 1) arities indent & ".(string)); _r := make([]interface{}, len(_parts)); for _i, _p := range _parts { _r[_i] = _p }; return _r }()" },
+    GoBuiltinEmitter { name = "text-starts-with", emit = \args arities indent ->
+     "strings.HasPrefix(" & emit-go-expr (list-at args 0) arities indent & ".(string), " & emit-go-expr (list-at args 1) arities indent & ".(string))" },
+    GoBuiltinEmitter { name = "text-to-integer", emit = \args arities indent ->
+     "func() interface{} { _v, _ := strconv.Atoi(" & emit-go-expr (list-at args 0) arities indent & ".(string)); return _v }()" },
+    GoBuiltinEmitter { name = "write-file", emit = \args arities indent ->
+     "func() interface{} { os.WriteFile(" & emit-go-expr (list-at args 0) arities indent & ".(string), []byte(" & emit-go-expr (list-at args 1) arities indent & ".(string)), 0644); return nil }()" }
+   ]
+
+  lookup-go-builtin : Text, List IRExpr, List ArityEntry, Integer -> Text
+  lookup-go-builtin (name) (args) (arities) (indent) =
+   let len = list-length go-builtin-emitters
+   in let pos = bsearch-go-builtin-pos go-builtin-emitters name 0 len
+   in if pos >= len then ""
+      else let e = list-at go-builtin-emitters pos
+      in if e.name == name then e.emit args arities indent else ""
+
+Section: Apply and Helpers
+
+  FlatApply = record {
+   root : IRExpr,
+   args : List IRExpr
+  }
+
+  collect-apply-chain : IRExpr, List IRExpr -> FlatApply
+  collect-apply-chain (e) (acc) =
+   when e
+    is IrApply (f) (a) (ty) (sp) -> collect-apply-chain f ([a] & acc)
+    is otherwise -> FlatApply { root = e, args = acc }
+
+  emit-go-apply : IRExpr, List ArityEntry, Integer -> Text
+  emit-go-apply (e) (arities) (indent) =
+   let chain = collect-apply-chain e []
+   in let root = chain.root
+   in let args = chain.args
+   in when root
+    is IrName (n) (ty) (sp) ->
+     if is-mktup-name n then "[]interface{}{" & emit-go-apply-args args arities indent 0 & "}"
+     else let builtin = lookup-go-builtin n args arities indent
+     in if text-length builtin > 0 then builtin
+     else let func = emit-go-expr root arities indent
+     in func & ".(func(" & emit-go-any-params (list-length args) 0 & ") interface{})(" & emit-go-apply-args args arities indent 0 & ")"
+    is otherwise ->
+     let func = emit-go-expr root arities indent
+     in func & ".(func(" & emit-go-any-params (list-length args) 0 & ") interface{})(" & emit-go-apply-args args arities indent 0 & ")"
+
+  emit-go-any-params : Integer, Integer -> Text
+  emit-go-any-params (n) (i) =
+   if i == n then ""
+   else let sep = if i > 0 then ", " else ""
+   in sep & "interface{}" & emit-go-any-params n (i + 1)
+
+  emit-go-apply-args : List IRExpr, List ArityEntry, Integer, Integer -> Text
+  emit-go-apply-args (args) (arities) (indent) (i) =
+   if i == list-length args then ""
+   else let sep = if i > 0 then ", " else ""
+   in sep & emit-go-expr (list-at args i) arities indent & emit-go-apply-args args arities indent (i + 1)
+
+  emit-go-lambda-params : List IRParam, Integer -> Text
+  emit-go-lambda-params (params) (i) =
+   if i == list-length params then ""
+   else let sep = if i > 0 then ", " else ""
+   in sep & go-sanitize (list-at params i).name & " interface{}" & emit-go-lambda-params params (i + 1)
+
+  emit-go-list-elems : List IRExpr, List ArityEntry, Integer, Integer -> Text
+  emit-go-list-elems (elems) (arities) (indent) (i) =
+   if i == list-length elems then ""
+   else let sep = if i > 0 then ", " else ""
+   in sep & emit-go-expr (list-at elems i) arities indent & emit-go-list-elems elems arities indent (i + 1)
+
+  emit-go-record-fields : List IRFieldVal, List ArityEntry, Integer, Integer -> Text
+  emit-go-record-fields (fields) (arities) (indent) (i) =
+   if i == list-length fields then ""
+   else let f = list-at fields i
+   in ", \"" & go-sanitize (f.name) & "\": " & emit-go-expr (f.value) arities indent & emit-go-record-fields fields arities indent (i + 1)
+
+Section: Match
+
+  emit-go-match : IRExpr, List IRBranch, List ArityEntry, Integer -> Text
+  emit-go-match (scrut) (branches) (arities) (indent) =
+   "func() interface{} { _s := " & emit-go-expr scrut arities indent & "; " & emit-go-branches branches arities indent 0 & " }()"
+
+  emit-go-branches : List IRBranch, List ArityEntry, Integer, Integer -> Text
+  emit-go-branches (branches) (arities) (indent) (i) =
+   if i == list-length branches then "panic(\"non-exhaustive match\"); return nil"
+   else let b = list-at branches i
+   in let cond = emit-go-pat-cond (b.pattern) "_s"
+   in let binds = emit-go-pat-binds (b.pattern) "_s"
+   in let body = emit-go-expr (b.body) arities indent
+   in "if " & cond & " { " & binds & "return " & body & " }; " & emit-go-branches branches arities indent (i + 1)
+
+  emit-go-pat-cond : IRPat, Text -> Text
+  emit-go-pat-cond (p) (scrut) =
+   when p
+    is IrVarPat (name) (ty) (sp) -> "true"
+    is IrLitPat (text) (ty) (sp) -> scrut & " == " & text
+    is IrCtorPat (name) (subs) (ty) (sp) ->
+     if is-mktup-name name then "true"
+     else scrut & ".(map[string]interface{})[\"_tag\"] == \"" & name & "\""
+    is IrVecPat (pats) (ty) (sp) -> "true"
+    is IrWildPat (sp) -> "true"
+
+  emit-go-pat-binds : IRPat, Text -> Text
+  emit-go-pat-binds (p) (scrut) =
+   when p
+    is IrVarPat (name) (ty) (sp) -> go-sanitize name & " := " & scrut & "; "
+    is IrLitPat (text) (ty) (sp) -> ""
+    is IrCtorPat (name) (subs) (ty) (sp) ->
+     if is-mktup-name name then emit-go-tup-binds subs scrut 0
+     else emit-go-ctor-binds subs scrut 0
+    is IrVecPat (pats) (ty) (sp) -> ""
+    is IrWildPat (sp) -> ""
+
+  emit-go-ctor-binds : List IRPat, Text, Integer -> Text
+  emit-go-ctor-binds (subs) (scrut) (i) =
+   if i == list-length subs then ""
+   else let sub = list-at subs i
+   in let access = scrut & ".(map[string]interface{})[\"_" & show i & "\"]"
+   in emit-go-pat-binds sub access & emit-go-ctor-binds subs scrut (i + 1)
+
+Section: Act Blocks
+
+  emit-go-act : List IRActStmt, List ArityEntry, Integer -> Text
+  emit-go-act (stmts) (arities) (indent) =
+   "func() interface{} {\n" & emit-go-act-stmts stmts arities (indent + 1) 0 & go-indent indent & "}()"
+
+  emit-go-act-stmts : List IRActStmt, List ArityEntry, Integer, Integer -> Text
+  emit-go-act-stmts (stmts) (arities) (indent) (i) =
+   if i == list-length stmts then ""
+   else let s = list-at stmts i
+   in let is-last = i == list-length stmts - 1
+   in when s
+    is IrDoBind (name) (ty) (val) (sp) -> go-indent indent & go-sanitize name & " := " & emit-go-expr val arities indent & "\n" & emit-go-act-stmts stmts arities indent (i + 1)
+    is IrDoExec (e) (sp) ->
+     if is-last then go-indent indent & "return " & emit-go-expr e arities indent & "\n"
+     else go-indent indent & "_ = " & emit-go-expr e arities indent & "\n" & emit-go-act-stmts stmts arities indent (i + 1)
+
+Section: Type Definitions
+
+  emit-go-type-def : ATypeDef -> Text
+  emit-go-type-def (td) =
+   when td
+    is ARecordTypeDef (name) (tparams) (fields) (is-mut) (s) ->
+     "type " & go-sanitize (name.value) & " = map[string]interface{}\n\n"
+    is AVariantTypeDef (name) (tparams) (ctors) (s) ->
+     if is-tup-type (name.value) then ""
+     else emit-go-variant-ctors ctors 0
+
+  emit-go-variant-ctors : List AVariantCtorDef, Integer -> Text
+  emit-go-variant-ctors (ctors) (i) =
+   if i == list-length ctors then ""
+   else let c = list-at ctors i
+   in let n = list-length (c.fields)
+   in let ctor-text = if n == 0 then "var " & go-sanitize (c.name.value) & " = map[string]interface{}{\"_tag\": \"" & c.name.value & "\"}\n"
+      else "func " & go-sanitize (c.name.value) & "(" & emit-go-ctor-params n 0 & ") interface{} { return map[string]interface{}{\"_tag\": \"" & c.name.value & "\"" & emit-go-ctor-fields n 0 & "} }\n"
+   in ctor-text & emit-go-variant-ctors ctors (i + 1)
+
+  emit-go-ctor-params : Integer, Integer -> Text
+  emit-go-ctor-params (n) (i) =
+   if i == n then ""
+   else let sep = if i > 0 then ", " else ""
+   in sep & "_" & show i & " interface{}" & emit-go-ctor-params n (i + 1)
+
+  emit-go-ctor-fields : Integer, Integer -> Text
+  emit-go-ctor-fields (n) (i) =
+   if i == n then ""
+   else ", \"_" & show i & "\": _" & show i & emit-go-ctor-fields n (i + 1)
+
+Section: Definition Emission
+
+  emit-go-def : IRDef, List ArityEntry -> Text
+  emit-go-def (d) (arities) =
+   if text-length (d.name) == 0 then ""
+   else let sname = go-sanitize (d.name)
+   in if list-length (d.params) == 0
+      then "var " & sname & " interface{} = " & emit-go-expr (d.body) arities 0 & "\n\n"
+      else "func " & sname & "(" & emit-go-func-params (d.params) 0 & ") interface{} {\n    return " & emit-go-expr (d.body) arities 1 & "\n}\n\n"
+
+  emit-go-func-params : List IRParam, Integer -> Text
+  emit-go-func-params (params) (i) =
+   if i == list-length params then ""
+   else let sep = if i > 0 then ", " else ""
+   in sep & go-sanitize (list-at params i).name & " interface{}" & emit-go-func-params params (i + 1)
+
+  emit-go-defs : List IRDef, Integer, List ArityEntry -> Text
+  emit-go-defs (defs) (i) (arities) =
+   if i == list-length defs then ""
+   else emit-go-def (list-at defs i) arities & emit-go-defs defs (i + 1) arities
+
+  emit-go-type-defs : List ATypeDef, Integer -> Text
+  emit-go-type-defs (tds) (i) =
+   if i == list-length tds then ""
+   else emit-go-type-def (list-at tds i) & emit-go-type-defs tds (i + 1)
+
+Section: Go Module Assembly
+
+  emit-go-chapter : IRChapter, List ATypeDef -> Text
+  emit-go-chapter (m) (type-defs) =
+   let arities = build-arity-map (m.defs) 0 []
+   in let header = "package main\n\nimport (\n    \"bufio\"\n    \"fmt\"\n    \"math\"\n    \"os\"\n    \"strconv\"\n    \"strings\"\n)\n\nvar _ = math.Pi\nvar _ = strconv.Atoi\n\n"
+   in let types-text = emit-go-type-defs type-defs 0
+   in let defs-text = emit-go-defs (m.defs) 0 arities
+   in let main-func = "func main() {\n    opening()\n}\n"
+   in header & types-text & defs-text & main-func
+
+  emit-go-tup-binds : List IRPat, Text, Integer -> Text
+  emit-go-tup-binds (subs) (scrut) (i) =
+   if i == list-length subs then ""
+   else let sub = list-at subs i
+   in let access = scrut & ".([]interface{})[" & show i & "]"
+   in emit-go-pat-binds sub access & emit-go-tup-binds subs scrut (i + 1)
+
+  is-mktup-name : Text -> Boolean
+  is-mktup-name (n) =
+   n == "MkTup2" | n == "MkTup3" | n == "MkTup4" | n == "MkTup5"
+
+  is-tup-type : Text -> Boolean
+  is-tup-type (n) =
+   n == "Tup2" | n == "Tup3" | n == "Tup4" | n == "Tup5"
+
+Page 1

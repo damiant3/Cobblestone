@@ -1,0 +1,127 @@
+Chapter: TestCommand
+  cites Cvmm chapter CvmmTypes
+  cites Cvmm chapter ResourceModel
+  cites Cvmm chapter Command
+  cites Foreword chapter Maybe
+
+ Unit tests for the command system: execute, undo, redo, history
+ cursor, truncation, and destructive flags.
+
+Section: Test Harness
+
+  assert-eq-int : Text, Integer, Integer -> Text
+  assert-eq-int (label) (expected) (actual) =
+    if expected == actual then "PASS " & label
+    else "FAIL " & label & ": expected " & show expected & " got " & show actual
+
+  assert-true : Text, Boolean -> Text
+  assert-true (label) (val) = if val then "PASS " & label else "FAIL " & label
+
+  assert-false : Text, Boolean -> Text
+  assert-false (label) (val) = if val then "FAIL " & label else "PASS " & label
+
+  assert-eq-text : Text, Text, Text -> Text
+  assert-eq-text (label) (expected) (actual) =
+    if expected == actual then "PASS " & label
+    else "FAIL " & label & ": expected \"" & expected & "\" got \"" & actual & "\""
+
+Section: History Tests
+
+  test-empty-history : Text
+  test-empty-history =
+    let h = cmd-history-new 50
+    in let t1 = assert-eq-int "empty-count" 0 (h.ch-count)
+    in let t2 = assert-eq-int "empty-cursor" 0 (h.ch-cursor)
+    in let t3 = assert-false "cannot-undo" (ch-can-undo h)
+    in let t4 = assert-false "cannot-redo" (ch-can-redo h)
+    in t1 & "\n" & t2 & "\n" & t3 & "\n" & t4
+
+  test-push-and-undo : Text
+  test-push-and-undo =
+    let h = cmd-history-new 50
+    in let h2 = ch-push h (CmdNavigate "Files") 100
+    in let t1 = assert-eq-int "count-1" 1 (h2.ch-count)
+    in let t2 = assert-eq-int "cursor-1" 1 (h2.ch-cursor)
+    in let t3 = assert-true "can-undo" (ch-can-undo h2)
+    in let t4 = assert-false "cannot-redo" (ch-can-redo h2)
+    in let h3 = ch-push h2 (CmdNavigate "Processes") 200
+    in let t5 = assert-eq-int "count-2" 2 (h3.ch-count)
+    in let h4 = ch-undo h3
+    in let t6 = assert-eq-int "cursor-after-undo" 1 (h4.ch-cursor)
+    in let t7 = assert-true "can-undo-again" (ch-can-undo h4)
+    in let t8 = assert-true "can-redo" (ch-can-redo h4)
+    in t1 & "\n" & t2 & "\n" & t3 & "\n" & t4 & "\n" & t5 & "\n" & t6 & "\n" & t7 & "\n" & t8
+
+  test-redo : Text
+  test-redo =
+    let h = ch-push (ch-push (cmd-history-new 50) (CmdNavigate "A") 1) (CmdNavigate "B") 2
+    in let h2 = ch-undo h
+    in let h3 = ch-redo h2
+    in let t1 = assert-eq-int "redo-cursor" 2 (h3.ch-cursor)
+    in let t2 = assert-false "no-more-redo" (ch-can-redo h3)
+    in t1 & "\n" & t2
+
+  test-branch-truncation : Text
+  test-branch-truncation =
+    let h = ch-push (ch-push (ch-push (cmd-history-new 50) (CmdNavigate "A") 1) (CmdNavigate "B") 2) (CmdNavigate "C") 3
+    in let h2 = ch-undo (ch-undo h)
+    in let h3 = ch-push h2 (CmdNavigate "D") 4
+    in let t1 = assert-eq-int "after-branch" 2 (h3.ch-count)
+    in let t2 = assert-eq-int "branch-cursor" 2 (h3.ch-cursor)
+    in let t3 = assert-false "no-redo-after-branch" (ch-can-redo h3)
+    in t1 & "\n" & t2 & "\n" & t3
+
+  test-max-size : Text
+  test-max-size =
+    let h = cmd-history-new 3
+    in let h2 = ch-push (ch-push (ch-push (ch-push h (CmdNavigate "A") 1) (CmdNavigate "B") 2) (CmdNavigate "C") 3) (CmdNavigate "D") 4
+    in let t1 = assert-eq-int "trimmed-to-max" 3 (h2.ch-count)
+    in t1
+
+  test-last : Text
+  test-last =
+    let h = ch-push (cmd-history-new 50) (CmdNavigate "Files") 100
+    in let last = ch-last h
+    in let t1 = when last
+      is Just (r) -> assert-eq-text "last-desc" "Navigate to Files" (r.cr-description)
+      is None -> "FAIL last: empty"
+    in let empty = ch-last (cmd-history-new 50)
+    in let t2 = when empty
+      is Just (r) -> "FAIL empty-last: should be None"
+      is None -> "PASS empty-last"
+    in t1 & "\n" & t2
+
+Section: Command Kind Tests
+
+  test-destructive : Text
+  test-destructive =
+    let t1 = assert-true "delete-destructive" (cmd-is-destructive (CmdDeleteResource "x"))
+    in let t2 = assert-true "bulk-kill" (cmd-is-destructive (CmdBulkAction ["a", "b"] CapKill))
+    in let t3 = assert-false "navigate-not-destructive" (cmd-is-destructive (CmdNavigate "Files"))
+    in let t4 = assert-true "resource-delete" (cmd-is-destructive (CmdResourceAction "x" CapDelete))
+    in let t5 = assert-false "resource-start" (cmd-is-destructive (CmdResourceAction "x" CapStart))
+    in t1 & "\n" & t2 & "\n" & t3 & "\n" & t4 & "\n" & t5
+
+  test-confirm : Text
+  test-confirm =
+    let t1 = assert-true "delete-confirm" (cmd-needs-confirm (CmdDeleteResource "x"))
+    in let t2 = assert-true "bulk-stop" (cmd-needs-confirm (CmdBulkAction ["a"] CapStop))
+    in let t3 = assert-false "navigate-no-confirm" (cmd-needs-confirm (CmdNavigate "X"))
+    in t1 & "\n" & t2 & "\n" & t3
+
+Section: Entry
+
+  opening : [Console] None = act
+    print-line-uni "=== Command Tests ==="
+    print-line-uni test-empty-history
+    print-line-uni test-push-and-undo
+    print-line-uni test-redo
+    print-line-uni test-branch-truncation
+    print-line-uni test-max-size
+    print-line-uni test-last
+    print-line-uni test-destructive
+    print-line-uni test-confirm
+    print-line-uni "=== Done ==="
+  end
+
+Page 1

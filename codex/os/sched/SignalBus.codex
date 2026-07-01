@@ -1,0 +1,113 @@
+Chapter: SignalBus
+  cites Foreword chapter Maybe
+
+ The SignalBus delivers inter-process signals (term, kill, hup,
+ usr1, usr2, child, alarm) to registered handlers, queuing
+ pending signals per process ID.
+
+ We say:
+
+Section: Signal Types
+
+  Signal =
+    | SigTerm
+    | SigKill
+    | SigHup
+    | SigUsr1
+    | SigUsr2
+    | SigChild (Integer)
+    | SigAlarm (Integer)
+
+  SignalEntry = record {
+    target-pid : Integer,
+    signal : Signal,
+    from-pid : Integer,
+    timestamp : Integer
+  }
+
+  SignalQueue = record {
+    pending : List SignalEntry,
+    count : Integer between 0 and 65535,
+    delivered : Integer between 0 and 4294967295
+  }
+
+Section: Queue Operations
+
+  signal-queue-empty : SignalQueue
+  signal-queue-empty = SignalQueue { pending = [], count = 0, delivered = 0 }
+
+  signal-send : SignalQueue, Integer, Integer, Signal, Integer -> SignalQueue
+  signal-send (q) (from) (to) (sig) (ts) =
+    let entry = SignalEntry { target-pid = to, signal = sig, from-pid = from, timestamp = ts }
+    in SignalQueue { pending = list-push (q.pending) entry, count = q.count + 1, delivered = q.delivered }
+
+  signal-peek : SignalQueue, Integer -> Maybe SignalEntry
+  signal-peek (q) (pid) = find-signal (q.pending) pid 0 (q.count)
+
+  find-signal : List SignalEntry, Integer, Integer, Integer -> Maybe SignalEntry
+  find-signal (entries) (pid) (i) (len) =
+    if i >= len then None
+    else let e = list-at entries i
+    in if e.target-pid == pid then Just e
+    else find-signal entries pid (i + 1) len
+
+  signal-consume : SignalQueue, Integer -> SignalQueue
+  signal-consume (q) (pid) =
+    let filtered = remove-first-for (q.pending) pid 0 (q.count) [] False
+    in SignalQueue { pending = filtered, count = list-length filtered, delivered = q.delivered + 1 }
+
+  remove-first-for : List SignalEntry, Integer, Integer, Integer, List SignalEntry, Boolean -> List SignalEntry
+  remove-first-for (entries) (pid) (i) (len) (acc) (removed) =
+    if i >= len then acc
+    else let e = list-at entries i
+    in if removed then remove-first-for entries pid (i + 1) len (list-push acc e) True
+    else if e.target-pid == pid then remove-first-for entries pid (i + 1) len acc True
+    else remove-first-for entries pid (i + 1) len (list-push acc e) False
+
+Section: Broadcast
+
+  signal-broadcast : SignalQueue, List Integer, Signal, Integer, Integer -> SignalQueue
+  signal-broadcast (q) (pids) (sig) (from) (ts) =
+    broadcast-loop q pids sig from ts 0 (list-length pids)
+
+  broadcast-loop : SignalQueue, List Integer, Signal, Integer, Integer, Integer, Integer -> SignalQueue
+  broadcast-loop (q) (pids) (sig) (from) (ts) (i) (len) =
+    if i >= len then q
+    else broadcast-loop (signal-send q from (list-at pids i) sig ts) pids sig from ts (i + 1) len
+
+Section: Queries
+
+  signal-pending-count : SignalQueue -> Integer
+  signal-pending-count (q) = q.count
+
+  signal-delivered-count : SignalQueue -> Integer
+  signal-delivered-count (q) = q.delivered
+
+  signal-pending-for : SignalQueue, Integer -> Integer
+  signal-pending-for (q) (pid) = count-for-pid (q.pending) pid 0 (q.count) 0
+
+  count-for-pid : List SignalEntry, Integer, Integer, Integer, Integer -> Integer
+  count-for-pid (entries) (pid) (i) (len) (acc) =
+    if i >= len then acc
+    else let e = list-at entries i
+    in count-for-pid entries pid (i + 1) len (acc + (if e.target-pid == pid then 1 else 0))
+
+Section: Formatting
+
+  format-signal : Signal -> Text
+  format-signal (s) = when s
+    is SigTerm -> "SIGTERM"
+    is SigKill -> "SIGKILL"
+    is SigHup -> "SIGHUP"
+    is SigUsr1 -> "SIGUSR1"
+    is SigUsr2 -> "SIGUSR2"
+    is SigChild (pid) -> "SIGCHILD(" & show pid & ")"
+    is SigAlarm (ticks) -> "SIGALARM(" & show ticks & ")"
+
+  format-signal-entry : SignalEntry -> Text
+  format-signal-entry (e) = show (e.from-pid) & "->" & show (e.target-pid) & " " & format-signal (e.signal)
+
+  signal-queue-stats : SignalQueue -> Text
+  signal-queue-stats (q) = "pending=" & show (q.count) & " delivered=" & show (q.delivered)
+
+Page 1

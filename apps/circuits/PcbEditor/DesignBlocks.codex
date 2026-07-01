@@ -1,0 +1,191 @@
+Chapter: DesignBlocks
+  cites Foreword chapter List
+  cites Foreword chapter Maybe
+
+ Reusable board layout fragments. A design block is a saved collection
+ of tracks, vias, footprints, and zones that can be instantiated into
+ a board at a given position and rotation. Useful for repeating proven
+ sub-circuits such as decoupling clusters or matched differential
+ pair breakouts.
+
+Section: Block Track
+
+  BlockTrack = record {
+    bt-x1 : Integer,
+    bt-y1 : Integer,
+    bt-x2 : Integer,
+    bt-y2 : Integer,
+    bt-width : Integer,
+    bt-layer : Integer,
+    bt-net-name : Text
+  }
+
+Section: Block Via
+
+  BlockVia = record {
+    bv-x : Integer,
+    bv-y : Integer,
+    bv-diameter : Integer,
+    bv-drill : Integer,
+    bv-net-name : Text
+  }
+
+Section: Block Footprint
+
+ The ref-pattern field uses a wildcard such as "U?" or "C?" so that
+ instances receive auto-numbered reference designators when placed.
+
+  BlockFootprint = record {
+    bf-ref-pattern : Text,
+    bf-footprint-name : Text,
+    bf-x : Integer,
+    bf-y : Integer,
+    bf-rotation : Integer,
+    bf-side : Integer
+  }
+
+Section: Block Zone Vertex
+
+  BlockZoneVertex = record {
+    zv-x : Integer,
+    zv-y : Integer
+  }
+
+Section: Block Zone
+
+  BlockZone = record {
+    bz-net-name : Text,
+    bz-layer : Integer,
+    bz-vertices : List BlockZoneVertex,
+    bz-priority : Integer
+  }
+
+Section: Design Block
+
+  DesignBlock = record {
+    db-name : Text,
+    db-description : Text,
+    db-tracks : List BlockTrack,
+    db-vias : List BlockVia,
+    db-footprints : List BlockFootprint,
+    db-zones : List BlockZone,
+    db-origin-x : Integer,
+    db-origin-y : Integer,
+    db-width : Integer,
+    db-height : Integer,
+    db-author : Text,
+    db-tags : List Text
+  }
+
+Section: Design Block Library
+
+  DesignBlockLibrary = record {
+    dbl-name : Text,
+    dbl-blocks : List DesignBlock,
+    dbl-count : Integer
+  }
+
+Section: Block Placement
+
+  BlockPlacement = record {
+    bp-block-name : Text,
+    bp-x : Integer,
+    bp-y : Integer,
+    bp-rotation : Integer,
+    bp-mirror : Integer,
+    bp-ref-offset : Integer
+  }
+
+Section: Construction
+
+  empty-design-block : Text -> DesignBlock
+  empty-design-block (name) = DesignBlock {
+    db-name = name,
+    db-description = "",
+    db-tracks = [],
+    db-vias = [],
+    db-footprints = [],
+    db-zones = [],
+    db-origin-x = 0,
+    db-origin-y = 0,
+    db-width = 0,
+    db-height = 0,
+    db-author = "",
+    db-tags = []
+  }
+
+  empty-block-library : Text -> DesignBlockLibrary
+  empty-block-library (name) = DesignBlockLibrary {
+    dbl-name = name,
+    dbl-blocks = [],
+    dbl-count = 0
+  }
+
+Section: Adding Elements
+
+  block-add-track : DesignBlock, BlockTrack -> DesignBlock
+  block-add-track (blk) (trk) =
+    __record-set blk "db-tracks" (list-push blk.db-tracks trk)
+
+  block-add-via : DesignBlock, BlockVia -> DesignBlock
+  block-add-via (blk) (v) =
+    __record-set blk "db-vias" (list-push blk.db-vias v)
+
+  block-add-footprint : DesignBlock, BlockFootprint -> DesignBlock
+  block-add-footprint (blk) (fp) =
+    __record-set blk "db-footprints" (list-push blk.db-footprints fp)
+
+  block-add-zone : DesignBlock, BlockZone -> DesignBlock
+  block-add-zone (blk) (z) =
+    __record-set blk "db-zones" (list-push blk.db-zones z)
+
+Section: Library Operations
+
+  library-add-block : DesignBlockLibrary, DesignBlock -> DesignBlockLibrary
+  library-add-block (lib) (blk) = DesignBlockLibrary {
+    dbl-name = lib.dbl-name,
+    dbl-blocks = list-push lib.dbl-blocks blk,
+    dbl-count = lib.dbl-count + 1
+  }
+
+  library-find-block : DesignBlockLibrary, Text -> Maybe DesignBlock
+  library-find-block (lib) (name) =
+    library-find-scan lib.dbl-blocks name 0 (list-length lib.dbl-blocks)
+
+  library-find-scan : List DesignBlock, Text, Integer, Integer -> Maybe DesignBlock
+  library-find-scan (blocks) (name) (i) (n) =
+    if i >= n then None
+    else let blk = list-at blocks i
+    in if blk.db-name == name then Just blk
+    else library-find-scan blocks name (i + 1) n
+
+Section: Counts
+
+  block-footprint-count : DesignBlock -> Integer
+  block-footprint-count (blk) = list-length blk.db-footprints
+
+  block-track-count : DesignBlock -> Integer
+  block-track-count (blk) = list-length blk.db-tracks
+
+  block-via-count : DesignBlock -> Integer
+  block-via-count (blk) = list-length blk.db-vias
+
+Section: Coordinate Transform
+
+ Translates a block-relative point by offset and rotation. Rotation
+ is in 90-degree increments (0, 90, 180, 270). These return a single
+ coordinate each since Codex functions return one value.
+
+  translate-block-point-x : Integer, Integer, Integer, Integer, Integer -> Integer
+  translate-block-point-x (px) (py) (ox) (oy) (rot) =
+    if rot == 90 then ox + (0 - py)
+    else if rot == 180 then ox + (0 - px)
+    else if rot == 270 then ox + py
+    else ox + px
+
+  translate-block-point-y : Integer, Integer, Integer, Integer, Integer -> Integer
+  translate-block-point-y (px) (py) (ox) (oy) (rot) =
+    if rot == 90 then oy + px
+    else if rot == 180 then oy + (0 - py)
+    else if rot == 270 then oy + (0 - px)
+    else oy + py

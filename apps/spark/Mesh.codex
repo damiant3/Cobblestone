@@ -1,0 +1,131 @@
+Chapter: Mesh
+  cites Math chapter Quaternion
+  cites Math chapter Geometry
+
+ Half-edge mesh data structure for 3D geometry. Vertices, edges,
+ faces with efficient topology traversal. All coordinates use Real.
+
+ We say:
+
+Section: Types
+
+  HalfEdge = record {
+    he-vert : Integer,
+    he-pair : Integer,
+    he-face : Integer,
+    he-next : Integer
+  }
+
+  MeshData = record {
+    md-verts : List Vec3,
+    md-uvs : List Vec2,
+    md-normals : List Vec3,
+    md-edges : List HalfEdge,
+    md-face-starts : List Integer,
+    md-vert-count : Integer,
+    md-face-count : Integer,
+    md-edge-count : Integer
+  }
+
+  TriFace = record {
+    tf-v0 : Integer,
+    tf-v1 : Integer,
+    tf-v2 : Integer
+  }
+
+  TriMesh = record {
+    tm-verts : List Vec3,
+    tm-uvs : List Vec2,
+    tm-normals : List Vec3,
+    tm-faces : List TriFace,
+    tm-vert-count : Integer,
+    tm-face-count : Integer
+  }
+
+Section: Construction
+
+  mesh-empty : MeshData
+  mesh-empty = MeshData {
+    md-verts = [],
+    md-uvs = [],
+    md-normals = [],
+    md-edges = [],
+    md-face-starts = [],
+    md-vert-count = 0,
+    md-face-count = 0,
+    md-edge-count = 0
+  }
+
+  tri-mesh-empty : TriMesh
+  tri-mesh-empty = TriMesh { tm-verts = [], tm-uvs = [], tm-normals = [], tm-faces = [], tm-vert-count = 0, tm-face-count = 0 }
+
+Section: Triangle Mesh Operations
+
+  tri-mesh-add-vert : TriMesh, Vec3, Vec2, Vec3 -> TriMesh
+  tri-mesh-add-vert (m) (pos) (uv) (normal) =
+    let vs = list-push (m.tm-verts) pos in let us = list-push (m.tm-uvs) uv in let ns = list-push (m.tm-normals) normal
+    in TriMesh { tm-verts = vs, tm-uvs = us, tm-normals = ns, tm-faces = m.tm-faces, tm-vert-count = m.tm-vert-count + 1, tm-face-count = m.tm-face-count }
+
+  tri-mesh-add-face : TriMesh, Integer, Integer, Integer -> TriMesh
+  tri-mesh-add-face (m) (v0) (v1) (v2) =
+    let f = TriFace { tf-v0 = v0, tf-v1 = v1, tf-v2 = v2 }
+    in TriMesh { tm-verts = m.tm-verts, tm-uvs = m.tm-uvs, tm-normals = m.tm-normals, tm-faces = list-push (m.tm-faces) f, tm-vert-count = m.tm-vert-count, tm-face-count = m.tm-face-count + 1 }
+
+Section: Queries
+
+  tri-mesh-vert : TriMesh, Integer -> Vec3
+  tri-mesh-vert (m) (i) = list-at (m.tm-verts) i
+
+  tri-mesh-uv : TriMesh, Integer -> Vec2
+  tri-mesh-uv (m) (i) = list-at (m.tm-uvs) i
+
+  tri-mesh-normal : TriMesh, Integer -> Vec3
+  tri-mesh-normal (m) (i) = list-at (m.tm-normals) i
+
+  tri-mesh-face : TriMesh, Integer -> TriFace
+  tri-mesh-face (m) (i) = list-at (m.tm-faces) i
+
+Section: Normal Computation
+
+  mesh-compute-face-normal : Vec3, Vec3, Vec3 -> Vec3
+  mesh-compute-face-normal (v0) (v1) (v2) =
+    let e1 = vec3-subtract v1 v0
+    in let e2 = vec3-subtract v2 v0
+    in let n = vec3-cross e1 e2
+    in let len = mesh-v3-length n
+    in if len == 0.0 then vec3-new 0.0 1.0 0.0
+    else Vec3 { vx = n.vx / len, vy = n.vy / len, vz = n.vz / len }
+
+  mesh-v3-length : Vec3 -> Real
+  mesh-v3-length (v) =
+    let sq = v.vx * v.vx + v.vy * v.vy + v.vz * v.vz
+    in geo-sqrt sq
+
+Section: Bounds
+
+  MeshBounds = record {
+    mb-min : Vec3,
+    mb-max : Vec3
+  }
+
+  tri-mesh-bounds : TriMesh -> MeshBounds
+  tri-mesh-bounds (m) =
+    if m.tm-vert-count == 0 then MeshBounds { mb-min = vec3-zero, mb-max = vec3-zero }
+    else let v0 = tri-mesh-vert m 0
+    in tri-mesh-bounds-loop m 1 v0 v0
+
+  tri-mesh-bounds-loop : TriMesh, Integer, Vec3, Vec3 -> MeshBounds
+  tri-mesh-bounds-loop (m) (i) (lo) (hi) =
+    if i >= m.tm-vert-count then MeshBounds { mb-min = lo, mb-max = hi }
+    else let v = tri-mesh-vert m i
+    in let new-lo = Vec3 { vx = mesh-min (lo.vx) (v.vx), vy = mesh-min (lo.vy) (v.vy), vz = mesh-min (lo.vz) (v.vz) }
+    in let new-hi = Vec3 { vx = mesh-max (hi.vx) (v.vx), vy = mesh-max (hi.vy) (v.vy), vz = mesh-max (hi.vz) (v.vz) }
+    in tri-mesh-bounds-loop m (i + 1) new-lo new-hi
+
+  mesh-min : Real, Real -> Real
+  mesh-min (a) (b) = if a < b then a else b
+
+  mesh-max : Real, Real -> Real
+  mesh-max (a) (b) = if a > b then a else b
+
+Page 1

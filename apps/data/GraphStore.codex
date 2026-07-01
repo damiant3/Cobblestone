@@ -1,0 +1,433 @@
+Chapter: GraphStore
+  cites Data chapter Row
+  cites Foreword chapter Maybe
+  cites Foreword chapter Hamt
+  cites Foreword chapter Sort
+  cites Foreword chapter Tuple
+
+ Property graph database. Nodes and edges carry typed properties.
+ Supports labeled nodes, typed directed edges, adjacency traversal,
+ path queries, shortest path (BFS), pattern matching, and
+ PageRank-style scoring.
+
+ We say:
+
+Section: Node
+
+  GNode = record {
+    gn-id : Integer,
+    gn-label : Text,
+    gn-props : HamtMap ColumnValue
+  }
+
+  gnode : Integer, Text -> GNode
+  gnode (id) (label) = GNode { gn-id = id, gn-label = label, gn-props = hamt-empty }
+
+  gnode-set : GNode, Text, ColumnValue -> GNode
+  gnode-set (n) (key) (val) = GNode { gn-id = n.gn-id, gn-label = n.gn-label, gn-props = hamt-set (n.gn-props) key val }
+
+  gnode-get : GNode, Text -> ColumnValue
+  gnode-get (n) (key) =
+    let found = hamt-get (n.gn-props) key
+    in when found
+      is Just (v) -> v
+      is None -> ValNull
+
+Section: Edge
+
+  GEdge = record {
+    ge-id : Integer,
+    ge-from : Integer,
+    ge-to : Integer,
+    ge-label : Text,
+    ge-weight : Integer,
+    ge-props : HamtMap ColumnValue
+  }
+
+  gedge : Integer, Integer, Integer, Text -> GEdge
+  gedge (id) (from) (to) (label) = GEdge { ge-id = id, ge-from = from, ge-to = to, ge-label = label, ge-weight = 1, ge-props = hamt-empty }
+
+  gedge-weighted : Integer, Integer, Integer, Text, Integer -> GEdge
+  gedge-weighted (id) (from) (to) (label) (weight) = GEdge { ge-id = id, ge-from = from, ge-to = to, ge-label = label, ge-weight = weight, ge-props = hamt-empty }
+
+  gedge-set : GEdge, Text, ColumnValue -> GEdge
+  gedge-set (e) (key) (val) = GEdge { ge-id = e.ge-id, ge-from = e.ge-from, ge-to = e.ge-to, ge-label = e.ge-label, ge-weight = e.ge-weight, ge-props = hamt-set (e.ge-props) key val }
+
+Section: Graph
+
+  GraphStore = record {
+    gs-nodes : HamtMap GNode,
+    gs-edges : List GEdge,
+    gs-adj-out : HamtMap (List Integer),
+    gs-adj-in : HamtMap (List Integer),
+    gs-node-count : Integer,
+    gs-edge-count : Integer,
+    gs-next-edge-id : Integer
+  }
+
+  graph-new : GraphStore
+  graph-new = GraphStore {
+    gs-nodes = hamt-empty,
+    gs-edges = [],
+    gs-adj-out = hamt-empty,
+    gs-adj-in = hamt-empty,
+    gs-node-count = 0,
+    gs-edge-count = 0,
+    gs-next-edge-id = 1
+  }
+
+Section: Add Node
+
+  graph-add-node : GraphStore, GNode -> GraphStore
+  graph-add-node (g) (node) =
+    let key = show (node.gn-id)
+    in GraphStore {
+      gs-nodes = hamt-set (g.gs-nodes) key node,
+      gs-edges = g.gs-edges,
+      gs-adj-out = g.gs-adj-out,
+      gs-adj-in = g.gs-adj-in,
+      gs-node-count = g.gs-node-count + 1,
+      gs-edge-count = g.gs-edge-count,
+      gs-next-edge-id = g.gs-next-edge-id
+    }
+
+Section: Add Edge
+
+  graph-add-edge : GraphStore, Integer, Integer, Text -> GraphStore
+  graph-add-edge (g) (from) (to) (label) =
+    let eid = g.gs-next-edge-id
+    in let edge = gedge eid from to label
+    in graph-insert-edge g edge
+
+  graph-add-weighted-edge : GraphStore, Integer, Integer, Text, Integer -> GraphStore
+  graph-add-weighted-edge (g) (from) (to) (label) (weight) =
+    let eid = g.gs-next-edge-id
+    in let edge = gedge-weighted eid from to label weight
+    in graph-insert-edge g edge
+
+  graph-insert-edge : GraphStore, GEdge -> GraphStore
+  graph-insert-edge (g) (edge) =
+    let from-key = show (edge.ge-from)
+    in let to-key = show (edge.ge-to)
+    in let edge-idx = list-length (g.gs-edges)
+    in let out-existing = hamt-get (g.gs-adj-out) from-key
+    in let new-out = when out-existing
+      is None -> hamt-set (g.gs-adj-out) from-key [edge-idx]
+      is Just (idxs) -> hamt-set (g.gs-adj-out) from-key (list-push idxs edge-idx)
+    in let in-existing = hamt-get (g.gs-adj-in) to-key
+    in let new-in = when in-existing
+      is None -> hamt-set (g.gs-adj-in) to-key [edge-idx]
+      is Just (idxs) -> hamt-set (g.gs-adj-in) to-key (list-push idxs edge-idx)
+    in GraphStore {
+      gs-nodes = g.gs-nodes,
+      gs-edges = list-push (g.gs-edges) edge,
+      gs-adj-out = new-out,
+      gs-adj-in = new-in,
+      gs-node-count = g.gs-node-count,
+      gs-edge-count = g.gs-edge-count + 1,
+      gs-next-edge-id = g.gs-next-edge-id + 1
+    }
+
+Section: Lookup
+
+  graph-get-node : GraphStore, Integer -> Maybe GNode
+  graph-get-node (g) (id) = hamt-get (g.gs-nodes) (show id)
+
+  graph-get-edge : GraphStore, Integer -> Maybe GEdge
+  graph-get-edge (g) (idx) =
+    if idx < 0 then None
+    else if idx >= g.gs-edge-count then None
+    else Just (list-at (g.gs-edges) idx)
+
+Section: Adjacency
+
+  graph-out-edges : GraphStore, Integer -> List GEdge
+  graph-out-edges (g) (node-id) =
+    let found = hamt-get (g.gs-adj-out) (show node-id)
+    in when found
+      is None -> []
+      is Just (idxs) -> g-resolve-edges (g.gs-edges) idxs 0 (list-length idxs) []
+
+  graph-in-edges : GraphStore, Integer -> List GEdge
+  graph-in-edges (g) (node-id) =
+    let found = hamt-get (g.gs-adj-in) (show node-id)
+    in when found
+      is None -> []
+      is Just (idxs) -> g-resolve-edges (g.gs-edges) idxs 0 (list-length idxs) []
+
+  g-resolve-edges : List GEdge, List Integer, Integer, Integer, List GEdge -> List GEdge
+  g-resolve-edges (edges) (idxs) (i) (len) (acc) =
+    if i >= len then acc
+    else g-resolve-edges edges idxs (i + 1) len (list-push acc (list-at edges (list-at idxs i)))
+
+  graph-neighbors : GraphStore, Integer -> List Integer
+  graph-neighbors (g) (node-id) =
+    let out = graph-out-edges g node-id
+    in g-neighbor-ids out 0 (list-length out) []
+
+  g-neighbor-ids : List GEdge, Integer, Integer, List Integer -> List Integer
+  g-neighbor-ids (edges) (i) (len) (acc) =
+    if i >= len then acc
+    else g-neighbor-ids edges (i + 1) len (list-push acc (list-at edges i).ge-to)
+
+  graph-out-by-label : GraphStore, Integer, Text -> List GEdge
+  graph-out-by-label (g) (node-id) (label) =
+    let out = graph-out-edges g node-id
+    in g-filter-label out label 0 (list-length out) []
+
+  g-filter-label : List GEdge, Text, Integer, Integer, List GEdge -> List GEdge
+  g-filter-label (edges) (label) (i) (len) (acc) =
+    if i >= len then acc
+    else let e = list-at edges i
+    in if e.ge-label == label then g-filter-label edges label (i + 1) len (list-push acc e)
+    else g-filter-label edges label (i + 1) len acc
+
+Section: Label Queries
+
+  graph-nodes-by-label : GraphStore, Text -> List GNode
+  graph-nodes-by-label (g) (label) =
+    let entries = hamt-to-list (g.gs-nodes)
+    in g-filter-node-label entries label 0 (list-length entries) []
+
+  g-filter-node-label : List (HamtEntry GNode), Text, Integer, Integer, List GNode -> List GNode
+  g-filter-node-label (entries) (label) (i) (len) (acc) =
+    if i >= len then acc
+    else let n = (list-at entries i).value
+    in if n.gn-label == label then g-filter-node-label entries label (i + 1) len (list-push acc n)
+    else g-filter-node-label entries label (i + 1) len acc
+
+  graph-edges-by-label : GraphStore, Text -> List GEdge
+  graph-edges-by-label (g) (label) =
+    g-filter-label (g.gs-edges) label 0 (g.gs-edge-count) []
+
+Section: BFS Shortest Path
+
+  BfsResult = record {
+    bfs-path : List Integer,
+    bfs-length : Integer,
+    bfs-found : Boolean
+  }
+
+  graph-shortest-path : GraphStore, Integer, Integer -> BfsResult
+  graph-shortest-path (g) (start) (goal) =
+    if start == goal then BfsResult { bfs-path = [start], bfs-length = 0, bfs-found = True }
+    else bfs-loop g [(start, -1)] 0 (hamt-set hamt-empty (show start) (-1)) goal
+
+  bfs-loop : GraphStore, List (Integer, Integer), Integer, HamtMap Integer, Integer -> BfsResult
+  bfs-loop (g) (queue) (qi) (visited) (goal) =
+    if qi >= list-length queue then BfsResult { bfs-path = [], bfs-length = 0, bfs-found = False }
+    else let entry = list-at queue qi
+    in let current = when entry is (node, parent) -> node
+    in let nbrs = graph-neighbors g current
+    in let result = bfs-expand g nbrs current queue visited goal 0 (list-length nbrs)
+    in when result
+      is Just (path) -> BfsResult { bfs-path = path, bfs-length = list-length path - 1, bfs-found = True }
+      is None -> bfs-loop g (result-queue result queue nbrs current visited) (qi + 1) (result-visited result visited nbrs current) goal
+
+  bfs-expand : GraphStore, List Integer, Integer, List (Integer, Integer), HamtMap Integer, Integer, Integer, Integer -> Maybe (List Integer)
+  bfs-expand (g) (nbrs) (current) (queue) (visited) (goal) (i) (len) =
+    if i >= len then None
+    else let nbr = list-at nbrs i
+    in if nbr == goal then Just (bfs-reconstruct queue current goal)
+    else let key = show nbr
+    in let seen = hamt-get visited key
+    in when seen
+      is Just (v) -> bfs-expand g nbrs current queue visited goal (i + 1) len
+      is None -> bfs-expand g nbrs current queue visited goal (i + 1) len
+
+  bfs-reconstruct : List (Integer, Integer), Integer, Integer -> List Integer
+  bfs-reconstruct (queue) (last-parent) (goal) =
+    [last-parent, goal]
+
+  result-queue : Maybe (List Integer), List (Integer, Integer), List Integer, Integer, HamtMap Integer -> List (Integer, Integer)
+  result-queue (r) (queue) (nbrs) (current) (visited) =
+    rq-add queue nbrs current visited 0 (list-length nbrs)
+
+  rq-add : List (Integer, Integer), List Integer, Integer, HamtMap Integer, Integer, Integer -> List (Integer, Integer)
+  rq-add (queue) (nbrs) (parent) (visited) (i) (len) =
+    if i >= len then queue
+    else let nbr = list-at nbrs i
+    in let seen = hamt-get visited (show nbr)
+    in when seen
+      is Just (v) -> rq-add queue nbrs parent visited (i + 1) len
+      is None -> rq-add (list-push queue (nbr, parent)) nbrs parent visited (i + 1) len
+
+  result-visited : Maybe (List Integer), HamtMap Integer, List Integer, Integer -> HamtMap Integer
+  result-visited (r) (visited) (nbrs) (current) =
+    rv-add visited nbrs current 0 (list-length nbrs)
+
+  rv-add : HamtMap Integer, List Integer, Integer, Integer, Integer -> HamtMap Integer
+  rv-add (visited) (nbrs) (parent) (i) (len) =
+    if i >= len then visited
+    else let nbr = list-at nbrs i
+    in rv-add (hamt-set visited (show nbr) parent) nbrs parent (i + 1) len
+
+Section: Depth-Limited Traversal
+
+  graph-traverse : GraphStore, Integer, Integer -> List Integer
+  graph-traverse (g) (start) (max-depth) =
+    gt-dfs g start max-depth 0 (hamt-set hamt-empty (show start) 1) [start]
+
+  gt-dfs : GraphStore, Integer, Integer, Integer, HamtMap Integer, List Integer -> List Integer
+  gt-dfs (g) (current) (max-depth) (depth) (visited) (acc) =
+    if depth >= max-depth then acc
+    else let nbrs = graph-neighbors g current
+    in gt-dfs-nbrs g nbrs max-depth (depth + 1) visited acc 0 (list-length nbrs)
+
+  gt-dfs-nbrs : GraphStore, List Integer, Integer, Integer, HamtMap Integer, List Integer, Integer, Integer -> List Integer
+  gt-dfs-nbrs (g) (nbrs) (max-depth) (depth) (visited) (acc) (i) (len) =
+    if i >= len then acc
+    else let nbr = list-at nbrs i
+    in let seen = hamt-get visited (show nbr)
+    in when seen
+      is Just (v) -> gt-dfs-nbrs g nbrs max-depth depth visited acc (i + 1) len
+      is None ->
+        let new-visited = hamt-set visited (show nbr) 1
+        in let new-acc = list-push acc nbr
+        in let deeper = gt-dfs g nbr max-depth depth new-visited new-acc
+        in gt-dfs-nbrs g nbrs max-depth depth new-visited deeper (i + 1) len
+
+Section: Pattern Match — (a)-[r]->(b)
+
+  PatternMatch = record {
+    pm-from : GNode,
+    pm-edge : GEdge,
+    pm-to : GNode
+  }
+
+  graph-match-pattern : GraphStore, Text, Text, Text -> List PatternMatch
+  graph-match-pattern (g) (from-label) (edge-label) (to-label) =
+    let from-nodes = graph-nodes-by-label g from-label
+    in gmp-loop g from-nodes edge-label to-label 0 (list-length from-nodes) []
+
+  gmp-loop : GraphStore, List GNode, Text, Text, Integer, Integer, List PatternMatch -> List PatternMatch
+  gmp-loop (g) (from-nodes) (edge-label) (to-label) (i) (len) (acc) =
+    if i >= len then acc
+    else let fn = list-at from-nodes i
+    in let edges = graph-out-by-label g (fn.gn-id) edge-label
+    in let matched = gmp-match-edges g fn edges to-label 0 (list-length edges) acc
+    in gmp-loop g from-nodes edge-label to-label (i + 1) len matched
+
+  gmp-match-edges : GraphStore, GNode, List GEdge, Text, Integer, Integer, List PatternMatch -> List PatternMatch
+  gmp-match-edges (g) (from-node) (edges) (to-label) (i) (len) (acc) =
+    if i >= len then acc
+    else let e = list-at edges i
+    in let to-node = graph-get-node g (e.ge-to)
+    in when to-node
+      is None -> gmp-match-edges g from-node edges to-label (i + 1) len acc
+      is Just (tn) ->
+        if tn.gn-label == to-label | to-label == "*" then
+          let pm = PatternMatch { pm-from = from-node, pm-edge = e, pm-to = tn }
+          in gmp-match-edges g from-node edges to-label (i + 1) len (list-push acc pm)
+        else gmp-match-edges g from-node edges to-label (i + 1) len acc
+
+Section: PageRank
+
+  PageRankResult = record {
+    pr-scores : HamtMap Integer,
+    pr-iterations : Integer
+  }
+
+  graph-pagerank : GraphStore, Integer, Integer -> PageRankResult
+  graph-pagerank (g) (iterations) (damping-pct) =
+    let node-entries = hamt-to-list (g.gs-nodes)
+    in let n = list-length node-entries
+    in let init-score = 1000 / (if n == 0 then 1 else n)
+    in let scores = pr-init-scores node-entries init-score 0 n hamt-empty
+    in let final = pr-iterate g node-entries scores damping-pct n 0 iterations
+    in PageRankResult { pr-scores = final, pr-iterations = iterations }
+
+  pr-init-scores : List (HamtEntry GNode), Integer, Integer, Integer, HamtMap Integer -> HamtMap Integer
+  pr-init-scores (entries) (init) (i) (len) (acc) =
+    if i >= len then acc
+    else let e = list-at entries i
+    in pr-init-scores entries init (i + 1) len (hamt-set acc (e.key) init)
+
+  pr-iterate : GraphStore, List (HamtEntry GNode), HamtMap Integer, Integer, Integer, Integer, Integer -> HamtMap Integer
+  pr-iterate (g) (nodes) (scores) (damping) (n) (iter) (max-iter) =
+    if iter >= max-iter then scores
+    else let new-scores = pr-one-pass g nodes scores damping n 0 (list-length nodes) hamt-empty
+    in pr-iterate g nodes new-scores damping n (iter + 1) max-iter
+
+  pr-one-pass : GraphStore, List (HamtEntry GNode), HamtMap Integer, Integer, Integer, Integer, Integer, HamtMap Integer -> HamtMap Integer
+  pr-one-pass (g) (nodes) (scores) (damping) (n) (i) (len) (acc) =
+    if i >= len then acc
+    else let e = list-at nodes i
+    in let node-id = (e.value).gn-id
+    in let in-edges = graph-in-edges g node-id
+    in let incoming = pr-sum-incoming g in-edges scores 0 (list-length in-edges) 0
+    in let base = (1000 - damping) * 1000 / (if n == 0 then 1 else n * 1000)
+    in let rank = base + (damping * incoming) / 1000
+    in pr-one-pass g nodes scores damping n (i + 1) len (hamt-set acc (e.key) rank)
+
+  pr-sum-incoming : GraphStore, List GEdge, HamtMap Integer, Integer, Integer, Integer -> Integer
+  pr-sum-incoming (g) (edges) (scores) (i) (len) (acc) =
+    if i >= len then acc
+    else let e = list-at edges i
+    in let from-key = show (e.ge-from)
+    in let from-score = when (hamt-get scores from-key)
+      is Just (s) -> s
+      is None -> 0
+    in let out-degree = list-length (graph-out-edges g (e.ge-from))
+    in let contribution = if out-degree == 0 then 0 else from-score / out-degree
+    in pr-sum-incoming g edges scores (i + 1) len (acc + contribution)
+
+  graph-top-ranked : PageRankResult, Integer -> List (Text, Integer)
+  graph-top-ranked (pr) (k) =
+    let entries = hamt-to-list (pr.pr-scores)
+    in let sorted = sort-by entries pr-entry-cmp
+    in pr-take-top sorted k 0 []
+
+  pr-entry-cmp : HamtEntry Integer, HamtEntry Integer -> Integer
+  pr-entry-cmp (a) (b) = b.value - a.value
+
+  pr-take-top : List (HamtEntry Integer), Integer, Integer, List (Text, Integer) -> List (Text, Integer)
+  pr-take-top (sorted) (k) (i) (acc) =
+    if i >= k then acc
+    else if i >= list-length sorted then acc
+    else let e = list-at sorted i
+    in pr-take-top sorted k (i + 1) (list-push acc (e.key, e.value))
+
+Section: Connected Components
+
+  graph-components : GraphStore -> List (List Integer)
+  graph-components (g) =
+    let entries = hamt-to-list (g.gs-nodes)
+    in gc-loop g entries 0 (list-length entries) hamt-empty []
+
+  gc-loop : GraphStore, List (HamtEntry GNode), Integer, Integer, HamtMap Integer, List (List Integer) -> List (List Integer)
+  gc-loop (g) (entries) (i) (len) (visited) (acc) =
+    if i >= len then acc
+    else let e = list-at entries i
+    in let node-id = (e.value).gn-id
+    in let seen = hamt-get visited (show node-id)
+    in when seen
+      is Just (v) -> gc-loop g entries (i + 1) len visited acc
+      is None ->
+        let component = graph-traverse g node-id 1000
+        in let new-visited = gc-mark-visited visited component 0 (list-length component)
+        in gc-loop g entries (i + 1) len new-visited (list-push acc component)
+
+  gc-mark-visited : HamtMap Integer, List Integer, Integer, Integer -> HamtMap Integer
+  gc-mark-visited (visited) (nodes) (i) (len) =
+    if i >= len then visited
+    else gc-mark-visited (hamt-set visited (show (list-at nodes i)) 1) nodes (i + 1) len
+
+Section: Degree Distribution
+
+  graph-degree-out : GraphStore, Integer -> Integer
+  graph-degree-out (g) (node-id) = list-length (graph-out-edges g node-id)
+
+  graph-degree-in : GraphStore, Integer -> Integer
+  graph-degree-in (g) (node-id) = list-length (graph-in-edges g node-id)
+
+  graph-degree : GraphStore, Integer -> Integer
+  graph-degree (g) (node-id) = graph-degree-out g node-id + graph-degree-in g node-id
+
+Section: Statistics
+
+  graph-stats : GraphStore -> Text
+  graph-stats (g) =
+    "graph: nodes=" & show (g.gs-node-count) & " edges=" & show (g.gs-edge-count)
+
+Page 1

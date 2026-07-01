@@ -1,0 +1,50 @@
+Chapter: CheckConstantsScript
+
+  cites Foreword chapter Console
+  cites Foreword chapter Maybe
+  cites Shell chapter ShellTypes
+  cites Shell chapter ShellBuild
+  cites Shell chapter PowerShellEmit
+
+ Generates check-constants.ps1 from the Shell DSL.
+ Extracts load-bearing constant values from compiler source files
+ and compares their SHA256 hash against seed/constants.hash.
+ Compile with: -Survey "lower-mul:500000"
+
+ We say:
+
+Section: Parameters
+
+  cc-params : List ShellParam = [sh-switch "Update"]
+
+Section: S01 -- Preamble
+
+  s01 : List ShellCmd = [ScSetStrictMode, ScSetErrorStop, ScBlank, ScAssign "Repo" (SeRaw "(Resolve-Path (Join-Path $PSScriptRoot '..')).Path"), ScAssign "BootFile" (SeRaw "Join-Path $Repo 'codex\\compiler\\Emit\\X86_64Boot.codex'"), ScAssign "SettingsFile" (SeRaw "Join-Path $Repo 'codex\\compiler\\Core\\BuildSettings.codex'"), ScAssign "HashFile" (SeRaw "Join-Path $Repo 'seed\\constants.hash'")]
+
+Section: S02 -- Extract constants
+
+  s02 : List ShellCmd = [ScDotNetCallAssign "constants" "System.Collections.Generic.SortedDictionary[string,string]" "new" [], ScForEach "file" (SeArrayLiteral [SeVar "BootFile", SeVar "SettingsFile"]) [ScForEach "line" (SeStaticCall "System.IO.File" "ReadAllLines" [SeVar "file"]) [ScIf (SeMatch (SeVar "line") "^\\s+(\\S+)\\s*:\\s*Integer\\s*=\\s*(\\-?\\d+)\\s*$") [ScRaw "$constants[$matches[1]] = $matches[2]"] []]]]
+
+Section: S03 -- Compute hash
+
+  s03 : List ShellCmd = [ScDotNetCallAssign "sb" "System.Text.StringBuilder" "new" [], ScForEach "kv" (SeRaw "$constants.GetEnumerator()") [ScRaw "[void]$sb.AppendLine(\"$($kv.Key)=$($kv.Value)\")"], ScAssign "text" (SeMethodCall (SeVar "sb") "ToString" []), ScAssign "bytes" (SeStaticCall "System.Text.Encoding" "UTF8.GetBytes" [SeVar "text"]), ScAssign "hash" (SeRaw "[System.Security.Cryptography.SHA256]::Create().ComputeHash($bytes)"), ScAssign "hexHash" (SeRaw "($hash | ForEach-Object { $_.ToString(\"x2\") }) -join ''")]
+
+Section: S04 -- Update mode
+
+  s04 : List ShellCmd = [ScIf (SeVar "Update") [ScIf (SeFileExists (SeVar "HashFile")) [ScRaw "Set-ItemProperty $HashFile -Name IsReadOnly -Value $false -ErrorAction SilentlyContinue"] [], ScDotNetCall "System.IO.File" "WriteAllText" [SeVar "HashFile", SeRaw "\"$hexHash`n\"", SeRaw "[System.Text.UTF8Encoding]::new($false)"], ScEcho (SeRaw "\"constants.hash updated: $hexHash ($($constants.Count) constants)\""), ScExit (SeInt 0)] []]
+
+Section: S05 -- Verify mode
+
+  s05 : List ShellCmd = [ScIf (SeNot (SeFileExists (SeVar "HashFile"))) [ScEcho (SeRaw "\"WARNING: seed/constants.hash not found -- run 'check-constants.ps1 -Update' after seed rebuild\""), ScExit (SeInt 1)] [], ScAssign "savedHash" (SeRaw "(Get-Content $HashFile -First 1).Trim()"), ScIf (SeStringEq (SeVar "hexHash") (SeVar "savedHash")) [ScEcho (SeRaw "\"Constants MATCH seed ($($constants.Count) constants)\""), ScExit (SeInt 0)] [ScEcho (SeRaw "\"WARNING: Constants MISMATCH -- source constants differ from seed\""), ScEcho (SeRaw "\"  Source hash: $hexHash\""), ScEcho (SeRaw "\"  Seed hash:   $savedHash\""), ScEcho (SeLit "  A seed rebuild is required before the changes take effect."), ScEcho (SeLit "  Run: build/build.ps1"), ScExit (SeInt 1)]]
+
+Section: Assembly
+
+  cc-body : List ShellCmd = [ScSequence s01, ScBlank, ScSequence s02, ScBlank, ScSequence s03, ScBlank, ScSequence s04, ScBlank, ScSequence s05]
+
+  cc-script : ShellScript = sh-script "check-constants" "Verify seed constants hash matches compiler source" cc-params cc-body
+
+  opening : [Console] Nothing = act
+    print-line-uni (emit-powershell cc-script)
+  end
+
+Page 1

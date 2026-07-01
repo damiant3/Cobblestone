@@ -1,0 +1,163 @@
+Chapter: AgentCoordinator
+  cites Works chapter AgentRuntime
+  cites Trust chapter TrustLattice
+  cites Foreword chapter Maybe
+  cites Foreword chapter Sha256
+
+ An AgentCoordinator dispatches tasks between a local agent and an upstream server. The local agent handles interactive work. For tasks beyond local capacity, the coordinator packages context and escalates to upstream. The upstream server can be a cloud API, a workstation, or another Codex OS instance. The protocol requires signed requests and trust-verified responses.
+
+ We say:
+
+Section: Upstream Configuration
+
+  UpstreamConfig = record {
+    host : Text,
+    port : Integer,
+    api-path : Text,
+    auth-key : Text,
+    model-name : Text,
+    timeout-ms : Integer
+  }
+
+  default-upstream : UpstreamConfig = UpstreamConfig {
+    host = "",
+    port = 443,
+    api-path = "/v1/chat/completions",
+    auth-key = "",
+    model-name = "",
+    timeout-ms = 30000
+  }
+
+  upstream-configured : UpstreamConfig -> Boolean
+  upstream-configured (cfg) = text-length (cfg.host) > 0
+
+Section: Request/Response
+
+  UpstreamRequest = record {
+    messages : List ChatMessage,
+    context-files : List Text,
+    task-description : Text,
+    max-tokens : Integer,
+    request-hash : Text
+  }
+
+  UpstreamResponse = record {
+    content : Text,
+    token-count : Integer,
+    model-used : Text,
+    response-hash : Text,
+    signature : List Integer,
+    verified : Boolean
+  }
+
+  RequestStatus =
+    | RequestPending
+    | RequestComplete (UpstreamResponse)
+    | RequestFailed (Text)
+    | RequestTimeout
+
+Section: Escalation
+
+ When must the local agent escalate to upstream?
+
+  EscalationReason =
+    | ReasonComplexity (Text)
+    | ReasonContextSize (Integer)
+    | ReasonUserRequest
+    | ReasonConfidenceLow
+
+  EscalationDecision =
+    | HandleLocally
+    | EscalateUpstream (EscalationReason)
+
+  should-escalate : Text, Integer -> EscalationDecision
+  should-escalate (task) (context-tokens) =
+    if context-tokens > 4096 then EscalateUpstream (ReasonContextSize context-tokens)
+    else HandleLocally
+
+Section: Mode Dispatch
+
+ Different agents for different modes. The dev console agent
+ understands compiler internals and build commands. The UI agent
+ understands layout, widgets, and user interaction. Each can be
+ a different model or the same model with different system prompts.
+
+  AgentRole =
+    | RoleDevConsole
+    | RoleUiAssist
+    | RoleBuildWatch
+    | RoleCodeReview
+    | RoleGeneral
+
+  RoleConfig = record {
+    role : AgentRole,
+    system-prompt : Text,
+    model-override : Maybe Text,
+    escalation-threshold : Integer
+  }
+
+  dev-console-role : RoleConfig = RoleConfig {
+    role = RoleDevConsole,
+    system-prompt = "You are a Codex OS development assistant. You help with compiler internals, build system issues, and code navigation. You can search definitions, edit files, compile programs, and run tests.",
+    model-override = None,
+    escalation-threshold = 2048
+  }
+
+  ui-assist-role : RoleConfig = RoleConfig {
+    role = RoleUiAssist,
+    system-prompt = "You are a Codex UI assistant. You help design and build user interfaces using the Codex UI framework (Widget, Layout, BoxModel, Event, Theme).",
+    model-override = None,
+    escalation-threshold = 2048
+  }
+
+  build-watch-role : RoleConfig = RoleConfig {
+    role = RoleBuildWatch,
+    system-prompt = "You monitor the Codex build pipeline. You watch for sweep regressions, seed rebuild failures, and performance anomalies. Report issues proactively.",
+    model-override = None,
+    escalation-threshold = 1024
+  }
+
+  role-label : AgentRole -> Text
+  role-label (r) = when r
+    is RoleDevConsole -> "dev-console"
+    is RoleUiAssist -> "ui-assist"
+    is RoleBuildWatch -> "build-watch"
+    is RoleCodeReview -> "code-review"
+    is RoleGeneral -> "general"
+
+Section: Coordinator State
+
+  CoordinatorState = record {
+    local-runtime : AgentRuntimeState,
+    upstream : UpstreamConfig,
+    active-role : RoleConfig,
+    chat : ChatHistory,
+    pending-requests : List UpstreamRequest,
+    escalation-count : Integer
+  }
+
+  coordinator-init : RoleConfig -> CoordinatorState
+  coordinator-init (role) = CoordinatorState {
+    local-runtime = runtime-init,
+    upstream = default-upstream,
+    active-role = role,
+    chat = chat-new (role.system-prompt),
+    pending-requests = [],
+    escalation-count = 0
+  }
+
+  coordinator-switch-role : CoordinatorState, RoleConfig -> CoordinatorState
+  coordinator-switch-role (cs) (role) =
+    __record-set (__record-set cs "active-role" role) "chat" (chat-new (role.system-prompt))
+
+Section: Formatting
+
+  format-coordinator-status : CoordinatorState -> Text
+  format-coordinator-status (cs) =
+    "Role: " & role-label (cs.active-role.role) & "\n"
+    & "Local: " & format-runtime-status (cs.local-runtime) & "\n"
+    & "Upstream: " & if upstream-configured (cs.upstream) then cs.upstream.host & ":" & show (cs.upstream.port) else "not configured" & "\n"
+    & "Chat: " & show (cs.chat.message-count) & " messages\n"
+    & "Escalations: " & show (cs.escalation-count)
+
+Page 1

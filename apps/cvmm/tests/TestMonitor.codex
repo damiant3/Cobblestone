@@ -1,0 +1,195 @@
+Chapter: TestMonitor
+  cites Cvmm chapter CvmmTypes
+  cites Cvmm chapter Monitor
+  cites Foreword chapter Maybe
+
+ Unit tests for the composable monitor: panels, layouts, presets,
+ sparkline history, thresholds, catalog, and layout switching.
+
+Section: Test Harness
+
+  assert-eq-text : Text, Text, Text -> Text
+  assert-eq-text (label) (expected) (actual) =
+    if expected == actual then "PASS " & label
+    else "FAIL " & label & ": expected \"" & expected & "\" got \"" & actual & "\""
+
+  assert-eq-int : Text, Integer, Integer -> Text
+  assert-eq-int (label) (expected) (actual) =
+    if expected == actual then "PASS " & label
+    else "FAIL " & label & ": expected " & show expected & " got " & show actual
+
+  assert-true : Text, Boolean -> Text
+  assert-true (label) (val) =
+    if val then "PASS " & label
+    else "FAIL " & label & ": expected True"
+
+  assert-false : Text, Boolean -> Text
+  assert-false (label) (val) =
+    if val then "FAIL " & label & ": expected False"
+    else "PASS " & label
+
+Section: Panel Tests
+
+  test-panel-new : Text
+  test-panel-new =
+    let p = monitor-panel-new "test" "Test Panel" DsCpuPercent VizGauge
+    in let t1 = assert-eq-text "panel-id" "test" (p.mp-id)
+    in let t2 = assert-eq-text "panel-title" "Test Panel" (p.mp-title)
+    in let t3 = assert-eq-int "default-width" 1 (p.mp-width)
+    in let t4 = assert-eq-int "default-height" 1 (p.mp-height)
+    in let t5 = assert-eq-int "sparkline-empty" 0 (p.mp-sparkline-len)
+    in t1 & "\n" & t2 & "\n" & t3 & "\n" & t4 & "\n" & t5
+
+  test-panel-update : Text
+  test-panel-update =
+    let p = monitor-panel-new "test" "CPU" DsCpuPercent VizGauge
+    in let p2 = mp-update-value p (DvPercent 42)
+    in let t1 = assert-eq-text "value-text" "42%" (dv-to-text (p2.mp-last-value))
+    in let t2 = assert-eq-int "sparkline-len" 1 (p2.mp-sparkline-len)
+    in let p3 = mp-update-value p2 (DvPercent 55)
+    in let t3 = assert-eq-int "sparkline-len-2" 2 (p3.mp-sparkline-len)
+    in t1 & "\n" & t2 & "\n" & t3
+
+  test-panel-thresholds : Text
+  test-panel-thresholds =
+    let p = mp-set-thresholds (monitor-panel-new "t" "CPU" DsCpuPercent VizGauge) 70 90
+    in let p-ok = mp-update-value p (DvPercent 50)
+    in let t1 = assert-eq-int "below-warn" 0 (mp-value-state p-ok)
+    in let p-warn = mp-update-value p (DvPercent 75)
+    in let t2 = assert-eq-int "in-warn" 1 (mp-value-state p-warn)
+    in let p-crit = mp-update-value p (DvPercent 95)
+    in let t3 = assert-eq-int "in-crit" 2 (mp-value-state p-crit)
+    in t1 & "\n" & t2 & "\n" & t3
+
+  test-panel-position : Text
+  test-panel-position =
+    let p = monitor-panel-new "t" "X" DsCpuPercent VizGauge
+    in let p2 = mp-set-position p 2 3
+    in let t1 = assert-eq-int "row" 2 (p2.mp-row)
+    in let t2 = assert-eq-int "col" 3 (p2.mp-col)
+    in let p3 = mp-set-size p2 2 3
+    in let t3 = assert-eq-int "width" 2 (p3.mp-width)
+    in let t4 = assert-eq-int "height" 3 (p3.mp-height)
+    in t1 & "\n" & t2 & "\n" & t3 & "\n" & t4
+
+Section: Layout Tests
+
+  test-layout-ops : Text
+  test-layout-ops =
+    let l = monitor-layout-new "test" "Test Layout"
+    in let t1 = assert-eq-int "empty-panels" 0 (l.ml-panel-count)
+    in let p1 = monitor-panel-new "p1" "CPU" DsCpuPercent VizGauge
+    in let p2 = monitor-panel-new "p2" "Mem" DsMemPercent VizGauge
+    in let l2 = ml-add-panel (ml-add-panel l p1) p2
+    in let t2 = assert-eq-int "two-panels" 2 (l2.ml-panel-count)
+    in let l3 = ml-remove-panel l2 "p1"
+    in let t3 = assert-eq-int "after-remove" 1 (l3.ml-panel-count)
+    in let found = ml-find-panel l2 "p2"
+    in let t4 = when found
+      is Just (p) -> assert-eq-text "found-title" "Mem" (p.mp-title)
+      is None -> "FAIL find-p2: not found"
+    in t1 & "\n" & t2 & "\n" & t3 & "\n" & t4
+
+  test-layout-update : Text
+  test-layout-update =
+    let l = ml-add-panel (monitor-layout-new "test" "Test") (monitor-panel-new "p1" "CPU" DsCpuPercent VizGauge)
+    in let l2 = ml-update-panel l "p1" (DvPercent 77)
+    in let updated = ml-find-panel l2 "p1"
+    in let t1 = when updated
+      is Just (p) -> assert-eq-text "updated-value" "77%" (dv-to-text (p.mp-last-value))
+      is None -> "FAIL update: panel lost"
+    in let l3 = ml-move-panel l2 "p1" 5 3
+    in let moved = ml-find-panel l3 "p1"
+    in let t2 = when moved
+      is Just (p) -> assert-eq-int "moved-row" 5 (p.mp-row)
+      is None -> "FAIL move: panel lost"
+    in t1 & "\n" & t2
+
+Section: Preset Tests
+
+  test-presets : Text
+  test-presets =
+    let sys = mon-preset-system
+    in let t1 = assert-eq-int "system-panels" 9 (sys.ml-panel-count)
+    in let t2 = assert-eq-text "system-name" "System Overview" (sys.ml-name)
+    in let net = mon-preset-network
+    in let t3 = assert-eq-int "network-panels" 6 (net.ml-panel-count)
+    in let fleet = mon-preset-fleet
+    in let t4 = assert-eq-int "fleet-panels" 6 (fleet.ml-panel-count)
+    in t1 & "\n" & t2 & "\n" & t3 & "\n" & t4
+
+Section: Monitor State Tests
+
+  test-monitor-state : Text
+  test-monitor-state =
+    let st = monitor-new
+    in let t1 = assert-eq-int "no-layouts" 0 (st.mon-layout-count)
+    in let st2 = mon-add-layout st mon-preset-system
+    in let t2 = assert-eq-int "one-layout" 1 (st2.mon-layout-count)
+    in let t3 = assert-eq-text "auto-active" "system" (st2.mon-active-layout)
+    in let st3 = mon-add-layout st2 mon-preset-network
+    in let t4 = assert-eq-int "two-layouts" 2 (st3.mon-layout-count)
+    in let st4 = mon-switch-layout st3 "network"
+    in let t5 = assert-eq-text "switched" "network" (st4.mon-active-layout)
+    in let st5 = mon-toggle-edit st4
+    in let t6 = assert-true "editing" (st5.mon-editing)
+    in t1 & "\n" & t2 & "\n" & t3 & "\n" & t4 & "\n" & t5 & "\n" & t6
+
+  test-add-panel-to-active : Text
+  test-add-panel-to-active =
+    let st = mon-add-layout monitor-new (monitor-layout-new "test" "Test")
+    in let st2 = mon-add-panel-to-active st DsCpuPercent VizGauge "CPU"
+    in let active = mon-active st2
+    in let t1 = when active
+      is Just (l) -> assert-eq-int "panel-added" 1 (l.ml-panel-count)
+      is None -> "FAIL add-panel: no active layout"
+    in let st3 = mon-add-panel-to-active st2 DsMemPercent VizGauge "Memory"
+    in let active2 = mon-active st3
+    in let t2 = when active2
+      is Just (l) -> assert-eq-int "two-panels" 2 (l.ml-panel-count)
+      is None -> "FAIL add-panel-2: no active layout"
+    in t1 & "\n" & t2
+
+Section: Catalog Tests
+
+  test-catalog : Text
+  test-catalog =
+    let cat = monitor-catalog
+    in let t1 = assert-true "catalog-not-empty" (list-length cat > 0)
+    in let t2 = assert-eq-text "first-title" "CPU" ((list-at cat 0).ce-default-title)
+    in let t3 = assert-eq-text "first-cat" "System" ((list-at cat 0).ce-category)
+    in t1 & "\n" & t2 & "\n" & t3
+
+Section: DataValue Tests
+
+  test-data-values : Text
+  test-data-values =
+    let t1 = assert-eq-text "int-text" "42" (dv-to-text (DvInteger 42))
+    in let t2 = assert-eq-text "pct-text" "75%" (dv-to-text (DvPercent 75))
+    in let t3 = assert-eq-text "bytes-text" "1 MB" (dv-to-text (DvBytes (megabytes 1)))
+    in let t4 = assert-eq-text "dur-text" "1h 30m" (dv-to-text (DvDuration 5400))
+    in let t5 = assert-eq-text "empty-text" "" (dv-to-text DvEmpty)
+    in let t6 = assert-eq-int "int-to-int" 42 (dv-to-integer (DvInteger 42))
+    in let t7 = assert-eq-int "pct-to-int" 75 (dv-to-integer (DvPercent 75))
+    in let t8 = assert-eq-int "empty-to-int" 0 (dv-to-integer DvEmpty)
+    in t1 & "\n" & t2 & "\n" & t3 & "\n" & t4 & "\n" & t5 & "\n" & t6 & "\n" & t7 & "\n" & t8
+
+Section: Entry
+
+  opening : [Console] None = act
+    print-line-uni "=== Monitor Tests ==="
+    print-line-uni test-panel-new
+    print-line-uni test-panel-update
+    print-line-uni test-panel-thresholds
+    print-line-uni test-panel-position
+    print-line-uni test-layout-ops
+    print-line-uni test-layout-update
+    print-line-uni test-presets
+    print-line-uni test-monitor-state
+    print-line-uni test-add-panel-to-active
+    print-line-uni test-catalog
+    print-line-uni test-data-values
+    print-line-uni "=== Done ==="
+  end
+
+Page 1

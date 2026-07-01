@@ -1,0 +1,294 @@
+Chapter: Tls
+  cites Foreword chapter AesGcm
+  cites Foreword chapter Sha256
+  cites Foreword chapter Hmac
+  cites Foreword chapter Hkdf
+  cites Foreword chapter DiffieHellman
+  cites Foreword chapter Maybe
+  cites Foreword chapter ListUtils
+
+ TLS 1.3 record layer and handshake protocol per RFC 8446. Supports
+ ChaCha20-Poly1305 and AES-128-GCM cipher suites. Builds and parses
+ TLS record bytes for integration with a TCP transport. Key exchange
+ uses X25519; key derivation uses HKDF-SHA256.
+
+ A TlsRecord is a record containing:
+   tls-rec-type    -- content type (handshake, application, alert).
+   tls-rec-version -- protocol version.
+   tls-rec-payload -- raw payload bytes.
+
+ A TlsClientHello is a record containing:
+   tch-random       -- 32-byte client random.
+   tch-session-id   -- legacy session identifier.
+   tch-cipher-suites -- list of cipher suite codes.
+   tch-key-share    -- X25519 public key bytes.
+   tch-server-name  -- SNI hostname.
+
+ A TlsState is a record containing:
+   tls-client-random, tls-server-random -- random values.
+   tls-my-private, tls-my-public       -- local X25519 key pair.
+   tls-peer-public                     -- peer's X25519 public key.
+   tls-shared-secret                   -- derived shared secret.
+   tls-cipher-suite                    -- negotiated cipher suite.
+   tls-connected                       -- handshake completion flag.
+
+ A TlsKeyMaterial is a record containing:
+   tkm-client-key, tkm-server-key -- symmetric keys for each direction.
+   tkm-handshake-secret           -- intermediate HKDF secret.
+
+ To tls-encode-record gives List Integer,
+   wrapping a payload in a TLS record header with type, version, length, and data.
+
+ To tls-decode-record gives TlsRecord,
+   parsing a TLS record from raw bytes.
+
+ To tls-build-client-hello gives List Integer,
+   serializing a ClientHello message into a complete TLS record.
+
+ To tls-hkdf-extract gives List Integer,
+   performing the HKDF-Extract step using HMAC-SHA256 with the given salt and input keying material.
+
+ To tls-hkdf-expand gives List Integer,
+   performing the HKDF-Expand step, returning the requested number of bytes of key material.
+
+ To tls-derive-keys gives TlsKeyMaterial,
+   deriving client and server handshake keys from the shared secret and transcript hashes.
+
+ To tls-init-client gives TlsState,
+   creating initial client-side TLS state from a private key.
+
+ To tls-complete-handshake gives TlsState,
+   completing the handshake by computing the shared secret from the server's public key.
+
+ To format-tls-state gives Text,
+   formatting TLS state as a diagnostic string.
+
+ To format-tls-record gives Text,
+   formatting a TLS record header as a diagnostic string.
+
+ We say:
+
+Section: Constants
+  tls-version-12 : Integer = 771
+  tls-version-13 : Integer = 772
+
+  tls-content-change-cipher : Integer = 20
+  tls-content-alert : Integer = 21
+  tls-content-handshake : Integer = 22
+  tls-content-application : Integer = 23
+
+  tls-handshake-client-hello : Integer = 1
+  tls-handshake-server-hello : Integer = 2
+  tls-handshake-encrypted-ext : Integer = 8
+  tls-handshake-certificate : Integer = 11
+  tls-handshake-cert-verify : Integer = 15
+  tls-handshake-finished : Integer = 20
+
+  tls-cipher-aes-128-gcm-sha256 : Integer = 4865
+  tls-cipher-chacha20-poly1305 : Integer = 4867
+
+  tls-ext-server-name : Integer = 0
+  tls-ext-supported-versions : Integer = 43
+  tls-ext-key-share : Integer = 51
+  tls-ext-supported-groups : Integer = 10
+
+  tls-group-x25519 : Integer = 29
+
+Section: Types
+  TlsRecord = record {
+    tls-rec-type : Integer,
+    tls-rec-version : Integer,
+    tls-rec-payload : List Integer
+  }
+
+  TlsClientHello = record {
+    tch-random : List Integer,
+    tch-session-id : List Integer,
+    tch-cipher-suites : List Integer,
+    tch-key-share : List Integer,
+    tch-server-name : Text
+  }
+
+  TlsState = record {
+    tls-client-random : List Integer,
+    tls-server-random : List Integer,
+    tls-my-private : List Integer,
+    tls-my-public : List Integer,
+    tls-peer-public : List Integer,
+    tls-shared-secret : List Integer,
+    tls-cipher-suite : Integer,
+    tls-connected : Boolean
+  }
+
+Section: Record Layer
+  tls-encode-record : Integer, List Integer -> List Integer
+  tls-encode-record (content-type) (payload) =
+    let len = list-length payload
+    in [content-type, 3, 3] & tls-be16 len & payload
+
+  tls-decode-record : List Integer -> TlsRecord
+  tls-decode-record (bytes) =
+    let rec-type = list-at bytes 0
+    in let version = bit-or (bit-shl (list-at bytes 1) 8) (list-at bytes 2)
+    in let len = bit-or (bit-shl (list-at bytes 3) 8) (list-at bytes 4)
+    in let payload = tls-slice bytes 5 len []
+    in TlsRecord { tls-rec-type = rec-type, tls-rec-version = version, tls-rec-payload = payload }
+
+Section: Client Hello
+  tls-build-client-hello : TlsClientHello -> List Integer
+  tls-build-client-hello (hello) =
+    let body = [3, 3] & hello.tch-random & [32] & hello.tch-session-id & tls-encode-cipher-suites (hello.tch-cipher-suites) & [1, 0] & tls-build-extensions hello
+    in let handshake = [tls-handshake-client-hello] & tls-be24 (list-length body) & body
+    in tls-encode-record tls-content-handshake handshake
+
+  tls-encode-cipher-suites : List Integer -> List Integer
+  tls-encode-cipher-suites (suites) =
+    let data = tls-cs-loop suites 0 (list-length suites) []
+    in tls-be16 (list-length data) & data
+
+  tls-cs-loop : List Integer, Integer, Integer, List Integer -> List Integer
+  tls-cs-loop (suites) (i) (n) (acc) =
+    if i >= n then acc
+    else tls-cs-loop suites (i + 1) n (acc & tls-be16 (list-at suites i))
+
+  tls-build-extensions : TlsClientHello -> List Integer
+  tls-build-extensions (hello) =
+    let sni = tls-ext-sni (hello.tch-server-name)
+    in let versions = tls-ext-versions
+    in let groups = tls-ext-groups
+    in let ks = tls-ext-key-share-client (hello.tch-key-share)
+    in let ext-data = sni & versions & groups & ks
+    in tls-be16 (list-length ext-data) & ext-data
+
+Section: Extensions
+  tls-ext-sni : Text -> List Integer
+  tls-ext-sni (hostname) =
+    let name-bytes = tls-text-to-bytes hostname
+    in let name-len = list-length name-bytes
+    in let entry = [0] & tls-be16 name-len & name-bytes
+    in let list-data = tls-be16 (list-length entry) & entry
+    in tls-be16 tls-ext-server-name & tls-be16 (list-length list-data) & list-data
+
+  tls-ext-versions : List Integer
+  tls-ext-versions =
+    let data = [2, 3, 4]
+    in tls-be16 tls-ext-supported-versions & tls-be16 (list-length data) & data
+
+  tls-ext-groups : List Integer
+  tls-ext-groups =
+    let data = tls-be16 2 & tls-be16 tls-group-x25519
+    in tls-be16 tls-ext-supported-groups & tls-be16 (list-length data) & data
+
+  tls-ext-key-share-client : List Integer -> List Integer
+  tls-ext-key-share-client (public-key) =
+    let entry = tls-be16 tls-group-x25519 & tls-be16 32 & public-key
+    in let entries = tls-be16 (list-length entry) & entry
+    in tls-be16 tls-ext-key-share & tls-be16 (list-length entries) & entries
+
+Section: Key Derivation (HKDF-based, simplified)
+  tls-hkdf-extract : List Integer, List Integer -> List Integer
+  tls-hkdf-extract (salt) (ikm) = hmac-sha256 salt ikm
+
+  tls-hkdf-expand : List Integer, List Integer, Integer -> List Integer
+  tls-hkdf-expand (prk) (info) (length) =
+    let block = hmac-sha256 prk (info & [1])
+    in tls-take-bytes block length
+
+  tls-derive-keys : List Integer, List Integer, List Integer -> TlsKeyMaterial
+  tls-derive-keys (shared-secret) (client-hello-hash) (server-hello-hash) =
+    let early-secret = tls-hkdf-extract (list-zeros 32) (list-zeros 32)
+    in let derived = tls-hkdf-expand early-secret [100, 101, 114, 105, 118, 101, 100] 32
+    in let handshake-secret = tls-hkdf-extract derived shared-secret
+    in let client-hs-key = tls-hkdf-expand handshake-secret [99, 32, 104, 115] 16
+    in let server-hs-key = tls-hkdf-expand handshake-secret [115, 32, 104, 115] 16
+    in TlsKeyMaterial { tkm-client-key = client-hs-key, tkm-server-key = server-hs-key, tkm-handshake-secret = handshake-secret }
+
+  TlsKeyMaterial = record {
+    tkm-client-key : List Integer,
+    tkm-server-key : List Integer,
+    tkm-handshake-secret : List Integer
+  }
+
+Section: State Management
+  tls-init-client : List Integer -> TlsState
+  tls-init-client (private-key) =
+    let public = x25519-public-key private-key
+    in TlsState { tls-client-random = list-zeros 32, tls-server-random = [], tls-my-private = private-key, tls-my-public = public, tls-peer-public = [], tls-shared-secret = [], tls-cipher-suite = tls-cipher-chacha20-poly1305, tls-connected = False }
+
+  tls-complete-handshake : TlsState, List Integer -> TlsState
+  tls-complete-handshake (state) (server-public) =
+    let shared = x25519-shared-secret (state.tls-my-private) server-public
+    in TlsState { tls-client-random = state.tls-client-random, tls-server-random = state.tls-server-random, tls-my-private = state.tls-my-private, tls-my-public = state.tls-my-public, tls-peer-public = server-public, tls-shared-secret = shared, tls-cipher-suite = state.tls-cipher-suite, tls-connected = True }
+
+Section: Helpers
+  tls-be16 : Integer -> List Integer
+  tls-be16 (v) = [bit-and (bit-shru v 8) 255, bit-and v 255]
+
+  tls-be24 : Integer -> List Integer
+  tls-be24 (v) = [bit-and (bit-shru v 16) 255, bit-and (bit-shru v 8) 255, bit-and v 255]
+
+  tls-slice : List Integer, Integer, Integer, List Integer -> List Integer
+  tls-slice (data) (start) (len) (acc) =
+    if len <= 0 then acc
+    else if start >= list-length data then acc
+    else tls-slice data (start + 1) (len - 1) (list-push acc (list-at data start))
+
+  tls-take-bytes : List Integer, Integer -> List Integer
+  tls-take-bytes (bytes) (n) = tls-slice bytes 0 n []
+
+  tls-text-to-bytes : Text -> List Integer
+  tls-text-to-bytes (s) = tls-t2b s 0 (text-length s) []
+
+  tls-t2b : Text, Integer, Integer, List Integer -> List Integer
+  tls-t2b (s) (i) (len) (acc) =
+    if i >= len then acc
+    else tls-t2b s (i + 1) len (list-push acc (char-code (char-at s i)))
+
+Section: Formatting
+  format-tls-state : TlsState -> Text
+  format-tls-state (s) =
+    "tls: cipher=" & show (s.tls-cipher-suite) & " connected=" & show (s.tls-connected) & " pubkey=" & show (list-length (s.tls-my-public)) & "B"
+
+  format-tls-record : TlsRecord -> Text
+  format-tls-record (r) =
+    let type-name = if r.tls-rec-type == 22 then "handshake" else if r.tls-rec-type == 23 then "application" else if r.tls-rec-type == 21 then "alert" else "type-" & show (r.tls-rec-type)
+    in type-name & " v=" & show (r.tls-rec-version) & " len=" & show (list-length (r.tls-rec-payload))
+
+Section: TLS 1.3 Key Schedule Bridge
+
+  tls13-derive-secret : List Integer, Text, List Integer -> List Integer
+  tls13-derive-secret (secret) (label) (messages-hash) =
+    let label-bytes = tls-t2b label 0 (text-length label) []
+    in let info = tls13-hkdf-label label-bytes messages-hash 32
+    in hkdf-expand secret info 32
+
+  tls13-hkdf-label : List Integer, List Integer, Integer -> List Integer
+  tls13-hkdf-label (label) (context) (length) =
+    [bit-shru length 8, bit-and length 255]
+    & [6 + list-length label] & [116, 108, 115, 49, 51, 32] & label
+    & [list-length context] & context
+
+  tls13-handshake-keys : List Integer, List Integer -> List Integer
+  tls13-handshake-keys (shared-secret) (hello-hash) =
+    let early-secret = hkdf-extract [] [0]
+    in let derived = tls13-derive-secret early-secret "derived" (sha256 [])
+    in let hs-secret = hkdf-extract derived shared-secret
+    in tls13-derive-secret hs-secret "c hs traffic" hello-hash
+
+  tls13-encrypt-record : List Integer, List Integer, List Integer, Integer -> List Integer
+  tls13-encrypt-record (key) (nonce) (plaintext) (seq) =
+    let iv = tls13-xor-nonce nonce seq
+    in let result = aesgcm-encrypt key iv plaintext [23, 3, 3]
+    in result.ciphertext & result.tag
+
+  tls13-xor-nonce : List Integer, Integer -> List Integer
+  tls13-xor-nonce (base-nonce) (seq) =
+    tls-xor-nonce-loop base-nonce seq 0 (list-length base-nonce) []
+
+  tls-xor-nonce-loop : List Integer, Integer, Integer, Integer, List Integer -> List Integer
+  tls-xor-nonce-loop (base) (seq) (i) (len) (acc) =
+    if i >= len then acc
+    else let seq-byte = if i >= len - 8 then bit-and (bit-shru seq ((len - 1 - i) * 8)) 255 else 0
+    in tls-xor-nonce-loop base seq (i + 1) len (list-push acc (bit-xor (list-at base i) seq-byte))
+
+Page 1

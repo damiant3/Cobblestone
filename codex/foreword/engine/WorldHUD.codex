@@ -1,0 +1,112 @@
+Chapter: WorldHUD
+  cites Engine chapter Scene3D
+  cites Game chapter Rasterizer
+  cites Game chapter Color
+  cites Math chapter Matrix4
+  cites Math chapter Quaternion
+
+ World-space HUD elements projected to screen. Health bars, damage
+ numbers, nameplates, and floating icons anchored to 3D positions
+ but rendered as 2D overlays. Includes fade-by-distance, occlusion
+ check (off-screen = hidden), and stacking to prevent overlap.
+
+ We say:
+
+Section: HUD Element
+
+  HudAnchor = record {
+    ha-world-x : Integer, ha-world-y : Integer, ha-world-z : Integer,
+    ha-offset-y : Integer
+  }
+
+  HudElement =
+    | HudHealthBar (HudAnchor) (Integer) (Integer)
+    | HudNameplate (HudAnchor) (Text)
+    | HudDamageNum (HudAnchor) (Integer) (Integer)
+    | HudIcon (HudAnchor) (Integer) (Integer)
+
+Section: Projected HUD
+
+  HudProjected = record {
+    hp-sx : Integer, hp-sy : Integer,
+    hp-depth : Integer,
+    hp-visible : Boolean,
+    hp-element : HudElement
+  }
+
+Section: Projection
+
+  hud-project : HudElement, Camera3D, Integer, Integer -> HudProjected
+  hud-project (elem) (cam) (half-w) (half-h) =
+    let anchor = hud-get-anchor elem
+    in let clip = mat4-transform-vec4 (camera3d-vp cam) (Vec4 { v4x = anchor.ha-world-x, v4y = anchor.ha-world-y + anchor.ha-offset-y, v4z = anchor.ha-world-z, v4w = 1000 })
+    in if clip.v4w <= 0 then HudProjected { hp-sx = 0, hp-sy = 0, hp-depth = 999999, hp-visible = False, hp-element = elem }
+    else let sx = half-w + clip.v4x * half-w / clip.v4w
+    in let sy = half-h - clip.v4y * half-h / clip.v4w
+    in let depth = clip.v4z * 1000 / clip.v4w
+    in let on-screen = sx >= 0 & sx < half-w * 2 & sy >= 0 & sy < half-h * 2
+    in HudProjected { hp-sx = sx, hp-sy = sy, hp-depth = depth, hp-visible = on-screen, hp-element = elem }
+
+  hud-get-anchor : HudElement -> HudAnchor
+  hud-get-anchor (elem) = when elem
+    is HudHealthBar (a) (cur) (mx) -> a
+    is HudNameplate (a) (name) -> a
+    is HudDamageNum (a) (amount) (age) -> a
+    is HudIcon (a) (icon-id) (size) -> a
+
+Section: Render HUD Elements
+
+  hud-render-all : List HudElement, Camera3D, Framebuf, Integer, Integer -> Framebuf
+  hud-render-all (elems) (cam) (fb) (half-w) (half-h) =
+    let projected = hud-project-all elems cam half-w half-h 0 (list-length elems) []
+    in hud-draw-all projected fb 0 (list-length projected)
+
+  hud-project-all : List HudElement, Camera3D, Integer, Integer, Integer, Integer, List HudProjected -> List HudProjected
+  hud-project-all (elems) (cam) (hw) (hh) (i) (n) (acc) =
+    if i >= n then acc
+    else let proj = hud-project (list-at elems i) cam hw hh
+    in if proj.hp-visible then hud-project-all elems cam hw hh (i + 1) n (list-push acc proj)
+    else hud-project-all elems cam hw hh (i + 1) n acc
+
+  hud-draw-all : List HudProjected, Framebuf, Integer, Integer -> Framebuf
+  hud-draw-all (projected) (fb) (i) (n) =
+    if i >= n then fb
+    else let hp = list-at projected i
+    in let fb2 = hud-draw-element hp fb
+    in hud-draw-all projected fb2 (i + 1) n
+
+  hud-draw-element : HudProjected, Framebuf -> Framebuf
+  hud-draw-element (hp) (fb) = when hp.hp-element
+    is HudHealthBar (a) (cur) (mx) -> hud-draw-health-bar fb (hp.hp-sx) (hp.hp-sy) cur mx
+    is HudNameplate (a) (name) -> fb
+    is HudDamageNum (a) (amount) (age) -> hud-draw-damage fb (hp.hp-sx) (hp.hp-sy) amount age
+    is HudIcon (a) (icon-id) (size) -> fb
+
+Section: Health Bar
+
+  hud-draw-health-bar : Framebuf, Integer, Integer, Integer, Integer -> Framebuf
+  hud-draw-health-bar (fb) (cx) (cy) (current) (max-hp) =
+    let bar-w = 40
+    in let bar-h = 4
+    in let x0 = cx - bar-w / 2
+    in let y0 = cy - bar-h / 2
+    in let fill-w = if max-hp == 0 then 0 else current * bar-w / max-hp
+    in let pct = if max-hp == 0 then 0 else current * 100 / max-hp
+    in let fill-color = if pct > 60 then #00CC00 else if pct > 25 then #CCCC00 else #CC0000
+    in let fb2 = fb-rect fb x0 y0 bar-w bar-h #333333
+    in fb-rect fb2 x0 y0 fill-w bar-h fill-color
+
+Section: Damage Number
+
+  hud-draw-damage : Framebuf, Integer, Integer, Integer, Integer -> Framebuf
+  hud-draw-damage (fb) (cx) (cy) (amount) (age) =
+    let float-y = cy - age / 10
+    in let color = if amount > 0 then #FF4444 else #44FF44
+    in fb-rect fb (cx - 2) float-y 4 4 color
+
+Section: Formatting
+
+  format-hud-projected : HudProjected -> Text
+  format-hud-projected (hp) = "HUD(" & show (hp.hp-sx) & "," & show (hp.hp-sy) & " d=" & show (hp.hp-depth) & ")"
+
+Page 1

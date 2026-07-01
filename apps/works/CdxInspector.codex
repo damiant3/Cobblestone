@@ -1,0 +1,224 @@
+Chapter: CdxInspector
+  cites Works chapter HexFormat
+  cites Works chapter KeyManager
+  cites Works chapter Annotation
+  cites Works chapter SignedAnnotation
+  cites Works chapter AnnotationsMigrate
+  cites Verify chapter CdxBinary
+  cites Trust chapter TrustLattice
+  cites Foreword chapter Ed25519
+  cites Foreword chapter Sha256
+  cites Foreword chapter Maybe
+
+ CDX binary inspector for the dev console. Displays full header
+ information: magic, version, flags, content hash, author key,
+ signature, section offsets, capabilities, effects, and proofs.
+ Validates everything and shows pass/fail for each check.
+
+ We say:
+
+Section: Header Fields
+
+  CdxHeaderInfo = record {
+    magic : Text,
+    magic-ok : Boolean,
+    version : Integer,
+    flags : Integer,
+    content-hash : Text,
+    author-fingerprint : Text,
+    author-key-present : Boolean,
+    signature-valid : Boolean,
+    content-hash-valid : Boolean,
+    text-offset : Integer,
+    text-size : Integer,
+    rodata-offset : Integer,
+    rodata-size : Integer,
+    entry-offset : Integer,
+    cap-offset : Integer,
+    cap-size : Integer,
+    total-size : Integer
+  }
+
+  inspect-cdx-header : List Integer -> CdxHeaderInfo
+  inspect-cdx-header (bytes) =
+    let magic-ok = cdx-verify-magic bytes
+    in let magic = if magic-ok then "CDX1" else "INVALID"
+    in let version = if list-length bytes >= 6 then read-le16 bytes 4 else 0
+    in let flags = if list-length bytes >= 8 then read-le16 bytes 6 else 0
+    in let content-hash = bytes-to-hex (list-slice bytes 8 40)
+    in let pub-key = list-slice bytes 40 72
+    in let sig = list-slice bytes 72 136
+    in let has-author = sum-bytes pub-key 0 4 0 > 0
+    in let fp = key-fingerprint pub-key
+    in let stored-hash = list-slice bytes 8 40
+    in let sig-valid = if has-author then ed25519-verify pub-key stored-hash sig else False
+    in let hash-valid = cdx-verify-content-hash bytes
+    in let text-off = if list-length bytes >= 176 then read-le64 bytes 168 else 0
+    in let text-sz = if list-length bytes >= 184 then read-le64 bytes 176 else 0
+    in let rodata-off = if list-length bytes >= 192 then read-le64 bytes 184 else 0
+    in let rodata-sz = if list-length bytes >= 200 then read-le64 bytes 192 else 0
+    in let entry-off = if list-length bytes >= 208 then read-le64 bytes 200 else 0
+    in let cap-off = if list-length bytes >= 144 then read-le64 bytes 136 else 0
+    in let cap-sz = if list-length bytes >= 152 then read-le64 bytes 144 else 0
+    in CdxHeaderInfo {
+      magic = magic,
+      magic-ok = magic-ok,
+      version = version,
+      flags = flags,
+      content-hash = content-hash,
+      author-fingerprint = fp,
+      author-key-present = has-author,
+      signature-valid = sig-valid,
+      content-hash-valid = hash-valid,
+      text-offset = text-off,
+      text-size = text-sz,
+      rodata-offset = rodata-off,
+      rodata-size = rodata-sz,
+      entry-offset = entry-off,
+      cap-offset = cap-off,
+      cap-size = cap-sz,
+      total-size = list-length bytes
+    }
+
+  sum-bytes : List Integer, Integer, Integer, Integer -> Integer
+  sum-bytes (bs) (i) (len) (acc) =
+    if i >= len then acc
+    else sum-bytes bs (i + 1) len (acc + list-at bs i)
+
+  read-le16 : List Integer, Integer -> Integer
+  read-le16 (bs) (off) = list-at bs off + bit-shl (list-at bs (off + 1)) 8
+
+  read-le64 : List Integer, Integer -> Integer
+  read-le64 (bs) (off) =
+    list-at bs off
+    + bit-shl (list-at bs (off + 1)) 8
+    + bit-shl (list-at bs (off + 2)) 16
+    + bit-shl (list-at bs (off + 3)) 24
+    + bit-shl (list-at bs (off + 4)) 32
+    + bit-shl (list-at bs (off + 5)) 40
+    + bit-shl (list-at bs (off + 6)) 48
+    + bit-shl (list-at bs (off + 7)) 56
+
+  bytes-to-hex : List Integer -> Text
+  bytes-to-hex (bs) = bytes-to-hex-loop bs 0 (list-length bs) ""
+
+  bytes-to-hex-loop : List Integer, Integer, Integer, Text -> Text
+  bytes-to-hex-loop (bs) (i) (len) (acc) =
+    if i >= len then acc
+    else bytes-to-hex-loop bs (i + 1) len (acc & byte-to-hex (list-at bs i))
+
+Section: Formatting
+
+  format-cdx-info : CdxHeaderInfo -> Text
+  format-cdx-info (h) =
+    "CDX Binary Inspector\n"
+    & "====================\n"
+    & "Magic:          " & h.magic & " " & check-mark (h.magic-ok) & "\n"
+    & "Version:        " & show (h.version) & "\n"
+    & "Flags:          0x" & hex-i32 (h.flags) & "\n"
+    & "Size:           " & format-bytes-exact (h.total-size) & "\n"
+    & "\n"
+    & "Authentication\n"
+    & "--------------\n"
+    & "Content Hash:   " & h.content-hash & "\n"
+    & "Hash Valid:     " & check-mark (h.content-hash-valid) & "\n"
+    & "Author Key:     " & h.author-fingerprint & " " & check-mark (h.author-key-present) & "\n"
+    & "Signature:      " & check-mark (h.signature-valid) & "\n"
+    & "\n"
+    & "Sections\n"
+    & "--------\n"
+    & "Text:           offset=" & show (h.text-offset) & " size=" & format-bytes (h.text-size) & "\n"
+    & "Rodata:         offset=" & show (h.rodata-offset) & " size=" & format-bytes (h.rodata-size) & "\n"
+    & "Entry:          offset=" & show (h.entry-offset) & "\n"
+    & "Capabilities:   offset=" & show (h.cap-offset) & " size=" & show (h.cap-size) & " bytes\n"
+
+  check-mark : Boolean -> Text
+  check-mark (ok) = if ok then "OK" else "FAIL"
+
+  format-cdx-summary : CdxHeaderInfo -> Text
+  format-cdx-summary (h) =
+    h.magic & " v" & show (h.version)
+    & " " & format-bytes (h.total-size)
+    & " text=" & format-bytes (h.text-size)
+    & " rodata=" & format-bytes (h.rodata-size)
+    & " auth=" & check-mark (h.signature-valid)
+
+Section: Annotation Verify
+
+ H5: per-annotation verdicts produced when the Editor loads an
+ annotated source file. Combines signature verification (D.14)
+ with trust-threshold check; schema migration is the file-level
+ step delegated to AnnotationsMigrate.
+
+  AnnotationVerdict =
+    | VerdictOk
+    | VerdictUnsigned
+    | VerdictSignatureInvalid
+    | VerdictBelowTrust
+
+  verdict-label : AnnotationVerdict -> Text
+  verdict-label (v) = when v
+    is VerdictOk -> "ok"
+    is VerdictUnsigned -> "unsigned"
+    is VerdictSignatureInvalid -> "sig-invalid"
+    is VerdictBelowTrust -> "below-trust"
+
+  AnnotationVerifyResult = record {
+    verdict : AnnotationVerdict,
+    annotation : SignedAnnotation,
+    trust-score : Integer
+  }
+
+  pick-verdict : SignedAnnotation, Integer, Integer -> AnnotationVerdict
+  pick-verdict (sa) (trust) (threshold) =
+    if list-length (sa.signature) == 0 then VerdictUnsigned
+    else if sa.verified == False then VerdictSignatureInvalid
+    else if trust < threshold then VerdictBelowTrust
+    else VerdictOk
+
+  verify-annotation-full : Keyring, TrustLattice, Integer, SignedAnnotation -> AnnotationVerifyResult
+  verify-annotation-full (kr) (lat) (threshold) (sa) =
+    let with-verify = verify-annotation kr sa
+    in let trust = lattice-trust-score lat (with-verify.annotation.author)
+    in let v = pick-verdict with-verify trust threshold
+    in AnnotationVerifyResult { verdict = v, annotation = with-verify, trust-score = trust }
+
+  verify-annotation-list : Keyring, TrustLattice, Integer, List SignedAnnotation -> List AnnotationVerifyResult
+  verify-annotation-list (kr) (lat) (threshold) (sas) =
+    verify-list-loop kr lat threshold sas 0 (list-length sas) []
+
+  verify-list-loop : Keyring, TrustLattice, Integer, List SignedAnnotation, Integer, Integer, List AnnotationVerifyResult -> List AnnotationVerifyResult
+  verify-list-loop (kr) (lat) (threshold) (sas) (i) (n) (acc) =
+    if i >= n then acc
+    else let sa = list-at sas i
+    in let result = verify-annotation-full kr lat threshold sa
+    in verify-list-loop kr lat threshold sas (i + 1) n (list-push acc result)
+
+Section: Annotation File Verify
+
+ File-level pass: schema migration first, then per-annotation
+ verdicts on the migrated payload. Returns one result per
+ annotation in the file plus the migration status.
+
+  AnnotationFileVerify = record {
+    migration : MigrationResult,
+    results : List AnnotationVerifyResult
+  }
+
+  verify-annotation-file : Keyring, TrustLattice, Integer, AnnotationFile, List SignedAnnotation -> AnnotationFileVerify
+  verify-annotation-file (kr) (lat) (threshold) (file) (sigs) =
+    let mig = migrate-forward file
+    in let results = verify-annotation-list kr lat threshold sigs
+    in AnnotationFileVerify { migration = mig, results = results }
+
+  count-verdicts : List AnnotationVerifyResult, AnnotationVerdict -> Integer
+  count-verdicts (rs) (v) = count-verdicts-loop rs v 0 (list-length rs) 0
+
+  count-verdicts-loop : List AnnotationVerifyResult, AnnotationVerdict, Integer, Integer, Integer -> Integer
+  count-verdicts-loop (rs) (target) (i) (n) (acc) =
+    if i >= n then acc
+    else let r = list-at rs i
+    in let inc = if r.verdict == target then 1 else 0
+    in count-verdicts-loop rs target (i + 1) n (acc + inc)
+
+Page 1

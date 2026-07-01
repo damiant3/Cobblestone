@@ -1,0 +1,261 @@
+Chapter: NumberTheory
+  cites Mathbook chapter Expr
+  cites Foreword chapter Maybe
+
+ Integer and number-theoretic operations. GCD, LCM, primality test,
+ prime factorization, modular arithmetic, Euler totient, Fibonacci,
+ binomial coefficients, integer partitions, and Diophantine solvers.
+ All pure integer math — no floating point.
+
+Section: Divisibility
+
+  nt-gcd : Integer, Integer -> Integer
+  nt-gcd (a) (b) =
+    let aa = if a < 0 then negate a else a
+    in let bb = if b < 0 then negate b else b
+    in nt-gcd-loop aa bb
+
+  nt-gcd-loop : Integer, Integer -> Integer
+  nt-gcd-loop (a) (b) = if b == 0 then a else nt-gcd-loop b (a - (a / b) * b)
+
+  nt-lcm : Integer, Integer -> Integer
+  nt-lcm (a) (b) =
+    if a == 0 then 0
+    else if b == 0 then 0
+    else let g = nt-gcd a b
+    in (a / g) * b
+
+  nt-divides : Integer, Integer -> Boolean
+  nt-divides (d) (n) =
+    if d == 0 then False
+    else n - (n / d) * d == 0
+
+  nt-mod : Integer, Integer -> Integer
+  nt-mod (a) (m) =
+    let r = a - (a / m) * m
+    in if r < 0 then r + m else r
+
+Section: Primality
+
+  nt-is-prime : Integer -> Boolean
+  nt-is-prime (n) =
+    if n < 2 then False
+    else if n < 4 then True
+    else if nt-divides 2 n then False
+    else if nt-divides 3 n then False
+    else nt-prime-check n 5
+
+  nt-prime-check : Integer, Integer -> Boolean
+  nt-prime-check (n) (d) =
+    if d * d > n then True
+    else if nt-divides d n then False
+    else if nt-divides (d + 2) n then False
+    else nt-prime-check n (d + 6)
+
+  nt-next-prime : Integer -> Integer
+  nt-next-prime (n) =
+    let candidate = if n < 2 then 2 else n + 1
+    in nt-next-prime-loop candidate
+
+  nt-next-prime-loop : Integer -> Integer
+  nt-next-prime-loop (n) =
+    if nt-is-prime n then n
+    else nt-next-prime-loop (n + 1)
+
+  nt-nth-prime : Integer -> Integer
+  nt-nth-prime (n) = nt-nth-prime-loop n 0 2
+
+  nt-nth-prime-loop : Integer, Integer, Integer -> Integer
+  nt-nth-prime-loop (target) (count) (current) =
+    if count >= target then current - 1
+    else if nt-is-prime current then nt-nth-prime-loop target (count + 1) (current + 1)
+    else nt-nth-prime-loop target count (current + 1)
+
+  nt-primes-up-to : Integer -> List Integer
+  nt-primes-up-to (n) = nt-primes-loop 2 n []
+
+  nt-primes-loop : Integer, Integer, List Integer -> List Integer
+  nt-primes-loop (k) (n) (acc) =
+    if k > n then acc
+    else if nt-is-prime k then nt-primes-loop (k + 1) n (list-push acc k)
+    else nt-primes-loop (k + 1) n acc
+
+Section: Factorization
+
+  PrimeFactor = record { pf-prime : Integer, pf-exponent : Integer }
+
+  nt-factorize : Integer -> List PrimeFactor
+  nt-factorize (n) =
+    if n <= 1 then []
+    else nt-factor-loop n 2 []
+
+  nt-factor-loop : Integer, Integer, List PrimeFactor -> List PrimeFactor
+  nt-factor-loop (n) (d) (acc) =
+    if d * d > n then
+      if n > 1 then list-push acc (PrimeFactor { pf-prime = n, pf-exponent = 1 })
+      else acc
+    else if nt-divides d n then
+      let result = nt-count-factor n d 0
+      in nt-factor-loop (result.cf-remainder) (d + 1) (list-push acc (PrimeFactor { pf-prime = d, pf-exponent = result.cf-count }))
+    else nt-factor-loop n (d + 1) acc
+
+  CountFactorResult = record { cf-count : Integer, cf-remainder : Integer }
+
+  nt-count-factor : Integer, Integer, Integer -> CountFactorResult
+  nt-count-factor (n) (d) (count) =
+    if nt-divides d n then nt-count-factor (n / d) d (count + 1)
+    else CountFactorResult { cf-count = count, cf-remainder = n }
+
+  nt-format-factors : List PrimeFactor -> Text
+  nt-format-factors (factors) = nt-fmt-loop factors 0 (list-length factors) ""
+
+  nt-fmt-loop : List PrimeFactor, Integer, Integer, Text -> Text
+  nt-fmt-loop (factors) (i) (n) (acc) =
+    if i >= n then acc
+    else let f = list-at factors i
+    in let sep = if i == 0 then "" else " * "
+    in let term = if f.pf-exponent == 1 then show (f.pf-prime) else show (f.pf-prime) & "^" & show (f.pf-exponent)
+    in nt-fmt-loop factors (i + 1) n (acc & sep & term)
+
+Section: Modular Arithmetic
+
+  nt-mod-pow : Integer, Integer, Integer -> Integer
+  nt-mod-pow (base) (exp) (modulus) =
+    if modulus == 1 then 0
+    else nt-mod-pow-loop base exp modulus 1
+
+  nt-mod-pow-loop : Integer, Integer, Integer, Integer -> Integer
+  nt-mod-pow-loop (base) (exp) (m) (result) =
+    if exp <= 0 then result
+    else if nt-mod exp 2 == 1 then nt-mod-pow-loop (nt-mod (base * base) m) (exp / 2) m (nt-mod (result * base) m)
+    else nt-mod-pow-loop (nt-mod (base * base) m) (exp / 2) m result
+
+  nt-mod-inverse : Integer, Integer -> Integer
+  nt-mod-inverse (a) (m) = nt-mod-pow a (m - 2) m
+
+  nt-euler-totient : Integer -> Integer
+  nt-euler-totient (n) =
+    if n <= 1 then 1
+    else let factors = nt-factorize n
+    in nt-totient-from-factors n factors 0 (list-length factors)
+
+  nt-totient-from-factors : Integer, List PrimeFactor, Integer, Integer -> Integer
+  nt-totient-from-factors (n) (factors) (i) (count) =
+    if i >= count then n
+    else let p = (list-at factors i).pf-prime
+    in nt-totient-from-factors (n - n / p) factors (i + 1) count
+
+Section: Combinatorics
+
+  nt-factorial : Integer -> Integer
+  nt-factorial (n) = if n <= 1 then 1 else n * nt-factorial (n - 1)
+
+  nt-binomial : Integer, Integer -> Integer
+  nt-binomial (n) (k) =
+    if k < 0 then 0
+    else if k > n then 0
+    else if k == 0 then 1
+    else if k == n then 1
+    else let kk = if k > n - k then n - k else k
+    in nt-binom-loop n kk 1 0
+
+  nt-binom-loop : Integer, Integer, Integer, Integer -> Integer
+  nt-binom-loop (n) (k) (result) (i) =
+    if i >= k then result
+    else nt-binom-loop n k (result * (n - i) / (i + 1)) (i + 1)
+
+  nt-fibonacci : Integer -> Integer
+  nt-fibonacci (n) =
+    if n <= 0 then 0
+    else if n == 1 then 1
+    else nt-fib-loop n 0 1 2
+
+  nt-fib-loop : Integer, Integer, Integer, Integer -> Integer
+  nt-fib-loop (target) (a) (b) (i) =
+    if i > target then b
+    else nt-fib-loop target b (a + b) (i + 1)
+
+  nt-catalan : Integer -> Integer
+  nt-catalan (n) = nt-binomial (2 * n) n / (n + 1)
+
+Section: Sequences
+
+  nt-triangular : Integer -> Integer
+  nt-triangular (n) = n * (n + 1) / 2
+
+  nt-square : Integer -> Integer
+  nt-square (n) = n * n
+
+  nt-pentagonal : Integer -> Integer
+  nt-pentagonal (n) = n * (3 * n - 1) / 2
+
+  nt-is-perfect-square : Integer -> Boolean
+  nt-is-perfect-square (n) =
+    if n < 0 then False
+    else let s = nt-isqrt n
+    in s * s == n
+
+  nt-isqrt : Integer -> Integer
+  nt-isqrt (n) =
+    if n <= 0 then 0
+    else nt-isqrt-loop n (n / 2 + 1)
+
+  nt-isqrt-loop : Integer, Integer -> Integer
+  nt-isqrt-loop (n) (guess) =
+    let next = (guess + n / guess) / 2
+    in if next >= guess then guess
+    else nt-isqrt-loop n next
+
+Section: GCD as Expression
+
+  nt-gcd-expr : Expr -> Expr
+  nt-gcd-expr (e) = when e
+    is ExFn ("gcd") (args) ->
+      if list-length args == 2 then
+        let a = list-at args 0
+        in let b = list-at args 1
+        in when a
+          is ExInt (na) -> when b
+            is ExInt (nb) -> ExInt (nt-gcd na nb)
+            is otherwise -> e
+          is otherwise -> e
+      else e
+    is ExFn ("lcm") (args) ->
+      if list-length args == 2 then
+        let a = list-at args 0
+        in let b = list-at args 1
+        in when a
+          is ExInt (na) -> when b
+            is ExInt (nb) -> ExInt (nt-lcm na nb)
+            is otherwise -> e
+          is otherwise -> e
+      else e
+    is ExFn ("factor") (args) ->
+      if list-length args == 1 then when list-at args 0
+        is ExInt (n) -> let factors = nt-factorize n in ExList (nt-factors-to-exprs factors 0 (list-length factors) [])
+        is otherwise -> e
+      else e
+    is ExFn ("isprime") (args) ->
+      if list-length args == 1 then when list-at args 0
+        is ExInt (n) -> if nt-is-prime n then ExTrue else ExFalse
+        is otherwise -> e
+      else e
+    is ExFn ("fib") (args) ->
+      if list-length args == 1 then when list-at args 0
+        is ExInt (n) -> ExInt (nt-fibonacci n)
+        is otherwise -> e
+      else e
+    is ExFn ("binomial") (args) ->
+      if list-length args == 2 then
+        let a = list-at args 0 in let b = list-at args 1
+        in when a is ExInt (na) -> when b is ExInt (nb) -> ExInt (nt-binomial na nb) is otherwise -> e is otherwise -> e
+      else e
+    is otherwise -> e
+
+  nt-factors-to-exprs : List PrimeFactor, Integer, Integer, List Expr -> List Expr
+  nt-factors-to-exprs (factors) (i) (n) (acc) =
+    if i >= n then acc
+    else let f = list-at factors i
+    in nt-factors-to-exprs factors (i + 1) n (list-push acc (ExPow (ExInt (f.pf-prime)) (ExInt (f.pf-exponent))))
+
+Page 1

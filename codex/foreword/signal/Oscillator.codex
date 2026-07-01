@@ -1,0 +1,156 @@
+Chapter: Oscillator
+  cites Foreword chapter Units (Frequency)
+
+ Multi-waveform oscillator bank with FM synthesis, ring modulation,
+ PWM, and wavetable lookup. Fixed-point (scale 1000). Builds on
+ Synth for basic waveforms, adds modulation and mixing.
+
+ We say:
+
+Section: Types
+  OscBank = record {
+    ob-oscs : List OscState,
+    ob-count : Integer,
+    ob-sample-rate : Frequency
+  }
+
+  OscState = record {
+    osc-freq : Frequency,
+    osc-phase : Integer,
+    osc-amp : Integer,
+    osc-type : Integer,
+    osc-param : Integer
+  }
+
+Section: Constants
+  osc-type-sine : Integer = 0
+  osc-type-square : Integer = 1
+  osc-type-saw : Integer = 2
+  osc-type-tri : Integer = 3
+  osc-type-pulse : Integer = 4
+  osc-type-noise : Integer = 5
+
+Section: Construction
+  osc-bank-new : Frequency -> OscBank
+  osc-bank-new (sr) = OscBank { ob-oscs = [], ob-count = 0, ob-sample-rate = sr }
+
+  osc-add : OscBank, Frequency, Integer, Integer, Integer -> OscBank
+  osc-add (bank) (freq) (amp) (wave-type) (param) =
+    let osc = OscState { osc-freq = freq, osc-phase = 0, osc-amp = amp, osc-type = wave-type, osc-param = param }
+    in OscBank { ob-oscs = list-push (bank.ob-oscs) osc, ob-count = bank.ob-count + 1, ob-sample-rate = bank.ob-sample-rate }
+
+Section: Sample Generation
+  osc-eval : OscState, Integer -> Integer
+  osc-eval (osc) (phase) =
+    if osc.osc-type == osc-type-sine then osc-sine-val phase (osc.osc-amp)
+    else if osc.osc-type == osc-type-square then osc-square-val phase (osc.osc-amp)
+    else if osc.osc-type == osc-type-saw then osc-saw-val phase (osc.osc-amp)
+    else if osc.osc-type == osc-type-tri then osc-tri-val phase (osc.osc-amp)
+    else if osc.osc-type == osc-type-pulse then osc-pulse-val phase (osc.osc-amp) (osc.osc-param)
+    else if osc.osc-type == osc-type-noise then osc-noise-val phase (osc.osc-amp)
+    else 0
+
+  osc-sine-val : Integer, Integer -> Integer
+  osc-sine-val (phase) (amp) =
+    let x = phase
+    in let x3 = x * x / 1000 * x / 1000
+    in let x5 = x3 * x / 1000 * x / 1000
+    in amp * (x - x3 / 6 + x5 / 120) / 1000
+
+  osc-square-val : Integer, Integer -> Integer
+  osc-square-val (phase) (amp) = if phase >= 0 then amp else -amp
+
+  osc-saw-val : Integer, Integer -> Integer
+  osc-saw-val (phase) (amp) = amp * phase / 3142
+
+  osc-tri-val : Integer, Integer -> Integer
+  osc-tri-val (phase) (amp) =
+    let abs-p = if phase < 0 then -phase else phase
+    in amp * (3142 - 2 * abs-p) / 3142
+
+  osc-pulse-val : Integer, Integer, Integer -> Integer
+  osc-pulse-val (phase) (amp) (duty) =
+    let threshold = duty * 6283 / 1000 - 3142
+    in if phase < threshold then amp else -amp
+
+  osc-noise-val : Integer, Integer -> Integer
+  osc-noise-val (phase) (amp) =
+    let hash = phase * 1103515245 + 12345
+    in let positive = if hash < 0 then -hash else hash
+    in let normalized = positive - positive / 2000 * 2000 - 1000
+    in amp * normalized / 1000
+
+Section: Phase Calculation
+  osc-phase-at : Integer, Integer, Integer -> Integer
+  osc-phase-at (freq) (sample-idx) (sample-rate) =
+    let period = sample-rate * 1000 / freq
+    in let pos = sample-idx * 1000 * 6283 / period
+    in let wrapped = pos - pos / 6283 * 6283
+    in wrapped - 3142
+
+Section: Bank Rendering
+  osc-bank-render : OscBank, Integer -> List Integer
+  osc-bank-render (bank) (num-samples) =
+    osc-bank-loop bank num-samples 0 []
+
+  osc-bank-loop : OscBank, Integer, Integer, List Integer -> List Integer
+  osc-bank-loop (bank) (n) (i) (acc) =
+    if i >= n then acc
+    else let sample = osc-bank-sample bank i
+    in osc-bank-loop bank n (i + 1) (list-push acc sample)
+
+  osc-bank-sample : OscBank, Integer -> Integer
+  osc-bank-sample (bank) (sample-idx) = osc-mix-loop (bank.ob-oscs) (bank.ob-sample-rate) sample-idx 0 (bank.ob-count) 0
+
+  osc-mix-loop : List OscState, Integer, Integer, Integer, Integer, Integer -> Integer
+  osc-mix-loop (oscs) (sr) (idx) (i) (n) (acc) =
+    if i >= n then acc
+    else let osc = list-at oscs i
+    in let phase = osc-phase-at (osc.osc-freq) idx sr
+    in let val = osc-eval osc phase
+    in osc-mix-loop oscs sr idx (i + 1) n (acc + val)
+
+Section: FM Synthesis
+  osc-fm : Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  osc-fm (carrier-freq) (mod-freq) (mod-depth) (amp) (sample-idx) (sr) =
+    let mod-phase = osc-phase-at mod-freq sample-idx sr
+    in let mod-val = osc-sine-val mod-phase mod-depth
+    in let inst-freq = carrier-freq + mod-val
+    in let car-phase = osc-phase-at inst-freq sample-idx sr
+    in osc-sine-val car-phase amp
+
+  osc-fm-render : Integer, Integer, Integer, Integer, Integer, Integer -> List Integer
+  osc-fm-render (carrier) (modulator) (depth) (amp) (sr) (n) =
+    osc-fm-loop carrier modulator depth amp sr n 0 []
+
+  osc-fm-loop : Integer, Integer, Integer, Integer, Integer, Integer, Integer, List Integer -> List Integer
+  osc-fm-loop (car) (mod) (depth) (amp) (sr) (n) (i) (acc) =
+    if i >= n then acc
+    else let val = osc-fm car mod depth amp i sr
+    in osc-fm-loop car mod depth amp sr n (i + 1) (list-push acc val)
+
+Section: Ring Modulation
+  osc-ring-mod : List Integer, List Integer -> List Integer
+  osc-ring-mod (a) (b) = osc-ring-loop a b 0 (osc-min-len (list-length a) (list-length b)) []
+
+  osc-ring-loop : List Integer, List Integer, Integer, Integer, List Integer -> List Integer
+  osc-ring-loop (a) (b) (i) (n) (acc) =
+    if i >= n then acc
+    else let val = list-at a i * list-at b i / 1000
+    in osc-ring-loop a b (i + 1) n (list-push acc val)
+
+  osc-min-len : Integer, Integer -> Integer
+  osc-min-len (a) (b) = if a < b then a else b
+
+Section: Analysis
+  osc-peak : List Integer -> Integer
+  osc-peak (samples) = osc-peak-loop samples 0 (list-length samples) 0
+
+  osc-peak-loop : List Integer, Integer, Integer, Integer -> Integer
+  osc-peak-loop (samples) (i) (n) (best) =
+    if i >= n then best
+    else let v = list-at samples i
+    in let abs-v = if v < 0 then -v else v
+    in osc-peak-loop samples (i + 1) n (if abs-v > best then abs-v else best)
+
+Page 1

@@ -1,0 +1,351 @@
+Chapter: Java Emitter
+  cites Codex chapter Text
+  cites Codex chapter Characters
+  cites Codex chapter Lists
+
+ Generates Java source code from the IR.
+
+Section: Sanitization
+
+  jv-sanitize : Text -> Text
+  jv-sanitize (name) =
+   text-replace (text-replace name "-" "_") "'" ""
+
+  jv-escape : Text -> Text
+  jv-escape (s) =
+   let s1 = text-replace s "\\" "\\\\"
+   in let s2 = text-replace s1 "\"" "\\\""
+   in let s3 = text-replace s2 "\n" "\\n"
+   in s3
+
+  jv-indent : Integer -> Text
+  jv-indent (n) =
+   if n <= 0 then ""
+   else "    " & jv-indent (n - 1)
+
+Section: Arity Map
+
+  ArityEntry = record {
+   name : Text,
+   arity : Integer between 0 and 255,
+   generic-count : Integer between 0 and 255
+  }
+
+  bsearch-arity-pos : List ArityEntry, Text, Integer, Integer -> Integer
+  bsearch-arity-pos (entries) (name) (lo) (hi) =
+   if lo >= hi then lo
+   else let mid = lo + (hi - lo) / 2
+   in let mid-name = (list-at entries mid).name
+   in if text-compare name mid-name <= 0 then bsearch-arity-pos entries name lo mid
+      else bsearch-arity-pos entries name (mid + 1) hi
+
+  sorted-insert-arity : List ArityEntry, ArityEntry -> List ArityEntry
+  sorted-insert-arity (xs) (e) =
+   let len = list-length xs
+   in let pos = bsearch-arity-pos xs (e.name) 0 len
+   in list-insert-at xs pos e
+
+  build-arity-map : List IRDef, Integer, List ArityEntry -> List ArityEntry
+  build-arity-map (defs) (i) (acc) =
+   if i == list-length defs then acc
+   else let d = list-at defs i
+   in build-arity-map defs (i + 1) (sorted-insert-arity acc (ArityEntry {
+    name = d.name,
+    arity = list-length (d.params),
+    generic-count = 0
+   }))
+
+  lookup-arity : List ArityEntry, Text -> Integer
+  lookup-arity (entries) (name) =
+   let len = list-length entries
+   in let pos = bsearch-arity-pos entries name 0 len
+   in if pos >= len then 0
+      else let e = list-at entries pos
+      in if e.name == name then e.arity else 0
+
+Section: Expression Emission
+
+  emit-jv-expr : IRExpr, List ArityEntry, Integer -> Text
+  emit-jv-expr (e) (arities) (indent) =
+   when e
+    is IrIntLit (n) (sp) -> show n
+    is IrNumLit (n) (sp) -> "Double.longBitsToDouble(" & show n & "L)"
+    is IrTextLit (s) (sp) -> "\"" & jv-escape s & "\""
+    is IrBoolLit (b) (sp) -> if b then "true" else "false"
+    is IrCharLit (n) (sp) -> "(char)" & show n
+    is IrName (n) (ty) (sp) -> jv-sanitize n
+    is IrBinary (op) (l) (r) (ty) (sp) -> emit-jv-binary op l r arities indent
+    is IrNegate (x) (sp) -> "(-(int)(" & emit-jv-expr x arities indent & "))"
+    is IrIf (c) (t) (el) (ty) (sp) -> "((boolean)(" & emit-jv-expr c arities indent & ") ? " & emit-jv-expr t arities indent & " : " & emit-jv-expr el arities indent & ")"
+    is IrLet (name) (ty) (val) (body) (sp) -> emit-jv-let name val body arities indent
+    is IrApply (f) (a) (ty) (sp) -> emit-jv-apply e arities indent
+    is IrLambda (params) (body) (ty) (sp) -> emit-jv-lambda params body arities indent
+    is IrList (elems) (ty) (sp) -> "new java.util.ArrayList<>(java.util.Arrays.asList(" & emit-jv-list-elems elems arities indent 0 & "))"
+    is IrMatch (scrut) (branches) (ty) (sp) -> emit-jv-match scrut branches arities indent
+    is IrAct (stmts) (ty) (sp) -> emit-jv-act stmts arities indent
+    is IrRecord (name) (fields) (ty) (sp) -> emit-jv-record name fields arities indent
+    is IrFieldAccess (rec) (field) (ty) (sp) -> "((java.util.Map<String,Object>)" & emit-jv-expr rec arities indent & ").get(\"" & jv-sanitize field & "\")"
+    is IrFieldStore (rec) (field) (val) (ty) (sp) -> "((java.util.function.Supplier<Object>)(() -> { var _r = (java.util.Map<String,Object>)" & emit-jv-expr rec arities indent & "; _r.put(\"" & jv-sanitize field & "\", " & emit-jv-expr val arities indent & "); return _r; })).get()"
+    is IrFork (body) (ty) (sp) -> "java.util.concurrent.CompletableFuture.supplyAsync(() -> " & emit-jv-expr body arities indent & ")"
+    is IrAwait (task) (ty) (sp) -> "((java.util.concurrent.CompletableFuture<Object>)" & emit-jv-expr task arities indent & ").join()"
+    is IrHandle (eff) (body) (clauses) (ty) (sp) -> emit-jv-expr body arities indent
+    is IrWithTimeout (secs) (effs) (scopes) (body) (ty) (sp) -> emit-jv-expr body arities indent
+    is IrTry (max) (body) (fb) (fail-stmts) (ty) (sp) -> emit-jv-try max body fb fail-stmts arities indent
+    is IrError (msg) (ty) (sp) -> "((java.util.function.Supplier<Object>)(() -> { throw new RuntimeException(\"" & jv-escape msg & "\"); })).get()"
+
+Section: Binary Operators
+
+  emit-jv-binary : IRBinaryOp, IRExpr, IRExpr, List ArityEntry, Integer -> Text
+  emit-jv-binary (op) (l) (r) (arities) (indent) =
+   let lhs = emit-jv-expr l arities indent
+   in let rhs = emit-jv-expr r arities indent
+   in when op
+    is IrAddInt -> "((int)" & lhs & " + (int)" & rhs & ")"
+    is IrSubInt -> "((int)" & lhs & " - (int)" & rhs & ")"
+    is IrMulInt -> "((int)" & lhs & " * (int)" & rhs & ")"
+    is IrDivInt -> "((int)" & lhs & " / (int)" & rhs & ")"
+    is IrRemInt -> "((int)" & lhs & " % (int)" & rhs & ")"
+    is IrPowInt -> "(int)Math.pow((int)" & lhs & ", (int)" & rhs & ")"
+    is IrAddNum | IrAddRealApprox | IrAddRealTrapping | IrAddRealSaturating -> "((double)" & lhs & " + (double)" & rhs & ")"
+    is IrSubNum | IrSubRealApprox | IrSubRealTrapping | IrSubRealSaturating -> "((double)" & lhs & " - (double)" & rhs & ")"
+    is IrMulNum | IrMulRealApprox | IrMulRealTrapping | IrMulRealSaturating -> "((double)" & lhs & " * (double)" & rhs & ")"
+    is IrDivNum | IrDivRealApprox | IrDivRealTrapping | IrDivRealSaturating -> "((double)" & lhs & " / (double)" & rhs & ")"
+    is IrAddVec -> "java.util.stream.IntStream.range(0, ((double[])" & lhs & ").length).mapToDouble(i -> ((double[])" & lhs & ")[i] + ((double[])" & rhs & ")[i]).toArray()"
+    is IrSubVec -> "java.util.stream.IntStream.range(0, ((double[])" & lhs & ").length).mapToDouble(i -> ((double[])" & lhs & ")[i] - ((double[])" & rhs & ")[i]).toArray()"
+    is IrMulVec -> "java.util.stream.IntStream.range(0, ((double[])" & lhs & ").length).mapToDouble(i -> ((double[])" & lhs & ")[i] * ((double[])" & rhs & ")[i]).toArray()"
+    is IrDivVec -> "java.util.stream.IntStream.range(0, ((double[])" & lhs & ").length).mapToDouble(i -> ((double[])" & lhs & ")[i] / ((double[])" & rhs & ")[i]).toArray()"
+    is IrEq -> "java.util.Objects.equals(" & lhs & ", " & rhs & ")"
+    is IrNotEq -> "!java.util.Objects.equals(" & lhs & ", " & rhs & ")"
+    is IrLt | IrLtVec -> "(((Comparable)" & lhs & ").compareTo(" & rhs & ") < 0)"
+    is IrGt | IrGtVec -> "(((Comparable)" & lhs & ").compareTo(" & rhs & ") > 0)"
+    is IrLtEq | IrLtEqVec -> "(((Comparable)" & lhs & ").compareTo(" & rhs & ") <= 0)"
+    is IrGtEq | IrGtEqVec -> "(((Comparable)" & lhs & ").compareTo(" & rhs & ") >= 0)"
+    is IrApproxEq -> "java.util.Objects.equals(" & lhs & ", " & rhs & ")"
+    is IrApproxEqExact -> "java.util.Objects.equals(" & lhs & ", " & rhs & ")"
+    is IrAnd -> "((boolean)" & lhs & " && (boolean)" & rhs & ")"
+    is IrOr -> "((boolean)" & lhs & " || (boolean)" & rhs & ")"
+    is IrAppendText -> "((String)" & lhs & " + (String)" & rhs & ")"
+    is IrAppendList -> "((java.util.function.Supplier<Object>)(() -> { var _l = new java.util.ArrayList<>((java.util.List<?>)" & lhs & "); _l.addAll((java.util.List<?>)" & rhs & "); return _l; })).get()"
+    is IrConsList -> "((java.util.function.Supplier<Object>)(() -> { var _l = new java.util.ArrayList<>(); _l.add(" & lhs & "); _l.addAll((java.util.List<?>)" & rhs & "); return _l; })).get()"
+
+Section: Apply and Helpers
+
+  FlatApply = record {
+   root : IRExpr,
+   args : List IRExpr
+  }
+
+  collect-apply-chain : IRExpr, List IRExpr -> FlatApply
+  collect-apply-chain (e) (acc) =
+   when e
+    is IrApply (f) (a) (ty) (sp) -> collect-apply-chain f ([a] & acc)
+    is otherwise -> FlatApply { root = e, args = acc }
+
+  emit-jv-apply : IRExpr, List ArityEntry, Integer -> Text
+  emit-jv-apply (e) (arities) (indent) =
+   let chain = collect-apply-chain e []
+   in let root = chain.root
+   in let args = chain.args
+   in when root
+    is IrName (n) (ty) (sp) ->
+     if is-mktup-name n then "new Object[]{" & emit-jv-apply-args args arities indent 0 & "}"
+     else let func = emit-jv-expr root arities indent
+     in func & "(" & emit-jv-apply-args args arities indent 0 & ")"
+    is otherwise ->
+     let func = emit-jv-expr root arities indent
+     in func & "(" & emit-jv-apply-args args arities indent 0 & ")"
+
+  emit-jv-apply-args : List IRExpr, List ArityEntry, Integer, Integer -> Text
+  emit-jv-apply-args (args) (arities) (indent) (i) =
+   if i == list-length args then ""
+   else let sep = if i > 0 then ", " else ""
+   in sep & emit-jv-expr (list-at args i) arities indent & emit-jv-apply-args args arities indent (i + 1)
+
+  emit-jv-lambda : List IRParam, IRExpr, List ArityEntry, Integer -> Text
+  emit-jv-lambda (params) (body) (arities) (indent) =
+   if list-length params == 0 then "((java.util.function.Supplier<Object>)(() -> " & emit-jv-expr body arities indent & "))"
+   else if list-length params == 1 then "((java.util.function.Function<Object,Object>)((" & jv-sanitize ((list-at params 0).name) & ") -> " & emit-jv-expr body arities indent & "))"
+   else "((java.util.function.BiFunction<Object,Object,Object>)((" & emit-jv-lambda-params params 0 & ") -> " & emit-jv-expr body arities indent & "))"
+
+  emit-jv-lambda-params : List IRParam, Integer -> Text
+  emit-jv-lambda-params (params) (i) =
+   if i == list-length params then ""
+   else let sep = if i > 0 then ", " else ""
+   in sep & jv-sanitize (list-at params i).name & emit-jv-lambda-params params (i + 1)
+
+  emit-jv-let : Text, IRExpr, IRExpr, List ArityEntry, Integer -> Text
+  emit-jv-let (name) (val) (body) (arities) (indent) =
+   "((java.util.function.Function<Object,Object>)((" & jv-sanitize name & ") -> " & emit-jv-expr body arities indent & ")).apply(" & emit-jv-expr val arities indent & ")"
+
+  emit-jv-list-elems : List IRExpr, List ArityEntry, Integer, Integer -> Text
+  emit-jv-list-elems (elems) (arities) (indent) (i) =
+   if i == list-length elems then ""
+   else let sep = if i > 0 then ", " else ""
+   in sep & "(Object)" & emit-jv-expr (list-at elems i) arities indent & emit-jv-list-elems elems arities indent (i + 1)
+
+  emit-jv-record : Text, List IRFieldVal, List ArityEntry, Integer -> Text
+  emit-jv-record (name) (fields) (arities) (indent) =
+   "((java.util.function.Supplier<Object>)(() -> { var _m = new java.util.HashMap<String,Object>(); _m.put(\"_type\", \"" & name & "\")" & emit-jv-record-puts fields arities indent 0 & "; return _m; })).get()"
+
+  emit-jv-record-puts : List IRFieldVal, List ArityEntry, Integer, Integer -> Text
+  emit-jv-record-puts (fields) (arities) (indent) (i) =
+   if i == list-length fields then ""
+   else let f = list-at fields i
+   in "; _m.put(\"" & jv-sanitize (f.name) & "\", " & emit-jv-expr (f.value) arities indent & ")" & emit-jv-record-puts fields arities indent (i + 1)
+
+Section: Match
+
+  emit-jv-match : IRExpr, List IRBranch, List ArityEntry, Integer -> Text
+  emit-jv-match (scrut) (branches) (arities) (indent) =
+   "((java.util.function.Function<Object,Object>)((_s) -> { " & emit-jv-branches branches arities indent 0 & " })).apply(" & emit-jv-expr scrut arities indent & ")"
+
+  emit-jv-branches : List IRBranch, List ArityEntry, Integer, Integer -> Text
+  emit-jv-branches (branches) (arities) (indent) (i) =
+   if i == list-length branches then "throw new RuntimeException(\"non-exhaustive match\");"
+   else let b = list-at branches i
+   in let cond = emit-jv-pat-cond (b.pattern) "_s"
+   in let binds = emit-jv-pat-binds (b.pattern) "_s"
+   in let body = emit-jv-expr (b.body) arities indent
+   in "if (" & cond & ") { " & binds & "return " & body & "; } else " & emit-jv-branches branches arities indent (i + 1)
+
+  emit-jv-pat-cond : IRPat, Text -> Text
+  emit-jv-pat-cond (p) (scrut) =
+   when p
+    is IrVarPat (name) (ty) (sp) -> "true"
+    is IrLitPat (text) (ty) (sp) -> "java.util.Objects.equals(" & scrut & ", " & text & ")"
+    is IrCtorPat (name) (subs) (ty) (sp) ->
+     if is-mktup-name name then "true"
+     else "java.util.Objects.equals(((java.util.Map<String,Object>)" & scrut & ").get(\"_tag\"), \"" & name & "\")"
+    is IrVecPat (pats) (ty) (sp) -> "true"
+    is IrWildPat (sp) -> "true"
+
+  emit-jv-pat-binds : IRPat, Text -> Text
+  emit-jv-pat-binds (p) (scrut) =
+   when p
+    is IrVarPat (name) (ty) (sp) -> "var " & jv-sanitize name & " = " & scrut & "; "
+    is IrLitPat (text) (ty) (sp) -> ""
+    is IrCtorPat (name) (subs) (ty) (sp) ->
+     if is-mktup-name name then emit-jv-tup-binds subs scrut 0
+     else emit-jv-ctor-binds subs scrut 0
+    is IrVecPat (pats) (ty) (sp) -> ""
+    is IrWildPat (sp) -> ""
+
+  emit-jv-ctor-binds : List IRPat, Text, Integer -> Text
+  emit-jv-ctor-binds (subs) (scrut) (i) =
+   if i == list-length subs then ""
+   else let sub = list-at subs i
+   in let access = "((java.util.Map<String,Object>)" & scrut & ").get(\"_" & show i & "\")"
+   in emit-jv-pat-binds sub access & emit-jv-ctor-binds subs scrut (i + 1)
+
+Section: Act Blocks
+
+  emit-jv-act : List IRActStmt, List ArityEntry, Integer -> Text
+  emit-jv-act (stmts) (arities) (indent) =
+   "((java.util.function.Supplier<Object>)(() -> {\n" & emit-jv-act-stmts stmts arities (indent + 1) 0 & jv-indent indent & "})).get()"
+
+  emit-jv-act-stmts : List IRActStmt, List ArityEntry, Integer, Integer -> Text
+  emit-jv-act-stmts (stmts) (arities) (indent) (i) =
+   if i == list-length stmts then ""
+   else let s = list-at stmts i
+   in let is-last = i == list-length stmts - 1
+   in when s
+    is IrDoBind (name) (ty) (val) (sp) -> jv-indent indent & "var " & jv-sanitize name & " = " & emit-jv-expr val arities indent & ";\n" & emit-jv-act-stmts stmts arities indent (i + 1)
+    is IrDoExec (e) (sp) ->
+     if is-last then jv-indent indent & "return (Object)(" & emit-jv-expr e arities indent & ");\n"
+     else jv-indent indent & emit-jv-expr e arities indent & ";\n" & emit-jv-act-stmts stmts arities indent (i + 1)
+
+Section: Try
+
+  emit-jv-try : Integer, List IRActStmt, List IRActStmt, List IRActStmt, List ArityEntry, Integer -> Text
+  emit-jv-try (max) (body) (fb) (fail-stmts) (arities) (indent) =
+   let body-text = emit-jv-act body arities indent
+   in let fb-text = emit-jv-act fb arities indent
+   in let fail-text = emit-jv-act fail-stmts arities indent
+   in "((java.util.function.Supplier<Object>)(() -> { boolean _try_ok = false; Object _try_result = null; for (int _try_i = 0; _try_i < " & show max & "; _try_i++) { try { _try_result = " & body-text & "; _try_ok = true; break; } catch (Exception _e) {} } if (_try_ok) return _try_result; try { return " & fb-text & "; } catch (Exception _e) { return " & fail-text & "; } })).get()"
+
+Section: Type Definitions
+
+  emit-jv-type-def : ATypeDef -> Text
+  emit-jv-type-def (td) =
+   when td
+    is ARecordTypeDef (name) (tparams) (fields) (is-mut) (s) ->
+     ""
+    is AVariantTypeDef (name) (tparams) (ctors) (s) ->
+     if is-tup-type (name.value) then ""
+     else emit-jv-variant-ctors ctors 0
+
+  emit-jv-variant-ctors : List AVariantCtorDef, Integer -> Text
+  emit-jv-variant-ctors (ctors) (i) =
+   if i == list-length ctors then ""
+   else let c = list-at ctors i
+   in let n = list-length (c.fields)
+   in let sname = jv-sanitize (c.name.value)
+   in let ctor-text = if n == 0 then "    static final Object " & sname & " = new java.util.HashMap<>(java.util.Map.of(\"_tag\", \"" & c.name.value & "\"));\n"
+      else "    static Object " & sname & "(" & emit-jv-ctor-params n 0 & ") { var _m = new java.util.HashMap<String,Object>(); _m.put(\"_tag\", \"" & c.name.value & "\")" & emit-jv-ctor-puts n 0 & "; return _m; }\n"
+   in ctor-text & emit-jv-variant-ctors ctors (i + 1)
+
+  emit-jv-ctor-params : Integer, Integer -> Text
+  emit-jv-ctor-params (n) (i) =
+   if i == n then ""
+   else let sep = if i > 0 then ", " else ""
+   in sep & "Object _" & show i & emit-jv-ctor-params n (i + 1)
+
+  emit-jv-ctor-puts : Integer, Integer -> Text
+  emit-jv-ctor-puts (n) (i) =
+   if i == n then ""
+   else "; _m.put(\"_" & show i & "\", _" & show i & ")" & emit-jv-ctor-puts n (i + 1)
+
+Section: Definition Emission
+
+  emit-jv-def : IRDef, List ArityEntry -> Text
+  emit-jv-def (d) (arities) =
+   if text-length (d.name) == 0 then ""
+   else let sname = jv-sanitize (d.name)
+   in if list-length (d.params) == 0
+      then "    static Object " & sname & " = " & emit-jv-expr (d.body) arities 0 & ";\n\n"
+      else "    static Object " & sname & "(" & emit-jv-method-params (d.params) 0 & ") {\n        return " & emit-jv-expr (d.body) arities 2 & ";\n    }\n\n"
+
+  emit-jv-method-params : List IRParam, Integer -> Text
+  emit-jv-method-params (params) (i) =
+   if i == list-length params then ""
+   else let sep = if i > 0 then ", " else ""
+   in sep & "Object " & jv-sanitize (list-at params i).name & emit-jv-method-params params (i + 1)
+
+  emit-jv-defs : List IRDef, Integer, List ArityEntry -> Text
+  emit-jv-defs (defs) (i) (arities) =
+   if i == list-length defs then ""
+   else emit-jv-def (list-at defs i) arities & emit-jv-defs defs (i + 1) arities
+
+  emit-jv-type-defs : List ATypeDef, Integer -> Text
+  emit-jv-type-defs (tds) (i) =
+   if i == list-length tds then ""
+   else emit-jv-type-def (list-at tds i) & emit-jv-type-defs tds (i + 1)
+
+Section: Java Class Assembly
+
+  emit-java-chapter : IRChapter, List ATypeDef -> Text
+  emit-java-chapter (m) (type-defs) =
+   let arities = build-arity-map (m.defs) 0 []
+   in let header = "import java.util.*;\nimport java.util.function.*;\n\npublic class Main {\n\n"
+   in let builtins = "    static Object print_line_uni(Object s) { System.out.println(s); return null; }\n    static Object show(Object n) { return String.valueOf(n); }\n    static Object text_length(Object s) { return ((String)s).length(); }\n    static Object text_replace(Object s, Object a, Object b) { return ((String)s).replace((String)a, (String)b); }\n    static Object text_compare(Object a, Object b) { return Integer.valueOf(((String)a).compareTo((String)b)); }\n    static Object list_length(Object xs) { return ((List<?>)xs).size(); }\n    static Object list_at(Object xs, Object i) { return ((List<?>)xs).get((int)i); }\n    static Object integer_to_text(Object n) { return String.valueOf(n); }\n    static Object negate(Object n) { return -(int)n; }\n\n"
+   in let types-text = emit-jv-type-defs type-defs 0
+   in let defs-text = emit-jv-defs (m.defs) 0 arities
+   in let main-method = "    public static void main(String[] args) {\n        try { opening(); } catch(Exception e) { System.err.println(e); }\n    }\n}\n"
+   in header & builtins & types-text & defs-text & main-method
+
+  emit-jv-tup-binds : List IRPat, Text, Integer -> Text
+  emit-jv-tup-binds (subs) (scrut) (i) =
+   if i == list-length subs then ""
+   else let sub = list-at subs i
+   in let access = "((Object[])" & scrut & ")[" & show i & "]"
+   in emit-jv-pat-binds sub access & emit-jv-tup-binds subs scrut (i + 1)
+
+  is-mktup-name : Text -> Boolean
+  is-mktup-name (n) =
+   n == "MkTup2" | n == "MkTup3" | n == "MkTup4" | n == "MkTup5"
+
+  is-tup-type : Text -> Boolean
+  is-tup-type (n) =
+   n == "Tup2" | n == "Tup3" | n == "Tup4" | n == "Tup5"
+
+Page 1

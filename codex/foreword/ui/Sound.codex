@@ -1,0 +1,142 @@
+Chapter: Sound
+  cites Foreword chapter Maybe
+
+ Sound effect descriptors and scheduling. Sounds are described as
+ waveform + frequency + duration + volume, not raw PCM. The actual
+ audio output is a platform concern -- this chapter defines the
+ intent. A SoundQueue accumulates pending effects for the platform
+ layer to drain each frame.
+
+Section: Waveform
+  Waveform =
+    | WavSine
+    | WavSquare
+    | WavTriangle
+    | WavNoise
+    | WavSilence
+
+Section: Sound Effect
+  SoundEffect = record {
+    snd-name : Text,
+    snd-wave : Waveform,
+    snd-freq : Integer,
+    snd-duration : Integer,
+    snd-volume : Integer between 0 and 1000,
+    snd-priority : Integer between 0 and 255
+  }
+
+Section: Sound Queue
+  SoundQueue = record {
+    sq-pending : List SoundEffect,
+    sq-count : Integer,
+    sq-max : Integer
+  }
+
+Section: Construction
+  sound-effect : Text, Waveform, Integer, Integer, Integer -> SoundEffect
+  sound-effect (name) (wave) (freq) (dur) (vol) =
+    SoundEffect { snd-name = name, snd-wave = wave, snd-freq = freq, snd-duration = dur, snd-volume = vol, snd-priority = 0 }
+
+  sound-effect-pri : Text, Waveform, Integer, Integer, Integer, Integer -> SoundEffect
+  sound-effect-pri (name) (wave) (freq) (dur) (vol) (pri) =
+    SoundEffect { snd-name = name, snd-wave = wave, snd-freq = freq, snd-duration = dur, snd-volume = vol, snd-priority = pri }
+
+  sound-queue-new : Integer -> SoundQueue
+  sound-queue-new (max-size) =
+    SoundQueue { sq-pending = [], sq-count = 0, sq-max = max-size }
+
+Section: Queue Operations
+  sq-enqueue : SoundQueue, SoundEffect -> SoundQueue
+  sq-enqueue (sq) (snd) =
+    if sq.sq-count >= sq.sq-max then sq
+    else SoundQueue { sq-pending = list-push (sq.sq-pending) snd, sq-count = sq.sq-count + 1, sq-max = sq.sq-max }
+
+  sq-drain : SoundQueue -> SoundQueue
+  sq-drain (sq) =
+    SoundQueue { sq-pending = [], sq-count = 0, sq-max = sq.sq-max }
+
+  sq-peek : SoundQueue -> Maybe SoundEffect
+  sq-peek (sq) =
+    if sq.sq-count <= 0 then None
+    else Just (list-at (sq.sq-pending) 0)
+
+  sq-is-empty : SoundQueue -> Boolean
+  sq-is-empty (sq) = sq.sq-count == 0
+
+Section: Built-in Effects
+  snd-click : SoundEffect
+  snd-click = sound-effect "click" WavSquare 800 50 500
+
+  snd-beep : SoundEffect
+  snd-beep = sound-effect "beep" WavSine 440 200 700
+
+  snd-error : SoundEffect
+  snd-error = sound-effect "error" WavSquare 220 300 800
+
+  snd-success : SoundEffect
+  snd-success = sound-effect "success" WavSine 880 150 600
+
+  snd-warning : SoundEffect
+  snd-warning = sound-effect "warning" WavTriangle 660 250 700
+
+  snd-notify : SoundEffect
+  snd-notify = sound-effect "notify" WavSine 1200 100 400
+
+  snd-tick : SoundEffect
+  snd-tick = sound-effect "tick" WavSquare 1000 30 300
+
+  snd-whoosh : SoundEffect
+  snd-whoosh = sound-effect "whoosh" WavNoise 0 200 500
+
+Section: Sound Sequence
+  SoundStep = record {
+    ss-effect : SoundEffect,
+    ss-delay : Integer
+  }
+
+  SoundSeq = record {
+    sseq-steps : List SoundStep,
+    sseq-count : Integer,
+    sseq-current : Integer,
+    sseq-elapsed : Integer,
+    sseq-done : Boolean
+  }
+
+  sound-step : SoundEffect, Integer -> SoundStep
+  sound-step (fx) (delay) = SoundStep { ss-effect = fx, ss-delay = delay }
+
+  sound-seq : List SoundStep -> SoundSeq
+  sound-seq (steps) =
+    SoundSeq { sseq-steps = steps, sseq-count = list-length steps, sseq-current = 0, sseq-elapsed = 0, sseq-done = False }
+
+  sound-seq-tick : SoundSeq, Integer, SoundQueue -> SoundSeqResult
+  sound-seq-tick (seq) (dt) (sq) =
+    if seq.sseq-done then SoundSeqResult { ssr-seq = seq, ssr-queue = sq }
+    else if seq.sseq-current >= seq.sseq-count then
+      SoundSeqResult { ssr-seq = SoundSeq { sseq-steps = seq.sseq-steps, sseq-count = seq.sseq-count, sseq-current = seq.sseq-current, sseq-elapsed = seq.sseq-elapsed, sseq-done = True }, ssr-queue = sq }
+    else let step = list-at (seq.sseq-steps) (seq.sseq-current)
+    in let new-elapsed = seq.sseq-elapsed + dt
+    in if new-elapsed >= step.ss-delay then
+      let sq2 = sq-enqueue sq (step.ss-effect)
+      in let next = SoundSeq { sseq-steps = seq.sseq-steps, sseq-count = seq.sseq-count, sseq-current = seq.sseq-current + 1, sseq-elapsed = 0, sseq-done = False }
+      in SoundSeqResult { ssr-seq = next, ssr-queue = sq2 }
+    else SoundSeqResult { ssr-seq = SoundSeq { sseq-steps = seq.sseq-steps, sseq-count = seq.sseq-count, sseq-current = seq.sseq-current, sseq-elapsed = new-elapsed, sseq-done = False }, ssr-queue = sq }
+
+  SoundSeqResult = record {
+    ssr-seq : SoundSeq,
+    ssr-queue : SoundQueue
+  }
+
+Section: Formatting
+  waveform-name : Waveform -> Text
+  waveform-name (w) = when w
+    is WavSine -> "sine"
+    is WavSquare -> "square"
+    is WavTriangle -> "triangle"
+    is WavNoise -> "noise"
+    is WavSilence -> "silence"
+
+  format-sound : SoundEffect -> Text
+  format-sound (s) = s.snd-name & " " & waveform-name (s.snd-wave) & " " & show (s.snd-freq) & "hz " & show (s.snd-duration) & "ms vol=" & show (s.snd-volume)
+
+Page 1

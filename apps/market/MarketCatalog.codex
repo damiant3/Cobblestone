@@ -1,0 +1,146 @@
+Chapter: MarketCatalog
+  cites Market chapter MarketTypes
+  cites Market chapter MarketDb
+  cites Foreword chapter Logger
+  cites Foreword chapter Maybe
+  cites Foreword chapter Hamt
+
+ Product catalog operations. Create products with flexible option
+ axes (color, size, material, etc.), manage variants (SKU + stock),
+ search and filter.
+
+Section: Product Creation
+
+  create-product : MarketState, Text, Text, Money, Integer -> (MarketState, Product)
+  create-product (st) (name) (desc) (price) (ts) =
+    let (st2, pid) = market-gen-id st "prod"
+    in let slug = text-to-slug name
+    in let prod = Product {
+      product-id = pid,
+      product-name = name,
+      product-slug = slug,
+      product-desc = desc,
+      product-price = price,
+      product-status = Draft,
+      product-options = [],
+      product-tags = [],
+      product-image-url = "",
+      product-weight-grams = 0,
+      product-created = ts,
+      product-updated = ts
+    }
+    in let log2 = log-info-msg (st2.mkt-log) "catalog" ("created product " & pid & " " & name) ts
+    in let st3 = __record-set st2 "mkt-log" log2
+    in (st3, prod)
+
+  text-to-slug : Text -> Text
+  text-to-slug (s) = slug-loop s 0 (text-length s) ""
+
+  slug-loop : Text, Integer, Integer, Text -> Text
+  slug-loop (s) (i) (len) (acc) =
+    if i >= len then acc
+    else let c = char-code (char-at s i)
+    in if c >= 65 then if c <= 90 then slug-loop s (i + 1) len (acc & char-from-code (c + 32))
+      else if c >= 97 then if c <= 122 then slug-loop s (i + 1) len (acc & char-from-code c)
+      else slug-loop s (i + 1) len acc
+      else slug-loop s (i + 1) len acc
+    else if c >= 48 then if c <= 57 then slug-loop s (i + 1) len (acc & char-from-code c)
+      else if c == 32 then slug-loop s (i + 1) len (acc & "-")
+      else if c == 45 then slug-loop s (i + 1) len (acc & "-")
+      else slug-loop s (i + 1) len acc
+    else slug-loop s (i + 1) len acc
+
+  char-from-code : Integer -> Text
+  char-from-code (c) =
+    if c >= 97 then if c <= 122 then substring "abcdefghijklmnopqrstuvwxyz" (c - 97) (c - 96)
+    else show c
+    else if c >= 48 then if c <= 57 then substring "0123456789" (c - 48) (c - 47)
+    else if c == 45 then "-"
+    else show c
+    else show c
+
+Section: Option Management
+
+  add-option-to-product : Product, OptionDef -> Product
+  add-option-to-product (prod) (opt) =
+    __record-set prod "product-options" (list-push (prod.product-options) opt)
+
+  remove-option-from-product : Product, Text -> Product
+  remove-option-from-product (prod) (option-id) =
+    __record-set prod "product-options" (filter-options (prod.product-options) option-id [])
+
+  filter-options : List OptionDef, Text, List OptionDef -> List OptionDef
+  filter-options (opts) (exclude-id) (acc) =
+    if list-length opts == 0 then acc
+    else let opt = list-at opts 0
+    in if opt.option-id == exclude-id then filter-options (list-tail opts) exclude-id acc
+    else filter-options (list-tail opts) exclude-id (list-push acc opt)
+
+Section: Variant Management
+
+  create-variant : MarketState, Text, Text, List OptionChoice, Integer -> (MarketState, Variant)
+  create-variant (st) (product-id) (sku) (choices) (stock) =
+    let (st2, vid) = market-gen-id st "var"
+    in let var = Variant {
+      variant-id = vid,
+      variant-product-id = product-id,
+      variant-choices = choices,
+      variant-sku = sku,
+      variant-price-override = None,
+      variant-stock = stock,
+      variant-weight-grams = 0
+    }
+    in (st2, var)
+
+  variant-in-stock : Variant -> Boolean
+  variant-in-stock (v) = v.variant-stock > 0
+
+  decrement-stock : Variant, Integer -> Variant
+  decrement-stock (v) (qty) =
+    let new-stock = if v.variant-stock >= qty then v.variant-stock - qty else 0
+    in __record-set v "variant-stock" new-stock
+
+Section: Product Publishing
+
+  publish-product : Product, Integer -> Product
+  publish-product (prod) (ts) =
+    let p2 = __record-set prod "product-status" Active
+    in __record-set p2 "product-updated" ts
+
+  archive-product : Product, Integer -> Product
+  archive-product (prod) (ts) =
+    let p2 = __record-set prod "product-status" Archived
+    in __record-set p2 "product-updated" ts
+
+Section: Common Option Presets
+
+  color-option : List OptionChoice -> OptionDef
+  color-option (colors) = option-def "color" "Color" colors
+
+  size-option : List OptionChoice -> OptionDef
+  size-option (sizes) = option-def "size" "Size" sizes
+
+  standard-colors : List OptionChoice
+  standard-colors = [
+    option-choice-color "red" "Red" "#dc2626",
+    option-choice-color "blue" "Blue" "#2563eb",
+    option-choice-color "green" "Green" "#16a34a",
+    option-choice-color "black" "Black" "#171717",
+    option-choice-color "white" "White" "#fafafa"
+  ]
+
+  standard-sizes : List OptionChoice
+  standard-sizes = [
+    option-choice "xs" "XS",
+    option-choice "s" "S",
+    option-choice "m" "M",
+    option-choice "l" "L",
+    option-choice "xl" "XL",
+    option-choice "xxl" "2XL"
+  ]
+
+  standard-tshirt-options : List OptionDef
+  standard-tshirt-options = [
+    color-option standard-colors,
+    size-option standard-sizes
+  ]

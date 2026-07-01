@@ -1,0 +1,74 @@
+Chapter: PlugRunScript
+
+  cites Foreword chapter Console
+  cites Foreword chapter Maybe
+  cites Shell chapter ShellTypes
+  cites Shell chapter ShellBuild
+  cites Shell chapter PowerShellEmit
+
+ Generates plug-run.ps1 -- a TEMPLATE for plug run scripts.
+ Boots a plug CDX in a VM, sends pre-compiled IR over TCP,
+ receives output bytes and writes them to Out.
+ Compile with: -Survey "lower-mul:500000"
+
+ We say:
+
+Section: Parameters
+
+  plugrun-params : List ShellParam = [sh-param "IrInput" SptString, sh-param "Out" SptString, sh-param-default "PlugCdx" SptString (SeLit ""), sh-param-default "MemMB" SptInt (SeInt 2048), sh-param-default "TimeoutSec" SptInt (SeInt 120), sh-param-default "Port" SptInt (SeInt 9100)]
+
+Section: S01 -- Preamble
+
+  s01 : List ShellCmd =
+    let no-ir = [ScWriteError (SeRaw "\"MISSING IR input: $IrInput\""), ScExit (SeInt 2)]
+    in let no-plug = [ScWriteError (SeRaw "\"MISSING plug CDX: $PlugCdx\""), ScExit (SeInt 2)]
+    in [ScSetStrictMode, ScSetErrorStop, ScBlank, ScRunDot (SeRaw "(Join-Path $PSScriptRoot 'vm-config.ps1')"), ScBlank, ScAssign "Repo" (SeRaw "(Resolve-Path (Join-Path $PSScriptRoot '..')).Path"), ScIf (SeNot (SeFileExists (SeVar "IrInput"))) no-ir [], ScIf (SeNot (SeVar "PlugCdx")) [ScAssign "PlugCdx" (SeRaw "Join-Path $PSScriptRoot 'build-output\\plug.cdx'")] [], ScIf (SeNot (SeFileExists (SeVar "PlugCdx"))) no-plug []]
+
+Section: S02 -- Read IR input
+
+  s02 : List ShellCmd = [ScReadBytes "irBytes" (SeVar "IrInput"), ScEcho (SeRaw "\"[plug-run] IR input: $($irBytes.Length) bytes\""), ScEcho (SeRaw "\"[plug-run] Plug: $PlugCdx\"")]
+
+Section: S03 -- Start TCP listener
+
+  s03 : List ShellCmd = [ScRaw "$listener = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, $Port)", ScRaw "$listener.Start()", ScEcho (SeRaw "\"[plug-run] Listening on TCP $Port\"")]
+
+Section: S04 -- Boot VM
+
+  s04 : List ShellCmd = [ScAssign "vmBin" (SeRaw "Join-Path $Repo 'tools\\codex-vm.exe'"), ScTempFile "stderrFile", ScAssign "vmArgs" (SeArrayLiteral [SeLit "-kernel", SeVar "PlugCdx", SeLit "-mem", SeRaw "\"$MemMB\"", SeLit "-headless"]), ScRaw "$proc = Start-Process -FilePath $vmBin -ArgumentList $vmArgs -PassThru -WindowStyle Hidden -RedirectStandardError $stderrFile", ScEcho (SeRaw "\"[plug-run] VM PID $($proc.Id)\"")]
+
+Section: S05 -- Wait for TCP connection
+
+  s05 : List ShellCmd =
+    let vm-died = [ScRaw "$stderr = if (Test-Path $stderrFile) { Get-Content $stderrFile -Raw } else { '' }", ScWriteError (SeRaw "\"FAIL: VM exited before connecting. stderr: $stderr\""), ScExit (SeInt 4)]
+    in let timeout-hit = [ScWriteError (SeLit "FAIL: plug did not connect within 60s"), ScExit (SeInt 5)]
+    in [ScAssign "deadline" (SeRaw "[DateTime]::UtcNow.AddSeconds(60)"), ScLabeledWhile "wait_conn" (SeNot (SeRaw "$listener.Pending()")) [ScIf (SeProperty (SeVar "proc") "HasExited") vm-died [], ScIf (SeRaw "[DateTime]::UtcNow -gt $deadline") timeout-hit [], ScRaw "Start-Sleep -Milliseconds 100"], ScRaw "$client = $listener.AcceptTcpClient()", ScRaw "$stream = $client.GetStream()", ScRaw "$listener.Stop()", ScEcho (SeLit "[plug-run] Connected")]
+
+Section: S06 -- Send IR
+
+  s06 : List ShellCmd = [ScRaw "$msgLen = $irBytes.Length + 1", ScRaw "$hdr = [BitConverter]::GetBytes([int]$msgLen)", ScRaw "$stream.Write($hdr, 0, 4)", ScRaw "$stream.WriteByte(1)", ScRaw "$chunkSize = 4096", ScRaw "$off = 0", ScLabeledWhile "send_loop" (SeRaw "$off -lt $irBytes.Length") [ScRaw "$n = [Math]::Min($chunkSize, $irBytes.Length - $off)", ScRaw "$stream.Write($irBytes, $off, $n)", ScRaw "$stream.Flush()", ScRaw "$off += $n", ScIf (SeRaw "$off -lt $irBytes.Length") [ScRaw "Start-Sleep -Milliseconds 50"] []], ScEcho (SeRaw "\"[plug-run] Sent $($irBytes.Length) bytes\"")]
+
+Section: S07 -- Receive output
+
+  s07 : List ShellCmd = [ScRaw "$stream.ReadTimeout = $TimeoutSec * 1000", ScRaw "$allBytes = [System.Collections.Generic.List[byte]]::new(65536)", ScRaw "$readBuf = [byte[]]::new(8192)", ScTry [ScLabeledWhile "recv_loop" (SeRaw "$true") [ScRaw "$n = $stream.Read($readBuf, 0, $readBuf.Length)", ScIf (SeRaw "$n -le 0") [ScBreak] [], ScRaw "for ($bi = 0; $bi -lt $n; $bi++) { $allBytes.Add($readBuf[$bi]) }"]] [ScComment "Read timeout or connection reset -- normal end"] [], ScRaw "$client.Close()"]
+
+Section: S08 -- Write output
+
+  s08 : List ShellCmd =
+    let no-output = [ScIf (SeNot (SeProperty (SeVar "proc") "HasExited")) [ScRaw "$proc.WaitForExit(5000)"] [], ScRaw "$stderr = if (Test-Path $stderrFile) { Get-Content $stderrFile -Raw } else { '' }", ScWriteError (SeRaw "\"FAIL: plug produced no output. stderr: $stderr\""), ScExit (SeInt 6)]
+    in [ScIf (SeRaw "$allBytes.Count -eq 0") no-output [], ScDotNetCall "System.IO.File" "WriteAllBytes" [SeVar "Out", SeRaw "$allBytes.ToArray()"], ScEcho (SeRaw "\"[plug-run] OK: $Out ($($allBytes.Count) bytes)\"")]
+
+Section: S09 -- Cleanup
+
+  s09 : List ShellCmd = [ScIf (SeAnd (SeVar "proc") (SeNot (SeProperty (SeVar "proc") "HasExited"))) [ScRaw "Stop-VmGraceful -ProcessId $proc.Id"] [], ScRaw "Remove-Item -Force $stderrFile -ErrorAction SilentlyContinue", ScRaw "try { $listener.Stop() } catch {}"]
+
+Section: Assembly
+
+  plugrun-body : List ShellCmd = [ScSequence s01, ScBlank, ScSequence s02, ScBlank, ScTry [ScSequence s03, ScBlank, ScSequence s04, ScBlank, ScSequence s05, ScBlank, ScSequence s06, ScBlank, ScSequence s07, ScBlank, ScSequence s08] [] s09]
+
+  plugrun-script : ShellScript = sh-script "plug-run" "Boot a plug CDX in a VM and send pre-compiled IR over TCP to produce output" plugrun-params plugrun-body
+
+  opening : [Console] Nothing = act
+    print-line-uni (emit-powershell plugrun-script)
+  end
+
+Page 1

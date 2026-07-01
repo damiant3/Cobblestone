@@ -1,0 +1,117 @@
+Chapter: VmCompile
+  cites Foreword chapter Maybe
+  cites Foreword chapter CCE
+  cites Works chapter DevHypervisor
+
+ VmCompile runs the Codex compiler inside a VMX guest. The host
+ loads a seed CDX as guest code, sends a mode header and source
+ text via the virtual serial port, and captures the compiled binary
+ from the guest's serial output. This replaces sample-compile-selfhost.ps1.
+
+ To vm-compile gives VmCompileResult,
+   compiling source text with the given seed CDX and mode string.
+
+ To vm-compile-cdx gives VmCompileResult,
+   compiling source text in CDX mode.
+
+ We say:
+
+Section: Types
+
+  VmCompileResult = record {
+    vcr-success : Boolean,
+    vcr-binary : List Integer,
+    vcr-size : Integer,
+    vcr-log : Text
+  }
+
+Section: Text to Byte Conversion
+
+  text-to-serial-bytes : Text, Integer, Integer, List Integer -> List Integer
+  text-to-serial-bytes (txt) (i) (len) (acc) =
+    if i >= len then acc
+    else let cce = char-code-at txt i
+    in let u = to-unicode cce
+    in let byte = if u >= 128 then 63 else u
+    in text-to-serial-bytes txt (i + 1) len (list-push acc byte)
+
+Section: Serial Protocol
+
+  vm-build-serial-input : Text, Text -> List Integer
+  vm-build-serial-input (mode) (source) =
+    let mode-bytes = text-to-serial-bytes mode 0 (text-length mode) []
+    in let newline = [10]
+    in let source-bytes = text-to-serial-bytes source 0 (text-length source) []
+    in let eot = [4]
+    in mode-bytes & newline & source-bytes & eot
+
+Section: Output Parsing
+
+  vm-parse-compile-output : VmSerialPort -> VmCompileResult
+  vm-parse-compile-output (port) =
+    let output = port.vs-output
+    in let len = list-length output
+    in vm-scan-for-size output 0 len
+
+  vm-scan-for-size : List Integer, Integer, Integer -> VmCompileResult
+  vm-scan-for-size (bytes) (i) (len) =
+    if i >= len then VmCompileResult { vcr-success = False, vcr-binary = [], vcr-size = 0, vcr-log = "no SIZE marker in output" }
+    else if vm-matches-size-marker bytes i len then
+      let size-start = i + 5
+      in let size-val = vm-parse-int-from-bytes bytes size-start len 0
+      in let binary-start = vm-skip-to-newline bytes size-start len + 1
+      in let binary = vm-extract-bytes bytes binary-start size-val
+      in VmCompileResult { vcr-success = True, vcr-binary = binary, vcr-size = size-val, vcr-log = "" }
+    else if vm-matches-halted-marker bytes i len then
+      VmCompileResult { vcr-success = False, vcr-binary = [], vcr-size = 0, vcr-log = "CODEGEN-HALTED" }
+    else vm-scan-for-size bytes (i + 1) len
+
+  vm-matches-size-marker : List Integer, Integer, Integer -> Boolean
+  vm-matches-size-marker (bytes) (i) (len) =
+    i + 5 <= len & list-at bytes i == 83 & list-at bytes (i + 1) == 73 & list-at bytes (i + 2) == 90 & list-at bytes (i + 3) == 69 & list-at bytes (i + 4) == 58
+
+  vm-matches-halted-marker : List Integer, Integer, Integer -> Boolean
+  vm-matches-halted-marker (bytes) (i) (len) =
+    i + 15 <= len & list-at bytes i == 67 & list-at bytes (i + 1) == 79 & list-at bytes (i + 2) == 68 & list-at bytes (i + 3) == 69 & list-at bytes (i + 4) == 71 & list-at bytes (i + 5) == 69 & list-at bytes (i + 6) == 78 & list-at bytes (i + 7) == 45 & list-at bytes (i + 8) == 72 & list-at bytes (i + 9) == 65 & list-at bytes (i + 10) == 76
+
+  vm-parse-int-from-bytes : List Integer, Integer, Integer, Integer -> Integer
+  vm-parse-int-from-bytes (bytes) (i) (len) (acc) =
+    if i >= len then acc
+    else let b = list-at bytes i
+    in if b >= 48 & b <= 57 then vm-parse-int-from-bytes bytes (i + 1) len (acc * 10 + b - 48)
+    else acc
+
+  vm-skip-to-newline : List Integer, Integer, Integer -> Integer
+  vm-skip-to-newline (bytes) (i) (len) =
+    if i >= len then i
+    else if list-at bytes i == 10 then i
+    else vm-skip-to-newline bytes (i + 1) len
+
+  vm-extract-bytes : List Integer, Integer, Integer -> List Integer
+  vm-extract-bytes (bytes) (start) (count) =
+    vm-extract-loop bytes start (start + count) []
+
+  vm-extract-loop : List Integer, Integer, Integer, List Integer -> List Integer
+  vm-extract-loop (bytes) (i) (stop) (acc) =
+    if i >= stop then acc
+    else if i >= list-length bytes then acc
+    else vm-extract-loop bytes (i + 1) stop (list-push acc (list-at bytes i))
+
+Section: Compile Entry Points
+
+  vm-compile : List Integer, Text, Text, Integer -> VmCompileResult
+  vm-compile (seed-cdx) (mode) (source) (revision-id) =
+    let input-bytes = vm-build-serial-input mode source
+    in let cfg = GuestConfig { entry-point = 1048576, stack-size = 65536, memory-mb = 256 }
+    in let result = vm-setup-and-run-with-serial cfg revision-id seed-cdx input-bytes
+    in vm-parse-compile-output (result.vfr-devices.vd-com1)
+
+  vm-compile-cdx : List Integer, Text, Integer -> VmCompileResult
+  vm-compile-cdx (seed-cdx) (source) (revision-id) =
+    vm-compile seed-cdx "CDX" source revision-id
+
+  vm-compile-text : List Integer, Text, Integer -> VmCompileResult
+  vm-compile-text (seed-cdx) (source) (revision-id) =
+    vm-compile seed-cdx "TEXT" source revision-id
+
+Page 1

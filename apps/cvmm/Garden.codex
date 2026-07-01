@@ -1,0 +1,174 @@
+Chapter: Garden
+  cites Cvmm chapter CvmmTypes
+  cites Cvmm chapter ProductivityDb
+  cites Data chapter Row
+  cites UI chapter Widget
+  cites UI chapter Layout
+
+ Garden tracker. Plants with variety, location, planting date,
+ water schedule, and sun requirements. Garden log tracks watering,
+ fertilizing, pruning, harvesting, and observations. Tracks which
+ plants are alive, which need water, and seasonal planting guides.
+
+Section: Plant Status
+
+  PlantHealth =
+    | PhThriving
+    | PhHealthy
+    | PhStressed
+    | PhWilting
+    | PhDead
+
+  ph-label : PlantHealth -> Text
+  ph-label (h) = when h
+    is PhThriving -> "Thriving"
+    is PhHealthy -> "Healthy"
+    is PhStressed -> "Stressed"
+    is PhWilting -> "Wilting"
+    is PhDead -> "Dead"
+
+  SunNeeds =
+    | SnFullSun
+    | SnPartSun
+    | SnPartShade
+    | SnFullShade
+
+  sn-label : SunNeeds -> Text
+  sn-label (s) = when s
+    is SnFullSun -> "Full Sun"
+    is SnPartSun -> "Part Sun"
+    is SnPartShade -> "Part Shade"
+    is SnFullShade -> "Full Shade"
+
+  GardenAction =
+    | GaWater
+    | GaFertilize
+    | GaPrune
+    | GaHarvest
+    | GaRepot
+    | GaWeedControl
+    | GaPestControl
+    | GaObservation
+
+  ga-label : GardenAction -> Text
+  ga-label (a) = when a
+    is GaWater -> "Water"
+    is GaFertilize -> "Fertilize"
+    is GaPrune -> "Prune"
+    is GaHarvest -> "Harvest"
+    is GaRepot -> "Repot"
+    is GaWeedControl -> "Weed"
+    is GaPestControl -> "Pest Control"
+    is GaObservation -> "Note"
+
+Section: Plant (in-memory view)
+
+  Plant = record {
+    pl-id : Integer,
+    pl-name : Text,
+    pl-variety : Text,
+    pl-location : Text,
+    pl-planted : Integer,
+    pl-water-days : Integer,
+    pl-sun : Text,
+    pl-notes : Text,
+    pl-alive : Boolean,
+    pl-last-watered : Integer,
+    pl-last-action : Text,
+    pl-log-count : Integer
+  }
+
+  pl-needs-water : Plant, Integer -> Boolean
+  pl-needs-water (p) (now) =
+    if p.pl-alive then
+      if p.pl-water-days == 0 then False
+      else let days-since = (now - p.pl-last-watered) / 86400
+      in days-since >= p.pl-water-days
+    else False
+
+  pl-days-since-planted : Plant, Integer -> Integer
+  pl-days-since-planted (p) (now) =
+    if p.pl-planted == 0 then 0
+    else (now - p.pl-planted) / 86400
+
+Section: Garden Log Entry
+
+  GardenLogEntry = record {
+    gl-id : Integer,
+    gl-plant-id : Integer,
+    gl-date : Integer,
+    gl-action : GardenAction,
+    gl-notes : Text
+  }
+
+Section: Garden App State
+
+  GardenAppState = record {
+    ga-plants : List Plant,
+    ga-plant-count : Integer,
+    ga-logs : List GardenLogEntry,
+    ga-log-count : Integer,
+    ga-selected : Integer,
+    ga-filter-location : Text,
+    ga-show-dead : Boolean,
+    ga-active-tab : Integer,
+    ga-locations : List Text,
+    ga-location-count : Integer
+  }
+
+  garden-app-new : GardenAppState
+  garden-app-new = GardenAppState {
+    ga-plants = [], ga-plant-count = 0,
+    ga-logs = [], ga-log-count = 0,
+    ga-selected = -1,
+    ga-filter-location = "", ga-show-dead = False,
+    ga-active-tab = 0,
+    ga-locations = ["Front Yard", "Back Yard", "Indoor", "Greenhouse", "Balcony", "Raised Bed"],
+    ga-location-count = 6
+  }
+
+  ga-alive-count : GardenAppState -> Integer
+  ga-alive-count (st) = ga-count-alive (st.ga-plants) 0 (st.ga-plant-count) 0
+
+  ga-count-alive : List Plant, Integer, Integer, Integer -> Integer
+  ga-count-alive (plants) (i) (n) (acc) =
+    if i >= n then acc
+    else let delta = if (list-at plants i).pl-alive then 1 else 0
+    in ga-count-alive plants (i + 1) n (acc + delta)
+
+  ga-needs-water-count : GardenAppState, Integer -> Integer
+  ga-needs-water-count (st) (now) = ga-water-loop (st.ga-plants) now 0 (st.ga-plant-count) 0
+
+  ga-water-loop : List Plant, Integer, Integer, Integer, Integer -> Integer
+  ga-water-loop (plants) (now) (i) (n) (acc) =
+    if i >= n then acc
+    else let delta = if pl-needs-water (list-at plants i) now then 1 else 0
+    in ga-water-loop plants now (i + 1) n (acc + delta)
+
+Section: Widget Building
+
+  pl-row : Plant, Integer -> WidgetNode
+  pl-row (p) (now) =
+    let name = widget-label ("pl-n-" & show (p.pl-id)) (p.pl-name)
+    in let variety = widget-label ("pl-v-" & show (p.pl-id)) (p.pl-variety)
+    in let loc = widget-label ("pl-l-" & show (p.pl-id)) (p.pl-location)
+    in let age = widget-label ("pl-a-" & show (p.pl-id)) (show (pl-days-since-planted p now) & " days")
+    in let water = widget-label ("pl-w-" & show (p.pl-id)) (if pl-needs-water p now then "NEEDS WATER" else "ok")
+    in let alive-lbl = widget-label ("pl-al-" & show (p.pl-id)) (if p.pl-alive then "" else "DEAD")
+    in let row = widget-panel ("plant-" & show (p.pl-id)) DirRow 8 [name, variety, loc, age, water, alive-lbl]
+    in if pl-needs-water p now then widget-set-state row 1
+    else if p.pl-alive then row
+    else widget-set-state row 3
+
+  garden-widget : GardenAppState -> WidgetNode
+  garden-widget (st) =
+    let title = widget-label "ga-title" "Garden"
+    in let alive = ga-alive-count st
+    in let summary = widget-label "ga-summary" (show alive & "/" & show (st.ga-plant-count) & " alive")
+    in let tabs = widget-tabs "ga-tabs" ["Plants", "Garden Log"] (st.ga-active-tab)
+    in let add-btn = widget-button "ga-add" "Add Plant"
+    in let water-btn = widget-button "ga-water-all" "Water All Due"
+    in let toolbar = widget-toolbar "ga-toolbar" [add-btn, water-btn]
+    in widget-panel "garden-app" DirColumn 4 [title, summary, tabs, toolbar]
+
+Page 1

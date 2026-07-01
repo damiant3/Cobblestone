@@ -1,0 +1,371 @@
+Chapter: CCE
+
+ A CharClass is one of Whitespace, Digit, Lower, Upper, Punct, Accented, Cyrillic, or Other.
+ To is-whitespace gives True for whitespace code points.
+ To is-digit gives True for digit code points.
+ To digit-value gives the numeric value of a digit character.
+ To is-lower gives True for lowercase letter code points.
+ To is-upper gives True for uppercase letter code points.
+ To is-letter gives True for alphabetic code points.
+ To is-punct gives True for punctuation code points.
+ To is-accented gives True for accented letter code points.
+ To is-cyrillic gives True for Cyrillic letter code points.
+ To to-lower gives the lowercase form of a character.
+ To to-upper gives the uppercase form of a character.
+ To classify gives the CharClass of a character.
+ To to-unicode gives the Unicode code point for a CCE code point.
+ To from-unicode gives the CCE code point for a Unicode code point, or negative one when unmapped.
+ To cce-encode-length gives the byte count for a CCE code point.
+ To cce-is-continuation gives True when a byte is a multi-byte continuation.
+ To cce-char-start gives True when a byte is a character start.
+ To cce-decode-length gives the character byte count from its first byte.
+ To cce-encode gives the encoded bytes for a CCE code point.
+ To cce-decode gives the decoded code point from bytes at an offset.
+ To cce-is-letter-ext gives True for Tier 1 letter code points.
+ To cce-script gives the script block index for a Tier 1 code point.
+ To text-char-count gives the logical character count of a text value.
+
+ We say:
+
+Section: Definitions
+
+  CharClass =
+    | Whitespace
+    | Digit
+    | Lower
+    | Upper
+    | Punct
+    | Accented
+    | Cyrillic
+    | Other
+
+  is-whitespace : Char -> Boolean
+  is-whitespace (c) = char-code c <= 2
+
+  is-digit : Char -> Boolean
+  is-digit (c) = if char-code c >= 3 then char-code c <= 12 else False
+
+  digit-value : Char -> Integer
+  digit-value (c) = char-code c - 3
+
+  is-lower : Char -> Boolean
+  is-lower (c) = if char-code c >= 13 then char-code c <= 38 else False
+
+  is-upper : Char -> Boolean
+  is-upper (c) = if char-code c >= 39 then char-code c <= 64 else False
+
+  is-letter : Char -> Boolean
+  is-letter (c) = if char-code c >= 13 then char-code c <= 64 else False
+
+  is-punct : Char -> Boolean
+  is-punct (c) = if char-code c >= 65 then char-code c <= 96 else False
+
+  is-accented : Char -> Boolean
+  is-accented (c) = if char-code c >= 97 then char-code c <= 112 else False
+
+  is-cyrillic : Char -> Boolean
+  is-cyrillic (c) = if char-code c >= 113 then char-code c <= 127 else False
+
+  to-lower : Char -> Char
+  to-lower (c) = if is-upper c then code-to-char (char-code c - 26) else c
+
+  to-upper : Char -> Char
+  to-upper (c) = if is-lower c then code-to-char (char-code c + 26) else c
+
+  classify : Char -> CharClass
+  classify (c) =
+    let b = char-code c
+    in if b <= 2 then Whitespace
+      else if b <= 12 then Digit
+      else if b <= 38 then Lower
+      else if b <= 64 then Upper
+      else if b <= 96 then Punct
+      else if b <= 112 then Accented
+      else if b <= 127 then Cyrillic
+      else Other
+
+  cce-to-unicode-table : List Integer
+  cce-to-unicode-table = [
+    0, 10, 32,
+    48, 49, 50, 51, 52, 53, 54, 55, 56, 57,
+    101, 116, 97, 111, 105, 110, 115, 104, 114, 100,
+    108, 99, 117, 109, 119, 102, 103, 121, 112, 98,
+    118, 107, 106, 120, 113, 122,
+    69, 84, 65, 79, 73, 78, 83, 72, 82, 68,
+    76, 67, 85, 77, 87, 70, 71, 89, 80, 66,
+    86, 75, 74, 88, 81, 90,
+    46, 44, 33, 63, 58, 59, 39, 34, 45, 40, 41,
+    43, 61, 42, 60, 62,
+    47, 64, 35, 38, 95, 92, 124, 91, 93, 123, 125, 126, 96,
+    94,
+    36, 37,
+    233, 232, 234, 235, 225, 224, 226, 228,
+    243, 244, 246, 250, 252, 241, 231, 237,
+    1072, 1086, 1077, 1080, 1085, 1090, 1089, 1088,
+    1074, 1083, 1082, 1084, 1076, 1087, 1091
+  ]
+
+Section: Multi-byte Framing
+
+  cce-encode-length : Integer -> Integer
+  cce-encode-length (cp) =
+    if cp < 128 then 1
+    else if cp < 2176 then 2
+    else if cp < 67712 then 3
+    else 4
+
+  cce-is-continuation : Integer -> Boolean
+  cce-is-continuation (b) = bit-and b 192 == 128
+
+  cce-char-start : Integer -> Boolean
+  cce-char-start (b) = bit-and b 192 /= 128
+
+  cce-decode-length : Integer -> Integer
+  cce-decode-length (b) =
+    if bit-and b 128 == 0 then 1
+    else if bit-and b 224 == 192 then 2
+    else if bit-and b 240 == 224 then 3
+    else if bit-and b 248 == 240 then 4
+    else 1
+
+  cce-encode : Integer -> List Integer
+  cce-encode (cp) =
+    if cp < 128 then [cp]
+    else if cp < 2176 then
+      let v = cp - 128
+      in [bit-or 192 (bit-shru v 6), bit-or 128 (bit-and v 63)]
+    else if cp < 67712 then
+      let v = cp - 2176
+      in [bit-or 224 (bit-shru v 12), bit-or 128 (bit-and (bit-shru v 6) 63), bit-or 128 (bit-and v 63)]
+    else
+      let v = cp - 67712
+      in [bit-or 240 (bit-shru v 18), bit-or 128 (bit-and (bit-shru v 12) 63), bit-or 128 (bit-and (bit-shru v 6) 63), bit-or 128 (bit-and v 63)]
+
+  cce-decode-at : Text, Integer -> Integer
+  cce-decode-at (s) (offset) =
+    let b0 = char-code (char-at s offset)
+    in if bit-and b0 128 == 0 then b0
+    else if bit-and b0 224 == 192 then
+      let b1 = char-code (char-at s (offset + 1))
+      in 128 + bit-shl (bit-and b0 31) 6 + bit-and b1 63
+    else if bit-and b0 240 == 224 then
+      let b1 = char-code (char-at s (offset + 1))
+      in let b2 = char-code (char-at s (offset + 2))
+      in 2176 + bit-shl (bit-and b0 15) 12 + bit-shl (bit-and b1 63) 6 + bit-and b2 63
+    else
+      let b1 = char-code (char-at s (offset + 1))
+      in let b2 = char-code (char-at s (offset + 2))
+      in let b3 = char-code (char-at s (offset + 3))
+      in 67712 + bit-shl (bit-and b0 7) 18 + bit-shl (bit-and b1 63) 12 + bit-shl (bit-and b2 63) 6 + bit-and b3 63
+
+Section: Tier 1 Block Tables
+
+  cce-tier1-block-count : Integer = 11
+
+  cce-tier1-block-bases : List Integer
+  cce-tier1-block-bases = [
+    128,    256,
+    1024,   128,
+    880,    128,
+    1536,   128,
+    1424,   128,
+    2304,   128,
+    3584,   128,
+    4352,   128,
+    19968,  512,
+    12352,  256,
+    8704,   128
+  ]
+
+  cce-tier1-block-unicode-base : Integer -> Integer
+  cce-tier1-block-unicode-base (block) =
+    list-at cce-tier1-block-bases (block * 2)
+
+  cce-tier1-block-size : Integer -> Integer
+  cce-tier1-block-size (block) =
+    list-at cce-tier1-block-bases (block * 2 + 1)
+
+  cce-tier1-block : Integer -> Integer
+  cce-tier1-block (cp) =
+    let v = cp - 128
+    in if v < 256 then 0
+    else if v < 384 then 1
+    else if v < 512 then 2
+    else if v < 640 then 3
+    else if v < 768 then 4
+    else if v < 896 then 5
+    else if v < 1024 then 6
+    else if v < 1152 then 7
+    else if v < 1664 then 8
+    else if v < 1920 then 9
+    else if v < 2048 then 10
+    else -1
+
+  cce-tier1-offset-in-block : Integer -> Integer
+  cce-tier1-offset-in-block (cp) =
+    let v = cp - 128
+    in if v < 256 then v
+    else if v < 1152 then int-mod (v - 256) 128
+    else if v < 1664 then v - 1152
+    else if v < 1920 then v - 1664
+    else v - 1920
+
+Section: Tier 1 Classification
+
+  cce-is-letter-ext : Integer -> Boolean
+  cce-is-letter-ext (cp) =
+    if cp < 128 then is-letter (code-to-char cp)
+    else let block = cce-tier1-block cp
+    in if block >= 0 then block <= 5 else False
+
+  cce-is-letter-any : Integer -> Boolean
+  cce-is-letter-any (cp) =
+    if cp < 128 then
+      let c = cp
+      in if c >= 13 then c <= 127 else False
+    else if cp < 2176 then cce-is-letter-ext cp
+    else cce-is-cjk cp | cce-is-hangul cp | cce-is-kana cp
+
+  cce-script : Integer -> Integer
+  cce-script (cp) =
+    if cp < 128 then 0
+    else cce-tier1-block cp
+
+  text-char-count : Text -> Integer
+  text-char-count (s) = text-char-count-loop s 0 (text-length s) 0
+
+  text-char-count-loop : Text, Integer, Integer, Integer -> Integer
+  text-char-count-loop (s) (i) (len) (count) =
+    if i >= len then count
+    else if cce-is-continuation (char-code (char-at s i)) then text-char-count-loop s (i + 1) len count
+    else text-char-count-loop s (i + 1) len (count + 1)
+
+Section: Tier 2 Block Tables
+
+  cce-tier2-base : Integer = 2176
+
+  cce-tier2-block-count : Integer = 10
+
+  cce-tier2-block-table : List Integer
+  cce-tier2-block-table = [
+    12288,    64,
+    12352,    96,
+    12448,    96,
+    19968,    20992,
+    13312,    6592,
+    44032,    11172,
+    3584,     256,
+    8192,     512,
+    127744,   1024,
+    9728,     256
+  ]
+
+  cce-tier2-block-unicode-base : Integer -> Integer
+  cce-tier2-block-unicode-base (block) =
+    list-at cce-tier2-block-table (block * 2)
+
+  cce-tier2-block-size : Integer -> Integer
+  cce-tier2-block-size (block) =
+    list-at cce-tier2-block-table (block * 2 + 1)
+
+  cce-tier2-cce-base : Integer -> Integer
+  cce-tier2-cce-base (block) =
+    cce-tier2-cce-base-loop block 0 cce-tier2-base
+
+  cce-tier2-cce-base-loop : Integer, Integer, Integer -> Integer
+  cce-tier2-cce-base-loop (target) (i) (acc) =
+    if i >= target then acc
+    else cce-tier2-cce-base-loop target (i + 1) (acc + cce-tier2-block-size i)
+
+Section: Tier 2 Classification
+
+  cce-is-cjk : Integer -> Boolean
+  cce-is-cjk (cp) =
+    let u = to-unicode cp
+    in if u >= 19968 then u <= 40959
+    else if u >= 13312 then u <= 19903
+    else False
+
+  cce-is-hangul : Integer -> Boolean
+  cce-is-hangul (cp) =
+    let u = to-unicode cp
+    in if u >= 44032 then u <= 55203 else False
+
+  cce-is-kana : Integer -> Boolean
+  cce-is-kana (cp) =
+    let u = to-unicode cp
+    in if u >= 12352 then u <= 12543 else False
+
+  cce-is-emoji : Integer -> Boolean
+  cce-is-emoji (cp) =
+    let u = to-unicode cp
+    in if u >= 127744 then u <= 128767 else False
+
+Section: Unicode Conversion
+
+  to-unicode : Integer -> Integer
+  to-unicode (cp) =
+    if cp < 0 then 65533
+    else if cp < 128 then list-at cce-to-unicode-table cp
+    else if cp < 2176 then
+      let block = cce-tier1-block cp
+      in if block < 0 then 65533
+      else cce-tier1-block-unicode-base block + cce-tier1-offset-in-block cp
+    else if cp < 67712 then
+      to-unicode-tier2 cp 0
+    else 65533
+
+  to-unicode-tier2 : Integer, Integer -> Integer
+  to-unicode-tier2 (cp) (block) =
+    if block >= cce-tier2-block-count then 65533
+    else let block-base = cce-tier2-cce-base block
+    in let block-size = cce-tier2-block-size block
+    in if cp >= block-base then
+      if cp < block-base + block-size then
+        cce-tier2-block-unicode-base block + (cp - block-base)
+      else to-unicode-tier2 cp (block + 1)
+    else to-unicode-tier2 cp (block + 1)
+
+  from-unicode : Integer -> Integer
+  from-unicode (u) =
+    let t0 = from-unicode-tier0 u 0 128
+    in if t0 >= 0 then t0
+    else let t1 = from-unicode-tier1 u 0
+    in if t1 >= 0 then t1
+    else from-unicode-tier2 u 0
+
+  from-unicode-tier0 : Integer, Integer, Integer -> Integer
+  from-unicode-tier0 (u) (i) (len) =
+    if i >= len then -1
+    else if list-at cce-to-unicode-table i == u then i
+    else from-unicode-tier0 u (i + 1) len
+
+  from-unicode-tier1 : Integer, Integer -> Integer
+  from-unicode-tier1 (u) (block) =
+    if block >= cce-tier1-block-count then -1
+    else let base = cce-tier1-block-unicode-base block
+    in let size = cce-tier1-block-size block
+    in if u >= base then
+      if u < base + size then
+        let block-start = if block == 0 then 128
+          else if block < 8 then 256 + block * 128
+          else if block == 8 then 1280
+          else if block == 9 then 1792
+          else if block == 10 then 2048
+          else -1
+        in if block-start < 0 then -1
+        else block-start + (u - base)
+      else from-unicode-tier1 u (block + 1)
+    else from-unicode-tier1 u (block + 1)
+
+  from-unicode-tier2 : Integer, Integer -> Integer
+  from-unicode-tier2 (u) (block) =
+    if block >= cce-tier2-block-count then -1
+    else let base = cce-tier2-block-unicode-base block
+    in let size = cce-tier2-block-size block
+    in if u >= base then
+      if u < base + size then cce-tier2-cce-base block + (u - base)
+      else from-unicode-tier2 u (block + 1)
+    else from-unicode-tier2 u (block + 1)
+
+Page 1

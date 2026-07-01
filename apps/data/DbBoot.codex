@@ -1,0 +1,224 @@
+Chapter: DbBoot
+  cites Data chapter Server
+  cites Data chapter Catalog
+  cites Data chapter Schema
+  cites Data chapter Row
+  cites Data chapter Protocol
+  cites Data chapter Replication
+  cites Data chapter Wal
+  cites Foreword chapter Maybe
+  cites Foreword chapter Tuple
+
+ Bare-metal boot entry point for Codex DB as a standalone OS/DB
+ appliance. Boots directly on codex-vm or real hardware, initializes
+ the database engine, and listens for connections over the NIC.
+ No host OS required.
+
+ We say:
+
+Section: Boot Configuration
+
+  DbConfig = record {
+    dbc-name : Text,
+    dbc-buffer-pool-pages : Integer,
+    dbc-wal-checkpoint-interval : Integer,
+    dbc-max-connections : Integer,
+    dbc-listen-port : Integer,
+    dbc-replication-role : Text,
+    dbc-node-id : Integer
+  }
+
+  default-db-config : DbConfig
+  default-db-config = DbConfig {
+    dbc-name = "codex",
+    dbc-buffer-pool-pages = 256,
+    dbc-wal-checkpoint-interval = 1000,
+    dbc-max-connections = 64,
+    dbc-listen-port = 5432,
+    dbc-replication-role = "primary",
+    dbc-node-id = 1
+  }
+
+Section: Service State
+
+  ServiceState =
+    | SvcRunning
+    | SvcPaused
+    | SvcStopped
+
+  svc-name : ServiceState -> Text
+  svc-name (s) =
+    when s
+      is SvcRunning -> "running"
+      is SvcPaused -> "paused"
+      is SvcStopped -> "stopped"
+
+  svc-accepts-connections : ServiceState -> Boolean
+  svc-accepts-connections (s) =
+    when s
+      is SvcRunning -> True
+      is SvcPaused -> False
+      is SvcStopped -> False
+
+  svc-accepts-queries : ServiceState -> Boolean
+  svc-accepts-queries (s) =
+    when s
+      is SvcRunning -> True
+      is SvcPaused -> True
+      is SvcStopped -> False
+
+Section: Boot State
+
+  DbBootState = record {
+    dbs-server : DbServer,
+    dbs-config : DbConfig,
+    dbs-replica : ReplicaState,
+    dbs-service-state : ServiceState,
+    dbs-uptime-ticks : Integer,
+    dbs-total-queries : Integer,
+    dbs-total-txns : Integer
+  }
+
+  db-boot-init : DbConfig -> DbBootState
+  db-boot-init (config) =
+    let srv = db-server-new (config.dbc-name)
+    in let replica = if config.dbc-replication-role == "primary" then replica-primary (config.dbc-node-id)
+       else replica-follower (config.dbc-node-id) ""
+    in DbBootState {
+      dbs-server = srv,
+      dbs-config = config,
+      dbs-replica = replica,
+      dbs-service-state = SvcRunning,
+      dbs-uptime-ticks = 0,
+      dbs-total-queries = 0,
+      dbs-total-txns = 0
+    }
+
+  db-set-service-state : DbBootState, ServiceState -> DbBootState
+  db-set-service-state (state) (svc) = DbBootState {
+    dbs-server = state.dbs-server,
+    dbs-config = state.dbs-config,
+    dbs-replica = state.dbs-replica,
+    dbs-service-state = svc,
+    dbs-uptime-ticks = state.dbs-uptime-ticks,
+    dbs-total-queries = state.dbs-total-queries,
+    dbs-total-txns = state.dbs-total-txns
+  }
+
+Section: System Catalog Bootstrap
+
+  bootstrap-system-tables : DbBootState -> DbBootState
+  bootstrap-system-tables (state) =
+    let srv = state.dbs-server
+    in let srv2 = db-create-table srv (table-def "sys_tables" [
+      col-def-not-null "table-id" ColInteger,
+      col-def-not-null "table-name" ColText,
+      col-def "col-count" ColInteger,
+      col-def "row-count" ColInteger
+    ])
+    in let srv3 = db-create-table srv2 (table-def "sys_columns" [
+      col-def-not-null "table-id" ColInteger,
+      col-def-not-null "col-name" ColText,
+      col-def-not-null "col-type" ColText,
+      col-def "nullable" ColBoolean,
+      col-def "ordinal" ColInteger
+    ])
+    in let srv4 = db-create-table srv3 (table-def "sys_indexes" [
+      col-def-not-null "index-id" ColInteger,
+      col-def-not-null "table-name" ColText,
+      col-def-not-null "index-name" ColText,
+      col-def "is-unique" ColBoolean
+    ])
+    in let srv5 = db-create-table srv4 (table-def "sys_sessions" [
+      col-def-not-null "session-id" ColInteger,
+      col-def "client-addr" ColText,
+      col-def "state" ColText,
+      col-def "queries" ColInteger
+    ])
+    in let srv6 = db-create-table srv5 (table-def "sys_config" [
+      col-def-not-null "key" ColText,
+      col-def-not-null "value" ColText
+    ])
+    in let config-schema = table-schema (table-def "sys_config" [col-def-not-null "key" ColText, col-def-not-null "value" ColText])
+    in let srv7 = db-insert srv6 "sys_config" (row-new config-schema [ValText "version", ValText "0.1.0"])
+    in let srv8 = db-insert srv7 "sys_config" (row-new config-schema [ValText "node-id", ValText (show (state.dbs-config.dbc-node-id))])
+    in let srv9 = db-insert srv8 "sys_config" (row-new config-schema [ValText "role", ValText (state.dbs-config.dbc-replication-role)])
+    in DbBootState {
+      dbs-server = srv9,
+      dbs-config = state.dbs-config,
+      dbs-replica = state.dbs-replica,
+      dbs-service-state = state.dbs-service-state,
+      dbs-uptime-ticks = state.dbs-uptime-ticks,
+      dbs-total-queries = state.dbs-total-queries,
+      dbs-total-txns = state.dbs-total-txns
+    }
+
+Section: Status Banner
+
+  db-boot-banner : DbConfig -> Text
+  db-boot-banner (config) =
+    "Codex DB v0.1.0\n"
+    & "  name:        " & config.dbc-name & "\n"
+    & "  node:        " & show (config.dbc-node-id) & "\n"
+    & "  role:        " & config.dbc-replication-role & "\n"
+    & "  port:        " & show (config.dbc-listen-port) & "\n"
+    & "  buffer pool: " & show (config.dbc-buffer-pool-pages) & " pages\n"
+    & "  max conns:   " & show (config.dbc-max-connections) & "\n"
+    & "  ready."
+
+Section: Connection Handler
+
+  db-handle-connection : DbBootState, Integer, Frame -> DbBootState
+  db-handle-connection (state) (session-id) (frame) =
+    if svc-accepts-queries (state.dbs-service-state) == False then state
+    else let resp = db-handle-frame (state.dbs-server) session-id frame
+    in DbBootState {
+      dbs-server = resp.dbr-server,
+      dbs-config = state.dbs-config,
+      dbs-replica = state.dbs-replica,
+      dbs-service-state = state.dbs-service-state,
+      dbs-uptime-ticks = state.dbs-uptime-ticks,
+      dbs-total-queries = state.dbs-total-queries + 1,
+      dbs-total-txns = state.dbs-total-txns
+    }
+
+  db-accept-connection : DbBootState -> (DbBootState, Integer)
+  db-accept-connection (state) =
+    if svc-accepts-connections (state.dbs-service-state) == False then (state, -1)
+    else let result = db-connect (state.dbs-server)
+    in let new-srv = when result is (srv, sess) -> srv
+    in let sess = when result is (srv, sess) -> sess
+    in let new-state = DbBootState {
+      dbs-server = new-srv,
+      dbs-config = state.dbs-config,
+      dbs-replica = state.dbs-replica,
+      dbs-service-state = state.dbs-service-state,
+      dbs-uptime-ticks = state.dbs-uptime-ticks,
+      dbs-total-queries = state.dbs-total-queries,
+      dbs-total-txns = state.dbs-total-txns
+    }
+    in (new-state, sess.session-id)
+
+Section: Health Status
+
+  db-health : DbBootState -> Text
+  db-health (state) =
+    db-stats (state.dbs-server)
+    & " state=" & svc-name (state.dbs-service-state)
+    & " uptime=" & show (state.dbs-uptime-ticks)
+    & " queries=" & show (state.dbs-total-queries)
+    & " txns=" & show (state.dbs-total-txns)
+    & " " & replication-stats (state.dbs-replica)
+
+Section: Entry Point
+
+  opening : [Console] None = act
+    let config = default-db-config
+    in print-line-uni (db-boot-banner config)
+    in let state = db-boot-init config
+    in let state2 = bootstrap-system-tables state
+    in print-line-uni (db-health state2)
+    in print-line-uni ("system tables: " & catalog-stats (state2.dbs-server.db-catalog))
+  end
+
+Page 1

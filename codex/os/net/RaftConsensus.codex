@@ -1,0 +1,287 @@
+Chapter: RaftConsensus
+  cites Foreword chapter Maybe
+
+ Raft consensus protocol. Provides distributed agreement on a
+ replicated log. Used for leader election with split-brain safety,
+ distributed config, service registry consistency, and any state
+ that must be the same on every node. The implementation follows
+ the Ongaro/Ousterhout paper: leader election with randomized
+ timeouts, log replication with AppendEntries, and commitment by
+ majority quorum.
+
+Section: Node Role
+
+  RaftRole =
+    | Follower
+    | Candidate
+    | Leader
+
+  raft-role-label : RaftRole -> Text
+  raft-role-label (r) = when r
+    is Follower -> "follower"
+    is Candidate -> "candidate"
+    is Leader -> "leader"
+
+Section: Log Entry
+
+  LogEntry = record {
+    le-index : Integer,
+    le-term : Integer,
+    le-command : Text,
+    le-data : Text
+  }
+
+  log-entry-new : Integer, Integer, Text, Text -> LogEntry
+  log-entry-new (idx) (term) (cmd) (data) = LogEntry {
+    le-index = idx, le-term = term, le-command = cmd, le-data = data
+  }
+
+Section: RPC Messages
+
+  RaftMsg =
+    | RequestVote (Integer) (Text) (Integer) (Integer)
+    | VoteResponse (Integer) (Boolean)
+    | AppendEntries (Integer) (Text) (Integer) (Integer) (List LogEntry) (Integer)
+    | AppendResponse (Integer) (Boolean) (Integer)
+
+  raft-msg-label : RaftMsg -> Text
+  raft-msg-label (m) = when m
+    is RequestVote (term) (candidate) (last-idx) (last-term) ->
+      "RequestVote term=" & show term & " from=" & candidate
+    is VoteResponse (term) (granted) ->
+      "VoteResponse term=" & show term & " granted=" & if granted then "yes" else "no"
+    is AppendEntries (term) (leader) (prev-idx) (prev-term) (entries) (commit) ->
+      "AppendEntries term=" & show term & " leader=" & leader & " entries=" & show (list-length entries)
+    is AppendResponse (term) (success) (match-idx) ->
+      "AppendResponse term=" & show term & " ok=" & if success then "yes" else "no"
+
+Section: Peer State (leader tracking per follower)
+
+  RaftPeer = record {
+    rp-id : Text,
+    rp-next-index : Integer,
+    rp-match-index : Integer,
+    rp-vote-granted : Boolean,
+    rp-last-contact : Integer
+  }
+
+  raft-peer-new : Text, Integer -> RaftPeer
+  raft-peer-new (id) (last-log-idx) = RaftPeer {
+    rp-id = id, rp-next-index = last-log-idx + 1,
+    rp-match-index = 0, rp-vote-granted = False, rp-last-contact = 0
+  }
+
+Section: Raft Node State
+
+  RaftState = record {
+    rs-id : Text,
+    rs-role : RaftRole,
+    rs-current-term : Integer,
+    rs-voted-for : Text,
+    rs-log : List LogEntry,
+    rs-log-length : Integer,
+    rs-commit-index : Integer,
+    rs-last-applied : Integer,
+    rs-peers : List RaftPeer,
+    rs-peer-count : Integer,
+    rs-votes-received : Integer,
+    rs-leader-id : Text,
+    rs-election-timeout : Integer,
+    rs-heartbeat-interval : Integer,
+    rs-last-heartbeat : Integer
+  }
+
+  raft-new : Text, List Text -> RaftState
+  raft-new (id) (peer-ids) =
+    let peers = raft-init-peers peer-ids 0 (list-length peer-ids) []
+    in RaftState {
+      rs-id = id, rs-role = Follower,
+      rs-current-term = 0, rs-voted-for = "",
+      rs-log = [], rs-log-length = 0,
+      rs-commit-index = 0, rs-last-applied = 0,
+      rs-peers = peers, rs-peer-count = list-length peer-ids,
+      rs-votes-received = 0, rs-leader-id = "",
+      rs-election-timeout = 150, rs-heartbeat-interval = 50,
+      rs-last-heartbeat = 0
+    }
+
+  raft-init-peers : List Text, Integer, Integer, List RaftPeer -> List RaftPeer
+  raft-init-peers (ids) (i) (n) (acc) =
+    if i >= n then acc
+    else raft-init-peers ids (i + 1) n (list-push acc (raft-peer-new (list-at ids i) 0))
+
+  raft-quorum-size : RaftState -> Integer
+  raft-quorum-size (st) = (st.rs-peer-count + 1) / 2 + 1
+
+  raft-is-leader : RaftState -> Boolean
+  raft-is-leader (st) = when st.rs-role is Leader -> True is otherwise -> False
+
+  raft-last-log-index : RaftState -> Integer
+  raft-last-log-index (st) =
+    if st.rs-log-length == 0 then 0
+    else (list-at (st.rs-log) (st.rs-log-length - 1)).le-index
+
+  raft-last-log-term : RaftState -> Integer
+  raft-last-log-term (st) =
+    if st.rs-log-length == 0 then 0
+    else (list-at (st.rs-log) (st.rs-log-length - 1)).le-term
+
+Section: Election
+
+  raft-start-election : RaftState -> RaftState
+  raft-start-election (st) =
+    RaftState {
+      rs-id = st.rs-id, rs-role = Candidate,
+      rs-current-term = st.rs-current-term + 1,
+      rs-voted-for = st.rs-id,
+      rs-log = st.rs-log, rs-log-length = st.rs-log-length,
+      rs-commit-index = st.rs-commit-index, rs-last-applied = st.rs-last-applied,
+      rs-peers = st.rs-peers, rs-peer-count = st.rs-peer-count,
+      rs-votes-received = 1,
+      rs-leader-id = "",
+      rs-election-timeout = st.rs-election-timeout,
+      rs-heartbeat-interval = st.rs-heartbeat-interval,
+      rs-last-heartbeat = st.rs-last-heartbeat
+    }
+
+  raft-make-request-vote : RaftState -> RaftMsg
+  raft-make-request-vote (st) =
+    RequestVote (st.rs-current-term) (st.rs-id) (raft-last-log-index st) (raft-last-log-term st)
+
+  raft-handle-request-vote : RaftState, Integer, Text, Integer, Integer -> RaftState
+  raft-handle-request-vote (st) (term) (candidate) (last-log-idx) (last-log-term) =
+    let st2 = raft-maybe-step-down st term
+    in if term < st2.rs-current-term then st2
+    else let can-vote = if text-length (st2.rs-voted-for) == 0 then True else st2.rs-voted-for == candidate
+    in let log-ok = if last-log-term > raft-last-log-term st2 then True
+      else if last-log-term == raft-last-log-term st2 then last-log-idx >= raft-last-log-index st2
+      else False
+    in if can-vote then if log-ok then __record-set st2 "rs-voted-for" candidate else st2
+    else st2
+
+  raft-handle-vote-response : RaftState, Integer, Boolean -> RaftState
+  raft-handle-vote-response (st) (term) (granted) =
+    let st2 = raft-maybe-step-down st term
+    in when st2.rs-role
+      is Candidate ->
+        if granted then
+          let new-votes = st2.rs-votes-received + 1
+          in if new-votes >= raft-quorum-size st2 then raft-become-leader (__record-set st2 "rs-votes-received" new-votes)
+          else __record-set st2 "rs-votes-received" new-votes
+        else st2
+      is otherwise -> st2
+
+  raft-become-leader : RaftState -> RaftState
+  raft-become-leader (st) =
+    let next-idx = raft-last-log-index st + 1
+    in let peers = raft-reset-peer-indices (st.rs-peers) next-idx 0 (st.rs-peer-count) []
+    in __record-set (__record-set (__record-set st "rs-role" Leader) "rs-leader-id" (st.rs-id)) "rs-peers" peers
+
+  raft-reset-peer-indices : List RaftPeer, Integer, Integer, Integer, List RaftPeer -> List RaftPeer
+  raft-reset-peer-indices (peers) (next-idx) (i) (n) (acc) =
+    if i >= n then acc
+    else let p = list-at peers i
+    in raft-reset-peer-indices peers next-idx (i + 1) n (list-push acc (__record-set (__record-set p "rp-next-index" next-idx) "rp-match-index" 0))
+
+  raft-maybe-step-down : RaftState, Integer -> RaftState
+  raft-maybe-step-down (st) (term) =
+    if term > st.rs-current-term then
+      __record-set (__record-set (__record-set st "rs-current-term" term) "rs-role" Follower) "rs-voted-for" ""
+    else st
+
+Section: Log Replication
+
+  raft-append-command : RaftState, Text, Text -> RaftState
+  raft-append-command (st) (cmd) (data) =
+    let entry = log-entry-new (raft-last-log-index st + 1) (st.rs-current-term) cmd data
+    in __record-set (__record-set st "rs-log" (list-push (st.rs-log) entry)) "rs-log-length" (st.rs-log-length + 1)
+
+  raft-handle-append-entries : RaftState, Integer, Text, Integer, Integer, List LogEntry, Integer -> RaftState
+  raft-handle-append-entries (st) (term) (leader) (prev-idx) (prev-term) (entries) (leader-commit) =
+    let st2 = raft-maybe-step-down st term
+    in if term < st2.rs-current-term then st2
+    else let st3 = __record-set (__record-set st2 "rs-leader-id" leader) "rs-role" Follower
+    in let log-ok = raft-log-matches st3 prev-idx prev-term
+    in if log-ok then
+      let st4 = raft-append-new-entries st3 entries 0 (list-length entries)
+      in let new-commit = if leader-commit > st4.rs-commit-index then
+        if leader-commit < raft-last-log-index st4 then leader-commit else raft-last-log-index st4
+        else st4.rs-commit-index
+      in __record-set st4 "rs-commit-index" new-commit
+    else st3
+
+  raft-log-matches : RaftState, Integer, Integer -> Boolean
+  raft-log-matches (st) (prev-idx) (prev-term) =
+    if prev-idx == 0 then True
+    else if prev-idx > st.rs-log-length then False
+    else (list-at (st.rs-log) (prev-idx - 1)).le-term == prev-term
+
+  raft-append-new-entries : RaftState, List LogEntry, Integer, Integer -> RaftState
+  raft-append-new-entries (st) (entries) (i) (n) =
+    if i >= n then st
+    else let entry = list-at entries i
+    in let st2 = if entry.le-index <= st.rs-log-length then st
+      else __record-set (__record-set st "rs-log" (list-push (st.rs-log) entry)) "rs-log-length" (st.rs-log-length + 1)
+    in raft-append-new-entries st2 entries (i + 1) n
+
+  raft-handle-append-response : RaftState, Text, Integer, Boolean, Integer -> RaftState
+  raft-handle-append-response (st) (peer-id) (term) (success) (match-idx) =
+    let st2 = raft-maybe-step-down st term
+    in when st2.rs-role
+      is Leader ->
+        let peers = raft-update-peer (st2.rs-peers) peer-id success match-idx 0 (st2.rs-peer-count) []
+        in let st3 = __record-set st2 "rs-peers" peers
+        in raft-advance-commit st3
+      is otherwise -> st2
+
+  raft-update-peer : List RaftPeer, Text, Boolean, Integer, Integer, Integer, List RaftPeer -> List RaftPeer
+  raft-update-peer (peers) (id) (success) (match-idx) (i) (n) (acc) =
+    if i >= n then acc
+    else let p = list-at peers i
+    in if p.rp-id == id then
+      if success then raft-update-peer peers id success match-idx (i + 1) n (list-push acc (__record-set (__record-set p "rp-match-index" match-idx) "rp-next-index" (match-idx + 1)))
+      else raft-update-peer peers id success match-idx (i + 1) n (list-push acc (__record-set p "rp-next-index" (if p.rp-next-index > 1 then p.rp-next-index - 1 else 1)))
+    else raft-update-peer peers id success match-idx (i + 1) n (list-push acc p)
+
+  raft-advance-commit : RaftState -> RaftState
+  raft-advance-commit (st) =
+    let new-commit = raft-find-commit-index st (st.rs-commit-index + 1) (st.rs-log-length)
+    in __record-set st "rs-commit-index" new-commit
+
+  raft-find-commit-index : RaftState, Integer, Integer -> Integer
+  raft-find-commit-index (st) (idx) (max-idx) =
+    if idx > max-idx then idx - 1
+    else let replicated = raft-count-replicated (st.rs-peers) idx 0 (st.rs-peer-count) 1
+    in if replicated >= raft-quorum-size st then raft-find-commit-index st (idx + 1) max-idx
+    else idx - 1
+
+  raft-count-replicated : List RaftPeer, Integer, Integer, Integer, Integer -> Integer
+  raft-count-replicated (peers) (idx) (i) (n) (acc) =
+    if i >= n then acc
+    else let p = list-at peers i
+    in let delta = if p.rp-match-index >= idx then 1 else 0
+    in raft-count-replicated peers idx (i + 1) n (acc + delta)
+
+Section: State Machine Application
+
+  raft-apply-committed : RaftState -> RaftState
+  raft-apply-committed (st) =
+    if st.rs-last-applied >= st.rs-commit-index then st
+    else __record-set st "rs-last-applied" (st.rs-last-applied + 1)
+
+  raft-pending-applies : RaftState -> Integer
+  raft-pending-applies (st) = st.rs-commit-index - st.rs-last-applied
+
+  raft-get-entry : RaftState, Integer -> Maybe LogEntry
+  raft-get-entry (st) (idx) =
+    if idx < 1 then None
+    else if idx > st.rs-log-length then None
+    else Just (list-at (st.rs-log) (idx - 1))
+
+Section: Diagnostics
+
+  raft-status : RaftState -> Text
+  raft-status (st) =
+    raft-role-label (st.rs-role) & " term=" & show (st.rs-current-term) & " log=" & show (st.rs-log-length) & " commit=" & show (st.rs-commit-index) & " applied=" & show (st.rs-last-applied) & " leader=" & st.rs-leader-id
+
+Page 1

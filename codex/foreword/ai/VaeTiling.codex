@@ -1,0 +1,232 @@
+Chapter: VaeTiling
+  cites AI chapter Tensor
+  cites AI chapter VaeDecoder
+  cites AI chapter Conv2d
+  cites AI chapter Normalization
+  cites AI chapter ImageTensor
+
+ Tiled VAE decoding for large images. Splits the latent tensor
+ into overlapping tiles, decodes each tile independently, then
+ blends the overlapping regions to produce a seamless output.
+ Reduces peak VRAM from O(H*W) to O(tile_size^2).
+
+ Without tiling, a 2048x2048 image requires decoding a 256x256
+ latent in one pass (~4 GB activations). With 128x128 tiles and
+ 16-pixel overlap, peak memory drops to ~256 MB per tile.
+
+ Fixed-point (scale 1000).
+
+ We say:
+
+Section: Types
+  TileConfig = record {
+    tc-tile-size : Integer,
+    tc-overlap : Integer,
+    tc-blend-mode : BlendMode
+  }
+
+  BlendMode =
+    | BlendLinear
+    | BlendCosine
+
+  TileSpec = record {
+    ts-x : Integer,
+    ts-y : Integer,
+    ts-w : Integer,
+    ts-h : Integer,
+    ts-src-x : Integer,
+    ts-src-y : Integer
+  }
+
+Section: Default Configuration
+  tile-default : TileConfig
+  tile-default = TileConfig { tc-tile-size = 128, tc-overlap = 16, tc-blend-mode = BlendLinear }
+
+  tile-large : TileConfig
+  tile-large = TileConfig { tc-tile-size = 192, tc-overlap = 24, tc-blend-mode = BlendLinear }
+
+  tile-small : TileConfig
+  tile-small = TileConfig { tc-tile-size = 64, tc-overlap = 8, tc-blend-mode = BlendLinear }
+
+Section: Tile Grid Generation
+  vt-compute-tiles : Integer, Integer, TileConfig -> List TileSpec
+  vt-compute-tiles (lat-w) (lat-h) (cfg) =
+    let step = cfg.tc-tile-size - cfg.tc-overlap
+    in let cols = vt-tile-count lat-w (cfg.tc-tile-size) step
+    in let rows = vt-tile-count lat-h (cfg.tc-tile-size) step
+    in vt-gen-tiles lat-w lat-h (cfg.tc-tile-size) step rows cols 0 0 []
+
+  vt-tile-count : Integer, Integer, Integer -> Integer
+  vt-tile-count (dim) (tile-size) (step) =
+    if dim <= tile-size then 1
+    else (dim - tile-size + step - 1) / step + 1
+
+  vt-gen-tiles : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, List TileSpec -> List TileSpec
+  vt-gen-tiles (lat-w) (lat-h) (tile-size) (step) (rows) (cols) (row) (col) (acc) =
+    if row >= rows then acc
+    else if col >= cols then vt-gen-tiles lat-w lat-h tile-size step rows cols (row + 1) 0 acc
+    else let x = vt-clamp-pos (col * step) (lat-w - tile-size)
+    in let y = vt-clamp-pos (row * step) (lat-h - tile-size)
+    in let w = vt-min-val tile-size (lat-w - x)
+    in let h = vt-min-val tile-size (lat-h - y)
+    in let tile = TileSpec { ts-x = x, ts-y = y, ts-w = w, ts-h = h, ts-src-x = x, ts-src-y = y }
+    in vt-gen-tiles lat-w lat-h tile-size step rows cols row (col + 1) (list-push acc tile)
+
+  vt-clamp-pos : Integer, Integer -> Integer
+  vt-clamp-pos (v) (max-v) = if v > max-v then max-v else if v < 0 then 0 else v
+
+Section: Extract Tile from Latent
+  vt-extract-tile : List Integer, Integer, Integer, Integer, TileSpec -> List Integer
+  vt-extract-tile (latents) (channels) (lat-w) (lat-h) (tile) =
+    vt-extract-loop latents channels lat-w lat-h tile 0 0 0 []
+
+  vt-extract-loop : List Integer, Integer, Integer, Integer, TileSpec, Integer, Integer, Integer, List Integer -> List Integer
+  vt-extract-loop (data) (ch) (lat-w) (lat-h) (tile) (c) (ty) (tx) (acc) =
+    if c >= ch then acc
+    else if ty >= tile.ts-h then vt-extract-loop data ch lat-w lat-h tile (c + 1) 0 0 acc
+    else if tx >= tile.ts-w then vt-extract-loop data ch lat-w lat-h tile c (ty + 1) 0 acc
+    else let src-idx = c * lat-h * lat-w + (tile.ts-y + ty) * lat-w + (tile.ts-x + tx)
+    in let val = if src-idx < list-length data then list-at data src-idx else 0
+    in vt-extract-loop data ch lat-w lat-h tile c ty (tx + 1) (list-push acc val)
+
+Section: Tiled VAE Decode
+  vae-decode-tiled : VaeState, List Integer, Integer, Integer, TileConfig -> ImageData
+  vae-decode-tiled (vae) (latents) (lat-w) (lat-h) (cfg) =
+    let tiles = vt-compute-tiles lat-w lat-h cfg
+    in let out-w = lat-w * 8
+    in let out-h = lat-h * 8
+    in let channels = (vae.vs-config.vae-latent-channels)
+    in let canvas = vt-blank-canvas out-w out-h
+    in let weight-canvas = vt-blank-weights out-w out-h
+    in let result = vt-decode-tiles vae latents lat-w lat-h channels tiles cfg canvas weight-canvas 0 (list-length tiles)
+    in let normalized = vt-normalize-canvas (result.vtr-canvas) (result.vtr-weights) out-w out-h
+    in tensor-to-image normalized out-w out-h
+
+  VtResult = record {
+    vtr-canvas : List Integer,
+    vtr-weights : List Integer
+  }
+
+  vt-decode-tiles : VaeState, List Integer, Integer, Integer, Integer, List TileSpec, TileConfig, List Integer, List Integer, Integer, Integer -> VtResult
+  vt-decode-tiles (vae) (latents) (lat-w) (lat-h) (ch) (tiles) (cfg) (canvas) (weights) (i) (n) =
+    if i >= n then VtResult { vtr-canvas = canvas, vtr-weights = weights }
+    else let tile = list-at tiles i
+    in let tile-data = vt-extract-tile latents ch lat-w lat-h tile
+    in let decoded = vae-decode vae tile-data (tile.ts-w) (tile.ts-h)
+    in let tile-w = tile.ts-w * 8
+    in let tile-h = tile.ts-h * 8
+    in let out-x = tile.ts-x * 8
+    in let out-y = tile.ts-y * 8
+    in let out-w = lat-w * 8
+    in let blend-weights = vt-compute-blend-weights tile-w tile-h (cfg.tc-overlap * 8) (cfg.tc-blend-mode)
+    in let new-canvas = vt-splat-tile canvas out-w (decoded.img-pixels) tile-w tile-h out-x out-y blend-weights
+    in let new-weights = vt-splat-weights weights out-w tile-w tile-h out-x out-y blend-weights
+    in vt-decode-tiles vae latents lat-w lat-h ch tiles cfg new-canvas new-weights (i + 1) n
+
+Section: Blend Weight Computation
+  vt-compute-blend-weights : Integer, Integer, Integer, BlendMode -> List Integer
+  vt-compute-blend-weights (w) (h) (overlap) (mode) =
+    vt-blend-loop w h overlap mode 0 0 []
+
+  vt-blend-loop : Integer, Integer, Integer, BlendMode, Integer, Integer, List Integer -> List Integer
+  vt-blend-loop (w) (h) (overlap) (mode) (y) (x) (acc) =
+    if y >= h then acc
+    else if x >= w then vt-blend-loop w h overlap mode (y + 1) 0 acc
+    else let wx = vt-edge-weight x w overlap mode
+    in let wy = vt-edge-weight y h overlap mode
+    in let weight = wx * wy / 1000
+    in vt-blend-loop w h overlap mode y (x + 1) (list-push acc weight)
+
+  vt-edge-weight : Integer, Integer, Integer, BlendMode -> Integer
+  vt-edge-weight (pos) (dim) (overlap) (mode) =
+    let dist-from-edge = vt-min-val pos (dim - 1 - pos)
+    in if dist-from-edge >= overlap then 1000
+    else if overlap <= 0 then 1000
+    else when mode
+      is BlendLinear -> dist-from-edge * 1000 / overlap
+      is BlendCosine -> let t = dist-from-edge * 1571 / overlap in vt-sin-approx t
+
+  vt-sin-approx : Integer -> Integer
+  vt-sin-approx (x) = let x2 = x * x / 1000 in x - x * x2 / 6000
+
+Section: Canvas Operations
+  vt-blank-canvas : Integer, Integer -> List Integer
+  vt-blank-canvas (w) (h) = vt-zeros (w * h * 3) 0 []
+
+  vt-blank-weights : Integer, Integer -> List Integer
+  vt-blank-weights (w) (h) = vt-zeros (w * h) 0 []
+
+  vt-splat-tile : List Integer, Integer, List Rgb, Integer, Integer, Integer, Integer, List Integer -> List Integer
+  vt-splat-tile (canvas) (canvas-w) (pixels) (tile-w) (tile-h) (ox) (oy) (weights) =
+    vt-splat-loop canvas canvas-w pixels tile-w tile-h ox oy weights 0 0
+
+  vt-splat-loop : List Integer, Integer, List Rgb, Integer, Integer, Integer, Integer, List Integer, Integer, Integer -> List Integer
+  vt-splat-loop (canvas) (cw) (pixels) (tw) (th) (ox) (oy) (weights) (ty) (tx) =
+    if ty >= th then canvas
+    else if tx >= tw then vt-splat-loop canvas cw pixels tw th ox oy weights (ty + 1) 0
+    else let w = list-at weights (ty * tw + tx)
+    in let px = list-at pixels (ty * tw + tx)
+    in let ci = ((oy + ty) * cw + (ox + tx)) * 3
+    in let canvas2 = vt-add-weighted-pixel canvas ci (px.cr) (px.cg) (px.cb) w
+    in vt-splat-loop canvas2 cw pixels tw th ox oy weights ty (tx + 1)
+
+  vt-add-weighted-pixel : List Integer, Integer, Integer, Integer, Integer, Integer -> List Integer
+  vt-add-weighted-pixel (canvas) (ci) (r) (g) (b) (w) =
+    let canvas2 = list-set-at canvas ci (list-at canvas ci + r * w / 1000)
+    in let canvas3 = list-set-at canvas2 (ci + 1) (list-at canvas2 (ci + 1) + g * w / 1000)
+    in list-set-at canvas3 (ci + 2) (list-at canvas3 (ci + 2) + b * w / 1000)
+
+  vt-splat-weights : List Integer, Integer, Integer, Integer, Integer, Integer, List Integer -> List Integer
+  vt-splat-weights (weights) (cw) (tw) (th) (ox) (oy) (tile-weights) =
+    vt-wt-loop weights cw tw th ox oy tile-weights 0 0
+
+  vt-wt-loop : List Integer, Integer, Integer, Integer, Integer, Integer, List Integer, Integer, Integer -> List Integer
+  vt-wt-loop (weights) (cw) (tw) (th) (ox) (oy) (tile-w) (ty) (tx) =
+    if ty >= th then weights
+    else if tx >= tw then vt-wt-loop weights cw tw th ox oy tile-w (ty + 1) 0
+    else let wi = (oy + ty) * cw + (ox + tx)
+    in let tw-val = list-at tile-w (ty * tw + tx)
+    in let weights2 = list-set-at weights wi (list-at weights wi + tw-val)
+    in vt-wt-loop weights2 cw tw th ox oy tile-w ty (tx + 1)
+
+  vt-normalize-canvas : List Integer, List Integer, Integer, Integer -> List Integer
+  vt-normalize-canvas (canvas) (weights) (w) (h) =
+    vt-norm-loop canvas weights w h 0 0 0 []
+
+  vt-norm-loop : List Integer, List Integer, Integer, Integer, Integer, Integer, Integer, List Integer -> List Integer
+  vt-norm-loop (canvas) (weights) (w) (h) (ch) (y) (x) (acc) =
+    if ch >= 3 then acc
+    else if y >= h then vt-norm-loop canvas weights w h (ch + 1) 0 0 acc
+    else if x >= w then vt-norm-loop canvas weights w h ch (y + 1) 0 acc
+    else let ci = (y * w + x) * 3 + ch
+    in let wi = y * w + x
+    in let wt = list-at weights wi
+    in let val = if wt <= 0 then 0 else list-at canvas ci * 1000 / wt
+    in vt-norm-loop canvas weights w h ch y (x + 1) (list-push acc val)
+
+Section: Helpers
+  vt-zeros : Integer, Integer, List Integer -> List Integer
+  vt-zeros (n) (i) (acc) =
+    if i >= n then acc
+    else vt-zeros n (i + 1) (list-push acc 0)
+
+  vt-min-val : Integer, Integer -> Integer
+  vt-min-val (a) (b) = if a < b then a else b
+
+Section: Queries
+  format-tile-config : TileConfig -> Text
+  format-tile-config (cfg) =
+    "tile=" & show (cfg.tc-tile-size) & " overlap=" & show (cfg.tc-overlap) & " blend=" & vt-blend-name (cfg.tc-blend-mode)
+
+  vt-blend-name : BlendMode -> Text
+  vt-blend-name (m) =
+    when m
+      is BlendLinear -> "linear"
+      is BlendCosine -> "cosine"
+
+  format-tile-grid : Integer, Integer, TileConfig -> Text
+  format-tile-grid (w) (h) (cfg) =
+    let tiles = vt-compute-tiles w h cfg
+    in show (list-length tiles) & " tiles for " & show w & "x" & show h & " latent"
+
+Page 1

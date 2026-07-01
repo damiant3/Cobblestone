@@ -1,0 +1,149 @@
+Chapter: ParticleRenderer
+  cites Sim chapter ParticleSystem
+  cites Engine chapter Scene3D
+  cites Game chapter Rasterizer
+  cites Game chapter Color
+  cites Math chapter Matrix4
+  cites Math chapter Quaternion
+
+ 3D particle rendering. Takes a ParticleSystem and renders each
+ particle as a camera-facing billboard (two triangles). Particles
+ are sorted back-to-front for correct alpha blending. Size scales
+ with distance. Color fades with remaining lifetime.
+
+ We say:
+
+Section: Billboard
+
+  Billboard = record {
+    bb-x : Integer, bb-y : Integer,
+    bb-hw : Integer, bb-hh : Integer,
+    bb-depth : Integer,
+    bb-color : Integer,
+    bb-alpha : Integer
+  }
+
+Section: Particle to Billboard
+
+  part-to-billboard : Particle, Camera3D, Integer, Integer -> Billboard
+  part-to-billboard (p) (cam) (half-w) (half-h) =
+    let clip = mat4-transform-vec4 (camera3d-vp cam) (Vec4 { v4x = p.part-x, v4y = p.part-y, v4z = p.part-z, v4w = 1000 })
+    in if clip.v4w <= 0 then Billboard { bb-x = -9999, bb-y = -9999, bb-hw = 0, bb-hh = 0, bb-depth = 999999, bb-color = 0, bb-alpha = 0 }
+    else let sx = half-w + clip.v4x * half-w / clip.v4w
+    in let sy = half-h - clip.v4y * half-h / clip.v4w
+    in let depth = clip.v4z * 1000 / clip.v4w
+    in let screen-size = 500 * 1000 / clip.v4w
+    in let life-frac = p.part-life * 1000 / p.part-max-life
+    in let alpha = life-frac
+    in Billboard { bb-x = sx, bb-y = sy, bb-hw = screen-size, bb-hh = screen-size, bb-depth = depth, bb-color = p.part-color, bb-alpha = alpha }
+
+Section: Render Particles
+
+  pr-render : ParticleSystem, Camera3D, Framebuf, Integer, Integer -> Framebuf
+  pr-render (psys) (cam) (fb) (half-w) (half-h) =
+    let billboards = pr-project-all (psys.particles) cam half-w half-h 0 (psys.count) []
+    in let sorted = pr-sort-depth billboards (list-length billboards)
+    in pr-draw-all sorted fb 0 (list-length sorted)
+
+  pr-project-all : List Particle, Camera3D, Integer, Integer, Integer, Integer, List Billboard -> List Billboard
+  pr-project-all (parts) (cam) (hw) (hh) (i) (n) (acc) =
+    if i >= n then acc
+    else let p = list-at parts i
+    in let bb = part-to-billboard p cam hw hh
+    in if bb.bb-alpha > 0 then pr-project-all parts cam hw hh (i + 1) n (list-push acc bb)
+    else pr-project-all parts cam hw hh (i + 1) n acc
+
+  pr-draw-all : List Billboard, Framebuf, Integer, Integer -> Framebuf
+  pr-draw-all (bbs) (fb) (i) (n) =
+    if i >= n then fb
+    else let bb = list-at bbs i
+    in let fb2 = pr-draw-billboard bb fb
+    in pr-draw-all bbs fb2 (i + 1) n
+
+  pr-draw-billboard : Billboard, Framebuf -> Framebuf
+  pr-draw-billboard (bb) (fb) =
+    let x0 = bb.bb-x - bb.bb-hw
+    in let x1 = bb.bb-x + bb.bb-hw
+    in let y0 = bb.bb-y - bb.bb-hh
+    in let y1 = bb.bb-y + bb.bb-hh
+    in pr-fill-rect fb x0 y0 x1 y1 (bb.bb-color) (bb.bb-alpha)
+
+  pr-fill-rect : Framebuf, Integer, Integer, Integer, Integer, Integer, Integer -> Framebuf
+  pr-fill-rect (fb) (x0) (y0) (x1) (y1) (color) (alpha) =
+    pr-fill-rows fb x0 y0 x1 y1 color alpha y0
+
+  pr-fill-rows : Framebuf, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Framebuf
+  pr-fill-rows (fb) (x0) (y0) (x1) (y1) (color) (alpha) (y) =
+    if y > y1 then fb
+    else if y < 0 then pr-fill-rows fb x0 y0 x1 y1 color alpha (y + 1)
+    else if y >= fb.fb-height then fb
+    else let fb2 = pr-fill-cols fb x0 x1 y color alpha x0
+    in pr-fill-rows fb2 x0 y0 x1 y1 color alpha (y + 1)
+
+  pr-fill-cols : Framebuf, Integer, Integer, Integer, Integer, Integer, Integer -> Framebuf
+  pr-fill-cols (fb) (x0) (x1) (y) (color) (alpha) (x) =
+    if x > x1 then fb
+    else if x < 0 then pr-fill-cols fb x0 x1 y color alpha (x + 1)
+    else if x >= fb.fb-width then fb
+    else let blended = pr-alpha-blend (fb-get fb x y) color alpha
+    in pr-fill-cols (fb-set fb x y blended) x0 x1 y color alpha (x + 1)
+
+Section: Alpha Blend
+
+  pr-alpha-blend : Integer, Integer, Integer -> Integer
+  pr-alpha-blend (dst) (src) (alpha) =
+    let inv = 1000 - alpha
+    in let sr = pr-chan-r src
+    in let sg = pr-chan-g src
+    in let sb = pr-chan-b src
+    in let dr = pr-chan-r dst
+    in let dg = pr-chan-g dst
+    in let db = pr-chan-b dst
+    in let r = (sr * alpha + dr * inv) / 1000
+    in let g = (sg * alpha + dg * inv) / 1000
+    in let b = (sb * alpha + db * inv) / 1000
+    in pr-pack-rgb r g b
+
+  pr-chan-r : Integer -> Integer
+  pr-chan-r (p) = bit-and (bit-shru p 16) 255
+
+  pr-chan-g : Integer -> Integer
+  pr-chan-g (p) = bit-and (bit-shru p 8) 255
+
+  pr-chan-b : Integer -> Integer
+  pr-chan-b (p) = bit-and p 255
+
+  pr-pack-rgb : Integer, Integer, Integer -> Integer
+  pr-pack-rgb (r) (g) (b) = bit-or (bit-shl r 16) (bit-or (bit-shl g 8) b)
+
+Section: Depth Sort (insertion sort, small N)
+
+  pr-sort-depth : List Billboard, Integer -> List Billboard
+  pr-sort-depth (bbs) (n) = pr-isort bbs 1 n
+
+  pr-isort : List Billboard, Integer, Integer -> List Billboard
+  pr-isort (bbs) (i) (n) =
+    if i >= n then bbs
+    else let sorted = pr-insert bbs i
+    in pr-isort sorted (i + 1) n
+
+  pr-insert : List Billboard, Integer -> List Billboard
+  pr-insert (bbs) (i) =
+    if i <= 0 then bbs
+    else let cur = list-at bbs i
+    in let prev = list-at bbs (i - 1)
+    in if cur.bb-depth > prev.bb-depth then pr-insert (pr-swap-bb bbs i (i - 1)) (i - 1)
+    else bbs
+
+  pr-swap-bb : List Billboard, Integer, Integer -> List Billboard
+  pr-swap-bb (bbs) (a) (b) =
+    let va = list-at bbs a
+    in let vb = list-at bbs b
+    in list-set-at (list-set-at bbs a vb) b va
+
+Section: Formatting
+
+  format-billboard : Billboard -> Text
+  format-billboard (bb) = "BB(" & show (bb.bb-x) & "," & show (bb.bb-y) & " a=" & show (bb.bb-alpha) & ")"
+
+Page 1

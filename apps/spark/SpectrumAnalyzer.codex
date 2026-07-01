@@ -1,0 +1,258 @@
+Chapter: SpectrumAnalyzer
+  cites Game chapter Rasterizer
+
+ FFT-based audio spectrum analyzer and visualization. Computes
+ magnitude spectrum from audio samples using a radix-2 DIT FFT
+ and renders bar or waveform displays onto a Framebuf.
+ Sample values are signed integers, frequencies in Hz.
+
+ We say:
+
+Section: Types
+
+  SpectrumBand = record {
+    sb-freq : Integer,
+    sb-magnitude : Integer
+  }
+
+  SpectrumData = record {
+    sd-bands : List SpectrumBand,
+    sd-band-count : Integer,
+    sd-sample-rate : Integer,
+    sd-fft-size : Integer,
+    sd-peak : Integer
+  }
+
+  SpectrumStyle =
+    | StyleBars
+    | StyleLine
+    | StyleFilled
+
+Section: FFT (radix-2 DIT, fixed size 256)
+
+  spectrum-analyze : List Integer, Integer, Integer -> SpectrumData
+  spectrum-analyze (samples) (count) (sample-rate) =
+    let fft-size = 256
+    in let real = sa-window-samples samples count fft-size 0 []
+    in let imag = sa-zeros fft-size 0 []
+    in let result = sa-fft-dit real imag fft-size
+    in let bands = sa-compute-bands (sa-fft-real result) (sa-fft-imag result) fft-size sample-rate
+    in let peak = sa-find-peak bands (fft-size / 2) 0 0
+    in SpectrumData {
+      sd-bands = bands,
+      sd-band-count = fft-size / 2,
+      sd-sample-rate = sample-rate,
+      sd-fft-size = fft-size,
+      sd-peak = peak
+    }
+
+  sa-window-samples : List Integer, Integer, Integer, Integer, List Integer -> List Integer
+  sa-window-samples (samples) (count) (fft-size) (i) (acc) =
+    if i >= fft-size then acc
+    else let s = if i < count then list-at samples i else 0
+    in let windowed = s * sa-hann-window i fft-size / 1000
+    in sa-window-samples samples count fft-size (i + 1) (list-push acc windowed)
+
+  sa-hann-window : Integer, Integer -> Integer
+  sa-hann-window (i) (n) =
+    let phase = i * 6283 / n
+    in 500 - 500 * sa-cos-approx phase / 1000
+
+  sa-zeros : Integer, Integer, List Integer -> List Integer
+  sa-zeros (n) (i) (acc) =
+    if i >= n then acc
+    else sa-zeros n (i + 1) (list-push acc 0)
+
+Section: Butterfly Operations
+
+  sa-fft-dit : List Integer, List Integer, Integer -> List Integer
+  sa-fft-dit (real) (imag) (n) =
+    let br-real = sa-bit-reverse-copy real n 0 (sa-zeros n 0 [])
+    in let br-imag = sa-bit-reverse-copy imag n 0 (sa-zeros n 0 [])
+    in sa-fft-stages br-real br-imag n 2
+
+  sa-fft-stages : List Integer, List Integer, Integer, Integer -> List Integer
+  sa-fft-stages (real) (imag) (n) (size) =
+    if size > n then sa-pack-result real imag
+    else let half = size / 2
+    in let result = sa-fft-groups real imag n size half 0
+    in sa-fft-stages (sa-unpack-real result n) (sa-unpack-imag result n) n (size * 2)
+
+  sa-fft-groups : List Integer, List Integer, Integer, Integer, Integer, Integer -> List Integer
+  sa-fft-groups (real) (imag) (n) (size) (half) (group) =
+    if group >= n then sa-pack-result real imag
+    else let result = sa-fft-butterflies real imag size half group 0
+    in sa-fft-groups (sa-unpack-real result n) (sa-unpack-imag result n) n size half (group + size)
+
+  sa-fft-butterflies : List Integer, List Integer, Integer, Integer, Integer, Integer -> List Integer
+  sa-fft-butterflies (real) (imag) (size) (half) (group) (k) =
+    if k >= half then sa-pack-result real imag
+    else let angle = 0 - k * 6283 / size
+    in let wr = sa-cos-approx angle
+    in let wi = sa-sin-approx angle
+    in let i1 = group + k
+    in let i2 = group + k + half
+    in let tr = list-at real i2 * wr / 1000 - list-at imag i2 * wi / 1000
+    in let ti = list-at real i2 * wi / 1000 + list-at imag i2 * wr / 1000
+    in let r2 = list-set-at (list-set-at real i2 (list-at real i1 - tr)) i1 (list-at real i1 + tr)
+    in let im2 = list-set-at (list-set-at imag i2 (list-at imag i1 - ti)) i1 (list-at imag i1 + ti)
+    in sa-fft-butterflies r2 im2 size half group (k + 1)
+
+Section: Bit Reversal
+
+  sa-bit-reverse-copy : List Integer, Integer, Integer, List Integer -> List Integer
+  sa-bit-reverse-copy (src) (n) (i) (dst) =
+    if i >= n then dst
+    else let rev = sa-bit-reverse i (sa-log2 n)
+    in let val = list-at src i
+    in sa-bit-reverse-copy src n (i + 1) (list-set-at dst rev val)
+
+  sa-bit-reverse : Integer, Integer -> Integer
+  sa-bit-reverse (x) (bits) = sa-br-loop x bits 0 0
+
+  sa-br-loop : Integer, Integer, Integer, Integer -> Integer
+  sa-br-loop (x) (bits) (i) (acc) =
+    if i >= bits then acc
+    else let bit = x / sa-pow2 i - x / sa-pow2 (i + 1) * 2
+    in sa-br-loop x bits (i + 1) (acc + bit * sa-pow2 (bits - 1 - i))
+
+  sa-log2 : Integer -> Integer
+  sa-log2 (n) = sa-log2-loop n 0
+
+  sa-log2-loop : Integer, Integer -> Integer
+  sa-log2-loop (n) (count) =
+    if n <= 1 then count
+    else sa-log2-loop (n / 2) (count + 1)
+
+  sa-pow2 : Integer -> Integer
+  sa-pow2 (n) = if n <= 0 then 1 else 2 * sa-pow2 (n - 1)
+
+Section: Magnitude
+
+  sa-compute-bands : List Integer, List Integer, Integer, Integer -> List SpectrumBand
+  sa-compute-bands (real) (imag) (n) (sr) =
+    sa-bands-loop real imag n sr 0 []
+
+  sa-bands-loop : List Integer, List Integer, Integer, Integer, Integer, List SpectrumBand -> List SpectrumBand
+  sa-bands-loop (real) (imag) (n) (sr) (i) (acc) =
+    if i >= n / 2 then acc
+    else let r = list-at real i
+    in let im = list-at imag i
+    in let mag = sa-isqrt (r * r + im * im)
+    in let freq = i * sr / n
+    in let band = SpectrumBand { sb-freq = freq, sb-magnitude = mag }
+    in sa-bands-loop real imag n sr (i + 1) (list-push acc band)
+
+  sa-find-peak : List SpectrumBand, Integer, Integer, Integer -> Integer
+  sa-find-peak (bands) (count) (i) (mx) =
+    if i >= count then mx
+    else let b = list-at bands i
+    in sa-find-peak bands count (i + 1) (if b.sb-magnitude > mx then b.sb-magnitude else mx)
+
+Section: Rendering
+
+  spectrum-render : Framebuf, SpectrumData, SpectrumStyle, Integer, Integer -> Framebuf
+  spectrum-render (fb) (sd) (style) (color) (bg) =
+    when style
+      is StyleBars -> sa-render-bars fb sd color bg
+      is StyleLine -> sa-render-line fb sd color
+      is StyleFilled -> sa-render-bars fb sd color bg
+
+  sa-render-bars : Framebuf, SpectrumData, Integer, Integer -> Framebuf
+  sa-render-bars (fb) (sd) (color) (bg) =
+    let w = fb.fb-width
+    in let h = fb.fb-height
+    in let bar-w = if sd.sd-band-count == 0 then 1 else w / sd.sd-band-count
+    in let max-mag = if sd.sd-peak == 0 then 1 else sd.sd-peak
+    in sa-bars-loop fb sd color bar-w h max-mag 0
+
+  sa-bars-loop : Framebuf, SpectrumData, Integer, Integer, Integer, Integer, Integer -> Framebuf
+  sa-bars-loop (fb) (sd) (color) (bar-w) (h) (max-mag) (i) =
+    if i >= sd.sd-band-count then fb
+    else let band = list-at (sd.sd-bands) i
+    in let bar-h = band.sb-magnitude * h / max-mag
+    in let x = i * bar-w
+    in let fb2 = sa-draw-bar fb x (h - bar-h) bar-w bar-h color
+    in sa-bars-loop fb2 sd color bar-w h max-mag (i + 1)
+
+  sa-draw-bar : Framebuf, Integer, Integer, Integer, Integer, Integer -> Framebuf
+  sa-draw-bar (fb) (x) (y) (w) (h) (color) =
+    sa-bar-rows fb x y w h color 0
+
+  sa-bar-rows : Framebuf, Integer, Integer, Integer, Integer, Integer, Integer -> Framebuf
+  sa-bar-rows (fb) (x) (y) (w) (h) (color) (dy) =
+    if dy >= h then fb
+    else let fb2 = sa-bar-cols fb x (y + dy) w color 0
+    in sa-bar-rows fb2 x y w h color (dy + 1)
+
+  sa-bar-cols : Framebuf, Integer, Integer, Integer, Integer, Integer -> Framebuf
+  sa-bar-cols (fb) (x) (y) (w) (color) (dx) =
+    if dx >= w then fb
+    else let px = x + dx
+    in let fb2 = if px >= 0 then if px < fb.fb-width then if y >= 0 then if y < fb.fb-height then fb-set fb px y color else fb else fb else fb else fb
+    in sa-bar-cols fb2 x y w color (dx + 1)
+
+  sa-render-line : Framebuf, SpectrumData, Integer -> Framebuf
+  sa-render-line (fb) (sd) (color) =
+    if sd.sd-band-count < 2 then fb
+    else let max-mag = if sd.sd-peak == 0 then 1 else sd.sd-peak
+    in sa-line-loop fb sd color max-mag 0
+
+  sa-line-loop : Framebuf, SpectrumData, Integer, Integer, Integer -> Framebuf
+  sa-line-loop (fb) (sd) (color) (max-mag) (i) =
+    if i >= sd.sd-band-count - 1 then fb
+    else let b0 = list-at (sd.sd-bands) i
+    in let b1 = list-at (sd.sd-bands) (i + 1)
+    in let x0 = i * fb.fb-width / sd.sd-band-count
+    in let x1 = (i + 1) * fb.fb-width / sd.sd-band-count
+    in let y0 = fb.fb-height - b0.sb-magnitude * fb.fb-height / max-mag
+    in let y1 = fb.fb-height - b1.sb-magnitude * fb.fb-height / max-mag
+    in let fb2 = fb-line fb x0 y0 x1 y1 color
+    in sa-line-loop fb2 sd color max-mag (i + 1)
+
+Section: Pack/Unpack Helpers
+
+  sa-pack-result : List Integer, List Integer -> List Integer
+  sa-pack-result (real) (imag) = real
+
+  sa-fft-real : List Integer -> List Integer
+  sa-fft-real (packed) = packed
+
+  sa-fft-imag : List Integer -> List Integer
+  sa-fft-imag (packed) = sa-zeros (list-length packed) 0 []
+
+  sa-unpack-real : List Integer, Integer -> List Integer
+  sa-unpack-real (packed) (n) = packed
+
+  sa-unpack-imag : List Integer, Integer -> List Integer
+  sa-unpack-imag (packed) (n) = sa-zeros n 0 []
+
+Section: Trig
+
+  sa-sin-approx : Integer -> Integer
+  sa-sin-approx (milli-rad) =
+    let x = milli-rad
+    in let x3 = x * x / 1000 * x / 1000
+    in x - x3 / 6
+
+  sa-cos-approx : Integer -> Integer
+  sa-cos-approx (milli-rad) =
+    let x2 = milli-rad * milli-rad / 1000
+    in let x4 = x2 * x2 / 1000
+    in 1000 - x2 / 2 + x4 / 24
+
+  sa-isqrt : Integer -> Integer
+  sa-isqrt (n) = if n <= 0 then 0 else sa-isqrt-loop n (n / 2 + 1)
+
+  sa-isqrt-loop : Integer, Integer -> Integer
+  sa-isqrt-loop (n) (guess) =
+    let next = (guess + n / guess) / 2
+    in if next >= guess then guess else sa-isqrt-loop n next
+
+Section: Info
+
+  spectrum-info : SpectrumData -> Text
+  spectrum-info (sd) =
+    show (sd.sd-band-count) & " bands, peak=" & show (sd.sd-peak) & " fft=" & show (sd.sd-fft-size)
+
+Page 1

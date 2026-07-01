@@ -1,0 +1,159 @@
+Chapter: ShellDispatch
+  cites Works chapter ShellParser
+  cites OS chapter ShellCore
+  cites Works chapter ShellClarifier
+  cites Observe chapter SystemInfo
+  cites OS chapter ProgramRegistry
+  cites Verify chapter CdxVerifier
+  cites Trust chapter TrustLattice
+  cites Trust chapter PolicyEngine
+  cites Foreword chapter FactStore
+  cites OS chapter Clarifier
+  cites Foreword chapter Sha256
+  cites Foreword chapter Maybe
+  cites Foreword chapter Hamt
+
+ Command dispatcher for the Codex shell. Parses input, resolves
+ programs, and executes verified binaries.
+
+ We say:
+
+Section: Binary Store
+
+  BinaryStore = record {
+    entries : HamtMap (List Integer),
+    count : Integer between 0 and 65535
+  }
+
+  binary-store-empty : BinaryStore
+  binary-store-empty = BinaryStore { entries = hamt-empty, count = 0 }
+
+  binary-store-add : BinaryStore, Text, List Integer -> BinaryStore
+  binary-store-add (bs) (name) (binary) =
+    BinaryStore { entries = hamt-set (bs.entries) name binary, count = bs.count + 1 }
+
+  binary-store-get : BinaryStore, Text -> Maybe (List Integer)
+  binary-store-get (bs) (name) = hamt-get (bs.entries) name
+
+Section: Dispatch Result
+
+  DispatchResult = record {
+    output : Text,
+    new-state : ShellState,
+    running : Boolean
+  }
+
+Section: Dispatch
+
+  dispatch : ShellInput, ShellState, BinaryStore -> DispatchResult
+  dispatch (input) (state) (bs) = when input
+    is InputInstall (name) -> dispatch-install name state bs
+    is InputRun (name) -> dispatch-simple (CmdRun name) state
+    is InputRevoke (name) (bit) -> dispatch-simple (CmdRevoke name bit) state
+    is InputStatus (name) -> dispatch-simple (CmdStatus name) state
+    is InputList -> dispatch-simple CmdListPrograms state
+    is InputTrust (key) (score) -> dispatch-simple (CmdTrust key score) state
+    is InputUntrust (key) -> dispatch-simple (CmdUntrust key) state
+    is InputRule (name) (cap) (dir) -> dispatch-simple (CmdAddRule name cap dir) state
+    is InputVerify (name) -> dispatch-verify name state bs
+    is InputSave -> dispatch-save state
+    is InputInfo -> dispatch-info state
+    is InputHelp -> DispatchResult { output = help-text, new-state = state, running = True }
+    is InputExit -> DispatchResult { output = "bye", new-state = state, running = False }
+
+  dispatch-simple : ShellCmd, ShellState -> DispatchResult
+  dispatch-simple (cmd) (state) =
+    let result = execute-cmd cmd state
+    in let output = if result.success then result.output
+      else clarify-cmd-result result Technical
+    in DispatchResult { output = output, new-state = result.new-state, running = True }
+
+  dispatch-install : Text, ShellState, BinaryStore -> DispatchResult
+  dispatch-install (name) (state) (bs) =
+    let found = binary-store-get bs name
+    in when found
+      is None -> DispatchResult {
+        output = "error: no binary found for " & qt name,
+        new-state = state,
+        running = True
+      }
+      is Just (binary) ->
+        let result = execute-cmd (CmdInstall name binary) state
+        in let output = if result.success then result.output
+          else clarify-cmd-result result Technical
+        in DispatchResult { output = output, new-state = result.new-state, running = True }
+
+  dispatch-verify : Text, ShellState, BinaryStore -> DispatchResult
+  dispatch-verify (name) (state) (bs) =
+    let found = binary-store-get bs name
+    in when found
+      is None -> DispatchResult { output = "error: no binary found for " & qt name, new-state = state, running = True }
+      is Just (binary) ->
+        let result = verify-cdx-full binary (state.lattice) (state.policy) 0 (state.store) (state.fuel)
+        in let status = if result.accepted then "PASS" else "FAIL"
+        in let phase-name = show-verify-phase (result.phase)
+        in DispatchResult {
+          output = "verify " & name & ": " & status & " phase=" & phase-name & " " & result.reason,
+          new-state = state,
+          running = True
+        }
+
+  show-verify-phase : VerifyPhase -> Text
+  show-verify-phase (p) = when p
+    is PhaseIntegrity -> "integrity"
+    is PhaseAuthor -> "author"
+    is PhaseCapabilities -> "capabilities"
+    is PhaseEffects -> "effects"
+    is PhaseProofs -> "proofs"
+
+  dispatch-save : ShellState -> DispatchResult
+  dispatch-save (state) =
+    DispatchResult {
+      output = "state saved (in-memory)",
+      new-state = state,
+      running = True
+    }
+
+  dispatch-info : ShellState -> DispatchResult
+  dispatch-info (state) =
+    let report = gather-report state
+    in DispatchResult {
+      output = format-report report,
+      new-state = state,
+      running = True
+    }
+
+  help-text : Text
+  help-text = "commands: install run revoke status list trust untrust rule verify save info help exit"
+
+Section: REPL
+
+  shell-repl : ShellState, BinaryStore -> [Console] Nothing
+  shell-repl (state) (bs) = act
+    print-line-uni ">"
+    input <- read-line
+    when input
+     is Just (line) ->
+      let pr = parse-command line
+      in when pr
+        is ParseError (msg) -> act
+          print-line-uni ("? " & msg)
+          shell-repl state bs
+        end
+        is ParseOk (cmd) ->
+          let dr = dispatch cmd state bs
+          in if dr.running then act
+            print-line-uni (dr.output)
+            shell-repl (dr.new-state) bs
+          end
+          else print-line-uni (dr.output)
+     is None -> print-line-uni "eof"
+  end
+
+  shell-start : Text, ShellState, BinaryStore -> [Console] Nothing
+  shell-start (banner) (state) (bs) = act
+    print-line-uni banner
+    shell-repl state bs
+  end
+
+Page 1

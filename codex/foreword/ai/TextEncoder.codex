@@ -1,0 +1,204 @@
+Chapter: TextEncoder
+  cites AI chapter Tensor
+  cites AI chapter Transformer
+  cites AI chapter Embedding
+  cites AI chapter Tokenizer
+  cites AI chapter SafeTensors
+  cites AI chapter Normalization
+  cites Foreword chapter Maybe
+
+ CLIP-style text encoder for diffusion model conditioning.
+ Tokenizes input text, embeds tokens with positional encoding,
+ runs through N transformer encoder layers, applies final layer
+ norm. Output is a sequence of hidden states used as cross-attention
+ conditioning in the UNet.
+
+ Fixed-point (scale 1000). Weights loaded from SafeTensors.
+
+ We say:
+
+Section: Types
+  TextEncoderConfig = record {
+    te-vocab-size : Integer,
+    te-max-seq-len : Integer,
+    te-d-model : Integer,
+    te-num-heads : Integer,
+    te-d-ff : Integer,
+    te-num-layers : Integer
+  }
+
+  TextEncoderState = record {
+    tes-config : TextEncoderConfig,
+    tes-token-embed : List Integer,
+    tes-pos-embed : List Integer,
+    tes-layers : List TransformerWeights,
+    tes-final-ln-gamma : List Integer,
+    tes-final-ln-beta : List Integer
+  }
+
+Section: Configuration
+  clip-config-base : TextEncoderConfig
+  clip-config-base = TextEncoderConfig {
+    te-vocab-size = 49408,
+    te-max-seq-len = 77,
+    te-d-model = 768,
+    te-num-heads = 12,
+    te-d-ff = 3072,
+    te-num-layers = 12
+  }
+
+  clip-config-large : TextEncoderConfig
+  clip-config-large = TextEncoderConfig {
+    te-vocab-size = 49408,
+    te-max-seq-len = 77,
+    te-d-model = 1024,
+    te-num-heads = 16,
+    te-d-ff = 4096,
+    te-num-layers = 24
+  }
+
+Section: Special Tokens
+  clip-bos-token : Integer = 49406
+  clip-eos-token : Integer = 49407
+  clip-pad-token : Integer = 49407
+
+Section: Tokenization
+  te-tokenize : Text, BpeTokenizer, Integer -> List Integer
+  te-tokenize (text) (tokenizer) (max-len) =
+    let tokens = bpe-tokenize tokenizer text
+    in let with-bos = [clip-bos-token] & tokens
+    in let with-eos = te-append-eos with-bos max-len
+    in te-pad-tokens with-eos max-len
+
+  te-append-eos : List Integer, Integer -> List Integer
+  te-append-eos (tokens) (max-len) =
+    if list-length tokens >= max-len then te-truncate tokens (max-len - 1) 0 []
+    else list-push tokens clip-eos-token
+
+  te-truncate : List Integer, Integer, Integer, List Integer -> List Integer
+  te-truncate (tokens) (len) (i) (acc) =
+    if i >= len then list-push acc clip-eos-token
+    else te-truncate tokens len (i + 1) (list-push acc (list-at tokens i))
+
+  te-pad-tokens : List Integer, Integer -> List Integer
+  te-pad-tokens (tokens) (max-len) =
+    if list-length tokens >= max-len then tokens
+    else te-pad-tokens (list-push tokens clip-pad-token) max-len
+
+Section: Embedding
+  te-embed : List Integer, TextEncoderState -> List Integer
+  te-embed (tokens) (state) =
+    let cfg = state.tes-config
+    in let tok-emb = te-lookup-tokens tokens (state.tes-token-embed) (cfg.te-d-model) 0 (list-length tokens) []
+    in let pos-emb = te-lookup-positions (state.tes-pos-embed) (cfg.te-d-model) 0 (list-length tokens) []
+    in te-add-vecs tok-emb pos-emb 0 (list-length tok-emb) []
+
+  te-lookup-tokens : List Integer, List Integer, Integer, Integer, Integer, List Integer -> List Integer
+  te-lookup-tokens (tokens) (embed-table) (dim) (i) (n) (acc) =
+    if i >= n then acc
+    else let token-id = list-at tokens i
+    in let start = token-id * dim
+    in let vec = te-extract-vec embed-table start dim 0 []
+    in te-lookup-tokens tokens embed-table dim (i + 1) n (acc & vec)
+
+  te-lookup-positions : List Integer, Integer, Integer, Integer, List Integer -> List Integer
+  te-lookup-positions (pos-table) (dim) (i) (n) (acc) =
+    if i >= n then acc
+    else let start = i * dim
+    in let vec = te-extract-vec pos-table start dim 0 []
+    in te-lookup-positions pos-table dim (i + 1) n (acc & vec)
+
+  te-extract-vec : List Integer, Integer, Integer, Integer, List Integer -> List Integer
+  te-extract-vec (data) (start) (dim) (j) (acc) =
+    if j >= dim then acc
+    else te-extract-vec data start dim (j + 1) (list-push acc (list-at data (start + j)))
+
+  te-add-vecs : List Integer, List Integer, Integer, Integer, List Integer -> List Integer
+  te-add-vecs (a) (b) (i) (n) (acc) =
+    if i >= n then acc
+    else te-add-vecs a b (i + 1) n (list-push acc (list-at a i + list-at b i))
+
+Section: Forward Pass
+  te-forward : List Integer, TextEncoderState -> List Integer
+  te-forward (tokens) (state) =
+    let cfg = state.tes-config
+    in let embedded = te-embed tokens state
+    in let tf-cfg = TransformerConfig {
+        tf-d-model = cfg.te-d-model,
+        tf-num-heads = cfg.te-num-heads,
+        tf-d-ff = cfg.te-d-ff,
+        tf-seq-len = list-length tokens,
+        tf-dropout = 0
+      }
+    in let encoded = te-run-layers embedded (state.tes-layers) tf-cfg 0 (cfg.te-num-layers)
+    in layer-norm encoded (state.tes-final-ln-gamma) (state.tes-final-ln-beta) (cfg.te-d-model)
+
+  te-run-layers : List Integer, List TransformerWeights, TransformerConfig, Integer, Integer -> List Integer
+  te-run-layers (hidden) (layers) (cfg) (i) (n) =
+    if i >= n then hidden
+    else let w = list-at layers i
+    in let output = transformer-encoder-layer hidden w cfg
+    in te-run-layers output layers cfg (i + 1) n
+
+Section: Full Encode (text string to hidden states)
+  te-encode : Text, BpeTokenizer, TextEncoderState -> List Integer
+  te-encode (text) (tokenizer) (state) =
+    let tokens = te-tokenize text tokenizer (state.tes-config.te-max-seq-len)
+    in te-forward tokens state
+
+Section: Weight Loading from SafeTensors
+  te-load-layer-weights : List Integer, SafeTensorFile, Integer -> TransformerWeights
+  te-load-layer-weights (data) (file) (layer-idx) =
+    let prefix = "text_model.encoder.layers." & show layer-idx & "."
+    in TransformerWeights {
+      tw-q = te-load-weight data file (prefix & "self_attn.q_proj.weight"),
+      tw-k = te-load-weight data file (prefix & "self_attn.k_proj.weight"),
+      tw-v = te-load-weight data file (prefix & "self_attn.v_proj.weight"),
+      tw-out = te-load-weight data file (prefix & "self_attn.out_proj.weight"),
+      tw-ff1 = te-load-weight data file (prefix & "mlp.fc1.weight"),
+      tw-ff1-bias = te-load-weight data file (prefix & "mlp.fc1.bias"),
+      tw-ff2 = te-load-weight data file (prefix & "mlp.fc2.weight"),
+      tw-ff2-bias = te-load-weight data file (prefix & "mlp.fc2.bias"),
+      tw-ln1-gamma = te-load-weight data file (prefix & "layer_norm1.weight"),
+      tw-ln1-beta = te-load-weight data file (prefix & "layer_norm1.bias"),
+      tw-ln2-gamma = te-load-weight data file (prefix & "layer_norm2.weight"),
+      tw-ln2-beta = te-load-weight data file (prefix & "layer_norm2.bias"),
+      tw-ln3-gamma = [],
+      tw-ln3-beta = []
+    }
+
+  te-load-weight : List Integer, SafeTensorFile, Text -> List Integer
+  te-load-weight (data) (file) (name) =
+    let found = st-find-tensor file name
+    in when found
+      is Just (meta) -> (st-load-tensor data file meta).data
+      is None -> []
+
+  te-load-all-layers : List Integer, SafeTensorFile, Integer, Integer, List TransformerWeights -> List TransformerWeights
+  te-load-all-layers (data) (file) (i) (n) (acc) =
+    if i >= n then acc
+    else let w = te-load-layer-weights data file i
+    in te-load-all-layers data file (i + 1) n (list-push acc w)
+
+  te-load-state : List Integer, SafeTensorFile, TextEncoderConfig -> TextEncoderState
+  te-load-state (data) (file) (cfg) =
+    let tok-embed = te-load-weight data file "text_model.embeddings.token_embedding.weight"
+    in let pos-embed = te-load-weight data file "text_model.embeddings.position_embedding.weight"
+    in let layers = te-load-all-layers data file 0 (cfg.te-num-layers) []
+    in let ln-gamma = te-load-weight data file "text_model.final_layer_norm.weight"
+    in let ln-beta = te-load-weight data file "text_model.final_layer_norm.bias"
+    in TextEncoderState {
+      tes-config = cfg,
+      tes-token-embed = tok-embed,
+      tes-pos-embed = pos-embed,
+      tes-layers = layers,
+      tes-final-ln-gamma = ln-gamma,
+      tes-final-ln-beta = ln-beta
+    }
+
+Section: Queries
+  format-te-config : TextEncoderConfig -> Text
+  format-te-config (cfg) =
+    "d_model=" & show (cfg.te-d-model) & " heads=" & show (cfg.te-num-heads) & " layers=" & show (cfg.te-num-layers) & " d_ff=" & show (cfg.te-d-ff) & " vocab=" & show (cfg.te-vocab-size)
+
+Page 1

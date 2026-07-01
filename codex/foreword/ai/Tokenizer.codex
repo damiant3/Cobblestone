@@ -1,0 +1,85 @@
+Chapter: Tokenizer
+  cites Foreword chapter Maybe
+  cites Foreword chapter Hamt
+
+ Byte-pair encoding (BPE) tokenizer. Splits text into tokens using
+ a vocabulary of merge rules. Core component for LLM inference —
+ converts text to token IDs for embedding lookup.
+
+ We say:
+
+Section: Types
+  BpeMerge = record {
+    bpe-left : Text,
+    bpe-right : Text,
+    bpe-result : Text,
+    bpe-priority : Integer
+  }
+
+  BpeVocab = record {
+    bpe-token-to-id : HamtMap Integer,
+    bpe-merges : List BpeMerge,
+    bpe-merge-count : Integer,
+    bpe-vocab-size : Integer
+  }
+
+Section: Construction
+  bpe-vocab-new : BpeVocab
+  bpe-vocab-new = BpeVocab { bpe-token-to-id = hamt-empty, bpe-merges = [], bpe-merge-count = 0, bpe-vocab-size = 0 }
+
+  bpe-add-token : BpeVocab, Text, Integer -> BpeVocab
+  bpe-add-token (v) (token) (id) =
+    BpeVocab { bpe-token-to-id = hamt-set (v.bpe-token-to-id) token id, bpe-merges = v.bpe-merges, bpe-merge-count = v.bpe-merge-count, bpe-vocab-size = v.bpe-vocab-size + 1 }
+
+  bpe-add-merge : BpeVocab, Text, Text, Text -> BpeVocab
+  bpe-add-merge (v) (left) (right) (result) =
+    let merge = BpeMerge { bpe-left = left, bpe-right = right, bpe-result = result, bpe-priority = v.bpe-merge-count }
+    in BpeVocab { bpe-token-to-id = v.bpe-token-to-id, bpe-merges = list-push (v.bpe-merges) merge, bpe-merge-count = v.bpe-merge-count + 1, bpe-vocab-size = v.bpe-vocab-size }
+
+Section: Tokenization
+  bpe-tokenize : BpeVocab, Text -> List Integer
+  bpe-tokenize (vocab) (text) =
+    let chars = bpe-split-chars text 0 (text-length text) []
+    in let merged = bpe-apply-merges vocab chars
+    in bpe-lookup-ids vocab merged 0 (list-length merged) []
+
+  bpe-split-chars : Text, Integer, Integer, List Text -> List Text
+  bpe-split-chars (s) (i) (len) (acc) =
+    if i >= len then acc
+    else bpe-split-chars s (i + 1) len (list-push acc (char-to-text (char-at s i)))
+
+  bpe-apply-merges : BpeVocab, List Text -> List Text
+  bpe-apply-merges (vocab) (tokens) = bpe-apply-merge-loop vocab tokens 0 (vocab.bpe-merge-count)
+
+  bpe-apply-merge-loop : BpeVocab, List Text, Integer, Integer -> List Text
+  bpe-apply-merge-loop (vocab) (tokens) (mi) (num-merges) =
+    if mi >= num-merges then tokens
+    else let merge = list-at (vocab.bpe-merges) mi
+    in let merged = bpe-apply-one-merge tokens (merge.bpe-left) (merge.bpe-right) (merge.bpe-result) 0 (list-length tokens) []
+    in bpe-apply-merge-loop vocab merged (mi + 1) num-merges
+
+  bpe-apply-one-merge : List Text, Text, Text, Text, Integer, Integer, List Text -> List Text
+  bpe-apply-one-merge (tokens) (left) (right) (result) (i) (len) (acc) =
+    if i >= len then acc
+    else if i + 1 < len then
+      if list-at tokens i == left then
+        if list-at tokens (i + 1) == right then bpe-apply-one-merge tokens left right result (i + 2) len (list-push acc result)
+        else bpe-apply-one-merge tokens left right result (i + 1) len (list-push acc (list-at tokens i))
+      else bpe-apply-one-merge tokens left right result (i + 1) len (list-push acc (list-at tokens i))
+    else list-push acc (list-at tokens i)
+
+  bpe-lookup-ids : BpeVocab, List Text, Integer, Integer, List Integer -> List Integer
+  bpe-lookup-ids (vocab) (tokens) (i) (len) (acc) =
+    if i >= len then acc
+    else let found = hamt-get (vocab.bpe-token-to-id) (list-at tokens i)
+    in let id = when found is Just (v) -> v is None -> 0
+    in bpe-lookup-ids vocab tokens (i + 1) len (list-push acc id)
+
+Section: Queries
+  bpe-vocab-size : BpeVocab -> Integer
+  bpe-vocab-size (v) = v.bpe-vocab-size
+
+  bpe-encode-length : BpeVocab, Text -> Integer
+  bpe-encode-length (vocab) (text) = list-length (bpe-tokenize vocab text)
+
+Page 1

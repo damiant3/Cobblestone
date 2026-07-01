@@ -1,0 +1,449 @@
+Chapter: Arm64Encoder
+
+ AArch64 instruction encoding. Fixed 32-bit words. Each encoder
+ returns a List Integer (4 bytes, little-endian) for one instruction.
+ Transliterated from old/src/Codex.Emit.Arm64/Arm64Encoder.cs.
+
+Section: Register Constants
+
+  reg-x0 : Integer = 0
+  reg-x1 : Integer = 1
+  reg-x2 : Integer = 2
+  reg-x3 : Integer = 3
+  reg-x4 : Integer = 4
+  reg-x5 : Integer = 5
+  reg-x6 : Integer = 6
+  reg-x7 : Integer = 7
+  reg-x8 : Integer = 8
+  reg-x9 : Integer = 9
+  reg-x10 : Integer = 10
+  reg-x11 : Integer = 11
+  reg-x12 : Integer = 12
+  reg-x13 : Integer = 13
+  reg-x14 : Integer = 14
+  reg-x15 : Integer = 15
+  reg-x16 : Integer = 16
+  reg-x17 : Integer = 17
+  reg-x18 : Integer = 18
+  reg-x19 : Integer = 19
+  reg-x20 : Integer = 20
+  reg-x21 : Integer = 21
+  reg-x22 : Integer = 22
+  reg-x23 : Integer = 23
+  reg-x24 : Integer = 24
+  reg-x25 : Integer = 25
+  reg-x26 : Integer = 26
+  reg-x27 : Integer = 27
+  reg-x28 : Integer = 28
+  reg-fp : Integer = 29
+  reg-lr : Integer = 30
+  reg-xzr : Integer = 31
+  reg-sp : Integer = 31
+
+Section: Helpers
+
+  arm64-encode : Integer -> List Integer
+  arm64-encode (w) =
+    [bit-and w 255, bit-and (bit-shru w 8) 255, bit-and (bit-shru w 16) 255, bit-and (bit-shru w 24) 255]
+
+  arm64-rrr : Integer, Integer, Integer, Integer -> List Integer
+  arm64-rrr (opcode) (rd) (rn) (rm) =
+    arm64-encode (bit-or (bit-or (bit-or opcode (bit-shl rm 16)) (bit-shl rn 5)) rd)
+
+Section: Data Processing (Register)
+
+  arm64-add : Integer, Integer, Integer -> List Integer
+  arm64-add (rd) (rn) (rm) = arm64-rrr #8B000000 rd rn rm
+
+  arm64-sub : Integer, Integer, Integer -> List Integer
+  arm64-sub (rd) (rn) (rm) = arm64-rrr #CB000000 rd rn rm
+
+  arm64-and : Integer, Integer, Integer -> List Integer
+  arm64-and (rd) (rn) (rm) = arm64-rrr #8A000000 rd rn rm
+
+  arm64-or : Integer, Integer, Integer -> List Integer
+  arm64-or (rd) (rn) (rm) = arm64-rrr #AA000000 rd rn rm
+
+  arm64-xor : Integer, Integer, Integer -> List Integer
+  arm64-xor (rd) (rn) (rm) = arm64-rrr #CA000000 rd rn rm
+
+  arm64-lsl : Integer, Integer, Integer -> List Integer
+  arm64-lsl (rd) (rn) (rm) = arm64-rrr #9AC02000 rd rn rm
+
+  arm64-lsr : Integer, Integer, Integer -> List Integer
+  arm64-lsr (rd) (rn) (rm) = arm64-rrr #9AC02400 rd rn rm
+
+  arm64-asr : Integer, Integer, Integer -> List Integer
+  arm64-asr (rd) (rn) (rm) = arm64-rrr #9AC02800 rd rn rm
+
+  arm64-lsr-imm : Integer, Integer, Integer -> List Integer
+  arm64-lsr-imm (rd) (rn) (imm) =
+    arm64-encode (bit-or (bit-or (bit-or (bit-or #D340FC00 (bit-shl (bit-and imm #3F) 16)) (bit-shl rn 5)) rd) 0)
+
+  arm64-lsl-imm : Integer, Integer, Integer -> List Integer
+  arm64-lsl-imm (rd) (rn) (imm) =
+    let immr = bit-and (64 - imm) #3F
+    in let imms = bit-and (63 - imm) #3F
+    in arm64-encode (bit-or (bit-or (bit-or (bit-or #D3400000 (bit-shl immr 16)) (bit-shl imms 10)) (bit-shl rn 5)) rd)
+
+  arm64-mul : Integer, Integer, Integer -> List Integer
+  arm64-mul (rd) (rn) (rm) = arm64-rrr #9B007C00 rd rn rm
+
+  arm64-sdiv : Integer, Integer, Integer -> List Integer
+  arm64-sdiv (rd) (rn) (rm) = arm64-rrr #9AC00C00 rd rn rm
+
+  arm64-msub : Integer, Integer, Integer, Integer -> List Integer
+  arm64-msub (rd) (rn) (rm) (ra) =
+    arm64-encode (bit-or (bit-or (bit-or (bit-or #9B008000 (bit-shl rm 16)) (bit-shl ra 10)) (bit-shl rn 5)) rd)
+
+  arm64-neg : Integer, Integer -> List Integer
+  arm64-neg (rd) (rm) = arm64-sub rd reg-xzr rm
+
+Section: Compare
+
+  arm64-cmp : Integer, Integer -> List Integer
+  arm64-cmp (rn) (rm) = arm64-rrr #EB000000 reg-xzr rn rm
+
+  arm64-cmp-imm : Integer, Integer -> List Integer
+  arm64-cmp-imm (rn) (imm12) =
+    arm64-encode (bit-or (bit-or #F100001F (bit-shl (bit-and imm12 #FFF) 10)) (bit-shl rn 5))
+
+Section: Conditional Select
+
+  arm64-cond-eq : Integer = 0
+  arm64-cond-ne : Integer = 1
+  arm64-cond-lt : Integer = 11
+  arm64-cond-ge : Integer = 10
+  arm64-cond-le : Integer = 13
+  arm64-cond-gt : Integer = 12
+
+  arm64-csel : Integer, Integer, Integer, Integer -> List Integer
+  arm64-csel (rd) (rn) (rm) (cond) =
+    arm64-encode (bit-or (bit-or (bit-or (bit-or #9A800000 (bit-shl rm 16)) (bit-shl cond 12)) (bit-shl rn 5)) rd)
+
+  arm64-csinc : Integer, Integer, Integer, Integer -> List Integer
+  arm64-csinc (rd) (rn) (rm) (cond) =
+    arm64-encode (bit-or (bit-or (bit-or (bit-or #9A800400 (bit-shl rm 16)) (bit-shl cond 12)) (bit-shl rn 5)) rd)
+
+Section: Data Processing (Immediate)
+
+  arm64-add-imm : Integer, Integer, Integer -> List Integer
+  arm64-add-imm (rd) (rn) (imm12) =
+    arm64-encode (bit-or (bit-or (bit-or #91000000 (bit-shl (bit-and imm12 #FFF) 10)) (bit-shl rn 5)) rd)
+
+  arm64-sub-imm : Integer, Integer, Integer -> List Integer
+  arm64-sub-imm (rd) (rn) (imm12) =
+    arm64-encode (bit-or (bit-or (bit-or #D1000000 (bit-shl (bit-and imm12 #FFF) 10)) (bit-shl rn 5)) rd)
+
+  arm64-movz : Integer, Integer, Integer -> List Integer
+  arm64-movz (rd) (imm16) (shift) =
+    arm64-encode (bit-or (bit-or (bit-or #D2800000 (bit-shl (shift / 16) 21)) (bit-shl (bit-and imm16 #FFFF) 5)) rd)
+
+  arm64-movk : Integer, Integer, Integer -> List Integer
+  arm64-movk (rd) (imm16) (shift) =
+    arm64-encode (bit-or (bit-or (bit-or #F2800000 (bit-shl (shift / 16) 21)) (bit-shl (bit-and imm16 #FFFF) 5)) rd)
+
+  arm64-movn : Integer, Integer, Integer -> List Integer
+  arm64-movn (rd) (imm16) (shift) =
+    arm64-encode (bit-or (bit-or (bit-or #92800000 (bit-shl (shift / 16) 21)) (bit-shl (bit-and imm16 #FFFF) 5)) rd)
+
+Section: Loads and Stores
+
+  arm64-ldr : Integer, Integer, Integer -> List Integer
+  arm64-ldr (rt) (rn) (offset) =
+    if offset < 0 then arm64-encode (bit-or (bit-or (bit-or #F8400000 (bit-shl (bit-and offset #1FF) 12)) (bit-shl rn 5)) rt)
+    else arm64-encode (bit-or (bit-or (bit-or #F9400000 (bit-shl (bit-and (offset / 8) #FFF) 10)) (bit-shl rn 5)) rt)
+
+  arm64-str : Integer, Integer, Integer -> List Integer
+  arm64-str (rt) (rn) (offset) =
+    if offset < 0 then arm64-encode (bit-or (bit-or (bit-or #F8000000 (bit-shl (bit-and offset #1FF) 12)) (bit-shl rn 5)) rt)
+    else arm64-encode (bit-or (bit-or (bit-or #F9000000 (bit-shl (bit-and (offset / 8) #FFF) 10)) (bit-shl rn 5)) rt)
+
+  arm64-ldrb : Integer, Integer, Integer -> List Integer
+  arm64-ldrb (rt) (rn) (offset) =
+    arm64-encode (bit-or (bit-or (bit-or #39400000 (bit-shl (bit-and offset #FFF) 10)) (bit-shl rn 5)) rt)
+
+  arm64-strb : Integer, Integer, Integer -> List Integer
+  arm64-strb (rt) (rn) (offset) =
+    arm64-encode (bit-or (bit-or (bit-or #39000000 (bit-shl (bit-and offset #FFF) 10)) (bit-shl rn 5)) rt)
+
+  arm64-ldr-reg : Integer, Integer, Integer -> List Integer
+  arm64-ldr-reg (rt) (rn) (rm) = arm64-rrr #F8606800 rt rn rm
+
+  arm64-ldrb-reg : Integer, Integer, Integer -> List Integer
+  arm64-ldrb-reg (rt) (rn) (rm) = arm64-rrr #38606800 rt rn rm
+
+  arm64-strb-reg : Integer, Integer, Integer -> List Integer
+  arm64-strb-reg (rt) (rn) (rm) = arm64-rrr #38206800 rt rn rm
+
+  arm64-stp : Integer, Integer, Integer, Integer -> List Integer
+  arm64-stp (rt1) (rt2) (rn) (offset) =
+    let imm7 = bit-and (offset / 8) #7F
+    in arm64-encode (bit-or (bit-or (bit-or (bit-or #A9000000 (bit-shl imm7 15)) (bit-shl rt2 10)) (bit-shl rn 5)) rt1)
+
+  arm64-ldp : Integer, Integer, Integer, Integer -> List Integer
+  arm64-ldp (rt1) (rt2) (rn) (offset) =
+    let imm7 = bit-and (offset / 8) #7F
+    in arm64-encode (bit-or (bit-or (bit-or (bit-or #A9400000 (bit-shl imm7 15)) (bit-shl rt2 10)) (bit-shl rn 5)) rt1)
+
+Section: Branches
+
+  arm64-b : Integer -> List Integer
+  arm64-b (offset) =
+    arm64-encode (bit-or #14000000 (bit-and (offset / 4) #3FFFFFF))
+
+  arm64-bl : Integer -> List Integer
+  arm64-bl (offset) =
+    arm64-encode (bit-or #94000000 (bit-and (offset / 4) #3FFFFFF))
+
+  arm64-b-cond : Integer, Integer -> List Integer
+  arm64-b-cond (cond) (offset) =
+    arm64-encode (bit-or (bit-or #54000000 (bit-shl (bit-and (offset / 4) #7FFFF) 5)) cond)
+
+  arm64-cbz : Integer, Integer -> List Integer
+  arm64-cbz (rt) (offset) =
+    arm64-encode (bit-or (bit-or #B4000000 (bit-shl (bit-and (offset / 4) #7FFFF) 5)) rt)
+
+  arm64-cbnz : Integer, Integer -> List Integer
+  arm64-cbnz (rt) (offset) =
+    arm64-encode (bit-or (bit-or #B5000000 (bit-shl (bit-and (offset / 4) #7FFFF) 5)) rt)
+
+  arm64-br : Integer -> List Integer
+  arm64-br (rn) = arm64-encode (bit-or #D61F0000 (bit-shl rn 5))
+
+  arm64-blr : Integer -> List Integer
+  arm64-blr (rn) = arm64-encode (bit-or #D63F0000 (bit-shl rn 5))
+
+  arm64-ret : List Integer = arm64-encode (bit-or #D65F0000 (bit-shl reg-lr 5))
+
+Section: 32-bit Loads and Stores
+
+  arm64-ldr-w : Integer, Integer, Integer -> List Integer
+  arm64-ldr-w (rt) (rn) (offset) =
+    arm64-encode (bit-or (bit-or (bit-or #B9400000 (bit-shl (bit-and (offset / 4) #FFF) 10)) (bit-shl rn 5)) rt)
+
+  arm64-str-w : Integer, Integer, Integer -> List Integer
+  arm64-str-w (rt) (rn) (offset) =
+    arm64-encode (bit-or (bit-or (bit-or #B9000000 (bit-shl (bit-and (offset / 4) #FFF) 10)) (bit-shl rn 5)) rt)
+
+  arm64-ldr-w-reg : Integer, Integer, Integer -> List Integer
+  arm64-ldr-w-reg (rt) (rn) (rm) = arm64-rrr #B8606800 rt rn rm
+
+  arm64-str-w-reg : Integer, Integer, Integer -> List Integer
+  arm64-str-w-reg (rt) (rn) (rm) = arm64-rrr #B8206800 rt rn rm
+
+Section: System
+
+  arm64-svc : Integer -> List Integer
+  arm64-svc (imm16) = arm64-encode (bit-or #D4000001 (bit-shl (bit-and imm16 #FFFF) 5))
+
+  arm64-nop : List Integer = arm64-encode #D503201F
+
+  arm64-dsb-sy : List Integer = arm64-encode #D5033F9F
+  arm64-dmb-sy : List Integer = arm64-encode #D5033FBF
+  arm64-isb : List Integer = arm64-encode #D5033FDF
+
+  arm64-dsb-ish : List Integer = arm64-encode #D5033B9F
+  arm64-dmb-ish : List Integer = arm64-encode #D5033BBF
+
+  arm64-ldxr : Integer, Integer -> List Integer
+  arm64-ldxr (rt) (rn) =
+    arm64-encode (bit-or (bit-or #C85F7C00 (bit-shl rn 5)) rt)
+
+  arm64-stxr : Integer, Integer, Integer -> List Integer
+  arm64-stxr (rs) (rt) (rn) =
+    arm64-encode (bit-or (bit-or (bit-or #C8007C00 (bit-shl rs 16)) (bit-shl rn 5)) rt)
+
+  arm64-ldar : Integer, Integer -> List Integer
+  arm64-ldar (rt) (rn) =
+    arm64-encode (bit-or (bit-or #C8DFFC00 (bit-shl rn 5)) rt)
+
+  arm64-stlr : Integer, Integer -> List Integer
+  arm64-stlr (rt) (rn) =
+    arm64-encode (bit-or (bit-or #C89FFC00 (bit-shl rn 5)) rt)
+
+  arm64-mrs : Integer, Integer -> List Integer
+  arm64-mrs (rt) (sysreg) =
+    arm64-encode (bit-or (bit-or #D5300000 (bit-shl sysreg 5)) rt)
+
+  arm64-msr : Integer, Integer -> List Integer
+  arm64-msr (sysreg) (rt) =
+    arm64-encode (bit-or (bit-or #D5100000 (bit-shl sysreg 5)) rt)
+
+  arm64-wfi : List Integer = arm64-encode #D503207F
+
+  arm64-eret : List Integer = arm64-encode #D69F03E0
+
+Section: System Register IDs (for MRS/MSR)
+
+  sysreg-sctlr-el1 : Integer = #4080
+  sysreg-ttbr0-el1 : Integer = #4100
+  sysreg-ttbr1-el1 : Integer = #4101
+  sysreg-tcr-el1 : Integer = #4102
+  sysreg-mair-el1 : Integer = #4510
+  sysreg-vbar-el1 : Integer = #4600
+  sysreg-currentel : Integer = #4212
+  sysreg-daif : Integer = #5A11
+  sysreg-cntp-ctl-el0 : Integer = #5F11
+  sysreg-cntp-tval-el0 : Integer = #5F10
+  sysreg-cntfrq-el0 : Integer = #5F00
+  sysreg-icc-pmr-el1 : Integer = #4230
+  sysreg-icc-igrpen1-el1 : Integer = #4667
+  sysreg-icc-iar1-el1 : Integer = #4660
+  sysreg-icc-eoir1-el1 : Integer = #4661
+
+Section: Floating-Point
+
+  arm64-fmov-to-fp : Integer, Integer -> List Integer
+  arm64-fmov-to-fp (fd) (xn) =
+    arm64-encode (bit-or (bit-or #9E670000 (bit-shl xn 5)) fd)
+
+  arm64-fmov-from-fp : Integer, Integer -> List Integer
+  arm64-fmov-from-fp (xd) (dn) =
+    arm64-encode (bit-or (bit-or #9E660000 (bit-shl dn 5)) xd)
+
+  arm64-fmov-to-fp-s : Integer, Integer -> List Integer
+  arm64-fmov-to-fp-s (sd) (wn) =
+    arm64-encode (bit-or (bit-or #1E270000 (bit-shl wn 5)) sd)
+
+  arm64-fmov-from-fp-s : Integer, Integer -> List Integer
+  arm64-fmov-from-fp-s (wd) (sn) =
+    arm64-encode (bit-or (bit-or #1E260000 (bit-shl sn 5)) wd)
+
+  arm64-fadd-d : Integer, Integer, Integer -> List Integer
+  arm64-fadd-d (fd) (fn) (fm) = arm64-rrr #1E602800 fd fn fm
+
+  arm64-fsub-d : Integer, Integer, Integer -> List Integer
+  arm64-fsub-d (fd) (fn) (fm) = arm64-rrr #1E603800 fd fn fm
+
+  arm64-fmul-d : Integer, Integer, Integer -> List Integer
+  arm64-fmul-d (fd) (fn) (fm) = arm64-rrr #1E600800 fd fn fm
+
+  arm64-fdiv-d : Integer, Integer, Integer -> List Integer
+  arm64-fdiv-d (fd) (fn) (fm) = arm64-rrr #1E601800 fd fn fm
+
+  arm64-fadd-s : Integer, Integer, Integer -> List Integer
+  arm64-fadd-s (fd) (fn) (fm) = arm64-rrr #1E202800 fd fn fm
+
+  arm64-fsub-s : Integer, Integer, Integer -> List Integer
+  arm64-fsub-s (fd) (fn) (fm) = arm64-rrr #1E203800 fd fn fm
+
+  arm64-fmul-s : Integer, Integer, Integer -> List Integer
+  arm64-fmul-s (fd) (fn) (fm) = arm64-rrr #1E200800 fd fn fm
+
+  arm64-fdiv-s : Integer, Integer, Integer -> List Integer
+  arm64-fdiv-s (fd) (fn) (fm) = arm64-rrr #1E201800 fd fn fm
+
+  arm64-fcmp-d : Integer, Integer -> List Integer
+  arm64-fcmp-d (fn) (fm) =
+    arm64-encode (bit-or (bit-or #1E602000 (bit-shl fm 16)) (bit-shl fn 5))
+
+  arm64-fcmp-s : Integer, Integer -> List Integer
+  arm64-fcmp-s (fn) (fm) =
+    arm64-encode (bit-or (bit-or #1E202000 (bit-shl fm 16)) (bit-shl fn 5))
+
+  arm64-scvtf-d : Integer, Integer -> List Integer
+  arm64-scvtf-d (fd) (xn) =
+    arm64-encode (bit-or (bit-or #9E620000 (bit-shl xn 5)) fd)
+
+  arm64-fcvtzs-dx : Integer, Integer -> List Integer
+  arm64-fcvtzs-dx (xd) (dn) =
+    arm64-encode (bit-or (bit-or #9E780000 (bit-shl dn 5)) xd)
+
+  arm64-fcvt-sd : Integer, Integer -> List Integer
+  arm64-fcvt-sd (sd) (dn) =
+    arm64-encode (bit-or (bit-or #1E624000 (bit-shl dn 5)) sd)
+
+  arm64-fcvt-ds : Integer, Integer -> List Integer
+  arm64-fcvt-ds (dd) (sn) =
+    arm64-encode (bit-or (bit-or #1E22C000 (bit-shl sn 5)) dd)
+
+  arm64-scvtf-s : Integer, Integer -> List Integer
+  arm64-scvtf-s (fd) (xn) =
+    arm64-encode (bit-or (bit-or #9E220000 (bit-shl xn 5)) fd)
+
+  arm64-fcvtzs-sx : Integer, Integer -> List Integer
+  arm64-fcvtzs-sx (xd) (sn) =
+    arm64-encode (bit-or (bit-or #9E380000 (bit-shl sn 5)) xd)
+
+Section: NEON Packed Double
+
+  arm64-fadd-2d : Integer, Integer, Integer -> List Integer
+  arm64-fadd-2d (vd) (vn) (vm) = arm64-rrr #4E60D400 vd vn vm
+
+  arm64-fsub-2d : Integer, Integer, Integer -> List Integer
+  arm64-fsub-2d (vd) (vn) (vm) = arm64-rrr #4EE0D400 vd vn vm
+
+  arm64-fmul-2d : Integer, Integer, Integer -> List Integer
+  arm64-fmul-2d (vd) (vn) (vm) = arm64-rrr #6E60DC00 vd vn vm
+
+  arm64-fdiv-2d : Integer, Integer, Integer -> List Integer
+  arm64-fdiv-2d (vd) (vn) (vm) = arm64-rrr #6E60FC00 vd vn vm
+
+  arm64-faddp-d : Integer, Integer -> List Integer
+  arm64-faddp-d (dd) (vn) =
+   arm64-encode (bit-or (bit-or #7E70D800 (bit-shl vn 5)) dd)
+
+  arm64-dup-2d : Integer, Integer -> List Integer
+  arm64-dup-2d (vd) (xn) =
+   arm64-encode (bit-or (bit-or #4E080C00 (bit-shl xn 5)) vd)
+
+  arm64-ins-d : Integer, Integer, Integer -> List Integer
+  arm64-ins-d (vd) (lane) (xn) =
+   arm64-encode (bit-or (bit-or (bit-or #4E081C00 (bit-shl lane 20)) (bit-shl xn 5)) vd)
+
+  arm64-umov-d : Integer, Integer, Integer -> List Integer
+  arm64-umov-d (xd) (vn) (lane) =
+   arm64-encode (bit-or (bit-or (bit-or #4E083C00 (bit-shl lane 20)) (bit-shl vn 5)) xd)
+
+  arm64-bsl-16b : Integer, Integer, Integer -> List Integer
+  arm64-bsl-16b (vd) (vn) (vm) = arm64-rrr #6E601C00 vd vn vm
+
+  arm64-str-q : Integer, Integer, Integer -> List Integer
+  arm64-str-q (qt) (xn) (offset) =
+   let imm12 = bit-and (offset / 16) 4095
+   in arm64-encode (bit-or (bit-or (bit-or #3D800000 (bit-shl imm12 10)) (bit-shl xn 5)) qt)
+
+  arm64-ldr-q : Integer, Integer, Integer -> List Integer
+  arm64-ldr-q (qt) (xn) (offset) =
+   let imm12 = bit-and (offset / 16) 4095
+   in arm64-encode (bit-or (bit-or (bit-or #3DC00000 (bit-shl imm12 10)) (bit-shl xn 5)) qt)
+
+Section: Pseudo-Instructions
+
+  arm64-mov : Integer, Integer -> List Integer
+  arm64-mov (rd) (rm) =
+    if rm == reg-sp then arm64-add-imm rd rm 0
+    else if rd == reg-sp then arm64-add-imm rd rm 0
+    else arm64-or rd reg-xzr rm
+
+  arm64-li : Integer, Integer -> List Integer
+  arm64-li (rd) (value) =
+    if value >= 0 then
+      if value <= #FFFF then arm64-movz rd value 0
+      else if value <= #FFFFFFFF then arm64-li-32 rd value
+      else arm64-li-64 rd value
+    else if value >= 0 - #10000 then arm64-movn rd (bit-xor value (0 - 1)) 0
+    else arm64-li-64 rd value
+
+  arm64-li-32 : Integer, Integer -> List Integer
+  arm64-li-32 (rd) (value) =
+    let lo = bit-and value #FFFF
+    in let hi = bit-and (bit-shru value 16) #FFFF
+    in if hi == 0 then arm64-movz rd lo 0
+    else if lo == 0 then arm64-movz rd hi 16
+    else arm64-movz rd lo 0 & arm64-movk rd hi 16
+
+  arm64-li-64 : Integer, Integer -> List Integer
+  arm64-li-64 (rd) (value) =
+    arm64-li-64-loop rd value 0 True []
+
+  arm64-li-64-loop : Integer, Integer, Integer, Boolean, List Integer -> List Integer
+  arm64-li-64-loop (rd) (value) (shift) (first) (acc) =
+    if shift >= 64 then if list-length acc == 0 then arm64-movz rd 0 0 else acc
+    else let chunk = bit-and (bit-shru value shift) #FFFF
+    in if chunk == 0 then arm64-li-64-loop rd value (shift + 16) first acc
+    else if first then arm64-li-64-loop rd value (shift + 16) False (acc & arm64-movz rd chunk shift)
+    else arm64-li-64-loop rd value (shift + 16) False (acc & arm64-movk rd chunk shift)
+
+Page 1

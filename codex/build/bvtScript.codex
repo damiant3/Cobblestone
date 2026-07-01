@@ -1,0 +1,83 @@
+Chapter: BvtScript
+
+  cites Foreword chapter Console
+  cites Foreword chapter Maybe
+  cites Shell chapter ShellTypes
+  cites Shell chapter ShellBuild
+  cites Shell chapter PowerShellEmit
+
+ Generates bvt.ps1 -- Build Verification Test, minimal confidence gate.
+ Compile with: -Survey "lower-mul:500000"
+
+ We say:
+
+Section: Parameters
+
+  bvt-params : List ShellParam = [sh-param-default "CodexCdx" SptString (SeLit ""), sh-param-default "Jobs" SptInt (SeInt 4)]
+
+Section: S01 -- Preamble
+
+  s01 : List ShellCmd =
+    let no-kernel = [ScEcho (SeRaw "\"ERROR: No kernel at $stage0 - run build/build.ps1 first.\""), ScExit (SeInt 1)]
+    in let no-vm = [ScEcho (SeRaw "\"ERROR: codex-vm.exe not found at $vmExe\""), ScExit (SeInt 1)]
+    in [ScSetStrictMode, ScSetErrorStop, ScRaw "Set-Location (Join-Path $PSScriptRoot '..')", ScRaw "[Environment]::CurrentDirectory = (Get-Location).Path"]
+
+Section: S02 -- Test List
+
+  s02 : List ShellCmd = [ScAssign "BvtTests" (SeArrayLiteral [SeLit "codex\\test\\typeclass-smoke.codex", SeLit "codex\\test\\handler-smoke.codex", SeLit "codex\\test\\linear-smoke.codex", SeLit "codex\\test\\mutable-smoke.codex", SeLit "codex\\test\\try-smoke.codex", SeLit "codex\\test\\with-timeout-test.codex", SeLit "codex\\test\\fork-nested.codex", SeLit "codex\\test\\unit-smoke.codex", SeLit "codex\\test\\hamt-test.codex", SeLit "codex\\test\\sort-test.codex", SeLit "codex\\test\\crypto-test.codex", SeLit "codex\\test\\errors\\type-mismatch.codex", SeLit "codex\\test\\errors\\unknown-name.codex", SeLit "codex\\test\\errors\\non-exhaustive-match.codex", SeLit "codex\\test\\errors\\keyword-as-pattern-var.codex", SeLit "codex\\test\\errors\\linear-errors.codex"])]
+
+Section: S03 -- Output Directories
+
+  s03 : List ShellCmd = [ScAssign "OutRoot" (SeLit "test-output"), ScAssign "ResultsDir" (SeRaw "Join-Path $OutRoot '_results'"), ScRaw "New-Item -ItemType Directory -Force -Path $OutRoot | Out-Null", ScIf (SeDirExists (SeVar "ResultsDir")) [ScRaw "Remove-Item -Recurse -Force $ResultsDir"] [], ScRaw "New-Item -ItemType Directory -Force -Path $ResultsDir | Out-Null", ScBlank, ScAssign "TestLog" (SeRaw "Join-Path $OutRoot 'bvt.log'"), ScSetContent (SeVar "TestLog") (SeLit ""), ScRaw "$env:CODEX_SWEEP_LOG = (Resolve-Path $TestLog).Path"]
+
+Section: S04 -- Kernel Setup
+
+  s04 : List ShellCmd =
+    let copy-cdx = [ScAssign "stage0" (SeRaw "Join-Path (Resolve-Path .).Path 'build-output\\bare-metal\\Codex.cdx'"), ScRaw "New-Item -ItemType Directory -Force -Path (Split-Path $stage0) | Out-Null", ScCopy (SeVar "CodexCdx") (SeVar "stage0")]
+    in let no-kernel = [ScEcho (SeRaw "\"ERROR: No kernel at $stage0 - run build/build.ps1 first.\""), ScExit (SeInt 1)]
+    in let no-vm = [ScEcho (SeRaw "\"ERROR: codex-vm.exe not found at $vmExe\""), ScExit (SeInt 1)]
+    in [ScIf (SeVar "CodexCdx") copy-cdx [], ScBlank, ScAssign "stage0" (SeRaw "Join-Path (Resolve-Path .).Path 'build-output\\bare-metal\\Codex.cdx'"), ScIf (SeNot (SeFileExists (SeVar "stage0"))) no-kernel [], ScBlank, ScAssign "vmExe" (SeRaw "Join-Path (Resolve-Path .).Path 'tools\\codex-vm.exe'"), ScIf (SeNot (SeFileExists (SeVar "vmExe"))) no-vm []]
+
+Section: S05 -- Missing Files Check
+
+  s05 : List ShellCmd = [ScAssign "missing" (SeRaw "@()"), ScForEach "t" (SeVar "BvtTests") [ScIf (SeNot (SeFileExists (SeVar "t"))) [ScRaw "$missing += $t"] []], ScIf (SeRaw "$missing.Count -gt 0") [ScEcho (SeLit "ERROR: Missing BVT test files:"), ScForEach "m" (SeVar "missing") [ScEcho (SeRaw "\"  $m\"")], ScExit (SeInt 1)] []]
+
+Section: S06 -- Timer and Header
+
+  s06 : List ShellCmd = [ScRaw "$sw = [System.Diagnostics.Stopwatch]::StartNew()", ScEcho (SeRaw "\"BVT: $($BvtTests.Count) tests, $Jobs parallel slots\""), ScEcho (SeLit "")]
+
+Section: S07 -- Phase 1 Compile
+
+  s07 : List ShellCmd = [ScEcho (SeLit "--- Phase 1: compile ---"), ScAssign "compileScript" (SeRaw "Join-Path (Resolve-Path .).Path 'build\\compile.ps1'"), ScRaw "$compileFails = [System.Collections.Concurrent.ConcurrentBag[string]]::new()", ScRaw "$compilePass = [System.Collections.Concurrent.ConcurrentBag[string]]::new()"]
+
+Section: S08 -- Parallel Compile Loop
+
+  s08 : List ShellCmd = [ScRaw "$BvtTests | ForEach-Object -ThrottleLimit $Jobs -Parallel {", ScRaw "    $t = $_", ScRaw "    $base = [System.IO.Path]::GetFileNameWithoutExtension($t)", ScRaw "    $outDir = Join-Path $using:OutRoot $base", ScRaw "    $cdxOut = Join-Path $outDir \"$base.cdx\"", ScRaw "    $logOut = Join-Path $outDir \"$base.log\"", ScRaw "    New-Item -ItemType Directory -Force -Path $outDir | Out-Null", ScRaw "    $failFile = $t -replace '\\.codex$', '.failing'", ScRaw "    $expectFail = Test-Path $failFile", ScRaw "    $r = & pwsh -NoProfile -File $using:compileScript -Src $t -Out $cdxOut -Log $logOut 2>&1", ScRaw "    $ok = $LASTEXITCODE -eq 0", ScRaw "    if ($expectFail) {", ScRaw "        if ($ok) {", ScRaw "            ($using:compileFails).Add(\"$base (expected compile FAIL but got PASS)\")", ScRaw "            Write-Host \"  FAIL  $base (expected compile failure)\" -ForegroundColor Red", ScRaw "        } else {", ScRaw "            $codes = (Get-Content $failFile -ErrorAction SilentlyContinue) -split \"`n\" | ForEach-Object { $_.Trim() } | Where-Object { $_ -match '^\\d+$' }", ScRaw "            $logText = if (Test-Path $logOut) { Get-Content $logOut -Raw -ErrorAction SilentlyContinue } else { '' }", ScRaw "            $allFound = $true", ScRaw "            foreach ($code in $codes) { if ($logText -notmatch \"CDX$code\") { $allFound = $false } }", ScRaw "            if ($allFound) {", ScRaw "                ($using:compilePass).Add($base)", ScRaw "                Write-Host \"  PASS  $base (expected error)\" -ForegroundColor Green", ScRaw "            } else {", ScRaw "                ($using:compileFails).Add(\"$base (missing expected CDX codes: $($codes -join ','))\")", ScRaw "                Write-Host \"  FAIL  $base (wrong error codes)\" -ForegroundColor Red", ScRaw "            }", ScRaw "        }", ScRaw "    } else {", ScRaw "        if ($ok) {", ScRaw "            ($using:compilePass).Add($base)", ScRaw "            Write-Host \"  PASS  $base\" -ForegroundColor Green", ScRaw "        } else {", ScRaw "            ($using:compileFails).Add(\"$base (compile failed)\")", ScRaw "            Write-Host \"  FAIL  $base (compile)\" -ForegroundColor Red", ScRaw "        }", ScRaw "    }", ScRaw "}"]
+
+Section: S09 -- Phase 2 Run Header
+
+  s09 : List ShellCmd = [ScEcho (SeLit ""), ScEcho (SeLit "--- Phase 2: run ---"), ScRaw "$runFails = [System.Collections.Concurrent.ConcurrentBag[string]]::new()", ScRaw "$runPass = [System.Collections.Concurrent.ConcurrentBag[string]]::new()", ScAssign "runSkip" (SeInt 0), ScBlank, ScRaw "$runnableTests = $BvtTests | Where-Object { $exp = $_ -replace '\\.codex$', '.expected'; Test-Path $exp }"]
+
+Section: S10 -- Parallel Run Loop
+
+  s10 : List ShellCmd = [ScRaw "$runnableTests | ForEach-Object -ThrottleLimit $Jobs -Parallel {", ScRaw "    $t = $_", ScRaw "    $base = [System.IO.Path]::GetFileNameWithoutExtension($t)", ScRaw "    $outDir = Join-Path $using:OutRoot $base", ScRaw "    $cdxOut = Join-Path $outDir \"$base.cdx\"", ScRaw "    $runOut = Join-Path $outDir \"$base.out\"", ScRaw "    $expFile = $t -replace '\\.codex$', '.expected'", ScRaw "    if (-not (Test-Path $cdxOut)) {", ScRaw "        ($using:runFails).Add(\"$base (no CDX to run)\")", ScRaw "        Write-Host \"  SKIP  $base (no CDX)\" -ForegroundColor Yellow", ScRaw "        return", ScRaw "    }", ScRaw "    & pwsh -NoProfile -File (Join-Path $using:PWD 'build\\test-run.ps1') -Kernel $cdxOut -OutFile $runOut 2>`$null", ScRaw "    if (-not (Test-Path $runOut)) {", ScRaw "        ($using:runFails).Add(\"$base (no output)\")", ScRaw "        Write-Host \"  FAIL  $base (no output)\" -ForegroundColor Red", ScRaw "        return", ScRaw "    }", ScRaw "    $actual = (Get-Content $runOut -Raw -ErrorAction SilentlyContinue) -replace \"`r\", ''", ScRaw "    $expected = (Get-Content $expFile -Raw -ErrorAction SilentlyContinue) -replace \"`r\", ''", ScRaw "    $actual = $actual.TrimEnd(\"`n\")", ScRaw "    $expected = $expected.TrimEnd(\"`n\")", ScRaw "    if ($actual -eq $expected) {", ScRaw "        ($using:runPass).Add($base)", ScRaw "        Write-Host \"  PASS  $base\" -ForegroundColor Green", ScRaw "    } else {", ScRaw "        ($using:runFails).Add(\"$base (output mismatch)\")", ScRaw "        Write-Host \"  FAIL  $base (output mismatch)\" -ForegroundColor Red", ScRaw "        Write-Host \"    expected: $($expected.Substring(0, [Math]::Min(80, $expected.Length)))\" -ForegroundColor DarkGray", ScRaw "        Write-Host \"    actual:   $($actual.Substring(0, [Math]::Min(80, $actual.Length)))\" -ForegroundColor DarkGray", ScRaw "    }", ScRaw "}"]
+
+Section: S11 -- Results Summary
+
+  s11 : List ShellCmd = [ScRaw "$sw.Stop()", ScRaw "$totalPass = $compilePass.Count + $runPass.Count", ScRaw "$totalFail = $compileFails.Count + $runFails.Count", ScEcho (SeLit ""), ScEcho (SeLit "--- BVT Results ---"), ScEcho (SeRaw "\"  Compile: $($compilePass.Count) pass, $($compileFails.Count) fail\""), ScEcho (SeRaw "\"  Runtime: $($runPass.Count) pass, $($runFails.Count) fail\""), ScEcho (SeRaw "\"  Total:   $totalPass pass, $totalFail fail\""), ScEcho (SeRaw "\"  Time:    $([math]::Round($sw.Elapsed.TotalSeconds, 1))s\"")]
+
+Section: S12 -- Failure Report and Exit
+
+  s12 : List ShellCmd = [ScIf (SeRaw "$totalFail -gt 0") [ScEcho (SeLit ""), ScEcho (SeLit "FAILURES:"), ScForEach "f" (SeVar "compileFails") [ScEcho (SeRaw "\"  $f\"")], ScForEach "f" (SeVar "runFails") [ScEcho (SeRaw "\"  $f\"")], ScExit (SeInt 1)] [], ScBlank, ScEcho (SeLit ""), ScEcho (SeLit "BVT PASSED"), ScExit (SeInt 0)]
+
+Section: Assembly
+
+  bvt-body : List ShellCmd = [ScSequence s01, ScBlank, ScSequence s02, ScBlank, ScSequence s03, ScBlank, ScSequence s04, ScBlank, ScSequence s05, ScBlank, ScSequence s06, ScBlank, ScSequence s07, ScBlank, ScSequence s08, ScBlank, ScSequence s09, ScBlank, ScSequence s10, ScBlank, ScSequence s11, ScBlank, ScSequence s12]
+
+  bvt-script : ShellScript = sh-script "bvt" "Build Verification Test - minimal confidence gate" bvt-params bvt-body
+
+  opening : [Console] Nothing = act
+    print-line-uni (emit-powershell bvt-script)
+  end
+
+Page 1

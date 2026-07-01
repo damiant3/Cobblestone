@@ -1,0 +1,134 @@
+Chapter: CvmmDashboard
+  cites Cvmm chapter CvmmTypes
+  cites Cvmm chapter CvmmState
+  cites UI chapter Widget
+  cites UI chapter Layout
+
+ System dashboard. The home view when CVMM opens. Shows a summary of
+ every subsystem: CPU, memory, disk, network, services, fleet. Each
+ card is a gateway to the full manager view. Designed to answer "is
+ everything OK?" in one glance.
+
+Section: Summary Cards
+
+  dash-cpu-card : SystemSummary -> WidgetNode
+  dash-cpu-card (sys) =
+    let title = widget-label "cpu-title" "CPU"
+    in let gauge = widget-gauge "cpu-gauge" (sys.sys-cpu-percent) 100
+    in let label = widget-label "cpu-label" (show (sys.sys-cpu-percent) & "%")
+    in widget-panel "card-cpu" DirColumn 4 [title, gauge, label]
+
+  dash-mem-card : SystemSummary -> WidgetNode
+  dash-mem-card (sys) =
+    let title = widget-label "mem-title" "Memory"
+    in let pct = byte-size-percent (sys.sys-mem-used) (sys.sys-mem-total)
+    in let gauge = widget-gauge "mem-gauge" pct 100
+    in let label = widget-label "mem-label" (format-bytes (sys.sys-mem-used) & " / " & format-bytes (sys.sys-mem-total))
+    in widget-panel "card-mem" DirColumn 4 [title, gauge, label]
+
+  dash-disk-card : SystemSummary -> WidgetNode
+  dash-disk-card (sys) =
+    let title = widget-label "disk-title" "Disk"
+    in let pct = byte-size-percent (sys.sys-disk-used) (sys.sys-disk-total)
+    in let gauge = widget-gauge "disk-gauge" pct 100
+    in let label = widget-label "disk-label" (format-bytes (sys.sys-disk-used) & " / " & format-bytes (sys.sys-disk-total))
+    in widget-panel "card-disk" DirColumn 4 [title, gauge, label]
+
+  dash-uptime-card : SystemSummary -> WidgetNode
+  dash-uptime-card (sys) =
+    let title = widget-label "uptime-title" "Uptime"
+    in let label = widget-label "uptime-label" (format-uptime (sys.sys-uptime))
+    in let hostname = widget-label "hostname-label" (sys.sys-hostname)
+    in let device = widget-label "device-label" (device-kind-label ((sys.sys-device).dev-kind))
+    in widget-panel "card-uptime" DirColumn 4 [title, label, hostname, device]
+
+Section: Service Summary Cards
+
+  dash-services-card : SystemSummary -> WidgetNode
+  dash-services-card (sys) =
+    let title = widget-label "svc-card-title" "Services"
+    in let count = widget-label "svc-card-count" (show (sys.sys-service-count))
+    in let link = widget-button "goto-services" "View All"
+    in widget-panel "card-services" DirColumn 4 [title, count, link]
+
+  dash-processes-card : SystemSummary -> WidgetNode
+  dash-processes-card (sys) =
+    let title = widget-label "proc-card-title" "Processes"
+    in let count = widget-label "proc-card-count" (show (sys.sys-process-count))
+    in let link = widget-button "goto-processes" "View All"
+    in widget-panel "card-processes" DirColumn 4 [title, count, link]
+
+  dash-ports-card : SystemSummary -> WidgetNode
+  dash-ports-card (sys) =
+    let title = widget-label "port-card-title" "Ports"
+    in let count = widget-label "port-card-count" (show (sys.sys-port-count))
+    in let link = widget-button "goto-ports" "View All"
+    in widget-panel "card-ports" DirColumn 4 [title, count, link]
+
+  dash-network-card : SystemSummary -> WidgetNode
+  dash-network-card (sys) =
+    let title = widget-label "net-card-title" "Network"
+    in let count = widget-label "net-card-count" (show (sys.sys-nic-count) & " interfaces")
+    in let link = widget-button "goto-network" "View All"
+    in widget-panel "card-network" DirColumn 4 [title, count, link]
+
+  dash-fleet-card : SystemSummary -> WidgetNode
+  dash-fleet-card (sys) =
+    let title = widget-label "fleet-card-title" "Fleet"
+    in let count = widget-label "fleet-card-count" (show (sys.sys-fleet-count) & " nodes")
+    in let link = widget-button "goto-fleet" "View All"
+    in widget-panel "card-fleet" DirColumn 4 [title, count, link]
+
+  dash-mesh-card : SystemSummary -> WidgetNode
+  dash-mesh-card (sys) =
+    let title = widget-label "mesh-card-title" "Mesh"
+    in let members = widget-label "mesh-card-members" (show (sys.sys-mesh-alive) & "/" & show (sys.sys-mesh-total) & " alive")
+    in let checks = widget-label "mesh-card-checks" (show (sys.sys-healthy-checks) & "/" & show (sys.sys-total-checks) & " checks OK")
+    in let link = widget-button "goto-mesh" "View Mesh"
+    in widget-panel "card-mesh" DirColumn 4 [title, members, checks, link]
+
+Section: Dashboard Layout
+
+  dashboard-widget : SystemSummary -> WidgetNode
+  dashboard-widget (sys) =
+    let title = widget-label "dash-title" "System Dashboard"
+    in let status = widget-label "dash-status" (status-label (sys.sys-status))
+    in let top-row = widget-panel "dash-top" DirRow 8 [
+      dash-cpu-card sys,
+      dash-mem-card sys,
+      dash-disk-card sys,
+      dash-uptime-card sys
+    ]
+    in let bottom-row = widget-panel "dash-bottom" DirRow 8 [
+      dash-services-card sys,
+      dash-processes-card sys,
+      dash-ports-card sys,
+      dash-network-card sys,
+      dash-fleet-card sys,
+      dash-mesh-card sys
+    ]
+    in widget-panel "dashboard" DirColumn 12 [title, status, top-row, bottom-row]
+
+Section: Dashboard JSON
+
+  system-summary-to-json : SystemSummary -> Text
+  system-summary-to-json (sys) =
+    "{\"hostname\":\"" & sys.sys-hostname
+    & "\",\"status\":\"" & status-label (sys.sys-status)
+    & "\",\"uptime\":" & show (sys.sys-uptime).ut-seconds
+    & ",\"cpu\":" & show (sys.sys-cpu-percent)
+    & ",\"memUsed\":" & show (sys.sys-mem-used).bs-bytes
+    & ",\"memTotal\":" & show (sys.sys-mem-total).bs-bytes
+    & ",\"diskUsed\":" & show (sys.sys-disk-used).bs-bytes
+    & ",\"diskTotal\":" & show (sys.sys-disk-total).bs-bytes
+    & ",\"processes\":" & show (sys.sys-process-count)
+    & ",\"services\":" & show (sys.sys-service-count)
+    & ",\"ports\":" & show (sys.sys-port-count)
+    & ",\"nics\":" & show (sys.sys-nic-count)
+    & ",\"fleet\":" & show (sys.sys-fleet-count)
+    & ",\"meshTotal\":" & show (sys.sys-mesh-total)
+    & ",\"meshAlive\":" & show (sys.sys-mesh-alive)
+    & ",\"healthyChecks\":" & show (sys.sys-healthy-checks)
+    & ",\"totalChecks\":" & show (sys.sys-total-checks) & "}"
+
+Page 1

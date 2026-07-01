@@ -1,0 +1,152 @@
+Chapter: BrowserPersist
+  cites Foreword chapter Maybe
+  cites Foreword chapter FactStore
+  cites Foreword chapter Parse
+  cites Foreword chapter TextSearch
+  cites Foreword chapter Ed25519
+  cites Encode chapter Hex
+  cites Kernel chapter DiskFacts
+  cites Kernel chapter AppPersist
+  cites Browser chapter History
+  cites Browser chapter TrustManager
+
+ Persistent storage for browsing history and trust decisions.
+ History is serialized as one fact (kind 20) with newline-separated
+ entries. Trust store is one fact (kind 21) with newline-separated
+ decisions.
+
+Section: Kind Constants
+
+  persist-kind-history : Integer = 20
+  persist-kind-trust : Integer = 21
+
+Section: History Serialization
+
+  history-to-text : BrowsingHistory -> Text
+  history-to-text (hist) =
+    history-entries-to-text hist.bh-entries 0 (list-length hist.bh-entries) ""
+
+  history-entries-to-text : List HistoryEntry, Integer, Integer, Text -> Text
+  history-entries-to-text (entries) (i) (len) (acc) =
+    if i >= len then acc
+    else let e = list-at entries i
+    in let line = e.he-address & "|" & e.he-title & "|" & show e.he-visit-tick & "|" & show e.he-visit-count
+    in let sep = if i == 0 then "" else "\n"
+    in history-entries-to-text entries (i + 1) len (acc & sep & line)
+
+  history-from-text : Text, Integer -> BrowsingHistory
+  history-from-text (txt) (max-entries) =
+    if text-length txt == 0 then history-new max-entries
+    else let lines = text-split txt "\n"
+    in let entries = parse-history-lines lines 0 (list-length lines) []
+    in BrowsingHistory {
+      bh-entries = entries,
+      bh-max-entries = max-entries
+    }
+
+  parse-history-lines : List Text, Integer, Integer, List HistoryEntry -> List HistoryEntry
+  parse-history-lines (lines) (i) (len) (acc) =
+    if i >= len then acc
+    else let line = list-at lines i
+    in let parsed = parse-history-entry line
+    in when parsed
+      is Just (entry) -> parse-history-lines lines (i + 1) len (list-push acc entry)
+      is None -> parse-history-lines lines (i + 1) len acc
+
+  parse-history-entry : Text -> Maybe HistoryEntry
+  parse-history-entry (line) =
+    let parts = text-split line "|"
+    in if list-length parts < 4 then None
+    else let tick = parse-decimal-full (list-at parts 2)
+    in let count = parse-decimal-full (list-at parts 3)
+    in Just (HistoryEntry {
+      he-address = list-at parts 0,
+      he-title = list-at parts 1,
+      he-visit-tick = tick,
+      he-visit-count = count
+    })
+
+Section: Trust Serialization
+
+  trust-to-text : TrustStore -> Text
+  trust-to-text (store) =
+    trust-decisions-to-text store.ts-decisions 0 (list-length store.ts-decisions) ""
+
+  trust-decisions-to-text : List TrustDecision, Integer, Integer, Text -> Text
+  trust-decisions-to-text (decs) (i) (len) (acc) =
+    if i >= len then acc
+    else let d = list-at decs i
+    in let pub-hex = bytes-to-hex d.td-publisher
+    in let tier-int = tier-level d.td-max-tier
+    in let exp = when d.td-expires
+          is Just (t) -> show t
+          is None -> "-1"
+    in let line = pub-hex & "|" & show tier-int & "|" & show d.td-granted & "|" & exp
+    in let sep = if i == 0 then "" else "\n"
+    in trust-decisions-to-text decs (i + 1) len (acc & sep & line)
+
+  trust-from-text : Text, List Integer -> TrustStore
+  trust-from-text (txt) (own-key) =
+    if text-length txt == 0 then trust-store-new own-key
+    else let lines = text-split txt "\n"
+    in let decs = parse-trust-lines lines 0 (list-length lines) []
+    in TrustStore {
+      ts-decisions = decs,
+      ts-own-key = own-key
+    }
+
+  parse-trust-lines : List Text, Integer, Integer, List TrustDecision -> List TrustDecision
+  parse-trust-lines (lines) (i) (len) (acc) =
+    if i >= len then acc
+    else let line = list-at lines i
+    in let parsed = parse-trust-decision line
+    in when parsed
+      is Just (dec) -> parse-trust-lines lines (i + 1) len (list-push acc dec)
+      is None -> parse-trust-lines lines (i + 1) len acc
+
+  parse-trust-decision : Text -> Maybe TrustDecision
+  parse-trust-decision (line) =
+    let parts = text-split line "|"
+    in if list-length parts < 4 then None
+    else let pub-bytes = hex-decode (list-at parts 0)
+    in let tier-int = parse-decimal-full (list-at parts 1)
+    in let granted = parse-decimal-full (list-at parts 2)
+    in let exp-val = parse-decimal-full (list-at parts 3)
+    in let expires = if exp-val == (-1) then None else Just exp-val
+    in Just (TrustDecision {
+      td-publisher = pub-bytes,
+      td-max-tier = int-to-tier tier-int,
+      td-granted = granted,
+      td-expires = expires,
+      td-vouched = None
+    })
+
+  int-to-tier : Integer -> CapabilityTier
+  int-to-tier (n) =
+    if n == 0 then TierStatic
+    else if n == 1 then TierConnected
+    else if n == 2 then TierInteractive
+    else if n == 3 then TierSensor
+    else TierSystem
+
+Section: Save and Load
+
+  browser-persist-save : DiskFactStore, BrowsingHistory, TrustStore, Integer -> DiskFactStore
+  browser-persist-save (store) (hist) (trust) (timestamp) =
+    let s1 = app-write-fact store persist-kind-history (history-to-text hist) timestamp
+    in let s2 = app-write-fact s1 persist-kind-trust (trust-to-text trust) timestamp
+    in disk-checkpoint s2
+
+  browser-persist-load-history : DiskFactStore, Integer -> BrowsingHistory
+  browser-persist-load-history (store) (max-entries) =
+    let found = app-scan-last store persist-kind-history
+    in when found
+      is None -> history-new max-entries
+      is Just (txt) -> history-from-text txt max-entries
+
+  browser-persist-load-trust : DiskFactStore, List Integer -> TrustStore
+  browser-persist-load-trust (store) (own-key) =
+    let found = app-scan-last store persist-kind-trust
+    in when found
+      is None -> trust-store-new own-key
+      is Just (txt) -> trust-from-text txt own-key

@@ -1,0 +1,99 @@
+Chapter: HelmAttention
+  cites Helm chapter HelmTypes
+
+ Attention scoring and time band management. Ranks currents
+ by participant count, explicit clicks, recency, and velocity.
+ Groups activity into configurable time bands for historical
+ browsing.
+
+Section: Attention Scoring
+
+  attention-new : AttentionScore
+  attention-new = AttentionScore { as-participants = 0, as-clicks = 0, as-recency = 100, as-velocity = 0 }
+
+  attention-add-participant : AttentionScore -> AttentionScore
+  attention-add-participant (a) =
+    __record-set a "as-participants" (a.as-participants + 1)
+
+  attention-add-click : AttentionScore -> AttentionScore
+  attention-add-click (a) =
+    __record-set a "as-clicks" (a.as-clicks + 1)
+
+  attention-update-velocity : AttentionScore, Integer -> AttentionScore
+  attention-update-velocity (a) (messages-per-min) =
+    __record-set a "as-velocity" messages-per-min
+
+  attention-update-recency : AttentionScore, Integer, Integer -> AttentionScore
+  attention-update-recency (a) (last-active) (now) =
+    let age = now - last-active
+    in let recency = if age > 300 then 0
+          else if age > 120 then 25
+          else if age > 60 then 50
+          else if age > 30 then 75
+          else 100
+    in __record-set a "as-recency" recency
+
+Section: Current Attention Update
+
+  current-click : Current -> Current
+  current-click (cur) =
+    __record-set cur "cur-attention" (attention-add-click cur.cur-attention)
+
+  current-refresh-attention : Current, Integer -> Current
+  current-refresh-attention (cur) (now) =
+    let velocity = if now - cur.cur-started == 0 then cur.cur-count
+          else cur.cur-count * 60 / (now - cur.cur-started)
+    in let updated = attention-update-recency (attention-update-velocity cur.cur-attention velocity) cur.cur-last-active now
+    in __record-set cur "cur-attention" updated
+
+Section: Time Band Management
+
+  time-band-new : Integer, Integer -> TimeBand
+  time-band-new (start) (minutes) =
+    TimeBand {
+      tb-start = start,
+      tb-end = start + minutes * 60,
+      tb-currents = [],
+      tb-current-count = 0,
+      tb-participant-count = 0
+    }
+
+  tb-add-current : TimeBand, Integer, Integer -> TimeBand
+  tb-add-current (band) (current-id) (participants) =
+    __record-set (__record-set (__record-set band "tb-currents" (list-push band.tb-currents current-id)) "tb-current-count" (band.tb-current-count + 1)) "tb-participant-count" (band.tb-participant-count + participants)
+
+  room-update-bands : Room, Integer -> Room
+  room-update-bands (room) (now) =
+    let band-sec = room.rm-band-minutes * 60
+    in let band-start = now - (int-mod now band-sec)
+    in let existing = find-band room.rm-time-bands band-start 0 room.rm-band-count
+    in when existing
+      is Just (idx) -> room
+      is None ->
+        let new-band = time-band-new band-start room.rm-band-minutes
+        in let with-currents = assign-currents-to-band new-band room.rm-currents band-start (band-start + band-sec) 0 room.rm-current-count
+        in __record-set (__record-set room "rm-time-bands" (list-push room.rm-time-bands with-currents)) "rm-band-count" (room.rm-band-count + 1)
+
+  find-band : List TimeBand, Integer, Integer, Integer -> Maybe Integer
+  find-band (bands) (start) (i) (len) =
+    if i >= len then None
+    else let b = list-at bands i
+    in if b.tb-start == start then Just i
+    else find-band bands start (i + 1) len
+
+  assign-currents-to-band : TimeBand, List Current, Integer, Integer, Integer, Integer -> TimeBand
+  assign-currents-to-band (band) (currents) (start) (end-time) (i) (len) =
+    if i >= len then band
+    else let cur = list-at currents i
+    in if cur.cur-last-active >= start
+      then if cur.cur-started < end-time
+        then let updated = tb-add-current band cur.cur-id cur.cur-attention.as-participants
+        in assign-currents-to-band updated currents start end-time (i + 1) len
+        else assign-currents-to-band band currents start end-time (i + 1) len
+      else assign-currents-to-band band currents start end-time (i + 1) len
+
+Section: Band Summary
+
+  tb-summary : TimeBand -> Text
+  tb-summary (b) =
+    show b.tb-current-count & " currents, " & show b.tb-participant-count & " participants"

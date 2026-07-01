@@ -1,0 +1,251 @@
+Chapter: DamageSystem
+  cites Engine chapter GameplayTags
+  cites Sim chapter ParticleSystem
+  cites Game chapter Color
+  cites Foreword chapter Maybe
+
+ Gore and injury system. Tracks per-limb damage, dismemberment
+ when a limb's HP reaches zero, blood particle emitters at wound
+ sites, wound decal textures, and ragdoll activation on death.
+ Supports blunt/slash/pierce/burn/explosion damage types with
+ different visual effects. Fixed-point (scale 1000).
+
+ We say:
+
+Section: Damage Types
+
+  DamageType =
+    | DmgBlunt
+    | DmgSlash
+    | DmgPierce
+    | DmgBurn
+    | DmgExplosion
+    | DmgPoison
+    | DmgFrost
+
+Section: Body Parts
+
+  BodyPart =
+    | PartHead
+    | PartTorso
+    | PartLeftArm
+    | PartRightArm
+    | PartLeftLeg
+    | PartRightLeg
+    | PartLeftHand
+    | PartRightHand
+    | PartLeftFoot
+    | PartRightFoot
+
+  bp-label : BodyPart -> Text
+  bp-label (p) = when p
+    is PartHead -> "head"
+    is PartTorso -> "torso"
+    is PartLeftArm -> "left-arm"
+    is PartRightArm -> "right-arm"
+    is PartLeftLeg -> "left-leg"
+    is PartRightLeg -> "right-leg"
+    is PartLeftHand -> "left-hand"
+    is PartRightHand -> "right-hand"
+    is PartLeftFoot -> "left-foot"
+    is PartRightFoot -> "right-foot"
+
+  bp-index : BodyPart -> Integer
+  bp-index (p) = when p
+    is PartHead -> 0
+    is PartTorso -> 1
+    is PartLeftArm -> 2
+    is PartRightArm -> 3
+    is PartLeftLeg -> 4
+    is PartRightLeg -> 5
+    is PartLeftHand -> 6
+    is PartRightHand -> 7
+    is PartLeftFoot -> 8
+    is PartRightFoot -> 9
+
+  bp-is-vital : BodyPart -> Boolean
+  bp-is-vital (p) = when p
+    is PartHead -> True
+    is PartTorso -> True
+    is otherwise -> False
+
+  bp-can-dismember : BodyPart -> Boolean
+  bp-can-dismember (p) = when p
+    is PartHead -> True
+    is PartLeftArm -> True
+    is PartRightArm -> True
+    is PartLeftLeg -> True
+    is PartRightLeg -> True
+    is PartLeftHand -> True
+    is PartRightHand -> True
+    is PartLeftFoot -> True
+    is PartRightFoot -> True
+    is PartTorso -> False
+
+Section: Limb State
+
+  LimbState = record {
+    ls-hp : Integer,
+    ls-max-hp : Integer,
+    ls-severed : Boolean,
+    ls-bleeding : Boolean,
+    ls-bleed-rate : Integer,
+    ls-burn-level : Integer,
+    ls-wound-count : Integer
+  }
+
+  ls-healthy : Integer -> LimbState
+  ls-healthy (max-hp) = LimbState { ls-hp = max-hp, ls-max-hp = max-hp, ls-severed = False, ls-bleeding = False, ls-bleed-rate = 0, ls-burn-level = 0, ls-wound-count = 0 }
+
+Section: Wound
+
+  Wound = record {
+    wd-part : Integer,
+    wd-dmg-type : DamageType,
+    wd-severity : Integer,
+    wd-x : Integer, wd-y : Integer, wd-z : Integer,
+    wd-bleed-active : Boolean,
+    wd-age : Integer
+  }
+
+Section: Damage State
+
+  DamageState = record {
+    ds-limbs : List LimbState,
+    ds-limb-count : Integer,
+    ds-wounds : List Wound,
+    ds-wound-count : Integer,
+    ds-total-blood-loss : Integer,
+    ds-is-dead : Boolean,
+    ds-ragdoll-active : Boolean,
+    ds-dismembered : List Integer
+  }
+
+  ds-new : DamageState
+  ds-new =
+    let limbs = [ls-healthy 1000, ls-healthy 2000, ls-healthy 800, ls-healthy 800, ls-healthy 1000, ls-healthy 1000, ls-healthy 400, ls-healthy 400, ls-healthy 400, ls-healthy 400]
+    in DamageState { ds-limbs = limbs, ds-limb-count = 10, ds-wounds = [], ds-wound-count = 0, ds-total-blood-loss = 0, ds-is-dead = False, ds-ragdoll-active = False, ds-dismembered = ds-init-dismember 10 0 [] }
+
+  ds-init-dismember : Integer, Integer, List Integer -> List Integer
+  ds-init-dismember (n) (i) (acc) =
+    if i >= n then acc
+    else ds-init-dismember n (i + 1) (list-push acc 0)
+
+Section: Apply Damage
+
+  ds-apply-damage : DamageState, BodyPart, DamageType, Integer, Integer, Integer, Integer -> DamageState
+  ds-apply-damage (ds) (part) (dmg-type) (amount) (wx) (wy) (wz) =
+    if ds.ds-is-dead then ds
+    else let idx = bp-index part
+    in let limb = list-at (ds.ds-limbs) idx
+    in if limb.ls-severed then ds
+    else let actual = ds-apply-armor amount dmg-type
+    in let new-hp = limb.ls-hp - actual
+    in let bleeds = ds-causes-bleeding dmg-type
+    in let bleed-rate = if bleeds then actual / 10 else 0
+    in let new-limb = LimbState { ls-hp = if new-hp < 0 then 0 else new-hp, ls-max-hp = limb.ls-max-hp, ls-severed = limb.ls-severed, ls-bleeding = bleeds, ls-bleed-rate = limb.ls-bleed-rate + bleed-rate, ls-burn-level = if ds-is-burn dmg-type then limb.ls-burn-level + actual / 5 else limb.ls-burn-level, ls-wound-count = limb.ls-wound-count + 1 }
+    in let wound = Wound { wd-part = idx, wd-dmg-type = dmg-type, wd-severity = actual, wd-x = wx, wd-y = wy, wd-z = wz, wd-bleed-active = bleeds, wd-age = 0 }
+    in let ds2 = DamageState { ds-limbs = list-set-at (ds.ds-limbs) idx new-limb, ds-limb-count = ds.ds-limb-count, ds-wounds = list-push (ds.ds-wounds) wound, ds-wound-count = ds.ds-wound-count + 1, ds-total-blood-loss = ds.ds-total-blood-loss, ds-is-dead = ds.ds-is-dead, ds-ragdoll-active = ds.ds-ragdoll-active, ds-dismembered = ds.ds-dismembered }
+    in let ds3 = if new-hp <= 0 then ds-check-dismember ds2 part else ds2
+    in ds-check-death ds3
+
+  ds-apply-armor : Integer, DamageType -> Integer
+  ds-apply-armor (amount) (dt) = when dt
+    is DmgBlunt -> amount * 800 / 1000
+    is DmgSlash -> amount
+    is DmgPierce -> amount * 1200 / 1000
+    is DmgBurn -> amount * 900 / 1000
+    is DmgExplosion -> amount * 1500 / 1000
+    is DmgPoison -> amount * 700 / 1000
+    is DmgFrost -> amount * 600 / 1000
+
+  ds-causes-bleeding : DamageType -> Boolean
+  ds-causes-bleeding (dt) = when dt
+    is DmgSlash -> True
+    is DmgPierce -> True
+    is DmgExplosion -> True
+    is otherwise -> False
+
+  ds-is-burn : DamageType -> Boolean
+  ds-is-burn (dt) = when dt
+    is DmgBurn -> True
+    is otherwise -> False
+
+Section: Dismemberment
+
+  ds-check-dismember : DamageState, BodyPart -> DamageState
+  ds-check-dismember (ds) (part) =
+    if bp-can-dismember part then
+      let idx = bp-index part
+      in let limb = list-at (ds.ds-limbs) idx
+      in if limb.ls-hp <= 0 then
+        let severed-limb = LimbState { ls-hp = 0, ls-max-hp = limb.ls-max-hp, ls-severed = True, ls-bleeding = True, ls-bleed-rate = 50, ls-burn-level = limb.ls-burn-level, ls-wound-count = limb.ls-wound-count }
+        in DamageState { ds-limbs = list-set-at (ds.ds-limbs) idx severed-limb, ds-limb-count = ds.ds-limb-count, ds-wounds = ds.ds-wounds, ds-wound-count = ds.ds-wound-count, ds-total-blood-loss = ds.ds-total-blood-loss, ds-is-dead = ds.ds-is-dead, ds-ragdoll-active = ds.ds-ragdoll-active, ds-dismembered = list-set-at (ds.ds-dismembered) idx 1 }
+      else ds
+    else ds
+
+Section: Death Check
+
+  ds-check-death : DamageState -> DamageState
+  ds-check-death (ds) =
+    let head = list-at (ds.ds-limbs) 0
+    in let torso = list-at (ds.ds-limbs) 1
+    in let dead = head.ls-hp <= 0 | torso.ls-hp <= 0 | ds.ds-total-blood-loss > 5000
+    in if dead then DamageState { ds-limbs = ds.ds-limbs, ds-limb-count = ds.ds-limb-count, ds-wounds = ds.ds-wounds, ds-wound-count = ds.ds-wound-count, ds-total-blood-loss = ds.ds-total-blood-loss, ds-is-dead = True, ds-ragdoll-active = True, ds-dismembered = ds.ds-dismembered }
+    else ds
+
+Section: Bleed Tick
+
+  ds-bleed-tick : DamageState, Integer -> DamageState
+  ds-bleed-tick (ds) (dt) =
+    let total = ds-sum-bleed (ds.ds-limbs) 0 (ds.ds-limb-count) 0
+    in let blood-loss = total * dt / 1000
+    in let new-total = ds.ds-total-blood-loss + blood-loss
+    in let ds2 = __record-set ds "ds-total-blood-loss" new-total
+    in ds-check-death ds2
+
+  ds-sum-bleed : List LimbState, Integer, Integer, Integer -> Integer
+  ds-sum-bleed (limbs) (i) (n) (acc) =
+    if i >= n then acc
+    else let limb = list-at limbs i
+    in let rate = if limb.ls-bleeding then limb.ls-bleed-rate else 0
+    in ds-sum-bleed limbs (i + 1) n (acc + rate)
+
+Section: Blood Particle Config
+
+  BloodConfig = record {
+    bc-color-fresh : Integer,
+    bc-color-dry : Integer,
+    bc-splatter-speed : Integer,
+    bc-drip-speed : Integer,
+    bc-pool-rate : Integer
+  }
+
+  bc-default : BloodConfig
+  bc-default = BloodConfig { bc-color-fresh = #CC0000, bc-color-dry = #660000, bc-splatter-speed = 3000, bc-drip-speed = 500, bc-pool-rate = 100 }
+
+Section: Queries
+
+  ds-limb-hp : DamageState, BodyPart -> Integer
+  ds-limb-hp (ds) (part) = (list-at (ds.ds-limbs) (bp-index part)).ls-hp
+
+  ds-is-severed : DamageState, BodyPart -> Boolean
+  ds-is-severed (ds) (part) = (list-at (ds.ds-limbs) (bp-index part)).ls-severed
+
+  ds-severed-count : DamageState -> Integer
+  ds-severed-count (ds) = ds-count-sev (ds.ds-limbs) 0 (ds.ds-limb-count) 0
+
+  ds-count-sev : List LimbState, Integer, Integer, Integer -> Integer
+  ds-count-sev (limbs) (i) (n) (acc) =
+    if i >= n then acc
+    else let inc = if (list-at limbs i).ls-severed then 1 else 0
+    in ds-count-sev limbs (i + 1) n (acc + inc)
+
+Section: Formatting
+
+  format-damage-state : DamageState -> Text
+  format-damage-state (ds) =
+    let status = if ds.ds-is-dead then "DEAD" else "alive"
+    in status & " wounds=" & show (ds.ds-wound-count) & " blood=" & show (ds.ds-total-blood-loss) & " severed=" & show (ds-severed-count ds)
+
+Page 1

@@ -1,0 +1,121 @@
+Chapter: TestKeybindings
+  cites Cvmm chapter CvmmTypes
+  cites Cvmm chapter ResourceModel
+  cites Cvmm chapter Command
+  cites Cvmm chapter Keybindings
+  cites Foreword chapter Maybe
+
+ Unit tests for keybindings: chord matching, scope filtering,
+ registry lookup, and default shortcuts.
+
+Section: Test Harness
+
+  assert-eq-text : Text, Text, Text -> Text
+  assert-eq-text (label) (expected) (actual) =
+    if expected == actual then "PASS " & label
+    else "FAIL " & label & ": expected \"" & expected & "\" got \"" & actual & "\""
+
+  assert-eq-int : Text, Integer, Integer -> Text
+  assert-eq-int (label) (expected) (actual) =
+    if expected == actual then "PASS " & label
+    else "FAIL " & label & ": expected " & show expected & " got " & show actual
+
+  assert-true : Text, Boolean -> Text
+  assert-true (label) (val) = if val then "PASS " & label else "FAIL " & label
+
+  assert-false : Text, Boolean -> Text
+  assert-false (label) (val) = if val then "FAIL " & label else "PASS " & label
+
+Section: Chord Tests
+
+  test-chord-format : Text
+  test-chord-format =
+    let t1 = assert-eq-text "plain-key" "a" (format-chord (key-chord "a"))
+    in let t2 = assert-eq-text "ctrl-z" "Ctrl+z" (format-chord (ctrl-key "z"))
+    in let t3 = assert-eq-text "alt-1" "Alt+1" (format-chord (alt-key "1"))
+    in let t4 = assert-eq-text "ctrl-shift-z" "Ctrl+Shift+z" (format-chord (ctrl-shift-key "z"))
+    in t1 & "\n" & t2 & "\n" & t3 & "\n" & t4
+
+  test-chord-match : Text
+  test-chord-match =
+    let a = ctrl-key "z"
+    in let b = ctrl-key "z"
+    in let c = ctrl-key "x"
+    in let d = alt-key "z"
+    in let t1 = assert-true "same-chord" (chords-match a b)
+    in let t2 = assert-false "diff-key" (chords-match a c)
+    in let t3 = assert-false "diff-mod" (chords-match a d)
+    in let t4 = assert-true "plain-match" (chords-match (key-chord "a") (key-chord "a"))
+    in t1 & "\n" & t2 & "\n" & t3 & "\n" & t4
+
+Section: Registry Tests
+
+  test-registry-match : Text
+  test-registry-match =
+    let reg = default-shortcuts
+    in let undo = sr-match reg (ctrl-key "z") "Dashboard"
+    in let t1 = when undo
+      is Just (sc) -> assert-eq-text "undo-found" "undo" (sc.sc-id)
+      is None -> "FAIL undo: not found"
+    in let nav1 = sr-match reg (alt-key "1") "anything"
+    in let t2 = when nav1
+      is Just (sc) -> assert-eq-text "alt-1-nav" "nav-dash" (sc.sc-id)
+      is None -> "FAIL alt-1: not found"
+    in let missing = sr-match reg (key-chord "q") "Dashboard"
+    in let t3 = when missing
+      is Just (sc) -> "FAIL plain-q: should not match"
+      is None -> "PASS plain-q-no-match"
+    in t1 & "\n" & t2 & "\n" & t3
+
+  test-registry-scope : Text
+  test-registry-scope =
+    let reg = shortcut-registry-new
+    in let global-sc = shortcut-new "g1" (ctrl-key "z") (CmdCustom "undo" "") ScopeGlobal "Undo"
+    in let view-sc = shortcut-new "v1" (key-chord "d") (CmdCustom "delete" "") (ScopeView "Files") "Delete file"
+    in let reg2 = sr-add (sr-add reg global-sc) view-sc
+    in let global-match = sr-match reg2 (ctrl-key "z") "anything"
+    in let t1 = when global-match
+      is Just (sc) -> assert-eq-text "global-matches" "g1" (sc.sc-id)
+      is None -> "FAIL global: should match"
+    in let view-match = sr-match reg2 (key-chord "d") "Files"
+    in let t2 = when view-match
+      is Just (sc) -> assert-eq-text "view-matches" "v1" (sc.sc-id)
+      is None -> "FAIL view: should match in Files"
+    in let view-miss = sr-match reg2 (key-chord "d") "Processes"
+    in let t3 = when view-miss
+      is Just (sc) -> "FAIL view-wrong-scope: should not match in Processes"
+      is None -> "PASS view-wrong-scope"
+    in t1 & "\n" & t2 & "\n" & t3
+
+  test-registry-for-scope : Text
+  test-registry-for-scope =
+    let reg = default-shortcuts
+    in let globals = sr-for-scope reg ScopeGlobal
+    in let t1 = assert-eq-int "default-globals" 13 (list-length globals)
+    in t1
+
+  test-add-remove : Text
+  test-add-remove =
+    let reg = shortcut-registry-new
+    in let sc1 = shortcut-new "a" (key-chord "a") (CmdCustom "a" "") ScopeGlobal "A"
+    in let sc2 = shortcut-new "b" (key-chord "b") (CmdCustom "b" "") ScopeGlobal "B"
+    in let reg2 = sr-add (sr-add reg sc1) sc2
+    in let t1 = assert-eq-int "two-shortcuts" 2 (reg2.sr-count)
+    in let reg3 = sr-remove reg2 "a"
+    in let t2 = assert-eq-int "after-remove" 1 (reg3.sr-count)
+    in t1 & "\n" & t2
+
+Section: Entry
+
+  opening : [Console] None = act
+    print-line-uni "=== Keybindings Tests ==="
+    print-line-uni test-chord-format
+    print-line-uni test-chord-match
+    print-line-uni test-registry-match
+    print-line-uni test-registry-scope
+    print-line-uni test-registry-for-scope
+    print-line-uni test-add-remove
+    print-line-uni "=== Done ==="
+  end
+
+Page 1

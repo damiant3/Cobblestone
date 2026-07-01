@@ -1,0 +1,212 @@
+Chapter: AudioDsp
+
+ Digital signal processing for audio. Low-pass, high-pass,
+ band-pass filters, delay line, reverb, compressor, and
+ distortion. Coefficients use fixed-point scale 1000.
+ Sample values are signed integers (typically -32768 to 32767).
+
+ We say:
+
+Section: Types
+
+  FilterState = record {
+    fs-prev-in : Integer,
+    fs-prev-out : Integer,
+    fs-alpha : Integer
+  }
+
+  DelayLine = record {
+    dl-buffer : List Integer,
+    dl-length : Integer,
+    dl-write-pos : Integer,
+    dl-feedback : Integer,
+    dl-wet : Integer
+  }
+
+  CompressorState = record {
+    cs-threshold : Integer,
+    cs-ratio : Integer,
+    cs-attack : Integer,
+    cs-release : Integer,
+    cs-envelope : Integer
+  }
+
+Section: Filter Construction
+
+  filter-lowpass : Integer -> FilterState
+  filter-lowpass (alpha) = FilterState {
+    fs-prev-in = 0,
+    fs-prev-out = 0,
+    fs-alpha = dsp-clamp alpha 1 999
+  }
+
+  filter-highpass : Integer -> FilterState
+  filter-highpass (alpha) = FilterState {
+    fs-prev-in = 0,
+    fs-prev-out = 0,
+    fs-alpha = dsp-clamp alpha 1 999
+  }
+
+Section: Filter Processing
+
+  dsp-lowpass-sample : FilterState, Integer -> FilterState
+  dsp-lowpass-sample (fs) (sample) =
+    let out = fs.fs-prev-out + fs.fs-alpha * (sample - fs.fs-prev-out) / 1000
+    in FilterState { fs-prev-in = sample, fs-prev-out = out, fs-alpha = fs.fs-alpha }
+
+  dsp-highpass-sample : FilterState, Integer -> FilterState
+  dsp-highpass-sample (fs) (sample) =
+    let out = fs.fs-alpha * (fs.fs-prev-out + sample - fs.fs-prev-in) / 1000
+    in FilterState { fs-prev-in = sample, fs-prev-out = out, fs-alpha = fs.fs-alpha }
+
+  dsp-filter-output : FilterState -> Integer
+  dsp-filter-output (fs) = fs.fs-prev-out
+
+  dsp-lowpass-buffer : List Integer, Integer, Integer -> List Integer
+  dsp-lowpass-buffer (samples) (count) (alpha) =
+    dsp-lp-loop samples count (filter-lowpass alpha) 0 []
+
+  dsp-lp-loop : List Integer, Integer, FilterState, Integer, List Integer -> List Integer
+  dsp-lp-loop (samples) (count) (fs) (i) (acc) =
+    if i >= count then acc
+    else let s = list-at samples i
+    in let fs2 = dsp-lowpass-sample fs s
+    in dsp-lp-loop samples count fs2 (i + 1) (list-push acc (dsp-filter-output fs2))
+
+  dsp-highpass-buffer : List Integer, Integer, Integer -> List Integer
+  dsp-highpass-buffer (samples) (count) (alpha) =
+    dsp-hp-loop samples count (filter-highpass alpha) 0 []
+
+  dsp-hp-loop : List Integer, Integer, FilterState, Integer, List Integer -> List Integer
+  dsp-hp-loop (samples) (count) (fs) (i) (acc) =
+    if i >= count then acc
+    else let s = list-at samples i
+    in let fs2 = dsp-highpass-sample fs s
+    in dsp-hp-loop samples count fs2 (i + 1) (list-push acc (dsp-filter-output fs2))
+
+Section: Delay
+
+  delay-new : Integer, Integer, Integer -> DelayLine
+  delay-new (length) (feedback) (wet) =
+    DelayLine {
+      dl-buffer = dsp-zeros length 0 [],
+      dl-length = length,
+      dl-write-pos = 0,
+      dl-feedback = feedback,
+      dl-wet = wet
+    }
+
+  dsp-zeros : Integer, Integer, List Integer -> List Integer
+  dsp-zeros (n) (i) (acc) =
+    if i >= n then acc
+    else dsp-zeros n (i + 1) (list-push acc 0)
+
+  delay-process-sample : DelayLine, Integer -> DelayLine
+  delay-process-sample (dl) (sample) =
+    let read-pos = dl.dl-write-pos
+    in let delayed = list-at (dl.dl-buffer) read-pos
+    in let mixed = sample + delayed * dl.dl-feedback / 1000
+    in let buf2 = list-set-at (dl.dl-buffer) (dl.dl-write-pos) mixed
+    in let next-pos = dl.dl-write-pos + 1
+    in let wrapped = if next-pos >= dl.dl-length then 0 else next-pos
+    in DelayLine {
+      dl-buffer = buf2,
+      dl-length = dl.dl-length,
+      dl-write-pos = wrapped,
+      dl-feedback = dl.dl-feedback,
+      dl-wet = dl.dl-wet
+    }
+
+  delay-output : DelayLine, Integer -> Integer
+  delay-output (dl) (dry) =
+    let delayed = list-at (dl.dl-buffer) (dl.dl-write-pos)
+    in dry * (1000 - dl.dl-wet) / 1000 + delayed * dl.dl-wet / 1000
+
+  delay-process-buffer : DelayLine, List Integer, Integer -> List Integer
+  delay-process-buffer (dl) (samples) (count) =
+    dsp-delay-loop dl samples count 0 []
+
+  dsp-delay-loop : DelayLine, List Integer, Integer, Integer, List Integer -> List Integer
+  dsp-delay-loop (dl) (samples) (count) (i) (acc) =
+    if i >= count then acc
+    else let s = list-at samples i
+    in let dl2 = delay-process-sample dl s
+    in let out = delay-output dl2 s
+    in dsp-delay-loop dl2 samples count (i + 1) (list-push acc out)
+
+Section: Compressor
+
+  compressor-new : Integer, Integer, Integer, Integer -> CompressorState
+  compressor-new (threshold) (ratio) (attack) (release) = CompressorState {
+    cs-threshold = threshold,
+    cs-ratio = ratio,
+    cs-attack = attack,
+    cs-release = release,
+    cs-envelope = 0
+  }
+
+  compressor-process : CompressorState, Integer -> CompressorState
+  compressor-process (cs) (sample) =
+    let abs-sample = if sample < 0 then 0 - sample else sample
+    in let target = if abs-sample > cs.cs-threshold then cs.cs-threshold + (abs-sample - cs.cs-threshold) * 1000 / cs.cs-ratio else abs-sample
+    in let coeff = if abs-sample > cs.cs-envelope then cs.cs-attack else cs.cs-release
+    in let new-env = cs.cs-envelope + coeff * (abs-sample - cs.cs-envelope) / 1000
+    in CompressorState {
+      cs-threshold = cs.cs-threshold,
+      cs-ratio = cs.cs-ratio,
+      cs-attack = cs.cs-attack,
+      cs-release = cs.cs-release,
+      cs-envelope = new-env
+    }
+
+  compressor-output : CompressorState, Integer -> Integer
+  compressor-output (cs) (sample) =
+    let abs-s = if sample < 0 then 0 - sample else sample
+    in if abs-s <= cs.cs-threshold then sample
+    else let gain = cs.cs-threshold * 1000 / abs-s + (1000 - cs.cs-threshold * 1000 / abs-s) * 1000 / cs.cs-ratio / 1000
+    in sample * gain / 1000
+
+Section: Distortion
+
+  dsp-distortion : Integer, Integer -> Integer
+  dsp-distortion (sample) (drive) =
+    let driven = sample * drive / 1000
+    in dsp-soft-clip driven
+
+  dsp-soft-clip : Integer -> Integer
+  dsp-soft-clip (x) =
+    if x > 32767 then 32767
+    else if x < -32767 then -32767
+    else x - x * x * x / (3 * 32767 * 32767 / 1000) / 1000
+
+  dsp-distort-buffer : List Integer, Integer, Integer -> List Integer
+  dsp-distort-buffer (samples) (count) (drive) =
+    for s in samples -> dsp-distortion s drive
+
+Section: Gain and Mix
+
+  dsp-gain : Integer, Integer -> Integer
+  dsp-gain (sample) (gain) = sample * gain / 1000
+
+  dsp-mix : Integer, Integer, Integer -> Integer
+  dsp-mix (a) (b) (wet) = a * (1000 - wet) / 1000 + b * wet / 1000
+
+Section: Helpers
+
+  dsp-clamp : Integer, Integer, Integer -> Integer
+  dsp-clamp (v) (lo) (hi) = if v < lo then lo else if v > hi then hi else v
+
+  dsp-abs : Integer -> Integer
+  dsp-abs (n) = if n < 0 then 0 - n else n
+
+Section: Info
+
+  delay-info : DelayLine -> Text
+  delay-info (dl) =
+    "delay " & show (dl.dl-length) & " samples, fb=" & show (dl.dl-feedback) & " wet=" & show (dl.dl-wet)
+
+  compressor-info : CompressorState -> Text
+  compressor-info (cs) =
+    "comp thresh=" & show (cs.cs-threshold) & " ratio=" & show (cs.cs-ratio)
+
+Page 1

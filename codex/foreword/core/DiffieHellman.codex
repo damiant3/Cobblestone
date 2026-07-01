@@ -1,0 +1,125 @@
+Chapter: DiffieHellman
+  cites Foreword chapter Ed25519
+
+ Elliptic-curve Diffie-Hellman key exchange over Curve25519 (X25519,
+ RFC 7748). Produces a 32-byte shared secret from a private key and a
+ peer's public key. Scalar multiplication uses the Montgomery ladder
+ for constant-time execution. Field arithmetic modulo 2^255 - 19
+ reuses the 16-limb little-endian field from the Ed25519 chapter
+ (fe-mul, fe-add, fe-sub, fe-carry, fe-invert, fe-from-bytes,
+ fe-to-bytes), which is byte-exact against RFC 8032. The earlier
+ implementation operated on native Integer values and was structurally
+ unable to represent 255-bit field elements in a 64-bit word.
+
+ An X25519State is a record containing:
+   x2, z2, x3, z3 -- projective field coordinates for the two ladder points.
+
+ To x25519-public-key gives List Integer,
+   deriving a 32-byte public key from a 32-byte private key.
+
+ To x25519-shared-secret gives List Integer,
+   computing the 32-byte shared secret from a private key and a peer's public key.
+
+ To dh-format-key gives Text,
+   formatting a 32-byte key as a lowercase hex string.
+
+ We say:
+
+Section: Constants
+
+ The base point u-coordinate (9) and a24 = (486662 - 2) / 4 = 121665,
+ expressed as a 16-limb field element: 121665 = 1 * 65536 + 56129.
+
+  x25519-base-u : List Integer = [9, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+
+  x25519-a24-fe : List Integer = [56129, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+
+Section: Key Generation
+
+  x25519-public-key : List Integer -> List Integer
+  x25519-public-key (private-key) =
+    x25519-scalar-mult private-key x25519-base-u
+
+  x25519-shared-secret : List Integer, List Integer -> List Integer
+  x25519-shared-secret (my-private) (their-public) =
+    x25519-scalar-mult my-private their-public
+
+Section: Key Clamping
+
+  x25519-clamp : List Integer -> List Integer
+  x25519-clamp (key) =
+    let k0 = bit-and (list-at key 0) 248
+    in let k31 = bit-or (bit-and (list-at key 31) 127) 64
+    in list-set-at (list-set-at key 0 k0) 31 k31
+
+Section: Montgomery Ladder
+
+  X25519State = record {
+    x2 : List Integer,
+    z2 : List Integer,
+    x3 : List Integer,
+    z3 : List Integer
+  }
+
+  x25519-scalar-mult : List Integer, List Integer -> List Integer
+  x25519-scalar-mult (scalar-bytes) (u-bytes) =
+    let scalar = x25519-clamp scalar-bytes
+    in let x1 = fe-from-bytes u-bytes
+    in let final = x25519-ladder scalar x1 (fe-copy fe-one) (fe-copy fe-zero) (fe-copy x1) (fe-copy fe-one) 254
+    in let inv = fe-invert (fe-copy (final.z2))
+    in fe-to-bytes (fe-mul (final.x2) inv)
+
+  x25519-ladder : List Integer, List Integer, List Integer, List Integer, List Integer, List Integer, Integer -> X25519State
+  x25519-ladder (scalar) (x1) (x2) (z2) (x3) (z3) (i) =
+    if i < 0 then X25519State { x2 = x2, z2 = z2, x3 = x3, z3 = z3 }
+    else let b = bit-at scalar i
+    in let s = x25519-ladder-step b x1 x2 z2 x3 z3
+    in x25519-ladder scalar x1 (s.x2) (s.z2) (s.x3) (s.z3) (i - 1)
+
+  x25519-ladder-step : Integer, List Integer, List Integer, List Integer, List Integer, List Integer -> X25519State
+  x25519-ladder-step (b) (x1) (x2) (z2) (x3) (z3) =
+    let sx2 = fe-ct-select b (fe-copy x3) (fe-copy x2)
+    in let sz2 = fe-ct-select b (fe-copy z3) (fe-copy z2)
+    in let sx3 = fe-ct-select b (fe-copy x2) (fe-copy x3)
+    in let sz3 = fe-ct-select b (fe-copy z2) (fe-copy z3)
+    in let av = fe-carry (fe-add (fe-copy sx2) sz2)
+    in let bv = fe-carry (fe-sub (fe-copy sx2) sz2)
+    in let cv = fe-carry (fe-add (fe-copy sx3) sz3)
+    in let dv = fe-carry (fe-sub (fe-copy sx3) sz3)
+    in let aa = fe-sq (fe-copy av)
+    in let bb = fe-sq (fe-copy bv)
+    in let da = fe-mul (fe-copy dv) av
+    in let cb = fe-mul (fe-copy cv) bv
+    in let e = fe-carry (fe-sub (fe-copy aa) bb)
+    in let new-x2 = fe-mul (fe-copy aa) bb
+    in let a24e = fe-mul (fe-copy x25519-a24-fe) (fe-copy e)
+    in let new-z2 = fe-mul (fe-copy e) (fe-carry (fe-add (fe-copy aa) a24e))
+    in let new-x3 = fe-sq (fe-carry (fe-add (fe-copy da) cb))
+    in let dacb = fe-sq (fe-carry (fe-sub (fe-copy da) cb))
+    in let new-z3 = fe-mul (fe-copy x1) dacb
+    in let rx2 = fe-ct-select b (fe-copy new-x3) (fe-copy new-x2)
+    in let rz2 = fe-ct-select b (fe-copy new-z3) (fe-copy new-z2)
+    in let rx3 = fe-ct-select b (fe-copy new-x2) (fe-copy new-x3)
+    in let rz3 = fe-ct-select b (fe-copy new-z2) (fe-copy new-z3)
+    in X25519State { x2 = rx2, z2 = rz2, x3 = rx3, z3 = rz3 }
+
+Section: Formatting
+  dh-format-key : List Integer -> Text
+  dh-format-key (key) = dh-fmt-loop key 0 (list-length key) ""
+
+  dh-fmt-loop : List Integer, Integer, Integer, Text -> Text
+  dh-fmt-loop (key) (i) (n) (acc) =
+    if i >= n then acc
+    else dh-fmt-loop key (i + 1) n (acc & dh-hex-byte (list-at key i))
+
+  dh-hex-byte : Integer -> Text
+  dh-hex-byte (b) = dh-hex-nib (bit-shru b 4) & dh-hex-nib (bit-and b 15)
+
+  dh-hex-nib : Integer -> Text
+  dh-hex-nib (n) =
+    if n == 0 then "0" else if n == 1 then "1" else if n == 2 then "2" else if n == 3 then "3"
+    else if n == 4 then "4" else if n == 5 then "5" else if n == 6 then "6" else if n == 7 then "7"
+    else if n == 8 then "8" else if n == 9 then "9" else if n == 10 then "a" else if n == 11 then "b"
+    else if n == 12 then "c" else if n == 13 then "d" else if n == 14 then "e" else "f"
+
+Page 1

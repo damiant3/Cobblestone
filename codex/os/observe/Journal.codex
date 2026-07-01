@@ -1,0 +1,118 @@
+Chapter: Journal
+  cites Foreword chapter Maybe
+
+ The Journal records structured log entries at five severity levels
+ (debug, info, warn, error, fatal) with timestamps, enabling
+ filtered retrieval by minimum level.
+
+ We say:
+
+Section: Log Levels
+
+  LogLevel =
+    | LogDebug
+    | LogInfo
+    | LogWarn
+    | LogError
+    | LogFatal
+
+  level-rank : LogLevel -> Integer
+  level-rank (l) = when l
+    is LogDebug -> 0
+    is LogInfo -> 1
+    is LogWarn -> 2
+    is LogError -> 3
+    is LogFatal -> 4
+
+Section: Log Entry
+
+  LogEntry = record {
+    level : LogLevel,
+    source : Text,
+    message : Text,
+    timestamp : Integer
+  }
+
+  Journal = record {
+    entries : List LogEntry,
+    count : Integer between 0 and 65535,
+    min-level : LogLevel
+  }
+
+Section: Journal Operations
+
+  journal-new : LogLevel -> Journal
+  journal-new (min) = Journal { entries = [], count = 0, min-level = min }
+
+  journal-log : Journal, LogLevel, Text, Text, Integer -> Journal
+  journal-log (j) (level) (source) (msg) (ts) =
+    if level-rank level < level-rank (j.min-level) then j
+    else let entry = LogEntry { level = level, source = source, message = msg, timestamp = ts }
+    in Journal { entries = list-push (j.entries) entry, count = j.count + 1, min-level = j.min-level }
+
+  journal-debug : Journal, Text, Text, Integer -> Journal
+  journal-debug (j) (source) (msg) (ts) = journal-log j LogDebug source msg ts
+
+  journal-info : Journal, Text, Text, Integer -> Journal
+  journal-info (j) (source) (msg) (ts) = journal-log j LogInfo source msg ts
+
+  journal-warn : Journal, Text, Text, Integer -> Journal
+  journal-warn (j) (source) (msg) (ts) = journal-log j LogWarn source msg ts
+
+  journal-error : Journal, Text, Text, Integer -> Journal
+  journal-error (j) (source) (msg) (ts) = journal-log j LogError source msg ts
+
+  journal-fatal : Journal, Text, Text, Integer -> Journal
+  journal-fatal (j) (source) (msg) (ts) = journal-log j LogFatal source msg ts
+
+Section: Queries
+
+  journal-count : Journal -> Integer
+  journal-count (j) = j.count
+
+  journal-last : Journal -> Maybe LogEntry
+  journal-last (j) =
+    if j.count == 0 then None
+    else Just (list-at (j.entries) (j.count - 1))
+
+  journal-errors : Journal -> Integer
+  journal-errors (j) = count-level (j.entries) LogError 0 (j.count) 0
+
+  journal-warnings : Journal -> Integer
+  journal-warnings (j) = count-level (j.entries) LogWarn 0 (j.count) 0
+
+  count-level : List LogEntry, LogLevel, Integer, Integer, Integer -> Integer
+  count-level (entries) (target) (i) (len) (acc) =
+    if i >= len then acc
+    else let e = list-at entries i
+    in let inc = if level-rank (e.level) == level-rank target then 1 else 0
+    in count-level entries target (i + 1) len (acc + inc)
+
+  journal-entries-since : Journal, Integer -> List LogEntry
+  journal-entries-since (j) (ts) =
+    filter-since (j.entries) ts 0 (j.count) []
+
+  filter-since : List LogEntry, Integer, Integer, Integer, List LogEntry -> List LogEntry
+  filter-since (entries) (ts) (i) (len) (acc) =
+    if i >= len then acc
+    else let e = list-at entries i
+    in if e.timestamp >= ts then filter-since entries ts (i + 1) len (list-push acc e)
+    else filter-since entries ts (i + 1) len acc
+
+Section: Formatting
+
+  format-level : LogLevel -> Text
+  format-level (l) = when l
+    is LogDebug -> "DEBUG"
+    is LogInfo -> "INFO"
+    is LogWarn -> "WARN"
+    is LogError -> "ERROR"
+    is LogFatal -> "FATAL"
+
+  format-log-entry : LogEntry -> Text
+  format-log-entry (e) = "[" & show (e.timestamp) & "] " & format-level (e.level) & " " & e.source & ": " & e.message
+
+  journal-stats : Journal -> Text
+  journal-stats (j) = "entries=" & show (j.count) & " errors=" & show (journal-errors j) & " warnings=" & show (journal-warnings j)
+
+Page 1

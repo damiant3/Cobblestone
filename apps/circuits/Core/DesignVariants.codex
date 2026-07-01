@@ -1,0 +1,104 @@
+Chapter: DesignVariants
+  cites Foreword chapter List
+  cites Foreword chapter Maybe
+
+ Design variant management. A variant shares the schematic and PCB
+ layout but overrides component properties such as value, footprint,
+ or do-not-populate status. Used for BOM alternatives, cost
+ optimization, and regional variants.
+
+Section: Override
+
+  VariantOverride = record {
+    vo-ref : Text,
+    vo-field-name : Text,
+    vo-override-value : Text
+  }
+
+Section: Variant Definition
+
+  VariantDef = record {
+    vd-name : Text,
+    vd-description : Text,
+    vd-overrides : List VariantOverride,
+    vd-is-default : Integer
+  }
+
+Section: Variant Set
+
+  VariantSet = record {
+    vs-variants : List VariantDef,
+    vs-active : Text
+  }
+
+  empty-variant-set : VariantSet
+  empty-variant-set = VariantSet {
+    vs-variants = [],
+    vs-active = ""
+  }
+
+  add-variant : VariantSet, VariantDef -> VariantSet
+  add-variant (vset) (vdef) = VariantSet {
+    vs-variants = list-push vset.vs-variants vdef,
+    vs-active = if vdef.vd-is-default == 1 then vdef.vd-name
+                else vset.vs-active
+  }
+
+  set-active-variant : VariantSet, Text -> VariantSet
+  set-active-variant (vset) (name) = VariantSet {
+    vs-variants = vset.vs-variants,
+    vs-active = name
+  }
+
+Section: Lookup
+
+  find-variant-by-name : List VariantDef, Text -> Maybe VariantDef
+  find-variant-by-name (variants) (name) = find-variant-by-name-loop variants name 0 (list-length variants)
+
+  find-variant-by-name-loop : List VariantDef, Text, Integer, Integer -> Maybe VariantDef
+  find-variant-by-name-loop (variants) (name) (i) (n) =
+    if i >= n then None
+    else let v = list-at variants i
+    in if v.vd-name == name then Just v
+    else find-variant-by-name-loop variants name (i + 1) n
+
+  find-override-for-ref : List VariantOverride, Text, Text -> Maybe Text
+  find-override-for-ref (overrides) (ref) (field) = find-override-for-ref-loop overrides ref field 0 (list-length overrides)
+
+  find-override-for-ref-loop : List VariantOverride, Text, Text, Integer, Integer -> Maybe Text
+  find-override-for-ref-loop (overrides) (ref) (field) (i) (n) =
+    if i >= n then None
+    else let o = list-at overrides i
+    in if o.vo-ref == ref then find-override-for-ref-check o overrides ref field i n
+    else find-override-for-ref-loop overrides ref field (i + 1) n
+
+  find-override-for-ref-check : VariantOverride, List VariantOverride, Text, Text, Integer, Integer -> Maybe Text
+  find-override-for-ref-check (o) (overrides) (ref) (field) (i) (n) =
+    if o.vo-field-name == field then Just o.vo-override-value
+    else find-override-for-ref-loop overrides ref field (i + 1) n
+
+Section: Application
+
+ Apply a variant override to a component. Given a component reference
+ designator, a field name, the original value, and a variant set,
+ returns the overridden value if one exists, or the original.
+
+  apply-override : Text, Text, Text, VariantSet -> Text
+  apply-override (ref) (field) (original) (vset) =
+    let found = find-variant-by-name vset.vs-variants vset.vs-active
+    in when found
+      is Just (vdef) ->
+        let ov = find-override-for-ref vdef.vd-overrides ref field
+        in when ov
+          is Just (val) -> val
+          is None -> original
+      is None -> original
+
+ Check whether a component is marked do-not-populate in the active
+ variant. Returns 1 if DNP, 0 otherwise.
+
+  is-dnp : Text, VariantSet -> Integer
+  is-dnp (ref) (vset) =
+    let val = apply-override ref "dnp" "0" vset
+    in if val == "1" then 1
+    else 0

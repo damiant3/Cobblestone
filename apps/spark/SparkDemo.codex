@@ -1,0 +1,243 @@
+Chapter: SparkDemo
+  cites Foreword chapter Console
+  cites Math chapter Quaternion
+  cites Spark chapter SparkDisplay
+
+ Real-time animated demo. Renders a looping animation directly
+ to the GOP framebuffer: scrolling starfield background, orbiting
+ colored shapes, a pulsing center glow, and a sine-wave ribbon.
+ Run with: codex-vm -kernel SparkDemo.cdx -gop -mem 2048
+
+ We say:
+
+Section: Constants
+
+  demo-w : Integer = 640
+  demo-h : Integer = 480
+  demo-cx : Integer = 320
+  demo-cy : Integer = 240
+  demo-frames : Integer = 600
+
+Section: Entry
+
+  opening : [Console] None = act
+    print-line-uni "Spark Demo: starting animation..."
+    let gd = gop-display-new demo-w demo-h
+    in let w = demo-loop gd 0
+    in act
+      print-line-uni "Spark Demo: done. Close window to exit."
+      let halt = demo-spin 0
+      in print-line-uni "exit"
+    end
+  end
+
+Section: Main Loop
+
+  demo-loop : GopDisplay, Integer -> Integer
+  demo-loop (gd) (frame) =
+    if frame >= demo-frames then 0
+    else let w = demo-render-frame gd frame
+    in demo-loop gd (frame + 1)
+
+  demo-render-frame : GopDisplay, Integer -> Integer
+  demo-render-frame (gd) (frame) =
+    let w0 = demo-draw-bg gd frame
+    in let w1 = demo-draw-stars gd frame
+    in let w2 = demo-draw-ribbon gd frame
+    in let w3 = demo-draw-orbits gd frame
+    in let w4 = demo-draw-glow gd frame
+    in let w5 = demo-draw-frame-counter gd frame
+    in w5
+
+Section: Background — dark gradient with slow color shift
+
+  demo-draw-bg : GopDisplay, Integer -> Integer
+  demo-draw-bg (gd) (frame) =
+    demo-bg-row gd frame 0
+
+  demo-bg-row : GopDisplay, Integer, Integer -> Integer
+  demo-bg-row (gd) (frame) (y) =
+    if y >= demo-h then 0
+    else let t = y * 1000 / demo-h
+    in let phase = frame * 3
+    in let r = 8 + t * 20 / 1000
+    in let g = 8 + t * 12 / 1000 + demo-sn (phase * 2) * 5 / 1000
+    in let b = 20 + t * 30 / 1000 + demo-sn phase * 8 / 1000
+    in let color = demo-clamp r 0 255 * 65536 + demo-clamp g 0 255 * 256 + demo-clamp b 0 255
+    in let w = demo-fill-row gd y color 0
+    in demo-bg-row gd frame (y + 1)
+
+  demo-fill-row : GopDisplay, Integer, Integer, Integer -> Integer
+  demo-fill-row (gd) (y) (color) (x) =
+    if x >= demo-w then 0
+    else let w = gop-put-pixel gd x y color
+    in demo-fill-row gd y color (x + 1)
+
+Section: Starfield — scattered dots drifting down
+
+  demo-draw-stars : GopDisplay, Integer -> Integer
+  demo-draw-stars (gd) (frame) =
+    demo-star-loop gd frame 0 60
+
+  demo-star-loop : GopDisplay, Integer, Integer, Integer -> Integer
+  demo-star-loop (gd) (frame) (i) (count) =
+    if i >= count then 0
+    else let seed = i * 7919 + 1
+    in let sx = demo-hash seed 1 demo-w
+    in let base-y = demo-hash seed 2 demo-h
+    in let speed = 1 + demo-hash seed 3 3
+    in let sy = (base-y + frame * speed) - (base-y + frame * speed) / demo-h * demo-h
+    in let bright = 100 + demo-hash seed 4 155
+    in let color = bright * 65536 + bright * 256 + bright
+    in let w = gop-put-pixel gd sx sy color
+    in demo-star-loop gd frame (i + 1) count
+
+Section: Sine Ribbon — wavy colored band
+
+  demo-draw-ribbon : GopDisplay, Integer -> Integer
+  demo-draw-ribbon (gd) (frame) =
+    demo-ribbon-loop gd frame 0
+
+  demo-ribbon-loop : GopDisplay, Integer, Integer -> Integer
+  demo-ribbon-loop (gd) (frame) (x) =
+    if x >= demo-w then 0
+    else let phase = x * 15 + frame * 80
+    in let wave = demo-sn phase
+    in let y = demo-cy + wave * 80 / 1000
+    in let phase2 = x * 8 + frame * 120
+    in let wave2 = demo-sn phase2
+    in let y2 = demo-cy + wave2 * 40 / 1000 + 30
+    in let t = x * 1000 / demo-w
+    in let r = 50 + t * 200 / 1000
+    in let g = 100 + demo-abs (demo-sn (frame * 50 + x * 10)) * 150 / 1000
+    in let b = 200 - t * 150 / 1000
+    in let color = demo-clamp r 0 255 * 65536 + demo-clamp g 0 255 * 256 + demo-clamp b 0 255
+    in let cy1 = demo-clamp y 0 (demo-h - 1)
+    in let cy2 = demo-clamp y2 0 (demo-h - 1)
+    in let w = gop-put-pixel gd x cy1 color
+    in let w2 = gop-put-pixel gd x cy2 (demo-clamp g 0 255 * 65536 + demo-clamp b 0 255 * 256 + demo-clamp r 0 255)
+    in demo-ribbon-loop gd frame (x + 1)
+
+Section: Orbiting Shapes — circles orbiting the center
+
+  demo-draw-orbits : GopDisplay, Integer -> Integer
+  demo-draw-orbits (gd) (frame) =
+    let w1 = demo-draw-orb gd frame 0 150 16711680 12
+    in let w2 = demo-draw-orb gd frame 2094 120 65280 10
+    in let w3 = demo-draw-orb gd frame 4188 180 4474111 14
+    in let w4 = demo-draw-orb gd frame 1047 100 16776960 8
+    in w4
+
+  demo-draw-orb : GopDisplay, Integer, Integer, Integer, Integer, Integer -> Integer
+  demo-draw-orb (gd) (frame) (phase-offset) (radius) (color) (size) =
+    let angle = frame * 40 + phase-offset
+    in let ox = demo-cx + radius * demo-cs angle / 1000
+    in let oy = demo-cy + radius * demo-sn angle / 1000
+    in demo-fill-circle gd ox oy size color
+
+  demo-fill-circle : GopDisplay, Integer, Integer, Integer, Integer -> Integer
+  demo-fill-circle (gd) (cx) (cy) (r) (color) =
+    demo-circle-y gd cx cy r color (cy - r)
+
+  demo-circle-y : GopDisplay, Integer, Integer, Integer, Integer, Integer -> Integer
+  demo-circle-y (gd) (cx) (cy) (r) (color) (y) =
+    if y > cy + r then 0
+    else let dy = y - cy
+    in let half-w = demo-isqrt (r * r - dy * dy)
+    in let w = demo-circle-x gd (cx - half-w) (cx + half-w) y color
+    in demo-circle-y gd cx cy r color (y + 1)
+
+  demo-circle-x : GopDisplay, Integer, Integer, Integer, Integer -> Integer
+  demo-circle-x (gd) (x0) (x1) (y) (color) =
+    if x0 > x1 then 0
+    else let w = if x0 >= 0 then if x0 < demo-w then if y >= 0 then if y < demo-h then gop-put-pixel gd x0 y color else 0 else 0 else 0 else 0
+    in demo-circle-x gd (x0 + 1) x1 y color
+
+Section: Center Glow — pulsing radial glow
+
+  demo-draw-glow : GopDisplay, Integer -> Integer
+  demo-draw-glow (gd) (frame) =
+    let pulse = 500 + demo-sn (frame * 100) * 400 / 1000
+    in let radius = 30 + pulse * 20 / 1000
+    in demo-glow-y gd demo-cx demo-cy radius pulse (demo-cy - radius)
+
+  demo-glow-y : GopDisplay, Integer, Integer, Integer, Integer, Integer -> Integer
+  demo-glow-y (gd) (cx) (cy) (radius) (intensity) (y) =
+    if y > cy + radius then 0
+    else if y < 0 then demo-glow-y gd cx cy radius intensity (y + 1)
+    else if y >= demo-h then 0
+    else let dy = y - cy
+    in let span = demo-isqrt (radius * radius - dy * dy)
+    in let w = demo-glow-x gd cx cy radius intensity (cx - span) (cx + span) y
+    in demo-glow-y gd cx cy radius intensity (y + 1)
+
+  demo-glow-x : GopDisplay, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  demo-glow-x (gd) (cx) (cy) (radius) (intensity) (x) (x1) (y) =
+    if x > x1 then 0
+    else if x < 0 then demo-glow-x gd cx cy radius intensity (x + 1) x1 y
+    else if x >= demo-w then 0
+    else let dx = x - cx
+    in let dy = y - cy
+    in let dist = demo-isqrt (dx * dx + dy * dy)
+    in let falloff = if radius == 0 then 0 else (radius - dist) * 1000 / radius
+    in let bright = falloff * intensity / 1000 * 255 / 1000
+    in let cb = demo-clamp bright 0 255
+    in let existing-off = (y * demo-w + x) * 4
+    in let er = peek-32 gop-fb-base existing-off
+    in let old-r = er / 65536
+    in let old-g = er / 256 - old-r * 256
+    in let old-b = er - er / 256 * 256
+    in let nr = demo-clamp (old-r + cb) 0 255
+    in let ng = demo-clamp (old-g + cb * 9 / 10) 0 255
+    in let nb = demo-clamp (old-b + cb * 7 / 10) 0 255
+    in let w = gop-put-pixel gd x y (nr * 65536 + ng * 256 + nb)
+    in demo-glow-x gd cx cy radius intensity (x + 1) x1 y
+
+Section: Frame Counter
+
+  demo-draw-frame-counter : GopDisplay, Integer -> Integer
+  demo-draw-frame-counter (gd) (frame) =
+    let d2 = frame / 100
+    in let d1 = frame / 10 - d2 * 10
+    in let d0 = frame - frame / 10 * 10
+    in let w1 = gop-put-char gd 4 4 (48 + d2) #808080
+    in let w2 = gop-put-char gd 10 4 (48 + d1) #808080
+    in gop-put-char gd 16 4 (48 + d0) #808080
+
+Section: Trig and Helpers
+
+  demo-sn : Integer -> Integer
+  demo-sn (milli-rad) =
+    let x = milli-rad - milli-rad / 6283 * 6283
+    in let x2 = if x > 3141 then x - 6283 else x
+    in let x3 = x2 * x2 / 1000 * x2 / 1000
+    in x2 - x3 / 6
+
+  demo-cs : Integer -> Integer
+  demo-cs (milli-rad) = demo-sn (milli-rad + 1571)
+
+  demo-abs : Integer -> Integer
+  demo-abs (n) = if n < 0 then 0 - n else n
+
+  demo-isqrt : Integer -> Integer
+  demo-isqrt (n) = if n <= 0 then 0 else demo-isqrt-loop n (n / 2 + 1)
+
+  demo-isqrt-loop : Integer, Integer -> Integer
+  demo-isqrt-loop (n) (guess) =
+    let next = (guess + n / guess) / 2
+    in if next >= guess then guess else demo-isqrt-loop n next
+
+  demo-clamp : Integer, Integer, Integer -> Integer
+  demo-clamp (v) (lo) (hi) = if v < lo then lo else if v > hi then hi else v
+
+  demo-hash : Integer, Integer, Integer -> Integer
+  demo-hash (seed) (salt) (range) =
+    if range <= 0 then 0
+    else let h = seed * 1103515245 + salt * 12345 + 2531011
+    in let abs-h = if h < 0 then 0 - h else h
+    in abs-h - abs-h / range * range
+
+  demo-spin : Integer -> Integer
+  demo-spin (n) = demo-spin (n + 1)
+
+Page 1

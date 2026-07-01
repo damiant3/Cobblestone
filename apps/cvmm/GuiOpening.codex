@@ -1,0 +1,185 @@
+Chapter: GuiOpening
+  cites Foreword chapter List
+  cites Foreword chapter Console
+  cites UI chapter Widget
+  cites UI chapter Layout
+  cites UI chapter Theme
+  cites UI chapter Event
+  cites UI chapter Overlay
+  cites UI chapter Orchestrator
+  cites UI chapter InputSource
+  cites UI chapter GpuRender
+  cites UI chapter AppRunner
+  cites UI chapter Canvas
+
+ Bare-metal GuiOS desktop shell. Uses the widget system for layout,
+ InputSource for mouse/keyboard, GpuRender for display. Provides a
+ sidebar navigator and content area for launching apps.
+
+Section: Constants
+
+  gui-w : Integer = 1024
+  gui-h : Integer = 768
+  gui-max-tris : Integer = 12000
+  gui-sidebar-w : Integer = 160
+
+Section: App IDs
+
+  AppId =
+    | AppDashboard
+    | AppCircuits
+    | AppSettings
+
+  app-id-label : AppId -> Text
+  app-id-label (a) = when a
+    is AppDashboard -> "Dashboard"
+    is AppCircuits -> "Circuits"
+    is AppSettings -> "Settings"
+
+  app-id-icon : AppId -> Text
+  app-id-icon (a) = when a
+    is AppDashboard -> "D"
+    is AppCircuits -> "C"
+    is AppSettings -> "G"
+
+Section: Shell State
+
+  ShellState = record {
+    ss-app : BareApp,
+    ss-active : Integer,
+    ss-frame : Integer
+  }
+
+Section: Navigation
+
+  NavEntry = record {
+    ne-id : Integer,
+    ne-label : Text,
+    ne-icon : Text
+  }
+
+  shell-nav-entries : List NavEntry
+  shell-nav-entries = [
+    NavEntry { ne-id = 0, ne-label = "Dashboard", ne-icon = "D" },
+    NavEntry { ne-id = 1, ne-label = "Circuits", ne-icon = "C" },
+    NavEntry { ne-id = 2, ne-label = "Settings", ne-icon = "G" }
+  ]
+
+Section: Widget Tree
+
+  shell-build-root : Integer -> WidgetNode
+  shell-build-root (active) =
+    let sidebar = shell-build-sidebar active
+    in let content = shell-build-content active
+    in widget-panel "root" DirRow 0 [sidebar, content]
+
+  shell-build-sidebar : Integer -> WidgetNode
+  shell-build-sidebar (active) =
+    let logo = widget-set-min (widget-label "logo" "CODEX GUIOS") gui-sidebar-w 24
+    in let sep = widget-separator "nav-sep"
+    in let items = shell-build-nav-items active 0 (list-length shell-nav-entries) []
+    in widget-set-min (widget-set-flex (widget-panel "sidebar" DirColumn 2 ([logo, sep] & items)) 0) gui-sidebar-w 0
+
+  shell-build-nav-items : Integer, Integer, Integer, List WidgetNode -> List WidgetNode
+  shell-build-nav-items (active) (i) (n) (acc) =
+    if i >= n then acc
+    else let entry = list-at shell-nav-entries i
+    in let btn = widget-button ("nav-" & (show i)) (entry.ne-icon & " " & entry.ne-label)
+    in let styled = if i == active then widget-set-state btn 4 else btn
+    in shell-build-nav-items active (i + 1) n (list-push acc styled)
+
+  shell-build-content : Integer -> WidgetNode
+  shell-build-content (active) =
+    let header = shell-build-header active
+    in let body = shell-build-body active
+    in widget-set-flex (widget-panel "content" DirColumn 0 [header, body]) 1
+
+  shell-build-header : Integer -> WidgetNode
+  shell-build-header (active) =
+    let title-text = if active == 0 then "Dashboard" else if active == 1 then "Circuits EDA" else "Settings"
+    in let title = widget-label "title" title-text
+    in widget-set-min (widget-panel "header" DirRow 8 [title]) 0 28
+
+  shell-build-body : Integer -> WidgetNode
+  shell-build-body (active) =
+    if active == 0 then shell-dashboard-body
+    else if active == 1 then shell-circuits-body
+    else shell-settings-body
+
+  shell-dashboard-body : WidgetNode
+  shell-dashboard-body =
+    let welcome = widget-label "welcome" "Welcome to Codex GuiOS"
+    in let info = widget-label "info" "Use the sidebar to navigate."
+    in let apps = widget-label "apps-label" "Available apps: Circuits EDA, Settings"
+    in widget-set-flex (widget-panel "dash-body" DirColumn 8 [welcome, info, apps]) 1
+
+  shell-circuits-body : WidgetNode
+  shell-circuits-body =
+    let info = widget-label "circ-info" "Launch Circuits EDA externally:"
+    in let cmd = widget-label "circ-cmd" "codex-vm -kernel circuits-gpu.cdx -gop"
+    in let hint = widget-label "circ-hint" "Full EDA with schematic, PCB, 3D, sim"
+    in widget-set-flex (widget-panel "circ-body" DirColumn 8 [info, cmd, hint]) 1
+
+  shell-settings-body : WidgetNode
+  shell-settings-body =
+    let theme-label = widget-label "set-theme" "Theme: Terminal"
+    in let res-label = widget-label "set-res" "Resolution: 1024x768"
+    in widget-set-flex (widget-panel "set-body" DirColumn 8 [theme-label, res-label]) 1
+
+Section: Init
+
+  shell-init : ShellState
+  shell-init =
+    let root = shell-build-root 0
+    in let ba = bare-app-new root theme-terminal gui-w gui-h gui-max-tris
+    in ShellState {
+      ss-app = ba,
+      ss-active = 0,
+      ss-frame = 0
+    }
+
+Section: Main Loop
+
+  shell-loop : ShellState -> Integer
+  shell-loop (ss) =
+    let ba2 = bare-app-tick (ss.ss-app)
+    in let ss2 = shell-process-input ss ba2
+    in let rendered = bare-app-render (ss2.ss-app)
+    in if (ss2.ss-app).ba-quit then ss2.ss-frame
+    else shell-loop (ShellState { ss-app = ss2.ss-app, ss-active = ss2.ss-active, ss-frame = ss2.ss-frame + 1 })
+
+  shell-process-input : ShellState, BareApp -> ShellState
+  shell-process-input (ss) (ba) =
+    let ri = bare-app-input ba
+    in let key = ri-key-pressed ri
+    in let clicked = ri-left-down ri
+    in let mx = ri.ri-mx
+    in let my = ri.ri-my
+    in let ss2 = if key == 16 then ShellState { ss-app = bare-app-set-quit ba, ss-active = ss.ss-active, ss-frame = ss.ss-frame } else ShellState { ss-app = ba, ss-active = ss.ss-active, ss-frame = ss.ss-frame }
+    in if clicked then shell-handle-click ss2 mx my else ss2
+
+  shell-handle-click : ShellState, Integer, Integer -> ShellState
+  shell-handle-click (ss) (mx) (my) =
+    if mx < gui-sidebar-w then shell-nav-click ss my
+    else ss
+
+  shell-nav-click : ShellState, Integer -> ShellState
+  shell-nav-click (ss) (my) =
+    let idx = (my - 36) / 24
+    in if idx < 0 then ss
+    else if idx >= list-length shell-nav-entries then ss
+    else let new-root = shell-build-root idx
+    in ShellState {
+      ss-app = bare-app-set-root (ss.ss-app) new-root,
+      ss-active = idx,
+      ss-frame = ss.ss-frame
+    }
+
+Section: Entry
+
+  opening : [Console] Nothing = act
+    let frames = shell-loop shell-init
+    in print-line ("GuiOS | " & (show frames) & " frames")
+  end
+
+Page 1

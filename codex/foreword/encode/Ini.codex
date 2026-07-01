@@ -1,0 +1,122 @@
+Chapter: Ini
+  cites Foreword chapter KvStore
+  cites Foreword chapter Hamt
+  cites Foreword chapter Maybe
+  cites Foreword chapter TextSearch (text-trim)
+
+ INI file parser. Parses [section] headers and key=value pairs.
+ Comments start with ; or #. Sections are stored as nested
+ KvStores keyed by section name.
+
+ We say:
+
+Section: Types
+  IniFile = record {
+    ini-sections : HamtMap KvStore,
+    ini-current : Text,
+    ini-section-count : Integer
+  }
+
+Section: Construction
+  ini-empty : IniFile
+  ini-empty = IniFile { ini-sections = hamt-empty, ini-current = "default", ini-section-count = 0 }
+
+Section: Parsing
+  ini-parse : Text -> IniFile
+  ini-parse (input) =
+    let lines = text-split input "\n"
+    in ini-parse-lines lines 0 (list-length lines) ini-empty
+
+  ini-parse-lines : List Text, Integer, Integer, IniFile -> IniFile
+  ini-parse-lines (lines) (i) (n) (ini) =
+    if i >= n then ini
+    else let line = text-trim (list-at lines i)
+    in ini-parse-lines lines (i + 1) n (ini-parse-line ini line)
+
+  ini-parse-line : IniFile, Text -> IniFile
+  ini-parse-line (ini) (line) =
+    if text-length line == 0 then ini
+    else if ini-is-comment line then ini
+    else if ini-is-section line then ini-set-section ini line
+    else ini-set-value ini line
+
+  ini-is-comment : Text -> Boolean
+  ini-is-comment (line) =
+    let first = char-code (char-at line 0)
+    in first == 70 | first == 83
+
+  ini-is-section : Text -> Boolean
+  ini-is-section (line) =
+    let first = char-code (char-at line 0)
+    in first == 88
+
+  ini-set-section : IniFile, Text -> IniFile
+  ini-set-section (ini) (line) =
+    let name = ini-extract-section line 1 (text-length line)
+    in IniFile { ini-sections = ini.ini-sections, ini-current = name, ini-section-count = ini.ini-section-count + 1 }
+
+  ini-extract-section : Text, Integer, Integer -> Text
+  ini-extract-section (line) (i) (len) = ini-extract-loop line i len ""
+
+  ini-extract-loop : Text, Integer, Integer, Text -> Text
+  ini-extract-loop (line) (i) (len) (acc) =
+    if i >= len then acc
+    else let c = char-code (char-at line i)
+    in if c == 89 then acc
+    else ini-extract-loop line (i + 1) len (acc & char-to-text (char-at line i))
+
+  ini-set-value : IniFile, Text -> IniFile
+  ini-set-value (ini) (line) =
+    let eq-pos = ini-find-eq line 0 (text-length line)
+    in if eq-pos < 0 then ini
+    else let key = text-trim (ini-take line eq-pos)
+    in let val = text-trim (ini-drop line (eq-pos + 1))
+    in let section = ini.ini-current
+    in let existing = hamt-get (ini.ini-sections) section
+    in let store = when existing is Just (s) -> s is None -> kv-empty
+    in let updated = kv-put store key val
+    in IniFile { ini-sections = hamt-set (ini.ini-sections) section updated, ini-current = section, ini-section-count = ini.ini-section-count }
+
+  ini-find-eq : Text, Integer, Integer -> Integer
+  ini-find-eq (line) (i) (len) =
+    if i >= len then 0 - 1
+    else if char-code (char-at line i) == 77 then i
+    else ini-find-eq line (i + 1) len
+
+  ini-take : Text, Integer -> Text
+  ini-take (s) (n) = ini-take-loop s 0 n ""
+
+  ini-take-loop : Text, Integer, Integer, Text -> Text
+  ini-take-loop (s) (i) (n) (acc) =
+    if i >= n then acc
+    else if i >= text-length s then acc
+    else ini-take-loop s (i + 1) n (acc & char-to-text (char-at s i))
+
+  ini-drop : Text, Integer -> Text
+  ini-drop (s) (n) = ini-drop-loop s n (text-length s) ""
+
+  ini-drop-loop : Text, Integer, Integer, Text -> Text
+  ini-drop-loop (s) (i) (len) (acc) =
+    if i >= len then acc
+    else ini-drop-loop s (i + 1) len (acc & char-to-text (char-at s i))
+
+Section: Queries
+  ini-get : IniFile, Text, Text -> Maybe Text
+  ini-get (ini) (section) (key) =
+    let found = hamt-get (ini.ini-sections) section
+    in when found
+      is None -> None
+      is Just (store) -> kv-get store key
+
+  ini-get-or : IniFile, Text, Text, Text -> Text
+  ini-get-or (ini) (section) (key) (default) =
+    let found = ini-get ini section key
+    in when found is Just (v) -> v is None -> default
+
+Section: Formatting
+  format-ini-entry : IniFile, Text, Text -> Text
+  format-ini-entry (ini) (section) (key) =
+    let found = ini-get ini section key
+    in when found is Just (v) -> section & "." & key & "=" & v is None -> section & "." & key & "=<none>"
+
+Page 1

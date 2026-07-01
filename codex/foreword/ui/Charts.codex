@@ -1,0 +1,189 @@
+Chapter: Charts
+  cites Foreword chapter ListUtils
+
+ Data visualization — bar charts, line charts, scatter plots, and
+ pie charts as renderable data structures. Charts are built from
+ data series, then can be converted to a list of draw commands
+ for rendering on any surface. Uses fixed-point scale-1000.
+
+ To chart-bar gives a bar chart from labeled values.
+ To chart-line gives a line chart from a data series.
+ To chart-scatter gives a scatter plot from point pairs.
+ To chart-pie gives a pie chart from labeled slices.
+ To chart-render gives draw commands for a chart.
+
+ We say:
+
+Section: Types
+
+  ChartKind =
+    | CkBar
+    | CkLine
+    | CkScatter
+    | CkPie
+
+  DataPoint = record {
+    dp-x : Integer,
+    dp-y : Integer,
+    dp-label : Text
+  }
+
+  DataSeries = record {
+    ds-name : Text,
+    ds-points : List DataPoint,
+    ds-count : Integer,
+    ds-color : Integer between 0 and 16777215
+  }
+
+  Chart = record {
+    ch-kind : ChartKind,
+    ch-series : List DataSeries,
+    ch-title : Text,
+    ch-x-label : Text,
+    ch-y-label : Text,
+    ch-width : Integer between 1 and 32767,
+    ch-height : Integer between 1 and 32767
+  }
+
+  DrawCmd =
+    | DrawLine (Integer) (Integer) (Integer) (Integer) (Integer)
+    | DrawRect (Integer) (Integer) (Integer) (Integer) (Integer) (Boolean)
+    | DrawText (Integer) (Integer) (Text) (Integer)
+    | DrawCircle (Integer) (Integer) (Integer) (Integer)
+
+Section: Construction
+
+  chart-bar : Text, List DataPoint, Integer -> Chart
+  chart-bar (title) (points) (color) = Chart {
+    ch-kind = CkBar,
+    ch-series = [DataSeries { ds-name = "default", ds-points = points, ds-count = list-length points, ds-color = color }],
+    ch-title = title,
+    ch-x-label = "",
+    ch-y-label = "",
+    ch-width = 400,
+    ch-height = 300
+  }
+
+  chart-line : Text, List DataPoint, Integer -> Chart
+  chart-line (title) (points) (color) = Chart {
+    ch-kind = CkLine,
+    ch-series = [DataSeries { ds-name = "default", ds-points = points, ds-count = list-length points, ds-color = color }],
+    ch-title = title,
+    ch-x-label = "",
+    ch-y-label = "",
+    ch-width = 400,
+    ch-height = 300
+  }
+
+  chart-scatter : Text, List DataPoint, Integer -> Chart
+  chart-scatter (title) (points) (color) = Chart {
+    ch-kind = CkScatter,
+    ch-series = [DataSeries { ds-name = "default", ds-points = points, ds-count = list-length points, ds-color = color }],
+    ch-title = title,
+    ch-x-label = "",
+    ch-y-label = "",
+    ch-width = 400,
+    ch-height = 300
+  }
+
+  chart-pie : Text, List DataPoint -> Chart
+  chart-pie (title) (slices) = Chart {
+    ch-kind = CkPie,
+    ch-series = [DataSeries { ds-name = "default", ds-points = slices, ds-count = list-length slices, ds-color = 0 }],
+    ch-title = title,
+    ch-x-label = "",
+    ch-y-label = "",
+    ch-width = 300,
+    ch-height = 300
+  }
+
+  chart-set-size : Chart, Integer, Integer -> Chart
+  chart-set-size (c) (w) (h) = __record-set (__record-set c "ch-width" w) "ch-height" h
+
+  chart-set-labels : Chart, Text, Text -> Chart
+  chart-set-labels (c) (x-label) (y-label) = __record-set (__record-set c "ch-x-label" x-label) "ch-y-label" y-label
+
+Section: Data Points
+
+  data-point : Integer, Integer -> DataPoint
+  data-point (x) (y) = DataPoint { dp-x = x, dp-y = y, dp-label = "" }
+
+  data-point-labeled : Integer, Integer, Text -> DataPoint
+  data-point-labeled (x) (y) (label) = DataPoint { dp-x = x, dp-y = y, dp-label = label }
+
+Section: Rendering
+
+  chart-render : Chart -> List DrawCmd
+  chart-render (c) = when c.ch-kind
+    is CkBar -> chart-render-bar c
+    is CkLine -> chart-render-line c
+    is CkScatter -> chart-render-scatter c
+    is CkPie -> chart-render-pie c
+
+  chart-render-bar : Chart -> List DrawCmd
+  chart-render-bar (c) =
+    let series = list-at (c.ch-series) 0
+    in let n = series.ds-count
+    in if n == 0 then [DrawText 10 10 (c.ch-title) 0]
+    else let max-y = chart-max-y (series.ds-points) 0 n 0
+    in let bar-width = (c.ch-width - 40) / n
+    in let title-cmd = DrawText 10 10 (c.ch-title) 0
+    in title-cmd :: chart-bar-loop (series.ds-points) n max-y bar-width (c.ch-height - 30) (series.ds-color) 0 []
+
+  chart-bar-loop : List DataPoint, Integer, Integer, Integer, Integer, Integer, Integer, List DrawCmd -> List DrawCmd
+  chart-bar-loop (points) (n) (max-y) (bar-w) (base-y) (color) (i) (acc) =
+    if i >= n then acc
+    else let pt = list-at points i
+    in let bar-h = if max-y == 0 then 0 else pt.dp-y * (base-y - 30) / max-y
+    in let x = 30 + i * bar-w
+    in let cmd = DrawRect x (base-y - bar-h) (bar-w - 4) bar-h color True
+    in chart-bar-loop points n max-y bar-w base-y color (i + 1) (list-push acc cmd)
+
+  chart-render-line : Chart -> List DrawCmd
+  chart-render-line (c) =
+    let series = list-at (c.ch-series) 0
+    in let n = series.ds-count
+    in if n < 2 then [DrawText 10 10 (c.ch-title) 0]
+    else let max-y = chart-max-y (series.ds-points) 0 n 0
+    in let max-x = chart-max-x (series.ds-points) 0 n 0
+    in DrawText 10 10 (c.ch-title) 0 :: chart-line-loop (series.ds-points) n max-x max-y (c.ch-width) (c.ch-height) (series.ds-color) 0 []
+
+  chart-line-loop : List DataPoint, Integer, Integer, Integer, Integer, Integer, Integer, Integer, List DrawCmd -> List DrawCmd
+  chart-line-loop (points) (n) (max-x) (max-y) (w) (h) (color) (i) (acc) =
+    if i + 1 >= n then acc
+    else let p1 = list-at points i
+    in let p2 = list-at points (i + 1)
+    in let x1 = 30 + (if max-x == 0 then 0 else p1.dp-x * (w - 40) / max-x)
+    in let y1 = h - 30 - (if max-y == 0 then 0 else p1.dp-y * (h - 60) / max-y)
+    in let x2 = 30 + (if max-x == 0 then 0 else p2.dp-x * (w - 40) / max-x)
+    in let y2 = h - 30 - (if max-y == 0 then 0 else p2.dp-y * (h - 60) / max-y)
+    in chart-line-loop points n max-x max-y w h color (i + 1) (list-push acc (DrawLine x1 y1 x2 y2 color))
+
+  chart-render-scatter : Chart -> List DrawCmd
+  chart-render-scatter (c) =
+    let series = list-at (c.ch-series) 0
+    in let n = series.ds-count
+    in let max-y = chart-max-y (series.ds-points) 0 n 0
+    in let max-x = chart-max-x (series.ds-points) 0 n 0
+    in DrawText 10 10 (c.ch-title) 0 :: (for pt in (series.ds-points) -> let x = 30 + (if max-x == 0 then 0 else pt.dp-x * ((c.ch-width) - 40) / max-x) in let y = (c.ch-height) - 30 - (if max-y == 0 then 0 else pt.dp-y * ((c.ch-height) - 60) / max-y) in DrawCircle x y 3 (series.ds-color))
+
+  chart-render-pie : Chart -> List DrawCmd
+  chart-render-pie (c) =
+    let series = list-at (c.ch-series) 0
+    in [DrawText 10 10 (c.ch-title) 0, DrawCircle (c.ch-width / 2) (c.ch-height / 2) (c.ch-height / 3) 7]
+
+Section: Helpers
+
+  chart-max-y : List DataPoint, Integer, Integer, Integer -> Integer
+  chart-max-y (pts) (i) (len) (best) =
+    if i >= len then best
+    else let v = (list-at pts i).dp-y
+    in chart-max-y pts (i + 1) len (if v > best then v else best)
+
+  chart-max-x : List DataPoint, Integer, Integer, Integer -> Integer
+  chart-max-x (pts) (i) (len) (best) =
+    if i >= len then best
+    else let v = (list-at pts i).dp-x
+    in chart-max-x pts (i + 1) len (if v > best then v else best)
+
+Page 1

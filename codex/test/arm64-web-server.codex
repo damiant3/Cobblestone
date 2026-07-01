@@ -1,0 +1,168 @@
+Chapter: Arm64WebServer
+  cites Kernel chapter Arm64Pci
+  cites Kernel chapter VirtioPci
+  cites Kernel chapter VirtioNet
+  cites Net chapter Arm64NetIO
+  cites Net chapter NetworkStack
+  cites Net chapter TcpTransport
+  cites Net chapter Ethernet
+  cites Works chapter Http
+  cites Foreword chapter Maybe
+  cites Foreword chapter CCE
+
+ Bare-metal ARM64 web server. Boots on QEMU virt (or OCI Ampere),
+ initializes PCI + VirtIO-net, listens on port 80, serves HTTP.
+
+Section: Network Config
+
+  ws-local-mac : List Integer = [82, 84, 0, 18, 52, 86]
+  ws-local-ip : List Integer = [10, 0, 2, 15]
+  ws-gateway-ip : List Integer = [10, 0, 2, 2]
+  ws-port : Integer = 80
+
+Section: Landing HTML
+
+  html-head : Text =
+    "<!DOCTYPE html><html><head><meta charset='utf-8'>"
+    & "<title>Codex</title>"
+    & "<style>body{font-family:system-ui;max-width:800px;margin:0 auto;padding:2em;background:#0a0a0a;color:#e0e0e0}"
+    & "h1{color:#7cf}a{color:#7cf}.card{background:#1a1a2e;border-radius:8px;padding:1.5em;margin:1em 0}</style>"
+    & "</head><body>"
+
+  html-hero : Text =
+    "<h1>Codex</h1>"
+    & "<p>A self-sustaining compiler, language, and operating system.</p>"
+    & "<p>This page is served by Codex bare-metal on ARM64 -- no OS, no runtime, no libc.</p>"
+
+  html-cards : Text =
+    "<div class='card'><h2>Self-Hosting</h2>"
+    & "<p>The compiler compiles itself. The output is byte-identical to the input. Fixed point.</p></div>"
+    & "<div class='card'><h2>Bare Metal</h2>"
+    & "<p>Boots via UEFI, initializes PCI + VirtIO-net, serves HTTP. No borrowed substrate.</p></div>"
+    & "<div class='card'><h2>ARM64</h2>"
+    & "<p>Running on AArch64 Cortex-A72. Same source compiles to x86-64, ARM64, and RISC-V.</p></div>"
+
+  html-foot : Text =
+    "<hr><p><a href='/api/health'>Health</a> | <a href='/api/status'>Status</a></p>"
+    & "</body></html>"
+
+  landing-html : Text = html-head & html-hero & html-cards & html-foot
+
+Section: HTTP Route
+
+  ws-route : HttpRequest -> HttpResponse
+  ws-route (req) =
+    if req.path == "/" then HttpResponse { status = http-200, content-type = "text/html", body = landing-html }
+    else HttpResponse { status = http-404, content-type = "text/plain", body = "Not found" }
+
+Section: Network Init
+
+  ws-find-or-fallback : Arm64PciScanResult, Maybe Arm64PciDevice -> Arm64PciDevice
+  ws-find-or-fallback (scan) (result) =
+    when result
+      is Just (d) -> d
+      is None -> list-at (scan.devices) 0
+
+  ws-find-virtio-net : Arm64PciScanResult -> Arm64PciDevice
+  ws-find-virtio-net (scan) =
+    when arm64-pci-find-device scan #1AF4 #1041
+      is Just (d) -> d
+      is None -> ws-find-or-fallback scan (arm64-pci-find-device scan #1AF4 #1000)
+
+  ws-init-net : Integer -> Arm64NetIOState
+  ws-init-net (dummy) =
+    let scan = arm64-pci-scan-bus 0
+    in let dev = ws-find-virtio-net scan
+    in let enabled = arm64-pci-enable-device dev
+    in let vnet = virtio-net-init dev
+    in let sess = net-session-new ws-local-mac ws-local-ip ws-gateway-ip ws-port 0 ws-gateway-ip 1000
+    in let ts = transport-new sess
+    in Arm64NetIOState { vnet = vnet, transport = ts }
+
+Section: Serve Loop
+
+  WsResult = record { ws-state : Arm64NetIOState, ws-diag : Text }
+
+  ws-serve-one : Arm64NetIOState, Integer -> WsResult
+  ws-serve-one (st) (count) =
+    let st1 = arm64-net-io-listen st
+    in let st2 = arm64-net-io-accept st1 0
+    in when ((st2.transport).session).conn.state
+      is TcpEstablished -> ws-handle-request st2 count
+      is otherwise -> WsResult { ws-state = st2, ws-diag = "no-conn" }
+
+  ws-handle-request : Arm64NetIOState, Integer -> WsResult
+  ws-handle-request (st) (count) =
+    let recv = arm64-net-io-recv-raw st 0
+    in if recv.has-data then
+      let req = http-parse-request (recv.data)
+      in let std = ws-standard-route count (req.path)
+      in let resp = when std
+        is Just (r) -> r
+        is None -> ws-route req
+      in let resp-bytes = http-encode resp
+      in let resp-len = list-length resp-bytes
+      in let st1 = arm64-net-io-send-raw (recv.state) resp-bytes
+      in let st2 = arm64-net-io-close st1
+      in WsResult { ws-state = st2, ws-diag = "ok:" & req.path & " recv=" & show (list-length (recv.data)) & " resp=" & show resp-len }
+    else let st1 = arm64-net-io-close (recv.state)
+      in WsResult { ws-state = st1, ws-diag = "no-data" }
+
+  ws-standard-route : Integer, Text -> Maybe HttpResponse
+  ws-standard-route (count) (path) =
+    if path == "/api/health" then Just (HttpResponse { status = http-200, content-type = "application/json", body = "{\"status\":\"ok\"}" })
+    else if path == "/api/status" then Just (HttpResponse { status = http-200, content-type = "application/json", body = "{\"requests\":" & show count & "}" })
+    else None
+
+  ws-serve-loop : Arm64NetIOState, Integer -> [Console] Integer
+  ws-serve-loop (st) (count) = act
+    let hp = __heap-save
+    in let r = ws-serve-one st count
+    in act
+      print-line-uni ("loop " & show count & " " & r.ws-diag)
+      let restored = __heap-restore hp
+      in ws-serve-loop st (count + 1)
+    end
+  end
+
+Section: Entry
+
+  opening : [Console] Integer = act
+    print-line-uni "Codex ARM64 web server starting..."
+    let scan = arm64-pci-scan-bus 0
+    in let dev = ws-find-virtio-net scan
+    in let bar4-check = ecam-read-32 (dev.pci-bus) (dev.pci-dev) (dev.pci-func) 32
+    in let bars = if bit-and bar4-check #FFFFFFF0 == 0 then arm64-pci-assign-bars dev arm64-pci-mmio-base else 0
+    in let enabled = arm64-pci-enable-device dev
+    in act
+      print-line-uni ("PCI: " & show (scan.count) & " dev=" & show (dev.pci-device-id))
+      let vd = virtio-init-device dev
+      in act
+        print-line-uni ("cb=" & show (vd.common-base))
+        let features = virtio-negotiate vd vnet-feature-mac
+        in act
+          print-line-uni ("feat=" & show features)
+          let rxq = virtio-setup-queue vd 0 vnet-queue-region
+          in act
+            print-line-uni ("rxq=" & show (rxq.queue-size))
+            let txq = virtio-setup-queue vd 1 (vnet-queue-region + #10000)
+            in let s = virtio-set-status vd virtio-status-driver-ok
+            in let mac = virtio-net-read-mac vd
+            in let rxq1 = virtio-net-fill-rx rxq 0
+            in let vnet = VirtioNetState { device = vd, rx-queue = rxq1, tx-queue = txq, mac = mac }
+            in let arp-frame = arp-build-request ws-local-mac ws-local-ip ws-gateway-ip
+            in let vnet1 = virtio-net-send-frame vnet arp-frame
+            in let sess = net-session-new ws-local-mac ws-local-ip ws-gateway-ip ws-port 0 ws-gateway-ip 1000
+            in let ts = transport-new sess
+            in let st = Arm64NetIOState { vnet = vnet1, transport = ts }
+            in act
+              print-line-uni "Listening on port 80"
+              ws-serve-loop st 0
+            end
+          end
+        end
+      end
+    end
+  end
+
+Page 1

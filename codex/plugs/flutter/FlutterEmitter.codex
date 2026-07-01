@@ -1,0 +1,279 @@
+Chapter: Flutter Emitter
+  cites Codex chapter Text
+  cites Codex chapter Characters
+  cites Codex chapter Lists
+
+ Generates Flutter (Dart) from the IR.
+
+Section: Sanitization
+
+  dart-sanitize : Text -> Text
+  dart-sanitize (name) =
+   let s = text-replace name "-" "_"
+   in let s2 = text-replace s "'" ""
+   in if s2 == "is" then "is_"
+      else if s2 == "in" then "in_"
+      else if s2 == "switch" then "switch_"
+      else if s2 == "class" then "class_"
+      else if s2 == "with" then "with_"
+      else if s2 == "new" then "new_"
+      else s2
+
+  dart-escape : Text -> Text
+  dart-escape (s) =
+   let s1 = text-replace s "\\" "\\\\"
+   in let s2 = text-replace s1 "\"" "\\\""
+   in text-replace s2 "\n" "\\n"
+
+  dart-indent : Integer -> Text
+  dart-indent (n) =
+   if n <= 0 then ""
+   else "  " & dart-indent (n - 1)
+
+Section: Arity Map
+
+  ArityEntry = record {
+   name : Text,
+   arity : Integer between 0 and 255,
+   generic-count : Integer between 0 and 255
+  }
+
+  bsearch-arity-pos : List ArityEntry, Text, Integer, Integer -> Integer
+  bsearch-arity-pos (entries) (name) (lo) (hi) =
+   if lo >= hi then lo
+   else let mid = lo + (hi - lo) / 2
+   in if text-compare name (list-at entries mid).name <= 0 then bsearch-arity-pos entries name lo mid
+      else bsearch-arity-pos entries name (mid + 1) hi
+
+  sorted-insert-arity : List ArityEntry, ArityEntry -> List ArityEntry
+  sorted-insert-arity (xs) (e) =
+   list-insert-at xs (bsearch-arity-pos xs (e.name) 0 (list-length xs)) e
+
+  build-arity-map : List IRDef, Integer, List ArityEntry -> List ArityEntry
+  build-arity-map (defs) (i) (acc) =
+   if i == list-length defs then acc
+   else let d = list-at defs i
+   in build-arity-map defs (i + 1) (sorted-insert-arity acc (ArityEntry { name = d.name, arity = list-length (d.params), generic-count = 0 }))
+
+Section: Expression Emission
+
+  emit-dart-expr : IRExpr, List ArityEntry, Integer -> Text
+  emit-dart-expr (e) (arities) (indent) =
+   when e
+    is IrIntLit (n) (sp) -> show n
+    is IrNumLit (n) (sp) -> show n & ".0"
+    is IrTextLit (s) (sp) -> "\"" & dart-escape s & "\""
+    is IrBoolLit (b) (sp) -> if b then "true" else "false"
+    is IrCharLit (n) (sp) -> "String.fromCharCode(" & show n & ")"
+    is IrName (n) (ty) (sp) -> dart-sanitize n
+    is IrBinary (op) (l) (r) (ty) (sp) -> emit-dart-binary op l r arities indent
+    is IrNegate (x) (sp) -> "(-((" & emit-dart-expr x arities indent & ") as int))"
+    is IrIf (c) (t) (el) (ty) (sp) -> "(" & emit-dart-expr c arities indent & " ? " & emit-dart-expr t arities indent & " : " & emit-dart-expr el arities indent & ")"
+    is IrLet (name) (ty) (val) (body) (sp) -> "(() {\n" & dart-indent (indent + 1) & "final " & dart-sanitize name & " = " & emit-dart-expr val arities (indent + 1) & ";\n" & dart-indent (indent + 1) & "return " & emit-dart-expr body arities (indent + 1) & ";\n" & dart-indent indent & "})()"
+    is IrApply (f) (a) (ty) (sp) -> emit-dart-apply e arities indent
+    is IrLambda (params) (body) (ty) (sp) -> "(" & emit-dart-params params 0 & ") => " & emit-dart-expr body arities indent
+    is IrList (elems) (ty) (sp) -> "[" & emit-dart-elems elems arities indent 0 & "]"
+    is IrMatch (scrut) (branches) (ty) (sp) -> emit-dart-match scrut branches arities indent
+    is IrAct (stmts) (ty) (sp) -> emit-dart-act stmts arities indent
+    is IrRecord (name) (fields) (ty) (sp) -> "{'_type': '" & name & "'" & emit-dart-rec-fields fields arities indent 0 & "}"
+    is IrFieldAccess (rec) (field) (ty) (sp) -> "(" & emit-dart-expr rec arities indent & " as Map)['" & field & "']"
+    is IrFieldStore (rec) (field) (val) (ty) (sp) -> "(" & emit-dart-expr rec arities indent & " as Map)['" & field & "'] = " & emit-dart-expr val arities indent
+    is IrFork (body) (ty) (sp) -> "Future.value(" & emit-dart-expr body arities indent & ")"
+    is IrAwait (task) (ty) (sp) -> "(await " & emit-dart-expr task arities indent & ")"
+    is IrHandle (eff) (body) (clauses) (ty) (sp) -> emit-dart-expr body arities indent
+    is IrWithTimeout (secs) (effs) (scopes) (body) (ty) (sp) -> emit-dart-expr body arities indent
+    is IrTry (max) (body) (fb) (fail) (ty) (sp) -> emit-dart-act body arities indent
+    is IrError (msg) (ty) (sp) -> "throw Exception(\"" & dart-escape msg & "\")"
+
+  emit-dart-binary : IRBinaryOp, IRExpr, IRExpr, List ArityEntry, Integer -> Text
+  emit-dart-binary (op) (l) (r) (arities) (indent) =
+   let lhs = emit-dart-expr l arities indent
+   in let rhs = emit-dart-expr r arities indent
+   in when op
+    is IrAddInt -> "((" & lhs & " as int) + (" & rhs & " as int))"
+    is IrSubInt -> "((" & lhs & " as int) - (" & rhs & " as int))"
+    is IrMulInt -> "((" & lhs & " as int) * (" & rhs & " as int))"
+    is IrDivInt -> "((" & lhs & " as int) ~/ (" & rhs & " as int))"
+    is IrRemInt -> "((" & lhs & " as int) % (" & rhs & " as int))"
+    is IrPowInt -> "pow((" & lhs & " as int), (" & rhs & " as int)).toInt()"
+    is IrAddNum | IrAddRealApprox | IrAddRealTrapping | IrAddRealSaturating -> "((" & lhs & " as double) + (" & rhs & " as double))"
+    is IrSubNum | IrSubRealApprox | IrSubRealTrapping | IrSubRealSaturating -> "((" & lhs & " as double) - (" & rhs & " as double))"
+    is IrMulNum | IrMulRealApprox | IrMulRealTrapping | IrMulRealSaturating -> "((" & lhs & " as double) * (" & rhs & " as double))"
+    is IrDivNum | IrDivRealApprox | IrDivRealTrapping | IrDivRealSaturating -> "((" & lhs & " as double) / (" & rhs & " as double))"
+    is IrEq -> "(" & lhs & " == " & rhs & ")"
+    is IrNotEq -> "(" & lhs & " != " & rhs & ")"
+    is IrLt | IrLtVec -> "((" & lhs & " as Comparable).compareTo(" & rhs & ") < 0)"
+    is IrGt | IrGtVec -> "((" & lhs & " as Comparable).compareTo(" & rhs & ") > 0)"
+    is IrLtEq | IrLtEqVec -> "((" & lhs & " as Comparable).compareTo(" & rhs & ") <= 0)"
+    is IrGtEq | IrGtEqVec -> "((" & lhs & " as Comparable).compareTo(" & rhs & ") >= 0)"
+    is IrApproxEq -> "(" & lhs & " == " & rhs & ")"
+    is IrApproxEqExact -> "(" & lhs & " == " & rhs & ")"
+    is IrAnd -> "((" & lhs & " as bool) && (" & rhs & " as bool))"
+    is IrOr -> "((" & lhs & " as bool) || (" & rhs & " as bool))"
+    is IrAppendText -> "('$" & lhs & "$" & rhs & "')"
+    is IrAppendList -> "([...(" & lhs & " as List), ...(" & rhs & " as List)])"
+    is IrConsList -> "[" & lhs & ", ...(" & rhs & " as List)]"
+    is IrAddVec -> "List.generate((" & lhs & " as List).length, (i) => (" & lhs & " as List)[i] + (" & rhs & " as List)[i])"
+    is IrSubVec -> "List.generate((" & lhs & " as List).length, (i) => (" & lhs & " as List)[i] - (" & rhs & " as List)[i])"
+    is IrMulVec -> "List.generate((" & lhs & " as List).length, (i) => (" & lhs & " as List)[i] * (" & rhs & " as List)[i])"
+    is IrDivVec -> "List.generate((" & lhs & " as List).length, (i) => (" & lhs & " as List)[i] / (" & rhs & " as List)[i])"
+
+  FlatApply = record { root : IRExpr, args : List IRExpr }
+
+  collect-apply-chain : IRExpr, List IRExpr -> FlatApply
+  collect-apply-chain (e) (acc) =
+   when e
+    is IrApply (f) (a) (ty) (sp) -> collect-apply-chain f ([a] & acc)
+    is otherwise -> FlatApply { root = e, args = acc }
+
+  emit-dart-apply : IRExpr, List ArityEntry, Integer -> Text
+  emit-dart-apply (e) (arities) (indent) =
+   let chain = collect-apply-chain e []
+   in let root = chain.root
+   in let args = chain.args
+   in when root
+    is IrName (n) (ty) (sp) ->
+     if is-mktup-name n then "[" & emit-dart-elems args arities indent 0 & "]"
+     else "Function.apply(" & emit-dart-expr root arities indent & ", [" & emit-dart-elems args arities indent 0 & "])"
+    is otherwise -> "Function.apply(" & emit-dart-expr root arities indent & ", [" & emit-dart-elems args arities indent 0 & "])"
+
+  emit-dart-params : List IRParam, Integer -> Text
+  emit-dart-params (params) (i) =
+   if i == list-length params then ""
+   else let sep = if i > 0 then ", " else ""
+   in sep & "dynamic " & dart-sanitize (list-at params i).name & emit-dart-params params (i + 1)
+
+  emit-dart-elems : List IRExpr, List ArityEntry, Integer, Integer -> Text
+  emit-dart-elems (elems) (arities) (indent) (i) =
+   if i == list-length elems then ""
+   else let sep = if i > 0 then ", " else ""
+   in sep & emit-dart-expr (list-at elems i) arities indent & emit-dart-elems elems arities indent (i + 1)
+
+  emit-dart-rec-fields : List IRFieldVal, List ArityEntry, Integer, Integer -> Text
+  emit-dart-rec-fields (fields) (arities) (indent) (i) =
+   if i == list-length fields then ""
+   else let f = list-at fields i
+   in ", '" & f.name & "': " & emit-dart-expr (f.value) arities indent & emit-dart-rec-fields fields arities indent (i + 1)
+
+  emit-dart-match : IRExpr, List IRBranch, List ArityEntry, Integer -> Text
+  emit-dart-match (scrut) (branches) (arities) (indent) =
+   "(() {\n" & dart-indent (indent + 1) & "final _s = " & emit-dart-expr scrut arities indent & ";\n" & emit-dart-arms branches arities (indent + 1) 0 & dart-indent (indent + 1) & "throw Exception('match');\n" & dart-indent indent & "})()"
+
+  emit-dart-arms : List IRBranch, List ArityEntry, Integer, Integer -> Text
+  emit-dart-arms (branches) (arities) (indent) (i) =
+   if i == list-length branches then ""
+   else let b = list-at branches i
+   in let cond = emit-dart-pat-cond (b.pattern) "_s"
+   in let binds = emit-dart-pat-binds (b.pattern) "_s" indent
+   in dart-indent indent & "if (" & cond & ") {\n" & binds & dart-indent (indent + 1) & "return " & emit-dart-expr (b.body) arities (indent + 1) & ";\n" & dart-indent indent & "}\n" & emit-dart-arms branches arities indent (i + 1)
+
+  emit-dart-pat-cond : IRPat, Text -> Text
+  emit-dart-pat-cond (p) (scrut) =
+   when p
+    is IrVarPat (name) (ty) (sp) -> "true"
+    is IrLitPat (text) (ty) (sp) -> scrut & " == " & text
+    is IrCtorPat (name) (subs) (ty) (sp) -> if is-mktup-name name then scrut & " is List" else "(" & scrut & " as Map)['_tag'] == '" & name & "'"
+    is IrWildPat (sp) -> "true"
+    is IrVecPat (pats) (ty) (sp) -> "true"
+
+  emit-dart-pat-binds : IRPat, Text, Integer -> Text
+  emit-dart-pat-binds (p) (scrut) (indent) =
+   when p
+    is IrVarPat (name) (ty) (sp) -> dart-indent (indent + 1) & "final " & dart-sanitize name & " = " & scrut & ";\n"
+    is IrLitPat (text) (ty) (sp) -> ""
+    is IrCtorPat (name) (subs) (ty) (sp) -> if is-mktup-name name then emit-dart-tup-binds subs scrut indent 0 else emit-dart-ctor-binds subs scrut indent 0
+    is IrWildPat (sp) -> ""
+    is IrVecPat (pats) (ty) (sp) -> ""
+
+  emit-dart-ctor-binds : List IRPat, Text, Integer, Integer -> Text
+  emit-dart-ctor-binds (subs) (scrut) (indent) (i) =
+   if i == list-length subs then ""
+   else emit-dart-pat-binds (list-at subs i) ("(" & scrut & " as Map)['_" & show i & "']") indent & emit-dart-ctor-binds subs scrut indent (i + 1)
+
+  emit-dart-act : List IRActStmt, List ArityEntry, Integer -> Text
+  emit-dart-act (stmts) (arities) (indent) =
+   "(() {\n" & emit-dart-act-loop stmts arities (indent + 1) 0 & dart-indent indent & "})()"
+
+  emit-dart-act-loop : List IRActStmt, List ArityEntry, Integer, Integer -> Text
+  emit-dart-act-loop (stmts) (arities) (indent) (i) =
+   if i == list-length stmts then ""
+   else let s = list-at stmts i
+   in let is-last = i == list-length stmts - 1
+   in when s
+    is IrDoBind (name) (ty) (val) (sp) -> dart-indent indent & "final " & dart-sanitize name & " = " & emit-dart-expr val arities indent & ";\n" & emit-dart-act-loop stmts arities indent (i + 1)
+    is IrDoExec (e) (sp) -> if is-last then dart-indent indent & "return " & emit-dart-expr e arities indent & ";\n" else dart-indent indent & emit-dart-expr e arities indent & ";\n" & emit-dart-act-loop stmts arities indent (i + 1)
+
+Section: Type and Definition Emission
+
+  emit-dart-type-def : ATypeDef -> Text
+  emit-dart-type-def (td) =
+   when td
+    is ARecordTypeDef (name) (tparams) (fields) (is-mut) (s) ->
+     "Map " & dart-sanitize (name.value) & "(Map fields) => {'_type': '" & name.value & "', ...fields};\n\n"
+    is AVariantTypeDef (name) (tparams) (ctors) (s) ->
+     if is-tup-type (name.value) then ""
+     else emit-dart-var-ctors ctors 0
+
+  emit-dart-var-ctors : List AVariantCtorDef, Integer -> Text
+  emit-dart-var-ctors (ctors) (i) =
+   if i == list-length ctors then ""
+   else let c = list-at ctors i
+   in let n = list-length (c.fields)
+   in let t = if n == 0 then "final " & dart-sanitize (c.name.value) & " = {'_tag': '" & c.name.value & "'};\n"
+      else "Map " & dart-sanitize (c.name.value) & "(" & emit-dart-ctor-p n 0 & ") => {'_tag': '" & c.name.value & "'" & emit-dart-ctor-f n 0 & "};\n"
+   in t & emit-dart-var-ctors ctors (i + 1)
+
+  emit-dart-ctor-p : Integer, Integer -> Text
+  emit-dart-ctor-p (n) (i) = if i == n then "" else let sep = if i > 0 then ", " else "" in sep & "dynamic _" & show i & emit-dart-ctor-p n (i + 1)
+
+  emit-dart-ctor-f : Integer, Integer -> Text
+  emit-dart-ctor-f (n) (i) = if i == n then "" else ", '_" & show i & "': _" & show i & emit-dart-ctor-f n (i + 1)
+
+  emit-dart-def : IRDef, List ArityEntry -> Text
+  emit-dart-def (d) (arities) =
+   if text-length (d.name) == 0 then ""
+   else let sname = dart-sanitize (d.name)
+   in if list-length (d.params) == 0
+      then "final " & sname & " = " & emit-dart-expr (d.body) arities 0 & ";\n\n"
+      else "dynamic " & sname & "(" & emit-dart-params (d.params) 0 & ") {\n  return " & emit-dart-expr (d.body) arities 1 & ";\n}\n\n"
+
+  emit-dart-defs : List IRDef, Integer, List ArityEntry -> Text
+  emit-dart-defs (defs) (i) (arities) =
+   if i == list-length defs then "" else emit-dart-def (list-at defs i) arities & emit-dart-defs defs (i + 1) arities
+
+  emit-dart-type-defs : List ATypeDef, Integer -> Text
+  emit-dart-type-defs (tds) (i) =
+   if i == list-length tds then "" else emit-dart-type-def (list-at tds i) & emit-dart-type-defs tds (i + 1)
+
+Section: Flutter Assembly
+
+  emit-flutter-chapter : IRChapter, List ATypeDef -> Text
+  emit-flutter-chapter (m) (type-defs) =
+   let arities = build-arity-map (m.defs) 0 []
+   in let title = if m.chapter-title == "" then "Codex App" else m.chapter-title
+   in let header = "import 'package:flutter/material.dart';\nimport 'dart:math';\n\n"
+   in let builtins = "final List<String> _output = [];\nvoid print_line_uni(dynamic s) { _output.add(s?.toString() ?? ''); }\nvoid print_line(dynamic s) { print_line_uni(s); }\nString show(dynamic n) => n?.toString() ?? '';\nint text_length(dynamic s) => (s as String).length;\nString text_replace(dynamic s, dynamic a, dynamic b) => (s as String).replaceAll(a as String, b as String);\nint text_compare(dynamic a, dynamic b) => (a as String).compareTo(b as String);\nint list_length(dynamic xs) => (xs as List).length;\ndynamic list_at(dynamic xs, dynamic i) => (xs as List)[i as int];\nList list_push(dynamic xs, dynamic x) => [...(xs as List), x];\nString integer_to_text(dynamic n) => n.toString();\nint negate(dynamic n) => -(n as int);\n\n"
+   in let types-text = emit-dart-type-defs type-defs 0
+   in let defs-text = emit-dart-defs (m.defs) 0 arities
+   in let app = "void main() => runApp(const CodexApp());\n\nclass CodexApp extends StatelessWidget {\n  const CodexApp({super.key});\n  @override\n  Widget build(BuildContext context) {\n    return MaterialApp(\n      title: '" & dart-escape title & "',\n      theme: ThemeData.dark(),\n      home: const CodexPage(),\n    );\n  }\n}\n\nclass CodexPage extends StatefulWidget {\n  const CodexPage({super.key});\n  @override\n  State<CodexPage> createState() => _CodexPageState();\n}\n\nclass _CodexPageState extends State<CodexPage> {\n  List<String> lines = [];\n\n  @override\n  void initState() {\n    super.initState();\n    _output.clear();\n    try { opening(); } catch (e) { _output.add('ERROR: $e'); }\n    lines = List.from(_output);\n  }\n\n  @override\n  Widget build(BuildContext context) {\n    return Scaffold(\n      appBar: AppBar(title: const Text('" & dart-escape title & "')),\n      body: ListView.builder(\n        padding: const EdgeInsets.all(16),\n        itemCount: lines.length,\n        itemBuilder: (_, i) => Text(lines[i],\n          style: const TextStyle(fontFamily: 'monospace', fontSize: 14)),\n      ),\n    );\n  }\n}\n"
+   in header & builtins & types-text & defs-text & app
+
+Section: Tuple Helpers
+
+  is-mktup-name : Text -> Boolean
+  is-mktup-name (n) =
+   n == "MkTup2" | n == "MkTup3" | n == "MkTup4" | n == "MkTup5"
+
+  is-tup-type : Text -> Boolean
+  is-tup-type (n) =
+   n == "Tup2" | n == "Tup3" | n == "Tup4" | n == "Tup5"
+
+  emit-dart-tup-binds : List IRPat, Text, Integer, Integer -> Text
+  emit-dart-tup-binds (subs) (scrut) (indent) (i) =
+   if i == list-length subs then ""
+   else let sub = list-at subs i
+   in (when sub
+    is IrVarPat (name) (ty) (sp) -> dart-indent (indent + 1) & "final " & dart-sanitize name & " = (" & scrut & " as List)[" & show i & "];\n"
+    is IrWildPat (sp) -> ""
+    is IrVecPat (pats) (ty) (sp) -> ""
+    is otherwise -> "") & emit-dart-tup-binds subs scrut indent (i + 1)

@@ -1,0 +1,64 @@
+Chapter: TestExceptionHandlerScript
+
+  cites Foreword chapter Console
+  cites Foreword chapter Maybe
+  cites Shell chapter ShellTypes
+  cites Shell chapter ShellBuild
+  cites Shell chapter PowerShellEmit
+
+ Generates test-exception-handler.ps1 from the Shell DSL.
+ Tests the bare-metal exception handler output: compiles crashing
+ samples, boots them with a short timeout, verifies serial output.
+ Compile with: -Survey "lower-mul:500000"
+
+ We say:
+
+Section: Parameters
+
+  teh-params : List ShellParam = [sh-param-default "CodexCdx" SptString (SeLit "")]
+
+Section: S01 -- Preamble
+
+  s01 : List ShellCmd = [ScSetStrictMode, ScSetErrorStop, ScBlank, ScRunDot (SeRaw "(Join-Path $PSScriptRoot 'vm-config.ps1')"), ScBlank, ScAssign "Repo" (SeRaw "(Resolve-Path (Join-Path $PSScriptRoot '..')).Path"), ScIf (SeNot (SeVar "CodexCdx")) [ScAssign "CodexCdx" (SeRaw "Join-Path $Repo 'seed\\Codex.cdx'")] [], ScAssign "compile" (SeRaw "Join-Path $PSScriptRoot 'compile.ps1'"), ScAssign "outDir" (SeRaw "Join-Path $Repo 'build-output\\exc-test'"), ScIf (SeDirExists (SeVar "outDir")) [ScRaw "Remove-Item -Recurse -Force $outDir"] [], ScMkdir (SeVar "outDir")]
+
+Section: S02 -- Stage0 copy
+
+  s02 : List ShellCmd = [ScAssign "stage0Dir" (SeRaw "Join-Path $Repo 'build-output\\bare-metal'"), ScMkdir (SeVar "stage0Dir"), ScCopy (SeVar "CodexCdx") (SeRaw "Join-Path $stage0Dir 'Codex.cdx'")]
+
+Section: S03 -- Sample definitions
+
+  s03 : List ShellCmd = [ScRaw "$samples = @(\n    @{ Name = 'exc-div-zero';    Pattern = '!EXC=';          NeedStack = $true },\n    @{ Name = 'exc-null-read';   Pattern = '!EXC=';          NeedStack = $true },\n    @{ Name = 'exc-gpf';         Pattern = '!EXC=';          NeedStack = $true },\n    @{ Name = 'exc-stack-heap';  Pattern = 'OUT OF MEMORY';  NeedStack = $false }\n)", ScBlank, ScRaw "$pass = 0; $fail = 0"]
+
+Section: S04 -- Compile each sample
+
+  s04 : List ShellCmd = [ScAssign "src" (SeRaw "Join-Path $Repo \"codex\\test\\$($s.Name).codex\""), ScAssign "cdx" (SeRaw "Join-Path $outDir \"$($s.Name).cdx\""), ScAssign "log" (SeRaw "Join-Path $outDir \"$($s.Name).log\""), ScBlank, ScRaw "Write-Host -NoNewline \"$($s.Name): \"", ScBlank, ScRaw "& pwsh -NoProfile -File $compile -Src $src -Out $cdx -Log $log 2>&1 | Out-Null", ScIf (SeNot (SeExitCodeEq 0)) [ScRaw "Write-Host 'FAIL (compile)'", ScRaw "$fail++; continue"] []]
+
+Section: S05 -- VM boot and capture
+
+  s05 : List ShellCmd = [ScRaw "$run = Start-VmRun -Kernel $cdx -ConnectTimeoutSec 5 -MemMB 3072", ScIf (SeNot (SeVar "run")) [ScRaw "Write-Host 'FAIL (vm start)'", ScRaw "$fail++; continue"] []]
+
+Section: S06 -- Stream read loop
+
+  s06 : List ShellCmd = [ScRaw "$output = ''", ScRaw "try {\n    $dataStream = $run.Conn.Data.GetStream()\n    $ctrlStream = $run.Conn.Ctrl.GetStream()\n    $allBytes = [System.Collections.Generic.List[byte]]::new(65536)\n    $readBuf = New-Object byte[] 4096\n    $deadline = (Get-Date).AddSeconds(10)\n    while ((Get-Date) -lt $deadline) {\n        $gotData = $false\n        if ($dataStream.DataAvailable) {\n            if ($dataStream.CanTimeout) { $dataStream.ReadTimeout = 2000 }\n            try { $n = $dataStream.Read($readBuf, 0, $readBuf.Length) } catch { $n = 0 }\n            if ($n -gt 0) { for ($i = 0; $i -lt $n; $i++) { $allBytes.Add($readBuf[$i]) }; $gotData = $true }\n        }\n        if ($ctrlStream.DataAvailable) {\n            if ($ctrlStream.CanTimeout) { $ctrlStream.ReadTimeout = 2000 }\n            try { $n = $ctrlStream.Read($readBuf, 0, $readBuf.Length) } catch { $n = 0 }\n            if ($n -gt 0) { for ($i = 0; $i -lt $n; $i++) { $allBytes.Add($readBuf[$i]) }; $gotData = $true }\n        }\n        if (-not $gotData) { Start-Sleep -Milliseconds 100; continue }\n        $partial = [System.Text.Encoding]::UTF8.GetString($allBytes.ToArray())\n        if ($partial.Contains('S[0000000000000070]') -or $partial.Contains('OUT OF MEMORY')) { break }\n    }\n    $output = [System.Text.Encoding]::UTF8.GetString($allBytes.ToArray())\n} finally {\n    Close-Vm -Conn $run.Conn -Process $run.Process\n    Remove-Item -Force $run.StdoutFile, $run.StderrFile -ErrorAction SilentlyContinue\n}"]
+
+Section: S07 -- Write output and verify
+
+  s07-verify : List ShellCmd = [ScRaw "$hasPattern = $output.Contains($s.Pattern)", ScRaw "$dumpLines = @($output -split \"`n\" | Where-Object { $_ -match '^S\\[' }).Count", ScRaw "$stackOk = if ($s.NeedStack) { $dumpLines -ge 14 } else { $true }", ScBlank, ScIf (SeAnd (SeVar "hasPattern") (SeVar "stackOk")) [ScRaw "Write-Host \"PASS (pattern=$hasPattern stack=$dumpLines)\"", ScRaw "$pass++"] [ScRaw "Write-Host \"FAIL (pattern=$hasPattern stack=$dumpLines)\"", ScRaw "Write-Host \"  output: $($output.Substring(0, [math]::Min(200, $output.Length)))\"", ScRaw "$fail++"]]
+
+  s07 : List ShellCmd = [ScDotNetCall "System.IO.File" "WriteAllText" [SeRaw "Join-Path $outDir \"$($s.Name).out\"", SeVar "output"], ScBlank, ScSequence s07-verify]
+
+Section: S08 -- Summary
+
+  s08 : List ShellCmd = [ScEcho (SeLit ""), ScRaw "Write-Host \"Exception handler tests: pass=$pass fail=$fail\"", ScIf (SeIntGt (SeVar "fail") (SeInt 0)) [ScExit (SeInt 1)] [], ScExit (SeInt 0)]
+
+Section: Assembly
+
+  teh-body : List ShellCmd = [ScSequence s01, ScBlank, ScSequence s02, ScBlank, ScSequence s03, ScBlank, ScForEach "s" (SeVar "samples") [ScSequence s04, ScBlank, ScSequence s05, ScBlank, ScSequence s06, ScBlank, ScSequence s07], ScBlank, ScSequence s08]
+
+  teh-script : ShellScript = sh-script "test-exception-handler" "Test bare-metal exception handler output" teh-params teh-body
+
+  opening : [Console] Nothing = act
+    print-line-uni (emit-powershell teh-script)
+  end
+
+Page 1

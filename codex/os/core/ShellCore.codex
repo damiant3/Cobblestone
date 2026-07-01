@@ -1,0 +1,204 @@
+Chapter: ShellCore
+  cites OS chapter ProgramRegistry
+  cites Trust chapter TrustLattice
+  cites Trust chapter PolicyEngine
+  cites Foreword chapter FactStore
+  cites Foreword chapter Sha256
+  cites Foreword chapter Maybe
+  cites Foreword chapter Hamt
+
+ ShellCore parses and executes OS shell commands: install, run,
+ revoke, status, list, trust, and untrust. Each command produces
+ a verified state transition through the ProgramRegistry.
+
+ We say:
+
+Section: Command Types
+
+  ShellCmd =
+    | CmdInstall (Text) (List Integer)
+    | CmdRun (Text)
+    | CmdRevoke (Text) (Integer)
+    | CmdStatus (Text)
+    | CmdListPrograms
+    | CmdTrust (Text) (Integer)
+    | CmdUntrust (Text)
+    | CmdAddRule (Text) (Text) (Integer)
+
+Section: Shell State
+
+  ShellState = record {
+    registry : ProgramRegistry,
+    lattice : TrustLattice,
+    policy : Policy,
+    store : BareFactStore,
+    fuel : Integer between 1 and 4294967295
+  }
+
+  CmdResult = record {
+    output : Text,
+    new-state : ShellState,
+    success : Boolean
+  }
+
+Section: State Construction
+
+  shell-init : Policy, Integer -> ShellState
+  shell-init (policy) (fuel) = ShellState {
+    registry = registry-empty,
+    lattice = lattice-empty,
+    policy = policy,
+    store = fact-store-empty,
+    fuel = fuel
+  }
+
+  with-registry : ShellState, ProgramRegistry -> ShellState
+  with-registry (s) (r) = ShellState {
+    registry = r,
+    lattice = s.lattice,
+    policy = s.policy,
+    store = s.store,
+    fuel = s.fuel
+  }
+
+  with-lattice : ShellState, TrustLattice -> ShellState
+  with-lattice (s) (l) = ShellState {
+    registry = s.registry,
+    lattice = l,
+    policy = s.policy,
+    store = s.store,
+    fuel = s.fuel
+  }
+
+  with-policy : ShellState, Policy -> ShellState
+  with-policy (s) (p) = ShellState {
+    registry = s.registry,
+    lattice = s.lattice,
+    policy = p,
+    store = s.store,
+    fuel = s.fuel
+  }
+
+Section: Command Dispatch
+
+  execute-cmd : ShellCmd, ShellState -> CmdResult
+  execute-cmd (cmd) (state) = when cmd
+    is CmdInstall (name) (binary) -> exec-install name binary state
+    is CmdRun (name) -> exec-run name state
+    is CmdRevoke (name) (bit) -> exec-revoke name bit state
+    is CmdStatus (name) -> exec-status name state
+    is CmdListPrograms -> exec-list state
+    is CmdTrust (key) (score) -> exec-trust key score state
+    is CmdUntrust (key) -> exec-untrust key state
+    is CmdAddRule (name) (cap) (dir) -> exec-add-rule name cap dir state
+
+Section: Install
+
+  exec-install : Text, List Integer, ShellState -> CmdResult
+  exec-install (name) (binary) (state) =
+    let result = registry-install (state.registry) name binary (state.lattice) (state.policy) (state.store) (state.fuel)
+    in when result
+      is InstallOk (reg) -> CmdResult { output = "installed: " & name, new-state = with-registry state reg, success = True }
+      is InstallDenied (reason) -> CmdResult { output = "denied: " & reason, new-state = state, success = False }
+      is InstallDuplicate -> CmdResult { output = "duplicate: " & name, new-state = state, success = False }
+
+Section: Run
+
+  exec-run : Text, ShellState -> CmdResult
+  exec-run (name) (state) =
+    let found = registry-lookup (state.registry) name
+    in when found
+      is Just (entry) -> CmdResult {
+        output = "run: " & name & " grant=" & show (entry.cap-bitmask),
+        new-state = state,
+        success = True
+      }
+      is None -> CmdResult { output = "not found: " & name, new-state = state, success = False }
+
+Section: Revoke
+
+  exec-revoke : Text, Integer, ShellState -> CmdResult
+  exec-revoke (name) (bit) (state) =
+    let found = registry-lookup (state.registry) name
+    in when found
+      is None -> CmdResult { output = "not found: " & name, new-state = state, success = False }
+      is Just (entry) ->
+        let new-mask = bit-and (entry.cap-bitmask) (bit-not (bit-shl 1 bit))
+        in let new-entry = ProgramEntry {
+          name = entry.name,
+          content-hash = entry.content-hash,
+          author-key = entry.author-key,
+          cap-bitmask = new-mask,
+          cap-count = entry.cap-count
+        }
+        in let reg1 = registry-remove (state.registry) name
+        in let reg2 = ProgramRegistry {
+          programs = hamt-set (reg1.programs) name new-entry,
+          count = reg1.count + 1
+        }
+        in CmdResult {
+          output = "revoked bit " & show bit & " from " & name & " new-mask=" & show new-mask,
+          new-state = with-registry state reg2,
+          success = True
+        }
+
+Section: Status
+
+  exec-status : Text, ShellState -> CmdResult
+  exec-status (name) (state) =
+    let found = registry-lookup (state.registry) name
+    in when found
+      is Just (entry) -> CmdResult {
+        output = name & ": caps=" & show (entry.cap-bitmask) & " hash=" & text-take 16 (entry.content-hash),
+        new-state = state,
+        success = True
+      }
+      is None -> CmdResult { output = "not found: " & name, new-state = state, success = False }
+
+  text-take : Integer, Text -> Text
+  text-take (n) (s) =
+    if n >= text-length s then s
+    else substring s 0 n
+
+Section: List
+
+  exec-list : ShellState -> CmdResult
+  exec-list (state) =
+    CmdResult {
+      output = show (registry-count (state.registry)) & " programs",
+      new-state = state,
+      success = True
+    }
+
+Section: Trust
+
+  exec-trust : Text, Integer, ShellState -> CmdResult
+  exec-trust (key) (score) (state) =
+    let new-lattice = lattice-add-direct (state.lattice) key score
+    in CmdResult {
+      output = "trusted: score=" & show score,
+      new-state = with-lattice state new-lattice,
+      success = True
+    }
+
+  exec-untrust : Text, ShellState -> CmdResult
+  exec-untrust (key) (state) =
+    let new-lattice = lattice-add-direct (state.lattice) key 0
+    in CmdResult {
+      output = "untrusted",
+      new-state = with-lattice state new-lattice,
+      success = True
+    }
+
+Section: Policy Rule
+
+  exec-add-rule : Text, Text, Integer, ShellState -> CmdResult
+  exec-add-rule (name) (cap) (dir) (state) =
+    let new-policy = policy-add-rule (state.policy) (rule-allow name (CapabilityMatch cap dir))
+    in CmdResult {
+      output = "rule added: " & name,
+      new-state = with-policy state new-policy,
+      success = True
+    }
+
+Page 1

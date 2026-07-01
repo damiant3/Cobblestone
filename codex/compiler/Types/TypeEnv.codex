@@ -1,0 +1,341 @@
+Chapter: Type Environment
+  cites Codex chapter General
+  cites Codex chapter Console
+  cites Codex chapter Files
+  cites Codex chapter Process
+  cites Codex chapter Text
+  cites Codex chapter Characters
+  cites Codex chapter Numbers
+  cites Codex chapter Bitwise
+  cites Codex chapter Lists
+  cites Codex chapter Concurrency
+  cites Codex chapter Runtime
+  cites Foreword chapter Sort
+
+ An immutable mapping from names to types.
+
+Section: Environment Type
+  TypeEnv = record {
+   bindings : List TypeBinding,
+   locals : List TypeBinding,
+   chapter-renames : List RenameEntry
+  }
+
+  TypeBinding = record {
+   name : Text,
+   bound-type : CodexType
+  }
+
+Section: Construction
+  empty-type-env : TypeEnv = TypeEnv { bindings = [], locals = [], chapter-renames = [] }
+
+Section: Lookup (locals first, then globals)
+  env-lookup-in : List TypeBinding, Text -> CodexType
+  env-lookup-in (bs) (name) =
+   let len = list-length bs
+   in if len == 0 then ErrorTy
+   else let pos = bsearch-text-pos bs name 0 len
+   in if pos >= len then ErrorTy
+   else let b = list-at bs pos
+   in if b.name == name then b.bound-type else ErrorTy
+
+  env-has-in : List TypeBinding, Text -> Boolean
+  env-has-in (bs) (name) =
+   let len = list-length bs
+   in if len == 0 then False
+   else let pos = bsearch-text-pos bs name 0 len
+   in if pos >= len then False
+      else (list-at bs pos).name == name
+
+  env-lookup : TypeEnv, Text -> CodexType
+  env-lookup (env) (name) =
+   let llen = list-length (env.locals)
+   in let lpos = bsearch-text-pos (env.locals) name 0 llen
+   in if lpos < llen
+      then let lb = list-at (env.locals) lpos
+           in if lb.name == name then lb.bound-type
+              else env-lookup-in (env.bindings) name
+      else env-lookup-in (env.bindings) name
+
+  env-has : TypeEnv, Text -> Boolean
+  env-has (env) (name) =
+   let llen = list-length (env.locals)
+   in let lpos = bsearch-text-pos (env.locals) name 0 llen
+   in if lpos < llen
+      then if (list-at (env.locals) lpos).name == name then True
+           else env-has-in (env.bindings) name
+      else env-has-in (env.bindings) name
+
+Section: Unsorted Membership (linear scan, for use before env-finalize)
+  env-has-linear-in : List TypeBinding, Text, Integer, Integer -> Boolean
+  env-has-linear-in (bs) (name) (i) (len) =
+   if i == len then False
+   else if (list-at bs i).name == name then True
+        else env-has-linear-in bs name (i + 1) len
+
+  env-has-unsorted : TypeEnv, Text -> Boolean
+  env-has-unsorted (env) (name) =
+   env-has-linear-in (env.bindings) name 0 (list-length (env.bindings))
+
+Section: Bind (unsorted accumulation — call env-finalize before lookup)
+  env-replace-in : List TypeBinding, Text, CodexType, Integer, Integer -> List TypeBinding
+  env-replace-in (bs) (name) (ty) (i) (len) =
+   if i >= len then list-push bs (deck-record (TypeBinding { name = name, bound-type = ty }))
+   else if (list-at bs i).name == name then list-set-at bs i (deck-record (TypeBinding { name = name, bound-type = ty }))
+   else env-replace-in bs name ty (i + 1) len
+
+  env-bind : TypeEnv, Text, CodexType -> TypeEnv
+  env-bind (env) (name) (ty) =
+   let bs = env.bindings
+   in __record-set env "bindings" (env-replace-in bs name ty 0 (list-length bs))
+
+  env-bind-local : TypeEnv, Text, CodexType -> TypeEnv
+  env-bind-local (env) (name) (ty) =
+   let len = list-length (env.locals)
+   in let pos = bsearch-text-pos (env.locals) name 0 len
+   in __record-set env "locals" (list-insert-at (env.locals) pos (deck-record (TypeBinding {
+    name = name,
+    bound-type = ty
+   })))
+
+Section: Finalize (sort bindings for bsearch lookup)
+  compare-type-binding-names : TypeBinding, TypeBinding -> Integer
+  compare-type-binding-names (a) (b) = text-compare (a.name) (b.name)
+
+  env-finalize : TypeEnv -> TypeEnv
+  env-finalize (env) =
+   __record-set env "bindings" (sort-by (env.bindings) compare-type-binding-names)
+
+Section: Builtins
+  builtin-type-env : TypeEnv
+  builtin-type-env =
+   let e = empty-type-env
+   in let e2 = env-bind e "negate" (ForAllTy 0 (FunTy (TypeVar 0) (TypeVar 0)))
+   in let e3 = env-bind e2 "text-length" (FunTy TextTy int-ty-default)
+   in let e4 = env-bind e3 "integer-to-text" (FunTy int-ty-default TextTy)
+   in let e5 = env-bind e4 "char-at" (FunTy TextTy (FunTy int-ty-default CharTy))
+   in let e5b = env-bind e5 "char-to-text" (FunTy CharTy TextTy)
+   in let e6 = env-bind e5b "substring" (FunTy TextTy (FunTy int-ty-default (FunTy int-ty-default TextTy)))
+   in let e7 = env-bind e6 "is-letter" (FunTy CharTy BooleanTy)
+   in let e8 = env-bind e7 "is-digit" (FunTy CharTy BooleanTy)
+   in let e9 = env-bind e8 "is-whitespace" (FunTy CharTy BooleanTy)
+   in let e10 = env-bind e9 "char-code" (FunTy CharTy int-ty-default)
+   in let e10b = env-bind e10 "char-code-at" (FunTy TextTy (FunTy int-ty-default int-ty-default))
+   in let e11 = env-bind e10b "code-to-char" (FunTy int-ty-default CharTy)
+   in let e12 = env-bind e11 "text-replace" (FunTy TextTy (FunTy TextTy (FunTy TextTy TextTy)))
+   in let e12b = env-bind e12 "text-to-double-bits" (FunTy TextTy int-ty-default)
+   in let e13 = env-bind e12b "text-to-integer" (FunTy TextTy int-ty-default)
+   in let e14 = env-bind e13 "show" (ForAllTy 0 (FunTy (TypeVar 0) TextTy))
+   in let e14cmp = env-bind e14 "compare" (ForAllTy 0 (FunTy (TypeVar 0) (FunTy (TypeVar 0) int-ty-default)))
+   in let e14dsh = env-bind e14cmp "__dderiv-Show" (ForAllTy 0 (FunTy (TypeVar 0) TextTy))
+   in let e14dor = env-bind e14dsh "__dderiv-Ord" (ForAllTy 0 (FunTy (TypeVar 0) (FunTy (TypeVar 0) int-ty-default)))
+   in let e15 = env-bind e14dor "print-line" (FunTy TextTy (EffectfulTy [Name { value = "Console" }] [] NothingTy))
+   in let e15b = env-bind e15 "print-line-raw" (FunTy TextTy (EffectfulTy [Name { value = "Console" }] [] NothingTy))
+   in let e15c = env-bind e15b "print-line-uni" (FunTy TextTy (EffectfulTy [Name { value = "Console" }] [] NothingTy))
+   in let e15c1 = env-bind e15c "print-uni" (FunTy TextTy (EffectfulTy [Name { value = "Console" }] [] NothingTy))
+   in let e15a = env-bind e15c1 "print-error" (FunTy TextTy (EffectfulTy [Name { value = "Console" }] [] NothingTy))
+   in let e15d = env-bind e15a "print-error-uni" (FunTy TextTy (EffectfulTy [Name { value = "Console" }] [] NothingTy))
+   in let e16 = env-bind e15d "list-length" (ForAllTy 0 (FunTy (ListTy (TypeVar 0)) int-ty-default))
+   in let e16b = env-bind e16 "list-insert-at" (ForAllTy 0 (FunTy (ListTy (TypeVar 0)) (FunTy int-ty-default (FunTy (TypeVar 0) (ListTy (TypeVar 0))))))
+   in let e16b2 = env-bind e16b "list-set-at" (ForAllTy 0 (FunTy (ListTy (TypeVar 0)) (FunTy int-ty-default (FunTy (TypeVar 0) (ListTy (TypeVar 0))))))
+   in let e16c = env-bind e16b2 "text-compare" (FunTy TextTy (FunTy TextTy int-ty-default))
+   in let e16d = env-bind e16c "list-snoc" (ForAllTy 0 (FunTy (ListTy (TypeVar 0)) (FunTy (TypeVar 0) (ListTy (TypeVar 0)))))
+   in let e16e = env-bind e16d "list-push" (ForAllTy 0 (FunTy (ListTy (TypeVar 0)) (FunTy (TypeVar 0) (ListTy (TypeVar 0)))))
+   in let e17 = env-bind e16e "list-at" (ForAllTy 0 (FunTy (ListTy (TypeVar 0)) (FunTy int-ty-default (TypeVar 0))))
+   in let e18 = env-bind e17 "map" (ForAllTy 0 (ForAllTy 1 (FunTy (FunTy (TypeVar 0) (TypeVar 1)) (FunTy (ListTy (TypeVar 0)) (ListTy (TypeVar 1))))))
+   in let e21 = env-bind e18 "read-line" (EffectfulTy [Name { value = "Console" }] [] (ConstructedTy (Name { value = "Maybe" }) [TextTy]))
+   in let e21rl = env-bind e21 "read-line-cce" (EffectfulTy [Name { value = "Console" }] [] (ConstructedTy (Name { value = "Maybe" }) [TextTy]))
+   in let e21a = env-bind e21rl "read-file-raw" (FunTy TextTy TextTy)
+   in let e21b = env-bind e21a "read-serial-cce" (FunTy TextTy TextTy)
+   in let e22 = env-bind e21b "read-file" (FunTy TextTy TextTy)
+   in let e22a = env-bind e22 "read-file-uni" (FunTy TextTy TextTy)
+   in let e23 = env-bind e22a "write-file" (FunTy TextTy (FunTy TextTy NothingTy))
+   in let e23a = env-bind e23 "write-binary" (FunTy (ListTy int-ty-default) NothingTy)
+   in let e24 = env-bind e23a "file-exists" (FunTy TextTy BooleanTy)
+   in let e25 = env-bind e24 "list-files" (FunTy TextTy (FunTy TextTy (ListTy TextTy)))
+   in let e25a = env-bind e25 "list-directories" (FunTy TextTy (ListTy TextTy))
+   in let e25b = env-bind e25a "write-binary-file" (FunTy TextTy (FunTy (ListTy int-ty-default) NothingTy))
+   in let e25c = env-bind e25b "create-directory" (FunTy TextTy NothingTy)
+   in let e25d = env-bind e25c "path-combine" (FunTy TextTy (FunTy TextTy TextTy))
+   in let e25e = env-bind e25d "path-filename" (FunTy TextTy TextTy)
+   in let e25f = env-bind e25e "external-compile-bare" (FunTy TextTy (FunTy TextTy (FunTy TextTy (FunTy TextTy (ListTy int-ty-default)))))
+   in let e26 = env-bind e25f "text-split" (FunTy TextTy (FunTy TextTy (ListTy TextTy)))
+   in let e27 = env-bind e26 "text-contains" (FunTy TextTy (FunTy TextTy BooleanTy))
+   in let e28 = env-bind e27 "text-starts-with" (FunTy TextTy (FunTy TextTy BooleanTy))
+   in let e29 = env-bind e28 "get-args" (EffectfulTy [Name { value = "Process" }] [] (ListTy TextTy))
+   in let e30 = env-bind e29 "get-env" (FunTy TextTy (EffectfulTy [Name { value = "Process" }] [] TextTy))
+   in let e31 = env-bind e30 "current-dir" (EffectfulTy [Name { value = "Process" }] [] TextTy)
+   in let e31b = env-bind e31 "run-process" (FunTy TextTy (FunTy TextTy (EffectfulTy [Name { value = "Process" }] [] TextTy)))
+   in let e31c = env-bind e31b "run-process-full" (FunTy TextTy (FunTy TextTy (EffectfulTy [Name { value = "Process" }] [] (RecordTy (Name { value = "ProcessResult" }) [] [RecordField { name = Name { value = "stdout" }, type-val = TextTy }, RecordField { name = Name { value = "stderr" }, type-val = TextTy }, RecordField { name = Name { value = "exit-code" }, type-val = int-ty-default }]))))
+   in let e31d = env-bind e31c "process-exit" (FunTy int-ty-default (EffectfulTy [Name { value = "Process" }] [] NothingTy))
+   in let e32 = env-bind e31d "fork" (ForAllTy 0 (FunTy (FunTy NothingTy (TypeVar 0)) (ConstructedTy (Name { value = "Task" }) [TypeVar 0])))
+   in let e33 = env-bind e32 "await" (ForAllTy 0 (FunTy (ConstructedTy (Name { value = "Task" }) [TypeVar 0]) (TypeVar 0)))
+   in let e34 = env-bind e33 "par" (ForAllTy 0 (ForAllTy 1 (FunTy (FunTy (TypeVar 0) (TypeVar 1)) (FunTy (ListTy (TypeVar 0)) (ListTy (TypeVar 1))))))
+   in let e35 = env-bind e34 "race" (ForAllTy 0 (FunTy (ListTy (FunTy NothingTy (TypeVar 0))) (TypeVar 0)))
+   in let e35a1 = env-bind e35 "fail" (ForAllTy 0 (FunTy TextTy (TypeVar 0)))
+   in let e35b = env-bind e35a1 "run-state" (FunTy int-ty-default (FunTy int-ty-default int-ty-default))
+   in let e35c = env-bind e35b "get-state" int-ty-default
+   in let e35d = env-bind e35c "set-state" (FunTy int-ty-default NothingTy)
+   in let e35e = env-bind e35d "block-read" (FunTy int-ty-default int-ty-default)
+   in let e35f = env-bind e35e "block-write" (FunTy int-ty-default (FunTy int-ty-default int-ty-default))
+   in let e35g = env-bind e35f "block-read-sector" (FunTy int-ty-default int-ty-default)
+   in let e35h = env-bind e35g "block-write-sector" (FunTy int-ty-default (FunTy int-ty-default int-ty-default))
+   in let e35i = env-bind e35h "peek-byte" (FunTy int-ty-default (FunTy int-ty-default int-ty-default))
+   in let e35j = env-bind e35i "poke-byte" (FunTy int-ty-default (FunTy int-ty-default (FunTy int-ty-default int-ty-default)))
+   in let e35j1 = env-bind e35j "port-in-byte" (FunTy int-ty-default int-ty-default)
+   in let e35j2 = env-bind e35j1 "port-out-byte" (FunTy int-ty-default (FunTy int-ty-default int-ty-default))
+   in let e35j3 = env-bind e35j2 "port-in-32" (FunTy int-ty-default int-ty-default)
+   in let e35j4 = env-bind e35j3 "port-out-32" (FunTy int-ty-default (FunTy int-ty-default int-ty-default))
+   in let e35j4w = env-bind e35j4 "port-in-16" (FunTy int-ty-default int-ty-default)
+   in let e35j4x = env-bind e35j4w "port-out-16" (FunTy int-ty-default (FunTy int-ty-default int-ty-default))
+   in let e35j4t = env-bind e35j4x "flush-tlb" int-ty-default
+   in let e35j5 = env-bind e35j4t "peek-32" (FunTy int-ty-default (FunTy int-ty-default int-ty-default))
+   in let e35j5q = env-bind e35j5 "peek-qword" (FunTy int-ty-default (FunTy int-ty-default int-ty-default))
+   in let e35j6 = env-bind e35j5q "poke-32" (FunTy int-ty-default (FunTy int-ty-default (FunTy int-ty-default int-ty-default)))
+   in let e35k = env-bind e35j6 "alloc-bytes" (FunTy int-ty-default int-ty-default)
+   in let e35k1 = env-bind e35k "block-select" (FunTy int-ty-default int-ty-default)
+   in let e35l = env-bind e35k1 "block-sector-count" int-ty-default
+   in let e35m = env-bind e35l "process-yield" int-ty-default
+   in let e35n = env-bind e35m "process-spawn" (FunTy (FunTy int-ty-default int-ty-default) int-ty-default)
+   in let e35p = env-bind e35n "process-exit" int-ty-default
+   in let e35q = env-bind e35p "process-spawn-priority" (FunTy (FunTy int-ty-default int-ty-default) (FunTy int-ty-default (FunTy int-ty-default int-ty-default)))
+   in let e35r = env-bind e35q "process-wait" (FunTy int-ty-default int-ty-default)
+   in let e35s = env-bind e35r "get-ticks" int-ty-default
+   in let e35t = env-bind e35s "process-get-pid" int-ty-default
+   in let e35u = env-bind e35t "process-restrict-cap" (FunTy int-ty-default (FunTy int-ty-default int-ty-default))
+   in let e35v = env-bind e35u "chan-kern-create" (FunTy int-ty-default int-ty-default)
+   in let e35w = env-bind e35v "chan-kern-send" (FunTy int-ty-default (FunTy int-ty-default int-ty-default))
+   in let e35x = env-bind e35w "chan-kern-recv" (FunTy int-ty-default int-ty-default)
+   in let e35y = env-bind e35x "chan-kern-close" (FunTy int-ty-default int-ty-default)
+   in let e35z = env-bind e35y "process-kill" (FunTy int-ty-default int-ty-default)
+   in let e35aa = env-bind e35z "process-get-cap" (FunTy int-ty-default int-ty-default)
+   in let e35ab = env-bind e35aa "process-status" (FunTy int-ty-default int-ty-default)
+   in let e35ac = env-bind e35ab "process-count" int-ty-default
+   in let e35ad = env-bind e35ac "chan-kern-send-block" (FunTy int-ty-default (FunTy int-ty-default int-ty-default))
+   in let e35ae = env-bind e35ad "chan-kern-recv-block" (FunTy int-ty-default int-ty-default)
+   in let e35ae1 = env-bind e35ae "chan-text-send" (FunTy int-ty-default (FunTy TextTy int-ty-default))
+   in let e35ae2 = env-bind e35ae1 "chan-text-recv" (FunTy int-ty-default TextTy)
+   in let e35af = env-bind e35ae2 "hardware-random" int-ty-default
+   in let e35ag = env-bind e35af "identity-whoami" (FunTy int-ty-default int-ty-default)
+   in let e35ah = env-bind e35ag "identity-set" (FunTy int-ty-default (FunTy int-ty-default int-ty-default))
+   in let e35ai = env-bind e35ah "device-seed" (FunTy int-ty-default int-ty-default)
+   in let e35aj = env-bind e35ai "boot-factstore-status" int-ty-default
+   in let e35ak = env-bind e35aj "identity-set-proc" (FunTy int-ty-default (FunTy int-ty-default (FunTy int-ty-default int-ty-default)))
+   in let e35al = env-bind e35ak "identity-get-proc" (FunTy int-ty-default (FunTy int-ty-default int-ty-default))
+   in let e35am = env-bind e35al "process-spawn-with-heap" (FunTy (FunTy int-ty-default int-ty-default) (FunTy int-ty-default int-ty-default))
+   in let e35an = env-bind e35am "net-status" int-ty-default
+   in let e35ao = env-bind e35an "net-get-hwaddr" (FunTy int-ty-default int-ty-default)
+   in let e35ap = env-bind e35ao "net-send-raw" (FunTy int-ty-default (FunTy int-ty-default int-ty-default))
+   in let e35aq = env-bind e35ap "net-recv-raw" (FunTy int-ty-default int-ty-default)
+   in let e35v0 = env-bind e35aq "vmxon" (FunTy int-ty-default int-ty-default)
+   in let e35v1 = env-bind e35v0 "vmclear" (FunTy int-ty-default int-ty-default)
+   in let e35v2 = env-bind e35v1 "vmptrld" (FunTy int-ty-default int-ty-default)
+   in let e35v3 = env-bind e35v2 "vmlaunch" int-ty-default
+   in let e35v4 = env-bind e35v3 "vmresume" int-ty-default
+   in let e35v5 = env-bind e35v4 "vmread" (FunTy int-ty-default int-ty-default)
+   in let e35v6 = env-bind e35v5 "vmwrite" (FunTy int-ty-default (FunTy int-ty-default int-ty-default))
+   in let e35m0 = env-bind e35v6 "rdmsr" (FunTy int-ty-default int-ty-default)
+   in let e35m1 = env-bind e35m0 "wrmsr" (FunTy int-ty-default (FunTy int-ty-default int-ty-default))
+   in let e35m2 = env-bind e35m1 "vmlaunch-full" int-ty-default
+   in let e35m3 = env-bind e35m2 "vmresume-full" int-ty-default
+   in let e35u0 = env-bind e35m3 "uefi-set-attr" (FunTy int-ty-default int-ty-default)
+   in let e35u1 = env-bind e35u0 "uefi-clear-screen" int-ty-default
+   in let e35u2 = env-bind e35u1 "uefi-set-cursor" (FunTy int-ty-default (FunTy int-ty-default int-ty-default))
+   in let e35u3 = env-bind e35u2 "uefi-enable-cursor" (FunTy int-ty-default int-ty-default)
+   in let e35u4 = env-bind e35u3 "uefi-set-mode" (FunTy int-ty-default int-ty-default)
+   in let e35u5 = env-bind e35u4 "uefi-read-key" int-ty-default
+   in let e35u6 = env-bind e35u5 "uefi-read-key-ex" int-ty-default
+   in let e35u7 = env-bind e35u6 "uefi-read-file" (FunTy TextTy TextTy)
+   in let e36 = env-bind e35u7 "text-concat-list" (FunTy (ListTy TextTy) TextTy)
+   in let e36a = env-bind e36 "text-to-unicode-bytes" (FunTy TextTy (ListTy int-ty-default))
+   in let e36b = env-bind e36a "unicode-bytes-to-text" (FunTy (ListTy int-ty-default) TextTy)
+   in let e36c = env-bind e36b "raw-bytes-to-text" (FunTy (ListTy int-ty-default) TextTy)
+   in let e37 = env-bind e36c "__linked-list-empty" (ForAllTy 0 (FunTy int-ty-default (LinkedListTy (TypeVar 0))))
+   in let e38 = env-bind e37 "__linked-list-push" (ForAllTy 0 (FunTy (LinkedListTy (TypeVar 0)) (FunTy (TypeVar 0) (LinkedListTy (TypeVar 0)))))
+   in let e39 = env-bind e38 "__linked-list-to-list" (ForAllTy 0 (FunTy (LinkedListTy (TypeVar 0)) (ListTy (TypeVar 0))))
+   in let e40 = env-bind e39 "__record-set" (ForAllTy 0 (ForAllTy 1 (FunTy (TypeVar 0) (FunTy TextTy (FunTy (TypeVar 1) (TypeVar 0))))))
+   in let e41 = env-bind e40 "__heap-save" int-ty-default
+   in let e41a = env-bind e41 "address-of" (ForAllTy 0 (FunTy (TypeVar 0) int-ty-default))
+   in let e41b = env-bind e41a "__self-type-defs" (ListTy (ConstructedTy (Name { value = "TypeBinding" }) []))
+   in let e42 = env-bind e41b "__heap-restore" (FunTy int-ty-default NothingTy)
+   in let e42m = env-bind e42 "__memset" (FunTy int-ty-default (FunTy int-ty-default (FunTy int-ty-default NothingTy)))
+   in let e43 = env-bind e42m "__heap-advance" (FunTy int-ty-default NothingTy)
+   in let e43a = env-bind e43 "__deck-pos" int-ty-default
+   in let e43b = env-bind e43a "__deck-set" (FunTy int-ty-default NothingTy)
+   in let e43c = env-bind e43b "__deck-alloc" (FunTy int-ty-default int-ty-default)
+   in let e43d = env-bind e43c "__deck-enter" NothingTy
+   in let e43e = env-bind e43d "__deck-exit" NothingTy
+   in let e43f = env-bind e43e "__narrow" (FunTy int-ty-default int-ty-default)
+   in let e44 = env-bind e43f "__list-with-capacity" (ForAllTy 0 (FunTy int-ty-default (ListTy (TypeVar 0))))
+   in let e45 = env-bind e44 "__buf-write-byte" (FunTy int-ty-default (FunTy int-ty-default (FunTy int-ty-default int-ty-default)))
+   in let e46 = env-bind e45 "__buf-write-bytes" (FunTy int-ty-default (FunTy int-ty-default (FunTy (ListTy int-ty-default) int-ty-default)))
+   in let e47 = env-bind e46 "__buf-read-bytes" (FunTy int-ty-default (FunTy int-ty-default (FunTy int-ty-default (ListTy int-ty-default))))
+   in let e48 = env-bind e47 "bit-and" (FunTy int-ty-default (FunTy int-ty-default int-ty-default))
+   in let e49 = env-bind e48 "bit-or" (FunTy int-ty-default (FunTy int-ty-default int-ty-default))
+   in let e50 = env-bind e49 "bit-xor" (FunTy int-ty-default (FunTy int-ty-default int-ty-default))
+   in let e51 = env-bind e50 "bit-shl" (FunTy int-ty-default (FunTy int-ty-default int-ty-default))
+   in let e52 = env-bind e51 "bit-shr" (FunTy int-ty-default (FunTy int-ty-default int-ty-default))
+   in let e52u = env-bind e52 "bit-shru" (FunTy int-ty-default (FunTy int-ty-default int-ty-default))
+   in let e53 = env-bind e52u "bit-not" (FunTy int-ty-default int-ty-default)
+   in let e54 = env-bind e53 "int-mod" (FunTy int-ty-default (FunTy int-ty-default int-ty-default))
+   in let e55 = env-bind e54 "abs" (FunTy int-ty-default int-ty-default)
+   in let e56 = env-bind e55 "min" (FunTy int-ty-default (FunTy int-ty-default int-ty-default))
+   in let e57 = env-bind e56 "max" (FunTy int-ty-default (FunTy int-ty-default int-ty-default))
+   in let e58 = env-bind e57 "Refl" (ForAllTy 0 (PropEqTy (TypeVar 0) (TypeVar 0)))
+   in let e59 = env-bind e58 "assume" ProofTy
+   in let e60 = env-bind e59 "sym" (ForAllTy 0 (ForAllTy 1 (FunTy (PropEqTy (TypeVar 0) (TypeVar 1)) (PropEqTy (TypeVar 1) (TypeVar 0)))))
+   in let e61 = env-bind e60 "trans" (ForAllTy 0 (ForAllTy 1 (ForAllTy 2 (FunTy (PropEqTy (TypeVar 0) (TypeVar 1)) (FunTy (PropEqTy (TypeVar 1) (TypeVar 2)) (PropEqTy (TypeVar 0) (TypeVar 2)))))))
+   in let e62 = env-bind e61 "cong" (ForAllTy 0 (ForAllTy 1 (ForAllTy 2 (FunTy (PropEqTy (TypeVar 0) (TypeVar 1)) (PropEqTy (TypeApply (TypeVar 2) (TypeVar 0)) (TypeApply (TypeVar 2) (TypeVar 1)))))))
+   in let e62b = env-bind e62 "app-cong" (ForAllTy 0 (ForAllTy 1 (ForAllTy 2 (FunTy (PropEqTy (TypeVar 0) (TypeVar 1)) (PropEqTy (TypeApply (TypeVar 0) (TypeVar 2)) (TypeApply (TypeVar 1) (TypeVar 2)))))))
+   in let e63 = env-bind e62b "prof-start" int-ty-default
+   in let e64 = env-bind e63 "prof-dump" int-ty-default
+   in let e65 = env-bind e64 "force" (ForAllTy 0 (FunTy (FunTy int-ty-default (TypeVar 0)) (TypeVar 0)))
+   in let ev1 = env-bind e65 "vec-splat" (ForAllTy 0 (FunTy (TypeVar 0) (VectorTy 2 (TypeVar 0))))
+   in let ev2 = env-bind ev1 "vec-extract" (ForAllTy 0 (FunTy (VectorTy 2 (TypeVar 0)) (FunTy int-ty-default (TypeVar 0))))
+   in let ev3 = env-bind ev2 "vec-add" (FunTy (VectorTy 2 RealTy) (FunTy (VectorTy 2 RealTy) (VectorTy 2 RealTy)))
+   in let ev4 = env-bind ev3 "vec-sub" (FunTy (VectorTy 2 RealTy) (FunTy (VectorTy 2 RealTy) (VectorTy 2 RealTy)))
+   in let ev5 = env-bind ev4 "vec-mul" (FunTy (VectorTy 2 RealTy) (FunTy (VectorTy 2 RealTy) (VectorTy 2 RealTy)))
+   in let ev6 = env-bind ev5 "vec-div" (FunTy (VectorTy 2 RealTy) (FunTy (VectorTy 2 RealTy) (VectorTy 2 RealTy)))
+   in let ev7 = env-bind ev6 "vec-reduce-add" (FunTy (VectorTy 2 RealTy) RealTy)
+   in let ev8 = env-bind ev7 "vec-select" (ForAllTy 0 (FunTy (VectorMaskTy 2) (FunTy (VectorTy 2 (TypeVar 0)) (FunTy (VectorTy 2 (TypeVar 0)) (VectorTy 2 (TypeVar 0))))))
+   in let em1 = env-bind ev8 "mask-any" (FunTy (VectorMaskTy 2) BooleanTy)
+   in let em2 = env-bind em1 "mask-all" (FunTy (VectorMaskTy 2) BooleanTy)
+   in let em3 = env-bind em2 "mask-none" (FunTy (VectorMaskTy 2) BooleanTy)
+   in let em4 = env-bind em3 "mask-count" (FunTy (VectorMaskTy 2) int-ty-default)
+   in let ef1 = env-bind em4 "to-real-approx" (FunTy RealTy RealApproxTy)
+   in let ef2 = env-bind ef1 "from-real-approx" (FunTy RealApproxTy RealTy)
+   in let ef2a = env-bind ef2 "to-real-trapping" (FunTy RealTy RealTrappingTy)
+   in let ef2b = env-bind ef2a "from-real-trapping" (FunTy RealTrappingTy RealTy)
+   in let ef2c = env-bind ef2b "to-real-saturating" (FunTy RealTy RealSaturatingTy)
+   in let ef2d = env-bind ef2c "from-real-saturating" (FunTy RealSaturatingTy RealTy)
+   in let ef2e = env-bind ef2d "real-from-int" (FunTy int-ty-default RealTy)
+   in let ef2f = env-bind ef2e "real-to-int" (FunTy RealTy int-ty-default)
+   in let ef2g = env-bind ef2f "real-approx-from-int" (FunTy int-ty-default RealApproxTy)
+   in let ef2h = env-bind ef2g "real-approx-to-int" (FunTy RealApproxTy int-ty-default)
+   in let ef3 = env-bind ef2h "vec4-splat" (FunTy RealApproxTy (VectorTy 4 RealApproxTy))
+   in let ef4 = env-bind ef3 "vec4-extract" (FunTy (VectorTy 4 RealApproxTy) (FunTy int-ty-default RealApproxTy))
+   in let ef5 = env-bind ef4 "suggested-vector-width" (ForAllTy 0 (FunTy (TypeVar 0) int-ty-default))
+   in let ea1 = env-bind ef5 "atomic-load" (FunTy int-ty-default int-ty-default)
+   in let ea2 = env-bind ea1 "atomic-store" (FunTy int-ty-default (FunTy int-ty-default int-ty-default))
+   in let ea3 = env-bind ea2 "atomic-cas" (FunTy int-ty-default (FunTy int-ty-default (FunTy int-ty-default BooleanTy)))
+   in let ea4 = env-bind ea3 "atomic-add" (FunTy int-ty-default (FunTy int-ty-default int-ty-default))
+   in let ea5 = env-bind ea4 "atomic-exchange" (FunTy int-ty-default (FunTy int-ty-default int-ty-default))
+   in let ea6 = env-bind ea5 "memory-fence" (FunTy int-ty-default int-ty-default)
+   in let vl1 = env-bind ea6 "vec-empty" (ForAllTy 0 (VectorTy 0 (TypeVar 0)))
+   in let vl2 = env-bind vl1 "vec-singleton" (ForAllTy 0 (FunTy (TypeVar 0) (VectorTy 1 (TypeVar 0))))
+   in let vl3 = env-bind vl2 "vec-head" (ForAllTy 0 (FunTy (VectorTy (0 - 1) (TypeVar 0)) (TypeVar 0)))
+   in let vl4 = env-bind vl3 "vec-cons" (ForAllTy 0 (FunTy (TypeVar 0) (FunTy (VectorTy (0 - 1) (TypeVar 0)) (VectorTy (0 - 1) (TypeVar 0)))))
+   in let vl5 = env-bind vl4 "vec-length" (ForAllTy 0 (FunTy (VectorTy (0 - 1) (TypeVar 0)) int-ty-default))
+   in let ssend-name = Name { value = "SSend" }
+   in let srecv-name = Name { value = "SRecv" }
+   in let send-name = Name { value = "SEnd" }
+   in let schan-name = Name { value = "SChan" }
+   in let ss1 = env-bind vl5 "s-new" (ForAllTy 0 (deck-record (ConstructedTy schan-name [TypeVar 0])))
+   in let ss2 = env-bind ss1 "s-send" (ForAllTy 0 (ForAllTy 1 (FunTy (deck-record (ConstructedTy schan-name [deck-record (ConstructedTy ssend-name [TypeVar 0, TypeVar 1])])) (FunTy (TypeVar 0) (deck-record (ConstructedTy schan-name [TypeVar 1]))))))
+   in let ss3 = env-bind ss2 "s-recv" (ForAllTy 0 (ForAllTy 1 (FunTy (deck-record (ConstructedTy schan-name [deck-record (ConstructedTy srecv-name [TypeVar 0, TypeVar 1])])) (deck-record (ConstructedTy schan-name [TypeVar 1])))))
+   in let ss4 = env-bind ss3 "s-recv-value" (ForAllTy 0 (FunTy (deck-record (ConstructedTy schan-name [TypeVar 0])) int-ty-default))
+   in let ss5 = env-bind ss4 "s-close" (FunTy (deck-record (ConstructedTy schan-name [deck-record (ConstructedTy send-name [])])) int-ty-default)
+   in ss5
+
+Page 1
+

@@ -1,0 +1,95 @@
+Chapter: Wav
+  cites Foreword chapter Units (Frequency)
+
+ WAV audio encoder. 16-bit PCM mono/stereo. Produces the raw byte
+ stream (List Integer) for a RIFF WAV file. Input samples are
+ fixed-point (scale 1000), converted to signed 16-bit PCM.
+
+ We say:
+
+Section: Encoding
+  wav-encode-mono : Frequency, List Integer -> List Integer
+  wav-encode-mono (sample-rate) (samples) =
+    let num-samples = list-length samples
+    in let data-size = num-samples * 2
+    in let file-size = 36 + data-size
+    in wav-riff-header file-size & wav-fmt-chunk sample-rate 1 & wav-data-chunk samples data-size
+
+  wav-encode-stereo : Frequency, List Integer, List Integer -> List Integer
+  wav-encode-stereo (sample-rate) (left) (right) =
+    let num-samples = wav-min-len (list-length left) (list-length right)
+    in let data-size = num-samples * 4
+    in let file-size = 36 + data-size
+    in wav-riff-header file-size & wav-fmt-chunk sample-rate 2 & wav-data-stereo left right num-samples data-size
+
+Section: RIFF Header
+  wav-riff-header : Integer -> List Integer
+  wav-riff-header (file-size) =
+    [82, 73, 70, 70] & wav-le32 file-size & [87, 65, 86, 69]
+
+Section: Format Chunk
+  wav-fmt-chunk : Integer, Integer -> List Integer
+  wav-fmt-chunk (sample-rate) (channels) =
+    let byte-rate = sample-rate * channels * 2
+    in let block-align = channels * 2
+    in [102, 109, 116, 32] & wav-le32 16 & wav-le16 1 & wav-le16 channels & wav-le32 sample-rate & wav-le32 byte-rate & wav-le16 block-align & wav-le16 16
+
+Section: Data Chunk (Mono)
+  wav-data-chunk : List Integer, Integer -> List Integer
+  wav-data-chunk (samples) (data-size) =
+    [100, 97, 116, 97] & wav-le32 data-size & wav-samples-to-pcm samples 0 (list-length samples) []
+
+  wav-samples-to-pcm : List Integer, Integer, Integer, List Integer -> List Integer
+  wav-samples-to-pcm (samples) (i) (n) (acc) =
+    if i >= n then acc
+    else let fixed = list-at samples i
+    in let pcm = wav-fixed-to-pcm16 fixed
+    in wav-samples-to-pcm samples (i + 1) n (acc & wav-le16-signed pcm)
+
+Section: Data Chunk (Stereo)
+  wav-data-stereo : List Integer, List Integer, Integer, Integer -> List Integer
+  wav-data-stereo (left) (right) (n) (data-size) =
+    [100, 97, 116, 97] & wav-le32 data-size & wav-stereo-loop left right 0 n []
+
+  wav-stereo-loop : List Integer, List Integer, Integer, Integer, List Integer -> List Integer
+  wav-stereo-loop (left) (right) (i) (n) (acc) =
+    if i >= n then acc
+    else let l = wav-fixed-to-pcm16 (list-at left i)
+    in let r = wav-fixed-to-pcm16 (list-at right i)
+    in wav-stereo-loop left right (i + 1) n (acc & wav-le16-signed l & wav-le16-signed r)
+
+Section: Conversion
+  wav-fixed-to-pcm16 : Integer -> Integer
+  wav-fixed-to-pcm16 (fixed) =
+    let scaled = fixed * 32767 / 1000
+    in wav-clamp16 scaled
+
+  wav-clamp16 : Integer -> Integer
+  wav-clamp16 (v) =
+    if v > 32767 then 32767
+    else if v < 0 - 32768 then 0 - 32768
+    else v
+
+Section: Helpers
+  wav-le16 : Integer -> List Integer
+  wav-le16 (v) = [bit-and v 255, bit-and (bit-shru v 8) 255]
+
+  wav-le16-signed : Integer -> List Integer
+  wav-le16-signed (v) =
+    let unsigned = if v < 0 then 65536 + v else v
+    in [bit-and unsigned 255, bit-and (bit-shru unsigned 8) 255]
+
+  wav-le32 : Integer -> List Integer
+  wav-le32 (v) = [bit-and v 255, bit-and (bit-shru v 8) 255, bit-and (bit-shru v 16) 255, bit-and (bit-shru v 24) 255]
+
+  wav-min-len : Integer, Integer -> Integer
+  wav-min-len (a) (b) = if a < b then a else b
+
+Section: Queries
+  wav-duration-ms : Integer, Integer -> Integer
+  wav-duration-ms (sample-rate) (num-samples) = num-samples * 1000 / sample-rate
+
+  wav-file-size : Integer, Integer -> Integer
+  wav-file-size (channels) (num-samples) = 44 + num-samples * channels * 2
+
+Page 1

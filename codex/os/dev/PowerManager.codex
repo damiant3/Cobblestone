@@ -1,0 +1,285 @@
+Chapter: PowerManager
+  cites Foreword chapter Maybe
+  cites UI chapter Widget
+  cites UI chapter Layout
+
+ System power management. Power plans (performance, balanced, battery
+ saver), sleep/hibernate timers, display brightness, night light
+ (blue light filter), lid close action, and battery monitoring.
+ The OS reads battery level from USB HID battery reports or ACPI
+ and adjusts behavior per the active power plan.
+
+Section: Power Plan
+
+  PowerPlan =
+    | PlanPerformance
+    | PlanBalanced
+    | PlanBatterySaver
+    | PlanCustom (Text)
+
+  power-plan-label : PowerPlan -> Text
+  power-plan-label (p) = when p
+    is PlanPerformance -> "Performance"
+    is PlanBalanced -> "Balanced"
+    is PlanBatterySaver -> "Battery Saver"
+    is PlanCustom (name) -> name
+
+Section: Lid Action
+
+  LidAction =
+    | LidSleep
+    | LidHibernate
+    | LidShutdown
+    | LidNothing
+
+  lid-action-label : LidAction -> Text
+  lid-action-label (a) = when a
+    is LidSleep -> "Sleep"
+    is LidHibernate -> "Hibernate"
+    is LidShutdown -> "Shut Down"
+    is LidNothing -> "Do Nothing"
+
+Section: Battery
+
+  BatteryState = record {
+    bat-present : Boolean,
+    bat-percent : Integer between 0 and 100,
+    bat-charging : Boolean,
+    bat-time-remaining : Integer,
+    bat-health : Integer between 0 and 100,
+    bat-cycle-count : Integer
+  }
+
+  battery-unknown : BatteryState
+  battery-unknown = BatteryState {
+    bat-present = False, bat-percent = 0, bat-charging = False,
+    bat-time-remaining = 0, bat-health = 100, bat-cycle-count = 0
+  }
+
+Section: Night Light
+
+  NightLightState = record {
+    nl-enabled : Boolean,
+    nl-active : Boolean,
+    nl-strength : Integer between 0 and 100,
+    nl-schedule-enabled : Boolean,
+    nl-start-hour : Integer between 0 and 23,
+    nl-end-hour : Integer between 0 and 23
+  }
+
+  night-light-default : NightLightState
+  night-light-default = NightLightState {
+    nl-enabled = False, nl-active = False, nl-strength = 50,
+    nl-schedule-enabled = True, nl-start-hour = 22, nl-end-hour = 6
+  }
+
+Section: State
+
+  PowerManagerState = record {
+    pm-plan : PowerPlan,
+    pm-battery : BatteryState,
+    pm-brightness : Integer between 0 and 100,
+    pm-night-light : NightLightState,
+    pm-sleep-after : Integer,
+    pm-hibernate-after : Integer,
+    pm-display-off-after : Integer,
+    pm-lid-action : LidAction,
+    pm-lid-action-plugged : LidAction,
+    pm-battery-saver-threshold : Integer between 0 and 100,
+    pm-battery-saver-auto : Boolean,
+    pm-idle-seconds : Integer
+  }
+
+  power-manager-new : PowerManagerState
+  power-manager-new = PowerManagerState {
+    pm-plan = PlanBalanced,
+    pm-battery = battery-unknown,
+    pm-brightness = 80,
+    pm-night-light = night-light-default,
+    pm-sleep-after = 1800,
+    pm-hibernate-after = 7200,
+    pm-display-off-after = 600,
+    pm-lid-action = LidSleep,
+    pm-lid-action-plugged = LidNothing,
+    pm-battery-saver-threshold = 20,
+    pm-battery-saver-auto = True,
+    pm-idle-seconds = 0
+  }
+
+Section: Power Plan
+
+  pm-set-plan : PowerManagerState, PowerPlan -> PowerManagerState
+  pm-set-plan (st) (plan) = __record-set st "pm-plan" plan
+
+  pm-apply-plan-defaults : PowerManagerState -> PowerManagerState
+  pm-apply-plan-defaults (st) = when st.pm-plan
+    is PlanPerformance -> __record-set (__record-set (__record-set st "pm-sleep-after" 0) "pm-display-off-after" 1800) "pm-brightness" 100
+    is PlanBalanced -> __record-set (__record-set (__record-set st "pm-sleep-after" 1800) "pm-display-off-after" 600) "pm-brightness" 80
+    is PlanBatterySaver -> __record-set (__record-set (__record-set st "pm-sleep-after" 600) "pm-display-off-after" 120) "pm-brightness" 40
+    is PlanCustom (name) -> st
+
+Section: Brightness
+
+  pm-set-brightness : PowerManagerState, Integer -> PowerManagerState
+  pm-set-brightness (st) (val) =
+    let clamped = if val < 0 then 0 else if val > 100 then 100 else val
+    in __record-set st "pm-brightness" clamped
+
+  pm-brightness-up : PowerManagerState, Integer -> PowerManagerState
+  pm-brightness-up (st) (step) = pm-set-brightness st (st.pm-brightness + step)
+
+  pm-brightness-down : PowerManagerState, Integer -> PowerManagerState
+  pm-brightness-down (st) (step) = pm-set-brightness st (st.pm-brightness - step)
+
+Section: Night Light
+
+  pm-toggle-night-light : PowerManagerState -> PowerManagerState
+  pm-toggle-night-light (st) =
+    let nl = st.pm-night-light
+    in __record-set st "pm-night-light" (__record-set nl "nl-enabled" (if nl.nl-enabled then False else True))
+
+  pm-set-night-light-strength : PowerManagerState, Integer -> PowerManagerState
+  pm-set-night-light-strength (st) (val) =
+    let clamped = if val < 0 then 0 else if val > 100 then 100 else val
+    in __record-set st "pm-night-light" (__record-set (st.pm-night-light) "nl-strength" clamped)
+
+  pm-check-night-schedule : PowerManagerState, Integer -> PowerManagerState
+  pm-check-night-schedule (st) (current-hour) =
+    let nl = st.pm-night-light
+    in if nl.nl-schedule-enabled then
+      let active = if nl.nl-start-hour > nl.nl-end-hour then
+        if current-hour >= nl.nl-start-hour then True else current-hour < nl.nl-end-hour
+      else if current-hour >= nl.nl-start-hour then current-hour < nl.nl-end-hour else False
+      in __record-set st "pm-night-light" (__record-set nl "nl-active" active)
+    else st
+
+Section: Battery
+
+  pm-update-battery : PowerManagerState, Integer, Boolean -> PowerManagerState
+  pm-update-battery (st) (percent) (charging) =
+    let bat = BatteryState { bat-present = True, bat-percent = percent, bat-charging = charging, bat-time-remaining = (st.pm-battery).bat-time-remaining, bat-health = (st.pm-battery).bat-health, bat-cycle-count = (st.pm-battery).bat-cycle-count }
+    in let st2 = __record-set st "pm-battery" bat
+    in if st.pm-battery-saver-auto then pm-auto-battery-saver st2 else st2
+
+  pm-auto-battery-saver : PowerManagerState -> PowerManagerState
+  pm-auto-battery-saver (st) =
+    let bat = st.pm-battery
+    in if bat.bat-charging then st
+    else if bat.bat-percent <= st.pm-battery-saver-threshold then pm-set-plan st PlanBatterySaver
+    else st
+
+  pm-battery-icon : PowerManagerState -> Text
+  pm-battery-icon (st) =
+    let bat = st.pm-battery
+    in if bat.bat-present then
+      if bat.bat-charging then "upload"
+      else if bat.bat-percent <= 10 then "warning"
+      else if bat.bat-percent <= 25 then "power"
+      else "power"
+    else "power"
+
+Section: Timers
+
+  pm-set-sleep-after : PowerManagerState, Integer -> PowerManagerState
+  pm-set-sleep-after (st) (seconds) = __record-set st "pm-sleep-after" seconds
+
+  pm-set-hibernate-after : PowerManagerState, Integer -> PowerManagerState
+  pm-set-hibernate-after (st) (seconds) = __record-set st "pm-hibernate-after" seconds
+
+  pm-set-display-off-after : PowerManagerState, Integer -> PowerManagerState
+  pm-set-display-off-after (st) (seconds) = __record-set st "pm-display-off-after" seconds
+
+  pm-set-lid-action : PowerManagerState, LidAction -> PowerManagerState
+  pm-set-lid-action (st) (action) = __record-set st "pm-lid-action" action
+
+  pm-set-lid-action-plugged : PowerManagerState, LidAction -> PowerManagerState
+  pm-set-lid-action-plugged (st) (action) = __record-set st "pm-lid-action-plugged" action
+
+  pm-tick : PowerManagerState, Integer -> PowerManagerState
+  pm-tick (st) (elapsed) = __record-set st "pm-idle-seconds" (st.pm-idle-seconds + elapsed)
+
+  pm-on-input : PowerManagerState -> PowerManagerState
+  pm-on-input (st) = __record-set st "pm-idle-seconds" 0
+
+  pm-should-sleep : PowerManagerState -> Boolean
+  pm-should-sleep (st) =
+    if st.pm-sleep-after == 0 then False
+    else st.pm-idle-seconds >= st.pm-sleep-after
+
+  pm-should-display-off : PowerManagerState -> Boolean
+  pm-should-display-off (st) =
+    if st.pm-display-off-after == 0 then False
+    else st.pm-idle-seconds >= st.pm-display-off-after
+
+Section: Widget Building
+
+  power-widget : PowerManagerState -> WidgetNode
+  power-widget (st) =
+    let title = widget-label "pm-title" "Power & Battery"
+    in let plan-row = widget-panel "pm-plans" DirRow 4 [
+      widget-button "pm-perf" "Performance",
+      widget-button "pm-bal" "Balanced",
+      widget-button "pm-saver" "Battery Saver"
+    ]
+    in let bat = pm-battery-widget st
+    in let bright = pm-brightness-widget st
+    in let night = pm-night-light-widget st
+    in let timers = pm-timer-widget st
+    in let lid = pm-lid-widget st
+    in widget-panel "pm-settings" DirColumn 4 [title, plan-row, bat, bright, night, timers, lid]
+
+  pm-battery-widget : PowerManagerState -> WidgetNode
+  pm-battery-widget (st) =
+    let bat = st.pm-battery
+    in if bat.bat-present then
+      let icon = widget-label "pm-bat-icon" (pm-battery-icon st)
+      in let pct = widget-label "pm-bat-pct" (show (bat.bat-percent) & "%")
+      in let status = widget-label "pm-bat-status" (if bat.bat-charging then "Charging" else "On Battery")
+      in let gauge = widget-gauge "pm-bat-gauge" (bat.bat-percent) 100
+      in widget-panel "pm-battery" DirRow 4 [icon, pct, status, gauge]
+    else widget-label "pm-no-battery" "No battery detected"
+
+  pm-brightness-widget : PowerManagerState -> WidgetNode
+  pm-brightness-widget (st) =
+    let label = widget-label "pm-br-label" "Brightness"
+    in let slider = widget-gauge "pm-br-slider" (st.pm-brightness) 100
+    in let pct = widget-label "pm-br-pct" (show (st.pm-brightness) & "%")
+    in widget-panel "pm-brightness" DirRow 4 [label, slider, pct]
+
+  pm-night-light-widget : PowerManagerState -> WidgetNode
+  pm-night-light-widget (st) =
+    let nl = st.pm-night-light
+    in let toggle = widget-button "pm-nl-toggle" (if nl.nl-enabled then "Night Light: ON" else "Night Light: OFF")
+    in let strength = widget-gauge "pm-nl-strength" (nl.nl-strength) 100
+    in let sched = widget-label "pm-nl-sched" ("Schedule: " & show (nl.nl-start-hour) & ":00 - " & show (nl.nl-end-hour) & ":00")
+    in widget-panel "pm-night-light" DirRow 4 [toggle, strength, sched]
+
+  pm-timer-widget : PowerManagerState -> WidgetNode
+  pm-timer-widget (st) =
+    let sleep-label = widget-label "pm-sleep" ("Sleep after: " & pm-timer-label (st.pm-sleep-after))
+    in let disp-label = widget-label "pm-disp" ("Display off: " & pm-timer-label (st.pm-display-off-after))
+    in widget-panel "pm-timers" DirColumn 2 [sleep-label, disp-label]
+
+  pm-lid-widget : PowerManagerState -> WidgetNode
+  pm-lid-widget (st) =
+    let on-bat = widget-label "pm-lid-bat" ("Lid close (battery): " & lid-action-label (st.pm-lid-action))
+    in let on-plug = widget-label "pm-lid-plug" ("Lid close (plugged): " & lid-action-label (st.pm-lid-action-plugged))
+    in widget-panel "pm-lid" DirColumn 2 [on-bat, on-plug]
+
+  pm-timer-label : Integer -> Text
+  pm-timer-label (seconds) =
+    if seconds == 0 then "Never"
+    else if seconds < 60 then show seconds & "s"
+    else if seconds < 3600 then show (seconds / 60) & " min"
+    else show (seconds / 3600) & " hr"
+
+Section: Formatting
+
+  format-power-manager : PowerManagerState -> Text
+  format-power-manager (st) =
+    power-plan-label (st.pm-plan)
+    & " brightness=" & show (st.pm-brightness) & "%"
+    & " bat=" & (if (st.pm-battery).bat-present then show ((st.pm-battery).bat-percent) & "%" else "none")
+    & " idle=" & show (st.pm-idle-seconds) & "s"
+
+Page 1

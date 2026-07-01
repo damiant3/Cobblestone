@@ -1,0 +1,301 @@
+Chapter: Optimizer
+  cites Data chapter RelAlgebra
+  cites Data chapter Catalog
+  cites Data chapter Row
+  cites Foreword chapter Maybe
+  cites Foreword chapter Hamt
+  cites Foreword chapter Pair
+
+ Cost-based query optimizer. Transforms logical RelOp trees by
+ pushing predicates down toward scans, choosing indexes for point
+ lookups, and selecting join algorithms based on estimated
+ cardinalities.
+
+ We say:
+
+Section: Table Statistics
+
+  TableStats = record {
+    ts-row-count : Integer,
+    ts-page-count : Integer,
+    ts-col-stats : HamtMap ColStats
+  }
+
+  ColStats = record {
+    cs-distinct : Integer,
+    cs-min-val : ColumnValue,
+    cs-max-val : ColumnValue,
+    cs-null-count : Integer
+  }
+
+  ts-empty : TableStats
+  ts-empty = TableStats { ts-row-count = 0, ts-page-count = 0, ts-col-stats = hamt-empty }
+
+Section: Cost Model
+
+  PlanCost = record {
+    pc-rows : Integer,
+    pc-io : Integer,
+    pc-cpu : Integer,
+    pc-total : Integer
+  }
+
+  cost-seq-scan : Integer, Integer -> PlanCost
+  cost-seq-scan (rows) (pages) = PlanCost {
+    pc-rows = rows,
+    pc-io = pages,
+    pc-cpu = rows,
+    pc-total = pages + rows
+  }
+
+  cost-index-scan : Integer, Integer -> PlanCost
+  cost-index-scan (rows) (height) = PlanCost {
+    pc-rows = rows,
+    pc-io = height + rows,
+    pc-cpu = rows,
+    pc-total = height + rows * 2
+  }
+
+  cost-hash-join : Integer, Integer -> PlanCost
+  cost-hash-join (left-rows) (right-rows) = PlanCost {
+    pc-rows = left-rows,
+    pc-io = 0,
+    pc-cpu = left-rows + right-rows * 3,
+    pc-total = left-rows + right-rows * 3
+  }
+
+  cost-nested-loop : Integer, Integer -> PlanCost
+  cost-nested-loop (left-rows) (right-rows) = PlanCost {
+    pc-rows = left-rows * right-rows,
+    pc-io = 0,
+    pc-cpu = left-rows * right-rows,
+    pc-total = left-rows * right-rows
+  }
+
+  cost-sort : Integer -> PlanCost
+  cost-sort (rows) =
+    let log-rows = if rows <= 1 then 1 else cost-log2 rows
+    in PlanCost {
+      pc-rows = rows,
+      pc-io = 0,
+      pc-cpu = rows * log-rows,
+      pc-total = rows * log-rows
+    }
+
+  cost-log2 : Integer -> Integer
+  cost-log2 (n) = cost-log2-loop n 0
+
+  cost-log2-loop : Integer, Integer -> Integer
+  cost-log2-loop (n) (acc) =
+    if n <= 1 then acc
+    else cost-log2-loop (n / 2) (acc + 1)
+
+Section: Selectivity Estimation
+
+  estimate-selectivity : Predicate, TableStats -> Integer
+  estimate-selectivity (pred) (stats) =
+    let rows = stats.ts-row-count
+    in if rows == 0 then 0
+    else when pred
+      is PredTrue -> rows
+      is PredFalse -> 0
+      is PredColCmp (col) (op) (val) ->
+        let cs = hamt-get (stats.ts-col-stats) col
+        in when cs
+          is None -> rows / 3
+          is Just (s) -> estimate-cmp-selectivity op rows (s.cs-distinct)
+      is PredAnd (a) (b) ->
+        let sa = estimate-selectivity a stats
+        in let sb = estimate-selectivity b stats
+        in (sa * sb) / (if rows == 0 then 1 else rows)
+      is PredOr (a) (b) ->
+        let sa = estimate-selectivity a stats
+        in let sb = estimate-selectivity b stats
+        in let combined = sa + sb - (sa * sb) / (if rows == 0 then 1 else rows)
+        in if combined > rows then rows else combined
+      is PredNot (inner) -> rows - estimate-selectivity inner stats
+
+  estimate-cmp-selectivity : CmpOp, Integer, Integer -> Integer
+  estimate-cmp-selectivity (op) (rows) (distinct) =
+    let d = if distinct == 0 then 1 else distinct
+    in when op
+      is CmpEq -> rows / d
+      is CmpNe -> rows - rows / d
+      is CmpLt -> rows / 3
+      is CmpGt -> rows / 3
+      is CmpLe -> rows / 3
+      is CmpGe -> rows / 3
+
+Section: Predicate Pushdown
+
+  optimize : RelOp -> RelOp
+  optimize (op) =
+    when op
+      is RelFilter (child) (pred) -> push-filter (optimize child) pred
+      is RelProject (child) (proj) -> RelProject (optimize child) proj
+      is RelSort (child) (specs) -> RelSort (optimize child) specs
+      is RelLimit (child) (n) -> RelLimit (optimize child) n
+      is RelDistinct (child) -> RelDistinct (optimize child)
+      is RelJoin (left) (right) (pred) -> RelJoin (optimize left) (optimize right) pred
+      is RelLeftJoin (left) (right) (pred) -> RelLeftJoin (optimize left) (optimize right) pred
+      is RelGroup (child) (cols) (aggs) -> RelGroup (optimize child) cols aggs
+      is RelUnion (left) (right) -> RelUnion (optimize left) (optimize right)
+      is RelIntersect (left) (right) -> RelIntersect (optimize left) (optimize right)
+      is RelExcept (left) (right) -> RelExcept (optimize left) (optimize right)
+      is RelScan (t) -> RelScan t
+
+  push-filter : RelOp, Predicate -> RelOp
+  push-filter (child) (pred) =
+    when child
+      is RelJoin (left) (right) (jpred) ->
+        let pushed-left = try-push-to-side pred left
+        in let pushed-right = try-push-to-side pred right
+        in if pushed-left.pushed then RelJoin (pushed-left.result) right jpred
+        else if pushed-right.pushed then RelJoin left (pushed-right.result) jpred
+        else RelFilter (RelJoin left right jpred) pred
+      is RelScan (t) -> RelFilter (RelScan t) pred
+      is otherwise -> RelFilter child pred
+
+  PushResult = record {
+    result : RelOp,
+    pushed : Boolean
+  }
+
+  try-push-to-side : Predicate, RelOp -> PushResult
+  try-push-to-side (pred) (op) =
+    when op
+      is RelScan (t) -> PushResult { result = RelFilter (RelScan t) pred, pushed = True }
+      is RelFilter (child) (existing) -> PushResult { result = RelFilter child (PredAnd existing pred), pushed = True }
+      is otherwise -> PushResult { result = op, pushed = False }
+
+Section: Join Order Selection
+
+  JoinChoice =
+    | UseNestedLoop
+    | UseHashJoin
+    | UseSortMerge
+
+  choose-join : Integer, Integer -> JoinChoice
+  choose-join (left-rows) (right-rows) =
+    let nl-cost = left-rows * right-rows
+    in let hj-cost = left-rows + right-rows * 3
+    in let sm-cost = (left-rows + right-rows) * (cost-log2 (left-rows + right-rows))
+    in if hj-cost <= nl-cost then
+      if hj-cost <= sm-cost then UseHashJoin
+      else UseSortMerge
+    else if sm-cost <= nl-cost then UseSortMerge
+    else UseNestedLoop
+
+Section: Explain Plan
+
+  explain : RelOp, Integer -> Text
+  explain (op) (indent) =
+    let pad = explain-pad indent
+    in when op
+      is RelScan (t) -> pad & "SeqScan(" & t & ")"
+      is RelFilter (child) (pred) -> pad & "Filter\n" & explain child (indent + 2)
+      is RelProject (child) (proj) -> pad & "Project\n" & explain child (indent + 2)
+      is RelSort (child) (specs) -> pad & "Sort\n" & explain child (indent + 2)
+      is RelLimit (child) (n) -> pad & "Limit(" & show n & ")\n" & explain child (indent + 2)
+      is RelDistinct (child) -> pad & "Distinct\n" & explain child (indent + 2)
+      is RelJoin (left) (right) (pred) -> pad & "Join\n" & explain left (indent + 2) & "\n" & explain right (indent + 2)
+      is RelLeftJoin (left) (right) (pred) -> pad & "LeftJoin\n" & explain left (indent + 2) & "\n" & explain right (indent + 2)
+      is RelGroup (child) (cols) (aggs) -> pad & "GroupBy\n" & explain child (indent + 2)
+      is RelUnion (left) (right) -> pad & "Union\n" & explain left (indent + 2) & "\n" & explain right (indent + 2)
+      is RelIntersect (left) (right) -> pad & "Intersect\n" & explain left (indent + 2) & "\n" & explain right (indent + 2)
+      is RelExcept (left) (right) -> pad & "Except\n" & explain left (indent + 2) & "\n" & explain right (indent + 2)
+
+  explain-pad : Integer -> Text
+  explain-pad (n) = explain-pad-loop n ""
+
+  explain-pad-loop : Integer, Text -> Text
+  explain-pad-loop (n) (acc) =
+    if n <= 0 then acc
+    else explain-pad-loop (n - 1) (acc & " ")
+
+Section: Plan Cache
+
+  CachedPlan = record {
+    cp-query-hash : Text,
+    cp-plan : RelOp,
+    cp-use-count : Integer,
+    cp-stale : Boolean
+  }
+
+  PlanCache = record {
+    pc-plans : HamtMap CachedPlan,
+    pc-count : Integer,
+    pc-hits : Integer,
+    pc-misses : Integer,
+    pc-enabled : Boolean
+  }
+
+  plan-cache-new : PlanCache
+  plan-cache-new = PlanCache { pc-plans = hamt-empty, pc-count = 0, pc-hits = 0, pc-misses = 0, pc-enabled = True }
+
+  plan-cache-lookup : PlanCache, Text -> Pair PlanCache (Maybe RelOp)
+  plan-cache-lookup (cache) (query-hash) =
+    if cache.pc-enabled == False then make-pair cache None
+    else let found = hamt-get (cache.pc-plans) query-hash
+    in when found
+      is None -> make-pair (PlanCache { pc-plans = cache.pc-plans, pc-count = cache.pc-count, pc-hits = cache.pc-hits, pc-misses = cache.pc-misses + 1, pc-enabled = cache.pc-enabled }) None
+      is Just (cp) ->
+        if cp.cp-stale then make-pair (PlanCache { pc-plans = cache.pc-plans, pc-count = cache.pc-count, pc-hits = cache.pc-hits, pc-misses = cache.pc-misses + 1, pc-enabled = cache.pc-enabled }) None
+        else let updated = CachedPlan { cp-query-hash = cp.cp-query-hash, cp-plan = cp.cp-plan, cp-use-count = cp.cp-use-count + 1, cp-stale = False }
+        in make-pair (PlanCache { pc-plans = hamt-set (cache.pc-plans) query-hash updated, pc-count = cache.pc-count, pc-hits = cache.pc-hits + 1, pc-misses = cache.pc-misses, pc-enabled = cache.pc-enabled }) (Just (cp.cp-plan))
+
+  plan-cache-store : PlanCache, Text, RelOp -> PlanCache
+  plan-cache-store (cache) (query-hash) (plan) =
+    let cp = CachedPlan { cp-query-hash = query-hash, cp-plan = plan, cp-use-count = 1, cp-stale = False }
+    in PlanCache { pc-plans = hamt-set (cache.pc-plans) query-hash cp, pc-count = cache.pc-count + 1, pc-hits = cache.pc-hits, pc-misses = cache.pc-misses, pc-enabled = cache.pc-enabled }
+
+  plan-cache-invalidate : PlanCache, Text -> PlanCache
+  plan-cache-invalidate (cache) (query-hash) =
+    PlanCache { pc-plans = hamt-remove (cache.pc-plans) query-hash, pc-count = cache.pc-count - 1, pc-hits = cache.pc-hits, pc-misses = cache.pc-misses, pc-enabled = cache.pc-enabled }
+
+  plan-cache-purge : PlanCache -> PlanCache
+  plan-cache-purge (cache) = PlanCache { pc-plans = hamt-empty, pc-count = 0, pc-hits = cache.pc-hits, pc-misses = cache.pc-misses, pc-enabled = cache.pc-enabled }
+
+  plan-cache-disable : PlanCache -> PlanCache
+  plan-cache-disable (cache) = PlanCache { pc-plans = cache.pc-plans, pc-count = cache.pc-count, pc-hits = cache.pc-hits, pc-misses = cache.pc-misses, pc-enabled = False }
+
+  plan-cache-enable : PlanCache -> PlanCache
+  plan-cache-enable (cache) = PlanCache { pc-plans = cache.pc-plans, pc-count = cache.pc-count, pc-hits = cache.pc-hits, pc-misses = cache.pc-misses, pc-enabled = True }
+
+  plan-cache-mark-stale : PlanCache, Text -> PlanCache
+  plan-cache-mark-stale (cache) (table-name) =
+    let entries = hamt-to-list (cache.pc-plans)
+    in let staled = pc-stale-loop entries table-name 0 (list-length entries) (cache.pc-plans)
+    in PlanCache { pc-plans = staled, pc-count = cache.pc-count, pc-hits = cache.pc-hits, pc-misses = cache.pc-misses, pc-enabled = cache.pc-enabled }
+
+  pc-stale-loop : List (HamtEntry CachedPlan), Text, Integer, Integer, HamtMap CachedPlan -> HamtMap CachedPlan
+  pc-stale-loop (entries) (table) (i) (len) (plans) =
+    if i >= len then plans
+    else let e = list-at entries i
+    in let cp = e.value
+    in if plan-references-table (cp.cp-plan) table then
+      let staled = CachedPlan { cp-query-hash = cp.cp-query-hash, cp-plan = cp.cp-plan, cp-use-count = cp.cp-use-count, cp-stale = True }
+      in pc-stale-loop entries table (i + 1) len (hamt-set plans (e.key) staled)
+    else pc-stale-loop entries table (i + 1) len plans
+
+  plan-references-table : RelOp, Text -> Boolean
+  plan-references-table (op) (table) =
+    when op
+      is RelScan (t) -> t == table
+      is RelFilter (child) (pred) -> plan-references-table child table
+      is RelProject (child) (proj) -> plan-references-table child table
+      is RelSort (child) (specs) -> plan-references-table child table
+      is RelLimit (child) (n) -> plan-references-table child table
+      is RelDistinct (child) -> plan-references-table child table
+      is RelJoin (left) (right) (pred) -> plan-references-table left table | plan-references-table right table
+      is RelLeftJoin (left) (right) (pred) -> plan-references-table left table | plan-references-table right table
+      is RelGroup (child) (cols) (aggs) -> plan-references-table child table
+      is RelUnion (left) (right) -> plan-references-table left table | plan-references-table right table
+      is RelIntersect (left) (right) -> plan-references-table left table | plan-references-table right table
+      is RelExcept (left) (right) -> plan-references-table left table | plan-references-table right table
+
+  plan-cache-stats : PlanCache -> Text
+  plan-cache-stats (cache) =
+    "plans=" & show (cache.pc-count) & " hits=" & show (cache.pc-hits) & " misses=" & show (cache.pc-misses) & " enabled=" & show (cache.pc-enabled)
+
+Page 1

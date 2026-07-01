@@ -1,0 +1,105 @@
+Chapter: Matrix3
+  cites Math chapter Geometry
+  cites Foreword chapter ListUtils
+
+ 3x3 matrix for 2D affine transforms. Row-major layout stored as a
+ flat 9-element list. Fixed-point (scale 1000). Supports translate,
+ rotate, scale, and composition. Transforms Vec2 via homogeneous
+ coordinates.
+
+ We say:
+
+Section: Types
+  Mat3 = record { m3-data : List Integer }
+
+Section: Construction
+  mat3-identity : Mat3
+  mat3-identity = Mat3 { m3-data = [1000, 0, 0, 0, 1000, 0, 0, 0, 1000] }
+
+  mat3-from : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Mat3
+  mat3-from (a) (b) (c) (d) (e) (f) (g) (h) (i) = Mat3 { m3-data = [a, b, c, d, e, f, g, h, i] }
+
+  mat3-translate : Integer, Integer -> Mat3
+  mat3-translate (tx) (ty) = Mat3 { m3-data = [1000, 0, tx, 0, 1000, ty, 0, 0, 1000] }
+
+  mat3-scale : Integer, Integer -> Mat3
+  mat3-scale (sx) (sy) = Mat3 { m3-data = [sx, 0, 0, 0, sy, 0, 0, 0, 1000] }
+
+  mat3-rotate : Integer -> Mat3
+  mat3-rotate (milli-rad) =
+    let c = mat3-cos milli-rad
+    in let s = mat3-sin milli-rad
+    in Mat3 { m3-data = [c, -s, 0, s, c, 0, 0, 0, 1000] }
+
+Section: Element Access
+  mat3-at : Mat3, Integer, Integer -> Integer
+  mat3-at (m) (row) (col) = list-at (m.m3-data) (row * 3 + col)
+
+Section: Multiplication
+  mat3-mul : Mat3, Mat3 -> Mat3
+  mat3-mul (a) (b) =
+    let r00 = mat3-dot-rc a b 0 0
+    in let r01 = mat3-dot-rc a b 0 1
+    in let r02 = mat3-dot-rc a b 0 2
+    in let r10 = mat3-dot-rc a b 1 0
+    in let r11 = mat3-dot-rc a b 1 1
+    in let r12 = mat3-dot-rc a b 1 2
+    in let r20 = mat3-dot-rc a b 2 0
+    in let r21 = mat3-dot-rc a b 2 1
+    in let r22 = mat3-dot-rc a b 2 2
+    in mat3-from r00 r01 r02 r10 r11 r12 r20 r21 r22
+
+  mat3-dot-rc : Mat3, Mat3, Integer, Integer -> Integer
+  mat3-dot-rc (a) (b) (row) (col) =
+    (mat3-at a row 0) * (mat3-at b 0 col) / 1000
+    + (mat3-at a row 1) * (mat3-at b 1 col) / 1000
+    + (mat3-at a row 2) * (mat3-at b 2 col) / 1000
+
+Section: Transform Vec2
+  mat3-transform : Mat3, Vec2 -> Vec2
+  mat3-transform (m) (v) =
+    let vxi = real-to-int (v.v2x)
+    in let vyi = real-to-int (v.v2y)
+    in let x = (mat3-at m 0 0) * vxi / 1000 + (mat3-at m 0 1) * vyi / 1000 + mat3-at m 0 2
+    in let y = (mat3-at m 1 0) * vxi / 1000 + (mat3-at m 1 1) * vyi / 1000 + mat3-at m 1 2
+    in vec2-new (real-from-int x) (real-from-int y)
+
+  mat3-transform-list : Mat3, List Vec2 -> List Vec2
+  mat3-transform-list (m) (pts) = for p in pts -> mat3-transform m p
+
+Section: Inverse (2D affine only)
+  mat3-det : Mat3 -> Integer
+  mat3-det (m) =
+    let a = mat3-at m 0 0
+    in let b = mat3-at m 0 1
+    in let c = mat3-at m 0 2
+    in let d = mat3-at m 1 0
+    in let e = mat3-at m 1 1
+    in let f = mat3-at m 1 2
+    in let g = mat3-at m 2 0
+    in let h = mat3-at m 2 1
+    in let i = mat3-at m 2 2
+    in a * (e * i / 1000 - f * h / 1000) / 1000
+     - b * (d * i / 1000 - f * g / 1000) / 1000
+     + c * (d * h / 1000 - e * g / 1000) / 1000
+
+Section: Trig Approximation
+  mat3-sin : Integer -> Integer
+  mat3-sin (x) =
+    let x3 = x * x / 1000 * x / 1000
+    in x - x3 / 6
+
+  mat3-cos : Integer -> Integer
+  mat3-cos (x) =
+    let x2 = x * x / 1000
+    in let x4 = x2 * x2 / 1000
+    in 1000 - x2 / 2 + x4 / 24
+
+Section: Formatting
+  format-mat3 : Mat3 -> Text
+  format-mat3 (m) =
+    "[" & show (mat3-at m 0 0) & "," & show (mat3-at m 0 1) & "," & show (mat3-at m 0 2)
+    & "|" & show (mat3-at m 1 0) & "," & show (mat3-at m 1 1) & "," & show (mat3-at m 1 2)
+    & "|" & show (mat3-at m 2 0) & "," & show (mat3-at m 2 1) & "," & show (mat3-at m 2 2) & "]"
+
+Page 1

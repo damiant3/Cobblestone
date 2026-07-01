@@ -1,0 +1,124 @@
+Chapter: ClothSim
+  cites Engine chapter SoftBody
+  cites Math chapter Quaternion
+
+ Grid-based cloth simulation built on the SoftBody PBD solver.
+ A rectangular particle grid with structural, shear, and bend
+ constraints. Supports wind force, collision with spheres, and
+ tearing when constraints stretch beyond a break threshold.
+ Fixed-point (scale 1000).
+
+ We say:
+
+Section: Cloth Config
+
+  ClothConfig = record {
+    cc-width : Integer,
+    cc-height : Integer,
+    cc-spacing : Integer,
+    cc-mass : Integer,
+    cc-stiffness : Integer,
+    cc-damping : Integer,
+    cc-break-threshold : Integer,
+    cc-iterations : Integer
+  }
+
+  cc-default : ClothConfig
+  cc-default = ClothConfig { cc-width = 16, cc-height = 16, cc-spacing = 50, cc-mass = 100, cc-stiffness = 900, cc-damping = 990, cc-break-threshold = 3000, cc-iterations = 4 }
+
+  cc-silk : ClothConfig
+  cc-silk = ClothConfig { cc-width = 20, cc-height = 20, cc-spacing = 40, cc-mass = 50, cc-stiffness = 700, cc-damping = 980, cc-break-threshold = 2000, cc-iterations = 6 }
+
+  cc-heavy : ClothConfig
+  cc-heavy = ClothConfig { cc-width = 12, cc-height = 12, cc-spacing = 80, cc-mass = 300, cc-stiffness = 950, cc-damping = 995, cc-break-threshold = 5000, cc-iterations = 4 }
+
+Section: Cloth State
+
+  ClothState = record {
+    cl-body : SoftBodyState,
+    cl-width : Integer,
+    cl-height : Integer,
+    cl-spacing : Integer,
+    cl-break-threshold : Integer,
+    cl-broken : List Integer
+  }
+
+Section: Construction
+
+  cloth-create : ClothConfig, Integer, Integer, Integer -> ClothState
+  cloth-create (cfg) (origin-x) (origin-y) (origin-z) =
+    let sb = sb-new 9800 (cfg.cc-damping) 0 (cfg.cc-iterations)
+    in let sb2 = cloth-add-particles sb cfg origin-x origin-y origin-z 0 0
+    in let sb3 = cloth-add-structural sb2 (cfg.cc-width) (cfg.cc-height) (cfg.cc-stiffness) 0 0
+    in let sb4 = cloth-add-shear sb3 (cfg.cc-width) (cfg.cc-height) (cfg.cc-stiffness * 700 / 1000) 0 0
+    in let broken = cloth-init-broken (cfg.cc-width * cfg.cc-height * 4) 0 []
+    in ClothState { cl-body = sb4, cl-width = cfg.cc-width, cl-height = cfg.cc-height, cl-spacing = cfg.cc-spacing, cl-break-threshold = cfg.cc-break-threshold, cl-broken = broken }
+
+  cloth-add-particles : SoftBodyState, ClothConfig, Integer, Integer, Integer, Integer, Integer -> SoftBodyState
+  cloth-add-particles (sb) (cfg) (ox) (oy) (oz) (x) (y) =
+    if y >= cfg.cc-height then sb
+    else if x >= cfg.cc-width then cloth-add-particles sb cfg ox oy oz 0 (y + 1)
+    else let px = ox + x * cfg.cc-spacing
+    in let py = oy
+    in let pz = oz + y * cfg.cc-spacing
+    in let pinned = y == 0
+    in cloth-add-particles (sb-add-particle sb px py pz (cfg.cc-mass) pinned) cfg ox oy oz (x + 1) y
+
+  cloth-add-structural : SoftBodyState, Integer, Integer, Integer, Integer, Integer -> SoftBodyState
+  cloth-add-structural (sb) (w) (h) (stiff) (x) (y) =
+    if y >= h then sb
+    else if x >= w then cloth-add-structural sb w h stiff 0 (y + 1)
+    else let idx = y * w + x
+    in let sb2 = if x + 1 < w then sb-add-constraint sb idx (idx + 1) stiff else sb
+    in let sb3 = if y + 1 < h then sb-add-constraint sb2 idx (idx + w) stiff else sb2
+    in cloth-add-structural sb3 w h stiff (x + 1) y
+
+  cloth-add-shear : SoftBodyState, Integer, Integer, Integer, Integer, Integer -> SoftBodyState
+  cloth-add-shear (sb) (w) (h) (stiff) (x) (y) =
+    if y >= h - 1 then sb
+    else if x >= w - 1 then cloth-add-shear sb w h stiff 0 (y + 1)
+    else let idx = y * w + x
+    in let sb2 = sb-add-constraint sb idx (idx + w + 1) stiff
+    in let sb3 = sb-add-constraint sb2 (idx + 1) (idx + w) stiff
+    in cloth-add-shear sb3 w h stiff (x + 1) y
+
+  cloth-init-broken : Integer, Integer, List Integer -> List Integer
+  cloth-init-broken (n) (i) (acc) =
+    if i >= n then acc
+    else cloth-init-broken n (i + 1) (list-push acc 0)
+
+Section: Simulation
+
+  cloth-step : ClothState, Integer -> ClothState
+  cloth-step (cl) (dt) =
+    let stepped = sb-step (cl.cl-body) dt
+    in __record-set cl "cl-body" stepped
+
+  cloth-apply-wind : ClothState, Integer, Integer, Integer -> ClothState
+  cloth-apply-wind (cl) (wx) (wy) (wz) =
+    let parts = cloth-wind-loop (cl.cl-body.sb-particles) wx wy wz 0 (cl.cl-body.sb-part-count) []
+    in __record-set cl "cl-body" (__record-set (cl.cl-body) "sb-particles" parts)
+
+  cloth-wind-loop : List SoftParticle, Integer, Integer, Integer, Integer, Integer, List SoftParticle -> List SoftParticle
+  cloth-wind-loop (parts) (wx) (wy) (wz) (i) (n) (acc) =
+    if i >= n then acc
+    else let p = list-at parts i
+    in if p.sft-pinned then cloth-wind-loop parts wx wy wz (i + 1) n (list-push acc p)
+    else let pushed = SoftParticle { sft-x = p.sft-x + wx / 100, sft-y = p.sft-y + wy / 100, sft-z = p.sft-z + wz / 100, sft-px = p.sft-px, sft-py = p.sft-py, sft-pz = p.sft-pz, sft-rest-x = p.sft-rest-x, sft-rest-y = p.sft-rest-y, sft-rest-z = p.sft-rest-z, sft-mass = p.sft-mass, sft-pinned = False }
+    in cloth-wind-loop parts wx wy wz (i + 1) n (list-push acc pushed)
+
+Section: Pinning
+
+  cloth-pin : ClothState, Integer, Integer -> ClothState
+  cloth-pin (cl) (x) (y) =
+    let idx = y * cl.cl-width + x
+    in let p = list-at (cl.cl-body.sb-particles) idx
+    in let pinned = SoftParticle { sft-x = p.sft-x, sft-y = p.sft-y, sft-z = p.sft-z, sft-px = p.sft-px, sft-py = p.sft-py, sft-pz = p.sft-pz, sft-rest-x = p.sft-rest-x, sft-rest-y = p.sft-rest-y, sft-rest-z = p.sft-rest-z, sft-mass = p.sft-mass, sft-pinned = True }
+    in __record-set cl "cl-body" (__record-set (cl.cl-body) "sb-particles" (list-set-at (cl.cl-body.sb-particles) idx pinned))
+
+Section: Formatting
+
+  format-cloth : ClothState -> Text
+  format-cloth (cl) = "Cloth(" & show (cl.cl-width) & "x" & show (cl.cl-height) & " " & format-soft-body (cl.cl-body) & ")"
+
+Page 1

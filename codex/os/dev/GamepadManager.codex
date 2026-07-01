@@ -1,0 +1,154 @@
+Chapter: GamepadManager
+  cites Foreword chapter Maybe
+  cites UI chapter Widget
+  cites UI chapter Layout
+
+ Game controller / gamepad management. USB HID gamepad detection,
+ button mapping display, axis calibration, dead zone configuration,
+ and vibration test. Supports standard gamepad layout (ABXY, D-pad,
+ sticks, triggers, bumpers, start/select).
+
+Section: Button
+
+  GamepadButton =
+    | BtnA | BtnB | BtnX | BtnY
+    | BtnLB | BtnRB | BtnLT | BtnRT
+    | BtnStart | BtnSelect | BtnHome
+    | BtnLStick | BtnRStick
+    | BtnDpadUp | BtnDpadDown | BtnDpadLeft | BtnDpadRight
+
+  gamepad-button-label : GamepadButton -> Text
+  gamepad-button-label (b) = when b
+    is BtnA -> "A" is BtnB -> "B" is BtnX -> "X" is BtnY -> "Y"
+    is BtnLB -> "LB" is BtnRB -> "RB" is BtnLT -> "LT" is BtnRT -> "RT"
+    is BtnStart -> "Start" is BtnSelect -> "Select" is BtnHome -> "Home"
+    is BtnLStick -> "L3" is BtnRStick -> "R3"
+    is BtnDpadUp -> "Up" is BtnDpadDown -> "Down" is BtnDpadLeft -> "Left" is BtnDpadRight -> "Right"
+
+Section: Axis
+
+  GamepadAxis =
+    | AxisLeftX | AxisLeftY
+    | AxisRightX | AxisRightY
+    | AxisTriggerL | AxisTriggerR
+
+Section: Gamepad
+
+  Gamepad = record {
+    gp-id : Text,
+    gp-name : Text,
+    gp-vendor : Integer,
+    gp-product : Integer,
+    gp-connected : Boolean,
+    gp-button-count : Integer,
+    gp-axis-count : Integer,
+    gp-has-vibration : Boolean,
+    gp-dead-zone : Integer between 0 and 100,
+    gp-axis-values : List Integer,
+    gp-button-states : List Boolean
+  }
+
+  gamepad-new : Text, Text, Integer, Integer -> Gamepad
+  gamepad-new (id) (name) (vendor) (product) = Gamepad {
+    gp-id = id, gp-name = name, gp-vendor = vendor, gp-product = product,
+    gp-connected = True, gp-button-count = 17, gp-axis-count = 6,
+    gp-has-vibration = True, gp-dead-zone = 15,
+    gp-axis-values = [0, 0, 0, 0, 0, 0],
+    gp-button-states = [False, False, False, False, False, False, False, False, False, False, False, False, False, False, False, False, False]
+  }
+
+Section: State
+
+  GamepadManagerState = record {
+    gm-gamepads : List Gamepad,
+    gm-count : Integer,
+    gm-selected : Text,
+    gm-calibrating : Boolean,
+    gm-vibration-test : Boolean
+  }
+
+  gamepad-manager-new : GamepadManagerState
+  gamepad-manager-new = GamepadManagerState {
+    gm-gamepads = [], gm-count = 0, gm-selected = "",
+    gm-calibrating = False, gm-vibration-test = False
+  }
+
+Section: Actions
+
+  gm-add-gamepad : GamepadManagerState, Gamepad -> GamepadManagerState
+  gm-add-gamepad (st) (gp) =
+    let st2 = __record-set (__record-set st "gm-gamepads" (list-push (st.gm-gamepads) gp)) "gm-count" (st.gm-count + 1)
+    in if text-length (st.gm-selected) == 0 then __record-set st2 "gm-selected" (gp.gp-id) else st2
+
+  gm-remove-gamepad : GamepadManagerState, Text -> GamepadManagerState
+  gm-remove-gamepad (st) (id) =
+    let filtered = gm-filter (st.gm-gamepads) id 0 (st.gm-count) []
+    in __record-set (__record-set st "gm-gamepads" filtered) "gm-count" (list-length filtered)
+
+  gm-filter : List Gamepad, Text, Integer, Integer, List Gamepad -> List Gamepad
+  gm-filter (pads) (exclude) (i) (n) (acc) =
+    if i >= n then acc
+    else let gp = list-at pads i
+    in if gp.gp-id == exclude then gm-filter pads exclude (i + 1) n acc
+    else gm-filter pads exclude (i + 1) n (list-push acc gp)
+
+  gm-set-dead-zone : GamepadManagerState, Text, Integer -> GamepadManagerState
+  gm-set-dead-zone (st) (id) (dz) =
+    let updated = gm-update-dz (st.gm-gamepads) id dz 0 (st.gm-count) []
+    in __record-set st "gm-gamepads" updated
+
+  gm-update-dz : List Gamepad, Text, Integer, Integer, Integer, List Gamepad -> List Gamepad
+  gm-update-dz (pads) (target) (dz) (i) (n) (acc) =
+    if i >= n then acc
+    else let gp = list-at pads i
+    in let updated = if gp.gp-id == target then __record-set gp "gp-dead-zone" dz else gp
+    in gm-update-dz pads target dz (i + 1) n (list-push acc updated)
+
+  gm-select : GamepadManagerState, Text -> GamepadManagerState
+  gm-select (st) (id) = __record-set st "gm-selected" id
+
+  gm-start-calibration : GamepadManagerState -> GamepadManagerState
+  gm-start-calibration (st) = __record-set st "gm-calibrating" True
+
+  gm-stop-calibration : GamepadManagerState -> GamepadManagerState
+  gm-stop-calibration (st) = __record-set st "gm-calibrating" False
+
+  gm-toggle-vibration-test : GamepadManagerState -> GamepadManagerState
+  gm-toggle-vibration-test (st) = __record-set st "gm-vibration-test" (if st.gm-vibration-test then False else True)
+
+Section: Widget
+
+  gm-widget : GamepadManagerState -> WidgetNode
+  gm-widget (st) =
+    let title = widget-label "gm-title" "Game Controllers"
+    in let count = widget-label "gm-count" (show (st.gm-count) & " controllers detected")
+    in let rows = gm-gamepad-rows st 0 (st.gm-count) []
+    in let controls = if text-length (st.gm-selected) > 0 then [gm-detail-widget st] else []
+    in widget-panel "gm-panel" DirColumn 4 ([title, count] & rows & controls)
+
+  gm-gamepad-rows : GamepadManagerState, Integer, Integer, List WidgetNode -> List WidgetNode
+  gm-gamepad-rows (st) (i) (n) (acc) =
+    if i >= n then acc
+    else let gp = list-at (st.gm-gamepads) i
+    in let name = widget-label ("gm-n-" & gp.gp-id) (gp.gp-name)
+    in let status = widget-label ("gm-s-" & gp.gp-id) (if gp.gp-connected then "Connected" else "Disconnected")
+    in let sel-btn = widget-button ("gm-sel-" & gp.gp-id) (if gp.gp-id == st.gm-selected then "Selected" else "Select")
+    in let row = widget-panel ("gm-r-" & gp.gp-id) DirRow 4 [name, status, sel-btn]
+    in gm-gamepad-rows st (i + 1) n (list-push acc row)
+
+  gm-detail-widget : GamepadManagerState -> WidgetNode
+  gm-detail-widget (st) =
+    let dz-label = widget-label "gm-dz" "Dead Zone"
+    in let dz-slider = widget-gauge "gm-dz-slider" 15 100
+    in let cal-btn = widget-button "gm-cal" (if st.gm-calibrating then "Stop Calibration" else "Calibrate")
+    in let vib-btn = widget-button "gm-vib" (if st.gm-vibration-test then "Stop Vibration" else "Test Vibration")
+    in widget-panel "gm-detail" DirColumn 4 [dz-label, dz-slider, cal-btn, vib-btn]
+
+Section: Formatting
+
+  format-gamepad-manager : GamepadManagerState -> Text
+  format-gamepad-manager (st) =
+    "gamepads=" & show (st.gm-count) & " selected=" & st.gm-selected
+    & (if st.gm-calibrating then " [calibrating]" else "")
+
+Page 1

@@ -1,0 +1,917 @@
+Chapter: X86-64 Code Generator
+  cites Codex chapter Text
+  cites Codex chapter Numbers
+  cites Codex chapter Lists
+  cites Codex chapter Runtime
+  cites Codex chapter VM Profile
+  cites Codex chapter Build Settings (max-emit-work)
+
+ State records, constants, rodata tables, register allocation, and
+ byte-patching helpers used throughout the x86-64 code generator.
+
+Section: Record Types
+  X86_64ExitMode =
+   | ExitRepl
+   | Exit
+   | ExitAcpiS5
+   | ExitUefi
+
+  X86_64WatchdogMode =
+   | WatchdogProgress
+   | WatchdogPet
+
+  UserArity = record {
+   name : Text,
+   arity : Integer between 0 and 255
+  }
+
+  FuncOffset = record {
+   name : Text,
+   offset : Integer between 0 and 4294967295
+  }
+
+  CallPatch = record {
+   patch-offset : Integer between 0 and 4294967295,
+   target : Text
+  }
+
+  LocalBinding = record {
+   name : Text,
+   slot : Integer between 0 and 65535
+  }
+
+  FuncAddrFixup = record {
+   patch-offset : Integer between 0 and 4294967295,
+   target : Text
+  }
+
+  RodataFixup = record {
+   patch-offset : Integer between 0 and 4294967295,
+   rodata-offset : Integer between 0 and 4294967295
+  }
+
+  TcoState = record {
+   active : Boolean,
+   in-tail-pos : Boolean,
+   loop-top : Integer between 0 and 4294967295,
+   param-locals : List Integer,
+   temp-locals : List Integer,
+   current-func : Text,
+   saved-next-local : Integer between 0 and 65535,
+   saved-next-temp : Integer between 0 and 65535
+  }
+
+  CodegenState = record {
+   workspace : EmitWorkspace,
+   code-len : Integer between 0 and 4294967295,
+   data-len : Integer between 0 and 4294967295,
+   fo-names : List Text,
+   fo-offsets : List Integer,
+   cp-offsets : List Integer,
+   cp-targets : List Text,
+   fa-offsets : List Integer,
+   fa-targets : List Text,
+   rf-poffsets : List Integer,
+   rf-roffsets : List Integer,
+   da-poffsets : List Integer,
+   da-offsets : List Integer,
+   stack-overflow-checks : List Integer,
+   locals : List LocalBinding,
+   next-temp : Integer between 0 and 65535,
+   next-local : Integer between 0 and 65535,
+   spill-count : Integer between 0 and 65535,
+   peak-local : Integer between 0 and 65535,
+   peak-spill : Integer between 0 and 65535,
+   load-local-toggle : Integer between 0 and 4294967295,
+   tco : TcoState,
+   type-defs : List TypeBinding,
+   builtin-names : SkipListText,
+   emit-work : Integer between 0 and 4294967295,
+   exit-mode : X86_64ExitMode,
+   watchdog-mode : X86_64WatchdogMode,
+   opening-ret-type : CodexType,
+   state-local : Integer,
+   user-arities : List UserArity,
+   bag : DiagnosticBag,
+   deck-bound : Boolean,
+   effect-op-addrs : List EffectOpAddr,
+   vm-profile : VmProfile,
+   poison-alloc : Boolean,
+   trace-alloc : Boolean,
+   stack-guard : Boolean,
+   omit-frame-pointer : Boolean,
+   func-local-regs : List Integer,
+   stype-sites : List Integer,
+   insn-count : Integer between 0 and 4294967295
+  }
+
+  EffectOpAddr = record {
+   name : Text,
+   addr : Integer between 0 and 4294967295
+  }
+
+  EmitResult = record {
+   state : CodegenState,
+   reg : Integer between 0 and 4294967295
+  }
+
+  TrampolineResult = record {
+   bytes : List Integer,
+   far-jump-patch-pos : Integer between 0 and 4294967295
+  }
+
+  EmitChapterResult = record {
+   header-bytes : List Integer,
+   content-buf : Integer,
+   content-len : Integer,
+   tail-bytes : List Integer,
+   bag : DiagnosticBag,
+   symbol-map : List Text
+  }
+
+  FlatApply = record {
+   func-name : Text,
+   args : List IRExpr
+  }
+
+  SavedArgs = record {
+   state : CodegenState,
+   locals : List Integer
+  }
+
+  FieldLocal = record {
+   name : Text,
+   slot : Integer between 0 and 65535,
+   value-expr : IRExpr
+  }
+
+  EvalFieldsResult = record {
+   state : CodegenState,
+   field-locals : List FieldLocal
+  }
+
+  MatchBranchState = record {
+   cg-state : CodegenState,
+   end-patches : List Integer
+  }
+
+Section: Constants
+  default-tco-state : TcoState
+  default-tco-state =
+   TcoState {
+    active = False,
+    in-tail-pos = False,
+    loop-top = 0,
+    param-locals = [],
+    temp-locals = [],
+    current-func = "",
+    saved-next-local = 0,
+    saved-next-temp = 0
+  }
+
+  temp-regs : List Integer = [0, 1, 2, 6, 7, 11]
+
+  local-regs : List Integer = [3, 12, 13, 14]
+
+  spill-base : Integer = 32
+
+  bare-metal-load-addr : Integer = 1048576
+
+  bare-metal-ram-size : Integer = 3221225472
+
+  bare-metal-stack-top : Integer = bare-metal-ram-size
+
+  bare-metal-pd-count : Integer = (bare-metal-ram-size + 1073741823) / 1073741824
+
+  bare-metal-page-count : Integer = (bare-metal-ram-size + 2097151) / 2097152
+
+  bare-metal-nx-boundary : Integer = 3
+
+Section: CCE Table (inlined from Foreword CCE to avoid duplicate-definition conflict during self-compilation)
+  cce-to-unicode-table : List Integer
+  cce-to-unicode-table = [
+   0, 10, 32,
+   48, 49, 50, 51, 52, 53, 54, 55, 56, 57,
+   101, 116, 97, 111, 105, 110, 115, 104, 114, 100,
+   108, 99, 117, 109, 119, 102, 103, 121, 112, 98,
+   118, 107, 106, 120, 113, 122,
+   69, 84, 65, 79, 73, 78, 83, 72, 82, 68,
+   76, 67, 85, 77, 87, 70, 71, 89, 80, 66,
+   86, 75, 74, 88, 81, 90,
+   46, 44, 33, 63, 58, 59, 39, 34, 45, 40, 41,
+   43, 61, 42, 60, 62,
+   47, 64, 35, 38, 95, 92, 124, 91, 93, 123, 125, 126, 96,
+   94,
+   36, 37,
+   233, 232, 234, 235, 225, 224, 226, 228,
+   243, 244, 246, 250, 252, 241, 231, 237,
+   1072, 1086, 1077, 1080, 1085, 1090, 1089, 1088,
+   1074, 1083, 1082, 1084, 1076, 1087, 1091
+  ]
+
+Section: Rodata Tables
+  cce-to-unicode-byte-table : List Integer
+  cce-to-unicode-byte-table = for x in cce-to-unicode-table -> int-mod x 256
+
+  find-cce-for-byte : List Integer, Integer, Integer, Integer -> Integer
+  find-cce-for-byte (src) (u) (i) (len) =
+   if i >= len then 68
+   else if int-mod (list-at src i) 256 == u then i
+   else find-cce-for-byte src u (i + 1) len
+
+  build-reverse-byte-table : List Integer, Integer, Integer, List Integer -> List Integer
+  build-reverse-byte-table (src) (i) (len) (acc) =
+   if i >= len then acc
+   else build-reverse-byte-table src (i + 1) len (list-push acc (find-cce-for-byte src i 0 128))
+
+  unicode-to-cce-byte-table : List Integer
+  unicode-to-cce-byte-table = build-reverse-byte-table cce-to-unicode-table 0 128 []
+
+  cce-to-unicode-rodata-offset : Integer = 0
+
+  unicode-to-cce-rodata-offset : Integer = 128
+
+  tier1-slice-bases : List Integer
+  tier1-slice-bases = [192, 320, 1024, 880, 1536, 1424, 2304, 3584, 4352, 19968, 20096, 20224, 20352, 12352, 12480, 8704]
+
+  tier1-block-rodata : List Integer
+  tier1-block-rodata =
+    let lo = for x in tier1-slice-bases -> int-mod x 256
+    in let hi = for x in tier1-slice-bases -> int-mod (x / 256) 256
+    in lo & hi
+
+  tier1-block-rodata-offset : Integer = 256
+
+  tier2-rodata : List Integer
+  tier2-rodata = [
+    192, 8, 128, 39, 0, 0,
+    32, 9, 128, 39, 0, 0,
+    128, 9, 128, 39, 0, 0,
+    128, 91, 128, 68, 0, 0,
+    64, 117, 128, 216, 255, 255,
+    228, 160, 192, 54, 0, 0,
+    228, 161, 28, 109, 255, 255,
+    228, 163, 28, 126, 255, 255,
+    228, 167, 28, 79, 1, 0,
+    228, 168, 28, 126, 255, 255]
+
+  tier2-rodata-offset : Integer = 288
+
+  tier2-entry-stride : Integer = 6
+
+  cce-to-unicode-hi-table : List Integer
+  cce-to-unicode-hi-table = for x in cce-to-unicode-table -> int-mod (x / 256) 256
+
+  cce-to-unicode-hi-rodata-offset : Integer = 348
+
+  init-rodata : List Integer = cce-to-unicode-byte-table & unicode-to-cce-byte-table & tier1-block-rodata & tier2-rodata & cce-to-unicode-hi-table
+
+Section: Full CCE Conversion (tier0/1/2, inlined from Foreword CCE)
+  cce-tier1-blocks : List Integer
+  cce-tier1-blocks = [128, 256, 1024, 128, 880, 128, 1536, 128, 1424, 128, 2304, 128, 3584, 128, 4352, 128, 19968, 512, 12352, 256, 8704, 128]
+
+  cce-tier1-count : Integer = 11
+
+  cce-tier1-ubase : Integer -> Integer
+  cce-tier1-ubase (block) = list-at cce-tier1-blocks (block * 2)
+
+  cce-tier1-usize : Integer -> Integer
+  cce-tier1-usize (block) = list-at cce-tier1-blocks (block * 2 + 1)
+
+  cce-tier1-blk : Integer -> Integer
+  cce-tier1-blk (cp) =
+    let v = cp - 128
+    in if v < 256 then 0
+    else if v < 384 then 1
+    else if v < 512 then 2
+    else if v < 640 then 3
+    else if v < 768 then 4
+    else if v < 896 then 5
+    else if v < 1024 then 6
+    else if v < 1152 then 7
+    else if v < 1664 then 8
+    else if v < 1920 then 9
+    else if v < 2048 then 10
+    else (-1)
+
+  cce-tier1-off : Integer -> Integer
+  cce-tier1-off (cp) =
+    let v = cp - 128
+    in if v < 256 then v
+    else if v < 1152 then int-mod (v - 256) 128
+    else if v < 1664 then v - 1152
+    else if v < 1920 then v - 1664
+    else v - 1920
+
+  cce-tier2-ubase-c : Integer = 2176
+  cce-tier2-count : Integer = 10
+
+  cce-tier2-blocks : List Integer
+  cce-tier2-blocks = [12288, 64, 12352, 96, 12448, 96, 19968, 20992, 13312, 6592, 44032, 11172, 3584, 256, 8192, 512, 127744, 1024, 9728, 256]
+
+  cce-tier2-ubase : Integer -> Integer
+  cce-tier2-ubase (block) = list-at cce-tier2-blocks (block * 2)
+
+  cce-tier2-usize : Integer -> Integer
+  cce-tier2-usize (block) = list-at cce-tier2-blocks (block * 2 + 1)
+
+  cce-tier2-cbase-loop : Integer, Integer, Integer -> Integer
+  cce-tier2-cbase-loop (target) (i) (acc) =
+    if i >= target then acc
+    else cce-tier2-cbase-loop target (i + 1) (acc + cce-tier2-usize i)
+
+  cce-tier2-cbase : Integer -> Integer
+  cce-tier2-cbase (block) = cce-tier2-cbase-loop block 0 cce-tier2-ubase-c
+
+  cce-to-uni : Integer -> Integer
+  cce-to-uni (cp) =
+    if cp < 0 then 65533
+    else if cp < 128 then list-at cce-to-unicode-table cp
+    else if cp < 2176 then
+      let block = cce-tier1-blk cp
+      in if block < 0 then 65533
+      else cce-tier1-ubase block + cce-tier1-off cp
+    else if cp < 67712 then cce-to-uni-t2 cp 0
+    else 65533
+
+  cce-to-uni-t2 : Integer, Integer -> Integer
+  cce-to-uni-t2 (cp) (block) =
+    if block >= cce-tier2-count then 65533
+    else let cb = cce-tier2-cbase block
+    in let cs = cce-tier2-usize block
+    in if cp >= cb then
+      if cp < cb + cs then cce-tier2-ubase block + (cp - cb)
+      else cce-to-uni-t2 cp (block + 1)
+    else cce-to-uni-t2 cp (block + 1)
+
+  cce-from-uni : Integer -> Integer
+  cce-from-uni (u) =
+    let t0 = cce-from-uni-t0 u 0 128
+    in if t0 >= 0 then t0
+    else let t1 = cce-from-uni-t1 u 0
+    in if t1 >= 0 then t1
+    else cce-from-uni-t2 u 0
+
+  cce-from-uni-t0 : Integer, Integer, Integer -> Integer
+  cce-from-uni-t0 (u) (i) (len) =
+    if i >= len then (-1)
+    else if list-at cce-to-unicode-table i == u then i
+    else cce-from-uni-t0 u (i + 1) len
+
+  cce-from-uni-t1 : Integer, Integer -> Integer
+  cce-from-uni-t1 (u) (block) =
+    if block >= cce-tier1-count then (-1)
+    else let base = cce-tier1-ubase block
+    in let size = cce-tier1-usize block
+    in if u >= base then
+      if u < base + size then
+        let bstart = if block == 0 then 128
+          else if block < 8 then 256 + block * 128
+          else if block == 8 then 1280
+          else if block == 9 then 1792
+          else if block == 10 then 2048
+          else (-1)
+        in if bstart < 0 then (-1)
+        else bstart + (u - base)
+      else cce-from-uni-t1 u (block + 1)
+    else cce-from-uni-t1 u (block + 1)
+
+  cce-from-uni-t2 : Integer, Integer -> Integer
+  cce-from-uni-t2 (u) (block) =
+    if block >= cce-tier2-count then (-1)
+    else let base = cce-tier2-ubase block
+    in let size = cce-tier2-usize block
+    in if u >= base then
+      if u < base + size then cce-tier2-cbase block + (u - base)
+      else cce-from-uni-t2 u (block + 1)
+    else cce-from-uni-t2 u (block + 1)
+
+  cce-frame : Integer -> List Integer
+  cce-frame (cp) =
+    if cp < 128 then [cp]
+    else if cp < 2176 then
+      let v = cp - 128
+      in [bit-or 192 (bit-shru v 6), bit-or 128 (bit-and v 63)]
+    else if cp < 67712 then
+      let v = cp - 2176
+      in [bit-or 224 (bit-shru v 12), bit-or 128 (bit-and (bit-shru v 6) 63), bit-or 128 (bit-and v 63)]
+    else
+      let v = cp - 67712
+      in [bit-or 240 (bit-shru v 18), bit-or 128 (bit-and (bit-shru v 12) 63), bit-or 128 (bit-and (bit-shru v 6) 63), bit-or 128 (bit-and v 63)]
+
+  cce-frame-len : Integer -> Integer
+  cce-frame-len (b) =
+    if bit-and b 128 == 0 then 1
+    else if bit-and b 224 == 192 then 2
+    else if bit-and b 240 == 224 then 3
+    else 4
+
+  cce-unframe : Text, Integer -> Integer
+  cce-unframe (s) (off) =
+    let b0 = char-code-at s off
+    in if bit-and b0 128 == 0 then b0
+    else if bit-and b0 224 == 192 then
+      128 + bit-shl (bit-and b0 31) 6 + bit-and (char-code-at s (off + 1)) 63
+    else if bit-and b0 240 == 224 then
+      2176 + bit-shl (bit-and b0 15) 12 + bit-shl (bit-and (char-code-at s (off + 1)) 63) 6 + bit-and (char-code-at s (off + 2)) 63
+    else
+      67712 + bit-shl (bit-and b0 7) 18 + bit-shl (bit-and (char-code-at s (off + 1)) 63) 12 + bit-shl (bit-and (char-code-at s (off + 2)) 63) 6 + bit-and (char-code-at s (off + 3)) 63
+
+  utf8-len : Integer -> Integer
+  utf8-len (b) =
+    if bit-and b 128 == 0 then 1
+    else if bit-and b 224 == 192 then 2
+    else if bit-and b 240 == 224 then 3
+    else if bit-and b 248 == 240 then 4
+    else 1
+
+  utf8-unframe : Text, Integer -> Integer
+  utf8-unframe (s) (off) =
+    let b0 = char-code-at s off
+    in if bit-and b0 128 == 0 then b0
+    else if bit-and b0 224 == 192 then
+      bit-shl (bit-and b0 31) 6 + bit-and (char-code-at s (off + 1)) 63
+    else if bit-and b0 240 == 224 then
+      bit-shl (bit-and b0 15) 12 + bit-shl (bit-and (char-code-at s (off + 1)) 63) 6 + bit-and (char-code-at s (off + 2)) 63
+    else
+      bit-shl (bit-and b0 7) 18 + bit-shl (bit-and (char-code-at s (off + 1)) 63) 12 + bit-shl (bit-and (char-code-at s (off + 2)) 63) 6 + bit-and (char-code-at s (off + 3)) 63
+
+  utf8-frame : Integer -> List Integer
+  utf8-frame (cp) =
+    if cp < 128 then [cp]
+    else if cp < 2048 then
+      [bit-or 192 (bit-shru cp 6), bit-or 128 (bit-and cp 63)]
+    else if cp < 65536 then
+      [bit-or 224 (bit-shru cp 12), bit-or 128 (bit-and (bit-shru cp 6) 63), bit-or 128 (bit-and cp 63)]
+    else
+      [bit-or 240 (bit-shru cp 18), bit-or 128 (bit-and (bit-shru cp 12) 63), bit-or 128 (bit-and (bit-shru cp 6) 63), bit-or 128 (bit-and cp 63)]
+
+  cce-push-bytes : List Integer, List Integer, Integer -> List Integer
+  cce-push-bytes (acc) (bs) (i) =
+    if i >= list-length bs then acc
+    else cce-push-bytes (list-push acc (list-at bs i)) bs (i + 1)
+
+  utf8-has-high : Text, Integer, Integer -> Boolean
+  utf8-has-high (s) (i) (len) =
+    if i >= len then False
+    else if char-code-at s i >= 128 then True
+    else utf8-has-high s (i + 1) len
+
+  utf8-to-cce-loop : Text, Integer, Integer, List Integer -> List Integer
+  utf8-to-cce-loop (s) (i) (len) (acc) =
+    if i >= len then acc
+    else let b = char-code-at s i
+    in if b < 128 then utf8-to-cce-loop s (i + 1) len (list-push acc b)
+    else let cp = utf8-unframe s i
+    in let blen = utf8-len b
+    in let cc0 = cce-from-uni cp
+    in let cc = if cc0 < 0 then cce-from-uni 63 else cc0
+    in utf8-to-cce-loop s (i + blen) len (cce-push-bytes acc (cce-frame cc) 0)
+
+  utf8-to-cce : Text -> Text
+  utf8-to-cce (s) =
+    let len = text-length s
+    in if utf8-has-high s 0 len
+    then raw-bytes-to-text (utf8-to-cce-loop s 0 len (__list-with-capacity (len + 1)))
+    else s
+
+  build-cce0u2 : Integer, Integer, List Integer -> List Integer
+  build-cce0u2 (i) (n) (acc) =
+    if i >= n then acc
+    else build-cce0u2 (i + 1) n (list-push acc (cce-to-uni i))
+
+  cce0u2-vals : List Integer
+  cce0u2-vals = build-cce0u2 0 2176 (__list-with-capacity 2176)
+
+  cce0u2-lo : List Integer
+  cce0u2-lo = for x in cce0u2-vals -> int-mod x 256
+
+  cce0u2-hi : List Integer
+  cce0u2-hi = for x in cce0u2-vals -> int-mod (x / 256) 256
+
+  cce-t2-cbases : List Integer
+  cce-t2-cbases = [2176, 2240, 2336, 2432, 23424, 30016, 41188, 41444, 41956, 42980]
+
+  cce-t2-sizes : List Integer
+  cce-t2-sizes = [64, 96, 96, 20992, 6592, 11172, 256, 512, 1024, 256]
+
+  cce-t2-ubases : List Integer
+  cce-t2-ubases = [12288, 12352, 12448, 19968, 13312, 44032, 3584, 8192, 127744, 9728]
+
+  le8-of : Integer -> List Integer
+  le8-of (x) = [int-mod x 256, int-mod (x / 256) 256, int-mod (x / 65536) 256, int-mod (x / 16777216) 256, 0, 0, 0, 0]
+
+  le8-cat : List Integer, Integer, Integer, List Integer -> List Integer
+  le8-cat (xs) (i) (n) (acc) =
+    if i >= n then acc else le8-cat xs (i + 1) n (acc & le8-of (list-at xs i))
+
+  cce-t2-rodata : List Integer
+  cce-t2-rodata = le8-cat cce-t2-cbases 0 10 [] & le8-cat cce-t2-sizes 0 10 [] & le8-cat cce-t2-ubases 0 10 []
+
+  cce0u2-rodata-offset : Integer
+  cce0u2-rodata-offset = list-length cce-to-unicode-byte-table + list-length unicode-to-cce-byte-table + list-length tier1-block-rodata
+
+  cce0u2-hi-rodata-offset : Integer
+  cce0u2-hi-rodata-offset = cce0u2-rodata-offset + 2176
+
+  cce-t2-rodata-offset : Integer
+  cce-t2-rodata-offset = cce0u2-rodata-offset + 4352
+
+Section: State Helpers
+  empty-codegen-state : CodegenState
+  empty-codegen-state =
+   CodegenState {
+   workspace = EmitWorkspace { code-buffer = 0, code-capacity = 0, data-buffer = 0, data-capacity = 0 },
+   code-len = 0,
+   data-len = 0,
+   fo-names = [],
+   fo-offsets = [],
+   cp-offsets = [],
+   cp-targets = [],
+   fa-offsets = [],
+   fa-targets = [],
+   rf-poffsets = [],
+   rf-roffsets = [],
+   da-poffsets = [],
+   da-offsets = [],
+   stack-overflow-checks = [],
+   locals = [],
+   next-temp = 0,
+   next-local = 0,
+   spill-count = 0,
+   load-local-toggle = 0,
+   tco = TcoState {
+    active = False,
+    in-tail-pos = False,
+    loop-top = 0,
+    param-locals = [],
+    temp-locals = [],
+    current-func = "",
+    saved-next-local = 0,
+    saved-next-temp = 0
+   },
+   type-defs = [],
+   builtin-names = sorted-builtin-names,
+   emit-work = 0,
+   exit-mode = ExitRepl,
+   watchdog-mode = WatchdogProgress,
+   opening-ret-type = NothingTy,
+   state-local = 0 - 1,
+   user-arities = [],
+   bag = empty-bag,
+   deck-bound = False,
+   vm-profile = vm-profile-spec,
+   poison-alloc = False,
+   stype-sites = [],
+   insn-count = 0
+  }
+
+  st-add-error : CodegenState, Integer, Text, SourceSpan -> CodegenState
+  st-add-error (st) (code) (msg) (sp) =
+   __record-set st "bag" (bag-add (st.bag) (make-error code msg sp))
+
+  st-add-info : CodegenState, Integer, Text, SourceSpan -> CodegenState
+  st-add-info (st) (code) (msg) (sp) =
+   __record-set st "bag" (bag-add (st.bag) (make-info code msg sp))
+
+  st-add-warning : CodegenState, Integer, Text, SourceSpan -> CodegenState
+  st-add-warning (st) (code) (msg) (sp) =
+   __record-set st "bag" (bag-add (st.bag) (make-warning code msg sp))
+
+  emit-fuel-exhausted : CodegenState -> Boolean
+  emit-fuel-exhausted (st) = st.emit-work >= max-emit-work
+
+  emit-fuel-bump : CodegenState -> CodegenState
+  emit-fuel-bump (st) = __record-set st "emit-work" (st.emit-work + 1)
+
+  emit-fuel-error : CodegenState -> CodegenState
+  emit-fuel-error (st) =
+   st-add-error st cdx-resource-exhausted ("compiler resource exhausted in x86-64-emitter.emit-expr (budget " & integer-to-text max-emit-work & ")") synthetic-span
+
+  st-append-code : CodegenState, List Integer -> CodegenState
+  st-append-code (st) (bytes) =
+   let new-len = __buf-write-bytes (st.workspace.code-buffer) (st.code-len) bytes
+   in __record-set (__record-set st "code-len" new-len) "insn-count" (st.insn-count + 1)
+
+
+  record-func-offset : CodegenState, Text -> CodegenState
+  record-func-offset (st) (name) =
+   let n1 = list-push (st.fo-names) name
+   in let o1 = list-push (st.fo-offsets) (st.code-len)
+   in let st1 = __record-set st "fo-names" n1
+   in __record-set st1 "fo-offsets" o1
+
+  fresh-empty-locals : Integer -> List LocalBinding
+  fresh-empty-locals (x) = []
+
+  codegen-carry-forward : CodegenState, Integer, Integer, Integer -> CodegenState
+  codegen-carry-forward (st) (new-code-len) (new-data-len) (new-emit-work) =
+   CodegenState {
+    workspace = st.workspace,
+    code-len = new-code-len,
+    data-len = new-data-len,
+    fo-names = st.fo-names,
+    fo-offsets = st.fo-offsets,
+    cp-offsets = st.cp-offsets,
+    cp-targets = st.cp-targets,
+    fa-offsets = st.fa-offsets,
+    fa-targets = st.fa-targets,
+    rf-poffsets = st.rf-poffsets,
+    rf-roffsets = st.rf-roffsets,
+    da-poffsets = st.da-poffsets,
+    da-offsets = st.da-offsets,
+    stack-overflow-checks = st.stack-overflow-checks,
+    locals = [],
+    next-temp = 0,
+    next-local = 0,
+    spill-count = 0,
+    peak-local = 0,
+    peak-spill = 0,
+    load-local-toggle = 0,
+    tco = default-tco-state,
+    type-defs = st.type-defs,
+    builtin-names = st.builtin-names,
+    emit-work = new-emit-work,
+    exit-mode = st.exit-mode,
+    watchdog-mode = st.watchdog-mode,
+    opening-ret-type = st.opening-ret-type,
+    state-local = 0 - 1,
+    user-arities = st.user-arities,
+    bag = st.bag,
+    deck-bound = st.deck-bound,
+    effect-op-addrs = st.effect-op-addrs,
+    vm-profile = st.vm-profile,
+    poison-alloc = st.poison-alloc,
+    trace-alloc = st.trace-alloc,
+    stack-guard = st.stack-guard,
+    omit-frame-pointer = st.omit-frame-pointer,
+    func-local-regs = [],
+    stype-sites = st.stype-sites,
+    insn-count = st.insn-count
+   }
+
+  reset-func-state : CodegenState, Text -> CodegenState
+  reset-func-state (st) (name) =
+   let n1 = list-push (st.fo-names) name
+   in let o1 = list-push (st.fo-offsets) (st.code-len)
+   in let st0a = __record-set st "fo-names" n1
+   in let st1 = __record-set st0a "fo-offsets" o1
+   in let st2 = __record-set st1 "locals" (fresh-empty-locals 0)
+   in let st3 = __record-set st2 "next-temp" 0
+   in let st4 = __record-set st3 "next-local" 0
+   in let st5 = __record-set st4 "spill-count" 0
+   in let st5p = __record-set st5 "peak-local" 0
+   in let st5q = __record-set st5p "peak-spill" 0
+   in let st5a = __record-set st5q "func-local-regs" []
+   in let st6 = __record-set st5a "load-local-toggle" 0
+   in __record-set st6 "tco" (TcoState {
+    active = False,
+    in-tail-pos = False,
+    loop-top = 0,
+    param-locals = [],
+    temp-locals = [],
+    current-func = "",
+    saved-next-local = 0,
+    saved-next-temp = 0
+   })
+
+Section: Register Allocation
+ The active register pools are per-function. By default locals use the
+ callee-saved set and temps the full caller-saved rotation. A pure-leaf
+ function (see emit-function-minimal) may instead hold its locals in
+ caller-saved argument registers -- no prologue save is owed, and a
+ parameter binds to the register it already arrives in. When that mode
+ is active, `func-local-regs` lists the chosen local registers and the
+ temp rotation carves them out so a temp can never alias a live local.
+
+  reg-list-without : List Integer, List Integer, Integer, List Integer -> List Integer
+  reg-list-without (xs) (excl) (i) (acc) =
+   if i == list-length xs then acc
+   else let x = list-at xs i
+   in if tco-list-contains excl x 0 then reg-list-without xs excl (i + 1) acc
+   else reg-list-without xs excl (i + 1) (list-push acc x)
+
+  active-temp-regs : CodegenState -> List Integer
+  active-temp-regs (st) =
+   if list-length (st.func-local-regs) > 0 then reg-list-without temp-regs (st.func-local-regs) 0 []
+   else temp-regs
+
+  active-local-regs : CodegenState -> List Integer
+  active-local-regs (st) =
+   if list-length (st.func-local-regs) > 0 then st.func-local-regs
+   else local-regs
+
+  alloc-temp : CodegenState -> EmitResult
+  alloc-temp (st) =
+   let pool = active-temp-regs st
+   in let idx = int-mod (st.next-temp) (list-length pool)
+   in let reg = list-at pool idx
+   in EmitResult {
+   state = __record-set st "next-temp" (st.next-temp + 1),
+   reg = reg
+  }
+
+ When a value is still live in a temp register, every temp allocated
+ before its last read must skip that register, or the rotation can
+ hand the live register back and the new temp's first write destroys
+ the operand. The collision is phase-dependent (it appears only when
+ the surrounding expression has consumed the right number of temps),
+ which is how bit-xor of three calls shipped computing x ^ x = 0.
+
+  alloc-temp-avoiding : CodegenState, Integer -> EmitResult
+  alloc-temp-avoiding (st) (avoid) =
+   let pool = active-temp-regs st
+   in let idx = int-mod (st.next-temp) (list-length pool)
+   in if list-at pool idx == avoid
+      then alloc-temp (__record-set st "next-temp" (st.next-temp + 1))
+      else alloc-temp st
+
+  alloc-local : CodegenState -> EmitResult
+  alloc-local (st) =
+   let regs = active-local-regs st
+   in let nl = st.next-local + 1
+   in let st-pk = __record-set st "peak-local" (if nl > st.peak-local then nl else st.peak-local)
+   in if st.next-local < list-length regs then let reg = list-at regs (st.next-local)
+   in EmitResult {
+   state = __record-set st-pk "next-local" nl,
+   reg = reg
+  }
+   else let slot = spill-base + st.spill-count
+   in let sc = st.spill-count + 1
+   in let st1 = __record-set st-pk "next-local" nl
+   in let st2 = __record-set st1 "spill-count" sc
+   in EmitResult {
+   state = __record-set st2 "peak-spill" (if sc > st2.peak-spill then sc else st2.peak-spill),
+   reg = slot
+  }
+
+  store-local : CodegenState, Integer, Integer -> CodegenState
+  store-local (st) (local) (value-reg) =
+   if local < spill-base then if local == value-reg then st
+   else st-append-code st (mov-rr local value-reg)
+   else if st.omit-frame-pointer then let offset = (local - spill-base) * 8
+   in st-append-code st (mov-store reg-rsp value-reg offset)
+   else let offset = -((local - spill-base + 1) * 8 + 32)
+   in st-append-code st (mov-store reg-rbp value-reg offset)
+
+  load-local-scratch-for : Integer -> Integer
+  load-local-scratch-for (toggle) =
+   let idx = int-mod toggle 3
+   in if idx == 0 then reg-r8
+      else if idx == 1 then reg-r9
+      else reg-r15
+
+  load-local : CodegenState, Integer -> EmitResult
+  load-local (st) (local) =
+   if local < spill-base then EmitResult {
+   state = st,
+   reg = local
+  }
+   else let scratch = load-local-scratch-for (st.load-local-toggle)
+   in let offset = if st.omit-frame-pointer then (local - spill-base) * 8
+   else -((local - spill-base + 1) * 8 + 32)
+   in let base-reg = if st.omit-frame-pointer then reg-rsp else reg-rbp
+   in let st1 = st-append-code st (mov-load scratch base-reg offset)
+   in EmitResult {
+   state = __record-set st1 "load-local-toggle" (st.load-local-toggle + 1),
+   reg = scratch
+  }
+
+  BivyAlloc = record {
+   state : CodegenState,
+   ptr-loc : Integer between 0 and 65535
+  }
+
+  emit-bivy-alloc : CodegenState, Integer -> BivyAlloc
+  emit-bivy-alloc (st) (size) =
+   let ptr-loc = alloc-local st
+   in let st1 = st-append-code (ptr-loc.state) (li reg-rdi size)
+   in let st2 = emit-call-to st1 "__alloc"
+   in BivyAlloc {
+    state = store-local st2 (ptr-loc.reg) reg-rax,
+    ptr-loc = ptr-loc.reg
+   }
+
+Section: Byte Patching
+  patch-i32-at : List Integer, Integer, Integer -> List Integer
+  patch-i32-at (bytes) (pos) (value) =
+   let new-bytes = write-i32 value
+   in patch-4-loop bytes pos new-bytes 0 (list-length bytes) []
+
+  patch-4-loop : List Integer, Integer, List Integer, Integer, Integer, List Integer -> List Integer
+  patch-4-loop (bytes) (pos) (new-bytes) (i) (len) (acc) =
+   if i == len then acc
+   else if i >= pos & i < pos + 4 then patch-4-loop bytes pos new-bytes (i + 1) len (list-push acc (list-at new-bytes (i - pos)))
+   else patch-4-loop bytes pos new-bytes (i + 1) len (list-push acc (list-at bytes i))
+
+  st-add-deferred-patch : CodegenState, PatchEntry -> CodegenState
+  st-add-deferred-patch (st) (entry) =
+   let r1 = __buf-write-byte (st.workspace.code-buffer) (entry.pos) (entry.b0)
+   in let r2 = __buf-write-byte (st.workspace.code-buffer) (entry.pos + 1) (entry.b1)
+   in let r3 = __buf-write-byte (st.workspace.code-buffer) (entry.pos + 2) (entry.b2)
+   in let r4 = __buf-write-byte (st.workspace.code-buffer) (entry.pos + 3) (entry.b3)
+   in st
+
+  patch-jcc-at : CodegenState, Integer, Integer -> CodegenState
+  patch-jcc-at (st) (jcc-pos) (target-pos) =
+   let rel32 = target-pos - (jcc-pos + 6)
+   in st-add-deferred-patch st (make-i32-patch (jcc-pos + 2) rel32)
+
+  patch-jmp-at : CodegenState, Integer, Integer -> CodegenState
+  patch-jmp-at (st) (jmp-pos) (target-pos) =
+   let rel32 = target-pos - (jmp-pos + 5)
+   in st-add-deferred-patch st (make-i32-patch (jmp-pos + 1) rel32)
+
+  patch-call-at : CodegenState, Integer, Integer -> CodegenState
+  patch-call-at (st) (call-pos) (target-pos) =
+   let rel32 = target-pos - (call-pos + 5)
+   in st-add-deferred-patch st (make-i32-patch (call-pos + 1) rel32)
+
+  PatchEntry = record {
+   pos : Integer between 0 and 4294967295,
+   b0 : Integer between 0 and 255,
+   b1 : Integer between 0 and 255,
+   b2 : Integer between 0 and 255,
+   b3 : Integer between 0 and 255
+  }
+
+  make-i32-patch : Integer, Integer -> PatchEntry
+  make-i32-patch (pos) (value) =
+   let bs = write-i32 value
+   in PatchEntry {
+    pos = pos,
+    b0 = list-at bs 0,
+    b1 = list-at bs 1,
+    b2 = list-at bs 2,
+    b3 = list-at bs 3
+  }
+
+  apply-all-patches : List Integer, List PatchEntry -> List Integer
+  apply-all-patches (bytes) (patches) =
+   apply-patch-walk bytes patches 0 (list-length bytes) []
+
+  apply-patch-walk : List Integer, List PatchEntry, Integer, Integer, List Integer -> List Integer
+  apply-patch-walk (bytes) (patches) (i) (len) (acc) =
+   if i == len then acc
+   else let b = find-patch-byte patches i 0 (list-length patches)
+   in if b >= 0 then apply-patch-walk bytes patches (i + 1) len (list-push acc b)
+      else apply-patch-walk bytes patches (i + 1) len (list-push acc (list-at bytes i))
+
+  find-patch-byte : List PatchEntry, Integer, Integer, Integer -> Integer
+  find-patch-byte (patches) (i) (j) (len) =
+   if j == len then -1
+   else let p = list-at patches j
+   in if i == p.pos then p.b0
+      else if i == p.pos + 1 then p.b1
+      else if i == p.pos + 2 then p.b2
+      else if i == p.pos + 3 then p.b3
+      else find-patch-byte patches i (j + 1) len
+
+  collect-call-patches : List Integer, List Text, OffsetTable, Integer, List PatchEntry -> List PatchEntry
+  collect-call-patches (offsets) (targets) (offset-map) (i) (acc) =
+   if i == list-length offsets then acc
+   else let po = list-at offsets i
+   in let target = list-at targets i
+   in let target-offset = offset-table-lookup offset-map target
+   in let resolved = if target-offset == -1 then offset-table-lookup offset-map "__unresolved_trap" else target-offset
+   in if resolved == -1 then collect-call-patches offsets targets offset-map (i + 1) acc
+      else let rel32 = resolved - (po + 5)
+      in collect-call-patches offsets targets offset-map (i + 1) (list-push acc (make-i32-patch (po + 1) rel32))
+
+  check-call-patch-targets : CodegenState, OffsetTable, Integer -> CodegenState
+  check-call-patch-targets (st) (fm) (i) =
+   if i == list-length (st.cp-targets) then st
+   else let target = list-at (st.cp-targets) i
+   in let off = offset-table-lookup fm target
+   in let trap = offset-table-lookup fm "__unresolved_trap"
+   in if off == -1 & text-starts-with target "__no-instance-"
+    then check-call-patch-targets (st-add-error st cdx-unresolved-func-offset ("No type-class instance for '" & substring target 14 (text-length target - 14) & "'") synthetic-span) fm (i + 1)
+    else if off == -1
+    then check-call-patch-targets (st-add-error st cdx-unresolved-func-offset ("Unresolved call to '" & target & "' (redirected to __unresolved_trap)") synthetic-span) fm (i + 1)
+    else check-call-patch-targets st fm (i + 1)
+
+  check-func-addr-targets : CodegenState, OffsetTable, Integer -> CodegenState
+  check-func-addr-targets (st) (fm) (i) =
+   if i == list-length (st.fa-targets) then st
+   else let target = list-at (st.fa-targets) i
+   in let off = offset-table-lookup fm target
+   in let trap = offset-table-lookup fm "__unresolved_trap"
+   in if off == -1 & trap == -1
+    then check-func-addr-targets (st-add-error st cdx-unresolved-func-offset ("Unresolved func-addr reference to '" & target & "'") synthetic-span) fm (i + 1)
+    else check-func-addr-targets st fm (i + 1)
+
+  check-runtime-symbol : CodegenState, OffsetTable, Text -> CodegenState
+  check-runtime-symbol (st) (fm) (name) =
+   let off = offset-table-lookup fm name
+   in if off == -1
+    then st-add-error st cdx-unresolved-func-offset ("Missing runtime symbol '" & name & "'") synthetic-span
+    else st
+
+
+  align-16 : Integer -> Integer
+  align-16 (n) =
+   let r = int-mod n 16
+   in if r == 0 then n else n + 16 - r
+
+
+Page 2 of 10

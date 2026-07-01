@@ -1,0 +1,294 @@
+Chapter: MarketWeb
+  cites Market chapter MarketTypes
+  cites Market chapter MarketDb
+  cites Market chapter MarketAuth
+  cites Market chapter MarketCatalog
+  cites Market chapter MarketCart
+  cites Market chapter MarketTax
+  cites Market chapter MarketPayment
+  cites Market chapter MarketHtml
+  cites Net chapter WebServer
+  cites Net chapter NetIO
+  cites Net chapter TcpTransport
+  cites Works chapter Http
+  cites Foreword chapter Maybe
+  cites Foreword chapter Logger
+  cites Foreword chapter CCE
+  cites Foreword chapter StringUtils
+  cites Foreword chapter TextSearch
+  cites Encode chapter Json
+
+ HTTP server for the Market storefront. Routes requests to the
+ appropriate handler, renders HTML via MarketHtml, and serves JSON
+ API endpoints for AJAX operations.
+
+Section: Route Dispatch
+
+  market-route : MarketState, HttpRequest -> (MarketState, HttpResponse)
+  market-route (st) (req) =
+    let path = req.path
+    in let cfg = st.mkt-config
+    in let sess = lookup-session st req
+    in if path == "/" then (st, home-page st sess)
+    else if path == "/catalog" then (st, catalog-page st sess)
+    else if path == "/cart" then (st, cart-view-page st sess)
+    else if path == "/login" then
+      if req.method == "POST" then handle-login st req
+      else (st, render-page cfg sess (login-page ""))
+    else if path == "/register" then
+      if req.method == "POST" then handle-register st req 0
+      else (st, render-page cfg sess (register-page ""))
+    else if path == "/logout" then handle-logout st req
+    else if text-starts-with path "/product/" then (st, product-page st sess path)
+    else if text-starts-with path "/admin" then handle-admin st sess path
+    else if text-starts-with path "/api/" then handle-api st req
+    else (st, render-page cfg sess "<div style=\"text-align:center;padding:80px\"><h1>404</h1><p>Page not found</p><a href=\"/\">Go home</a></div>")
+
+Section: Page Rendering
+
+  render-page : StoreConfig, Maybe Session, Text -> HttpResponse
+  render-page (cfg) (sess) (body) =
+    http-html (html-page (cfg.store-name) (cfg.store-accent-color) (nav-bar cfg sess) body)
+
+  home-page : MarketState, Maybe Session -> HttpResponse
+  home-page (st) (sess) =
+    let products = get-active-products st
+    in let body = "<div style=\"text-align:center;padding:40px 0\"><h1 style=\"font-size:2em\">" & st.mkt-config.store-name & "</h1><p style=\"color:#666;margin-top:8px\">Welcome to our store</p></div>" & product-grid products
+    in render-page (st.mkt-config) sess body
+
+  catalog-page : MarketState, Maybe Session -> HttpResponse
+  catalog-page (st) (sess) =
+    let products = get-active-products st
+    in let body = "<div class=\"section-title\">All Products (" & show (list-length products) & ")</div>" & product-grid products
+    in render-page (st.mkt-config) sess body
+
+  cart-view-page : MarketState, Maybe Session -> HttpResponse
+  cart-view-page (st) (sess) =
+    let cart = get-user-cart st sess
+    in render-page (st.mkt-config) sess (cart-page cart (st.mkt-config))
+
+  product-page : MarketState, Maybe Session, Text -> HttpResponse
+  product-page (st) (sess) (path) =
+    let slug = substring path 9 (text-length path)
+    in let prod = find-product-by-slug st slug
+    in when prod
+      is Just (p) -> render-page (st.mkt-config) sess (product-detail p [])
+      is None -> render-page (st.mkt-config) sess "<p>Product not found</p>"
+
+Section: Auth Handlers
+
+  handle-login : MarketState, HttpRequest -> (MarketState, HttpResponse)
+  handle-login (st) (req) =
+    let log2 = log-info-msg (st.mkt-log) "web" "login attempt" 0
+    in let st2 = __record-set st "mkt-log" log2
+    in let email = find-param-value (req.body) "email"
+    in let password = find-param-value (req.body) "password"
+    in if text-length email == 0 then (st2, render-page (st2.mkt-config) None (login-page "Email is required"))
+    else let match = find-user-by-email (market-read-users st2) email 0
+    in when match
+      is None -> (st2, render-page (st2.mkt-config) None (login-page "Invalid email or password"))
+      is Just (user) ->
+        if verify-password password (st2.mkt-config.store-merchant-id) (user.user-pass-hash)
+        then let (st3, sess) = create-session st2 (user.user-id) (user.user-role) 0
+             in (st3, http-redirect "/")
+        else (st2, render-page (st2.mkt-config) None (login-page "Invalid email or password"))
+
+  handle-register : MarketState, HttpRequest, Integer -> (MarketState, HttpResponse)
+  handle-register (st) (req) (ts) =
+    let log2 = log-info-msg (st.mkt-log) "web" "register attempt" ts
+    in let st2 = __record-set st "mkt-log" log2
+    in let name = find-param-value (req.body) "name"
+    in let email = find-param-value (req.body) "email"
+    in let password = find-param-value (req.body) "password"
+    in if text-length name == 0 then (st2, render-page (st2.mkt-config) None (register-page "Name is required"))
+    else if text-length email == 0 then (st2, render-page (st2.mkt-config) None (register-page "Email is required"))
+    else if text-length password == 0 then (st2, render-page (st2.mkt-config) None (register-page "Password is required"))
+    else let (st3, user) = register-user st2 email name password ts
+    in (st3, http-redirect "/login")
+
+  handle-logout : MarketState, HttpRequest -> (MarketState, HttpResponse)
+  handle-logout (st) (req) =
+    (st, http-redirect "/")
+
+Section: Admin Handlers
+
+  handle-admin : MarketState, Maybe Session, Text -> (MarketState, HttpResponse)
+  handle-admin (st) (sess) (path) =
+    let is-admin = when sess
+      is Just (s) -> when s.sess-role is RoleAdmin -> True is otherwise -> False
+      is None -> False
+    in if is-admin then
+      let content = admin-route st path
+      in (st, render-page (st.mkt-config) sess (admin-page "" content))
+    else (st, http-redirect "/login")
+
+  admin-route : MarketState, Text -> Text
+  admin-route (st) (path) =
+    if path == "/admin" then admin-dashboard 0 0 (money-zero USD)
+    else if path == "/admin/products" then admin-product-list (get-active-products st)
+    else if path == "/admin/orders" then admin-order-list []
+    else if path == "/admin/users" then admin-user-list (market-read-users st)
+    else if path == "/admin/settings" then admin-settings (st.mkt-config)
+    else "<p>Admin page not found</p>"
+
+  admin-settings : StoreConfig -> Text
+  admin-settings (cfg) =
+    "<div class=\"section-title\">Store Settings</div>" &
+    "<div class=\"card\" style=\"padding:20px\">" &
+    "<div class=\"form-group\"><label>Store Name</label><input class=\"form-input\" value=\"" & cfg.store-name & "\"></div>" &
+    "<div class=\"form-group\"><label>Currency</label><input class=\"form-input\" value=\"" & currency-code (cfg.store-currency) & "\"></div>" &
+    "<div class=\"form-group\"><label>Merchant ID</label><input class=\"form-input\" value=\"" & cfg.store-merchant-id & "\"></div>" &
+    "<div class=\"form-group\"><label>Accent Color</label><input class=\"form-input\" type=\"color\" value=\"" & cfg.store-accent-color & "\"></div>" &
+    "<button class=\"btn\">Save Settings</button></div>"
+
+  admin-user-list : List User -> Text
+  admin-user-list (users) =
+    "<div class=\"section-title\">Users (" & show (list-length users) & ")</div>" &
+    "<table style=\"width:100%;border-collapse:collapse\">" &
+    "<tr style=\"background:#f5f5f5;text-align:left\">" &
+    "<th style=\"padding:8px;border-bottom:2px solid #ddd\">ID</th>" &
+    "<th style=\"padding:8px;border-bottom:2px solid #ddd\">Name</th>" &
+    "<th style=\"padding:8px;border-bottom:2px solid #ddd\">Email</th>" &
+    "<th style=\"padding:8px;border-bottom:2px solid #ddd\">Role</th></tr>" &
+    admin-user-rows users 0 &
+    "</table>"
+
+  admin-user-rows : List User, Integer -> Text
+  admin-user-rows (users) (i) =
+    if i >= list-length users then ""
+    else let u = list-at users i
+    in "<tr style=\"border-bottom:1px solid #eee\">" &
+    "<td style=\"padding:8px\">" & u.user-id & "</td>" &
+    "<td style=\"padding:8px\">" & u.user-name & "</td>" &
+    "<td style=\"padding:8px\">" & u.user-email & "</td>" &
+    "<td style=\"padding:8px\">" & role-name (u.user-role) & "</td></tr>" &
+    admin-user-rows users (i + 1)
+
+Section: API Handlers
+
+  handle-api : MarketState, HttpRequest -> (MarketState, HttpResponse)
+  handle-api (st) (req) =
+    let path = req.path
+    in if path == "/api/products" then (st, http-json (products-json (get-active-products st)))
+    else if path == "/api/cart" then (st, http-json "{\"items\":[]}")
+    else if path == "/api/health" then (st, http-json "{\"status\":\"ok\",\"store\":\"" & st.mkt-config.store-name & "\"}")
+    else (st, http-json "{\"error\":\"not found\"}")
+
+  products-json : List Product -> Text
+  products-json (products) =
+    "[" & products-json-loop products 0 & "]"
+
+  products-json-loop : List Product, Integer -> Text
+  products-json-loop (products) (i) =
+    if i >= list-length products then ""
+    else let p = list-at products i
+    in let sep = if i > 0 then "," else ""
+    in sep & "{\"id\":\"" & p.product-id & "\",\"name\":\"" & p.product-name & "\",\"price\":" & show (p.product-price.amount) & ",\"status\":\"" &
+    (when p.product-status is Active -> "active" is Draft -> "draft" is Archived -> "archived") & "\"}" &
+    products-json-loop products (i + 1)
+
+Section: State Helpers
+
+  get-active-products : MarketState -> List Product
+  get-active-products (st) = []
+
+  find-product-by-slug : MarketState, Text -> Maybe Product
+  find-product-by-slug (st) (slug) = None
+
+  get-user-cart : MarketState, Maybe Session -> Cart
+  get-user-cart (st) (sess) =
+    let uid = when sess is Just (s) -> s.sess-user-id is None -> "anon"
+    in cart-new "cart-0" uid 0
+
+  lookup-session : MarketState, HttpRequest -> Maybe Session
+  lookup-session (st) (req) = None
+
+  find-user-by-email : List User, Text, Integer -> Maybe User
+  find-user-by-email (users) (email) (i) =
+    if i >= list-length users then None
+    else let u = list-at users i
+    in if u.user-email == email then Just u
+    else find-user-by-email users email (i + 1)
+
+Section: Form Parsing
+
+  find-param-value : Text, Text -> Text
+  find-param-value (qs) (key) =
+    let pairs = text-split qs "&"
+    in find-in-pairs pairs key 0
+
+  find-in-pairs : List Text, Text, Integer -> Text
+  find-in-pairs (pairs) (key) (i) =
+    if i >= list-length pairs then ""
+    else let pair = list-at pairs i
+    in let eqpos = find-char pair 61 0
+    in if eqpos < 0 then find-in-pairs pairs key (i + 1)
+    else let k = text-take pair eqpos
+    in if k == key then text-drop pair (eqpos + 1)
+    else find-in-pairs pairs key (i + 1)
+
+  find-char : Text, Integer, Integer -> Integer
+  find-char (s) (target) (i) =
+    if i >= text-length s then (-1)
+    else if to-unicode (char-code (char-at s i)) == target then i
+    else find-char s target (i + 1)
+
+Section: HTTP Helpers
+
+  http-html : Text -> HttpResponse
+  http-html (body) = http-encode "text/html" body
+
+  http-json : Text -> HttpResponse
+  http-json (body) = http-encode "application/json" body
+
+  http-redirect : Text -> HttpResponse
+  http-redirect (url) = http-encode "text/html" ("<html><head><meta http-equiv=\"refresh\" content=\"0;url=" & url & "\"></head></html>")
+
+Section: Demo Store Setup
+
+  demo-store : MarketState -> MarketState
+  demo-store (st) =
+    let (st2, p1) = create-product st "Classic T-Shirt" "Premium cotton t-shirt, available in 5 colors and 6 sizes." (money-usd 2999) 0
+    in let p1b = add-option-to-product p1 (color-option standard-colors)
+    in let p1c = add-option-to-product p1b (size-option standard-sizes)
+    in let p1d = publish-product p1c 0
+    in let (st3, p2) = create-product st2 "Wireless Headphones" "Noise-cancelling, 40-hour battery, Bluetooth 5.3." (money-usd 7999) 0
+    in let p2b = add-option-to-product p2 (color-option [
+      option-choice-color "midnight" "Midnight Black" "#171717",
+      option-choice-color "silver" "Space Silver" "#a3a3a3",
+      option-choice-color "navy" "Navy Blue" "#1e3a5f"
+    ])
+    in let p2c = publish-product p2b 0
+    in let (st4, p3) = create-product st3 "Leather Wallet" "Full-grain leather bifold wallet with RFID protection." (money-usd 4999) 0
+    in let p3b = add-option-to-product p3 (color-option [
+      option-choice-color "tan" "Tan" "#d2a679",
+      option-choice-color "dark-brown" "Dark Brown" "#5c3317",
+      option-choice-color "black" "Black" "#1a1a1a"
+    ])
+    in let p3c = publish-product p3b 0
+    in let (st5, p4) = create-product st4 "Running Shoes" "Lightweight mesh upper, responsive foam midsole." (money-usd 12999) 0
+    in let p4b = add-option-to-product p4 (color-option [
+      option-choice-color "volt" "Volt Green" "#c6f528",
+      option-choice-color "coral" "Coral" "#ff7f7f",
+      option-choice-color "grey" "Cool Grey" "#9ca3af"
+    ])
+    in let p4c = add-option-to-product p4b (size-option [
+      option-choice "7" "7",
+      option-choice "8" "8",
+      option-choice "9" "9",
+      option-choice "10" "10",
+      option-choice "11" "11",
+      option-choice-priced "12" "12" 1000,
+      option-choice-priced "13" "13" 2000
+    ])
+    in let p4d = publish-product p4c 0
+    in let (st6, p5) = create-product st5 "Artisan Coffee Mug" "Handmade ceramic mug, 12oz capacity." (money-usd 1899) 0
+    in let p5b = add-option-to-product p5 (option-def "glaze" "Glaze" [
+      option-choice-color "ocean" "Ocean Blue" "#0077b6",
+      option-choice-color "sunset" "Sunset Orange" "#fb923c",
+      option-choice-color "forest" "Forest Green" "#166534",
+      option-choice-color "midnight" "Midnight" "#1e1e2e",
+      option-choice-priced "gold" "Gold Trim" 500
+    ])
+    in let p5c = publish-product p5b 0
+    in st6

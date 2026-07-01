@@ -1,0 +1,72 @@
+Chapter: TestCompileBatchScript
+
+  cites Foreword chapter Console
+  cites Foreword chapter Maybe
+  cites Shell chapter ShellTypes
+  cites Shell chapter ShellBuild
+  cites Shell chapter PowerShellEmit
+
+ Generates test-compile-batch.ps1 from the Shell DSL.
+ Batch compiler: boots one VM in REPL mode, feeds all test sources
+ sequentially. One VM boot for the entire batch.
+ Compile with: -Survey "lower-mul:500000"
+
+ We say:
+
+Section: Parameters
+
+  batch-params : List ShellParam = [sh-param "ListFile" SptString, sh-param "OutRoot" SptString, sh-param-default "PCore" SptInt (SeInt 1)]
+
+Section: S01 -- Preamble
+
+  s01 : List ShellCmd = [ScSetStrictMode, ScSetErrorStop, ScRaw "Set-Location (Join-Path $PSScriptRoot '..')", ScRaw "[Environment]::CurrentDirectory = (Get-Location).Path", ScRunDot (SeRaw "(Join-Path $PSScriptRoot 'vm-config.ps1')")]
+
+Section: S02 -- Read Source List
+
+  s02 : List ShellCmd = [ScRaw "$sources = @(Get-Content -Path $ListFile | Where-Object { $_.Trim() -ne '' })", ScIf (SeRaw "$sources.Count -eq 0") [ScExit (SeInt 0)] [], ScRunDot (SeRaw "(Join-Path $PSScriptRoot 'quire-map.ps1')")]
+
+Section: S03 -- Resolve-Source Function
+
+  s03 : List ShellCmd = [ScRaw "function Resolve-Source {\n    param([string]$SrcPath)\n    $lines = [System.IO.File]::ReadAllLines($SrcPath)\n    $seedSeen = @{}; $embPat = '^Chapter:\\s*(\\w+)--(.+?)\\s*$'\n    foreach ($l in $lines) {\n        if ($l -match $embPat) { $seedSeen[\"$($matches[1])::$($matches[2])\"] = $true }\n    }\n    try {\n        $ordered = Resolve-CiteOrder -RootLines $lines -Repo '.' -SeedSeen $seedSeen\n    } catch {\n        return $null\n    }\n    $sb = [System.Text.StringBuilder]::new(524288)\n    foreach ($l in (Format-CiteChapters -Ordered $ordered)) { [void]$sb.Append($l + \"`n\") }\n    foreach ($l in $lines) { [void]$sb.Append($l + \"`n\") }\n    return $sb.ToString()\n}"]
+
+Section: S04 -- Build Combined REPL Input
+
+  s04-resolve-loop-body : List ShellCmd = [ScAssign "name" (SeStaticCall "System.IO.Path" "GetFileNameWithoutExtension" [SeIndex (SeVar "sources") (SeVar "i")]), ScAssign "testOut" (SeRaw "Join-Path $OutRoot $name"), ScRaw "New-Item -ItemType Directory -Force -Path $testOut | Out-Null", ScAssign "resolved" (SeRaw "Resolve-Source $sources[$i]"), ScIf (SeRaw "$null -eq $resolved") [ScSetContent (SeRaw "Join-Path $testOut '.exitcode'") (SeLit "8"), ScSetContent (SeRaw "Join-Path $testOut 'build.log'") (SeLit "error 3010: foreword resolution failed"), ScContinue] [], ScRaw "[void]$testNames.Add($name)", ScAssign "flagsFile" (SeRaw "Join-Path ([System.IO.Path]::GetDirectoryName($sources[$i])) \"$name.flags\""), ScRaw "$extraFlags = if (Test-Path -PathType Leaf $flagsFile) { ' ' + (Get-Content -TotalCount 1 $flagsFile).Trim() } else { '' }", ScAssign "mode" (SeRaw "\"CDX repl$extraFlags`n\""), ScRaw "[void]$inputSb.Append($mode)", ScRaw "[void]$inputSb.Append($resolved)", ScRaw "[void]$inputSb.Append([char]4)"]
+
+  s04 : List ShellCmd = [ScAssign "inputSb" (SeStaticCall "System.Text.StringBuilder" "new" [SeInt 10485760]), ScDotNetCallAssign "testNames" "System.Collections.Generic.List[string]" "new" [], ScForLoop "i" (SeInt 0) (SeRaw "$i -lt $sources.Count") (SeRaw "$i++") s04-resolve-loop-body, ScIf (SeRaw "$testNames.Count -eq 0") [ScExit (SeInt 0)] []]
+
+Section: S05 -- Write Input and Launch VM
+
+  s05 : List ShellCmd = [ScTempFile "inputFile", ScDotNetCall "System.IO.File" "WriteAllText" [SeVar "inputFile", SeMethodCall (SeVar "inputSb") "ToString" [], SeRaw "[System.Text.UTF8Encoding]::new($false)"], ScTempFile "outputFile", ScTempFile "stderrFile", ScAssign "Stage0" (SeRaw "Join-Path (Split-Path $PSScriptRoot) 'build-output\\bare-metal\\Codex.cdx'"), ScIf (SeNot (SeFileExists (SeVar "Stage0"))) [ScWriteError (SeRaw "\"MISSING: $Stage0\""), ScExit (SeInt 2)] [], ScBlank, ScAssign "vmArgs" (SeArrayLiteral [SeLit "-kernel", SeVar "Stage0", SeLit "-input", SeVar "inputFile", SeLit "-output", SeVar "outputFile", SeLit "-mem", SeLit "3072", SeLit "-headless"]), ScRaw "$proc = Start-Process -FilePath $script:CodexVmBin -ArgumentList $vmArgs -PassThru -WindowStyle Hidden -RedirectStandardError $stderrFile", ScRaw "$proc.WaitForExit(1800000)", ScIf (SeNot (SeProperty (SeVar "proc") "HasExited")) [ScRaw "Stop-VmGraceful -ProcessId $proc.Id"] []]
+
+Section: S06 -- NextLine and SkipBytes Functions
+
+  s06 : List ShellCmd = [ScRaw "function NextLine {\n    if ($script:pos -ge $raw.Length) { return $null }\n    $start = $script:pos\n    while ($script:pos -lt $raw.Length -and $raw[$script:pos] -ne 10) { $script:pos++ }\n    $end = $script:pos\n    if ($script:pos -lt $raw.Length) { $script:pos++ }\n    $len = $end - $start\n    if ($len -gt 0 -and $raw[$start + $len - 1] -eq 13) { $len-- }\n    if ($len -le 0) { return '' }\n    return [System.Text.Encoding]::UTF8.GetString($raw, $start, $len)\n}", ScBlank, ScRaw "function SkipBytes { param([int]$n); $script:pos = [Math]::Min($script:pos + $n, $raw.Length) }"]
+
+Section: S07 -- Read Output Bytes
+
+  s07 : List ShellCmd = [ScRaw "$raw = if (Test-Path $outputFile) { [System.IO.File]::ReadAllBytes($outputFile) } else { [byte[]]::new(0) }", ScAssign "pos" (SeInt 0), ScAssign "testIdx" (SeInt 0)]
+
+Section: S08 -- Parse Per-Test Output
+
+  s08 : List ShellCmd = [ScRaw "while ($testIdx -lt $testNames.Count -and $pos -lt $raw.Length) {\n    $name = $testNames[$testIdx]\n    $testOut = Join-Path $OutRoot $name\n    $logLines = [System.Collections.Generic.List[string]]::new()\n    $exitCode = '4'\n\n    :testloop while ($pos -lt $raw.Length) {\n        $line = NextLine\n        if ($null -eq $line) { break }\n\n        if ($line.StartsWith('SIZE:')) {\n            $binSize = 0\n            if ($line.Substring(5) -match '^\\d+') { $binSize = [int]$matches[0] }\n            if ($binSize -gt 0 -and $pos + $binSize -le $raw.Length) {\n                $binBytes = New-Object byte[] $binSize\n                [Array]::Copy($raw, $pos, $binBytes, 0, $binSize)\n                [System.IO.File]::WriteAllBytes((Join-Path $testOut \"$name.cdx\"), $binBytes)\n                SkipBytes $binSize\n                $exitCode = '0'\n            }\n            break testloop\n        }\n        elseif ($line.StartsWith('CODEGEN-HALTED') -or $line.StartsWith('CODEGEN-ERRORS')) {\n            $logLines.Add($line)\n            while ($pos -lt $raw.Length) {\n                $el = NextLine; if ($null -eq $el) { break }\n                if ($el.StartsWith('CODEGEN-HALTED')) { $logLines.Add($el); break }\n                if ($el -ne '') { $logLines.Add($el) }\n            }\n            $exitCode = '7'\n            break testloop\n        }\n        elseif ($line.StartsWith('!EXC')) {\n            $logLines.Add($line); $exitCode = '4'; break\n        }\n        elseif ($line.StartsWith('WD:') -or $line.StartsWith('HEAP:') -or $line.StartsWith('STACK:')) {\n            if ($line.StartsWith('STACK:')) { break testloop }\n        }\n        else { if ($line) { $logLines.Add($line) } }\n    }\n\n    [System.IO.File]::WriteAllLines((Join-Path $testOut 'build.log'), $logLines.ToArray(), [System.Text.UTF8Encoding]::new($false))\n    $exitCode | Set-Content -Path (Join-Path $testOut '.exitcode') -Encoding UTF8\n    $testIdx++\n}"]
+
+Section: S09 -- Backfill Unreached Tests
+
+  s09 : List ShellCmd = [ScRaw "while ($testIdx -lt $testNames.Count) {\n    $name = $testNames[$testIdx]; $testOut = Join-Path $OutRoot $name\n    New-Item -ItemType Directory -Force -Path $testOut | Out-Null\n    '99' | Set-Content -Path (Join-Path $testOut '.exitcode') -Encoding UTF8\n    'FAIL: VM died before this test' | Set-Content -Path (Join-Path $testOut 'build.log') -Encoding UTF8\n    $testIdx++\n}"]
+
+Section: S10 -- Cleanup
+
+  s10 : List ShellCmd = [ScRaw "Remove-Item -Force $inputFile, $outputFile, $stderrFile -ErrorAction SilentlyContinue", ScRaw "Write-SweepLog \"batch-done pcore=$PCore compiled=$($sources.Count)\""]
+
+Section: Assembly
+
+  batch-body : List ShellCmd = [ScSequence s01, ScBlank, ScSequence s02, ScBlank, ScSequence s03, ScBlank, ScSequence s04, ScBlank, ScSequence s05, ScBlank, ScSequence s06, ScBlank, ScSequence s07, ScBlank, ScSequence s08, ScBlank, ScSequence s09, ScBlank, ScSequence s10]
+
+  batch-script : ShellScript = sh-script "test-compile-batch" "Batch compiler -- boots one VM in REPL mode, feeds all test sources sequentially" batch-params batch-body
+
+  opening : [Console] Nothing = act
+    print-line-uni (emit-powershell batch-script)
+  end
+
+Page 1

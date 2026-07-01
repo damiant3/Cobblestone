@@ -1,0 +1,234 @@
+Chapter: Scene3D
+  cites Engine chapter Mesh
+  cites Engine chapter Material
+  cites Math chapter Matrix4
+  cites Math chapter Quaternion
+  cites Foreword chapter Maybe
+
+ 3D scene graph. Nodes carry transform (position, rotation, scale),
+ optional mesh and material, parent-child hierarchy, and visibility.
+ World transforms computed by walking up the parent chain. Includes
+ frustum culling, light definitions, and camera.
+
+ We say:
+
+Section: Transform
+
+  Transform3D = record {
+    t3-pos : Vec3,
+    t3-rot : Quat,
+    t3-scale : Vec3
+  }
+
+  t3-identity : Transform3D
+  t3-identity = Transform3D {
+    t3-pos = vec3-zero,
+    t3-rot = quat-identity,
+    t3-scale = vec3-new 1000.0 1000.0 1000.0
+  }
+
+  t3-at : Real, Real, Real -> Transform3D
+  t3-at (x) (y) (z) = Transform3D {
+    t3-pos = vec3-new x y z,
+    t3-rot = quat-identity,
+    t3-scale = vec3-new 1000.0 1000.0 1000.0
+  }
+
+  t3-to-mat4 : Transform3D -> Mat4
+  t3-to-mat4 (t) =
+    let rot-mat = mat4-from-quat (t.t3-rot)
+    in let scale-mat = mat4-scale (t.t3-scale.vx) (t.t3-scale.vy) (t.t3-scale.vz)
+    in let translate-mat = mat4-translate (t.t3-pos.vx) (t.t3-pos.vy) (t.t3-pos.vz)
+    in mat4-mul translate-mat (mat4-mul rot-mat scale-mat)
+
+Section: Camera
+
+  Camera3D = record {
+    c3-eye : Vec3,
+    c3-target : Vec3,
+    c3-up : Vec3,
+    c3-fov : Integer,
+    c3-near : Integer,
+    c3-far : Integer,
+    c3-aspect : Integer
+  }
+
+  camera3d-new : Vec3, Vec3, Integer -> Camera3D
+  camera3d-new (eye) (target) (fov) = Camera3D {
+    c3-eye = eye,
+    c3-target = target,
+    c3-up = vec3-new 0.0 1000.0 0.0,
+    c3-fov = fov,
+    c3-near = 100,
+    c3-far = 100000,
+    c3-aspect = 1333
+  }
+
+  camera3d-view : Camera3D -> Mat4
+  camera3d-view (c) = mat4-look-at (c.c3-eye) (c.c3-target) (c.c3-up)
+
+  camera3d-proj : Camera3D -> Mat4
+  camera3d-proj (c) = mat4-perspective (c.c3-fov) (c.c3-aspect) (c.c3-near) (c.c3-far)
+
+  camera3d-vp : Camera3D -> Mat4
+  camera3d-vp (c) = mat4-mul (camera3d-proj c) (camera3d-view c)
+
+Section: Lights
+
+  Light3D =
+    | DirLight (Vec3) (Rgb) (Integer)
+    | PtLight (Vec3) (Rgb) (Integer) (Integer)
+    | SpotLight3D (Vec3) (Vec3) (Rgb) (Integer) (Integer) (Integer)
+
+  dir-light : Vec3, Rgb, Integer -> Light3D
+  dir-light (direction) (color) (intensity) = DirLight direction color intensity
+
+  pt-light : Vec3, Rgb, Integer, Integer -> Light3D
+  pt-light (pos) (color) (intensity) (radius) = PtLight pos color intensity radius
+
+Section: Scene Node
+
+  SceneNode3D = record {
+    sn3-transform : Transform3D,
+    sn3-mesh : Maybe Mesh,
+    sn3-material : EngineMaterial,
+    sn3-parent : Integer,
+    sn3-visible : Boolean,
+    sn3-tag : Text
+  }
+
+  sn3-new : Text -> SceneNode3D
+  sn3-new (tag) = SceneNode3D {
+    sn3-transform = t3-identity,
+    sn3-mesh = None,
+    sn3-material = emat-default,
+    sn3-parent = -1,
+    sn3-visible = True,
+    sn3-tag = tag
+  }
+
+  sn3-with-mesh : Text, Mesh, EngineMaterial -> SceneNode3D
+  sn3-with-mesh (tag) (m) (mat) = SceneNode3D {
+    sn3-transform = t3-identity,
+    sn3-mesh = Just m,
+    sn3-material = mat,
+    sn3-parent = -1,
+    sn3-visible = True,
+    sn3-tag = tag
+  }
+
+  sn3-set-pos : SceneNode3D, Real, Real, Real -> SceneNode3D
+  sn3-set-pos (n) (x) (y) (z) =
+    let t = n.sn3-transform
+    in let t2 = Transform3D { t3-pos = vec3-new x y z, t3-rot = t.t3-rot, t3-scale = t.t3-scale }
+    in __record-set n "sn3-transform" t2
+
+  sn3-set-rot : SceneNode3D, Quat -> SceneNode3D
+  sn3-set-rot (n) (q) =
+    let t = n.sn3-transform
+    in let t2 = Transform3D { t3-pos = t.t3-pos, t3-rot = q, t3-scale = t.t3-scale }
+    in __record-set n "sn3-transform" t2
+
+  sn3-set-scale : SceneNode3D, Integer, Integer, Integer -> SceneNode3D
+  sn3-set-scale (n) (sx) (sy) (sz) =
+    let t = n.sn3-transform
+    in let t2 = Transform3D { t3-pos = t.t3-pos, t3-rot = t.t3-rot, t3-scale = vec3-new sx sy sz }
+    in __record-set n "sn3-transform" t2
+
+Section: Scene
+
+  Scene3DState = record {
+    s3-nodes : List SceneNode3D,
+    s3-count : Integer,
+    s3-lights : List Light3D,
+    s3-camera : Camera3D,
+    s3-ambient : Integer
+  }
+
+  scene3d-new : Camera3D -> Scene3DState
+  scene3d-new (cam) = Scene3DState {
+    s3-nodes = [],
+    s3-count = 0,
+    s3-lights = [],
+    s3-camera = cam,
+    s3-ambient = 200
+  }
+
+  scene3d-add : Scene3DState, SceneNode3D -> Scene3DState
+  scene3d-add (s) (node) = Scene3DState {
+    s3-nodes = list-push (s.s3-nodes) node,
+    s3-count = s.s3-count + 1,
+    s3-lights = s.s3-lights,
+    s3-camera = s.s3-camera,
+    s3-ambient = s.s3-ambient
+  }
+
+  scene3d-add-light : Scene3DState, Light3D -> Scene3DState
+  scene3d-add-light (s) (light) = Scene3DState {
+    s3-nodes = s.s3-nodes,
+    s3-count = s.s3-count,
+    s3-lights = list-push (s.s3-lights) light,
+    s3-camera = s.s3-camera,
+    s3-ambient = s.s3-ambient
+  }
+
+  scene3d-set-camera : Scene3DState, Camera3D -> Scene3DState
+  scene3d-set-camera (s) (cam) = __record-set s "s3-camera" cam
+
+  scene3d-set-ambient : Scene3DState, Integer -> Scene3DState
+  scene3d-set-ambient (s) (a) = __record-set s "s3-ambient" a
+
+Section: World Transform
+
+  scene3d-world-matrix : Scene3DState, Integer -> Mat4
+  scene3d-world-matrix (s) (idx) =
+    if idx < 0 then mat4-identity
+    else if idx >= s.s3-count then mat4-identity
+    else let node = list-at (s.s3-nodes) idx
+    in let local = t3-to-mat4 (node.sn3-transform)
+    in if node.sn3-parent < 0 then local
+    else mat4-mul (scene3d-world-matrix s (node.sn3-parent)) local
+
+Section: Node Manipulation
+
+  scene3d-node-at : Scene3DState, Integer -> SceneNode3D
+  scene3d-node-at (s) (idx) = list-at (s.s3-nodes) idx
+
+  scene3d-update-node : Scene3DState, Integer, SceneNode3D -> Scene3DState
+  scene3d-update-node (s) (idx) (node) =
+    if idx < 0 then s
+    else if idx >= s.s3-count then s
+    else Scene3DState {
+      s3-nodes = list-set-at (s.s3-nodes) idx node,
+      s3-count = s.s3-count,
+      s3-lights = s.s3-lights,
+      s3-camera = s.s3-camera,
+      s3-ambient = s.s3-ambient
+    }
+
+  scene3d-find-tag : Scene3DState, Text -> Integer
+  scene3d-find-tag (s) (tag) = s3-find-loop (s.s3-nodes) tag 0 (s.s3-count)
+
+  s3-find-loop : List SceneNode3D, Text, Integer, Integer -> Integer
+  s3-find-loop (nodes) (tag) (i) (n) =
+    if i >= n then 0 - 1
+    else if (list-at nodes i).sn3-tag == tag then i
+    else s3-find-loop nodes tag (i + 1) n
+
+Section: Queries
+
+  scene3d-count : Scene3DState -> Integer
+  scene3d-count (s) = s.s3-count
+
+  scene3d-light-count : Scene3DState -> Integer
+  scene3d-light-count (s) = list-length (s.s3-lights)
+
+Section: Formatting
+
+  format-scene3d : Scene3DState -> Text
+  format-scene3d (s) = "Scene3D(" & show (s.s3-count) & " nodes, " & show (list-length (s.s3-lights)) & " lights)"
+
+  format-transform : Transform3D -> Text
+  format-transform (t) = "pos=(" & show (t.t3-pos.vx) & "," & show (t.t3-pos.vy) & "," & show (t.t3-pos.vz) & ")"
+
+Page 1

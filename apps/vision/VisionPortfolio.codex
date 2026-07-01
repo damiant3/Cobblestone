@@ -1,0 +1,195 @@
+Chapter: VisionPortfolio
+  cites Vision chapter VisionTypes
+  cites Foreword chapter Maybe
+  cites Foreword chapter ListUtils
+
+ Portfolio management. Projects, milestones, risks, and
+ dependencies. Layered opt-in: teams publish what they choose.
+ Vision computes cascade impact, resource contention, and
+ portfolio-level confidence from whatever is published.
+
+Section: Portfolio State
+
+  PortfolioState = record {
+    pf-projects : List Project,
+    pf-project-count : Integer,
+    pf-dependencies : List Dependency,
+    pf-dep-count : Integer,
+    pf-next-id : Integer
+  }
+
+  portfolio-new : PortfolioState
+  portfolio-new = PortfolioState {
+    pf-projects = [], pf-project-count = 0,
+    pf-dependencies = [], pf-dep-count = 0,
+    pf-next-id = 1
+  }
+
+Section: Project CRUD
+
+  pf-add-project : PortfolioState, Text, Text, Text, Integer -> PortfolioState
+  pf-add-project (pf) (name) (domain) (owner) (now) =
+    let p = Project {
+      proj-id = pf.pf-next-id,
+      proj-name = name,
+      proj-domain = domain,
+      proj-owner = owner,
+      proj-status = ProjPlanning,
+      proj-milestones = [],
+      proj-milestone-count = 0,
+      proj-risks = [],
+      proj-risk-count = 0,
+      proj-created = now,
+      proj-updated = now
+    }
+    in PortfolioState {
+      pf-projects = list-push pf.pf-projects p,
+      pf-project-count = pf.pf-project-count + 1,
+      pf-dependencies = pf.pf-dependencies,
+      pf-dep-count = pf.pf-dep-count,
+      pf-next-id = pf.pf-next-id + 1
+    }
+
+  pf-find-project : PortfolioState, Integer -> Maybe Project
+  pf-find-project (pf) (id) = pf-find-loop pf.pf-projects id 0 pf.pf-project-count
+
+  pf-find-loop : List Project, Integer, Integer, Integer -> Maybe Project
+  pf-find-loop (projects) (id) (i) (len) =
+    if i >= len then None
+    else let p = list-at projects i
+    in if p.proj-id == id then Just p
+    else pf-find-loop projects id (i + 1) len
+
+  pf-update-project : PortfolioState, Project -> PortfolioState
+  pf-update-project (pf) (updated) =
+    __record-set pf "pf-projects" (list-map (pf-replace-proj updated) pf.pf-projects)
+
+  pf-replace-proj : Project, Project -> Project
+  pf-replace-proj (updated) (p) =
+    if p.proj-id == updated.proj-id then updated else p
+
+Section: Milestone Operations
+
+  pf-add-milestone : Project, Text, Integer -> Project
+  pf-add-milestone (p) (name) (due) =
+    let ms = Milestone {
+      ms-id = p.proj-milestone-count + 1,
+      ms-project-id = p.proj-id,
+      ms-name = name,
+      ms-due = due,
+      ms-completed = 0,
+      ms-status = ProjPlanning
+    }
+    in __record-set (__record-set p
+      "proj-milestones" (list-push p.proj-milestones ms))
+      "proj-milestone-count" (p.proj-milestone-count + 1)
+
+  pf-complete-milestone : Project, Integer, Integer -> Project
+  pf-complete-milestone (p) (ms-id) (now) =
+    __record-set p "proj-milestones" (list-map (ms-complete ms-id now) p.proj-milestones)
+
+  ms-complete : Integer, Integer, Milestone -> Milestone
+  ms-complete (id) (now) (ms) =
+    if ms.ms-id == id
+    then __record-set (__record-set ms "ms-completed" now) "ms-status" ProjComplete
+    else ms
+
+Section: Risk Operations
+
+  pf-add-risk : Project, Text, RiskLevel, Integer, Integer, Text -> Project
+  pf-add-risk (p) (desc) (level) (prob) (impact) (mitigation) =
+    let r = ProjectRisk {
+      pr-id = p.proj-risk-count + 1,
+      pr-project-id = p.proj-id,
+      pr-description = desc,
+      pr-level = level,
+      pr-probability = prob,
+      pr-impact = impact,
+      pr-mitigation = mitigation
+    }
+    in __record-set (__record-set p
+      "proj-risks" (list-push p.proj-risks r))
+      "proj-risk-count" (p.proj-risk-count + 1)
+
+Section: Dependency Operations
+
+  pf-add-dependency : PortfolioState, Integer, Integer, Integer, Integer, Text -> PortfolioState
+  pf-add-dependency (pf) (from-proj) (from-ms) (to-proj) (to-ms) (desc) =
+    let d = Dependency {
+      dep-from-project = from-proj,
+      dep-from-milestone = from-ms,
+      dep-to-project = to-proj,
+      dep-to-milestone = to-ms,
+      dep-description = desc
+    }
+    in __record-set (__record-set pf
+      "pf-dependencies" (list-push pf.pf-dependencies d))
+      "pf-dep-count" (pf.pf-dep-count + 1)
+
+Section: Portfolio Queries
+
+  pf-by-domain : PortfolioState, Text -> List Project
+  pf-by-domain (pf) (domain) = pf-domain-loop pf.pf-projects domain 0 pf.pf-project-count []
+
+  pf-domain-loop : List Project, Text, Integer, Integer, List Project -> List Project
+  pf-domain-loop (projects) (domain) (i) (len) (acc) =
+    if i >= len then acc
+    else let p = list-at projects i
+    in if p.proj-domain == domain
+      then pf-domain-loop projects domain (i + 1) len (list-push acc p)
+      else pf-domain-loop projects domain (i + 1) len acc
+
+  pf-active-projects : PortfolioState -> List Project
+  pf-active-projects (pf) = pf-active-loop pf.pf-projects 0 pf.pf-project-count []
+
+  pf-active-loop : List Project, Integer, Integer, List Project -> List Project
+  pf-active-loop (projects) (i) (len) (acc) =
+    if i >= len then acc
+    else let p = list-at projects i
+    in when p.proj-status
+      is ProjActive -> pf-active-loop projects (i + 1) len (list-push acc p)
+      is ProjPlanning -> pf-active-loop projects (i + 1) len (list-push acc p)
+      is otherwise -> pf-active-loop projects (i + 1) len acc
+
+  pf-downstream : PortfolioState, Integer -> List Dependency
+  pf-downstream (pf) (project-id) =
+    pf-dep-filter pf.pf-dependencies project-id 0 pf.pf-dep-count []
+
+  pf-dep-filter : List Dependency, Integer, Integer, Integer, List Dependency -> List Dependency
+  pf-dep-filter (deps) (proj-id) (i) (len) (acc) =
+    if i >= len then acc
+    else let d = list-at deps i
+    in if d.dep-from-project == proj-id
+      then pf-dep-filter deps proj-id (i + 1) len (list-push acc d)
+      else pf-dep-filter deps proj-id (i + 1) len acc
+
+Section: Portfolio Health
+
+  pf-health-score : Project, Integer -> Integer
+  pf-health-score (p) (now) =
+    let ms-score = milestone-health p.proj-milestones now 0 p.proj-milestone-count 0 0
+    in let risk-penalty = risk-score p.proj-risks 0 p.proj-risk-count 0
+    in let base = if ms-score.mh-total == 0 then 100 else ms-score.mh-on-track * 100 / ms-score.mh-total
+    in if base - risk-penalty < 0 then 0 else base - risk-penalty
+
+  MilestoneHealth = record { mh-on-track : Integer, mh-total : Integer }
+
+  milestone-health : List Milestone, Integer, Integer, Integer, Integer, Integer -> MilestoneHealth
+  milestone-health (milestones) (now) (i) (len) (on-track) (total) =
+    if i >= len then MilestoneHealth { mh-on-track = on-track, mh-total = total }
+    else let ms = list-at milestones i
+    in let ok = when ms.ms-status
+          is ProjComplete -> 1
+          is otherwise -> if ms.ms-due >= now then 1 else 0
+    in milestone-health milestones now (i + 1) len (on-track + ok) (total + 1)
+
+  risk-score : List ProjectRisk, Integer, Integer, Integer -> Integer
+  risk-score (risks) (i) (len) (acc) =
+    if i >= len then acc
+    else let r = list-at risks i
+    in let penalty = when r.pr-level
+          is RiskCritical -> 20
+          is RiskHigh -> 10
+          is RiskMedium -> 5
+          is RiskLow -> 1
+    in risk-score risks (i + 1) len (acc + penalty)

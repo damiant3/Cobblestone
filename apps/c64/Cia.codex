@@ -1,0 +1,243 @@
+Chapter: Cia
+
+ CIA 1 and CIA 2 emulation. CIA 1 handles the keyboard matrix
+ and joystick ports. CIA 2 handles VIC bank selection.
+
+Section: State
+
+ All CIA state in a contiguous block at #A16000:
+   +0..+7:   keyboard matrix (8 bytes, one per column, active low)
+   +16:      CIA1 port A output latch
+   +17:      CIA1 timer A lo
+   +18:      CIA1 timer A hi
+   +19:      CIA1 ICR
+   +20:      CIA1 CRA
+   +32:      CIA2 port A output
+   +48:      key-up flag (set when F0 prefix received)
+
+  cia-state : Integer = #A16000
+
+  cia-init : Integer -> Integer
+  cia-init (dummy) =
+    let d0 = poke-byte cia-state 0 #FF
+    in let d1 = poke-byte cia-state 1 #FF
+    in let d2 = poke-byte cia-state 2 #FF
+    in let d3 = poke-byte cia-state 3 #FF
+    in let d4 = poke-byte cia-state 4 #FF
+    in let d5 = poke-byte cia-state 5 #FF
+    in let d6 = poke-byte cia-state 6 #FF
+    in let d7 = poke-byte cia-state 7 #FF
+    in let d8 = poke-byte cia-state 16 #FF
+    in let d9 = poke-byte cia-state 17 #FF
+    in let d10 = poke-byte cia-state 18 #FF
+    in let d11 = poke-byte cia-state 29 0
+    in let d12 = poke-byte cia-state 30 0
+    in let d13 = poke-byte cia-state 32 #03
+    in let d14 = poke-byte cia-state 48 0
+    in d0 + d1 + d2 + d3 + d4 + d5 + d6 + d7 + d8 + d9 + d10 + d11 + d12 + d13 + d14
+
+Section: CIA 1 Registers
+
+  cia1-read : Integer -> Integer
+  cia1-read (reg) =
+    if reg == 1 then cia1-scan-keyboard (peek-byte cia-state 16)
+    else if reg == 13 then let v = peek-byte cia-state (16 + 13)
+      in let d = poke-byte cia-state (16 + 13) 0
+      in v
+    else peek-byte cia-state (16 + reg)
+
+  cia1-write : Integer, Integer -> Integer
+  cia1-write (reg) (val) = poke-byte cia-state (16 + reg) (bit-and val #FF)
+
+Section: Keyboard Matrix Scan
+
+  cia1-scan-keyboard : Integer -> Integer
+  cia1-scan-keyboard (col-select) =
+    let inv = bit-xor col-select #FF
+    in cia1-scan-cols inv 0 #FF
+
+  cia1-scan-cols : Integer, Integer, Integer -> Integer
+  cia1-scan-cols (mask) (col) (result) =
+    if col >= 8 then result
+    else if bit-and mask (bit-shl 1 col) /= 0
+    then cia1-scan-cols mask (col + 1) (bit-and result (peek-byte cia-state col))
+    else cia1-scan-cols mask (col + 1) result
+
+Section: PS/2 to C64 Keyboard Mapping
+
+  scancode-to-matrix : Integer -> Integer
+  scancode-to-matrix (sc) =
+    when sc
+      is #01 -> 63
+      is #02 -> 56
+      is #03 -> 59
+      is #04 -> 8
+      is #05 -> 11
+      is #06 -> 16
+      is #07 -> 19
+      is #08 -> 24
+      is #09 -> 27
+      is #0A -> 32
+      is #0B -> 35
+      is #0C -> 43
+      is #0D -> 40
+      is #0E -> 0
+      is #10 -> 62
+      is #11 -> 9
+      is #12 -> 14
+      is #13 -> 17
+      is #14 -> 22
+      is #15 -> 25
+      is #16 -> 30
+      is #17 -> 33
+      is #18 -> 38
+      is #19 -> 41
+      is #1C -> 1
+      is #1D -> 58
+      is #1E -> 10
+      is #1F -> 13
+      is #20 -> 18
+      is #21 -> 21
+      is #22 -> 26
+      is #23 -> 29
+      is #24 -> 34
+      is #25 -> 37
+      is #26 -> 42
+      is #27 -> 50
+      is #2A -> 15
+      is #2C -> 12
+      is #2D -> 23
+      is #2E -> 20
+      is #2F -> 31
+      is #30 -> 28
+      is #31 -> 39
+      is #32 -> 36
+      is #33 -> 47
+      is #34 -> 44
+      is #35 -> 55
+      is #36 -> 52
+      is #39 -> 60
+      is #3B -> 4
+      is #3D -> 5
+      is #3F -> 6
+      is #41 -> 3
+      is #47 -> 51
+      is #4D -> 2
+      is #50 -> 7
+      is otherwise -> -1
+
+Section: Key Press/Release
+
+  kbd-key-down : Integer -> Integer
+  kbd-key-down (sc) =
+    let pos = scancode-to-matrix sc
+    in if pos < 0 then 0
+    else let col = pos / 8
+    in let row = int-mod pos 8
+    in let cur = peek-byte cia-state col
+    in poke-byte cia-state col (bit-and cur (bit-xor #FF (bit-shl 1 row)))
+
+  kbd-key-up : Integer -> Integer
+  kbd-key-up (sc) =
+    let pos = scancode-to-matrix sc
+    in if pos < 0 then 0
+    else let col = pos / 8
+    in let row = int-mod pos 8
+    in let cur = peek-byte cia-state col
+    in poke-byte cia-state col (bit-or cur (bit-shl 1 row))
+
+Section: Poll Host Keyboard
+
+  kbd-clear-matrix : Integer -> Integer
+  kbd-clear-matrix (dummy) =
+    let d0 = poke-byte cia-state 0 #FF
+    in let d1 = poke-byte cia-state 1 #FF
+    in let d2 = poke-byte cia-state 2 #FF
+    in let d3 = poke-byte cia-state 3 #FF
+    in let d4 = poke-byte cia-state 4 #FF
+    in let d5 = poke-byte cia-state 5 #FF
+    in let d6 = poke-byte cia-state 6 #FF
+    in let d7 = poke-byte cia-state 7 #FF
+    in d0 + d1 + d2 + d3 + d4 + d5 + d6 + d7
+
+  c64-ram-ref : Integer = #A00000
+
+  scancode-to-petscii : Integer -> Integer
+  scancode-to-petscii (sc) =
+    when sc
+      is #1E -> 65
+      is #30 -> 66
+      is #2E -> 67
+      is #20 -> 68
+      is #12 -> 69
+      is #21 -> 70
+      is #22 -> 71
+      is #23 -> 72
+      is #17 -> 73
+      is #24 -> 74
+      is #25 -> 75
+      is #26 -> 76
+      is #32 -> 77
+      is #31 -> 78
+      is #18 -> 79
+      is #19 -> 80
+      is #10 -> 81
+      is #13 -> 82
+      is #1F -> 83
+      is #14 -> 84
+      is #16 -> 85
+      is #2F -> 86
+      is #11 -> 87
+      is #2D -> 88
+      is #15 -> 89
+      is #2C -> 90
+      is #02 -> 49
+      is #03 -> 50
+      is #04 -> 51
+      is #05 -> 52
+      is #06 -> 53
+      is #07 -> 54
+      is #08 -> 55
+      is #09 -> 56
+      is #0A -> 57
+      is #0B -> 48
+      is #39 -> 32
+      is #1C -> 13
+      is #0E -> 20
+      is #33 -> 44
+      is #34 -> 46
+      is #0C -> 45
+      is #0D -> 43
+      is #27 -> 59
+      is #28 -> 34
+      is #35 -> 63
+      is otherwise -> 0
+
+  kbd-inject : Integer -> Integer
+  kbd-inject (pet) =
+    let count = peek-byte c64-ram-ref #C6
+    in if count >= 10 then 0
+    else let d0 = poke-byte c64-ram-ref (#0277 + count) pet
+    in poke-byte c64-ram-ref #C6 (count + 1)
+
+  kbd-ring-base : Integer = #7100
+
+  kbd-poll : Integer -> Integer
+  kbd-poll (dummy) =
+    let wc = peek-byte kbd-ring-base 0
+    in let rc = peek-byte kbd-ring-base 1
+    in if wc == rc then 0
+    else let sc = peek-byte kbd-ring-base (16 + bit-and rc 63)
+    in let d = poke-byte kbd-ring-base 1 (bit-and (rc + 1) #FF)
+    in if bit-and sc #80 /= 0 then kbd-poll 0
+    else let pet = scancode-to-petscii sc
+    in if pet == 0 then kbd-poll 0
+    else kbd-inject pet + kbd-poll 0
+
+Section: CIA 2 Registers
+
+  cia2-read : Integer -> Integer
+  cia2-read (reg) = peek-byte cia-state (32 + reg)
+
+  cia2-write : Integer, Integer -> Integer
+  cia2-write (reg) (val) = poke-byte cia-state (32 + reg) (bit-and val #FF)

@@ -1,0 +1,1849 @@
+Chapter: X86-64 Code Generator
+  cites Codex chapter Text
+  cites Codex chapter Lists
+  cites Codex chapter Runtime
+  cites Foreword chapter Sort
+
+Section: Function Application
+  flatten-apply : IRExpr, List IRExpr -> FlatApply
+  flatten-apply (expr) (acc) =
+   when expr
+    is IrApply (f) (a) (t) (sp) -> flatten-apply f ([a] & acc)
+    is IrName (n) (t) (sp) -> FlatApply {
+     func-name = n,
+     args = acc
+    }
+    is otherwise -> FlatApply {
+     func-name = "",
+     args = acc
+    }
+
+  get-apply-root : IRExpr -> IRExpr
+  get-apply-root (e) =
+   when e
+    is IrApply (f) (a) (t) (s) -> get-apply-root f
+    is otherwise -> e
+
+  bsearch-x86-arity-pos : List UserArity, Text, Integer, Integer -> Integer
+  bsearch-x86-arity-pos (entries) (name) (lo) (hi) =
+   if lo >= hi then lo
+   else let mid = lo + (hi - lo) / 2
+   in if text-compare name (list-at entries mid).name <= 0 then bsearch-x86-arity-pos entries name lo mid
+      else bsearch-x86-arity-pos entries name (mid + 1) hi
+
+  build-x86-arities : List IRDef, Integer, Integer, List UserArity -> List UserArity
+  build-x86-arities (defs) (i) (len) (acc) =
+   if i >= len then sort-x86-arities acc
+   else let d = list-at defs i
+   in build-x86-arities defs (i + 1) len (list-push acc (UserArity {
+     name = d.name,
+     arity = list-length (d.params)
+    }))
+
+  sort-x86-arities : List UserArity -> List UserArity
+  sort-x86-arities (xs) = sort-by xs (\a b -> text-compare (a.name) (b.name))
+
+  lookup-x86-arity : List UserArity, Text -> Integer
+  lookup-x86-arity (entries) (name) =
+   let len = list-length entries
+   in let pos = bsearch-x86-arity-pos entries name 0 len
+   in if pos >= len then 0 - 1
+      else let e = list-at entries pos
+      in if e.name == name then e.arity else 0 - 1
+
+  take-ir-list : List IRExpr, Integer, Integer, List IRExpr -> List IRExpr
+  take-ir-list (xs) (i) (n) (acc) =
+   if i >= n then acc
+   else take-ir-list xs (i + 1) n (list-push acc (list-at xs i))
+
+  all-args-reg-locals : List LocalBinding, List IRExpr, Integer -> Boolean
+  all-args-reg-locals (locals) (args) (i) =
+   if i == list-length args then True
+   else when list-at args i
+    is IrName (n) (ty) (sp) ->
+     let slot = lookup-local locals n
+     in if slot >= 0 & slot < spill-base then all-args-reg-locals locals args (i + 1)
+     else False
+    is otherwise -> False
+
+  is-simple-arg : CodegenState, IRExpr -> Boolean
+  is-simple-arg (st) (expr) =
+   when expr
+    is IrName (n) (ty) (sp) ->
+     let slot = lookup-local (st.locals) n
+     in slot >= 0 & slot < spill-base
+    is IrIntLit (v) (sp) -> True
+    is IrBoolLit (v) (sp) -> True
+    is IrBinary (op) (left) (right) (ty) (sp) ->
+     when op
+      is IrAddInt | IrSubInt ->
+       when left
+        is IrName (n) (ty2) (sp2) ->
+         let slot = lookup-local (st.locals) n
+         in if slot >= 0 & slot < spill-base then
+          when right
+           is IrIntLit (v) (s) -> v >= (0 - 2147483648) & v <= 2147483647
+           is otherwise -> False
+         else False
+        is otherwise -> False
+      is otherwise -> False
+    is otherwise -> False
+
+  all-args-simple : CodegenState, List IRExpr, Integer -> Boolean
+  all-args-simple (st) (args) (i) =
+   if i == list-length args then True
+   else if is-simple-arg st (list-at args i) then all-args-simple st args (i + 1)
+   else False
+
+  emit-simple-args-to-regs : CodegenState, List IRExpr, Integer, Integer -> CodegenState
+  emit-simple-args-to-regs (st) (args) (i) (count) =
+   if i == count then st
+   else emit-simple-args-to-regs (emit-to-local st (list-at args i) (list-at arg-regs i) False) args (i + 1) count
+
+  emit-args-to-regs : CodegenState, List IRExpr, Integer, Integer -> CodegenState
+  emit-args-to-regs (st) (args) (i) (count) =
+   if i == count then st
+   else when list-at args i
+    is IrName (n) (ty) (sp) ->
+     let slot = lookup-local (st.locals) n
+     in emit-args-to-regs (st-append-code st (mov-rr (list-at arg-regs i) slot)) args (i + 1) count
+    is otherwise -> st
+
+  save-args-loop : CodegenState, List IRExpr, Integer, List Integer -> SavedArgs
+  save-args-loop (st) (args) (i) (acc) =
+   if i == list-length args then SavedArgs {
+   state = st,
+   locals = acc
+  }
+   else let r = emit-expr st (list-at args i)
+   in let loc = alloc-local (r.state)
+   in let st1 = store-local (loc.state) (loc.reg) (r.reg)
+   in save-args-loop st1 args (i + 1) (list-push acc (loc.reg))
+
+  emit-and-push-args : CodegenState, List IRExpr, Integer -> CodegenState
+  emit-and-push-args (st) (args) (i) =
+   if i == list-length args then st
+   else let r = emit-expr (st-set-tail-pos st False) (list-at args i)
+   in emit-and-push-args (st-append-code (r.state) (push-r (r.reg))) args (i + 1)
+
+  push-reg-args : CodegenState, List Integer, Integer, Integer -> CodegenState
+  push-reg-args (st) (arg-locals) (i) (count) =
+   if i == count then st
+   else let loaded = load-local st (list-at arg-locals i)
+   in push-reg-args (st-append-code (loaded.state) (push-r (loaded.reg))) arg-locals (i + 1) count
+
+  pop-to-arg-regs : CodegenState, Integer -> CodegenState
+  pop-to-arg-regs (st) (i) =
+   if i < 0 then st
+   else pop-to-arg-regs (st-append-code st (pop-r (list-at arg-regs i))) (i - 1)
+
+  push-stack-args : CodegenState, List Integer, Integer -> CodegenState
+  push-stack-args (st) (arg-locals) (i) =
+   if i < 6 then st
+   else let loaded = load-local st (list-at arg-locals i)
+   in push-stack-args (st-append-code (loaded.state) (push-r (loaded.reg))) arg-locals (i - 1)
+
+  emit-apply : CodegenState, IRExpr, IRExpr, CodexType -> EmitResult
+  emit-apply (st) (func-expr) (arg-expr) (result-ty) =
+   let saved-tail = st.tco.in-tail-pos
+   in let full-expr = IrApply func-expr arg-expr result-ty (ir-expr-span func-expr)
+   in let r = if st.tco.active & saved-tail & is-self-call full-expr (st.tco.current-func) then emit-tail-call st func-expr arg-expr
+              else let flat = flatten-apply func-expr [arg-expr]
+              in if flat.func-name == "deck-record" & list-length (flat.args) == 1 then emit-deck-record-wrapper st (flat.args)
+              else if flat.func-name == "" then emit-indirect-call-value st (get-apply-root func-expr) (flat.args)
+                    else let user-arity = lookup-x86-arity (st.user-arities) (flat.func-name)
+                    in if user-arity < 0 & is-builtin (st.builtin-names) (flat.func-name) then emit-builtin st (flat.func-name) (flat.args)
+                    else if user-arity > 0 & list-length (flat.args) > user-arity & lookup-local (st.locals) (flat.func-name) < 0 then emit-over-apply st (flat.func-name) (flat.args) user-arity
+                    else let resolved-result-ty = resolve-constructed-ty st result-ty
+                    in when resolved-result-ty
+                     is SumTy (sname) (args) (ctors) ->
+                      let tag = find-ctor-tag ctors (flat.func-name) 0
+              in if tag >= 0 then emit-sum-ctor st (flat.args) tag
+                         else let is-local-sum = lookup-local (st.locals) (flat.func-name) >= 0
+                         in if is-local-sum then emit-indirect-call st flat
+                         else emit-direct-call st flat
+                     is UnitTy (uname) (inner) ->
+                      if flat.func-name == uname.value & list-length (flat.args) == 1 then emit-expr st (list-at (flat.args) 0)
+                      else emit-direct-call st flat
+                     is FunTy (pt) (rt) ->
+                      let is-local = lookup-local (st.locals) (flat.func-name) >= 0
+              in if is-local then emit-indirect-call st flat
+                         else emit-partial-application st (flat.func-name) (flat.args)
+                     is otherwise ->
+                      let is-local = lookup-local (st.locals) (flat.func-name) >= 0
+              in if is-local then emit-indirect-call st flat
+                         else emit-direct-call st flat
+   in EmitResult {
+    state = st-set-tail-pos (r.state) saved-tail,
+    reg = r.reg
+   }
+
+  emit-direct-call : CodegenState, FlatApply -> EmitResult
+  emit-direct-call (st) (flat) =
+   let arg-count = list-length (flat.args)
+   in let st3 = if arg-count == 1 then
+    emit-to-local (st-set-tail-pos st False) (list-at (flat.args) 0) (list-at arg-regs 0) False
+   else if arg-count <= 6 & all-args-simple st (flat.args) 0 then
+    emit-simple-args-to-regs (st-set-tail-pos st False) (flat.args) 0 arg-count
+   else if arg-count <= 4 & all-args-reg-locals (st.locals) (flat.args) 0 then
+    emit-args-to-regs st (flat.args) 0 arg-count
+   else if arg-count <= 6 then
+    let st1 = emit-and-push-args (st-set-tail-pos st False) (flat.args) 0
+    in pop-to-arg-regs st1 (arg-count - 1)
+   else let saved = save-args-loop (st-set-tail-pos st False) (flat.args) 0 []
+   in let st1 = push-stack-args (saved.state) (saved.locals) (arg-count - 1)
+   in let reg-count = if arg-count < 6 then arg-count else 6
+   in let st2 = push-reg-args st1 (saved.locals) 0 reg-count
+   in pop-to-arg-regs st2 (reg-count - 1)
+   in let st4 = emit-call-to st3 (flat.func-name)
+   in let stack-arg-count = arg-count - 6
+   in let st5 = if stack-arg-count > 0 then st-append-code st4 (add-ri reg-rsp (stack-arg-count * 8))
+    else st4
+   in EmitResult {
+   state = __record-set st5 "next-temp" (st5.next-temp + 1),
+   reg = reg-rax
+  }
+
+  emit-indirect-call : CodegenState, FlatApply -> EmitResult
+  emit-indirect-call (st) (flat) =
+   let saved = save-args-loop (st-set-tail-pos st False) (flat.args) 0 []
+   in let arg-count = list-length (flat.args)
+   in let reg-count = if arg-count < 6 then arg-count else 6
+   in let st1 = push-reg-args (saved.state) (saved.locals) 0 reg-count
+   in let st2 = pop-to-arg-regs st1 (reg-count - 1)
+   in let closure-load = load-local st2 (lookup-local (st2.locals) (flat.func-name))
+   in let st3 = st-append-code (closure-load.state) (mov-rr reg-r11 (closure-load.reg))
+   in let st4 = st-append-code st3 (mov-load reg-rax reg-r11 0)
+   in let st5 = st-append-code st4 [255, 208]
+   in EmitResult {
+   state = __record-set st5 "next-temp" (st5.next-temp + 1),
+   reg = reg-rax
+  }
+
+  emit-over-apply : CodegenState, Text, List IRExpr, Integer -> EmitResult
+  emit-over-apply (st) (func-name) (args) (arity) =
+   let direct-args = take-ir-list args 0 arity []
+   in let direct = emit-direct-call st (FlatApply { func-name = func-name, args = direct-args })
+   in let closure-loc = alloc-local (direct.state)
+   in let st1 = store-local (closure-loc.state) (closure-loc.reg) (direct.reg)
+   in emit-over-apply-extras st1 (closure-loc.reg) args arity (list-length args)
+
+  emit-over-apply-extras : CodegenState, Integer, List IRExpr, Integer, Integer -> EmitResult
+  emit-over-apply-extras (st) (closure-local) (args) (i) (len) =
+   if i >= len then
+    let final = load-local st closure-local
+    in let rd = alloc-temp (final.state)
+    in EmitResult {
+     state = st-append-code (rd.state) (mov-rr (rd.reg) (final.reg)),
+     reg = rd.reg
+    }
+   else let arg-r = emit-expr (st-set-tail-pos st False) (list-at args i)
+   in let arg-loc = alloc-local (arg-r.state)
+   in let st1 = store-local (arg-loc.state) (arg-loc.reg) (arg-r.reg)
+   in let closure-load = load-local st1 closure-local
+   in let st2 = st-append-code (closure-load.state) (mov-rr reg-r11 (closure-load.reg))
+   in let st3 = st-append-code st2 (mov-load reg-rax reg-r11 0)
+   in let arg-load = load-local st3 (arg-loc.reg)
+   in let st4 = st-append-code (arg-load.state) (mov-rr reg-rdi (arg-load.reg))
+   in let st5 = st-append-code st4 [255, 208]
+   in let new-closure = alloc-temp st5
+   in let st6 = st-append-code (new-closure.state) (mov-rr (new-closure.reg) reg-rax)
+   in let st7 = store-local st6 closure-local (new-closure.reg)
+   in emit-over-apply-extras st7 closure-local args (i + 1) len
+
+  emit-indirect-call-value : CodegenState, IRExpr, List IRExpr -> EmitResult
+  emit-indirect-call-value (st) (func-expr) (args) =
+   let fr = emit-expr (st-set-tail-pos st False) func-expr
+   in let closure-local = alloc-local (fr.state)
+   in let st-save = store-local (closure-local.state) (closure-local.reg) (fr.reg)
+   in let saved = save-args-loop st-save args 0 []
+   in let arg-count = list-length args
+   in let reg-count = if arg-count < 6 then arg-count else 6
+   in let st1 = push-reg-args (saved.state) (saved.locals) 0 reg-count
+   in let st2 = pop-to-arg-regs st1 (reg-count - 1)
+   in let closure-reload = load-local st2 (closure-local.reg)
+   in let st3 = st-append-code (closure-reload.state) (mov-rr reg-r11 (closure-reload.reg))
+   in let st4 = st-append-code st3 (mov-load reg-rax reg-r11 0)
+   in let st5 = st-append-code st4 [255, 208]
+   in let tmp = alloc-temp st5
+   in EmitResult {
+   state = st-append-code (tmp.state) (mov-rr (tmp.reg) reg-rax),
+   reg = tmp.reg
+  }
+
+  flatten-tail-args : IRExpr, List IRExpr -> List IRExpr
+  flatten-tail-args (expr) (acc) =
+   when expr
+    is IrApply (f) (a) (t) (sp) -> flatten-tail-args f ([a] & acc)
+    is otherwise -> acc
+
+  eval-tail-arg-direct : CodegenState, IRExpr, Integer -> CodegenState
+  eval-tail-arg-direct (st) (arg) (target) =
+   if target < spill-base then
+    when arg
+     is IrIntLit (v) (sp) -> st-append-code st (li target v)
+     is IrBoolLit (v) (sp) -> st-append-code st (li target (if v then 1 else 0))
+     is IrCharLit (v) (sp) -> st-append-code st (li target v)
+     is IrBinary (op) (left) (right) (ty) (sp) ->
+      when right
+       is IrIntLit (v) (s) ->
+        if v >= (0 - 2147483648) & v <= 2147483647 then
+         when op
+          is IrAddInt ->
+           let l = emit-expr (st-set-tail-pos st False) left
+           in st-append-code (l.state) (lea target (l.reg) v)
+          is IrSubInt ->
+           let l = emit-expr (st-set-tail-pos st False) left
+           in st-append-code (l.state) (lea target (l.reg) (0 - v))
+          is otherwise -> emit-to-local st arg target False
+        else emit-to-local st arg target False
+       is IrName (n) (nty) (nsp) ->
+        let slot = lookup-local (st.locals) n
+        in if slot >= 0 & slot < spill-base & is-tco-binop op then
+         let l = emit-expr (st-set-tail-pos st False) left
+         in st-append-code (l.state) (mov-rr target (l.reg) & emit-tco-binop op target slot)
+        else emit-to-local st arg target False
+       is otherwise -> emit-to-local st arg target False
+     is otherwise -> emit-to-local st arg target False
+   else emit-to-local st arg target False
+
+  is-tco-binop : IRBinaryOp -> Boolean
+  is-tco-binop (op) =
+   when op
+    is IrAddInt | IrSubInt | IrMulInt -> True
+    is otherwise -> False
+
+  emit-tco-binop : IRBinaryOp, Integer, Integer -> List Integer
+  emit-tco-binop (op) (target) (right-reg) =
+   when op
+    is IrAddInt -> add-rr target right-reg
+    is IrSubInt -> sub-rr target right-reg
+    is IrMulInt -> imul-rr target right-reg
+    is otherwise -> add-rr target right-reg
+
+  eval-tail-arg-standard : CodegenState, IRExpr, Integer -> CodegenState
+  eval-tail-arg-standard (st) (arg) (target) =
+   let r = emit-expr (st-set-tail-pos st False) arg
+   in store-local (r.state) target (r.reg)
+
+  eval-tail-args : CodegenState, List IRExpr, List Integer, Integer -> CodegenState
+  eval-tail-args (st) (args) (temp-locals) (i) =
+   if i == list-length args then st
+   else let st1 = eval-tail-arg-direct st (list-at args i) (list-at temp-locals i)
+   in eval-tail-args st1 args temp-locals (i + 1)
+
+  copy-temps-to-params : CodegenState, List Integer, List Integer, Integer -> CodegenState
+  copy-temps-to-params (st) (temp-locals) (param-locals) (i) =
+   if i == list-length temp-locals then st
+   else let loaded = load-local st (list-at temp-locals i)
+   in let st1 = store-local (loaded.state) (list-at param-locals i) (loaded.reg)
+   in copy-temps-to-params st1 temp-locals param-locals (i + 1)
+
+ Tail-call argument shuffle, direct form. When an argument is a
+ literal, a local name, or a two-operand integer binop over locals,
+ its value is written straight into the parameter register -- no
+ staging temp, no copy pass. The writes are ordered so that no
+ parameter is overwritten while a later direct argument still needs
+ its original value; an argument reading its own target parameter is
+ fine because the read and the write are the same instruction.
+ Arguments outside the direct shapes (calls, nested expressions)
+ evaluate into their pre-allocated temps first, before any parameter
+ is written, and are copied to their parameters after the direct
+ writes. A cycle among the direct arguments (a parameter swap) falls
+ back to the temp path for the whole site. The direct path allocates
+ no locals: next-local, spill-count, and the frame layout are
+ identical whether or not it fires.
+
+  is-commutative-tco-op : IRBinaryOp -> Boolean
+  is-commutative-tco-op (op) =
+   when op
+    is IrAddInt | IrMulInt -> True
+    is otherwise -> False
+
+  tco-list-contains : List Integer, Integer, Integer -> Boolean
+  tco-list-contains (xs) (v) (i) =
+   if i == list-length xs then False
+   else if list-at xs i == v then True
+   else tco-list-contains xs v (i + 1)
+
+  tco-param-index : List Integer, Integer, Integer -> Integer
+  tco-param-index (param-locals) (slot) (i) =
+   if i == list-length param-locals then 0 - 1
+   else if list-at param-locals i == slot then i
+   else tco-param-index param-locals slot (i + 1)
+
+  tco-name-reads : CodegenState, Text, List Integer, List Integer -> List Integer
+  tco-name-reads (st) (n) (param-locals) (acc) =
+   let idx = tco-param-index param-locals (lookup-local (st.locals) n) 0
+   in if idx >= 0 then list-push acc idx else acc
+
+  tco-arg-reads : CodegenState, IRExpr, List Integer -> List Integer
+  tco-arg-reads (st) (arg) (param-locals) =
+   when arg
+    is IrName (n) (ty) (sp) -> tco-name-reads st n param-locals []
+    is IrBinary (op) (left) (right) (ty) (sp) ->
+     let acc = when left
+        is IrName (ln) (lt) (ls) -> tco-name-reads st ln param-locals []
+        is otherwise -> []
+     in when right
+      is IrName (rn) (rt) (rs) -> tco-name-reads st rn param-locals acc
+      is otherwise -> acc
+    is otherwise -> []
+
+  is-direct-tail-arg : CodegenState, IRExpr, Integer -> Boolean
+  is-direct-tail-arg (st) (arg) (target) =
+   if target >= spill-base then False
+   else when arg
+    is IrIntLit (v) (sp) | IrBoolLit (v) (sp) | IrCharLit (v) (sp) -> True
+    is IrName (n) (ty) (sp) -> lookup-local (st.locals) n >= 0
+    is IrBinary (op) (left) (right) (ty) (sp) -> is-direct-tail-binop st op left right target
+    is otherwise -> False
+
+  is-direct-tail-binop : CodegenState, IRBinaryOp, IRExpr, IRExpr, Integer -> Boolean
+  is-direct-tail-binop (st) (op) (left) (right) (target) =
+   when left
+    is IrName (ln) (lt) (ls) ->
+     if lookup-local (st.locals) ln < 0 then False
+     else when right
+      is IrIntLit (v) (s) ->
+       when op
+        is IrAddInt -> bound-fits-i32 v
+        is IrSubInt -> bound-fits-i32 v & bound-fits-i32 (0 - v)
+        is IrMulInt -> bound-fits-i32 v
+        is IrDivInt -> v > 0 & bit-and v (v - 1) == 0
+        is IrRemInt -> v > 0 & bit-and v (v - 1) == 0
+        is otherwise -> False
+      is IrName (rn) (rt) (rs) ->
+       let rslot = lookup-local (st.locals) rn
+       in if rslot < 0 then False
+          else if is-tco-binop op == False then False
+          else if rslot == target then is-commutative-tco-op op
+          else True
+      is otherwise -> False
+    is otherwise ->
+     when right
+      is IrIntLit (v) (s) ->
+       when op
+        is IrAddInt -> bound-fits-i32 v
+        is IrSubInt -> bound-fits-i32 v & bound-fits-i32 (0 - v)
+        is otherwise -> False
+      is otherwise -> False
+
+  tco-direct-count : CodegenState, List IRExpr, List Integer, Integer, Integer -> Integer
+  tco-direct-count (st) (args) (param-locals) (i) (acc) =
+   if i == list-length args then acc
+   else if is-direct-tail-arg st (list-at args i) (list-at param-locals i)
+        then tco-direct-count st args param-locals (i + 1) (acc + 1)
+   else tco-direct-count st args param-locals (i + 1) acc
+
+  tco-pending-reader : CodegenState, List IRExpr, List Integer, List Integer, Integer, Integer -> Boolean
+  tco-pending-reader (st) (args) (param-locals) (picked) (i) (j) =
+   if j == list-length args then False
+   else if j /= i
+         & is-direct-tail-arg st (list-at args j) (list-at param-locals j)
+         & tco-list-contains picked j 0 == False
+         & tco-list-contains (tco-arg-reads st (list-at args j) param-locals) i 0
+        then True
+   else tco-pending-reader st args param-locals picked i (j + 1)
+
+  tco-find-pick : CodegenState, List IRExpr, List Integer, List Integer, Integer -> Integer
+  tco-find-pick (st) (args) (param-locals) (picked) (i) =
+   if i == list-length args then 0 - 1
+   else if is-direct-tail-arg st (list-at args i) (list-at param-locals i)
+         & tco-list-contains picked i 0 == False
+         & tco-pending-reader st args param-locals picked i 0 == False
+        then i
+   else tco-find-pick st args param-locals picked (i + 1)
+
+  tco-plan-order : CodegenState, List IRExpr, List Integer, List Integer, Integer -> List Integer
+  tco-plan-order (st) (args) (param-locals) (picked) (fuel) =
+   if fuel == list-length args then picked
+   else let pick = tco-find-pick st args param-locals picked 0
+   in if pick < 0 then picked
+   else tco-plan-order st args param-locals (list-push picked pick) (fuel + 1)
+
+  TcoShufflePlan = record {
+   ok : Boolean,
+   order : List Integer
+  }
+
+  tco-shuffle-plan : CodegenState, List IRExpr, List Integer -> TcoShufflePlan
+  tco-shuffle-plan (st) (args) (param-locals) =
+   if list-length args /= list-length param-locals
+   then TcoShufflePlan { ok = False, order = [] }
+   else let order = tco-plan-order st args param-locals [] 0
+   in TcoShufflePlan {
+    ok = list-length order == tco-direct-count st args param-locals 0 0,
+    order = order
+   }
+
+  emit-direct-tail-binop : CodegenState, IRExpr, IRBinaryOp, IRExpr, IRExpr, Integer -> CodegenState
+  emit-direct-tail-binop (st) (arg) (op) (left) (right) (target) =
+   when left
+    is IrName (ln) (lt) (ls) ->
+     let lload = load-local st (lookup-local (st.locals) ln)
+     in when right
+      is IrIntLit (v) (s) ->
+       when op
+        is IrAddInt -> st-append-code (lload.state) (lea target (lload.reg) v)
+        is IrSubInt -> st-append-code (lload.state) (lea target (lload.reg) (0 - v))
+        is IrMulInt -> st-append-code (lload.state) (imul-rri target (lload.reg) v)
+        is IrDivInt -> if v > 0 & bit-and v (v - 1) == 0 then
+         let shift = int-log2 v
+         in if lload.reg == target then st-append-code (lload.state) (sar-ri target shift)
+         else st-append-code (lload.state) (mov-rr target (lload.reg) & sar-ri target shift)
+        else eval-tail-arg-standard st arg target
+        is IrRemInt -> if v > 0 & bit-and v (v - 1) == 0 then
+         if lload.reg == target then st-append-code (lload.state) (and-ri target (v - 1))
+         else st-append-code (lload.state) (mov-rr target (lload.reg) & and-ri target (v - 1))
+        else eval-tail-arg-standard st arg target
+        is otherwise -> emit-to-local st arg target False
+      is IrName (rn) (rt) (rs) ->
+       let rload = load-local (lload.state) (lookup-local (st.locals) rn)
+       in if rload.reg == target then st-append-code (rload.state) (emit-tco-binop op target (lload.reg))
+          else if lload.reg == target then st-append-code (rload.state) (emit-tco-binop op target (rload.reg))
+          else st-append-code (rload.state) (mov-rr target (lload.reg) & emit-tco-binop op target (rload.reg))
+      is otherwise -> emit-to-local st arg target False
+    is otherwise -> emit-to-local st arg target False
+
+  emit-direct-tail-arg : CodegenState, IRExpr, Integer -> CodegenState
+  emit-direct-tail-arg (st) (arg) (target) =
+   when arg
+    is IrIntLit (v) (sp) -> st-append-code st (li target v)
+    is IrBoolLit (v) (sp) -> st-append-code st (li target (if v then 1 else 0))
+    is IrCharLit (v) (sp) -> st-append-code st (li target v)
+    is IrName (n) (ty) (sp) ->
+     let loaded = load-local st (lookup-local (st.locals) n)
+     in if loaded.reg == target then loaded.state
+        else st-append-code (loaded.state) (mov-rr target (loaded.reg))
+    is IrBinary (op) (left) (right) (ty) (sp) -> emit-direct-tail-binop st arg op left right target
+    is otherwise -> emit-to-local st arg target False
+
+  eval-complex-tail-args : CodegenState, List IRExpr, List Integer, List Integer, Integer, Integer -> CodegenState
+  eval-complex-tail-args (st) (args) (temp-locals) (param-locals) (i) (ci) =
+   if i == list-length args then st
+   else if is-direct-tail-arg st (list-at args i) (list-at param-locals i) then
+    eval-complex-tail-args st args temp-locals param-locals (i + 1) ci
+   else let st1 = eval-tail-arg-direct st (list-at args i) (list-at temp-locals ci)
+   in eval-complex-tail-args st1 args temp-locals param-locals (i + 1) (ci + 1)
+
+  emit-direct-tail-moves : CodegenState, List IRExpr, List Integer, List Integer, Integer -> CodegenState
+  emit-direct-tail-moves (st) (args) (param-locals) (order) (k) =
+   if k == list-length order then st
+   else let st1 = emit-direct-tail-arg st (list-at args (list-at order k)) (list-at param-locals (list-at order k))
+   in emit-direct-tail-moves st1 args param-locals order (k + 1)
+
+ Load any local straight into target. For a register-local this is a
+ plain mov (elided when already in target); for a spilled local it is
+ a single mov from the frame slot. Unlike load-local it needs no
+ scratch and leaves the load-local toggle untouched -- the caller has
+ named the destination, so there is nothing transient to rotate.
+
+  load-local-to : CodegenState, Integer, Integer -> CodegenState
+  load-local-to (st) (local) (target) =
+   if local < spill-base then
+    if local == target then st
+    else st-append-code st (mov-rr target local)
+   else let offset = if st.omit-frame-pointer then (local - spill-base) * 8
+    else -((local - spill-base + 1) * 8 + 32)
+   in let base-reg = if st.omit-frame-pointer then reg-rsp else reg-rbp
+   in st-append-code st (mov-load target base-reg offset)
+
+ When the parameter slot is a register, the complex result can be
+ loaded directly into it -- mov param,[spill] -- instead of the
+ load-local/store-local pair that stages through a scratch register
+ (mov scratch,[spill]; mov param,scratch). A spilled parameter still
+ needs the scratch hop because x86 has no memory-to-memory mov.
+
+  copy-one-complex-temp : CodegenState, Integer, Integer -> CodegenState
+  copy-one-complex-temp (st) (temp-local) (param-local) =
+   if param-local < spill-base then load-local-to st temp-local param-local
+   else let loaded = load-local st temp-local
+   in store-local (loaded.state) param-local (loaded.reg)
+
+  copy-complex-temps : CodegenState, List IRExpr, List Integer, List Integer, Integer, Integer -> CodegenState
+  copy-complex-temps (st) (args) (temp-locals) (param-locals) (i) (ci) =
+   if i == list-length args then st
+   else if is-direct-tail-arg st (list-at args i) (list-at param-locals i) then
+    copy-complex-temps st args temp-locals param-locals (i + 1) ci
+   else let st1 = copy-one-complex-temp st (list-at temp-locals ci) (list-at param-locals i)
+   in copy-complex-temps st1 args temp-locals param-locals (i + 1) (ci + 1)
+
+  emit-tail-call : CodegenState, IRExpr, IRExpr -> EmitResult
+  emit-tail-call (st) (func-expr) (arg-expr) =
+   let args = flatten-tail-args func-expr [arg-expr]
+   in let plan = tco-shuffle-plan st args (st.tco.param-locals)
+   in let st2 = if plan.ok then
+       let ci = tco-find-complex st args (st.tco.param-locals) 0
+       in if ci >= 0 & tco-find-complex st args (st.tco.param-locals) (ci + 1) < 0
+        then emit-tail-single-complex st args (st.tco.param-locals) (plan.order) ci
+       else emit-tail-call-general-shuffle st args (st.tco.temp-locals) (st.tco.param-locals) (plan.order)
+      else let fallback-temps = tco-ensure-temps st (st.tco.temp-locals) (list-length args)
+       in let st1 = eval-tail-args (fallback-temps.alloc-state) args (fallback-temps.alloc-locals) 0
+       in copy-temps-to-params st1 (fallback-temps.alloc-locals) (st.tco.param-locals) 0
+   in let rel32 = st.tco.loop-top - (st2.code-len + 5)
+   in let st3 = st-append-code st2 (jmp rel32)
+   in EmitResult {
+   state = st3,
+   reg = reg-rax
+  }
+
+  emit-sum-ctor : CodegenState, List IRExpr, Integer -> EmitResult
+  emit-sum-ctor (st) (args) (tag) =
+   let saved = save-args-loop (st-set-tail-pos st False) args 0 []
+   in let field-count = list-length args
+   in let total-size = (1 + field-count) * 8
+   in let alloc = emit-bivy-alloc (saved.state) total-size
+   in let tag-tmp = alloc-temp (alloc.state)
+   in let st4 = st-append-code (tag-tmp.state) (li (tag-tmp.reg) tag)
+   in let ptr-load1 = load-local st4 (alloc.ptr-loc)
+   in let st5 = st-append-code (ptr-load1.state) (mov-store (ptr-load1.reg) (tag-tmp.reg) 0)
+   in let st6 = emit-store-ctor-fields st5 (saved.locals) (alloc.ptr-loc) 0
+   in load-local st6 (alloc.ptr-loc)
+
+  emit-store-ctor-fields : CodegenState, List Integer, Integer, Integer -> CodegenState
+  emit-store-ctor-fields (st) (field-locals) (ptr-loc) (i) =
+   if i == list-length field-locals then st
+   else let val = load-local st (list-at field-locals i)
+   in let ptr = load-local (val.state) ptr-loc
+   in let st1 = st-append-code (ptr.state) (mov-store (ptr.reg) (val.reg) (8 + i * 8))
+   in emit-store-ctor-fields st1 field-locals ptr-loc (i + 1)
+
+Section: Closures and Partial Application
+  emit-load-rodata-addr : CodegenState, Integer, Integer -> CodegenState
+  emit-load-rodata-addr (st) (reg) (rodata-off) =
+   let po = st.code-len + 2
+   in let st1 = st-append-code st (mov-ri64 reg 0)
+   in let rf-p = list-push (st1.rf-poffsets) po
+   in let rf-r = list-push (st1.rf-roffsets) rodata-off
+   in let st2 = __record-set st1 "rf-poffsets" rf-p
+   in __record-set st2 "rf-roffsets" rf-r
+
+  emit-load-func-addr : CodegenState, Integer, Text -> CodegenState
+  emit-load-func-addr (st) (reg) (func-name) =
+   let po = st.code-len + 2
+   in let st1 = st-append-code st (mov-ri64 reg 0)
+   in let fa-o = list-push (st1.fa-offsets) po
+   in let fa-t = list-push (st1.fa-targets) func-name
+   in let st2 = __record-set st1 "fa-offsets" fa-o
+   in __record-set st2 "fa-targets" fa-t
+
+  emit-load-known-func-offset : CodegenState, Integer, Integer -> CodegenState
+  emit-load-known-func-offset (st) (reg) (target-offset) =
+   let po = st.code-len + 2
+   in let st1 = st-append-code st (mov-ri64 reg 0)
+   in let da-p = list-push (st1.da-poffsets) po
+   in let da-o = list-push (st1.da-offsets) target-offset
+   in let st2 = __record-set st1 "da-poffsets" da-p
+   in __record-set st2 "da-offsets" da-o
+
+  emit-trampoline-shift-args : CodegenState, Integer, Integer -> CodegenState
+  emit-trampoline-shift-args (st) (i) (num-captures) =
+   if i < 0 then st
+   else if i + num-captures < 6 then emit-trampoline-shift-args (st-append-code st (mov-rr (list-at arg-regs (i + num-captures)) (list-at arg-regs i))) (i - 1) num-captures
+   else emit-trampoline-shift-args st (i - 1) num-captures
+
+  emit-trampoline-load-captures : CodegenState, Integer, Integer -> CodegenState
+  emit-trampoline-load-captures (st) (i) (num-captures) =
+   if i == num-captures then st
+   else if i < 6 then emit-trampoline-load-captures (st-append-code st (mov-load (list-at arg-regs i) reg-r11 (8 + i * 8))) (i + 1) num-captures
+   else st
+
+  emit-partial-application : CodegenState, Text, List IRExpr -> EmitResult
+  emit-partial-application (st) (func-name) (captured-args) =
+   let saved = save-args-loop (st-set-tail-pos st False) captured-args 0 []
+   in let num-captures = list-length captured-args
+   in let jmp-over-pos = saved.state.code-len
+   in let st1 = st-append-code (saved.state) (jmp 0)
+   in let tramp-offset = st1.code-len
+   in let st3 = emit-trampoline-shift-args st1 5 num-captures
+   in let st4 = emit-trampoline-load-captures st3 0 num-captures
+   in let st5 = emit-load-func-addr st4 reg-rax func-name
+   in let st6 = st-append-code st5 [255, 224]
+   in let st7 = patch-jmp-at st6 jmp-over-pos (st6.code-len)
+   in let closure-size = (1 + num-captures) * 8
+   in let alloc = emit-bivy-alloc st7 closure-size
+   in let st11 = emit-load-known-func-offset (alloc.state) reg-rax tramp-offset
+   in let ptr-load1 = load-local st11 (alloc.ptr-loc)
+   in let st12 = st-append-code (ptr-load1.state) (mov-store (ptr-load1.reg) reg-rax 0)
+   in let st13 = emit-store-closure-captures st12 (saved.locals) (alloc.ptr-loc) 0
+   in load-local st13 (alloc.ptr-loc)
+
+  emit-store-closure-captures : CodegenState, List Integer, Integer, Integer -> CodegenState
+  emit-store-closure-captures (st) (cap-locals) (ptr-loc) (i) =
+   if i == list-length cap-locals then st
+   else let val = load-local st (list-at cap-locals i)
+   in let ptr = load-local (val.state) ptr-loc
+   in let st1 = st-append-code (ptr.state) (mov-store (ptr.reg) (val.reg) (8 + i * 8))
+   in emit-store-closure-captures st1 cap-locals ptr-loc (i + 1)
+
+  collect-func-addr-patches : List Integer, List Text, OffsetTable, Integer, Integer, List PatchEntry -> List PatchEntry
+  collect-func-addr-patches (patch-offsets) (targets) (offset-map) (text-base) (i) (acc) =
+   if i == list-length patch-offsets then acc
+   else let po = list-at patch-offsets i
+   in let target = list-at targets i
+   in let func-offset = offset-table-lookup offset-map target
+   in if func-offset == -1 then collect-func-addr-patches patch-offsets targets offset-map text-base (i + 1) acc
+      else let addr = text-base + func-offset
+      in let addr-bytes = write-i64 addr
+      in let p0 = PatchEntry {
+       pos = po,
+       b0 = list-at addr-bytes 0,
+       b1 = list-at addr-bytes 1,
+       b2 = list-at addr-bytes 2,
+       b3 = list-at addr-bytes 3
+      }
+      in let p1 = PatchEntry {
+       pos = po + 4,
+       b0 = list-at addr-bytes 4,
+       b1 = list-at addr-bytes 5,
+       b2 = list-at addr-bytes 6,
+       b3 = list-at addr-bytes 7
+      }
+      in collect-func-addr-patches patch-offsets targets offset-map text-base (i + 1) (list-push (list-push acc p0) p1)
+
+  collect-rodata-patches : List Integer, List Integer, Integer, Integer, List PatchEntry -> List PatchEntry
+  collect-rodata-patches (patch-offsets) (rodata-offsets) (data-vaddr) (i) (acc) =
+   if i == list-length patch-offsets then acc
+   else let po = list-at patch-offsets i
+   in let ro = list-at rodata-offsets i
+   in let addr = data-vaddr + ro
+   in let addr-bytes = write-i64 addr
+   in let p0 = PatchEntry {
+    pos = po,
+    b0 = list-at addr-bytes 0,
+    b1 = list-at addr-bytes 1,
+    b2 = list-at addr-bytes 2,
+    b3 = list-at addr-bytes 3
+  }
+   in let p1 = PatchEntry {
+    pos = po + 4,
+    b0 = list-at addr-bytes 4,
+    b1 = list-at addr-bytes 5,
+    b2 = list-at addr-bytes 6,
+    b3 = list-at addr-bytes 7
+  }
+   in collect-rodata-patches patch-offsets rodata-offsets data-vaddr (i + 1) (list-push (list-push acc p0) p1)
+
+Section: Record Emission
+  resolve-constructed-raw : CodexType, CodexType -> CodexType
+  resolve-constructed-raw (raw) (fallback) =
+   when raw
+    is RecordTy (rn) (ra) (rf) | SumTy (sn) (sa) (sc) -> raw
+    is FunTy (p) (r) -> strip-fun-args-emitter r
+    is otherwise -> fallback
+
+  resolve-constructed-ty : CodegenState, CodexType -> CodexType
+  resolve-constructed-ty (st) (ty) =
+   when ty
+    is RecordTy (rn) (ra) (rf) | SumTy (sn) (sa) (sc) -> ty
+    is ConstructedTy (cname) (cargs) ->
+     let raw = lookup-type-binding (st.type-defs) (cname.value)
+     in resolve-constructed-raw raw ty
+    is EffectfulTy (effs) (sc) (ret) -> resolve-constructed-ty st ret
+    is ForAllTy (id) (body) -> resolve-constructed-ty st body
+    is otherwise -> ty
+
+  strip-fun-args-emitter : CodexType -> CodexType
+  strip-fun-args-emitter (ty) =
+   when ty
+    is FunTy (p) (r) -> strip-fun-args-emitter r
+    is otherwise -> ty
+
+  bsearch-type-binding-pos : List TypeBinding, Text, Integer, Integer -> Integer
+  bsearch-type-binding-pos (bindings) (name) (lo) (hi) =
+   if lo >= hi then lo
+   else let mid = lo + (hi - lo) / 2
+   in if text-compare name (list-at bindings mid).name <= 0 then bsearch-type-binding-pos bindings name lo mid
+      else bsearch-type-binding-pos bindings name (mid + 1) hi
+
+  sort-type-bindings : List TypeBinding, Integer, Integer, List TypeBinding -> List TypeBinding
+  sort-type-bindings (src) (i) (len) (acc) =
+   sort-by src (\a b -> text-compare (a.name) (b.name))
+
+  lookup-type-binding : List TypeBinding, Text -> CodexType
+  lookup-type-binding (bindings) (name) =
+   let len = list-length bindings
+   in let pos = bsearch-type-binding-pos bindings name 0 len
+   in if pos >= len then ErrorTy
+      else let b = list-at bindings pos
+      in if b.name == name then prefer-type-binding bindings name pos len (b.bound-type) else ErrorTy
+
+  prefer-type-binding : List TypeBinding, Text, Integer, Integer, CodexType -> CodexType
+  prefer-type-binding (bindings) (name) (i) (len) (fallback) =
+   if i >= len then fallback
+   else let b = list-at bindings i
+   in if b.name == name
+      then when b.bound-type
+        is SumTy (sn) (sa) (sc) | RecordTy (rn) (ra) (rf) -> b.bound-type
+        is otherwise -> prefer-type-binding bindings name (i + 1) len fallback
+      else fallback
+
+  find-record-field-index : List RecordField, Text, Integer -> Integer
+  find-record-field-index (fields) (name) (i) =
+   if i == list-length fields then 0
+   else let f = list-at fields i
+   in if f.name.value == name then i
+      else find-record-field-index fields name (i + 1)
+
+  field-byte-width : CodexType -> Integer
+  field-byte-width (ty) =
+   when ty
+    is IntegerTy (lo) (hi) (mode) -> hw-width-bytes (bounds-to-hw-width lo hi)
+    is BooleanTy -> 1
+    is UnitTy (n) (inner) -> field-byte-width inner
+    is otherwise -> 8
+
+  field-byte-signed : CodexType -> Boolean
+  field-byte-signed (ty) =
+   when ty
+    is IntegerTy (lo) (hi) (mode) -> hw-width-signed (bounds-to-hw-width lo hi)
+    is UnitTy (n) (inner) -> field-byte-signed inner
+    is otherwise -> False
+
+  round-up-to-8 : Integer -> Integer
+  round-up-to-8 (n) = (n + 7) / 8 * 8
+
+  emit-narrow-store : Integer, Integer, Integer, Integer -> List Integer
+  emit-narrow-store (width) (rd) (rs) (offset) =
+   if width == 1 then mov-store-byte rd rs offset
+   else if width == 2 then mov-store-word rd rs offset
+   else if width == 4 then mov-store-dword rd rs offset
+   else mov-store rd rs offset
+
+Section: Narrow-store with overflow-mode dispatch
+
+ Wraps emit-narrow-store with a runtime overflow check determined by
+ the field type's OverflowMode. OvError emits a cmp+jcc+ud2 trap pair
+ around the store; OvClamping saturates the value to [lo, hi] before
+ the store; OvWrapping falls through to silent truncation (modular
+ arithmetic, the user's explicit choice). Full-width fields (width
+ >= 8) skip the check entirely — no narrowing happens there, so no
+ overflow possible. Bounds that fit i32-signed use cmp-ri for a
+ compact check; bounds outside i32-signed (e.g. u32 hi=4294967295)
+ use a push-r9 / mov-ri64 / cmp-rr / pop-r9 sandwich. Both paths
+ emit the same trap shape (jcc + ud2) for OvError; OvClamping uses
+ cmp-ri + jcc + mov-ri32 to saturate when out of range.
+
+  ir-expr-proven-range : IRExpr -> CodexType
+  ir-expr-proven-range (e) =
+   when e
+    is IrIntLit (v) (s) -> IntegerTy v v OvError
+    is IrFieldAccess (rec) (fname) (vty) (sp) ->
+     when vty
+      is IntegerTy (lo) (hi) (mode) -> vty
+      is otherwise -> int-ty-default
+    is IrApply (func) (arg) (ty) (sp) ->
+     when func
+      is IrName (n) (nty) (nsp) ->
+       if n == "__narrow" then ir-expr-proven-range arg else int-ty-default
+      is IrApply (inner-func) (inner-arg) (ity) (isp) ->
+       when inner-func
+        is IrName (n) (nty) (nsp) ->
+         if n == "int-mod" then proven-mod-shallow inner-arg arg
+         else if n == "bit-and" then proven-bitand-shallow inner-arg arg
+         else if n == "bit-shru" then proven-shru-shallow inner-arg arg
+         else int-ty-default
+        is otherwise -> int-ty-default
+      is otherwise -> int-ty-default
+    is IrBinary (op) (left) (right) (ty) (sp) -> proven-binary-range op left right
+    is IrNegate (x) (s) -> proven-negate-range x
+    is IrIf (cond) (then-e) (else-e) (ty) (sp) -> proven-if-range then-e else-e
+    is IrLet (name) (lty) (value) (body) (sp) -> ir-expr-proven-range body
+    is otherwise -> int-ty-default
+
+  proven-negate-range : IRExpr -> CodexType
+  proven-negate-range (x) =
+   let inner = ir-expr-proven-range x
+   in when inner
+    is IntegerTy (lo) (hi) (m) ->
+     if lo == i64-min then int-ty-default
+     else IntegerTy (negate hi) (negate lo) m
+    is otherwise -> int-ty-default
+
+  proven-if-range : IRExpr, IRExpr -> CodexType
+  proven-if-range (then-e) (else-e) =
+   let tr = ir-expr-proven-range then-e
+   in let er = ir-expr-proven-range else-e
+   in when tr
+    is IntegerTy (t-lo) (t-hi) (tm) ->
+     when er
+      is IntegerTy (e-lo) (e-hi) (em) ->
+       let lo = if t-lo <= e-lo then t-lo else e-lo
+       in let hi = if t-hi >= e-hi then t-hi else e-hi
+       in IntegerTy lo hi OvError
+      is otherwise -> int-ty-default
+    is otherwise -> int-ty-default
+
+  proven-binary-range : IRBinaryOp, IRExpr, IRExpr -> CodexType
+  proven-binary-range (op) (left) (right) =
+   let lr = ir-expr-proven-range left
+   in let rr = ir-expr-proven-range right
+   in when lr
+    is IntegerTy (l-lo) (l-hi) (lm) ->
+     when rr
+      is IntegerTy (r-lo) (r-hi) (rm) ->
+       when op
+        is IrAddInt -> proven-add-range l-lo l-hi r-lo r-hi
+        is IrSubInt -> proven-sub-range l-lo l-hi r-lo r-hi
+        is IrMulInt -> proven-mul-range l-lo l-hi r-lo r-hi
+        is IrDivInt -> proven-div-range l-lo l-hi r-lo r-hi
+        is otherwise -> int-ty-default
+      is otherwise -> int-ty-default
+    is otherwise -> int-ty-default
+
+  proven-add-range : Integer, Integer, Integer, Integer -> CodexType
+  proven-add-range (l-lo) (l-hi) (r-lo) (r-hi) =
+   if l-lo >= 0 & r-lo >= 0
+   then if l-hi <= i64-max - r-hi then IntegerTy (l-lo + r-lo) (l-hi + r-hi) OvError
+        else int-ty-default
+   else int-ty-default
+
+  proven-sub-range : Integer, Integer, Integer, Integer -> CodexType
+  proven-sub-range (l-lo) (l-hi) (r-lo) (r-hi) =
+   if l-lo >= 0 & r-lo >= 0
+   then IntegerTy (l-lo - r-hi) (l-hi - r-lo) OvError
+   else int-ty-default
+
+  proven-mul-range : Integer, Integer, Integer, Integer -> CodexType
+  proven-mul-range (l-lo) (l-hi) (r-lo) (r-hi) =
+   if l-lo >= 0 & r-lo >= 0
+   then if l-hi == 0 then IntegerTy 0 0 OvError
+   else if r-hi <= i64-max / l-hi then IntegerTy (l-lo * r-lo) (l-hi * r-hi) OvError
+        else int-ty-default
+   else int-ty-default
+
+  proven-div-range : Integer, Integer, Integer, Integer -> CodexType
+  proven-div-range (l-lo) (l-hi) (r-lo) (r-hi) =
+   if l-lo >= 0 & r-lo > 0
+   then IntegerTy (l-lo / r-hi) (l-hi / r-lo) OvError
+   else int-ty-default
+
+  proven-shru-range : Integer, Integer, Integer, Integer -> CodexType
+  proven-shru-range (x-lo) (x-hi) (n-lo) (n-hi) =
+   if x-lo >= 0 & n-lo >= 0 & n-hi < 64
+   then IntegerTy (bit-shru x-lo n-hi) (bit-shru x-hi n-lo) OvError
+   else int-ty-default
+
+  proven-shru-shallow : IRExpr, IRExpr -> CodexType
+  proven-shru-shallow (x-expr) (n-expr) =
+   let xr = ir-expr-proven-range x-expr
+   in let nr = ir-expr-proven-range n-expr
+   in when xr
+    is IntegerTy (x-lo) (x-hi) (xm) ->
+     when nr
+      is IntegerTy (n-lo) (n-hi) (nm) -> proven-shru-range x-lo x-hi n-lo n-hi
+      is otherwise -> int-ty-default
+    is otherwise -> int-ty-default
+
+  proven-mod-shallow : IRExpr, IRExpr -> CodexType
+  proven-mod-shallow (x-expr) (n-expr) =
+   let nr = ir-expr-proven-range n-expr
+   in when nr
+    is IntegerTy (n-lo) (n-hi) (nm) ->
+     if n-lo > 0 then IntegerTy 0 (n-hi - 1) OvError
+     else int-ty-default
+    is otherwise -> int-ty-default
+
+  proven-bitand-shallow : IRExpr, IRExpr -> CodexType
+  proven-bitand-shallow (x-expr) (y-expr) =
+   let xr = ir-expr-proven-range x-expr
+   in let yr = ir-expr-proven-range y-expr
+   in when xr
+    is IntegerTy (x-lo) (x-hi) (xm) ->
+     when yr
+      is IntegerTy (y-lo) (y-hi) (ym) ->
+       if x-lo >= 0 & y-lo >= 0
+       then let hi = if x-hi <= y-hi then x-hi else y-hi
+            in IntegerTy 0 hi OvError
+       else int-ty-default
+      is otherwise -> int-ty-default
+    is otherwise -> int-ty-default
+
+  bounds-subset : CodexType, CodexType -> Boolean
+  bounds-subset (value-ty) (field-ty) =
+   when value-ty
+    is IntegerTy (v-lo) (v-hi) (vm) ->
+     when field-ty
+      is IntegerTy (f-lo) (f-hi) (fm) ->
+       v-lo >= f-lo & v-hi <= f-hi
+      is otherwise -> False
+    is otherwise -> False
+
+  value-fits-field : IRExpr, CodexType -> Boolean
+  value-fits-field (val-expr) (field-ty) =
+   bounds-subset (ir-expr-proven-range val-expr) field-ty
+
+  emit-narrow-store-proven : CodegenState, CodexType, Integer, Integer, Integer, IRExpr -> CodegenState
+  emit-narrow-store-proven (st) (ty) (rd) (rs) (offset) (val-expr) =
+   if value-fits-field val-expr ty
+   then let width = field-byte-width ty
+        in let st1 = st-add-info st cdx-bounds-proven "bounds proven: runtime check elided" (ir-expr-span val-expr)
+        in st-append-code st1 (emit-narrow-store width rd rs offset)
+   else emit-narrow-store-checked st ty rd rs offset
+
+  emit-narrow-store-checked : CodegenState, CodexType, Integer, Integer, Integer -> CodegenState
+  emit-narrow-store-checked (st) (ty) (rd) (rs) (offset) =
+   let width = field-byte-width ty
+   in if width >= 8 then st-append-code st (emit-narrow-store width rd rs offset)
+      else when ty
+       is IntegerTy (lo) (hi) (mode) ->
+        when mode
+         is OvError -> emit-error-checked-store st lo hi width rd rs offset
+         is OvClamping ->
+          if bound-fits-i32 lo & bound-fits-i32 hi
+          then emit-clamping-checked-store st lo hi width rd rs offset
+          else st-append-code st (emit-narrow-store width rd rs offset)
+         is otherwise -> st-append-code st (emit-narrow-store width rd rs offset)
+       is UnitTy (n) (inner) -> emit-narrow-store-checked st inner rd rs offset
+       is otherwise -> st-append-code st (emit-narrow-store width rd rs offset)
+
+  bound-fits-i32 : Integer -> Boolean
+  bound-fits-i32 (n) =
+   n >= (0 - 2147483648) & n <= 2147483647
+
+  emit-error-checked-store : CodegenState, Integer, Integer, Integer, Integer, Integer, Integer -> CodegenState
+  emit-error-checked-store (st) (lo) (hi) (width) (rd) (rs) (offset) =
+   let st1 = emit-error-bound-trap st rs hi 14
+   in let st2 = emit-error-bound-trap st1 rs lo 13
+   in st-append-code st2 (emit-narrow-store width rd rs offset)
+
+  emit-error-bound-trap : CodegenState, Integer, Integer, Integer -> CodegenState
+  emit-error-bound-trap (st) (rs) (bound) (cc) =
+   if bound-fits-i32 bound
+   then st-append-code st (cmp-ri rs bound & jcc cc 2 & [15, 11])
+   else st-append-code st (push-r 9 & mov-ri64 9 bound & cmp-rr rs 9 & pop-r 9 & jcc cc 2 & [15, 11])
+
+  emit-clamping-checked-store : CodegenState, Integer, Integer, Integer, Integer, Integer, Integer -> CodegenState
+  emit-clamping-checked-store (st) (lo) (hi) (width) (rd) (rs) (offset) =
+   let st1 = st-append-code st (cmp-ri rs hi & jcc 14 7 & mov-ri32 rs hi)
+   in let st2 = st-append-code st1 (cmp-ri rs lo & jcc 13 7 & mov-ri32 rs lo)
+   in st-append-code st2 (emit-narrow-store width rd rs offset)
+
+  emit-narrow-load : Integer, Boolean, Integer, Integer, Integer -> List Integer
+  emit-narrow-load (width) (signed) (rd) (rs) (offset) =
+   if width == 1 then
+    if signed then movsx-byte rd rs offset else movzx-byte rd rs offset
+   else if width == 2 then
+    if signed then movsx-word rd rs offset else movzx-word rd rs offset
+   else if width == 4 then
+    if signed then movsxd rd rs offset else mov-load-u32 rd rs offset
+   else mov-load rd rs offset
+
+  FieldOffsetType = record {
+   offset : Integer between 0 and 65535,
+   type-val : CodexType
+  }
+
+  width-prefix : Integer -> Text
+  width-prefix (w) =
+   if w == 8 then "1-"
+   else if w == 4 then "2-"
+   else if w == 2 then "3-"
+   else "4-"
+
+  field-sort-key : RecordField -> Text
+  field-sort-key (f) =
+   width-prefix (field-byte-width (f.type-val)) & (f.name.value)
+
+  cce-byte-offset-and-type : List RecordField, Text -> FieldOffsetType
+  cce-byte-offset-and-type (fields) (target) =
+   let target-ty = find-target-type fields target 0
+   in let target-w = field-byte-width target-ty
+   in let offset = accumulate-offset-width-sort fields target target-w 0 0
+   in FieldOffsetType { offset = offset, type-val = target-ty }
+
+  find-target-type : List RecordField, Text, Integer -> CodexType
+  find-target-type (fields) (target) (i) =
+   if i == list-length fields then ErrorTy
+   else let f = list-at fields i
+   in if f.name.value == target then f.type-val
+      else find-target-type fields target (i + 1)
+
+  accumulate-offset-width-sort : List RecordField, Text, Integer, Integer, Integer -> Integer
+  accumulate-offset-width-sort (fields) (target-name) (target-w) (i) (acc) =
+   if i == list-length fields then acc
+   else let f = list-at fields i
+   in let f-w = field-byte-width (f.type-val)
+   in if f-w > target-w
+      then accumulate-offset-width-sort fields target-name target-w (i + 1) (acc + f-w)
+      else if f-w == target-w & text-compare (f.name.value) target-name < 0
+      then accumulate-offset-width-sort fields target-name target-w (i + 1) (acc + f-w)
+      else accumulate-offset-width-sort fields target-name target-w (i + 1) acc
+
+Section: Pointer-Map Walk
+
+ Precise typed traversal of a live heap object graph, driven by the
+ pointer-maps — no per-object type tags needed: the static type says
+ which slots are pointers (record map / ctor map), and a variant's tag
+ already sits at offset 0 (emit-sum-ctor). This is the precise
+ replacement for scan-deck-dangling: rather than scanning raw deck slots
+ (which cannot tell a pointer from an integer — the source of the SCOPE
+ false positives), it follows only real pointer slots from a typed root
+ and counts those landing in the dead range [lo, hi). Fuel-bounded for
+ safety. Handles RecordTy, SumTy, ListTy, and ConstructedTy (resolved by
+ name against a TypeBinding table via lookup-type-binding, so the full
+ named-type graph AChapter->ADef->AExpr is traversable given the table).
+ FunTy / LinkedListTy are leaves for now (cons-cell layout is a later
+ refinement). The TypeBinding table must be sorted by name (bsearch).
+
+  ptr-in-range : Integer, Integer, Integer -> Integer
+  ptr-in-range (p) (lo) (hi) =
+   if p >= lo then if p < hi then 1 else 0 else 0
+
+  pmap-walk : Integer, CodexType, List TypeBinding, Integer, Integer, Integer -> Integer
+  pmap-walk (ptr) (ty) (defs) (lo) (hi) (fuel) =
+   if fuel <= 0 then 0
+   else if ptr == 0 then 0
+   else when ty
+    is RecordTy (n) (a) (fields) -> pmap-walk-record ptr fields defs 0 (list-length fields) lo hi fuel 0
+    is SumTy (n) (a) (ctors) -> pmap-walk-sum ptr ctors defs lo hi fuel
+    is ListTy (elem) -> pmap-walk-list ptr elem defs lo hi fuel
+    is ConstructedTy (cn) (ca) -> pmap-walk ptr (lookup-type-binding defs (cn.value)) defs lo hi (fuel - 1)
+    is otherwise -> 0
+
+  pmap-walk-record : Integer, List RecordField, List TypeBinding, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  pmap-walk-record (ptr) (fields) (defs) (i) (len) (lo) (hi) (fuel) (acc) =
+   if i == len then acc
+   else let f = list-at fields i
+   in if is-pointer-type (f.type-val)
+      then let fot = cce-byte-offset-and-type fields (f.name.value)
+           in let child = peek-qword ptr (fot.offset)
+           in let sub = ptr-in-range child lo hi + pmap-walk child (f.type-val) defs lo hi (fuel - 1)
+           in pmap-walk-record ptr fields defs (i + 1) len lo hi fuel (acc + sub)
+      else pmap-walk-record ptr fields defs (i + 1) len lo hi fuel acc
+
+  pmap-walk-sum : Integer, List SumCtor, List TypeBinding, Integer, Integer, Integer -> Integer
+  pmap-walk-sum (ptr) (ctors) (defs) (lo) (hi) (fuel) =
+   let tag = peek-qword ptr 0
+   in if tag >= list-length ctors then 0
+      else let c = list-at ctors tag
+      in pmap-walk-ctor (c.fields) ptr defs 0 (list-length (c.fields)) lo hi fuel 0
+
+  pmap-walk-ctor : List CodexType, Integer, List TypeBinding, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  pmap-walk-ctor (tys) (ptr) (defs) (i) (len) (lo) (hi) (fuel) (acc) =
+   if i == len then acc
+   else let ety = list-at tys i
+   in if is-pointer-type ety
+      then let child = peek-qword ptr (8 + i * 8)
+           in let sub = ptr-in-range child lo hi + pmap-walk child ety defs lo hi (fuel - 1)
+           in pmap-walk-ctor tys ptr defs (i + 1) len lo hi fuel (acc + sub)
+      else pmap-walk-ctor tys ptr defs (i + 1) len lo hi fuel acc
+
+  pmap-walk-list : Integer, CodexType, List TypeBinding, Integer, Integer, Integer -> Integer
+  pmap-walk-list (ptr) (elem) (defs) (lo) (hi) (fuel) =
+   if is-pointer-type elem
+   then pmap-walk-list-elems ptr elem defs 0 (peek-qword ptr 0) lo hi fuel 0
+   else 0
+
+  pmap-walk-list-elems : Integer, CodexType, List TypeBinding, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  pmap-walk-list-elems (ptr) (elem) (defs) (j) (count) (lo) (hi) (fuel) (acc) =
+   if j == count then acc
+   else if fuel <= 0 then acc
+   else let child = peek-qword ptr (8 + j * 8)
+   in let sub = ptr-in-range child lo hi + pmap-walk child elem defs lo hi (fuel - 1)
+   in pmap-walk-list-elems ptr elem defs (j + 1) count lo hi fuel (acc + sub)
+
+ Runtime conformance check for pmap-walk (gated by -EscapeCheck at the call
+ site; fires a diagnostic only on failure). This guards the pointer-map
+ walker — the safety-critical machinery the escape check and copying
+ compactor will drive — against silent breakage from layout or codegen
+ changes. `cap` = __heap-save captured just before the record's allocation
+ is the record's address (a record's pointer is its alloc start — no cap
+ word, unlike lists); the record is forced (rec.tr-num) so it is materialized
+ at cap, then pmap-walk over [h0, cap) counts the in-range pointers. PmTestRec
+ has tr-ptr (Text), a scalar tr-num, and tr-inner (a ConstructedTy "PmInner"
+ record whose in-ptr is another heap Text). Expected result: 3 (tr-ptr +
+ tr-inner + inner.in-ptr; tr-num scalar skipped; ConstructedTy "PmInner"
+ resolved against __self-type-defs). The root type PmTestRec is itself
+ resolved from __self-type-defs by name, so this exercises the whole
+ self-type-table: the emitted table carries the compiler's OWN types (baked
+ in at the compiler's self-compile), and pmap-walk drives off it.
+
+ The pointees MUST be runtime heap allocations: a bare string literal is
+ emitted into rodata (emit-text-lit, X86_64.codex), so its pointer lands
+ below the heap and would never fall in [h0, cap) — a real pointer the
+ escape check correctly ignores. `show N` forces a runtime heap string.
+
+  PmInner = record { in-ptr : Text }
+
+  PmTestRec = record { tr-num : Integer, tr-ptr : Text, tr-inner : PmInner }
+
+  pmap-self-test : Integer
+  pmap-self-test =
+   let defs = __self-type-defs
+   in let h0 = __heap-save
+   in let sub = show 99
+   in let inner-sub = show 88
+   in let inner = PmInner { in-ptr = inner-sub }
+   in let cap = __heap-save
+   in let rec = PmTestRec { tr-num = 42, tr-ptr = sub, tr-inner = inner }
+   in if rec.tr-num == 42
+      then pmap-walk cap (lookup-type-binding defs "PmTestRec") defs h0 cap 64
+      else 0 - 1
+
+  pmap-escape-fuel : Integer = 1000000
+
+  pmap-escape-count : Integer, Text, Integer, Integer -> Integer
+  pmap-escape-count (root-addr) (type-name) (lo) (hi) =
+   let defs = __self-type-defs
+   in pmap-walk root-addr (lookup-type-binding defs type-name) defs lo hi pmap-escape-fuel
+
+Section: Self-Type-Table Emission
+
+ Emits the compiler's own type-defs (filtered to RecordTy/SumTy) into rodata
+ as a live `List TypeBinding` graph in exact heap layout with ABSOLUTE
+ addresses (data-vaddr is known at finalize, so no relocations needed).
+ pmap-walk consumes it unchanged to resolve ConstructedTy at runtime. Layouts:
+ List = [cap][len][elem@8+i*8] (pointer = len word); Sum box = [tag][field@8+
+ i*8]; record fields width-sorted (all 8B here, so name-sorted at 8*k); Text =
+ [len][bytes][pad8]. pmap-walk/is-pointer-type read only a descriptor's tag and
+ the pointer slots they recurse on (ListTy.elem, RecordTy.fields, SumTy.ctors,
+ ConstructedTy.name), so unused scalar/pointer slots are emitted as 0 — EXCEPT
+ IntegerTy's lo/hi bounds, which field-byte-width reads to compute a record's
+ field widths (and hence offsets), so those are emitted faithfully.
+
+  ConstEmit = record { len : Integer, off : Integer }
+
+  ConstList = record { len : Integer, offs : List Integer }
+
+  const-text-bytes : Integer, Integer, Text, Integer, Integer -> Integer
+  const-text-bytes (buf) (pos) (s) (i) (n) =
+   if i == n then pos
+   else let w = __buf-write-byte buf pos (char-code-at s i)
+   in const-text-bytes buf (pos + 1) s (i + 1) n
+
+  const-pad8 : Integer, Integer -> Integer
+  const-pad8 (buf) (pos) =
+   if int-mod pos 8 == 0 then pos
+   else let w = __buf-write-byte buf pos 0 in const-pad8 buf (pos + 1)
+
+  const-words : Integer, Integer, List Integer, Integer, Integer -> Integer
+  const-words (buf) (pos) (ws) (i) (n) =
+   if i == n then pos else const-words buf (buf-write-i64 buf pos (list-at ws i)) ws (i + 1) n
+
+  emit-const-text : Integer, Integer, Text -> ConstEmit
+  emit-const-text (buf) (len) (s) =
+   let n = text-length s
+   in let p1 = buf-write-i64 buf len n
+   in let p2 = const-text-bytes buf p1 s 0 n
+   in ConstEmit { len = const-pad8 buf p2, off = len }
+
+  const-addr-words : Integer, Integer, List Integer, Integer, Integer, Integer -> Integer
+  const-addr-words (buf) (pos) (offs) (i) (n) (vaddr) =
+   if i == n then pos
+   else const-addr-words buf (buf-write-i64 buf pos (vaddr + list-at offs i)) offs (i + 1) n vaddr
+
+  emit-const-ptr-list : Integer, Integer, Integer, List Integer -> ConstEmit
+  emit-const-ptr-list (buf) (len) (vaddr) (child-offs) =
+   let n = list-length child-offs
+   in let p1 = buf-write-i64 buf len n
+   in let p2 = buf-write-i64 buf p1 n
+   in ConstEmit { len = const-addr-words buf p2 child-offs 0 n vaddr, off = len + 8 }
+
+  const-box : Integer, Integer, Integer, List Integer -> ConstEmit
+  const-box (buf) (len) (tag) (words) =
+   let p1 = buf-write-i64 buf len tag
+   in ConstEmit { len = const-words buf p1 words 0 (list-length words), off = len }
+
+  emit-const-name : Integer, Integer, Integer, Name -> ConstEmit
+  emit-const-name (buf) (len) (vaddr) (nm) =
+   let t = emit-const-text buf len (nm.value)
+   in ConstEmit { len = buf-write-i64 buf (t.len) (vaddr + t.off), off = t.len }
+
+  emit-const-codextype : Integer, Integer, Integer, CodexType, Integer -> ConstEmit
+  emit-const-codextype (buf) (len) (vaddr) (ty) (fuel) =
+   if fuel <= 0 then const-box buf len 7 []
+   else when ty
+    is IntegerTy (lo) (hi) (mode) -> const-box buf len 0 [lo, hi, 0]
+    is RealTy -> const-box buf len 1 []
+    is TextTy -> const-box buf len 2 []
+    is BooleanTy -> const-box buf len 3 []
+    is CharTy -> const-box buf len 4 []
+    is VoidTy -> const-box buf len 5 []
+    is NothingTy -> const-box buf len 6 []
+    is ErrorTy -> const-box buf len 7 []
+    is FunTy (p) (r) -> const-box buf len 8 [0, 0]
+    is ListTy (elem) -> let c = emit-const-codextype buf len vaddr elem (fuel - 1) in const-box buf (c.len) 9 [vaddr + c.off]
+    is LinkedListTy (elem) -> const-box buf len 10 [0]
+    is TypeVar (i) -> const-box buf len 11 [0]
+    is ForAllTy (i) (b) -> let c = emit-const-codextype buf len vaddr b (fuel - 1) in const-box buf (c.len) 12 [0, vaddr + c.off]
+    is SumTy (n) (a) (ctors) | RecordTy (n) (a) (fields) | ConstructedTy (n) (a) -> let nm = emit-const-name buf len vaddr n in const-box buf (nm.len) 15 [vaddr + nm.off, 0]
+    is EffectfulTy (e) (s) (r) -> let c = emit-const-codextype buf len vaddr r (fuel - 1) in const-box buf (c.len) 16 [0, 0, vaddr + c.off]
+    is ProofTy -> const-box buf len 17 []
+    is PropEqTy (a) (b) -> const-box buf len 18 [0, 0]
+    is UnitTy (n) (inner) -> let nm = emit-const-name buf len vaddr n in let c = emit-const-codextype buf (nm.len) vaddr inner (fuel - 1) in const-box buf (c.len) 19 [vaddr + nm.off, vaddr + c.off]
+    is VectorTy (vn) (vt) -> const-box buf len 20 [vn, 0]
+    is VectorMaskTy (n) -> const-box buf len 21 [n, 0]
+    is RealApproxTy -> const-box buf len 22 []
+    is RealTrappingTy -> const-box buf len 23 []
+    is RealSaturatingTy -> const-box buf len 24 []
+    is TypeCon (n) -> let nm = emit-const-name buf len vaddr n in const-box buf (nm.len) 15 [vaddr + nm.off, 0]
+    is TypeApply (f) (a) -> const-box buf len 7 []
+
+  emit-const-codextype-top : Integer, Integer, Integer, CodexType -> ConstEmit
+  emit-const-codextype-top (buf) (len) (vaddr) (ty) =
+   when ty
+    is SumTy (n) (a) (ctors) -> let nm = emit-const-name buf len vaddr n in let cs = emit-const-ctorlist buf (nm.len) vaddr ctors 12 in const-box buf (cs.len) 13 [vaddr + nm.off, 0, vaddr + cs.off]
+    is RecordTy (n) (a) (fields) -> let nm = emit-const-name buf len vaddr n in let fs = emit-const-fieldlist buf (nm.len) vaddr fields 12 in const-box buf (fs.len) 14 [vaddr + nm.off, 0, vaddr + fs.off]
+    is otherwise -> emit-const-codextype buf len vaddr ty 12
+
+  emit-const-recordfield : Integer, Integer, Integer, RecordField, Integer -> ConstEmit
+  emit-const-recordfield (buf) (len) (vaddr) (fld) (fuel) =
+   let nm = emit-const-name buf len vaddr (fld.name)
+   in let tv = emit-const-codextype buf (nm.len) vaddr (fld.type-val) fuel
+   in let p1 = buf-write-i64 buf (tv.len) (vaddr + tv.off)
+   in ConstEmit { len = buf-write-i64 buf p1 (vaddr + nm.off), off = tv.len }
+
+  emit-const-sumctor : Integer, Integer, Integer, SumCtor, Integer -> ConstEmit
+  emit-const-sumctor (buf) (len) (vaddr) (ct) (fuel) =
+   let fs = emit-const-typelist buf len vaddr (ct.fields) fuel
+   in let nm = emit-const-name buf (fs.len) vaddr (ct.name)
+   in let p1 = buf-write-i64 buf (nm.len) (vaddr + nm.off)
+   in ConstEmit { len = buf-write-i64 buf p1 (vaddr + fs.off), off = nm.len }
+
+  emit-const-type-elems : Integer, Integer, Integer, List CodexType, Integer, Integer, List Integer, Integer -> ConstList
+  emit-const-type-elems (buf) (len) (vaddr) (tys) (i) (n) (acc) (fuel) =
+   if i == n then ConstList { len = len, offs = acc }
+   else let c = emit-const-codextype buf len vaddr (list-at tys i) fuel
+   in emit-const-type-elems buf (c.len) vaddr tys (i + 1) n (list-push acc (c.off)) fuel
+
+  emit-const-typelist : Integer, Integer, Integer, List CodexType, Integer -> ConstEmit
+  emit-const-typelist (buf) (len) (vaddr) (tys) (fuel) =
+   let r = emit-const-type-elems buf len vaddr tys 0 (list-length tys) [] fuel
+   in emit-const-ptr-list buf (r.len) vaddr (r.offs)
+
+  emit-const-field-elems : Integer, Integer, Integer, List RecordField, Integer, Integer, List Integer, Integer -> ConstList
+  emit-const-field-elems (buf) (len) (vaddr) (flds) (i) (n) (acc) (fuel) =
+   if i == n then ConstList { len = len, offs = acc }
+   else let c = emit-const-recordfield buf len vaddr (list-at flds i) fuel
+   in emit-const-field-elems buf (c.len) vaddr flds (i + 1) n (list-push acc (c.off)) fuel
+
+  emit-const-fieldlist : Integer, Integer, Integer, List RecordField, Integer -> ConstEmit
+  emit-const-fieldlist (buf) (len) (vaddr) (flds) (fuel) =
+   let r = emit-const-field-elems buf len vaddr flds 0 (list-length flds) [] fuel
+   in emit-const-ptr-list buf (r.len) vaddr (r.offs)
+
+  emit-const-ctor-elems : Integer, Integer, Integer, List SumCtor, Integer, Integer, List Integer, Integer -> ConstList
+  emit-const-ctor-elems (buf) (len) (vaddr) (cts) (i) (n) (acc) (fuel) =
+   if i == n then ConstList { len = len, offs = acc }
+   else let c = emit-const-sumctor buf len vaddr (list-at cts i) fuel
+   in emit-const-ctor-elems buf (c.len) vaddr cts (i + 1) n (list-push acc (c.off)) fuel
+
+  emit-const-ctorlist : Integer, Integer, Integer, List SumCtor, Integer -> ConstEmit
+  emit-const-ctorlist (buf) (len) (vaddr) (cts) (fuel) =
+   let r = emit-const-ctor-elems buf len vaddr cts 0 (list-length cts) [] fuel
+   in emit-const-ptr-list buf (r.len) vaddr (r.offs)
+
+  emit-const-typebinding : Integer, Integer, Integer, TypeBinding -> ConstEmit
+  emit-const-typebinding (buf) (len) (vaddr) (tb) =
+   let bt = emit-const-codextype-top buf len vaddr (tb.bound-type)
+   in let nm = emit-const-text buf (bt.len) (tb.name)
+   in let p1 = buf-write-i64 buf (nm.len) (vaddr + nm.off)
+   in ConstEmit { len = buf-write-i64 buf p1 (vaddr + bt.off), off = nm.len }
+
+  is-record-or-sum : CodexType -> Boolean
+  is-record-or-sum (ty) =
+   when ty
+    is RecordTy (n) (a) (f) | SumTy (sn) (sa) (sc) -> True
+    is otherwise -> False
+
+  emit-const-binding-elems : Integer, Integer, Integer, List TypeBinding, Integer, Integer, List Integer -> ConstList
+  emit-const-binding-elems (buf) (len) (vaddr) (bs) (i) (n) (acc) =
+   if i == n then ConstList { len = len, offs = acc }
+   else let c = emit-const-typebinding buf len vaddr (list-at bs i)
+   in emit-const-binding-elems buf (c.len) vaddr bs (i + 1) n (list-push acc (c.off))
+
+  name-in-set : Text, List Text, Integer, Integer -> Boolean
+  name-in-set (nm) (names) (i) (n) =
+   if i == n then False
+   else if (list-at names i) == nm then True
+   else name-in-set nm names (i + 1) n
+
+  filter-by-names : List TypeBinding, List Text, Integer, Integer, List TypeBinding -> List TypeBinding
+  filter-by-names (bs) (names) (i) (n) (acc) =
+   if i == n then acc
+   else let b = list-at bs i
+   in let resolved = resolve-constructed-raw-ty (b.bound-type)
+   in if name-in-set (b.name) names 0 (list-length names) & is-record-or-sum resolved
+      then filter-by-names bs names (i + 1) n (list-push acc (__record-set b "bound-type" resolved))
+      else filter-by-names bs names (i + 1) n acc
+
+  resolve-constructed-raw-ty : CodexType -> CodexType
+  resolve-constructed-raw-ty (raw) =
+   when raw
+    is RecordTy (rn) (ra) (rf) | SumTy (sn) (sa) (sc) -> raw
+    is FunTy (p) (r) -> strip-fun-args-emitter r
+    is otherwise -> raw
+
+  collect-ctd-in-tylist : List CodexType, Integer, Integer, List Text -> List Text
+  collect-ctd-in-tylist (tys) (i) (n) (acc) =
+   if i == n then acc
+   else collect-ctd-in-tylist tys (i + 1) n (collect-ctd-in-type (list-at tys i) acc)
+
+  collect-ctd-in-fields : List RecordField, Integer, Integer, List Text -> List Text
+  collect-ctd-in-fields (fields) (i) (n) (acc) =
+   if i == n then acc
+   else let f = list-at fields i
+   in collect-ctd-in-fields fields (i + 1) n (collect-ctd-in-type (f.type-val) acc)
+
+  collect-ctd-in-ctors : List SumCtor, Integer, Integer, List Text -> List Text
+  collect-ctd-in-ctors (ctors) (i) (n) (acc) =
+   if i == n then acc
+   else let c = list-at ctors i
+   in collect-ctd-in-ctors ctors (i + 1) n (collect-ctd-in-tylist (c.fields) 0 (list-length (c.fields)) acc)
+
+  collect-ctd-in-type : CodexType, List Text -> List Text
+  collect-ctd-in-type (ty) (acc) =
+   when ty
+    is ConstructedTy (cn) (ca) -> collect-ctd-in-tylist ca 0 (list-length ca) (list-push acc (cn.value))
+    is RecordTy (n) (a) (fields) | SumTy (n) (a) (ctors) -> list-push acc (n.value)
+    is ListTy (e) | LinkedListTy (e) -> collect-ctd-in-type e acc
+    is ForAllTy (i) (b) -> collect-ctd-in-type b acc
+    is EffectfulTy (ef) (s) (r) -> collect-ctd-in-type r acc
+    is FunTy (p) (r) -> collect-ctd-in-type r (collect-ctd-in-type p acc)
+    is otherwise -> acc
+
+  collect-ctd-roots : CodexType, List Text -> List Text
+  collect-ctd-roots (ty) (acc) =
+   when ty
+    is RecordTy (n) (a) (fields) -> collect-ctd-in-fields fields 0 (list-length fields) acc
+    is SumTy (n) (a) (ctors) -> collect-ctd-in-ctors ctors 0 (list-length ctors) acc
+    is otherwise -> collect-ctd-in-type ty acc
+
+  reach-names : List TypeBinding, Text, List Text, Integer -> List Text
+  reach-names (defs) (nm) (seen) (fuel) =
+   if fuel <= 0 then seen
+   else if name-in-set nm seen 0 (list-length seen) then seen
+   else let seen1 = list-push seen nm
+   in let resolved = resolve-constructed-raw-ty (lookup-type-binding defs nm)
+   in if is-record-or-sum resolved
+      then let refs = collect-ctd-roots resolved []
+           in reach-names-list defs refs 0 (list-length refs) seen1 (fuel - 1)
+      else seen1
+
+  reach-names-list : List TypeBinding, List Text, Integer, Integer, List Text, Integer -> List Text
+  reach-names-list (defs) (refs) (i) (n) (seen) (fuel) =
+   if i == n then seen
+   else if fuel <= 0 then seen
+   else let seen2 = reach-names defs (list-at refs i) seen (fuel - 1)
+   in reach-names-list defs refs (i + 1) n seen2 (fuel - 1)
+
+  emit-self-type-table : Integer, Integer, Integer, List TypeBinding -> ConstEmit
+  emit-self-type-table (buf) (len) (vaddr) (type-defs) =
+   let roots = ["PmTestRec", "Document", "AChapter"]
+   in let names = reach-names-list type-defs roots 0 (list-length roots) [] 100000
+   in let filtered = filter-by-names type-defs names 0 (list-length type-defs) []
+   in let sorted = sort-type-bindings filtered 0 0 []
+   in let r = emit-const-binding-elems buf len vaddr sorted 0 (list-length sorted) []
+   in emit-const-ptr-list buf (r.len) vaddr (r.offs)
+
+  record-field-sort-keys : List RecordField, Integer, List Text -> List Text
+  record-field-sort-keys (fields) (i) (acc) =
+   if i == list-length fields then acc
+   else let f = list-at fields i
+   in record-field-sort-keys fields (i + 1) (list-push acc (field-sort-key f))
+
+  field-local-names : List FieldLocal, Integer, List Text -> List Text
+  field-local-names (fls) (i) (acc) =
+   if i == list-length fls then acc
+   else let fl = list-at fls i
+   in field-local-names fls (i + 1) (list-push acc (fl.name))
+
+  LayoutResult = record {
+   offsets : List Integer,
+   byte-size : Integer between 0 and 65535
+  }
+
+  build-cce-byte-offsets : List RecordField, SkipListText, Integer -> LayoutResult
+  build-cce-byte-offsets (fields) (sorted) (n) =
+   let widths-by-rank = build-widths-by-rank fields sorted 0 n (replicate-int n 0)
+   in cumsum-widths widths-by-rank 0 0 []
+
+  build-widths-by-rank : List RecordField, SkipListText, Integer, Integer, List Integer -> List Integer
+  build-widths-by-rank (fields) (sorted) (i) (n) (acc) =
+   if i == n then acc
+   else let f = list-at fields i
+   in let rank = skip-list-text-rank-of sorted (field-sort-key f)
+   in let w = field-byte-width (f.type-val)
+   in build-widths-by-rank fields sorted (i + 1) n (list-set-at acc rank w)
+
+  cumsum-widths : List Integer, Integer, Integer, List Integer -> LayoutResult
+  cumsum-widths (widths) (i) (acc-sum) (offsets) =
+   if i == list-length widths then LayoutResult { offsets = offsets, byte-size = acc-sum }
+   else let w = list-at widths i
+   in cumsum-widths widths (i + 1) (acc-sum + w) (list-push offsets acc-sum)
+
+  emit-eval-record-fields : CodegenState, List IRFieldVal, Integer, List FieldLocal -> EvalFieldsResult
+  emit-eval-record-fields (st) (fields) (i) (acc) =
+   if i == list-length fields then EvalFieldsResult {
+   state = st,
+    field-locals = acc
+  }
+   else let fv = list-at fields i
+   in let r = emit-expr st (fv.value)
+   in let loc = alloc-local (r.state)
+   in let st1 = store-local (loc.state) (loc.reg) (r.reg)
+   in emit-eval-record-fields st1 fields (i + 1) (list-push acc (FieldLocal {
+    name = fv.name,
+    slot = loc.reg,
+    value-expr = fv.value
+   }))
+
+  find-field-local-slot : List FieldLocal, Text, Integer -> Integer
+  find-field-local-slot (fls) (name) (i) =
+   if i == list-length fls then -1
+   else let fl = list-at fls i
+   in if fl.name == name then fl.slot
+      else find-field-local-slot fls name (i + 1)
+
+  find-field-local-expr : List FieldLocal, Text, Integer -> IRExpr
+  find-field-local-expr (fls) (name) (i) =
+   if i == list-length fls then IrIntLit 0 synthetic-span
+   else let fl = list-at fls i
+   in if fl.name == name then fl.value-expr
+      else find-field-local-expr fls name (i + 1)
+
+  emit-store-record-fields-by-type : CodegenState, List RecordField, List FieldLocal, SkipListText, List Integer, Integer, Integer -> CodegenState
+  emit-store-record-fields-by-type (st) (type-fields) (field-locals) (sorted) (offsets) (ptr-loc) (i) =
+   if i == list-length type-fields then st
+   else let tf = list-at type-fields i
+   in let slot = find-field-local-slot field-locals (tf.name.value) 0
+   in if slot >= 0 then let val = load-local st slot
+   in let ptr = load-local (val.state) ptr-loc
+   in let rank = skip-list-text-rank-of sorted (field-sort-key tf)
+   in let offset = list-at offsets rank
+   in let val-ir = find-field-local-expr field-locals (tf.name.value) 0
+   in let st1 = emit-narrow-store-proven (ptr.state) (tf.type-val) (ptr.reg) (val.reg) offset val-ir
+   in emit-store-record-fields-by-type st1 type-fields field-locals sorted offsets ptr-loc (i + 1)
+     else emit-store-record-fields-by-type st type-fields field-locals sorted offsets ptr-loc (i + 1)
+
+  emit-store-record-fields-by-list : CodegenState, List FieldLocal, SkipListText, Integer, Integer -> CodegenState
+  emit-store-record-fields-by-list (st) (field-locals) (sorted) (ptr-loc) (i) =
+   if i == list-length field-locals then st
+   else let fl = list-at field-locals i
+   in let val = load-local st (fl.slot)
+   in let ptr = load-local (val.state) ptr-loc
+   in let offset = skip-list-text-rank-of sorted (fl.name) * 8
+   in let st1 = st-append-code (ptr.state) (mov-store (ptr.reg) (val.reg) offset)
+   in emit-store-record-fields-by-list st1 field-locals sorted ptr-loc (i + 1)
+
+  emit-record : CodegenState, List IRFieldVal, CodexType -> EmitResult
+  emit-record (st) (fields) (ty) =
+   let evaled = emit-eval-record-fields (st-set-tail-pos st False) fields 0 []
+   in let resolved-ty = resolve-constructed-ty st ty
+   in let layout-pair = when resolved-ty
+    is RecordTy (rname) (rargs) (type-fields) ->
+     let sorted = skip-list-text-from-list (record-field-sort-keys type-fields 0 [])
+     in let layout = build-cce-byte-offsets type-fields sorted (list-length type-fields)
+     in RecordLayoutPair { sorted = sorted, layout = layout, by-list = False }
+    is otherwise ->
+     let sorted = skip-list-text-from-list (field-local-names (evaled.field-locals) 0 [])
+     in let n = list-length (evaled.field-locals)
+     in RecordLayoutPair { sorted = sorted, layout = LayoutResult { offsets = [], byte-size = n * 8 }, by-list = True }
+   in let total-size = round-up-to-8 (layout-pair.layout.byte-size)
+   in let alloc = emit-bivy-alloc (evaled.state) total-size
+   in let st4 = when resolved-ty
+    is RecordTy (rname) (rargs) (type-fields) ->
+     emit-store-record-fields-by-type (alloc.state) type-fields (evaled.field-locals) (layout-pair.sorted) (layout-pair.layout.offsets) (alloc.ptr-loc) 0
+    is otherwise ->
+     emit-store-record-fields-by-list (alloc.state) (evaled.field-locals) (layout-pair.sorted) (alloc.ptr-loc) 0
+   in load-local st4 (alloc.ptr-loc)
+
+  RecordLayoutPair = record {
+   sorted : SkipListText,
+   layout : LayoutResult,
+   by-list : Boolean
+  }
+
+  emit-deck-record-wrapper : CodegenState, List IRExpr -> EmitResult
+  emit-deck-record-wrapper (st) (args) =
+   let arg = list-at args 0
+   in let enter = emit-deck-enter-builtin st
+   in let r = emit-expr (st-set-tail-pos (enter.state) False) arg
+   in let save-loc = alloc-local (r.state)
+   in let st-save = store-local (save-loc.state) (save-loc.reg) (r.reg)
+   in let exit = emit-deck-exit-builtin st-save
+   in load-local (exit.state) (save-loc.reg)
+
+  emit-deck-bump : CodegenState, Integer, Integer -> CodegenState
+  emit-deck-bump (st) (ptr-reg) (size) =
+   let addr-tmp = alloc-temp st
+   in let st1 = st-append-code (addr-tmp.state) (li (addr-tmp.reg) deck-pos-addr)
+   in let st2 = st-append-code st1 (mov-load ptr-reg (addr-tmp.reg) 0)
+   in let new-tmp = alloc-temp st2
+   in let st3 = st-append-code (new-tmp.state) (mov-rr (new-tmp.reg) ptr-reg)
+   in let st4 = st-append-code st3 (add-ri (new-tmp.reg) size)
+   in st-append-code st4 (mov-store (addr-tmp.reg) (new-tmp.reg) 0)
+
+  emit-field-access : CodegenState, IRExpr, Text -> EmitResult
+  emit-field-access (st) (rec-expr) (field-name) =
+   let rec-ty = resolve-constructed-ty st (ir-expr-type rec-expr)
+   in let rec-result = emit-expr (st-set-tail-pos st False) rec-expr
+   in when rec-ty
+    is RecordTy (rname) (rargs) (rfields) ->
+     let fot = cce-byte-offset-and-type rfields field-name
+     in let width = field-byte-width (fot.type-val)
+     in let signed = field-byte-signed (fot.type-val)
+     in let rd = alloc-temp (rec-result.state)
+     in EmitResult {
+      state = st-append-code (rd.state) (emit-narrow-load width signed (rd.reg) (rec-result.reg) (fot.offset)),
+      reg = rd.reg
+     }
+    is otherwise ->
+     let st-err = st-add-error (rec-result.state) cdx-ir-error ("emit-field-access: unresolved type for field '" & field-name & "'") (ir-expr-span rec-expr)
+     in let rd = alloc-temp st-err
+     in EmitResult {
+      state = st-append-code (rd.state) [15, 11],
+      reg = rd.reg
+     }
+
+Section: Pattern Matching
+  emit-match : CodegenState, IRExpr, List IRBranch -> EmitResult
+  emit-match (st) (scrut-expr) (branches) =
+   let saved-tail = st.tco.in-tail-pos
+   in let scrut-ty = resolve-constructed-ty st (ir-expr-type scrut-expr)
+   in let scrut-result = emit-expr (st-set-tail-pos st False) scrut-expr
+   in let scrut-loc = alloc-local (scrut-result.state)
+   in let st1 = store-local (scrut-loc.state) (scrut-loc.reg) (scrut-result.reg)
+   in let st1a = st-set-tail-pos st1 saved-tail
+   in let result-loc = alloc-local st1a
+   in let mbs = MatchBranchState {
+    cg-state = st1a,
+    end-patches = []
+  }
+   in let mbs-final = emit-match-branch-loop mbs (scrut-loc.reg) (result-loc.reg) branches 0 (list-length branches) scrut-ty
+   in let st-end = patch-match-end-jumps (mbs-final.cg-state) (mbs-final.end-patches) 0
+   in load-local st-end (result-loc.reg)
+
+  emit-match-branch-loop : MatchBranchState, Integer, Integer, List IRBranch, Integer, Integer, CodexType -> MatchBranchState
+  emit-match-branch-loop (mbs) (scrut-loc) (result-loc) (branches) (i) (total) (scrut-ty) =
+   if i == total then mbs
+   else let b = list-at branches i
+   in let mbs1 = emit-one-match-branch mbs scrut-loc result-loc b (i < total - 1) scrut-ty
+   in emit-match-branch-loop mbs1 scrut-loc result-loc branches (i + 1) total scrut-ty
+
+  emit-one-match-branch : MatchBranchState, Integer, Integer, IRBranch, Boolean, CodexType -> MatchBranchState
+  emit-one-match-branch (mbs) (scrut-loc) (result-loc) (branch) (needs-jmp-end) (scrut-ty) =
+   let sv-local = mbs.cg-state.next-local
+   in let sv-spill = mbs.cg-state.spill-count
+   in let pat-result = emit-pattern (mbs.cg-state) scrut-loc (branch.pattern) scrut-ty
+   in let guard-result = emit-match-guard (pat-result.state) (branch.guard)
+   in let body-result = emit-expr (guard-result.state) (branch.body)
+   in let st1s = store-local (body-result.state) result-loc (body-result.reg)
+   in let st1 = __record-set (__record-set st1s "next-local" sv-local) "spill-count" sv-spill
+   in let st2 = if needs-jmp-end then let jmp-pos = st1.code-len
+   in MatchBranchState {
+      cg-state = st-append-code st1 (jmp 0),
+      end-patches = list-push (mbs.end-patches) jmp-pos
+     }
+    else MatchBranchState {
+     cg-state = st1,
+     end-patches = mbs.end-patches
+    }
+   in let st3 = if pat-result.next-branch-patch >= 0 then MatchBranchState {
+     cg-state = patch-jcc-at (st2.cg-state) (pat-result.next-branch-patch) (st2.cg-state.code-len),
+     end-patches = st2.end-patches
+    }
+    else st2
+   in if guard-result.guard-patch >= 0 then MatchBranchState {
+     cg-state = patch-jcc-at (st3.cg-state) (guard-result.guard-patch) (st3.cg-state.code-len),
+     end-patches = st3.end-patches
+    }
+    else st3
+
+  GuardResult = record {
+   state : CodegenState,
+   guard-patch : Integer
+  }
+
+  emit-match-guard : CodegenState, IRExpr -> GuardResult
+  emit-match-guard (st) (guard) =
+   when guard
+    is IrBoolLit (v) (sp) ->
+     if v then GuardResult { state = st, guard-patch = -1 }
+     else let patch-pos = st.code-len
+          in let st1 = st-append-code st (jmp 0)
+          in GuardResult { state = st1, guard-patch = patch-pos }
+    is otherwise ->
+     let gr = emit-expr st guard
+     in let st1 = st-append-code (gr.state) (cmp-ri (gr.reg) 0)
+     in let patch-pos = st1.code-len
+     in let st2 = st-append-code st1 (jcc cc-e 0)
+     in GuardResult { state = st2, guard-patch = patch-pos }
+
+  EmitPatternResult = record {
+   state : CodegenState,
+   next-branch-patch : Integer
+  }
+
+  emit-pattern : CodegenState, Integer, IRPat, CodexType -> EmitPatternResult
+  emit-pattern (st) (scrut-loc) (pat) (scrut-ty) =
+   when pat
+    is IrWildPat (sp) -> EmitPatternResult {
+     state = st,
+     next-branch-patch = -1
+    }
+    is IrVarPat (name) (ty) (sp) ->
+     let var-loc = alloc-local st
+     in let loaded = load-local (var-loc.state) scrut-loc
+     in let st1 = store-local (loaded.state) (var-loc.reg) (loaded.reg)
+     in EmitPatternResult {
+      state = add-local st1 name (var-loc.reg),
+      next-branch-patch = -1
+     }
+    is IrCtorPat (name) (sub-pats) (ty) (sp) ->
+     let scrut-load = load-local st scrut-loc
+     in let tag-reg = alloc-temp (scrut-load.state)
+     in let st1 = st-append-code (tag-reg.state) (mov-load (tag-reg.reg) (scrut-load.reg) 0)
+     in let resolve-ty = when scrut-ty
+      is SumTy (sn) (sa) (cs) -> scrut-ty
+      is otherwise -> resolve-constructed-ty st ty
+     in let expected-tag = when resolve-ty
+      is SumTy (sname) (args) (ctors) -> find-ctor-tag ctors name 0
+      is otherwise -> 0
+     in let st2 = st-append-code st1 (cmp-ri (tag-reg.reg) expected-tag)
+     in let jcc-pos = st2.code-len
+     in let st3 = st-append-code st2 (jcc cc-ne 0)
+     in let st4 = bind-ctor-fields st3 scrut-loc sub-pats 0
+     in EmitPatternResult {
+      state = st4,
+      next-branch-patch = jcc-pos
+     }
+    is IrLitPat (value) (ty) (sp) ->
+     let int-value = lit-text-to-integer value
+     in let scrut-load = load-local st scrut-loc
+     in let st1 = st-append-code (scrut-load.state) (cmp-ri (scrut-load.reg) int-value)
+     in let jcc-pos = st1.code-len
+     in let st2 = st-append-code st1 (jcc cc-ne 0)
+     in EmitPatternResult {
+      state = st2,
+      next-branch-patch = jcc-pos
+     }
+    is IrVecPat (sub-pats) (ty) (sp) ->
+     let result-loc = alloc-local st
+     in let acc-reg = alloc-temp (result-loc.state)
+     in let st1 = st-append-code (acc-reg.state) (li (acc-reg.reg) 1)
+     in let st2 = store-local st1 (result-loc.reg) (acc-reg.reg)
+     in let st3 = emit-vec-lane-checks st2 scrut-loc sub-pats (result-loc.reg) 0 (list-length sub-pats)
+     in let res-load = load-local st3 (result-loc.reg)
+     in let st4 = st-append-code (res-load.state) (cmp-ri (res-load.reg) 0)
+     in let jcc-pos = st4.code-len
+     in let st5 = st-append-code st4 (jcc cc-e 0)
+     in EmitPatternResult {
+      state = st5,
+      next-branch-patch = jcc-pos
+     }
+
+  emit-vec-lane-checks : CodegenState, Integer, List IRPat, Integer, Integer, Integer -> CodegenState
+  emit-vec-lane-checks (st) (scrut-loc) (pats) (result-loc) (i) (n) =
+   if i >= n then st
+   else let sub = list-at pats i
+   in when sub
+    is IrLitPat (value) (ty) (sp) ->
+     let int-value = lit-text-to-integer value
+     in let scrut-load = load-local st scrut-loc
+     in let lane-reg = alloc-temp (scrut-load.state)
+     in let st1 = st-append-code (lane-reg.state) (mov-load (lane-reg.reg) (scrut-load.reg) (i * 8))
+     in let st2 = st-append-code st1 (cmp-ri (lane-reg.reg) int-value)
+     in let eq-reg = alloc-temp st2
+     in let st3 = st-append-code (eq-reg.state) (setcc cc-e (eq-reg.reg))
+     in let st4 = st-append-code st3 (movzx-byte-self (eq-reg.reg))
+     in let acc-load = load-local st4 result-loc
+     in let st5 = st-append-code (acc-load.state) (and-rr (acc-load.reg) (eq-reg.reg))
+     in let st6 = store-local st5 result-loc (acc-load.reg)
+     in emit-vec-lane-checks st6 scrut-loc pats result-loc (i + 1) n
+    is IrVarPat (name) (ty) (sp) ->
+     let var-loc = alloc-local st
+     in let scrut-load = load-local (var-loc.state) scrut-loc
+     in let lane-reg = alloc-temp (scrut-load.state)
+     in let st1 = st-append-code (lane-reg.state) (mov-load (lane-reg.reg) (scrut-load.reg) (i * 8))
+     in let st2 = store-local st1 (var-loc.reg) (lane-reg.reg)
+     in emit-vec-lane-checks (add-local st2 name (var-loc.reg)) scrut-loc pats result-loc (i + 1) n
+    is IrWildPat (sp) -> emit-vec-lane-checks st scrut-loc pats result-loc (i + 1) n
+    is otherwise -> emit-vec-lane-checks st scrut-loc pats result-loc (i + 1) n
+
+  bind-ctor-fields : CodegenState, Integer, List IRPat, Integer -> CodegenState
+  bind-ctor-fields (st) (scrut-loc) (sub-pats) (i) =
+   if i == list-length sub-pats then st
+   else let sub = list-at sub-pats i
+   in when sub
+     is IrVarPat (name) (ty) (sp) ->
+      let field-loc = alloc-local st
+   in let scrut-load = load-local (field-loc.state) scrut-loc
+   in let field-val = alloc-temp (scrut-load.state)
+   in let st1 = st-append-code (field-val.state) (mov-load (field-val.reg) (scrut-load.reg) ((1 + i) * 8))
+   in let st2 = store-local st1 (field-loc.reg) (field-val.reg)
+   in bind-ctor-fields (add-local st2 name (field-loc.reg)) scrut-loc sub-pats (i + 1)
+     is otherwise -> bind-ctor-fields st scrut-loc sub-pats (i + 1)
+
+  patch-match-end-jumps : CodegenState, List Integer, Integer -> CodegenState
+  patch-match-end-jumps (st) (patches) (i) =
+   if i == list-length patches then st
+   else patch-match-end-jumps (patch-jmp-at st (list-at patches i) (st.code-len)) patches (i + 1)
+
+Section: List Emission
+  emit-eval-list-elems : CodegenState, List IRExpr, Integer, List Integer -> SavedArgs
+  emit-eval-list-elems (st) (elems) (i) (acc) =
+   if i == list-length elems then SavedArgs {
+   state = st,
+   locals = acc
+  }
+   else let r = emit-expr st (list-at elems i)
+   in let loc = alloc-local (r.state)
+   in let st1 = store-local (loc.state) (loc.reg) (r.reg)
+   in emit-eval-list-elems st1 elems (i + 1) (list-push acc (loc.reg))
+
+  emit-store-list-elems : CodegenState, List Integer, Integer, Integer -> CodegenState
+  emit-store-list-elems (st) (elem-locals) (ptr-loc) (i) =
+   if i == list-length elem-locals then st
+   else let val = load-local st (list-at elem-locals i)
+   in let ptr = load-local (val.state) ptr-loc
+   in let st1 = st-append-code (ptr.state) (mov-store (ptr.reg) (val.reg) (8 + i * 8))
+   in emit-store-list-elems st1 elem-locals ptr-loc (i + 1)
+
+  emit-list : CodegenState, List IRExpr -> EmitResult
+  emit-list (st) (elems) =
+   let saved = emit-eval-list-elems (st-set-tail-pos st False) elems 0 []
+   in let count = list-length elems
+   in emit-list-bivy (saved.state) (saved.locals) count
+
+  emit-list-bivy : CodegenState, List Integer, Integer -> EmitResult
+  emit-list-bivy (st) (locals) (count) =
+   let cap-tmp = alloc-temp st
+   in let st1 = st-append-code (cap-tmp.state) (li (cap-tmp.reg) count)
+   in let st2 = st-append-code st1 (mov-store reg-r10 (cap-tmp.reg) 0)
+   in let st3 = st-append-code st2 (add-ri reg-r10 8)
+   in let alloc = emit-bivy-alloc st3 ((count + 1) * 8)
+   in let len-tmp = alloc-temp (alloc.state)
+   in let st7 = st-append-code (len-tmp.state) (li (len-tmp.reg) count)
+   in let ptr-load = load-local st7 (alloc.ptr-loc)
+   in let st8 = st-append-code (ptr-load.state) (mov-store (ptr-load.reg) (len-tmp.reg) 0)
+   in let st9 = emit-store-list-elems st8 locals (alloc.ptr-loc) 0
+   in load-local st9 (alloc.ptr-loc)
+
+  emit-list-deck : CodegenState, List Integer, Integer -> EmitResult
+  emit-list-deck (st) (locals) (count) =
+   let addr-tmp = alloc-temp st
+   in let st0 = st-append-code (addr-tmp.state) (li (addr-tmp.reg) deck-pos-addr)
+   in let deckp-tmp = alloc-temp st0
+   in let st1 = st-append-code (deckp-tmp.state) (mov-load (deckp-tmp.reg) (addr-tmp.reg) 0)
+   in let cap-tmp = alloc-temp st1
+   in let st2 = st-append-code (cap-tmp.state) (li (cap-tmp.reg) count)
+   in let st3 = st-append-code st2 (mov-store (deckp-tmp.reg) (cap-tmp.reg) 0)
+   in let st4 = st-append-code st3 (add-ri (deckp-tmp.reg) 8)
+   in let ptr-loc = alloc-local st4
+   in let ptr-tmp = alloc-temp (ptr-loc.state)
+   in let st5 = st-append-code (ptr-tmp.state) (mov-rr (ptr-tmp.reg) (deckp-tmp.reg))
+   in let st6 = store-local st5 (ptr-loc.reg) (ptr-tmp.reg)
+   in let st7 = st-append-code st6 (add-ri (deckp-tmp.reg) ((count + 1) * 8))
+   in let st8 = st-append-code st7 (mov-store (addr-tmp.reg) (deckp-tmp.reg) 0)
+   in let len-tmp = alloc-temp st8
+   in let st9 = st-append-code (len-tmp.state) (li (len-tmp.reg) count)
+   in let ptr-load = load-local st9 (ptr-loc.reg)
+   in let st10 = st-append-code (ptr-load.state) (mov-store (ptr-load.reg) (len-tmp.reg) 0)
+   in let st11 = emit-store-list-elems st10 locals (ptr-loc.reg) 0
+   in load-local st11 (ptr-loc.reg)
+
+
+Page 5 of 10

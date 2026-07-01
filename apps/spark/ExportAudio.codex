@@ -1,0 +1,73 @@
+Chapter: ExportAudio
+  cites Spark chapter Mixer
+
+ Export mixed audio to raw PCM data suitable for WAV encoding
+ via the foreword encode modules. Converts fixed-point scale 1000
+ samples to 16-bit signed PCM range.
+
+ We say:
+
+Section: Types
+
+  AudioExport = record {
+    ae-left : List Integer,
+    ae-right : List Integer,
+    ae-length : Integer,
+    ae-sample-rate : Integer,
+    ae-channels : Integer
+  }
+
+Section: From Mixer
+
+  export-mix : MixerState, Integer -> AudioExport
+  export-mix (mx) (length) =
+    let result = mixer-render mx length
+    in AudioExport {
+      ae-left = result.mr-left,
+      ae-right = result.mr-right,
+      ae-length = result.mr-length,
+      ae-sample-rate = mx.mx-sample-rate,
+      ae-channels = 2
+    }
+
+Section: PCM Conversion
+
+  export-to-pcm16 : AudioExport -> List Integer
+  export-to-pcm16 (ae) = ae-pcm-loop (ae.ae-left) (ae.ae-right) (ae.ae-length) 0 []
+
+  ae-pcm-loop : List Integer, List Integer, Integer, Integer, List Integer -> List Integer
+  ae-pcm-loop (left) (right) (length) (i) (acc) =
+    if i >= length then acc
+    else let l = list-at left i
+    in let r = list-at right i
+    in let l16 = ae-to-pcm16 l
+    in let r16 = ae-to-pcm16 r
+    in ae-pcm-loop left right length (i + 1) (list-push (list-push acc l16) r16)
+
+  ae-to-pcm16 : Integer -> Integer
+  ae-to-pcm16 (sample) =
+    let scaled = sample * 32767 / 1000
+    in let clamped = if scaled > 32767 then 32767 else if scaled < -32768 then -32768 else scaled
+    in clamped
+
+Section: Statistics
+
+  export-audio-info : AudioExport -> Text
+  export-audio-info (ae) =
+    let dur-ms = if ae.ae-sample-rate == 0 then 0 else ae.ae-length * 1000 / ae.ae-sample-rate
+    in show (ae.ae-length) & " samples, " & show (ae.ae-sample-rate) & " Hz, " & show dur-ms & "ms"
+
+  export-audio-peak : AudioExport -> Integer
+  export-audio-peak (ae) = ae-peak-loop (ae.ae-left) (ae.ae-length) 0 0
+
+  ae-peak-loop : List Integer, Integer, Integer, Integer -> Integer
+  ae-peak-loop (samples) (length) (i) (best) =
+    if i >= length then best
+    else let val = ae-abs (list-at samples i)
+    in let new-best = if val > best then val else best
+    in ae-peak-loop samples length (i + 1) new-best
+
+  ae-abs : Integer -> Integer
+  ae-abs (n) = if n < 0 then -n else n
+
+Page 1

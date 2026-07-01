@@ -1,0 +1,317 @@
+Chapter: SafeTensors
+  cites AI chapter Tensor
+  cites Foreword chapter Maybe
+  cites Encode chapter Json
+
+ SafeTensors model file parser. Reads the header (JSON metadata)
+ and provides random-access tensor loading by name. Dequantizes
+ F16/BF16 to fixed-point (scale 1000). F32 conversion reuses
+ the same pattern as Gguf.codex.
+
+ Format:
+   [8 bytes: header length N, little-endian u64]
+   [N bytes: JSON header]
+   [remaining: raw tensor data, contiguous]
+
+ The JSON header maps tensor names to:
+   {"dtype": "F16"|"F32"|"BF16"|"I32"|"I8",
+    "shape": [dim0, dim1, ...],
+    "data_offsets": [start, end]}
+
+ Data offsets are relative to the first byte after the header.
+
+ We say:
+
+Section: Constants
+  st-dtype-f32 : Integer = 0
+  st-dtype-f16 : Integer = 1
+  st-dtype-bf16 : Integer = 2
+  st-dtype-i32 : Integer = 3
+  st-dtype-i8 : Integer = 4
+  st-dtype-unknown : Integer = 99
+
+Section: Types
+  SafeTensorFile = record {
+    st-header-len : Integer,
+    st-data-offset : Integer,
+    st-tensors : List StTensorMeta,
+    st-tensor-count : Integer,
+    st-valid : Boolean
+  }
+
+  StTensorMeta = record {
+    stm-name : Text,
+    stm-dtype : Integer,
+    stm-shape : List Integer,
+    stm-ndim : Integer,
+    stm-offset-start : Integer,
+    stm-offset-end : Integer
+  }
+
+Section: Byte Reading
+  st-read-u32 : List Integer, Integer -> Integer
+  st-read-u32 (data) (off) =
+    let b0 = list-at data off
+    in let b1 = bit-shl (list-at data (off + 1)) 8
+    in let b2 = bit-shl (list-at data (off + 2)) 16
+    in let b3 = bit-shl (list-at data (off + 3)) 24
+    in bit-or b0 (bit-or b1 (bit-or b2 b3))
+
+  st-read-u64 : List Integer, Integer -> Integer
+  st-read-u64 (data) (off) =
+    let lo = st-read-u32 data off
+    in let hi = st-read-u32 data (off + 4)
+    in lo + hi * 4294967296
+
+Section: Header Parsing
+  st-parse-file : List Integer -> SafeTensorFile
+  st-parse-file (data) =
+    if list-length data < 8 then SafeTensorFile { st-header-len = 0, st-data-offset = 0, st-tensors = [], st-tensor-count = 0, st-valid = False }
+    else let hlen = st-read-u64 data 0
+    in let data-off = 8 + hlen
+    in let header-text = st-extract-text data 8 hlen ""
+    in let parsed = json-parse header-text
+    in when parsed
+      is Just (jv) -> st-build-file hlen data-off jv
+      is None -> SafeTensorFile { st-header-len = hlen, st-data-offset = data-off, st-tensors = [], st-tensor-count = 0, st-valid = False }
+
+  st-build-file : Integer, Integer, JsonValue -> SafeTensorFile
+  st-build-file (hlen) (data-off) (jv) =
+    when jv
+      is JsonObject (pairs) ->
+        let tensors = st-parse-tensor-pairs pairs 0 (list-length pairs) []
+        in SafeTensorFile { st-header-len = hlen, st-data-offset = data-off, st-tensors = tensors, st-tensor-count = list-length tensors, st-valid = True }
+      is otherwise -> SafeTensorFile { st-header-len = hlen, st-data-offset = data-off, st-tensors = [], st-tensor-count = 0, st-valid = False }
+
+  st-parse-tensor-pairs : List JsonPair, Integer, Integer, List StTensorMeta -> List StTensorMeta
+  st-parse-tensor-pairs (pairs) (i) (len) (acc) =
+    if i >= len then acc
+    else let p = list-at pairs i
+    in if p.key == "__metadata__" then st-parse-tensor-pairs pairs (i + 1) len acc
+    else let meta = st-parse-one-tensor (p.key) (p.value)
+    in st-parse-tensor-pairs pairs (i + 1) len (list-push acc meta)
+
+  st-parse-one-tensor : Text, JsonValue -> StTensorMeta
+  st-parse-one-tensor (name) (v) =
+    let dtype = st-parse-dtype (json-get-str v "dtype" "F32")
+    in let shape = st-parse-shape (json-get v "shape")
+    in let offsets = st-parse-offsets (json-get v "data_offsets")
+    in StTensorMeta { stm-name = name, stm-dtype = dtype, stm-shape = shape.st-dims, stm-ndim = shape.st-ndim, stm-offset-start = offsets.st-off-start, stm-offset-end = offsets.st-off-end }
+
+Section: Dtype Parsing
+  st-parse-dtype : Text -> Integer
+  st-parse-dtype (s) =
+    if s == "F32" then st-dtype-f32
+    else if s == "F16" then st-dtype-f16
+    else if s == "BF16" then st-dtype-bf16
+    else if s == "I32" then st-dtype-i32
+    else if s == "I8" then st-dtype-i8
+    else st-dtype-unknown
+
+Section: Shape Parsing
+  StShape = record { st-dims : List Integer, st-ndim : Integer }
+
+  st-parse-shape : Maybe JsonValue -> StShape
+  st-parse-shape (mv) =
+    when mv
+      is Just (jv) ->
+        when jv
+          is JsonArray (items) -> StShape { st-dims = st-extract-ints items 0 (list-length items) [], st-ndim = list-length items }
+          is otherwise -> StShape { st-dims = [], st-ndim = 0 }
+      is None -> StShape { st-dims = [], st-ndim = 0 }
+
+  st-extract-ints : List JsonValue, Integer, Integer, List Integer -> List Integer
+  st-extract-ints (items) (i) (len) (acc) =
+    if i >= len then acc
+    else let v = list-at items i
+    in let n = when v
+        is JsonInt (x) -> x
+        is otherwise -> 0
+    in st-extract-ints items (i + 1) len (list-push acc n)
+
+Section: Offset Parsing
+  StOffsets = record { st-off-start : Integer, st-off-end : Integer }
+
+  st-parse-offsets : Maybe JsonValue -> StOffsets
+  st-parse-offsets (mv) =
+    when mv
+      is Just (jv) ->
+        when jv
+          is JsonArray (items) ->
+            if list-length items >= 2 then
+              let s = list-at items 0
+              in let e = list-at items 1
+              in StOffsets { st-off-start = st-json-to-int s, st-off-end = st-json-to-int e }
+            else StOffsets { st-off-start = 0, st-off-end = 0 }
+          is otherwise -> StOffsets { st-off-start = 0, st-off-end = 0 }
+      is None -> StOffsets { st-off-start = 0, st-off-end = 0 }
+
+  st-json-to-int : JsonValue -> Integer
+  st-json-to-int (v) =
+    when v
+      is JsonInt (n) -> n
+      is otherwise -> 0
+
+Section: Text Extraction
+  st-extract-text : List Integer, Integer, Integer, Text -> Text
+  st-extract-text (data) (off) (remaining) (acc) =
+    if remaining <= 0 then acc
+    else if off >= list-length data then acc
+    else let b = list-at data off
+    in st-extract-text data (off + 1) (remaining - 1) (acc & char-to-text (code-to-char (from-unicode b)))
+
+Section: Tensor Lookup
+  st-find-tensor : SafeTensorFile, Text -> Maybe StTensorMeta
+  st-find-tensor (file) (name) = st-find-in-list (file.st-tensors) name 0 (file.st-tensor-count)
+
+  st-find-in-list : List StTensorMeta, Text, Integer, Integer -> Maybe StTensorMeta
+  st-find-in-list (tensors) (name) (i) (len) =
+    if i >= len then None
+    else let t = list-at tensors i
+    in if t.stm-name == name then Just t
+    else st-find-in-list tensors name (i + 1) len
+
+Section: Tensor Loading (F32)
+  st-load-f32 : List Integer, SafeTensorFile, StTensorMeta -> Tensor
+  st-load-f32 (data) (file) (meta) =
+    let abs-start = file.st-data-offset + meta.stm-offset-start
+    in let elements = st-element-count meta
+    in let values = st-read-f32-loop data abs-start elements 0 []
+    in let rows = if meta.stm-ndim >= 1 then list-at (meta.stm-shape) 0 else 1
+    in let cols = if meta.stm-ndim >= 2 then list-at (meta.stm-shape) 1 else elements
+    in tensor-from rows cols values
+
+  st-read-f32-loop : List Integer, Integer, Integer, Integer, List Integer -> List Integer
+  st-read-f32-loop (data) (off) (count) (i) (acc) =
+    if i >= count then acc
+    else let raw = st-read-u32 data (off + i * 4)
+    in let val = st-f32-to-fixed raw
+    in st-read-f32-loop data off count (i + 1) (list-push acc val)
+
+  st-f32-to-fixed : Integer -> Integer
+  st-f32-to-fixed (raw) =
+    let sign = bit-and (bit-shru raw 31) 1
+    in let exp = bit-and (bit-shru raw 23) 255
+    in let mant = bit-and raw 8388607
+    in if exp == 0 then 0
+    else let frac = 8388608 + mant
+    in let val = frac * 1000 / 8388608
+    in let e = exp - 127
+    in let shifted = if e >= 0 then val * st-pow2 e else val / st-pow2 (-e)
+    in if sign == 1 then -shifted else shifted
+
+Section: Tensor Loading (F16)
+  st-load-f16 : List Integer, SafeTensorFile, StTensorMeta -> Tensor
+  st-load-f16 (data) (file) (meta) =
+    let abs-start = file.st-data-offset + meta.stm-offset-start
+    in let elements = st-element-count meta
+    in let values = st-read-f16-loop data abs-start elements 0 []
+    in let rows = if meta.stm-ndim >= 1 then list-at (meta.stm-shape) 0 else 1
+    in let cols = if meta.stm-ndim >= 2 then list-at (meta.stm-shape) 1 else elements
+    in tensor-from rows cols values
+
+  st-read-f16-loop : List Integer, Integer, Integer, Integer, List Integer -> List Integer
+  st-read-f16-loop (data) (off) (count) (i) (acc) =
+    if i >= count then acc
+    else let lo = list-at data (off + i * 2)
+    in let hi = list-at data (off + i * 2 + 1)
+    in let raw = bit-or lo (bit-shl hi 8)
+    in let val = st-f16-to-fixed raw
+    in st-read-f16-loop data off count (i + 1) (list-push acc val)
+
+  st-f16-to-fixed : Integer -> Integer
+  st-f16-to-fixed (h) =
+    let sign = bit-and (bit-shru h 15) 1
+    in let exp = bit-and (bit-shru h 10) 31
+    in let mant = bit-and h 1023
+    in if exp == 0 then 0
+    else if exp == 31 then if sign == 1 then 0 - 30000 else 30000
+    else let e = exp - 15
+    in let frac = 1024 + mant
+    in let val = frac * 1000 / 1024
+    in let shifted = if e >= 0 then val * st-pow2 e else val / st-pow2 (-e)
+    in if sign == 1 then -shifted else shifted
+
+Section: Tensor Loading (BF16)
+  st-load-bf16 : List Integer, SafeTensorFile, StTensorMeta -> Tensor
+  st-load-bf16 (data) (file) (meta) =
+    let abs-start = file.st-data-offset + meta.stm-offset-start
+    in let elements = st-element-count meta
+    in let values = st-read-bf16-loop data abs-start elements 0 []
+    in let rows = if meta.stm-ndim >= 1 then list-at (meta.stm-shape) 0 else 1
+    in let cols = if meta.stm-ndim >= 2 then list-at (meta.stm-shape) 1 else elements
+    in tensor-from rows cols values
+
+  st-read-bf16-loop : List Integer, Integer, Integer, Integer, List Integer -> List Integer
+  st-read-bf16-loop (data) (off) (count) (i) (acc) =
+    if i >= count then acc
+    else let lo = list-at data (off + i * 2)
+    in let hi = list-at data (off + i * 2 + 1)
+    in let raw = bit-or lo (bit-shl hi 8)
+    in let val = st-bf16-to-fixed raw
+    in st-read-bf16-loop data off count (i + 1) (list-push acc val)
+
+  st-bf16-to-fixed : Integer -> Integer
+  st-bf16-to-fixed (h) =
+    let sign = bit-and (bit-shru h 15) 1
+    in let exp = bit-and (bit-shru h 7) 255
+    in let mant = bit-and h 127
+    in if exp == 0 then 0
+    else let frac = 128 + mant
+    in let val = frac * 1000 / 128
+    in let e = exp - 127
+    in let shifted = if e >= 0 then val * st-pow2 e else val / st-pow2 (-e)
+    in if sign == 1 then -shifted else shifted
+
+Section: Auto-Load (dispatch on dtype)
+  st-load-tensor : List Integer, SafeTensorFile, StTensorMeta -> Tensor
+  st-load-tensor (data) (file) (meta) =
+    if meta.stm-dtype == st-dtype-f32 then st-load-f32 data file meta
+    else if meta.stm-dtype == st-dtype-f16 then st-load-f16 data file meta
+    else if meta.stm-dtype == st-dtype-bf16 then st-load-bf16 data file meta
+    else tensor-new 0 0
+
+  st-load-by-name : List Integer, SafeTensorFile, Text -> Tensor
+  st-load-by-name (data) (file) (name) =
+    let found = st-find-tensor file name
+    in when found
+      is Just (meta) -> st-load-tensor data file meta
+      is None -> tensor-new 0 0
+
+Section: Helpers
+  st-element-count : StTensorMeta -> Integer
+  st-element-count (meta) = st-product (meta.stm-shape) 0 (meta.stm-ndim) 1
+
+  st-product : List Integer, Integer, Integer, Integer -> Integer
+  st-product (dims) (i) (len) (acc) =
+    if i >= len then acc
+    else st-product dims (i + 1) len (acc * list-at dims i)
+
+  st-pow2 : Integer -> Integer
+  st-pow2 (n) = if n <= 0 then 1 else 2 * st-pow2 (n - 1)
+
+Section: Queries
+  format-st-file : SafeTensorFile -> Text
+  format-st-file (f) =
+    "header=" & show (f.st-header-len) & " tensors=" & show (f.st-tensor-count) & " valid=" & (if f.st-valid then "yes" else "no")
+
+  format-st-tensor : StTensorMeta -> Text
+  format-st-tensor (t) =
+    t.stm-name & " dtype=" & st-dtype-name (t.stm-dtype) & " shape=" & st-format-shape (t.stm-shape) 0 (t.stm-ndim) "" & " bytes=" & show (t.stm-offset-end - t.stm-offset-start)
+
+  st-dtype-name : Integer -> Text
+  st-dtype-name (d) =
+    if d == st-dtype-f32 then "F32"
+    else if d == st-dtype-f16 then "F16"
+    else if d == st-dtype-bf16 then "BF16"
+    else if d == st-dtype-i32 then "I32"
+    else if d == st-dtype-i8 then "I8"
+    else "unknown"
+
+  st-format-shape : List Integer, Integer, Integer, Text -> Text
+  st-format-shape (dims) (i) (len) (acc) =
+    if i >= len then acc
+    else let sep = if i == 0 then "" else "x"
+    in st-format-shape dims (i + 1) len (acc & sep & show (list-at dims i))
+
+Page 1

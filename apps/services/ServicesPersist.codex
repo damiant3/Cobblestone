@@ -1,0 +1,235 @@
+Chapter: ServicesPersist
+  cites Foreword chapter Maybe
+  cites Foreword chapter FactStore
+  cites Foreword chapter Parse
+  cites Foreword chapter Sha256
+  cites Foreword chapter TextSearch
+  cites Foreword chapter Ed25519
+  cites Encode chapter Hex
+  cites Kernel chapter DiskFacts
+  cites Kernel chapter AppPersist
+  cites Services chapter Revocation
+  cites Accounts chapter ManagedAccounts
+
+ Persistent storage for system services. Revocation records
+ are serialized as kind 26. Parental/account settings as kind 27.
+ These modules have no entry point — callers (shell, apps)
+ invoke save/load as needed.
+
+Section: Kind Constants
+
+  persist-kind-revocation : Integer = 26
+  persist-kind-accounts : Integer = 27
+
+Section: Revocation Serialization
+
+  revocation-store-to-text : RevocationStore -> Text
+  revocation-store-to-text (store) =
+    rev-records-to-text store.rs-records 0 (list-length store.rs-records) ""
+
+  rev-records-to-text : List RevocationRecord, Integer, Integer, Text -> Text
+  rev-records-to-text (recs) (i) (len) (acc) =
+    if i >= len then acc
+    else let r = list-at recs i
+    in let sep = if i == 0 then "" else "\n"
+    in let line = rev-record-to-line r
+    in rev-records-to-text recs (i + 1) len (acc & sep & line)
+
+  rev-record-to-line : RevocationRecord -> Text
+  rev-record-to-line (r) =
+    let type-int = revocation-type-byte r.rr-type
+    in let scope-text = rev-scope-to-text r.rr-scope
+    in let auth-hex = bytes-to-hex r.rr-authority
+    in let sig-hex = bytes-to-hex r.rr-signature
+    in show type-int & "|"
+    & scope-text & "|"
+    & auth-hex & "|"
+    & show r.rr-timestamp & "|"
+    & show r.rr-effective & "|"
+    & r.rr-reason & "|"
+    & sig-hex
+
+  rev-scope-to-text : RevocationScope -> Text
+  rev-scope-to-text (scope) =
+    when scope
+      is ScopeIdentity (key) -> "id:" & bytes-to-hex key
+      is ScopeContentHash (hash) -> "hash:" & bytes-to-hex hash
+      is ScopeCapability (cap) -> "cap:" & cap
+      is ScopeVaultAccess (vid) -> "vault:" & vid
+
+  revocation-store-from-text : Text -> RevocationStore
+  revocation-store-from-text (txt) =
+    if text-length txt == 0 then revocation-store-new
+    else let lines = text-split txt "\n"
+    in let recs = parse-rev-lines lines 0 (list-length lines) []
+    in RevocationStore {
+      rs-records = recs,
+      rs-count = list-length recs,
+      rs-last-check = 0
+    }
+
+  parse-rev-lines : List Text, Integer, Integer, List RevocationRecord -> List RevocationRecord
+  parse-rev-lines (lines) (i) (len) (acc) =
+    if i >= len then acc
+    else let parsed = parse-rev-line (list-at lines i)
+    in when parsed
+      is Just (r) -> parse-rev-lines lines (i + 1) len (list-push acc r)
+      is None -> parse-rev-lines lines (i + 1) len acc
+
+  parse-rev-line : Text -> Maybe RevocationRecord
+  parse-rev-line (line) =
+    let parts = text-split line "|"
+    in if list-length parts < 7 then None
+    else let type-int = parse-decimal-full (list-at parts 0)
+    in let rtype = int-to-rev-type type-int
+    in let scope = parse-rev-scope (list-at parts 1)
+    in let auth = hex-decode (list-at parts 2)
+    in let timestamp = parse-decimal-full (list-at parts 3)
+    in let effective = parse-decimal-full (list-at parts 4)
+    in let reason = list-at parts 5
+    in let sig = hex-decode (list-at parts 6)
+    in let rec = RevocationRecord {
+      rr-id = sha256 (text-to-bytes line),
+      rr-type = rtype,
+      rr-scope = scope,
+      rr-authority = auth,
+      rr-timestamp = timestamp,
+      rr-effective = effective,
+      rr-reason = reason,
+      rr-signature = sig,
+      rr-supersedes = None
+    }
+    in Just rec
+
+  int-to-rev-type : Integer -> RevocationType
+  int-to-rev-type (n) =
+    if n == 1 then RevokeKeyCompromise
+    else if n == 2 then RevokeTrustWithdrawal
+    else if n == 3 then RevokeCapability
+    else if n == 4 then RevokeContent
+    else if n == 5 then RevokeTeamMember
+    else RevokeAllCapabilities
+
+  parse-rev-scope : Text -> RevocationScope
+  parse-rev-scope (txt) =
+    if starts-with txt "id:" then ScopeIdentity (hex-decode (substring txt 3 (text-length txt - 3)))
+    else if starts-with txt "hash:" then ScopeContentHash (hex-decode (substring txt 5 (text-length txt - 5)))
+    else if starts-with txt "cap:" then ScopeCapability (substring txt 4 (text-length txt - 4))
+    else if starts-with txt "vault:" then ScopeVaultAccess (substring txt 6 (text-length txt - 6))
+    else ScopeCapability txt
+
+Section: Save and Load
+
+  services-persist-save-revocation : DiskFactStore, RevocationStore, Integer -> DiskFactStore
+  services-persist-save-revocation (store) (revs) (timestamp) =
+    app-write-and-checkpoint store persist-kind-revocation (revocation-store-to-text revs) timestamp
+
+  services-persist-load-revocation : DiskFactStore -> RevocationStore
+  services-persist-load-revocation (store) =
+    let found = app-scan-last store persist-kind-revocation
+    in when found
+      is None -> revocation-store-new
+      is Just (txt) -> revocation-store-from-text txt
+
+Section: Account Serialization
+
+  account-store-to-text : AccountStore -> Text
+  account-store-to-text (store) =
+    let header = show store.as-active-id & "|" & show store.as-guardian-id & "|" & show store.as-next-id & "|" & (if store.as-locked then "1" else "0")
+    in header & "\n" & accounts-to-text store.as-accounts 0 (list-length store.as-accounts) ""
+
+  accounts-to-text : List Account, Integer, Integer, Text -> Text
+  accounts-to-text (accs) (i) (len) (acc) =
+    if i >= len then acc
+    else let a = list-at accs i
+    in let sep = if i == 0 then "" else "\n"
+    in let line = account-to-line a
+    in accounts-to-text accs (i + 1) len (acc & sep & line)
+
+  account-to-line : Account -> Text
+  account-to-line (a) =
+    let type-int = when a.acc-type is GuardianAccount -> 0 is ManagedAccount -> 1
+    in let age-int = when a.acc-age-group is AgeChild -> 0 is AgeTeen -> 1 is AgeRestricted -> 2
+    in show a.acc-id & "|"
+    & a.acc-name & "|"
+    & show type-int & "|"
+    & show age-int & "|"
+    & show a.acc-guardian-id & "|"
+    & show a.acc-created & "|"
+    & show a.acc-last-login & "|"
+    & (if a.acc-active then "1" else "0")
+
+  account-store-from-text : Text -> AccountStore
+  account-store-from-text (txt) =
+    if text-length txt == 0 then account-store-new [] 0
+    else let lines = text-split txt "\n"
+    in if list-length lines < 1 then account-store-new [] 0
+    else let header = parse-account-header (list-at lines 0)
+    in let accs = parse-account-lines lines 1 (list-length lines) []
+    in AccountStore {
+      as-accounts = accs,
+      as-active-id = header.ah-active,
+      as-guardian-id = header.ah-guardian,
+      as-next-id = header.ah-next-id,
+      as-locked = header.ah-locked
+    }
+
+  AccountHeader = record {
+    ah-active : Integer,
+    ah-guardian : Integer,
+    ah-next-id : Integer,
+    ah-locked : Boolean
+  }
+
+  parse-account-header : Text -> AccountHeader
+  parse-account-header (line) =
+    let parts = text-split line "|"
+    in AccountHeader {
+      ah-active = parse-decimal-full (list-at parts 0),
+      ah-guardian = parse-decimal-full (list-at parts 1),
+      ah-next-id = parse-decimal-full (list-at parts 2),
+      ah-locked = list-at parts 3 == "1"
+    }
+
+  parse-account-lines : List Text, Integer, Integer, List Account -> List Account
+  parse-account-lines (lines) (i) (len) (acc) =
+    if i >= len then acc
+    else let parsed = parse-account-line (list-at lines i)
+    in when parsed
+      is Just (a) -> parse-account-lines lines (i + 1) len (list-push acc a)
+      is None -> parse-account-lines lines (i + 1) len acc
+
+  parse-account-line : Text -> Maybe Account
+  parse-account-line (line) =
+    let parts = text-split line "|"
+    in if list-length parts < 8 then None
+    else let type-int = parse-decimal-full (list-at parts 2)
+    in let age-int = parse-decimal-full (list-at parts 3)
+    in let age = if age-int == 0 then AgeChild else if age-int == 1 then AgeTeen else AgeRestricted
+    in let a = Account {
+      acc-id = parse-decimal-full (list-at parts 0),
+      acc-name = list-at parts 1,
+      acc-type = if type-int == 0 then GuardianAccount else ManagedAccount,
+      acc-identity = [],
+      acc-pin-hash = [],
+      acc-age-group = age,
+      acc-policy = policy-for-age age,
+      acc-guardian-id = parse-decimal-full (list-at parts 4),
+      acc-created = parse-decimal-full (list-at parts 5),
+      acc-last-login = parse-decimal-full (list-at parts 6),
+      acc-active = list-at parts 7 == "1"
+    }
+    in Just a
+
+Section: Account Save and Load
+
+  services-persist-save-accounts : DiskFactStore, AccountStore, Integer -> DiskFactStore
+  services-persist-save-accounts (store) (accounts) (timestamp) =
+    app-write-and-checkpoint store persist-kind-accounts (account-store-to-text accounts) timestamp
+
+  services-persist-load-accounts : DiskFactStore -> AccountStore
+  services-persist-load-accounts (store) =
+    let found = app-scan-last store persist-kind-accounts
+    in when found
+      is None -> account-store-new [] 0
+      is Just (txt) -> account-store-from-text txt

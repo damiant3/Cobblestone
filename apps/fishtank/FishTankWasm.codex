@@ -1,0 +1,906 @@
+Chapter: FishTankWasm
+  cites Foreword chapter List
+  cites Foreword chapter Maybe
+
+ Fish tank domain logic compiled to WASM. Exports functions that
+ the JS bridge calls: species count, species properties, body
+ profile stations, boids update, particle update, init, tick.
+
+ All values scaled by 100 for positions/velocities, 1000 for
+ angles/alpha/size. Integer arithmetic only (no floats in Codex).
+
+Section: Species Data
+
+  species-count : Integer = 8
+
+  species-name : Integer -> Text
+  species-name (i) =
+    if i == 0 then "Clownfish"
+    else if i == 1 then "Angelfish"
+    else if i == 2 then "Neon Tetra"
+    else if i == 3 then "Blue Tang"
+    else if i == 4 then "Discus"
+    else if i == 5 then "Guppy"
+    else if i == 6 then "Seahorse"
+    else "Shrimp"
+
+  species-tex : Integer -> Text
+  species-tex (i) =
+    if i == 0 then "fish-clownfish"
+    else if i == 1 then "fish-angelfish"
+    else if i == 2 then "fish-neontetra"
+    else if i == 3 then "fish-tang"
+    else if i == 4 then "fish-discus"
+    else if i == 5 then "fish-guppy"
+    else if i == 6 then "creature-seahorse"
+    else "creature-shrimp"
+
+  species-width : Integer -> Integer
+  species-width (i) =
+    if i == 0 then 300
+    else if i == 1 then 350
+    else if i == 2 then 140
+    else if i == 3 then 300
+    else if i == 4 then 300
+    else if i == 5 then 120
+    else if i == 6 then 180
+    else 140
+
+  species-height : Integer -> Integer
+  species-height (i) =
+    if i == 0 then 200
+    else if i == 1 then 350
+    else if i == 2 then 70
+    else if i == 3 then 220
+    else if i == 4 then 300
+    else if i == 5 then 60
+    else if i == 6 then 280
+    else 70
+
+  species-speed : Integer -> Integer
+  species-speed (i) =
+    if i == 0 then 120
+    else if i == 1 then 60
+    else if i == 2 then 180
+    else if i == 3 then 90
+    else if i == 4 then 50
+    else if i == 5 then 220
+    else if i == 6 then 30
+    else 100
+
+  species-turn : Integer -> Integer
+  species-turn (i) =
+    if i == 0 then 350
+    else if i == 1 then 180
+    else if i == 2 then 500
+    else if i == 3 then 280
+    else if i == 4 then 150
+    else if i == 5 then 600
+    else if i == 6 then 100
+    else 400
+
+  species-school : Integer -> Integer
+  species-school (i) =
+    if i == 0 then 3
+    else if i == 1 then 1
+    else if i == 2 then 12
+    else if i == 3 then 4
+    else if i == 4 then 2
+    else if i == 5 then 8
+    else if i == 6 then 1
+    else 2
+
+  species-sep : Integer -> Integer
+  species-sep (i) =
+    if i == 0 then 200
+    else if i == 1 then 300
+    else if i == 2 then 80
+    else if i == 3 then 200
+    else if i == 4 then 250
+    else if i == 5 then 60
+    else if i == 6 then 250
+    else 100
+
+  species-solo : Integer -> Integer
+  species-solo (i) =
+    if i == 1 then 1
+    else if i == 6 then 1
+    else 0
+
+Section: Body Profile Data
+
+  station-count : Integer -> Integer
+  station-count (species) = 9
+
+  station-t : Integer, Integer -> Integer
+  station-t (sp) (si) =
+    if sp == 0 then list-at [0, 8, 20, 35, 50, 65, 80, 90, 100] si
+    else if sp == 1 then list-at [0, 10, 25, 40, 55, 70, 85, 92, 100] si
+    else if sp == 2 then list-at [0, 10, 25, 40, 55, 70, 85, 93, 100] si
+    else if sp == 3 then list-at [0, 8, 22, 38, 55, 70, 85, 93, 100] si
+    else if sp == 4 then list-at [0, 8, 20, 40, 60, 75, 88, 94, 100] si
+    else if sp == 5 then list-at [0, 10, 25, 40, 55, 70, 82, 90, 100] si
+    else if sp == 6 then list-at [0, 10, 25, 40, 55, 70, 85, 93, 100] si
+    else list-at [0, 10, 25, 40, 55, 70, 85, 93, 100] si
+
+  station-ry : Integer, Integer -> Integer
+  station-ry (sp) (si) =
+    if sp == 0 then list-at [1, 10, 18, 22, 20, 15, 6, 2, 12] si
+    else if sp == 1 then list-at [1, 15, 35, 40, 35, 20, 4, 2, 18] si
+    else if sp == 2 then list-at [1, 6, 10, 12, 10, 6, 2, 1, 6] si
+    else if sp == 3 then list-at [1, 12, 28, 32, 28, 15, 3, 1, 14] si
+    else if sp == 4 then list-at [1, 12, 35, 42, 35, 15, 3, 1, 10] si
+    else if sp == 5 then list-at [1, 5, 8, 9, 7, 4, 2, 1, 10] si
+    else if sp == 6 then list-at [1, 8, 12, 10, 8, 5, 3, 2, 1] si
+    else list-at [1, 4, 6, 7, 6, 4, 3, 1, 5] si
+
+  station-rz : Integer, Integer -> Integer
+  station-rz (sp) (si) =
+    if sp == 0 then list-at [1, 8, 12, 14, 12, 9, 3, 1, 0] si
+    else if sp == 1 then list-at [1, 5, 7, 8, 7, 5, 2, 1, 0] si
+    else if sp == 2 then list-at [1, 5, 8, 9, 7, 4, 1, 0, 0] si
+    else if sp == 3 then list-at [1, 6, 9, 10, 8, 5, 1, 0, 0] si
+    else if sp == 4 then list-at [1, 4, 6, 6, 5, 3, 1, 0, 0] si
+    else if sp == 5 then list-at [1, 4, 6, 7, 5, 3, 1, 0, 0] si
+    else if sp == 6 then list-at [1, 6, 8, 7, 6, 4, 2, 1, 1] si
+    else list-at [1, 4, 6, 7, 6, 4, 3, 1, 0] si
+
+Section: Fin Data
+
+  dorsal-start : Integer -> Integer
+  dorsal-start (sp) =
+    if sp == 0 then 25
+    else if sp == 1 then 15
+    else if sp == 2 then 35
+    else if sp == 3 then 15
+    else if sp == 4 then 15
+    else if sp == 5 then 35
+    else if sp == 6 then 30
+    else (0 - 1)
+
+  dorsal-end : Integer -> Integer
+  dorsal-end (sp) =
+    if sp == 0 then 65
+    else if sp == 1 then 70
+    else if sp == 2 then 55
+    else if sp == 3 then 75
+    else if sp == 4 then 70
+    else if sp == 5 then 55
+    else if sp == 6 then 55
+    else (0 - 1)
+
+  dorsal-height : Integer -> Integer
+  dorsal-height (sp) =
+    if sp == 0 then 6
+    else if sp == 1 then 15
+    else if sp == 2 then 3
+    else if sp == 3 then 10
+    else if sp == 4 then 8
+    else if sp == 5 then 2
+    else if sp == 6 then 3
+    else 0
+
+  tail-height : Integer -> Integer
+  tail-height (sp) =
+    if sp == 0 then 12
+    else if sp == 1 then 18
+    else if sp == 2 then 6
+    else if sp == 3 then 14
+    else if sp == 4 then 10
+    else if sp == 5 then 10
+    else if sp == 6 then 0
+    else 5
+
+  tail-fork : Integer -> Integer
+  tail-fork (sp) =
+    if sp == 0 then 3
+    else if sp == 1 then 6
+    else if sp == 2 then 2
+    else if sp == 3 then 4
+    else if sp == 4 then 2
+    else if sp == 5 then 1
+    else 0
+
+Section: Spawn Config
+
+  spawn-count : Integer = 8
+  spawn-species : Integer -> Integer
+  spawn-species (i) = list-at [2, 0, 5, 3, 1, 4, 6, 7] i
+  spawn-amount : Integer -> Integer
+  spawn-amount (i) = list-at [18, 5, 12, 6, 2, 3, 2, 4] i
+
+Section: Tank Bounds
+
+  tank-xmin : Integer = -5000
+  tank-xmax : Integer = 5000
+  tank-ymin : Integer = -4000
+  tank-ymax : Integer = 3000
+  tank-zmin : Integer = -3000
+  tank-zmax : Integer = 3000
+
+Section: Memory Access Helpers
+
+  w32 : Integer, Integer -> Integer
+  w32 (addr) (val) = poke-32 0 addr val
+
+  rd : Integer -> Integer
+  rd (addr) = peek-32 0 addr
+
+  scratch-base : Integer = 270336
+
+  scratch-write : Integer, Integer -> Integer
+  scratch-write (slot) (val) = w32 (scratch-base + slot * 4) val
+
+  scratch-read : Integer -> Integer
+  scratch-read (slot) = rd (scratch-base + slot * 4)
+
+  fish-count-get : Integer
+  fish-count-get = rd 131072
+
+  fish-count-set : Integer -> Integer
+  fish-count-set (v) = w32 131072 v
+
+  fish-get-x : Integer -> Integer
+  fish-get-x (i) = rd (131076 + i * 4)
+
+  fish-set-x : Integer, Integer -> Integer
+  fish-set-x (i) (v) = w32 (131076 + i * 4) v
+
+  fish-get-y : Integer -> Integer
+  fish-get-y (i) = rd (132100 + i * 4)
+
+  fish-set-y : Integer, Integer -> Integer
+  fish-set-y (i) (v) = w32 (132100 + i * 4) v
+
+  fish-get-z : Integer -> Integer
+  fish-get-z (i) = rd (133124 + i * 4)
+
+  fish-set-z : Integer, Integer -> Integer
+  fish-set-z (i) (v) = w32 (133124 + i * 4) v
+
+  fish-get-vx : Integer -> Integer
+  fish-get-vx (i) = rd (134148 + i * 4)
+
+  fish-set-vx : Integer, Integer -> Integer
+  fish-set-vx (i) (v) = w32 (134148 + i * 4) v
+
+  fish-get-vy : Integer -> Integer
+  fish-get-vy (i) = rd (135172 + i * 4)
+
+  fish-set-vy : Integer, Integer -> Integer
+  fish-set-vy (i) (v) = w32 (135172 + i * 4) v
+
+  fish-get-vz : Integer -> Integer
+  fish-get-vz (i) = rd (136196 + i * 4)
+
+  fish-set-vz : Integer, Integer -> Integer
+  fish-set-vz (i) (v) = w32 (136196 + i * 4) v
+
+  fish-get-angle : Integer -> Integer
+  fish-get-angle (i) = rd (137220 + i * 4)
+
+  fish-set-angle : Integer, Integer -> Integer
+  fish-set-angle (i) (v) = w32 (137220 + i * 4) v
+
+  fish-get-flex : Integer -> Integer
+  fish-get-flex (i) = rd (138244 + i * 4)
+
+  fish-set-flex : Integer, Integer -> Integer
+  fish-set-flex (i) (v) = w32 (138244 + i * 4) v
+
+  fish-get-species : Integer -> Integer
+  fish-get-species (i) = rd (139268 + i * 4)
+
+  fish-set-species : Integer, Integer -> Integer
+  fish-set-species (i) (v) = w32 (139268 + i * 4) v
+
+  part-get-x : Integer -> Integer
+  part-get-x (i) = rd (196620 + i * 4)
+
+  part-set-x : Integer, Integer -> Integer
+  part-set-x (i) (v) = w32 (196620 + i * 4) v
+
+  part-get-y : Integer -> Integer
+  part-get-y (i) = rd (198668 + i * 4)
+
+  part-set-y : Integer, Integer -> Integer
+  part-set-y (i) (v) = w32 (198668 + i * 4) v
+
+  part-get-z : Integer -> Integer
+  part-get-z (i) = rd (200716 + i * 4)
+
+  part-set-z : Integer, Integer -> Integer
+  part-set-z (i) (v) = w32 (200716 + i * 4) v
+
+  part-get-vy : Integer -> Integer
+  part-get-vy (i) = rd (202764 + i * 4)
+
+  part-set-vy : Integer, Integer -> Integer
+  part-set-vy (i) (v) = w32 (202764 + i * 4) v
+
+  part-get-size : Integer -> Integer
+  part-get-size (i) = rd (204812 + i * 4)
+
+  part-set-size : Integer, Integer -> Integer
+  part-set-size (i) (v) = w32 (204812 + i * 4) v
+
+  part-get-alpha : Integer -> Integer
+  part-get-alpha (i) = rd (206860 + i * 4)
+
+  part-set-alpha : Integer, Integer -> Integer
+  part-set-alpha (i) (v) = w32 (206860 + i * 4) v
+
+  part-get-type : Integer -> Integer
+  part-get-type (i) = rd (208908 + i * 4)
+
+  part-set-type : Integer, Integer -> Integer
+  part-set-type (i) (v) = w32 (208908 + i * 4) v
+
+  part-get-phase : Integer -> Integer
+  part-get-phase (i) = rd (210956 + i * 4)
+
+  part-set-phase : Integer, Integer -> Integer
+  part-set-phase (i) (v) = w32 (210956 + i * 4) v
+
+  bubble-count-get : Integer
+  bubble-count-get = rd 196608
+
+  bubble-count-set : Integer -> Integer
+  bubble-count-set (v) = w32 196608 v
+
+  food-count-get : Integer
+  food-count-get = rd 196612
+
+  food-count-set : Integer -> Integer
+  food-count-set (v) = w32 196612 v
+
+  speck-count-get : Integer
+  speck-count-get = rd 196616
+
+  speck-count-set : Integer -> Integer
+  speck-count-set (v) = w32 196616 v
+
+  scatter-timer-get : Integer
+  scatter-timer-get = rd 262144
+
+  scatter-timer-set : Integer -> Integer
+  scatter-timer-set (v) = w32 262144 v
+
+  light-on-get : Integer
+  light-on-get = rd 262148
+
+  light-on-set : Integer -> Integer
+  light-on-set (v) = w32 262148 v
+
+  time-of-day-get : Integer
+  time-of-day-get = rd 262152
+
+  time-of-day-set : Integer -> Integer
+  time-of-day-set (v) = w32 262152 v
+
+  delta-time-get : Integer
+  delta-time-get = rd 262156
+
+  current-time-get : Integer
+  current-time-get = rd 262160
+
+  rng-state-get : Integer
+  rng-state-get = rd 262164
+
+  rng-state-set : Integer -> Integer
+  rng-state-set (v) = w32 262164 v
+
+Section: Integer Math Helpers
+
+  isqrt : Integer -> Integer
+  isqrt (n) =
+    if n <= 0 then 0
+    else let g0 = n
+    in let g1 = (g0 + n / g0) / 2
+    in let g2 = (g1 + n / g1) / 2
+    in let g3 = (g2 + n / g2) / 2
+    in g3
+
+  sin-quarter-table : Integer -> Integer
+  sin-quarter-table (i) =
+    if i == 0 then 0
+    else if i == 1 then 98
+    else if i == 2 then 195
+    else if i == 3 then 290
+    else if i == 4 then 383
+    else if i == 5 then 471
+    else if i == 6 then 556
+    else if i == 7 then 634
+    else if i == 8 then 707
+    else if i == 9 then 773
+    else if i == 10 then 831
+    else if i == 11 then 882
+    else if i == 12 then 924
+    else if i == 13 then 957
+    else if i == 14 then 981
+    else if i == 15 then 995
+    else 1000
+
+  isin1000 : Integer -> Integer
+  isin1000 (ang) =
+    let twopi = 6283
+    in let a = int-mod ang twopi
+    in let norm = if a < 0 then a + twopi else a
+    in let qi = norm * 64 / twopi
+    in let quadrant = qi / 16
+    in let idx = int-mod qi 16
+    in if quadrant == 0 then sin-quarter-table idx
+    else if quadrant == 1 then sin-quarter-table (16 - idx)
+    else if quadrant == 2 then 0 - sin-quarter-table idx
+    else 0 - sin-quarter-table (16 - idx)
+
+  icos1000 : Integer -> Integer
+  icos1000 (ang) = isin1000 (ang + 1571)
+
+  int-abs : Integer -> Integer
+  int-abs (n) = if n < 0 then 0 - n else n
+
+  iatan2-1000 : Integer, Integer -> Integer
+  iatan2-1000 (y) (x) =
+    let ax = int-abs x
+    in let ay = int-abs y
+    in if ax == 0 then
+      if y > 0 then 1571
+      else if y < 0 then -1571
+      else 0
+    else if ay == 0 then
+      if x >= 0 then 0
+      else 3142
+    else let swapped = if ay > ax then 1 else 0
+    in let num = if swapped == 1 then ax else ay
+    in let den = if swapped == 1 then ay else ax
+    in let ratio = num * 1000 / den
+    in let base = ratio * 785 / 1000
+    in let angle = if swapped == 1 then 1571 - base else base
+    in let angle2 = if x < 0 then 3142 - angle else angle
+    in if y < 0 then 0 - angle2 else angle2
+
+  rng-next : Integer
+  rng-next =
+    let state = rng-state-get
+    in let next = bit-and (state * 1103515245 + 12345) 2147483647
+    in let w = rng-state-set next
+    in next
+
+  rng-range : Integer, Integer -> Integer
+  rng-range (minv) (maxv) =
+    let r = rng-next
+    in let range = maxv - minv
+    in if range <= 0 then minv
+    else int-mod (int-abs r) range + minv
+
+Section: Boids AI
+
+  clamp-int : Integer, Integer, Integer -> Integer
+  clamp-int (v) (lo) (hi) = if v < lo then lo else if v > hi then hi else v
+
+  update-fish : Integer -> Integer
+  update-fish (dt) =
+    let fc = fish-count-get
+    in let cdt = clamp-int dt 1 50
+    in let w = update-fish-loop cdt fc 0
+    in let st = scatter-timer-get
+    in if st > 0 then scatter-timer-set (st - cdt)
+    else 0
+
+  update-fish-loop : Integer, Integer, Integer -> Integer
+  update-fish-loop (dt) (fc) (i) =
+    if i >= fc then 0
+    else let w = update-one-fish dt fc i
+    in update-fish-loop dt fc (i + 1)
+
+  update-one-fish : Integer, Integer, Integer -> Integer
+  update-one-fish (dt) (fc) (i) =
+    let sp = fish-get-species i
+    in let px = fish-get-x i
+    in let py = fish-get-y i
+    in let pz = fish-get-z i
+    in let vx = fish-get-vx i
+    in let vy = fish-get-vy i
+    in let vz = fish-get-vz i
+    in let sep-r = species-sep sp * 10
+    in let spd = species-speed sp
+    in let wb = compute-boids fc i sp px py pz sep-r 0 0 0 0 0 0 0 0 0 0
+    in let bx = scratch-read 0
+    in let by = scratch-read 1
+    in let bz = scratch-read 2
+    in let ww = compute-wall-force px py pz
+    in let wx = scratch-read 3
+    in let wy = scratch-read 4
+    in let wz = scratch-read 5
+    in let ycenter = (0 - 500 - py) / 10
+    in let wf = find-nearest-food i px py pz
+    in let fx = scratch-read 6
+    in let fy = scratch-read 7
+    in let fz = scratch-read 8
+    in let scx = if scatter-timer-get > 0 then rng-range (0 - 500) 500 else 0
+    in let scy = if scatter-timer-get > 0 then rng-range (0 - 250) 250 else 0
+    in let scz = if scatter-timer-get > 0 then rng-range (0 - 500) 500 else 0
+    in let stx = bx + wx + fx + scx
+    in let sty = by + wy + fy + scy + ycenter
+    in let stz = bz + wz + fz + scz
+    in let nvx = vx + stx * dt / 100
+    in let nvy = vy + sty * dt / 100
+    in let nvz = vz + stz * dt / 100
+    in let speed2 = nvx * nvx + nvy * nvy + nvz * nvz
+    in let maxspd2 = spd * spd
+    in let minspd = spd / 5
+    in let minspd2 = minspd * minspd
+    in let splen = isqrt speed2 + 1
+    in let cvx = if speed2 > maxspd2 then nvx * spd / splen else nvx
+    in let cvy = if speed2 > maxspd2 then nvy * spd / splen else nvy
+    in let cvz = if speed2 > maxspd2 then nvz * spd / splen else nvz
+    in let fvx = if speed2 < minspd2 then if splen < 2 then minspd else cvx * minspd / splen else cvx
+    in let fvy = if speed2 < minspd2 then if splen < 2 then 0 else cvy * minspd / splen else cvy
+    in let fvz = if speed2 < minspd2 then if splen < 2 then 0 else cvz * minspd / splen else cvz
+    in let npx = px + fvx * dt / 100
+    in let npy = py + fvy * dt / 100
+    in let npz = pz + fvz * dt / 100
+    in let cpx = clamp-int npx (tank-xmin + 50) (tank-xmax - 50)
+    in let cpy = clamp-int npy (tank-ymin + 50) (tank-ymax - 50)
+    in let cpz = clamp-int npz (tank-zmin + 50) (tank-zmax - 50)
+    in let rvx = if cpx /= npx then 0 - fvx / 2 else fvx
+    in let rvy = if cpy /= npy then 0 - fvy / 2 else fvy
+    in let rvz = if cpz /= npz then 0 - fvz / 2 else fvz
+    in let target-angle = iatan2-1000 rvz rvx
+    in let cur-angle = fish-get-angle i
+    in let adiff = target-angle - cur-angle
+    in let adiff2 = if adiff > 3142 then adiff - 6283
+                    else if adiff < (0 - 3142) then adiff + 6283
+                    else adiff
+    in let turn-rate = species-turn sp
+    in let max-turn = turn-rate * dt / 1000 + 1
+    in let clamped = clamp-int adiff2 (0 - max-turn) max-turn
+    in let nangle = cur-angle + clamped
+    in let w1 = fish-set-x i cpx
+    in let w2 = fish-set-y i cpy
+    in let w3 = fish-set-z i cpz
+    in let w4 = fish-set-vx i rvx
+    in let w5 = fish-set-vy i rvy
+    in let w6 = fish-set-vz i rvz
+    in let w7 = fish-set-angle i nangle
+    in let flex-phase = fish-get-flex i + dt * 5
+    in let w8 = fish-set-flex i (int-mod flex-phase 6283)
+    in w1 + w2 + w3 + w4 + w5 + w6 + w7 + w8
+
+  compute-boids : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  compute-boids (fc) (i) (sp) (px) (py) (pz) (sep-r) (j) (sepx) (sepy) (sepz) (alvx) (alvy) (alvz) (cohx) (cohy) (cohz) =
+    if j >= fc then
+      let ax = sepx * 2 + alvx + cohx
+      in let ay = sepy * 2 + alvy + cohy
+      in let az = sepz * 2 + alvz + cohz
+      in let w1 = scratch-write 0 ax
+      in let w2 = scratch-write 1 ay
+      in let w3 = scratch-write 2 az
+      in w1 + w2 + w3
+    else if j == i then compute-boids fc i sp px py pz sep-r (j + 1) sepx sepy sepz alvx alvy alvz cohx cohy cohz
+    else let jsp = fish-get-species j
+    in let dominated = species-solo sp
+    in let same = if sp == jsp then 1 else if dominated == 1 then 1 else 0
+    in if same == 0 then compute-boids fc i sp px py pz sep-r (j + 1) sepx sepy sepz alvx alvy alvz cohx cohy cohz
+    else let dx = px - fish-get-x j
+    in let dy = py - fish-get-y j
+    in let dz = pz - fish-get-z j
+    in let dist2 = dx * dx + dy * dy + dz * dz
+    in let dist = isqrt dist2 + 1
+    in let sep2 = sep-r * sep-r
+    in if dist2 < sep2 then
+      let nsx = sepx + dx * 10 / dist
+      in let nsy = sepy + dy * 10 / dist
+      in let nsz = sepz + dz * 10 / dist
+      in compute-boids fc i sp px py pz sep-r (j + 1) nsx nsy nsz alvx alvy alvz cohx cohy cohz
+    else if dist < sep-r * 4 then
+      let nalx = alvx + fish-get-vx j / 5
+      in let naly = alvy + fish-get-vy j / 5
+      in let nalz = alvz + fish-get-vz j / 5
+      in compute-boids fc i sp px py pz sep-r (j + 1) sepx sepy sepz nalx naly nalz cohx cohy cohz
+    else if dist < sep-r * 6 then
+      let ncx = cohx + (fish-get-x j - px) / 10
+      in let ncy = cohy + (fish-get-y j - py) / 10
+      in let ncz = cohz + (fish-get-z j - pz) / 10
+      in compute-boids fc i sp px py pz sep-r (j + 1) sepx sepy sepz alvx alvy alvz ncx ncy ncz
+    else compute-boids fc i sp px py pz sep-r (j + 1) sepx sepy sepz alvx alvy alvz cohx cohy cohz
+
+  compute-wall-force : Integer, Integer, Integer -> Integer
+  compute-wall-force (px) (py) (pz) =
+    let margin = 800
+    in let wx = if px < tank-xmin + margin then (tank-xmin + margin - px) * 3 / 10
+               else if px > tank-xmax - margin then (tank-xmax - margin - px) * 3 / 10
+               else 0
+    in let wy = if py < tank-ymin + margin then (tank-ymin + margin - py) * 3 / 10
+               else if py > tank-ymax - margin then (tank-ymax - margin - py) * 3 / 10
+               else 0
+    in let wz = if pz < tank-zmin + margin then (tank-zmin + margin - pz) * 3 / 10
+               else if pz > tank-zmax - margin then (tank-zmax - margin - pz) * 3 / 10
+               else 0
+    in let w1 = scratch-write 3 wx
+    in let w2 = scratch-write 4 wy
+    in let w3 = scratch-write 5 wz
+    in w1 + w2 + w3
+
+  find-nearest-food : Integer, Integer, Integer, Integer -> Integer
+  find-nearest-food (fi) (px) (py) (pz) =
+    let total = bubble-count-get + food-count-get + speck-count-get
+    in find-food-loop fi px py pz total 0 999999 0 0 0 (0 - 1)
+
+  find-food-loop : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  find-food-loop (fi) (px) (py) (pz) (total) (j) (bestd) (bfx) (bfy) (bfz) (bestj) =
+    if j >= total then
+      let range = 3000
+      in if bestd < range then
+        let eat-dist = 150
+        in if bestd < eat-dist then
+          let we = if bestj >= 0 then part-set-alpha bestj 0 else 0
+          in let w1 = scratch-write 6 bfx
+          in let w2 = scratch-write 7 bfy
+          in let w3 = scratch-write 8 bfz
+          in we + w1 + w2 + w3
+        else let w1 = scratch-write 6 bfx
+        in let w2 = scratch-write 7 bfy
+        in let w3 = scratch-write 8 bfz
+        in w1 + w2 + w3
+      else let w1 = scratch-write 6 0
+      in let w2 = scratch-write 7 0
+      in let w3 = scratch-write 8 0
+      in w1 + w2 + w3
+    else if part-get-type j == 1 then
+      let dx = part-get-x j - px
+      in let dy = part-get-y j - py
+      in let dz = part-get-z j - pz
+      in let d2 = dx * dx / 100 + dy * dy / 100 + dz * dz / 100
+      in let d = isqrt (d2 * 100)
+      in if d < bestd then
+        let steer = 30
+        in let sfx = dx * steer / (d + 1)
+        in let sfy = dy * steer / (d + 1)
+        in let sfz = dz * steer / (d + 1)
+        in find-food-loop fi px py pz total (j + 1) d sfx sfy sfz j
+      else find-food-loop fi px py pz total (j + 1) bestd bfx bfy bfz bestj
+    else find-food-loop fi px py pz total (j + 1) bestd bfx bfy bfz bestj
+
+Section: Particle System
+
+  update-particles : Integer -> Integer
+  update-particles (dt) =
+    let w1 = maybe-spawn-bubbles dt
+    in let total = bubble-count-get + food-count-get + speck-count-get
+    in let w2 = update-all-particles dt total 0
+    in let w3 = compact-particles
+    in w1 + w2 + w3
+
+  maybe-spawn-bubbles : Integer -> Integer
+  maybe-spawn-bubbles (dt) =
+    let w1 = try-spawn-bubble (0 - 30000) (0 - 35000) (0 - 10000)
+    in let w2 = try-spawn-bubble 20000 (0 - 30000) 15000
+    in let w3 = try-spawn-bubble (0 - 10000) (0 - 38000) 5000
+    in w1 + w2 + w3
+
+  try-spawn-bubble : Integer, Integer, Integer -> Integer
+  try-spawn-bubble (bx) (by) (bz) =
+    let chance = rng-range 0 100
+    in if chance < 3 then
+      let total = bubble-count-get + food-count-get + speck-count-get
+      in if total >= 512 then 0
+      else let w1 = part-set-x total (bx + rng-range (0 - 500) 500)
+      in let w2 = part-set-y total by
+      in let w3 = part-set-z total (bz + rng-range (0 - 500) 500)
+      in let w4 = part-set-vy total (rng-range 5000 10000)
+      in let w5 = part-set-size total (rng-range 30 70)
+      in let w6 = part-set-alpha total (rng-range 600 900)
+      in let w7 = part-set-type total 0
+      in let w8 = part-set-phase total (rng-range 0 6283)
+      in let w9 = bubble-count-set (bubble-count-get + 1)
+      in w1 + w2 + w3 + w4 + w5 + w6 + w7 + w8 + w9
+    else 0
+
+  update-all-particles : Integer, Integer, Integer -> Integer
+  update-all-particles (dt) (total) (j) =
+    if j >= total then 0
+    else let pt = part-get-type j
+    in let ovy = part-get-vy j
+    in let oy = part-get-y j
+    in let ny = oy + ovy * dt / 1000
+    in let w1 = part-set-y j ny
+    in let w2 = if pt == 2 then
+        let ox = part-get-x j
+        in let oz = part-get-z j
+        in let wx = part-set-x j (ox + rng-range (0 - 30) 30)
+        in let wz = part-set-z j (oz + rng-range (0 - 30) 30)
+        in wx + wz
+      else 0
+    in let w3 = if pt == 1 then
+        let nvy = ovy - 15 * dt / 100
+        in let nalpha = part-get-alpha j - 20 * dt / 1000
+        in let wa = part-set-vy j nvy
+        in let wb = part-set-alpha j nalpha
+        in wa + wb
+      else 0
+    in let w4 = if pt == 0 then
+        if ny >= tank-ymax then part-set-alpha j 0
+        else 0
+      else 0
+    in let w5 = w1 + w2 + w3 + w4
+    in update-all-particles dt total (j + 1)
+
+  compact-particles : Integer
+  compact-particles =
+    let total = bubble-count-get + food-count-get + speck-count-get
+    in compact-loop total 0 0 0 0 0
+
+  compact-loop : Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  compact-loop (total) (src) (dst) (nb) (nf) (ns) =
+    if src >= total then
+      let w1 = bubble-count-set nb
+      in let w2 = food-count-set nf
+      in let w3 = speck-count-set ns
+      in w1 + w2 + w3
+    else let alpha = part-get-alpha src
+    in if alpha <= 10 then
+      compact-loop total (src + 1) dst nb nf ns
+    else let w = if src == dst then 0
+      else let w1 = part-set-x dst (part-get-x src)
+        in let w2 = part-set-y dst (part-get-y src)
+        in let w3 = part-set-z dst (part-get-z src)
+        in let w4 = part-set-vy dst (part-get-vy src)
+        in let w5 = part-set-size dst (part-get-size src)
+        in let w6 = part-set-alpha dst (part-get-alpha src)
+        in let w7 = part-set-type dst (part-get-type src)
+        in let w8 = part-set-phase dst (part-get-phase src)
+        in w1 + w2 + w3 + w4 + w5 + w6 + w7 + w8
+    in let pt = part-get-type src
+    in let nnb = if pt == 0 then nb + 1 else nb
+    in let nnf = if pt == 1 then nf + 1 else nf
+    in let nns = if pt == 2 then ns + 1 else ns
+    in compact-loop total (src + 1) (dst + 1) nnb nnf nns
+
+Section: Spawn Functions
+
+  spawn-food : Integer
+  spawn-food =
+    let count = rng-range 15 25
+    in spawn-food-loop count 0
+
+  spawn-food-loop : Integer, Integer -> Integer
+  spawn-food-loop (count) (j) =
+    if j >= count then 0
+    else let total = bubble-count-get + food-count-get + speck-count-get
+    in if total >= 512 then 0
+    else let w1 = part-set-x total (rng-range tank-xmin tank-xmax)
+    in let w2 = part-set-y total (tank-ymax - 200)
+    in let w3 = part-set-z total (rng-range tank-zmin tank-zmax)
+    in let w4 = part-set-vy total (rng-range (0 - 400) (0 - 200))
+    in let w5 = part-set-size total (rng-range 40 80)
+    in let w6 = part-set-alpha total 1000
+    in let w7 = part-set-type total 1
+    in let w8 = part-set-phase total 0
+    in let w9 = food-count-set (food-count-get + 1)
+    in let wa = w1 + w2 + w3 + w4 + w5 + w6 + w7 + w8 + w9
+    in spawn-food-loop count (j + 1)
+
+  spawn-one-fish : Integer -> Integer
+  spawn-one-fish (sp) =
+    let fc = fish-count-get
+    in if fc >= 256 then 0
+    else let fx = rng-range (tank-xmin * 70 / 100) (tank-xmax * 70 / 100)
+    in let fy = rng-range (tank-ymin * 70 / 100) (tank-ymax * 70 / 100)
+    in let fz = rng-range (tank-zmin * 70 / 100) (tank-zmax * 70 / 100)
+    in let halfspd = species-speed sp * 50 / 100
+    in let fvx = rng-range (0 - halfspd) halfspd
+    in let fvy = rng-range (0 - halfspd / 3) (halfspd / 3)
+    in let fvz = rng-range (0 - halfspd) halfspd
+    in let fangle = rng-range (0 - 3142) 3142
+    in let w1 = fish-set-x fc fx
+    in let w2 = fish-set-y fc fy
+    in let w3 = fish-set-z fc fz
+    in let w4 = fish-set-vx fc fvx
+    in let w5 = fish-set-vy fc fvy
+    in let w6 = fish-set-vz fc fvz
+    in let w7 = fish-set-angle fc fangle
+    in let w8 = fish-set-flex fc 0
+    in let w9 = fish-set-species fc sp
+    in let w10 = fish-count-set (fc + 1)
+    in w1 + w2 + w3 + w4 + w5 + w6 + w7 + w8 + w9 + w10
+
+Section: Init and Tick
+
+  init-aquarium : Integer
+  init-aquarium =
+    let w1 = rng-state-set 42
+    in let w2 = fish-count-set 0
+    in let w3 = bubble-count-set 0
+    in let w4 = food-count-set 0
+    in let w5 = speck-count-set 0
+    in let w6 = spawn-all-schools 0
+    in let w7 = spawn-all-specks 0 80
+    in let w8 = light-on-set 1000
+    in let w9 = time-of-day-set 250
+    in let w10 = scatter-timer-set 0
+    in w1 + w2 + w3 + w4 + w5 + w6 + w7 + w8 + w9 + w10
+
+  spawn-all-schools : Integer -> Integer
+  spawn-all-schools (si) =
+    if si >= spawn-count then 0
+    else let sp = spawn-species si
+    in let amt = spawn-amount si
+    in let w = spawn-school sp amt 0
+    in spawn-all-schools (si + 1)
+
+  spawn-school : Integer, Integer, Integer -> Integer
+  spawn-school (sp) (amt) (k) =
+    if k >= amt then 0
+    else let w = spawn-one-fish sp
+    in spawn-school sp amt (k + 1)
+
+  spawn-all-specks : Integer, Integer -> Integer
+  spawn-all-specks (j) (count) =
+    if j >= count then 0
+    else let total = bubble-count-get + food-count-get + speck-count-get
+    in if total >= 512 then 0
+    else let w1 = part-set-x total (rng-range tank-xmin tank-xmax)
+    in let w2 = part-set-y total (rng-range tank-ymin tank-ymax)
+    in let w3 = part-set-z total (rng-range tank-zmin tank-zmax)
+    in let w4 = part-set-vy total (rng-range (0 - 20) 20)
+    in let w5 = part-set-size total (rng-range 10 30)
+    in let w6 = part-set-alpha total (rng-range 200 500)
+    in let w7 = part-set-type total 2
+    in let w8 = part-set-phase total (rng-range 0 6283)
+    in let w9 = speck-count-set (speck-count-get + 1)
+    in let wa = w1 + w2 + w3 + w4 + w5 + w6 + w7 + w8 + w9
+    in spawn-all-specks (j + 1) count
+
+  tick : Integer
+  tick =
+    let dt = delta-time-get
+    in let w1 = update-fish dt
+    in let w2 = update-particles dt
+    in let tod = time-of-day-get
+    in let ntod = int-mod (tod + dt / 300) 1000
+    in let w3 = time-of-day-set ntod
+    in w1 + w2 + w3
+
+  scatter : Integer
+  scatter = scatter-timer-set 200
+
+  toggle-light : Integer
+  toggle-light =
+    if light-on-get > 500 then light-on-set 0
+    else light-on-set 1000
+
+Section: Entry
+
+  keep-alive : Integer -> Integer
+  keep-alive (x) =
+    species-width x + species-height x + species-speed x + species-turn x
+    + species-school x + species-sep x + species-solo x
+    + station-count x + station-t x 0 + station-ry x 0 + station-rz x 0
+    + dorsal-start x + dorsal-end x + dorsal-height x
+    + tail-height x + tail-fork x
+    + spawn-count + spawn-species x + spawn-amount x
+    + tank-xmin + tank-xmax + tank-ymin + tank-ymax + tank-zmin + tank-zmax
+    + fish-count-get + bubble-count-get + food-count-get + speck-count-get
+    + scatter-timer-get + light-on-get + time-of-day-get + delta-time-get
+    + current-time-get + rng-state-get
+    + fish-get-x 0 + fish-get-y 0 + fish-get-z 0
+    + fish-get-vx 0 + fish-get-vy 0 + fish-get-vz 0
+    + fish-get-angle 0 + fish-get-flex 0 + fish-get-species 0
+    + part-get-x 0 + part-get-y 0 + part-get-z 0
+    + part-get-vy 0 + part-get-size 0 + part-get-alpha 0
+    + part-get-type 0 + part-get-phase 0
+    + isqrt 100 + isin1000 0 + icos1000 0 + iatan2-1000 1 1
+    + rng-next + init-aquarium + tick + spawn-food
+    + scatter + toggle-light + spawn-one-fish x
+    + update-fish 16 + update-particles 16
+
+  opening : [Console] Nothing
+  opening = act
+    let w = init-aquarium
+    in let k = keep-alive 0
+    in print-line (show (species-count + k - k))
+  end
+
+Page 1

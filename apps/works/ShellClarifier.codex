@@ -1,0 +1,117 @@
+Chapter: ShellClarifier
+  cites OS chapter Clarifier
+  cites OS chapter ShellCore
+  cites OS chapter ProgramRegistry
+  cites Trust chapter TrustLattice
+  cites Trust chapter PolicyEngine
+  cites Foreword chapter FactStore
+  cites Foreword chapter Sha256
+  cites Foreword chapter Maybe
+  cites Foreword chapter StringUtils
+
+ Diagnostic clarifier for the Codex shell. Explains install failures,
+ trust rejections, and verification errors in plain language.
+
+ We say:
+
+Section: Diagnostic Clarification
+
+  diagnose-install-failure : Text, Text, ShellState, Register -> ClarifyResult
+  diagnose-install-failure (name) (reason) (state) (reg) =
+    let nodes = build-install-nodes name reason state
+    in clarify nodes reg
+
+  build-install-nodes : Text, Text, ShellState -> Utterance
+  build-install-nodes (name) (reason) (state) =
+    let solid = [SolidNode { label = "install", description = "user wants to install " & name }]
+    in let unresolved = diagnose-reason reason name state
+    in Utterance { solid = solid, unresolved = unresolved }
+
+  diagnose-reason : Text, Text, ShellState -> List UnresolvedNode
+  diagnose-reason (reason) (name) (state) =
+    if text-starts-with reason "trust score" then [
+      UnresolvedNode {
+        kind = ReferentQuestion,
+        label = "author",
+        ambiguity = "author not in trust lattice or score too low"
+      },
+      UnresolvedNode {
+        kind = ThresholdQuestion,
+        label = "trust-threshold",
+        ambiguity = reason
+      }
+    ]
+    else if text-starts-with reason "binary too small" then [
+      UnresolvedNode {
+        kind = DomainQuestion,
+        label = name,
+        ambiguity = "the provided binary is not a valid CDX file"
+      }
+    ]
+    else if text-starts-with reason "bad magic" then [
+      UnresolvedNode {
+        kind = DomainQuestion,
+        label = name,
+        ambiguity = "the binary does not have a CDX header (expected CDX1 magic)"
+      }
+    ]
+    else if text-starts-with reason "capability" then [
+      UnresolvedNode {
+        kind = ReferentQuestion,
+        label = "capability",
+        ambiguity = reason
+      },
+      UnresolvedNode {
+        kind = DomainQuestion,
+        label = "policy",
+        ambiguity = "the current policy does not allow the requested capabilities"
+      }
+    ]
+    else [
+      UnresolvedNode {
+        kind = DomainQuestion,
+        label = "error",
+        ambiguity = reason
+      }
+    ]
+
+
+Section: Interactive Clarification
+
+  clarify-cmd-result : CmdResult, Register -> Text
+  clarify-cmd-result (result) (reg) =
+    if result.success then result.output
+    else let diagnosis = build-failure-nodes (result.output)
+    in let cr = clarify diagnosis reg
+    in if cr.fully-resolved then result.output
+    else cr.next-question
+
+  build-failure-nodes : Text -> Utterance
+  build-failure-nodes (msg) =
+    if text-starts-with msg "denied:" then Utterance {
+      solid = [SolidNode { label = "command", description = "command was attempted" }],
+      unresolved = [
+        UnresolvedNode { kind = ReferentQuestion, label = "authorization", ambiguity = msg }
+      ]
+    }
+    else if text-starts-with msg "not found:" then Utterance {
+      solid = [SolidNode { label = "command", description = "command was attempted" }],
+      unresolved = [
+        UnresolvedNode { kind = ReferentQuestion, label = "program", ambiguity = msg }
+      ]
+    }
+    else if text-starts-with msg "duplicate:" then Utterance {
+      solid = [
+        SolidNode { label = "command", description = "command was attempted" },
+        SolidNode { label = "program-exists", description = "program already installed" }
+      ],
+      unresolved = []
+    }
+    else Utterance {
+      solid = [SolidNode { label = "command", description = "command was attempted" }],
+      unresolved = [
+        UnresolvedNode { kind = DomainQuestion, label = "failure", ambiguity = msg }
+      ]
+    }
+
+Page 1

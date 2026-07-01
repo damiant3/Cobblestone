@@ -1,0 +1,98 @@
+Chapter: Arm64Plug
+  cites Foreword chapter Maybe
+
+ Plug entry. Reads IR text from serial input (file-mapped by
+ codex-vm), runs the ARM64 code generator, writes binary wire
+ output to serial as raw bytes via UART port.
+
+Section: Raw Output
+
+  serial-data-port : Integer = 1016
+
+  serial-write-byte : Integer -> Integer
+  serial-write-byte (b) = port-out-byte serial-data-port b
+
+  serial-write-loop : List Integer, Integer, Integer -> Integer
+  serial-write-loop (bs) (i) (len) =
+   if i >= len then len
+   else let w = serial-write-byte (list-at bs i)
+   in serial-write-loop bs (i + 1) len
+
+  serial-write-bytes : List Integer -> Integer
+  serial-write-bytes (bs) = serial-write-loop bs 0 (list-length bs)
+
+  wire-buf-addr : Integer = #500000
+
+  serial-write-buf-loop : Integer, Integer, Integer -> Integer
+  serial-write-buf-loop (buf) (i) (len) =
+   if i >= len then len
+   else let b = peek-byte buf i
+   in let w = serial-write-byte b
+   in serial-write-buf-loop buf (i + 1) len
+
+  serial-write-via-buf : List Integer, Integer -> Integer
+  serial-write-via-buf (bs) (len) =
+   let copied = __buf-write-bytes wire-buf-addr 0 bs
+   in serial-write-buf-loop wire-buf-addr 0 len
+
+Section: WCET Output
+
+  a64-print-reports : List Text, Integer -> [Console] Nothing
+  a64-print-reports (reports) (i) = act
+   if i >= list-length reports then print-line-uni ""
+   else let line = list-at reports i
+   in act
+    print-line-uni line
+    a64-print-reports reports (i + 1)
+   end
+  end
+
+Section: Body
+
+  dispatch : Text -> [Console, FileSystem] Nothing
+  dispatch (mode) = act
+    source <- read-file mode
+    let parsed = parse-ir-chapter source
+    in let cg-state = a64-emit-module make-a64-state (parsed.chapter) (parsed.type-defs) (parsed.effect-op-names)
+    in let wire = a64-build-wire-output cg-state
+    in let wire-len = a64-wire-length cg-state
+    in let written = serial-write-via-buf wire wire-len
+    in let reports = (cg-state.extra).wcet-reports
+    in if list-length reports > 0 then a64-print-reports reports 0
+    else print-line-uni ""
+  end
+
+  dispatch-repl : Text -> [Console, FileSystem] Nothing
+  dispatch-repl (mode) = act
+    source <- read-file mode
+    let parsed = parse-ir-chapter source
+    in let cg-state = a64-emit-module make-a64-state (parsed.chapter) (parsed.type-defs) (parsed.effect-op-names)
+    in let wire = a64-build-wire-output cg-state
+    in let wire-len = a64-wire-length cg-state
+    in let written = serial-write-via-buf wire wire-len
+    in let reports = (cg-state.extra).wcet-reports
+    in act
+      if list-length reports > 0 then a64-print-reports reports 0
+      else print-line-uni ""
+      print-line-uni "WIRE-END"
+      repl-loop
+    end
+  end
+
+  repl-loop : [Console, FileSystem] Nothing = act
+    mode-result <- read-line-cce
+    when mode-result
+      is Just (mode) -> if text-contains mode "repl" then dispatch-repl mode
+        else dispatch mode
+      is None -> print-line-uni "REPL-DONE"
+  end
+
+  opening : [Console, FileSystem] Nothing = act
+    mode-result <- read-line-cce
+    when mode-result
+      is Just (mode) -> if text-contains mode "repl" then dispatch-repl mode
+        else dispatch mode
+      is None -> print-line-uni "no input"
+  end
+
+Page 1

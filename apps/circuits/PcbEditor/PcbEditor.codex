@@ -1,0 +1,189 @@
+Chapter: PcbEditor
+  cites Foreword chapter List
+
+ The PCB editor state machine. Manages the active tool, layer
+ selection, mouse dispatch, selection, measurement, and the
+ integration point for the interactive router and DRC engine.
+
+Section: PCB Tool
+
+  PcbTool =
+    | PcbToolSelect
+    | PcbToolRoute
+    | PcbToolRouteDiffPair
+    | PcbToolVia
+    | PcbToolZone
+    | PcbToolMeasure
+    | PcbToolPlaceFootprint
+    | PcbToolDrawLine
+    | PcbToolDrawRect
+    | PcbToolDrawCircle
+    | PcbToolDrawArc
+    | PcbToolDrawText
+    | PcbToolTuneSingle
+    | PcbToolTuneDiffPair
+    | PcbToolPan
+    | PcbToolZoom
+
+  pcb-tool-name : PcbTool -> Text
+  pcb-tool-name (t) = when t
+    is PcbToolSelect -> "Select"
+    is PcbToolRoute -> "Route Track"
+    is PcbToolRouteDiffPair -> "Route Diff Pair"
+    is PcbToolVia -> "Place Via"
+    is PcbToolZone -> "Draw Zone"
+    is PcbToolMeasure -> "Measure"
+    is PcbToolPlaceFootprint -> "Place Footprint"
+    is PcbToolDrawLine -> "Draw Line"
+    is PcbToolDrawRect -> "Draw Rectangle"
+    is PcbToolDrawCircle -> "Draw Circle"
+    is PcbToolDrawArc -> "Draw Arc"
+    is PcbToolDrawText -> "Draw Text"
+    is PcbToolTuneSingle -> "Tune Length"
+    is PcbToolTuneDiffPair -> "Tune Diff Pair"
+    is PcbToolPan -> "Pan"
+    is PcbToolZoom -> "Zoom"
+
+Section: PCB Selection
+
+  PcbSelection = record {
+    ps-tracks : List Integer,
+    ps-vias : List Integer,
+    ps-footprints : List Text,
+    ps-zones : List Integer,
+    ps-count : Integer
+  }
+
+  empty-pcb-selection : PcbSelection
+  empty-pcb-selection = PcbSelection {
+    ps-tracks = [],
+    ps-vias = [],
+    ps-footprints = [],
+    ps-zones = [],
+    ps-count = 0
+  }
+
+  pcb-selection-add-track : PcbSelection, Integer -> PcbSelection
+  pcb-selection-add-track (sel) (idx) = PcbSelection {
+    ps-tracks = list-push sel.ps-tracks idx,
+    ps-vias = sel.ps-vias,
+    ps-footprints = sel.ps-footprints,
+    ps-zones = sel.ps-zones,
+    ps-count = sel.ps-count + 1
+  }
+
+  pcb-selection-add-footprint : PcbSelection, Text -> PcbSelection
+  pcb-selection-add-footprint (sel) (ref) = PcbSelection {
+    ps-tracks = sel.ps-tracks,
+    ps-vias = sel.ps-vias,
+    ps-footprints = list-push sel.ps-footprints ref,
+    ps-zones = sel.ps-zones,
+    ps-count = sel.ps-count + 1
+  }
+
+Section: Measurement
+
+  PcbMeasurement = record {
+    pm-x1 : Integer,
+    pm-y1 : Integer,
+    pm-x2 : Integer,
+    pm-y2 : Integer,
+    pm-distance : Integer,
+    pm-angle : Integer
+  }
+
+Section: Editor State
+
+  PcbEditorState = record {
+    pe-active-tool : PcbTool,
+    pe-active-layer : Integer,
+    pe-selection : PcbSelection,
+    pe-cursor-x : Integer,
+    pe-cursor-y : Integer,
+    pe-routing : Integer,
+    pe-route-net : Integer,
+    pe-route-width : Integer,
+    pe-grid-size : Integer,
+    pe-grid-snap : Integer,
+    pe-show-ratsnest : Integer,
+    pe-show-drc-markers : Integer,
+    pe-highlight-net : Integer,
+    pe-modified : Integer,
+    pe-measurement : PcbMeasurement
+  }
+
+  empty-pcb-editor : PcbEditorState
+  empty-pcb-editor = PcbEditorState {
+    pe-active-tool = PcbToolSelect,
+    pe-active-layer = 0,
+    pe-selection = empty-pcb-selection,
+    pe-cursor-x = 0,
+    pe-cursor-y = 0,
+    pe-routing = 0,
+    pe-route-net = -1,
+    pe-route-width = 250000,
+    pe-grid-size = 250000,
+    pe-grid-snap = 1,
+    pe-show-ratsnest = 1,
+    pe-show-drc-markers = 1,
+    pe-highlight-net = -1,
+    pe-modified = 0,
+    pe-measurement = PcbMeasurement {
+      pm-x1 = 0, pm-y1 = 0,
+      pm-x2 = 0, pm-y2 = 0,
+      pm-distance = 0, pm-angle = 0
+    }
+  }
+
+Section: Layer Management
+
+  pcb-set-layer : PcbEditorState, Integer -> PcbEditorState
+  pcb-set-layer (st) (layer) = PcbEditorState {
+    pe-active-tool = st.pe-active-tool,
+    pe-active-layer = layer,
+    pe-selection = st.pe-selection,
+    pe-cursor-x = st.pe-cursor-x,
+    pe-cursor-y = st.pe-cursor-y,
+    pe-routing = st.pe-routing,
+    pe-route-net = st.pe-route-net,
+    pe-route-width = st.pe-route-width,
+    pe-grid-size = st.pe-grid-size,
+    pe-grid-snap = st.pe-grid-snap,
+    pe-show-ratsnest = st.pe-show-ratsnest,
+    pe-show-drc-markers = st.pe-show-drc-markers,
+    pe-highlight-net = st.pe-highlight-net,
+    pe-modified = st.pe-modified,
+    pe-measurement = st.pe-measurement
+  }
+
+Section: Keyboard Shortcuts
+
+  PcbKeyAction =
+    | PcbKeyNone
+    | PcbKeySetTool (PcbTool)
+    | PcbKeyNextLayer
+    | PcbKeyPrevLayer
+    | PcbKeyDelete
+    | PcbKeyRotate
+    | PcbKeyFlip
+    | PcbKeyEscape
+    | PcbKeyUndo
+    | PcbKeyRedo
+    | PcbKeyRunDrc
+    | PcbKeyFillZones
+    | PcbKeyUnfillZones
+    | PcbKeySave
+
+  pcb-key-to-action : Integer -> PcbKeyAction
+  pcb-key-to-action (key) =
+    if key == 88 then PcbKeySetTool PcbToolRoute
+    else if key == 68 then PcbKeySetTool PcbToolRouteDiffPair
+    else if key == 86 then PcbKeySetTool PcbToolVia
+    else if key == 77 then PcbKeySetTool PcbToolMeasure
+    else if key == 27 then PcbKeyEscape
+    else if key == 46 then PcbKeyDelete
+    else if key == 82 then PcbKeyRotate
+    else if key == 70 then PcbKeyFlip
+    else if key == 66 then PcbKeyFillZones
+    else if key == 78 then PcbKeyUnfillZones
+    else PcbKeyNone

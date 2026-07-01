@@ -1,0 +1,324 @@
+Chapter: MapMode
+  cites Globe chapter GlobeTypes
+  cites Globe chapter GlobeScene
+  cites Globe chapter MapTypes
+  cites Globe chapter MapNetwork
+  cites Globe chapter MapSearch
+  cites Foreword chapter Maybe
+  cites Foreword chapter Event
+  cites UI chapter Widget
+  cites UI chapter Layout
+
+ Map/GIS mode controller. Manages the map view state, route
+ planning workflow, POI display, and search. Integrates as
+ a mode within the globe app so map features don't clutter
+ the weather/earthquake feeds.
+
+Section: Globe Mode
+
+  GlobeMode =
+    | ModeEarth
+    | ModeMap
+    | ModeRoute
+    | ModeSearch
+    | ModePoi
+    | ModeElevation
+
+  gm-label : GlobeMode -> Text
+  gm-label (m) = when m
+    is ModeEarth -> "Earth"
+    is ModeMap -> "Map"
+    is ModeRoute -> "Route"
+    is ModeSearch -> "Search"
+    is ModePoi -> "POI"
+    is ModeElevation -> "Elevation"
+
+Section: Map State
+
+  MapState = record {
+    ms-mode : GlobeMode,
+    ms-graph : RoadGraph,
+    ms-pois : PoiStore,
+    ms-bookmarks : BookmarkStore,
+    ms-active-route : Maybe Route,
+    ms-route-options : RouteOptions,
+    ms-route-start : Maybe GeoCoord,
+    ms-route-end : Maybe GeoCoord,
+    ms-route-waypoints : List GeoCoord,
+    ms-waypoint-count : Integer,
+    ms-search-query : Text,
+    ms-search-results : List GeocodeResult,
+    ms-search-result-count : Integer,
+    ms-poi-filter : Maybe PoiCategory,
+    ms-poi-radius-km : Integer,
+    ms-selected-poi : Integer,
+    ms-show-traffic : Boolean,
+    ms-show-pois : Boolean,
+    ms-show-elevation : Boolean,
+    ms-zoom-level : Integer,
+    ms-next-route-id : Integer
+  }
+
+  map-state-new : MapState
+  map-state-new = MapState {
+    ms-mode = ModeEarth,
+    ms-graph = sample-road-network,
+    ms-pois = sample-pois,
+    ms-bookmarks = bookmark-store-new,
+    ms-active-route = None,
+    ms-route-options = ro-default,
+    ms-route-start = None,
+    ms-route-end = None,
+    ms-route-waypoints = [],
+    ms-waypoint-count = 0,
+    ms-search-query = "",
+    ms-search-results = [],
+    ms-search-result-count = 0,
+    ms-poi-filter = None,
+    ms-poi-radius-km = 5,
+    ms-selected-poi = (-1),
+    ms-show-traffic = False,
+    ms-show-pois = True,
+    ms-show-elevation = False,
+    ms-zoom-level = 12,
+    ms-next-route-id = 1
+  }
+
+Section: Mode Switching
+
+  map-set-mode : MapState, GlobeMode -> MapState
+  map-set-mode (st) (mode) = __record-set st "ms-mode" mode
+
+  map-toggle-traffic : MapState -> MapState
+  map-toggle-traffic (st) =
+    __record-set st "ms-show-traffic" (if st.ms-show-traffic then False else True)
+
+  map-toggle-pois : MapState -> MapState
+  map-toggle-pois (st) =
+    __record-set st "ms-show-pois" (if st.ms-show-pois then False else True)
+
+  map-toggle-elevation : MapState -> MapState
+  map-toggle-elevation (st) =
+    __record-set st "ms-show-elevation" (if st.ms-show-elevation then False else True)
+
+Section: Route Planning Workflow
+
+  map-set-start : MapState, Integer, Integer -> MapState
+  map-set-start (st) (lat) (lon) =
+    __record-set st "ms-route-start" (Just (GeoCoord { gc-lat = lat, gc-lon = lon }))
+
+  map-set-end : MapState, Integer, Integer -> MapState
+  map-set-end (st) (lat) (lon) =
+    __record-set st "ms-route-end" (Just (GeoCoord { gc-lat = lat, gc-lon = lon }))
+
+  map-add-waypoint : MapState, Integer, Integer -> MapState
+  map-add-waypoint (st) (lat) (lon) =
+    let wp = GeoCoord { gc-lat = lat, gc-lon = lon }
+    in __record-set (__record-set st
+      "ms-route-waypoints" (list-push st.ms-route-waypoints wp))
+      "ms-waypoint-count" (st.ms-waypoint-count + 1)
+
+  map-clear-route : MapState -> MapState
+  map-clear-route (st) =
+    __record-set (__record-set (__record-set (__record-set (__record-set st
+      "ms-active-route" None)
+      "ms-route-start" None)
+      "ms-route-end" None)
+      "ms-route-waypoints" [])
+      "ms-waypoint-count" 0
+
+  map-calculate-route : MapState -> MapState
+  map-calculate-route (st) =
+    when st.ms-route-start
+      is None -> st
+      is Just (start) -> when st.ms-route-end
+        is None -> st
+        is Just (end-coord) ->
+          let start-node = rg-nearest-node st.ms-graph start.gc-lat start.gc-lon
+          in let end-node = rg-nearest-node st.ms-graph end-coord.gc-lat end-coord.gc-lon
+          in when start-node
+            is None -> st
+            is Just (sn) -> when end-node
+              is None -> st
+              is Just (en) ->
+                let result = find-route st.ms-graph sn.rn-id en.rn-id st.ms-route-options.ro-mode st.ms-route-options
+                in let steps = generate-directions st.ms-graph result.rr-path st.ms-route-options.ro-mode
+                in let route = Route {
+                  rt-id = st.ms-next-route-id,
+                  rt-name = "Route",
+                  rt-mode = st.ms-route-options.ro-mode,
+                  rt-steps = steps,
+                  rt-step-count = list-length steps,
+                  rt-total-distance-m = result.rr-total-distance,
+                  rt-total-duration-sec = result.rr-total-time,
+                  rt-waypoints = [start, end-coord],
+                  rt-waypoint-count = 2,
+                  rt-elevation-gain = 0,
+                  rt-elevation-loss = 0,
+                  rt-toll-roads = False,
+                  rt-avoid-highways = st.ms-route-options.ro-avoid-highways
+                }
+                in __record-set (__record-set st
+                  "ms-active-route" (Just route))
+                  "ms-next-route-id" (st.ms-next-route-id + 1)
+
+Section: Search
+
+  map-search : MapState, Text, List CityPoint -> MapState
+  map-search (st) (query) (cities) =
+    let results = geocode query cities
+    in __record-set (__record-set (__record-set st
+      "ms-search-query" query)
+      "ms-search-results" results)
+      "ms-search-result-count" (list-length results)
+
+  map-clear-search : MapState -> MapState
+  map-clear-search (st) =
+    __record-set (__record-set (__record-set st
+      "ms-search-query" "")
+      "ms-search-results" [])
+      "ms-search-result-count" 0
+
+Section: POI Filter
+
+  map-set-poi-filter : MapState, PoiCategory -> MapState
+  map-set-poi-filter (st) (cat) =
+    __record-set st "ms-poi-filter" (Just cat)
+
+  map-clear-poi-filter : MapState -> MapState
+  map-clear-poi-filter (st) =
+    __record-set st "ms-poi-filter" None
+
+  map-set-poi-radius : MapState, Integer -> MapState
+  map-set-poi-radius (st) (km) =
+    __record-set st "ms-poi-radius-km" km
+
+  map-visible-pois : MapState, Integer, Integer -> List PointOfInterest
+  map-visible-pois (st) (center-lat) (center-lon) =
+    let radius-m = st.ms-poi-radius-km * 1000
+    in let nearby = ps-within-radius st.ms-pois center-lat center-lon radius-m
+    in when st.ms-poi-filter
+      is None -> nearby
+      is Just (cat) -> filter-category nearby cat 0 (list-length nearby) []
+
+Section: Route Options
+
+  map-set-travel-mode : MapState, TravelMode -> MapState
+  map-set-travel-mode (st) (mode) =
+    __record-set st "ms-route-options" (__record-set st.ms-route-options "ro-mode" mode)
+
+  map-toggle-avoid-tolls : MapState -> MapState
+  map-toggle-avoid-tolls (st) =
+    let opts = st.ms-route-options
+    in __record-set st "ms-route-options"
+      (__record-set opts "ro-avoid-tolls" (if opts.ro-avoid-tolls then False else True))
+
+  map-toggle-avoid-highways : MapState -> MapState
+  map-toggle-avoid-highways (st) =
+    let opts = st.ms-route-options
+    in __record-set st "ms-route-options"
+      (__record-set opts "ro-avoid-highways" (if opts.ro-avoid-highways then False else True))
+
+Section: Bookmarks
+
+  map-add-bookmark : MapState, Text, Integer, Integer, Text -> MapState
+  map-add-bookmark (st) (name) (lat) (lon) (notes) =
+    __record-set st "ms-bookmarks" (bs-add st.ms-bookmarks name lat lon st.ms-zoom-level notes)
+
+Section: Map UI Widgets
+
+  map-toolbar-widget : MapState -> WidgetNode
+  map-toolbar-widget (st) =
+    let mode-lbl = widget-label "map-mode" ("Mode: " & gm-label st.ms-mode)
+    in let drive-btn = widget-button "map-drive" "Drive"
+    in let walk-btn = widget-button "map-walk" "Walk"
+    in let bike-btn = widget-button "map-bike" "Bike"
+    in let transit-btn = widget-button "map-transit" "Transit"
+    in let traffic-btn = widget-button "map-traffic" (if st.ms-show-traffic then "[T] Traffic ON" else "[T] Traffic")
+    in let poi-btn = widget-button "map-poi" (if st.ms-show-pois then "[P] POIs ON" else "[P] POIs")
+    in let elev-btn = widget-button "map-elev" (if st.ms-show-elevation then "[E] Elev ON" else "[E] Elev")
+    in widget-panel "map-toolbar" DirRow 4
+      [mode-lbl, drive-btn, walk-btn, bike-btn, transit-btn, traffic-btn, poi-btn, elev-btn]
+
+  route-panel-widget : MapState -> WidgetNode
+  route-panel-widget (st) =
+    let title = widget-label "rt-title" "Route Planner"
+    in let start-lbl = widget-label "rt-start" (when st.ms-route-start
+          is None -> "Start: (click map)"
+          is Just (c) -> "Start: " & show c.gc-lat & ", " & show c.gc-lon)
+    in let end-lbl = widget-label "rt-end" (when st.ms-route-end
+          is None -> "End: (click map)"
+          is Just (c) -> "End: " & show c.gc-lat & ", " & show c.gc-lon)
+    in let calc-btn = widget-button "rt-calc" "Calculate Route"
+    in let clear-btn = widget-button "rt-clear" "Clear"
+    in let mode-lbl = widget-label "rt-mode" ("Mode: " & tm-label st.ms-route-options.ro-mode)
+    in let opts = widget-panel "rt-opts" DirRow 4 [
+          widget-button "rt-no-tolls" (if st.ms-route-options.ro-avoid-tolls then "[x] No Tolls" else "[ ] No Tolls"),
+          widget-button "rt-no-hw" (if st.ms-route-options.ro-avoid-highways then "[x] No Highways" else "[ ] No Highways")
+        ]
+    in let route-info = when st.ms-active-route
+          is None -> widget-label "rt-info" "No route calculated"
+          is Just (r) -> widget-label "rt-info" (format-route-summary r)
+    in let directions = when st.ms-active-route
+          is None -> widget-label "rt-dirs" ""
+          is Just (r) -> directions-widget r.rt-steps r.rt-step-count
+    in widget-panel "route-panel" DirColumn 4
+      [title, start-lbl, end-lbl, mode-lbl, opts, calc-btn, clear-btn, route-info, directions]
+
+  directions-widget : List RouteStep, Integer -> WidgetNode
+  directions-widget (steps) (count) =
+    let title = widget-label "dir-title" ("Directions (" & show count & " steps)")
+    in let rows = dir-rows steps 0 count []
+    in widget-panel "directions" DirColumn 2 (title :: rows)
+
+  dir-rows : List RouteStep, Integer, Integer, List WidgetNode -> List WidgetNode
+  dir-rows (steps) (i) (len) (acc) =
+    if i >= len then acc
+    else let s = list-at steps i
+    in let row = widget-label ("dir-" & show i) (format-step s i)
+    in dir-rows steps (i + 1) len (list-push acc row)
+
+  search-panel-widget : MapState -> WidgetNode
+  search-panel-widget (st) =
+    let title = widget-label "srch-title" "Search"
+    in let query-lbl = widget-label "srch-q" ("Query: " & st.ms-search-query)
+    in let count-lbl = widget-label "srch-count" (show st.ms-search-result-count & " results")
+    in let rows = search-result-rows st.ms-search-results 0 st.ms-search-result-count []
+    in widget-panel "search-panel" DirColumn 4 [title, query-lbl, count-lbl] & rows
+
+  search-result-rows : List GeocodeResult, Integer, Integer, List WidgetNode -> List WidgetNode
+  search-result-rows (results) (i) (len) (acc) =
+    if i >= len then acc
+    else let r = list-at results i
+    in let row = widget-label ("srch-r-" & show i) (r.gcr-display & " (" & r.gcr-type & ")")
+    in search-result-rows results (i + 1) len (list-push acc row)
+
+  poi-panel-widget : MapState, Integer, Integer -> WidgetNode
+  poi-panel-widget (st) (lat) (lon) =
+    let title = widget-label "poi-title" "Points of Interest"
+    in let visible = map-visible-pois st lat lon
+    in let count-lbl = widget-label "poi-count" (show (list-length visible) & " nearby")
+    in let rows = poi-rows visible 0 (list-length visible) []
+    in widget-panel "poi-panel" DirColumn 4 ([title, count-lbl] & rows)
+
+  poi-rows : List PointOfInterest, Integer, Integer, List WidgetNode -> List WidgetNode
+  poi-rows (pois) (i) (len) (acc) =
+    if i >= len then acc
+    else let p = list-at pois i
+    in let row = widget-label ("poi-r-" & show p.poi-id)
+          (poi-icon p.poi-category & " " & p.poi-name & " — " & p.poi-address)
+    in poi-rows pois (i + 1) len (list-push acc row)
+
+  bookmark-panel-widget : MapState -> WidgetNode
+  bookmark-panel-widget (st) =
+    let title = widget-label "bm-title" ("Bookmarks (" & show st.ms-bookmarks.bs-count & ")")
+    in let rows = bm-rows st.ms-bookmarks.bs-bookmarks 0 st.ms-bookmarks.bs-count []
+    in widget-panel "bookmark-panel" DirColumn 4 (title :: rows)
+
+  bm-rows : List MapBookmark, Integer, Integer, List WidgetNode -> List WidgetNode
+  bm-rows (bms) (i) (len) (acc) =
+    if i >= len then acc
+    else let b = list-at bms i
+    in let row = widget-label ("bm-" & show b.mb-id)
+          (b.mb-name & " (" & show b.mb-lat & ", " & show b.mb-lon & ")")
+    in bm-rows bms (i + 1) len (list-push acc row)

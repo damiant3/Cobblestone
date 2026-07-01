@@ -1,0 +1,135 @@
+Chapter: InputSource
+  cites UI chapter Event
+  cites UI chapter BoxModel
+
+ Bare-metal input polling. Reads mouse from I/O ports 0xE1-0xE4
+ (absolute coordinates written by codex-vm) and keyboard from
+ GPA 28680 (scan code byte). Produces Event records that the
+ Orchestrator can dispatch.
+
+Section: Constants
+
+  is-kb-addr : Integer = 28680
+
+Section: Types
+
+  RawInput = record {
+    ri-mx : Integer,
+    ri-my : Integer,
+    ri-left : Integer,
+    ri-right : Integer,
+    ri-middle : Integer,
+    ri-key : Integer,
+    ri-prev-mx : Integer,
+    ri-prev-my : Integer,
+    ri-prev-left : Integer,
+    ri-prev-right : Integer,
+    ri-prev-middle : Integer,
+    ri-prev-key : Integer,
+    ri-max-x : Integer,
+    ri-max-y : Integer
+  }
+
+Section: Construction
+
+  raw-input-new : Integer, Integer -> RawInput
+  raw-input-new (w) (h) = RawInput {
+    ri-mx = w / 2, ri-my = h / 2,
+    ri-left = 0, ri-right = 0, ri-middle = 0, ri-key = 0,
+    ri-prev-mx = w / 2, ri-prev-my = h / 2,
+    ri-prev-left = 0, ri-prev-right = 0, ri-prev-middle = 0, ri-prev-key = 0,
+    ri-max-x = w - 1, ri-max-y = h - 1
+  }
+
+Section: Polling
+
+  raw-input-poll : RawInput -> RawInput
+  raw-input-poll (ri) =
+    let dummy = port-in-byte 96
+    in let sc = peek-byte is-kb-addr 0
+    in let ck = if sc /= 0 then poke-byte is-kb-addr 0 0 else 0
+    in let has-mouse = port-in-byte #E4
+    in let btn = if has-mouse > 0 then port-in-byte #E1 else 0
+    in let abs-x = if has-mouse > 0 then port-in-16 #E2 else ri.ri-mx
+    in let abs-y = if has-mouse > 0 then port-in-16 #E3 else ri.ri-my
+    in let mx = ri-clamp abs-x 0 (ri.ri-max-x)
+    in let my = ri-clamp abs-y 0 (ri.ri-max-y)
+    in let ignore = ck
+    in RawInput {
+      ri-mx = mx, ri-my = my,
+      ri-left = if bit-and btn 1 > 0 then 1 else 0,
+      ri-right = if bit-and btn 2 > 0 then 1 else 0,
+      ri-middle = if bit-and btn 4 > 0 then 1 else 0,
+      ri-key = sc,
+      ri-prev-mx = ri.ri-mx, ri-prev-my = ri.ri-my,
+      ri-prev-left = ri.ri-left, ri-prev-right = ri.ri-right,
+      ri-prev-middle = ri.ri-middle, ri-prev-key = ri.ri-key,
+      ri-max-x = ri.ri-max-x, ri-max-y = ri.ri-max-y
+    }
+
+Section: Event Generation
+
+  ri-collect-events : RawInput, Integer -> List Event
+  ri-collect-events (ri) (ts) =
+    let acc = ri-mouse-move-events ri ts []
+    in let acc2 = ri-mouse-btn-events ri ts acc
+    in ri-key-events ri ts acc2
+
+  ri-mouse-move-events : RawInput, Integer, List Event -> List Event
+  ri-mouse-move-events (ri) (ts) (acc) =
+    if ri.ri-mx == ri.ri-prev-mx then
+      if ri.ri-my == ri.ri-prev-my then acc
+      else list-push acc (event-mouse-move (ri.ri-mx) (ri.ri-my) ts)
+    else list-push acc (event-mouse-move (ri.ri-mx) (ri.ri-my) ts)
+
+  ri-mouse-btn-events : RawInput, Integer, List Event -> List Event
+  ri-mouse-btn-events (ri) (ts) (acc) =
+    let acc2 = ri-btn-edge acc ri.ri-left ri.ri-prev-left btn-left (ri.ri-mx) (ri.ri-my) ts
+    in let acc3 = ri-btn-edge acc2 ri.ri-right ri.ri-prev-right btn-right (ri.ri-mx) (ri.ri-my) ts
+    in ri-btn-edge acc3 ri.ri-middle ri.ri-prev-middle btn-middle (ri.ri-mx) (ri.ri-my) ts
+
+  ri-btn-edge : List Event, Integer, Integer, Integer, Integer, Integer, Integer -> List Event
+  ri-btn-edge (acc) (cur) (prev) (btn) (mx) (my) (ts) =
+    if cur == 1 then
+      if prev == 0 then list-push acc (event-mouse-down mx my btn ts)
+      else acc
+    else if prev == 1 then list-push acc (event-mouse-up mx my btn ts)
+    else acc
+
+  ri-key-events : RawInput, Integer, List Event -> List Event
+  ri-key-events (ri) (ts) (acc) =
+    let sc = ri.ri-key
+    in if sc == 0 then acc
+    else if sc >= 128 then list-push acc (event-key-up (sc - 128) mod-none ts)
+    else if ri.ri-prev-key == 0 then list-push acc (event-key-down sc mod-none ts)
+    else acc
+
+Section: Helpers
+
+  ri-clamp : Integer, Integer, Integer -> Integer
+  ri-clamp (v) (lo) (hi) = if v < lo then lo else if v > hi then hi else v
+
+  ri-dx : RawInput -> Integer
+  ri-dx (ri) = ri.ri-mx - ri.ri-prev-mx
+
+  ri-dy : RawInput -> Integer
+  ri-dy (ri) = ri.ri-my - ri.ri-prev-my
+
+  ri-left-down : RawInput -> Boolean
+  ri-left-down (ri) = if ri.ri-left == 1 then if ri.ri-prev-left == 0 then True else False else False
+
+  ri-left-up : RawInput -> Boolean
+  ri-left-up (ri) = if ri.ri-left == 0 then if ri.ri-prev-left == 1 then True else False else False
+
+  ri-right-down : RawInput -> Boolean
+  ri-right-down (ri) = if ri.ri-right == 1 then if ri.ri-prev-right == 0 then True else False else False
+
+  ri-middle-held : RawInput -> Boolean
+  ri-middle-held (ri) = if ri.ri-middle == 1 then True else False
+
+  ri-key-pressed : RawInput -> Integer
+  ri-key-pressed (ri) =
+    let sc = ri.ri-key
+    in if sc > 0 then if sc < 128 then if ri.ri-prev-key == 0 then sc else 0 else 0 else 0
+
+Page 1

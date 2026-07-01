@@ -1,0 +1,163 @@
+Chapter: LoadTest
+  cites Foreword chapter CCE
+
+ A LoadScenario describes a named batch of requests with a payload size.
+ A LoadResult accumulates completed requests, errors, and total bytes.
+ To load-scenario gives a new scenario with a name, request count, and payload size.
+ To load-result-empty gives a zeroed result for a named scenario.
+ To load-result-add records one completed request with a byte count.
+ To load-result-error records one failed request.
+ To load-run-fold runs a scenario by folding a handler over a sequence.
+ To load-payload gives a list of N bytes for use as a request body.
+ To load-http-get gives a GET request line as a byte list for a given path.
+ To load-http-post gives a POST request with an N-byte body as a byte list.
+ To load-report gives a formatted text summary of a LoadResult.
+ To load-suite-report gives a formatted summary of multiple LoadResults.
+
+ We say:
+
+Section: Scenario
+
+  LoadScenario = record {
+    ls-name : Text,
+    ls-requests : Integer,
+    ls-payload-size : Integer
+  }
+
+  load-scenario : Text, Integer, Integer -> LoadScenario
+  load-scenario (name) (requests) (payload-size) =
+    LoadScenario { ls-name = name, ls-requests = requests, ls-payload-size = payload-size }
+
+Section: Result
+
+  LoadResult = record {
+    lr-name : Text,
+    lr-completed : Integer,
+    lr-errors : Integer,
+    lr-bytes : Integer,
+    lr-ticks : Integer
+  }
+
+  load-result-empty : Text -> LoadResult
+  load-result-empty (name) =
+    LoadResult { lr-name = name, lr-completed = 0, lr-errors = 0, lr-bytes = 0, lr-ticks = 0 }
+
+  load-result-add : LoadResult, Integer -> LoadResult
+  load-result-add (r) (bytes) =
+    LoadResult { lr-name = r.lr-name, lr-completed = r.lr-completed + 1, lr-errors = r.lr-errors, lr-bytes = r.lr-bytes + bytes, lr-ticks = r.lr-ticks }
+
+  load-result-error : LoadResult -> LoadResult
+  load-result-error (r) =
+    LoadResult { lr-name = r.lr-name, lr-completed = r.lr-completed, lr-errors = r.lr-errors + 1, lr-bytes = r.lr-bytes, lr-ticks = r.lr-ticks }
+
+  load-result-with-ticks : LoadResult, Integer -> LoadResult
+  load-result-with-ticks (r) (ticks) =
+    LoadResult { lr-name = r.lr-name, lr-completed = r.lr-completed, lr-errors = r.lr-errors, lr-bytes = r.lr-bytes, lr-ticks = ticks }
+
+  load-result-merge : LoadResult, LoadResult -> LoadResult
+  load-result-merge (a) (b) =
+    LoadResult { lr-name = a.lr-name, lr-completed = a.lr-completed + b.lr-completed, lr-errors = a.lr-errors + b.lr-errors, lr-bytes = a.lr-bytes + b.lr-bytes, lr-ticks = a.lr-ticks + b.lr-ticks }
+
+Section: Runner
+
+  load-run-fold : LoadScenario, (Integer, Integer -> LoadStep) -> LoadResult
+  load-run-fold (scenario) (handler) =
+    let t0 = get-ticks
+    in let r = load-run-loop handler 0 (scenario.ls-requests) (scenario.ls-payload-size) (load-result-empty (scenario.ls-name))
+    in let t1 = get-ticks
+    in load-result-with-ticks r (t1 - t0)
+
+  LoadStep = record {
+    step-ok : Boolean,
+    step-bytes : Integer
+  }
+
+  load-step-ok : Integer -> LoadStep
+  load-step-ok (bytes) = LoadStep { step-ok = True, step-bytes = bytes }
+
+  load-step-fail : LoadStep
+  load-step-fail = LoadStep { step-ok = False, step-bytes = 0 }
+
+  load-run-loop : (Integer, Integer -> LoadStep), Integer, Integer, Integer, LoadResult -> LoadResult
+  load-run-loop (handler) (i) (n) (payload-size) (acc) =
+    if i >= n then acc
+    else let h = __heap-save
+    in let step = handler i payload-size
+    in let ok = step.step-ok
+    in let bytes = step.step-bytes
+    in let ignored = __heap-restore h
+    in let next = if ok then load-result-add acc bytes
+                  else load-result-error acc
+    in load-run-loop handler (i + 1) n payload-size next
+
+Section: Payload Generation
+
+  load-payload : Integer -> List Integer
+  load-payload (n) = load-payload-loop 0 n []
+
+  load-payload-loop : Integer, Integer, List Integer -> List Integer
+  load-payload-loop (i) (n) (acc) =
+    if i >= n then acc
+    else let b = 65 + i - (i / 26) * 26
+    in load-payload-loop (i + 1) n (list-push acc b)
+
+  load-http-get : Text -> List Integer
+  load-http-get (path) =
+    let line = load-text-to-bytes ("GET " & path & " HTTP/1.0") 0 (text-length ("GET " & path & " HTTP/1.0")) []
+    in line & [13, 10, 13, 10]
+
+  load-http-post : Text, Integer -> List Integer
+  load-http-post (path) (body-size) =
+    let body = load-payload body-size
+    in let req-line = load-text-to-bytes ("POST " & path & " HTTP/1.0") 0 (text-length ("POST " & path & " HTTP/1.0")) []
+    in let cl-hdr = load-text-to-bytes ("Content-Length: " & show body-size) 0 (text-length ("Content-Length: " & show body-size)) []
+    in req-line & [13, 10] & cl-hdr & [13, 10, 13, 10] & body
+
+  load-text-to-bytes : Text, Integer, Integer, List Integer -> List Integer
+  load-text-to-bytes (s) (i) (len) (acc) =
+    if i >= len then acc
+    else load-text-to-bytes s (i + 1) len (list-push acc (to-unicode (char-code (char-at s i))))
+
+Section: Reporting
+
+  load-ticks-per-sec : Integer = 18
+
+  load-req-per-sec : LoadResult -> Integer
+  load-req-per-sec (r) =
+    if r.lr-ticks <= 0 then 0
+    else r.lr-completed * load-ticks-per-sec / r.lr-ticks
+
+  load-elapsed-ms : LoadResult -> Integer
+  load-elapsed-ms (r) = r.lr-ticks * 55
+
+  load-report : LoadResult -> Text
+  load-report (r) =
+    let timing = if r.lr-ticks <= 0 then "<1 tick"
+                 else show (load-elapsed-ms r) & "ms, ~" & show (load-req-per-sec r) & " req/s"
+    in r.lr-name & ": "
+    & show (r.lr-completed) & " ok, "
+    & show (r.lr-errors) & " err, "
+    & show (r.lr-bytes) & " bytes, "
+    & timing
+
+  load-suite-report : List LoadResult, Integer, Integer, Text -> Text
+  load-suite-report (results) (i) (n) (acc) =
+    if i >= n then acc
+    else let r = list-at results i
+    in let line = load-report r
+    in let sep = if i + 1 < n then "\n" else ""
+    in load-suite-report results (i + 1) n (acc & line & sep)
+
+  load-suite-summary : List LoadResult -> Text
+  load-suite-summary (results) =
+    let n = list-length results
+    in let totals = load-suite-totals results 0 n (load-result-empty "total")
+    in load-suite-report results 0 n ""
+    & "\n" & load-report totals
+
+  load-suite-totals : List LoadResult, Integer, Integer, LoadResult -> LoadResult
+  load-suite-totals (results) (i) (n) (acc) =
+    if i >= n then acc
+    else load-suite-totals results (i + 1) n (load-result-merge acc (list-at results i))
+
+Page 1

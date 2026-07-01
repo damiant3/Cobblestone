@@ -1,0 +1,229 @@
+Chapter: IsBanking
+  cites ERP chapter ErpTypes
+  cites ERP chapter FinGL
+  cites ERP chapter FinTreasury
+  cites Foreword chapter Maybe
+  cites Foreword chapter List
+
+ Banking: deposit accounts, loan origination and servicing, treasury
+ trading, regulatory reporting (Basel III capital ratios), interest
+ calculation, and payment processing (ACH/wire/SWIFT).
+
+Section: Deposit Accounts
+
+  DepositAccount = record {
+    da-id : Text,
+    da-customer-id : Text,
+    da-type : DepositType,
+    da-balance : Integer,
+    da-currency : Text,
+    da-rate-bps : Integer,
+    da-opened : Integer,
+    da-maturity : Integer,
+    da-status : Text,
+    da-branch : Text,
+    da-tier : Text
+  }
+
+  DepositType =
+    | DemandDeposit
+    | SavingsDeposit
+    | TimeDeposit (Integer)
+    | CertificateOfDeposit (Integer)
+    | MoneyMarketDeposit
+
+  daily-interest : DepositAccount -> Integer
+  daily-interest (da) = da.da-balance * da.da-rate-bps / 3650000
+
+  accrue-interest : DepositAccount, Integer -> DepositAccount
+  accrue-interest (da) (days) =
+    let interest = daily-interest da * days
+    in __record-set da "da-balance" (da.da-balance + interest)
+
+Section: Loan Products
+
+  LoanProduct = record {
+    lp-id : Text,
+    lp-name : Text,
+    lp-type : LoanType,
+    lp-min-amount : Integer,
+    lp-max-amount : Integer,
+    lp-min-term : Integer,
+    lp-max-term : Integer,
+    lp-base-rate-bps : Integer,
+    lp-spread-bps : Integer,
+    lp-rate-type : RateType,
+    lp-collateral-required : Boolean
+  }
+
+  LoanType =
+    | PersonalLoan
+    | AutoLoan
+    | MortgageLoan
+    | CommercialLoan
+    | LineOfCredit2
+    | ConstructionLoan
+    | SBALoan
+    | StudentLoan
+
+  RateType =
+    | FixedRate
+    | VariableRate (Text)
+    | HybridRate (Integer) (Integer)
+
+Section: Loan Accounts
+
+  LoanAccount = record {
+    la-id : Text,
+    la-product-id : Text,
+    la-customer-id : Text,
+    la-principal : Integer,
+    la-outstanding : Integer,
+    la-rate-bps : Integer,
+    la-term-months : Integer,
+    la-payment-amount : Integer,
+    la-next-payment : Integer,
+    la-payments-made : Integer,
+    la-interest-paid : Integer,
+    la-principal-paid : Integer,
+    la-status : LoanStatus,
+    la-collateral : Text,
+    la-ltv-pct : Integer,
+    la-originated : Integer,
+    la-maturity : Integer,
+    la-delinquent-days : Integer,
+    la-risk-rating : Integer
+  }
+
+  LoanStatus =
+    | LoanCurrent
+    | LoanDelinquent30
+    | LoanDelinquent60
+    | LoanDelinquent90
+    | LoanDefault
+    | LoanPaidOff
+    | LoanChargedOff
+    | LoanForbearance
+
+ The annuity formula in x10000 fixed point: the monthly rate mr is
+ rate-bps / 12 (both are fractions x10000), and power-inv gives
+ (1 + mr)^-months on the same scale, therefore the denominator
+ 10000 - power-inv is the annuity factor x10000. Truncation in
+ power-inv understates long-term payments by under one percent;
+ callers needing exactness must use an exact amortization schedule.
+
+  monthly-payment : Integer, Integer, Integer -> Integer
+  monthly-payment (principal) (rate-bps) (months) =
+    if months == 0 then 0
+    else if rate-bps == 0 then principal / months
+    else let mr = rate-bps / 12
+    in if mr == 0 then principal / months
+    else principal * mr / (10000 - power-inv (10000 + mr) months)
+
+  power-inv : Integer, Integer -> Integer
+  power-inv (base-x10000) (n) = power-inv-loop base-x10000 n 10000
+
+  power-inv-loop : Integer, Integer, Integer -> Integer
+  power-inv-loop (base) (n) (acc) =
+    if n <= 0 then acc
+    else power-inv-loop base (n - 1) (acc * 10000 / base)
+
+  amortize : Integer, Integer, Integer -> (Integer, Integer)
+  amortize (outstanding) (rate-bps) (payment) =
+    let interest = outstanding * rate-bps / 120000
+    in let principal-pmt = payment - interest
+    in (principal-pmt, interest)
+
+Section: Regulatory Capital (Basel III)
+
+  CapitalRatios = record {
+    cr-cet1 : Integer,
+    cr-tier1 : Integer,
+    cr-total-capital : Integer,
+    cr-rwa : Integer,
+    cr-cet1-ratio-bps : Integer,
+    cr-tier1-ratio-bps : Integer,
+    cr-total-ratio-bps : Integer,
+    cr-leverage-ratio-bps : Integer
+  }
+
+  calc-capital-ratios : Integer, Integer, Integer, Integer, Integer -> CapitalRatios
+  calc-capital-ratios (cet1) (at1) (tier2) (rwa) (total-exposure) =
+    let tier1 = cet1 + at1
+    in let total = tier1 + tier2
+    in CapitalRatios {
+      cr-cet1 = cet1, cr-tier1 = tier1, cr-total-capital = total, cr-rwa = rwa,
+      cr-cet1-ratio-bps = if rwa == 0 then 0 else cet1 * 10000 / rwa,
+      cr-tier1-ratio-bps = if rwa == 0 then 0 else tier1 * 10000 / rwa,
+      cr-total-ratio-bps = if rwa == 0 then 0 else total * 10000 / rwa,
+      cr-leverage-ratio-bps = if total-exposure == 0 then 0 else tier1 * 10000 / total-exposure
+    }
+
+  capital-adequate : CapitalRatios -> Boolean
+  capital-adequate (cr) =
+    cr.cr-cet1-ratio-bps >= 450 & cr.cr-tier1-ratio-bps >= 600 & cr.cr-total-ratio-bps >= 800
+
+  RiskWeight = record {
+    rw-category : Text,
+    rw-weight-pct : Integer,
+    rw-exposure : Integer,
+    rw-weighted : Integer
+  }
+
+  calc-rwa : List RiskWeight -> Integer
+  calc-rwa (weights) = sum-rwa weights 0 0
+
+  sum-rwa : List RiskWeight, Integer, Integer -> Integer
+  sum-rwa (ws) (i) (acc) =
+    if i >= list-length ws then acc
+    else let w = list-at ws i
+    in sum-rwa ws (i + 1) (acc + w.rw-exposure * w.rw-weight-pct / 100)
+
+Section: Payment Processing
+
+  PaymentChannel =
+    | AchPayment
+    | WireTransfer
+    | SwiftTransfer
+    | FedWire
+    | RtpPayment
+    | CheckClearing
+
+  BankPayment = record {
+    bp-id : Text,
+    bp-channel : PaymentChannel,
+    bp-from-account : Text,
+    bp-to-account : Text,
+    bp-to-routing : Text,
+    bp-amount : Integer,
+    bp-currency : Text,
+    bp-reference : Text,
+    bp-status : Text,
+    bp-initiated : Integer,
+    bp-settled : Integer,
+    bp-fee : Integer
+  }
+
+  channel-fee : PaymentChannel, Integer -> Integer
+  channel-fee (ch) (amount) =
+    when ch
+      is AchPayment -> 25
+      is WireTransfer -> 2500
+      is SwiftTransfer -> 4500
+      is FedWire -> 2000
+      is RtpPayment -> 50
+      is CheckClearing -> 100
+
+Section: Liquidity Coverage
+
+  LcrReport = record {
+    lcr-hqla : Integer,
+    lcr-net-outflows : Integer,
+    lcr-ratio-pct : Integer,
+    lcr-compliant : Boolean
+  }
+
+  calc-lcr : Integer, Integer -> LcrReport
+  calc-lcr (hqla) (net-outflows) =
+    let ratio = if net-outflows == 0 then 10000 else hqla * 100 / net-outflows
+    in LcrReport { lcr-hqla = hqla, lcr-net-outflows = net-outflows, lcr-ratio-pct = ratio, lcr-compliant = ratio >= 100 }

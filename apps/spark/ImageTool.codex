@@ -1,0 +1,91 @@
+Chapter: ImageTool
+  cites Spark chapter Canvas
+  cites Spark chapter Brush
+
+ Image editing tools: paint, erase, fill (flood), eyedropper,
+ and gradient. Operates on Canvas2D through the active layer.
+
+ We say:
+
+Section: Types
+
+  ImageToolKind =
+    | ItPaint
+    | ItErase
+    | ItFill
+    | ItEyedropper
+    | ItGradient
+
+Section: Paint
+
+  img-paint : Canvas2D, BrushSettings, Integer, Integer -> Canvas2D
+  img-paint (cv) (br) (x) (y) = brush-stamp cv br x y
+
+  img-paint-line : Canvas2D, BrushSettings, Integer, Integer, Integer, Integer -> Canvas2D
+  img-paint-line (cv) (br) (x0) (y0) (x1) (y1) = brush-stroke cv br x0 y0 x1 y1
+
+Section: Erase
+
+  img-erase : Canvas2D, Integer, Integer, Integer -> Canvas2D
+  img-erase (cv) (x) (y) (size) =
+    let bg = cv.cv-bg-color
+    in let br = brush-new size bg 1000
+    in brush-stamp cv br x y
+
+Section: Fill
+
+  img-fill : Canvas2D, Integer, Integer, Integer -> Canvas2D
+  img-fill (cv) (x) (y) (color) =
+    if x < 0 then cv
+    else if y < 0 then cv
+    else if x >= cv.cv-width then cv
+    else if y >= cv.cv-height then cv
+    else let target = canvas-get-pixel cv x y
+    in if target == color then cv
+    else img-fill-scan cv x y color target
+
+  img-fill-scan : Canvas2D, Integer, Integer, Integer, Integer -> Canvas2D
+  img-fill-scan (cv) (x) (y) (color) (target) =
+    if x < 0 then cv
+    else if y < 0 then cv
+    else if x >= cv.cv-width then cv
+    else if y >= cv.cv-height then cv
+    else let current = canvas-get-pixel cv x y
+    in if current /= target then cv
+    else let cv2 = canvas-set-pixel cv x y color
+    in let cv3 = img-fill-scan cv2 (x + 1) y color target
+    in let cv4 = img-fill-scan cv3 (x - 1) y color target
+    in let cv5 = img-fill-scan cv4 x (y + 1) color target
+    in img-fill-scan cv5 x (y - 1) color target
+
+Section: Eyedropper
+
+  img-eyedropper : Canvas2D, Integer, Integer -> Integer
+  img-eyedropper (cv) (x) (y) = canvas-get-pixel cv x y
+
+Section: Gradient
+
+  img-gradient-h : Canvas2D, Integer, Integer, Integer, Integer, Integer, Integer -> Canvas2D
+  img-gradient-h (cv) (x0) (y0) (x1) (y1) (color-a) (color-b) =
+    img-gradient-h-loop cv x0 y0 x1 y1 color-a color-b y0
+
+  img-gradient-h-loop : Canvas2D, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Canvas2D
+  img-gradient-h-loop (cv) (x0) (y0) (x1) (y1) (color-a) (color-b) (y) =
+    if y > y1 then cv
+    else let cv2 = img-gradient-h-row cv x0 x1 y color-a color-b
+    in img-gradient-h-loop cv2 x0 y0 x1 y1 color-a color-b (y + 1)
+
+  img-gradient-h-row : Canvas2D, Integer, Integer, Integer, Integer, Integer -> Canvas2D
+  img-gradient-h-row (cv) (x0) (x1) (y) (color-a) (color-b) =
+    img-gradient-row-loop cv x0 x1 y color-a color-b x0
+
+  img-gradient-row-loop : Canvas2D, Integer, Integer, Integer, Integer, Integer, Integer -> Canvas2D
+  img-gradient-row-loop (cv) (x0) (x1) (y) (color-a) (color-b) (x) =
+    if x > x1 then cv
+    else let dx = x1 - x0
+    in let t = if dx == 0 then 0 else (x - x0) * 1000 / dx
+    in let color = brush-lerp-color color-a color-b t
+    in let cv2 = canvas-set-pixel cv x y color
+    in img-gradient-row-loop cv2 x0 x1 y color-a color-b (x + 1)
+
+Page 1

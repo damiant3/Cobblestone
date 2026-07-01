@@ -1,0 +1,167 @@
+Chapter: Canvas
+  cites Game chapter Rasterizer
+
+ Pixel canvas with layers and blend modes for 2D image editing.
+ Each layer is a Framebuf with an opacity value. The canvas
+ composites layers bottom-to-top.
+
+ We say:
+
+Section: Types
+
+  BlendMode =
+    | BlendNormal
+    | BlendMultiply
+    | BlendScreen
+    | BlendOverlay
+    | BlendAdditive
+
+  CanvasLayer = record {
+    cl-name : Text,
+    cl-pixels : Framebuf,
+    cl-opacity : Real,
+    cl-visible : Boolean,
+    cl-blend : BlendMode,
+    cl-locked : Boolean
+  }
+
+  Canvas2D = record {
+    cv-width : Integer,
+    cv-height : Integer,
+    cv-layers : List CanvasLayer,
+    cv-layer-count : Integer,
+    cv-active-layer : Integer,
+    cv-bg-color : Integer
+  }
+
+Section: Construction
+
+  canvas-new : Integer, Integer, Integer -> Canvas2D
+  canvas-new (w) (h) (bg) =
+    let base-layer = CanvasLayer {
+      cl-name = "Background",
+      cl-pixels = fb-new w h bg,
+      cl-opacity = 1.0,
+      cl-visible = True,
+      cl-blend = BlendNormal,
+      cl-locked = False
+    }
+    in Canvas2D {
+      cv-width = w,
+      cv-height = h,
+      cv-layers = [base-layer],
+      cv-layer-count = 1,
+      cv-active-layer = 0,
+      cv-bg-color = bg
+    }
+
+Section: Layer Management
+
+  canvas-add-layer : Canvas2D, Text -> Canvas2D
+  canvas-add-layer (cv) (name) =
+    let layer = CanvasLayer {
+      cl-name = name,
+      cl-pixels = fb-new (cv.cv-width) (cv.cv-height) 0,
+      cl-opacity = 1.0,
+      cl-visible = True,
+      cl-blend = BlendNormal,
+      cl-locked = False
+    }
+    in Canvas2D {
+      cv-width = cv.cv-width,
+      cv-height = cv.cv-height,
+      cv-layers = list-push (cv.cv-layers) layer,
+      cv-layer-count = cv.cv-layer-count + 1,
+      cv-active-layer = cv.cv-layer-count,
+      cv-bg-color = cv.cv-bg-color
+    }
+
+  canvas-active : Canvas2D -> CanvasLayer
+  canvas-active (cv) = list-at (cv.cv-layers) (cv.cv-active-layer)
+
+  canvas-set-active : Canvas2D, Integer -> Canvas2D
+  canvas-set-active (cv) (idx) =
+    if idx < 0 then cv
+    else if idx >= cv.cv-layer-count then cv
+    else __record-set cv "cv-active-layer" idx
+
+  canvas-set-layer-visible : Canvas2D, Integer, Boolean -> Canvas2D
+  canvas-set-layer-visible (cv) (idx) (vis) =
+    let layer = list-at (cv.cv-layers) idx
+    in let updated = __record-set layer "cl-visible" vis
+    in __record-set cv "cv-layers" (list-set-at (cv.cv-layers) idx updated)
+
+  canvas-set-layer-opacity : Canvas2D, Integer, Real -> Canvas2D
+  canvas-set-layer-opacity (cv) (idx) (opacity) =
+    let layer = list-at (cv.cv-layers) idx
+    in let updated = __record-set layer "cl-opacity" opacity
+    in __record-set cv "cv-layers" (list-set-at (cv.cv-layers) idx updated)
+
+Section: Pixel Access
+
+  canvas-set-pixel : Canvas2D, Integer, Integer, Integer -> Canvas2D
+  canvas-set-pixel (cv) (x) (y) (color) =
+    let layer = canvas-active cv
+    in if layer.cl-locked then cv
+    else let new-fb = fb-set (layer.cl-pixels) x y color
+    in let updated = __record-set layer "cl-pixels" new-fb
+    in __record-set cv "cv-layers" (list-set-at (cv.cv-layers) (cv.cv-active-layer) updated)
+
+  canvas-get-pixel : Canvas2D, Integer, Integer -> Integer
+  canvas-get-pixel (cv) (x) (y) =
+    let layer = canvas-active cv
+    in fb-get (layer.cl-pixels) x y
+
+Section: Compositing
+
+  canvas-flatten : Canvas2D -> Framebuf
+  canvas-flatten (cv) =
+    let base = fb-new (cv.cv-width) (cv.cv-height) (cv.cv-bg-color)
+    in canvas-flatten-loop cv base 0
+
+  canvas-flatten-loop : Canvas2D, Framebuf, Integer -> Framebuf
+  canvas-flatten-loop (cv) (fb) (i) =
+    if i >= cv.cv-layer-count then fb
+    else let layer = list-at (cv.cv-layers) i
+    in let fb2 = if layer.cl-visible then canvas-composite fb (layer.cl-pixels) (layer.cl-opacity) (layer.cl-blend) 0 (cv.cv-width * cv.cv-height) else fb
+    in canvas-flatten-loop cv fb2 (i + 1)
+
+  canvas-composite : Framebuf, Framebuf, Real, BlendMode, Integer, Integer -> Framebuf
+  canvas-composite (dst) (src) (opacity) (mode) (i) (total) =
+    if i >= total then dst
+    else let sc = list-at (src.fb-pixels) i
+    in let fb2 = if sc == 0 then dst
+      else let dc = list-at (dst.fb-pixels) i
+      in let blended = canvas-blend-pixel dc sc opacity mode
+      in Framebuf { fb-width = dst.fb-width, fb-height = dst.fb-height, fb-pixels = list-set-at (dst.fb-pixels) i blended }
+    in canvas-composite fb2 src opacity mode (i + 1) total
+
+  canvas-blend-pixel : Integer, Integer, Real, BlendMode -> Integer
+  canvas-blend-pixel (dst) (src) (opacity) (mode) =
+    let sr = src / 65536
+    in let sg = src / 256 - sr * 256
+    in let sb = src - src / 256 * 256
+    in let dr = dst / 65536
+    in let dg = dst / 256 - dr * 256
+    in let db = dst - dst / 256 * 256
+    in let br = canvas-blend-channel dr sr mode
+    in let bg2 = canvas-blend-channel dg sg mode
+    in let bb = canvas-blend-channel db sb mode
+    in let fr = dr + real-to-int (real-from-int (br - dr) * opacity)
+    in let fg = dg + real-to-int (real-from-int (bg2 - dg) * opacity)
+    in let fb2 = db + real-to-int (real-from-int (bb - db) * opacity)
+    in cv-clamp fr 0 255 * 65536 + cv-clamp fg 0 255 * 256 + cv-clamp fb2 0 255
+
+  canvas-blend-channel : Integer, Integer, BlendMode -> Integer
+  canvas-blend-channel (d) (s) (mode) =
+    when mode
+      is BlendNormal -> s
+      is BlendMultiply -> d * s / 255
+      is BlendScreen -> 255 - (255 - d) * (255 - s) / 255
+      is BlendOverlay -> if d < 128 then 2 * d * s / 255 else 255 - 2 * (255 - d) * (255 - s) / 255
+      is BlendAdditive -> cv-clamp (d + s) 0 255
+
+  cv-clamp : Integer, Integer, Integer -> Integer
+  cv-clamp (v) (lo) (hi) = if v < lo then lo else if v > hi then hi else v
+
+Page 1

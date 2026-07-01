@@ -1,0 +1,123 @@
+Chapter: CommandSystem
+
+ Unified command dispatch. All editor actions route through
+ commands, which carry metadata for undo, keybinding display,
+ menu labels, and execution. Commands are registered in a
+ command palette and invoked by name.
+
+ We say:
+
+Section: Types
+
+  CommandStatus =
+    | CmdReady
+    | CmdRunning
+    | CmdDone
+    | CmdFailed (Text)
+
+  CommandDef = record {
+    cd-name : Text,
+    cd-label : Text,
+    cd-category : Text,
+    cd-shortcut : Text,
+    cd-undoable : Boolean
+  }
+
+  CommandRegistry = record {
+    cr-commands : List CommandDef,
+    cr-count : Integer
+  }
+
+  CommandResult = record {
+    crs-name : Text,
+    crs-status : CommandStatus
+  }
+
+Section: Construction
+
+  command-registry-new : CommandRegistry
+  command-registry-new = CommandRegistry { cr-commands = [], cr-count = 0 }
+
+  command-def : Text, Text, Text, Text, Boolean -> CommandDef
+  command-def (name) (label) (category) (shortcut) (undoable) = CommandDef {
+    cd-name = name,
+    cd-label = label,
+    cd-category = category,
+    cd-shortcut = shortcut,
+    cd-undoable = undoable
+  }
+
+Section: Registration
+
+  cmd-register : CommandRegistry, CommandDef -> CommandRegistry
+  cmd-register (reg) (cmd) = CommandRegistry {
+    cr-commands = list-push (reg.cr-commands) cmd,
+    cr-count = reg.cr-count + 1
+  }
+
+  cmd-find : CommandRegistry, Text -> CommandDef
+  cmd-find (reg) (name) =
+    cmd-find-loop (reg.cr-commands) (reg.cr-count) name 0
+
+  cmd-find-loop : List CommandDef, Integer, Text, Integer -> CommandDef
+  cmd-find-loop (cmds) (count) (name) (i) =
+    if i >= count then command-def name name "unknown" "" False
+    else let cmd = list-at cmds i
+    in if text-starts-with (cmd.cd-name) name then
+      if text-length (cmd.cd-name) == text-length name then cmd
+      else cmd-find-loop cmds count name (i + 1)
+    else cmd-find-loop cmds count name (i + 1)
+
+Section: Default Commands
+
+  cmd-registry-default : CommandRegistry
+  cmd-registry-default =
+    let r = command-registry-new
+    in let r2 = cmd-register r (command-def "grab" "Grab/Move" "Transform" "G" True)
+    in let r3 = cmd-register r2 (command-def "rotate" "Rotate" "Transform" "R" True)
+    in let r4 = cmd-register r3 (command-def "scale" "Scale" "Transform" "S" True)
+    in let r5 = cmd-register r4 (command-def "delete" "Delete" "Edit" "X" True)
+    in let r6 = cmd-register r5 (command-def "undo" "Undo" "Edit" "Ctrl+Z" False)
+    in let r7 = cmd-register r6 (command-def "redo" "Redo" "Edit" "Ctrl+Shift+Z" False)
+    in let r8 = cmd-register r7 (command-def "save" "Save" "File" "Ctrl+S" False)
+    in let r9 = cmd-register r8 (command-def "new" "New" "File" "Ctrl+N" False)
+    in let r10 = cmd-register r9 (command-def "cancel" "Cancel" "Edit" "Esc" False)
+    in let r11 = cmd-register r10 (command-def "duplicate" "Duplicate" "Edit" "Shift+D" True)
+    in let r12 = cmd-register r11 (command-def "select-all" "Select All" "Select" "A" False)
+    in let r13 = cmd-register r12 (command-def "deselect" "Deselect" "Select" "Alt+A" False)
+    in let r14 = cmd-register r13 (command-def "toggle-wireframe" "Toggle Wireframe" "View" "Z" False)
+    in let r15 = cmd-register r14 (command-def "focus-selected" "Focus Selected" "View" "." False)
+    in cmd-register r15 (command-def "toggle-grid" "Toggle Grid" "View" "G" False)
+
+Section: Command Palette Search
+
+  cmd-search : CommandRegistry, Text -> List CommandDef
+  cmd-search (reg) (query) =
+    cmd-search-loop (reg.cr-commands) (reg.cr-count) query 0 []
+
+  cmd-search-loop : List CommandDef, Integer, Text, Integer, List CommandDef -> List CommandDef
+  cmd-search-loop (cmds) (count) (query) (i) (acc) =
+    if i >= count then acc
+    else let cmd = list-at cmds i
+    in let matches = text-contains (cmd.cd-label) query
+    in let acc2 = if matches then list-push acc cmd else acc
+    in cmd-search-loop cmds count query (i + 1) acc2
+
+Section: Result
+
+  cmd-success : Text -> CommandResult
+  cmd-success (name) = CommandResult { crs-name = name, crs-status = CmdDone }
+
+  cmd-failure : Text, Text -> CommandResult
+  cmd-failure (name) (reason) = CommandResult { crs-name = name, crs-status = CmdFailed reason }
+
+Section: Info
+
+  cmd-registry-info : CommandRegistry -> Text
+  cmd-registry-info (reg) = show (reg.cr-count) & " commands"
+
+  cmd-result-info : CommandResult -> Text
+  cmd-result-info (r) =
+    r.crs-name & ": " & (when r.crs-status is CmdReady -> "ready" is CmdRunning -> "running" is CmdDone -> "done" is CmdFailed (msg) -> "failed: " & msg)
+
+Page 1

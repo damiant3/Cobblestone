@@ -1,0 +1,645 @@
+Chapter: Parser
+  cites Mathbook chapter Expr
+
+ Recursive descent parser for mathematical expressions. Converts text
+ input into Expr trees. Precedence climbing: or/and (0), relational (1),
+ add/sub (2), mul/div (3), unary (4), power (5), atoms (6). Supports
+ assignment (name := expr), function calls with comma-separated args,
+ named constants (pi, e, oo, true, false), and special forms (diff,
+ integrate, sum, prod, lim, sqrt, abs).
+
+Section: Character Codes
+
+  pc-space : Integer = char-code ' '
+  pc-tab : Integer = 9
+  pc-zero : Integer = char-code '0'
+  pc-nine : Integer = char-code '9'
+  pc-lower-a : Integer = char-code 'a'
+  pc-lower-z : Integer = char-code 'z'
+  pc-upper-a : Integer = char-code 'A'
+  pc-upper-z : Integer = char-code 'Z'
+  pc-underscore : Integer = char-code '_'
+  pc-minus : Integer = char-code '-'
+  pc-plus : Integer = char-code '+'
+  pc-star : Integer = char-code '*'
+  pc-slash : Integer = char-code '/'
+  pc-caret : Integer = char-code '^'
+  pc-lparen : Integer = char-code '('
+  pc-rparen : Integer = char-code ')'
+  pc-lbracket : Integer = char-code '['
+  pc-rbracket : Integer = char-code ']'
+  pc-lbrace : Integer = char-code '{'
+  pc-rbrace : Integer = char-code '}'
+  pc-comma : Integer = char-code ','
+  pc-dot : Integer = char-code '.'
+  pc-equals : Integer = char-code '='
+  pc-less : Integer = char-code '<'
+  pc-greater : Integer = char-code '>'
+  pc-colon : Integer = char-code ':'
+  pc-pipe : Integer = char-code '|'
+  pc-bang : Integer = char-code '!'
+
+Section: Parse Result
+
+  ParseResult =
+    | ParseOk (Expr) (Integer)
+    | ParseErr (Text) (Integer)
+
+  pr-expr : ParseResult -> Expr
+  pr-expr (r) = when r
+    is ParseOk (e) (pos) -> e
+    is ParseErr (msg) (pos) -> ExUndefined
+
+  pr-pos : ParseResult -> Integer
+  pr-pos (r) = when r
+    is ParseOk (e) (pos) -> pos
+    is ParseErr (msg) (pos) -> pos
+
+  pr-is-ok : ParseResult -> Boolean
+  pr-is-ok (r) = when r
+    is ParseOk (e) (pos) -> True
+    is ParseErr (msg) (pos) -> False
+
+  pr-error : ParseResult -> Text
+  pr-error (r) = when r
+    is ParseOk (e) (pos) -> ""
+    is ParseErr (msg) (pos) -> msg
+
+Section: Scanner Utilities
+
+  ps-is-space : Integer -> Boolean
+  ps-is-space (c) = c == pc-space | c == pc-tab
+
+  ps-is-digit : Integer -> Boolean
+  ps-is-digit (c) = c >= pc-zero & c <= pc-nine
+
+  ps-is-alpha : Integer -> Boolean
+  ps-is-alpha (c) = (c >= pc-lower-a & c <= pc-lower-z) | (c >= pc-upper-a & c <= pc-upper-z)
+
+  ps-is-ident-start : Integer -> Boolean
+  ps-is-ident-start (c) = ps-is-alpha c | c == pc-underscore
+
+  ps-is-ident-char : Integer -> Boolean
+  ps-is-ident-char (c) = ps-is-alpha c | ps-is-digit c | c == pc-underscore
+
+  ps-skip-ws : Text, Integer, Integer -> Integer
+  ps-skip-ws (src) (pos) (len) =
+    if pos >= len then pos
+    else if ps-is-space (char-code-at src pos) then ps-skip-ws src (pos + 1) len
+    else pos
+
+  ps-peek : Text, Integer, Integer -> Integer
+  ps-peek (src) (pos) (len) =
+    if pos >= len then 0
+    else char-code-at src pos
+
+  ps-peek-at : Text, Integer, Integer, Integer -> Integer
+  ps-peek-at (src) (pos) (offset) (len) =
+    if pos + offset >= len then 0
+    else char-code-at src (pos + offset)
+
+Section: Number Scanning
+
+  ps-scan-int : Text, Integer, Integer, Integer -> ParseResult
+  ps-scan-int (src) (pos) (len) (acc) =
+    if pos >= len then ParseOk (ExInt acc) pos
+    else let c = char-code-at src pos
+    in if ps-is-digit c then ps-scan-int src (pos + 1) len (acc * 10 + (c - pc-zero))
+    else if c == pc-dot then
+      if pos + 1 < len then
+        if ps-is-digit (char-code-at src (pos + 1)) then ps-scan-frac src (pos + 1) len (acc * 1000) 100
+        else ParseOk (ExInt acc) pos
+      else ParseOk (ExInt acc) pos
+    else ParseOk (ExInt acc) pos
+
+  ps-scan-frac : Text, Integer, Integer, Integer, Integer -> ParseResult
+  ps-scan-frac (src) (pos) (len) (acc) (scale) =
+    if pos >= len then ParseOk (ExFloat acc) pos
+    else let c = char-code-at src pos
+    in if ps-is-digit c then
+      if scale > 0 then ps-scan-frac src (pos + 1) len (acc + (c - pc-zero) * scale) (scale / 10)
+      else ps-scan-frac-skip src (pos + 1) len acc
+    else ParseOk (ExFloat acc) pos
+
+  ps-scan-frac-skip : Text, Integer, Integer, Integer -> ParseResult
+  ps-scan-frac-skip (src) (pos) (len) (acc) =
+    if pos >= len then ParseOk (ExFloat acc) pos
+    else if ps-is-digit (char-code-at src pos) then ps-scan-frac-skip src (pos + 1) len acc
+    else ParseOk (ExFloat acc) pos
+
+Section: Identifier Scanning
+
+  ps-scan-ident-end : Text, Integer, Integer -> Integer
+  ps-scan-ident-end (src) (pos) (len) =
+    if pos >= len then pos
+    else if ps-is-ident-char (char-code-at src pos) then ps-scan-ident-end src (pos + 1) len
+    else pos
+
+  ps-scan-ident : Text, Integer, Integer -> ParseResult
+  ps-scan-ident (src) (pos) (len) =
+    let end = ps-scan-ident-end src pos len
+    in let name = substring src pos (end - pos)
+    in ParseOk (ExVar name) end
+
+Section: Argument List Parsing
+
+  ps-parse-args : Text, Integer, Integer, List Expr -> ParseResult
+  ps-parse-args (src) (pos) (len) (acc) =
+    let p = ps-skip-ws src pos len
+    in if ps-peek src p len == pc-rparen then ParseOk (ExFn "args" acc) (p + 1)
+    else let arg = ps-parse-expr src p len
+    in if pr-is-ok arg then
+      let p2 = ps-skip-ws src (pr-pos arg) len
+      in if ps-peek src p2 len == pc-comma then ps-parse-args src (p2 + 1) len (list-push acc (pr-expr arg))
+      else if ps-peek src p2 len == pc-rparen then ParseOk (ExFn "args" (list-push acc (pr-expr arg))) (p2 + 1)
+      else ParseErr "expected ',' or ')'" p2
+    else arg
+
+Section: Special Form Parsing
+
+  ps-parse-diff : Text, Integer, Integer -> ParseResult
+  ps-parse-diff (src) (pos) (len) =
+    let p = ps-skip-ws src pos len
+    in if ps-peek src p len /= pc-lparen then ParseErr "expected '(' after diff" p
+    else let body = ps-parse-expr src (p + 1) len
+    in if pr-is-ok body then
+      let p2 = ps-skip-ws src (pr-pos body) len
+      in if ps-peek src p2 len == pc-comma then
+        let p3 = ps-skip-ws src (p2 + 1) len
+        in let vr = ps-scan-ident src p3 len
+        in if pr-is-ok vr then
+          let vname = when pr-expr vr is ExVar (n) -> n is otherwise -> "x"
+          in let p4 = ps-skip-ws src (pr-pos vr) len
+          in if ps-peek src p4 len == pc-rparen then ParseOk (ExDeriv (pr-expr body) vname) (p4 + 1)
+          else ParseErr "expected ')' after diff" p4
+        else vr
+      else ParseErr "expected ',' in diff" p2
+    else body
+
+  ps-parse-integrate : Text, Integer, Integer -> ParseResult
+  ps-parse-integrate (src) (pos) (len) =
+    let p = ps-skip-ws src pos len
+    in if ps-peek src p len /= pc-lparen then ParseErr "expected '(' after integrate" p
+    else let body = ps-parse-expr src (p + 1) len
+    in if pr-is-ok body then
+      let p2 = ps-skip-ws src (pr-pos body) len
+      in if ps-peek src p2 len == pc-comma then
+        let p3 = ps-skip-ws src (p2 + 1) len
+        in let vr = ps-scan-ident src p3 len
+        in if pr-is-ok vr then
+          let vname = when pr-expr vr is ExVar (n) -> n is otherwise -> "x"
+          in let p4 = ps-skip-ws src (pr-pos vr) len
+          in if ps-peek src p4 len == pc-comma then
+            let lo = ps-parse-expr src (p4 + 1) len
+            in if pr-is-ok lo then
+              let p5 = ps-skip-ws src (pr-pos lo) len
+              in if ps-peek src p5 len == pc-comma then
+                let hi = ps-parse-expr src (p5 + 1) len
+                in if pr-is-ok hi then
+                  let p6 = ps-skip-ws src (pr-pos hi) len
+                  in if ps-peek src p6 len == pc-rparen then ParseOk (ExDefIntegral (pr-expr body) vname (pr-expr lo) (pr-expr hi)) (p6 + 1)
+                  else ParseErr "expected ')' after integrate" p6
+                else hi
+              else ParseErr "expected ',' in integrate" p5
+            else lo
+          else if ps-peek src p4 len == pc-rparen then ParseOk (ExIntegral (pr-expr body) vname) (p4 + 1)
+          else ParseErr "expected ')' or ',' after integrate variable" p4
+        else vr
+      else ParseErr "expected ',' in integrate" p2
+    else body
+
+  ps-parse-sum-prod : Text, Integer, Integer, Boolean -> ParseResult
+  ps-parse-sum-prod (src) (pos) (len) (is-sum) =
+    let p = ps-skip-ws src pos len
+    in if ps-peek src p len /= pc-lparen then ParseErr "expected '(' after sum/prod" p
+    else let body = ps-parse-expr src (p + 1) len
+    in if pr-is-ok body then
+      let p2 = ps-skip-ws src (pr-pos body) len
+      in if ps-peek src p2 len == pc-comma then
+        let p3 = ps-skip-ws src (p2 + 1) len
+        in let vr = ps-scan-ident src p3 len
+        in if pr-is-ok vr then
+          let vname = when pr-expr vr is ExVar (n) -> n is otherwise -> "i"
+          in let p4 = ps-skip-ws src (pr-pos vr) len
+          in if ps-peek src p4 len == pc-equals then
+            let lo = ps-parse-expr src (p4 + 1) len
+            in if pr-is-ok lo then
+              let p5 = ps-skip-ws src (pr-pos lo) len
+              in if ps-peek src p5 len == pc-dot & ps-peek-at src p5 1 len == pc-dot then
+                let hi = ps-parse-expr src (p5 + 2) len
+                in if pr-is-ok hi then
+                  let p6 = ps-skip-ws src (pr-pos hi) len
+                  in if ps-peek src p6 len == pc-rparen then
+                    if is-sum then ParseOk (ExSum (pr-expr body) vname (pr-expr lo) (pr-expr hi)) (p6 + 1)
+                    else ParseOk (ExProd (pr-expr body) vname (pr-expr lo) (pr-expr hi)) (p6 + 1)
+                  else ParseErr "expected ')' after sum/prod" p6
+                else hi
+              else ParseErr "expected '..' in sum/prod range" p5
+            else lo
+          else ParseErr "expected '=' after sum/prod variable" p4
+        else vr
+      else ParseErr "expected ',' in sum/prod" p2
+    else body
+
+  ps-parse-lim : Text, Integer, Integer -> ParseResult
+  ps-parse-lim (src) (pos) (len) =
+    let p = ps-skip-ws src pos len
+    in if ps-peek src p len /= pc-lparen then ParseErr "expected '(' after lim" p
+    else let body = ps-parse-expr src (p + 1) len
+    in if pr-is-ok body then
+      let p2 = ps-skip-ws src (pr-pos body) len
+      in if ps-peek src p2 len == pc-comma then
+        let p3 = ps-skip-ws src (p2 + 1) len
+        in let vr = ps-scan-ident src p3 len
+        in if pr-is-ok vr then
+          let vname = when pr-expr vr is ExVar (n) -> n is otherwise -> "x"
+          in let p4 = ps-skip-ws src (pr-pos vr) len
+          in if ps-peek src p4 len == pc-minus & ps-peek-at src p4 1 len == pc-greater then
+            let to = ps-parse-expr src (p4 + 2) len
+            in if pr-is-ok to then
+              let p5 = ps-skip-ws src (pr-pos to) len
+              in if ps-peek src p5 len == pc-rparen then ParseOk (ExLim (pr-expr body) vname (pr-expr to)) (p5 + 1)
+              else ParseErr "expected ')' after lim" p5
+            else to
+          else ParseErr "expected '->' in lim" p4
+        else vr
+      else ParseErr "expected ',' in lim" p2
+    else body
+
+  ps-parse-matrix : Text, Integer, Integer -> ParseResult
+  ps-parse-matrix (src) (pos) (len) =
+    let p = ps-skip-ws src pos len
+    in if ps-peek src p len /= pc-lparen then ParseErr "expected '(' after matrix" p
+    else let rows-r = ps-scan-int src (p + 1) len 0
+    in if pr-is-ok rows-r then
+      let rows = ex-to-int (pr-expr rows-r)
+      in let p2 = ps-skip-ws src (pr-pos rows-r) len
+      in if ps-peek src p2 len == pc-comma then
+        let cols-r = ps-scan-int src (p2 + 1) len 0
+        in if pr-is-ok cols-r then
+          let cols = ex-to-int (pr-expr cols-r)
+          in let p3 = ps-skip-ws src (pr-pos cols-r) len
+          in if ps-peek src p3 len == pc-comma then
+            let elems = ps-parse-matrix-elems src (p3 + 1) len (rows * cols) 0 []
+            in if pr-is-ok elems then
+              let elist = when pr-expr elems is ExList (es) -> es is otherwise -> []
+              in ParseOk (ExMatrix rows cols elist) (pr-pos elems)
+            else elems
+          else if ps-peek src p3 len == pc-rparen then ParseOk (ExMatrix rows cols []) (p3 + 1)
+          else ParseErr "expected ',' or ')' in matrix" p3
+        else cols-r
+      else ParseErr "expected ',' after matrix rows" p2
+    else rows-r
+
+  ps-parse-matrix-elems : Text, Integer, Integer, Integer, Integer, List Expr -> ParseResult
+  ps-parse-matrix-elems (src) (pos) (len) (total) (count) (acc) =
+    if count >= total then
+      let p = ps-skip-ws src pos len
+      in if ps-peek src p len == pc-rparen then ParseOk (ExList acc) (p + 1)
+      else ParseErr "expected ')' after matrix elements" p
+    else let elem = ps-parse-expr src pos len
+    in if pr-is-ok elem then
+      let p2 = ps-skip-ws src (pr-pos elem) len
+      in let new-acc = list-push acc (pr-expr elem)
+      in if count + 1 >= total then
+        if ps-peek src p2 len == pc-rparen then ParseOk (ExList new-acc) (p2 + 1)
+        else ParseErr "expected ')' after matrix elements" p2
+      else if ps-peek src p2 len == pc-comma then ps-parse-matrix-elems src (p2 + 1) len total (count + 1) new-acc
+      else ParseErr "expected ',' between matrix elements" p2
+    else elem
+
+  ps-parse-abs : Text, Integer, Integer -> ParseResult
+  ps-parse-abs (src) (pos) (len) =
+    let body = ps-parse-expr src pos len
+    in if pr-is-ok body then
+      let p2 = ps-skip-ws src (pr-pos body) len
+      in if ps-peek src p2 len == pc-pipe then ParseOk (ExAbs (pr-expr body)) (p2 + 1)
+      else ParseErr "expected '|' to close abs" p2
+    else body
+
+Section: List/Set Parsing
+
+  ps-parse-list-elems : Text, Integer, Integer, Integer, List Expr -> ParseResult
+  ps-parse-list-elems (src) (pos) (len) (close) (acc) =
+    let p = ps-skip-ws src pos len
+    in if ps-peek src p len == close then ParseOk (ExList acc) (p + 1)
+    else let elem = ps-parse-expr src p len
+    in if pr-is-ok elem then
+      let p2 = ps-skip-ws src (pr-pos elem) len
+      in if ps-peek src p2 len == pc-comma then ps-parse-list-elems src (p2 + 1) len close (list-push acc (pr-expr elem))
+      else if ps-peek src p2 len == close then
+        if close == pc-rbracket then ParseOk (ExList (list-push acc (pr-expr elem))) (p2 + 1)
+        else ParseOk (ExSet (list-push acc (pr-expr elem))) (p2 + 1)
+      else ParseErr "expected ',' or closing bracket" p2
+    else elem
+
+Section: Atom Parsing
+
+  ps-parse-atom : Text, Integer, Integer -> ParseResult
+  ps-parse-atom (src) (pos) (len) =
+    let p = ps-skip-ws src pos len
+    in let c = ps-peek src p len
+    in if c == 0 then ParseErr "unexpected end of input" p
+    else if ps-is-digit c then ps-scan-int src p len 0
+    else if c == pc-lparen then
+      let inner = ps-parse-expr src (p + 1) len
+      in if pr-is-ok inner then
+        let p2 = ps-skip-ws src (pr-pos inner) len
+        in if ps-peek src p2 len == pc-rparen then ParseOk (pr-expr inner) (p2 + 1)
+        else ParseErr "expected ')'" p2
+      else inner
+    else if c == pc-pipe then ps-parse-abs src (p + 1) len
+    else if c == pc-lbracket then ps-parse-list-elems src (p + 1) len pc-rbracket []
+    else if c == pc-lbrace then ps-parse-list-elems src (p + 1) len pc-rbrace []
+    else if ps-is-ident-start c then ps-parse-name src p len
+    else ParseErr "unexpected character" p
+
+  ps-parse-name : Text, Integer, Integer -> ParseResult
+  ps-parse-name (src) (pos) (len) =
+    let end = ps-scan-ident-end src pos len
+    in let name = substring src pos (end - pos)
+    in let p = ps-skip-ws src end len
+    in if name == "pi" then ParseOk ExPi p
+    else if name == "e" then
+      if ps-peek src p len == pc-lparen then
+        let args = ps-parse-args src (p + 1) len []
+        in if pr-is-ok args then
+          let arglist = when pr-expr args is ExFn (n) (a) -> a is otherwise -> []
+          in ParseOk (ExFn "e" arglist) (pr-pos args)
+        else args
+      else ParseOk ExE p
+    else if name == "oo" then ParseOk ExInfinity p
+    else if name == "inf" then ParseOk ExInfinity p
+    else if name == "infinity" then ParseOk ExInfinity p
+    else if name == "true" then ParseOk ExTrue p
+    else if name == "false" then ParseOk ExFalse p
+    else if name == "undefined" then ParseOk ExUndefined p
+    else if name == "diff" then ps-parse-diff src p len
+    else if name == "integrate" then ps-parse-integrate src p len
+    else if name == "sum" then ps-parse-sum-prod src p len True
+    else if name == "prod" then ps-parse-sum-prod src p len False
+    else if name == "lim" then ps-parse-lim src p len
+    else if name == "matrix" then ps-parse-matrix src p len
+    else if name == "sqrt" then
+      if ps-peek src p len == pc-lparen then
+        let arg = ps-parse-expr src (p + 1) len
+        in if pr-is-ok arg then
+          let p2 = ps-skip-ws src (pr-pos arg) len
+          in if ps-peek src p2 len == pc-rparen then ParseOk (ExSqrt (pr-expr arg)) (p2 + 1)
+          else ParseErr "expected ')' after sqrt" p2
+        else arg
+      else ParseOk (ExVar "sqrt") p
+    else if name == "abs" then
+      if ps-peek src p len == pc-lparen then
+        let arg = ps-parse-expr src (p + 1) len
+        in if pr-is-ok arg then
+          let p2 = ps-skip-ws src (pr-pos arg) len
+          in if ps-peek src p2 len == pc-rparen then ParseOk (ExAbs (pr-expr arg)) (p2 + 1)
+          else ParseErr "expected ')' after abs" p2
+        else arg
+      else ParseOk (ExVar "abs") p
+    else if name == "not" then
+      let arg = ps-parse-unary src p len
+      in if pr-is-ok arg then ParseOk (ExNot (pr-expr arg)) (pr-pos arg)
+      else arg
+    else if ps-peek src p len == pc-lparen then
+      let args = ps-parse-args src (p + 1) len []
+      in if pr-is-ok args then
+        let arglist = when pr-expr args is ExFn (n) (a) -> a is otherwise -> []
+        in ParseOk (ExFn name arglist) (pr-pos args)
+      else args
+    else ParseOk (ExVar name) p
+
+Section: Postfix (power)
+
+  ps-parse-power : Text, Integer, Integer -> ParseResult
+  ps-parse-power (src) (pos) (len) =
+    let base = ps-parse-atom src pos len
+    in if pr-is-ok base then
+      let p = ps-skip-ws src (pr-pos base) len
+      in if ps-peek src p len == pc-caret then
+        let exp = ps-parse-unary src (p + 1) len
+        in if pr-is-ok exp then ParseOk (ex-pow (pr-expr base) (pr-expr exp)) (pr-pos exp)
+        else exp
+      else if ps-peek src p len == pc-bang then ParseOk (ex-fact (pr-expr base)) (p + 1)
+      else base
+    else base
+
+Section: Unary
+
+  ps-parse-unary : Text, Integer, Integer -> ParseResult
+  ps-parse-unary (src) (pos) (len) =
+    let p = ps-skip-ws src pos len
+    in if ps-peek src p len == pc-minus then
+      let operand = ps-parse-unary src (p + 1) len
+      in if pr-is-ok operand then ParseOk (ex-neg (pr-expr operand)) (pr-pos operand)
+      else operand
+    else if ps-peek src p len == pc-plus then ps-parse-unary src (p + 1) len
+    else ps-parse-power src p len
+
+Section: Multiplicative
+
+  ps-parse-mul : Text, Integer, Integer -> ParseResult
+  ps-parse-mul (src) (pos) (len) =
+    let left = ps-parse-unary src pos len
+    in if pr-is-ok left then ps-parse-mul-rest src (pr-pos left) len (pr-expr left)
+    else left
+
+  ps-parse-mul-rest : Text, Integer, Integer, Expr -> ParseResult
+  ps-parse-mul-rest (src) (pos) (len) (left) =
+    let p = ps-skip-ws src pos len
+    in let c = ps-peek src p len
+    in if c == pc-star then
+      let right = ps-parse-unary src (p + 1) len
+      in if pr-is-ok right then ps-parse-mul-rest src (pr-pos right) len (ex-mul left (pr-expr right))
+      else right
+    else if c == pc-slash then
+      let right = ps-parse-unary src (p + 1) len
+      in if pr-is-ok right then ps-parse-mul-rest src (pr-pos right) len (ex-div left (pr-expr right))
+      else right
+    else if ps-implicit-mul left c then
+      let right = ps-parse-unary src p len
+      in if pr-is-ok right then ps-parse-mul-rest src (pr-pos right) len (ex-mul left (pr-expr right))
+      else right
+    else ParseOk left p
+
+  ps-implicit-mul : Expr, Integer -> Boolean
+  ps-implicit-mul (left) (next-char) =
+    if next-char == pc-lparen then True
+    else if ps-is-ident-start next-char then ps-left-allows-implicit left
+    else if ps-is-digit next-char then when left
+      is ExVar (n) -> True
+      is ExFn (n) (a) -> False
+      is otherwise -> False
+    else False
+
+  ps-left-allows-implicit : Expr -> Boolean
+  ps-left-allows-implicit (left) = when left
+    is ExInt (n) -> True
+    is ExRatio (n) (d) -> True
+    is ExFloat (n) -> True
+    is ExVar (name) -> True
+    is ExPow (a) (b) -> True
+    is ExFn (n) (a) -> True
+    is ExNeg (a) -> True
+    is otherwise -> when left
+      is ExAdd (a) (b) -> False
+      is ExSub (a) (b) -> False
+      is ExMul (a) (b) -> True
+      is ExDiv (a) (b) -> True
+      is ExAbs (a) -> True
+      is ExSqrt (a) -> True
+      is ExPi -> True
+      is ExE -> True
+      is otherwise -> False
+
+Section: Additive
+
+  ps-parse-add : Text, Integer, Integer -> ParseResult
+  ps-parse-add (src) (pos) (len) =
+    let left = ps-parse-mul src pos len
+    in if pr-is-ok left then ps-parse-add-rest src (pr-pos left) len (pr-expr left)
+    else left
+
+  ps-parse-add-rest : Text, Integer, Integer, Expr -> ParseResult
+  ps-parse-add-rest (src) (pos) (len) (left) =
+    let p = ps-skip-ws src pos len
+    in let c = ps-peek src p len
+    in if c == pc-plus then
+      let right = ps-parse-mul src (p + 1) len
+      in if pr-is-ok right then ps-parse-add-rest src (pr-pos right) len (ex-add left (pr-expr right))
+      else right
+    else if c == pc-minus then
+      let right = ps-parse-mul src (p + 1) len
+      in if pr-is-ok right then ps-parse-add-rest src (pr-pos right) len (ex-sub left (pr-expr right))
+      else right
+    else ParseOk left p
+
+Section: Relational
+
+  ps-parse-rel : Text, Integer, Integer -> ParseResult
+  ps-parse-rel (src) (pos) (len) =
+    let left = ps-parse-add src pos len
+    in if pr-is-ok left then
+      let p = ps-skip-ws src (pr-pos left) len
+      in let c = ps-peek src p len
+      in if c == pc-equals then
+        let right = ps-parse-add src (p + 1) len
+        in if pr-is-ok right then ParseOk (ExEq (pr-expr left) (pr-expr right)) (pr-pos right)
+        else right
+      else if c == pc-less then
+        if ps-peek-at src p 1 len == pc-equals then
+          let right = ps-parse-add src (p + 2) len
+          in if pr-is-ok right then ParseOk (ExLeq (pr-expr left) (pr-expr right)) (pr-pos right)
+          else right
+        else let right = ps-parse-add src (p + 1) len
+        in if pr-is-ok right then ParseOk (ExLt (pr-expr left) (pr-expr right)) (pr-pos right)
+        else right
+      else if c == pc-greater then
+        if ps-peek-at src p 1 len == pc-equals then
+          let right = ps-parse-add src (p + 2) len
+          in if pr-is-ok right then ParseOk (ExGeq (pr-expr left) (pr-expr right)) (pr-pos right)
+          else right
+        else let right = ps-parse-add src (p + 1) len
+        in if pr-is-ok right then ParseOk (ExGt (pr-expr left) (pr-expr right)) (pr-pos right)
+        else right
+      else ParseOk (pr-expr left) p
+    else left
+
+Section: Logical
+
+  ps-parse-logic : Text, Integer, Integer -> ParseResult
+  ps-parse-logic (src) (pos) (len) =
+    let left = ps-parse-rel src pos len
+    in if pr-is-ok left then ps-parse-logic-rest src (pr-pos left) len (pr-expr left)
+    else left
+
+  ps-parse-logic-rest : Text, Integer, Integer, Expr -> ParseResult
+  ps-parse-logic-rest (src) (pos) (len) (left) =
+    let p = ps-skip-ws src pos len
+    in if p + 2 < len then
+      let kw = substring src p 3
+      in if kw == "and" then
+        if p + 3 >= len then let right = ps-parse-rel src (p + 3) len
+          in if pr-is-ok right then ps-parse-logic-rest src (pr-pos right) len (ExAnd left (pr-expr right))
+          else right
+        else if ps-is-ident-char (char-code-at src (p + 3)) then ParseOk left p
+        else let right = ps-parse-rel src (p + 3) len
+          in if pr-is-ok right then ps-parse-logic-rest src (pr-pos right) len (ExAnd left (pr-expr right))
+          else right
+      else if p + 1 < len then
+        let kw2 = substring src p 2
+        in if kw2 == "or" then
+          if p + 2 >= len then let right = ps-parse-rel src (p + 2) len
+            in if pr-is-ok right then ps-parse-logic-rest src (pr-pos right) len (ExOr left (pr-expr right))
+            else right
+          else if ps-is-ident-char (char-code-at src (p + 2)) then ParseOk left p
+          else let right = ps-parse-rel src (p + 2) len
+            in if pr-is-ok right then ps-parse-logic-rest src (pr-pos right) len (ExOr left (pr-expr right))
+            else right
+        else ParseOk left p
+      else ParseOk left p
+    else if p + 1 < len then
+      let kw2 = substring src p 2
+      in if kw2 == "or" then
+        if p + 2 >= len then let right = ps-parse-rel src (p + 2) len
+          in if pr-is-ok right then ps-parse-logic-rest src (pr-pos right) len (ExOr left (pr-expr right))
+          else right
+        else if ps-is-ident-char (char-code-at src (p + 2)) then ParseOk left p
+        else let right = ps-parse-rel src (p + 2) len
+          in if pr-is-ok right then ps-parse-logic-rest src (pr-pos right) len (ExOr left (pr-expr right))
+          else right
+      else ParseOk left p
+    else ParseOk left p
+
+Section: Top-Level Expression
+
+  ps-parse-expr : Text, Integer, Integer -> ParseResult
+  ps-parse-expr (src) (pos) (len) = ps-parse-logic src pos len
+
+Section: Public API
+
+  ParseOutput = record {
+    po-expr : Expr,
+    po-error : Text,
+    po-ok : Boolean
+  }
+
+  parse-expr : Text -> ParseOutput
+  parse-expr (input) =
+    let len = text-length input
+    in if len == 0 then ParseOutput { po-expr = ExUndefined, po-error = "empty input", po-ok = False }
+    else let result = ps-parse-expr input 0 len
+    in if pr-is-ok result then ParseOutput { po-expr = pr-expr result, po-error = "", po-ok = True }
+    else ParseOutput { po-expr = ExUndefined, po-error = pr-error result, po-ok = False }
+
+  AssignResult = record {
+    ar-name : Text,
+    ar-expr : Expr,
+    ar-is-assign : Boolean,
+    ar-error : Text,
+    ar-ok : Boolean
+  }
+
+  parse-input : Text -> AssignResult
+  parse-input (input) =
+    let len = text-length input
+    in if len == 0 then AssignResult { ar-name = "", ar-expr = ExUndefined, ar-is-assign = False, ar-error = "empty input", ar-ok = False }
+    else let p = ps-skip-ws input 0 len
+    in let c = ps-peek input p len
+    in if ps-is-ident-start c then
+      let end = ps-scan-ident-end input p len
+      in let name = substring input p (end - p)
+      in let p2 = ps-skip-ws input end len
+      in if ps-peek input p2 len == pc-colon & ps-peek-at input p2 1 len == pc-equals then
+        let rhs = ps-parse-expr input (p2 + 2) len
+        in if pr-is-ok rhs then AssignResult { ar-name = name, ar-expr = pr-expr rhs, ar-is-assign = True, ar-error = "", ar-ok = True }
+        else AssignResult { ar-name = "", ar-expr = ExUndefined, ar-is-assign = False, ar-error = pr-error rhs, ar-ok = False }
+      else let result = ps-parse-expr input 0 len
+      in if pr-is-ok result then AssignResult { ar-name = "", ar-expr = pr-expr result, ar-is-assign = False, ar-error = "", ar-ok = True }
+      else AssignResult { ar-name = "", ar-expr = ExUndefined, ar-is-assign = False, ar-error = pr-error result, ar-ok = False }
+    else let result = ps-parse-expr input 0 len
+    in if pr-is-ok result then AssignResult { ar-name = "", ar-expr = pr-expr result, ar-is-assign = False, ar-error = "", ar-ok = True }
+    else AssignResult { ar-name = "", ar-expr = ExUndefined, ar-is-assign = False, ar-error = pr-error result, ar-ok = False }
+
+Page 1

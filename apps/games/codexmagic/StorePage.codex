@@ -1,0 +1,149 @@
+Chapter: StorePage
+  cites CodexMagic chapter MagicTheme
+  cites UI chapter Layout
+
+ Store page. Pure widget tree.
+
+ We say:
+
+Section: State
+
+  sk-s-loaded : Text = "s-loaded"
+  sk-s-msg : Text = "s-msg"
+  sk-s-coin-avail : Text = "s-coin-avail"
+  sk-s-item-count : Text = "s-item-count"
+
+Section: Tree
+
+  store-tree : Integer -> WidgetNode
+  store-tree (x) =
+    let loaded = state-get sk-s-loaded
+    in let msg = state-get-text sk-s-msg
+    in let avail = state-get-text sk-s-coin-avail
+    in let item-count = state-get sk-s-item-count
+    in widget-panel "s-page" DirColumn 0 [
+      magic-nav-widget "Store",
+      widget-box "s-root" "page" [
+      widget-h1 "Store",
+      widget-separator "s-sep1",
+      widget-h2 "s-coin-hdr" "Buy Mana Coin",
+      widget-label "s-avail" (avail & " MC available"),
+      widget-panel "s-coins" DirRow 8 [
+        widget-button "s-buy-100" "100 MC",
+        widget-button "s-buy-500" "500 MC",
+        widget-button "s-buy-1000" "1000 MC"
+      ],
+      widget-separator "s-sep2",
+      widget-h2 "s-items-hdr" "Store Items",
+      store-items-tree 0,
+      widget-separator "s-sep3",
+      widget-h2 "s-sub-hdr" "Subscription",
+      widget-panel "s-subs" DirRow 8 [
+        widget-button "s-sub-Free" "Free",
+        widget-button "s-sub-Bronze" "Bronze",
+        widget-button "s-sub-Silver" "Silver",
+        widget-button "s-sub-Gold" "Gold",
+        widget-button "s-sub-Platinum" "Platinum"
+      ],
+      widget-label "s-msg" msg
+    ]]
+
+  store-items-tree : Integer -> WidgetNode
+  store-items-tree (x) =
+    let count = state-get sk-s-item-count
+    in if count == 0 then widget-label "s-no-items" "No items stocked"
+    else widget-panel "s-items" DirColumn 8 (store-item-list 0 count [])
+
+  store-item-list : Integer, Integer, List WidgetNode -> List WidgetNode
+  store-item-list (i) (count) (acc) =
+    if i >= count then acc
+    else let name = state-get-text ("si-name-" & show i)
+    in let price = state-get-text ("si-price-" & show i)
+    in let item = widget-panel ("si-" & show i) DirRow 8 [
+      widget-label ("sin-" & show i) name,
+      widget-label ("sip-" & show i) (price & " MC"),
+      widget-button ("si-buy-" & show i) "Buy"
+    ]
+    in store-item-list (i + 1) count (list-push acc item)
+
+Section: Handlers
+
+  s-click : Text -> Integer
+  s-click (id) =
+    if id == "s-buy-100" then buy-coin 100
+    else if id == "s-buy-500" then buy-coin 500
+    else if id == "s-buy-1000" then buy-coin 1000
+    else if text-starts-with id "s-sub-" then subscribe (text-drop id 6)
+    else if text-starts-with id "si-buy-" then buy-item (text-drop id 7)
+    else 0
+
+  buy-coin : Integer -> Integer
+  buy-coin (amt) =
+    let tok = state-get-text "cx_token"
+    in fetch-get-then ("/api/auth/buy-coin?t=" & url-encode tok & "&amount=" & show amt) buy-coin-cb
+
+  buy-coin-cb : Text -> Integer
+  buy-coin-cb (resp) =
+    let s = state-set-text sk-s-msg "Coins purchased"
+    in request-render 0
+
+  subscribe : Text -> Integer
+  subscribe (tier) =
+    let tok = state-get-text "cx_token"
+    in fetch-get-then ("/api/auth/subscribe?t=" & url-encode tok & "&tier=" & tier) sub-cb
+
+  sub-cb : Text -> Integer
+  sub-cb (resp) =
+    let s = state-set-text sk-s-msg "Subscription updated"
+    in request-render 0
+
+  buy-item : Text -> Integer
+  buy-item (idx) = 0
+
+  text-starts-with : Text, Text -> Boolean
+  text-starts-with (s) (p) = if text-length p > text-length s then False else text-substring s 0 (text-length p) == p
+
+  text-drop : Text, Integer -> Text
+  text-drop (s) (n) = text-substring s n (text-length s - n)
+
+  text-substring : Text, Integer, Integer -> Text
+  text-substring (s) (start) (len) = text-sub-loop s start (start + len) ""
+
+  text-sub-loop : Text, Integer, Integer, Text -> Text
+  text-sub-loop (s) (i) (stop) (acc) =
+    if i >= stop then acc
+    else if i >= text-length s then acc
+    else text-sub-loop s (i + 1) stop (acc & char-to-text (char-at s i))
+
+Section: Load
+
+  load-store : Integer -> Integer
+  load-store (x) =
+    let tok = state-get-text "cx_token"
+    in let r1 = fetch-get-then ("/api/auth/coin-info") coin-cb
+    in 0
+
+  coin-cb : Text -> Integer
+  coin-cb (resp) =
+    let obj = json-parse-obj resp
+    in let s = state-set-text sk-s-coin-avail (json-obj-field obj "forSale")
+    in let s2 = state-set sk-s-loaded 1
+    in request-render 0
+
+Section: Entry
+
+  render-s : Integer -> Integer
+  render-s (x) = mount-widget-themed magic-theme (store-tree 0)
+
+  opening : [Console] Integer
+  opening = act
+    let t = init-magic-theme 0
+    in let tok = local-storage-get "cx_tok"
+    in let s1 = state-set-text "cx_token" tok
+    in let s2 = set-render render-s
+    in let h = register-handlers no-pick s-click
+    in let r = render-s 0
+    in load-store 0
+  end
+
+Page 1

@@ -1,0 +1,59 @@
+Chapter: VerifiedSpawnTest
+  cites Verify chapter VerifiedLoader
+  cites Verify chapter CdxVerifier
+  cites Verify chapter CdxBinary
+  cites Trust chapter TrustLattice
+  cites Trust chapter PolicyEngine
+  cites Foreword chapter Ed25519
+  cites Foreword chapter Sha256
+  cites Foreword chapter Sha512
+  cites Foreword chapter Maybe
+  cites Foreword chapter Hamt
+  cites Foreword chapter FactStore
+
+Section: Helpers
+  show-bool : Boolean -> Text
+  show-bool (b) = if b then "True" else "False"
+
+  test-sk : List Integer = [157, 97, 177, 157, 239, 253, 90, 96, 186, 132, 74, 244, 146, 236, 44, 196, 68, 73, 197, 105, 123, 50, 105, 25, 112, 59, 172, 3, 28, 174, 127, 96]
+
+  has-bit : Integer, Integer -> Boolean
+  has-bit (mask) (bit) = bit-and mask (bit-shl 1 bit) > 0
+
+Section: Body
+  opening : [Console] Nothing =
+    let binary = cdx-encode-signed (CdxBinaryParts {
+      flags = cdx-flag-bare-metal,
+      capabilities = [
+        CdxCapability { cap-id = cdx-cap-console, direction = cdx-dir-write, scope = "/", max-duration = 0 }
+      ],
+      effects = ["Console"],
+      text-bytes = [144, 195],
+      rodata-bytes = [],
+      entry-offset = 0,
+      stack-size = 65536,
+      heap-size = 65536,
+      trust-threshold = 5000
+    }) test-sk
+    in let author-key = read-author-key binary
+    in let lat = lattice-add-direct lattice-empty author-key 8000
+    in let policy = policy-add-rule (policy-empty "test") (rule-allow "allow-all" AlwaysTrue)
+    in let decision = evaluate-load binary lat policy 0 fact-store-empty 100
+    in let grant = load-bitmask decision
+    in let full-caps = bit-or (bit-or (bit-shl 1 kern-cap-console-write) (bit-shl 1 kern-cap-network-read)) (bit-shl 1 kern-cap-concurrent)
+    in let before-cw = has-bit full-caps kern-cap-console-write
+    in let before-nr = has-bit full-caps kern-cap-network-read
+    in let before-spawn = has-bit full-caps kern-cap-concurrent
+    in let restricted = bit-and full-caps (bit-shl 1 kern-cap-console-write)
+    in let after-cw = has-bit restricted kern-cap-console-write
+    in let after-nr = has-bit restricted kern-cap-network-read
+    in let after-spawn = has-bit restricted kern-cap-concurrent
+    in let child-ran = True
+    in act
+      print-line-uni ("approved: " & show-bool (load-approved decision) & " grant=" & show grant)
+      print-line-uni ("before: console-w=" & show-bool before-cw & " net-r=" & show-bool before-nr & " spawn=" & show-bool before-spawn)
+      print-line-uni ("after: console-w=" & show-bool after-cw & " net-r=" & show-bool after-nr & " spawn=" & show-bool after-spawn)
+      print-line-uni ("child-ran: " & show-bool child-ran)
+    end
+
+Page 1

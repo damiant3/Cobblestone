@@ -1,0 +1,575 @@
+Chapter: MediaPlayer
+  cites Foreword chapter Widget
+  cites Foreword chapter Maybe
+  cites Foreword chapter Console
+  cites UI chapter Layout
+  cites Game chapter Rasterizer
+  cites Game chapter Color
+  cites Encode chapter VideoCodec
+  cites Encode chapter Wav
+  cites Browser chapter DataChannel
+  cites Browser chapter BrowserTheme
+  cites Browser chapter Display
+  cites Browser chapter AudioOutput
+  cites Foreword chapter ListUtils
+
+ Multimedia playback for the Codex Browser. Decodes audio and
+ video from typed data channels and renders to the display and
+ audio hardware.
+
+ A media page declares [Display, Network, Audio] effects. The
+ server streams compressed media over two typed channels:
+   "video": keyframe + delta frames (Codex Native codec)
+   "audio": PCM or compressed audio packets
+
+ The browser decodes each packet locally and writes decoded
+ PCM to Intel HDA and decoded frames to the VBE framebuffer.
+
+Section: Types
+
+  PlaybackState =
+    | Stopped
+    | Playing
+    | Paused
+    | Buffering
+    | Ended
+
+  MediaType =
+    | MediaAudio
+    | MediaVideo
+    | MediaAudioVideo
+
+  AudioCodecTag =
+    | AudioPcm
+    | AudioWav
+    | AudioOgg
+    | AudioMp3
+    | AudioFlac
+
+  VideoCodecTag =
+    | VideoRaw
+    | VideoCodexNative
+    | VideoMjpeg
+
+  MediaInfo = record {
+    mi-type         : MediaType,
+    mi-duration-ms  : Integer,
+    mi-width        : Integer,
+    mi-height       : Integer,
+    mi-audio-codec  : AudioCodecTag,
+    mi-video-codec  : VideoCodecTag,
+    mi-sample-rate  : Integer,
+    mi-channels     : Integer,
+    mi-frame-rate   : Integer
+  }
+
+  PlayerState = record {
+    ps-playback     : PlaybackState,
+    ps-media-info   : Maybe MediaInfo,
+    ps-position-ms  : Integer,
+    ps-duration-ms  : Integer,
+    ps-volume       : Integer,
+    ps-muted        : Boolean,
+    ps-fullscreen   : Boolean,
+    ps-video-frame  : Maybe Framebuf,
+    ps-prev-pixels  : List Integer,
+    ps-audio-buffer : List Integer,
+    ps-audio-out    : AudioOutputState,
+    ps-buffered-ms  : Integer,
+    ps-video-width  : Integer,
+    ps-video-height : Integer,
+    ps-frame-count  : Integer,
+    ps-dropped      : Integer,
+    ps-channel-mgr  : ChannelManager
+  }
+
+  MediaEvent =
+    | MediaPlay
+    | MediaPause
+    | MediaStop
+    | MediaSeek (Integer)
+    | MediaSetVolume (Integer)
+    | MediaVolumeUp
+    | MediaVolumeDown
+    | MediaToggleMute
+    | MediaToggleFullscreen
+    | MediaVideoFrame (Integer) (List Integer)
+    | MediaAudioPacket (Integer) (List Integer)
+    | MediaEnded
+    | MediaError (Text)
+    | MediaSkipForward
+    | MediaSkipBack
+
+Section: Construction
+
+  player-new : PlayerState
+  player-new =
+    PlayerState {
+      ps-playback = Stopped,
+      ps-media-info = None,
+      ps-position-ms = 0,
+      ps-duration-ms = 0,
+      ps-volume = 80,
+      ps-muted = False,
+      ps-fullscreen = False,
+      ps-video-frame = None,
+      ps-prev-pixels = [],
+      ps-audio-buffer = [],
+      ps-audio-out = audio-output-new,
+      ps-buffered-ms = 0,
+      ps-video-width = 0,
+      ps-video-height = 0,
+      ps-frame-count = 0,
+      ps-dropped = 0,
+      ps-channel-mgr = channel-manager-new
+    }
+
+  player-with-info : MediaInfo -> PlayerState
+  player-with-info (info) =
+    let ps = player-new
+    in __record-set (__record-set (__record-set (__record-set (__record-set ps
+      "ps-media-info" (Just info))
+      "ps-duration-ms" info.mi-duration-ms)
+      "ps-video-width" info.mi-width)
+      "ps-video-height" info.mi-height)
+      "ps-audio-out" (audio-init (audio-output-new))
+
+Section: Playback Control
+
+  player-handle-event : PlayerState, MediaEvent -> PlayerState
+  player-handle-event (ps) (ev) =
+    when ev
+      is MediaPlay -> player-play ps
+      is MediaPause -> player-pause ps
+      is MediaStop -> player-stop ps
+      is MediaSeek (pos) ->
+        __record-set ps "ps-position-ms" (clamp-pos pos ps.ps-duration-ms)
+      is MediaSetVolume (vol) ->
+        let clamped = clamp-vol vol
+        in __record-set (__record-set ps
+          "ps-volume" clamped)
+          "ps-audio-out" (audio-set-volume ps.ps-audio-out clamped)
+      is MediaVolumeUp ->
+        player-handle-event ps (MediaSetVolume (ps.ps-volume + 5))
+      is MediaVolumeDown ->
+        player-handle-event ps (MediaSetVolume (ps.ps-volume - 5))
+      is MediaToggleMute ->
+        __record-set ps "ps-muted" (if ps.ps-muted then False else True)
+      is MediaToggleFullscreen ->
+        __record-set ps "ps-fullscreen" (if ps.ps-fullscreen then False else True)
+      is MediaVideoFrame (ts) (data) ->
+        player-receive-video ps ts data
+      is MediaAudioPacket (ts) (data) ->
+        player-receive-audio ps ts data
+      is MediaEnded -> __record-set ps "ps-playback" Ended
+      is MediaError (msg) -> __record-set ps "ps-playback" Stopped
+      is MediaSkipForward ->
+        __record-set ps "ps-position-ms" (clamp-pos (ps.ps-position-ms + 10000) ps.ps-duration-ms)
+      is MediaSkipBack ->
+        __record-set ps "ps-position-ms" (clamp-pos (ps.ps-position-ms - 10000) ps.ps-duration-ms)
+
+  player-play : PlayerState -> PlayerState
+  player-play (ps) =
+    let started = __record-set ps "ps-playback" Playing
+    in __record-set started "ps-audio-out" (audio-start ps.ps-audio-out)
+
+  player-pause : PlayerState -> PlayerState
+  player-pause (ps) =
+    let paused = __record-set ps "ps-playback" Paused
+    in __record-set paused "ps-audio-out" (audio-stop ps.ps-audio-out)
+
+  player-stop : PlayerState -> PlayerState
+  player-stop (ps) =
+    let stopped = __record-set (__record-set ps
+          "ps-playback" Stopped)
+          "ps-position-ms" 0
+    in __record-set (__record-set stopped
+      "ps-audio-out" (audio-stop ps.ps-audio-out))
+      "ps-prev-pixels" []
+
+  player-toggle-play : PlayerState -> PlayerState
+  player-toggle-play (ps) =
+    when ps.ps-playback
+      is Playing -> player-pause ps
+      is Paused -> player-play ps
+      is Stopped -> player-play ps
+      is Ended -> player-play (__record-set ps "ps-position-ms" 0)
+      is Buffering -> ps
+
+  clamp-pos : Integer, Integer -> Integer
+  clamp-pos (pos) (duration) =
+    if pos < 0 then 0
+    else if duration > 0 then if pos > duration then duration else pos
+    else pos
+
+  clamp-vol : Integer -> Integer
+  clamp-vol (v) =
+    if v < 0 then 0 else if v > 100 then 100 else v
+
+Section: Video Frame Reception
+
+  player-receive-video : PlayerState, Integer, List Integer -> PlayerState
+  player-receive-video (ps) (timestamp) (packet-data) =
+    let parsed = parse-video-packet packet-data
+    in when parsed
+      is None -> __record-set ps "ps-dropped" (ps.ps-dropped + 1)
+      is Just (frame-type, payload) ->
+        let decoded-pixels = decode-video-payload frame-type payload ps.ps-prev-pixels ps.ps-video-width ps.ps-video-height
+        in let fb = pixels-to-framebuf decoded-pixels ps.ps-video-width ps.ps-video-height
+        in __record-set (__record-set (__record-set (__record-set ps
+          "ps-video-frame" (Just fb))
+          "ps-prev-pixels" decoded-pixels)
+          "ps-position-ms" timestamp)
+          "ps-frame-count" (ps.ps-frame-count + 1)
+
+  decode-video-payload : Integer, List Integer, List Integer, Integer, Integer -> List Integer
+  decode-video-payload (frame-type) (payload) (prev-pixels) (w) (h) =
+    if frame-type == 73
+    then rle-decompress payload []
+    else let deltas = decode-delta-list payload
+      in apply-delta-list prev-pixels deltas
+
+  apply-delta-list : List Integer, List PixelDelta -> List Integer
+  apply-delta-list (pixels) (deltas) =
+    if list-length deltas == 0 then pixels
+    else let head = list-at deltas 0
+        in apply-delta-list (list-set-at pixels head.pd-offset head.pd-color) (list-drop deltas 1)
+
+  decode-delta-list : List Integer -> List PixelDelta
+  decode-delta-list (data) =
+    decode-delta-loop data 0 (list-length data) []
+
+  decode-delta-loop : List Integer, Integer, Integer, List PixelDelta -> List PixelDelta
+  decode-delta-loop (data) (i) (n) (acc) =
+    if i + 7 >= n then acc
+    else let offset = read-pkt-u32 data i
+    in let color = read-pkt-u32 data (i + 4)
+    in let delta = PixelDelta { pd-offset = offset, pd-color = color }
+    in decode-delta-loop data (i + 8) n (list-push acc delta)
+
+Section: Audio Packet Reception
+
+  player-receive-audio : PlayerState, Integer, List Integer -> PlayerState
+  player-receive-audio (ps) (timestamp) (packet-data) =
+    let parsed = parse-audio-packet packet-data
+    in when parsed
+      is None -> ps
+      is Just (codec-tag, payload) ->
+        let pcm = decode-audio-payload codec-tag payload
+        in __record-set (__record-set ps
+          "ps-audio-buffer" (ps.ps-audio-buffer & pcm))
+          "ps-buffered-ms" timestamp
+
+  decode-audio-payload : Integer, List Integer -> List Integer
+  decode-audio-payload (codec-tag) (payload) =
+    if codec-tag == 1 then payload
+    else if codec-tag == 4 then wav-decode-pcm payload
+    else payload
+
+Section: WAV Decoder
+
+ WAV files have a 44-byte header (RIFF + fmt + data chunk headers).
+ Strip the header, extract raw 16-bit signed LE PCM samples.
+
+  wav-decode-pcm : List Integer -> List Integer
+  wav-decode-pcm (wav-data) =
+    if list-length wav-data < 44 then []
+    else let data-offset = wav-find-data-chunk wav-data
+    in if data-offset < 0 then []
+    else let data-size = read-pkt-u32 wav-data (data-offset + 4)
+    in let pcm-start = data-offset + 8
+    in wav-extract-samples wav-data pcm-start (pcm-start + data-size) []
+
+  wav-find-data-chunk : List Integer -> Integer
+  wav-find-data-chunk (data) =
+    wav-find-data-at data 12 (list-length data)
+
+  wav-find-data-at : List Integer, Integer, Integer -> Integer
+  wav-find-data-at (data) (pos) (len) =
+    if pos + 8 >= len then (-1)
+    else if list-at data pos == 100
+      then if list-at data (pos + 1) == 97
+        then if list-at data (pos + 2) == 116
+          then if list-at data (pos + 3) == 97
+            then pos
+            else let chunk-size = read-pkt-u32 data (pos + 4)
+              in wav-find-data-at data (pos + 8 + chunk-size) len
+          else let chunk-size = read-pkt-u32 data (pos + 4)
+            in wav-find-data-at data (pos + 8 + chunk-size) len
+        else let chunk-size = read-pkt-u32 data (pos + 4)
+          in wav-find-data-at data (pos + 8 + chunk-size) len
+      else let chunk-size = read-pkt-u32 data (pos + 4)
+        in wav-find-data-at data (pos + 8 + chunk-size) len
+
+  wav-extract-samples : List Integer, Integer, Integer, List Integer -> List Integer
+  wav-extract-samples (data) (pos) (end-pos) (acc) =
+    if pos + 1 >= end-pos then acc
+    else let lo = list-at data pos
+    in let hi = list-at data (pos + 1)
+    in let unsigned = lo + hi * 256
+    in let signed = if unsigned >= 32768 then unsigned - 65536 else unsigned
+    in wav-extract-samples data (pos + 2) end-pos (list-push acc signed)
+
+Section: Pixel-to-Framebuf Conversion
+
+  pixels-to-framebuf : List Integer, Integer, Integer -> Framebuf
+  pixels-to-framebuf (pixels) (w) (h) =
+    if w <= 0 then fb-new 1 1 0
+    else if h <= 0 then fb-new 1 1 0
+    else let fb = fb-new w h 0
+    in pixels-to-fb-loop fb pixels w h 0
+
+  pixels-to-fb-loop : Framebuf, List Integer, Integer, Integer, Integer -> Framebuf
+  pixels-to-fb-loop (fb) (pixels) (w) (h) (i) =
+    if i >= list-length pixels then fb
+    else if i >= w * h then fb
+    else let x = int-mod i w
+    in let y = i / w
+    in let pixel = list-at pixels i
+    in let updated = fb-set fb x y pixel
+    in pixels-to-fb-loop updated pixels w h (i + 1)
+
+Section: Video Scaling
+
+  scale-frame : Framebuf, Integer, Integer, Integer, Integer -> Framebuf
+  scale-frame (src) (sw) (sh) (dw) (dh) =
+    let dst = fb-new dw dh 0
+    in scale-rows dst src sw sh dw dh 0
+
+  scale-rows : Framebuf, Framebuf, Integer, Integer, Integer, Integer, Integer -> Framebuf
+  scale-rows (dst) (src) (sw) (sh) (dw) (dh) (dy) =
+    if dy >= dh then dst
+    else let sy = dy * sh / dh
+    in let row-fb = scale-cols dst src sw dw dy sy 0
+    in scale-rows row-fb src sw sh dw dh (dy + 1)
+
+  scale-cols : Framebuf, Framebuf, Integer, Integer, Integer, Integer, Integer -> Framebuf
+  scale-cols (dst) (src) (sw) (dw) (dy) (sy) (dx) =
+    if dx >= dw then dst
+    else let sx = dx * sw / dw
+    in fb-set dst dx dy (fb-get src sx sy)
+
+Section: Video Rendering
+
+  player-render-video : PlayerState, Integer, Integer -> Maybe Framebuf
+  player-render-video (ps) (vw) (vh) =
+    when ps.ps-video-frame
+      is None -> None
+      is Just (frame) ->
+        if ps.ps-fullscreen
+        then Just (scale-frame frame ps.ps-video-width ps.ps-video-height vw vh)
+        else if ps.ps-video-width > vw
+        then Just (scale-frame frame ps.ps-video-width ps.ps-video-height vw (ps.ps-video-height * vw / ps.ps-video-width))
+        else Just frame
+
+Section: Audio Flush
+
+  player-flush-audio : PlayerState -> PlayerState
+  player-flush-audio (ps) =
+    if list-length ps.ps-audio-buffer == 0 then ps
+    else if ps.ps-muted
+    then __record-set ps "ps-audio-buffer" []
+    else let scaled = scale-audio ps.ps-audio-buffer ps.ps-volume
+      in let ao = audio-write-pcm ps.ps-audio-out scaled
+      in __record-set (__record-set ps
+        "ps-audio-buffer" [])
+        "ps-audio-out" ao
+
+  scale-audio : List Integer, Integer -> List Integer
+  scale-audio (samples) (volume) =
+    list-map (scale-one-sample volume) samples
+
+  scale-one-sample : Integer, Integer -> Integer
+  scale-one-sample (vol) (s) = s * vol / 100
+
+Section: Packet Parsing
+
+  parse-video-packet : List Integer -> Maybe (Integer, List Integer)
+  parse-video-packet (data) =
+    if list-length data < 9 then None
+    else let frame-type = list-at data 0
+    in let payload-len = read-pkt-u32 data 5
+    in if list-length data < 9 + payload-len then None
+    else Just (frame-type, list-take (list-drop data 9) payload-len)
+
+  parse-audio-packet : List Integer -> Maybe (Integer, List Integer)
+  parse-audio-packet (data) =
+    if list-length data < 9 then None
+    else let codec-tag = list-at data 0
+    in let payload-len = read-pkt-u32 data 5
+    in if list-length data < 9 + payload-len then None
+    else Just (codec-tag, list-take (list-drop data 9) payload-len)
+
+  read-pkt-u32 : List Integer, Integer -> Integer
+  read-pkt-u32 (bs) (off) =
+    list-at bs off
+    + (list-at bs (off + 1)) * 256
+    + (list-at bs (off + 2)) * 65536
+    + (list-at bs (off + 3)) * 16777216
+
+Section: Tick Processing
+
+  player-tick : PlayerState, Integer -> PlayerState
+  player-tick (ps) (elapsed-ms) =
+    when ps.ps-playback
+      is Playing ->
+        let advanced = __record-set ps
+              "ps-position-ms" (ps.ps-position-ms + elapsed-ms)
+        in let flushed = player-flush-audio advanced
+        in if flushed.ps-duration-ms > 0
+          then if flushed.ps-position-ms >= flushed.ps-duration-ms
+            then player-handle-event flushed MediaEnded
+            else flushed
+          else flushed
+      is otherwise -> ps
+
+Section: Player UI Widget
+
+  player-render-widget : PlayerState, Integer, Integer -> WidgetNode
+  player-render-widget (ps) (w) (h) =
+    let control-height = 48
+    in let video-h = h - control-height
+    in let video-area = player-render-video-area ps w video-h
+    in let controls = player-render-controls ps w
+    in widget-panel "media-player" DirColumn 0 [
+      widget-set-flex video-area 1,
+      widget-set-min controls w control-height
+    ]
+
+  player-render-video-area : PlayerState, Integer, Integer -> WidgetNode
+  player-render-video-area (ps) (w) (h) =
+    when ps.ps-playback
+      is Stopped -> widget-label "video-stopped" "No media loaded"
+      is Buffering -> widget-label "video-buffering" "Buffering..."
+      is Ended -> widget-label "video-ended" "Playback ended"
+      is otherwise -> widget-custom "video-surface" "" w h
+
+  player-render-controls : PlayerState, Integer -> WidgetNode
+  player-render-controls (ps) (w) =
+    let play-pause = when ps.ps-playback
+          is Playing -> widget-button "media-pause" "||"
+          is otherwise -> widget-button "media-play" ">"
+    in let stop-btn = widget-button "media-stop" "[]"
+    in let skip-back = widget-button "media-back" "<<"
+    in let skip-fwd = widget-button "media-fwd" ">>"
+    in let progress = widget-progress "media-progress"
+          ps.ps-position-ms
+          (if ps.ps-duration-ms > 0 then ps.ps-duration-ms else 100)
+    in let position = widget-label "media-pos" (format-time ps.ps-position-ms)
+    in let slash = widget-label "media-slash" " / "
+    in let duration = widget-label "media-dur" (format-time ps.ps-duration-ms)
+    in let vol-down = widget-button "media-vol-down" "-"
+    in let vol-label = widget-label "media-vol"
+          (if ps.ps-muted then "MUTE" else "V:" & show ps.ps-volume)
+    in let vol-up = widget-button "media-vol-up" "+"
+    in let mute-btn = widget-button "media-mute" (if ps.ps-muted then "X" else "M")
+    in let fs-btn = widget-button "media-fs" (if ps.ps-fullscreen then "><" else "[ ]")
+    in let time-display = widget-panel "time" DirRow 0 [position, slash, duration]
+    in let volume-controls = widget-panel "volume" DirRow spacing-xs [vol-down, mute-btn, vol-label, vol-up]
+    in widget-panel "controls" DirRow spacing-sm [
+      skip-back, play-pause, stop-btn, skip-fwd,
+      widget-set-flex progress 1,
+      time-display,
+      volume-controls,
+      fs-btn
+    ]
+
+  format-time : Integer -> Text
+  format-time (ms) =
+    let total-sec = ms / 1000
+    in let hrs = total-sec / 3600
+    in let mins = int-mod (total-sec / 60) 60
+    in let secs = int-mod total-sec 60
+    in let min-str = if mins < 10 then "0" & show mins else show mins
+    in let sec-str = if secs < 10 then "0" & show secs else show secs
+    in if hrs > 0
+      then show hrs & ":" & min-str & ":" & sec-str
+      else min-str & ":" & sec-str
+
+Section: Media Keyboard Shortcuts
+
+  map-media-key : Integer -> Maybe MediaEvent
+  map-media-key (key-code) =
+    if key-code == 32 then Just MediaPlay
+    else if key-code == 37 then Just MediaSkipBack
+    else if key-code == 39 then Just MediaSkipForward
+    else if key-code == 38 then Just MediaVolumeUp
+    else if key-code == 40 then Just MediaVolumeDown
+    else if key-code == 77 then Just MediaToggleMute
+    else if key-code == 70 then Just MediaToggleFullscreen
+    else None
+
+Section: Channel Integration
+
+  media-open-channels : PlayerState, Text -> PlayerState
+  media-open-channels (ps) (origin) =
+    let mgr1 = channel-open ps.ps-channel-mgr "video" "VideoPacket"
+    in let mgr2 = channel-open mgr1 "audio" "AudioPacket"
+    in __record-set ps "ps-channel-mgr" mgr2
+
+  media-process-channel-data : PlayerState -> PlayerState
+  media-process-channel-data (ps) =
+    let video-result = channel-drain ps.ps-channel-mgr "video"
+    in let mgr-after-video = when video-result is (mgr, packets) -> mgr
+    in let video-packets = when video-result is (mgr, packets) -> packets
+    in let ps2 = __record-set ps "ps-channel-mgr" mgr-after-video
+    in let ps3 = process-video-packets ps2 video-packets
+    in let audio-result = channel-drain ps3.ps-channel-mgr "audio"
+    in let mgr-after-audio = when audio-result is (mgr, packets) -> mgr
+    in let audio-packets = when audio-result is (mgr, packets) -> packets
+    in let ps4 = __record-set ps3 "ps-channel-mgr" mgr-after-audio
+    in process-audio-packets ps4 audio-packets
+
+  process-video-packets : PlayerState, List (List Integer) -> PlayerState
+  process-video-packets (ps) (packets) =
+    if list-length packets == 0 then ps
+    else let head = list-at packets 0
+        in let parsed = parse-video-packet head
+        in let updated = when parsed
+              is None -> ps
+              is Just (frame-type, payload) ->
+                player-receive-video ps 0 head
+        in process-video-packets updated (list-drop packets 1)
+
+  process-audio-packets : PlayerState, List (List Integer) -> PlayerState
+  process-audio-packets (ps) (packets) =
+    if list-length packets == 0 then ps
+    else let head = list-at packets 0
+        in let updated = player-receive-audio ps 0 head
+        in process-audio-packets updated (list-drop packets 1)
+
+Section: Queries
+
+  player-is-playing : PlayerState -> Boolean
+  player-is-playing (ps) =
+    when ps.ps-playback
+      is Playing -> True
+      is otherwise -> False
+
+  player-progress-pct : PlayerState -> Integer
+  player-progress-pct (ps) =
+    if ps.ps-duration-ms <= 0 then 0
+    else ps.ps-position-ms * 100 / ps.ps-duration-ms
+
+  player-status-text : PlayerState -> Text
+  player-status-text (ps) =
+    when ps.ps-playback
+      is Stopped -> "Stopped"
+      is Playing -> "Playing"
+      is Paused -> "Paused"
+      is Buffering -> "Buffering..."
+      is Ended -> "Ended"
+
+  format-player-state : PlayerState -> Text
+  format-player-state (ps) =
+    player-status-text ps
+    & " " & format-time ps.ps-position-ms
+    & "/" & format-time ps.ps-duration-ms
+    & " vol=" & show ps.ps-volume
+    & " frames=" & show ps.ps-frame-count
+    & " dropped=" & show ps.ps-dropped
+
+Section: Capability Requirements
+
+  media-required-effects : List Text
+  media-required-effects = ["Display", "Network", "Audio"]

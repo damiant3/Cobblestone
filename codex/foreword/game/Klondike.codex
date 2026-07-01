@@ -1,0 +1,260 @@
+Chapter: Klondike
+  cites Game chapter CardDeck
+  cites Foreword chapter Maybe
+  cites Foreword chapter ListUtils
+
+ Klondike solitaire. 7 tableau piles, 4 foundation piles, stock
+ and waste. Cards in tableau are face-down except the top card of
+ each pile. Red on black alternating, descending rank in tableau.
+ Ascending same-suit on foundation starting from Ace.
+
+ We say:
+
+Section: Types
+  Pile = record {
+    pile-cards : List Integer,
+    pile-face-up : Integer
+  }
+
+  KlondikeState = record {
+    kl-tableau : List Pile,
+    kl-foundation : List (List Integer),
+    kl-stock : List Integer,
+    kl-waste : List Integer,
+    kl-moves : Integer
+  }
+
+Section: Card Properties
+  card-color : Integer -> Integer
+  card-color (card) =
+    let s = card-suit card
+    in if s == 0 then 0
+    else if s == 3 then 0
+    else 1
+
+  cards-alternate-color : Integer, Integer -> Boolean
+  cards-alternate-color (top) (bottom) = card-color top /= card-color bottom
+
+  card-fits-tableau : Integer, Integer -> Boolean
+  card-fits-tableau (card) (target) =
+    cards-alternate-color card target & card-rank card + 1 == card-rank target
+
+  card-fits-foundation : Integer, List Integer -> Boolean
+  card-fits-foundation (card) (foundation) =
+    let n = list-length foundation
+    in if n == 0 then card-rank card == 0
+    else let top = list-at foundation (n - 1)
+    in card-suit card == card-suit top & card-rank card == card-rank top + 1
+
+Section: Construction
+  klondike-new : Integer -> KlondikeState
+  klondike-new (seed) =
+    let deck = deck-shuffle deck-new seed
+    in klondike-deal deck
+
+  klondike-deal : List Integer -> KlondikeState
+  klondike-deal (deck) =
+    let r0 = kl-deal-pile deck 0 1
+    in let r1 = kl-deal-pile (r0.remaining) 1 2
+    in let r2 = kl-deal-pile (r1.remaining) 2 3
+    in let r3 = kl-deal-pile (r2.remaining) 3 4
+    in let r4 = kl-deal-pile (r3.remaining) 4 5
+    in let r5 = kl-deal-pile (r4.remaining) 5 6
+    in let r6 = kl-deal-pile (r5.remaining) 6 7
+    in let tableau = [r0.hand, r1.hand, r2.hand, r3.hand, r4.hand, r5.hand, r6.hand]
+    in let piles = kl-make-piles tableau 0 []
+    in KlondikeState { kl-tableau = piles, kl-foundation = [[], [], [], []], kl-stock = r6.remaining, kl-waste = [], kl-moves = 0 }
+
+  kl-deal-pile : List Integer, Integer, Integer -> DealResult
+  kl-deal-pile (deck) (pile-idx) (count) = deck-deal deck count
+
+  kl-make-piles : List (List Integer), Integer, List Pile -> List Pile
+  kl-make-piles (hands) (i) (acc) =
+    if i >= 7 then acc
+    else let cards = list-at hands i
+    in let n = list-length cards
+    in kl-make-piles hands (i + 1) (list-push acc (Pile { pile-cards = cards, pile-face-up = n - 1 }))
+
+Section: Pile Queries
+  pile-top : Pile -> Maybe Integer
+  pile-top (p) =
+    let n = list-length (p.pile-cards)
+    in if n == 0 then None else Just (list-at (p.pile-cards) (n - 1))
+
+  pile-is-empty : Pile -> Boolean
+  pile-is-empty (p) = list-length (p.pile-cards) == 0
+
+  pile-size : Pile -> Integer
+  pile-size (p) = list-length (p.pile-cards)
+
+  pile-face-down-count : Pile -> Integer
+  pile-face-down-count (p) = p.pile-face-up
+
+Section: Moves
+  MoveResult =
+    | MoveOk (KlondikeState)
+    | MoveErr (Text)
+
+  kl-draw : KlondikeState -> MoveResult
+  kl-draw (st) =
+    if list-length (st.kl-stock) == 0 then
+      if list-length (st.kl-waste) == 0 then MoveErr "stock and waste empty"
+      else MoveOk (KlondikeState { kl-tableau = st.kl-tableau, kl-foundation = st.kl-foundation, kl-stock = kl-reverse-list (st.kl-waste), kl-waste = [], kl-moves = st.kl-moves + 1 })
+    else let card = list-at (st.kl-stock) 0
+    in let rest = list-tail (st.kl-stock)
+    in MoveOk (KlondikeState { kl-tableau = st.kl-tableau, kl-foundation = st.kl-foundation, kl-stock = rest, kl-waste = list-push (st.kl-waste) card, kl-moves = st.kl-moves + 1 })
+
+  kl-waste-to-tableau : KlondikeState, Integer -> MoveResult
+  kl-waste-to-tableau (st) (pile-idx) =
+    if pile-idx < 0 then MoveErr "invalid pile"
+    else if pile-idx >= 7 then MoveErr "invalid pile"
+    else if list-length (st.kl-waste) == 0 then MoveErr "waste empty"
+    else let card = list-at (st.kl-waste) (list-length (st.kl-waste) - 1)
+    in let pile = list-at (st.kl-tableau) pile-idx
+    in let top = pile-top pile
+    in let fits = when top is None -> card-rank card == 12 is Just (t) -> card-fits-tableau card t
+    in if fits then
+      let new-waste = kl-list-init (st.kl-waste)
+      in let new-pile = Pile { pile-cards = list-push (pile.pile-cards) card, pile-face-up = pile.pile-face-up }
+      in let new-tab = list-set-at (st.kl-tableau) pile-idx new-pile
+      in MoveOk (KlondikeState { kl-tableau = new-tab, kl-foundation = st.kl-foundation, kl-stock = st.kl-stock, kl-waste = new-waste, kl-moves = st.kl-moves + 1 })
+    else MoveErr "card does not fit"
+
+  kl-waste-to-foundation : KlondikeState -> MoveResult
+  kl-waste-to-foundation (st) =
+    if list-length (st.kl-waste) == 0 then MoveErr "waste empty"
+    else let card = list-at (st.kl-waste) (list-length (st.kl-waste) - 1)
+    in let suit = card-suit card
+    in let foundation = list-at (st.kl-foundation) suit
+    in if card-fits-foundation card foundation then
+      let new-waste = kl-list-init (st.kl-waste)
+      in let new-found = list-set-at (st.kl-foundation) suit (list-push foundation card)
+      in MoveOk (KlondikeState { kl-tableau = st.kl-tableau, kl-foundation = new-found, kl-stock = st.kl-stock, kl-waste = new-waste, kl-moves = st.kl-moves + 1 })
+    else MoveErr "card does not fit foundation"
+
+  kl-tableau-to-foundation : KlondikeState, Integer -> MoveResult
+  kl-tableau-to-foundation (st) (pile-idx) =
+    if pile-idx < 0 then MoveErr "invalid pile"
+    else if pile-idx >= 7 then MoveErr "invalid pile"
+    else let pile = list-at (st.kl-tableau) pile-idx
+    in let top = pile-top pile
+    in when top
+      is None -> MoveErr "pile empty"
+      is Just (card) ->
+        let suit = card-suit card
+        in let foundation = list-at (st.kl-foundation) suit
+        in if card-fits-foundation card foundation then
+          let new-pile = kl-remove-top pile
+          in let new-found = list-set-at (st.kl-foundation) suit (list-push foundation card)
+          in let new-tab = list-set-at (st.kl-tableau) pile-idx new-pile
+          in MoveOk (KlondikeState { kl-tableau = new-tab, kl-foundation = new-found, kl-stock = st.kl-stock, kl-waste = st.kl-waste, kl-moves = st.kl-moves + 1 })
+        else MoveErr "card does not fit foundation"
+
+  kl-tableau-to-tableau : KlondikeState, Integer, Integer -> MoveResult
+  kl-tableau-to-tableau (st) (from) (to) =
+    if from < 0 then MoveErr "invalid source"
+    else if from >= 7 then MoveErr "invalid source"
+    else if to < 0 then MoveErr "invalid target"
+    else if to >= 7 then MoveErr "invalid target"
+    else let src = list-at (st.kl-tableau) from
+    in let top = pile-top src
+    in when top
+      is None -> MoveErr "source empty"
+      is Just (card) ->
+        let dst = list-at (st.kl-tableau) to
+        in let dst-top = pile-top dst
+        in let fits = when dst-top is None -> card-rank card == 12 is Just (t) -> card-fits-tableau card t
+        in if fits then
+          let new-src = kl-remove-top src
+          in let new-dst = Pile { pile-cards = list-push (dst.pile-cards) card, pile-face-up = dst.pile-face-up }
+          in let tab1 = list-set-at (st.kl-tableau) from new-src
+          in let tab2 = list-set-at tab1 to new-dst
+          in MoveOk (KlondikeState { kl-tableau = tab2, kl-foundation = st.kl-foundation, kl-stock = st.kl-stock, kl-waste = st.kl-waste, kl-moves = st.kl-moves + 1 })
+        else MoveErr "card does not fit"
+
+Section: Pile Helpers
+  kl-remove-top : Pile -> Pile
+  kl-remove-top (p) =
+    let cards = kl-list-init (p.pile-cards)
+    in let n = list-length cards
+    in let fu = if p.pile-face-up > n then n else if p.pile-face-up >= n then n - 1 else p.pile-face-up
+    in let adjusted = if fu < 0 then 0 else fu
+    in Pile { pile-cards = cards, pile-face-up = adjusted }
+
+Section: Win Check
+  kl-is-won : KlondikeState -> Boolean
+  kl-is-won (st) =
+    list-length (list-at (st.kl-foundation) 0) == 13 &
+    list-length (list-at (st.kl-foundation) 1) == 13 &
+    list-length (list-at (st.kl-foundation) 2) == 13 &
+    list-length (list-at (st.kl-foundation) 3) == 13
+
+  kl-foundation-count : KlondikeState -> Integer
+  kl-foundation-count (st) =
+    list-length (list-at (st.kl-foundation) 0) +
+    list-length (list-at (st.kl-foundation) 1) +
+    list-length (list-at (st.kl-foundation) 2) +
+    list-length (list-at (st.kl-foundation) 3)
+
+Section: Display
+  kl-format-waste : KlondikeState -> Text
+  kl-format-waste (st) =
+    let n = list-length (st.kl-waste)
+    in if n == 0 then "[]"
+    else "[" & format-card (list-at (st.kl-waste) (n - 1)) & "]"
+
+  kl-format-stock : KlondikeState -> Text
+  kl-format-stock (st) = "(" & show (list-length (st.kl-stock)) & ")"
+
+  kl-format-foundation : KlondikeState -> Text
+  kl-format-foundation (st) =
+    kl-fmt-found (list-at (st.kl-foundation) 0) "S" & " " &
+    kl-fmt-found (list-at (st.kl-foundation) 1) "H" & " " &
+    kl-fmt-found (list-at (st.kl-foundation) 2) "D" & " " &
+    kl-fmt-found (list-at (st.kl-foundation) 3) "C"
+
+  kl-fmt-found : List Integer, Text -> Text
+  kl-fmt-found (cards) (suit) =
+    let n = list-length cards
+    in if n == 0 then "[" & suit & "]"
+    else "[" & format-card (list-at cards (n - 1)) & "]"
+
+  kl-format-tableau-pile : Pile, Integer -> Text
+  kl-format-tableau-pile (p) (idx) =
+    show idx & ": " & kl-fmt-pile-cards (p.pile-cards) (p.pile-face-up) 0 (list-length (p.pile-cards)) ""
+
+  kl-fmt-pile-cards : List Integer, Integer, Integer, Integer, Text -> Text
+  kl-fmt-pile-cards (cards) (face-up) (i) (n) (acc) =
+    if i >= n then if n == 0 then "--" else acc
+    else let sep = if i == 0 then "" else " "
+    in let card-str = if i < face-up then "##" else format-card (list-at cards i)
+    in kl-fmt-pile-cards cards face-up (i + 1) n (acc & sep & card-str)
+
+  kl-format-state : KlondikeState -> Text
+  kl-format-state (st) =
+    "Stock:" & kl-format-stock st & " Waste:" & kl-format-waste st & " Found:" & kl-format-foundation st &
+    " Moves:" & show (st.kl-moves)
+
+  kl-format-tableau : KlondikeState, Integer -> Text
+  kl-format-tableau (st) (idx) =
+    if idx >= 7 then ""
+    else kl-format-tableau-pile (list-at (st.kl-tableau) idx) idx
+
+Section: List Helpers
+  kl-list-init : List Integer -> List Integer
+  kl-list-init (xs) = kl-take-list xs 0 (list-length xs - 1) []
+
+  kl-take-list : List Integer, Integer, Integer, List Integer -> List Integer
+  kl-take-list (xs) (i) (n) (acc) =
+    if i >= n then acc
+    else kl-take-list xs (i + 1) n (list-push acc (list-at xs i))
+
+  kl-reverse-list : List Integer -> List Integer
+  kl-reverse-list (xs) = kl-rev-loop xs (list-length xs - 1) []
+
+  kl-rev-loop : List Integer, Integer, List Integer -> List Integer
+  kl-rev-loop (xs) (i) (acc) =
+    if i < 0 then acc
+    else kl-rev-loop xs (i - 1) (list-push acc (list-at xs i))
+
+Page 1

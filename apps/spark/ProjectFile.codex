@@ -1,0 +1,96 @@
+Chapter: ProjectFile
+  cites Spark chapter Project
+
+ Project serialization to a text-based format. Exports project
+ state as structured text that can be written to disk and parsed
+ back. Format uses line-oriented records with tagged fields.
+
+ We say:
+
+Section: Types
+
+  ProjectHeader = record {
+    ph-magic : Text,
+    ph-version : Integer,
+    ph-name : Text,
+    ph-object-count : Integer
+  }
+
+  SerializedObject = record {
+    so-ser-name : Text,
+    so-ser-vert-count : Integer,
+    so-ser-face-count : Integer,
+    so-ser-pos-x : Real,
+    so-ser-pos-y : Real,
+    so-ser-pos-z : Real,
+    so-ser-color : Integer,
+    so-ser-visible : Boolean
+  }
+
+Section: Export
+
+  project-serialize : SparkProject -> Text
+  project-serialize (proj) =
+    let header = pf-header-line proj
+    in let objects = pf-serialize-objects proj 0
+    in header & "\n" & objects & "END\n"
+
+  pf-header-line : SparkProject -> Text
+  pf-header-line (proj) =
+    "SPARK " & show 1 & " " & proj.sp-name & " " & show (proj.sp-object-count)
+
+  pf-serialize-objects : SparkProject, Integer -> Text
+  pf-serialize-objects (proj) (i) =
+    if i >= proj.sp-object-count then ""
+    else let obj = project-get-object proj i
+    in let line = pf-object-line obj i
+    in line & "\n" & pf-serialize-objects proj (i + 1)
+
+  pf-object-line : SceneObject, Integer -> Text
+  pf-object-line (obj) (idx) =
+    "OBJ " & show idx &
+    " name=" & obj.so-name &
+    " verts=" & show (obj.so-mesh.tm-vert-count) &
+    " faces=" & show (obj.so-mesh.tm-face-count) &
+    " pos=" & show (obj.so-position.vx) & "," & show (obj.so-position.vy) & "," & show (obj.so-position.vz) &
+    " color=" & show (obj.so-color) &
+    " visible=" & (if obj.so-visible then "1" else "0")
+
+Section: Import Helpers
+
+  pf-parse-header : Text -> ProjectHeader
+  pf-parse-header (line) =
+    ProjectHeader {
+      ph-magic = "SPARK",
+      ph-version = 1,
+      ph-name = pf-extract-name line,
+      ph-object-count = 0
+    }
+
+  pf-extract-name : Text -> Text
+  pf-extract-name (line) =
+    let parts = text-split line " "
+    in if list-length parts >= 3 then list-at parts 2 else "Untitled"
+
+Section: Summary
+
+  project-summary : SparkProject -> Text
+  project-summary (proj) =
+    let total-verts = pf-count-verts proj 0 0
+    in let total-faces = pf-count-faces proj 0 0
+    in proj.sp-name & ": " & show (proj.sp-object-count) & " objects, " &
+      show total-verts & " verts, " & show total-faces & " faces"
+
+  pf-count-verts : SparkProject, Integer, Integer -> Integer
+  pf-count-verts (proj) (i) (acc) =
+    if i >= proj.sp-object-count then acc
+    else let obj = project-get-object proj i
+    in pf-count-verts proj (i + 1) (acc + obj.so-mesh.tm-vert-count)
+
+  pf-count-faces : SparkProject, Integer, Integer -> Integer
+  pf-count-faces (proj) (i) (acc) =
+    if i >= proj.sp-object-count then acc
+    else let obj = project-get-object proj i
+    in pf-count-faces proj (i + 1) (acc + obj.so-mesh.tm-face-count)
+
+Page 1

@@ -1,0 +1,807 @@
+Chapter: ConsoleEditor
+  cites Works chapter CodeBrowser
+  cites Works chapter Annotation
+  cites Works chapter AnnotationStore
+  cites Works chapter SignedAnnotation
+  cites Works chapter KeyManager
+  cites Works chapter RepoProtocol
+  cites UI chapter Overlay
+  cites UI chapter Widget
+  cites Foreword chapter Maybe
+
+ Minimal console text editor for the UEFI dev console. Edits
+ source files in-place on the boot image filesystem. Line-oriented
+ with cursor movement, insert, delete, save.
+
+ We say:
+
+Section: Buffer List
+
+  BufferList = record {
+    buffers : List EditorState,
+    active-idx : Integer,
+    buffer-count : Integer
+  }
+
+  buffers-empty : BufferList = BufferList { buffers = [], active-idx = 0, buffer-count = 0 }
+
+  buffers-open : BufferList, Text, Integer -> BufferList
+  buffers-open (bl) (path) (visible-rows) =
+    let existing = buffers-find-path (bl.buffers) path 0 (bl.buffer-count)
+    in if existing >= 0 then __record-set bl "active-idx" existing
+    else let e = editor-open path visible-rows
+    in BufferList { buffers = list-push (bl.buffers) e, active-idx = bl.buffer-count, buffer-count = bl.buffer-count + 1 }
+
+  buffers-find-path : List EditorState, Text, Integer, Integer -> Integer
+  buffers-find-path (bufs) (path) (i) (len) =
+    if i >= len then -1
+    else if (list-at bufs i).file-path == path then i
+    else buffers-find-path bufs path (i + 1) len
+
+  buffers-active : BufferList -> Maybe EditorState
+  buffers-active (bl) =
+    if bl.buffer-count == 0 then None
+    else Just (list-at (bl.buffers) (bl.active-idx))
+
+  buffers-update-active : BufferList, EditorState -> BufferList
+  buffers-update-active (bl) (e) =
+    BufferList { buffers = list-set-at (bl.buffers) (bl.active-idx) e, active-idx = bl.active-idx, buffer-count = bl.buffer-count }
+
+  buffers-next : BufferList -> BufferList
+  buffers-next (bl) =
+    if bl.buffer-count <= 1 then bl
+    else let next = if bl.active-idx + 1 >= bl.buffer-count then 0 else bl.active-idx + 1
+    in __record-set bl "active-idx" next
+
+  buffers-prev : BufferList -> BufferList
+  buffers-prev (bl) =
+    if bl.buffer-count <= 1 then bl
+    else let prev = if bl.active-idx <= 0 then bl.buffer-count - 1 else bl.active-idx - 1
+    in __record-set bl "active-idx" prev
+
+  buffers-close-active : BufferList -> BufferList
+  buffers-close-active (bl) =
+    if bl.buffer-count <= 0 then bl
+    else let new-bufs = buffers-remove (bl.buffers) (bl.active-idx) 0 (bl.buffer-count) []
+    in let new-count = bl.buffer-count - 1
+    in let new-idx = if bl.active-idx >= new-count then (if new-count > 0 then new-count - 1 else 0) else bl.active-idx
+    in BufferList { buffers = new-bufs, active-idx = new-idx, buffer-count = new-count }
+
+  buffers-remove : List EditorState, Integer, Integer, Integer, List EditorState -> List EditorState
+  buffers-remove (bufs) (skip) (i) (len) (acc) =
+    if i >= len then acc
+    else if i == skip then buffers-remove bufs skip (i + 1) len acc
+    else buffers-remove bufs skip (i + 1) len (list-push acc (list-at bufs i))
+
+  buffers-status : BufferList -> Text
+  buffers-status (bl) =
+    if bl.buffer-count == 0 then "No files open"
+    else "[" & show (bl.active-idx + 1) & "/" & show (bl.buffer-count) & "] " & (list-at (bl.buffers) (bl.active-idx)).file-path
+
+  buffers-dirty-count : BufferList -> Integer
+  buffers-dirty-count (bl) = buffers-dirty-loop (bl.buffers) 0 (bl.buffer-count) 0
+
+  buffers-dirty-loop : List EditorState, Integer, Integer, Integer -> Integer
+  buffers-dirty-loop (bufs) (i) (len) (acc) =
+    if i >= len then acc
+    else let e = list-at bufs i
+    in buffers-dirty-loop bufs (i + 1) len (acc + (if e.dirty then 1 else 0))
+
+Section: Editor State
+
+  EditorState = record {
+    file-path : Text,
+    lines : List Text,
+    line-count : Integer,
+    cursor-line : Integer,
+    cursor-col : Integer,
+    scroll-top : Integer,
+    visible-rows : Integer,
+    dirty : Boolean,
+    status : Text
+  }
+
+  editor-open : Text, Integer -> EditorState
+  editor-open (path) (visible-rows) =
+    let content = read-file path
+    in let lines = text-split content "\n"
+    in EditorState {
+      file-path = path,
+      lines = lines,
+      line-count = list-length lines,
+      cursor-line = 0,
+      cursor-col = 0,
+      scroll-top = 0,
+      visible-rows = visible-rows,
+      dirty = False,
+      status = path & " (" & show (list-length lines) & " lines)"
+    }
+
+  editor-new-file : Text, Integer -> EditorState
+  editor-new-file (path) (visible-rows) =
+    EditorState {
+      file-path = path,
+      lines = [""],
+      line-count = 1,
+      cursor-line = 0,
+      cursor-col = 0,
+      scroll-top = 0,
+      visible-rows = visible-rows,
+      dirty = False,
+      status = "new: " & path
+    }
+
+Section: Navigation
+
+  editor-move-up : EditorState -> EditorState
+  editor-move-up (e) =
+    if e.cursor-line <= 0 then e
+    else let new-line = e.cursor-line - 1
+    in let line-len = text-length (list-at (e.lines) new-line)
+    in let new-col = if e.cursor-col > line-len then line-len else e.cursor-col
+    in let new-scroll = if new-line < e.scroll-top then new-line else e.scroll-top
+    in EditorState { file-path = e.file-path, lines = e.lines, line-count = e.line-count, cursor-line = new-line, cursor-col = new-col, scroll-top = new-scroll, visible-rows = e.visible-rows, dirty = e.dirty, status = e.status }
+
+  editor-move-down : EditorState -> EditorState
+  editor-move-down (e) =
+    if e.cursor-line >= e.line-count - 1 then e
+    else let new-line = e.cursor-line + 1
+    in let line-len = text-length (list-at (e.lines) new-line)
+    in let new-col = if e.cursor-col > line-len then line-len else e.cursor-col
+    in let new-scroll = if new-line >= e.scroll-top + e.visible-rows then e.scroll-top + 1 else e.scroll-top
+    in EditorState { file-path = e.file-path, lines = e.lines, line-count = e.line-count, cursor-line = new-line, cursor-col = new-col, scroll-top = new-scroll, visible-rows = e.visible-rows, dirty = e.dirty, status = e.status }
+
+  editor-move-left : EditorState -> EditorState
+  editor-move-left (e) =
+    if e.cursor-col <= 0 then e
+    else __record-set e "cursor-col" (e.cursor-col - 1)
+
+  editor-move-right : EditorState -> EditorState
+  editor-move-right (e) =
+    let line-len = text-length (list-at (e.lines) (e.cursor-line))
+    in if e.cursor-col >= line-len then e
+    else __record-set e "cursor-col" (e.cursor-col + 1)
+
+  editor-page-up : EditorState -> EditorState
+  editor-page-up (e) =
+    let new-line = if e.cursor-line - e.visible-rows < 0 then 0 else e.cursor-line - e.visible-rows
+    in let new-scroll = if new-line < e.scroll-top then new-line else e.scroll-top
+    in let e2 = __record-set e "cursor-line" new-line
+    in __record-set e2 "scroll-top" new-scroll
+
+  editor-page-down : EditorState -> EditorState
+  editor-page-down (e) =
+    let new-line = if e.cursor-line + e.visible-rows >= e.line-count then e.line-count - 1 else e.cursor-line + e.visible-rows
+    in let new-scroll = if new-line >= e.scroll-top + e.visible-rows then new-line - e.visible-rows + 1 else e.scroll-top
+    in let e2 = __record-set e "cursor-line" new-line
+    in __record-set e2 "scroll-top" new-scroll
+
+Section: Editing
+
+  editor-insert-char : EditorState, Integer -> EditorState
+  editor-insert-char (e) (ch) =
+    let line = list-at (e.lines) (e.cursor-line)
+    in let before = substring line 0 (e.cursor-col)
+    in let after = substring line (e.cursor-col) (text-length line - e.cursor-col)
+    in let new-line = before & char-to-text (code-to-char ch) & after
+    in let new-lines = list-set-at (e.lines) (e.cursor-line) new-line
+    in EditorState { file-path = e.file-path, lines = new-lines, line-count = e.line-count, cursor-line = e.cursor-line, cursor-col = e.cursor-col + 1, scroll-top = e.scroll-top, visible-rows = e.visible-rows, dirty = True, status = "modified" }
+
+  editor-delete-char : EditorState -> EditorState
+  editor-delete-char (e) =
+    if e.cursor-col <= 0 then e
+    else let line = list-at (e.lines) (e.cursor-line)
+    in let before = substring line 0 (e.cursor-col - 1)
+    in let after = substring line (e.cursor-col) (text-length line - e.cursor-col)
+    in let new-lines = list-set-at (e.lines) (e.cursor-line) (before & after)
+    in EditorState { file-path = e.file-path, lines = new-lines, line-count = e.line-count, cursor-line = e.cursor-line, cursor-col = e.cursor-col - 1, scroll-top = e.scroll-top, visible-rows = e.visible-rows, dirty = True, status = "modified" }
+
+  editor-delete-forward : EditorState -> EditorState
+  editor-delete-forward (e) =
+    let line = list-at (e.lines) (e.cursor-line)
+    in let line-len = text-length line
+    in if e.cursor-col >= line-len then
+      if e.cursor-line >= e.line-count - 1 then e
+      else let next-line = list-at (e.lines) (e.cursor-line + 1)
+      in let merged = line & next-line
+      in let new-lines = list-set-at (e.lines) (e.cursor-line) merged
+      in let final-lines = editor-remove-line new-lines (e.cursor-line + 1) (e.line-count)
+      in EditorState { file-path = e.file-path, lines = final-lines, line-count = e.line-count - 1, cursor-line = e.cursor-line, cursor-col = e.cursor-col, scroll-top = e.scroll-top, visible-rows = e.visible-rows, dirty = True, status = "modified" }
+    else let before = substring line 0 (e.cursor-col)
+    in let after = substring line (e.cursor-col + 1) (line-len - e.cursor-col - 1)
+    in let new-lines = list-set-at (e.lines) (e.cursor-line) (before & after)
+    in EditorState { file-path = e.file-path, lines = new-lines, line-count = e.line-count, cursor-line = e.cursor-line, cursor-col = e.cursor-col, scroll-top = e.scroll-top, visible-rows = e.visible-rows, dirty = True, status = "modified" }
+
+  editor-remove-line : List Text, Integer, Integer -> List Text
+  editor-remove-line (lines) (idx) (len) =
+    editor-remove-loop lines idx 0 len []
+
+  editor-remove-loop : List Text, Integer, Integer, Integer, List Text -> List Text
+  editor-remove-loop (lines) (skip) (i) (len) (acc) =
+    if i >= len then acc
+    else if i == skip then editor-remove-loop lines skip (i + 1) len acc
+    else editor-remove-loop lines skip (i + 1) len (list-push acc (list-at lines i))
+
+  editor-insert-newline : EditorState -> EditorState
+  editor-insert-newline (e) =
+    let line = list-at (e.lines) (e.cursor-line)
+    in let before = substring line 0 (e.cursor-col)
+    in let after = substring line (e.cursor-col) (text-length line - e.cursor-col)
+    in let new-lines = list-set-at (e.lines) (e.cursor-line) before
+    in let final-lines = list-insert-at new-lines (e.cursor-line + 1) after
+    in EditorState { file-path = e.file-path, lines = final-lines, line-count = e.line-count + 1, cursor-line = e.cursor-line + 1, cursor-col = 0, scroll-top = e.scroll-top, visible-rows = e.visible-rows, dirty = True, status = "modified" }
+
+Section: Save
+
+  editor-save : EditorState -> EditorState
+  editor-save (e) =
+    let content = join-editor-lines (e.lines) 0 (e.line-count) ""
+    in let w = write-file (e.file-path) content
+    in EditorState { file-path = e.file-path, lines = e.lines, line-count = e.line-count, cursor-line = e.cursor-line, cursor-col = e.cursor-col, scroll-top = e.scroll-top, visible-rows = e.visible-rows, dirty = False, status = "saved: " & e.file-path }
+
+  join-editor-lines : List Text, Integer, Integer, Text -> Text
+  join-editor-lines (lines) (i) (len) (acc) =
+    if i >= len then acc
+    else let sep = if i == 0 then "" else "\n"
+    in join-editor-lines lines (i + 1) len (acc & sep & list-at lines i)
+
+Section: Rendering
+
+  editor-visible-lines : EditorState -> List Text
+  editor-visible-lines (e) =
+    editor-slice-lines (e.lines) (e.scroll-top) (e.scroll-top + e.visible-rows) (e.line-count) []
+
+  editor-slice-lines : List Text, Integer, Integer, Integer, List Text -> List Text
+  editor-slice-lines (lines) (i) (stop) (len) (acc) =
+    if i >= stop then acc
+    else if i >= len then list-push acc "~"
+    else editor-slice-lines lines (i + 1) stop len (list-push acc (list-at lines i))
+
+  editor-status-line : EditorState -> Text
+  editor-status-line (e) =
+    let dirty-flag = if e.dirty then " [+]" else ""
+    in e.file-path & dirty-flag & "  L" & show (e.cursor-line + 1) & ":" & show (e.cursor-col + 1) & "/" & show (e.line-count) & "  " & e.status
+
+Section: Find and Replace
+
+  editor-find : EditorState, Text -> EditorState
+  editor-find (e) (query) =
+    if text-length query == 0 then __record-set e "status" "Find: empty query"
+    else let result = find-in-lines (e.lines) query (e.cursor-line) (e.cursor-col + 1) (e.line-count)
+    in let (r-found, r-line, r-col) = result
+    in if r-found then
+      let e2 = __record-set e "cursor-line" r-line
+      in let e3 = __record-set e2 "cursor-col" r-col
+      in let e4 = editor-ensure-visible e3
+      in __record-set e4 "status" ("Found: '" & query & "' at L" & show (r-line + 1) & ":" & show (r-col + 1))
+    else __record-set e "status" ("Not found: '" & query & "'")
+
+  editor-find-next : EditorState, Text -> EditorState
+  editor-find-next (e) (query) = editor-find e query
+
+  find-in-lines : List Text, Text, Integer, Integer, Integer -> (Boolean, Integer, Integer)
+  find-in-lines (lines) (query) (start-line) (start-col) (line-count) =
+    let found = find-from-line lines query start-line start-col line-count
+    in let (f-found, f-line, f-col) = found
+    in if f-found then found
+    else find-from-line lines query 0 0 start-line
+
+  find-from-line : List Text, Text, Integer, Integer, Integer -> (Boolean, Integer, Integer)
+  find-from-line (lines) (query) (from-line) (from-col) (stop-line) =
+    find-line-loop lines query from-line from-col stop-line
+
+  find-line-loop : List Text, Text, Integer, Integer, Integer -> (Boolean, Integer, Integer)
+  find-line-loop (lines) (query) (i) (start-col) (stop) =
+    if i >= stop then (False, 0, 0)
+    else let line = list-at lines i
+    in let col = find-in-text line query start-col
+    in if col >= 0 then (True, i, col)
+    else find-line-loop lines query (i + 1) 0 stop
+
+  find-in-text : Text, Text, Integer -> Integer
+  find-in-text (line) (query) (from) =
+    let line-len = text-length line
+    in let query-len = text-length query
+    in find-in-text-loop line query from (line-len - query-len + 1) query-len
+
+  find-in-text-loop : Text, Text, Integer, Integer, Integer -> Integer
+  find-in-text-loop (line) (query) (i) (limit) (qlen) =
+    if i >= limit then -1
+    else if substring line i qlen == query then i
+    else find-in-text-loop line query (i + 1) limit qlen
+
+  editor-replace : EditorState, Text, Text -> EditorState
+  editor-replace (e) (old) (new) =
+    let line = list-at (e.lines) (e.cursor-line)
+    in let before-cursor = substring line 0 (e.cursor-col)
+    in let from-cursor = substring line (e.cursor-col) (text-length line - e.cursor-col)
+    in let pos = find-in-text from-cursor old 0
+    in if pos < 0 then __record-set e "status" ("Replace: '" & old & "' not found on current line")
+    else let abs-pos = e.cursor-col + pos
+    in let prefix = substring line 0 abs-pos
+    in let suffix = substring line (abs-pos + text-length old) (text-length line - abs-pos - text-length old)
+    in let new-line = prefix & new & suffix
+    in let new-lines = list-set-at (e.lines) (e.cursor-line) new-line
+    in let e2 = __record-set e "lines" new-lines
+    in let e3 = __record-set e2 "cursor-col" (abs-pos + text-length new)
+    in let e4 = __record-set e3 "dirty" True
+    in __record-set e4 "status" "Replaced"
+
+  editor-replace-all : EditorState, Text, Text -> EditorState
+  editor-replace-all (e) (old) (new) =
+    let result = replace-all-lines (e.lines) old new 0 (e.line-count) [] 0
+    in let (ra-lines, ra-count) = result
+    in let e2 = __record-set e "lines" ra-lines
+    in let e3 = __record-set e2 "dirty" True
+    in __record-set e3 "status" ("Replaced " & show ra-count & " occurrences")
+
+  replace-all-lines : List Text, Text, Text, Integer, Integer, List Text, Integer -> (List Text, Integer)
+  replace-all-lines (lines) (old) (new) (i) (len) (acc) (count) =
+    if i >= len then (acc, count)
+    else let line = list-at lines i
+    in let replaced = replace-in-line line old new
+    in let line-count = count-occurrences line old
+    in replace-all-lines lines old new (i + 1) len (list-push acc replaced) (count + line-count)
+
+  replace-in-line : Text, Text, Text -> Text
+  replace-in-line (line) (old) (new) =
+    replace-in-line-loop line old new 0 (text-length line) (text-length old) ""
+
+  replace-in-line-loop : Text, Text, Text, Integer, Integer, Integer, Text -> Text
+  replace-in-line-loop (line) (old) (new) (i) (line-len) (old-len) (acc) =
+    if i >= line-len then acc
+    else if i + old-len <= line-len then
+      if substring line i old-len == old then replace-in-line-loop line old new (i + old-len) line-len old-len (acc & new)
+      else replace-in-line-loop line old new (i + 1) line-len old-len (acc & char-to-text (char-at line i))
+    else replace-in-line-loop line old new (i + 1) line-len old-len (acc & char-to-text (char-at line i))
+
+  count-occurrences : Text, Text -> Integer
+  count-occurrences (line) (query) =
+    count-occ-loop line query 0 (text-length line) (text-length query) 0
+
+  count-occ-loop : Text, Text, Integer, Integer, Integer, Integer -> Integer
+  count-occ-loop (line) (query) (i) (line-len) (q-len) (acc) =
+    if i + q-len > line-len then acc
+    else if substring line i q-len == query then count-occ-loop line query (i + q-len) line-len q-len (acc + 1)
+    else count-occ-loop line query (i + 1) line-len q-len acc
+
+  editor-ensure-visible : EditorState -> EditorState
+  editor-ensure-visible (e) =
+    if e.cursor-line < e.scroll-top then __record-set e "scroll-top" (e.cursor-line)
+    else if e.cursor-line >= e.scroll-top + e.visible-rows then __record-set e "scroll-top" (e.cursor-line - e.visible-rows + 1)
+    else e
+
+Section: Undo
+
+  UndoEntry = record {
+    ue-lines : List Text,
+    ue-line-count : Integer,
+    ue-cursor-line : Integer,
+    ue-cursor-col : Integer
+  }
+
+  UndoStack = record {
+    entries : List UndoEntry,
+    count : Integer,
+    max-depth : Integer
+  }
+
+  undo-stack-new : Integer -> UndoStack
+  undo-stack-new (max-depth) = UndoStack { entries = [], count = 0, max-depth = max-depth }
+
+  undo-push : UndoStack, EditorState -> UndoStack
+  undo-push (stack) (e) =
+    let entry = UndoEntry { ue-lines = e.lines, ue-line-count = e.line-count, ue-cursor-line = e.cursor-line, ue-cursor-col = e.cursor-col }
+    in let new-entries = if stack.count >= stack.max-depth then list-push (list-tail-undo (stack.entries) 1 (stack.count) []) entry
+      else list-push (stack.entries) entry
+    in let new-count = if stack.count >= stack.max-depth then stack.count else stack.count + 1
+    in UndoStack { entries = new-entries, count = new-count, max-depth = stack.max-depth }
+
+  undo-pop : UndoStack -> UndoStack
+  undo-pop (stack) =
+    if stack.count <= 0 then stack
+    else UndoStack { entries = list-take-undo (stack.entries) (stack.count - 1) 0 [], count = stack.count - 1, max-depth = stack.max-depth }
+
+  undo-peek : UndoStack -> Maybe UndoEntry
+  undo-peek (stack) =
+    if stack.count <= 0 then None
+    else Just (list-at (stack.entries) (stack.count - 1))
+
+  UndoRedoResult = record {
+    editor : EditorState,
+    undo : UndoStack,
+    redo : UndoStack
+  }
+
+  editor-undo : EditorState, UndoStack, UndoStack -> UndoRedoResult
+  editor-undo (e) (undo-s) (redo-s) =
+    when undo-peek undo-s
+      is None -> UndoRedoResult { editor = __record-set e "status" "None to undo", undo = undo-s, redo = redo-s }
+      is Just (entry) ->
+        let redo-s2 = undo-push redo-s e
+        in let e2 = __record-set e "lines" (entry.ue-lines)
+        in let e3 = __record-set e2 "line-count" (entry.ue-line-count)
+        in let e4 = __record-set e3 "cursor-line" (entry.ue-cursor-line)
+        in let e5 = __record-set e4 "cursor-col" (entry.ue-cursor-col)
+        in let e6 = __record-set e5 "dirty" True
+        in let e7 = __record-set e6 "status" "Undone"
+        in UndoRedoResult { editor = e7, undo = undo-pop undo-s, redo = redo-s2 }
+
+  editor-redo : EditorState, UndoStack, UndoStack -> UndoRedoResult
+  editor-redo (e) (undo-s) (redo-s) =
+    when undo-peek redo-s
+      is None -> UndoRedoResult { editor = __record-set e "status" "None to redo", undo = undo-s, redo = redo-s }
+      is Just (entry) ->
+        let undo-s2 = undo-push undo-s e
+        in let e2 = __record-set e "lines" (entry.ue-lines)
+        in let e3 = __record-set e2 "line-count" (entry.ue-line-count)
+        in let e4 = __record-set e3 "cursor-line" (entry.ue-cursor-line)
+        in let e5 = __record-set e4 "cursor-col" (entry.ue-cursor-col)
+        in let e6 = __record-set e5 "dirty" True
+        in let e7 = __record-set e6 "status" "Redone"
+        in UndoRedoResult { editor = e7, undo = undo-s2, redo = undo-pop redo-s }
+
+  redo-clear : UndoStack -> UndoStack
+  redo-clear (stack) = UndoStack { entries = [], count = 0, max-depth = stack.max-depth }
+
+  list-tail-undo : List UndoEntry, Integer, Integer, List UndoEntry -> List UndoEntry
+  list-tail-undo (xs) (i) (len) (acc) =
+    if i >= len then acc
+    else list-tail-undo xs (i + 1) len (list-push acc (list-at xs i))
+
+  list-take-undo : List UndoEntry, Integer, Integer, List UndoEntry -> List UndoEntry
+  list-take-undo (xs) (n) (i) (acc) =
+    if i >= n then acc
+    else list-take-undo xs n (i + 1) (list-push acc (list-at xs i))
+
+Section: Go To Line
+
+  editor-goto-line : EditorState, Integer -> EditorState
+  editor-goto-line (e) (target) =
+    let line = if target < 0 then 0 else if target >= e.line-count then e.line-count - 1 else target
+    in let e2 = __record-set e "cursor-line" line
+    in let e3 = __record-set e2 "cursor-col" 0
+    in editor-ensure-visible e3
+
+Section: Annotation Authoring
+
+ Writer-role surface (H2). The cursor is a coordinate in source;
+ author-annotation lifts that coordinate to a definition target,
+ builds an Annotation, signs it via KeyManager, and stores both
+ the plain annotation in AnnotationFact (read by CodeBrowser at
+ H1) and the SignedAnnotation alongside (kept on the editor for
+ later publish via H7). No outbound, no trust check yet.
+
+  AuthoredAnnotation = record {
+    fact-store : AnnotationFact,
+    signed : SignedAnnotation
+  }
+
+  def-at-cursor : SourceIndex, Text, Integer -> Maybe DefLocation
+  def-at-cursor (idx) (chapter) (cursor-line) =
+    def-at-cursor-scan (idx.locations) chapter (cursor-line + 1) 0 (list-length (idx.locations)) None
+
+  def-at-cursor-scan : List DefLocation, Text, Integer, Integer, Integer, Maybe DefLocation -> Maybe DefLocation
+  def-at-cursor-scan (locs) (chapter) (target-line) (i) (n) (best) =
+    if i >= n then best
+    else let loc = list-at locs i
+    in if loc.chapter == chapter then
+      if loc.line <= target-line then
+        let updated = when best
+          is None -> Just loc
+          is Just (b) -> if loc.line > b.line then Just loc else Just b
+        in def-at-cursor-scan locs chapter target-line (i + 1) n updated
+      else def-at-cursor-scan locs chapter target-line (i + 1) n best
+    else def-at-cursor-scan locs chapter target-line (i + 1) n best
+
+  author-annotation-at : AnnotationFact, Keypair, AnnotationTarget, AnnotationKind, Text, Integer -> AuthoredAnnotation
+  author-annotation-at (af) (kp) (target) (kind) (body) (ts) =
+    let a = create-annotation target kind (kp.fingerprint) body ts
+    in let sa = sign-annotation kp a
+    in let af2 = annotate af target kind (kp.fingerprint) body ts
+    in AuthoredAnnotation { fact-store = af2, signed = sa }
+
+  annotate-at-cursor : EditorState, SourceIndex, Text, AnnotationFact, Keypair, AnnotationKind, Text, Integer -> Maybe AuthoredAnnotation
+  annotate-at-cursor (e) (idx) (chapter) (af) (kp) (kind) (body) (ts) =
+    when def-at-cursor idx chapter (e.cursor-line)
+      is None -> None
+      is Just (loc) ->
+        let target = make-target (loc.chapter) (loc.name)
+        in Just (author-annotation-at af kp target kind body ts)
+
+Section: Inbound Notification
+
+ H8: notification surface for incoming proposal payloads. The
+ driver registers a TrustService handler that pushes payloads
+ onto the editor's inbound queue. The editor filters by current
+ file and renders relevant items as throbber/toast/overlay
+ widgets. Auto-dismiss timing follows the existing Overlay tick
+ loop.
+
+  InboundNotification = record {
+    payload : ProposalPayload,
+    seen : Boolean,
+    arrived-at : Integer
+  }
+
+  EditorNotifications = record {
+    queue : List InboundNotification,
+    queue-count : Integer,
+    unseen-count : Integer
+  }
+
+  notifications-empty : EditorNotifications = EditorNotifications {
+    queue = [],
+    queue-count = 0,
+    unseen-count = 0
+  }
+
+  enqueue-notification : EditorNotifications, ProposalPayload, Integer -> EditorNotifications
+  enqueue-notification (n) (pp) (now) =
+    let entry = InboundNotification { payload = pp, seen = False, arrived-at = now }
+    in EditorNotifications {
+      queue = list-snoc (n.queue) entry,
+      queue-count = n.queue-count + 1,
+      unseen-count = n.unseen-count + 1
+    }
+
+  mark-all-seen : EditorNotifications -> EditorNotifications
+  mark-all-seen (n) =
+    EditorNotifications {
+      queue = mark-seen-loop (n.queue) 0 (n.queue-count) [],
+      queue-count = n.queue-count,
+      unseen-count = 0
+    }
+
+  mark-seen-loop : List InboundNotification, Integer, Integer, List InboundNotification -> List InboundNotification
+  mark-seen-loop (q) (i) (n) (acc) =
+    if i >= n then acc
+    else let it = list-at q i
+    in let seen-it = InboundNotification {
+      payload = it.payload,
+      seen = True,
+      arrived-at = it.arrived-at
+    }
+    in mark-seen-loop q (i + 1) n (list-push acc seen-it)
+
+Section: Notification Filtering
+
+ Of the queued payloads, the relevant subset for the editor is
+ those whose target-chapter matches the file open in the editor.
+ file-path-to-chapter is a heuristic — it strips the directory
+ and the .codex suffix.
+
+  file-path-to-chapter : Text -> Text
+  file-path-to-chapter (path) = strip-codex-suffix (basename path)
+
+  basename : Text -> Text
+  basename (p) = basename-loop p (text-length p) (text-length p)
+
+  basename-loop : Text, Integer, Integer -> Text
+  basename-loop (p) (i) (n) =
+    if i <= 0 then p
+    else if char-at p (i - 1) == char-at "/" 0 then substring p i (n - i)
+    else basename-loop p (i - 1) n
+
+  strip-codex-suffix : Text -> Text
+  strip-codex-suffix (s) =
+    let n = text-length s
+    in if n < 6 then s
+    else if substring s (n - 6) 6 == ".codex"
+      then substring s 0 (n - 6)
+      else s
+
+  relevant-notifications : EditorNotifications, EditorState -> List InboundNotification
+  relevant-notifications (n) (e) =
+    let chapter = file-path-to-chapter (e.file-path)
+    in filter-relevant (n.queue) chapter 0 (n.queue-count) []
+
+  filter-relevant : List InboundNotification, Text, Integer, Integer, List InboundNotification -> List InboundNotification
+  filter-relevant (q) (chapter) (i) (n) (acc) =
+    if i >= n then acc
+    else let it = list-at q i
+    in if it.payload.target-chapter == chapter
+      then filter-relevant q chapter (i + 1) n (list-push acc it)
+      else filter-relevant q chapter (i + 1) n acc
+
+  unseen-relevant-count : EditorNotifications, EditorState -> Integer
+  unseen-relevant-count (n) (e) =
+    let rel = relevant-notifications n e
+    in count-unseen rel 0 (list-length rel) 0
+
+  count-unseen : List InboundNotification, Integer, Integer, Integer -> Integer
+  count-unseen (q) (i) (n) (acc) =
+    if i >= n then acc
+    else let it = list-at q i
+    in let inc = if it.seen then 0 else 1
+    in count-unseen q (i + 1) n (acc + inc)
+
+Section: Notification Widgets
+
+ Three render shapes per Damian's framing — throbber (subtle
+ status-line dot), toast (auto-dismissing overlay), overlay
+ (modal-ish review panel). The driver chooses based on user
+ preference; this chapter just emits widget trees.
+
+  notification-throbber-text : EditorNotifications, EditorState -> Text
+  notification-throbber-text (n) (e) =
+    let count = unseen-relevant-count n e
+    in if count == 0 then ""
+    else "[" & show count & " new]"
+
+  notification-toast-text : InboundNotification -> Text
+  notification-toast-text (it) =
+    "New proposal on " & (it.payload.target-chapter)
+    & " from " & ((it.payload.annotation.annotation).author)
+
+  notification-toast-overlay : InboundNotification, Integer, Integer -> Overlay
+  notification-toast-overlay (it) (x) (y) =
+    let id = "toast-" & ((it.payload.annotation.annotation).hash)
+    in let widget = widget-label id (notification-toast-text it)
+    in overlay-notification id x y 360 24 widget 4000
+
+  build-notification-rows : List InboundNotification, Integer, Integer, List WidgetNode -> List WidgetNode
+  build-notification-rows (q) (i) (n) (acc) =
+    if i >= n then acc
+    else let it = list-at q i
+    in let id = "notify-row-" & show i
+    in let label = widget-label id (notification-toast-text it)
+    in build-notification-rows q (i + 1) n (list-push acc label)
+
+  notification-panel : EditorNotifications, EditorState -> WidgetNode
+  notification-panel (n) (e) =
+    let rel = relevant-notifications n e
+    in let rows = build-notification-rows rel 0 (list-length rel) []
+    in widget-panel "editor-notifications" DirColumn 2 rows
+
+  notification-overlay : EditorNotifications, EditorState, Integer, Integer -> Overlay
+  notification-overlay (n) (e) (x) (y) =
+    let widget = notification-panel n e
+    in let count = list-length (relevant-notifications n e)
+    in let h = 32 + 22 * count
+    in overlay-popup "editor-notifications-overlay" x y 400 h widget
+
+Section: Verdict Subscription
+
+ H10: the annotator-side counterpart to H8. When a verdict
+ arrives on a proposal this editor authored, surface it. The
+ user can fetch the superseding fact or show a diff; both are
+ queued as PendingAction values and consumed by the driver.
+
+  IncomingVerdict = record {
+    verdict : Verdict,
+    seen : Boolean,
+    arrived-at : Integer
+  }
+
+  PendingAction =
+    | ActionFetchNewFact (Text)
+    | ActionShowDiff (Text)
+
+  EditorVerdicts = record {
+    authored-proposals : List Text,
+    inbox : List IncomingVerdict,
+    inbox-count : Integer,
+    pending : List PendingAction
+  }
+
+  verdicts-empty : EditorVerdicts = EditorVerdicts {
+    authored-proposals = [],
+    inbox = [],
+    inbox-count = 0,
+    pending = []
+  }
+
+  remember-authored-proposal : EditorVerdicts, Text -> EditorVerdicts
+  remember-authored-proposal (v) (proposal-id) =
+    EditorVerdicts {
+      authored-proposals = list-snoc (v.authored-proposals) proposal-id,
+      inbox = v.inbox,
+      inbox-count = v.inbox-count,
+      pending = v.pending
+    }
+
+  is-authored-proposal : EditorVerdicts, Text -> Boolean
+  is-authored-proposal (v) (proposal-id) =
+    list-contains (v.authored-proposals) (fn x -> x == proposal-id)
+
+  enqueue-verdict : EditorVerdicts, Verdict, Integer -> EditorVerdicts
+  enqueue-verdict (v) (verdict) (now) =
+    if is-authored-proposal v (verdict.proposal-id) == False then v
+    else let entry = IncomingVerdict {
+      verdict = verdict,
+      seen = False,
+      arrived-at = now
+    }
+    in EditorVerdicts {
+      authored-proposals = v.authored-proposals,
+      inbox = list-snoc (v.inbox) entry,
+      inbox-count = v.inbox-count + 1,
+      pending = v.pending
+    }
+
+  unseen-verdict-count : EditorVerdicts -> Integer
+  unseen-verdict-count (v) =
+    count-unseen-verdicts (v.inbox) 0 (v.inbox-count) 0
+
+  count-unseen-verdicts : List IncomingVerdict, Integer, Integer, Integer -> Integer
+  count-unseen-verdicts (q) (i) (n) (acc) =
+    if i >= n then acc
+    else let it = list-at q i
+    in let inc = if it.seen then 0 else 1
+    in count-unseen-verdicts q (i + 1) n (acc + inc)
+
+Section: Sync Actions
+
+ fetch-new-fact and show-diff are queue-only here. The driver
+ dequeues with take-pending-actions and dispatches to repo +
+ transport. The editor doesn't know about TCP or disk; it only
+ knows it wanted to do something with a proposal-id.
+
+  queue-fetch-fact : EditorVerdicts, Text -> EditorVerdicts
+  queue-fetch-fact (v) (proposal-id) =
+    EditorVerdicts {
+      authored-proposals = v.authored-proposals,
+      inbox = v.inbox,
+      inbox-count = v.inbox-count,
+      pending = list-snoc (v.pending) (ActionFetchNewFact proposal-id)
+    }
+
+  queue-show-diff : EditorVerdicts, Text -> EditorVerdicts
+  queue-show-diff (v) (proposal-id) =
+    EditorVerdicts {
+      authored-proposals = v.authored-proposals,
+      inbox = v.inbox,
+      inbox-count = v.inbox-count,
+      pending = list-snoc (v.pending) (ActionShowDiff proposal-id)
+    }
+
+  take-pending-actions : EditorVerdicts -> EditorVerdicts
+  take-pending-actions (v) =
+    EditorVerdicts {
+      authored-proposals = v.authored-proposals,
+      inbox = v.inbox,
+      inbox-count = v.inbox-count,
+      pending = []
+    }
+
+  pending-action-count : EditorVerdicts -> Integer
+  pending-action-count (v) = list-length (v.pending)
+
+Section: Verdict Widgets
+
+ Toast and panel for the verdict inbox. The verdict text labels
+ the kind via verdict-kind-name (already exported by RepoProtocol).
+
+  format-verdict-line : IncomingVerdict -> Text
+  format-verdict-line (it) =
+    "[" & verdict-kind-name (it.verdict.kind) & "] "
+    & "on " & (it.verdict.proposal-id)
+    & "  by " & (it.verdict.author-fingerprint)
+
+  build-verdict-rows : List IncomingVerdict, Integer, Integer, List WidgetNode -> List WidgetNode
+  build-verdict-rows (q) (i) (n) (acc) =
+    if i >= n then acc
+    else let it = list-at q i
+    in let id = "verdict-row-" & show i
+    in let label = widget-label id (format-verdict-line it)
+    in build-verdict-rows q (i + 1) n (list-push acc label)
+
+  verdict-panel : EditorVerdicts -> WidgetNode
+  verdict-panel (v) =
+    let rows = build-verdict-rows (v.inbox) 0 (v.inbox-count) []
+    in widget-panel "editor-verdicts" DirColumn 2 rows
+
+  verdict-overlay : EditorVerdicts, Integer, Integer -> Overlay
+  verdict-overlay (v) (x) (y) =
+    let widget = verdict-panel v
+    in let h = 32 + 22 * v.inbox-count
+    in overlay-popup "editor-verdicts-overlay" x y 480 h widget
+
+  verdict-toast : IncomingVerdict, Integer, Integer -> Overlay
+  verdict-toast (it) (x) (y) =
+    let id = "verdict-toast-" & (it.verdict.id)
+    in let widget = widget-label id (format-verdict-line it)
+    in overlay-notification id x y 420 24 widget 5000
+
+Page 1

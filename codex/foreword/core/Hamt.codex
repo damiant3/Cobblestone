@@ -1,0 +1,311 @@
+Chapter: Hamt
+
+  cites Foreword chapter Maybe
+  cites Foreword chapter ListUtils
+
+ A HamtEntry is a record containing key, the lookup text, and value, the stored element.
+
+ A HamtNode is one of:
+
+   HamtEmpty — an absent sub-trie.
+   HamtLeaf — carries a hash, key, and value for a single entry.
+   HamtCollision — carries a shared hash and a list of HamtEntry values whose keys collide.
+   HamtBranch — carries a bitmap and a compressed list of child HamtNode values.
+
+ A HamtMap is a record containing root, the top-level trie node, and size, the total number of entries.
+
+ To hamt-empty gives HamtMap a, an empty map with no entries.
+
+ To hamt-get gives Maybe a, looking up a key in O(log32 n) time, or None when the key is absent.
+
+ To hamt-set gives HamtMap a, inserting or replacing the entry for the given key.
+
+ To hamt-remove gives HamtMap a, deleting the entry for the given key; returns the map unchanged when the key is absent.
+
+ To hamt-contains gives Boolean, True when the given key exists in the map.
+
+ To hamt-size gives Integer, the number of entries in the map.
+
+ To hamt-fold gives b, folding a function over every key-value pair with an initial accumulator.
+
+ To hamt-to-list gives List HamtEntry, all entries as a flat list.
+
+ To hamt-from-list gives HamtMap a, bulk-inserting all entries into an empty map.
+
+ We say:
+
+Section: Definitions
+
+  HamtEntry a = record {
+
+    key : Text,
+
+    value : a
+  }
+
+  HamtNode a =
+    | HamtEmpty
+    | HamtLeaf (Integer) (Text) (a)
+    | HamtCollision (Integer) (List (HamtEntry a))
+    | HamtBranch (Integer) (List (HamtNode a))
+
+  HamtMap a = record {
+
+    root : HamtNode a,
+
+    size : Integer between 0 and 4294967295
+  }
+
+  hamt-empty : HamtMap a = HamtMap { root = HamtEmpty, size = 0 }
+
+  djb2-hash : Text -> Integer
+  djb2-hash (s) = djb2-loop s 0 (text-length s) 5381
+
+  djb2-loop : Text, Integer, Integer, Integer -> Integer
+  djb2-loop (s) (i) (len) (h) =
+    if i == len then abs-int h
+    else djb2-loop s (i + 1) len (h * 33 + char-code (char-at s i))
+
+  abs-int : Integer -> Integer
+  abs-int (n) = if n < 0 then -n else n
+
+  pow2 : Integer -> Integer
+  pow2 (n) = bit-shl 1 n
+
+  extract-chunk : Integer, Integer -> Integer
+  extract-chunk (hash) (level) = bit-and (bit-shru hash (level * 5)) 31
+
+  popcount : Integer -> Integer
+  popcount (n) = popcount-loop (bit-and n 4294967295) 0
+
+  popcount-loop : Integer, Integer -> Integer
+  popcount-loop (n) (count) =
+    if n == 0 then count
+    else popcount-loop (bit-shru n 1) (count + bit-and n 1)
+
+  bitmap-has : Integer, Integer -> Boolean
+  bitmap-has (bitmap) (bit) =
+    bit-and (bit-shru bitmap bit) 1 == 1
+
+  bitmap-set : Integer, Integer -> Integer
+  bitmap-set (bitmap) (bit) =
+    bit-or bitmap (pow2 bit)
+
+  bitmap-index : Integer, Integer -> Integer
+  bitmap-index (bitmap) (bit) =
+    popcount (bit-and bitmap (pow2 bit - 1))
+
+  list-insert-at : List a, Integer, a -> List a
+  list-insert-at (xs) (i) (x) =
+    if i == 0 then [x] & xs
+    else [list-at xs 0] & list-insert-at (list-tail xs) (i - 1) x
+
+  list-replace-at : List a, Integer, a -> List a
+  list-replace-at (xs) (i) (x) =
+    if i == 0 then [x] & list-tail xs
+    else [list-at xs 0] & list-replace-at (list-tail xs) (i - 1) x
+
+  list-remove-at : List a, Integer -> List a
+  list-remove-at (xs) (i) =
+    if i == 0 then list-tail xs
+    else [list-at xs 0] & list-remove-at (list-tail xs) (i - 1)
+
+  hamt-get : HamtMap a, Text -> Maybe a
+  hamt-get (m) (key) =
+    let hash = djb2-hash key
+    in hamt-node-get m.root hash key 0
+
+  hamt-node-get : HamtNode a, Integer, Text, Integer -> Maybe a
+  hamt-node-get (node) (hash) (key) (level) =
+    when node
+      is HamtEmpty -> None
+      is HamtLeaf (h) (k) (v) ->
+        if k == key then Just v else None
+      is HamtCollision (h) (entries) ->
+        if h == hash then collision-find entries key else None
+      is HamtBranch (bitmap) (children) ->
+        let chunk = extract-chunk hash level
+        in if bitmap-has bitmap chunk
+          then let idx = bitmap-index bitmap chunk
+            in hamt-node-get (list-at children idx) hash key (level + 1)
+          else None
+
+  collision-find : List (HamtEntry a), Text -> Maybe a
+  collision-find (entries) (key) =
+    if list-length entries == 0 then None
+    else let e = list-at entries 0
+      in if e.key == key then Just e.value
+      else collision-find (list-tail entries) key
+
+  hamt-set : HamtMap a, Text, a -> HamtMap a
+  hamt-set (m) (key) (value) =
+    let hash = djb2-hash key
+    in let result = hamt-node-set m.root hash key value 0
+    in HamtMap { root = result.node, size = m.size + result.delta }
+
+  HamtSetResult a = record {
+
+    node : HamtNode a,
+
+    delta : Integer between 0 and 255
+  }
+
+  hamt-node-set : HamtNode a, Integer, Text, a, Integer -> HamtSetResult a
+  hamt-node-set (node) (hash) (key) (value) (level) =
+    when node
+      is HamtEmpty ->
+        HamtSetResult { node = HamtLeaf hash key value, delta = 1 }
+      is HamtLeaf (h) (k) (v) ->
+        if k == key
+          then HamtSetResult { node = HamtLeaf h key value, delta = 0 }
+        else if h == hash
+          then HamtSetResult { node = HamtCollision h [HamtEntry { key = k, value = v }, HamtEntry { key = key, value = value }], delta = 1 }
+        else let new-node = make-branch h k v hash key value level
+          in HamtSetResult { node = new-node, delta = 1 }
+      is HamtCollision (h) (entries) ->
+        if h == hash
+          then let updated = collision-set entries key value
+            in HamtSetResult { node = HamtCollision h updated.entries, delta = updated.delta }
+        else let col-node = HamtCollision h entries
+          in let branch = hamt-node-set (make-single-branch col-node h level) hash key value level
+          in branch
+      is HamtBranch (bitmap) (children) ->
+        let chunk = extract-chunk hash level
+        in if bitmap-has bitmap chunk
+          then let idx = bitmap-index bitmap chunk
+            in let child = list-at children idx
+            in let result = hamt-node-set child hash key value (level + 1)
+            in HamtSetResult { node = HamtBranch bitmap (list-replace-at children idx result.node), delta = result.delta }
+          else let idx = bitmap-index bitmap chunk
+            in let new-leaf = HamtLeaf hash key value
+            in HamtSetResult { node = HamtBranch (bitmap-set bitmap chunk) (list-insert-at children idx new-leaf), delta = 1 }
+
+  make-single-branch : HamtNode a, Integer, Integer -> HamtNode a
+  make-single-branch (node) (hash) (level) =
+    let chunk = extract-chunk hash level
+    in HamtBranch (pow2 chunk) [node]
+
+  make-branch : Integer, Text, a, Integer, Text, a, Integer -> HamtNode a
+  make-branch (h1) (k1) (v1) (h2) (k2) (v2) (level) =
+    if level > 6 then HamtCollision h1 [HamtEntry { key = k1, value = v1 }, HamtEntry { key = k2, value = v2 }]
+    else let c1 = extract-chunk h1 level
+      in let c2 = extract-chunk h2 level
+      in if c1 == c2
+        then let child = make-branch h1 k1 v1 h2 k2 v2 (level + 1)
+          in HamtBranch (pow2 c1) [child]
+        else if c1 < c2
+          then HamtBranch (bitmap-set (pow2 c1) c2) [HamtLeaf h1 k1 v1, HamtLeaf h2 k2 v2]
+          else HamtBranch (bitmap-set (pow2 c2) c1) [HamtLeaf h2 k2 v2, HamtLeaf h1 k1 v1]
+
+  CollisionSetResult a = record {
+
+    entries : List (HamtEntry a),
+
+    delta : Integer between 0 and 255
+  }
+
+  collision-set : List (HamtEntry a), Text, a -> CollisionSetResult a
+  collision-set (entries) (key) (value) =
+    collision-set-loop entries key value 0
+
+  collision-set-loop : List (HamtEntry a), Text, a, Integer -> CollisionSetResult a
+  collision-set-loop (entries) (key) (value) (i) =
+    if i == list-length entries
+      then CollisionSetResult { entries = entries & [HamtEntry { key = key, value = value }], delta = 1 }
+    else let e = list-at entries i
+      in if e.key == key
+        then CollisionSetResult { entries = list-replace-at entries i (HamtEntry { key = key, value = value }), delta = 0 }
+        else collision-set-loop entries key value (i + 1)
+
+  hamt-remove : HamtMap a, Text -> HamtMap a
+  hamt-remove (m) (key) =
+    let hash = djb2-hash key
+    in let result = hamt-node-remove m.root hash key 0
+    in when result
+      is Just (new-root) -> HamtMap { root = new-root, size = m.size - 1 }
+      is None -> m
+
+  hamt-node-remove : HamtNode a, Integer, Text, Integer -> Maybe (HamtNode a)
+  hamt-node-remove (node) (hash) (key) (level) =
+    when node
+      is HamtEmpty -> None
+      is HamtLeaf (h) (k) (v) ->
+        if k == key then Just HamtEmpty else None
+      is HamtCollision (h) (entries) ->
+        if h == hash
+          then let filtered = collision-remove entries key
+            in if list-length filtered == list-length entries then None
+            else if list-length filtered == 1
+              then let e = list-at filtered 0
+                in Just (HamtLeaf h e.key e.value)
+            else Just (HamtCollision h filtered)
+        else None
+      is HamtBranch (bitmap) (children) ->
+        let chunk = extract-chunk hash level
+        in if bitmap-has bitmap chunk
+          then let idx = bitmap-index bitmap chunk
+            in let child = list-at children idx
+            in let result = hamt-node-remove child hash key (level + 1)
+            in when result
+              is None -> None
+              is Just (new-child) ->
+                when new-child
+                  is HamtEmpty ->
+                    if list-length children == 1 then Just HamtEmpty
+                    else let new-bitmap = bitmap - pow2 chunk
+                      in Just (HamtBranch new-bitmap (list-remove-at children idx))
+                  is otherwise -> Just (HamtBranch bitmap (list-replace-at children idx new-child))
+          else None
+
+  collision-remove : List (HamtEntry a), Text -> List (HamtEntry a)
+  collision-remove (entries) (key) =
+    if list-length entries == 0 then []
+    else let e = list-at entries 0
+      in if e.key == key then list-tail entries
+      else [e] & collision-remove (list-tail entries) key
+
+  hamt-contains : HamtMap a, Text -> Boolean
+  hamt-contains (m) (key) =
+    when hamt-get m key
+      is Just (val) -> True
+      is None -> False
+
+  hamt-size : HamtMap a -> Integer
+  hamt-size (m) = m.size
+
+  hamt-fold : (b, Text, a -> b), b, HamtMap a -> b
+  hamt-fold (f) (init) (m) = hamt-node-fold f init m.root
+
+  hamt-node-fold : (b, Text, a -> b), b, HamtNode a -> b
+  hamt-node-fold (f) (acc) (node) =
+    when node
+      is HamtEmpty -> acc
+      is HamtLeaf (h) (k) (v) -> f acc k v
+      is HamtCollision (h) (entries) -> fold-entries f acc entries 0
+      is HamtBranch (bitmap) (children) -> fold-children f acc children 0
+
+  fold-entries : (b, Text, a -> b), b, List (HamtEntry a), Integer -> b
+  fold-entries (f) (acc) (entries) (i) =
+    if i == list-length entries then acc
+    else let e = list-at entries i
+      in fold-entries f (f acc e.key e.value) entries (i + 1)
+
+  fold-children : (b, Text, a -> b), b, List (HamtNode a), Integer -> b
+  fold-children (f) (acc) (children) (i) =
+    if i == list-length children then acc
+    else fold-children f (hamt-node-fold f acc (list-at children i)) children (i + 1)
+
+  hamt-to-list : HamtMap a -> List (HamtEntry a)
+  hamt-to-list (m) = hamt-fold (\acc -> \k -> \v -> acc & [HamtEntry { key = k, value = v }]) [] m
+
+  hamt-from-list : List (HamtEntry a) -> HamtMap a
+  hamt-from-list (entries) = hamt-from-list-loop entries 0 hamt-empty
+
+  hamt-from-list-loop : List (HamtEntry a), Integer, HamtMap a -> HamtMap a
+  hamt-from-list-loop (entries) (i) (m) =
+    if i == list-length entries then m
+    else let e = list-at entries i
+      in hamt-from-list-loop entries (i + 1) (hamt-set m e.key e.value)
+
+Page 1
+

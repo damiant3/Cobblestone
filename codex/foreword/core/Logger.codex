@@ -1,0 +1,125 @@
+Chapter: Logger
+  cites Foreword chapter Maybe
+
+ A LogEntry is a record containing le-level, le-category, le-message, and le-timestamp.
+ A LogState is a record containing ls-entries, ls-count, ls-max, and ls-min-level.
+ To logger-new gives a LogState with the given capacity and minimum level.
+ To log-entry gives a new LogState with the entry appended, dropping the oldest when full and discarding entries below the minimum level.
+ To log-trace-msg gives a new LogState with a trace-level entry added.
+ To log-debug-msg gives a new LogState with a debug-level entry added.
+ To log-info-msg gives a new LogState with an info-level entry added.
+ To log-warn-msg gives a new LogState with a warn-level entry added.
+ To log-error-msg gives a new LogState with an error-level entry added.
+ To log-filter-level gives all entries at or above the given level.
+ To log-filter-category gives all entries matching the given category.
+ To log-last gives the most recent entry as a Maybe, or None when the log is empty.
+ To format-log-entry gives a Text representation of a LogEntry.
+ To format-log-state gives a Text summary of the LogState count, capacity, and minimum level.
+
+ We say:
+
+Section: Constants
+  log-trace : Integer = 0
+  log-debug : Integer = 1
+  log-info : Integer = 2
+  log-warn : Integer = 3
+  log-error : Integer = 4
+  log-fatal : Integer = 5
+
+Section: Types
+  LogEntry = record {
+    le-level : Integer,
+    le-category : Text,
+    le-message : Text,
+    le-timestamp : Integer
+  }
+
+  LogState = record {
+    ls-entries : List LogEntry,
+    ls-count : Integer,
+    ls-max : Integer,
+    ls-min-level : Integer
+  }
+
+Section: Construction
+  logger-new : Integer, Integer -> LogState
+  logger-new (max-entries) (min-level) = LogState { ls-entries = [], ls-count = 0, ls-max = max-entries, ls-min-level = min-level }
+
+Section: Logging
+  log-entry : LogState, Integer, Text, Text, Integer -> LogState
+  log-entry (state) (level) (category) (message) (timestamp) =
+    if level < state.ls-min-level then state
+    else let entry = LogEntry { le-level = level, le-category = category, le-message = message, le-timestamp = timestamp }
+    in let entries = if state.ls-count >= state.ls-max then list-push (log-drop-first (state.ls-entries)) entry
+      else list-push (state.ls-entries) entry
+    in let count = if state.ls-count >= state.ls-max then state.ls-max else state.ls-count + 1
+    in LogState { ls-entries = entries, ls-count = count, ls-max = state.ls-max, ls-min-level = state.ls-min-level }
+
+  log-drop-first : List LogEntry -> List LogEntry
+  log-drop-first (xs) = log-drop-loop xs 1 (list-length xs) []
+
+  log-drop-loop : List LogEntry, Integer, Integer, List LogEntry -> List LogEntry
+  log-drop-loop (xs) (i) (n) (acc) =
+    if i >= n then acc
+    else log-drop-loop xs (i + 1) n (list-push acc (list-at xs i))
+
+Section: Convenience
+  log-trace-msg : LogState, Text, Text, Integer -> LogState
+  log-trace-msg (s) (cat) (msg) (ts) = log-entry s log-trace cat msg ts
+
+  log-debug-msg : LogState, Text, Text, Integer -> LogState
+  log-debug-msg (s) (cat) (msg) (ts) = log-entry s log-debug cat msg ts
+
+  log-info-msg : LogState, Text, Text, Integer -> LogState
+  log-info-msg (s) (cat) (msg) (ts) = log-entry s log-info cat msg ts
+
+  log-warn-msg : LogState, Text, Text, Integer -> LogState
+  log-warn-msg (s) (cat) (msg) (ts) = log-entry s log-warn cat msg ts
+
+  log-error-msg : LogState, Text, Text, Integer -> LogState
+  log-error-msg (s) (cat) (msg) (ts) = log-entry s log-error cat msg ts
+
+Section: Queries
+  log-filter-level : LogState, Integer -> List LogEntry
+  log-filter-level (state) (level) = log-filter-loop (state.ls-entries) level 0 (state.ls-count) []
+
+  log-filter-category : LogState, Text -> List LogEntry
+  log-filter-category (state) (cat) = log-cat-loop (state.ls-entries) cat 0 (state.ls-count) []
+
+  log-filter-loop : List LogEntry, Integer, Integer, Integer, List LogEntry -> List LogEntry
+  log-filter-loop (entries) (level) (i) (n) (acc) =
+    if i >= n then acc
+    else let e = list-at entries i
+    in if e.le-level >= level then log-filter-loop entries level (i + 1) n (list-push acc e)
+    else log-filter-loop entries level (i + 1) n acc
+
+  log-cat-loop : List LogEntry, Text, Integer, Integer, List LogEntry -> List LogEntry
+  log-cat-loop (entries) (cat) (i) (n) (acc) =
+    if i >= n then acc
+    else let e = list-at entries i
+    in if e.le-category == cat then log-cat-loop entries cat (i + 1) n (list-push acc e)
+    else log-cat-loop entries cat (i + 1) n acc
+
+  log-last : LogState -> Maybe LogEntry
+  log-last (state) =
+    if state.ls-count == 0 then None
+    else Just (list-at (state.ls-entries) (state.ls-count - 1))
+
+Section: Formatting
+  format-log-entry : LogEntry -> Text
+  format-log-entry (e) =
+    "[" & show (e.le-timestamp) & "] " & log-level-name (e.le-level) & " " & e.le-category & ": " & e.le-message
+
+  log-level-name : Integer -> Text
+  log-level-name (level) =
+    if level == 0 then "TRACE"
+    else if level == 1 then "DEBUG"
+    else if level == 2 then "INFO"
+    else if level == 3 then "WARN"
+    else if level == 4 then "ERROR"
+    else "FATAL"
+
+  format-log-state : LogState -> Text
+  format-log-state (s) = "log: " & show (s.ls-count) & "/" & show (s.ls-max) & " min-level=" & log-level-name (s.ls-min-level)
+
+Page 1

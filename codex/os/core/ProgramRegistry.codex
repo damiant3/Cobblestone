@@ -1,0 +1,90 @@
+Chapter: ProgramRegistry
+  cites Verify chapter VerifiedLoader
+  cites Verify chapter CdxVerifier
+  cites Verify chapter CdxBinary
+  cites Trust chapter TrustLattice
+  cites Trust chapter PolicyEngine
+  cites Foreword chapter FactStore
+  cites Foreword chapter Sha256
+  cites Foreword chapter Ed25519
+  cites Foreword chapter Maybe
+  cites Foreword chapter Hamt
+
+ A ProgramRegistry tracks installed CDX binaries by name, recording
+ each program's SHA-256 digest, trust score, granted capabilities,
+ and verification status.
+
+ We say:
+
+Section: Registry Types
+
+  ProgramEntry = record {
+    name : Text,
+    content-hash : Text,
+    author-key : Text,
+    cap-bitmask : Integer,
+    cap-count : Integer between 0 and 255
+  }
+
+  ProgramRegistry = record {
+    programs : HamtMap ProgramEntry,
+    count : Integer between 0 and 65535
+  }
+
+  InstallResult =
+    | InstallOk (ProgramRegistry)
+    | InstallDenied (Text)
+    | InstallDuplicate
+
+Section: Registry Operations
+
+  registry-empty : ProgramRegistry
+  registry-empty = ProgramRegistry { programs = hamt-empty, count = 0 }
+
+  binary-hash-hex : List Integer -> Text
+  binary-hash-hex (binary) =
+    let hash-bytes = cdx-read-content-hash binary
+    in bytes-to-hex-range hash-bytes 0 32
+
+  registry-install : ProgramRegistry, Text, List Integer, TrustLattice, Policy, BareFactStore, Integer -> InstallResult
+  registry-install (reg) (name) (binary) (lattice) (policy) (store) (fuel) =
+    if hamt-contains (reg.programs) name then InstallDuplicate
+    else let decision = evaluate-load binary lattice policy 0 store fuel
+    in if load-approved decision then
+      let hash = binary-hash-hex binary
+      in let author = read-author-key binary
+      in let entry = ProgramEntry {
+        name = name,
+        content-hash = hash,
+        author-key = author,
+        cap-bitmask = load-bitmask decision,
+        cap-count = list-length (extract-caps binary)
+      }
+      in InstallOk (ProgramRegistry {
+        programs = hamt-set (reg.programs) name entry,
+        count = reg.count + 1
+      })
+    else InstallDenied (load-reason decision)
+
+  extract-caps : List Integer -> List CdxCapability
+  extract-caps (binary) =
+    let cap-off = read-le64 binary 136
+    in let cap-sz = read-le64 binary 144
+    in decode-capabilities binary cap-off (cap-off + cap-sz)
+
+  registry-lookup : ProgramRegistry, Text -> Maybe ProgramEntry
+  registry-lookup (reg) (name) = hamt-get (reg.programs) name
+
+  registry-has : ProgramRegistry, Text -> Boolean
+  registry-has (reg) (name) = hamt-contains (reg.programs) name
+
+  registry-count : ProgramRegistry -> Integer
+  registry-count (reg) = reg.count
+
+  registry-remove : ProgramRegistry, Text -> ProgramRegistry
+  registry-remove (reg) (name) =
+    if hamt-contains (reg.programs) name then
+      ProgramRegistry { programs = hamt-remove (reg.programs) name, count = reg.count - 1 }
+    else reg
+
+Page 1

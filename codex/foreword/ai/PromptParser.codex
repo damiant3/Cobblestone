@@ -1,0 +1,240 @@
+Chapter: PromptParser
+  cites AI chapter Tokenizer
+  cites Foreword chapter Maybe
+  cites Foreword chapter CCE
+
+ Prompt parser for diffusion models. Handles weighted tokens
+ using (text:weight) syntax, negative prompts, and BREAK token
+ for multi-segment prompts. Output is a list of weighted token
+ segments ready for the text encoder.
+
+ Syntax:
+   "a (beautiful:1.5) landscape"  -> "beautiful" gets 1.5x weight
+   "(dark:0.5) forest"            -> "dark" gets 0.5x weight
+   "mountain BREAK ocean"         -> two segments encoded separately
+   "((emphasis))"                 -> double parens = 1.1^2 = 1.21x
+
+ Fixed-point (scale 1000). Weight 1000 = 1.0x.
+
+ We say:
+
+Section: Types
+  PromptToken = record {
+    pt-text : Text,
+    pt-weight : Integer
+  }
+
+  PromptSegment = record {
+    ps-tokens : List PromptToken,
+    ps-token-count : Integer
+  }
+
+  ParsedPrompt = record {
+    pp-segments : List PromptSegment,
+    pp-segment-count : Integer
+  }
+
+Section: Default Weight
+  prompt-default-weight : Integer = 1000
+  prompt-emphasis-factor : Integer = 1100
+
+Section: Parse Full Prompt
+  parse-prompt : Text -> ParsedPrompt
+  parse-prompt (text) =
+    let segments = pp-split-breaks text
+    in let parsed = pp-parse-segments segments 0 (list-length segments) []
+    in ParsedPrompt { pp-segments = parsed, pp-segment-count = list-length parsed }
+
+  pp-split-breaks : Text -> List Text
+  pp-split-breaks (text) = pp-break-loop text 0 (text-length text) 0 []
+
+  pp-break-loop : Text, Integer, Integer, Integer, List Text -> List Text
+  pp-break-loop (s) (i) (len) (start) (acc) =
+    if i >= len then
+      let final = pp-trim (substring s start (len - start))
+      in if text-length final > 0 then list-push acc final else acc
+    else if pp-is-break s i len then
+      let seg = pp-trim (substring s start (i - start))
+      in let new-acc = if text-length seg > 0 then list-push acc seg else acc
+      in pp-break-loop s (i + 5) len (i + 5) new-acc
+    else pp-break-loop s (i + 1) len start acc
+
+  pp-is-break : Text, Integer, Integer -> Boolean
+  pp-is-break (s) (i) (len) =
+    if i + 5 > len then False
+    else substring s i 5 == "BREAK"
+
+Section: Parse Segment
+  pp-parse-segments : List Text, Integer, Integer, List PromptSegment -> List PromptSegment
+  pp-parse-segments (segments) (i) (n) (acc) =
+    if i >= n then acc
+    else let seg = pp-parse-one-segment (list-at segments i)
+    in pp-parse-segments segments (i + 1) n (list-push acc seg)
+
+  pp-parse-one-segment : Text -> PromptSegment
+  pp-parse-one-segment (text) =
+    let tokens = pp-tokenize-weighted text 0 (text-length text) prompt-default-weight 0 []
+    in PromptSegment { ps-tokens = tokens, ps-token-count = list-length tokens }
+
+Section: Weighted Tokenization
+  pp-tokenize-weighted : Text, Integer, Integer, Integer, Integer, List PromptToken -> List PromptToken
+  pp-tokenize-weighted (s) (i) (len) (weight) (paren-depth) (acc) =
+    if i >= len then
+      let final = pp-flush-word s i len acc weight
+      in final
+    else let cp = pp-codepoint s i
+    in if cp == 40 then pp-handle-open-paren s (i + 1) len weight paren-depth acc
+    else if cp == 41 then pp-handle-close-paren s i len weight paren-depth acc
+    else if cp == 32 then
+      let flushed = pp-flush-word s i len acc weight
+      in pp-tokenize-weighted s (i + 1) len weight paren-depth flushed
+    else pp-tokenize-weighted s (i + 1) len weight paren-depth acc
+
+  pp-handle-open-paren : Text, Integer, Integer, Integer, Integer, List PromptToken -> List PromptToken
+  pp-handle-open-paren (s) (i) (len) (weight) (depth) (acc) =
+    let colon-pos = pp-find-colon-weight s i len
+    in if colon-pos > 0 then
+      let inner-text = substring s i (colon-pos - i)
+      in let weight-text = pp-read-weight-value s (colon-pos + 1) len
+      in let close = pp-find-close-paren s (colon-pos + 1) len
+      in let new-weight = weight * (weight-text.pw-value) / 1000
+      in let inner-tokens = pp-tokenize-weighted inner-text 0 (text-length inner-text) new-weight 0 []
+      in pp-tokenize-weighted s (close + 1) len weight depth (acc & inner-tokens)
+    else let new-weight = weight * prompt-emphasis-factor / 1000
+    in pp-tokenize-weighted s i len new-weight (depth + 1) acc
+
+  pp-handle-close-paren : Text, Integer, Integer, Integer, Integer, List PromptToken -> List PromptToken
+  pp-handle-close-paren (s) (i) (len) (weight) (depth) (acc) =
+    let flushed = pp-flush-word s i len acc weight
+    in let new-weight = if depth > 0 then weight * 1000 / prompt-emphasis-factor else weight
+    in let new-depth = if depth > 0 then depth - 1 else 0
+    in pp-tokenize-weighted s (i + 1) len new-weight new-depth flushed
+
+Section: Weight Value Parsing
+  WeightValue = record { pw-value : Integer, pw-end : Integer }
+
+  pp-read-weight-value : Text, Integer, Integer -> WeightValue
+  pp-read-weight-value (s) (i) (len) =
+    let result = pp-parse-decimal s i len 0 False 0
+    in WeightValue { pw-value = result, pw-end = i }
+
+  pp-parse-decimal : Text, Integer, Integer, Integer, Boolean, Integer -> Integer
+  pp-parse-decimal (s) (i) (len) (whole) (has-dot) (frac-digits) =
+    if i >= len then pp-combine-decimal whole frac-digits has-dot
+    else let cp = pp-codepoint s i
+    in if cp >= 48 then if cp <= 57 then
+      if has-dot then pp-parse-decimal s (i + 1) len (whole * 10 + cp - 48) True (frac-digits + 1)
+      else pp-parse-decimal s (i + 1) len (whole * 10 + cp - 48) False frac-digits
+    else pp-combine-decimal whole frac-digits has-dot
+    else if cp == 46 then pp-parse-decimal s (i + 1) len whole True frac-digits
+    else pp-combine-decimal whole frac-digits has-dot
+
+  pp-combine-decimal : Integer, Integer, Boolean -> Integer
+  pp-combine-decimal (raw) (frac-digits) (has-dot) =
+    if has-dot == False then raw * 1000
+    else if frac-digits == 0 then raw * 1000
+    else if frac-digits == 1 then raw * 100
+    else if frac-digits == 2 then raw * 10
+    else raw
+
+Section: Helper Functions
+  pp-find-colon-weight : Text, Integer, Integer -> Integer
+  pp-find-colon-weight (s) (i) (len) =
+    if i >= len then 0 - 1
+    else let cp = pp-codepoint s i
+    in if cp == 58 then i
+    else if cp == 41 then 0 - 1
+    else pp-find-colon-weight s (i + 1) len
+
+  pp-find-close-paren : Text, Integer, Integer -> Integer
+  pp-find-close-paren (s) (i) (len) =
+    if i >= len then len
+    else let cp = pp-codepoint s i
+    in if cp == 41 then i
+    else pp-find-close-paren s (i + 1) len
+
+  pp-flush-word : Text, Integer, Integer, List PromptToken, Integer -> List PromptToken
+  pp-flush-word (s) (pos) (len) (acc) (weight) =
+    let word-start = pp-find-word-start s pos acc
+    in if word-start < 0 then acc
+    else let word = pp-extract-current-word s word-start pos
+    in if text-length word == 0 then acc
+    else list-push acc (PromptToken { pt-text = word, pt-weight = weight })
+
+  pp-find-word-start : Text, Integer, List PromptToken -> Integer
+  pp-find-word-start (s) (pos) (acc) = pp-scan-back s (pos - 1)
+
+  pp-scan-back : Text, Integer -> Integer
+  pp-scan-back (s) (i) =
+    if i < 0 then 0
+    else let cp = pp-codepoint s i
+    in if cp == 32 then i + 1
+    else if cp == 40 then i + 1
+    else if cp == 41 then i + 1
+    else pp-scan-back s (i - 1)
+
+  pp-extract-current-word : Text, Integer, Integer -> Text
+  pp-extract-current-word (s) (start) (end) =
+    if start >= end then ""
+    else pp-trim (substring s start (end - start))
+
+  pp-codepoint : Text, Integer -> Integer
+  pp-codepoint (s) (i) = to-unicode (char-code (char-at s i))
+
+  pp-trim : Text -> Text
+  pp-trim (s) = pp-trim-right (pp-trim-left s 0 (text-length s)) 0
+
+  pp-trim-left : Text, Integer, Integer -> Text
+  pp-trim-left (s) (i) (len) =
+    if i >= len then ""
+    else if pp-codepoint s i == 32 then pp-trim-left s (i + 1) len
+    else substring s i (len - i)
+
+  pp-trim-right : Text, Integer -> Text
+  pp-trim-right (s) (dummy) =
+    let len = text-length s
+    in pp-trim-r-scan s (len - 1)
+
+  pp-trim-r-scan : Text, Integer -> Text
+  pp-trim-r-scan (s) (i) =
+    if i < 0 then ""
+    else if pp-codepoint s i == 32 then pp-trim-r-scan s (i - 1)
+    else substring s 0 (i + 1)
+
+Section: Prompt to Weighted Embeddings
+  prompt-apply-weights : ParsedPrompt, Integer -> List Integer
+  prompt-apply-weights (prompt) (embed-dim) =
+    if prompt.pp-segment-count == 0 then []
+    else let first = list-at (prompt.pp-segments) 0
+    in prompt-weight-tokens (first.ps-tokens) embed-dim 0 (first.ps-token-count) []
+
+  prompt-weight-tokens : List PromptToken, Integer, Integer, Integer, List Integer -> List Integer
+  prompt-weight-tokens (tokens) (dim) (i) (n) (acc) =
+    if i >= n then acc
+    else let tok = list-at tokens i
+    in let weighted = prompt-scale-embedding acc (tok.pt-weight) dim
+    in prompt-weight-tokens tokens dim (i + 1) n weighted
+
+  prompt-scale-embedding : List Integer, Integer, Integer -> List Integer
+  prompt-scale-embedding (embed) (weight) (dim) =
+    if weight == 1000 then embed
+    else prompt-scale-loop embed weight 0 (list-length embed) []
+
+  prompt-scale-loop : List Integer, Integer, Integer, Integer, List Integer -> List Integer
+  prompt-scale-loop (embed) (weight) (i) (n) (acc) =
+    if i >= n then acc
+    else prompt-scale-loop embed weight (i + 1) n (list-push acc (list-at embed i * weight / 1000))
+
+Section: Queries
+  format-parsed-prompt : ParsedPrompt -> Text
+  format-parsed-prompt (p) =
+    show (p.pp-segment-count) & " segment(s), " & format-segment-summary (p.pp-segments) 0 (p.pp-segment-count) ""
+
+  format-segment-summary : List PromptSegment, Integer, Integer, Text -> Text
+  format-segment-summary (segs) (i) (n) (acc) =
+    if i >= n then acc
+    else let seg = list-at segs i
+    in let sep = if i == 0 then "" else " | "
+    in format-segment-summary segs (i + 1) n (acc & sep & show (seg.ps-token-count) & " tokens")
+
+Page 1

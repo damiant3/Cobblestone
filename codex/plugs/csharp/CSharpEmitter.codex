@@ -1,0 +1,594 @@
+Chapter: CSharp Emitter
+
+  cites Codex chapter Text
+  cites Codex chapter Lists
+
+ Generates C# source code from the IR.
+
+Section: Type Definition Emission
+
+  emit-type-defs : List ATypeDef, Integer -> Text
+  emit-type-defs (tds) (i) =
+   if i == list-length tds then ""
+   else emit-type-def (list-at tds i) & "\n" & emit-type-defs tds (i + 1)
+
+  infer-tparams-from-fields : List ARecordFieldDef, Integer, List Name -> List Name
+  infer-tparams-from-fields (fields) (i) (acc) =
+   if i >= list-length fields then acc
+   else let f = list-at fields i
+   in infer-tparams-from-fields fields (i + 1) (infer-tparams-from-type-expr (f.type-expr) acc)
+
+  infer-tparams-from-type-expr : ATypeExpr, List Name -> List Name
+  infer-tparams-from-type-expr (te) (acc) =
+   when te
+    is ANamedType (name) (s) ->
+     if is-type-var-name (name.value) then
+      if tparam-already-present acc (name.value) 0 then acc
+      else list-push acc name
+     else acc
+    is AAppType (base) (args) (s) -> infer-tparams-from-type-exprs args 0 acc
+    is AFunType (p) (r) (s) -> infer-tparams-from-type-expr r (infer-tparams-from-type-expr p acc)
+    is otherwise -> acc
+
+  infer-tparams-from-type-exprs : List ATypeExpr, Integer, List Name -> List Name
+  infer-tparams-from-type-exprs (args) (i) (acc) =
+   if i >= list-length args then acc
+   else infer-tparams-from-type-exprs args (i + 1) (infer-tparams-from-type-expr (list-at args i) acc)
+
+  tparam-already-present : List Name, Text, Integer -> Boolean
+  tparam-already-present (ns) (v) (i) =
+   if i >= list-length ns then False
+   else if (list-at ns i).value == v then True
+   else tparam-already-present ns v (i + 1)
+
+  is-tup-type : Text -> Boolean
+  is-tup-type (n) =
+   n == "Tup2" | n == "Tup3" | n == "Tup4" | n == "Tup5"
+
+  emit-type-def : ATypeDef -> Text
+  emit-type-def (td) =
+   when td
+    is ARecordTypeDef (name) (tparams) (fields) (s) ->
+     let gen = emit-tparameter-suffix tparams
+     in "public sealed record " & sanitize (name.value) & gen & "(" & emit-record-field-defs fields tparams 0 & ");\n"
+    is AVariantTypeDef (name) (tparams) (ctors) (s) ->
+     if is-tup-type (name.value) then ""
+     else
+     let gen = emit-tparameter-suffix tparams
+     in if list-length ctors == 1 then
+      if (list-at ctors 0).name.value == name.value then
+       let c = list-at ctors 0
+       in if list-length (c.fields) == 0 then "public sealed record " & sanitize (name.value) & gen & ";\n\n"
+          else "public sealed record " & sanitize (name.value) & gen & "(" & emit-ctor-fields (c.fields) tparams 0 & ");\n\n"
+      else "public abstract record " & sanitize (name.value) & gen & ";\n" & emit-variant-ctors ctors name tparams 0 & "\n"
+     else "public abstract record " & sanitize (name.value) & gen & ";\n" & emit-variant-ctors ctors name tparams 0 & "\n"
+
+  emit-tparameter-suffix : List Name -> Text
+  emit-tparameter-suffix (tparams) =
+   if list-length tparams == 0 then ""
+   else "<" & emit-tparameter-names tparams 0 & ">"
+
+  emit-tparameter-names : List Name, Integer -> Text
+  emit-tparameter-names (tparams) (i) =
+   if i == list-length tparams then ""
+   else if i == list-length tparams - 1 then "T" & integer-to-text i
+   else "T" & integer-to-text i & ", " & emit-tparameter-names tparams (i + 1)
+
+  emit-record-field-defs : List ARecordFieldDef, List Name, Integer -> Text
+  emit-record-field-defs (fields) (tparams) (i) =
+   if i == list-length fields then ""
+   else let f = list-at fields i
+   in emit-type-expr-tp (f.type-expr) tparams & " " & sanitize (f.name.value) & (if i < list-length fields - 1 then ", " else "") & emit-record-field-defs fields tparams (i + 1)
+
+  emit-variant-ctors : List AVariantCtorDef, Name, List Name, Integer -> Text
+  emit-variant-ctors (ctors) (base-name) (tparams) (i) =
+   if i == list-length ctors then ""
+   else let c = list-at ctors i
+   in emit-variant-ctor c base-name tparams & emit-variant-ctors ctors base-name tparams (i + 1)
+
+  emit-variant-ctor : AVariantCtorDef, Name, List Name -> Text
+  emit-variant-ctor (c) (base-name) (tparams) =
+   let gen = emit-tparameter-suffix tparams
+   in if list-length (c.fields) == 0 then "public sealed record " & sanitize (c.name.value) & gen & " : " & sanitize (base-name.value) & gen & ";\n"
+      else "public sealed record " & sanitize (c.name.value) & gen & "(" & emit-ctor-fields (c.fields) tparams 0 & ") : " & sanitize (base-name.value) & gen & ";\n"
+
+  emit-ctor-fields : List ATypeExpr, List Name, Integer -> Text
+  emit-ctor-fields (fields) (tparams) (i) =
+   if i == list-length fields then ""
+   else emit-type-expr-tp (list-at fields i) tparams & " Field" & integer-to-text i & (if i < list-length fields - 1 then ", " else "") & emit-ctor-fields fields tparams (i + 1)
+
+  emit-type-expr : ATypeExpr -> Text
+  emit-type-expr (te) =
+   emit-type-expr-tp te []
+
+  emit-type-expr-tp : ATypeExpr, List Name -> Text
+  emit-type-expr-tp (te) (tparams) =
+   when te
+    is ANamedType (name) (s) ->
+     let idx = find-tparam-index tparams (name.value) 0
+     in if idx >= 0 then "T" & integer-to-text idx
+        else when-type-name (name.value)
+    is AFunType (p) (r) (s) -> "Func<" & emit-type-expr-tp p tparams & ", " & emit-type-expr-tp r tparams & ">"
+    is AAppType (base) (args) (s) -> emit-type-expr-tp base tparams & "<" & emit-type-expr-list-tp args tparams 0 & ">"
+    is AEffectType (effs) (scopes) (r) (s) -> emit-type-expr-tp r tparams
+    is ABoundedIntType (b) (lo) (hi) (mode) (s) -> emit-type-expr-tp b tparams
+
+  find-tparam-index : List Name, Text, Integer -> Integer
+  find-tparam-index (tparams) (name) (i) =
+   if i == list-length tparams then -1
+   else if (list-at tparams i).value == name then i
+   else find-tparam-index tparams name (i + 1)
+
+  is-type-var-name : Text -> Boolean
+  is-type-var-name (n) =
+   if text-length n == 1 then
+    let c = char-code (char-at n 0)
+    in c >= 13 & c <= 38
+   else False
+
+  when-type-name : Text -> Text
+  when-type-name (n) =
+   if n == "Integer" then "long"
+   else if n == "Real" then "double"
+   else if n == "Text" then "string"
+   else if n == "Boolean" then "bool"
+   else if n == "List" then "List"
+   else if n == "LinkedList" then "List"
+   else if is-type-var-name n then "object"
+   else sanitize n
+
+  emit-type-expr-list : List ATypeExpr, Integer -> Text
+  emit-type-expr-list (args) (i) =
+   if i == list-length args then ""
+   else emit-type-expr (list-at args i) & (if i < list-length args - 1 then ", " else "") & emit-type-expr-list args (i + 1)
+
+  emit-type-expr-list-tp : List ATypeExpr, List Name, Integer -> Text
+  emit-type-expr-list-tp (args) (tparams) (i) =
+   if i == list-length args then ""
+   else emit-type-expr-tp (list-at args i) tparams & (if i < list-length args - 1 then ", " else "") & emit-type-expr-list-tp args tparams (i + 1)
+
+Section: Generic Helpers
+
+  collect-type-var-ids : CodexType, List Integer -> List Integer
+  collect-type-var-ids (ty) (acc) =
+   when ty
+    is TypeVar (id) -> if list-contains-int acc id then acc
+    else list-append-int acc id
+    is FunTy (p) (r) -> collect-type-var-ids r (collect-type-var-ids p acc)
+    is ListTy (elem) -> collect-type-var-ids elem acc
+    is ForAllTy (id) (body) -> collect-type-var-ids body acc
+    is ConstructedTy (name) (args) -> collect-type-var-ids-list args acc
+    is otherwise -> acc
+
+  collect-type-var-ids-list : List CodexType, List Integer -> List Integer
+  collect-type-var-ids-list (types) (acc) =
+   collect-type-var-ids-list-loop types acc 0 (list-length types)
+
+  collect-type-var-ids-list-loop : List CodexType, List Integer, Integer, Integer -> List Integer
+  collect-type-var-ids-list-loop (types) (acc) (i) (len) =
+   if i == len then acc
+   else collect-type-var-ids-list-loop types (collect-type-var-ids (list-at types i) acc) (i + 1) len
+
+  list-contains-int : List Integer, Integer -> Boolean
+  list-contains-int (xs) (n) =
+   list-contains-int-loop xs n 0 (list-length xs)
+
+  list-contains-int-loop : List Integer, Integer, Integer, Integer -> Boolean
+  list-contains-int-loop (xs) (n) (i) (len) =
+   if i == len then False
+   else if list-at xs i == n then True
+   else list-contains-int-loop xs n (i + 1) len
+
+  list-append-int : List Integer, Integer -> List Integer
+  list-append-int (xs) (n) =
+   xs & [n]
+
+  generic-suffix : CodexType -> Text
+  generic-suffix (ty) =
+   let ids = collect-type-var-ids ty []
+   in if list-length ids == 0 then ""
+      else "<" & emit-type-params ids 0 & ">"
+
+  emit-type-params : List Integer, Integer -> Text
+  emit-type-params (ids) (i) =
+   if i == list-length ids then ""
+   else if i == list-length ids - 1 then "T" & integer-to-text (list-at ids i)
+   else "T" & integer-to-text (list-at ids i) & ", " & emit-type-params ids (i + 1)
+
+  collect-record-field-tvar-ids : List RecordField, Integer, List Integer -> List Integer
+  collect-record-field-tvar-ids (fields) (i) (acc) =
+   if i == list-length fields then acc
+   else let f = list-at fields i
+   in collect-record-field-tvar-ids fields (i + 1) (collect-type-var-ids (f.type-val) acc)
+
+  extract-ctor-type-args : CodexType -> Text
+  extract-ctor-type-args (ty) =
+   when ty
+    is ConstructedTy (name) (args) ->
+     if list-length args == 0 then ""
+     else "<" & emit-cs-type-args args 0 & ">"
+    is SumTy (name) (args) (ctors) ->
+     if list-length args == 0 then ""
+     else "<" & emit-cs-type-args args 0 & ">"
+    is RecordTy (name) (args) (fields) ->
+     if list-length args > 0 then "<" & emit-cs-type-args args 0 & ">"
+     else let ids = collect-record-field-tvar-ids fields 0 []
+     in if list-length ids == 0 then ""
+     else "<" & emit-type-params ids 0 & ">"
+    is otherwise -> ""
+
+  cs-type-or-object : CodexType -> Text
+  cs-type-or-object (ty) =
+   when ty
+    is TypeVar (id) -> "object"
+    is otherwise -> cs-type ty
+
+  emit-cs-type-args-safe : List CodexType, Integer -> Text
+  emit-cs-type-args-safe (args) (i) =
+   if i == list-length args then ""
+   else let t = cs-type-or-object (list-at args i)
+   in if i == list-length args - 1 then t
+      else t & ", " & emit-cs-type-args-safe args (i + 1)
+
+  extract-fn-type-args : CodexType -> Text
+  extract-fn-type-args (ty) =
+   when ty
+    is ConstructedTy (name) (args) ->
+     if list-length args == 0 then ""
+     else "<" & emit-cs-type-args-safe args 0 & ">"
+    is SumTy (name) (args) (ctors) ->
+     if list-length args == 0 then ""
+     else "<" & emit-cs-type-args-safe args 0 & ">"
+    is RecordTy (name) (args) (fields) ->
+     if list-length args == 0 then ""
+     else "<" & emit-cs-type-args-safe args 0 & ">"
+    is otherwise -> ""
+
+Section: Tail Call Optimization
+
+  is-self-call : IRExpr, Text -> Boolean
+  is-self-call (e) (func-name) =
+   let chain = collect-apply-chain e []
+   in is-self-call-root (chain.root) func-name
+
+  is-self-call-root : IRExpr, Text -> Boolean
+  is-self-call-root (e) (func-name) =
+   when e
+    is IrName (n) (ty) (sp) -> n == func-name
+    is otherwise -> False
+
+  has-tail-call : IRExpr, Text -> Boolean
+  has-tail-call (e) (func-name) =
+   when e
+    is IrIf (c) (t) (el) (ty) (sp) -> has-tail-call t func-name | has-tail-call el func-name
+    is IrLet (name) (ty) (val) (body) (sp) -> has-tail-call body func-name
+    is IrMatch (scrut) (branches) (ty) (sp) -> has-tail-call-branches branches func-name 0
+    is IrApply (f) (a) (ty) (sp) -> is-self-call e func-name
+    is IrAct (stmts) (ty) (sp) -> has-tail-call-act stmts func-name
+    is otherwise -> False
+
+  has-tail-call-branches : List IRBranch, Text, Integer -> Boolean
+  has-tail-call-branches (branches) (func-name) (i) =
+   if i == list-length branches then False
+   else let b = list-at branches i
+   in if has-tail-call (b.body) func-name then True
+      else has-tail-call-branches branches func-name (i + 1)
+
+  has-tail-call-act : List IRActStmt, Text -> Boolean
+  has-tail-call-act (stmts) (func-name) =
+   let len = list-length stmts
+   in if len == 0 then False
+    else let last = list-at stmts (len - 1)
+     in when last
+      is IrDoExec (e) (sp) -> has-tail-call e func-name
+      is otherwise -> False
+
+  should-tco : IRDef -> Boolean
+  should-tco (d) =
+   if list-length (d.params) == 0 then False
+   else has-tail-call (d.body) (d.name)
+
+  emit-tco-def : IRDef, List ArityEntry -> Text
+  emit-tco-def (d) (arities) =
+   let ret = get-return-type (d.type-val) (list-length (d.params))
+   in let gen = generic-suffix (d.type-val)
+   in "    public static " & cs-type ret & " " & sanitize (d.name) & gen & "(" & emit-def-params (d.params) 0 & ")\n    {\n        while (true)\n        {\n" & emit-tco-body (d.body) (d.name) (d.params) arities 0 & "        }\n    }\n"
+
+  emit-tco-body : IRExpr, Text, List IRParam, List ArityEntry, Integer -> Text
+  emit-tco-body (e) (func-name) (params) (arities) (depth) =
+   when e
+    is IrIf (c) (t) (el) (ty) (sp) -> emit-tco-if c t el func-name params arities depth
+    is IrLet (name) (ty) (val) (body) (sp) -> emit-tco-let name ty val body func-name params arities depth
+    is IrMatch (scrut) (branches) (ty) (sp) -> emit-tco-match scrut branches func-name params arities depth
+    is IrApply (f) (a) (rty) (sp) -> emit-tco-apply e func-name params arities
+    is IrAct (stmts) (ty) (sp) -> emit-tco-act stmts func-name params arities depth
+    is otherwise -> "            return " & emit-expr e arities & ";\n"
+
+  emit-tco-act : List IRActStmt, Text, List IRParam, List ArityEntry, Integer -> Text
+  emit-tco-act (stmts) (func-name) (params) (arities) (depth) =
+   emit-tco-act-stmts stmts func-name params arities depth 0 (list-length stmts)
+
+  emit-tco-act-stmts : List IRActStmt, Text, List IRParam, List ArityEntry, Integer, Integer, Integer -> Text
+  emit-tco-act-stmts (stmts) (func-name) (params) (arities) (depth) (i) (len) =
+   if i == len then "            return default;\n"
+   else let s = list-at stmts i
+   in let is-last = i == len - 1
+   in if is-last then when s
+     is IrDoExec (e) (sp) -> emit-tco-body e func-name params arities depth
+     is IrDoBind (name) (ty) (val) (sp) -> "            " & cs-type-or-dynamic ty & " " & sanitize name & " = " & emit-expr val arities & ";\n            return default;\n"
+    else emit-tco-act-stmt s arities & emit-tco-act-stmts stmts func-name params arities depth (i + 1) len
+
+  emit-tco-act-stmt : IRActStmt, List ArityEntry -> Text
+  emit-tco-act-stmt (s) (arities) =
+   when s
+    is IrDoBind (name) (ty) (val) (sp) -> "            " & cs-type-or-dynamic ty & " " & sanitize name & " = " & emit-expr val arities & ";\n"
+    is IrDoExec (e) (sp) ->
+     if is-irif-expr e then "            _ = (" & emit-expr e arities & ");\n"
+     else "            " & emit-expr e arities & ";\n"
+
+  emit-tco-apply : IRExpr, Text, List IRParam, List ArityEntry -> Text
+  emit-tco-apply (e) (func-name) (params) (arities) =
+   if is-self-call e func-name then emit-tco-jump e params arities
+   else "            return " & emit-expr e arities & ";\n"
+
+  emit-tco-if : IRExpr, IRExpr, IRExpr, Text, List IRParam, List ArityEntry, Integer -> Text
+  emit-tco-if (cond) (t) (el) (func-name) (params) (arities) (depth) =
+   "            if (" & emit-expr cond arities & ")\n            {\n" & emit-tco-body t func-name params arities depth & "            }\n            else\n            {\n" & emit-tco-body el func-name params arities depth & "            }\n"
+
+  emit-tco-let : Text, CodexType, IRExpr, IRExpr, Text, List IRParam, List ArityEntry, Integer -> Text
+  emit-tco-let (name) (ty) (val) (body) (func-name) (params) (arities) (depth) =
+   "            " & cs-type-or-dynamic ty & " " & sanitize name & " = " & emit-expr val arities & ";\n" & emit-tco-body body func-name params arities depth
+
+  emit-tco-match : IRExpr, List IRBranch, Text, List IRParam, List ArityEntry, Integer -> Text
+  emit-tco-match (scrut) (branches) (func-name) (params) (arities) (depth) =
+   let s-var = tco-scrut-var depth
+   in "            " & cs-type-or-dynamic (ir-expr-type scrut) & " " & s-var & " = " & emit-expr scrut arities & ";\n" & emit-tco-match-branches branches func-name params arities 0 True depth
+
+  emit-tco-match-branches : List IRBranch, Text, List IRParam, List ArityEntry, Integer, Boolean, Integer -> Text
+  emit-tco-match-branches (branches) (func-name) (params) (arities) (i) (is-first) (depth) =
+   if i == list-length branches then ""
+   else let b = list-at branches i
+   in emit-tco-match-branch b func-name params arities i is-first depth & emit-tco-match-branches branches func-name params arities (i + 1) False depth
+
+  emit-tco-match-branch : IRBranch, Text, List IRParam, List ArityEntry, Integer, Boolean, Integer -> Text
+  emit-tco-match-branch (b) (func-name) (params) (arities) (idx) (is-first) (depth) =
+   let s-var = tco-scrut-var depth
+   in when b.pattern
+    is IrWildPat (sp) -> "            {\n" & emit-tco-body (b.body) func-name params arities (depth + 1) & "            }\n"
+    is IrVecPat (pats) (ty) (sp) -> "            {\n" & emit-tco-body (b.body) func-name params arities (depth + 1) & "            }\n"
+    is IrVarPat (name) (ty) (sp) -> "            {\n                " & cs-type-or-dynamic ty & " " & sanitize name & " = " & s-var & ";\n" & emit-tco-body (b.body) func-name params arities (depth + 1) & "            }\n"
+    is IrCtorPat (name) (subs) (ty) (sp) ->
+     if is-mktup-name name
+     then "            {\n" & emit-tco-tup-let-bindings subs s-var 0 & emit-tco-body (b.body) func-name params arities (depth + 1) & "            }\n"
+     else let keyword = if is-first then "if" else "else if"
+          in let match-var = tco-match-var depth idx
+          in "            " & keyword & " (" & s-var & " is " & sanitize name & extract-ctor-type-args ty & " " & match-var & ")\n            {\n" & emit-tco-ctor-bindings subs match-var 0 & emit-tco-body (b.body) func-name params arities (depth + 1) & "            }\n"
+    is IrLitPat (text) (ty) (sp) ->
+     let keyword = if is-first then "if" else "else if"
+     in "            " & keyword & " (object.Equals(" & s-var & ", " & text & "))\n            {\n" & emit-tco-body (b.body) func-name params arities (depth + 1) & "            }\n"
+
+  tco-scrut-var : Integer -> Text
+  tco-scrut-var (depth) =
+   if depth == 0 then "_tco_s" else "_tco_s" & integer-to-text depth
+
+  tco-match-var : Integer, Integer -> Text
+  tco-match-var (depth) (idx) =
+   if depth == 0 then "_tco_m" & integer-to-text idx
+   else "_tco_m" & integer-to-text depth & "_" & integer-to-text idx
+
+  emit-tco-ctor-bindings : List IRPat, Text, Integer -> Text
+  emit-tco-ctor-bindings (subs) (match-var) (i) =
+   if i == list-length subs then ""
+   else let sub = list-at subs i
+   in emit-tco-ctor-binding sub match-var i & emit-tco-ctor-bindings subs match-var (i + 1)
+
+  emit-tco-ctor-binding : IRPat, Text, Integer -> Text
+  emit-tco-ctor-binding (sub) (match-var) (i) =
+   when sub
+    is IrVarPat (name) (ty) (sp) -> "                " & cs-type-or-dynamic ty & " " & sanitize name & " = " & match-var & ".Field" & integer-to-text i & ";\n"
+    is otherwise -> ""
+
+  emit-tco-tup-let-bindings : List IRPat, Text, Integer -> Text
+  emit-tco-tup-let-bindings (subs) (scrut-var) (i) =
+   if i == list-length subs then ""
+   else let sub = list-at subs i
+   in let binding = when sub
+       is IrVarPat (name) (ty) (sp) -> "                var " & sanitize name & " = " & scrut-var & ".Item" & integer-to-text (i + 1) & ";\n"
+       is otherwise -> ""
+   in binding & emit-tco-tup-let-bindings subs scrut-var (i + 1)
+
+  emit-tco-jump : IRExpr, List IRParam, List ArityEntry -> Text
+  emit-tco-jump (e) (params) (arities) =
+   let chain = collect-apply-chain e []
+   in emit-tco-temps (chain.args) params arities 0 & emit-tco-assigns params 0 & "            continue;\n"
+
+  emit-tco-temps : List IRExpr, List IRParam, List ArityEntry, Integer -> Text
+  emit-tco-temps (args) (params) (arities) (i) =
+   if i == list-length args then ""
+   else let p = list-at params i
+   in "            " & cs-type-or-dynamic (p.type-val) & " _tco_" & integer-to-text i & " = " & emit-expr (list-at args i) arities & ";\n" & emit-tco-temps args params arities (i + 1)
+
+  emit-tco-assigns : List IRParam, Integer -> Text
+  emit-tco-assigns (params) (i) =
+   if i == list-length params then ""
+   else let p = list-at params i
+   in "            " & sanitize (p.name) & " = _tco_" & integer-to-text i & ";\n" & emit-tco-assigns params (i + 1)
+
+Section: Definition Emission
+
+  emit-def : IRDef, List ArityEntry -> Text
+  emit-def (d) (arities) =
+   if should-tco d then emit-tco-def d arities
+   else let ret = get-return-type (d.type-val) (list-length (d.params))
+   in let gen = generic-suffix (d.type-val)
+   in "    public static " & cs-type ret & " " & sanitize (d.name) & gen & "(" & emit-def-params (d.params) 0 & ") => " & emit-expr (d.body) arities & ";\n"
+
+  get-return-type : CodexType, Integer -> CodexType
+  get-return-type (ty) (n) =
+   if n == 0 then strip-forall ty
+   else when strip-forall ty
+    is FunTy (p) (r) -> get-return-type r (n - 1)
+    is otherwise -> ty
+
+  strip-forall : CodexType -> CodexType
+  strip-forall (ty) =
+   when ty
+    is ForAllTy (id) (body) -> strip-forall body
+    is otherwise -> ty
+
+  emit-def-params : List IRParam, Integer -> Text
+  emit-def-params (params) (i) =
+   if i == list-length params then ""
+   else let p = list-at params i
+   in cs-type (p.type-val) & " " & sanitize (p.name) & (if i < list-length params - 1 then ", " else "") & emit-def-params params (i + 1)
+
+Section: Chapter Emission
+
+  emit-cce-runtime : Text
+  emit-cce-runtime =
+   text-concat-list [
+   "static class _Cce {\n",
+   "    static readonly int[] _toUni = {\n",
+   "        0, 10, 32,\n",
+   "        48, 49, 50, 51, 52, 53, 54, 55, 56, 57,\n",
+   "        101, 116, 97, 111, 105, 110, 115, 104, 114, 100,\n",
+   "        108, 99, 117, 109, 119, 102, 103, 121, 112, 98,\n",
+   "        118, 107, 106, 120, 113, 122,\n",
+   "        69, 84, 65, 79, 73, 78, 83, 72, 82, 68,\n",
+   "        76, 67, 85, 77, 87, 70, 71, 89, 80, 66,\n",
+   "        86, 75, 74, 88, 81, 90,\n",
+   "        46, 44, 33, 63, 58, 59, 39, 34, 45, 40, 41,\n",
+   "        43, 61, 42, 60, 62,\n",
+   "        47, 64, 35, 38, 95, 92, 124, 91, 93, 123, 125, 126, 96,\n",
+   "        94,\n",
+   "        36, 37,\n",
+   "        233, 232, 234, 235, 225, 224, 226, 228,\n",
+   "        243, 244, 246, 250, 252, 241, 231, 237,\n",
+   "        1072, 1086, 1077, 1080, 1085, 1090, 1089, 1088,\n",
+   "        1074, 1083, 1082, 1084, 1076, 1087, 1091\n",
+   "    };\n",
+   "    static readonly Dictionary<int, int> _fromUni = new();\n",
+   "    static _Cce() { for (int i = 0; i < 128; i++) _fromUni[_toUni[i]] = i; }\n",
+   "    public static string FromUnicode(string s) {\n",
+   "        s = s.Replace(\"\\t\", \"  \").Replace(\"\\r\", \"\");\n",
+   "        System.Text.StringBuilder sb = new System.Text.StringBuilder(s.Length);\n",
+   "        for (int i = 0; i < s.Length; i++) {\n",
+   "            int u = s[i];\n",
+   "            if (_fromUni.TryGetValue(u, out int b)) sb.Append((char)b);\n",
+   "            else if (u > 127) { sb.Append((char)(0xE0|(u>>12))); sb.Append((char)(0x80|((u>>6)&0x3F))); sb.Append((char)(0x80|(u&0x3F))); }\n",
+   "            else sb.Append((char)68);\n",
+   "        }\n",
+   "        return sb.ToString();\n",
+   "    }\n",
+   "    public static string ToUnicode(string s) {\n",
+   "        System.Text.StringBuilder sb = new System.Text.StringBuilder(s.Length);\n",
+   "        for (int i = 0; i < s.Length; i++) {\n",
+   "            int b = s[i];\n",
+   "            if (b < 128) sb.Append((char)_toUni[b]);\n",
+   "            else if ((b & 0xE0) == 0xE0 && i+2 < s.Length) {\n",
+   "                int u = ((b & 0x0F) << 12) | ((s[i+1] & 0x3F) << 6) | (s[i+2] & 0x3F);\n",
+   "                sb.Append((char)u); i += 2;\n",
+   "            }\n",
+   "            else sb.Append('\\uFFFD');\n",
+   "        }\n",
+   "        return sb.ToString();\n",
+   "    }\n",
+   "    public static long UniToCce(long u) {\n",
+   "        return _fromUni.TryGetValue((int)u, out int c) ? c : 68;\n",
+   "    }\n",
+   "    public static long CceToUni(long b) {\n",
+   "        return (b >= 0 && b < 128) ? _toUni[(int)b] : 65533;\n",
+   "    }\n",
+   "}\n\n"]
+
+  emit-buf-runtime : Text
+  emit-buf-runtime =
+   text-concat-list [
+   "static class _Buf {\n",
+   "    static byte[] _mem = new byte[512 * 1024 * 1024];\n",
+   "    static long _ptr = 0;\n",
+   "    public static long heap_save() => _ptr;\n",
+   "    public static long heap_restore(object p) { _ptr = (long)p; return 0; }\n",
+   "    public static long heap_advance(object n) { _ptr += (long)n; return 0; }\n",
+   "    public static long buf_write_byte(object b, object off, object v) { _mem[(long)b + (long)off] = (byte)(long)v; return (long)off + 1; }\n",
+   "    public static long buf_write_bytes(object b, object off, object vs) {\n",
+   "        List<long> list = (List<long>)vs; long o = (long)off; long ba = (long)b;\n",
+   "        for (int i = 0; i < list.Count; i++) _mem[ba + o + i] = (byte)list[i];\n",
+   "        return o + list.Count;\n",
+   "    }\n",
+   "    public static List<long> buf_read_bytes(object b, object off, object n) {\n",
+   "        long ba = (long)b; long o = (long)off; int cnt = (int)(long)n;\n",
+   "        List<long> r = new List<long>(cnt);\n",
+   "        for (int i = 0; i < cnt; i++) r.Add(_mem[ba + o + i]);\n",
+   "        return r;\n",
+   "    }\n",
+   "    public static dynamic list_with_capacity(object cap) => new List<object>((int)(long)cap);\n",
+   "}\n\n"]
+
+  emit-state-runtime : Text
+  emit-state-runtime =
+   text-concat-list [
+   "static class _State {\n",
+   "    public static long _value = 0;\n",
+   "    public static long get_state => _value;\n",
+   "    public static long set_state(long v) { _value = v; return 0; }\n",
+   "}\n\n"]
+
+  opening-return-type : List IRDef -> CodexType
+  opening-return-type (defs) = opening-return-loop defs 0
+
+  opening-return-loop : List IRDef, Integer -> CodexType
+  opening-return-loop (defs) (i) =
+   if i >= list-length defs then NothingTy
+   else let d = list-at defs i in
+     if d.name == opening-entry-point then strip-fun-args (d.type-val)
+     else opening-return-loop defs (i + 1)
+
+  opening-emit-entry : Text, CodexType -> Text
+  opening-emit-entry (class-name) (ret-ty) = when ret-ty
+
+    is EffectfulTy (effs) (sc) (inner) -> class-name & "." & opening-entry-point & "();\n\n"
+    is NothingTy -> class-name & "." & opening-entry-point & "();\n\n"
+    is VoidTy -> class-name & "." & opening-entry-point & "();\n\n"
+    is TextTy -> "Console.WriteLine(" & class-name & "." & opening-entry-point & "());\n\n"
+    is otherwise -> "Console.WriteLine(" & class-name & "." & opening-entry-point & "());\n\n"
+
+  emit-csharp-text-chapter : IRChapter, List ATypeDef -> Text
+  emit-csharp-text-chapter (m) (type-defs) =
+   let arities = build-arity-map (m.defs) 0 []
+   in let header = "using System;\nusing System.Collections.Generic;\nusing System.IO;\nusing System.Linq;\nusing System.Threading.Tasks;\n\n"
+   in let class-name = "Codex_" & sanitize (m.name.value)
+   in let entry = opening-emit-entry class-name (opening-return-type (m.defs))
+   in text-concat-list ([header, entry, emit-cce-runtime, emit-buf-runtime, emit-state-runtime, emit-type-defs type-defs 0, emit-class-header (m.name.value)] & emit-defs-list (m.defs) 0 arities & ["}\n"])
+
+  emit-csharp-parts : IRChapter, List ATypeDef -> List Text
+  emit-csharp-parts (m) (type-defs) =
+   let arities = build-arity-map (m.defs) 0 []
+   in let header = "using System;\nusing System.Collections.Generic;\nusing System.IO;\nusing System.Linq;\nusing System.Threading.Tasks;\n\n"
+   in let class-name = "Codex_" & sanitize (m.name.value)
+   in let entry = opening-emit-entry class-name (opening-return-type (m.defs))
+   in [header, entry, emit-cce-runtime, emit-buf-runtime, emit-state-runtime, emit-type-defs type-defs 0, emit-class-header (m.name.value)] & emit-defs-list (m.defs) 0 arities & ["}\n"]
+
+  emit-chapter : IRChapter -> Text
+  emit-chapter (m) =
+   let arities = build-arity-map (m.defs) 0 []
+   in let header = "using System;\nusing System.Collections.Generic;\nusing System.IO;\nusing System.Linq;\nusing System.Threading.Tasks;\n\n"
+   in let class-name = "Codex_" & sanitize (m.name.value)
+   in let entry = opening-emit-entry class-name (opening-return-type (m.defs))
+   in text-concat-list ([header, entry, emit-cce-runtime, emit-buf-runtime, emit-state-runtime, emit-class-header (m.name.value)] & emit-defs-list (m.defs) 0 arities & ["}\n"])
+
+  emit-class-header : Text -> Text
+  emit-class-header (name) =
+   "public static class Codex_" & sanitize name & "\n{\n"
+
+  emit-defs-list : List IRDef, Integer, List ArityEntry -> List Text
+  emit-defs-list (defs) (i) (arities) =
+   emit-defs-list-acc defs 0 (list-length defs) arities []
+
+  emit-defs-list-acc : List IRDef, Integer, Integer, List ArityEntry, List Text -> List Text
+  emit-defs-list-acc (defs) (i) (len) (arities) (acc) =
+   if i == len then acc
+   else emit-defs-list-acc defs (i + 1) len arities (list-snoc (list-snoc acc (emit-def (list-at defs i) arities)) "\n")
+
+Page 1 of 2
+

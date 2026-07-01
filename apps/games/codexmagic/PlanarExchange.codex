@@ -1,0 +1,403 @@
+Chapter: PlanarExchange
+  cites CodexMagic chapter GameRegistry
+  cites CodexMagic chapter RPGEngine
+  cites CodexMagic chapter ClanEconomy
+  cites CodexMagic chapter Token
+  cites CodexMagic chapter Clan
+
+ The Planar Exchange - cross-game item and token trading. All games
+ in the registry exist on "planes" of a shared multiverse. Items,
+ currency, and rewards flow between planes via the exchange.
+
+ A sword won in a dungeon crawl can be sold for ManaCoin. ManaCoin
+ buys a pack in CodexMagic. A CodexMagic card spawns a chess match.
+ Winning the chess match earns a racecar part. The racecar wins a
+ race and the prize is a dungeon key. Everything connects.
+
+ The exchange is the central clearinghouse - it converts game-specific
+ tokens into universal ManaCoin (or clan coin), validates cross-game
+ transfers, and maintains provenance so every item's journey through
+ the planes is recorded.
+
+ We say:
+
+Section: Planar Item - Universal Item Wrapper
+
+  PlanarItem = record {
+    planar-id : Integer,
+    origin-game : Integer,
+    origin-instance : Text,
+    item-name : Text,
+    item-type : PlanarItemType,
+    value-estimate : Integer,
+    owner : Integer,
+    provenance : List PlaneTransfer,
+    listed : Boolean,
+    list-price : Integer,
+    tradeable : Boolean,
+    bound : Boolean
+  }
+
+  PlanarItemType =
+    | PlanarCard
+    | PlanarRPGItem
+    | PlanarVehiclePart
+    | PlanarKey
+    | PlanarCosmetic
+    | PlanarMaterial
+    | PlanarCurrency (Integer)
+    | PlanarCustom (Text)
+
+  planar-type-name : PlanarItemType -> Text
+  planar-type-name (pt) =
+    when pt
+      is PlanarCard -> "Card"
+      is PlanarRPGItem -> "RPG Item"
+      is PlanarVehiclePart -> "Vehicle Part"
+      is PlanarKey -> "Key"
+      is PlanarCosmetic -> "Cosmetic"
+      is PlanarMaterial -> "Material"
+      is PlanarCurrency (amount) -> show amount & " Coin"
+      is PlanarCustom (name) -> name
+
+  PlaneTransfer = record {
+    from-game : Integer,
+    to-game : Integer,
+    from-owner : Integer,
+    to-owner : Integer,
+    transfer-type : TransferType,
+    timestamp : Integer,
+    price-paid : Integer
+  }
+
+  TransferType =
+    | TransferTrade
+    | TransferReward
+    | TransferMint
+    | TransferSubgame
+    | TransferConvert
+
+Section: Exchange State
+
+  PlanarExchangeState = record {
+    items : List PlanarItem,
+    next-planar-id : Integer,
+    listings : List ExchangeListing,
+    next-listing-id : Integer,
+    conversions : List ConversionRule,
+    total-trades : Integer,
+    total-volume : Integer,
+    planes : List PlaneRecord
+  }
+
+  ExchangeListing = record {
+    listing-id : Integer,
+    planar-id : Integer,
+    seller : Integer,
+    price : Integer,
+    currency-type : CurrencyType,
+    listed-at : Integer,
+    active : Boolean
+  }
+
+  CurrencyType =
+    | GlobalManaCoin
+    | ClanCoin (Integer)
+    | GameGold (Integer)
+
+  currency-type-name : CurrencyType -> Text
+  currency-type-name (ct) =
+    when ct
+      is GlobalManaCoin -> "ManaCoin"
+      is ClanCoin (clan-id) -> "Clan #" & show clan-id & " Coin"
+      is GameGold (game-id) -> "Game #" & show game-id & " Gold"
+
+  ConversionRule = record {
+    from-game : Integer,
+    to-game : Integer,
+    item-type : PlanarItemType,
+    exchange-rate : Integer,
+    enabled : Boolean
+  }
+
+  PlaneRecord = record {
+    game-id : Integer,
+    game-name : Text,
+    items-originated : Integer,
+    items-imported : Integer,
+    items-exported : Integer,
+    economy-volume : Integer
+  }
+
+Section: Exchange Initialization
+
+  exchange-new : PlanarExchangeState
+  exchange-new =
+    PlanarExchangeState {
+      items = [],
+      next-planar-id = 1,
+      listings = [],
+      next-listing-id = 1,
+      conversions = [],
+      total-trades = 0,
+      total-volume = 0,
+      planes = []
+    }
+
+Section: Item Registration - Mint into the planar system
+
+  mint-planar-item : PlanarExchangeState, Integer, Text, Text, PlanarItemType, Integer, Integer, Integer -> PlanarExchangeState
+  mint-planar-item (exchange) (origin-game) (inst) (name) (ptype) (value) (owner) (time) =
+    let item = PlanarItem {
+      planar-id = exchange.next-planar-id,
+      origin-game = origin-game,
+      origin-instance = inst,
+      item-name = name,
+      item-type = ptype,
+      value-estimate = value,
+      owner = owner,
+      provenance = [PlaneTransfer { from-game = 0, to-game = origin-game, from-owner = 0, to-owner = owner, transfer-type = TransferMint, timestamp = time, price-paid = 0 }],
+      listed = False,
+      list-price = 0,
+      tradeable = True,
+      bound = False
+    }
+    in PlanarExchangeState {
+      items = list-push (exchange.items) item,
+      next-planar-id = exchange.next-planar-id + 1,
+      listings = exchange.listings,
+      next-listing-id = exchange.next-listing-id,
+      conversions = exchange.conversions,
+      total-trades = exchange.total-trades,
+      total-volume = exchange.total-volume,
+      planes = update-plane-originated (exchange.planes) origin-game
+    }
+
+Section: Listing and Trading
+
+  list-item-for-sale : PlanarExchangeState, Integer, Integer, Integer, CurrencyType, Integer -> PlanarExchangeState
+  list-item-for-sale (exchange) (planar-id) (seller) (price) (currency) (time) =
+    let listing = ExchangeListing {
+      listing-id = exchange.next-listing-id,
+      planar-id = planar-id,
+      seller = seller,
+      price = price,
+      currency-type = currency,
+      listed-at = time,
+      active = True
+    }
+    in let items2 = mark-item-listed (exchange.items) planar-id price 0 (list-length (exchange.items)) []
+    in PlanarExchangeState {
+      items = items2,
+      next-planar-id = exchange.next-planar-id,
+      listings = list-push (exchange.listings) listing,
+      next-listing-id = exchange.next-listing-id + 1,
+      conversions = exchange.conversions,
+      total-trades = exchange.total-trades,
+      total-volume = exchange.total-volume,
+      planes = exchange.planes
+    }
+
+  PlanarTradeResult = record {
+    exchange : PlanarExchangeState,
+    ledger : ManaCoinLedger,
+    success : Boolean
+  }
+
+  buy-listed-item : PlanarExchangeState, ManaCoinLedger, Integer, Integer, Integer -> PlanarTradeResult
+  buy-listed-item (exchange) (ledger) (listing-id) (buyer) (time) =
+    let listing = find-listing (exchange.listings) listing-id 0 (list-length (exchange.listings))
+    in if listing.listing-id < 0 then PlanarTradeResult { exchange = exchange, ledger = ledger, success = False }
+    else if listing.active == False then PlanarTradeResult { exchange = exchange, ledger = ledger, success = False }
+    else let buyer-bal = ledger-balance ledger buyer
+    in if buyer-bal < listing.price then PlanarTradeResult { exchange = exchange, ledger = ledger, success = False }
+    else let ledger2 = ledger-transfer ledger buyer (listing.seller) listing.price
+    in let rake = listing.price / 10
+    in let ledger3 = ledger-burn ledger2 (listing.seller) rake
+    in let items2 = transfer-planar-item (exchange.items) (listing.planar-id) buyer 0 0 TransferTrade time listing.price 0 (list-length (exchange.items)) []
+    in let listings2 = deactivate-listing (exchange.listings) listing-id 0 (list-length (exchange.listings)) []
+    in PlanarTradeResult {
+      exchange = PlanarExchangeState {
+        items = items2,
+        next-planar-id = exchange.next-planar-id,
+        listings = listings2,
+        next-listing-id = exchange.next-listing-id,
+        conversions = exchange.conversions,
+        total-trades = exchange.total-trades + 1,
+        total-volume = exchange.total-volume + listing.price,
+        planes = exchange.planes
+      },
+      ledger = ledger3,
+      success = True
+    }
+
+Section: Cross-Game Transfer - Subgame rewards flow back
+
+  transfer-from-subgame : PlanarExchangeState, Integer, Integer, Integer, Integer, Integer -> PlanarExchangeState
+  transfer-from-subgame (exchange) (planar-id) (from-game) (to-game) (new-owner) (time) =
+    let items2 = transfer-planar-item (exchange.items) planar-id new-owner from-game to-game TransferSubgame time 0 0 (list-length (exchange.items)) []
+    in let planes2 = update-plane-exported (exchange.planes) from-game
+    in let planes3 = update-plane-imported planes2 to-game
+    in PlanarExchangeState {
+      items = items2,
+      next-planar-id = exchange.next-planar-id,
+      listings = exchange.listings,
+      next-listing-id = exchange.next-listing-id,
+      conversions = exchange.conversions,
+      total-trades = exchange.total-trades,
+      total-volume = exchange.total-volume,
+      planes = planes3
+    }
+
+  reward-from-game : PlanarExchangeState, Integer, Text, PlanarItemType, Integer, Integer, Integer, Integer -> PlanarExchangeState
+  reward-from-game (exchange) (game-id) (item-name) (ptype) (value) (recipient) (from-game) (time) =
+    let item = PlanarItem {
+      planar-id = exchange.next-planar-id,
+      origin-game = game-id,
+      origin-instance = "reward",
+      item-name = item-name,
+      item-type = ptype,
+      value-estimate = value,
+      owner = recipient,
+      provenance = [PlaneTransfer { from-game = from-game, to-game = game-id, from-owner = 0, to-owner = recipient, transfer-type = TransferReward, timestamp = time, price-paid = 0 }],
+      listed = False,
+      list-price = 0,
+      tradeable = True,
+      bound = False
+    }
+    in PlanarExchangeState {
+      items = list-push (exchange.items) item,
+      next-planar-id = exchange.next-planar-id + 1,
+      listings = exchange.listings,
+      next-listing-id = exchange.next-listing-id,
+      conversions = exchange.conversions,
+      total-trades = exchange.total-trades,
+      total-volume = exchange.total-volume,
+      planes = update-plane-originated (exchange.planes) game-id
+    }
+
+Section: Plane Management
+
+  register-plane : PlanarExchangeState, Integer, Text -> PlanarExchangeState
+  register-plane (exchange) (game-id) (game-name) =
+    let plane = PlaneRecord { game-id = game-id, game-name = game-name, items-originated = 0, items-imported = 0, items-exported = 0, economy-volume = 0 }
+    in PlanarExchangeState {
+      items = exchange.items,
+      next-planar-id = exchange.next-planar-id,
+      listings = exchange.listings,
+      next-listing-id = exchange.next-listing-id,
+      conversions = exchange.conversions,
+      total-trades = exchange.total-trades,
+      total-volume = exchange.total-volume,
+      planes = list-push (exchange.planes) plane
+    }
+
+  update-plane-originated : List PlaneRecord, Integer -> List PlaneRecord
+  update-plane-originated (planes) (game-id) =
+    update-plane-field planes game-id 1 0 0 0 (list-length planes) []
+
+  update-plane-exported : List PlaneRecord, Integer -> List PlaneRecord
+  update-plane-exported (planes) (game-id) =
+    update-plane-field planes game-id 0 0 1 0 (list-length planes) []
+
+  update-plane-imported : List PlaneRecord, Integer -> List PlaneRecord
+  update-plane-imported (planes) (game-id) =
+    update-plane-field planes game-id 0 1 0 0 (list-length planes) []
+
+  update-plane-field : List PlaneRecord, Integer, Integer, Integer, Integer, Integer, Integer, List PlaneRecord -> List PlaneRecord
+  update-plane-field (planes) (game-id) (orig-inc) (imp-inc) (exp-inc) (i) (len) (acc) =
+    if i >= len then acc
+    else let p = list-at planes i
+    in if p.game-id == game-id then
+      update-plane-field planes game-id orig-inc imp-inc exp-inc (i + 1) len (list-push acc (PlaneRecord { game-id = p.game-id, game-name = p.game-name, items-originated = p.items-originated + orig-inc, items-imported = p.items-imported + imp-inc, items-exported = p.items-exported + exp-inc, economy-volume = p.economy-volume }))
+    else update-plane-field planes game-id orig-inc imp-inc exp-inc (i + 1) len (list-push acc p)
+
+Section: Item Helpers
+
+  mark-item-listed : List PlanarItem, Integer, Integer, Integer, Integer, List PlanarItem -> List PlanarItem
+  mark-item-listed (items) (planar-id) (price) (i) (len) (acc) =
+    if i >= len then acc
+    else let item = list-at items i
+    in if item.planar-id == planar-id then
+      mark-item-listed items planar-id price (i + 1) len (list-push acc (PlanarItem { planar-id = item.planar-id, origin-game = item.origin-game, origin-instance = item.origin-instance, item-name = item.item-name, item-type = item.item-type, value-estimate = item.value-estimate, owner = item.owner, provenance = item.provenance, listed = True, list-price = price, tradeable = item.tradeable, bound = item.bound }))
+    else mark-item-listed items planar-id price (i + 1) len (list-push acc item)
+
+  transfer-planar-item : List PlanarItem, Integer, Integer, Integer, Integer, TransferType, Integer, Integer, Integer, Integer, List PlanarItem -> List PlanarItem
+  transfer-planar-item (items) (planar-id) (new-owner) (from-game) (to-game) (ttype) (time) (price) (i) (len) (acc) =
+    if i >= len then acc
+    else let item = list-at items i
+    in if item.planar-id == planar-id then
+      let transfer = PlaneTransfer { from-game = from-game, to-game = to-game, from-owner = item.owner, to-owner = new-owner, transfer-type = ttype, timestamp = time, price-paid = price }
+      in let updated = PlanarItem { planar-id = item.planar-id, origin-game = item.origin-game, origin-instance = item.origin-instance, item-name = item.item-name, item-type = item.item-type, value-estimate = item.value-estimate, owner = new-owner, provenance = list-push (item.provenance) transfer, listed = False, list-price = 0, tradeable = item.tradeable, bound = item.bound }
+      in transfer-planar-item items planar-id new-owner from-game to-game ttype time price (i + 1) len (list-push acc updated)
+    else transfer-planar-item items planar-id new-owner from-game to-game ttype time price (i + 1) len (list-push acc item)
+
+  deactivate-listing : List ExchangeListing, Integer, Integer, Integer, List ExchangeListing -> List ExchangeListing
+  deactivate-listing (listings) (id) (i) (len) (acc) =
+    if i >= len then acc
+    else let l = list-at listings i
+    in if l.listing-id == id then
+      deactivate-listing listings id (i + 1) len (list-push acc (ExchangeListing { listing-id = l.listing-id, planar-id = l.planar-id, seller = l.seller, price = l.price, currency-type = l.currency-type, listed-at = l.listed-at, active = False }))
+    else deactivate-listing listings id (i + 1) len (list-push acc l)
+
+  find-listing : List ExchangeListing, Integer, Integer, Integer -> ExchangeListing
+  find-listing (listings) (id) (i) (len) =
+    if i >= len then ExchangeListing { listing-id = -1, planar-id = 0, seller = 0, price = 0, currency-type = GlobalManaCoin, listed-at = 0, active = False }
+    else let l = list-at listings i
+    in if l.listing-id == id then l
+    else find-listing listings id (i + 1) len
+
+Section: Queries
+
+  items-owned-by : PlanarExchangeState, Integer -> List PlanarItem
+  items-owned-by (exchange) (owner) =
+    filter-by-owner (exchange.items) owner 0 (list-length (exchange.items)) []
+
+  filter-by-owner : List PlanarItem, Integer, Integer, Integer, List PlanarItem -> List PlanarItem
+  filter-by-owner (items) (owner) (i) (len) (acc) =
+    if i >= len then acc
+    else let item = list-at items i
+    in if item.owner == owner then filter-by-owner items owner (i + 1) len (list-push acc item)
+    else filter-by-owner items owner (i + 1) len acc
+
+  items-from-game : PlanarExchangeState, Integer -> List PlanarItem
+  items-from-game (exchange) (game-id) =
+    filter-by-origin (exchange.items) game-id 0 (list-length (exchange.items)) []
+
+  filter-by-origin : List PlanarItem, Integer, Integer, Integer, List PlanarItem -> List PlanarItem
+  filter-by-origin (items) (game-id) (i) (len) (acc) =
+    if i >= len then acc
+    else let item = list-at items i
+    in if item.origin-game == game-id then filter-by-origin items game-id (i + 1) len (list-push acc item)
+    else filter-by-origin items game-id (i + 1) len acc
+
+  active-listings : PlanarExchangeState -> List ExchangeListing
+  active-listings (exchange) =
+    filter-active-listings (exchange.listings) 0 (list-length (exchange.listings)) []
+
+  filter-active-listings : List ExchangeListing, Integer, Integer, List ExchangeListing -> List ExchangeListing
+  filter-active-listings (listings) (i) (len) (acc) =
+    if i >= len then acc
+    else let l = list-at listings i
+    in if l.active then filter-active-listings listings (i + 1) len (list-push acc l)
+    else filter-active-listings listings (i + 1) len acc
+
+  exchange-stats : PlanarExchangeState -> ExchangeStats
+  exchange-stats (exchange) =
+    ExchangeStats {
+      total-items = list-length (exchange.items),
+      total-listings = list-length (active-listings exchange),
+      total-trades = exchange.total-trades,
+      total-volume = exchange.total-volume,
+      planes-registered = list-length (exchange.planes)
+    }
+
+  ExchangeStats = record {
+    total-items : Integer,
+    total-listings : Integer,
+    total-trades : Integer,
+    total-volume : Integer,
+    planes-registered : Integer
+  }
+
+Page 1

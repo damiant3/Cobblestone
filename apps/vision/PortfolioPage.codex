@@ -1,0 +1,60 @@
+Chapter: PortfolioPage
+  cites Vision chapter VisionTypes
+  cites Vision chapter VisionPortfolio
+  cites Vision chapter VisionTheme
+  cites UI chapter Widget
+  cites UI chapter Layout
+  cites Foreword chapter ListUtils
+
+ Executive portfolio dashboard. Shows all projects with health
+ scores, milestone progress, risk heat, and dependency status.
+
+Section: Portfolio Dashboard
+
+  portfolio-dashboard : PortfolioState, Integer -> WidgetNode
+  portfolio-dashboard (pf) (now) =
+    let title = widget-label "pf-title" "Portfolio Dashboard"
+    in let summary = widget-label "pf-summary" (show pf.pf-project-count & " projects, " & show pf.pf-dep-count & " dependencies")
+    in let active = pf-active-projects pf
+    in let cards = project-cards active now 0 (list-length active) []
+    in widget-panel "portfolio" DirColumn 8 ([title, summary] & cards)
+
+  project-cards : List Project, Integer, Integer, Integer, List WidgetNode -> List WidgetNode
+  project-cards (projects) (now) (i) (len) (acc) =
+    if i >= len then acc
+    else let p = list-at projects i
+    in let card = project-card p now
+    in project-cards projects now (i + 1) len (list-push acc card)
+
+Section: Project Card
+
+  project-card : Project, Integer -> WidgetNode
+  project-card (p) (now) =
+    let name-lbl = widget-label ("proj-n-" & show p.proj-id) p.proj-name
+    in let domain-lbl = widget-label ("proj-d-" & show p.proj-id) ("[" & p.proj-domain & "]")
+    in let owner-lbl = widget-label ("proj-o-" & show p.proj-id) p.proj-owner
+    in let status-lbl = widget-label ("proj-s-" & show p.proj-id) (proj-status-label p.proj-status)
+    in let health = pf-health-score p now
+    in let health-lbl = widget-label ("proj-h-" & show p.proj-id) ("Health: " & show health & "%")
+    in let ms-lbl = widget-label ("proj-ms-" & show p.proj-id) (show p.proj-milestone-count & " milestones")
+    in let risk-lbl = widget-label ("proj-r-" & show p.proj-id) (show p.proj-risk-count & " risks")
+    in let header = widget-panel ("proj-hdr-" & show p.proj-id) DirRow 8 [name-lbl, domain-lbl, owner-lbl]
+    in let metrics = widget-panel ("proj-met-" & show p.proj-id) DirRow 8 [status-lbl, health-lbl, ms-lbl, risk-lbl]
+    in widget-panel ("proj-" & show p.proj-id) DirColumn 4 [header, metrics]
+
+Section: Risk Heat Map
+
+  risk-heat-widget : PortfolioState -> WidgetNode
+  risk-heat-widget (pf) =
+    let title = widget-label "risk-title" "Risk Overview"
+    in let rows = risk-rows pf.pf-projects 0 pf.pf-project-count []
+    in widget-panel "risk-heat" DirColumn 4 (title :: rows)
+
+  risk-rows : List Project, Integer, Integer, List WidgetNode -> List WidgetNode
+  risk-rows (projects) (i) (len) (acc) =
+    if i >= len then acc
+    else let p = list-at projects i
+    in if p.proj-risk-count > 0
+      then let row = widget-label ("risk-row-" & show p.proj-id) (p.proj-name & ": " & show p.proj-risk-count & " risks")
+        in risk-rows projects (i + 1) len (list-push acc row)
+      else risk-rows projects (i + 1) len acc

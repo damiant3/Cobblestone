@@ -1,0 +1,237 @@
+Chapter: CallPage
+  cites Collab chapter CollabTypes
+  cites Collab chapter CallEngine
+  cites Collab chapter CollabTheme
+  cites UI chapter Widget
+  cites UI chapter Layout
+  cites UI chapter DataTable
+  cites UI chapter Dropdown
+  cites UI chapter Markdown
+  cites UI chapter TreeView
+  cites UI chapter SettingsPanel
+  cites UI chapter FilterableList
+  cites UI chapter DetailPane
+  cites UI chapter StatusBadge
+  cites UI chapter SearchBar
+  cites UI chapter CommandPalette
+  cites Foreword chapter ListUtils
+
+ Call view UI. Participant grid with video tiles, controls
+ toolbar (mute/video/screen-share/record/hand/leave),
+ side panel for chat and participant list.
+
+Section: Call View
+
+  call-view-widget : Call, CallChat, Integer -> WidgetNode
+  call-view-widget (c) (chat) (now) =
+    let header = call-header c now
+    in let grid = participant-grid c
+    in let toolbar = call-toolbar c
+    in let side = call-side-panel c chat
+    in widget-panel "call-view" DirColumn 0 [header, grid, toolbar]
+
+Section: Header
+
+  call-header : Call, Integer -> WidgetNode
+  call-header (c) (now) =
+    let title-lbl = widget-label "call-title" c.call-title
+    in let dur = call-duration c now
+    in let dur-lbl = widget-label "call-dur" (format-duration dur)
+    in let count-lbl = widget-label "call-count" (show c.call-participant-count & " participants")
+    in let rec-lbl = if c.call-recording
+          then widget-label "call-rec" "[REC]"
+          else widget-label "call-rec" ""
+    in widget-panel "call-header" DirRow 12 [title-lbl, dur-lbl, count-lbl, rec-lbl]
+
+  format-duration : Integer -> Text
+  format-duration (sec) =
+    let m = sec / 60
+    in let s = sec - m * 60
+    in show m & ":" & (if s < 10 then "0" else "") & show s
+
+Section: Participant Grid
+
+  participant-grid : Call -> WidgetNode
+  participant-grid (c) =
+    let tiles = participant-tiles c.call-participants 0 c.call-participant-count []
+    in widget-panel "call-grid" DirRow 4 tiles
+
+  participant-tiles : List CallParticipant, Integer, Integer, List WidgetNode -> List WidgetNode
+  participant-tiles (parts) (i) (len) (acc) =
+    if i >= len then acc
+    else let p = list-at parts i
+    in let tile = participant-tile p
+    in participant-tiles parts (i + 1) len (list-push acc tile)
+
+  participant-tile : CallParticipant -> WidgetNode
+  participant-tile (p) =
+    let name-lbl = widget-label ("pt-name-" & p.cp-user-id) p.cp-name
+    in let role-lbl = widget-label ("pt-role-" & p.cp-user-id) (pr-label p.cp-role)
+    in let mute-ind = widget-label ("pt-mic-" & p.cp-user-id) (if p.cp-muted then "[M]" else "[*]")
+    in let video-ind = widget-label ("pt-vid-" & p.cp-user-id) (if p.cp-video-on then "[V]" else "[.]")
+    in let share-ind = if p.cp-screen-sharing
+          then widget-label ("pt-scr-" & p.cp-user-id) "[SCR]"
+          else widget-label ("pt-scr-" & p.cp-user-id) ""
+    in let hand-ind = if p.cp-hand-raised
+          then widget-label ("pt-hand-" & p.cp-user-id) "[HAND]"
+          else widget-label ("pt-hand-" & p.cp-user-id) ""
+    in let indicators = widget-panel ("pt-ind-" & p.cp-user-id) DirRow 4 [mute-ind, video-ind, share-ind, hand-ind]
+    in widget-panel ("pt-" & p.cp-user-id) DirColumn 2 [name-lbl, role-lbl, indicators]
+
+Section: Controls Toolbar
+
+  call-toolbar : Call -> WidgetNode
+  call-toolbar (c) =
+    let mute-btn = widget-button "ctl-mute" "Mute (M)"
+    in let video-btn = widget-button "ctl-video" "Video (V)"
+    in let share-btn = widget-button "ctl-share" "Share (S)"
+    in let record-btn = widget-button "ctl-record" (if c.call-recording then "Stop Rec" else "Record")
+    in let hand-btn = widget-button "ctl-hand" "Hand (H)"
+    in let react-btn = widget-button "ctl-react" "React (R)"
+    in let leave-btn = widget-button "ctl-leave" "Leave"
+    in widget-panel "call-toolbar" DirRow 8 [mute-btn, video-btn, share-btn, record-btn, hand-btn, react-btn, leave-btn]
+
+Section: Side Panel
+
+  call-side-panel : Call, CallChat -> WidgetNode
+  call-side-panel (c) (chat) =
+    let part-title = widget-label "side-parts" ("Participants (" & show c.call-participant-count & ")")
+    in let part-list = participant-list c.call-participants 0 c.call-participant-count []
+    in let chat-title = widget-label "side-chat" ("Chat (" & show chat.cc-count & ")")
+    in let chat-msgs = chat-msg-list chat.cc-messages 0 chat.cc-count []
+    in widget-panel "side-panel" DirColumn 4 ([part-title] & part-list & [chat-title] & chat-msgs)
+
+  participant-list : List CallParticipant, Integer, Integer, List WidgetNode -> List WidgetNode
+  participant-list (parts) (i) (len) (acc) =
+    if i >= len then acc
+    else let p = list-at parts i
+    in let status = (if p.cp-muted then "M" else "*") & (if p.cp-video-on then "V" else ".") & (if p.cp-hand-raised then "H" else ".")
+    in let row = widget-label ("pl-" & p.cp-user-id) ("[" & status & "] " & p.cp-name & " (" & pr-label p.cp-role & ")")
+    in participant-list parts (i + 1) len (list-push acc row)
+
+  chat-msg-list : List CallMessage, Integer, Integer, List WidgetNode -> List WidgetNode
+  chat-msg-list (msgs) (i) (len) (acc) =
+    if i >= len then acc
+    else let m = list-at msgs i
+    in let row = widget-label ("cm-" & show m.cm-id) (m.cm-author & ": " & m.cm-content)
+    in chat-msg-list msgs (i + 1) len (list-push acc row)
+
+Section: Meeting List View
+
+  meeting-list-widget : List MeetingRoom, Integer -> WidgetNode
+  meeting-list-widget (meetings) (now) =
+    let title = widget-label "ml-title" "Meetings"
+    in let rows = meeting-rows meetings now 0 (list-length meetings) []
+    in widget-panel "meeting-list" DirColumn 4 (title :: rows)
+
+  meeting-rows : List MeetingRoom, Integer, Integer, Integer, List WidgetNode -> List WidgetNode
+  meeting-rows (meetings) (now) (i) (len) (acc) =
+    if i >= len then acc
+    else let m = list-at meetings i
+    in let status = when m.mr-call
+          is Just (c) -> cs-label c.call-state
+          is None -> if m.mr-scheduled-start > now then "Upcoming" else "Not Started"
+    in let row = widget-label ("mt-" & m.mr-id) (m.mr-title & " [" & mt-label m.mr-type & "] " & status & " (" & show m.mr-agenda-count & " agenda items)")
+    in meeting-rows meetings now (i + 1) len (list-push acc row)
+
+Section: Participant DataTable
+  participant-table : Call -> DataTableState
+  participant-table (call) =
+    let cols = [
+      table-column "name" "Name" 100,
+      table-column "role" "Role" 60,
+      table-column "mute" "Mute" 40,
+      table-column "video" "Video" 40,
+      table-column "screen" "Screen" 40,
+      table-column "hand" "Hand" 40
+    ]
+    in let rows = participant-to-rows (call.call-participants) 0 (list-length (call.call-participants)) []
+    in data-table-new "participants" cols rows
+
+  participant-to-rows : List Participant, Integer, Integer, List TableRow -> List TableRow
+  participant-to-rows (parts) (i) (n) (acc) =
+    if i >= n then acc
+    else let p = list-at parts i
+    in let tr = table-row (p.part-id) [
+        p.part-name,
+        p.part-role,
+        if p.part-muted then "Yes" else "No",
+        if p.part-video then "On" else "Off",
+        if p.part-screen-share then "Yes" else "No",
+        if p.part-hand-raised then "Yes" else "No"
+      ]
+    in participant-to-rows parts (i + 1) n (list-push acc tr)
+
+Section: Role Assignment Dropdown
+  role-dropdown : DropdownState
+  role-dropdown = dropdown-new "dd-role" ["Host", "Presenter", "Participant", "Observer"]
+
+  quality-dropdown : DropdownState
+  quality-dropdown = dropdown-new "dd-quality" ["Auto", "720p", "480p", "360p", "Audio Only"]
+
+Section: Chat Message Rendering
+  chat-message-md : Text -> WidgetNode
+  chat-message-md (msg) =
+    let doc = md-parse msg
+    in md-document-to-widget doc "chat-msg"
+
+Section: Meeting Agenda TreeView
+  agenda-tree : MeetingRecord -> TreeViewState
+  agenda-tree (meeting) =
+    let items = agenda-to-nodes (meeting.mr-agenda) 0 (meeting.mr-agenda-count) []
+    in tree-view-new "agenda" items
+
+  agenda-to-nodes : List AgendaItem, Integer, Integer, List TreeNode -> List TreeNode
+  agenda-to-nodes (items) (i) (n) (acc) =
+    if i >= n then acc
+    else let item = list-at items i
+    in let icon = if item.ai-done then "[x]" else "[ ]"
+    in let node = tree-node-leaf ("ag-" & show i) (item.ai-title) icon
+    in agenda-to-nodes items (i + 1) n (list-push acc node)
+
+Section: Shared Component Usage
+
+  call-participant-detail : Participant -> DetailSpec
+  call-participant-detail (p) =
+    let spec = detail-spec "part-det" (p.part-name) (p.part-id)
+    in let s1 = detail-add-field spec (df-text "Role" (p.part-role))
+    in let s2 = detail-add-field s1 (df-badge "Audio" (if p.part-muted then "Muted" else "Active") (if p.part-muted then #EF4444 else #22C55E))
+    in let s3 = detail-add-field s2 (df-badge "Video" (if p.part-video then "On" else "Off") (if p.part-video then #22C55E else #6B7280))
+    in let s4 = detail-add-field s3 (df-badge "Screen" (if p.part-screen-share then "Sharing" else "Off") (if p.part-screen-share then #3B82F6 else #6B7280))
+    in s4
+
+  call-participant-list : Call -> FilterableListState
+  call-participant-list (call) =
+    let items = call-parts-to-items (call.call-participants) 0 (list-length (call.call-participants)) []
+    in filterable-list-new "part-list" items
+
+  call-parts-to-items : List Participant, Integer, Integer, List ListItem -> List ListItem
+  call-parts-to-items (parts) (i) (n) (acc) =
+    if i >= n then acc
+    else let p = list-at parts i
+    in let icon = if p.part-muted then "(x)" else "(~)"
+    in let item = fl-item-full (p.part-id) (p.part-name) (p.part-role) icon "" 0
+    in call-parts-to-items parts (i + 1) n (list-push acc item)
+
+  call-settings : SettingsSpec
+  call-settings = settings-spec "call-settings" "Call Settings" [
+    sf-dropdown "quality" "Quality" ["Auto", "720p", "480p", "360p", "Audio Only"],
+    sf-toggle "noise-cancel" "Noise Cancel" True,
+    sf-toggle "echo-cancel" "Echo Cancel" True,
+    sf-toggle "auto-gain" "Auto Gain" True,
+    sf-sep,
+    sf-dropdown "layout" "Layout" ["Grid", "Speaker", "Sidebar"],
+    sf-toggle "show-names" "Show Names" True
+  ]
+
+  call-palette : PaletteState
+  call-palette = palette-new "call-pal" [
+    palette-command "mute" "Toggle mute" "m" "action" 1,
+    palette-command "video" "Toggle video" "v" "action" 2,
+    palette-command "screen" "Share screen" "s" "action" 3,
+    palette-command "record" "Toggle recording" "r" "action" 4,
+    palette-command "hand" "Raise hand" "h" "action" 5,
+    palette-command "chat" "Open chat" "c" "nav" 6,
+    palette-command "parts" "Participants" "p" "nav" 7,
+    palette-command "leave" "Leave call" "q" "action" 8
+  ]

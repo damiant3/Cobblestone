@@ -1,0 +1,294 @@
+Chapter: ErpServer
+  cites ERP chapter ErpTypes
+  cites ERP chapter ErpConfig
+  cites ERP chapter FinGL
+  cites ERP chapter FinApAr
+  cites Works chapter Http
+  cites Encode chapter Json
+  cites Foreword chapter Maybe
+  cites Foreword chapter Tuple
+  cites Foreword chapter List
+  cites UI chapter DataTable
+  cites UI chapter Dropdown
+  cites UI chapter SettingsPanel
+  cites UI chapter DetailPane
+  cites UI chapter FilterableList
+  cites UI chapter StatusBadge
+  cites UI chapter SearchBar
+  cites UI chapter Validation
+  cites UI chapter CommandPalette
+  cites Net chapter WebServer
+  cites Net chapter NetIO
+  cites Net chapter TcpTransport
+  cites Foreword chapter CCE
+
+ JSON API over the ERP suite, on the MarketWeb route pattern: a pure
+ function from state and request to state and response. No sockets
+ live here; a transport hands erp-route the parsed request and writes
+ back the encoded response, and tests call it directly.
+
+Section: Server State
+
+  ErpState = record {
+    erp-gl : GlState,
+    erp-cfg : ErpConfig,
+    erp-ap : List ApInvoice,
+    erp-ar : List ArInvoice
+  }
+
+  erp-state-new : Integer, Integer -> ErpState
+  erp-state-new (period) (year) =
+    let st = gl-init "CODEX"
+    in let st2 = load-standard-coa st
+    in let st3 = __record-set st2 "gl-periods" [FiscalPeriod { fp-year = year, fp-period = period, fp-company = "CODEX", fp-start-date = year * 10000 + period * 100 + 1, fp-end-date = year * 10000 + period * 100 + 31, fp-status = PeriodOpen }]
+    in ErpState {
+      erp-gl = st3,
+      erp-cfg = standard-config period year,
+      erp-ap = [],
+      erp-ar = []
+    }
+
+Section: Response Helpers
+
+  erp-json : Text -> HttpResponse
+  erp-json (body) = HttpResponse { status = "200 OK", content-type = "application/json", body = body }
+
+  erp-bad-request : Text -> HttpResponse
+  erp-bad-request (msg) = HttpResponse { status = "400 Bad Request", content-type = "application/json", body = json-emit (json-object [json-pair "error" (json-str msg)]) }
+
+Section: Route Dispatch
+
+  erp-route : ErpState, HttpRequest -> (ErpState, HttpResponse)
+  erp-route (st) (req) =
+    let path = req.path
+    in if path == "/health" then (st, http-plain "ok")
+    else if path == "/api/gl/accounts" then (st, accounts-response st)
+    else if path == "/api/gl/trial-balance" then (st, tb-response st)
+    else if path == "/api/gl/journal" then
+      if req.method == "POST" then handle-post-journal st req
+      else (st, erp-bad-request "POST a journal entry to this route")
+    else if path == "/api/ap/aging" then (st, aging-response (calc-ap-aging (st.erp-ap) 0))
+    else if path == "/api/ar/aging" then (st, aging-response (calc-ar-aging (st.erp-ar) 0))
+    else if path == "/api/kpi/dashboard" then (st, kpi-response st)
+    else (st, http-not-found)
+
+Section: GL Routes
+
+  account-json : GlState, GlAccount -> JsonValue
+  account-json (gl) (a) =
+    json-object [
+      json-pair "number" (json-str (a.gl-number)),
+      json-pair "name" (json-str (a.gl-name)),
+      json-pair "type" (json-str (account-type-name (a.gl-type))),
+      json-pair "balance" (json-int (get-balance gl (a.gl-number)))
+    ]
+
+  accounts-json-loop : GlState, List GlAccount, List JsonValue, Integer -> List JsonValue
+  accounts-json-loop (gl) (accts) (acc) (i) =
+    if i >= list-length accts then acc
+    else accounts-json-loop gl accts (list-push acc (account-json gl (list-at accts i))) (i + 1)
+
+  accounts-response : ErpState -> HttpResponse
+  accounts-response (st) =
+    let gl = st.erp-gl
+    in erp-json (json-emit (json-array (accounts-json-loop gl (gl.gl-accounts) [] 0)))
+
+  tb-line-json : TrialBalanceLine -> JsonValue
+  tb-line-json (l) =
+    json-object [
+      json-pair "account" (json-str (l.tb-account)),
+      json-pair "name" (json-str (l.tb-name)),
+      json-pair "debit" (json-int (l.tb-debit)),
+      json-pair "credit" (json-int (l.tb-credit))
+    ]
+
+  tb-lines-json : List TrialBalanceLine, List JsonValue, Integer -> List JsonValue
+  tb-lines-json (lines) (acc) (i) =
+    if i >= list-length lines then acc
+    else tb-lines-json lines (list-push acc (tb-line-json (list-at lines i))) (i + 1)
+
+  tb-response : ErpState -> HttpResponse
+  tb-response (st) =
+    let tb = trial-balance (st.erp-gl)
+    in let body = json-object [
+      json-pair "debits" (json-int (tb-total-debits tb)),
+      json-pair "credits" (json-int (tb-total-credits tb)),
+      json-pair "lines" (json-array (tb-lines-json tb [] 0))
+    ]
+    in erp-json (json-emit body)
+
+Section: Journal Posting Route
+
+ The POST body is a single balanced movement: debit account, credit
+ account, amount, and an id. Multi-line entries arrive in a later
+ phase; one pair covers the manual-correction use case the dashboard
+ needs.
+
+  handle-post-journal : ErpState, HttpRequest -> (ErpState, HttpResponse)
+  handle-post-journal (st) (req) =
+    when json-parse (req.body)
+      is None -> (st, erp-bad-request "body is not valid JSON")
+      is Just (j) ->
+        let id = json-get-str j "id" ""
+        in let debit = json-get-str j "debit" ""
+        in let credit = json-get-str j "credit" ""
+        in let amount = json-get-int j "amount" 0
+        in if id == "" then (st, erp-bad-request "missing id")
+        else if debit == "" then (st, erp-bad-request "missing debit")
+        else if credit == "" then (st, erp-bad-request "missing credit")
+        else if amount <= 0 then (st, erp-bad-request "amount must be positive")
+        else post-pair st id debit credit amount
+
+  post-pair : ErpState, Text, Text, Text, Integer -> (ErpState, HttpResponse)
+  post-pair (st) (id) (debit) (credit) (amount) =
+    let cfg = st.erp-cfg
+    in let je = JournalEntry {
+      je-id = id, je-company = (st.erp-gl).gl-company, je-date = 0,
+      je-period = cfg.cfg-period, je-year = cfg.cfg-year,
+      je-description = "API journal " & id,
+      je-lines = [journal-line-debit debit amount "" "api", journal-line-credit credit amount "" "api"],
+      je-source = SrcManual, je-posted = False, je-reversed = False,
+      je-reversal-of = "", je-created-by = "api", je-approved-by = "",
+      je-created = 0
+    }
+    in when post-journal (st.erp-gl) je
+      is (gl2, r) ->
+        let st2 = __record-set st "erp-gl" gl2
+        in when r
+          is PostSuccess (je2) -> (st2, erp-json (json-emit (json-object [json-pair "posted" (json-bool True), json-pair "id" (json-str (je2.je-id))])))
+          is PostFailed (msg) -> (st2, erp-bad-request msg)
+
+Section: Aging and KPI Routes
+
+  aging-response : AgingBucket -> HttpResponse
+  aging-response (b) =
+    erp-json (json-emit (json-object [
+      json-pair "current" (json-int (b.ab-current)),
+      json-pair "days30" (json-int (b.ab-30)),
+      json-pair "days60" (json-int (b.ab-60)),
+      json-pair "days90" (json-int (b.ab-90)),
+      json-pair "over90" (json-int (b.ab-over-90)),
+      json-pair "total" (json-int (b.ab-total))
+    ]))
+
+  kpi-response : ErpState -> HttpResponse
+  kpi-response (st) =
+    let gl = st.erp-gl
+    in erp-json (json-emit (json-object [
+      json-pair "revenue" (json-int (total-revenue gl)),
+      json-pair "expenses" (json-int (total-expenses gl)),
+      json-pair "net-income" (json-int (net-income gl)),
+      json-pair "cash" (json-int (get-balance gl "1000")),
+      json-pair "assets" (json-int (total-assets gl)),
+      json-pair "liabilities" (json-int (total-liabilities gl)),
+      json-pair "equity" (json-int (total-equity gl))
+    ]))
+
+Section: Sample Data
+
+  erp-seed-vendors : ErpState -> ErpState
+  erp-seed-vendors (st) =
+    let inv1 = ApInvoice {
+      api-id = "AP-001", api-vendor-id = "V-100", api-company = "CODEX",
+      api-invoice-num = "INV-AP-001", api-date = 20260615, api-due-date = 20260715,
+      api-amount = 250000, api-tax-amount = 20000, api-currency = "USD",
+      api-lines = [ApInvoiceLine { apl-gl-account = "5000", apl-amount = 250000, apl-tax-code = "ST", apl-cost-center = "PROD", apl-description = "Component order Q2", apl-quantity = 100, apl-unit-price = 2500 }],
+      api-status = ApApproved, api-po-ref = "PO-001", api-gr-ref = "",
+      api-payment-ref = "", api-three-way-match = False, api-created = 20260615
+    }
+    in let inv2 = ApInvoice {
+      api-id = "AP-002", api-vendor-id = "V-101", api-company = "CODEX",
+      api-invoice-num = "INV-AP-002", api-date = 20260618, api-due-date = 20260801,
+      api-amount = 180000, api-tax-amount = 14400, api-currency = "USD",
+      api-lines = [ApInvoiceLine { apl-gl-account = "5000", apl-amount = 180000, apl-tax-code = "ST", apl-cost-center = "PROD", apl-description = "IC supply", apl-quantity = 500, apl-unit-price = 360 }],
+      api-status = ApPending, api-po-ref = "PO-002", api-gr-ref = "",
+      api-payment-ref = "", api-three-way-match = False, api-created = 20260618
+    }
+    in __record-set st "erp-ap" [inv1, inv2]
+
+  erp-seed-customers : ErpState -> ErpState
+  erp-seed-customers (st) =
+    let inv1 = ArInvoice {
+      ari-id = "AR-001", ari-customer-id = "C-200", ari-company = "CODEX",
+      ari-invoice-num = "INV-AR-001", ari-date = 20260610, ari-due-date = 20260710,
+      ari-amount = 450000, ari-tax-amount = 36000, ari-currency = "USD",
+      ari-lines = [ArInvoiceLine { arl-gl-account = "4000", arl-amount = 450000, arl-tax-code = "ST", arl-description = "License sale", arl-quantity = 5, arl-unit-price = 90000 }],
+      ari-status = ArOpen, ari-so-ref = "SO-001", ari-payment-received = 0, ari-created = 20260610
+    }
+    in let inv2 = ArInvoice {
+      ari-id = "AR-002", ari-customer-id = "C-201", ari-company = "CODEX",
+      ari-invoice-num = "INV-AR-002", ari-date = 20260612, ari-due-date = 20260720,
+      ari-amount = 120000, ari-tax-amount = 9600, ari-currency = "USD",
+      ari-lines = [ArInvoiceLine { arl-gl-account = "4000", arl-amount = 120000, arl-tax-code = "ST", arl-description = "Consulting", arl-quantity = 10, arl-unit-price = 12000 }],
+      ari-status = ArOpen, ari-so-ref = "SO-002", ari-payment-received = 0, ari-created = 20260612
+    }
+    in __record-set st "erp-ar" [inv1, inv2]
+
+  erp-init-with-seed : ErpState -> ErpState
+  erp-init-with-seed (st) =
+    let st2 = erp-seed-vendors st
+    in erp-seed-customers st2
+
+Section: HTTP Transport
+
+  ErpLoop = record {
+    erp-transport : TcpTransportState,
+    erp-state : ErpState,
+    erp-requests : Integer
+  }
+
+  erp-handle-request : ErpLoop, TransportRecvResult -> ErpLoop
+  erp-handle-request (ls) (recv) =
+    let req = http-parse-request (recv.body)
+    in if req.valid == False then
+      let err-bytes = http-encode (erp-bad-request "malformed request")
+      in let ts2 = net-io-send-raw (ls.erp-transport) err-bytes
+      in ErpLoop { erp-transport = ts2, erp-state = ls.erp-state, erp-requests = ls.erp-requests + 1 }
+    else let (st2, resp) = erp-route (ls.erp-state) req
+      in let resp-bytes = http-encode resp
+      in let ts2 = net-io-send-raw (ls.erp-transport) resp-bytes
+      in ErpLoop { erp-transport = ts2, erp-state = st2, erp-requests = ls.erp-requests + 1 }
+
+  erp-loop : ErpLoop -> [Console] Integer
+  erp-loop (ls) = act
+    let recv = net-io-recv-loop (ls.erp-transport) 0
+    in if recv.has-message then act
+      let next = erp-handle-request ls recv
+      in erp-loop next
+    end
+    else act
+      ls.erp-requests
+    end
+  end
+
+  erp-local-mac : List Integer = [82, 84, 0, 18, 52, 100]
+  erp-local-ip : List Integer = [10, 0, 2, 15]
+  erp-gateway-ip : List Integer = [10, 0, 2, 2]
+  erp-host-ip : List Integer = [127, 0, 0, 1]
+
+  erp-server : ErpState -> [Console] Integer
+  erp-server (st) =
+    let sess = net-session-new erp-local-mac erp-local-ip erp-gateway-ip 49154 9200 erp-host-ip 2000
+    in let ts = transport-new sess
+    in let ts1 = net-io-connect ts
+    in act
+      erp-loop (ErpLoop { erp-transport = ts1, erp-state = st, erp-requests = 0 })
+    end
+
+Section: Entry Point
+
+  opening : [Console] None = act
+    print-line-uni "Codex ERP server starting on port 9200..."
+    print-line-uni "Routes:"
+    print-line-uni "  GET  /health              - Health check"
+    print-line-uni "  GET  /api/gl/accounts     - Chart of accounts"
+    print-line-uni "  GET  /api/gl/trial-balance - Trial balance"
+    print-line-uni "  POST /api/gl/journal      - Post journal entry"
+    print-line-uni "  GET  /api/ap/aging        - AP aging buckets"
+    print-line-uni "  GET  /api/ar/aging        - AR aging buckets"
+    print-line-uni "  GET  /api/kpi/dashboard   - KPI dashboard"
+    let st = erp-state-new 6 2026
+    in let st2 = erp-init-with-seed st
+    in print-line-uni ("Initialized: " & show (list-length (st2.erp-gl).gl-accounts) & " accounts, " & show (list-length (st2.erp-ap)) & " AP invoices, " & show (list-length (st2.erp-ar)) & " AR invoices")
+    in erp-server st2
+  end

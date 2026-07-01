@@ -1,0 +1,130 @@
+Chapter: GridSnap
+  cites Math chapter Quaternion
+  cites Game chapter Rasterizer
+
+ Grid and snapping system for precise placement. Supports
+ regular grids and custom snap points.
+
+ We say:
+
+Section: Types
+
+  SnapMode =
+    | SnapNone
+    | SnapGrid
+    | SnapVertex
+    | SnapEdgeMidpoint
+
+  GridConfig = record {
+    gc-spacing : Real,
+    gc-subdivisions : Integer,
+    gc-visible : Boolean,
+    gc-snap-enabled : Boolean,
+    gc-snap-mode : SnapMode
+  }
+
+  SnapPoint = record {
+    sp-x : Real,
+    sp-y : Real,
+    sp-z : Real
+  }
+
+Section: Construction
+
+  grid-default : GridConfig
+  grid-default = GridConfig {
+    gc-spacing = 1.0,
+    gc-subdivisions = 4,
+    gc-visible = True,
+    gc-snap-enabled = True,
+    gc-snap-mode = SnapGrid
+  }
+
+  grid-new : Real, Integer -> GridConfig
+  grid-new (spacing) (subdivs) = GridConfig {
+    gc-spacing = spacing,
+    gc-subdivisions = subdivs,
+    gc-visible = True,
+    gc-snap-enabled = True,
+    gc-snap-mode = SnapGrid
+  }
+
+Section: Snapping
+
+  grid-snap-value : GridConfig, Real -> Real
+  grid-snap-value (gc) (v) =
+    if gc.gc-snap-enabled then
+      when gc.gc-snap-mode
+        is SnapGrid -> grid-snap-to-grid gc v
+        is SnapNone -> v
+        is otherwise -> v
+    else v
+
+  grid-snap-to-grid : GridConfig, Real -> Real
+  grid-snap-to-grid (gc) (v) =
+    let step = gc.gc-spacing / real-from-int gc.gc-subdivisions
+    in if step <= 0.0 then v
+    else let half = step / 2.0
+    in let offset = if v >= 0.0 then v + half else v - half
+    in real-from-int (real-to-int (offset / step)) * step
+
+  grid-snap-vec3 : GridConfig, Vec3 -> Vec3
+  grid-snap-vec3 (gc) (v) = Vec3 {
+    vx = grid-snap-value gc (v.vx),
+    vy = grid-snap-value gc (v.vy),
+    vz = grid-snap-value gc (v.vz)
+  }
+
+Section: Configuration
+
+  grid-set-spacing : GridConfig, Real -> GridConfig
+  grid-set-spacing (gc) (s) = __record-set gc "gc-spacing" s
+
+  grid-set-subdivisions : GridConfig, Integer -> GridConfig
+  grid-set-subdivisions (gc) (n) = __record-set gc "gc-subdivisions" n
+
+  grid-toggle-visible : GridConfig -> GridConfig
+  grid-toggle-visible (gc) = __record-set gc "gc-visible" (if gc.gc-visible then False else True)
+
+  grid-toggle-snap : GridConfig -> GridConfig
+  grid-toggle-snap (gc) = __record-set gc "gc-snap-enabled" (if gc.gc-snap-enabled then False else True)
+
+  grid-set-snap-mode : GridConfig, SnapMode -> GridConfig
+  grid-set-snap-mode (gc) (mode) = __record-set gc "gc-snap-mode" mode
+
+Section: Grid Drawing (2D overlay)
+
+  grid-draw : Framebuf, GridConfig, Integer, Integer, Integer -> Framebuf
+  grid-draw (fb) (gc) (offset-x) (offset-y) (color) =
+    if gc.gc-visible then
+      let step = real-to-int (gc.gc-spacing / real-from-int gc.gc-subdivisions)
+      in if step <= 0 then fb
+      else grid-draw-h-lines (grid-draw-v-lines fb step offset-x color 0) step offset-y color 0
+    else fb
+
+  grid-draw-v-lines : Framebuf, Integer, Integer, Integer, Integer -> Framebuf
+  grid-draw-v-lines (fb) (step) (offset) (color) (i) =
+    let x = i * step + offset
+    in if x >= fb.fb-width then fb
+    else if x >= 0 then
+      let fb2 = fb-line fb x 0 x (fb.fb-height - 1) color
+      in grid-draw-v-lines fb2 step offset color (i + 1)
+    else grid-draw-v-lines fb step offset color (i + 1)
+
+  grid-draw-h-lines : Framebuf, Integer, Integer, Integer, Integer -> Framebuf
+  grid-draw-h-lines (fb) (step) (offset) (color) (i) =
+    let y = i * step + offset
+    in if y >= fb.fb-height then fb
+    else if y >= 0 then
+      let fb2 = fb-line fb 0 y (fb.fb-width - 1) y color
+      in grid-draw-h-lines fb2 step offset color (i + 1)
+    else grid-draw-h-lines fb step offset color (i + 1)
+
+Section: Info
+
+  grid-info : GridConfig -> Text
+  grid-info (gc) =
+    "grid " & show (gc.gc-spacing) & "/" & show (gc.gc-subdivisions) &
+    (if gc.gc-snap-enabled then " snap=on" else " snap=off")
+
+Page 1

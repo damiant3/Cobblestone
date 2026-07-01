@@ -1,0 +1,196 @@
+Chapter: NavMesh
+  cites Math chapter Quaternion
+  cites Foreword chapter Maybe
+
+ Navigation mesh for 3D AI pathfinding. A navmesh is a set of convex
+ polygons (typically triangles) representing walkable surface. Agents
+ query the mesh for paths using A* over the polygon adjacency graph.
+ Supports area costs (grass=1, mud=3, road=0.5) for weighted
+ pathfinding. Fixed-point (scale 1000).
+
+ We say:
+
+Section: NavPoly
+
+  NavPoly = record {
+    np-id : Integer,
+    np-cx : Integer, np-cy : Integer, np-cz : Integer,
+    np-neighbors : List Integer,
+    np-neighbor-count : Integer,
+    np-area-cost : Integer,
+    np-walkable : Boolean
+  }
+
+Section: NavMesh
+
+  NavMeshData = record {
+    nm-polys : List NavPoly,
+    nm-count : Integer
+  }
+
+  nm-new : NavMeshData
+  nm-new = NavMeshData { nm-polys = [], nm-count = 0 }
+
+  nm-add-poly : NavMeshData, Integer, Integer, Integer, Integer, List Integer -> NavMeshData
+  nm-add-poly (nm) (cx) (cy) (cz) (cost) (neighbors) =
+    let poly = NavPoly { np-id = nm.nm-count, np-cx = cx, np-cy = cy, np-cz = cz, np-neighbors = neighbors, np-neighbor-count = list-length neighbors, np-area-cost = cost, np-walkable = True }
+    in NavMeshData { nm-polys = list-push (nm.nm-polys) poly, nm-count = nm.nm-count + 1 }
+
+  nm-poly-at : NavMeshData, Integer -> NavPoly
+  nm-poly-at (nm) (idx) = list-at (nm.nm-polys) idx
+
+Section: Closest Poly
+
+  nm-closest-poly : NavMeshData, Integer, Integer, Integer -> Integer
+  nm-closest-poly (nm) (x) (y) (z) = nm-closest-loop (nm.nm-polys) x y z 0 (nm.nm-count) (-1) 999999999
+
+  nm-closest-loop : List NavPoly, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  nm-closest-loop (polys) (x) (y) (z) (i) (n) (best-id) (best-dist) =
+    if i >= n then best-id
+    else let p = list-at polys i
+    in if p.np-walkable then
+      let dx = p.np-cx - x
+      in let dy = p.np-cy - y
+      in let dz = p.np-cz - z
+      in let dist = dx * dx + dy * dy + dz * dz
+      in if dist < best-dist then nm-closest-loop polys x y z (i + 1) n (p.np-id) dist
+      else nm-closest-loop polys x y z (i + 1) n best-id best-dist
+    else nm-closest-loop polys x y z (i + 1) n best-id best-dist
+
+Section: A* Pathfinding on NavMesh
+
+  NavPath = record {
+    nav-nodes : List Integer,
+    nav-length : Integer,
+    nav-found : Boolean
+  }
+
+  nav-no-path : NavPath
+  nav-no-path = NavPath { nav-nodes = [], nav-length = 0, nav-found = False }
+
+  nm-find-path : NavMeshData, Integer, Integer -> NavPath
+  nm-find-path (nm) (start) (goal) =
+    if start < 0 then nav-no-path
+    else if goal < 0 then nav-no-path
+    else if start == goal then NavPath { nav-nodes = [start], nav-length = 1, nav-found = True }
+    else nm-astar nm start goal (nav-init-open start) (nav-init-closed (nm.nm-count)) (nav-init-g (nm.nm-count) start) (nav-init-parent (nm.nm-count)) 0
+
+  nm-astar : NavMeshData, Integer, Integer, List Integer, List Integer, List Integer, List Integer, Integer -> NavPath
+  nm-astar (nm) (start) (goal) (open-set) (closed) (g-costs) (parents) (fuel) =
+    if fuel > 1000 then nav-no-path
+    else if list-length open-set == 0 then nav-no-path
+    else let current = nav-best-open open-set g-costs (nm.nm-polys) goal 0 (list-length open-set) (-1) 999999999
+    in if current == goal then nav-build-path parents start goal []
+    else let open2 = nav-remove-from open-set current 0 (list-length open-set) []
+    in let closed2 = list-set-at closed current 1
+    in let expanded = nav-expand-neighbors nm current goal open2 closed2 g-costs parents
+    in nm-astar nm start goal (expanded.ne-open) (expanded.ne-closed) (expanded.ne-g) (expanded.ne-parents) (fuel + 1)
+
+Section: A* Helpers
+
+  NavExpanded = record {
+    ne-open : List Integer,
+    ne-closed : List Integer,
+    ne-g : List Integer,
+    ne-parents : List Integer
+  }
+
+  nav-expand-neighbors : NavMeshData, Integer, Integer, List Integer, List Integer, List Integer, List Integer -> NavExpanded
+  nav-expand-neighbors (nm) (current) (goal) (open-set) (closed) (g-costs) (parents) =
+    let poly = nm-poly-at nm current
+    in nav-expand-loop nm current goal (poly.np-neighbors) 0 (poly.np-neighbor-count) open-set closed g-costs parents
+
+  nav-expand-loop : NavMeshData, Integer, Integer, List Integer, Integer, Integer, List Integer, List Integer, List Integer, List Integer -> NavExpanded
+  nav-expand-loop (nm) (current) (goal) (neighbors) (i) (n) (open-set) (closed) (g-costs) (parents) =
+    if i >= n then NavExpanded { ne-open = open-set, ne-closed = closed, ne-g = g-costs, ne-parents = parents }
+    else let nid = list-at neighbors i
+    in if list-at closed nid == 1 then nav-expand-loop nm current goal neighbors (i + 1) n open-set closed g-costs parents
+    else let npoly = nm-poly-at nm nid
+    in if npoly.np-walkable then
+      let new-g = list-at g-costs current + npoly.np-area-cost
+      in if new-g < list-at g-costs nid then
+        let g2 = list-set-at g-costs nid new-g
+        in let p2 = list-set-at parents nid current
+        in let o2 = if nav-in-list open-set nid 0 (list-length open-set) then open-set else list-push open-set nid
+        in nav-expand-loop nm current goal neighbors (i + 1) n o2 closed g2 p2
+      else nav-expand-loop nm current goal neighbors (i + 1) n open-set closed g-costs parents
+    else nav-expand-loop nm current goal neighbors (i + 1) n open-set closed g-costs parents
+
+  nav-best-open : List Integer, List Integer, List NavPoly, Integer, Integer, Integer, Integer, Integer -> Integer
+  nav-best-open (open-set) (g-costs) (polys) (goal) (i) (n) (best-id) (best-f) =
+    if i >= n then best-id
+    else let nid = list-at open-set i
+    in let g = list-at g-costs nid
+    in let h = nav-heuristic (list-at polys nid) (list-at polys goal)
+    in let f = g + h
+    in if f < best-f then nav-best-open open-set g-costs polys goal (i + 1) n nid f
+    else nav-best-open open-set g-costs polys goal (i + 1) n best-id best-f
+
+  nav-heuristic : NavPoly, NavPoly -> Integer
+  nav-heuristic (a) (b) =
+    let dx = nav-abs (a.np-cx - b.np-cx)
+    in let dy = nav-abs (a.np-cy - b.np-cy)
+    in let dz = nav-abs (a.np-cz - b.np-cz)
+    in dx + dy + dz
+
+  nav-build-path : List Integer, Integer, Integer, List Integer -> NavPath
+  nav-build-path (parents) (start) (current) (acc) =
+    let acc2 = list-push acc current
+    in if current == start then NavPath { nav-nodes = acc2, nav-length = list-length acc2, nav-found = True }
+    else let parent = list-at parents current
+    in if parent < 0 then NavPath { nav-nodes = acc2, nav-length = list-length acc2, nav-found = True }
+    else nav-build-path parents start parent acc2
+
+  nav-remove-from : List Integer, Integer, Integer, Integer, List Integer -> List Integer
+  nav-remove-from (lst) (val) (i) (n) (acc) =
+    if i >= n then acc
+    else let v = list-at lst i
+    in if v == val then nav-remove-from lst val (i + 1) n acc
+    else nav-remove-from lst val (i + 1) n (list-push acc v)
+
+  nav-in-list : List Integer, Integer, Integer, Integer -> Boolean
+  nav-in-list (lst) (val) (i) (n) =
+    if i >= n then False
+    else if list-at lst i == val then True
+    else nav-in-list lst val (i + 1) n
+
+  nav-init-open : Integer -> List Integer
+  nav-init-open (start) = [start]
+
+  nav-init-closed : Integer -> List Integer
+  nav-init-closed (n) = nav-zeros n 0 []
+
+  nav-init-g : Integer, Integer -> List Integer
+  nav-init-g (n) (start) = nav-init-g-loop n start 0 []
+
+  nav-init-g-loop : Integer, Integer, Integer, List Integer -> List Integer
+  nav-init-g-loop (n) (start) (i) (acc) =
+    if i >= n then acc
+    else let val = if i == start then 0 else 999999
+    in nav-init-g-loop n start (i + 1) (list-push acc val)
+
+  nav-init-parent : Integer -> List Integer
+  nav-init-parent (n) = nav-fill-neg n 0 []
+
+  nav-fill-neg : Integer, Integer, List Integer -> List Integer
+  nav-fill-neg (n) (i) (acc) =
+    if i >= n then acc
+    else nav-fill-neg n (i + 1) (list-push acc (-1))
+
+  nav-zeros : Integer, Integer, List Integer -> List Integer
+  nav-zeros (n) (i) (acc) =
+    if i >= n then acc
+    else nav-zeros n (i + 1) (list-push acc 0)
+
+  nav-abs : Integer -> Integer
+  nav-abs (n) = if n < 0 then 0 - n else n
+
+Section: Formatting
+
+  format-nav-path : NavPath -> Text
+  format-nav-path (p) = if p.nav-found then "Path(" & show (p.nav-length) & " nodes)" else "NoPath"
+
+  format-nav-mesh : NavMeshData -> Text
+  format-nav-mesh (nm) = "NavMesh(" & show (nm.nm-count) & " polys)"
+
+Page 1

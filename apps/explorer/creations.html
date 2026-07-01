@@ -1,0 +1,203 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>My Creations — Codex Explorer</title>
+<style>
+  *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+  body{font:15px/1.5 system-ui,sans-serif;background:#0d0d10;color:#e8e6df;padding:32px;max-width:860px;margin:0 auto}
+  h1{font-size:22px;color:#e9c46a;margin-bottom:4px}
+  .sub{color:#8a8780;margin-bottom:24px;font-size:13px}
+  .card{background:#16161b;border:1px solid #26262e;border-radius:10px;padding:18px;margin-bottom:18px}
+  .card h2{font-size:14px;text-transform:uppercase;letter-spacing:.08em;color:#9a8c66;margin-bottom:12px}
+  label{display:block;font-size:12px;color:#8a8780;margin:8px 0 3px}
+  input,select{width:100%;padding:8px 10px;background:#0d0d10;border:1px solid #33333d;border-radius:6px;color:#e8e6df;font:inherit}
+  button{padding:8px 16px;background:#e9c46a;color:#1a1a1a;border:0;border-radius:6px;font:inherit;font-weight:600;cursor:pointer;margin-top:10px}
+  button.ghost{background:transparent;color:#9a8c66;border:1px solid #33333d}
+  button.del{background:transparent;color:#c4756b;border:1px solid #4a2e2c;padding:4px 10px;margin:0;font-size:12px}
+  .row{display:flex;gap:12px}.row>*{flex:1}
+  .who{float:right;font-size:13px;color:#8a8780}
+  .crea{display:flex;align-items:center;justify-content:space-between;padding:10px 0;border-bottom:1px solid #222}
+  .crea:last-child{border-bottom:0}
+  .crea .k{display:inline-block;font-size:11px;text-transform:uppercase;color:#1a1a1a;background:#7aa874;border-radius:4px;padding:1px 7px;margin-right:8px}
+  .crea .nm{font-weight:600}.crea .dt{color:#8a8780;font-size:12px}
+  .msg{font-size:13px;color:#c4756b;min-height:18px;margin-top:6px}
+  .ok{color:#7aa874}
+  .hidden{display:none}
+</style>
+</head>
+<body>
+  <h1>My Creations <span id="who" class="who"></span></h1>
+  <div class="sub">A persistent, account-owned content store — generated worlds saved to a Codex backend over its own TCP stack and disk.</div>
+
+  <div id="authCard" class="card">
+    <h2>Sign in</h2>
+    <div class="row">
+      <div><label>Handle</label><input id="u" value="bob"></div>
+      <div><label>Password</label><input id="p" type="password" value="pw1"></div>
+    </div>
+    <div class="row">
+      <button id="loginBtn">Log in</button>
+      <button id="regBtn" class="ghost">Register</button>
+    </div>
+    <div id="authMsg" class="msg"></div>
+  </div>
+
+  <div id="appCard" class="card hidden">
+    <h2>Compose &amp; save a world</h2>
+    <label>Kind</label>
+    <select id="kind"><option>setting</option><option>character</option><option>item</option></select>
+    <div id="dims"></div>
+    <label>Name (auto-composed, editable)</label>
+    <input id="cname" placeholder="composed from your picks">
+    <div id="preview" class="dt" style="color:#8a8780;margin:8px 0"></div>
+    <button id="saveBtn">Save creation</button>
+    <button id="rollBtn" class="ghost">Randomize picks</button>
+    <div id="saveMsg" class="msg"></div>
+  </div>
+
+  <div id="listCard" class="card hidden">
+    <h2>Saved by you <button id="exportBtn" class="ghost" style="float:right;margin:0;padding:4px 10px;font-size:12px">Export as Markdown</button></h2>
+    <div id="list"></div>
+  </div>
+
+  <div class="card">
+    <h2>Community gallery</h2>
+    <div id="gallery"></div>
+  </div>
+
+<script>
+const $ = id => document.getElementById(id);
+const tok = () => localStorage.getItem('cx_tok') || '';
+const setTok = t => t ? localStorage.setItem('cx_tok', t) : localStorage.removeItem('cx_tok');
+async function api(path) {
+  const r = await fetch(path);
+  const t = await r.text();
+  try { return JSON.parse(t); } catch (e) { return { error: t }; }
+}
+const enc = encodeURIComponent;
+
+async function refreshWho() {
+  const t = tok();
+  if (!t) { $('who').textContent = ''; show(false); return; }
+  const me = await api('/api/auth/me?t=' + enc(t));
+  if (me && me.handle) {
+    $('who').innerHTML = me.handle + ' &middot; <a href="#" id="out" style="color:#9a8c66">log out</a>';
+    $('out').onclick = e => { e.preventDefault(); setTok(''); refreshWho(); };
+    show(true); await loadKind(); await loadMine();
+  } else { setTok(''); $('who').textContent = ''; show(false); }
+}
+function show(on) {
+  $('authCard').classList.toggle('hidden', on);
+  $('appCard').classList.toggle('hidden', !on);
+  $('listCard').classList.toggle('hidden', !on);
+}
+
+$('loginBtn').onclick = async () => {
+  const r = await api(`/api/auth/login?u=${enc($('u').value)}&p=${enc($('p').value)}`);
+  if (r.token) { setTok(r.token); $('authMsg').textContent=''; refreshWho(); }
+  else $('authMsg').textContent = r.error || 'login failed';
+};
+$('regBtn').onclick = async () => {
+  const u = $('u').value;
+  const r = await api(`/api/auth/register?u=${enc(u)}&d=${enc(u)}&p=${enc($('p').value)}`);
+  if (r.id) { $('authMsg').className='msg ok'; $('authMsg').textContent='registered — now log in'; }
+  else { $('authMsg').className='msg'; $('authMsg').textContent = r.error || 'register failed'; }
+};
+
+// Each kind composes a "world" from several catalog dimensions; each row is
+// [display-name, prompt-fragment]. data = the joined fragments.
+const CATS = {
+  setting:   ['biomes','times','weathers','moods'],
+  character: ['races','classes','genders','personalities'],
+  item:      ['items','materials','rarities']
+};
+const tables = {};
+async function loadKind() {
+  const kind = $('kind').value;
+  for (const t of CATS[kind]) if (!tables[t]) tables[t] = await api('/api/' + t);
+  const box = $('dims'); box.innerHTML = '';
+  CATS[kind].forEach(t => {
+    const rows = Array.isArray(tables[t]) ? tables[t] : [];
+    const lab = document.createElement('label'); lab.textContent = t;
+    const sel = document.createElement('select'); sel.id = 'dim_' + t; sel.dataset.tbl = t;
+    rows.forEach((r, i) => { const o = document.createElement('option'); o.value = i; o.textContent = r[0]; sel.appendChild(o); });
+    sel.onchange = compose; box.appendChild(lab); box.appendChild(sel);
+  });
+  compose();
+}
+function picks() {
+  const kind = $('kind').value;
+  return CATS[kind].map(t => { const s = $('dim_' + t); const rows = tables[t] || []; return rows[s ? +s.value : 0] || ['', '']; });
+}
+function compose() {
+  const p = picks();
+  $('cname').value = p.map(r => r[0]).filter(Boolean).join(' / ');
+  $('preview').textContent = p.map(r => r[1] || r[0]).filter(Boolean).join(' | ');
+}
+$('kind').onchange = loadKind;
+$('rollBtn').onclick = () => {
+  $('dims').querySelectorAll('select').forEach(s => { if (s.options.length) s.value = Math.floor(Math.random() * s.options.length); });
+  compose();
+};
+$('saveBtn').onclick = async () => {
+  const p = picks();
+  const name = ($('cname').value || 'Untitled').slice(0, 60);
+  const data = p.map(r => r[1] || r[0]).filter(Boolean).join(' | ').slice(0, 180);
+  const r = await api(`/api/save?t=${enc(tok())}&kind=${enc($('kind').value)}&name=${enc(name)}&data=${enc(data)}`);
+  if (r.ok) { $('saveMsg').className = 'msg ok'; $('saveMsg').textContent = 'saved "' + name + '"'; loadMine(); loadGallery(); }
+  else { $('saveMsg').className = 'msg'; $('saveMsg').textContent = r.error || 'save failed'; }
+};
+
+async function loadMine() {
+  const rows = await api('/api/mine?t=' + enc(tok()));
+  const box = $('list'); box.innerHTML = '';
+  if (!Array.isArray(rows) || rows.length === 0) { box.innerHTML = '<div class="dt" style="color:#8a8780">Nothing saved yet.</div>'; return; }
+  rows.forEach(c => {
+    const d = document.createElement('div'); d.className = 'crea';
+    const left = document.createElement('div');
+    left.innerHTML = `<span class="k">${c.kind}</span><span class="nm">${c.name}</span><div class="dt">${c.data}</div>`;
+    const acts = document.createElement('div'); acts.style.cssText = 'display:flex;gap:10px;align-items:center';
+    if (['setting', 'character', 'item'].includes(c.kind)) {
+      const a = document.createElement('a'); a.href = '/' + c.kind + '?prompt=' + enc(c.data); a.target = '_blank';
+      a.textContent = 'open in designer'; a.style.cssText = 'color:#e9c46a;font-size:12px;text-decoration:none';
+      acts.appendChild(a);
+    }
+    const b = document.createElement('button'); b.className = 'del'; b.textContent = 'delete';
+    b.onclick = async () => { await api(`/api/delete?t=${enc(tok())}&name=${enc(c.name)}`); loadMine(); loadGallery(); };
+    acts.appendChild(b);
+    d.appendChild(left); d.appendChild(acts); box.appendChild(d);
+  });
+}
+
+$('exportBtn').onclick = async () => {
+  const r = await fetch('/api/export?t=' + enc(tok()));
+  const md = await r.text();
+  const blob = new Blob([md], { type: 'text/markdown' });
+  const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = 'world-codex.md'; a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+};
+async function loadGallery() {
+  const rows = await api('/api/gallery');
+  const box = $('gallery'); box.innerHTML = '';
+  if (!Array.isArray(rows) || rows.length === 0) { box.innerHTML = '<div class="dt" style="color:#8a8780">No creations yet — be the first.</div>'; return; }
+  rows.slice().reverse().forEach(c => {
+    const d = document.createElement('div'); d.className = 'crea';
+    const left = document.createElement('div');
+    left.innerHTML = `<span class="k">${c.kind}</span><span class="nm">${c.name}</span> <span class="dt">by @${c.by}</span><div class="dt">${c.data}</div>`;
+    d.appendChild(left);
+    if (tok()) {
+      const b = document.createElement('button'); b.className = 'del';
+      b.style.color = '#e9c46a'; b.style.borderColor = '#4a4226'; b.textContent = 'remix';
+      b.onclick = async () => { const r = await api(`/api/remix?t=${enc(tok())}&by=${enc(c.by)}&name=${enc(c.name)}`); if (r.ok) { loadMine(); loadGallery(); } };
+      d.appendChild(b);
+    }
+    box.appendChild(d);
+  });
+}
+refreshWho();
+loadGallery();
+</script>
+</body>
+</html>

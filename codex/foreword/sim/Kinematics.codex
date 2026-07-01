@@ -1,0 +1,137 @@
+Chapter: Kinematics
+  cites Math chapter Cordic
+  cites Foreword chapter Units (Angle, Length)
+
+ Forward and inverse kinematics for articulated chains. A chain
+ is a list of joints with lengths and angles. FK computes end-
+ effector position from joint angles. IK adjusts angles to reach
+ a target position using CCD (Cyclic Coordinate Descent). Uses
+ fixed-point scale-1000 arithmetic.
+
+ To fk-solve gives the end-effector position from joint angles.
+ To ik-solve gives updated joint angles to reach a target.
+ To chain-new gives a new kinematic chain.
+
+ We say:
+
+Section: Types
+
+  Joint = record {
+    jt-length : Length,
+    jt-angle : Angle,
+    jt-min-angle : Angle,
+    jt-max-angle : Angle
+  }
+
+  KinChain = record {
+    kc-joints : List Joint,
+    kc-count : Integer,
+    kc-base-x : Integer,
+    kc-base-y : Integer
+  }
+
+  KinPos = record {
+    kp-x : Integer,
+    kp-y : Integer
+  }
+
+Section: Construction
+
+  joint-new : Length, Angle -> Joint
+  joint-new (length) (angle) = Joint {
+    jt-length = length,
+    jt-angle = angle,
+    jt-min-angle = 0 - 3142,
+    jt-max-angle = 3142
+  }
+
+  joint-constrained : Length, Angle, Angle, Angle -> Joint
+  joint-constrained (length) (angle) (min-a) (max-a) = Joint {
+    jt-length = length,
+    jt-angle = angle,
+    jt-min-angle = min-a,
+    jt-max-angle = max-a
+  }
+
+  chain-new : Integer, Integer, List Joint -> KinChain
+  chain-new (bx) (by) (joints) = KinChain {
+    kc-joints = joints,
+    kc-count = list-length joints,
+    kc-base-x = bx,
+    kc-base-y = by
+  }
+
+Section: Forward Kinematics
+
+  fk-solve : KinChain -> KinPos
+  fk-solve (chain) =
+    fk-loop (chain.kc-joints) (chain.kc-count) 0 0 (chain.kc-base-x) (chain.kc-base-y)
+
+  fk-loop : List Joint, Integer, Integer, Integer, Integer, Integer -> KinPos
+  fk-loop (joints) (n) (i) (cum-angle) (x) (y) =
+    if i >= n then KinPos { kp-x = x, kp-y = y }
+    else let j = list-at joints i
+    in let a = cum-angle + j.jt-angle
+    in let dx = j.jt-length * cordic-cos a / 1000
+    in let dy = j.jt-length * cordic-sin a / 1000
+    in fk-loop joints n (i + 1) a (x + dx) (y + dy)
+
+  fk-joint-positions : KinChain -> List KinPos
+  fk-joint-positions (chain) =
+    fk-pos-loop (chain.kc-joints) (chain.kc-count) 0 0 (chain.kc-base-x) (chain.kc-base-y) [KinPos { kp-x = chain.kc-base-x, kp-y = chain.kc-base-y }]
+
+  fk-pos-loop : List Joint, Integer, Integer, Integer, Integer, Integer, List KinPos -> List KinPos
+  fk-pos-loop (joints) (n) (i) (cum-angle) (x) (y) (acc) =
+    if i >= n then acc
+    else let j = list-at joints i
+    in let a = cum-angle + j.jt-angle
+    in let nx = x + j.jt-length * cordic-cos a / 1000
+    in let ny = y + j.jt-length * cordic-sin a / 1000
+    in fk-pos-loop joints n (i + 1) a nx ny (list-push acc (KinPos { kp-x = nx, kp-y = ny }))
+
+Section: Inverse Kinematics (CCD)
+
+  ik-solve : KinChain, Integer, Integer, Integer -> KinChain
+  ik-solve (chain) (target-x) (target-y) (max-iter) =
+    ik-iterate chain target-x target-y max-iter 0
+
+  ik-iterate : KinChain, Integer, Integer, Integer, Integer -> KinChain
+  ik-iterate (chain) (tx) (ty) (max-iter) (iter) =
+    if iter >= max-iter then chain
+    else let updated = ik-ccd-pass chain tx ty (chain.kc-count - 1)
+    in let end-pos = fk-solve updated
+    in let dx = end-pos.kp-x - tx
+    in let dy = end-pos.kp-y - ty
+    in let dist = kin-abs dx + kin-abs dy
+    in if dist < 10 then updated
+    else ik-iterate updated tx ty max-iter (iter + 1)
+
+  ik-ccd-pass : KinChain, Integer, Integer, Integer -> KinChain
+  ik-ccd-pass (chain) (tx) (ty) (joint-idx) =
+    if joint-idx < 0 then chain
+    else let adjusted = ik-adjust-joint chain joint-idx tx ty
+    in ik-ccd-pass adjusted tx ty (joint-idx - 1)
+
+  ik-adjust-joint : KinChain, Integer, Integer, Integer -> KinChain
+  ik-adjust-joint (chain) (idx) (tx) (ty) =
+    let positions = fk-joint-positions chain
+    in let joint-pos = list-at positions idx
+    in let end-pos = fk-solve chain
+    in let to-end = (cordic-atan2 (end-pos.kp-y - joint-pos.kp-y) (end-pos.kp-x - joint-pos.kp-x)).angle
+    in let to-target = (cordic-atan2 (ty - joint-pos.kp-y) (tx - joint-pos.kp-x)).angle
+    in let delta = to-target - to-end
+    in let j = list-at (chain.kc-joints) idx
+    in let new-angle = kin-clamp-angle (j.jt-angle + delta) (j.jt-min-angle) (j.jt-max-angle)
+    in let new-joint = __record-set j "jt-angle" new-angle
+    in __record-set chain "kc-joints" (list-set-at (chain.kc-joints) idx new-joint)
+
+Section: Helpers
+
+  kin-clamp-angle : Integer, Integer, Integer -> Integer
+  kin-clamp-angle (a) (lo) (hi) =
+    if a < lo then lo else if a > hi then hi else a
+
+  kin-abs : Integer -> Integer
+  kin-abs (x) = if x < 0 then 0 - x else x
+
+Page 1

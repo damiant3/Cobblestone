@@ -1,0 +1,231 @@
+Chapter: Toml
+  cites Foreword chapter Maybe
+
+ TOML parser and emitter (Tom's Obvious Minimal Language). Parses
+ TOML text into a tree of TomlValue nodes — tables, arrays, strings,
+ integers, booleans, and datetimes. Covers the subset needed for
+ config files: bare keys, quoted keys, inline tables, basic strings,
+ and literal strings.
+
+ To toml-parse gives a Maybe TomlValue from TOML text.
+ To toml-get gives a value at a dotted key path.
+ To toml-get-str gives a string value or a default.
+ To toml-get-int gives an integer value or a default.
+ To toml-emit gives TOML text from a TomlValue tree.
+
+ We say:
+
+Section: Types
+
+  TomlValue =
+    | TomlString (Text)
+    | TomlInteger (Integer)
+    | TomlBool (Boolean)
+    | TomlArray (List TomlValue)
+    | TomlTable (List TomlPair)
+    | TomlDatetime (Text)
+
+  TomlPair = record {
+    tp-key : Text,
+    tp-value : TomlValue
+  }
+
+Section: Construction
+
+  toml-string : Text -> TomlValue
+  toml-string (s) = TomlString s
+
+  toml-integer : Integer -> TomlValue
+  toml-integer (n) = TomlInteger n
+
+  toml-bool : Boolean -> TomlValue
+  toml-bool (b) = TomlBool b
+
+  toml-table : List TomlPair -> TomlValue
+  toml-table (pairs) = TomlTable pairs
+
+  toml-pair : Text, TomlValue -> TomlPair
+  toml-pair (k) (v) = TomlPair { tp-key = k, tp-value = v }
+
+  toml-empty : TomlValue
+  toml-empty = TomlTable []
+
+Section: Lookup
+
+  toml-get : TomlValue, Text -> Maybe TomlValue
+  toml-get (v) (key) = when v
+    is TomlTable (pairs) -> toml-find-pair pairs key 0 (list-length pairs)
+    is otherwise -> None
+
+  toml-find-pair : List TomlPair, Text, Integer, Integer -> Maybe TomlValue
+  toml-find-pair (pairs) (key) (i) (len) =
+    if i >= len then None
+    else let p = list-at pairs i
+    in if p.tp-key == key then Just (p.tp-value)
+    else toml-find-pair pairs key (i + 1) len
+
+  toml-get-str : TomlValue, Text, Text -> Text
+  toml-get-str (v) (key) (default) =
+    when toml-get v key
+      is Just (val) -> when val
+        is TomlString (s) -> s
+        is otherwise -> default
+      is None -> default
+
+  toml-get-int : TomlValue, Text, Integer -> Integer
+  toml-get-int (v) (key) (default) =
+    when toml-get v key
+      is Just (val) -> when val
+        is TomlInteger (n) -> n
+        is otherwise -> default
+      is None -> default
+
+  toml-get-bool : TomlValue, Text, Boolean -> Boolean
+  toml-get-bool (v) (key) (default) =
+    when toml-get v key
+      is Just (val) -> when val
+        is TomlBool (b) -> b
+        is otherwise -> default
+      is None -> default
+
+Section: Dotted Path
+
+  toml-get-path : TomlValue, List Text -> Maybe TomlValue
+  toml-get-path (v) (keys) = toml-walk v keys 0 (list-length keys)
+
+  toml-walk : TomlValue, List Text, Integer, Integer -> Maybe TomlValue
+  toml-walk (v) (keys) (i) (len) =
+    if i >= len then Just v
+    else when toml-get v (list-at keys i)
+      is Just (child) -> toml-walk child keys (i + 1) len
+      is None -> None
+
+Section: Parsing
+
+  toml-parse : Text -> Maybe TomlValue
+  toml-parse (input) =
+    let lines = text-split input "\n"
+    in Just (toml-parse-lines lines 0 (list-length lines) [] "")
+
+  toml-parse-lines : List Text, Integer, Integer, List TomlPair, Text -> TomlValue
+  toml-parse-lines (lines) (i) (len) (pairs) (current-table) =
+    if i >= len then TomlTable pairs
+    else let line = toml-trim (list-at lines i)
+    in if text-length line == 0 then toml-parse-lines lines (i + 1) len pairs current-table
+    else if toml-starts-with line "#" then toml-parse-lines lines (i + 1) len pairs current-table
+    else if toml-starts-with line "[" then
+      let table-name = toml-extract-table-name line
+      in toml-parse-lines lines (i + 1) len pairs table-name
+    else let kv = toml-parse-kv line
+    in toml-parse-lines lines (i + 1) len (list-push pairs kv) current-table
+
+  toml-parse-kv : Text -> TomlPair
+  toml-parse-kv (line) =
+    let eq-pos = toml-find-char line 77 0 (text-length line)
+    in if eq-pos < 0 then TomlPair { tp-key = line, tp-value = TomlString "" }
+    else let key = toml-trim (substring line 0 eq-pos)
+    in let val-str = toml-trim (substring line (eq-pos + 1) (text-length line - eq-pos - 1))
+    in TomlPair { tp-key = key, tp-value = toml-parse-value val-str }
+
+  toml-parse-value : Text -> TomlValue
+  toml-parse-value (s) =
+    if text-length s == 0 then TomlString ""
+    else if toml-starts-with s "\"" then TomlString (toml-unquote s)
+    else if toml-starts-with s "'" then TomlString (toml-unquote-literal s)
+    else if s == "true" then TomlBool True
+    else if s == "false" then TomlBool False
+    else if toml-looks-like-int s then TomlInteger (text-to-integer s)
+    else TomlString s
+
+  toml-extract-table-name : Text -> Text
+  toml-extract-table-name (line) =
+    let start = 1
+    in let end-pos = toml-find-char line 89 start (text-length line)
+    in if end-pos < 0 then ""
+    else toml-trim (substring line start (end-pos - start))
+
+Section: Emission
+
+  toml-emit : TomlValue -> Text
+  toml-emit (v) = when v
+    is TomlTable (pairs) -> toml-emit-pairs pairs 0 (list-length pairs) ""
+    is otherwise -> toml-emit-value v
+
+  toml-emit-pairs : List TomlPair, Integer, Integer, Text -> Text
+  toml-emit-pairs (pairs) (i) (len) (acc) =
+    if i >= len then acc
+    else let p = list-at pairs i
+    in let line = p.tp-key & " = " & toml-emit-value (p.tp-value) & "\n"
+    in toml-emit-pairs pairs (i + 1) len (acc & line)
+
+  toml-emit-value : TomlValue -> Text
+  toml-emit-value (v) = when v
+    is TomlString (s) -> "\"" & s & "\""
+    is TomlInteger (n) -> show n
+    is TomlBool (b) -> if b then "true" else "false"
+    is TomlDatetime (d) -> d
+    is TomlArray (items) -> "[" & toml-emit-array items 0 (list-length items) "" & "]"
+    is TomlTable (pairs) -> "{ " & toml-emit-inline pairs 0 (list-length pairs) "" & " }"
+
+  toml-emit-array : List TomlValue, Integer, Integer, Text -> Text
+  toml-emit-array (items) (i) (len) (acc) =
+    if i >= len then acc
+    else let sep = if i == 0 then "" else ", "
+    in toml-emit-array items (i + 1) len (acc & sep & toml-emit-value (list-at items i))
+
+  toml-emit-inline : List TomlPair, Integer, Integer, Text -> Text
+  toml-emit-inline (pairs) (i) (len) (acc) =
+    if i >= len then acc
+    else let p = list-at pairs i
+    in let sep = if i == 0 then "" else ", "
+    in toml-emit-inline pairs (i + 1) len (acc & sep & p.tp-key & " = " & toml-emit-value (p.tp-value))
+
+Section: Helpers
+
+  toml-looks-like-int : Text -> Boolean
+  toml-looks-like-int (s) =
+    if text-length s == 0 then False
+    else let first = char-code (char-at s 0)
+    in if first >= 3 then if first <= 12 then True else False
+    else if first == 73 then if text-length s > 1 then True else False
+    else if first == 76 then if text-length s > 1 then True else False
+    else False
+
+  toml-trim : Text -> Text
+  toml-trim (s) = toml-trim-left (toml-trim-right s)
+
+  toml-trim-left : Text -> Text
+  toml-trim-left (s) =
+    if text-length s == 0 then s
+    else if char-code (char-at s 0) == 2 then toml-trim-left (substring s 1 (text-length s - 1))
+    else s
+
+  toml-trim-right : Text -> Text
+  toml-trim-right (s) =
+    let len = text-length s
+    in if len == 0 then s
+    else if char-code (char-at s (len - 1)) == 2 then toml-trim-right (substring s 0 (len - 1))
+    else s
+
+  toml-starts-with : Text, Text -> Boolean
+  toml-starts-with (s) (prefix) = text-starts-with s prefix
+
+  toml-find-char : Text, Integer, Integer, Integer -> Integer
+  toml-find-char (s) (target) (i) (len) =
+    if i >= len then 0 - 1
+    else if char-code (char-at s i) == target then i
+    else toml-find-char s target (i + 1) len
+
+  toml-unquote : Text -> Text
+  toml-unquote (s) =
+    let len = text-length s
+    in if len < 2 then s
+    else substring s 1 (len - 2)
+
+  toml-unquote-literal : Text -> Text
+  toml-unquote-literal (s) =
+    let len = text-length s
+    in if len < 2 then s
+    else substring s 1 (len - 2)
+
+Page 1

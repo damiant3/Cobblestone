@@ -1,0 +1,245 @@
+Chapter: LayerEffects
+  cites Game chapter Rasterizer
+  cites Spark chapter Canvas
+
+ Non-destructive layer effects for the canvas: drop shadow,
+ outer glow, inner glow, and stroke. Effects are applied
+ during compositing without modifying the source layer.
+ All distances in pixels, colors as packed RGB.
+
+ We say:
+
+Section: Types
+
+  EffectKind =
+    | FxDropShadow
+    | FxOuterGlow
+    | FxInnerGlow
+    | FxStroke
+
+  LayerEffect = record {
+    le-kind : EffectKind,
+    le-color : Integer,
+    le-size : Integer,
+    le-offset-x : Integer,
+    le-offset-y : Integer,
+    le-opacity : Real,
+    le-enabled : Boolean
+  }
+
+  EffectStack = record {
+    es-effects : List LayerEffect,
+    es-count : Integer
+  }
+
+Section: Construction
+
+  effect-stack-new : EffectStack
+  effect-stack-new = EffectStack { es-effects = [], es-count = 0 }
+
+  fx-drop-shadow : Integer, Integer, Integer, Integer, Real -> LayerEffect
+  fx-drop-shadow (color) (size) (offset-x) (offset-y) (opacity) = LayerEffect {
+    le-kind = FxDropShadow,
+    le-color = color,
+    le-size = size,
+    le-offset-x = offset-x,
+    le-offset-y = offset-y,
+    le-opacity = opacity,
+    le-enabled = True
+  }
+
+  fx-outer-glow : Integer, Integer, Real -> LayerEffect
+  fx-outer-glow (color) (size) (opacity) = LayerEffect {
+    le-kind = FxOuterGlow,
+    le-color = color,
+    le-size = size,
+    le-offset-x = 0,
+    le-offset-y = 0,
+    le-opacity = opacity,
+    le-enabled = True
+  }
+
+  fx-inner-glow : Integer, Integer, Real -> LayerEffect
+  fx-inner-glow (color) (size) (opacity) = LayerEffect {
+    le-kind = FxInnerGlow,
+    le-color = color,
+    le-size = size,
+    le-offset-x = 0,
+    le-offset-y = 0,
+    le-opacity = opacity,
+    le-enabled = True
+  }
+
+  fx-stroke : Integer, Integer, Real -> LayerEffect
+  fx-stroke (color) (width) (opacity) = LayerEffect {
+    le-kind = FxStroke,
+    le-color = color,
+    le-size = width,
+    le-offset-x = 0,
+    le-offset-y = 0,
+    le-opacity = opacity,
+    le-enabled = True
+  }
+
+Section: Stack Operations
+
+  effect-stack-add : EffectStack, LayerEffect -> EffectStack
+  effect-stack-add (es) (fx) = EffectStack {
+    es-effects = list-push (es.es-effects) fx,
+    es-count = es.es-count + 1
+  }
+
+  effect-stack-toggle : EffectStack, Integer -> EffectStack
+  effect-stack-toggle (es) (idx) =
+    if idx < 0 then es
+    else if idx >= es.es-count then es
+    else let fx = list-at (es.es-effects) idx
+    in let toggled = __record-set fx "le-enabled" (if fx.le-enabled then False else True)
+    in __record-set es "es-effects" (list-set-at (es.es-effects) idx toggled)
+
+Section: Rendering
+
+  effect-stack-apply : Framebuf, CanvasLayer, EffectStack -> Framebuf
+  effect-stack-apply (fb) (layer) (es) =
+    lfx-apply-loop fb layer es 0
+
+  lfx-apply-loop : Framebuf, CanvasLayer, EffectStack, Integer -> Framebuf
+  lfx-apply-loop (fb) (layer) (es) (i) =
+    if i >= es.es-count then fb
+    else let fx = list-at (es.es-effects) i
+    in let fb2 = if fx.le-enabled then lfx-render fb layer fx else fb
+    in lfx-apply-loop fb2 layer es (i + 1)
+
+  lfx-render : Framebuf, CanvasLayer, LayerEffect -> Framebuf
+  lfx-render (fb) (layer) (fx) =
+    when fx.le-kind
+      is FxDropShadow -> lfx-drop-shadow fb layer fx
+      is FxOuterGlow -> lfx-outer-glow fb layer fx
+      is FxStroke -> lfx-stroke fb layer fx
+      is otherwise -> fb
+
+Section: Drop Shadow
+
+  lfx-drop-shadow : Framebuf, CanvasLayer, LayerEffect -> Framebuf
+  lfx-drop-shadow (fb) (layer) (fx) =
+    let src = layer.cl-pixels
+    in lfx-shadow-loop fb src fx 0 (src.fb-width * src.fb-height) (src.fb-width)
+
+  lfx-shadow-loop : Framebuf, Framebuf, LayerEffect, Integer, Integer, Integer -> Framebuf
+  lfx-shadow-loop (fb) (src) (fx) (i) (total) (w) =
+    if i >= total then fb
+    else let sx = i - i / w * w
+    in let sy = i / w
+    in let px = list-at (src.fb-pixels) i
+    in let fb2 = if px /= 0 then
+      let dx = sx + fx.le-offset-x
+      in let dy = sy + fx.le-offset-y
+      in if dx >= 0 then if dx < fb.fb-width then if dy >= 0 then if dy < fb.fb-height then
+        let existing = fb-get fb dx dy
+        in let blended = lfx-blend existing (fx.le-color) (fx.le-opacity)
+        in fb-set fb dx dy blended
+      else fb else fb else fb else fb
+    else fb
+    in lfx-shadow-loop fb2 src fx (i + 1) total w
+
+Section: Outer Glow
+
+  lfx-outer-glow : Framebuf, CanvasLayer, LayerEffect -> Framebuf
+  lfx-outer-glow (fb) (layer) (fx) =
+    let src = layer.cl-pixels
+    in lfx-glow-loop fb src fx 0 (src.fb-width * src.fb-height) (src.fb-width)
+
+  lfx-glow-loop : Framebuf, Framebuf, LayerEffect, Integer, Integer, Integer -> Framebuf
+  lfx-glow-loop (fb) (src) (fx) (i) (total) (w) =
+    if i >= total then fb
+    else let sx = i - i / w * w
+    in let sy = i / w
+    in let px = list-at (src.fb-pixels) i
+    in let fb2 = if px /= 0 then lfx-glow-ring fb sx sy (fx.le-size) (fx.le-color) (fx.le-opacity) else fb
+    in lfx-glow-loop fb2 src fx (i + 1) total w
+
+  lfx-glow-ring : Framebuf, Integer, Integer, Integer, Integer, Real -> Framebuf
+  lfx-glow-ring (fb) (cx) (cy) (radius) (color) (opacity) =
+    lfx-ring-loop fb cx cy radius color opacity (0 - radius)
+
+  lfx-ring-loop : Framebuf, Integer, Integer, Integer, Integer, Real, Integer -> Framebuf
+  lfx-ring-loop (fb) (cx) (cy) (radius) (color) (opacity) (dy) =
+    if dy > radius then fb
+    else let fb2 = lfx-ring-row fb cx cy radius color opacity dy (0 - radius)
+    in lfx-ring-loop fb2 cx cy radius color opacity (dy + 1)
+
+  lfx-ring-row : Framebuf, Integer, Integer, Integer, Integer, Real, Integer, Integer -> Framebuf
+  lfx-ring-row (fb) (cx) (cy) (radius) (color) (opacity) (dy) (dx) =
+    if dx > radius then fb
+    else let dist-sq = dx * dx + dy * dy
+    in let r-sq = radius * radius
+    in let fb2 = if dist-sq <= r-sq then
+      let x = cx + dx
+      in let y = cy + dy
+      in if x >= 0 then if x < fb.fb-width then if y >= 0 then if y < fb.fb-height then
+        let falloff = 1.0 - real-from-int dist-sq / real-from-int r-sq
+        in let alpha = opacity * falloff
+        in let existing = fb-get fb x y
+        in fb-set fb x y (lfx-blend existing color alpha)
+      else fb else fb else fb else fb
+    else fb
+    in lfx-ring-row fb2 cx cy radius color opacity dy (dx + 1)
+
+Section: Stroke
+
+  lfx-stroke : Framebuf, CanvasLayer, LayerEffect -> Framebuf
+  lfx-stroke (fb) (layer) (fx) =
+    let src = layer.cl-pixels
+    in lfx-stroke-loop fb src fx 0 (src.fb-width * src.fb-height) (src.fb-width)
+
+  lfx-stroke-loop : Framebuf, Framebuf, LayerEffect, Integer, Integer, Integer -> Framebuf
+  lfx-stroke-loop (fb) (src) (fx) (i) (total) (w) =
+    if i >= total then fb
+    else let sx = i - i / w * w
+    in let sy = i / w
+    in let px = list-at (src.fb-pixels) i
+    in let is-edge = if px /= 0 then lfx-is-edge src sx sy w (total / w) else False
+    in let fb2 = if is-edge then fb-set fb sx sy (fx.le-color) else fb
+    in lfx-stroke-loop fb2 src fx (i + 1) total w
+
+  lfx-is-edge : Framebuf, Integer, Integer, Integer, Integer -> Boolean
+  lfx-is-edge (src) (x) (y) (w) (h) =
+    if x <= 0 then True
+    else if x >= w - 1 then True
+    else if y <= 0 then True
+    else if y >= h - 1 then True
+    else if fb-get src (x - 1) y == 0 then True
+    else if fb-get src (x + 1) y == 0 then True
+    else if fb-get src x (y - 1) == 0 then True
+    else if fb-get src x (y + 1) == 0 then True
+    else False
+
+Section: Color Helpers
+
+  lfx-blend : Integer, Integer, Real -> Integer
+  lfx-blend (dst) (src) (alpha) =
+    let dr = dst / 65536
+    in let dg = dst / 256 - dr * 256
+    in let db = dst - dst / 256 * 256
+    in let sr = src / 65536
+    in let sg = src / 256 - sr * 256
+    in let sb = src - src / 256 * 256
+    in let rr = dr + real-to-int (real-from-int (sr - dr) * alpha)
+    in let rg = dg + real-to-int (real-from-int (sg - dg) * alpha)
+    in let rb = db + real-to-int (real-from-int (sb - db) * alpha)
+    in lfx-clamp rr 0 255 * 65536 + lfx-clamp rg 0 255 * 256 + lfx-clamp rb 0 255
+
+  lfx-clamp : Integer, Integer, Integer -> Integer
+  lfx-clamp (v) (lo) (hi) = if v < lo then lo else if v > hi then hi else v
+
+Section: Info
+
+  effect-stack-info : EffectStack -> Text
+  effect-stack-info (es) = show (es.es-count) & " effects"
+
+  layer-effect-info : LayerEffect -> Text
+  layer-effect-info (fx) =
+    let kind = when fx.le-kind is FxDropShadow -> "shadow" is FxOuterGlow -> "glow" is FxInnerGlow -> "inner-glow" is FxStroke -> "stroke"
+    in kind & " size=" & show (fx.le-size) & (if fx.le-enabled then " on" else " off")
+
+Page 1

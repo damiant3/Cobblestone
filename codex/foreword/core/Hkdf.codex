@@ -1,0 +1,76 @@
+Chapter: Hkdf
+  cites Foreword chapter Hmac
+
+ HMAC-based Extract-and-Expand Key Derivation Function (RFC 5869).
+ Used by TLS 1.3, Signal Protocol, and most modern key schedules.
+ Derives one or more keys from input keying material using a two-
+ step process: extract concentrates entropy into a pseudorandom
+ key, expand stretches it into output keying material.
+
+ To hkdf-extract gives a pseudorandom key from salt and input keying material.
+ To hkdf-expand gives output keying material of a requested length.
+ To hkdf gives the combined extract-then-expand in one call.
+
+ We say:
+
+Section: Extract
+
+  hkdf-extract : List Integer, List Integer -> List Integer
+  hkdf-extract (salt) (ikm) =
+    let effective-salt = if list-length salt == 0 then hkdf-zero-salt else salt
+    in hkdf-words-to-bytes (hmac-sha256 effective-salt ikm)
+
+  hkdf-zero-salt : List Integer
+  hkdf-zero-salt = hkdf-zeros 32 0 []
+
+  hkdf-zeros : Integer, Integer, List Integer -> List Integer
+  hkdf-zeros (n) (i) (acc) =
+    if i >= n then acc
+    else hkdf-zeros n (i + 1) (list-push acc 0)
+
+Section: Expand
+
+  hkdf-expand : List Integer, List Integer, Integer -> List Integer
+  hkdf-expand (prk) (info) (length) =
+    let n = (length + 31) / 32
+    in hkdf-expand-loop prk info length n 1 [] []
+
+  hkdf-expand-loop : List Integer, List Integer, Integer, Integer, Integer, List Integer, List Integer -> List Integer
+  hkdf-expand-loop (prk) (info) (length) (n) (i) (prev) (acc) =
+    if i > n then hkdf-take acc length
+    else let input = prev & info & [i]
+    in let block = hkdf-words-to-bytes (hmac-sha256 prk input)
+    in hkdf-expand-loop prk info length n (i + 1) block (acc & block)
+
+  hkdf-take : List Integer, Integer -> List Integer
+  hkdf-take (xs) (n) = hkdf-take-loop xs n 0 []
+
+  hkdf-take-loop : List Integer, Integer, Integer, List Integer -> List Integer
+  hkdf-take-loop (xs) (n) (i) (acc) =
+    if i >= n then acc
+    else if i >= list-length xs then acc
+    else hkdf-take-loop xs n (i + 1) (list-push acc (list-at xs i))
+
+Section: Combined
+
+  hkdf : List Integer, List Integer, List Integer, Integer -> List Integer
+  hkdf (salt) (ikm) (info) (length) =
+    let prk = hkdf-extract salt ikm
+    in hkdf-expand prk info length
+
+Section: Word Conversion
+
+  hkdf-words-to-bytes : List Integer -> List Integer
+  hkdf-words-to-bytes (words) = hkdf-w2b words 0 (list-length words) []
+
+  hkdf-w2b : List Integer, Integer, Integer, List Integer -> List Integer
+  hkdf-w2b (words) (i) (len) (acc) =
+    if i >= len then acc
+    else let w = list-at words i
+    in let b0 = bit-and (bit-shru w 24) 255
+    in let b1 = bit-and (bit-shru w 16) 255
+    in let b2 = bit-and (bit-shru w 8) 255
+    in let b3 = bit-and w 255
+    in hkdf-w2b words (i + 1) len (list-push (list-push (list-push (list-push acc b0) b1) b2) b3)
+
+Page 1

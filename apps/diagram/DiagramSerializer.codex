@@ -1,0 +1,177 @@
+Chapter: DiagramSerializer
+  cites Foreword chapter Maybe
+  cites Encode chapter Json
+  cites Diagram chapter DiagramModel
+  cites Foreword chapter ListUtils
+
+ Save and load diagrams in JSON format.
+
+Section: Serialize
+
+  diagram-to-json : Diagram -> Text
+  diagram-to-json (dg) =
+    json-emit (json-object [
+      json-pair "name" (json-str dg.dg-name),
+      json-pair "type" (json-str (diagram-type-name dg.dg-type)),
+      json-pair "grid" (json-int dg.dg-grid),
+      json-pair "snap" (json-bool dg.dg-snap),
+      json-pair "nodes" (json-array (list-map node-to-json dg.dg-nodes)),
+      json-pair "edges" (json-array (list-map edge-to-json dg.dg-edges))
+    ])
+
+  node-to-json : DiagramNode -> JsonValue
+  node-to-json (n) =
+    json-object [
+      json-pair "id" (json-int n.dn-id),
+      json-pair "shape" (json-str (shape-type-name n.dn-shape)),
+      json-pair "x" (json-int n.dn-x),
+      json-pair "y" (json-int n.dn-y),
+      json-pair "width" (json-int n.dn-width),
+      json-pair "height" (json-int n.dn-height),
+      json-pair "label" (json-str n.dn-label),
+      json-pair "sublabel" (json-str n.dn-sublabel),
+      json-pair "fill" (json-int n.dn-style.ns-fill-color),
+      json-pair "stroke" (json-int n.dn-style.ns-stroke-color)
+    ]
+
+  edge-to-json : DiagramEdge -> JsonValue
+  edge-to-json (e) =
+    json-object [
+      json-pair "id" (json-int e.de-id),
+      json-pair "source" (json-int e.de-source),
+      json-pair "target" (json-int e.de-target),
+      json-pair "label" (json-str e.de-label),
+      json-pair "routing" (json-str (routing-name e.de-routing))
+    ]
+
+Section: Shape Names
+
+  shape-type-name : ShapeType -> Text
+  shape-type-name (s) =
+    when s
+      is ShapeRect -> "rect"
+      is ShapeRoundRect -> "round-rect"
+      is ShapeDiamond -> "diamond"
+      is ShapeOval -> "oval"
+      is ShapeParallelogram -> "parallelogram"
+      is ShapeHexagon -> "hexagon"
+      is ShapeCylinder -> "cylinder"
+      is ShapeCircle -> "circle"
+      is ShapeTriangle -> "triangle"
+      is ShapeCloud -> "cloud"
+      is ShapeActor -> "actor"
+      is ShapeDocument -> "document"
+      is ShapeCompartmentBox (n) -> "compartment-" & show n
+
+  routing-name : EdgeRouting -> Text
+  routing-name (r) =
+    when r
+      is RouteStraight -> "straight"
+      is RouteOrthogonal -> "orthogonal"
+      is RouteBezier -> "bezier"
+      is RouteStepwise -> "stepwise"
+
+Section: Deserialize
+
+  diagram-from-json : Text -> Maybe Diagram
+  diagram-from-json (text) =
+    let parsed = json-parse text
+    in when parsed
+      is None -> None
+      is Just (jv) ->
+        let name = json-get-str jv "name" "Untitled"
+        in let grid = json-get-int jv "grid" 20
+        in let snap = json-get-bool jv "snap" True
+        in let nodes = parse-json-nodes jv
+        in let edges = parse-json-edges jv
+        in let max-id = find-max-id nodes edges
+        in Just (Diagram {
+          dg-nodes = nodes,
+          dg-edges = edges,
+          dg-name = name,
+          dg-type = Freeform,
+          dg-next-id = max-id + 1,
+          dg-grid = grid,
+          dg-snap = snap
+        })
+
+  parse-json-nodes : JsonValue -> List DiagramNode
+  parse-json-nodes (jv) =
+    let nodes-jv = json-get jv "nodes"
+    in when nodes-jv
+      is None -> []
+      is Just (arr) -> parse-node-array arr 0
+
+  parse-node-array : JsonValue, Integer -> List DiagramNode
+  parse-node-array (arr) (i) =
+    let item = json-array-at arr i
+    in when item
+      is None -> []
+      is Just (jv) ->
+        let node = json-to-node jv
+        in node :: parse-node-array arr (i + 1)
+
+  json-to-node : JsonValue -> DiagramNode
+  json-to-node (jv) =
+    DiagramNode {
+      dn-id = json-get-int jv "id" 0,
+      dn-shape = ShapeRect,
+      dn-x = json-get-int jv "x" 0,
+      dn-y = json-get-int jv "y" 0,
+      dn-width = json-get-int jv "width" 100,
+      dn-height = json-get-int jv "height" 60,
+      dn-label = json-get-str jv "label" "",
+      dn-sublabel = json-get-str jv "sublabel" "",
+      dn-style = default-node-style,
+      dn-ports = default-ports,
+      dn-props = [],
+      dn-locked = False
+    }
+
+  parse-json-edges : JsonValue -> List DiagramEdge
+  parse-json-edges (jv) =
+    let edges-jv = json-get jv "edges"
+    in when edges-jv
+      is None -> []
+      is Just (arr) -> parse-edge-array arr 0
+
+  parse-edge-array : JsonValue, Integer -> List DiagramEdge
+  parse-edge-array (arr) (i) =
+    let item = json-array-at arr i
+    in when item
+      is None -> []
+      is Just (jv) ->
+        let edge = json-to-edge jv
+        in edge :: parse-edge-array arr (i + 1)
+
+  json-to-edge : JsonValue -> DiagramEdge
+  json-to-edge (jv) =
+    DiagramEdge {
+      de-id = json-get-int jv "id" 0,
+      de-source = json-get-int jv "source" 0,
+      de-target = json-get-int jv "target" 0,
+      de-src-port = 0,
+      de-tgt-port = 0,
+      de-label = json-get-str jv "label" "",
+      de-style = default-edge-style,
+      de-routing = RouteStraight,
+      de-points = []
+    }
+
+  find-max-id : List DiagramNode, List DiagramEdge -> Integer
+  find-max-id (nodes) (edges) =
+    let node-max = find-max-node-id nodes 0
+    in let edge-max = find-max-edge-id edges 0
+    in if node-max > edge-max then node-max else edge-max
+
+  find-max-node-id : List DiagramNode, Integer -> Integer
+  find-max-node-id (nodes) (acc) =
+    if list-length nodes == 0 then acc
+    else let n = list-at nodes 0
+        in find-max-node-id (list-drop nodes 1) (if n.dn-id > acc then n.dn-id else acc)
+
+  find-max-edge-id : List DiagramEdge, Integer -> Integer
+  find-max-edge-id (edges) (acc) =
+    if list-length edges == 0 then acc
+    else let e = list-at edges 0
+        in find-max-edge-id (list-drop edges 1) (if e.de-id > acc then e.de-id else acc)

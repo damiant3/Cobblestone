@@ -1,0 +1,217 @@
+Chapter: CvmmApp
+  cites Cvmm chapter CvmmTypes
+  cites Cvmm chapter CvmmTheme
+  cites UI chapter Widget
+  cites UI chapter Layout
+  cites UI chapter Theme
+  cites Foreword chapter StringUtils
+  cites WebApp chapter WebRuntime
+  cites Encode chapter Json
+  cites Cvmm chapter CvmmSettingsViews
+
+ HTML plug target for the CVMM dashboard. Compiles through the HTML
+ plug to produce a self-contained browser page. Fetches data from
+ the CDX server API, builds widget trees, mounts them with theming.
+ This is the compiled version of the dashboard — the Codex source
+ IS the UI specification, the HTML/JS/CSS is the emission artifact.
+
+ We say:
+
+Section: State Keys
+
+  sk-view : Text = "view"
+  sk-sidebar : Text = "sidebar"
+  sk-nav-depth : Text = "navDepth"
+  sk-cpu : Text = "cpu"
+  sk-mem-pct : Text = "memPct"
+  sk-uptime : Text = "uptime"
+  sk-hostname : Text = "hostname"
+  sk-status : Text = "sysStatus"
+  sk-procs : Text = "procCount"
+  sk-svcs : Text = "svcCount"
+  sk-ports : Text = "portCount"
+  sk-nics : Text = "nicCount"
+  sk-fleet : Text = "fleetCount"
+  sk-disk-pct : Text = "diskPct"
+  sk-mem-used : Text = "memUsed"
+  sk-mem-total : Text = "memTotal"
+
+Section: Navigation
+
+  NavDef = record { nd-id : Text, nd-icon : Text, nd-label : Text, nd-api : Text }
+
+  nav-defs : List NavDef
+  nav-defs = [
+    NavDef { nd-id = "dashboard", nd-icon = "D", nd-label = "Dashboard", nd-api = "/api/system/status" },
+    NavDef { nd-id = "files", nd-icon = "F", nd-label = "Files", nd-api = "/api/fs/list" },
+    NavDef { nd-id = "drives", nd-icon = "H", nd-label = "Drives", nd-api = "/api/drive/list" },
+    NavDef { nd-id = "usb", nd-icon = "U", nd-label = "USB", nd-api = "/api/usb/list" },
+    NavDef { nd-id = "processes", nd-icon = "P", nd-label = "Processes", nd-api = "/api/process/list" },
+    NavDef { nd-id = "services", nd-icon = "S", nd-label = "Services", nd-api = "/api/service/list" },
+    NavDef { nd-id = "ports", nd-icon = "O", nd-label = "Ports", nd-api = "/api/port/listeners" },
+    NavDef { nd-id = "network", nd-icon = "N", nd-label = "Network", nd-api = "/api/net/nics" },
+    NavDef { nd-id = "monitor", nd-icon = "~", nd-label = "Monitor", nd-api = "/api/monitor/layout" },
+    NavDef { nd-id = "logs", nd-icon = "W", nd-label = "Logs", nd-api = "/api/log/list" },
+    NavDef { nd-id = "terminal", nd-icon = ">", nd-label = "Terminal", nd-api = "/api/terminal/state" },
+    NavDef { nd-id = "settings", nd-icon = "G", nd-label = "Settings", nd-api = "" },
+    NavDef { nd-id = "calendar", nd-icon = "C", nd-label = "Calendar", nd-api = "" },
+    NavDef { nd-id = "notes", nd-icon = "T", nd-label = "Notes", nd-api = "" },
+    NavDef { nd-id = "audio", nd-icon = "A", nd-label = "Audio", nd-api = "" },
+    NavDef { nd-id = "notifications", nd-icon = "!", nd-label = "Notifications", nd-api = "" },
+    NavDef { nd-id = "screensaver", nd-icon = "*", nd-label = "Screen Saver", nd-api = "" },
+    NavDef { nd-id = "power", nd-icon = "^", nd-label = "Power", nd-api = "" },
+    NavDef { nd-id = "datetime", nd-icon = "@", nd-label = "Date/Time", nd-api = "" },
+    NavDef { nd-id = "bluetooth", nd-icon = "B", nd-label = "Bluetooth", nd-api = "" },
+    NavDef { nd-id = "privacy", nd-icon = "#", nd-label = "Privacy", nd-api = "" },
+    NavDef { nd-id = "defaultapps", nd-icon = "=", nd-label = "Default Apps", nd-api = "" },
+    NavDef { nd-id = "wallpaper", nd-icon = "W", nd-label = "Wallpaper", nd-api = "" },
+    NavDef { nd-id = "keyboard", nd-icon = "K", nd-label = "Keyboard RGB", nd-api = "" }
+  ]
+
+Section: Sidebar Widget
+
+  sidebar-nav-item : NavDef, Text -> WidgetNode
+  sidebar-nav-item (nd) (active) =
+    let btn = widget-button ("nav-" & nd.nd-id) (nd.nd-icon & " " & nd.nd-label)
+    in if nd.nd-id == active then widget-set-state btn 4 else btn
+
+  sidebar-nav-items : List NavDef, Text, Integer, Integer, List WidgetNode -> List WidgetNode
+  sidebar-nav-items (defs) (active) (i) (n) (acc) =
+    if i >= n then acc
+    else sidebar-nav-items defs active (i + 1) n (list-push acc (sidebar-nav-item (list-at defs i) active))
+
+  build-sidebar : Text, Text -> WidgetNode
+  build-sidebar (active-view) (hostname) =
+    let logo = widget-label "logo" "CVMM"
+    in let host = widget-label "hostname" hostname
+    in let sep = widget-separator "nav-sep"
+    in let items = sidebar-nav-items nav-defs active-view 0 (list-length nav-defs) []
+    in widget-panel "sidebar" DirColumn 2 ([logo, host, sep] & items)
+
+Section: Header Widget
+
+  build-header : Text, Integer, Integer -> WidgetNode
+  build-header (view-label) (cpu) (mem-pct) =
+    let title = widget-label "view-title" view-label
+    in let cpu-gauge = widget-gauge "sys-cpu" cpu 100
+    in let mem-gauge = widget-gauge "sys-mem" mem-pct 100
+    in let cpu-label = widget-label "cpu-pct" (show cpu & "%")
+    in let mem-label = widget-label "mem-pct-label" (show mem-pct & "%")
+    in widget-panel "header" DirRow 12 [title, cpu-gauge, cpu-label, mem-gauge, mem-label]
+
+Section: Dashboard Cards
+
+  dash-gauge-card : Text, Text, Integer, Integer, Text -> WidgetNode
+  dash-gauge-card (id) (title) (value) (max-val) (subtitle) =
+    let t = widget-label (id & "-title") title
+    in let g = widget-gauge (id & "-gauge") value max-val
+    in let v = widget-label (id & "-val") (show value & if max-val == 100 then "%" else "")
+    in let sub = widget-label (id & "-sub") subtitle
+    in widget-panel id DirColumn 4 [t, g, v, sub]
+
+  dash-count-card : Text, Text, Integer, Text -> WidgetNode
+  dash-count-card (id) (title) (count) (nav-target) =
+    let t = widget-label (id & "-title") title
+    in let c = widget-label (id & "-count") (show count)
+    in let link = widget-button (id & "-goto") "View All"
+    in widget-panel id DirColumn 4 [t, c, link]
+
+  build-dashboard : WidgetNode
+  build-dashboard =
+    let cpu = state-get sk-cpu
+    in let mem-pct = state-get sk-mem-pct
+    in let disk-pct = state-get sk-disk-pct
+    in let uptime-val = state-get sk-uptime
+    in let top-row = widget-panel "dash-top" DirRow 8 [
+      dash-gauge-card "cpu" "CPU" cpu 100 "",
+      dash-gauge-card "mem" "Memory" mem-pct 100 (format-bytes (bytes (state-get sk-mem-used)) & " / " & format-bytes (bytes (state-get sk-mem-total))),
+      dash-gauge-card "disk" "Disk" disk-pct 100 "",
+      dash-gauge-card "up" "Uptime" uptime-val 86400 (format-uptime (Uptime { ut-seconds = uptime-val }))
+    ]
+    in let bottom-row = widget-panel "dash-bottom" DirRow 8 [
+      dash-count-card "procs" "Processes" (state-get sk-procs) "processes",
+      dash-count-card "svcs" "Services" (state-get sk-svcs) "services",
+      dash-count-card "ports" "Ports" (state-get sk-ports) "ports",
+      dash-count-card "nics" "Network" (state-get sk-nics) "network",
+      dash-count-card "fleet" "Fleet" (state-get sk-fleet) "fleet"
+    ]
+    in widget-panel "dashboard" DirColumn 12 [top-row, bottom-row]
+
+Section: Render Dispatch
+
+  view-label-for : Text -> Text
+  view-label-for (id) = vl-loop nav-defs id 0 (list-length nav-defs)
+
+  vl-loop : List NavDef, Text, Integer, Integer -> Text
+  vl-loop (defs) (id) (i) (n) =
+    if i >= n then id
+    else let d = list-at defs i
+    in if d.nd-id == id then d.nd-label
+    else vl-loop defs id (i + 1) n
+
+  render-app : Integer -> Integer
+  render-app (x) =
+    let active = state-get-text sk-view
+    in let hostname = state-get-text sk-hostname
+    in let cpu = state-get sk-cpu
+    in let mem-pct = state-get sk-mem-pct
+    in let sidebar = build-sidebar active hostname
+    in let header = build-header (view-label-for active) cpu mem-pct
+    in let content = if is-settings-view active then settings-view-widget active else build-dashboard
+    in let main = widget-panel "main" DirColumn 0 [header, content]
+    in let main-flex = widget-set-flex main 1
+    in let shell = widget-panel "shell" DirRow 0 [sidebar, main-flex]
+    in mount-widget-themed cvmm-theme-dark shell
+
+Section: API Callbacks
+
+  on-system-data : Text -> Integer
+  on-system-data (raw) =
+    let d = json-parse raw
+    in act
+      state-set sk-cpu (dom-get-value (dom-query ".cpu"))
+      state-set-render sk-status 1
+    end
+
+  on-nav-click : Text -> Integer
+  on-nav-click (id) =
+    let view-id = text-drop id 4
+    in act
+      let v = state-set-text-render sk-view view-id
+      in 0
+    end
+
+  on-sidebar-pick : Text, Integer -> Integer
+  on-sidebar-pick (dim) (idx) = 0
+
+  on-button-click : Text -> Integer
+  on-button-click (id) =
+    if text-starts-with id "nav-" then on-nav-click id
+    else 0
+
+Section: Entry
+
+  opening : [Console] Integer = act
+    inject-theme-css cvmm-theme-dark
+    state-set-text sk-view "dashboard"
+    state-set sk-sidebar 1
+    state-set sk-cpu 0
+    state-set sk-mem-pct 0
+    state-set sk-disk-pct 0
+    state-set sk-uptime 0
+    state-set sk-procs 0
+    state-set sk-svcs 0
+    state-set sk-ports 0
+    state-set sk-nics 0
+    state-set sk-fleet 0
+    state-set sk-mem-used 0
+    state-set sk-mem-total 0
+    state-set-text sk-hostname "codex-vm"
+    state-set-text sk-status "online"
+    set-render render-app
+    register-handlers on-sidebar-pick on-button-click
+    render-app 0
+    fetch-get-then "/api/system/status" on-system-data
+  end
+
+Page 1

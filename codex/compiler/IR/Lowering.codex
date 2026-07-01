@@ -1,0 +1,1475 @@
+Chapter: Lowering
+  cites Codex chapter Text
+  cites Codex chapter Characters
+  cites Codex chapter Lists
+  cites Codex chapter Concurrency
+  cites Codex chapter Build Settings (max-recursion-depth)
+
+ Transforms the typed AST into the intermediate representation.
+ Every IR node inherits the SourceSpan of the AST node it was
+ lowered from.
+
+Section: Lower Context
+  LowerCtx = record {
+   overlay : LookupOverlay,
+   base : List TypeBinding,
+   ust : UnificationState,
+   local-type-vars : List Integer,
+   chapter-renames : List RenameEntry
+  }
+
+Section: Expression Lowering
+  lower-expr : AExpr, CodexType, LowerCtx -> IRExpr
+  lower-expr (e) (ty) (ctx) = lower-expr-at e ty ctx 0
+
+  lower-expr-at : AExpr, CodexType, LowerCtx, Integer -> IRExpr
+  lower-expr-at (e) (ty) (ctx) (depth) =
+   if depth >= max-recursion-depth then deck-record (IrError "lower fuel exhausted" ty (aexpr-span e))
+   else when e
+    is ALitExpr (text) (kind) (s) -> lower-literal text kind s
+    is ANameExpr (name) (s) -> lower-name (name.value) ty ctx s
+    is AApplyExpr (f) (a) (s) -> lower-apply f a ty ctx s
+    is ABinaryExpr (l) (op) (r) (s) ->
+     let left-ir = lower-expr-at l ty ctx (depth + 1)
+     in let left-ty = ir-expr-type left-ir
+     in let right-ir = lower-expr-at r ty ctx (depth + 1)
+     in lower-binary-maybe-eq op left-ty left-ir right-ir ty ctx s
+    is AUnaryExpr (operand) (s) ->
+     let inner = lower-expr-at operand int-ty-default ctx (depth + 1)
+     in when inner
+      is IrIntLit (v) (ls) -> deck-record (IrIntLit (-v) s)
+      is otherwise -> deck-record (IrNegate inner s)
+    is AIfExpr (c) (t) (e2) (s) ->
+     let resolved = deep-resolve (ctx.ust) ty
+     in let then-ir-0 = lower-expr-at t resolved ctx (depth + 1)
+     in let then-ty-0 = ir-expr-type then-ir-0
+     in let hint-0 = when resolved
+        is ErrorTy -> then-ty-0
+        is otherwise -> resolved
+     in let else-ir = lower-expr-at e2 hint-0 ctx (depth + 1)
+     in let else-ty = ir-expr-type else-ir
+     in let result-ty = merge-ty hint-0 else-ty
+     in let then-ir = if ty-has-error then-ty-0 & ty-has-error result-ty == False
+        then lower-expr-at t result-ty ctx (depth + 1)
+        else then-ir-0
+     in deck-record (IrIf (lower-expr-at c BooleanTy ctx (depth + 1)) then-ir else-ir result-ty s)
+    is ALetExpr (binds) (body) (s) -> lower-let binds body ty ctx s depth
+    is ALambdaExpr (params) (body) (s) -> lower-lambda params body ty ctx s
+    is AMatchExpr (scrut) (arms) (s) -> lower-match scrut arms ty ctx s
+    is AListExpr (elems) (s) -> lower-list elems ty ctx s
+    is ARecordExpr (name) (fields) (s) -> lower-record name fields ty ctx s
+    is AFieldAccess (rec) (field) (s) ->
+     let rec-ir = lower-expr-at rec ErrorTy ctx (depth + 1)
+     in let rec-ty = deep-resolve (ctx.ust) (ir-expr-type rec-ir)
+     in let stripped-rec-ty = when rec-ty
+        is EffectfulTy (effs) (sc) (ret) -> deep-resolve (ctx.ust) ret
+        is ForAllTy (id) (body) -> deep-resolve (ctx.ust) body
+        is otherwise -> rec-ty
+     in let resolved-rec-ty = when stripped-rec-ty
+        is RecordTy (rn) (ra) (rf) -> stripped-rec-ty
+        is ConstructedTy (cname) (cargs) ->
+         let ctor-raw = lookup-type-split (ctx.overlay) (ctx.base) (cname.value)
+     in let resolved-record = when ctor-raw
+            is ErrorTy -> stripped-rec-ty
+            is otherwise -> strip-fun-args (deep-resolve (ctx.ust) ctor-raw)
+     in when resolved-record
+          is RecordTy (rn) (ra) (rf) -> resolved-record
+          is otherwise -> stripped-rec-ty
+        is otherwise -> stripped-rec-ty
+     in let field-ty = when resolved-rec-ty
+        is RecordTy (rname) (rargs) (rfields) -> lookup-record-field rfields (field.value)
+        is otherwise -> ty
+     in let actual-field-ty = when field-ty
+        is ErrorTy -> ty
+        is otherwise -> field-ty
+     in let fixed-rec = when rec-ty
+        is RecordTy (rn) (ra) (rf) -> rec-ir
+        is otherwise -> set-ir-expr-type rec-ir resolved-rec-ty
+     in deck-record (IrFieldAccess fixed-rec (field.value) actual-field-ty s)
+    is AActExpr (stmts) (s) -> lower-act stmts ty ctx s
+    is AHandleExpr (eff) (body) (clauses) (s) -> lower-handle eff body clauses ty ctx s
+    is AWithTimeoutExpr (timeout) (effs) (scopes) (body) (s) ->
+     let body-ir = lower-expr body ty ctx
+     in deck-record (IrWithTimeout (lit-text-to-integer timeout) (map-list name-value effs) scopes body-ir ty s)
+    is ATryExpr (max) (body) (fb) (fail) (s) ->
+     let body-ir = lower-act-stmts-loop body ty ctx 0 (list-length body)
+     in let fb-ir = lower-act-stmts-loop fb ty ctx 0 (list-length fb)
+     in let fail-ir = lower-act-stmts-loop fail ty ctx 0 (list-length fail)
+     in let try-ty = act-block-type body-ir ty
+     in deck-record (IrTry max body-ir fb-ir fail-ir try-ty s)
+    is AFieldAssignExpr (rec) (field) (val) (s) ->
+     let rec-ir = lower-expr-at rec ErrorTy ctx (depth + 1)
+     in let rec-ty = deep-resolve (ctx.ust) (ir-expr-type rec-ir)
+     in let val-ir = lower-expr-at val ErrorTy ctx (depth + 1)
+     in deck-record (IrFieldStore rec-ir (field.value) val-ir rec-ty s)
+    is ALazyExpr (inner) (s) -> lower-lazy inner ty ctx s depth
+    is AErrorExpr (msg) (s) -> deck-record (IrError msg ty s)
+    is AInductionExpr (scrut) (arms) (s) -> deck-record (IrIntLit 0 s)
+
+  lower-lazy : AExpr, CodexType, LowerCtx, SourceSpan, Integer -> IRExpr
+  lower-lazy (inner) (ty) (ctx) (s) (depth) =
+   let inner-ty = peel-fun-return ty
+   in let sfx = integer-to-text depth
+   in let cell-n = "__lz-cell" & sfx
+   in let unit-n = "__lz-u" & sfx
+   in let val-n = "__lz-v" & sfx
+   in let s1-n = "__lz-s1" & sfx
+   in let s2-n = "__lz-s2" & sfx
+   in let df = deck-record (RecordField { name = Name { value = "__lz-done" }, type-val = int-ty-default })
+   in let vf = deck-record (RecordField { name = Name { value = "__lz-val" }, type-val = inner-ty })
+   in let cty = deck-record (RecordTy (Name { value = "__LazyCell" }) [] (list-push (list-push [] df) vf))
+   in let f1 = deck-record (IRFieldVal { name = "__lz-done", value = deck-record (IrIntLit 0 s), span = s })
+   in let f2 = deck-record (IRFieldVal { name = "__lz-val", value = deck-record (IrIntLit 0 s), span = s })
+   in let cell-ir = deck-record (IrRecord "__LazyCell" (list-push (list-push [] f1) f2) cty s)
+   in let cell-name = deck-record (IrName cell-n cty s)
+   in let lctx = LowerCtx {
+    overlay = OverlayCons (TypeBinding { name = unit-n, bound-type = int-ty-default }) (OverlayCons (TypeBinding { name = cell-n, bound-type = cty }) (ctx.overlay)),
+    base = ctx.base,
+    ust = ctx.ust,
+    local-type-vars = ctx.local-type-vars,
+    chapter-renames = ctx.chapter-renames
+   }
+   in let body-ir = lower-expr-at inner inner-ty lctx (depth + 97)
+   in let zero = deck-record (IrIntLit 0 s)
+   in let one = deck-record (IrIntLit 1 s)
+   in let done-read = deck-record (IrFieldAccess cell-name "__lz-done" int-ty-default s)
+   in let done-check = deck-record (IrBinary IrEq done-read zero BooleanTy s)
+   in let val-name = deck-record (IrName val-n inner-ty s)
+   in let store-done = deck-record (IrFieldStore cell-name "__lz-done" one cty s)
+   in let store-val = deck-record (IrFieldStore cell-name "__lz-val" val-name cty s)
+   in let inner-let2 = deck-record (IrLet s2-n cty store-val val-name s)
+   in let inner-let1 = deck-record (IrLet s1-n cty store-done inner-let2 s)
+   in let then-body = deck-record (IrLet val-n inner-ty body-ir inner-let1 s)
+   in let else-body = deck-record (IrFieldAccess cell-name "__lz-val" inner-ty s)
+   in let if-expr = deck-record (IrIf done-check then-body else-body inner-ty s)
+   in let param = deck-record (IRParam { name = unit-n, type-val = int-ty-default, span = s })
+   in let lam = deck-record (IrLambda (list-push [] param) if-expr ty s)
+   in deck-record (IrLet cell-n cty cell-ir lam s)
+
+  lower-name : Text, CodexType, LowerCtx, SourceSpan -> IRExpr
+  lower-name (name) (ty) (ctx) (sp) =
+   if text-starts-with name "__dict-of-" then lower-dict-placeholder name ty ctx sp
+   else let cm = lookup-type-split (ctx.overlay) (ctx.base) "__classmethods"
+   in when cm
+    is RecordTy (cmn) (cma) (cmf) ->
+     let probe = lookup-record-field cmf name
+     in when probe
+      is ErrorTy -> lower-name-normal name ty ctx sp
+      is otherwise -> lower-class-method-ref name ty ctx sp
+    is otherwise -> lower-name-normal name ty ctx sp
+
+  lower-dict-placeholder : Text, CodexType, LowerCtx, SourceSpan -> IRExpr
+  lower-dict-placeholder (name) (ty) (ctx) (sp) =
+   let recorded = lookup-expr-type (ctx.ust) sp
+   in let cand = when recorded
+      is ErrorTy -> deep-resolve (ctx.ust) ty
+      is otherwise -> deep-resolve (ctx.ust) recorded
+   in let cls-dict = type-name-of cand
+   in let args = dict-type-args cand
+   in let arg-tn = if list-length args > 0 then type-name-of (deep-resolve (ctx.ust) (list-at args 0)) else ""
+   in if text-length arg-tn == 0 then dict-placeholder-fallback name ty ctx sp
+      else if text-length cls-dict <= 4 then dict-placeholder-fallback name ty ctx sp
+      else let concrete = rename-lookup (ctx.chapter-renames) (substring cls-dict 0 (text-length cls-dict - 4) & "-dict-" & arg-tn)
+      in let b = lookup-type-split (ctx.overlay) (ctx.base) concrete
+      in when b
+       is ErrorTy -> dict-placeholder-fallback name ty ctx sp
+       is otherwise -> deck-record (IrName concrete (deep-resolve (ctx.ust) b) sp)
+
+  dict-placeholder-fallback : Text, CodexType, LowerCtx, SourceSpan -> IRExpr
+  dict-placeholder-fallback (name) (ty) (ctx) (sp) =
+   let cls-name = substring name 10 (text-length name - 10)
+   in let param-name = "__" & cls-name & "-dict"
+   in let pb = lookup-type-split (ctx.overlay) (ctx.base) param-name
+   in when pb
+    is ErrorTy -> deck-record (IrName name ty sp)
+    is otherwise -> deck-record (IrName param-name (deep-resolve (ctx.ust) pb) sp)
+
+  dict-type-args : CodexType -> List CodexType
+  dict-type-args (ty) =
+   when ty
+    is ConstructedTy (n) (args) | RecordTy (n) (args) (fs) -> args
+    is otherwise -> []
+
+  lower-class-method-ref : Text, CodexType, LowerCtx, SourceSpan -> IRExpr
+  lower-class-method-ref (name) (ty) (ctx) (sp) =
+   let recorded = lookup-expr-type (ctx.ust) sp
+   in let cand = when recorded
+      is ErrorTy -> deep-resolve (ctx.ust) ty
+      is otherwise -> deep-resolve (ctx.ust) recorded
+   in let spec-rn = method-spec-rn name (type-name-of cand) ctx
+   in if text-length spec-rn == 0 then lower-name-normal name ty ctx sp
+      else let fty = strip-forall-ty (deep-resolve (ctx.ust) (lookup-type-split (ctx.overlay) (ctx.base) spec-rn))
+      in deck-record (IrName spec-rn fty sp)
+
+  lower-name-normal : Text, CodexType, LowerCtx, SourceSpan -> IRExpr
+  lower-name-normal (name) (ty) (ctx) (sp) =
+   let rn = rename-lookup (ctx.chapter-renames) name
+   in let recorded = lookup-expr-type (ctx.ust) sp
+   in when recorded
+    is ErrorTy ->
+     let raw = lookup-type-split (ctx.overlay) (ctx.base) rn
+     in when raw
+      is ErrorTy -> deck-record (IrName rn ty sp)
+      is otherwise ->
+       let resolved = deep-resolve (ctx.ust) raw
+       in let stripped = strip-forall-ty resolved
+       in deck-record (IrName rn (prefer-applied-ty ty stripped) sp)
+    is otherwise ->
+     let final = deep-resolve (ctx.ust) recorded
+     in let stripped = strip-forall-ty final
+     in deck-record (IrName rn stripped sp)
+
+  peel-effectful-ty : CodexType -> CodexType
+  peel-effectful-ty (ty) =
+   when ty
+    is EffectfulTy (effs) (sc) (ret) -> peel-effectful-ty ret
+    is otherwise -> ty
+
+  ty-has-error : CodexType -> Boolean
+  ty-has-error (t) =
+   when t
+    is ErrorTy -> True
+    is ListTy (e) -> ty-has-error e
+    is otherwise -> False
+
+  merge-ty : CodexType, CodexType -> CodexType
+  merge-ty (a) (b) =
+   when a
+    is ErrorTy -> b
+    is ListTy (ea) -> when b
+      is ListTy (eb) -> ListTy (merge-ty ea eb)
+      is otherwise -> a
+    is otherwise -> a
+
+  prefer-applied-ty : CodexType, CodexType -> CodexType
+  prefer-applied-ty (expected) (stripped) =
+   let peeled = peel-effectful-ty expected
+   in when peeled
+    is ConstructedTy (en) (eargs) ->
+     if list-length eargs == 0 then stripped
+     else when stripped
+      is SumTy (sn) (sa) (sc) -> if en.value == sn.value then peeled else stripped
+      is RecordTy (rn) (ra) (rf) -> if en.value == rn.value then peeled else stripped
+      is ConstructedTy (cn) (cargs) -> if en.value == cn.value & list-length cargs == list-length eargs then peeled else stripped
+      is otherwise -> stripped
+    is otherwise -> stripped
+
+  lower-literal : Text, LiteralKind, SourceSpan -> IRExpr
+  lower-literal (text) (kind) (sp) =
+   when kind
+    is IntLit -> deck-record (IrIntLit (lit-text-to-integer text) sp)
+    is NumLit -> deck-record (IrNumLit (text-to-double-bits text) sp)
+    is TextLit -> deck-record (IrTextLit text sp)
+    is CharLit -> deck-record (IrCharLit (text-to-integer text) sp)
+    is BoolLit -> deck-record (IrBoolLit (text == "True") sp)
+
+  lower-apply : AExpr, AExpr, CodexType, LowerCtx, SourceSpan -> IRExpr
+  lower-apply (f) (a) (ty) (ctx) (sp) =
+   when f
+    is ANameExpr (mn) (ns) ->
+     if (mn.value) == "show" then lower-show-apply f a ty ctx sp
+     else let cm = lookup-type-split (ctx.overlay) (ctx.base) "__classmethods"
+     in when cm
+      is RecordTy (cmn) (cma) (cmf) ->
+       let probe = lookup-record-field cmf (mn.value)
+       in when probe
+        is ErrorTy -> lower-apply-normal f a ty ctx sp
+        is otherwise -> lower-method-apply (mn.value) a ty ctx sp f
+      is otherwise -> lower-apply-normal f a ty ctx sp
+    is AApplyExpr (inner-f) (inner-a) (innersp) ->
+     when inner-f
+      is ANameExpr (ifn) (ifns) ->
+       if (ifn.value) == "compare" then lower-compare-apply inner-a a ty ctx sp
+       else lower-apply-aa inner-f inner-a a f ty ctx sp
+      is otherwise -> lower-apply-aa inner-f inner-a a f ty ctx sp
+    is otherwise -> lower-apply-normal f a ty ctx sp
+
+  lower-apply-aa : AExpr, AExpr, AExpr, AExpr, CodexType, LowerCtx, SourceSpan -> IRExpr
+  lower-apply-aa (inner-f) (inner-a) (a) (f) (ty) (ctx) (sp) =
+   when inner-a
+    is ANameExpr (pn) (pns) ->
+     if text-starts-with (pn.value) "__dict-of-" then lower-constrained-apply inner-f (pn.value) a ty ctx sp
+     else if text-starts-with (pn.value) "__dderiv-" then lower-derived-apply inner-f (pn.value) a ty ctx sp
+     else lower-apply-normal f a ty ctx sp
+    is otherwise -> lower-apply-normal f a ty ctx sp
+
+  lower-compare-apply : AExpr, AExpr, CodexType, LowerCtx, SourceSpan -> IRExpr
+  lower-compare-apply (a1) (a2) (ty) (ctx) (sp) =
+   let l-ir = lower-expr a1 ErrorTy ctx
+   in let r-ir = lower-expr a2 ErrorTy ctx
+   in let lt = deep-resolve (ctx.ust) (ir-expr-type l-ir)
+   in let tn = type-name-of lt
+   in let probe = if text-length tn == 0 | is-primitive-type-name tn then ErrorTy else lookup-type-split (ctx.overlay) (ctx.base) ("__compare_" & tn)
+   in when probe
+    is ErrorTy -> lower-compare-prim lt l-ir r-ir sp
+    is otherwise -> let fty = strip-forall-ty (deep-resolve (ctx.ust) probe)
+     in deck-record (IrApply (deck-record (IrApply (deck-record (IrName ("__compare_" & tn) fty sp)) l-ir (peel-fun-return fty) sp)) r-ir int-ty-default sp)
+
+  lower-compare-prim : CodexType, IRExpr, IRExpr, SourceSpan -> IRExpr
+  lower-compare-prim (lt) (l-ir) (r-ir) (sp) =
+   when lt
+    is TextTy -> deck-record (IrApply (deck-record (IrApply (deck-record (IrName "text-compare" (FunTy TextTy (FunTy TextTy int-ty-default)) sp)) l-ir (FunTy TextTy int-ty-default) sp)) r-ir int-ty-default sp)
+    is otherwise -> gen-int-compare l-ir r-ir sp
+
+  gen-int-compare : IRExpr, IRExpr, SourceSpan -> IRExpr
+  gen-int-compare (l-ir) (r-ir) (sp) =
+   let na = deck-record (IrName "__cmpa" int-ty-default sp)
+   in let nb = deck-record (IrName "__cmpb" int-ty-default sp)
+   in deck-record (IrLet "__cmpa" int-ty-default l-ir (deck-record (IrLet "__cmpb" int-ty-default r-ir (deck-record (IrIf (deck-record (IrBinary IrLt na nb BooleanTy sp)) (deck-record (IrIntLit (0 - 1) sp)) (deck-record (IrIf (deck-record (IrBinary IrGt na nb BooleanTy sp)) (deck-record (IrIntLit 1 sp)) (deck-record (IrIntLit 0 sp)) int-ty-default sp)) int-ty-default sp)) sp)) sp)
+
+  lower-constrained-apply : AExpr, Text, AExpr, CodexType, LowerCtx, SourceSpan -> IRExpr
+  lower-constrained-apply (inner-f) (pname) (a) (ty) (ctx) (sp) =
+   let func-ir = lower-expr inner-f ErrorTy ctx
+   in let func-ty = deep-resolve (ctx.ust) (ir-expr-type func-ir)
+   in let arg-ir = lower-expr a ErrorTy ctx
+   in let arg-ty = deep-resolve (ctx.ust) (ir-expr-type arg-ir)
+   in let dict-rn = constrained-dict-rn pname (type-name-of arg-ty) ctx
+   in if text-length dict-rn > 0
+      then let db = lookup-type-split (ctx.overlay) (ctx.base) dict-rn
+      in let dict-ir = deck-record (IrName dict-rn (deep-resolve (ctx.ust) db) sp)
+      in let inner-ret = peel-fun-return func-ty
+      in let inner-apply = deck-record (IrApply func-ir dict-ir inner-ret sp)
+      in lower-apply-dispatch inner-apply arg-ir (prefer-applied-ty ty (peel-fun-return inner-ret)) sp
+      else let cls-name = substring pname 10 (text-length pname - 10)
+      in let param-name = "__" & cls-name & "-dict"
+      in let pb = lookup-type-split (ctx.overlay) (ctx.base) param-name
+      in when pb
+       is ErrorTy -> lower-apply-dispatch (deck-record (IrName ("__no-instance-" & cls-name & "-" & type-name-of arg-ty) ty sp)) arg-ir ty sp
+       is otherwise -> let dict-ir = deck-record (IrName param-name (deep-resolve (ctx.ust) pb) sp)
+        in let inner-ret = peel-fun-return func-ty
+        in let inner-apply = deck-record (IrApply func-ir dict-ir inner-ret sp)
+        in lower-apply-dispatch inner-apply arg-ir (prefer-applied-ty ty (peel-fun-return inner-ret)) sp
+
+  lower-derived-apply : AExpr, Text, AExpr, CodexType, LowerCtx, SourceSpan -> IRExpr
+  lower-derived-apply (inner-f) (pname) (a) (ty) (ctx) (sp) =
+   let func-ir = lower-expr inner-f ErrorTy ctx
+   in let func-ty = deep-resolve (ctx.ust) (ir-expr-type func-ir)
+   in let arg-ir = lower-expr a ErrorTy ctx
+   in let arg-ty = deep-resolve (ctx.ust) (ir-expr-type arg-ir)
+   in let prefix = if pname == "__dderiv-Show" then "__show_" else "__compare_"
+   in let dict-rn = prefix & type-name-of arg-ty
+   in let db = lookup-type-split (ctx.overlay) (ctx.base) dict-rn
+   in let dict-ir = deck-record (IrName dict-rn (deep-resolve (ctx.ust) db) sp)
+   in let inner-ret = peel-fun-return func-ty
+   in let inner-apply = deck-record (IrApply func-ir dict-ir inner-ret sp)
+   in lower-apply-dispatch inner-apply arg-ir (prefer-applied-ty ty (peel-fun-return inner-ret)) sp
+
+  constrained-dict-rn : Text, Text, LowerCtx -> Text
+  constrained-dict-rn (pname) (tn) (ctx) =
+   if text-length tn == 0 then ""
+   else let dict-rn = rename-lookup (ctx.chapter-renames) (substring pname 10 (text-length pname - 10) & "-dict-" & tn)
+   in let b = lookup-type-split (ctx.overlay) (ctx.base) dict-rn
+   in when b
+    is ErrorTy -> ""
+    is otherwise -> dict-rn
+
+  lower-method-apply : Text, AExpr, CodexType, LowerCtx, SourceSpan, AExpr -> IRExpr
+  lower-method-apply (mname) (a) (ty) (ctx) (sp) (f) =
+   let arg-ir = lower-expr a ErrorTy ctx
+   in let arg-ty = deep-resolve (ctx.ust) (ir-expr-type arg-ir)
+   in let tn = type-name-of arg-ty
+   in let spec-rn = method-spec-rn mname tn ctx
+   in if text-length spec-rn == 0
+      then lower-apply-dispatch (deck-record (IrName ("__no-instance-" & mname & "-" & tn) ty sp)) arg-ir ty sp
+      else let fty = strip-forall-ty (deep-resolve (ctx.ust) (lookup-type-split (ctx.overlay) (ctx.base) spec-rn))
+      in let func-ir = deck-record (IrName spec-rn fty sp)
+      in let ret-ty = peel-fun-return fty
+      in lower-apply-dispatch func-ir arg-ir (prefer-applied-ty ty ret-ty) sp
+
+  method-spec-rn : Text, Text, LowerCtx -> Text
+  method-spec-rn (mname) (tn) (ctx) =
+   if text-length tn == 0 then ""
+   else let spec-rn = rename-lookup (ctx.chapter-renames) (mname & "-" & tn)
+   in let b = lookup-type-split (ctx.overlay) (ctx.base) spec-rn
+   in when b
+    is ErrorTy -> ""
+    is otherwise -> spec-rn
+
+  try-unit-convert : IRExpr, CodexType, SourceSpan -> IRExpr
+  try-unit-convert (arg-ir) (expected-ty) (sp) =
+   let arg-actual = ir-expr-type arg-ir
+   in when arg-actual
+    is UnitTy (from-name) (from-inner) ->
+     when expected-ty
+      is UnitTy (to-name) (to-inner) ->
+       if from-name.value == to-name.value then arg-ir
+       else let conv-name = from-name.value & "-to-" & to-name.value
+       in let conv-fn-ty = deck-record (FunTy arg-actual expected-ty)
+       in deck-record (IrApply (deck-record (IrName conv-name conv-fn-ty sp)) arg-ir expected-ty sp)
+      is otherwise -> arg-ir
+    is otherwise -> arg-ir
+
+  lower-apply-normal : AExpr, AExpr, CodexType, LowerCtx, SourceSpan -> IRExpr
+  lower-apply-normal (f) (a) (ty) (ctx) (sp) =
+   let func-ir = lower-expr f ErrorTy ctx
+   in let func-ty = deep-resolve (ctx.ust) (ir-expr-type func-ir)
+   in let arg-ty = peel-fun-param func-ty
+   in let ret-ty = peel-fun-return func-ty
+   in let raw-arg-ir = lower-expr a arg-ty ctx
+   in let arg-ir = try-unit-convert raw-arg-ir arg-ty sp
+   in let resolved-ret = subst-type-vars-from-arg arg-ty (ir-expr-type arg-ir) ret-ty
+   in let actual-ret = when resolved-ret
+      is ErrorTy -> ty
+      is otherwise -> resolved-ret
+   in let preferred-ret = prefer-applied-ty ty actual-ret
+   in lower-apply-dispatch func-ir arg-ir preferred-ret sp
+
+  lower-show-apply : AExpr, AExpr, CodexType, LowerCtx, SourceSpan -> IRExpr
+  lower-show-apply (f) (a) (ty) (ctx) (sp) =
+   let func-ir = lower-expr f ErrorTy ctx
+   in let func-ty = deep-resolve (ctx.ust) (ir-expr-type func-ir)
+   in let arg-ty-hint = peel-fun-param func-ty
+   in let ret-ty = peel-fun-return func-ty
+   in let arg-ir = lower-expr a arg-ty-hint ctx
+   in let resolved-ret = subst-type-vars-from-arg arg-ty-hint (ir-expr-type arg-ir) ret-ty
+   in let actual-ret = when resolved-ret
+      is ErrorTy -> ty
+      is otherwise -> resolved-ret
+   in let preferred-ret = prefer-applied-ty ty actual-ret
+   in let arg-tn = type-name-of (deep-resolve (ctx.ust) (ir-expr-type arg-ir))
+   in let probe = if text-length arg-tn == 0 | is-primitive-type-name arg-tn then ErrorTy else lookup-type-split (ctx.overlay) (ctx.base) ("__show_" & arg-tn)
+   in when probe
+    is ErrorTy -> lower-apply-dispatch func-ir arg-ir preferred-ret sp
+    is otherwise -> let fty = strip-forall-ty (deep-resolve (ctx.ust) probe)
+     in lower-apply-dispatch (deck-record (IrName ("__show_" & arg-tn) fty sp)) arg-ir (peel-fun-return fty) sp
+
+  lower-binary-maybe-eq : BinaryOp, CodexType, IRExpr, IRExpr, CodexType, LowerCtx, SourceSpan -> IRExpr
+  lower-binary-maybe-eq (op) (left-ty) (left-ir) (right-ir) (ty) (ctx) (s) =
+   when op
+    is OpEq -> lower-eq-dispatch left-ty left-ir right-ir ty ctx s True
+    is OpNotEq -> lower-eq-dispatch left-ty left-ir right-ir ty ctx s False
+    is otherwise -> deck-record (IrBinary (lower-bin-op op left-ty) left-ir right-ir (binary-result-type op left-ty ty) s)
+
+  eq-op-for : Boolean -> BinaryOp
+  eq-op-for (positive) = if positive then OpEq else OpNotEq
+
+  lower-eq-dispatch : CodexType, IRExpr, IRExpr, CodexType, LowerCtx, SourceSpan, Boolean -> IRExpr
+  lower-eq-dispatch (left-ty) (left-ir) (right-ir) (ty) (ctx) (s) (positive) =
+   let tn = type-name-of (deep-resolve (ctx.ust) left-ty)
+   in let probe = if text-length tn == 0 then ErrorTy else lookup-type-split (ctx.overlay) (ctx.base) ("__eq_" & tn)
+   in when probe
+    is ErrorTy -> deck-record (IrBinary (lower-bin-op (eq-op-for positive) left-ty) left-ir right-ir (binary-result-type (eq-op-for positive) left-ty ty) s)
+    is otherwise -> let fty = strip-forall-ty (deep-resolve (ctx.ust) probe)
+     in let inner = deck-record (IrApply (deck-record (IrName ("__eq_" & tn) fty s)) left-ir (peel-fun-return fty) s)
+     in let call = deck-record (IrApply inner right-ir BooleanTy s)
+     in if positive then call
+        else deck-record (IrIf call (deck-record (IrBoolLit False s)) (deck-record (IrBoolLit True s)) BooleanTy s)
+
+  is-primitive-type-name : Text -> Boolean
+  is-primitive-type-name (tn) =
+   tn == "Integer" | tn == "Real" | tn == "Text" | tn == "Boolean" | tn == "Char" | tn == "List" | tn == "Nothing"
+
+  type-name-of : CodexType -> Text
+  type-name-of (ty) =
+   when ty
+    is IntegerTy (lo) (hi) (m) -> "Integer"
+    is RealTy -> "Real"
+    is TextTy -> "Text"
+    is BooleanTy -> "Boolean"
+    is CharTy -> "Char"
+    is NothingTy -> "Nothing"
+    is ListTy (e) | LinkedListTy (e) -> "List"
+    is ConstructedTy (n) (args) | RecordTy (n) (ar) (fs) | SumTy (n) (ar) (cs) -> n.value
+    is otherwise -> ""
+
+  lower-apply-dispatch : IRExpr, IRExpr, CodexType, SourceSpan -> IRExpr
+  lower-apply-dispatch (func-ir) (arg-ir) (ret-ty) (sp) =
+   when func-ir
+    is IrName (n) (fty) (ns) ->
+     if n == "fork" then deck-record (IrFork arg-ir ret-ty sp)
+     else if n == "await" then deck-record (IrAwait arg-ir ret-ty sp)
+     else deck-record (IrApply func-ir arg-ir ret-ty sp)
+    is otherwise -> deck-record (IrApply func-ir arg-ir ret-ty sp)
+
+Section: Let and Lambda
+  lower-let : List ALetBind, AExpr, CodexType, LowerCtx, SourceSpan, Integer -> IRExpr
+  lower-let (binds) (body) (ty) (ctx) (sp) (depth) =
+   if list-length binds == 0 then lower-expr-at body ty ctx (depth + 1)
+   else let b = list-at binds 0
+   in let val-ir = lower-expr-at (b.value) ErrorTy ctx (depth + 1)
+   in let val-ty = deep-resolve (ctx.ust) (ir-expr-type val-ir)
+   in let ctx2 = LowerCtx {
+    overlay = OverlayCons (TypeBinding {
+     name = b.name.value,
+     bound-type = val-ty
+    }) (ctx.overlay),
+    base = ctx.base,
+    ust = ctx.ust,
+    local-type-vars = ctx.local-type-vars,
+    chapter-renames = ctx.chapter-renames
+   }
+   in deck-record (IrLet (b.name.value) val-ty val-ir (lower-let-rest binds body ty ctx2 1 sp depth) sp)
+
+  lower-let-rest : List ALetBind, AExpr, CodexType, LowerCtx, Integer, SourceSpan, Integer -> IRExpr
+  lower-let-rest (binds) (body) (ty) (ctx) (i) (sp) (depth) =
+   if i == list-length binds then lower-expr-at body ty ctx (depth + 1)
+   else let b = list-at binds i
+   in let val-ir = lower-expr-at (b.value) ErrorTy ctx (depth + 1)
+   in let val-ty = deep-resolve (ctx.ust) (ir-expr-type val-ir)
+   in let ctx2 = LowerCtx {
+    overlay = OverlayCons (TypeBinding {
+     name = b.name.value,
+     bound-type = val-ty
+    }) (ctx.overlay),
+    base = ctx.base,
+    ust = ctx.ust,
+    local-type-vars = ctx.local-type-vars,
+    chapter-renames = ctx.chapter-renames
+   }
+   in deck-record (IrLet (b.name.value) val-ty val-ir (lower-let-rest binds body ty ctx2 (i + 1) sp depth) sp)
+
+  lower-lambda : List Name, AExpr, CodexType, LowerCtx, SourceSpan -> IRExpr
+  lower-lambda (params) (body) (ty) (ctx) (sp) =
+   let stripped = strip-forall-ty ty
+   in let lparams = lower-lambda-params params stripped 0 sp
+   in let lctx = bind-lambda-to-ctx ctx params stripped 0
+   in deck-record (IrLambda lparams (lower-expr body (get-lambda-return stripped (list-length params)) lctx) ty sp)
+
+  bind-lambda-to-ctx : LowerCtx, List Name, CodexType, Integer -> LowerCtx
+  bind-lambda-to-ctx (ctx) (params) (ty) (i) =
+   if i == list-length params then ctx
+   else let p = list-at params i
+   in let param-ty = peel-fun-param ty
+   in let rest-ty = peel-fun-return ty
+   in let ctx2 = LowerCtx {
+    overlay = OverlayCons (TypeBinding {
+     name = p.value,
+     bound-type = param-ty
+    }) (ctx.overlay),
+    base = ctx.base,
+    ust = ctx.ust,
+    local-type-vars = ctx.local-type-vars,
+    chapter-renames = ctx.chapter-renames
+   }
+   in bind-lambda-to-ctx ctx2 params rest-ty (i + 1)
+
+  lower-lambda-params : List Name, CodexType, Integer, SourceSpan -> List IRParam
+  lower-lambda-params (params) (ty) (i) (sp) =
+   lower-lambda-params-acc params ty i sp []
+
+  lower-lambda-params-acc : List Name, CodexType, Integer, SourceSpan, List IRParam -> List IRParam
+  lower-lambda-params-acc (params) (ty) (i) (sp) (acc) =
+   if i == list-length params then acc
+   else let p = list-at params i
+   in let param-ty = peel-fun-param ty
+   in let rest-ty = peel-fun-return ty
+   in lower-lambda-params-acc params rest-ty (i + 1) sp (list-push acc (deck-record (IRParam {
+    name = p.value,
+    type-val = param-ty,
+    span = sp
+   })))
+
+  get-lambda-return : CodexType, Integer -> CodexType
+  get-lambda-return (ty) (n) =
+   if n == 0 then ty
+   else when ty
+    is FunTy (p) (r) -> get-lambda-return r (n - 1)
+    is otherwise -> ErrorTy
+
+Section: Match Lowering
+  lower-match : AExpr, List AMatchArm, CodexType, LowerCtx, SourceSpan -> IRExpr
+  lower-match (scrut) (arms) (ty) (ctx) (sp) =
+   let scrut-ir = lower-expr scrut ErrorTy ctx
+   in let scrut-ty = ir-expr-type scrut-ir
+   in let branches = lower-match-arms-loop arms ty scrut-ty ctx 0 (list-length arms)
+   in let result-ty = when ty
+      is ErrorTy -> infer-match-type branches 0 (list-length branches)
+      is otherwise -> ty
+   in deck-record (IrMatch scrut-ir branches result-ty sp)
+
+  infer-match-type : List IRBranch, Integer, Integer -> CodexType
+  infer-match-type (branches) (i) (len) =
+   if i == len then ErrorTy
+   else let b = list-at branches i
+   in let body-ty = ir-expr-type (b.body)
+   in when body-ty
+     is ErrorTy -> infer-match-type branches (i + 1) len
+     is otherwise -> body-ty
+
+  lower-match-arms-loop : List AMatchArm, CodexType, CodexType, LowerCtx, Integer, Integer -> List IRBranch
+  lower-match-arms-loop (arms) (ty) (scrut-ty) (ctx) (i) (len) =
+   lower-match-arms-acc arms ty scrut-ty ctx i len []
+
+  lower-match-arms-acc : List AMatchArm, CodexType, CodexType, LowerCtx, Integer, Integer, List IRBranch -> List IRBranch
+  lower-match-arms-acc (arms) (ty) (scrut-ty) (ctx) (i) (len) (acc) =
+   if i == len then acc
+   else let arm = list-at arms i
+   in let arm-ctx = bind-pattern-to-ctx ctx (arm.pattern) scrut-ty
+   in lower-match-arms-acc arms ty scrut-ty ctx (i + 1) len (list-push acc (deck-record (IRBranch {
+    pattern = lower-pattern (arm.pattern) scrut-ty,
+    body = lower-expr (arm.body) ty arm-ctx,
+    guard = lower-expr (arm.guard) BooleanTy arm-ctx,
+    span = arm.span,
+    alt-group = arm.alt-group
+   })))
+
+  bind-pattern-to-ctx : LowerCtx, APat, CodexType -> LowerCtx
+  bind-pattern-to-ctx (ctx) (pat) (ty) =
+   when pat
+    is AVarPat (name) (s) ->
+     LowerCtx {
+      overlay = OverlayCons (TypeBinding {
+       name = name.value,
+       bound-type = ty
+      }) (ctx.overlay),
+      base = ctx.base,
+      ust = ctx.ust,
+      local-type-vars = ctx.local-type-vars,
+      chapter-renames = ctx.chapter-renames
+     }
+    is ACtorPat (ctor-name) (sub-pats) (s) ->
+     let ctor-raw = lookup-type-split (ctx.overlay) (ctx.base) (ctor-name.value)
+     in let ctor-ty = deep-resolve (ctx.ust) ctor-raw
+     in let ctor-stripped = strip-forall-ty ctor-ty
+     in let subst = pattern-type-subst ctor-stripped ty
+     in let ctor-substituted = apply-ctor-subst subst ctor-stripped
+     in bind-ctor-pattern-fields ctx sub-pats ctor-substituted 0 (list-length sub-pats)
+    is AVecPat (sub-pats) (s) ->
+     let elem-ty = when ty is VectorTy (n) (t) -> t is otherwise -> ErrorTy
+     in bind-vec-pattern-fields ctx sub-pats elem-ty 0 (list-length sub-pats)
+    is AWildPat (s) | ALitPat (text) (kind) (s) -> ctx
+
+  bind-vec-pattern-fields : LowerCtx, List APat, CodexType, Integer, Integer -> LowerCtx
+  bind-vec-pattern-fields (ctx) (sub-pats) (elem-ty) (i) (len) =
+   if i == len then ctx
+   else let ctx2 = bind-pattern-to-ctx ctx (list-at sub-pats i) elem-ty
+   in bind-vec-pattern-fields ctx2 sub-pats elem-ty (i + 1) len
+
+  bind-ctor-pattern-fields : LowerCtx, List APat, CodexType, Integer, Integer -> LowerCtx
+  bind-ctor-pattern-fields (ctx) (sub-pats) (ctor-ty) (i) (len) =
+   if i == len then ctx
+   else when ctor-ty
+     is FunTy (param-ty) (ret-ty) ->
+      let ctx2 = bind-pattern-to-ctx ctx (list-at sub-pats i) param-ty
+      in bind-ctor-pattern-fields ctx2 sub-pats ret-ty (i + 1) len
+     is otherwise ->
+      let ctx2 = bind-pattern-to-ctx ctx (list-at sub-pats i) ErrorTy
+      in bind-ctor-pattern-fields ctx2 sub-pats ctor-ty (i + 1) len
+
+  lower-pattern : APat, CodexType -> IRPat
+  lower-pattern (p) (scrut-ty) = lower-pattern-at p scrut-ty 0
+
+  lower-pattern-at : APat, CodexType, Integer -> IRPat
+  lower-pattern-at (p) (scrut-ty) (depth) =
+   if depth >= max-recursion-depth then deck-record (IrWildPat (apat-span p))
+   else when p
+    is AVarPat (name) (s) -> deck-record (IrVarPat (name.value) scrut-ty s)
+    is ALitPat (text) (kind) (s) -> deck-record (IrLitPat text scrut-ty s)
+    is ACtorPat (name) (subs) (s) -> deck-record (IrCtorPat (name.value) (lower-ctor-sub-patterns subs scrut-ty (name.value) 0 (depth + 1)) scrut-ty s)
+    is AVecPat (subs) (s) ->
+     let elem-ty = when scrut-ty is VectorTy (n) (t) -> t is otherwise -> ErrorTy
+     in deck-record (IrVecPat (lower-vec-sub-patterns subs elem-ty 0 (depth + 1)) scrut-ty s)
+    is AWildPat (s) -> deck-record (IrWildPat s)
+
+  lower-ctor-sub-patterns : List APat, CodexType, Text, Integer, Integer -> List IRPat
+  lower-ctor-sub-patterns (subs) (scrut-ty) (ctor-name) (i) (depth) =
+   lower-ctor-sub-patterns-acc subs scrut-ty ctor-name i (list-length subs) depth []
+
+  lower-ctor-sub-patterns-acc : List APat, CodexType, Text, Integer, Integer, Integer, List IRPat -> List IRPat
+  lower-ctor-sub-patterns-acc (subs) (scrut-ty) (ctor-name) (i) (len) (depth) (acc) =
+   if i == len then acc
+   else let field-ty = lookup-ctor-field-type scrut-ty ctor-name i
+   in lower-ctor-sub-patterns-acc subs scrut-ty ctor-name (i + 1) len depth (list-push acc (lower-pattern-at (list-at subs i) field-ty depth))
+
+  lower-vec-sub-patterns : List APat, CodexType, Integer, Integer -> List IRPat
+  lower-vec-sub-patterns (subs) (elem-ty) (i) (depth) =
+   lower-vec-sub-patterns-acc subs elem-ty i (list-length subs) depth []
+
+  lower-vec-sub-patterns-acc : List APat, CodexType, Integer, Integer, Integer, List IRPat -> List IRPat
+  lower-vec-sub-patterns-acc (subs) (elem-ty) (i) (len) (depth) (acc) =
+   if i == len then acc
+   else lower-vec-sub-patterns-acc subs elem-ty (i + 1) len depth (list-push acc (lower-pattern-at (list-at subs i) elem-ty depth))
+
+  lookup-ctor-field-type : CodexType, Text, Integer -> CodexType
+  lookup-ctor-field-type (ty) (ctor-name) (field-idx) =
+   when ty
+    is SumTy (sname) (args) (ctors) -> find-ctor-field-type ctors ctor-name field-idx 0
+    is otherwise -> ErrorTy
+
+  find-ctor-field-type : List SumCtor, Text, Integer, Integer -> CodexType
+  find-ctor-field-type (ctors) (ctor-name) (field-idx) (i) =
+   if i == list-length ctors then ErrorTy
+   else let c = list-at ctors i
+   in if c.name.value == ctor-name then if field-idx < list-length (c.fields) then list-at (c.fields) field-idx else ErrorTy
+      else find-ctor-field-type ctors ctor-name field-idx (i + 1)
+
+  pattern-type-subst : CodexType, CodexType -> List TypeBinding
+  pattern-type-subst (ctor-ty) (scrut-ty) =
+   let ret-ty = strip-fun-args ctor-ty
+   in let scrut-args = extract-scrut-args scrut-ty
+   in if list-length scrut-args == 0 then []
+      else when ret-ty
+       is SumTy (sname) (args) (sum-ctors) ->
+        let param-names = collect-sum-type-params sum-ctors 0 (list-length sum-ctors) []
+        in pair-names-with-args param-names scrut-args 0 []
+       is ConstructedTy (nr) (args-r) ->
+        pair-positional-subst args-r scrut-args 0 (list-length args-r) []
+       is otherwise -> []
+
+  extract-scrut-args : CodexType -> List CodexType
+  extract-scrut-args (ty) =
+   when ty
+    is ConstructedTy (n) (args) -> args
+    is EffectfulTy (effs) (sc) (ret) -> extract-scrut-args ret
+    is ForAllTy (id) (body) -> extract-scrut-args body
+    is otherwise -> []
+
+  collect-sum-type-params : List SumCtor, Integer, Integer, List Text -> List Text
+  collect-sum-type-params (ctors) (i) (len) (acc) =
+   if i == len then acc
+   else let c = list-at ctors i
+   in collect-sum-type-params ctors (i + 1) len (collect-type-param-names-in-types (c.fields) 0 (list-length (c.fields)) acc)
+
+  collect-type-param-names-in-types : List CodexType, Integer, Integer, List Text -> List Text
+  collect-type-param-names-in-types (tys) (i) (len) (acc) =
+   if i == len then acc
+   else collect-type-param-names-in-types tys (i + 1) len (collect-type-param-names-in-type (list-at tys i) acc)
+
+  collect-type-param-names-in-type : CodexType, List Text -> List Text
+  collect-type-param-names-in-type (ty) (acc) =
+   when ty
+    is ConstructedTy (name) (args) ->
+     if list-length args == 0 then
+      if is-type-param-name (name.value) & list-contains-text acc (name.value) == False
+       then list-push acc (name.value)
+       else acc
+     else collect-type-param-names-in-types args 0 (list-length args) acc
+    is FunTy (p) (r) ->
+     collect-type-param-names-in-type r (collect-type-param-names-in-type p acc)
+    is ListTy (e) | LinkedListTy (e) -> collect-type-param-names-in-type e acc
+    is otherwise -> acc
+
+  is-type-param-name : Text -> Boolean
+  is-type-param-name (name) =
+   if text-length name == 0 then False
+   else let code = char-code (char-at name 0)
+   in code >= char-code 'e' & code <= char-code 'z'
+
+  list-contains-text : List Text, Text -> Boolean
+  list-contains-text (xs) (target) =
+   list-contains-text-loop xs target 0 (list-length xs)
+
+  list-contains-text-loop : List Text, Text, Integer, Integer -> Boolean
+  list-contains-text-loop (xs) (target) (i) (len) =
+   if i == len then False
+   else if list-at xs i == target then True
+   else list-contains-text-loop xs target (i + 1) len
+
+  pair-names-with-args : List Text, List CodexType, Integer, List TypeBinding -> List TypeBinding
+  pair-names-with-args (names) (args) (i) (acc) =
+   if i == list-length names then acc
+   else if i >= list-length args then acc
+   else pair-names-with-args names args (i + 1) (list-push acc (TypeBinding {
+    name = list-at names i,
+    bound-type = list-at args i
+   }))
+
+  pair-positional-subst : List CodexType, List CodexType, Integer, Integer, List TypeBinding -> List TypeBinding
+  pair-positional-subst (args-r) (args-s) (i) (len) (acc) =
+   if i == len then acc
+   else if i >= list-length args-s then acc
+   else let r = list-at args-r i
+   in let s = list-at args-s i
+   in when r
+    is ConstructedTy (name) (sub-args) ->
+     if list-length sub-args == 0 then pair-positional-subst args-r args-s (i + 1) len (list-push acc (TypeBinding { name = name.value, bound-type = s }))
+     else pair-positional-subst args-r args-s (i + 1) len acc
+    is otherwise -> pair-positional-subst args-r args-s (i + 1) len acc
+
+  apply-ctor-subst : List TypeBinding, CodexType -> CodexType
+  apply-ctor-subst (subst) (ty) =
+   if list-length subst == 0 then ty
+   else when ty
+    is ConstructedTy (name) (args) ->
+     if list-length args == 0 then lookup-subst subst (name.value) ty
+     else ConstructedTy name (for a in args -> apply-ctor-subst subst a)
+    is FunTy (p) (r) -> FunTy (apply-ctor-subst subst p) (apply-ctor-subst subst r)
+    is ListTy (e) -> ListTy (apply-ctor-subst subst e)
+    is LinkedListTy (e) -> LinkedListTy (apply-ctor-subst subst e)
+    is EffectfulTy (effs) (sc) (r) -> EffectfulTy effs sc (apply-ctor-subst subst r)
+    is otherwise -> ty
+
+  lookup-subst : List TypeBinding, Text, CodexType -> CodexType
+  lookup-subst (subst) (name) (default-ty) =
+   lookup-subst-loop subst name 0 (list-length subst) default-ty
+
+  lookup-subst-loop : List TypeBinding, Text, Integer, Integer, CodexType -> CodexType
+  lookup-subst-loop (subst) (name) (i) (len) (default-ty) =
+   if i == len then default-ty
+   else let b = list-at subst i
+   in if b.name == name then b.bound-type
+      else lookup-subst-loop subst name (i + 1) len default-ty
+
+Section: Collections and Act
+  lower-list : List AExpr, CodexType, LowerCtx, SourceSpan -> IRExpr
+  lower-list (elems) (ty) (ctx) (sp) =
+   if list-length elems == 0
+    then lower-empty-list ty ctx sp
+    else lower-nonempty-list elems ty ctx sp
+
+  lower-empty-list : CodexType, LowerCtx, SourceSpan -> IRExpr
+  lower-empty-list (ty) (ctx) (sp) =
+   let resolved = deep-resolve (ctx.ust) ty
+   in when resolved
+    is LinkedListTy (e) ->
+     let ll-ty = deck-record (LinkedListTy e)
+     in deck-record (IrApply (deck-record (IrName "__linked-list-empty" (deck-record (FunTy int-ty-default ll-ty)) sp)) (deck-record (IrIntLit 0 sp)) ll-ty sp)
+    is ListTy (e) -> deck-record (IrList [] e sp)
+    is otherwise -> deck-record (IrList [] ErrorTy sp)
+
+  lower-nonempty-list : List AExpr, CodexType, LowerCtx, SourceSpan -> IRExpr
+  lower-nonempty-list (elems) (ty) (ctx) (sp) =
+   let resolved = deep-resolve (ctx.ust) ty
+   in let from-context = when resolved
+      is ListTy (e) -> e
+      is otherwise -> ErrorTy
+   in let elem-ty = when from-context
+      is ErrorTy -> ir-expr-type (lower-expr (list-at elems 0) ErrorTy ctx)
+      is otherwise -> from-context
+   in deck-record (IrList (for e in elems -> lower-expr e elem-ty ctx) elem-ty sp)
+
+  lower-record : Name, List AFieldExpr, CodexType, LowerCtx, SourceSpan -> IRExpr
+  lower-record (name) (fields) (ty) (ctx) (sp) =
+   let ctor-raw = lookup-type-split (ctx.overlay) (ctx.base) (name.value)
+   in let record-ty = when ctor-raw
+      is ErrorTy -> ty
+      is otherwise -> strip-fun-args (deep-resolve (ctx.ust) ctor-raw)
+   in let actual-ty = when record-ty
+      is ErrorTy -> ty
+      is otherwise -> record-ty
+   in let lowered-fields = lower-record-fields-typed fields actual-ty ctx 0 (list-length fields)
+   in let refined-actual = refine-record-ty-from-fields actual-ty lowered-fields ctx 0 (list-length lowered-fields)
+   in let emit-ty = prefer-applied-record-ty ty refined-actual (ctx.local-type-vars)
+   in deck-record (IrRecord (name.value) lowered-fields emit-ty sp)
+
+  refine-record-ty-from-fields : CodexType, List IRFieldVal, LowerCtx, Integer, Integer -> CodexType
+  refine-record-ty-from-fields (ty) (lowered) (ctx) (i) (len) =
+   if i == len then ty
+   else when ty
+    is RecordTy (rn) (rargs) (rfields) ->
+     let f = list-at lowered i
+     in let declared = lookup-record-field rfields (f.name)
+     in let actual = deep-resolve (ctx.ust) (ir-expr-type (f.value))
+     in let ty2 = subst-type-vars-from-arg declared actual ty
+     in refine-record-ty-from-fields ty2 lowered ctx (i + 1) len
+    is otherwise -> ty
+
+  prefer-applied-record-ty : CodexType, CodexType, List Integer -> CodexType
+  prefer-applied-record-ty (expected) (fallback) (local-ids) =
+   let peeled = peel-effectful-ty expected
+   in when peeled
+    is ConstructedTy (en) (eargs) ->
+     if list-length eargs == 0 then fallback
+     else when fallback
+      is RecordTy (fn) (fa) (ff) -> if en.value == fn.value & list-length eargs == list-length fa then RecordTy fn (pick-record-args eargs fa local-ids 0 (list-length eargs) []) ff else fallback
+      is otherwise -> fallback
+    is RecordTy (en) (eargs) (efields) ->
+     if list-length eargs == 0 then fallback
+     else when fallback
+      is RecordTy (fn) (fa) (ff) -> if en.value == fn.value & list-length eargs == list-length fa then RecordTy fn (pick-record-args eargs fa local-ids 0 (list-length eargs) []) ff else peeled
+      is otherwise -> peeled
+    is otherwise -> fallback
+
+  pick-record-args : List CodexType, List CodexType, List Integer, Integer, Integer, List CodexType -> List CodexType
+  pick-record-args (eargs) (fargs) (local-ids) (i) (len) (acc) =
+   if i == len then acc
+   else let ea = list-at eargs i
+   in let fa = list-at fargs i
+   in let picked = when ea
+      is TypeVar (id) -> if list-contains-int local-ids id then ea else fa
+      is otherwise -> ea
+   in pick-record-args eargs fargs local-ids (i + 1) len (list-push acc picked)
+
+  list-contains-int : List Integer, Integer -> Boolean
+  list-contains-int (xs) (target) = list-contains-int-loop xs target 0 (list-length xs)
+
+  list-contains-int-loop : List Integer, Integer, Integer, Integer -> Boolean
+  list-contains-int-loop (xs) (target) (i) (len) =
+   if i == len then False
+   else if list-at xs i == target then True
+   else list-contains-int-loop xs target (i + 1) len
+
+  lower-record-fields-typed : List AFieldExpr, CodexType, LowerCtx, Integer, Integer -> List IRFieldVal
+  lower-record-fields-typed (fields) (record-ty) (ctx) (i) (len) =
+   lower-record-fields-acc fields record-ty ctx i len []
+
+  lower-record-fields-acc : List AFieldExpr, CodexType, LowerCtx, Integer, Integer, List IRFieldVal -> List IRFieldVal
+  lower-record-fields-acc (fields) (record-ty) (ctx) (i) (len) (acc) =
+   if i == len then acc
+   else let f = list-at fields i
+   in let field-expected = when record-ty
+       is RecordTy (rname) (rargs) (rfields) -> lookup-record-field rfields (f.name.value)
+       is otherwise -> ErrorTy
+   in lower-record-fields-acc fields record-ty ctx (i + 1) len (list-push acc (deck-record (IRFieldVal {
+    name = f.name.value,
+    value = lower-expr (f.value) field-expected ctx,
+    span = f.span
+   })))
+
+  lower-act : List AActStmt, CodexType, LowerCtx, SourceSpan -> IRExpr
+  lower-act (stmts) (ty) (ctx) (sp) =
+   let lowered = lower-act-stmts-loop stmts ty ctx 0 (list-length stmts)
+   in let act-ty = act-block-type lowered ty
+   in deck-record (IrAct lowered act-ty sp)
+
+  act-block-type : List IRActStmt, CodexType -> CodexType
+  act-block-type (stmts) (fallback) =
+   if list-length stmts == 0 then fallback
+   else let last = list-at stmts (list-length stmts - 1)
+   in when last
+     is IrDoExec (e) (sp) -> ir-expr-type e
+     is IrDoBind (nm) (bty) (e) (sp) -> bty
+
+  lower-act-stmts-loop : List AActStmt, CodexType, LowerCtx, Integer, Integer -> List IRActStmt
+  lower-act-stmts-loop (stmts) (ty) (ctx) (i) (len) =
+   lower-act-stmts-acc stmts ty ctx i len []
+
+  lower-act-stmts-acc : List AActStmt, CodexType, LowerCtx, Integer, Integer, List IRActStmt -> List IRActStmt
+  lower-act-stmts-acc (stmts) (ty) (ctx) (i) (len) (acc) =
+   if i == len then acc
+   else let s = list-at stmts i
+   in when s
+     is AActBindStmt (name) (val) (sp) ->
+      let val-ir = lower-expr val ty ctx
+   in let val-ty = peel-effectful-ty (ir-expr-type val-ir)
+   in let ctx2 = LowerCtx {
+       overlay = OverlayCons (TypeBinding {
+        name = name.value,
+        bound-type = val-ty
+       }) (ctx.overlay),
+       base = ctx.base,
+       ust = ctx.ust,
+       local-type-vars = ctx.local-type-vars,
+       chapter-renames = ctx.chapter-renames
+      }
+   in lower-act-stmts-acc stmts ty ctx2 (i + 1) len (list-push acc (deck-record (IrDoBind (name.value) val-ty val-ir sp)))
+     is AActExprStmt (e) (sp) ->
+      lower-act-stmts-acc stmts ty ctx (i + 1) len (list-push acc (deck-record (IrDoExec (lower-expr e ty ctx) sp)))
+
+  lower-handle : Name, AExpr, List AHandleClause, CodexType, LowerCtx, SourceSpan -> IRExpr
+  lower-handle (eff) (body) (clauses) (ty) (ctx) (sp) =
+   let body-ir = lower-expr body ty ctx
+   in deck-record (IrHandle (eff.value) body-ir (lower-handle-clauses clauses ty ctx) ty sp)
+
+  lower-handle-clauses : List AHandleClause, CodexType, LowerCtx -> List IRHandleClause
+  lower-handle-clauses (clauses) (ty) (ctx) =
+   lower-handle-clauses-loop clauses ty ctx 0
+
+  lower-handle-clauses-loop : List AHandleClause, CodexType, LowerCtx, Integer -> List IRHandleClause
+  lower-handle-clauses-loop (clauses) (ty) (ctx) (i) =
+   lower-handle-clauses-acc clauses ty ctx i []
+
+  lower-handle-clauses-acc : List AHandleClause, CodexType, LowerCtx, Integer, List IRHandleClause -> List IRHandleClause
+  lower-handle-clauses-acc (clauses) (ty) (ctx) (i) (acc) =
+   if i == list-length clauses then acc
+   else let c = list-at clauses i
+   in let body-ir = lower-expr (c.body) ty ctx
+   in let param-names = for p in (c.params) -> p.value
+   in let wrapped = wrap-clause-body-in-lambda param-names body-ir (c.span)
+   in lower-handle-clauses-acc clauses ty ctx (i + 1) (list-push acc (deck-record (IRHandleClause {
+    op-name = c.op-name.value,
+    params = param-names,
+    resume-name = c.resume-name.value,
+    body = wrapped,
+    span = c.span
+   })))
+
+  wrap-clause-body-in-lambda : List Text, IRExpr, SourceSpan -> IRExpr
+  wrap-clause-body-in-lambda (params) (body) (sp) =
+   if list-length params == 0 then body
+   else let ir-params = for n in params -> deck-record (IRParam { name = n, type-val = int-ty-default, span = sp })
+   in let body-ty = ir-expr-type body
+   in let lam-ty = build-lambda-type params body-ty 0
+   in deck-record (IrLambda ir-params body lam-ty sp)
+
+  build-lambda-type : List Text, CodexType, Integer -> CodexType
+  build-lambda-type (params) (ret) (i) =
+   if i >= list-length params then ret
+   else FunTy int-ty-default (build-lambda-type params ret (i + 1))
+
+Section: Definition Lowering
+  lower-def : ADef, List TypeBinding, UnificationState, List RenameEntry, List RenameEntry -> IRDef
+  lower-def (d) (types) (ust) (renames) (chapter-rn) =
+   let rn = resolve-def-name renames (d.name.value) (d.chapter-slug)
+   in let raw-type = lookup-type-bsearch types rn
+   in let full-type = deep-resolve ust raw-type
+   in let stripped = strip-forall-ty full-type
+   in let local-ids = collect-type-var-ids stripped []
+   in let params = lower-def-params (d.params) stripped 0
+   in let ret-type = get-return-type-n stripped (list-length (d.params))
+   in let ctx = build-def-ctx types ust (d.params) stripped local-ids chapter-rn
+   in deck-record (IRDef {
+    name = rn,
+    params = params,
+    type-val = full-type,
+    body = lower-expr (d.body) ret-type ctx,
+    chapter-slug = d.chapter-slug,
+    is-punctual = False,
+    wcet-budget = 0,
+    span = d.span
+   })
+
+  collect-type-var-ids : CodexType, List Integer -> List Integer
+  collect-type-var-ids (ty) (acc) =
+   when ty
+    is TypeVar (id) -> if list-contains-int acc id then acc else list-push acc id
+    is otherwise -> codex-type-fold-children collect-type-var-ids ty acc
+
+  build-def-ctx : List TypeBinding, UnificationState, List AParam, CodexType, List Integer, List RenameEntry -> LowerCtx
+  build-def-ctx (types) (ust) (params) (ty) (local-ids) (chapter-rn) =
+   let base-ctx = LowerCtx {
+    overlay = OverlayNil,
+    base = types,
+    ust = ust,
+    local-type-vars = local-ids,
+    chapter-renames = chapter-rn
+   }
+   in bind-params-to-ctx base-ctx params ty 0
+
+  bind-params-to-ctx : LowerCtx, List AParam, CodexType, Integer -> LowerCtx
+  bind-params-to-ctx (ctx) (params) (ty) (i) =
+   if i == list-length params then ctx
+   else let p = list-at params i
+   in let param-ty = peel-fun-param ty
+   in let rest-ty = peel-fun-return ty
+   in let ctx2 = LowerCtx {
+    overlay = OverlayCons (TypeBinding {
+     name = p.name.value,
+     bound-type = param-ty
+    }) (ctx.overlay),
+    base = ctx.base,
+    ust = ctx.ust,
+    local-type-vars = ctx.local-type-vars,
+    chapter-renames = ctx.chapter-renames
+   }
+   in bind-params-to-ctx ctx2 params rest-ty (i + 1)
+
+  lower-def-params : List AParam, CodexType, Integer -> List IRParam
+  lower-def-params (params) (ty) (i) =
+   lower-def-params-acc params ty i []
+
+  lower-def-params-acc : List AParam, CodexType, Integer, List IRParam -> List IRParam
+  lower-def-params-acc (params) (ty) (i) (acc) =
+   if i == list-length params then acc
+   else let p = list-at params i
+   in let param-ty = peel-fun-param ty
+   in let rest-ty = peel-fun-return ty
+   in lower-def-params-acc params rest-ty (i + 1) (list-push acc (deck-record (IRParam {
+    name = p.name.value,
+    type-val = param-ty,
+    span = p.span
+   })))
+
+  get-return-type-n : CodexType, Integer -> CodexType
+  get-return-type-n (ty) (n) =
+   if n == 0 then ty
+   else when ty
+    is FunTy (p) (r) -> get-return-type-n r (n - 1)
+    is otherwise -> ty
+
+  lower-chapter : AChapter, List TypeBinding, UnificationState, List Text, List RenameEntry, SkipListText, List ChapterAssignment -> IRChapter
+  lower-chapter (m) (all-types) (ust) (ctor-names) (renames) (colliding) (assignments) =
+   let slug-cache = for a in assignments -> slugify (a.chapter-slug)
+   in deck-record (IRChapter {
+    name = m.name,
+    defs = lower-defs (m.defs) all-types ust 0 renames colliding assignments (m.citations) slug-cache "" [] (m.rt-names) (m.rt-budgets),
+    effect-op-names = collect-effect-op-names (m.effect-defs) 0 (list-length (m.effect-defs)) [],
+    span = m.span
+   })
+
+  collect-effect-op-names : List AEffectDef, Integer, Integer, List Text -> List Text
+  collect-effect-op-names (effs) (i) (len) (acc) =
+   if i >= len then acc
+   else let e = list-at effs i
+   in collect-effect-op-names effs (i + 1) len (acc & (for op in (e.ops) -> op.name.value))
+
+  lower-defs : List ADef, List TypeBinding, UnificationState, Integer, List RenameEntry, SkipListText, List ChapterAssignment, List ACitesDecl, List Text, Text, List RenameEntry, List Text, List Integer -> List IRDef
+  lower-defs (defs) (types) (ust) (i) (renames) (colliding) (assignments) (citations) (slug-cache) (cur-slug) (cur-chapter-rn) (rt-names) (rt-budgets) =
+   lower-defs-acc defs types ust i [] renames colliding assignments citations slug-cache cur-slug cur-chapter-rn rt-names rt-budgets
+
+  is-in-rt-names : List Text, Text, Integer, Integer -> Boolean
+  is-in-rt-names (names) (target) (i) (len) =
+   if i >= len then False
+   else if list-at names i == target then True
+   else is-in-rt-names names target (i + 1) len
+
+  find-rt-budget : List Text, List Integer, Text, Integer, Integer -> Integer
+  find-rt-budget (names) (budgets) (target) (i) (len) =
+   if i >= len then 0
+   else if list-at names i == target then if i < list-length budgets then list-at budgets i else 0
+   else find-rt-budget names budgets target (i + 1) len
+
+  lower-defs-acc : List ADef, List TypeBinding, UnificationState, Integer, List IRDef, List RenameEntry, SkipListText, List ChapterAssignment, List ACitesDecl, List Text, Text, List RenameEntry, List Text, List Integer -> List IRDef
+  lower-defs-acc (defs) (types) (ust) (i) (acc) (renames) (colliding) (assignments) (citations) (slug-cache) (cur-slug) (cur-chapter-rn) (rt-names) (rt-budgets) =
+   if i == list-length defs then acc
+   else let d = list-at defs i
+   in let chapter-rn = if d.chapter-slug == cur-slug then cur-chapter-rn
+      else apply-cite-overrides (build-chapter-rename-map colliding assignments (d.chapter-slug)) citations colliding assignments slug-cache (d.chapter-slug) 0
+   in let ir-def = lower-def d types ust renames chapter-rn
+   in let tagged = if is-in-rt-names rt-names (d.name.value) 0 (list-length rt-names) then __record-set (__record-set ir-def "is-punctual" True) "wcet-budget" (find-rt-budget rt-names rt-budgets (d.name.value) 0 (list-length rt-names)) else ir-def
+   in lower-defs-acc defs types ust (i + 1) (list-push acc tagged) renames colliding assignments citations slug-cache (d.chapter-slug) chapter-rn rt-names rt-budgets
+
+Section: Constant Folding
+
+  fold-constants-in-chapter : IRChapter -> IRChapter
+  fold-constants-in-chapter (ch) =
+   __record-set ch "defs" (for d in (ch.defs) -> let folded = __record-set d "body" (fold-expr (d.body)) in deck-record folded)
+
+  fold-expr : IRExpr -> IRExpr
+  fold-expr (e) =
+   when e
+    is IrApply (f) (a) (ty) (sp) -> fold-apply (fold-expr f) (fold-expr a) ty sp
+    is IrBinary (op) (l) (r) (ty) (sp) -> deck-record (IrBinary op (fold-expr l) (fold-expr r) ty sp)
+    is IrIf (c) (t) (el) (ty) (sp) -> deck-record (IrIf (fold-expr c) (fold-expr t) (fold-expr el) ty sp)
+    is IrLet (n) (ty) (v) (b) (sp) -> deck-record (IrLet n ty (fold-expr v) (fold-expr b) sp)
+    is IrLambda (ps) (b) (ty) (sp) -> deck-record (IrLambda ps (fold-expr b) ty sp)
+    is IrNegate (x) (sp) ->
+     let fx = fold-expr x
+     in when fx
+      is IrIntLit (v) (ls) -> deck-record (IrIntLit (-v) sp)
+      is otherwise -> deck-record (IrNegate fx sp)
+    is IrMatch (sc) (bs) (ty) (sp) -> deck-record (IrMatch (fold-expr sc) (for b in bs -> deck-record (IRBranch { pattern = b.pattern, body = fold-expr (b.body), guard = fold-expr (b.guard), span = b.span, alt-group = b.alt-group })) ty sp)
+    is IrAct (ss) (ty) (sp) -> deck-record (IrAct (for stmt in ss -> when stmt is IrDoBind (n) (sty) (v) (ssp) -> deck-record (IrDoBind n sty (fold-expr v) ssp) is IrDoExec (ev) (esp) -> deck-record (IrDoExec (fold-expr ev) esp)) ty sp)
+    is IrRecord (n) (fs) (ty) (sp) -> deck-record (IrRecord n (for fv in fs -> deck-record (__record-set fv "value" (fold-expr (fv.value)))) ty sp)
+    is IrFieldAccess (r) (f) (ty) (sp) -> deck-record (IrFieldAccess (fold-expr r) f ty sp)
+    is IrFieldStore (r) (f) (v) (ty) (sp) -> deck-record (IrFieldStore (fold-expr r) f (fold-expr v) ty sp)
+    is IrList (es) (ty) (sp) -> deck-record (IrList (for x in es -> fold-expr x) ty sp)
+    is otherwise -> e
+
+  fold-apply : IRExpr, IRExpr, CodexType, SourceSpan -> IRExpr
+  fold-apply (f) (a) (ty) (sp) =
+   when f
+    is IrName (n) (fty) (ns) ->
+     if n == "text-length" then when a
+      is IrTextLit (s) (as) -> deck-record (IrIntLit (text-length s) sp)
+      is otherwise -> deck-record (IrApply f a ty sp)
+     else if n == "char-code" then when a
+      is IrCharLit (v) (as) -> deck-record (IrIntLit v sp)
+      is otherwise -> deck-record (IrApply f a ty sp)
+     else deck-record (IrApply f a ty sp)
+    is IrApply (inner-f) (inner-a) (fty) (fs) ->
+     when inner-f
+      is IrName (n) (nty) (nsp) ->
+       if n == "char-code-at" then fold-char-code-at f inner-a a ty sp
+       else deck-record (IrApply f a ty sp)
+      is otherwise -> deck-record (IrApply f a ty sp)
+    is otherwise -> deck-record (IrApply f a ty sp)
+
+  fold-char-code-at : IRExpr, IRExpr, IRExpr, CodexType, SourceSpan -> IRExpr
+  fold-char-code-at (partial) (str-arg) (idx-arg) (ty) (sp) =
+   when str-arg
+    is IrTextLit (s) (as) -> when idx-arg
+     is IrIntLit (i) (is2) ->
+      if i >= 0 then if i < text-length s then deck-record (IrIntLit (char-code-at s i) sp)
+       else deck-record (IrApply partial idx-arg ty sp)
+      else deck-record (IrApply partial idx-arg ty sp)
+     is otherwise -> deck-record (IrApply partial idx-arg ty sp)
+    is otherwise -> deck-record (IrApply partial idx-arg ty sp)
+
+Section: Leaf Inlining
+
+ Inlines saturated calls to leaf functions whose body is pure integer
+ arithmetic over their own parameters -- shapes like math-mod (a) (b)
+ = a - (a / b) * b. The inlined expression is the callee's own body
+ with parameter names replaced by the call-site arguments, so the
+ semantics (including division traps) are the callee's by
+ construction; nothing is synthesized. A call site qualifies only
+ when every argument is a name or an integer literal (free to
+ duplicate) and the root name is not shadowed by a local binding at
+ the site. deck-record is never a candidate: its definition is the identity,
+ but the emitter intercepts the NAME and wraps the argument in
+ __deck-enter/__deck-exit -- inlining it would delete the deck
+ allocation and leave the value on reclaimable bivy (found the hard
+ way: stage1 battery failures in every lambda-heavy test, CL 3716
+ bisect). The candidate's definition is never removed: bare
+ references and partial applications still call it. Runs on the CDX
+ path only, after constant folding; the TEXT path is untouched, so
+ text round-trip and semantic equivalence never see inlined bodies.
+ Defs are scanned read-only first and rebuilt only when they contain
+ a qualifying root name, so the LOWER deck pays copies only for the
+ defs that change.
+
+  InlineLeaf = record {
+   il-name : Text,
+   il-params : List Text,
+   il-body : IRExpr
+  }
+
+  is-inline-int-op : IRBinaryOp -> Boolean
+  is-inline-int-op (op) =
+   when op
+    is IrAddInt | IrSubInt | IrMulInt | IrDivInt -> True
+    is otherwise -> False
+
+  leaf-param-index : List Text, Text, Integer -> Integer
+  leaf-param-index (params) (n) (i) =
+   if i == list-length params then 0 - 1
+   else if list-at params i == n then i
+   else leaf-param-index params n (i + 1)
+
+  leaf-body-ok : IRExpr, List Text, Integer -> Integer
+  leaf-body-ok (e) (params) (fuel) =
+   if fuel <= 0 then 0 - 1
+   else when e
+    is IrIntLit (v) (sp) -> fuel - 1
+    is IrName (n) (ty) (sp) -> if leaf-param-index params n 0 >= 0 then fuel - 1 else 0 - 1
+    is IrBinary (op) (l) (r) (ty) (sp) ->
+     if is-inline-int-op op then
+      let lf = leaf-body-ok l params (fuel - 1)
+      in if lf < 0 then 0 - 1 else leaf-body-ok r params lf
+     else 0 - 1
+    is otherwise -> 0 - 1
+
+  collect-leaf-defs : List IRDef, Integer, List InlineLeaf -> List InlineLeaf
+  collect-leaf-defs (defs) (i) (acc) =
+   if i == list-length defs then acc
+   else let d = list-at defs i
+   in let pnames = for p in (d.params) -> p.name
+   in let np = list-length pnames
+   in let ok = if d.name == "deck-record" then 0 - 1
+      else if np >= 1 & np <= 3 then leaf-body-ok (d.body) pnames 12
+      else 0 - 1
+   in if ok >= 0
+      then collect-leaf-defs defs (i + 1) (list-push acc (deck-record (InlineLeaf { il-name = d.name, il-params = pnames, il-body = d.body })))
+   else collect-leaf-defs defs (i + 1) acc
+
+  find-leaf-def : List InlineLeaf, Text, Integer -> Integer
+  find-leaf-def (cands) (n) (i) =
+   if i == list-length cands then 0 - 1
+   else if (list-at cands i).il-name == n then i
+   else find-leaf-def cands n (i + 1)
+
+  inline-apply-root : IRExpr -> Text
+  inline-apply-root (e) =
+   when e
+    is IrApply (f) (a) (ty) (sp) -> inline-apply-root f
+    is IrName (n) (ty) (sp) -> n
+    is otherwise -> ""
+
+  inline-apply-args : IRExpr, List IRExpr -> List IRExpr
+  inline-apply-args (e) (acc) =
+   when e
+    is IrApply (f) (a) (ty) (sp) -> inline-apply-args f ([a] & acc)
+    is otherwise -> acc
+
+  ir-is-int-lit : IRExpr -> Boolean
+  ir-is-int-lit (e) =
+   when e
+    is IrIntLit (v) (sp) -> True
+    is otherwise -> False
+
+  leaf-arg-simple : IRExpr -> Boolean
+  leaf-arg-simple (a) =
+   when a
+    is IrName (n) (ty) (sp) -> True
+    is otherwise -> ir-is-int-lit a
+
+  leaf-args-simple : List IRExpr, Integer -> Boolean
+  leaf-args-simple (args) (i) =
+   if i == list-length args then True
+   else if leaf-arg-simple (list-at args i) then leaf-args-simple args (i + 1)
+   else False
+
+  subst-leaf : IRExpr, List Text, List IRExpr -> IRExpr
+  subst-leaf (e) (params) (args) =
+   when e
+    is IrName (n) (ty) (sp) ->
+     let idx = leaf-param-index params n 0
+     in if idx >= 0 then list-at args idx else e
+    is IrBinary (op) (l) (r) (ty) (sp) -> deck-record (IrBinary op (subst-leaf l params args) (subst-leaf r params args) ty sp)
+    is otherwise -> e
+
+  inline-apply-site : IRExpr, List InlineLeaf, List Text -> IRExpr
+  inline-apply-site (e) (cands) (bound) =
+   let root = inline-apply-root e
+   in if root == "" then e
+   else if leaf-param-index bound root 0 >= 0 then e
+   else let ci = find-leaf-def cands root 0
+   in if ci < 0 then e
+   else let cand = list-at cands ci
+   in let args = inline-apply-args e []
+   in if list-length args /= list-length (cand.il-params) then e
+   else if leaf-args-simple args 0 == False then e
+   else fold-rem-expr (subst-leaf (cand.il-body) (cand.il-params) args)
+
+ Remainder recognition over substituted bodies. The truncated-mod
+ idiom X - (X / Y) * Y computes with three operations what idiv
+ already left in RDX. IrRemInt emits exactly idiv's remainder --
+ truncated, sign of the dividend, trapping on Y = 0 -- which is the
+ idiom's semantics for every input including negative dividends.
+ The rewrite fires only on expressions the inliner just produced
+ (math-mod's body is the canonical source), matches the multiply in
+ either operand order, and requires the X and Y occurrences to be
+ the same name or the same literal; the matched subtree has no
+ binders, so equal names are equal values. CDX path only: the plug
+ wire format and the text round-trip build from the TEXT frontend,
+ which never inlines, so IrRemInt never reaches them.
+
+  ir-operand-same : IRExpr, IRExpr -> Boolean
+  ir-operand-same (a) (b) =
+   when a
+    is IrName (n) (ty) (sp) ->
+     (when b
+      is IrName (n2) (ty2) (sp2) -> n == n2
+      is otherwise -> False)
+    is IrIntLit (v) (sp) ->
+     (when b
+      is IrIntLit (v2) (sp2) -> v == v2
+      is otherwise -> False)
+    is otherwise -> False
+
+  rem-div-matches : IRExpr, IRExpr, IRExpr -> Boolean
+  rem-div-matches (x) (d) (y) =
+   when d
+    is IrBinary (dop) (dx) (dy) (dty) (dsp) ->
+     (when dop
+      is IrDivInt -> if ir-operand-same dx x then ir-operand-same dy y else False
+      is otherwise -> False)
+    is otherwise -> False
+
+  rem-shape-direct : IRExpr, IRExpr -> Boolean
+  rem-shape-direct (x) (r) =
+   when r
+    is IrBinary (mop) (ml) (mr) (mty) (msp) ->
+     (when mop
+      is IrMulInt -> rem-div-matches x ml mr
+      is otherwise -> False)
+    is otherwise -> False
+
+  rem-shape-commuted : IRExpr, IRExpr -> Boolean
+  rem-shape-commuted (x) (r) =
+   when r
+    is IrBinary (mop) (ml) (mr) (mty) (msp) ->
+     (when mop
+      is IrMulInt -> rem-div-matches x mr ml
+      is otherwise -> False)
+    is otherwise -> False
+
+  rem-mul-left : IRExpr -> IRExpr
+  rem-mul-left (r) =
+   when r
+    is IrBinary (mop) (ml) (mr) (mty) (msp) -> ml
+    is otherwise -> r
+
+  rem-mul-right : IRExpr -> IRExpr
+  rem-mul-right (r) =
+   when r
+    is IrBinary (mop) (ml) (mr) (mty) (msp) -> mr
+    is otherwise -> r
+
+  fold-rem-sub : IRExpr, IRExpr, CodexType, SourceSpan -> IRExpr
+  fold-rem-sub (x) (r) (ty) (sp) =
+   if rem-shape-direct x r then deck-record (IrBinary IrRemInt x (rem-mul-right r) ty sp)
+   else if rem-shape-commuted x r then deck-record (IrBinary IrRemInt x (rem-mul-left r) ty sp)
+   else deck-record (IrBinary IrSubInt x r ty sp)
+
+  fold-rem-expr : IRExpr -> IRExpr
+  fold-rem-expr (e) =
+   when e
+    is IrBinary (op) (l) (r) (ty) (sp) ->
+     let fl = fold-rem-expr l
+     in let fr = fold-rem-expr r
+     in (when op
+      is IrSubInt -> fold-rem-sub fl fr ty sp
+      is otherwise -> deck-record (IrBinary op fl fr ty sp))
+    is otherwise -> e
+
+  push-param-names : List Text, List IRParam, Integer -> List Text
+  push-param-names (bound) (ps) (i) =
+   if i == list-length ps then bound
+   else push-param-names (list-push bound (list-at ps i).name) ps (i + 1)
+
+  push-pat-names : List Text, IRPat -> List Text
+  push-pat-names (bound) (p) =
+   when p
+    is IrVarPat (n) (t) (s) -> list-push bound n
+    is IrCtorPat (n) (subs) (t) (s) -> push-pat-names-list bound subs 0
+    is otherwise -> bound
+
+  push-pat-names-list : List Text, List IRPat, Integer -> List Text
+  push-pat-names-list (bound) (ps) (i) =
+   if i == list-length ps then bound
+   else push-pat-names-list (push-pat-names bound (list-at ps i)) ps (i + 1)
+
+  has-leaf-call : IRExpr, List InlineLeaf -> Boolean
+  has-leaf-call (e) (cands) =
+   when e
+    is IrApply (f) (a) (ty) (sp) ->
+     if find-leaf-def cands (inline-apply-root e) 0 >= 0 then True
+     else if has-leaf-call f cands then True
+     else has-leaf-call a cands
+    is IrBinary (op) (l) (r) (ty) (sp) -> if has-leaf-call l cands then True else has-leaf-call r cands
+    is IrIf (c) (t) (el) (ty) (sp) -> if has-leaf-call c cands then True else if has-leaf-call t cands then True else has-leaf-call el cands
+    is IrLet (n) (ty) (v) (b) (sp) -> if has-leaf-call v cands then True else has-leaf-call b cands
+    is IrLambda (ps) (b) (ty) (sp) -> has-leaf-call b cands
+    is IrNegate (x) (sp) -> has-leaf-call x cands
+    is IrMatch (sc) (bs) (ty) (sp) -> if has-leaf-call sc cands then True else has-leaf-call-branches bs cands 0
+    is IrAct (ss) (ty) (sp) -> has-leaf-call-stmts ss cands 0
+    is IrRecord (n) (fs) (ty) (sp) -> has-leaf-call-fields fs cands 0
+    is IrFieldAccess (r) (f) (ty) (sp) -> has-leaf-call r cands
+    is IrFieldStore (r) (f) (v) (ty) (sp) -> if has-leaf-call r cands then True else has-leaf-call v cands
+    is IrList (es) (ty) (sp) -> has-leaf-call-list es cands 0
+    is otherwise -> False
+
+  has-leaf-call-branches : List IRBranch, List InlineLeaf, Integer -> Boolean
+  has-leaf-call-branches (bs) (cands) (i) =
+   if i == list-length bs then False
+   else let b = list-at bs i
+   in if has-leaf-call (b.body) cands then True
+   else if has-leaf-call (b.guard) cands then True
+   else has-leaf-call-branches bs cands (i + 1)
+
+  has-leaf-call-stmts : List IRActStmt, List InlineLeaf, Integer -> Boolean
+  has-leaf-call-stmts (ss) (cands) (i) =
+   if i == list-length ss then False
+   else let s = list-at ss i
+   in if has-leaf-call (ir-act-stmt-expr s) cands then True
+   else has-leaf-call-stmts ss cands (i + 1)
+
+  has-leaf-call-fields : List IRFieldVal, List InlineLeaf, Integer -> Boolean
+  has-leaf-call-fields (fs) (cands) (i) =
+   if i == list-length fs then False
+   else if has-leaf-call ((list-at fs i).value) cands then True
+   else has-leaf-call-fields fs cands (i + 1)
+
+  has-leaf-call-list : List IRExpr, List InlineLeaf, Integer -> Boolean
+  has-leaf-call-list (es) (cands) (i) =
+   if i == list-length es then False
+   else if has-leaf-call (list-at es i) cands then True
+   else has-leaf-call-list es cands (i + 1)
+
+  inline-act-stmts : List IRActStmt, List InlineLeaf, List Text, Integer, List IRActStmt -> List IRActStmt
+  inline-act-stmts (ss) (cands) (bound) (i) (acc) =
+   if i == list-length ss then acc
+   else let s = list-at ss i
+   in when s
+    is IrDoBind (n) (sty) (v) (ssp) -> inline-act-stmts ss cands (list-push bound n) (i + 1) (list-push acc (deck-record (IrDoBind n sty (inline-expr v cands bound) ssp)))
+    is IrDoExec (ev) (esp) -> inline-act-stmts ss cands bound (i + 1) (list-push acc (deck-record (IrDoExec (inline-expr ev cands bound) esp)))
+
+  inline-expr : IRExpr, List InlineLeaf, List Text -> IRExpr
+  inline-expr (e) (cands) (bound) =
+   when e
+    is IrApply (f) (a) (ty) (sp) ->
+     let nf = inline-expr f cands bound
+     in let na = inline-expr a cands bound
+     in inline-apply-site (deck-record (IrApply nf na ty sp)) cands bound
+    is IrBinary (op) (l) (r) (ty) (sp) -> deck-record (IrBinary op (inline-expr l cands bound) (inline-expr r cands bound) ty sp)
+    is IrIf (c) (t) (el) (ty) (sp) -> deck-record (IrIf (inline-expr c cands bound) (inline-expr t cands bound) (inline-expr el cands bound) ty sp)
+    is IrLet (n) (ty) (v) (b) (sp) -> deck-record (IrLet n ty (inline-expr v cands bound) (inline-expr b cands (list-push bound n)) sp)
+    is IrLambda (ps) (b) (ty) (sp) -> deck-record (IrLambda ps (inline-expr b cands (push-param-names bound ps 0)) ty sp)
+    is IrNegate (x) (sp) -> deck-record (IrNegate (inline-expr x cands bound) sp)
+    is IrMatch (sc) (bs) (ty) (sp) -> deck-record (IrMatch (inline-expr sc cands bound) (for b in bs -> deck-record (IRBranch { pattern = b.pattern, body = inline-expr (b.body) cands (push-pat-names bound (b.pattern)), guard = inline-expr (b.guard) cands (push-pat-names bound (b.pattern)), span = b.span, alt-group = b.alt-group })) ty sp)
+    is IrAct (ss) (ty) (sp) -> deck-record (IrAct (inline-act-stmts ss cands bound 0 []) ty sp)
+    is IrRecord (n) (fs) (ty) (sp) -> deck-record (IrRecord n (for fv in fs -> deck-record (__record-set fv "value" (inline-expr (fv.value) cands bound))) ty sp)
+    is IrFieldAccess (r) (f) (ty) (sp) -> deck-record (IrFieldAccess (inline-expr r cands bound) f ty sp)
+    is IrFieldStore (r) (f) (v) (ty) (sp) -> deck-record (IrFieldStore (inline-expr r cands bound) f (inline-expr v cands bound) ty sp)
+    is IrList (es) (ty) (sp) -> deck-record (IrList (for x in es -> inline-expr x cands bound) ty sp)
+    is otherwise -> e
+
+  inline-leaf-calls-in-chapter : IRChapter -> IRChapter
+  inline-leaf-calls-in-chapter (ch) =
+   let cands = collect-leaf-defs (ch.defs) 0 []
+   in if list-length cands == 0 then ch
+   else __record-set ch "defs" (for d in (ch.defs) -> if has-leaf-call (d.body) cands then deck-record (__record-set d "body" (inline-expr (d.body) cands (push-param-names [] (d.params) 0))) else d)
+
+Page 1 of 2

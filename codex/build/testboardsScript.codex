@@ -1,0 +1,68 @@
+Chapter: TestBoardsScript
+
+  cites Foreword chapter Console
+  cites Foreword chapter Maybe
+  cites Shell chapter ShellTypes
+  cites Shell chapter ShellBuild
+  cites Shell chapter PowerShellEmit
+
+ Generates test-boards.ps1 -- cross-architecture board tests via Renode.
+ Compile with: -Survey "lower-mul:500000"
+
+ We say:
+
+Section: Parameters
+
+  testboards-params : List ShellParam = [sh-param-default "Arch" SptString (SeLit "all")]
+
+Section: S01 -- Preamble
+
+  s01 : List ShellCmd =
+    let skip-renode = [ScEcho (SeLit "SKIP: Renode not installed at tools\\renode\\"), ScEcho (SeLit "  Download from https://github.com/renode/renode/releases"), ScExit (SeInt 0)]
+    in [ScSetStrictMode, ScSetErrorStop, ScBlank, ScAssign "Repo" (SeRaw "(Resolve-Path (Join-Path $PSScriptRoot '..')).Path"), ScAssign "RenodeExe" (SeRaw "Join-Path $Repo 'tools\\renode\\renode.exe'"), ScAssign "OutDir" (SeRaw "Join-Path $PSScriptRoot 'output\\boards'"), ScMkdir (SeVar "OutDir"), ScBlank, ScAssign "SeedCdx" (SeRaw "Join-Path $Repo 'seed\\Codex.cdx'"), ScAssign "Stage0" (SeRaw "Join-Path $Repo 'build-output\\bare-metal\\Codex.cdx'"), ScMkdir (SeRaw "Split-Path $Stage0"), ScIf (SeNot (SeFileExists (SeVar "Stage0"))) [ScCopy (SeVar "SeedCdx") (SeVar "Stage0")] [], ScBlank, ScIf (SeNot (SeFileExists (SeVar "RenodeExe"))) skip-renode []]
+
+Section: S02 -- Hello Source
+
+  s02 : List ShellCmd =
+    [ScAssign "HelloSrc" (SeRaw "Join-Path $OutDir 'hello-board.codex'"), ScRaw "@\"\nChapter: Hello\n  cites Foreword chapter Console\nSection: Main\n  opening : [Console] Nothing = act\n    print-line \"\"BOARD-TEST-OK\"\"\n  end\n\"@ | Set-Content $HelloSrc -Encoding UTF8"]
+
+Section: S03 -- Board Definitions
+
+  s03 : List ShellCmd =
+    [ScRaw "$boards = @(\n    @{ Name = 'arm64';   Plug = 'arm64';  Compile = 'compile-arm64.ps1'; Board = 'codex-arm64.repl';   Expected = 'BOARD-TEST-OK' },\n    @{ Name = 'riscv64'; Plug = 'riscv';  Compile = 'compile-riscv.ps1'; Board = 'codex-riscv64.repl'; Expected = 'BOARD-TEST-OK' }\n)", ScBlank, ScIf (SeStringNeq (SeVar "Arch") (SeLit "all")) [ScRaw "$boards = $boards | Where-Object { $_.Name -eq $Arch }"] [], ScBlank, ScRaw "$pass = 0; $fail = 0; $skip = 0"]
+
+Section: S04 -- Board Loop
+
+  s04-compile : List ShellCmd =
+    [ScAssign "elfOut" (SeRaw "Join-Path $OutDir \"hello-$($b.Name).elf\""), ScAssign "compileScript" (SeRaw "Join-Path $Repo \"codex\\plugs\\$($b.Plug)\\$($b.Compile)\""), ScBlank, ScRaw "Write-Host \"  $($b.Name): compiling...\" -NoNewline", ScRaw "$prev = $ErrorActionPreference; $ErrorActionPreference = 'Continue'", ScRaw "& pwsh -NoProfile -File $compileScript -Src $HelloSrc -Out $elfOut 2>&1 | Out-Null", ScRaw "$ErrorActionPreference = $prev", ScIf (SeOr (SeNot (SeExitCodeEq 0)) (SeNot (SeFileExists (SeVar "elfOut")))) [ScRaw "Write-Host \" FAIL (compile)\" -ForegroundColor Red", ScRaw "$fail++; continue"] []]
+
+  s04-renode : List ShellCmd =
+    [ScAssign "uartLog" (SeRaw "Join-Path $OutDir \"uart-$($b.Name).log\""), ScIf (SeFileExists (SeVar "uartLog")) [ScDelete (SeVar "uartLog")] [], ScBlank, ScRaw "$elfPath = (Resolve-Path $elfOut).Path -replace '\\\\','/'", ScRaw "$boardPath = (Resolve-Path $boardRepl).Path -replace '\\\\','/'", ScRaw "$uartPath = $uartLog -replace '\\\\','/'", ScBlank, ScRaw "$rescLines = @(\n        'mach create \"codex\"'\n        \"machine LoadPlatformDescription @$boardPath\"\n        \"sysbus LoadELF @$elfPath\"\n        \"uart0 CreateFileBackend @$uartPath true\"\n        'start'\n        'sleep 3'\n        'quit'\n    )", ScAssign "rescFile" (SeRaw "Join-Path $OutDir \"test-$($b.Name).resc\""), ScDotNetCall "System.IO.File" "WriteAllLines" [SeVar "rescFile", SeVar "rescLines"], ScRaw "$rescPath = $rescFile -replace '\\\\','/'", ScBlank, ScRaw "$prev = $ErrorActionPreference; $ErrorActionPreference = 'Continue'", ScRaw "& $RenodeExe --disable-xwt --console -e \"include @$rescPath\" 2>&1 | Out-Null", ScRaw "$ErrorActionPreference = $prev", ScRaw "Start-Sleep -Milliseconds 500"]
+
+  s04-verify : List ShellCmd =
+    let pass-branch = [ScRaw "Write-Host \" PASS\" -ForegroundColor Green", ScRaw "$pass++"]
+    in let fail-uart = [ScRaw "$preview = if ($uart) { $uart.Substring(0, [Math]::Min(60, $uart.Length)).Trim() } else { \"(empty)\" }", ScRaw "Write-Host \" FAIL (uart: $preview)\" -ForegroundColor Red", ScRaw "$fail++"]
+    in let no-log = [ScRaw "Write-Host \" FAIL (no uart log)\" -ForegroundColor Red", ScRaw "$fail++"]
+    in [ScIf (SeFileExists (SeVar "uartLog")) [ScRaw "$uart = Get-Content $uartLog -Raw -ErrorAction SilentlyContinue", ScIf (SeAnd (SeVar "uart") (SeRaw "$uart -match [regex]::Escape($b.Expected)")) pass-branch fail-uart] no-log]
+
+  s04 : List ShellCmd =
+    let plug-skip = [ScRaw "Write-Host \"  SKIP  $($b.Name): plug not built ($plugCdx)\" -ForegroundColor Yellow", ScRaw "$skip++; continue"]
+    in let board-skip = [ScRaw "Write-Host \"  SKIP  $($b.Name): board definition missing ($boardRepl)\" -ForegroundColor Yellow", ScRaw "$skip++; continue"]
+    in [ScForEach "b" (SeVar "boards") [ScAssign "plugCdx" (SeRaw "Join-Path $Repo \"codex\\plugs\\$($b.Plug)\\build-output\\$($b.Plug)-plug.cdx\""), ScIf (SeNot (SeFileExists (SeVar "plugCdx"))) plug-skip [], ScBlank, ScAssign "boardRepl" (SeRaw "Join-Path $Repo \"tools\\renode\\codex\\$($b.Board)\""), ScIf (SeNot (SeFileExists (SeVar "boardRepl"))) board-skip [], ScBlank, ScSequence s04-compile, ScBlank, ScSequence s04-renode, ScBlank, ScSequence s04-verify]]
+
+Section: S05 -- Summary
+
+  s05 : List ShellCmd =
+    [ScEcho (SeLit ""), ScRaw "Write-Host \"Board tests: $pass pass, $fail fail, $skip skip\" -ForegroundColor $(if ($fail -gt 0) { 'Red' } else { 'Green' })", ScExit (SeVar "fail")]
+
+Section: Assembly
+
+  testboards-body : List ShellCmd = [ScSequence s01, ScBlank, ScSequence s02, ScBlank, ScSequence s03, ScBlank, ScSequence s04, ScBlank, ScSequence s05]
+
+  testboards-script : ShellScript = sh-script "test-boards" "Cross-architecture board tests via Renode" testboards-params testboards-body
+
+  opening : [Console] Nothing = act
+    print-line-uni (emit-powershell testboards-script)
+  end
+
+Page 1

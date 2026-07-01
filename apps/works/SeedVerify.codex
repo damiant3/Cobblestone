@@ -1,0 +1,52 @@
+Chapter: SeedVerify
+  cites Verify chapter CdxBinary
+  cites Foreword chapter Ed25519
+  cites Foreword chapter Sha256
+  cites Foreword chapter Maybe
+
+ Self-verification of CDX seed binaries. SeedVerify checks magic
+ bytes, Ed25519 signature, and author key presence. SeedVerify
+ replaces test-self-verify.ps1 with a Codex-native implementation
+ that can run on the bare-metal OS.
+
+ We say:
+
+Section: Verification
+
+  SeedVerifyResult = record {
+    magic-ok : Boolean,
+    signature-valid : Boolean,
+    author-key-present : Boolean,
+    seed-size : Integer
+  }
+
+  verify-seed-header : List Integer -> SeedVerifyResult
+  verify-seed-header (header) =
+    let magic-ok = cdx-verify-magic header
+    in let pub-key = list-slice header 40 72
+    in let sig = list-slice header 72 136
+    in let content-hash = cdx-read-content-hash header
+    in let sig-valid = ed25519-verify pub-key content-hash sig
+    in let has-author = list-at header 40 + list-at header 41 + list-at header 42 + list-at header 43
+    in SeedVerifyResult {
+      magic-ok = magic-ok,
+      signature-valid = sig-valid,
+      author-key-present = has-author > 0,
+      seed-size = list-length header
+    }
+
+  seed-is-valid : SeedVerifyResult -> Boolean
+  seed-is-valid (r) = r.magic-ok & r.signature-valid & r.author-key-present
+
+Section: Reporting
+
+  format-verify-result : SeedVerifyResult -> Text
+  format-verify-result (r) =
+    "MAGIC: " & show (r.magic-ok) & "\n"
+    & "SIGNATURE: " & show (r.signature-valid) & "\n"
+    & "AUTHOR-KEY-PRESENT: " & show (r.author-key-present) & "\n"
+    & if seed-is-valid r then "THE SEED VERIFIES ITSELF"
+    else if r.magic-ok == False then "BAD MAGIC"
+    else "SIGNATURE INVALID"
+
+Page 1

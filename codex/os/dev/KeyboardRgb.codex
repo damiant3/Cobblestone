@@ -1,0 +1,175 @@
+Chapter: KeyboardRgb
+  cites Dev chapter QmkProtocol
+  cites Kernel chapter UsbHid
+  cites Game chapter Color
+  cites UI chapter Theme
+
+ High-level keyboard RGB lighting API. Wraps the VIA/QMK protocol
+ with Codex-native color types and palette sync. Converts between
+ the OS color system (packed 24-bit RGB, HSL palettes) and the
+ keyboard color system (HSV 0-360/0-255/0-255). Supports syncing
+ keyboard lighting with the OS theme palette or lolcat rainbow
+ palettes.
+
+Section: State
+
+  KeyboardRgbState = record {
+    kr-connected : Boolean,
+    kr-device : HidDevice,
+    kr-rgb : QmkRgbState,
+    kr-firmware : QmkFirmwareInfo,
+    kr-sync-theme : Boolean,
+    kr-sync-palette : Boolean,
+    kr-palette : RainbowPalette
+  }
+
+  keyboard-rgb-new : KeyboardRgbState
+  keyboard-rgb-new = KeyboardRgbState {
+    kr-connected = False,
+    kr-device = hid-device-new 0 0 0,
+    kr-rgb = qmk-rgb-default,
+    kr-firmware = qmk-firmware-info 0 0 0,
+    kr-sync-theme = False,
+    kr-sync-palette = False,
+    kr-palette = PalRainbow
+  }
+
+Section: Connection
+
+  keyboard-rgb-connect : KeyboardRgbState, HidDevice, QmkFirmwareInfo -> KeyboardRgbState
+  keyboard-rgb-connect (st) (dev) (fw) =
+    KeyboardRgbState {
+      kr-connected = True,
+      kr-device = dev,
+      kr-rgb = st.kr-rgb,
+      kr-firmware = fw,
+      kr-sync-theme = st.kr-sync-theme,
+      kr-sync-palette = st.kr-sync-palette,
+      kr-palette = st.kr-palette
+    }
+
+  keyboard-rgb-disconnect : KeyboardRgbState -> KeyboardRgbState
+  keyboard-rgb-disconnect (st) = __record-set st "kr-connected" False
+
+Section: RGB Control (builds command packets)
+
+  kbd-rgb-set-mode : KeyboardRgbState, RgbMode -> KeyboardRgbState
+  kbd-rgb-set-mode (st) (mode) =
+    __record-set st "kr-rgb" (__record-set (st.kr-rgb) "qr-mode" mode)
+
+  kbd-rgb-set-hsv : KeyboardRgbState, Integer, Integer, Integer -> KeyboardRgbState
+  kbd-rgb-set-hsv (st) (h) (s) (v) =
+    let rgb = st.kr-rgb
+    in let rgb2 = __record-set (__record-set (__record-set rgb "qr-hue" h) "qr-saturation" s) "qr-brightness" v
+    in __record-set st "kr-rgb" rgb2
+
+  kbd-rgb-set-brightness : KeyboardRgbState, Integer -> KeyboardRgbState
+  kbd-rgb-set-brightness (st) (v) =
+    __record-set st "kr-rgb" (__record-set (st.kr-rgb) "qr-brightness" v)
+
+  kbd-rgb-set-speed : KeyboardRgbState, Integer -> KeyboardRgbState
+  kbd-rgb-set-speed (st) (s) =
+    __record-set st "kr-rgb" (__record-set (st.kr-rgb) "qr-speed" s)
+
+  kbd-rgb-toggle : KeyboardRgbState -> KeyboardRgbState
+  kbd-rgb-toggle (st) =
+    let enabled = (st.kr-rgb).qr-enabled
+    in __record-set st "kr-rgb" (__record-set (st.kr-rgb) "qr-enabled" (if enabled then False else True))
+
+Section: Command Packets
+
+  kbd-rgb-mode-cmd : KeyboardRgbState -> List Integer
+  kbd-rgb-mode-cmd (st) = via-cmd-rgb-set-mode (st.kr-rgb).qr-mode
+
+  kbd-rgb-hsv-cmd : KeyboardRgbState -> List Integer
+  kbd-rgb-hsv-cmd (st) =
+    via-cmd-rgb-set-hsv ((st.kr-rgb).qr-hue) ((st.kr-rgb).qr-saturation) ((st.kr-rgb).qr-brightness)
+
+  kbd-rgb-speed-cmd : KeyboardRgbState -> List Integer
+  kbd-rgb-speed-cmd (st) = via-cmd-rgb-set-speed (st.kr-rgb).qr-speed
+
+  kbd-rgb-brightness-cmd : KeyboardRgbState -> List Integer
+  kbd-rgb-brightness-cmd (st) = via-cmd-rgb-set-brightness (st.kr-rgb).qr-brightness
+
+  kbd-rgb-save-cmd : List Integer
+  kbd-rgb-save-cmd = via-cmd-rgb-save
+
+Section: Palette Sync
+
+  kbd-rgb-set-palette : KeyboardRgbState, RainbowPalette -> KeyboardRgbState
+  kbd-rgb-set-palette (st) (pal) =
+    let hsv = palette-to-hsv pal
+    in let st2 = __record-set (__record-set st "kr-palette" pal) "kr-sync-palette" True
+    in kbd-rgb-set-hsv st2 (hsv.hsv-h) (hsv.hsv-s) (hsv.hsv-v)
+
+  kbd-rgb-sync-with-theme : KeyboardRgbState, Palette -> KeyboardRgbState
+  kbd-rgb-sync-with-theme (st) (theme-pal) =
+    let primary = theme-pal.pal-primary
+    in let hsv = rgb-packed-to-hsv primary
+    in __record-set (kbd-rgb-set-hsv st (hsv.hsv-h) (hsv.hsv-s) (hsv.hsv-v)) "kr-sync-theme" True
+
+  kbd-rgb-toggle-theme-sync : KeyboardRgbState -> KeyboardRgbState
+  kbd-rgb-toggle-theme-sync (st) =
+    __record-set st "kr-sync-theme" (if st.kr-sync-theme then False else True)
+
+Section: Color Conversion (RGB packed -> HSV for QMK)
+
+  KbdHsv = record {
+    hsv-h : Integer,
+    hsv-s : Integer,
+    hsv-v : Integer
+  }
+
+  rgb-packed-to-hsv : Integer -> KbdHsv
+  rgb-packed-to-hsv (packed) =
+    let r = bit-and (bit-shru packed 16) 255
+    in let g = bit-and (bit-shru packed 8) 255
+    in let b = bit-and packed 255
+    in let mx = kr-max3 r g b
+    in let mn = kr-min3 r g b
+    in let delta = mx - mn
+    in let v = mx
+    in let s = if mx == 0 then 0 else delta * 255 / mx
+    in let h = if delta == 0 then 0 else kr-compute-hue r g b mx delta
+    in KbdHsv { hsv-h = h, hsv-s = s, hsv-v = v }
+
+  kr-compute-hue : Integer, Integer, Integer, Integer, Integer -> Integer
+  kr-compute-hue (r) (g) (b) (mx) (delta) =
+    let raw = if mx == r then (g - b) * 60 / delta
+      else if mx == g then 120 + (b - r) * 60 / delta
+      else 240 + (r - g) * 60 / delta
+    in if raw < 0 then raw + 360 else raw
+
+  kr-max3 : Integer, Integer, Integer -> Integer
+  kr-max3 (a) (b) (c) = let ab = if a > b then a else b in if ab > c then ab else c
+
+  kr-min3 : Integer, Integer, Integer -> Integer
+  kr-min3 (a) (b) (c) = let ab = if a < b then a else b in if ab < c then ab else c
+
+Section: Palette to HSV
+
+  palette-to-hsv : RainbowPalette -> KbdHsv
+  palette-to-hsv (pal) = when pal
+    is PalRainbow -> KbdHsv { hsv-h = 0, hsv-s = 255, hsv-v = 200 }
+    is PalWarm -> KbdHsv { hsv-h = 20, hsv-s = 255, hsv-v = 200 }
+    is PalCool -> KbdHsv { hsv-h = 200, hsv-s = 255, hsv-v = 200 }
+    is PalPastel -> KbdHsv { hsv-h = 0, hsv-s = 128, hsv-v = 230 }
+    is PalNeon -> KbdHsv { hsv-h = 0, hsv-s = 255, hsv-v = 160 }
+    is PalFire -> KbdHsv { hsv-h = 10, hsv-s = 255, hsv-v = 200 }
+    is PalOcean -> KbdHsv { hsv-h = 170, hsv-s = 230, hsv-v = 180 }
+    is PalForest -> KbdHsv { hsv-h = 100, hsv-s = 200, hsv-v = 160 }
+    is PalMiami -> KbdHsv { hsv-h = 280, hsv-s = 200, hsv-v = 200 }
+    is PalMatrix -> KbdHsv { hsv-h = 130, hsv-s = 255, hsv-v = 160 }
+    is PalSakura -> KbdHsv { hsv-h = 310, hsv-s = 180, hsv-v = 230 }
+    is PalAurora -> KbdHsv { hsv-h = 140, hsv-s = 230, hsv-v = 180 }
+
+Section: Formatting
+
+  format-keyboard-rgb : KeyboardRgbState -> Text
+  format-keyboard-rgb (st) =
+    let conn = if st.kr-connected then "connected" else "disconnected"
+    in conn & " " & format-rgb-state (st.kr-rgb)
+    & (if st.kr-sync-theme then " [theme-sync]" else "")
+    & (if st.kr-sync-palette then " [palette-sync]" else "")
+
+Page 1

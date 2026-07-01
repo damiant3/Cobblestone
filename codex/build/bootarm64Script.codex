@@ -1,0 +1,79 @@
+Chapter: BootArm64Script
+
+  cites Foreword chapter Console
+  cites Foreword chapter Maybe
+  cites Shell chapter ShellTypes
+  cites Shell chapter ShellBuild
+  cites Shell chapter PowerShellEmit
+
+ Generates boot-arm64.ps1 from the Shell DSL.
+ Compile with: -Survey "lower-mul:500000"
+
+ We say:
+
+Section: Parameters
+
+  boot-arm64-params : List ShellParam = [sh-param "Src" SptString, sh-switch "NoBoot", sh-param-default "MemMB" SptInt (SeInt 4096)]
+
+Section: S01 -- Preamble
+
+  s01 : List ShellCmd =
+    let fail-arm = [ScWriteError (SeLit "ARM64 plug not built. Run: codex/plugs/arm64/build.ps1"), ScExit (SeInt 1)]
+    in let fail-pe = [ScWriteError (SeLit "PE plug not built. Run: codex/plugs/pe/build.ps1"), ScExit (SeInt 1)]
+    in [ScSetStrictMode, ScSetErrorStop, ScBlank, ScAssign "Repo" (SeRaw "(Resolve-Path (Join-Path $PSScriptRoot '..')).Path"), ScRunDot (SeRaw "(Join-Path $Repo 'build' 'vm-config.ps1')"), ScBlank, ScAssign "OutDir" (SeRaw "Join-Path $Repo 'build' 'arm64-output'"), ScMkdir (SeVar "OutDir"), ScBlank, ScAssign "Arm64PlugCdx" (SeRaw "Join-Path $Repo 'codex\\plugs\\arm64\\build-output\\arm64-plug.cdx'"), ScAssign "PePlugCdx" (SeRaw "Join-Path $Repo 'codex\\plugs\\pe\\build-output\\pe-plug.cdx'"), ScAssign "QemuBin" (SeLit "D:\\Program Files\\qemu\\qemu-system-aarch64.exe"), ScAssign "UefiFw" (SeLit "D:\\Program Files\\qemu\\share\\edk2-aarch64-code.fd"), ScBlank, ScIf (SeNot (SeFileExists (SeVar "Arm64PlugCdx"))) fail-arm [], ScIf (SeNot (SeFileExists (SeVar "PePlugCdx"))) fail-pe []]
+
+Section: S02 -- Phase 1 Compile IR
+
+  s02 : List ShellCmd =
+    let fail-ir = [ScWriteError (SeRaw "\"IR compile failed (exit $LASTEXITCODE); see $LogFile\""), ScExit (SeInt 1)]
+    in [ScAssign "IrFile" (SeRaw "Join-Path $OutDir 'arm64.ir'"), ScAssign "LogFile" (SeRaw "Join-Path $OutDir 'compile-ir.log'"), ScEcho (SeRaw "\"[boot-arm64] Phase 1: Compiling $Src to IR...\""), ScRaw "& pwsh -NoProfile -File (Join-Path $Repo 'build' 'compile.ps1') -Src $Src -Out $IrFile -Log $LogFile -IrCce -MemMB $MemMB", ScIf (SeNot (SeExitCodeEq 0)) fail-ir []]
+
+Section: S03 -- Phase 2 ARM64 Codegen
+
+  s03 : List ShellCmd =
+    let fail-cg = [ScWriteError (SeRaw "\"ARM64 codegen failed (exit $LASTEXITCODE)\""), ScExit (SeInt 1)]
+    in [ScAssign "WireFile" (SeRaw "Join-Path $OutDir 'arm64.wire.bin'"), ScEcho (SeLit "[boot-arm64] Phase 2: ARM64 codegen..."), ScRaw "& pwsh -NoProfile -File (Join-Path $Repo 'codex\\plugs\\arm64\\run.ps1') -IrInput $IrFile -Out $WireFile", ScIf (SeNot (SeExitCodeEq 0)) fail-cg []]
+
+Section: S04 -- Phase 3 PE Plug
+
+  s04-wire-clean : List ShellCmd = [ScReadBytes "wireBytes" (SeVar "WireFile"), ScRaw "$wireOff = 0", ScRaw "for ($wi = 0; $wi -lt [Math]::Min(64, $wireBytes.Length - 12); $wi++) { $cl = [BitConverter]::ToInt32($wireBytes, $wi); $dl = [BitConverter]::ToInt32($wireBytes, $wi + 4); $fc = [BitConverter]::ToInt32($wireBytes, $wi + 8); if ($cl -gt 0 -and $cl -lt 1000000 -and $dl -ge 0 -and $dl -lt 100000 -and $fc -gt 0 -and $fc -lt 10000) { $wireOff = $wi; break } }", ScRaw "$cleanWire = New-Object byte[] ($wireBytes.Length - $wireOff)", ScRaw "[Array]::Copy($wireBytes, $wireOff, $cleanWire, 0, $cleanWire.Length)"]
+
+  s04-payload : List ShellCmd = [ScRaw "$payload = New-Object byte[] (1 + $cleanWire.Length)", ScRaw "$payload[0] = 2", ScRaw "[Array]::Copy($cleanWire, 0, $payload, 1, $cleanWire.Length)"]
+
+  s04-tcp-send : List ShellCmd = [ScAssign "plugPort" (SeInt 9100), ScRaw "$listener = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, $plugPort)", ScRaw "$listener.Start()", ScTempFile "stderrFile", ScRaw "$proc = Start-Process -FilePath $script:CodexVmBin -ArgumentList @('-kernel', $PePlugCdx, '-mem', '3072', '-headless') -PassThru -WindowStyle Hidden -RedirectStandardError $stderrFile", ScRaw "$deadline = [DateTime]::UtcNow.AddSeconds(30)", ScRaw "while (-not $listener.Pending()) { if ([DateTime]::UtcNow -gt $deadline) { throw 'PE plug did not connect within 30s' }; Start-Sleep -Milliseconds 50 }", ScRaw "$tcpClient = $listener.AcceptTcpClient()", ScRaw "$tcpStream = $tcpClient.GetStream()", ScRaw "$listener.Stop()", ScEcho (SeRaw "\"[boot-arm64] PE plug connected, sending $($payload.Length) bytes...\"")]
+
+  s04-tcp-xfer : List ShellCmd = [ScRaw "$msgLen = $payload.Length + 1", ScRaw "$tcpStream.Write([BitConverter]::GetBytes([int]$msgLen), 0, 4)", ScRaw "$tcpStream.WriteByte(4)", ScRaw "$tcpStream.Write($payload, 0, $payload.Length)", ScRaw "$tcpStream.Flush()", ScRaw "$tcpStream.ReadTimeout = 60000", ScRaw "$allBytes = [System.Collections.Generic.List[byte]]::new(65536)", ScRaw "$readBuf = [byte[]]::new(8192)", ScRaw "try { while ($true) { $n = $tcpStream.Read($readBuf, 0, $readBuf.Length); if ($n -le 0) { break }; for ($bi = 0; $bi -lt $n; $bi++) { $allBytes.Add($readBuf[$bi]) } } } catch {}", ScIf (SeRaw "$allBytes.Count -lt 512") [ScRaw "throw \"PE output too small ($($allBytes.Count) bytes)\""] []]
+
+  s04-pe-fix : List ShellCmd = [ScRaw "$peArr = $allBytes.ToArray()", ScRaw "$maxExpected = $cleanWire.Length * 4", ScIf (SeRaw "$allBytes.Count -gt $maxExpected") [ScEcho (SeRaw "\"[boot-arm64] PE inflated ($($allBytes.Count) > $maxExpected), fixing headers...\""), ScRaw "$stubEnd = 512; for ($si = 512; $si -lt [Math]::Min($peArr.Length, 4096); $si += 4) { if ($peArr[$si] -eq $cleanWire[12] -and $peArr[$si+1] -eq $cleanWire[13] -and $peArr[$si+2] -eq $cleanWire[14] -and $peArr[$si+3] -eq $cleanWire[15]) { $stubEnd = $si; break } }", ScRaw "$stubSize = $stubEnd - 512; $codeLen = [BitConverter]::ToInt32($cleanWire, 0); $dataLen = [BitConverter]::ToInt32($cleanWire, 4); $totalCode = $stubSize + $codeLen + $dataLen", ScRaw "$codeRaw = (($totalCode + 511) -band (-bnot 511)); $codeSec = (($totalCode + 4095) -band (-bnot 4095)); $relocRva = 4096 + $codeSec; $imageSize = (($relocRva + 4096 + 4095) -band (-bnot 4095))", ScRaw "[BitConverter]::GetBytes([int]$codeRaw).CopyTo($peArr, 128 + 28); [BitConverter]::GetBytes([int]$imageSize).CopyTo($peArr, 128 + 80)", ScRaw "$secOff = 128 + 24 + 240; [BitConverter]::GetBytes([int]$totalCode).CopyTo($peArr, $secOff + 8); [BitConverter]::GetBytes([int]$codeRaw).CopyTo($peArr, $secOff + 16)", ScRaw "$sec2Off = $secOff + 40; [BitConverter]::GetBytes([int]$relocRva).CopyTo($peArr, $sec2Off + 12); [BitConverter]::GetBytes([int]($codeRaw + 512)).CopyTo($peArr, $sec2Off + 20)", ScRaw "[BitConverter]::GetBytes([int]$relocRva).CopyTo($peArr, 128 + 24 + 152)", ScRaw "$fixedSize = 512 + $codeRaw + 512; $fixedPe = New-Object byte[] $fixedSize; $copyLen = [Math]::Min(512 + $totalCode, $peArr.Length); [Array]::Copy($peArr, 0, $fixedPe, 0, $copyLen)", ScRaw "$fixedPe[$codeRaw + 512 + 4] = 8; $peArr = $fixedPe", ScEcho (SeRaw "\"[boot-arm64] Fixed: stub=$stubSize code=$codeLen data=$dataLen total=$totalCode pe=$fixedSize\"")] []]
+
+  s04-pe-write : List ShellCmd = [ScAssign "PeFile" (SeRaw "Join-Path $OutDir 'BOOTAA64.EFI'"), ScDotNetCall "System.IO.File" "WriteAllBytes" [SeVar "PeFile", SeVar "peArr"], ScEcho (SeRaw "\"[boot-arm64] PE: $PeFile ($($peArr.Length) bytes)\""), ScRaw "$tcpClient.Close()"]
+
+  s04-cleanup : List ShellCmd = [ScIf (SeAnd (SeVar "proc") (SeNot (SeProperty (SeVar "proc") "HasExited"))) [ScRaw "Stop-VmGraceful -ProcessId $proc.Id"] [], ScDelete (SeVar "stderrFile")]
+
+  s04 : List ShellCmd = [ScEcho (SeLit "[boot-arm64] Phase 3: Building ARM64 PE via plug (mode 2)..."), ScSequence s04-wire-clean, ScSequence s04-payload, ScTry [ScSequence s04-tcp-send, ScSequence s04-tcp-xfer, ScSequence s04-pe-fix, ScSequence s04-pe-write] [] s04-cleanup]
+
+Section: S05 -- Phase 4 GPT Disk Image
+
+  s05 : List ShellCmd =
+    let fail-img = [ScWriteError (SeRaw "\"Disk image build failed (exit $LASTEXITCODE)\""), ScExit (SeInt 1)]
+    in [ScAssign "ImgFile" (SeRaw "Join-Path $OutDir 'codex-arm64.img'"), ScEcho (SeLit "[boot-arm64] Phase 4: Building GPT disk image..."), ScRaw "& pwsh -NoProfile -File (Join-Path $Repo 'build' 'build-arm64-img.ps1') -PeInput $PeFile -Out $ImgFile", ScIf (SeNot (SeExitCodeEq 0)) fail-img []]
+
+Section: S06 -- NoBoot Exit
+
+  s06 : List ShellCmd = [ScIf (SeVar "NoBoot") [ScEcho (SeRaw "\"[boot-arm64] Done (NoBoot). Image: $ImgFile\""), ScExit (SeInt 0)] []]
+
+Section: S07 -- Phase 5 QEMU Boot
+
+  s07 : List ShellCmd = [ScEcho (SeLit "[boot-arm64] Phase 5: Booting in QEMU aarch64..."), ScEcho (SeLit "[boot-arm64] UART output on serial console. Press Ctrl+C to stop."), ScAssign "VarStore" (SeRaw "Join-Path $OutDir 'efi-varstore.img'"), ScIf (SeNot (SeFileExists (SeVar "VarStore"))) [ScRaw "$fs = [System.IO.File]::Create($VarStore); $fs.SetLength(64 * 1024 * 1024); $fs.Close()", ScEcho (SeRaw "\"[boot-arm64] Created EFI varstore: $VarStore\"")] [], ScAssign "qemuArgs" (SeRaw "@('-machine', 'virt,gic-version=3', '-cpu', 'cortex-a72', '-m', '1024', '-drive', \"if=pflash,format=raw,file=$UefiFw,readonly=on\", '-drive', \"if=pflash,format=raw,file=$VarStore\", '-drive', \"file=$ImgFile,format=raw,if=virtio\", '-device', 'virtio-net-pci,netdev=net0,mac=52:54:00:12:34:56', '-netdev', 'user,id=net0,hostfwd=tcp::8080-:80', '-nographic')"), ScRaw "& $QemuBin @qemuArgs"]
+
+Section: Assembly
+
+  boot-arm64-body : List ShellCmd = [ScSequence s01, ScBlank, ScSequence s02, ScBlank, ScSequence s03, ScBlank, ScSequence s04, ScBlank, ScSequence s05, ScBlank, ScSequence s06, ScBlank, ScSequence s07]
+
+  boot-arm64-script : ShellScript = sh-script "boot-arm64" "End-to-end ARM64 UEFI boot pipeline" boot-arm64-params boot-arm64-body
+
+  opening : [Console] Nothing = act
+    print-line-uni (emit-powershell boot-arm64-script)
+  end
+
+Page 1

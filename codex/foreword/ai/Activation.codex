@@ -1,0 +1,69 @@
+Chapter: Activation
+  cites AI chapter Tensor
+  cites Foreword chapter ListUtils
+
+ Neural network activation functions. Fixed-point (scale 1000).
+ Operates on Tensor data element-wise. Includes ReLU, sigmoid,
+ tanh, softmax, and GELU approximations.
+
+ We say:
+
+Section: ReLU
+  act-relu : Tensor -> Tensor
+  act-relu (t) = Tensor { data = for v in (t.data) -> if v > 0 then v else 0, rows = t.rows, cols = t.cols }
+
+  act-leaky-relu : Tensor, Integer -> Tensor
+  act-leaky-relu (t) (alpha) = Tensor { data = for v in (t.data) -> if v > 0 then v else v * alpha / 1000, rows = t.rows, cols = t.cols }
+
+Section: Sigmoid Approximation
+  act-sigmoid : Tensor -> Tensor
+  act-sigmoid (t) = Tensor { data = for v in (t.data) -> act-sigmoid-val v, rows = t.rows, cols = t.cols }
+
+  act-sigmoid-val : Integer -> Integer
+  act-sigmoid-val (x) =
+    if x > 6000 then 1000
+    else if x < (0 - 6000) then 0
+    else 500 + x * 250 / 1000 - x * x * x / 48000000
+
+Section: Tanh Approximation
+  act-tanh : Tensor -> Tensor
+  act-tanh (t) = Tensor { data = for v in (t.data) -> act-tanh-val v, rows = t.rows, cols = t.cols }
+
+  act-tanh-val : Integer -> Integer
+  act-tanh-val (x) =
+    if x > 4000 then 1000
+    else if x < (0 - 4000) then 0 - 1000
+    else let x2 = x * x / 1000
+    in x - x * x2 / 3000
+
+Section: GELU Approximation
+  act-gelu : Tensor -> Tensor
+  act-gelu (t) = Tensor { data = for v in (t.data) -> act-gelu-val v, rows = t.rows, cols = t.cols }
+
+  act-gelu-val : Integer -> Integer
+  act-gelu-val (x) =
+    let sig = act-sigmoid-val (x * 1702 / 1000)
+    in x * sig / 1000
+
+Section: Softmax
+  act-softmax : Tensor -> Tensor
+  act-softmax (t) =
+    let max-val = tensor-max t
+    in let shifted = for v in (t.data) -> v - max-val
+    in let exps = for v in shifted -> act-exp-approx v
+    in let total = act-sum-list exps 0 (list-length exps) 0
+    in let normed = if total == 0 then exps else for v in exps -> v * 1000 / total
+    in Tensor { data = normed, rows = t.rows, cols = t.cols }
+
+  act-exp-approx : Integer -> Integer
+  act-exp-approx (x) =
+    if x > 3000 then 20000
+    else if x < (0 - 3000) then 0
+    else 1000 + x + x * x / 2000
+
+  act-sum-list : List Integer, Integer, Integer, Integer -> Integer
+  act-sum-list (data) (i) (len) (acc) =
+    if i >= len then acc
+    else act-sum-list data (i + 1) len (acc + list-at data i)
+
+Page 1

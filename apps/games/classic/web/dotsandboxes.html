@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Codex — Dots and Boxes!</title>
+<link rel="stylesheet" href="/web/style.css?v={{VERSION}}">
+<style>
+  body { background: #f5e6c8; }
+  .game-page { max-width: 520px; margin: 0 auto; }
+  .bg-scene { position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+    background: url('/assets/games/dotsandboxes/bg-scene.png') center/cover no-repeat;
+    filter: brightness(0.5) blur(2px); z-index: 0; }
+  .content { position: relative; z-index: 1; }
+  .board-wrap { background: #fff8; border: 4px solid #ff6633; border-radius: 16px; padding: 20px;
+    margin-bottom: 12px; backdrop-filter: blur(8px);
+    box-shadow: 0 4px 20px rgba(255,100,50,0.2); display: flex; justify-content: center; }
+  .db-grid { display: grid; grid-template-columns: 16px 70px 16px 70px 16px 70px 16px;
+    grid-template-rows: 16px 70px 16px 70px 16px 70px 16px; gap: 0; }
+  .db-dot { background: #ff6633; border-radius: 50%; }
+  .db-hedge,.db-vedge { border-radius: 4px; transition: background 0.2s; }
+  .db-on { background: #ff6633; } .db-off { background: #ffddcc; }
+  .db-box { display: flex; align-items: center; justify-content: center; font-size: 24px; font-weight: bold; border-radius: 4px; }
+  .db-box-1 { background: #ff666644; color: #ff3300; } .db-box-2 { background: #3366ff44; color: #0033cc; } .db-box-0 { background: transparent; }
+  .score-bar { display: flex; gap: 16px; justify-content: center; margin-bottom: 10px; font-size: 16px; font-weight: bold; }
+  .controls { display: flex; gap: 10px; align-items: center; margin-bottom: 10px; justify-content: center; }
+  .controls button { background: linear-gradient(180deg, #ff6633, #cc4411); border: 2px solid #ff8855;
+    border-radius: 20px; color: #fff; font-family: inherit; font-size: 14px; padding: 8px 20px;
+    cursor: pointer; font-weight: bold; }
+  .controls button:hover { transform: scale(1.05); }
+  .controls button:disabled { opacity: 0.3; }
+  #status-line { color: #cc4411; font-size: 14px; margin-bottom: 8px; text-align: center; font-weight: bold; }
+  .speed-label { color: #ff8855; font-size: 12px; }
+  .engine-tag { background: #fff4; color: #cc4411; font-size: 10px; padding: 2px 8px;
+    border-radius: 10px; margin-left: 12px; border: 1px solid #ff663344; }
+</style>
+<script src="/web/game-engine.js"></script>
+</head>
+<body>
+<div class="bg-scene"></div>
+<nav class="topbar" style="background:#f5e6c8cc;border-color:#ff663322;backdrop-filter:blur(4px)">
+  <span class="topbar-logo" style="color:#ff6633">&#x2588; CODEX</span>
+  <a href="/#games" class="tab-btn" style="color:#cc8866">&#x2190; Games</a>
+  <span class="tab-btn active" style="color:#ff6633;border-color:#ff6633">Dots and Boxes!</span>
+  <span class="engine-tag">Codex VM</span>
+</nav>
+<div class="content game-page">
+  <div class="controls">
+    <button onclick="startGame()">&#x270F; DRAW!</button>
+    <button id="btn-pause" onclick="togglePause()" disabled>&#x23F8;</button>
+    <button id="btn-step" onclick="stepOnce()" disabled>&#x23ED;</button>
+    <button onclick="resetGame()">&#x21BB;</button>
+    <span class="speed-label">Speed:</span>
+    <input type="range" id="speed" min="1" max="10" value="4" style="width:80px;accent-color:#ff6633" oninput="updateSpeed()">
+  </div>
+  <div id="status-line">GRAB YOUR CRAYONS! &#x1F58D;</div>
+  <div class="score-bar"><span style="color:#ff3300">&#x1F534; P1: <span id="sc-1">0</span></span><span style="color:#0033cc">&#x1F535; P2: <span id="sc-2">0</span></span><span style="color:#cc8866"><span id="sc-m">0</span>/24</span></div>
+  <div id="narration" style="text-align:center;font-size:14px;font-weight:bold;min-height:20px;margin-bottom:8px;color:#ff6633"></div>
+  <div class="board-wrap"><div class="db-grid" id="board"></div></div>
+  <details style="background:#1a0a0099;border:1px solid #ff663322;border-radius:8px;padding:16px;margin-top:12px;color:#cc886688;font-size:13px;line-height:1.6">
+    <summary style="color:#ff6633;cursor:pointer;font-weight:bold;font-size:14px">How to Play Dots and Boxes</summary>
+    <p><b>Goal:</b> Complete more boxes than your opponent on a 4x4 dot grid.</p>
+    <p><b>Play:</b> Take turns drawing one line between adjacent dots. When you complete the 4th side of a box, you score it and go again.</p>
+    <p><b>Strategy:</b> Avoid giving your opponent chains of boxes. Force them to open chains for you to claim.</p>
+    <p><b>End:</b> Game ends when all 24 lines are drawn (9 boxes total). Most boxes wins.</p>
+  </details>
+</div>
+<script>
+var state,running=false,paused=false,timer,delay=500;
+function updateSpeed(){var v=parseInt(document.getElementById('speed').value);delay=[2000,1200,800,500,350,250,150,80,30,5][v-1]||500}
+async function api(p){try{var r=await fetch(p);return r.json()}catch(e){document.getElementById('status-line').textContent='Connection error';return null}}
+function render(s){var e=s.edges,b=s.boxes;var h='';for(var gr=0;gr<7;gr++){for(var gc=0;gc<7;gc++){if(gr%2===0&&gc%2===0)h+='<div class="db-dot"></div>';else if(gr%2===0&&gc%2===1){var ei=Math.floor(gr/2)*3+Math.floor(gc/2);h+='<div class="db-hedge '+(e[ei]?'db-on':'db-off')+'"></div>'}else if(gr%2===1&&gc%2===0){var ei=12+Math.floor(gr/2)*4+Math.floor(gc/2);h+='<div class="db-vedge '+(e[ei]?'db-on':'db-off')+'"></div>'}else{var bi=Math.floor(gr/2)*3+Math.floor(gc/2);h+='<div class="db-box db-box-'+b[bi]+'">'+(b[bi]?b[bi]:'')+'</div>'}}}document.getElementById('board').innerHTML=h;document.getElementById('sc-1').textContent=s.p1;document.getElementById('sc-2').textContent=s.p2;document.getElementById('sc-m').textContent=s.moves}
+async function resetGame(){clearTimeout(timer);running=false;paused=false;state=await api('/api/dotsandboxes/new?seed='+(Date.now()&0x7FFFFFFF));if(state)render(state);document.getElementById('status-line').innerHTML="GRAB YOUR CRAYONS! &#x1F58D;";document.getElementById('btn-pause').disabled=true;document.getElementById('btn-step').disabled=true}
+async function startGame(){await resetGame();running=true;document.getElementById('btn-pause').disabled=false;document.getElementById('btn-step').disabled=false;updateSpeed();scheduleTick()}
+function togglePause(){if(!running)return;paused=!paused;if(!paused)scheduleTick()}
+function scheduleTick(){if(!paused&&running)timer=setTimeout(tick,delay)}
+async function stepOnce(){if(running)await tick()}
+var prevP1=0,prevP2=0;
+async function tick(){if(!running||!state||state.moves>=24){if(state){var w=state.p1>state.p2?'P1':state.p2>state.p1?'P2':'Tie';document.getElementById('status-line').innerHTML=(w==='Tie'?'It\'s a tie!':'&#x1F389; '+w+' WINS!')+'  ('+state.p1+'-'+state.p2+')'}running=false;return}prevP1=state.p1;prevP2=state.p2;state=await api('/api/dotsandboxes/step');if(!state){running=false;return}render(state);var boxScored=state.p1>prevP1||state.p2>prevP2;var who='P'+(state.cur===0?'2':'1');if(boxScored)document.getElementById('narration').textContent=who+' completes a box! ('+state.p1+'-'+state.p2+')';else document.getElementById('narration').textContent=who+' draws a line';if(state.moves>=24){var w=state.p1>state.p2?'P1':state.p2>state.p1?'P2':'Tie';document.getElementById('status-line').innerHTML=(w==='Tie'?'Tie game!':'&#x1F389; '+w+' WINS!')+'  ('+state.p1+'-'+state.p2+')';running=false;return}document.getElementById('status-line').innerHTML='P'+(state.cur+1)+"'s turn — move "+state.moves+'/24';scheduleTick()}
+updateSpeed();resetGame();
+</script>
+</body>
+</html>

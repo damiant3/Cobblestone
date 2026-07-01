@@ -1,0 +1,148 @@
+Chapter: AssetForge
+  cites AI chapter DiffusionPipeline
+  cites AI chapter ImageTo3d
+  cites AI chapter ImageTensor
+  cites AI chapter SafeTensors
+  cites AI chapter TextEncoder
+  cites AI chapter UNet
+  cites AI chapter DiffusionScheduler
+  cites AI chapter Tokenizer
+  cites AI chapter NeuralNet
+  cites Encode chapter Gltf
+  cites Encode chapter Png
+  cites Foreword chapter Console
+  cites Foreword chapter Maybe
+
+ AssetForge: local AI asset generation tool. Generates 2D card art
+ from text prompts via diffusion, then reconstructs 3D meshes from
+ the generated images. Outputs PNG images and GLB mesh files.
+
+ All inference runs locally -- no external services, no API keys,
+ no subscriptions. Models loaded from SafeTensors files on disk.
+
+ We say:
+
+Section: Types
+  ForgeConfig = record {
+    fc-model-path : Text,
+    fc-recon-model-path : Text,
+    fc-output-dir : Text,
+    fc-width : Integer,
+    fc-height : Integer,
+    fc-steps : Integer,
+    fc-guidance : Integer,
+    fc-seed : Integer,
+    fc-generate-3d : Boolean,
+    fc-grid-res : Integer
+  }
+
+  ForgeResult = record {
+    fr-image-bytes : List Integer,
+    fr-mesh-bytes : List Integer,
+    fr-prompt : Text,
+    fr-width : Integer,
+    fr-height : Integer,
+    fr-has-mesh : Boolean
+  }
+
+Section: Default Configuration
+  forge-default-config : ForgeConfig
+  forge-default-config = ForgeConfig {
+    fc-model-path = "models/sd15",
+    fc-recon-model-path = "models/triposr",
+    fc-output-dir = "output",
+    fc-width = 512,
+    fc-height = 512,
+    fc-steps = 20,
+    fc-guidance = 7500,
+    fc-seed = 42,
+    fc-generate-3d = True,
+    fc-grid-res = 64
+  }
+
+  forge-fast-config : ForgeConfig
+  forge-fast-config = ForgeConfig {
+    fc-model-path = "models/sd15",
+    fc-recon-model-path = "models/triposr",
+    fc-output-dir = "output",
+    fc-width = 256,
+    fc-height = 256,
+    fc-steps = 10,
+    fc-guidance = 7500,
+    fc-seed = 42,
+    fc-generate-3d = False,
+    fc-grid-res = 32
+  }
+
+Section: Generation
+  forge-generate : Text, ForgeConfig, PipelineState, Recon3dState -> ForgeResult
+  forge-generate (prompt) (config) (pipe-state) (recon-state) =
+    let output = pipeline-generate prompt pipe-state
+    in let png = pipeline-to-png output
+    in if config.fc-generate-3d then
+      let img = forge-output-to-image output
+      in let glb = image-to-glb img recon-state
+      in ForgeResult { fr-image-bytes = png, fr-mesh-bytes = glb, fr-prompt = prompt, fr-width = config.fc-width, fr-height = config.fc-height, fr-has-mesh = True }
+    else ForgeResult { fr-image-bytes = png, fr-mesh-bytes = [], fr-prompt = prompt, fr-width = config.fc-width, fr-height = config.fc-height, fr-has-mesh = False }
+
+  forge-output-to-image : PipelineOutput -> ImageData
+  forge-output-to-image (output) =
+    let pixels = forge-unpack-pixels (output.po-pixels) 0 (output.po-width * output.po-height) []
+    in image-new (output.po-width) (output.po-height) pixels
+
+  forge-unpack-pixels : List Integer, Integer, Integer, List Rgb -> List Rgb
+  forge-unpack-pixels (packed) (i) (n) (acc) =
+    if i >= n then acc
+    else let p = list-at packed i
+    in let r = bit-and (bit-shru p 16) 255
+    in let g = bit-and (bit-shru p 8) 255
+    in let b = bit-and p 255
+    in forge-unpack-pixels packed (i + 1) n (list-push acc (Rgb { cr = r, cg = g, cb = b }))
+
+Section: Batch Generation
+  forge-batch : List Text, ForgeConfig, PipelineState, Recon3dState -> List ForgeResult
+  forge-batch (prompts) (config) (pipe-state) (recon-state) =
+    forge-batch-loop prompts config pipe-state recon-state 0 (list-length prompts) []
+
+  forge-batch-loop : List Text, ForgeConfig, PipelineState, Recon3dState, Integer, Integer, List ForgeResult -> List ForgeResult
+  forge-batch-loop (prompts) (config) (pipe-state) (recon-state) (i) (n) (acc) =
+    if i >= n then acc
+    else let seed-config = forge-with-seed config ((config.fc-seed) + i * 7919)
+    in let pipe = forge-update-pipe-seed pipe-state (config.fc-seed + i * 7919)
+    in let result = forge-generate (list-at prompts i) seed-config pipe recon-state
+    in forge-batch-loop prompts config pipe-state recon-state (i + 1) n (list-push acc result)
+
+  forge-with-seed : ForgeConfig, Integer -> ForgeConfig
+  forge-with-seed (config) (seed) =
+    ForgeConfig { fc-model-path = config.fc-model-path, fc-recon-model-path = config.fc-recon-model-path, fc-output-dir = config.fc-output-dir, fc-width = config.fc-width, fc-height = config.fc-height, fc-steps = config.fc-steps, fc-guidance = config.fc-guidance, fc-seed = seed, fc-generate-3d = config.fc-generate-3d, fc-grid-res = config.fc-grid-res }
+
+  forge-update-pipe-seed : PipelineState, Integer -> PipelineState
+  forge-update-pipe-seed (state) (seed) =
+    PipelineState {
+      ps-config = PipelineConfig {
+        pc-width = (state.ps-config.pc-width),
+        pc-height = (state.ps-config.pc-height),
+        pc-num-steps = (state.ps-config.pc-num-steps),
+        pc-guidance-scale = (state.ps-config.pc-guidance-scale),
+        pc-seed = seed,
+        pc-latent-channels = (state.ps-config.pc-latent-channels),
+        pc-latent-scale = (state.ps-config.pc-latent-scale)
+      },
+      ps-text-encoder = state.ps-text-encoder,
+      ps-unet = state.ps-unet,
+      ps-scheduler = state.ps-scheduler,
+      ps-vae-decoder-w = state.ps-vae-decoder-w,
+      ps-vae-decoder-b = state.ps-vae-decoder-b,
+      ps-tokenizer = state.ps-tokenizer
+    }
+
+Section: Queries
+  format-forge-config : ForgeConfig -> Text
+  format-forge-config (cfg) =
+    show (cfg.fc-width) & "x" & show (cfg.fc-height) & " steps=" & show (cfg.fc-steps) & " cfg=" & show (cfg.fc-guidance) & " 3d=" & (if cfg.fc-generate-3d then "yes" else "no")
+
+  format-forge-result : ForgeResult -> Text
+  format-forge-result (r) =
+    "\"" & r.fr-prompt & "\" " & show (r.fr-width) & "x" & show (r.fr-height) & " png=" & show (list-length (r.fr-image-bytes)) & "B" & (if r.fr-has-mesh then " glb=" & show (list-length (r.fr-mesh-bytes)) & "B" else "")
+
+Page 1

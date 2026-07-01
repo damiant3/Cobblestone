@@ -1,0 +1,92 @@
+Chapter: Router
+  cites Foreword chapter Maybe
+
+ A Router maps HTTP path and method pairs to named service
+ handlers, dispatching inbound requests to the matching service
+ by longest-prefix match.
+
+ We say:
+
+Section: Route Types
+
+  RouteHandler = record {
+    path : Text,
+    method : Text,
+    service : Text
+  }
+
+  Router = record {
+    routes : List RouteHandler,
+    count : Integer between 0 and 65535
+  }
+
+Section: Router Operations
+
+  router-empty : Router
+  router-empty = Router { routes = [], count = 0 }
+
+  router-add : Router, Text, Text, Text -> Router
+  router-add (r) (method) (path) (service) =
+    let handler = RouteHandler { path = path, method = method, service = service }
+    in Router { routes = list-push (r.routes) handler, count = r.count + 1 }
+
+  router-get : Router, Text, Text -> Router
+  router-get (r) (path) (service) = router-add r "GET" path service
+
+  router-post : Router, Text, Text -> Router
+  router-post (r) (path) (service) = router-add r "POST" path service
+
+Section: Route Matching
+
+  RouteMatch = record {
+    handler : RouteHandler,
+    matched : Boolean
+  }
+
+  router-match : Router, Text, Text -> RouteMatch
+  router-match (r) (method) (path) =
+    router-match-loop (r.routes) method path 0 (r.count)
+
+  router-match-loop : List RouteHandler, Text, Text, Integer, Integer -> RouteMatch
+  router-match-loop (routes) (method) (path) (i) (len) =
+    if i >= len then RouteMatch { handler = RouteHandler { path = "", method = "", service = "" }, matched = False }
+    else let h = list-at routes i
+    in if h.method == method then
+      if path-matches (h.path) path then RouteMatch { handler = h, matched = True }
+      else router-match-loop routes method path (i + 1) len
+    else router-match-loop routes method path (i + 1) len
+
+  path-matches : Text, Text -> Boolean
+  path-matches (pattern) (path) =
+    if pattern == path then True
+    else if pattern == "*" then True
+    else prefix-match pattern path
+
+  prefix-match : Text, Text -> Boolean
+  prefix-match (pattern) (path) =
+    let plen = text-length pattern
+    in if plen == 0 then False
+    else if char-at pattern (plen - 1) == char-at "*" 0 then
+      let prefix = substring pattern 0 (plen - 1)
+      in starts-with-router path prefix 0 (text-length prefix)
+    else False
+
+  starts-with-router : Text, Text, Integer, Integer -> Boolean
+  starts-with-router (s) (prefix) (i) (len) =
+    if len > text-length s then False
+    else if i >= len then True
+    else if char-at s i == char-at prefix i then starts-with-router s prefix (i + 1) len
+    else False
+
+Section: Queries
+
+  router-count : Router -> Integer
+  router-count (r) = r.count
+
+  router-stats : Router -> Text
+  router-stats (r) = "routes=" & show (r.count)
+
+  format-route : RouteHandler -> Text
+  format-route (h) = h.method & " " & h.path & " -> " & h.service
+
+Page 1

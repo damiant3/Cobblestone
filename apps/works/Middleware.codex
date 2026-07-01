@@ -1,0 +1,99 @@
+Chapter: Middleware
+  cites Works chapter Http
+  cites Observe chapter Journal
+  cites Observe chapter MetricStore
+  cites Observe chapter RateLimiter
+  cites Trust chapter SessionStore
+  cites Foreword chapter Maybe
+
+ HTTP middleware pipeline: logging, metrics, rate limiting, and sessions.
+
+ We say:
+
+Section: Middleware Context
+
+  MwContext = record {
+    method : Text,
+    path : Text,
+    client-ip : Text,
+    timestamp : Integer,
+    session-id : Text
+  }
+
+  MwResult = record {
+    response : HttpResponse,
+    journal : Journal,
+    metrics : MetricStore,
+    handled : Boolean
+  }
+
+Section: Logging Middleware
+
+  mw-log-request : MwContext, Journal -> Journal
+  mw-log-request (ctx) (j) =
+    journal-info j "http" (ctx.method & " " & ctx.path & " from " & ctx.client-ip) (ctx.timestamp)
+
+  mw-log-response : MwContext, HttpResponse, Journal -> Journal
+  mw-log-response (ctx) (resp) (j) =
+    journal-info j "http" (ctx.method & " " & ctx.path & " -> " & resp.status) (ctx.timestamp)
+
+Section: Metrics Middleware
+
+  mw-count-request : MetricStore -> MetricStore
+  mw-count-request (ms) = metric-increment ms "http-requests"
+
+  mw-observe-status : MetricStore, Integer -> MetricStore
+  mw-observe-status (ms) (code) =
+    if code >= 500 then metric-increment ms "http-5xx"
+    else if code >= 400 then metric-increment ms "http-4xx"
+    else if code >= 200 then metric-increment ms "http-2xx"
+    else ms
+
+Section: Rate Limiting Middleware
+
+  MwRateResult = record {
+    allowed : Boolean,
+    limiter : RateLimiter
+  }
+
+  mw-rate-check : RateLimiter, Integer -> MwRateResult
+  mw-rate-check (lim) (now) =
+    let r = limiter-acquire lim now
+    in MwRateResult { allowed = r.allowed, limiter = r.limiter }
+
+  mw-rate-denied-response : HttpResponse
+  mw-rate-denied-response = HttpResponse { status = "429 Too Many Requests", content-type = "text/plain", body = "rate limit exceeded" }
+
+Section: Session Middleware
+
+  mw-session-check : SessionStore, Text, Integer -> Boolean
+  mw-session-check (store) (session-id) (now) =
+    let found = session-get store session-id now
+    in when found
+      is Just (s) -> True
+      is None -> False
+
+  mw-session-required-response : HttpResponse
+  mw-session-required-response = HttpResponse { status = "401 Unauthorized", content-type = "text/plain", body = "valid session required" }
+
+Section: Pipeline
+
+  MwPipeline = record {
+    log-enabled : Boolean,
+    metrics-enabled : Boolean,
+    rate-limit-enabled : Boolean,
+    session-required : Boolean
+  }
+
+  pipeline-default : MwPipeline
+  pipeline-default = MwPipeline { log-enabled = True, metrics-enabled = True, rate-limit-enabled = False, session-required = False }
+
+  pipeline-strict : MwPipeline
+  pipeline-strict = MwPipeline { log-enabled = True, metrics-enabled = True, rate-limit-enabled = True, session-required = True }
+
+  pipeline-check : MwPipeline, MwContext, RateLimiter, SessionStore -> MwRateResult
+  pipeline-check (pipe) (ctx) (lim) (sessions) =
+    if pipe.rate-limit-enabled then mw-rate-check lim (ctx.timestamp)
+    else MwRateResult { allowed = True, limiter = lim }
+
+Page 1

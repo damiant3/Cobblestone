@@ -1,0 +1,207 @@
+Chapter: Matrix4
+  cites Math chapter Quaternion
+
+ 4x4 matrix for 3D transformations using Real (floating-point) arithmetic.
+ Column-major storage as 16-element flat array. Supports multiply,
+ transpose, translation, scaling, rotation, and perspective projection.
+
+ We say:
+
+Section: Type
+  Mat4 = record {
+    m : List Real
+  }
+
+Section: Construction
+  mat4-identity : Mat4
+  mat4-identity = Mat4 { m = [1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0] }
+
+  mat4-zero : Mat4
+  mat4-zero = Mat4 { m = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0] }
+
+  mat4-at : Mat4, Integer, Integer -> Real
+  mat4-at (a) (row) (col) = list-at (a.m) (col * 4 + row)
+
+  mat4-set : Mat4, Integer, Integer, Real -> Mat4
+  mat4-set (a) (row) (col) (val) = Mat4 { m = list-set-at (a.m) (col * 4 + row) val }
+
+Section: Multiply
+  mat4-mul : Mat4, Mat4 -> Mat4
+  mat4-mul (a) (b) = mat4-mul-build a b 0 0 []
+
+  mat4-mul-build : Mat4, Mat4, Integer, Integer, List Real -> Mat4
+  mat4-mul-build (a) (b) (col) (row) (acc) =
+    if col >= 4 then Mat4 { m = acc }
+    else if row >= 4 then mat4-mul-build a b (col + 1) 0 acc
+    else let val = mat4-dot-rc a b row col
+    in mat4-mul-build a b col (row + 1) (list-push acc val)
+
+  mat4-dot-rc : Mat4, Mat4, Integer, Integer -> Real
+  mat4-dot-rc (a) (b) (row) (col) =
+    let s0 = mat4-at a row 0 * mat4-at b 0 col
+    in let s1 = mat4-at a row 1 * mat4-at b 1 col
+    in let s2 = mat4-at a row 2 * mat4-at b 2 col
+    in let s3 = mat4-at a row 3 * mat4-at b 3 col
+    in s0 + s1 + s2 + s3
+
+Section: Transpose
+  mat4-transpose : Mat4 -> Mat4
+  mat4-transpose (a) = Mat4 { m = [mat4-at a 0 0, mat4-at a 1 0, mat4-at a 2 0, mat4-at a 3 0, mat4-at a 0 1, mat4-at a 1 1, mat4-at a 2 1, mat4-at a 3 1, mat4-at a 0 2, mat4-at a 1 2, mat4-at a 2 2, mat4-at a 3 2, mat4-at a 0 3, mat4-at a 1 3, mat4-at a 2 3, mat4-at a 3 3] }
+
+Section: Transforms
+  mat4-translate : Real, Real, Real -> Mat4
+  mat4-translate (x) (y) (z) = Mat4 { m = [1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, x, y, z, 1.0] }
+
+  mat4-scale : Real, Real, Real -> Mat4
+  mat4-scale (x) (y) (z) = Mat4 { m = [x, 0.0, 0.0, 0.0, 0.0, y, 0.0, 0.0, 0.0, 0.0, z, 0.0, 0.0, 0.0, 0.0, 1.0] }
+
+  mat4-from-quat : Quat -> Mat4
+  mat4-from-quat (q) =
+    let xx = q.x * q.x
+    in let yy = q.y * q.y
+    in let zz = q.z * q.z
+    in let xy = q.x * q.y
+    in let xz = q.x * q.z
+    in let yz = q.y * q.z
+    in let wx = q.w * q.x
+    in let wy = q.w * q.y
+    in let wz = q.w * q.z
+    in Mat4 { m = [1.0 - 2.0 * (yy + zz), 2.0 * (xy + wz), 2.0 * (xz - wy), 0.0, 2.0 * (xy - wz), 1.0 - 2.0 * (xx + zz), 2.0 * (yz + wx), 0.0, 2.0 * (xz + wy), 2.0 * (yz - wx), 1.0 - 2.0 * (xx + yy), 0.0, 0.0, 0.0, 0.0, 1.0] }
+
+Section: Transform Vec3
+  mat4-transform-point : Mat4, Vec3 -> Vec3
+  mat4-transform-point (m) (v) =
+    let x = mat4-at m 0 0 * v.vx + mat4-at m 0 1 * v.vy + mat4-at m 0 2 * v.vz + mat4-at m 0 3
+    in let y = mat4-at m 1 0 * v.vx + mat4-at m 1 1 * v.vy + mat4-at m 1 2 * v.vz + mat4-at m 1 3
+    in let z = mat4-at m 2 0 * v.vx + mat4-at m 2 1 * v.vy + mat4-at m 2 2 * v.vz + mat4-at m 2 3
+    in Vec3 { vx = x, vy = y, vz = z }
+
+Section: Projection
+
+  mat4-perspective : Real, Real, Real, Real -> Mat4
+  mat4-perspective (fov) (aspect) (near) (far) =
+    let half-fov = fov / 2.0
+    in let sin-h = mat4-sin-approx half-fov
+    in let cos-h = mat4-cos-approx half-fov
+    in let f = if sin-h ~ 0.0 then 1000.0 else cos-h / sin-h
+    in let fx = if aspect ~ 0.0 then f else f / aspect
+    in let dz = near - far
+    in let a = if dz ~ 0.0 then 0.0 else (far + near) / dz
+    in let b = if dz ~ 0.0 then 0.0 else 2.0 * far * near / dz
+    in Mat4 { m = [fx, 0.0, 0.0, 0.0, 0.0, f, 0.0, 0.0, 0.0, 0.0, a, -1.0, 0.0, 0.0, b, 0.0] }
+
+  mat4-ortho : Real, Real, Real, Real, Real, Real -> Mat4
+  mat4-ortho (left) (right) (bottom) (top) (near) (far) =
+    let dx = right - left
+    in let dy = top - bottom
+    in let dz = far - near
+    in let sx = if dx ~ 0.0 then 0.0 else 2.0 / dx
+    in let sy = if dy ~ 0.0 then 0.0 else 2.0 / dy
+    in let sz = if dz ~ 0.0 then 0.0 else -2.0 / dz
+    in let tx = if dx ~ 0.0 then 0.0 else -(right + left) / dx
+    in let ty = if dy ~ 0.0 then 0.0 else -(top + bottom) / dy
+    in let tz = if dz ~ 0.0 then 0.0 else -(far + near) / dz
+    in Mat4 { m = [sx, 0.0, 0.0, 0.0, 0.0, sy, 0.0, 0.0, 0.0, 0.0, sz, 0.0, tx, ty, tz, 1.0] }
+
+Section: View
+
+  mat4-look-at : Vec3, Vec3, Vec3 -> Mat4
+  mat4-look-at (eye) (target) (up) =
+    let fwd = mat4-v3-normalize (vec3-subtract target eye)
+    in let right = mat4-v3-normalize (vec3-cross fwd up)
+    in let cam-up = vec3-cross right fwd
+    in let tx = -(vec3-dot right eye)
+    in let ty = -(vec3-dot cam-up eye)
+    in let tz = vec3-dot fwd eye
+    in Mat4 { m = [right.vx, cam-up.vx, -fwd.vx, 0.0, right.vy, cam-up.vy, -fwd.vy, 0.0, right.vz, cam-up.vz, -fwd.vz, 0.0, tx, ty, tz, 1.0] }
+
+Section: Inverse
+
+  mat4-inverse : Mat4 -> Mat4
+  mat4-inverse (a) =
+    let s0 = mat4-at a 0 0 * mat4-at a 1 1 - mat4-at a 1 0 * mat4-at a 0 1
+    in let s1 = mat4-at a 0 0 * mat4-at a 1 2 - mat4-at a 1 0 * mat4-at a 0 2
+    in let s2 = mat4-at a 0 0 * mat4-at a 1 3 - mat4-at a 1 0 * mat4-at a 0 3
+    in let s3 = mat4-at a 0 1 * mat4-at a 1 2 - mat4-at a 1 1 * mat4-at a 0 2
+    in let s4 = mat4-at a 0 1 * mat4-at a 1 3 - mat4-at a 1 1 * mat4-at a 0 3
+    in let s5 = mat4-at a 0 2 * mat4-at a 1 3 - mat4-at a 1 2 * mat4-at a 0 3
+    in let c5 = mat4-at a 2 2 * mat4-at a 3 3 - mat4-at a 3 2 * mat4-at a 2 3
+    in let c4 = mat4-at a 2 1 * mat4-at a 3 3 - mat4-at a 3 1 * mat4-at a 2 3
+    in let c3 = mat4-at a 2 1 * mat4-at a 3 2 - mat4-at a 3 1 * mat4-at a 2 2
+    in let c2 = mat4-at a 2 0 * mat4-at a 3 3 - mat4-at a 3 0 * mat4-at a 2 3
+    in let c1 = mat4-at a 2 0 * mat4-at a 3 2 - mat4-at a 3 0 * mat4-at a 2 2
+    in let c0 = mat4-at a 2 0 * mat4-at a 3 1 - mat4-at a 3 0 * mat4-at a 2 1
+    in let det = s0 * c5 - s1 * c4 + s2 * c3 + s3 * c2 - s4 * c1 + s5 * c0
+    in if det ~ 0.0 then mat4-identity
+    else let inv-det = 1.0 / det
+    in let r00 = (mat4-at a 1 1 * c5 - mat4-at a 1 2 * c4 + mat4-at a 1 3 * c3) * inv-det
+    in let r01 = (-(mat4-at a 0 1) * c5 + mat4-at a 0 2 * c4 - mat4-at a 0 3 * c3) * inv-det
+    in let r02 = (mat4-at a 3 1 * s5 - mat4-at a 3 2 * s4 + mat4-at a 3 3 * s3) * inv-det
+    in let r03 = (-(mat4-at a 2 1) * s5 + mat4-at a 2 2 * s4 - mat4-at a 2 3 * s3) * inv-det
+    in let r10 = (-(mat4-at a 1 0) * c5 + mat4-at a 1 2 * c2 - mat4-at a 1 3 * c1) * inv-det
+    in let r11 = (mat4-at a 0 0 * c5 - mat4-at a 0 2 * c2 + mat4-at a 0 3 * c1) * inv-det
+    in let r12 = (-(mat4-at a 3 0) * s5 + mat4-at a 3 2 * s2 - mat4-at a 3 3 * s1) * inv-det
+    in let r13 = (mat4-at a 2 0 * s5 - mat4-at a 2 2 * s2 + mat4-at a 2 3 * s1) * inv-det
+    in let r20 = (mat4-at a 1 0 * c4 - mat4-at a 1 1 * c2 + mat4-at a 1 3 * c0) * inv-det
+    in let r21 = (-(mat4-at a 0 0) * c4 + mat4-at a 0 1 * c2 - mat4-at a 0 3 * c0) * inv-det
+    in let r22 = (mat4-at a 3 0 * s4 - mat4-at a 3 1 * s2 + mat4-at a 3 3 * s0) * inv-det
+    in let r23 = (-(mat4-at a 2 0) * s4 + mat4-at a 2 1 * s2 - mat4-at a 2 3 * s0) * inv-det
+    in let r30 = (-(mat4-at a 1 0) * c3 + mat4-at a 1 1 * c1 - mat4-at a 1 2 * c0) * inv-det
+    in let r31 = (mat4-at a 0 0 * c3 - mat4-at a 0 1 * c1 + mat4-at a 0 2 * c0) * inv-det
+    in let r32 = (-(mat4-at a 3 0) * s3 + mat4-at a 3 1 * s1 - mat4-at a 3 2 * s0) * inv-det
+    in let r33 = (mat4-at a 2 0 * s3 - mat4-at a 2 1 * s1 + mat4-at a 2 2 * s0) * inv-det
+    in Mat4 { m = [r00, r01, r02, r03, r10, r11, r12, r13, r20, r21, r22, r23, r30, r31, r32, r33] }
+
+Section: Transform Vec4
+
+  Vec4 = record { v4x : Real, v4y : Real, v4z : Real, v4w : Real }
+
+  mat4-transform-vec4 : Mat4, Vec4 -> Vec4
+  mat4-transform-vec4 (m) (v) =
+    let x = mat4-at m 0 0 * v.v4x + mat4-at m 0 1 * v.v4y + mat4-at m 0 2 * v.v4z + mat4-at m 0 3 * v.v4w
+    in let y = mat4-at m 1 0 * v.v4x + mat4-at m 1 1 * v.v4y + mat4-at m 1 2 * v.v4z + mat4-at m 1 3 * v.v4w
+    in let z = mat4-at m 2 0 * v.v4x + mat4-at m 2 1 * v.v4y + mat4-at m 2 2 * v.v4z + mat4-at m 2 3 * v.v4w
+    in let w = mat4-at m 3 0 * v.v4x + mat4-at m 3 1 * v.v4y + mat4-at m 3 2 * v.v4z + mat4-at m 3 3 * v.v4w
+    in Vec4 { v4x = x, v4y = y, v4z = z, v4w = w }
+
+Section: Trig Helpers
+
+  mat4-sin-approx : Real -> Real
+  mat4-sin-approx (rad) =
+    let x = rad
+    in let x3 = x * x * x
+    in x - x3 / 6.0
+
+  mat4-cos-approx : Real -> Real
+  mat4-cos-approx (rad) =
+    let x2 = rad * rad
+    in let x4 = x2 * x2
+    in 1.0 - x2 / 2.0 + x4 / 24.0
+
+Section: Vec3 Helpers
+
+  mat4-v3-length : Vec3 -> Real
+  mat4-v3-length (v) =
+    let sq = v.vx * v.vx + v.vy * v.vy + v.vz * v.vz
+    in mat4-sqrt sq
+
+  mat4-v3-normalize : Vec3 -> Vec3
+  mat4-v3-normalize (v) =
+    let len = mat4-v3-length v
+    in if len ~ 0.0 then vec3-zero
+    else Vec3 { vx = v.vx / len, vy = v.vy / len, vz = v.vz / len }
+
+  mat4-sqrt : Real -> Real
+  mat4-sqrt (n) = if n <= 0.0 then 0.0 else mat4-sqrt-loop n (n / 2.0 + 1.0)
+
+  mat4-sqrt-loop : Real, Real -> Real
+  mat4-sqrt-loop (n) (guess) =
+    let next = (guess + n / guess) / 2.0
+    in if next ~ guess then next else mat4-sqrt-loop n next
+
+Section: Formatting
+  format-mat4-row : Mat4, Integer -> Text
+  format-mat4-row (a) (row) =
+    show (mat4-at a row 0) & " " & show (mat4-at a row 1) & " " & show (mat4-at a row 2) & " " & show (mat4-at a row 3)
+
+Page 1

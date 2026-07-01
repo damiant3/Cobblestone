@@ -1,0 +1,59 @@
+Chapter: TestRenodeScript
+
+  cites Foreword chapter Console
+  cites Foreword chapter Maybe
+  cites Shell chapter ShellTypes
+  cites Shell chapter ShellBuild
+  cites Shell chapter PowerShellEmit
+
+ Generates test-renode.ps1 from the Shell DSL.
+ Run a Codex ELF binary under Renode, capture UART output.
+ Compile with: -Survey "lower-mul:500000"
+
+ We say:
+
+Section: Parameters
+
+  test-renode-params : List ShellParam = [sh-param "Arch" SptString, sh-param "Elf" SptString, sh-param "OutFile" SptString, sh-param-default "TimeoutSec" SptInt (SeInt 10)]
+
+Section: S01 -- Preamble
+
+  s01 : List ShellCmd =
+    let missing-renode = [ScWriteError (SeRaw "\"MISSING: $RenodeExe\""), ScExit (SeInt 2)]
+    in let missing-board = [ScWriteError (SeRaw "\"MISSING: board $boardRepl\""), ScExit (SeInt 2)]
+    in [ScSetStrictMode, ScSetErrorStop, ScBlank, ScAssign "Repo" (SeRaw "(Resolve-Path (Join-Path $PSScriptRoot '..')).Path"), ScAssign "RenodeExe" (SeRaw "Join-Path $Repo 'tools\\renode\\renode.exe'"), ScIf (SeNot (SeFileExists (SeVar "RenodeExe"))) missing-renode [], ScBlank, ScAssign "boardRepl" (SeRaw "Join-Path $Repo \"tools\\renode\\codex\\codex-${Arch}.repl\""), ScIf (SeNot (SeFileExists (SeVar "boardRepl"))) missing-board []]
+
+Section: S02 -- Resolve Paths
+
+  s02 : List ShellCmd = [ScAssign "elfPath" (SeRaw "(Resolve-Path $Elf).Path -replace '\\\\','/'"), ScAssign "boardPath" (SeRaw "(Resolve-Path $boardRepl).Path -replace '\\\\','/'"), ScAssign "uartLog" (SeRaw "(Join-Path ([System.IO.Path]::GetTempPath()) \"renode-uart-$([guid]::NewGuid().ToString('N').Substring(0,8)).log\") -replace '\\\\','/'")]
+
+Section: S03 -- Resc File
+
+  s03 : List ShellCmd = [ScAssign "rescContent" (SeRaw "\"mach create ```\"codex```\"`nmachine LoadPlatformDescription @${boardPath}`nsysbus LoadELF @${elfPath}`nuart0 CreateFileBackend @${uartLog} true`nstart`nsleep ${TimeoutSec}`nquit\""), ScRaw "$rescFile = [System.IO.Path]::GetTempFileName() -replace '\\\\','/'", ScDotNetCall "System.IO.File" "WriteAllText" [SeVar "rescFile", SeVar "rescContent"]]
+
+Section: S04 -- Launch Renode
+
+  s04 : List ShellCmd = [ScTempFile "stdoutFile", ScRaw "$proc = Start-Process -FilePath $RenodeExe -ArgumentList @('--disable-xwt', '--console', '-e', \"include @$rescFile\") -PassThru -WindowStyle Hidden -RedirectStandardOutput $stdoutFile -RedirectStandardError ([System.IO.Path]::GetTempFileName())", ScBlank, ScAssign "wallTimeout" (SeRaw "($TimeoutSec + 15) * 1000"), ScRaw "$proc.WaitForExit($wallTimeout) | Out-Null", ScIf (SeNot (SeProperty (SeVar "proc") "HasExited")) [ScRaw "try { Stop-Process -Id $proc.Id -Force -ErrorAction Stop } catch {}"] [], ScBlank, ScRaw "Start-Sleep -Milliseconds 500"]
+
+Section: S05 -- Capture UART
+
+  s05 : List ShellCmd =
+    let found = [ScRaw "$content = [System.IO.File]::ReadAllText($uartLog)", ScRaw "$lines = ($content -split \"`n\" | Select-Object -First 1) -replace \"`r\",\"\"", ScDotNetCall "System.IO.File" "WriteAllText" [SeVar "OutFile", SeRaw "$lines + \"`n\""], ScRaw "Write-Host \"[renode] ${Arch}: $($lines.Length) chars - $lines\"", ScRaw "Remove-Item $uartLog -Force -ErrorAction SilentlyContinue"]
+    in let not-found = [ScDotNetCall "System.IO.File" "WriteAllText" [SeVar "OutFile", SeLit ""], ScRaw "Write-Host \"[renode] ${Arch}: no UART output\""]
+    in [ScIf (SeFileExists (SeVar "uartLog")) found not-found]
+
+Section: S06 -- Cleanup
+
+  s06 : List ShellCmd = [ScRaw "Remove-Item $rescFile, $stdoutFile -Force -ErrorAction SilentlyContinue", ScExit (SeInt 0)]
+
+Section: Assembly
+
+  test-renode-body : List ShellCmd = [ScSequence s01, ScBlank, ScSequence s02, ScBlank, ScSequence s03, ScBlank, ScSequence s04, ScBlank, ScSequence s05, ScBlank, ScSequence s06]
+
+  test-renode-script : ShellScript = sh-script "test-renode" "Run a Codex ELF binary under Renode, capture UART output" test-renode-params test-renode-body
+
+  opening : [Console] Nothing = act
+    print-line-uni (emit-powershell test-renode-script)
+  end
+
+Page 1

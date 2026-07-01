@@ -1,0 +1,129 @@
+Chapter: Keyboard
+  cites Foreword chapter CCE
+  cites Foreword chapter KeyboardLayout
+
+ PS/2 keyboard driver with international layout support. Reads
+ scancodes from the kernel's IRQ1 key buffer (memory address 28680),
+ maps scancode set 1 (XT) to CCE via the active keyboard layout.
+ Supports dead key composition for accented characters.
+
+ The layout is selected at init time via kb-state-for-layout. The
+ default is US QWERTY. Switch layouts at runtime by replacing the
+ layout field in KbState.
+
+ We say:
+
+Section: Key Buffer
+  kb-buffer-addr : Integer = 28680
+
+  kb-has-key : Boolean
+  kb-has-key = peek-byte kb-buffer-addr 0 /= 0
+
+  kb-read-scancode : Integer
+  kb-read-scancode =
+    let sc = peek-byte kb-buffer-addr 0
+    in let clear = poke-byte kb-buffer-addr 0 0
+    in sc
+
+Section: Keyboard State
+  KbState = record {
+    shift : Boolean,
+    ctrl : Boolean,
+    caps : Boolean,
+    num : Boolean,
+    layout : KbLayout,
+    dead : DeadState
+  }
+
+  kb-state-new : KbState
+  kb-state-new = kb-state-for-layout kbl-us
+
+  kb-state-for-layout : KbLayout -> KbState
+  kb-state-for-layout (l) = KbState { shift = False, ctrl = False, caps = False, num = False, layout = l, dead = dead-none }
+
+Section: Scancode Processing
+  KbEvent = record {
+    ascii : Integer between 0 and 2175,
+    scancode : Integer between 0 and 255,
+    pressed : Boolean,
+    state : KbState
+  }
+
+  kb-no-event : KbState -> KbEvent
+  kb-no-event (st) = KbEvent { ascii = 0, scancode = 0, pressed = False, state = st }
+
+  kb-update-state : KbState, Boolean, Boolean, Boolean, Boolean -> KbState
+  kb-update-state (st) (sh) (ct) (ca) (nu) =
+    KbState { shift = sh, ctrl = ct, caps = ca, num = nu, layout = st.layout, dead = st.dead }
+
+  kb-process-scancode : KbState, Integer -> KbEvent
+  kb-process-scancode (st) (sc) =
+    if sc == 42 then KbEvent { ascii = 0, scancode = sc, pressed = True, state = kb-update-state st True st.ctrl st.caps st.num }
+    else if sc == 54 then KbEvent { ascii = 0, scancode = sc, pressed = True, state = kb-update-state st True st.ctrl st.caps st.num }
+    else if sc == 170 then KbEvent { ascii = 0, scancode = sc, pressed = False, state = kb-update-state st False st.ctrl st.caps st.num }
+    else if sc == 182 then KbEvent { ascii = 0, scancode = sc, pressed = False, state = kb-update-state st False st.ctrl st.caps st.num }
+    else if sc == 29 then KbEvent { ascii = 0, scancode = sc, pressed = True, state = kb-update-state st st.shift True st.caps st.num }
+    else if sc == 157 then KbEvent { ascii = 0, scancode = sc, pressed = False, state = kb-update-state st st.shift False st.caps st.num }
+    else if sc == 58 then KbEvent { ascii = 0, scancode = sc, pressed = True, state = kb-update-state st st.shift st.ctrl (if st.caps then False else True) st.num }
+    else if sc == 69 then KbEvent { ascii = 0, scancode = sc, pressed = True, state = kb-update-state st st.shift st.ctrl st.caps (if st.num then False else True) }
+    else if sc >= 128 then KbEvent { ascii = 0, scancode = sc, pressed = False, state = st }
+    else if sc >= 71 then if sc <= 83 then
+      if st.num then let base = kbl-lookup (st.layout.kbl-base) sc
+        in KbEvent { ascii = base, scancode = sc, pressed = True, state = st }
+      else KbEvent { ascii = 0, scancode = sc, pressed = True, state = st }
+    else KbEvent { ascii = 0, scancode = sc, pressed = True, state = st }
+    else kb-process-printable st sc
+
+  kb-process-printable : KbState, Integer -> KbEvent
+  kb-process-printable (st) (sc) =
+    let is-dead1 = sc == st.layout.kbl-dead1
+    in let is-dead2 = sc == st.layout.kbl-dead2
+    in if is-dead1 then
+      let accent = if st.shift then 4 else 1
+      in let new-dead = DeadState { ds-pending = accent }
+      in KbEvent { ascii = 0, scancode = sc, pressed = True, state = KbState { shift = st.shift, ctrl = st.ctrl, caps = st.caps, num = st.num, layout = st.layout, dead = new-dead } }
+    else if is-dead2 then
+      let accent = if st.shift then 3 else 2
+      in let new-dead = DeadState { ds-pending = accent }
+      in KbEvent { ascii = 0, scancode = sc, pressed = True, state = KbState { shift = st.shift, ctrl = st.ctrl, caps = st.caps, num = st.num, layout = st.layout, dead = new-dead } }
+    else let base-cce = kbl-lookup (st.layout.kbl-base) sc
+    in let shift-cce = kbl-lookup (st.layout.kbl-shift) sc
+    in let raw = if st.shift then
+        if shift-cce /= 0 then shift-cce
+        else kb-caps-to-upper base-cce
+      else base-cce
+    in let with-caps = kb-apply-caps st.caps st.shift raw
+    in let combined = dead-combine (st.dead) with-caps
+    in let clear-dead = KbState { shift = st.shift, ctrl = st.ctrl, caps = st.caps, num = st.num, layout = st.layout, dead = dead-none }
+    in KbEvent { ascii = combined, scancode = sc, pressed = True, state = clear-dead }
+
+  kb-apply-caps : Boolean, Boolean, Integer -> Integer
+  kb-apply-caps (caps) (shift) (c) =
+    if caps then
+      if shift then kb-caps-to-lower c
+      else kb-caps-to-upper c
+    else c
+
+  kb-caps-to-upper : Integer -> Integer
+  kb-caps-to-upper (c) =
+    if c >= 13 then if c <= 38 then c + 26
+    else if c >= 304 then if c <= 335 then c - 32
+    else if c >= 449 then if c <= 473 then c - 32
+    else c else c else c
+    else c
+
+  kb-caps-to-lower : Integer -> Integer
+  kb-caps-to-lower (c) =
+    if c >= 39 then if c <= 64 then c - 26
+    else if c >= 272 then if c <= 303 then c + 32
+    else if c >= 417 then if c <= 441 then c + 32
+    else c else c else c
+    else c
+
+Section: Polling
+  kb-poll : KbState -> KbEvent
+  kb-poll (st) =
+    if kb-has-key then kb-process-scancode st kb-read-scancode
+    else kb-no-event st
+
+Page 1

@@ -1,0 +1,340 @@
+Chapter: MapNetwork
+  cites Globe chapter GlobeTypes
+  cites Globe chapter MapTypes
+  cites Foreword chapter Maybe
+  cites Foreword chapter Pathfinding
+  cites Math chapter Geodesic
+
+ Road network graph and route planning. Builds a weighted
+ directed graph from road edges, runs Dijkstra for shortest
+ path, and generates turn-by-turn directions from the result.
+
+Section: Road Graph
+
+  RoadGraph = record {
+    rg-nodes : List RoadNode,
+    rg-node-count : Integer,
+    rg-edges : List RoadEdge,
+    rg-edge-count : Integer,
+    rg-next-node-id : Integer,
+    rg-next-edge-id : Integer
+  }
+
+  road-graph-new : RoadGraph
+  road-graph-new = RoadGraph {
+    rg-nodes = [], rg-node-count = 0,
+    rg-edges = [], rg-edge-count = 0,
+    rg-next-node-id = 1, rg-next-edge-id = 1
+  }
+
+  rg-add-node : RoadGraph, Integer, Integer, Integer -> RoadGraph
+  rg-add-node (g) (lat) (lon) (elev) =
+    let node = RoadNode {
+      rn-id = g.rg-next-node-id,
+      rn-lat = lat,
+      rn-lon = lon,
+      rn-elevation = elev,
+      rn-edge-count = 0
+    }
+    in __record-set (__record-set (__record-set g
+      "rg-nodes" (list-push g.rg-nodes node))
+      "rg-node-count" (g.rg-node-count + 1))
+      "rg-next-node-id" (g.rg-next-node-id + 1)
+
+  rg-add-edge : RoadGraph, Integer, Integer, RoadClass, Text, Integer, Boolean -> RoadGraph
+  rg-add-edge (g) (from) (to) (rc) (name) (length-m) (oneway) =
+    let edge = RoadEdge {
+      re-id = g.rg-next-edge-id,
+      re-from = from, re-to = to,
+      re-road-class = rc,
+      re-name = name,
+      re-length-m = length-m,
+      re-speed-limit = rc-speed-limit rc,
+      re-oneway = oneway,
+      re-toll = False, re-bridge = False, re-tunnel = False,
+      re-surface = RsPaved
+    }
+    in __record-set (__record-set (__record-set g
+      "rg-edges" (list-push g.rg-edges edge))
+      "rg-edge-count" (g.rg-edge-count + 1))
+      "rg-next-edge-id" (g.rg-next-edge-id + 1)
+
+Section: Node Lookup
+
+  rg-find-node : RoadGraph, Integer -> Maybe RoadNode
+  rg-find-node (g) (id) = rg-find-loop g.rg-nodes id 0 g.rg-node-count
+
+  rg-find-loop : List RoadNode, Integer, Integer, Integer -> Maybe RoadNode
+  rg-find-loop (nodes) (id) (i) (len) =
+    if i >= len then None
+    else let n = list-at nodes i
+    in if n.rn-id == id then Just n
+    else rg-find-loop nodes id (i + 1) len
+
+  rg-nearest-node : RoadGraph, Integer, Integer -> Maybe RoadNode
+  rg-nearest-node (g) (lat) (lon) =
+    rg-nearest-loop g.rg-nodes lat lon 0 g.rg-node-count (-1) 999999999
+
+  rg-nearest-loop : List RoadNode, Integer, Integer, Integer, Integer, Integer, Integer -> Maybe RoadNode
+  rg-nearest-loop (nodes) (lat) (lon) (i) (len) (best-idx) (best-dist) =
+    if i >= len then
+      if best-idx < 0 then None
+      else Just (list-at nodes best-idx)
+    else let n = list-at nodes i
+    in let dlat = n.rn-lat - lat
+    in let dlon = n.rn-lon - lon
+    in let dist = dlat * dlat + dlon * dlon
+    in if dist < best-dist
+      then rg-nearest-loop nodes lat lon (i + 1) len i dist
+      else rg-nearest-loop nodes lat lon (i + 1) len best-idx best-dist
+
+Section: Edge Queries
+
+  rg-edges-from : RoadGraph, Integer -> List RoadEdge
+  rg-edges-from (g) (node-id) =
+    rg-edge-filter g.rg-edges node-id 0 g.rg-edge-count []
+
+  rg-edge-filter : List RoadEdge, Integer, Integer, Integer, List RoadEdge -> List RoadEdge
+  rg-edge-filter (edges) (node-id) (i) (len) (acc) =
+    if i >= len then acc
+    else let e = list-at edges i
+    in if e.re-from == node-id
+      then rg-edge-filter edges node-id (i + 1) len (list-push acc e)
+      else if e.re-oneway == False
+        then if e.re-to == node-id
+          then rg-edge-filter edges node-id (i + 1) len (list-push acc e)
+          else rg-edge-filter edges node-id (i + 1) len acc
+        else rg-edge-filter edges node-id (i + 1) len acc
+
+Section: Edge Weight
+
+  edge-travel-time : RoadEdge, TravelMode -> Integer
+  edge-travel-time (e) (mode) =
+    let base-speed = when mode
+          is TmDriving -> e.re-speed-limit
+          is TmWalking -> 5
+          is TmCycling -> if rc-is-drivable e.re-road-class then 20 else 15
+          is TmTransit -> 40
+    in if base-speed == 0 then 999999
+    else e.re-length-m * 36 / (base-speed * 10)
+
+  edge-weight : RoadEdge, TravelMode, RouteOptions -> Integer
+  edge-weight (e) (mode) (opts) =
+    let time = edge-travel-time e mode
+    in let toll-penalty = if opts.ro-avoid-tolls then if e.re-toll then 999999 else 0 else 0
+    in let hw-penalty = if opts.ro-avoid-highways then
+          when e.re-road-class
+            is RcMotorway -> 999999
+            is RcTrunk -> 100000
+            is otherwise -> 0
+        else 0
+    in time + toll-penalty + hw-penalty
+
+Section: Route Finding (Dijkstra)
+
+  RouteResult = record {
+    rr-found : Boolean,
+    rr-path : List Integer,
+    rr-path-length : Integer,
+    rr-total-distance : Integer,
+    rr-total-time : Integer
+  }
+
+  rr-empty : RouteResult
+  rr-empty = RouteResult {
+    rr-found = False, rr-path = [], rr-path-length = 0,
+    rr-total-distance = 0, rr-total-time = 0
+  }
+
+  find-route : RoadGraph, Integer, Integer, TravelMode, RouteOptions -> RouteResult
+  find-route (g) (start-id) (end-id) (mode) (opts) =
+    let adj = build-adjacency g mode opts
+    in let result = dijkstra g.rg-node-count adj start-id
+    in extract-path result start-id end-id g
+
+  build-adjacency : RoadGraph, TravelMode, RouteOptions -> List (List (Integer, Integer))
+  build-adjacency (g) (mode) (opts) =
+    build-adj-loop g mode opts 0 g.rg-node-count []
+
+  build-adj-loop : RoadGraph, TravelMode, RouteOptions, Integer, Integer, List (List (Integer, Integer)) -> List (List (Integer, Integer))
+  build-adj-loop (g) (mode) (opts) (i) (len) (acc) =
+    if i >= len then acc
+    else let node-id = i + 1
+    in let edges = rg-edges-from g node-id
+    in let neighbors = edges-to-neighbors edges mode opts 0 (list-length edges) []
+    in build-adj-loop g mode opts (i + 1) len (list-push acc neighbors)
+
+  edges-to-neighbors : List RoadEdge, TravelMode, RouteOptions, Integer, Integer, List (Integer, Integer) -> List (Integer, Integer)
+  edges-to-neighbors (edges) (mode) (opts) (i) (len) (acc) =
+    if i >= len then acc
+    else let e = list-at edges i
+    in let target = if e.re-from == 0 then e.re-to else e.re-to
+    in let w = edge-weight e mode opts
+    in edges-to-neighbors edges mode opts (i + 1) len (list-push acc (target, w))
+
+  extract-path : DijkResult, Integer, Integer, RoadGraph -> RouteResult
+  extract-path (result) (start) (end-id) (g) =
+    let end-idx = end-id - 1
+    in let start-idx = start - 1
+    in if list-at (result.dj-distances) end-idx >= 999999999 then rr-empty
+    else let idx-path = dijk-path result end-idx
+    in let node-path = idx-to-node-ids idx-path 0 (list-length idx-path) []
+    in let total-dist = sum-path-distance g node-path 0 (list-length node-path) 0
+    in let total-time = list-at (result.dj-distances) end-idx
+    in RouteResult {
+      rr-found = True,
+      rr-path = node-path,
+      rr-path-length = list-length node-path,
+      rr-total-distance = total-dist,
+      rr-total-time = total-time
+    }
+
+  idx-to-node-ids : List Integer, Integer, Integer, List Integer -> List Integer
+  idx-to-node-ids (indices) (i) (n) (acc) =
+    if i >= n then acc
+    else idx-to-node-ids indices (i + 1) n (list-push acc (list-at indices i + 1))
+
+  sum-path-distance : RoadGraph, List Integer, Integer, Integer, Integer -> Integer
+  sum-path-distance (g) (path) (i) (len) (acc) =
+    if i + 1 >= len then acc
+    else let from-id = list-at path i
+    in let to-id = list-at path (i + 1)
+    in let edge = find-edge-between g.rg-edges from-id to-id 0 g.rg-edge-count
+    in let dist = edge-dist edge
+    in sum-path-distance g path (i + 1) len (acc + dist)
+
+Section: Turn-by-Turn Direction Generation
+
+  generate-directions : RoadGraph, List Integer, TravelMode -> List RouteStep
+  generate-directions (g) (path) (mode) =
+    gen-steps g path mode 0 (list-length path) []
+
+  gen-steps : RoadGraph, List Integer, TravelMode, Integer, Integer, List RouteStep -> List RouteStep
+  gen-steps (g) (path) (mode) (i) (len) (acc) =
+    if i + 1 >= len then acc
+    else let from-id = list-at path i
+    in let to-id = list-at path (i + 1)
+    in let from-node = rg-find-node g from-id
+    in let to-node = rg-find-node g to-id
+    in when from-node
+      is None -> acc
+      is Just (fn) -> when to-node
+        is None -> acc
+        is Just (tn) ->
+          let edge = find-edge-between g.rg-edges from-id to-id 0 g.rg-edge-count
+          in let maneuver = if i == 0 then MnDepart
+                else if i + 2 >= len then MnArrive
+                else determine-maneuver g path i
+          in let step = RouteStep {
+            rst-instruction = mn-label maneuver & " onto " & edge-name edge,
+            rst-maneuver = maneuver,
+            rst-distance-m = edge-dist edge,
+            rst-duration-sec = edge-time edge mode,
+            rst-road-name = edge-name edge,
+            rst-road-class = edge-class edge,
+            rst-start-lat = fn.rn-lat,
+            rst-start-lon = fn.rn-lon,
+            rst-end-lat = tn.rn-lat,
+            rst-end-lon = tn.rn-lon,
+            rst-heading = 0
+          }
+          in gen-steps g path mode (i + 1) len (list-push acc step)
+
+  find-edge-between : List RoadEdge, Integer, Integer, Integer, Integer -> Maybe RoadEdge
+  find-edge-between (edges) (from) (to) (i) (len) =
+    if i >= len then None
+    else let e = list-at edges i
+    in if e.re-from == from
+      then if e.re-to == to then Just e
+        else find-edge-between edges from to (i + 1) len
+      else find-edge-between edges from to (i + 1) len
+
+  edge-name : Maybe RoadEdge -> Text
+  edge-name (e) = when e
+    is None -> "road"
+    is Just (ed) -> if text-length ed.re-name > 0 then ed.re-name else rc-label ed.re-road-class
+
+  edge-dist : Maybe RoadEdge -> Integer
+  edge-dist (e) = when e is None -> 0 is Just (ed) -> ed.re-length-m
+
+  edge-time : Maybe RoadEdge, TravelMode -> Integer
+  edge-time (e) (mode) = when e is None -> 0 is Just (ed) -> edge-travel-time ed mode
+
+  edge-class : Maybe RoadEdge -> RoadClass
+  edge-class (e) = when e is None -> RcResidential is Just (ed) -> ed.re-road-class
+
+  determine-maneuver : RoadGraph, List Integer, Integer -> Maneuver
+  determine-maneuver (g) (path) (i) =
+    let prev-id = list-at path (i - 1)
+    in let curr-id = list-at path i
+    in let next-id = list-at path (i + 1)
+    in let prev-node = rg-find-node g prev-id
+    in let curr-node = rg-find-node g curr-id
+    in let next-node = rg-find-node g next-id
+    in when prev-node
+      is None -> MnContinue
+      is Just (pn) -> when curr-node
+        is None -> MnContinue
+        is Just (cn) -> when next-node
+          is None -> MnContinue
+          is Just (nn) ->
+            let in-dlat = cn.rn-lat - pn.rn-lat
+            in let in-dlon = cn.rn-lon - pn.rn-lon
+            in let out-dlat = nn.rn-lat - cn.rn-lat
+            in let out-dlon = nn.rn-lon - cn.rn-lon
+            in let cross = in-dlat * out-dlon - in-dlon * out-dlat
+            in let dot = in-dlat * out-dlat + in-dlon * out-dlon
+            in angle-to-maneuver cross dot
+
+  angle-to-maneuver : Integer, Integer -> Maneuver
+  angle-to-maneuver (cross) (dot) =
+    let abs-cross = if cross < 0 then 0 - cross else cross
+    in if dot > 0 then
+      if abs-cross * 4 < dot then MnContinue
+      else if cross > 0 then MnSlightLeft
+      else MnSlightRight
+    else if dot == 0 then
+      if cross > 0 then MnTurnLeft
+      else MnTurnRight
+    else
+      if abs-cross * 2 < (0 - dot) then MnUturn
+      else if cross > 0 then MnSharpLeft
+      else MnSharpRight
+
+Section: Sample Road Network
+
+  sample-road-network : RoadGraph
+  sample-road-network =
+    let g = road-graph-new
+    in let g1 = rg-add-node g 40713 (-74006) 10
+    in let g2 = rg-add-node g1 40758 (-73986) 20
+    in let g3 = rg-add-node g2 40748 (-73986) 15
+    in let g4 = rg-add-node g3 40730 (-73997) 8
+    in let g5 = rg-add-node g4 40689 (-74045) 3
+    in let g6 = rg-add-node g5 40776 (-73969) 30
+    in let g7 = rg-add-node g6 40721 (-73998) 5
+    in let g8 = rg-add-node g7 40750 (-73975) 25
+    in let g9 = rg-add-edge g8 1 4 RcPrimary "Broadway" 2100 False
+    in let g10 = rg-add-edge g9 4 3 RcPrimary "5th Avenue" 2400 False
+    in let g11 = rg-add-edge g10 3 2 RcSecondary "42nd Street" 1200 False
+    in let g12 = rg-add-edge g11 2 6 RcPrimary "Central Park West" 2000 False
+    in let g13 = rg-add-edge g12 1 5 RcMotorway "FDR Drive" 4500 True
+    in let g14 = rg-add-edge g13 1 7 RcSecondary "Canal Street" 800 False
+    in let g15 = rg-add-edge g14 7 4 RcTertiary "Lafayette St" 1100 False
+    in let g16 = rg-add-edge g15 3 8 RcSecondary "Lexington Ave" 500 False
+    in rg-add-edge g16 8 6 RcPrimary "Park Avenue" 2800 False
+
+Section: Route Formatting
+
+  format-route-summary : Route -> Text
+  format-route-summary (r) =
+    let dist-km = r.rt-total-distance-m / 1000
+    in let dur-min = r.rt-total-duration-sec / 60
+    in tm-label r.rt-mode & ": " & show dist-km & " km, " & show dur-min & " min"
+    & (if r.rt-toll-roads then " (tolls)" else "")
+    & (if r.rt-elevation-gain > 0 then " +" & show r.rt-elevation-gain & "m gain" else "")
+
+  format-step : RouteStep, Integer -> Text
+  format-step (s) (idx) =
+    show (idx + 1) & ". " & mn-icon s.rst-maneuver & " " & s.rst-instruction
+    & " (" & show s.rst-distance-m & "m, " & show s.rst-duration-sec & "s)"

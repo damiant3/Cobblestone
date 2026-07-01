@@ -1,0 +1,189 @@
+Chapter: WindowSnap
+  cites Foreword chapter Maybe
+  cites UI chapter Widget
+  cites UI chapter Layout
+
+ Window snapping. When a window is dragged to a screen edge or
+ a keyboard shortcut is pressed, the window snaps to a predefined
+ zone (half, quarter, or full screen). Supports snap preview
+ overlay and snap history for undo.
+
+Section: Snap Zone
+
+  SnapZone =
+    | SnapNone
+    | SnapLeft
+    | SnapRight
+    | SnapTop
+    | SnapBottom
+    | SnapTopLeft
+    | SnapTopRight
+    | SnapBottomLeft
+    | SnapBottomRight
+    | SnapMaximize
+
+  snap-zone-label : SnapZone -> Text
+  snap-zone-label (z) = when z
+    is SnapNone -> "None"
+    is SnapLeft -> "Left Half"
+    is SnapRight -> "Right Half"
+    is SnapTop -> "Top Half"
+    is SnapBottom -> "Bottom Half"
+    is SnapTopLeft -> "Top-Left Quarter"
+    is SnapTopRight -> "Top-Right Quarter"
+    is SnapBottomLeft -> "Bottom-Left Quarter"
+    is SnapBottomRight -> "Bottom-Right Quarter"
+    is SnapMaximize -> "Maximize"
+
+Section: Snap Rect
+
+  SnapRect = record {
+    sr-x : Integer,
+    sr-y : Integer,
+    sr-w : Integer,
+    sr-h : Integer
+  }
+
+  snap-zone-rect : SnapZone, Integer, Integer, Integer -> SnapRect
+  snap-zone-rect (zone) (screen-w) (screen-h) (taskbar-h) =
+    let usable-h = screen-h - taskbar-h
+    in let half-w = screen-w / 2
+    in let half-h = usable-h / 2
+    in when zone
+      is SnapNone -> SnapRect { sr-x = 0, sr-y = 0, sr-w = 0, sr-h = 0 }
+      is SnapLeft -> SnapRect { sr-x = 0, sr-y = 0, sr-w = half-w, sr-h = usable-h }
+      is SnapRight -> SnapRect { sr-x = half-w, sr-y = 0, sr-w = screen-w - half-w, sr-h = usable-h }
+      is SnapTop -> SnapRect { sr-x = 0, sr-y = 0, sr-w = screen-w, sr-h = half-h }
+      is SnapBottom -> SnapRect { sr-x = 0, sr-y = half-h, sr-w = screen-w, sr-h = usable-h - half-h }
+      is SnapTopLeft -> SnapRect { sr-x = 0, sr-y = 0, sr-w = half-w, sr-h = half-h }
+      is SnapTopRight -> SnapRect { sr-x = half-w, sr-y = 0, sr-w = screen-w - half-w, sr-h = half-h }
+      is SnapBottomLeft -> SnapRect { sr-x = 0, sr-y = half-h, sr-w = half-w, sr-h = usable-h - half-h }
+      is SnapBottomRight -> SnapRect { sr-x = half-w, sr-y = half-h, sr-w = screen-w - half-w, sr-h = usable-h - half-h }
+      is SnapMaximize -> SnapRect { sr-x = 0, sr-y = 0, sr-w = screen-w, sr-h = usable-h }
+
+Section: Edge Detection
+
+  snap-edge-margin : Integer = 16
+
+  snap-detect-zone : Integer, Integer, Integer, Integer -> SnapZone
+  snap-detect-zone (x) (y) (screen-w) (screen-h) =
+    let at-left = x < snap-edge-margin
+    in let at-right = x > screen-w - snap-edge-margin
+    in let at-top = y < snap-edge-margin
+    in let at-bottom = y > screen-h - snap-edge-margin
+    in if at-top then if at-left then SnapTopLeft else if at-right then SnapTopRight else SnapMaximize
+    else if at-bottom then if at-left then SnapBottomLeft else if at-right then SnapBottomRight else SnapBottom
+    else if at-left then SnapLeft
+    else if at-right then SnapRight
+    else SnapNone
+
+Section: Snap History
+
+  SnapEntry = record {
+    se-window-id : Text,
+    se-prev-x : Integer,
+    se-prev-y : Integer,
+    se-prev-w : Integer,
+    se-prev-h : Integer,
+    se-zone : SnapZone
+  }
+
+Section: State
+
+  WindowSnapState = record {
+    ws-enabled : Boolean,
+    ws-preview-zone : SnapZone,
+    ws-preview-visible : Boolean,
+    ws-history : List SnapEntry,
+    ws-history-count : Integer,
+    ws-screen-w : Integer,
+    ws-screen-h : Integer,
+    ws-taskbar-h : Integer
+  }
+
+  window-snap-new : Integer, Integer, Integer -> WindowSnapState
+  window-snap-new (w) (h) (tb-h) = WindowSnapState {
+    ws-enabled = True,
+    ws-preview-zone = SnapNone,
+    ws-preview-visible = False,
+    ws-history = [],
+    ws-history-count = 0,
+    ws-screen-w = w,
+    ws-screen-h = h,
+    ws-taskbar-h = tb-h
+  }
+
+Section: Actions
+
+  ws-toggle-enabled : WindowSnapState -> WindowSnapState
+  ws-toggle-enabled (st) = __record-set st "ws-enabled" (if st.ws-enabled then False else True)
+
+  ws-show-preview : WindowSnapState, SnapZone -> WindowSnapState
+  ws-show-preview (st) (zone) = when zone
+    is SnapNone -> __record-set st "ws-preview-visible" False
+    is otherwise -> __record-set (__record-set st "ws-preview-zone" zone) "ws-preview-visible" True
+
+  ws-hide-preview : WindowSnapState -> WindowSnapState
+  ws-hide-preview (st) = __record-set st "ws-preview-visible" False
+
+  ws-snap-window : WindowSnapState, Text, Integer, Integer, Integer, Integer, SnapZone -> WindowSnapState
+  ws-snap-window (st) (win-id) (prev-x) (prev-y) (prev-w) (prev-h) (zone) =
+    let entry = SnapEntry { se-window-id = win-id, se-prev-x = prev-x, se-prev-y = prev-y, se-prev-w = prev-w, se-prev-h = prev-h, se-zone = zone }
+    in let st2 = __record-set (__record-set st "ws-history" (list-push (st.ws-history) entry)) "ws-history-count" (st.ws-history-count + 1)
+    in ws-hide-preview st2
+
+  ws-unsnap-window : WindowSnapState, Text -> WindowSnapState
+  ws-unsnap-window (st) (win-id) =
+    let found = ws-find-snap st win-id
+    in when found
+      is Just (entry) -> __record-set (__record-set st "ws-history" (ws-remove-snap (st.ws-history) win-id 0 (st.ws-history-count) [])) "ws-history-count" (st.ws-history-count - 1)
+      is None -> st
+
+  ws-find-snap : WindowSnapState, Text -> Maybe SnapEntry
+  ws-find-snap (st) (win-id) = ws-find-loop (st.ws-history) win-id 0 (st.ws-history-count)
+
+  ws-find-loop : List SnapEntry, Text, Integer, Integer -> Maybe SnapEntry
+  ws-find-loop (entries) (target) (i) (n) =
+    if i >= n then None
+    else let entry = list-at entries i
+    in if entry.se-window-id == target then Just entry
+    else ws-find-loop entries target (i + 1) n
+
+  ws-remove-snap : List SnapEntry, Text, Integer, Integer, List SnapEntry -> List SnapEntry
+  ws-remove-snap (entries) (target) (i) (n) (acc) =
+    if i >= n then acc
+    else let entry = list-at entries i
+    in if entry.se-window-id == target then ws-remove-snap entries target (i + 1) n acc
+    else ws-remove-snap entries target (i + 1) n (list-push acc entry)
+
+Section: Keyboard Shortcuts
+
+  ws-handle-key : WindowSnapState, Integer, Boolean -> SnapZone
+  ws-handle-key (st) (key) (super-held) =
+    if super-held then
+      if key == 37 then SnapLeft
+      else if key == 39 then SnapRight
+      else if key == 38 then SnapMaximize
+      else if key == 40 then SnapBottom
+      else SnapNone
+    else SnapNone
+
+Section: Preview Widget
+
+  ws-preview-widget : WindowSnapState -> WidgetNode
+  ws-preview-widget (st) =
+    if st.ws-preview-visible then
+      let rect = snap-zone-rect (st.ws-preview-zone) (st.ws-screen-w) (st.ws-screen-h) (st.ws-taskbar-h)
+      in let preview = widget-custom "snap-preview" "snap-zone" (rect.sr-w) (rect.sr-h)
+      in widget-set-state preview state-focused
+    else widget-label "snap-hidden" ""
+
+Section: Formatting
+
+  format-window-snap : WindowSnapState -> Text
+  format-window-snap (st) =
+    "snap enabled=" & if st.ws-enabled then "yes" else "no"
+    & " history=" & show (st.ws-history-count)
+    & " preview=" & if st.ws-preview-visible then snap-zone-label (st.ws-preview-zone) else "none"
+
+Page 1

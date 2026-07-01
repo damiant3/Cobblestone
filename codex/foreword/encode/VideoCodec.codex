@@ -1,0 +1,122 @@
+Chapter: VideoCodec
+  cites Foreword chapter Maybe
+
+ Simple frame-based video codec. Stores keyframes as RLE-compressed
+ RGB, and delta frames as changed-pixel lists. Designed for small
+ resolution animations (game replays, UI recordings).
+
+ We say:
+
+Section: Types
+  VideoFrame =
+    | KeyFrame (Integer) (Integer) (List Integer)
+    | DeltaFrame (List PixelDelta)
+
+  PixelDelta = record {
+    pd-offset : Integer,
+    pd-color : Integer
+  }
+
+  VideoStream = record {
+    vs-width : Integer,
+    vs-height : Integer,
+    vs-frames : List VideoFrame,
+    vs-frame-count : Integer,
+    vs-fps : Integer
+  }
+
+Section: Construction
+  video-new : Integer, Integer, Integer -> VideoStream
+  video-new (w) (h) (fps) = VideoStream { vs-width = w, vs-height = h, vs-frames = [], vs-frame-count = 0, vs-fps = fps }
+
+Section: Encoding
+  video-add-keyframe : VideoStream, List Integer -> VideoStream
+  video-add-keyframe (vs) (pixels) =
+    let compressed = rle-compress pixels 0 (list-length pixels) []
+    in let frame = KeyFrame (vs.vs-width) (vs.vs-height) compressed
+    in VideoStream { vs-width = vs.vs-width, vs-height = vs.vs-height, vs-frames = list-push (vs.vs-frames) frame, vs-frame-count = vs.vs-frame-count + 1, vs-fps = vs.vs-fps }
+
+  video-add-delta : VideoStream, List Integer, List Integer -> VideoStream
+  video-add-delta (vs) (prev-pixels) (cur-pixels) =
+    let deltas = compute-deltas prev-pixels cur-pixels 0 (vid-min-len (list-length prev-pixels) (list-length cur-pixels)) []
+    in let frame = DeltaFrame deltas
+    in VideoStream { vs-width = vs.vs-width, vs-height = vs.vs-height, vs-frames = list-push (vs.vs-frames) frame, vs-frame-count = vs.vs-frame-count + 1, vs-fps = vs.vs-fps }
+
+  compute-deltas : List Integer, List Integer, Integer, Integer, List PixelDelta -> List PixelDelta
+  compute-deltas (prev) (cur) (i) (n) (acc) =
+    if i >= n then acc
+    else let p = list-at prev i
+    in let c = list-at cur i
+    in if p == c then compute-deltas prev cur (i + 1) n acc
+    else compute-deltas prev cur (i + 1) n (list-push acc (PixelDelta { pd-offset = i, pd-color = c }))
+
+Section: Decoding
+  video-decode-frame : VideoFrame, List Integer -> List Integer
+  video-decode-frame (frame) (prev) = when frame
+    is KeyFrame (w) (h) (rle) -> rle-decompress rle []
+    is DeltaFrame (deltas) -> apply-deltas prev deltas 0 (list-length deltas)
+
+  apply-deltas : List Integer, List PixelDelta, Integer, Integer -> List Integer
+  apply-deltas (pixels) (deltas) (i) (n) =
+    if i >= n then pixels
+    else let d = list-at deltas i
+    in apply-deltas (list-set-at pixels (d.pd-offset) (d.pd-color)) deltas (i + 1) n
+
+Section: RLE Compression
+  rle-compress : List Integer, Integer, Integer, List Integer -> List Integer
+  rle-compress (pixels) (i) (n) (acc) =
+    if i >= n then acc
+    else let val = list-at pixels i
+    in let run = rle-count-run pixels val (i + 1) n 1
+    in rle-compress pixels (i + run) n (acc & [run, val])
+
+  rle-count-run : List Integer, Integer, Integer, Integer, Integer -> Integer
+  rle-count-run (pixels) (val) (i) (n) (count) =
+    if i >= n then count
+    else if count >= 255 then count
+    else if list-at pixels i /= val then count
+    else rle-count-run pixels val (i + 1) n (count + 1)
+
+  rle-decompress : List Integer, List Integer -> List Integer
+  rle-decompress (rle) (acc) =
+    let n = list-length rle
+    in rle-decomp-loop rle 0 n acc
+
+  rle-decomp-loop : List Integer, Integer, Integer, List Integer -> List Integer
+  rle-decomp-loop (rle) (i) (n) (acc) =
+    if i + 1 >= n then acc
+    else let run = list-at rle i
+    in let val = list-at rle (i + 1)
+    in rle-decomp-loop rle (i + 2) n (rle-expand val run acc)
+
+  rle-expand : Integer, Integer, List Integer -> List Integer
+  rle-expand (val) (n) (acc) =
+    if n <= 0 then acc
+    else rle-expand val (n - 1) (list-push acc val)
+
+Section: Queries
+  video-duration-ms : VideoStream -> Integer
+  video-duration-ms (vs) =
+    if vs.vs-fps <= 0 then 0
+    else vs.vs-frame-count * 1000 / vs.vs-fps
+
+  video-frame-at : VideoStream, Integer -> Maybe VideoFrame
+  video-frame-at (vs) (idx) =
+    if idx < 0 then None
+    else if idx >= vs.vs-frame-count then None
+    else Just (list-at (vs.vs-frames) idx)
+
+  video-delta-count : VideoFrame -> Integer
+  video-delta-count (frame) = when frame
+    is KeyFrame (w) (h) (rle) -> list-length rle / 2
+    is DeltaFrame (deltas) -> list-length deltas
+
+Section: Formatting
+  format-video : VideoStream -> Text
+  format-video (vs) = show (vs.vs-width) & "x" & show (vs.vs-height) & " " & show (vs.vs-frame-count) & "f@" & show (vs.vs-fps) & "fps " & show (video-duration-ms vs) & "ms"
+
+Section: Helpers
+  vid-min-len : Integer, Integer -> Integer
+  vid-min-len (a) (b) = if a < b then a else b
+
+Page 1

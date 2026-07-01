@@ -1,0 +1,160 @@
+Chapter: FootprintEditor
+  cites Foreword chapter List
+  cites Foreword chapter Maybe
+
+ The footprint editor state machine. Manages the active tool, pad
+ and graphic selection, cursor tracking, grid snapping, and layer
+ visibility. This is the top-level controller for footprint editing.
+
+Section: Editor Tool
+
+  FpeTool =
+    | FpeToolSelect
+    | FpeToolPadSmd
+    | FpeToolPadThru
+    | FpeToolLine
+    | FpeToolRect
+    | FpeToolCircle
+    | FpeToolCourtyard
+    | FpeToolText
+    | FpeToolMeasure
+    | FpeToolOrigin
+
+  fpe-tool-name : FpeTool -> Text
+  fpe-tool-name (t) = when t
+    is FpeToolSelect -> "Select"
+    is FpeToolPadSmd -> "SMD Pad"
+    is FpeToolPadThru -> "Through-Hole Pad"
+    is FpeToolLine -> "Line"
+    is FpeToolRect -> "Rectangle"
+    is FpeToolCircle -> "Circle"
+    is FpeToolCourtyard -> "Courtyard"
+    is FpeToolText -> "Text"
+    is FpeToolMeasure -> "Measure"
+    is FpeToolOrigin -> "Set Origin"
+
+Section: Selection
+
+  FpeSelection = record {
+    fps-selected-pads : List Text,
+    fps-selected-graphics : List Integer,
+    fps-count : Integer
+  }
+
+  empty-fpe-selection : FpeSelection
+  empty-fpe-selection = FpeSelection {
+    fps-selected-pads = [],
+    fps-selected-graphics = [],
+    fps-count = 0
+  }
+
+  fpe-selection-add-pad : FpeSelection, Text -> FpeSelection
+  fpe-selection-add-pad (sel) (pad-num) = FpeSelection {
+    fps-selected-pads = list-push sel.fps-selected-pads pad-num,
+    fps-selected-graphics = sel.fps-selected-graphics,
+    fps-count = sel.fps-count + 1
+  }
+
+  fpe-selection-add-graphic : FpeSelection, Integer -> FpeSelection
+  fpe-selection-add-graphic (sel) (idx) = FpeSelection {
+    fps-selected-pads = sel.fps-selected-pads,
+    fps-selected-graphics = list-push sel.fps-selected-graphics idx,
+    fps-count = sel.fps-count + 1
+  }
+
+Section: Editor State
+
+  FpeEditorState = record {
+    fes-active-tool : FpeTool,
+    fes-selection : FpeSelection,
+    fes-cursor-x : Integer,
+    fes-cursor-y : Integer,
+    fes-grid-size : Integer,
+    fes-grid-snap : Integer,
+    fes-active-side : Integer,
+    fes-show-courtyard : Integer,
+    fes-show-fab : Integer,
+    fes-show-3d-anchor : Integer,
+    fes-modified : Integer
+  }
+
+  empty-fpe-state : FpeEditorState
+  empty-fpe-state = FpeEditorState {
+    fes-active-tool = FpeToolSelect,
+    fes-selection = empty-fpe-selection,
+    fes-cursor-x = 0,
+    fes-cursor-y = 0,
+    fes-grid-size = 250000,
+    fes-grid-snap = 1,
+    fes-active-side = 0,
+    fes-show-courtyard = 1,
+    fes-show-fab = 1,
+    fes-show-3d-anchor = 0,
+    fes-modified = 0
+  }
+
+Section: Tool Switching
+
+  fpe-set-tool : FpeEditorState, FpeTool -> FpeEditorState
+  fpe-set-tool (st) (tool) = FpeEditorState {
+    fes-active-tool = tool,
+    fes-selection = st.fes-selection,
+    fes-cursor-x = st.fes-cursor-x,
+    fes-cursor-y = st.fes-cursor-y,
+    fes-grid-size = st.fes-grid-size,
+    fes-grid-snap = st.fes-grid-snap,
+    fes-active-side = st.fes-active-side,
+    fes-show-courtyard = st.fes-show-courtyard,
+    fes-show-fab = st.fes-show-fab,
+    fes-show-3d-anchor = st.fes-show-3d-anchor,
+    fes-modified = st.fes-modified
+  }
+
+  fpe-clear-selection : FpeEditorState -> FpeEditorState
+  fpe-clear-selection (st) = FpeEditorState {
+    fes-active-tool = st.fes-active-tool,
+    fes-selection = empty-fpe-selection,
+    fes-cursor-x = st.fes-cursor-x,
+    fes-cursor-y = st.fes-cursor-y,
+    fes-grid-size = st.fes-grid-size,
+    fes-grid-snap = st.fes-grid-snap,
+    fes-active-side = st.fes-active-side,
+    fes-show-courtyard = st.fes-show-courtyard,
+    fes-show-fab = st.fes-show-fab,
+    fes-show-3d-anchor = st.fes-show-3d-anchor,
+    fes-modified = st.fes-modified
+  }
+
+Section: Keyboard Shortcuts
+
+  FpeKeyAction =
+    | FpeKeyNone
+    | FpeKeySetTool (FpeTool)
+    | FpeKeyDelete
+    | FpeKeyRotate
+    | FpeKeyMirror
+    | FpeKeyEscape
+    | FpeKeyFlipSide
+    | FpeKeyCopy
+    | FpeKeyPaste
+    | FpeKeySelectAll
+    | FpeKeyZoomFit
+    | FpeKeyZoomIn
+    | FpeKeyZoomOut
+    | FpeKeySave
+    | FpeKeyUndo
+    | FpeKeyRedo
+
+  fpe-key-to-action : Integer -> FpeKeyAction
+  fpe-key-to-action (key) =
+    if key == 83 then FpeKeySetTool FpeToolPadSmd
+    else if key == 84 then FpeKeySetTool FpeToolPadThru
+    else if key == 76 then FpeKeySetTool FpeToolLine
+    else if key == 82 then FpeKeySetTool FpeToolRect
+    else if key == 67 then FpeKeySetTool FpeToolCircle
+    else if key == 79 then FpeKeySetTool FpeToolOrigin
+    else if key == 77 then FpeKeySetTool FpeToolMeasure
+    else if key == 27 then FpeKeyEscape
+    else if key == 46 then FpeKeyDelete
+    else if key == 70 then FpeKeyFlipSide
+    else FpeKeyNone

@@ -1,0 +1,113 @@
+Chapter: MarketReview
+  cites Market chapter MarketTypes
+  cites Market chapter MarketDb
+  cites Foreword chapter Logger
+  cites Foreword chapter Maybe
+
+ Customer reviews and ratings. Supports verified purchase badges,
+ helpful/not-helpful voting, seller responses, and rating aggregation.
+
+Section: Review Creation
+
+  create-review : MarketState, Text, Text, Text, Integer, Text, Text, Boolean, Integer -> (MarketState, Review)
+  create-review (st) (product-id) (user-id) (user-name) (rating) (title) (body) (verified) (ts) =
+    let (st2, rid) = market-gen-id st "rev"
+    in let clamped = if rating < 1 then 1 else if rating > 5 then 5 else rating
+    in let rev = Review {
+      rev-id = rid,
+      rev-product-id = product-id,
+      rev-user-id = user-id,
+      rev-user-name = user-name,
+      rev-rating = clamped,
+      rev-title = title,
+      rev-body = body,
+      rev-verified = verified,
+      rev-created = ts
+    }
+    in let log2 = log-info-msg (st2.mkt-log) "review" (user-name & " rated " & product-id & " " & show clamped & "/5") ts
+    in let st3 = __record-set st2 "mkt-log" log2
+    in (st3, rev)
+
+Section: Rating Aggregation
+
+  RatingBreakdown = record {
+    rb-total : Integer,
+    rb-average-x10 : Integer,
+    rb-count-5 : Integer,
+    rb-count-4 : Integer,
+    rb-count-3 : Integer,
+    rb-count-2 : Integer,
+    rb-count-1 : Integer
+  }
+
+  calc-rating-breakdown : List Review -> RatingBreakdown
+  calc-rating-breakdown (reviews) =
+    count-ratings reviews (RatingBreakdown {
+      rb-total = 0, rb-average-x10 = 0,
+      rb-count-5 = 0, rb-count-4 = 0, rb-count-3 = 0,
+      rb-count-2 = 0, rb-count-1 = 0
+    }) 0
+
+  count-ratings : List Review, RatingBreakdown, Integer -> RatingBreakdown
+  count-ratings (reviews) (rb) (sum) =
+    if list-length reviews == 0 then
+      let avg = if rb.rb-total == 0 then 0 else sum * 10 / rb.rb-total
+      in __record-set rb "rb-average-x10" avg
+    else let r = list-at reviews 0
+    in let rb2 = __record-set rb "rb-total" (rb.rb-total + 1)
+    in let rb3 = if r.rev-rating == 5 then __record-set rb2 "rb-count-5" (rb2.rb-count-5 + 1)
+      else if r.rev-rating == 4 then __record-set rb2 "rb-count-4" (rb2.rb-count-4 + 1)
+      else if r.rev-rating == 3 then __record-set rb2 "rb-count-3" (rb2.rb-count-3 + 1)
+      else if r.rev-rating == 2 then __record-set rb2 "rb-count-2" (rb2.rb-count-2 + 1)
+      else __record-set rb2 "rb-count-1" (rb2.rb-count-1 + 1)
+    in count-ratings (list-tail reviews) rb3 (sum + r.rev-rating)
+
+Section: Review HTML Rendering
+
+  render-reviews : List Review, RatingBreakdown -> Text
+  render-reviews (reviews) (rb) =
+    "<div class=\"section-title\">Reviews</div>" &
+    render-rating-summary rb &
+    render-review-list reviews 0
+
+  render-rating-summary : RatingBreakdown -> Text
+  render-rating-summary (rb) =
+    let avg-whole = rb.rb-average-x10 / 10
+    in let avg-frac = rb.rb-average-x10 - avg-whole * 10
+    in "<div class=\"mkt-review-summary\">" &
+    "<div class=\"mkt-review-avg\">" &
+    "<div class=\"mkt-review-score\">" & show avg-whole & "." & show avg-frac & "</div>" &
+    "<div class=\"mkt-review-stars-lg\">" & review-stars avg-whole & "</div>" &
+    "<div class=\"mkt-review-count\">" & show (rb.rb-total) & " reviews</div></div>" &
+    "<div class=\"mkt-review-bars\">" &
+    rating-bar 5 (rb.rb-count-5) (rb.rb-total) &
+    rating-bar 4 (rb.rb-count-4) (rb.rb-total) &
+    rating-bar 3 (rb.rb-count-3) (rb.rb-total) &
+    rating-bar 2 (rb.rb-count-2) (rb.rb-total) &
+    rating-bar 1 (rb.rb-count-1) (rb.rb-total) &
+    "</div></div>"
+
+  rating-bar : Integer, Integer, Integer -> Text
+  rating-bar (stars) (count) (total) =
+    let pct = if total == 0 then 0 else count * 100 / total
+    in "<div class=\"mkt-rating-row\">" &
+    "<span class=\"mkt-rating-label\">" & show stars & "</span>" &
+    "<div class=\"mkt-rating-track\">" &
+    "<div class=\"mkt-rating-fill\" style=\"width:" & show pct & "%\"></div></div>" &
+    "<span class=\"mkt-rating-count\">" & show count & "</span></div>"
+
+  render-review-list : List Review, Integer -> Text
+  render-review-list (reviews) (i) =
+    if i >= list-length reviews then ""
+    else render-single-review (list-at reviews i) & render-review-list reviews (i + 1)
+
+  render-single-review : Review -> Text
+  render-single-review (r) =
+    "<div class=\"mkt-review-item\">" &
+    "<div class=\"mkt-review-header\">" &
+    "<span class=\"mkt-star-color\">" & review-stars (r.rev-rating) & "</span>" &
+    "<strong>" & r.rev-title & "</strong>" &
+    (if r.rev-verified then "<span class=\"badge badge-active\">Verified</span>" else "") &
+    "</div>" &
+    "<div class=\"mkt-review-author\">" & r.rev-user-name & "</div>" &
+    "<p class=\"mkt-review-body\">" & r.rev-body & "</p></div>"

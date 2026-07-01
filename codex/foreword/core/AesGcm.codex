@@ -1,0 +1,182 @@
+Chapter: AesGcm
+  cites Foreword chapter Aes
+
+ AES-128-GCM authenticated encryption (NIST SP 800-38D). Provides
+ confidentiality via AES-CTR and authenticity via GHASH over the
+ Galois field GF(2^128). The combined AEAD construction is the
+ standard cipher suite for TLS 1.3 and modern protocols. Nonces
+ must be exactly 12 bytes (96 bits), the NIST-recommended length.
+
+ To aesgcm-encrypt gives ciphertext and authentication tag.
+ To aesgcm-decrypt gives plaintext if the tag verifies, Nothing otherwise.
+
+ We say:
+
+Section: Types
+
+  AesGcmResult = record {
+    ciphertext : List Integer,
+    tag : List Integer
+  }
+
+Section: Encrypt
+
+  aesgcm-encrypt : List Integer, List Integer, List Integer, List Integer -> AesGcmResult
+  aesgcm-encrypt (key) (nonce) (plaintext) (aad) =
+    let ks = aes-expand-key-128 key
+    in let h = aes-encrypt-block (gcm-zeros 16 0 []) ks
+    in let ct = gcm-ctr-encrypt ks (gcm-inc32 (gcm-make-j0 nonce)) plaintext 0 (list-length plaintext) []
+    in let tag = gcm-compute-tag ks h (gcm-make-j0 nonce) aad ct
+    in AesGcmResult { ciphertext = ct, tag = tag }
+
+Section: Decrypt
+
+  aesgcm-decrypt : List Integer, List Integer, List Integer, List Integer, List Integer -> Maybe (List Integer)
+  aesgcm-decrypt (key) (nonce) (ciphertext) (aad) (tag) =
+    let ks = aes-expand-key-128 key
+    in let h = aes-encrypt-block (gcm-zeros 16 0 []) ks
+    in let expected = gcm-compute-tag ks h (gcm-make-j0 nonce) aad ciphertext
+    in if gcm-tags-equal expected tag then
+      Just (gcm-ctr-encrypt ks (gcm-inc32 (gcm-make-j0 nonce)) ciphertext 0 (list-length ciphertext) [])
+    else None
+
+Section: CTR Mode
+
+  gcm-ctr-encrypt : List Integer, List Integer, List Integer, Integer, Integer, List Integer -> List Integer
+  gcm-ctr-encrypt (ks) (ctr) (input) (i) (len) (acc) =
+    if i >= len then acc
+    else let block = aes-encrypt-block ctr ks
+    in let chunk-len = if len - i < 16 then len - i else 16
+    in let xored = gcm-xor-chunk block input i chunk-len 0 []
+    in gcm-ctr-encrypt ks (gcm-inc32 ctr) input (i + chunk-len) len (acc & xored)
+
+  gcm-xor-chunk : List Integer, List Integer, Integer, Integer, Integer, List Integer -> List Integer
+  gcm-xor-chunk (keystream) (input) (offset) (len) (i) (acc) =
+    if i >= len then acc
+    else let x = bit-xor (list-at keystream i) (list-at input (offset + i))
+    in gcm-xor-chunk keystream input offset len (i + 1) (list-push acc x)
+
+Section: GHASH
+
+  gcm-compute-tag : List Integer, List Integer, List Integer, List Integer, List Integer -> List Integer
+  gcm-compute-tag (ks) (h) (j0) (aad) (ct) =
+    let aad-padded = gcm-pad16 aad
+    in let ct-padded = gcm-pad16 ct
+    in let len-block = gcm-len-block (list-length aad) (list-length ct)
+    in let data = aad-padded & ct-padded & len-block
+    in let ghash = gcm-ghash h data 0 (list-length data) (gcm-zeros 16 0 [])
+    in let e-j0 = aes-encrypt-block j0 ks
+    in gcm-xor-blocks ghash e-j0
+
+  gcm-ghash : List Integer, List Integer, Integer, Integer, List Integer -> List Integer
+  gcm-ghash (h) (data) (i) (len) (y) =
+    if i >= len then y
+    else let block = gcm-slice data i 16
+    in let xored = gcm-xor-blocks y block
+    in let product = gcm-gf-mult xored h
+    in gcm-ghash h data (i + 16) len product
+
+  gcm-gf-mult : List Integer, List Integer -> List Integer
+  gcm-gf-mult (x) (y) =
+    gcm-gf-mult-loop x y (gcm-zeros 16 0 []) 0
+
+  gcm-gf-mult-loop : List Integer, List Integer, List Integer, Integer -> List Integer
+  gcm-gf-mult-loop (x) (y) (z) (i) =
+    if i >= 128 then z
+    else let byte-idx = i / 8
+    in let bit-idx = 7 - (i - (i / 8) * 8)
+    in let x-bit = bit-and (bit-shru (list-at x byte-idx) bit-idx) 1
+    in let z2 = if x-bit == 1 then gcm-xor-blocks z y else z
+    in let lsb = bit-and (list-at y 15) 1
+    in let y2 = gcm-shift-right y
+    in let y3 = if lsb == 1 then gcm-xor-byte y2 0 (bit-xor (list-at y2 0) 225) else y2
+    in gcm-gf-mult-loop x y3 z2 (i + 1)
+
+Section: Block Operations
+
+  gcm-xor-blocks : List Integer, List Integer -> List Integer
+  gcm-xor-blocks (a) (b) = gcm-xor-loop a b 0 16 []
+
+  gcm-xor-loop : List Integer, List Integer, Integer, Integer, List Integer -> List Integer
+  gcm-xor-loop (a) (b) (i) (len) (acc) =
+    if i >= len then acc
+    else gcm-xor-loop a b (i + 1) len (list-push acc (bit-xor (list-at a i) (list-at b i)))
+
+  gcm-shift-right : List Integer -> List Integer
+  gcm-shift-right (bs) = gcm-shift-loop bs 0 16 0 []
+
+  gcm-shift-loop : List Integer, Integer, Integer, Integer, List Integer -> List Integer
+  gcm-shift-loop (bs) (i) (len) (carry) (acc) =
+    if i >= len then acc
+    else let b = list-at bs i
+    in let new-carry = bit-and b 1
+    in let shifted = bit-or (bit-shru b 1) (bit-shl carry 7)
+    in gcm-shift-loop bs (i + 1) len new-carry (list-push acc shifted)
+
+  gcm-xor-byte : List Integer, Integer, Integer -> List Integer
+  gcm-xor-byte (bs) (idx) (val) = list-set-at bs idx val
+
+Section: Helpers
+
+  gcm-inc32 : List Integer -> List Integer
+  gcm-inc32 (ctr) =
+    let c3 = list-at ctr 15 + 1
+    in let carry = c3 / 256
+    in let c2 = list-at ctr 14 + carry
+    in let carry2 = c2 / 256
+    in let c1 = list-at ctr 13 + carry2
+    in let carry3 = c1 / 256
+    in let c0 = list-at ctr 12 + carry3
+    in gcm-set4 ctr 12 (bit-and c0 255) (bit-and c1 255) (bit-and c2 255) (bit-and c3 255)
+
+  gcm-set4 : List Integer, Integer, Integer, Integer, Integer, Integer -> List Integer
+  gcm-set4 (bs) (off) (a) (b) (c) (d) =
+    list-set-at (list-set-at (list-set-at (list-set-at bs off a) (off + 1) b) (off + 2) c) (off + 3) d
+
+  gcm-make-j0 : List Integer -> List Integer
+  gcm-make-j0 (nonce) = nonce & [0, 0, 0, 1]
+
+  gcm-pad16 : List Integer -> List Integer
+  gcm-pad16 (bs) =
+    let r = list-length bs - (list-length bs / 16) * 16
+    in if r == 0 then bs
+    else bs & gcm-zeros (16 - r) 0 []
+
+  gcm-len-block : Integer, Integer -> List Integer
+  gcm-len-block (aad-len) (ct-len) =
+    gcm-be64 (aad-len * 8) & gcm-be64 (ct-len * 8)
+
+  gcm-be64 : Integer -> List Integer
+  gcm-be64 (n) = [
+    bit-and (bit-shru n 56) 255, bit-and (bit-shru n 48) 255,
+    bit-and (bit-shru n 40) 255, bit-and (bit-shru n 32) 255,
+    bit-and (bit-shru n 24) 255, bit-and (bit-shru n 16) 255,
+    bit-and (bit-shru n 8) 255, bit-and n 255
+  ]
+
+  gcm-slice : List Integer, Integer, Integer -> List Integer
+  gcm-slice (bs) (off) (len) = gcm-slice-loop bs off len 0 []
+
+  gcm-slice-loop : List Integer, Integer, Integer, Integer, List Integer -> List Integer
+  gcm-slice-loop (bs) (off) (len) (i) (acc) =
+    if i >= len then acc
+    else let idx = off + i
+    in let val = if idx >= list-length bs then 0 else list-at bs idx
+    in gcm-slice-loop bs off len (i + 1) (list-push acc val)
+
+  gcm-zeros : Integer, Integer, List Integer -> List Integer
+  gcm-zeros (n) (i) (acc) =
+    if i >= n then acc
+    else gcm-zeros n (i + 1) (list-push acc 0)
+
+  gcm-tags-equal : List Integer, List Integer -> Boolean
+  gcm-tags-equal (a) (b) =
+    if list-length a /= list-length b then False
+    else gcm-tags-loop a b 0 (list-length a) 0
+
+  gcm-tags-loop : List Integer, List Integer, Integer, Integer, Integer -> Boolean
+  gcm-tags-loop (a) (b) (i) (len) (diff) =
+    if i >= len then diff == 0
+    else gcm-tags-loop a b (i + 1) len (bit-or diff (bit-xor (list-at a i) (list-at b i)))
+
+Page 1

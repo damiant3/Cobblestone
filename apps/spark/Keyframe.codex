@@ -1,0 +1,123 @@
+Chapter: Keyframe
+
+ Keyframe storage and interpolation. Supports linear, step, and
+ smooth (cubic Hermite) interpolation between keyed values.
+
+ We say:
+
+Section: Types
+
+  InterpMode =
+    | InterpLinear
+    | InterpStep
+    | InterpSmooth
+
+  Keyframe2 = record {
+    kf-frame : Integer,
+    kf-value : Real,
+    kf-interp : InterpMode
+  }
+
+  KeyframeTrack = record {
+    kt-name : Text,
+    kt-keys : List Keyframe2,
+    kt-count : Integer
+  }
+
+Section: Construction
+
+  keytrack-new : Text -> KeyframeTrack
+  keytrack-new (name) = KeyframeTrack { kt-name = name, kt-keys = [], kt-count = 0 }
+
+  keytrack-add : KeyframeTrack, Integer, Real, InterpMode -> KeyframeTrack
+  keytrack-add (track) (frame) (value) (interp) =
+    let key = Keyframe2 { kf-frame = frame, kf-value = value, kf-interp = interp }
+    in let new-keys = kf-insert-sorted (track.kt-keys) key 0 (track.kt-count)
+    in KeyframeTrack { kt-name = track.kt-name, kt-keys = new-keys, kt-count = track.kt-count + 1 }
+
+  keytrack-add-linear : KeyframeTrack, Integer, Real -> KeyframeTrack
+  keytrack-add-linear (track) (frame) (value) = keytrack-add track frame value InterpLinear
+
+Section: Evaluation
+
+  keytrack-eval : KeyframeTrack, Integer -> Real
+  keytrack-eval (track) (frame) =
+    if track.kt-count == 0 then 0.0
+    else if track.kt-count == 1 then (list-at (track.kt-keys) 0).kf-value
+    else kf-eval-between (track.kt-keys) (track.kt-count) frame
+
+  kf-eval-between : List Keyframe2, Integer, Integer -> Real
+  kf-eval-between (keys) (count) (frame) =
+    let first = list-at keys 0
+    in if frame <= first.kf-frame then first.kf-value
+    else let last = list-at keys (count - 1)
+    in if frame >= last.kf-frame then last.kf-value
+    else kf-find-pair keys count frame 0
+
+  kf-find-pair : List Keyframe2, Integer, Integer, Integer -> Real
+  kf-find-pair (keys) (count) (frame) (i) =
+    if i >= count - 1 then (list-at keys (count - 1)).kf-value
+    else let a = list-at keys i
+    in let b = list-at keys (i + 1)
+    in if frame >= a.kf-frame then
+      if frame < b.kf-frame then kf-interpolate a b frame
+      else kf-find-pair keys count frame (i + 1)
+    else kf-find-pair keys count frame (i + 1)
+
+  kf-interpolate : Keyframe2, Keyframe2, Integer -> Real
+  kf-interpolate (a) (b) (frame) =
+    when a.kf-interp
+      is InterpStep -> a.kf-value
+      is InterpLinear ->
+        let dt = b.kf-frame - a.kf-frame
+        in if dt == 0 then a.kf-value
+        else let t = real-from-int (frame - a.kf-frame) / real-from-int dt
+        in a.kf-value + (b.kf-value - a.kf-value) * t
+      is InterpSmooth ->
+        let dt = b.kf-frame - a.kf-frame
+        in if dt == 0 then a.kf-value
+        else let t = real-from-int (frame - a.kf-frame) / real-from-int dt
+        in let t2 = t * t
+        in let smooth-t = 3.0 * t2 - 2.0 * t2 * t
+        in a.kf-value + (b.kf-value - a.kf-value) * smooth-t
+
+Section: Sorted Insert
+
+  kf-insert-sorted : List Keyframe2, Keyframe2, Integer, Integer -> List Keyframe2
+  kf-insert-sorted (keys) (new-key) (i) (n) =
+    if i >= n then list-push keys new-key
+    else let existing = list-at keys i
+    in if new-key.kf-frame <= existing.kf-frame then kf-splice keys new-key i n
+    else kf-insert-sorted keys new-key (i + 1) n
+
+  kf-splice : List Keyframe2, Keyframe2, Integer, Integer -> List Keyframe2
+  kf-splice (keys) (new-key) (pos) (n) =
+    kf-splice-loop keys new-key pos n 0 []
+
+  kf-splice-loop : List Keyframe2, Keyframe2, Integer, Integer, Integer, List Keyframe2 -> List Keyframe2
+  kf-splice-loop (keys) (new-key) (pos) (n) (i) (acc) =
+    if i > n then acc
+    else if i == pos then kf-splice-loop keys new-key pos n (i + 1) (list-push (list-push acc new-key) (list-at keys i))
+    else if i >= n then acc
+    else kf-splice-loop keys new-key pos n (i + 1) (list-push acc (list-at keys i))
+
+Section: Queries
+
+  keytrack-frame-range : KeyframeTrack -> Integer
+  keytrack-frame-range (track) =
+    if track.kt-count == 0 then 0
+    else let first = list-at (track.kt-keys) 0
+    in let last = list-at (track.kt-keys) (track.kt-count - 1)
+    in last.kf-frame - first.kf-frame
+
+  keytrack-first-frame : KeyframeTrack -> Integer
+  keytrack-first-frame (track) =
+    if track.kt-count == 0 then 0
+    else (list-at (track.kt-keys) 0).kf-frame
+
+  keytrack-last-frame : KeyframeTrack -> Integer
+  keytrack-last-frame (track) =
+    if track.kt-count == 0 then 0
+    else (list-at (track.kt-keys) (track.kt-count - 1)).kf-frame
+
+Page 1

@@ -1,0 +1,183 @@
+Chapter: Command
+  cites Cvmm chapter CvmmTypes
+  cites Cvmm chapter ResourceModel
+  cites Foreword chapter Maybe
+
+ Undoable command system. Every user action that mutates state is
+ wrapped in a Command with an execute and an undo. Commands are
+ recorded in a history for undo/redo. Destructive commands require
+ confirmation before execution. This gives every manager a uniform
+ action model: the shell dispatches commands, the history tracks
+ them, and the UI can undo anything.
+
+Section: Command Kind
+
+  CommandKind =
+    | CmdResourceAction (Text) (ResourceCap)
+    | CmdNavigate (Text)
+    | CmdSetProperty (Text) (Text) (PropValue)
+    | CmdBulkAction (List Text) (ResourceCap)
+    | CmdCreateResource (Text) (Text)
+    | CmdDeleteResource (Text)
+    | CmdMoveResource (Text) (Text)
+    | CmdLayoutChange (Text) (Integer) (Integer)
+    | CmdThemeSwitch (Text)
+    | CmdCustom (Text) (Text)
+
+  cmd-kind-label : CommandKind -> Text
+  cmd-kind-label (k) = when k
+    is CmdResourceAction (id) (cap) -> cap-label cap & " " & id
+    is CmdNavigate (view) -> "Navigate to " & view
+    is CmdSetProperty (id) (key) (val) -> "Set " & key & " on " & id
+    is CmdBulkAction (ids) (cap) -> cap-label cap & " " & show (list-length ids) & " items"
+    is CmdCreateResource (kind) (name) -> "Create " & kind & ": " & name
+    is CmdDeleteResource (id) -> "Delete " & id
+    is CmdMoveResource (id) (dest) -> "Move " & id & " to " & dest
+    is CmdLayoutChange (panel) (row) (col) -> "Move panel " & panel
+    is CmdThemeSwitch (name) -> "Switch theme to " & name
+    is CmdCustom (name) (detail) -> name
+
+  cmd-is-destructive : CommandKind -> Boolean
+  cmd-is-destructive (k) = when k
+    is CmdResourceAction (id) (cap) -> cap-is-destructive cap
+    is CmdDeleteResource (id) -> True
+    is CmdBulkAction (ids) (cap) -> cap-is-destructive cap
+    is otherwise -> False
+
+  cmd-needs-confirm : CommandKind -> Boolean
+  cmd-needs-confirm (k) = when k
+    is CmdResourceAction (id) (cap) -> cap-needs-confirm cap
+    is CmdDeleteResource (id) -> True
+    is CmdBulkAction (ids) (cap) -> cap-needs-confirm cap
+    is otherwise -> False
+
+Section: Command Record
+
+  CommandState =
+    | CmdPending
+    | CmdExecuted
+    | CmdUndone
+    | CmdFailed (Text)
+
+  cmd-state-label : CommandState -> Text
+  cmd-state-label (s) = when s
+    is CmdPending -> "pending"
+    is CmdExecuted -> "executed"
+    is CmdUndone -> "undone"
+    is CmdFailed (msg) -> "failed: " & msg
+
+  CommandRecord = record {
+    cr-id : Integer,
+    cr-kind : CommandKind,
+    cr-state : CommandState,
+    cr-timestamp : Integer,
+    cr-description : Text,
+    cr-undo-data : Text
+  }
+
+  cmd-record-new : Integer, CommandKind, Integer -> CommandRecord
+  cmd-record-new (id) (kind) (ts) = CommandRecord {
+    cr-id = id,
+    cr-kind = kind,
+    cr-state = CmdPending,
+    cr-timestamp = ts,
+    cr-description = cmd-kind-label kind,
+    cr-undo-data = ""
+  }
+
+  cmd-mark-executed : CommandRecord -> CommandRecord
+  cmd-mark-executed (r) = __record-set r "cr-state" CmdExecuted
+
+  cmd-mark-undone : CommandRecord -> CommandRecord
+  cmd-mark-undone (r) = __record-set r "cr-state" CmdUndone
+
+  cmd-mark-failed : CommandRecord, Text -> CommandRecord
+  cmd-mark-failed (r) (msg) = __record-set r "cr-state" (CmdFailed msg)
+
+Section: Command History
+
+  CommandHistory = record {
+    ch-commands : List CommandRecord,
+    ch-count : Integer,
+    ch-cursor : Integer,
+    ch-max-size : Integer,
+    ch-next-id : Integer
+  }
+
+  cmd-history-new : Integer -> CommandHistory
+  cmd-history-new (max-size) = CommandHistory {
+    ch-commands = [],
+    ch-count = 0,
+    ch-cursor = 0,
+    ch-max-size = max-size,
+    ch-next-id = 1
+  }
+
+  ch-push : CommandHistory, CommandKind, Integer -> CommandHistory
+  ch-push (hist) (kind) (ts) =
+    let entry = cmd-record-new (hist.ch-next-id) kind ts
+    in let truncated = ch-truncate-at (hist.ch-commands) (hist.ch-cursor) 0 []
+    in let new-cmds = list-push truncated (cmd-mark-executed entry)
+    in let new-count = list-length new-cmds
+    in let trimmed = if new-count > hist.ch-max-size then ch-trim-oldest new-cmds new-count (hist.ch-max-size) else new-cmds
+    in CommandHistory {
+      ch-commands = trimmed,
+      ch-count = list-length trimmed,
+      ch-cursor = list-length trimmed,
+      ch-max-size = hist.ch-max-size,
+      ch-next-id = hist.ch-next-id + 1
+    }
+
+  ch-truncate-at : List CommandRecord, Integer, Integer, List CommandRecord -> List CommandRecord
+  ch-truncate-at (cmds) (at) (i) (acc) =
+    if i >= at then acc
+    else if i >= list-length cmds then acc
+    else ch-truncate-at cmds at (i + 1) (list-push acc (list-at cmds i))
+
+  ch-trim-oldest : List CommandRecord, Integer, Integer -> List CommandRecord
+  ch-trim-oldest (cmds) (count) (max-size) =
+    let drop = count - max-size
+    in ch-trim-loop cmds drop count []
+
+  ch-trim-loop : List CommandRecord, Integer, Integer, List CommandRecord -> List CommandRecord
+  ch-trim-loop (cmds) (start) (n) (acc) =
+    if start >= n then acc
+    else ch-trim-loop cmds (start + 1) n (list-push acc (list-at cmds start))
+
+  ch-can-undo : CommandHistory -> Boolean
+  ch-can-undo (hist) = hist.ch-cursor > 0
+
+  ch-can-redo : CommandHistory -> Boolean
+  ch-can-redo (hist) = hist.ch-cursor < hist.ch-count
+
+  ch-undo : CommandHistory -> CommandHistory
+  ch-undo (hist) =
+    if hist.ch-cursor <= 0 then hist
+    else let new-cursor = hist.ch-cursor - 1
+    in let entry = list-at (hist.ch-commands) new-cursor
+    in let updated = list-set-at (hist.ch-commands) new-cursor (cmd-mark-undone entry)
+    in __record-set (__record-set hist "ch-commands" updated) "ch-cursor" new-cursor
+
+  ch-redo : CommandHistory -> CommandHistory
+  ch-redo (hist) =
+    if hist.ch-cursor >= hist.ch-count then hist
+    else let entry = list-at (hist.ch-commands) (hist.ch-cursor)
+    in let updated = list-set-at (hist.ch-commands) (hist.ch-cursor) (cmd-mark-executed entry)
+    in __record-set (__record-set hist "ch-commands" updated) "ch-cursor" (hist.ch-cursor + 1)
+
+  ch-last : CommandHistory -> Maybe CommandRecord
+  ch-last (hist) =
+    if hist.ch-cursor <= 0 then None
+    else Just (list-at (hist.ch-commands) (hist.ch-cursor - 1))
+
+  ch-recent : CommandHistory, Integer -> List CommandRecord
+  ch-recent (hist) (n) =
+    let start = if hist.ch-count > n then hist.ch-count - n else 0
+    in ch-recent-loop (hist.ch-commands) start (hist.ch-count) []
+
+  ch-recent-loop : List CommandRecord, Integer, Integer, List CommandRecord -> List CommandRecord
+  ch-recent-loop (cmds) (i) (n) (acc) =
+    if i >= n then acc
+    else ch-recent-loop cmds (i + 1) n (list-push acc (list-at cmds i))
+
+Page 1

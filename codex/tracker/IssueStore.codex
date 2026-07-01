@@ -1,0 +1,214 @@
+Chapter: IssueStore
+  cites Tracker chapter IssueTypes
+  cites Data chapter Server
+  cites Data chapter Schema
+  cites Data chapter Row
+  cites Data chapter Catalog
+  cites Data chapter Executor
+  cites Data chapter RelAlgebra
+  cites Foreword chapter Maybe
+
+ Persistent issue store backed by the data quire. Creates tables,
+ inserts/updates/queries issues, projects, cycles, labels. Any app
+ can use this to add project management without reimplementing the
+ schema or queries.
+
+ We say:
+
+Section: Store State
+  IssueStoreState = record {
+    iss-db : DbServer,
+    iss-next-id : Integer
+  }
+
+Section: Initialization
+  issue-store-new : Text -> IssueStoreState
+  issue-store-new (name) =
+    let srv = db-server-new name
+    in let s1 = iss-create-table srv "issues" [
+      col-def-not-null "id" ColInteger,
+      col-def-not-null "key" ColText,
+      col-def-not-null "title" ColText,
+      col-def-not-null "status" ColInteger,
+      col-def-not-null "priority" ColInteger,
+      col-def "label" ColText,
+      col-def "assignee" ColText,
+      col-def "project" ColText,
+      col-def "cycle" ColText,
+      col-def "estimate" ColInteger,
+      col-def "description" ColText,
+      col-def "created" ColText
+    ]
+    in let s2 = iss-create-table s1 "projects" [
+      col-def-not-null "id" ColInteger,
+      col-def-not-null "name" ColText,
+      col-def "lead" ColText,
+      col-def "color" ColInteger
+    ]
+    in let s3 = iss-create-table s2 "cycles" [
+      col-def-not-null "id" ColInteger,
+      col-def-not-null "name" ColText,
+      col-def-not-null "start_date" ColText,
+      col-def-not-null "end_date" ColText,
+      col-def-not-null "active" ColBoolean
+    ]
+    in let s4 = iss-create-table s3 "labels" [
+      col-def-not-null "id" ColInteger,
+      col-def-not-null "name" ColText,
+      col-def-not-null "color" ColInteger
+    ]
+    in IssueStoreState { iss-db = s4, iss-next-id = 1 }
+
+  iss-create-table : DbServer, Text, List ColumnDef -> DbServer
+  iss-create-table (srv) (name) (cols) =
+    let tdef = TableDef { tbl-name = name, tbl-columns = cols, tbl-primary-key = [], tbl-indexes = [], tbl-constraints = [] }
+    in when catalog-create-table (srv.db-catalog) tdef
+      is Just (cat2) -> __record-set srv "db-catalog" cat2
+      is None -> srv
+
+Section: Issue CRUD
+  iss-add-issue : IssueStoreState, Issue -> IssueStoreState
+  iss-add-issue (store) (issue) =
+    let srv = store.iss-db
+    in let row = [ValInteger (issue.issue-id), ValText (issue.issue-key), ValText (issue.issue-title), ValInteger (issue-status-id (issue.issue-status)), ValInteger (issue-priority-id (issue.issue-priority)), ValText (issue.issue-label), ValText (issue.issue-assignee), ValText (issue.issue-project), ValText (issue.issue-cycle), ValInteger (issue.issue-estimate), ValText (issue.issue-description), ValText (issue.issue-created)]
+    in let srv2 = iss-insert srv "issues" row
+    in let next = if issue.issue-id >= store.iss-next-id then issue.issue-id + 1 else store.iss-next-id
+    in IssueStoreState { iss-db = srv2, iss-next-id = next }
+
+  iss-insert : DbServer, Text, List ColumnValue -> DbServer
+  iss-insert (srv) (table) (values) =
+    let cat = srv.db-catalog
+    in let tbl = catalog-get-table cat table
+    in when tbl
+      is Just (ct) ->
+        let schema = ct.ct-schema
+        in let row = row-new schema values
+        in let result = catalog-insert-row cat table row
+        in __record-set srv "db-catalog" (result.cir-cat)
+      is None -> srv
+
+  iss-update-status : IssueStoreState, Integer, IssueStatus -> IssueStoreState
+  iss-update-status (store) (id) (new-status) =
+    let srv = iss-update-field (store.iss-db) id "status" (ValInteger (issue-status-id new-status))
+    in __record-set store "iss-db" srv
+
+  iss-update-priority : IssueStoreState, Integer, IssuePriority -> IssueStoreState
+  iss-update-priority (store) (id) (new-priority) =
+    let srv = iss-update-field (store.iss-db) id "priority" (ValInteger (issue-priority-id new-priority))
+    in __record-set store "iss-db" srv
+
+  iss-update-assignee : IssueStoreState, Integer, Text -> IssueStoreState
+  iss-update-assignee (store) (id) (assignee) =
+    let srv = iss-update-field (store.iss-db) id "assignee" (ValText assignee)
+    in __record-set store "iss-db" srv
+
+  iss-update-field : DbServer, Integer, Text, ColumnValue -> DbServer
+  iss-update-field (srv) (id) (field) (val) =
+    let result = query (srv.db-catalog) (RelFilter (RelScan "issues") (PredColCmp "id" CmpEq (ValInteger id)))
+    in if result.qr-count == 0 then srv
+    else let row = list-at (result.qr-rows) 0
+    in let updated = row-set-value row field val
+    in let cat1 = catalog-delete-row (srv.db-catalog) "issues" id
+    in let cat2 = catalog-insert-row (cat1.cat) "issues" updated
+    in __record-set srv "db-catalog" (cat2.cir-cat)
+
+Section: Issue Queries
+  iss-all-issues : IssueStoreState -> QueryResult
+  iss-all-issues (store) =
+    query (store.iss-db.db-catalog) (RelSort (RelScan "issues") [SortSpec { sort-col = "id", sort-dir = SortAsc }])
+
+  iss-issues-by-status : IssueStoreState, IssueStatus -> QueryResult
+  iss-issues-by-status (store) (status) =
+    query (store.iss-db.db-catalog) (RelFilter (RelScan "issues") (PredColCmp "status" CmpEq (ValInteger (issue-status-id status))))
+
+  iss-issues-by-project : IssueStoreState, Text -> QueryResult
+  iss-issues-by-project (store) (project) =
+    query (store.iss-db.db-catalog) (RelFilter (RelScan "issues") (PredColCmp "project" CmpEq (ValText project)))
+
+  iss-issues-by-cycle : IssueStoreState, Text -> QueryResult
+  iss-issues-by-cycle (store) (cycle) =
+    query (store.iss-db.db-catalog) (RelFilter (RelScan "issues") (PredColCmp "cycle" CmpEq (ValText cycle)))
+
+  iss-open-issues : IssueStoreState -> QueryResult
+  iss-open-issues (store) =
+    query (store.iss-db.db-catalog) (RelFilter (RelScan "issues") (PredAnd (PredColCmp "status" CmpGe (ValInteger 0)) (PredColCmp "status" CmpLt (ValInteger 4))))
+
+  iss-count : IssueStoreState -> Integer
+  iss-count (store) = catalog-table-row-count (store.iss-db.db-catalog) "issues"
+
+  iss-count-by-status : IssueStoreState, IssueStatus -> Integer
+  iss-count-by-status (store) (status) =
+    let result = iss-issues-by-status store status
+    in result.qr-count
+
+  iss-count-open : IssueStoreState -> Integer
+  iss-count-open (store) =
+    let result = iss-open-issues store
+    in result.qr-count
+
+Section: Row Helpers
+  iss-row-to-issue : RowData -> Issue
+  iss-row-to-issue (row) = Issue {
+    issue-id = iss-row-int row "id",
+    issue-key = iss-row-text row "key",
+    issue-title = iss-row-text row "title",
+    issue-status = issue-status-from-id (iss-row-int row "status"),
+    issue-priority = issue-priority-from-id (iss-row-int row "priority"),
+    issue-label = iss-row-text row "label",
+    issue-assignee = iss-row-text row "assignee",
+    issue-project = iss-row-text row "project",
+    issue-cycle = iss-row-text row "cycle",
+    issue-estimate = iss-row-int row "estimate",
+    issue-description = iss-row-text row "description",
+    issue-created = iss-row-text row "created"
+  }
+
+  iss-row-int : RowData, Text -> Integer
+  iss-row-int (row) (col) =
+    let v = row-get-value row col
+    in when v
+      is ValInteger (n) -> n
+      is otherwise -> 0
+
+  iss-row-text : RowData, Text -> Text
+  iss-row-text (row) (col) =
+    let v = row-get-value row col
+    in when v
+      is ValText (s) -> s
+      is otherwise -> ""
+
+Section: Project/Cycle/Label CRUD
+  iss-add-project : IssueStoreState, Project -> IssueStoreState
+  iss-add-project (store) (proj) =
+    let srv = iss-insert (store.iss-db) "projects" [ValInteger (proj.project-id), ValText (proj.project-name), ValText (proj.project-lead), ValInteger (proj.project-color)]
+    in __record-set store "iss-db" srv
+
+  iss-add-cycle : IssueStoreState, Cycle -> IssueStoreState
+  iss-add-cycle (store) (cyc) =
+    let srv = iss-insert (store.iss-db) "cycles" [ValInteger (cyc.cycle-id), ValText (cyc.cycle-name), ValText (cyc.cycle-start), ValText (cyc.cycle-end), ValBoolean (cyc.cycle-active)]
+    in __record-set store "iss-db" srv
+
+  iss-add-label : IssueStoreState, Label -> IssueStoreState
+  iss-add-label (store) (lbl) =
+    let srv = iss-insert (store.iss-db) "labels" [ValInteger (lbl.label-id), ValText (lbl.label-name), ValInteger (lbl.label-color)]
+    in __record-set store "iss-db" srv
+
+  iss-all-projects : IssueStoreState -> QueryResult
+  iss-all-projects (store) = query (store.iss-db.db-catalog) (RelScan "projects")
+
+  iss-all-cycles : IssueStoreState -> QueryResult
+  iss-all-cycles (store) = query (store.iss-db.db-catalog) (RelScan "cycles")
+
+  iss-all-labels : IssueStoreState -> QueryResult
+  iss-all-labels (store) = query (store.iss-db.db-catalog) (RelScan "labels")
+
+Section: Convenience
+  iss-next-key : IssueStoreState, Text -> Text
+  iss-next-key (store) (prefix) = prefix & "-" & show (store.iss-next-id)
+
+  iss-gen-id : IssueStoreState -> (IssueStoreState, Integer)
+  iss-gen-id (store) =
+    let id = store.iss-next-id
+    in (__record-set store "iss-next-id" (id + 1), id)
+
+Page 1

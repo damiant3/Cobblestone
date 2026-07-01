@@ -1,0 +1,294 @@
+Chapter: Vue Emitter
+  cites Codex chapter Text
+  cites Codex chapter Characters
+  cites Codex chapter Lists
+
+ Generates Vue 3 Single File Components from the IR.
+
+Section: Sanitization
+
+  vue-sanitize : Text -> Text
+  vue-sanitize (name) =
+   text-replace (text-replace name "-" "_") "'" ""
+
+  vue-escape : Text -> Text
+  vue-escape (s) =
+   let s1 = text-replace s "\\" "\\\\"
+   in let s2 = text-replace s1 "\"" "\\\""
+   in let s3 = text-replace s2 "\n" "\\n"
+   in s3
+
+  vue-indent : Integer -> Text
+  vue-indent (n) =
+   if n <= 0 then ""
+   else "  " & vue-indent (n - 1)
+
+Section: Arity Map
+
+  ArityEntry = record {
+   name : Text,
+   arity : Integer between 0 and 255,
+   generic-count : Integer between 0 and 255
+  }
+
+  bsearch-arity-pos : List ArityEntry, Text, Integer, Integer -> Integer
+  bsearch-arity-pos (entries) (name) (lo) (hi) =
+   if lo >= hi then lo
+   else let mid = lo + (hi - lo) / 2
+   in let mid-name = (list-at entries mid).name
+   in if text-compare name mid-name <= 0 then bsearch-arity-pos entries name lo mid
+      else bsearch-arity-pos entries name (mid + 1) hi
+
+  sorted-insert-arity : List ArityEntry, ArityEntry -> List ArityEntry
+  sorted-insert-arity (xs) (e) =
+   let len = list-length xs
+   in let pos = bsearch-arity-pos xs (e.name) 0 len
+   in list-insert-at xs pos e
+
+  build-arity-map : List IRDef, Integer, List ArityEntry -> List ArityEntry
+  build-arity-map (defs) (i) (acc) =
+   if i == list-length defs then acc
+   else let d = list-at defs i
+   in build-arity-map defs (i + 1) (sorted-insert-arity acc (ArityEntry {
+    name = d.name,
+    arity = list-length (d.params),
+    generic-count = 0
+   }))
+
+  lookup-arity : List ArityEntry, Text -> Integer
+  lookup-arity (entries) (name) =
+   let len = list-length entries
+   in let pos = bsearch-arity-pos entries name 0 len
+   in if pos >= len then 0
+      else let e = list-at entries pos
+      in if e.name == name then e.arity else 0
+
+Section: Expression Emission
+
+  emit-vue-expr : IRExpr, List ArityEntry, Integer -> Text
+  emit-vue-expr (e) (arities) (indent) =
+   when e
+    is IrIntLit (n) (sp) -> show n
+    is IrNumLit (n) (sp) -> show n
+    is IrTextLit (s) (sp) -> "\"" & vue-escape s & "\""
+    is IrBoolLit (b) (sp) -> if b then "true" else "false"
+    is IrCharLit (n) (sp) -> "String.fromCharCode(" & show n & ")"
+    is IrName (n) (ty) (sp) -> vue-sanitize n
+    is IrBinary (op) (l) (r) (ty) (sp) -> emit-vue-binary op l r arities indent
+    is IrNegate (x) (sp) -> "(-(" & emit-vue-expr x arities indent & "))"
+    is IrIf (c) (t) (el) (ty) (sp) -> "(" & emit-vue-expr c arities indent & " ? " & emit-vue-expr t arities indent & " : " & emit-vue-expr el arities indent & ")"
+    is IrLet (name) (ty) (val) (body) (sp) -> "(() => { const " & vue-sanitize name & " = " & emit-vue-expr val arities indent & "; return " & emit-vue-expr body arities indent & "; })()"
+    is IrApply (f) (a) (ty) (sp) -> emit-vue-apply e arities indent
+    is IrLambda (params) (body) (ty) (sp) -> "(" & emit-vue-params params 0 & ") => " & emit-vue-expr body arities indent
+    is IrList (elems) (ty) (sp) -> "[" & emit-vue-list-elems elems arities indent 0 & "]"
+    is IrMatch (scrut) (branches) (ty) (sp) -> emit-vue-match scrut branches arities indent
+    is IrAct (stmts) (ty) (sp) -> emit-vue-act stmts arities indent
+    is IrRecord (name) (fields) (ty) (sp) -> "{ _type: \"" & name & "\"" & emit-vue-record-fields fields arities indent 0 & " }"
+    is IrFieldAccess (rec) (field) (ty) (sp) -> emit-vue-expr rec arities indent & "." & vue-sanitize field
+    is IrFieldStore (rec) (field) (val) (ty) (sp) -> "(" & emit-vue-expr rec arities indent & "." & vue-sanitize field & " = " & emit-vue-expr val arities indent & ")"
+    is IrFork (body) (ty) (sp) -> "Promise.resolve().then(() => " & emit-vue-expr body arities indent & ")"
+    is IrAwait (task) (ty) (sp) -> "(await " & emit-vue-expr task arities indent & ")"
+    is IrHandle (eff) (body) (clauses) (ty) (sp) -> emit-vue-expr body arities indent
+    is IrWithTimeout (secs) (effs) (scopes) (body) (ty) (sp) -> emit-vue-expr body arities indent
+    is IrTry (max) (body) (fb) (fail) (ty) (sp) -> emit-vue-act body arities indent
+    is IrError (msg) (ty) (sp) -> "(() => { throw new Error(\"" & vue-escape msg & "\"); })()"
+
+Section: Binary Operators
+
+  emit-vue-binary : IRBinaryOp, IRExpr, IRExpr, List ArityEntry, Integer -> Text
+  emit-vue-binary (op) (l) (r) (arities) (indent) =
+   let lhs = emit-vue-expr l arities indent
+   in let rhs = emit-vue-expr r arities indent
+   in when op
+    is IrAddInt -> "(" & lhs & " + " & rhs & ")"
+    is IrSubInt -> "(" & lhs & " - " & rhs & ")"
+    is IrMulInt -> "(" & lhs & " * " & rhs & ")"
+    is IrDivInt -> "Math.trunc(" & lhs & " / " & rhs & ")"
+    is IrRemInt -> "(" & lhs & " % " & rhs & ")"
+    is IrPowInt -> "(" & lhs & " ** " & rhs & ")"
+    is IrAddNum | IrAddRealApprox | IrAddRealTrapping | IrAddRealSaturating -> "(" & lhs & " + " & rhs & ")"
+    is IrSubNum | IrSubRealApprox | IrSubRealTrapping | IrSubRealSaturating -> "(" & lhs & " - " & rhs & ")"
+    is IrMulNum | IrMulRealApprox | IrMulRealTrapping | IrMulRealSaturating -> "(" & lhs & " * " & rhs & ")"
+    is IrDivNum | IrDivRealApprox | IrDivRealTrapping | IrDivRealSaturating -> "(" & lhs & " / " & rhs & ")"
+    is IrAddVec -> lhs & ".map((v, i) => v + " & rhs & "[i])"
+    is IrSubVec -> lhs & ".map((v, i) => v - " & rhs & "[i])"
+    is IrMulVec -> lhs & ".map((v, i) => v * " & rhs & "[i])"
+    is IrDivVec -> lhs & ".map((v, i) => v / " & rhs & "[i])"
+    is IrEq -> "(" & lhs & " === " & rhs & ")"
+    is IrNotEq -> "(" & lhs & " !== " & rhs & ")"
+    is IrLt | IrLtVec -> "(" & lhs & " < " & rhs & ")"
+    is IrGt | IrGtVec -> "(" & lhs & " > " & rhs & ")"
+    is IrLtEq | IrLtEqVec -> "(" & lhs & " <= " & rhs & ")"
+    is IrGtEq | IrGtEqVec -> "(" & lhs & " >= " & rhs & ")"
+    is IrApproxEq -> "(" & lhs & " === " & rhs & ")"
+    is IrApproxEqExact -> "(" & lhs & " === " & rhs & ")"
+    is IrAnd -> "(" & lhs & " && " & rhs & ")"
+    is IrOr -> "(" & lhs & " || " & rhs & ")"
+    is IrAppendText -> "(" & lhs & " + " & rhs & ")"
+    is IrAppendList -> "([..." & lhs & ", ..." & rhs & "])"
+    is IrConsList -> "[" & lhs & ", ..." & rhs & "]"
+
+Section: Apply and Helpers
+
+  FlatApply = record {
+   root : IRExpr,
+   args : List IRExpr
+  }
+
+  collect-apply-chain : IRExpr, List IRExpr -> FlatApply
+  collect-apply-chain (e) (acc) =
+   when e
+    is IrApply (f) (a) (ty) (sp) -> collect-apply-chain f ([a] & acc)
+    is otherwise -> FlatApply { root = e, args = acc }
+
+  emit-vue-apply : IRExpr, List ArityEntry, Integer -> Text
+  emit-vue-apply (e) (arities) (indent) =
+   let chain = collect-apply-chain e []
+   in let func = emit-vue-expr (chain.root) arities indent
+   in func & "(" & emit-vue-apply-args (chain.args) arities indent 0 & ")"
+
+  emit-vue-apply-args : List IRExpr, List ArityEntry, Integer, Integer -> Text
+  emit-vue-apply-args (args) (arities) (indent) (i) =
+   if i == list-length args then ""
+   else let sep = if i > 0 then ", " else ""
+   in sep & emit-vue-expr (list-at args i) arities indent & emit-vue-apply-args args arities indent (i + 1)
+
+  emit-vue-params : List IRParam, Integer -> Text
+  emit-vue-params (params) (i) =
+   if i == list-length params then ""
+   else let sep = if i > 0 then ", " else ""
+   in sep & vue-sanitize (list-at params i).name & emit-vue-params params (i + 1)
+
+  emit-vue-list-elems : List IRExpr, List ArityEntry, Integer, Integer -> Text
+  emit-vue-list-elems (elems) (arities) (indent) (i) =
+   if i == list-length elems then ""
+   else let sep = if i > 0 then ", " else ""
+   in sep & emit-vue-expr (list-at elems i) arities indent & emit-vue-list-elems elems arities indent (i + 1)
+
+  emit-vue-record-fields : List IRFieldVal, List ArityEntry, Integer, Integer -> Text
+  emit-vue-record-fields (fields) (arities) (indent) (i) =
+   if i == list-length fields then ""
+   else let f = list-at fields i
+   in ", " & vue-sanitize (f.name) & ": " & emit-vue-expr (f.value) arities indent & emit-vue-record-fields fields arities indent (i + 1)
+
+Section: Match
+
+  emit-vue-match : IRExpr, List IRBranch, List ArityEntry, Integer -> Text
+  emit-vue-match (scrut) (branches) (arities) (indent) =
+   "(() => { const _s = " & emit-vue-expr scrut arities indent & "; " & emit-vue-branches branches arities indent 0 & " })()"
+
+  emit-vue-branches : List IRBranch, List ArityEntry, Integer, Integer -> Text
+  emit-vue-branches (branches) (arities) (indent) (i) =
+   if i == list-length branches then "throw new Error('non-exhaustive match');"
+   else let b = list-at branches i
+   in let cond = emit-vue-pat-cond (b.pattern) "_s"
+   in let binds = emit-vue-pat-binds (b.pattern) "_s"
+   in let body = emit-vue-expr (b.body) arities indent
+   in "if (" & cond & ") { " & binds & "return " & body & "; } else " & emit-vue-branches branches arities indent (i + 1)
+
+  emit-vue-pat-cond : IRPat, Text -> Text
+  emit-vue-pat-cond (p) (scrut) =
+   when p
+    is IrVarPat (name) (ty) (sp) -> "true"
+    is IrLitPat (text) (ty) (sp) -> scrut & " === " & text
+    is IrCtorPat (name) (subs) (ty) (sp) -> scrut & "._tag === \"" & name & "\""
+    is IrWildPat (sp) -> "true"
+    is IrVecPat (pats) (ty) (sp) -> "true"
+
+  emit-vue-pat-binds : IRPat, Text -> Text
+  emit-vue-pat-binds (p) (scrut) =
+   when p
+    is IrVarPat (name) (ty) (sp) -> "const " & vue-sanitize name & " = " & scrut & "; "
+    is IrLitPat (text) (ty) (sp) -> ""
+    is IrCtorPat (name) (subs) (ty) (sp) -> emit-vue-ctor-binds subs scrut 0
+    is IrWildPat (sp) -> ""
+    is IrVecPat (pats) (ty) (sp) -> ""
+
+  emit-vue-ctor-binds : List IRPat, Text, Integer -> Text
+  emit-vue-ctor-binds (subs) (scrut) (i) =
+   if i == list-length subs then ""
+   else let sub = list-at subs i
+   in let access = scrut & "._" & show i
+   in emit-vue-pat-binds sub access & emit-vue-ctor-binds subs scrut (i + 1)
+
+Section: Act Blocks
+
+  emit-vue-act : List IRActStmt, List ArityEntry, Integer -> Text
+  emit-vue-act (stmts) (arities) (indent) =
+   "(() => {\n" & emit-vue-act-stmts stmts arities (indent + 1) 0 & vue-indent indent & "})()"
+
+  emit-vue-act-stmts : List IRActStmt, List ArityEntry, Integer, Integer -> Text
+  emit-vue-act-stmts (stmts) (arities) (indent) (i) =
+   if i == list-length stmts then ""
+   else let s = list-at stmts i
+   in let is-last = i == list-length stmts - 1
+   in when s
+    is IrDoBind (name) (ty) (val) (sp) -> vue-indent indent & "const " & vue-sanitize name & " = " & emit-vue-expr val arities indent & ";\n" & emit-vue-act-stmts stmts arities indent (i + 1)
+    is IrDoExec (e) (sp) ->
+     if is-last then vue-indent indent & "return " & emit-vue-expr e arities indent & ";\n"
+     else vue-indent indent & emit-vue-expr e arities indent & ";\n" & emit-vue-act-stmts stmts arities indent (i + 1)
+
+Section: Type Definitions
+
+  emit-vue-type-def : ATypeDef -> Text
+  emit-vue-type-def (td) =
+   when td
+    is ARecordTypeDef (name) (tparams) (fields) (is-mut) (s) ->
+     "function " & vue-sanitize (name.value) & "(fields: any): any { return { _type: \"" & name.value & "\", ...fields }; }\n"
+    is AVariantTypeDef (name) (tparams) (ctors) (s) ->
+     emit-vue-variant-ctors ctors 0
+
+  emit-vue-variant-ctors : List AVariantCtorDef, Integer -> Text
+  emit-vue-variant-ctors (ctors) (i) =
+   if i == list-length ctors then ""
+   else let c = list-at ctors i
+   in let n = list-length (c.fields)
+   in let ctor-text = if n == 0 then "const " & vue-sanitize (c.name.value) & ": any = { _tag: \"" & c.name.value & "\" };\n"
+      else "function " & vue-sanitize (c.name.value) & "(" & emit-vue-ctor-params n 0 & "): any { return { _tag: \"" & c.name.value & "\"" & emit-vue-ctor-fields n 0 & " }; }\n"
+   in ctor-text & emit-vue-variant-ctors ctors (i + 1)
+
+  emit-vue-ctor-params : Integer, Integer -> Text
+  emit-vue-ctor-params (n) (i) =
+   if i == n then ""
+   else let sep = if i > 0 then ", " else ""
+   in sep & "_" & show i & ": any" & emit-vue-ctor-params n (i + 1)
+
+  emit-vue-ctor-fields : Integer, Integer -> Text
+  emit-vue-ctor-fields (n) (i) =
+   if i == n then ""
+   else ", _" & show i & ": _" & show i & emit-vue-ctor-fields n (i + 1)
+
+Section: Definition Emission
+
+  emit-vue-def : IRDef, List ArityEntry -> Text
+  emit-vue-def (d) (arities) =
+   if text-length (d.name) == 0 then ""
+   else let sname = vue-sanitize (d.name)
+   in if list-length (d.params) == 0
+      then "const " & sname & " = " & emit-vue-expr (d.body) arities 0 & ";\n\n"
+      else "function " & sname & "(" & emit-vue-params (d.params) 0 & "): any {\n  return " & emit-vue-expr (d.body) arities 1 & ";\n}\n\n"
+
+  emit-vue-defs : List IRDef, Integer, List ArityEntry -> Text
+  emit-vue-defs (defs) (i) (arities) =
+   if i == list-length defs then ""
+   else emit-vue-def (list-at defs i) arities & emit-vue-defs defs (i + 1) arities
+
+  emit-vue-type-defs : List ATypeDef, Integer -> Text
+  emit-vue-type-defs (tds) (i) =
+   if i == list-length tds then ""
+   else emit-vue-type-def (list-at tds i) & emit-vue-type-defs tds (i + 1)
+
+Section: Vue SFC Assembly
+
+  emit-vue-chapter : IRChapter, List ATypeDef -> Text
+  emit-vue-chapter (m) (type-defs) =
+   let arities = build-arity-map (m.defs) 0 []
+   in let builtins = "function print_line_uni(s: string): void { output.value.push(s); }\nfunction show(n: any): string { return String(n); }\nfunction text_length(s: string): number { return s.length; }\nfunction text_replace(s: string, a: string, b: string): string { return s.split(a).join(b); }\nfunction text_compare(a: string, b: string): number { return a < b ? -1 : a > b ? 1 : 0; }\nfunction list_length(xs: any[]): number { return xs.length; }\nfunction list_at(xs: any[], i: number): any { return xs[i]; }\nfunction integer_to_text(n: number): string { return String(n); }\nfunction negate(n: number): number { return -n; }\n\n"
+   in let types-text = emit-vue-type-defs type-defs 0
+   in let defs-text = emit-vue-defs (m.defs) 0 arities
+   in let script = "<script setup lang=\"ts\">\nimport { ref, onMounted } from 'vue';\n\nconst output = ref<string[]>([]);\n\n" & builtins & types-text & defs-text & "onMounted(() => {\n  try { opening(); } catch(e) { console.error(e); }\n});\n</script>\n\n"
+   in let template = "<template>\n  <div class=\"app\">\n    <div v-for=\"(line, i) in output\" :key=\"i\">{{ line }}</div>\n  </div>\n</template>\n\n"
+   in let style = "<style scoped>\n.app { font-family: system-ui, sans-serif; padding: 1rem; }\n</style>\n"
+   in script & template & style
+
+Page 1

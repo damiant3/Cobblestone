@@ -1,0 +1,64 @@
+Chapter: Envelope
+
+ ADSR envelope generator for audio/animation. Fixed-point (scale
+ 1000). Attack-Decay-Sustain-Release with configurable times and
+ levels. Produces amplitude values for a given time position.
+
+ We say:
+
+Section: Types
+  AdsrEnvelope = record {
+    env-attack : Integer,
+    env-decay : Integer,
+    env-sustain-level : Integer between 0 and 1000,
+    env-release : Integer
+  }
+
+Section: Construction
+  adsr-new : Integer, Integer, Integer, Integer -> AdsrEnvelope
+  adsr-new (attack) (decay) (sustain) (release) = AdsrEnvelope { env-attack = attack, env-decay = decay, env-sustain-level = sustain, env-release = release }
+
+  adsr-default : AdsrEnvelope
+  adsr-default = AdsrEnvelope { env-attack = 100, env-decay = 200, env-sustain-level = 700, env-release = 300 }
+
+Section: Evaluation
+  adsr-eval : AdsrEnvelope, Integer, Integer, Boolean -> Integer
+  adsr-eval (env) (time) (note-off-time) (released) =
+    if released then adsr-release-phase env time note-off-time
+    else adsr-attack-decay-sustain env time
+
+  adsr-attack-decay-sustain : AdsrEnvelope, Integer -> Integer
+  adsr-attack-decay-sustain (env) (t) =
+    if t < env.env-attack then
+      if env.env-attack == 0 then 1000 else t * 1000 / env.env-attack
+    else let decay-t = t - env.env-attack
+    in if decay-t < env.env-decay then
+      let progress = if env.env-decay == 0 then 1000 else decay-t * 1000 / env.env-decay
+      in 1000 - (1000 - env.env-sustain-level) * progress / 1000
+    else env.env-sustain-level
+
+  adsr-release-phase : AdsrEnvelope, Integer, Integer -> Integer
+  adsr-release-phase (env) (time) (note-off) =
+    let release-t = time - note-off
+    in if release-t >= env.env-release then 0
+    else let level-at-release = env.env-sustain-level
+    in if env.env-release == 0 then 0
+    else level-at-release - level-at-release * release-t / env.env-release
+
+Section: Sample Generation
+  adsr-sample : AdsrEnvelope, Integer, Integer, Integer -> List Integer
+  adsr-sample (env) (duration) (release-at) (steps) = adsr-sample-loop env duration release-at steps 0 []
+
+  adsr-sample-loop : AdsrEnvelope, Integer, Integer, Integer, Integer, List Integer -> List Integer
+  adsr-sample-loop (env) (dur) (rel-at) (steps) (i) (acc) =
+    if i > steps then acc
+    else let t = i * dur / steps
+    in let released = t >= rel-at
+    in let val = adsr-eval env t rel-at released
+    in adsr-sample-loop env dur rel-at steps (i + 1) (list-push acc val)
+
+Section: Queries
+  adsr-total-time : AdsrEnvelope -> Integer
+  adsr-total-time (env) = env.env-attack + env.env-decay + env.env-release
+
+Page 1

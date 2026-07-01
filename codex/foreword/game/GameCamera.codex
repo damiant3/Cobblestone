@@ -1,0 +1,134 @@
+Chapter: GameCamera
+
+ Game camera — orthographic and perspective projection, follow
+ target, camera shake, viewport bounds. Uses fixed-point scale-
+ 1000 arithmetic for positions and zoom factors.
+
+ To camera-new gives a camera centered at a position.
+ To camera-follow gives a camera smoothly tracking a target.
+ To camera-shake gives a camera with screen shake applied.
+ To camera-world-to-screen gives screen coordinates from world.
+
+ We say:
+
+Section: Types
+
+  CameraMode =
+    | CamOrtho
+    | CamPerspective (Integer)
+
+  GameCam = record {
+    gc-x : Integer,
+    gc-y : Integer,
+    gc-zoom : Integer,
+    gc-rotation : Integer,
+    gc-mode : CameraMode,
+    gc-vp-width : Integer,
+    gc-vp-height : Integer,
+    gc-shake-x : Integer,
+    gc-shake-y : Integer,
+    gc-shake-decay : Integer
+  }
+
+Section: Construction
+
+  camera-new : Integer, Integer, Integer, Integer -> GameCam
+  camera-new (x) (y) (vp-w) (vp-h) = GameCam {
+    gc-x = x,
+    gc-y = y,
+    gc-zoom = 1000,
+    gc-rotation = 0,
+    gc-mode = CamOrtho,
+    gc-vp-width = vp-w,
+    gc-vp-height = vp-h,
+    gc-shake-x = 0,
+    gc-shake-y = 0,
+    gc-shake-decay = 900
+  }
+
+  camera-set-zoom : GameCam, Integer -> GameCam
+  camera-set-zoom (c) (z) = __record-set c "gc-zoom" z
+
+  camera-set-rotation : GameCam, Integer -> GameCam
+  camera-set-rotation (c) (r) = __record-set c "gc-rotation" r
+
+Section: Follow
+
+  camera-follow : GameCam, Integer, Integer, Integer -> GameCam
+  camera-follow (c) (target-x) (target-y) (lerp-speed) =
+    let dx = (target-x - c.gc-x) * lerp-speed / 1000
+    in let dy = (target-y - c.gc-y) * lerp-speed / 1000
+    in __record-set (__record-set c "gc-x" (c.gc-x + dx)) "gc-y" (c.gc-y + dy)
+
+  camera-snap : GameCam, Integer, Integer -> GameCam
+  camera-snap (c) (x) (y) = __record-set (__record-set c "gc-x" x) "gc-y" y
+
+Section: Shake
+
+  camera-shake : GameCam, Integer, Integer -> GameCam
+  camera-shake (c) (intensity-x) (intensity-y) =
+    __record-set (__record-set c "gc-shake-x" intensity-x) "gc-shake-y" intensity-y
+
+  camera-update-shake : GameCam -> GameCam
+  camera-update-shake (c) =
+    let sx = c.gc-shake-x * c.gc-shake-decay / 1000
+    in let sy = c.gc-shake-y * c.gc-shake-decay / 1000
+    in let sx2 = if cam-abs sx < 1 then 0 else 0 - sx
+    in let sy2 = if cam-abs sy < 1 then 0 else 0 - sy
+    in __record-set (__record-set c "gc-shake-x" sx2) "gc-shake-y" sy2
+
+Section: Projection
+
+  camera-world-to-screen : GameCam, Integer, Integer -> CamScreenPos
+  camera-world-to-screen (c) (wx) (wy) =
+    let dx = wx - c.gc-x
+    in let dy = wy - c.gc-y
+    in let sx = dx * c.gc-zoom / 1000 + c.gc-vp-width / 2 + c.gc-shake-x
+    in let sy = dy * c.gc-zoom / 1000 + c.gc-vp-height / 2 + c.gc-shake-y
+    in CamScreenPos { csp-x = sx, csp-y = sy }
+
+  camera-screen-to-world : GameCam, Integer, Integer -> CamWorldPos
+  camera-screen-to-world (c) (sx) (sy) =
+    let dx = (sx - c.gc-vp-width / 2 - c.gc-shake-x) * 1000 / c.gc-zoom
+    in let dy = (sy - c.gc-vp-height / 2 - c.gc-shake-y) * 1000 / c.gc-zoom
+    in CamWorldPos { cwp-x = c.gc-x + dx, cwp-y = c.gc-y + dy }
+
+  CamScreenPos = record {
+    csp-x : Integer,
+    csp-y : Integer
+  }
+
+  CamWorldPos = record {
+    cwp-x : Integer,
+    cwp-y : Integer
+  }
+
+Section: Bounds
+
+  camera-visible-rect : GameCam -> CamRect
+  camera-visible-rect (c) =
+    let half-w = c.gc-vp-width * 1000 / (2 * c.gc-zoom)
+    in let half-h = c.gc-vp-height * 1000 / (2 * c.gc-zoom)
+    in CamRect { cr-x = c.gc-x - half-w, cr-y = c.gc-y - half-h, cr-w = half-w * 2, cr-h = half-h * 2 }
+
+  CamRect = record {
+    cr-x : Integer,
+    cr-y : Integer,
+    cr-w : Integer,
+    cr-h : Integer
+  }
+
+  camera-is-visible : GameCam, Integer, Integer -> Boolean
+  camera-is-visible (c) (wx) (wy) =
+    let r = camera-visible-rect c
+    in if wx < r.cr-x then False
+    else if wx > r.cr-x + r.cr-w then False
+    else if wy < r.cr-y then False
+    else wy <= r.cr-y + r.cr-h
+
+Section: Helpers
+
+  cam-abs : Integer -> Integer
+  cam-abs (x) = if x < 0 then 0 - x else x
+
+Page 1

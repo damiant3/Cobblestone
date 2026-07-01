@@ -1,0 +1,84 @@
+Chapter: TestScript
+
+  cites Foreword chapter Console
+  cites Foreword chapter Maybe
+  cites Shell chapter ShellTypes
+  cites Shell chapter ShellBuild
+  cites Shell chapter PowerShellEmit
+
+ Generates test.ps1 -- Compiler acceptance test harness, batch mode.
+ Compile with: -Survey "lower-mul:500000"
+
+ We say:
+
+Section: Parameters
+
+  test-params : List ShellParam = [sh-param-default "CodexCdx" SptString (SeLit ""), sh-param-default "Jobs" SptInt (SeInt 4), sh-switch "ErrorsOnly", sh-switch "NoErrors", sh-switch "Apps", sh-switch "FW", sh-switch "All", sh-switch "Fuzz", sh-switch "Lib", sh-switch "Slow", sh-switch "Fatal"]
+
+Section: S01 -- Preamble
+
+  s01 : List ShellCmd = [ScSetStrictMode, ScSetErrorStop, ScRaw "Set-Location (Join-Path $PSScriptRoot '..')", ScRaw "[Environment]::CurrentDirectory = (Get-Location).Path", ScRaw "$Scope = if ($ErrorsOnly) { 'errors' } elseif ($NoErrors) { 'positive' } else { 'both' }", ScAssign "OutRoot" (SeLit "test-output"), ScAssign "ResultsDir" (SeRaw "Join-Path $OutRoot '_results'"), ScRaw "New-Item -ItemType Directory -Force -Path $OutRoot | Out-Null", ScIf (SeDirExists (SeVar "ResultsDir")) [ScRaw "Remove-Item -Recurse -Force $ResultsDir"] [], ScRaw "New-Item -ItemType Directory -Force -Path $ResultsDir | Out-Null", ScBlank, ScAssign "TestLog" (SeRaw "Join-Path $OutRoot 'test.log'"), ScSetContent (SeVar "TestLog") (SeLit ""), ScRaw "$env:CODEX_SWEEP_LOG = (Resolve-Path $TestLog).Path"]
+
+Section: S02 -- Gather Tests
+
+  s02 : List ShellCmd = [ScRaw "$tests = [System.Collections.Generic.List[string]]::new()", ScIf (SeOr (SeStringEq (SeVar "Scope") (SeLit "both")) (SeStringEq (SeVar "Scope") (SeLit "positive"))) [ScRaw "Get-ChildItem -Path 'codex\\test\\*.codex' -File -ErrorAction SilentlyContinue | ForEach-Object { $tests.Add($_.FullName) }", ScIf (SeOr (SeVar "Apps") (SeVar "All")) [ScRaw "Get-ChildItem -Path 'codex\\test\\apps\\*.codex' -File -ErrorAction SilentlyContinue | ForEach-Object { $tests.Add($_.FullName) }"] [], ScIf (SeOr (SeVar "FW") (SeVar "All")) [ScRaw "Get-ChildItem -Path 'codex\\test\\forewords\\*.codex' -File -ErrorAction SilentlyContinue | ForEach-Object { $tests.Add($_.FullName) }"] [], ScIf (SeOr (SeVar "Fuzz") (SeVar "All")) [ScRaw "Get-ChildItem -Path 'codex\\test\\fuzz\\*.codex' -File -ErrorAction SilentlyContinue | ForEach-Object { $tests.Add($_.FullName) }"] [], ScIf (SeOr (SeVar "Lib") (SeVar "All")) [ScRaw "Get-ChildItem -Path 'codex\\test\\lib\\*.codex' -File -ErrorAction SilentlyContinue | ForEach-Object { $tests.Add($_.FullName) }"] []] [], ScIf (SeOr (SeStringEq (SeVar "Scope") (SeLit "both")) (SeStringEq (SeVar "Scope") (SeLit "errors"))) [ScRaw "Get-ChildItem -Path 'codex\\test\\errors\\*.codex' -File -ErrorAction SilentlyContinue | ForEach-Object { $tests.Add($_.FullName) }"] []]
+
+Section: S03 -- Override Kernel
+
+  s03 : List ShellCmd =
+    let copy-cdx = [ScAssign "stage0" (SeRaw "Join-Path (Resolve-Path .).Path 'build-output\\bare-metal\\Codex.cdx'"), ScRaw "New-Item -ItemType Directory -Force -Path (Split-Path $stage0) | Out-Null", ScCopy (SeVar "CodexCdx") (SeVar "stage0")]
+    in [ScIf (SeVar "CodexCdx") copy-cdx []]
+
+Section: S04 -- Pre-filter Skips
+
+  s04 : List ShellCmd = [ScRaw "$toCompile = [System.Collections.Generic.List[string]]::new()", ScForEach "src" (SeVar "tests") [ScRaw "$name = [System.IO.Path]::GetFileNameWithoutExtension($src)", ScRaw "$dir  = [System.IO.Path]::GetDirectoryName($src)", ScRaw "$skipFile = Join-Path $dir \"$name.skip\"", ScRaw "$slowFile = Join-Path $dir \"$name.slow\"", ScRaw "$fatalFile = Join-Path $dir \"$name.fatal\"", ScIf (SeFileExists (SeVar "skipFile")) [ScRaw "$reason = (Get-Content -TotalCount 1 $skipFile)", ScRaw "$resultFile = Join-Path $ResultsDir $name", ScRaw "\"SKIPPED`t$name`t$reason\" | Set-Content -Path $resultFile -Encoding UTF8"] [ScIf (SeAnd (SeNot (SeVar "Slow")) (SeFileExists (SeVar "slowFile"))) [ScRaw "$reason = (Get-Content -TotalCount 1 $slowFile)", ScRaw "$resultFile = Join-Path $ResultsDir $name", ScRaw "\"SKIPPED`t$name`t(slow) $reason\" | Set-Content -Path $resultFile -Encoding UTF8"] [ScIf (SeAnd (SeNot (SeVar "Fatal")) (SeFileExists (SeVar "fatalFile"))) [ScRaw "$reason = (Get-Content -TotalCount 1 $fatalFile)", ScRaw "$resultFile = Join-Path $ResultsDir $name", ScRaw "\"SKIPPED`t$name`t(fatal) $reason\" | Set-Content -Path $resultFile -Encoding UTF8"] [ScRaw "$toCompile.Add($src)"]]]]]
+
+Section: S05 -- Sort and Count
+
+  s05 : List ShellCmd = [ScRaw "$toCompile = @($toCompile | Sort-Object { $m = Select-String -Path $_ -Pattern '^\\s*cites' -ErrorAction SilentlyContinue; if ($m) { @($m).Count } else { 0 } })", ScEcho (SeRaw "\"Tests: $($tests.Count) total, $($tests.Count - $toCompile.Count) skipped, $($toCompile.Count) to compile ($Jobs batch slots)\"")]
+
+Section: S06 -- Batch Setup
+
+  s06 : List ShellCmd = [ScAssign "batchDir" (SeRaw "Join-Path $OutRoot '_batches'"), ScIf (SeDirExists (SeVar "batchDir")) [ScRaw "Remove-Item -Recurse -Force $batchDir"] [], ScRaw "New-Item -ItemType Directory -Force -Path $batchDir | Out-Null", ScBlank, ScRaw "$listFiles = @()", ScRaw "$writers = @()", ScForLoop "j" (SeInt 0) (SeRaw "$j -lt $Jobs") (SeRaw "$j++") [ScRaw "$lf = Join-Path $batchDir \"batch-$j.txt\"", ScRaw "$listFiles += $lf", ScRaw "$writers += [System.IO.StreamWriter]::new($lf, $false, [System.Text.UTF8Encoding]::new($false))"], ScForLoop "i" (SeInt 0) (SeRaw "$i -lt $toCompile.Count") (SeRaw "$i++") [ScRaw "$writers[$i % $Jobs].WriteLine($toCompile[$i])"], ScForEach "w" (SeVar "writers") [ScRaw "$w.Close()"]]
+
+Section: S07 -- Launch Batch Compiles
+
+  s07 : List ShellCmd = [ScAssign "compileScript" (SeRaw "Join-Path $PSScriptRoot 'test-compile-batch.ps1'"), ScRaw "$compileProcs = @()", ScForLoop "j" (SeInt 0) (SeRaw "$j -lt $Jobs") (SeRaw "$j++") [ScRaw "$lf = $listFiles[$j]", ScIf (SeRaw "(Get-Item $lf).Length -eq 0") [ScContinue] [], ScRaw "$pcore = ($j + 1) % 8", ScRaw "$proc = Start-Process -FilePath 'pwsh' -ArgumentList @('-NoProfile', '-File', $compileScript, '-ListFile', $lf, '-OutRoot', $OutRoot, '-PCore', $pcore) -PassThru -WindowStyle Hidden", ScRaw "$compileProcs += $proc", ScEcho (SeRaw "\"  batch $j started (pid $($proc.Id), pcore $pcore)\"")]]
+
+Section: S08 -- Wait for Batches
+
+  s08 : List ShellCmd = [ScEcho (SeRaw "\"Waiting for $($compileProcs.Count) compile batches...\""), ScForEach "proc" (SeVar "compileProcs") [ScRaw "$proc.WaitForExit(1800000) | Out-Null", ScIf (SeNot (SeProperty (SeVar "proc") "HasExited")) [ScRaw "Write-Host \"  batch pid $($proc.Id) timed out - killing\" -ForegroundColor Yellow", ScRaw "try { Stop-Process -Id $proc.Id -Force -ErrorAction Stop } catch {}"] []], ScEcho (SeLit "Phase 1 (compile) complete.")]
+
+Section: S09 -- Retry Exitcode 99
+
+  s09 : List ShellCmd = [ScRaw "$retryList = @()", ScForEach "src" (SeVar "toCompile") [ScRaw "$name = [System.IO.Path]::GetFileNameWithoutExtension($src)", ScRaw "$out = Join-Path $OutRoot $name", ScRaw "$exitFile = Join-Path $out '.exitcode'", ScRaw "$exitCode = if (Test-Path $exitFile) { (Get-Content -TotalCount 1 $exitFile).Trim() } else { '99' }", ScIf (SeStringEq (SeVar "exitCode") (SeLit "99")) [ScRaw "$retryList += @{ Name = $name; Src = $src; Out = $out }"] []], ScIf (SeRaw "$retryList.Count -gt 0") [ScEcho (SeRaw "\"Retrying $($retryList.Count) tests individually (VM died in batch)...\""), ScAssign "compileScript2" (SeRaw "Join-Path $PSScriptRoot 'compile.ps1'"), ScForEach "r" (SeVar "retryList") [ScRaw "$logPath = Join-Path $r.Out 'build.log'", ScRaw "$binPath = Join-Path $r.Out \"$($r.Name).cdx\"", ScRaw "$proc2 = Start-Process -FilePath 'pwsh' -ArgumentList @('-NoProfile', '-File', $compileScript2, '-Src', $r.Src, '-Out', $binPath, '-Log', $logPath) -PassThru -WindowStyle Hidden", ScRaw "$proc2.WaitForExit(120000) | Out-Null", ScRaw "if (-not $proc2.HasExited) { try { Stop-Process -Id $proc2.Id -Force } catch {} }", ScRaw "$retryExit = if ($proc2.HasExited) { $proc2.ExitCode } else { 4 }", ScRaw "\"$retryExit\" | Set-Content -Path (Join-Path $r.Out '.exitcode') -Encoding UTF8", ScEcho (SeRaw "\"  retry $($r.Name): exit $retryExit\"")]] []]
+
+Section: S10 -- Classify Compile Results
+
+  s10 : List ShellCmd = [ScRaw "$needsRun = [System.Collections.Generic.List[hashtable]]::new()", ScForEach "src" (SeVar "toCompile") [ScRaw "$name = [System.IO.Path]::GetFileNameWithoutExtension($src)", ScRaw "$dir  = [System.IO.Path]::GetDirectoryName($src)", ScRaw "$out  = Join-Path $OutRoot $name", ScRaw "$resultFile = Join-Path $ResultsDir $name", ScRaw "$failingFile  = Join-Path $dir \"$name.failing\"", ScRaw "$expectedFile = Join-Path $dir \"$name.expected\"", ScRaw "$stdinFile    = Join-Path $dir \"$name.stdin\"", ScRaw "$diskFile     = Join-Path $dir \"$name.disk\"", ScRaw "$log = Join-Path $out 'build.log'", ScRaw "$bin = Join-Path $out \"$name.cdx\"", ScRaw "$exitFile = Join-Path $out '.exitcode'", ScBlank, ScRaw "$exitCode = if (Test-Path $exitFile) { (Get-Content -TotalCount 1 $exitFile).Trim() } else { '99' }", ScRaw "$compileOk = ($exitCode -eq '0')", ScBlank, ScIf (SeFileExists (SeVar "failingFile")) [ScIf (SeVar "compileOk") [ScRaw "\"FAIL_EXPECTED_BUT_COMPILED`t$name`t\" | Set-Content -Path $resultFile -Encoding UTF8", ScContinue] [], ScRaw "$codesOk = $true", ScRaw "$logText = if (Test-Path $log) { Get-Content -Raw -Path $log } else { '' }", ScRaw "foreach ($code in (Get-Content $failingFile)) { $code = $code.Trim(); if (-not $code) { continue }; if ($logText -notmatch \"error (CDX)?0*$code\\b\") { $codesOk = $false; break } }", ScIf (SeVar "codesOk") [ScRaw "\"PASS_FAILING`t$name`t\" | Set-Content -Path $resultFile -Encoding UTF8"] [ScRaw "\"FAIL_WRONG_DIAGNOSTIC`t$name`t\" | Set-Content -Path $resultFile -Encoding UTF8"], ScContinue] [], ScBlank, ScIf (SeNot (SeVar "compileOk")) [ScRaw "\"FAIL_COMPILE`t$name`t\" | Set-Content -Path $resultFile -Encoding UTF8", ScContinue] [], ScBlank, ScIf (SeNot (SeFileExists (SeVar "expectedFile"))) [ScRaw "\"PASS_UNVERIFIED`t$name`t\" | Set-Content -Path $resultFile -Encoding UTF8", ScContinue] [], ScBlank, ScRaw "$needsRun.Add(@{ Name = $name; Bin = $bin; Expected = $expectedFile; Stdin = $stdinFile; Disk = $diskFile })"]]
+
+Section: S11 -- Phase 2 Run Tests
+
+  s11 : List ShellCmd = [ScIf (SeRaw "$needsRun.Count -gt 0") [ScEcho (SeRaw "\"Phase 2: running $($needsRun.Count) tests with expected output, $Jobs parallel...\""), ScBlank, ScRaw "$coreQueue = [System.Collections.Concurrent.ConcurrentQueue[int]]::new()", ScForLoop "i" (SeInt 0) (SeRaw "$i -lt $Jobs") (SeRaw "$i++") [ScRaw "$coreQueue.Enqueue(($i + 1) % 8)"], ScBlank, ScRaw "$runWorker = {", ScRaw "    $t = $_", ScRaw "    $name = $t.Name", ScRaw "    $bin  = $t.Bin", ScRaw "    $expectedFile = $t.Expected", ScRaw "    $stdinFile    = $t.Stdin", ScRaw "    $diskFile     = $t.Disk", ScRaw "    $out  = Join-Path $using:OutRoot $name", ScRaw "    $resultFile = Join-Path $using:ResultsDir $name", ScRaw "    $runScript  = Join-Path $using:PSScriptRoot 'test-run.ps1'", ScRaw "    $actual = Join-Path $out 'runtime.actual'", ScRaw "    $cq = $using:coreQueue", ScRaw "    $pcore = 1", ScRaw "    [void]$cq.TryDequeue([ref]$pcore)", ScRaw "    try {", ScRaw "        $runArgs = @('-NoProfile', '-File', $runScript, '-Kernel', $bin, '-OutFile', $actual, '-PCore', $pcore)", ScRaw "        if (Test-Path -PathType Leaf $stdinFile) { $runArgs += @('-StdinFile', $stdinFile) }", ScRaw "        if (Test-Path -PathType Leaf $diskFile)  { $runArgs += @('-DiskFile', $diskFile) }", ScRaw "        & pwsh @runArgs", ScRaw "        if ($LASTEXITCODE -ne 0) {", ScRaw "            \"FAIL_RUNTIME`t$name`trun failed\" | Set-Content -Path $resultFile -Encoding UTF8", ScRaw "            return", ScRaw "        }", ScRaw "        $expectedBytes = [System.IO.File]::ReadAllText($expectedFile) -replace \"`r\",''", ScRaw "        $actualBytes   = if (Test-Path $actual) { [System.IO.File]::ReadAllText($actual) } else { '' }", ScRaw "        if ($expectedBytes -eq $actualBytes) {", ScRaw "            \"PASS_EXPECTED`t$name`t\" | Set-Content -Path $resultFile -Encoding UTF8", ScRaw "        } else {", ScRaw "            \"FAIL_OUTPUT`t$name`t\" | Set-Content -Path $resultFile -Encoding UTF8", ScRaw "        }", ScRaw "    } finally {", ScRaw "        $cq.Enqueue($pcore)", ScRaw "    }", ScRaw "}", ScBlank, ScRaw "$needsRun | ForEach-Object -Parallel $runWorker -ThrottleLimit $Jobs"] [], ScEcho (SeLit "Phase 2 (run) complete.")]
+
+Section: S12 -- Aggregate Results
+
+  s12 : List ShellCmd = [ScRaw "$buckets = @{ PASS_EXPECTED = @(); PASS_UNVERIFIED = @(); PASS_FAILING = @(); SKIPPED = @(); FAIL_COMPILE = @(); FAIL_RUNTIME = @(); FAIL_OUTPUT = @(); FAIL_EXPECTED_BUT_COMPILED = @(); FAIL_WRONG_DIAGNOSTIC = @() }", ScForEach "f" (SeRaw "Get-ChildItem -File $ResultsDir") [ScRaw "$line = Get-Content -TotalCount 1 $f.FullName", ScIf (SeNot (SeVar "line")) [ScContinue] [], ScRaw "$parts = $line -split \"`t\", 3", ScRaw "$status = $parts[0]; $name = $parts[1]; $detail = if ($parts.Count -ge 3) { $parts[2] } else { '' }", ScIf (SeNot (SeRaw "$buckets.ContainsKey($status)")) [ScRaw "Write-Host \"unknown result status '$status' for $name\" -ForegroundColor Yellow", ScContinue] [], ScIf (SeRaw "$status -in 'SKIPPED','FAIL_RUNTIME'") [ScRaw "$buckets[$status] += \"$name`: $detail\""] [ScRaw "$buckets[$status] += $name"]]]
+
+Section: S13 -- Summary and Exit
+
+  s13-failures : List ShellCmd = [ScRaw "function Show-Failures { param([string]$Label, [object[]]$Items); if ($Items.Count -gt 0) { Write-Host \"${Label}:\"; foreach ($i in $Items) { Write-Host \"  $i\" } } }", ScRaw "Show-Failures 'compile failed'              $buckets.FAIL_COMPILE", ScRaw "Show-Failures 'expected error but compiled' $buckets.FAIL_EXPECTED_BUT_COMPILED", ScRaw "Show-Failures 'wrong diagnostic'            $buckets.FAIL_WRONG_DIAGNOSTIC", ScRaw "Show-Failures 'output mismatch'             $buckets.FAIL_OUTPUT", ScRaw "Show-Failures 'runtime error'               $buckets.FAIL_RUNTIME", ScExit (SeInt 1)]
+
+  s13 : List ShellCmd = [ScRaw "$total = ($buckets.Values | ForEach-Object { $_.Count } | Measure-Object -Sum).Sum", ScRaw "$passed = $buckets.PASS_EXPECTED.Count + $buckets.PASS_FAILING.Count + $buckets.PASS_UNVERIFIED.Count", ScRaw "$unexpected = $buckets.FAIL_COMPILE.Count + $buckets.FAIL_EXPECTED_BUT_COMPILED.Count + $buckets.FAIL_WRONG_DIAGNOSTIC.Count + $buckets.FAIL_OUTPUT.Count + $buckets.FAIL_RUNTIME.Count", ScBlank, ScEcho (SeRaw "\"total=$total  pass=$passed  fail=$unexpected  skip=$($buckets.SKIPPED.Count)\""), ScBlank, ScIf (SeRaw "$unexpected -gt 0") s13-failures [], ScExit (SeInt 0)]
+
+Section: Assembly
+
+  test-body : List ShellCmd = [ScSequence s01, ScBlank, ScSequence s02, ScBlank, ScSequence s03, ScBlank, ScSequence s04, ScBlank, ScSequence s05, ScBlank, ScSequence s06, ScBlank, ScSequence s07, ScBlank, ScSequence s08, ScBlank, ScSequence s09, ScBlank, ScSequence s10, ScBlank, ScSequence s11, ScBlank, ScSequence s12, ScBlank, ScSequence s13]
+
+  test-script : ShellScript = sh-script "test" "Compiler acceptance test harness - batch mode" test-params test-body
+
+  opening : [Console] Nothing = act
+    print-line-uni (emit-powershell test-script)
+  end
+
+Page 1
