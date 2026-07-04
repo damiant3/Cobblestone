@@ -145,4 +145,43 @@ Section: Convenience Builders
   coap-ack (msg-id) =
    coap-build-header CoapAcknowledgement 0 msg-id 0
 
+Section: Block-Wise Transfer and Observe
+
+ Block-wise transfer (RFC 7959) splits a large payload across many
+ messages. The Block1 (request body, option 27) and Block2 (response
+ body, option 23) option values pack a block number, a more-blocks
+ flag, and a size exponent (block size is 2 raised to szx plus four)
+ into a minimal-length unsigned integer: (num << 4) | (more << 3) | szx.
+ The Observe option (RFC 7641, option 6) registers or cancels a
+ subscription and carries a sequence number. CoAP option values use the
+ shortest encoding, empty for zero.
+
+  coap-opt-block2 : Integer = 23
+  coap-opt-block1 : Integer = 27
+
+  coap-uint-bytes : Integer -> List Integer
+  coap-uint-bytes (v) =
+   if v == 0 then []
+   else if v < 256 then [v]
+   else if v < 65536 then [bit-and (bit-shru v 8) 255, bit-and v 255]
+   else [bit-and (bit-shru v 16) 255, bit-and (bit-shru v 8) 255, bit-and v 255]
+
+  coap-block-value : Integer, Integer, Integer -> Integer
+  coap-block-value (num) (more) (szx) =
+   bit-or (bit-or (bit-shl num 4) (bit-shl more 3)) szx
+
+  coap-block-option : Integer, Integer, Integer, Integer -> CoapOption
+  coap-block-option (option-num) (num) (more) (szx) =
+   CoapOption {
+    number = __narrow option-num,
+    value = coap-uint-bytes (coap-block-value num more szx)
+   }
+
+  coap-observe-option : Integer -> CoapOption
+  coap-observe-option (seq) =
+   CoapOption {
+    number = coap-opt-observe,
+    value = coap-uint-bytes seq
+   }
+
 Page 1

@@ -1,0 +1,78 @@
+Chapter: SerialLineTest
+
+  cites Foreword chapter SerialLine
+
+ Exercise the serial-line HAL: RS485 half-duplex direction discipline,
+ RS232 full-duplex freedom, and the linear bus grant. Each scenario
+ returns a packed integer (tx * 100 + rx * 10 + faults) so one check
+ verifies transmit accounting, receive accounting, and fault counting
+ together. opening returns the count of passing checks.
+
+Section: Scenarios
+
+ RS485 half-duplex: the first transmit happens while receiving (a
+ fault, no bytes sent); after enabling the driver two transmits send
+ 5 bytes; a receive while driving is a fault; after disabling the
+ driver a receive takes 4 bytes. Expect tx=5, rx=4, faults=2 -> 542.
+
+  rs485-scenario : Integer
+  rs485-scenario =
+   let p0 = serial-open rs485-half-config
+   in let p1 = serial-transmit p0 [1, 2, 3]
+   in let p2 = serial-drive-enable p1
+   in let p3 = serial-transmit p2 [1, 2, 3]
+   in let p4 = serial-transmit p3 [4, 5]
+   in let p5 = serial-receive p4 4
+   in let p6 = serial-drive-disable p5
+   in let p7 = serial-receive p6 4
+   in serial-tx-bytes p7 * 100 + serial-rx-bytes p7 * 10 + serial-faults p7
+
+ RS232 is full-duplex: transmit and receive are always allowed
+ regardless of direction. Expect tx=2, rx=3, faults=0 -> 230.
+
+  rs232-scenario : Integer
+  rs232-scenario =
+   let p0 = serial-open rs232-config
+   in let p1 = serial-transmit p0 [1, 2]
+   in let p2 = serial-receive p1 3
+   in serial-tx-bytes p2 * 100 + serial-rx-bytes p2 * 10 + serial-faults p2
+
+ RS485 full-duplex (four-wire) also imposes no direction constraint:
+ a transmit while still in receive succeeds. Expect tx=3.
+
+  rs485-full-scenario : Integer
+  rs485-full-scenario =
+   let p0 = serial-open rs485-full-config
+   in let p1 = serial-transmit p0 [1, 2, 3]
+   in serial-tx-bytes p1
+
+ Direction control: after enabling the driver the direction code is 1.
+
+  dir-scenario : Integer
+  dir-scenario =
+   let p0 = serial-open rs485-half-config
+   in let p1 = serial-drive-enable p0
+   in serial-direction-code p1
+
+ Linear bus grant: acquire, thread through two transmits, release
+ exactly once. The node id (7) survives the round trip.
+
+  bus-scenario : Integer
+  bus-scenario =
+   let g0 = serial-bus-acquire 7
+   in let g1 = serial-bus-transmit g0 [1, 2, 3]
+   in let g2 = serial-bus-transmit g1 [4, 5]
+   in serial-bus-release g2
+
+Section: Checks
+
+  flag : Boolean -> Integer
+  flag (b) = if b then 1 else 0
+
+  opening : Integer =
+   let a = flag (rs485-scenario == 542)
+   in let b = flag (rs232-scenario == 230)
+   in let c = flag (rs485-full-scenario == 3)
+   in let d = flag (dir-scenario == 1)
+   in let e = flag (bus-scenario == 7)
+   in a + b + c + d + e

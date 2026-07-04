@@ -1,0 +1,62 @@
+Chapter: Canopen
+
+ CANopen (CiA 301), the industrial-automation higher layer over CAN --
+ the factory and machine-tool counterpart to J1939. A message is
+ addressed by an 11-bit communication object identifier (COB-ID) that
+ combines a 4-bit function code with a 7-bit node id. This chapter builds
+ the COB-IDs, NMT network-management commands, expedited SDO downloads
+ (object-dictionary writes), and the heartbeat.
+
+Section: Function Codes
+
+  co-fc-nmt : Integer = #0
+  co-fc-sync : Integer = #1
+  co-fc-emergency : Integer = #1
+  co-fc-time : Integer = #2
+  co-fc-tpdo1 : Integer = #3
+  co-fc-rpdo1 : Integer = #4
+  co-fc-sdo-tx : Integer = #B
+  co-fc-sdo-rx : Integer = #C
+  co-fc-heartbeat : Integer = #E
+
+Section: COB-ID
+
+  co-cob-id : Integer, Integer -> Integer
+  co-cob-id (function) (node) = bit-or (bit-shl function 7) node
+
+Section: NMT
+
+  co-nmt-start : Integer = #01
+  co-nmt-stop : Integer = #02
+  co-nmt-pre-operational : Integer = #80
+  co-nmt-reset-node : Integer = #81
+  co-nmt-reset-communication : Integer = #82
+
+  co-nmt-command : Integer, Integer -> List Integer
+  co-nmt-command (command) (node) = [command, node]
+
+Section: Heartbeat
+
+  co-state-boot : Integer = #00
+  co-state-stopped : Integer = #04
+  co-state-operational : Integer = #05
+  co-state-pre-operational : Integer = #7F
+
+  co-heartbeat : Integer -> List Integer
+  co-heartbeat (state) = [state]
+
+Section: SDO Expedited Download
+
+ An expedited SDO download writes up to four bytes into the object
+ dictionary in a single 8-byte frame. The command byte marks the
+ transfer expedited and size-indicated and encodes the number of
+ unused data bytes; the index is little-endian.
+
+  co-zeros : Integer, List Integer -> List Integer
+  co-zeros (n) (acc) = if n <= 0 then acc else co-zeros (n - 1) (list-push acc 0)
+
+  co-sdo-download-expedited : Integer, Integer, List Integer -> List Integer
+  co-sdo-download-expedited (index) (subindex) (data) =
+   let n = list-length data
+   in let command = bit-or #23 (bit-shl (4 - n) 2)
+   in [command, bit-and index 255, bit-and (bit-shru index 8) 255, subindex] & data & co-zeros (4 - n) []

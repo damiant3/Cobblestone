@@ -43,20 +43,29 @@ Section: Construction
 
 Section: Polling
 
-  raw-input-poll : RawInput -> RawInput
-  raw-input-poll (ri) =
-    let dummy = port-in-byte 96
-    in let sc = peek-byte is-kb-addr 0
+  raw-input-poll : RawInput -> [Device.Port] RawInput
+  raw-input-poll (ri) = act
+    dummy <- port-in-byte 96
+    sc <- ri-take-key
+    has-mouse <- port-in-byte #E4
+    btn <- if has-mouse > 0 then port-in-byte #E1 else 0
+    abs-x <- if has-mouse > 0 then port-in-16 #E2 else ri.ri-mx
+    abs-y <- if has-mouse > 0 then port-in-16 #E3 else ri.ri-my
+    ri-build ri sc btn abs-x abs-y
+  end
+
+  ri-take-key : Integer
+  ri-take-key =
+    let sc = peek-byte is-kb-addr 0
     in let ck = if sc /= 0 then poke-byte is-kb-addr 0 0 else 0
-    in let has-mouse = port-in-byte #E4
-    in let btn = if has-mouse > 0 then port-in-byte #E1 else 0
-    in let abs-x = if has-mouse > 0 then port-in-16 #E2 else ri.ri-mx
-    in let abs-y = if has-mouse > 0 then port-in-16 #E3 else ri.ri-my
-    in let mx = ri-clamp abs-x 0 (ri.ri-max-x)
-    in let my = ri-clamp abs-y 0 (ri.ri-max-y)
     in let ignore = ck
-    in RawInput {
-      ri-mx = mx, ri-my = my,
+    in sc
+
+  ri-build : RawInput, Integer, Integer, Integer, Integer -> RawInput
+  ri-build (ri) (sc) (btn) (abs-x) (abs-y) =
+    RawInput {
+      ri-mx = ri-clamp abs-x 0 (ri.ri-max-x),
+      ri-my = ri-clamp abs-y 0 (ri.ri-max-y),
       ri-left = if bit-and btn 1 > 0 then 1 else 0,
       ri-right = if bit-and btn 2 > 0 then 1 else 0,
       ri-middle = if bit-and btn 4 > 0 then 1 else 0,

@@ -38,12 +38,24 @@ Built solo by one human in collaboration with a fleet of AI agents, in
 
 ## Verified
 
-As of 2026-07-01:
+As of 2026-07-04:
 
 - **CDX fixed point**: pingpong all phases green — text round-trip
   (stage1 === stage2) + CDX fixed-point (stage1.cdx === stage2.cdx),
   byte-identical. The compiler reproduces itself on bare metal.
-- **508 library modules** (371 foreword + 137 OS/kernel) across 28 quires: data structures, crypto,
+- **Safety claims are compiler-enforced, not aspirational**: the
+  "by-construction" promises are now compile errors. Effect rows are
+  first-class inferred data enforced at every boundary (CDX2031/2033/
+  2090/2092/2094); linear ownership follows through moves, call
+  boundaries, captures, and containers with all nine laundering routes
+  closed (CDX2061/2063/2065/2066/2067); bounded-integer parameters and
+  returns are statically and dynamically checked at the function boundary
+  (CDX2050/2051/2053, self-host CDX2051 count driven to zero); hardware
+  access carries `Device.Port`/`Device.Block`/`Device.Mmio` capability
+  effects. Each was landed by writing the program that *should* be
+  rejected, confirming the hole, then closing it and pinning the
+  rejection as a `.failing` test.
+- **533 library modules** (396 foreword + 137 OS) across 28 quires: data structures, crypto,
   networking (full TCP/IP + UDP/ICMP/DNS/DHCP/NTP/Syslog/TFTP), game
   engine (A*, hex maps, ECS, physics, Voronoi, Perlin), 3D engine
   (renderer, scene graph, LOD, culling, materials, skinning, audio,
@@ -87,9 +99,12 @@ As of 2026-07-01:
   startup via SIPI), work-stealing scheduler, per-core heap isolation,
   and IPI + lock-free channels for cross-core communication. codex-vm
   supports `-smp N` flag for multi-core guests.
-- **Cross-architecture test parity**: ARM64 135/135 and RISC-V 135/135
-  verified tests on Renode (Cortex-A53 / RV64GC cycle-accurate simulation)
-  -- 100% match with the x86-64 battery on both. Tests cover arithmetic,
+- **Cross-architecture test parity**: ARM64 135/135 verified tests on
+  Renode (Cortex-A53 cycle-accurate simulation) -- 100% match with the
+  x86-64 battery. RISC-V (RV64GC) is at ~132 on the committed Renode
+  board after a plug-repair campaign (boot stack pointer, string-literal
+  drop, register-allocation lifetime bugs); parity work is ongoing. The
+  battery now runs on both Renode and QEMU and they agree. Tests cover arithmetic,
   crypto, collections, TrueType font rendering, HTTP request/response
   parsing, effect handlers, pattern matching, closures, vectors, mutable
   records, and all foreword modules. Full battery:
@@ -209,7 +224,7 @@ As of 2026-07-01:
 - **For-expressions**: `for x in xs do f x` syntactic sugar for map
   loops. Desugars to `list-map` with a lambda. Dogfooded across ~50
   call sites in 19 files.
-- **Sample battery**: ~207 tests; 207 pass, 0 fail --
+- **Sample battery**: 294 tests; 294 pass, 0 fail, 15 skip --
   run against stage1, the self-applied compiler. BVT mode: 24-test
   subset, full build in ~130s.
 - **Native-class codegen**: three parallel optimization campaigns across
@@ -225,7 +240,7 @@ As of 2026-07-01:
   Controlling/Sales/Production/Maintenance/Quality/Warehouse/Projects/
   BW plus Real Estate, Banking, Insurance, Utilities, and Healthcare
   verticals.
-- **60 apps (27/27 web apps building clean)** -- see Applications below.
+- **57 apps (27/27 web apps building clean)** -- see Applications below.
 - **Codex.Spark creative suite**: 85-module application (3D modeling,
   image editor, animation, audio/DAW, video compositor, skeletal
   animation, particles, procedural noise, interactive UI shell) running
@@ -247,18 +262,21 @@ As of 2026-07-01:
 
 The compiler is a hard fixed point of itself on bare metal.
 
-**`seed/Codex.cdx`** (1,967,194 bytes, ~1.88 MB) — the canonical seed:
+**`seed/Codex.cdx`** (2,068,576 bytes, ~1.97 MB) — the canonical seed:
 
 | Algorithm | Digest |
 |---|---|
-| Content hash prefix | `3D7787D0` |
-| SHA-256 | `3D7787D09331142192E9D0D5FF91C53C3158D9A9EEDD634EDE39CC3885908544` |
+| Content hash prefix | `8E4B20BD` |
+| SHA-256 | `8CA1E63BA4DEE7F7CA80821C490A7EE625E03A425345669E558FE29D70ABABF1` |
 
 The seed grew from ~1.83 MB to ~1.88 MB on 2026-07-01, absorbing the
 CCE output boundary (tier0/1/2 UTF-8 conversion), the proof infrastructure
 (induction, normalizer, app-cong), and val's syntax cleanup (removed ++
 operator, chained arrows, vestigial tokens). The seed now carries full
-Unicode output support and machine-checked proof verification.
+Unicode output support and machine-checked proof verification. By
+2026-07-04 it reached ~1.97 MB as the by-construction safety campaign
+landed (effect rows, linear ownership, bounded signatures, capability
+effects) along with the industrial IoT protocol library.
 
 **`seed/Codex.img`** (8,388,608 bytes) — bootable GPT disk image:
 
@@ -801,7 +819,8 @@ Codex targets the IoT market as the first platform where the compiler
 proves firmware meets EU Cyber Resilience Act requirements by
 construction. The IoT stack is orthogonal to the cross-architecture
 codegen plugs — it runs on the hosted VM today and cross-compiles to
-real hardware via the ARM64 (100% test parity) and RISC-V (92%) backends.
+real hardware via the ARM64 (100% test parity) and RISC-V (~132 on the
+committed Renode board, repair campaign ongoing) backends.
 
 ### Board Drivers
 
@@ -832,6 +851,19 @@ Full details: `docs/TinkersToolbox.md`.
 | **CoAP (RFC 7252)** | `codex/foreword/encode/Coap.codex` | Implemented | GET, POST, PUT, DELETE, ACK, 13 content-formats, option encoding with delta/length nibbles. Test: PASS (6). |
 | **LwM2M** | `codex/foreword/encode/Lwm2m.codex` | Implemented | Object/resource IDs (Device/3, Firmware/5, Temperature/3303), TLV encoding, registration, URI builders. Test: PASS (9). |
 | **OTA Update** | `codex/foreword/core/OtaUpdate.codex` | Implemented | Two-gate verification (Gate A streaming, Gate B 5-phase), A/B boot slots, anti-rollback, abort/rollback state machine. Test: PASS (11, 6 paths). |
+
+Beyond the core four, the encode quire now carries a broad industrial-
+and building-automation protocol library, each a leaf module with
+byte-exact known-answer tests against an independent reference encoder:
+**Modbus** (RTU/TCP/ASCII), **DNP3**, **BACnet/IP**, **KNX**, **J1939**
+(CAN), **CANopen**, **M-Bus**, **OPC UA** (SecureConversation),
+**IEC 104**, **EtherNet/IP**, **S7comm**, **Melsec**, **FINS**,
+**GOOSE**, **HART**, **LoRaWAN** (uplink + OTAA join + downlink),
+**Zigbee**, **IEEE 802.15.4**, **6LoWPAN**, **BLE ATT/GATT**,
+**MQTT-SN**, **Sparkplug B** (float/double via IEEE-754 bitcast),
+**SNTP**, and **AES-CMAC**. A RS485/RS232 SerialLine HAL models the
+half-duplex bus grant as a linear token released exactly once — a shared-
+bus violation is a compile error, not a runtime fault.
 
 ### EU Compliance (CRA / ETSI / NIST)
 
@@ -892,8 +924,8 @@ in 18 seconds.
 | BVT (16 tests) | 18s |
 | **Total** | **~140s** |
 
-The seed is a 1.83 MB CDX binary (content hash
-`A403ED8A264FA5781D5D74BBDB0A71468722E95808FE2F44923FDEC9B92E76FF`).
+The seed is a 1.97 MB CDX binary (content hash
+`8E4B20BDE30D72446E29D5B07B6CB62DAC459A6176938DEE001AD0080D148F73`).
 The compiler is a hard fixed point of itself -- the output of
 self-compilation compiled by itself is byte-identical to itself.
 
@@ -937,7 +969,8 @@ gcd beats C /Od and closes on /O2 (frame overhead is the
 remaining gap). On ARM64 and RISC-V, all four benchmarks meet or
 beat GCC -O0 -- fact and sum beat GCC on both cross-targets.
 ARM64 passes 135/135 cross-architecture tests (100% parity with
-x86-64); RISC-V passes 122/133 (92%).
+x86-64); RISC-V is at ~132 on the committed Renode board with a
+plug-repair campaign ongoing.
 
 ---
 
@@ -1012,21 +1045,21 @@ characters requires the updated compiler.
 ## Library Quires
 
 Code outside the compiler is organized into **28 quires** (library namespaces)
-with **507 library modules** (360 foreword + 147 OS); the depot includes the 54-file compiler, 134 plug files, and 57 applications:
+with **533 library modules** (396 foreword + 137 OS); the depot includes the 54-file compiler, 143 plug files, and 57 applications:
 
 | Quire | Directory | Count | Highlights |
 |-------|-----------|------:|------------|
-| **Foreword** | `codex/foreword/core/` | 106 | Hamt, Sort, PriorityQueue, Trie, LruCache, UnionFind, Graph, B+Tree, Deque, Rope, IntervalTree, ConsistentHash, BloomFilter, Regex, DateTime, Ed25519, SHA-256/512, CCE, MathLib, Path, Format, Hkdf, NumberTheory, Probability, Locale |
+| **Foreword** | `codex/foreword/core/` | 111 | Hamt, Sort, PriorityQueue, Trie, LruCache, UnionFind, Graph, B+Tree, Deque, Rope, IntervalTree, ConsistentHash, BloomFilter, Regex, DateTime, Ed25519, SHA-256/512, Cmac, CCE, MathLib, Path, Format, Hkdf, NumberTheory, Probability, Locale, SerialLine |
 | **Game** | `codex/foreword/game/` | 26 | A*, Dijkstra, DiamondSquare, HexMap, Voronoi, FloodFill, Octree, Quadtree, Bresenham, CellularAutomata, ECS, StateMachine, Tween, TileMap, CardDeck, Rasterizer, Sprite, Scene2D, Color, Raytracer, Klondike, Camera |
-| **AI** | `codex/foreword/ai/` | 19 | Tensor, NeuralNet, Transformer, GGUF, SparseLattice, KNN, DecisionTree, GeneticAlgorithm, Tokenizer, KvCache, Sampling, Optimizer, Attention, Embedding, Loss, DiffusionScheduler |
-| **UI** | `codex/foreword/ui/` | 28 | Theme (3 built-in), Widget, Layout, Render, Surface, Event, Binding, Animation, Icon (5 sizes), Overlay, Sound, Font (CCE), Cursor, Scroll, Focus, Dialog, Orchestrator, Selection, TextField, Clipboard, RichText, Charts, Accessibility |
+| **AI** | `codex/foreword/ai/` | 43 | Tensor, NeuralNet, Transformer, GGUF, SparseLattice, KNN, DecisionTree, GeneticAlgorithm, Tokenizer, KvCache, Sampling, Optimizer, Attention, Embedding, Loss, DiffusionScheduler |
+| **UI** | `codex/foreword/ui/` | 47 | Theme (3 built-in), Widget, Layout, Render, Surface, Event, Binding, Animation, Icon (5 sizes), Overlay, Sound, Font (CCE), Cursor, Scroll, Focus, Dialog, Orchestrator, Selection, TextField, Clipboard, RichText, Charts, Accessibility |
 | **Signal** | `codex/foreword/signal/` | 14 | FFT, Perlin, Convolution, ADSR Envelope, Resample, Wavelet, Pitch |
 | **Compress** | `codex/foreword/compress/` | 8 | LZ77, Huffman, RLE, Deflate, Gzip, Lz4, Zstd, Brotli |
-| **Encode** | `codex/foreword/encode/` | 35 | JSON, Base64, Hex, URI, UUID, CSV, CRC32, Protobuf, Toml, Cbor, Yaml, MessagePack, Bencode, GrayCode, Mqtt, Coap, Lwm2m |
+| **Encode** | `codex/foreword/encode/` | 63 | JSON, Base64, Hex, URI, UUID, CSV, CRC32, Protobuf, Toml, Cbor, Yaml, MessagePack, Bencode, GrayCode, JWT, image/audio/video codecs (PNG, JPEG, GIF, WAV, MP3, MP4, ...), and a full IoT/industrial protocol suite (Mqtt, MqttSn, Coap, Lwm2m, Modbus, Dnp3, Bacnet, Knx, J1939, Canopen, Mbus, OpcUa, Iec104, Enip, S7comm, Zigbee, Ieee802154, Sixlowpan, BleAtt, Lorawan, Sparkplug, Sntp) |
 | **Math** | `codex/foreword/math/` | 12 | Quaternion, Matrix4, Bezier, CORDIC, Complex, Spline, Geodesic, LinearAlgebra, Numeric, Decimal |
 | **Sim** | `codex/foreword/sim/` | 7 | Verlet Physics, Collision, ParticleSystem, Steering, SpatialHash |
 | **Punctual** | `codex/foreword/punctual/` | 8 | IntOps, BitOps, Saturate, FastMath, Trig, ColorOps, Kinematic, Endian — every function is `punctual` (no heap, no recursion, bounded instruction count) |
-| **Engine** | `codex/foreword/engine/` | 21 | Renderer3D, Scene3D, Material, Texture, Mesh, Skinning, LOD, Culling, PostProcess, Audio3D, AudioBus, Input, GameLoop, GameplayTags, AbilitySystem, Signal, DebugDraw, TimeOfDay, AssetTable, EdgeMesh, HelmBridge |
+| **Engine** | `codex/foreword/engine/` | 42 | Renderer3D, Scene3D, Material, Texture, Mesh, Skinning, LOD, Culling, PostProcess, Audio3D, AudioBus, Input, GameLoop, GameplayTags, AbilitySystem, Signal, DebugDraw, TimeOfDay, AssetTable, EdgeMesh, HelmBridge, NavMesh, Terrain, Water, Fog, ClothSim, SoftBody, HairSim |
 | **GPU** | `codex/foreword/gpu/` | 10 | Warp primitives, shared memory, atomics, math intrinsics, kernel verifier, vecadd end-to-end test |
 | **Boards** | `codex/foreword/boards/` | 38 | STM32F4, ESP32-C6, RPi4, nRF52840, RP2040, nRF9160, STM32L4, FE310, QEMU virt — register-level HAL drivers |
 | **Net** | `codex/os/net/` | 16 | Ethernet, ARP, IPv4, TCP, UDP, ICMP, DNS, DHCP, NTP, Syslog, TFTP, HttpClient, Tls (AesGcm + X25519) |
@@ -1072,7 +1105,7 @@ codex/
     verify/               Verification — 5-phase CDX verifier (5 modules)
   plugs/                  Plug architecture — IR-text-driven emitters
   test/                   Compiler samples + OS integration tests (742 tests)
-apps/                     47 applications, 630 modules (see Applications)
+apps/                     57 applications, 767 modules (see Applications)
   works/                  Console, agents, VM tools, first boot (54 modules)
   games/                  CodexMagic — card platform, classic games, web portal (128 modules)
   spark/                  Codex.Spark — 3D, CAD, image, animation, audio, video (89 modules)
@@ -1130,6 +1163,8 @@ old/                      Retired C# reference compiler — historical only
 | **Update 25** | **Seed 2.30 MB, 425 library modules across 28 quires (added gpu, boards). VM default 8 GB RAM. Public push.** | **2026-06-18** |
 | **GUI OS + cross-arch** | **GUI shell on bare metal (GuiShell compositor, 7 apps, MutWheel state scheduler, multi-monitor 640x480-1024x768). TrueType font engine (14 CC0 fonts, 4x4 AA). 27 keyboard layouts. ARM64 62 Renode tests, RISC-V 44 Renode tests. All 52 plugs building, 27/27 web apps building, 507 library modules. Mutable records merged. SMP-aware GUI rendering.** | **2026-06-22** |
 | **ARM64 full parity** | **ARM64 backend reaches 135/135 verified cross-tests (100% match with x86-64 battery). Three codegen bugs fixed: record constructor heap corruption (spill-slot register encoding wrap), boot stub EL3/EL1 compatibility, unicode-bytes-to-text byte stride. RISC-V at 122/133 (92%). QEMU aarch64 boot enabled. HTTP request/response round-trip test on ARM64. f64 GPU kernels.** | **2026-06-26** |
+| **Machine-checked proofs** | **`reverse (reverse xs) === xs` proved by structural induction: definitional-equality normalizer (delta/iota/beta), `forall`/`induction` AST nodes, per-constructor subgoals, N-ary + function-position congruence, applicable lemmas, capture-avoiding substitution. All proofs erase at emit. CCE output boundary completes full UTF-8 (tiers 0-2).** | **2026-07-01** |
+| **The Vision Check** | **The by-construction safety claims become compiler errors: effect rows enforced at every boundary, linear ownership through moves/boundaries/captures (nine laundering routes closed), bounded-integer signatures checked statically + dynamically (self-host CDX2051 -> 0), hardware-access capability effects (Device.Port/Block/Mmio), tightened punctual real-time walk. Every binary now carries a derived capability manifest — effects and covering capabilities read from the program's own type, inside the signed content — so the verifier's capability and effect phases judge real data. Industrial IoT protocol suite (Modbus/DNP3/BACnet/OPC UA/LoRaWAN/Zigbee/... + AES-CMAC). RealBitcast intrinsics. RISC-V plug repair 0 -> 132 on the committed board; `build.ps1` gains a plug-binary backend gate.** | **2026-07-04** |
 
 Full detailed milestone history: [docs/PM/Milestones.md](docs/PM/Milestones.md)
 

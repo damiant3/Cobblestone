@@ -1,0 +1,75 @@
+Chapter: Melsec
+
+ MELSEC Communication (MC) protocol, the messaging that Mitsubishi
+ SIMATIC-class PLCs (MELSEC-Q/L/iQ-R, and SLMP-compatible devices)
+ speak on the factory floor -- the Mitsubishi counterpart to Rockwell's
+ EtherNet/IP and Siemens' S7comm. This encodes the 3E binary request
+ frame: a fixed subheader and access route, a request data length, a
+ CPU monitoring timer, a command and subcommand, and device data. A
+ device is a head number, a device code, and a point count. All
+ multi-octet fields are little-endian. Each builder returns a
+ List Integer.
+
+ The request data length counts the monitoring timer, command,
+ subcommand, and device data -- everything after the length field.
+
+Section: Byte Helpers
+
+  melsec-u16-le : Integer -> List Integer
+  melsec-u16-le (v) = [bit-and v 255, bit-and (bit-shru v 8) 255]
+
+  melsec-u24-le : Integer -> List Integer
+  melsec-u24-le (v) =
+   [bit-and v 255, bit-and (bit-shru v 8) 255, bit-and (bit-shru v 16) 255]
+
+Section: Commands and Devices
+
+  melsec-cmd-batch-read : Integer = #0401
+  melsec-cmd-batch-write : Integer = #1401
+  melsec-sub-word : Integer = #0000
+  melsec-sub-bit : Integer = #0001
+
+  melsec-dev-d : Integer = #A8
+  melsec-dev-m : Integer = #90
+  melsec-dev-x : Integer = #9C
+  melsec-dev-y : Integer = #9D
+  melsec-dev-w : Integer = #B4
+  melsec-dev-r : Integer = #AF
+
+Section: Request Frame
+
+ The 3E binary request opens with subheader 0x5000, a network number
+ (0 for the own network), a PC number (0xFF for the own station), the
+ request destination module I/O (0x03FF) and station (0), then the data
+ length and the body. The monitoring timer 0x0010 is the common default.
+
+  melsec-request : Integer, Integer, List Integer -> List Integer
+  melsec-request (command) (subcommand) (payload) =
+   let body = melsec-u16-le #0010 & melsec-u16-le command & melsec-u16-le subcommand & payload
+   in [#50, #00, #00, #FF] & melsec-u16-le #03FF & [#00] & melsec-u16-le (list-length body) & body
+
+Section: Device Access
+
+ A device is addressed by a three-octet head number, a one-octet device
+ code (0xA8 for a data register D, 0x90 for an internal relay M), and a
+ two-octet point count.
+
+  melsec-device : Integer, Integer, Integer -> List Integer
+  melsec-device (dev-code) (head) (count) =
+   melsec-u24-le head & [dev-code] & melsec-u16-le count
+
+  melsec-words-le : List Integer -> List Integer
+  melsec-words-le (words) = melsec-words-loop words 0 (list-length words) []
+
+  melsec-words-loop : List Integer, Integer, Integer, List Integer -> List Integer
+  melsec-words-loop (words) (i) (len) (acc) =
+   if i >= len then acc
+   else melsec-words-loop words (i + 1) len (acc & melsec-u16-le (list-at words i))
+
+  melsec-batch-read-words : Integer, Integer, Integer -> List Integer
+  melsec-batch-read-words (dev-code) (head) (count) =
+   melsec-request melsec-cmd-batch-read melsec-sub-word (melsec-device dev-code head count)
+
+  melsec-batch-write-words : Integer, Integer, List Integer -> List Integer
+  melsec-batch-write-words (dev-code) (head) (words) =
+   melsec-request melsec-cmd-batch-write melsec-sub-word (melsec-device dev-code head (list-length words) & melsec-words-le words)

@@ -43,10 +43,15 @@ Section: BPB Parsing
   fat16-read-u32 (buf) (off) =
     bit-or (fat16-read-u16 buf off) (bit-shl (fat16-read-u16 buf (off + 2)) 16)
 
-  fat16-init : Integer -> Fat16Volume
-  fat16-init (part-start) =
-    let buf = block-read-sector part-start
-    in let bps = fat16-read-u16 buf 11
+  fat16-init : Integer -> [Device.Block] Fat16Volume
+  fat16-init (part-start) = act
+    buf <- block-read-sector part-start
+    fat16-parse-bpb part-start buf
+  end
+
+  fat16-parse-bpb : Integer, Integer -> Fat16Volume
+  fat16-parse-bpb (part-start) (buf) =
+    let bps = fat16-read-u16 buf 11
     in let spc = peek-byte buf 13
     in let reserved = fat16-read-u16 buf 14
     in let nfats = peek-byte buf 16
@@ -71,13 +76,11 @@ Section: BPB Parsing
 
 Section: FAT Chain
 
-  fat16-next-cluster : Fat16Volume, Integer -> Integer
-  fat16-next-cluster (vol) (cluster) =
-    let byte-off = cluster * 2
-    in let sector = (vol.vol-fat-start) + byte-off / (vol.vol-bytes-per-sector)
-    in let off = byte-off - (byte-off / (vol.vol-bytes-per-sector)) * (vol.vol-bytes-per-sector)
-    in let buf = block-read-sector sector
-    in fat16-read-u16 buf off
+  fat16-next-cluster : Fat16Volume, Integer -> [Device.Block] Integer
+  fat16-next-cluster (vol) (cluster) = act
+    buf <- block-read-sector ((vol.vol-fat-start) + (cluster * 2) / (vol.vol-bytes-per-sector))
+    fat16-read-u16 buf (int-mod (cluster * 2) (vol.vol-bytes-per-sector))
+  end
 
   fat16-is-end : Integer -> Boolean
   fat16-is-end (cluster) = cluster >= 65528
@@ -133,19 +136,24 @@ Section: Directory Reading
 
 Section: Root Directory Search
 
-  fat16-find-in-root : Fat16Volume, Text -> Maybe Fat16DirEntry
+  fat16-find-in-root : Fat16Volume, Text -> [Device.Block] Maybe Fat16DirEntry
   fat16-find-in-root (vol) (name) =
     let root-sectors = ((vol.vol-root-entry-count) * 32 + (vol.vol-bytes-per-sector) - 1) / (vol.vol-bytes-per-sector)
     in fat16-scan-root-sectors vol name (vol.vol-root-start) root-sectors 0
 
-  fat16-scan-root-sectors : Fat16Volume, Text, Integer, Integer, Integer -> Maybe Fat16DirEntry
+  fat16-scan-root-sectors : Fat16Volume, Text, Integer, Integer, Integer -> [Device.Block] Maybe Fat16DirEntry
   fat16-scan-root-sectors (vol) (name) (sector) (remaining) (entries-checked) =
     if remaining == 0 then None
     else if entries-checked >= (vol.vol-root-entry-count) then None
-    else let buf = block-read-sector sector
-    in let entries-per-sector = (vol.vol-bytes-per-sector) / 32
-    in let result = fat16-scan-sector-entries buf name 0 entries-per-sector
-    in when result
+    else act
+      buf <- block-read-sector sector
+      fat16-scan-root-step vol name sector remaining entries-checked buf
+    end
+
+  fat16-scan-root-step : Fat16Volume, Text, Integer, Integer, Integer, Integer -> [Device.Block] Maybe Fat16DirEntry
+  fat16-scan-root-step (vol) (name) (sector) (remaining) (entries-checked) (buf) =
+    let entries-per-sector = (vol.vol-bytes-per-sector) / 32
+    in when fat16-scan-sector-entries buf name 0 entries-per-sector
       is Just (entry) -> Just entry
       is None -> fat16-scan-root-sectors vol name (sector + 1) (remaining - 1) (entries-checked + entries-per-sector)
 
@@ -164,24 +172,25 @@ Section: Root Directory Search
 
 Section: Cluster Directory Search
 
-  fat16-find-in-cluster-dir : Fat16Volume, Integer, Text -> Maybe Fat16DirEntry
+  fat16-find-in-cluster-dir : Fat16Volume, Integer, Text -> [Device.Block] Maybe Fat16DirEntry
   fat16-find-in-cluster-dir (vol) (cluster) (name) =
     if fat16-is-end cluster then None
-    else let sector = fat16-cluster-sector vol cluster
-    in let spc = vol.vol-sectors-per-cluster
-    in let result = fat16-scan-cluster-sectors vol name sector spc
-    in when result
+    else when fat16-scan-cluster-sectors vol name (fat16-cluster-sector vol cluster) (vol.vol-sectors-per-cluster)
       is Just (entry) -> Just entry
-      is None -> let next = fat16-next-cluster vol cluster
-        in fat16-find-in-cluster-dir vol next name
+      is None -> fat16-find-in-cluster-dir vol (fat16-next-cluster vol cluster) name
 
-  fat16-scan-cluster-sectors : Fat16Volume, Text, Integer, Integer -> Maybe Fat16DirEntry
+  fat16-scan-cluster-sectors : Fat16Volume, Text, Integer, Integer -> [Device.Block] Maybe Fat16DirEntry
   fat16-scan-cluster-sectors (vol) (name) (sector) (remaining) =
     if remaining == 0 then None
-    else let buf = block-read-sector sector
-    in let entries-per-sector = (vol.vol-bytes-per-sector) / 32
-    in let result = fat16-scan-sector-entries buf name 0 entries-per-sector
-    in when result
+    else act
+      buf <- block-read-sector sector
+      fat16-scan-cluster-step vol name sector remaining buf
+    end
+
+  fat16-scan-cluster-step : Fat16Volume, Text, Integer, Integer, Integer -> [Device.Block] Maybe Fat16DirEntry
+  fat16-scan-cluster-step (vol) (name) (sector) (remaining) (buf) =
+    let entries-per-sector = (vol.vol-bytes-per-sector) / 32
+    in when fat16-scan-sector-entries buf name 0 entries-per-sector
       is Just (entry) -> Just entry
       is None -> fat16-scan-cluster-sectors vol name (sector + 1) (remaining - 1)
 
@@ -200,18 +209,16 @@ Section: Path Resolution
     else let c = char-at s i
     in fat16-upper-loop s (i + 1) len (acc & char-to-text (to-upper c))
 
-  fat16-resolve-path : Fat16Volume, Text -> Maybe Fat16DirEntry
+  fat16-resolve-path : Fat16Volume, Text -> [Device.Block] Maybe Fat16DirEntry
   fat16-resolve-path (vol) (path) =
     let parts = fat16-split-path path
     in fat16-walk-path vol parts 0 (list-length parts)
 
-  fat16-walk-path : Fat16Volume, List Text, Integer, Integer -> Maybe Fat16DirEntry
+  fat16-walk-path : Fat16Volume, List Text, Integer, Integer -> [Device.Block] Maybe Fat16DirEntry
   fat16-walk-path (vol) (parts) (depth) (total) =
     if depth >= total then None
     else let name = list-at parts depth
-    in let found = if depth == 0 then fat16-find-in-root vol name
-       else None
-    in when found
+    in when (if depth == 0 then fat16-find-in-root vol name else None)
       is Just (entry) ->
         if depth == total - 1 then Just entry
         else if bit-and (entry.de-attr) 16 == 16
@@ -219,12 +226,11 @@ Section: Path Resolution
           else None
       is None -> None
 
-  fat16-walk-path-sub : Fat16Volume, List Text, Integer, Integer, Integer -> Maybe Fat16DirEntry
+  fat16-walk-path-sub : Fat16Volume, List Text, Integer, Integer, Integer -> [Device.Block] Maybe Fat16DirEntry
   fat16-walk-path-sub (vol) (parts) (depth) (total) (cluster) =
     if depth >= total then None
     else let name = list-at parts depth
-    in let found = fat16-find-in-cluster-dir vol cluster name
-    in when found
+    in when fat16-find-in-cluster-dir vol cluster name
       is Just (entry) ->
         if depth == total - 1 then Just entry
         else if bit-and (entry.de-attr) 16 == 16
@@ -245,13 +251,18 @@ Section: Path Resolution
 
 Section: File Reading
 
-  fat16-read-cluster-bytes : Fat16Volume, Integer, Integer, Integer, List Integer -> List Integer
+  fat16-read-cluster-bytes : Fat16Volume, Integer, Integer, Integer, List Integer -> [Device.Block] List Integer
   fat16-read-cluster-bytes (vol) (cluster) (remaining) (sector-off) (acc) =
     if remaining <= 0 then acc
     else if fat16-is-end cluster then acc
-    else let sector = fat16-cluster-sector vol cluster + sector-off
-    in let buf = block-read-sector sector
-    in let bytes-this = if remaining < (vol.vol-bytes-per-sector) then remaining else (vol.vol-bytes-per-sector)
+    else act
+      buf <- block-read-sector (fat16-cluster-sector vol cluster + sector-off)
+      fat16-read-cluster-step vol cluster remaining sector-off acc buf
+    end
+
+  fat16-read-cluster-step : Fat16Volume, Integer, Integer, Integer, List Integer, Integer -> [Device.Block] List Integer
+  fat16-read-cluster-step (vol) (cluster) (remaining) (sector-off) (acc) (buf) =
+    let bytes-this = if remaining < (vol.vol-bytes-per-sector) then remaining else (vol.vol-bytes-per-sector)
     in let acc2 = fat16-copy-bytes buf 0 bytes-this acc
     in let next-sector-off = sector-off + 1
     in if next-sector-off >= (vol.vol-sectors-per-cluster)
@@ -263,7 +274,7 @@ Section: File Reading
     if count <= 0 then acc
     else fat16-copy-bytes buf (off + 1) (count - 1) (list-push acc (peek-byte buf off))
 
-  fat16-read-bytes : Fat16Volume, Text -> Maybe (List Integer)
+  fat16-read-bytes : Fat16Volume, Text -> [Device.Block] Maybe (List Integer)
   fat16-read-bytes (vol) (path) =
     when fat16-resolve-path vol path
       is Just (entry) -> Just (fat16-read-cluster-bytes vol (entry.de-cluster) (entry.de-size) 0 [])
@@ -274,13 +285,13 @@ Section: File Reading
     if i >= len then acc
     else fat16-bytes-to-text bs (i + 1) len (acc & char-to-text (code-to-char (list-at bs i)))
 
-  fat16-read-text : Fat16Volume, Text -> Maybe Text
+  fat16-read-text : Fat16Volume, Text -> [Device.Block] Maybe Text
   fat16-read-text (vol) (path) =
     when fat16-read-bytes vol path
       is Just (bs) -> Just (fat16-bytes-to-text bs 0 (list-length bs) "")
       is None -> None
 
-  fat16-file-exists : Fat16Volume, Text -> Boolean
+  fat16-file-exists : Fat16Volume, Text -> [Device.Block] Boolean
   fat16-file-exists (vol) (path) =
     when fat16-resolve-path vol path
       is Just (entry) -> True
@@ -288,19 +299,24 @@ Section: File Reading
 
 Section: Root Listing
 
-  fat16-list-root : Fat16Volume -> List Text
+  fat16-list-root : Fat16Volume -> [Device.Block] List Text
   fat16-list-root (vol) =
     let root-sectors = ((vol.vol-root-entry-count) * 32 + (vol.vol-bytes-per-sector) - 1) / (vol.vol-bytes-per-sector)
     in fat16-list-root-sectors vol (vol.vol-root-start) root-sectors 0 []
 
-  fat16-list-root-sectors : Fat16Volume, Integer, Integer, Integer, List Text -> List Text
+  fat16-list-root-sectors : Fat16Volume, Integer, Integer, Integer, List Text -> [Device.Block] List Text
   fat16-list-root-sectors (vol) (sector) (remaining) (entries-checked) (acc) =
     if remaining == 0 then acc
     else if entries-checked >= (vol.vol-root-entry-count) then acc
-    else let buf = block-read-sector sector
-    in let entries-per-sector = (vol.vol-bytes-per-sector) / 32
-    in let acc2 = fat16-list-sector-entries buf 0 entries-per-sector acc
-    in fat16-list-root-sectors vol (sector + 1) (remaining - 1) (entries-checked + entries-per-sector) acc2
+    else act
+      buf <- block-read-sector sector
+      fat16-list-root-step vol sector remaining entries-checked acc buf
+    end
+
+  fat16-list-root-step : Fat16Volume, Integer, Integer, Integer, List Text, Integer -> [Device.Block] List Text
+  fat16-list-root-step (vol) (sector) (remaining) (entries-checked) (acc) (buf) =
+    let entries-per-sector = (vol.vol-bytes-per-sector) / 32
+    in fat16-list-root-sectors vol (sector + 1) (remaining - 1) (entries-checked + entries-per-sector) (fat16-list-sector-entries buf 0 entries-per-sector acc)
 
   fat16-list-sector-entries : Integer, Integer, Integer, List Text -> List Text
   fat16-list-sector-entries (buf) (i) (count) (acc) =

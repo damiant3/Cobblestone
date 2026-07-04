@@ -1,0 +1,107 @@
+Chapter: IdeaServer
+  cites Ideas chapter IdeaWeb
+  cites Ideas chapter IdeaEngine
+  cites Net chapter WebServer
+  cites Net chapter NetIO
+  cites Net chapter TcpTransport
+  cites Net chapter NetworkStack
+  cites Net chapter Tcp
+  cites Works chapter Http
+  cites Foreword chapter CCE
+  cites Foreword chapter Tuple
+
+ The network shell. Listens on guest port 9200 and serves one
+ connection at a time, the pattern codex-vm port forwarding expects:
+ boot with -portfwd <host>:9200 and the VM injects a SYN toward the
+ guest listener for every host client that connects. IdeaState is
+ threaded across connections so reservations and the daily deal
+ survive from one customer to the next.
+
+ Caller identity for the per-caller daily deal: the X-Forwarded-For
+ header when a proxy supplies it, else the who query parameter, else
+ the shared name the-proxy. The service day is the PIT tick counter
+ divided into day-sized slices -- boot-relative, which is honest: the
+ house's day starts when the house opens.
+
+ We say:
+
+Section: Caller Identity and Day
+
+  resolve-who : List Integer, Text -> Text
+  resolve-who (raw) (path) =
+    let head-stop = http-find-blank-line raw 0 (list-length raw)
+    in let head = http-bytes-to-text raw 0 head-stop
+    in let fwd = header-value head "x-forwarded-for"
+    in if text-length fwd > 0 then fwd
+    else let q = query-param path "who"
+    in if text-length q > 0 then q
+    else "the-proxy"
+
+  tick-count-addr : Integer = 28672
+  ticks-per-day : Integer = 1572480
+
+  current-day : Integer -> Integer
+  current-day (x) =
+    let ticks = peek-byte tick-count-addr 0 + bit-shl (peek-byte tick-count-addr 1) 8 + bit-shl (peek-byte tick-count-addr 2) 16 + bit-shl (peek-byte tick-count-addr 3) 24
+    in ticks / ticks-per-day
+
+Section: Serve Loop
+
+ One connection per iteration: fresh listening transport, accept,
+ read the request, route, respond, close. The gateway MAC is seeded
+ into the ARP cache so the SYN-ACK reply never waits on resolution;
+ the address is the fixed NAT gateway MAC codex-vm presents.
+
+  nat-gw-mac : List Integer = [82, 85, 10, 0, 2, 2]
+
+  idea-fresh-transport : Integer -> TcpTransportState
+  idea-fresh-transport (x) =
+    let sess = net-session-new local-mac local-ip gateway-ip 9200 0 gateway-ip 1000
+    in let sess2 = set-arp sess (arp-cache-add (sess.arp) gateway-ip nat-gw-mac)
+    in transport-new sess2
+
+  ServeStep = record {
+   ideas : IdeaState,
+   diag : Text
+  }
+
+  idea-serve-one : IdeaState -> ServeStep
+  idea-serve-one (st) =
+    let ts = net-io-listen (idea-fresh-transport 0)
+    in let ts2 = net-io-accept ts 0
+    in when (ts2.session).conn.state
+      is TcpEstablished -> idea-handle-request st ts2
+      is otherwise -> ServeStep { ideas = st, diag = "no-conn" }
+
+  idea-handle-request : IdeaState, TcpTransportState -> ServeStep
+  idea-handle-request (st) (ts) =
+    let recv = net-io-recv-raw ts 0
+    in if recv.has-data then
+      let req = http-parse-request (recv.data)
+      in if req.valid == False then
+        let ts1 = net-io-close (web-send-http (recv.transport) (http-error "Bad request"))
+        in ServeStep { ideas = st, diag = "bad-request" }
+      else let who = resolve-who (recv.data) (req.path)
+      in let (st2, resp) = idea-route-at st who (current-day 0) req
+      in let ts1 = net-io-close (web-send-http (recv.transport) resp)
+      in ServeStep { ideas = st2, diag = req.path & " -> " & resp.status }
+    else let ts1 = net-io-close (recv.transport)
+    in ServeStep { ideas = st, diag = "no-data" }
+
+  idea-serve-loop : IdeaState, Integer -> [Console] Integer
+  idea-serve-loop (st) (count) = act
+    let r = idea-serve-one st
+    in act
+      print-line-uni ("serve " & show count & " " & r.diag)
+      idea-serve-loop (r.ideas) (count + 1)
+    end
+  end
+
+Section: Entry
+
+  opening : [Console] Nothing
+  opening = act
+    print-line-uni "idea-forge listening on guest port 9200 (boot with -portfwd <host>:9200)"
+    served <- idea-serve-loop idea-state-new 0
+    print-line-uni ("idea-forge closed after " & show served)
+  end

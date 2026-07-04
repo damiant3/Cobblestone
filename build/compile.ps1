@@ -35,6 +35,32 @@ $ErrorActionPreference = 'Stop'
 
 . (Join-Path $PSScriptRoot 'vm-config.ps1')
 
+# --- DynamicSurvey Phase 1: auto-retry on CDX9002 deck overflow ---
+# The compiler names the overflowing phase in the diagnostic ("Deck overflow
+# in CHECK; ..."). Map that phase to the survey multiplier that sizes its deck,
+# then escalate the override and retry rather than failing the compile.
+$phaseSurveyField = @{
+    'LEX' = 'lex-mul'; 'PARSE' = 'parse-mul'; 'PARSE-KEEP' = 'headroom';
+    'DESUGAR' = 'desugar-mul'; 'DESUGAR-KEEP' = 'headroom'; 'SCOPE' = 'scope-mul';
+    'CHECK' = 'check-mul'; 'LOWER' = 'lower-mul'; 'RESOLVE' = 'resolve-mul'; 'LIFT' = 'lift-mul'
+}
+# Mirrors codex/compiler/Core/BuildSettings.codex survey-*-mul / survey-headroom.
+# Only a starting point for escalation; doubling converges even if these drift.
+$surveyDefaultMul = @{
+    'lex-mul' = 40; 'parse-mul' = 265; 'desugar-mul' = 21; 'scope-mul' = 52; 'check-mul' = 400;
+    'check-unit-mul' = 296000; 'lower-mul' = 42200; 'resolve-mul' = 3600; 'lift-mul' = 7600; 'headroom' = 120
+}
+$surveyOverrides = @{}
+if ($Survey) {
+    foreach ($pair in ($Survey -split ',')) {
+        $kv = $pair -split ':', 2
+        if ($kv.Count -eq 2 -and $kv[1].Trim() -match '^\d+$') { $surveyOverrides[$kv[0].Trim()] = [int]$kv[1].Trim() }
+    }
+}
+function Get-SurveyString {
+    ($surveyOverrides.GetEnumerator() | Sort-Object Name | ForEach-Object { "$($_.Key):$($_.Value)" }) -join ','
+}
+
 $Stage0 = 'build-output\bare-metal\Codex.cdx'
 if (-not (Test-Path -PathType Leaf $Stage0)) {
     [Console]::Error.WriteLine("MISSING: $Stage0 - run build.ps1 first")
@@ -88,7 +114,13 @@ try {
         "error 3010: $($_.Exception.Message)" | Set-Content -Path $Log -Encoding UTF8
         exit 8
     }
-    if ($ordered.Count -gt 0) {
+    # Only warn when compiling a source that is meant to be a self-contained
+    # bundle: such a source carries embedded "Quire--Name" chapters (SeedSeen
+    # non-empty), so any chapter resolved from a cite that is NOT already in
+    # the bundle signals a genuine gap in the bundle. For a standalone test
+    # compile SeedSeen is empty and every cited chapter is legitimately
+    # resolved and prepended below (line ~115); warning there is stale noise.
+    if ($ordered.Count -gt 0 -and $seedSeen.Count -gt 0) {
         [Console]::Error.WriteLine("WARNING: compile.ps1 resolved $($ordered.Count) chapter(s) not in bundled source:")
         foreach ($extra in $ordered) {
             [Console]::Error.WriteLine("  $($extra.Quire)::$($extra.Name) ($($extra.Path))")
@@ -96,28 +128,33 @@ try {
         [Console]::Error.WriteLine("These chapters are cited by bundled code but missing from the app build script.")
         [Console]::Error.WriteLine("Add them to the build script's chapter list, or remove the cites.")
     }
-    $sb = [System.Text.StringBuilder]::new(524288)
+    # Mode header (base flags; the survey= suffix is applied per attempt so a
+    # CDX9002 auto-retry can raise a multiplier without rebuilding the body).
+    $baseMode = if ($IrUni) { "IR-UNI" } elseif ($IrCce) { "IR-CCE" } else { "CDX" }
+    if ($Prose) { $baseMode = "$baseMode prose" }
+    if ($Repl) { $baseMode = "$baseMode repl" }
+    if ($Poison) { $baseMode = "$baseMode poison" }
+    if ($PoisonCompact) { $baseMode = "$baseMode poison-compact" }
+    if ($DebugMode) { $baseMode = "$baseMode debug" }
+    if ($Profile) { $baseMode = "$baseMode profile" }
+    if ($Trace) { $baseMode = "$baseMode trace" }
+    if ($EscapeCheck) { $baseMode = "$baseMode escape-check" }
+    if ($Uefi) { $baseMode = "$baseMode uefi" }
 
-    # Mode header
-    $mode = if ($IrUni) { "IR-UNI" } elseif ($IrCce) { "IR-CCE" } else { "CDX" }
-    if ($Prose) { $mode = "$mode prose" }
-    if ($Repl) { $mode = "$mode repl" }
-    if ($Poison) { $mode = "$mode poison" }
-    if ($PoisonCompact) { $mode = "$mode poison-compact" }
-    if ($DebugMode) { $mode = "$mode debug" }
-    if ($Profile) { $mode = "$mode profile" }
-    if ($Trace) { $mode = "$mode trace" }
-    if ($EscapeCheck) { $mode = "$mode escape-check" }
-    if ($Uefi) { $mode = "$mode uefi" }
-    if ($Survey) { $mode = "$mode survey=$Survey" }
-    [void]$sb.Append("$mode`n")
-
-    foreach ($l in (Format-CiteChapters -Ordered $ordered)) { [void]$sb.Append($l + "`n") }
-    foreach ($line in $srcLines) { [void]$sb.Append($line + "`n") }
-    [void]$sb.Append([char]4)  # EOT
+    # Body: cited chapters + source + EOT. Constant across attempts.
+    $bodyBuilder = [System.Text.StringBuilder]::new(524288)
+    foreach ($l in (Format-CiteChapters -Ordered $ordered)) { [void]$bodyBuilder.Append($l + "`n") }
+    foreach ($line in $srcLines) { [void]$bodyBuilder.Append($line + "`n") }
+    [void]$bodyBuilder.Append([char]4)  # EOT
+    $bodyText = $bodyBuilder.ToString()
 
     $inputFile = [System.IO.Path]::GetTempFileName()
-    [System.IO.File]::WriteAllText($inputFile, $sb.ToString(), [System.Text.UTF8Encoding]::new($false))
+    function Write-CompileInput {
+        $sv = Get-SurveyString
+        $modeLine = if ($sv) { "$baseMode survey=$sv" } else { $baseMode }
+        [System.IO.File]::WriteAllText($inputFile, "$modeLine`n$bodyText", [System.Text.UTF8Encoding]::new($false))
+    }
+    Write-CompileInput
 
     $outputFile = [System.IO.Path]::GetTempFileName()
     $stderrFile = [System.IO.Path]::GetTempFileName()
@@ -126,6 +163,9 @@ try {
     $curMem = $MemMB
     $attempt = 0
     $maxAttempts = 2
+    $surveyRetries = 0
+    $maxSurveyRetries = 5
+    $surveyRetry = $false
     :compile_loop while ($attempt -lt $maxAttempts) {
     $attempt++
     if (Test-Path $outputFile) { [System.IO.File]::WriteAllBytes($outputFile, [byte[]]::new(0)) }
@@ -163,13 +203,31 @@ try {
             $binStart = $i + 1; break
         }
         if ($line.StartsWith('CODEGEN-HALTED') -or $line.StartsWith('CODEGEN-ERRORS')) {
-            Add-Content -Path $Log -Value $line -Encoding UTF8
+            $errLines = [System.Collections.Generic.List[string]]::new()
+            [void]$errLines.Add($line)
             for ($k = $i + 1; $k -lt $outLines.Count; $k++) {
                 $el = $outLines[$k].TrimEnd("`r")
                 if ($el -and -not $el.StartsWith('WD:') -and -not $el.StartsWith('HEAP:') -and -not $el.StartsWith('STACK:')) {
-                    Add-Content -Path $Log -Value $el -Encoding UTF8
+                    [void]$errLines.Add($el)
                 }
             }
+            # CDX9002 deck overflow is self-healing: raise the overflowing phase's
+            # survey multiplier and retry instead of failing.
+            $ovMatch = [regex]::Match(($errLines -join "`n"), 'Deck overflow in ([A-Za-z][A-Za-z-]*)')
+            if ($ovMatch.Success -and $surveyRetries -lt $maxSurveyRetries) {
+                $phase = $ovMatch.Groups[1].Value
+                $field = $phaseSurveyField[$phase]
+                if (-not $field) { $field = 'headroom' }
+                $cur = if ($surveyOverrides.ContainsKey($field)) { [Math]::Max($surveyOverrides[$field], $surveyDefaultMul[$field]) } else { $surveyDefaultMul[$field] }
+                $surveyOverrides[$field] = $cur * 2
+                $surveyRetries++
+                $maxAttempts++
+                [Console]::Error.WriteLine("  CDX9002 deck overflow in $phase, retrying with ${field}:$($surveyOverrides[$field]) (survey retry $surveyRetries/$maxSurveyRetries)")
+                Write-CompileInput
+                $surveyRetry = $true
+                break
+            }
+            foreach ($el in $errLines) { Add-Content -Path $Log -Value $el -Encoding UTF8 }
             exit 4
         }
         if ($line.StartsWith('!EXC')) {
@@ -258,6 +316,7 @@ try {
         }
         "Binary size mismatch" | Add-Content -Path $Log -Encoding UTF8; exit 5
     }
+    if ($surveyRetry) { $surveyRetry = $false; continue compile_loop }
     if ($hitExc) { continue compile_loop }
     exit 4
     } # end compile_loop

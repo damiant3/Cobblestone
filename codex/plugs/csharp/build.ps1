@@ -7,4 +7,4 @@ $ErrorActionPreference = 'Stop'
 
 . (Join-Path $PSScriptRoot '..' 'common' 'plug-build-lib.ps1')
 
-Build-TranspilerPlug -PlugDir $PSScriptRoot -PlugName 'csharp' -Chapters @('CSharpEmitter', 'CSharpEmitterExpressions', 'CSharpPlug')
+Build-TranspilerPlug -PlugDir $PSScriptRoot -PlugName 'csharp' -Chapters @('CsAst', 'CSharpEmitter', 'CSharpEmitterExpressions', 'CSharpPlug')

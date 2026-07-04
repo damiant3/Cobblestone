@@ -445,7 +445,8 @@ Section: Control Flow
     in let st2 = rv-bind-local (vr.state) name (vr.reg)
     in rv-emit-expr (rv-set-tail-pos st2 saved-tail) body
    else let loc = rv-alloc-local st0
-   in let st1 = rv-set-result-dest (loc.state) (loc.reg)
+   in let dest-reg = if loc.reg < rv-spill-base then loc.reg else 0 - 1
+   in let st1 = rv-set-result-dest (loc.state) dest-reg
    in let vr = rv-emit-expr st1 value
    in if vr.reg == loc.reg then
     let st2 = rv-bind-local (vr.state) name (loc.reg)
@@ -876,6 +877,10 @@ Section: Apply
    else if name == "real-to-int" & list-length args == 1 then rv-emit-real-to-int st (list-at args 0)
    else if name == "real-approx-from-int" & list-length args == 1 then rv-emit-real-approx-from-int st (list-at args 0)
    else if name == "real-approx-to-int" & list-length args == 1 then rv-emit-real-approx-to-int st (list-at args 0)
+   else if name == "real-to-bits" & list-length args == 1 then rv-emit-real-to-bits st (list-at args 0)
+   else if name == "bits-to-real" & list-length args == 1 then rv-emit-bits-to-real st (list-at args 0)
+   else if name == "real-approx-to-bits" & list-length args == 1 then rv-emit-real-approx-to-bits st (list-at args 0)
+   else if name == "bits-to-real-approx" & list-length args == 1 then rv-emit-bits-to-real-approx st (list-at args 0)
    else if name == "to-real-approx" & list-length args == 1 then rv-emit-to-real-approx st (list-at args 0)
    else if name == "from-real-approx" & list-length args == 1 then rv-emit-from-real-approx st (list-at args 0)
    else if name == "to-real-trapping" & list-length args == 1 then rv-emit-expr st (list-at args 0)
@@ -962,6 +967,7 @@ Section: Apply
    when e
     is IrName (n) (t) (s) -> True
     is IrIntLit (v) (s) -> True
+    is IrNumLit (v) (s) -> True
     is IrBoolLit (v) (s) -> True
     is IrCharLit (v) (s) -> True
     is IrBinary (op) (l) (r) (t) (s) ->
@@ -985,10 +991,7 @@ Section: Apply
 
   rv-emit-user-call : RvState, Text, List IRExpr -> RvEmitResult
   rv-emit-user-call (st) (name) (args) =
-   let checkpoint = st.next-local
-   in let res = rv-emit-user-call-inner st name args
-   in if rv-is-frameless-mode st then res
-   else RvEmitResult { state = __record-set (res.state) "next-local" checkpoint, reg = res.reg }
+   rv-emit-user-call-inner st name args
 
   rv-emit-user-call-inner : RvState, Text, List IRExpr -> RvEmitResult
   rv-emit-user-call-inner (st) (name) (args) =

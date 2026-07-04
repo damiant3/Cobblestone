@@ -1,0 +1,168 @@
+Chapter: OpcUa
+  cites Foreword chapter CCE
+
+ OPC UA (IEC 62541) binary encoding and the OPC UA Connection Protocol
+ (UACP) that carries it over TCP -- the vendor-neutral interoperability
+ standard at the heart of Industrie 4.0, bridging the fieldbus world
+ (Modbus, EtherNet/IP, S7) to IT systems. Every UACP message opens with
+ an eight-octet header: a three-character message type, a one-character
+ chunk marker, and a little-endian total size. The binary encoding is
+ little-endian; strings carry an Int32 length prefix (-1 for a null
+ string) followed by their UTF-8 bytes; node identifiers select a
+ compact form by an encoding octet. Each builder returns a List Integer.
+
+Section: Byte Helpers
+
+  opcua-u16-le : Integer -> List Integer
+  opcua-u16-le (v) = [bit-and v 255, bit-and (bit-shru v 8) 255]
+
+  opcua-u32-le : Integer -> List Integer
+  opcua-u32-le (v) =
+   [bit-and v 255, bit-and (bit-shru v 8) 255, bit-and (bit-shru v 16) 255, bit-and (bit-shru v 24) 255]
+
+Section: Built-in Types
+
+ A string is an Int32 byte-length followed by the bytes; the wire bytes
+ are the Unicode code points of each character, so char codes pass
+ through to-unicode. A null string encodes its length as -1, the
+ all-ones Int32.
+
+  opcua-text-bytes : Text, Integer, Integer, List Integer -> List Integer
+  opcua-text-bytes (s) (i) (len) (acc) =
+   if i >= len then acc
+   else opcua-text-bytes s (i + 1) len (list-push acc (to-unicode (char-code (char-at s i))))
+
+  opcua-string : Text -> List Integer
+  opcua-string (s) =
+   let bytes = opcua-text-bytes s 0 (text-length s) []
+   in opcua-u32-le (list-length bytes) & bytes
+
+  opcua-string-null : List Integer = [#FF, #FF, #FF, #FF]
+
+  opcua-boolean : Boolean -> List Integer
+  opcua-boolean (b) = if b then [1] else [0]
+
+Section: Node Identifiers
+
+ A two-byte node id carries a one-octet numeric identifier in namespace
+ zero. A four-byte id adds a one-octet namespace and a sixteen-bit
+ identifier. The numeric id uses a sixteen-bit namespace and a
+ thirty-two-bit identifier.
+
+  opcua-nodeid-twobyte : Integer -> List Integer
+  opcua-nodeid-twobyte (id) = [#00, id]
+
+  opcua-nodeid-fourbyte : Integer, Integer -> List Integer
+  opcua-nodeid-fourbyte (ns) (id) = [#01, ns] & opcua-u16-le id
+
+  opcua-nodeid-numeric : Integer, Integer -> List Integer
+  opcua-nodeid-numeric (ns) (id) = [#02] & opcua-u16-le ns & opcua-u32-le id
+
+Section: UACP Messages
+
+ The message type is three ASCII octets; the chunk marker is 'F' for a
+ final chunk, 'C' for an intermediate one, and 'A' to abort. HELLO
+ announces the client's buffer limits and endpoint URL; the server
+ replies with ACKNOWLEDGE carrying its own limits. The size field
+ counts the eight-octet header plus the body.
+
+  opcua-type-hel : List Integer = [72, 69, 76]
+  opcua-type-ack : List Integer = [65, 67, 75]
+  opcua-type-err : List Integer = [69, 82, 82]
+  opcua-type-msg : List Integer = [77, 83, 71]
+  opcua-type-opn : List Integer = [79, 80, 78]
+  opcua-type-clo : List Integer = [67, 76, 79]
+
+  opcua-chunk-final : Integer = 70
+  opcua-chunk-intermediate : Integer = 67
+  opcua-chunk-abort : Integer = 65
+
+  opcua-msg-header : List Integer, Integer, Integer -> List Integer
+  opcua-msg-header (type3) (chunk) (size) = type3 & [chunk] & opcua-u32-le size
+
+  opcua-hello : Integer, Integer, Integer, Integer, Integer, Text -> List Integer
+  opcua-hello (proto-ver) (recv-buf) (send-buf) (max-msg) (max-chunk) (endpoint) =
+   let body = opcua-u32-le proto-ver & opcua-u32-le recv-buf & opcua-u32-le send-buf & opcua-u32-le max-msg & opcua-u32-le max-chunk & opcua-string endpoint
+   in opcua-msg-header opcua-type-hel opcua-chunk-final (8 + list-length body) & body
+
+  opcua-ack : Integer, Integer, Integer, Integer, Integer -> List Integer
+  opcua-ack (proto-ver) (recv-buf) (send-buf) (max-msg) (max-chunk) =
+   let body = opcua-u32-le proto-ver & opcua-u32-le recv-buf & opcua-u32-le send-buf & opcua-u32-le max-msg & opcua-u32-le max-chunk
+   in opcua-msg-header opcua-type-ack opcua-chunk-final (8 + list-length body) & body
+
+Section: Wide and Signed Built-ins
+
+ A UInt64 is eight little-endian octets. A DateTime is an Int64 count of
+ one-hundred-nanosecond intervals since 1601-01-01, which serialises with
+ the same eight octets. A ByteString mirrors a String: an Int32
+ byte-length prefix followed by the raw octets, with an all-ones length
+ for a null ByteString. A null array likewise encodes its element count
+ as the all-ones Int32.
+
+  opcua-u64-le : Integer -> List Integer
+  opcua-u64-le (v) =
+   [bit-and v 255, bit-and (bit-shru v 8) 255, bit-and (bit-shru v 16) 255, bit-and (bit-shru v 24) 255, bit-and (bit-shru v 32) 255, bit-and (bit-shru v 40) 255, bit-and (bit-shru v 48) 255, bit-and (bit-shru v 56) 255]
+
+  opcua-datetime : Integer -> List Integer
+  opcua-datetime (ticks) = opcua-u64-le ticks
+
+  opcua-bytestring : List Integer -> List Integer
+  opcua-bytestring (bs) = opcua-u32-le (list-length bs) & bs
+
+  opcua-bytestring-null : List Integer = [#FF, #FF, #FF, #FF]
+
+  opcua-array-null : List Integer = [#FF, #FF, #FF, #FF]
+
+Section: Secure Conversation
+
+ A SecureChannel carries service messages inside chunks. An OpenSecureChannel
+ chunk opens with an asymmetric security header naming the security policy;
+ for the None policy the sender certificate and receiver thumbprint are both
+ null ByteStrings. Established MSG chunks use a symmetric header carrying only
+ the token id. Every chunk then carries a sequence header pairing a monotonic
+ sequence number with the request id. An ExtensionObject with no body encodes
+ a two-byte null node id and a zero encoding octet.
+
+  opcua-policy-none : Text = "http://opcfoundation.org/UA/SecurityPolicy#None"
+
+  opcua-asym-security-header-none : List Integer =
+   opcua-string opcua-policy-none & opcua-bytestring-null & opcua-bytestring-null
+
+  opcua-sequence-header : Integer, Integer -> List Integer
+  opcua-sequence-header (seq) (req-id) = opcua-u32-le seq & opcua-u32-le req-id
+
+  opcua-ext-object-null : List Integer = [#00, #00, #00]
+
+Section: Service Requests
+
+ Every service request begins with a RequestHeader: an authentication token
+ node id (a two-byte null id before a session exists), a DateTime timestamp,
+ a request handle, a return-diagnostics mask, a null audit-entry string, a
+ timeout hint, and a null additional-header ExtensionObject. A service body
+ is the request's DefaultBinary encoding node id followed by the struct
+ fields. OpenSecureChannelRequest (id 446) requests a channel with a protocol
+ version, a token request type, a message security mode, a null client nonce,
+ and a requested lifetime. GetEndpointsRequest (id 428) carries the endpoint
+ url and null locale and profile arrays.
+
+  opcua-request-header : List Integer, Integer, Integer, Integer, Integer -> List Integer
+  opcua-request-header (auth-token) (timestamp) (handle) (diag) (timeout) =
+   auth-token & opcua-datetime timestamp & opcua-u32-le handle & opcua-u32-le diag & opcua-string-null & opcua-u32-le timeout & opcua-ext-object-null
+
+  opcua-open-secure-channel-body : List Integer, Integer, Integer, Integer, Integer -> List Integer
+  opcua-open-secure-channel-body (req-header) (proto-ver) (req-type) (sec-mode) (lifetime) =
+   opcua-nodeid-fourbyte 0 446 & req-header & opcua-u32-le proto-ver & opcua-u32-le req-type & opcua-u32-le sec-mode & opcua-bytestring-null & opcua-u32-le lifetime
+
+  opcua-opn : Integer, Integer, Integer, List Integer -> List Integer
+  opcua-opn (chan) (seq) (req-id) (body) =
+   let framed = opcua-u32-le chan & opcua-asym-security-header-none & opcua-u32-le seq & opcua-u32-le req-id & body
+   in opcua-msg-header opcua-type-opn opcua-chunk-final (8 + list-length framed) & framed
+
+  opcua-get-endpoints-body : List Integer, Text -> List Integer
+  opcua-get-endpoints-body (req-header) (endpoint-url) =
+   opcua-nodeid-fourbyte 0 428 & req-header & opcua-string endpoint-url & opcua-array-null & opcua-array-null
+
+  opcua-msg : Integer, Integer, Integer, Integer, List Integer -> List Integer
+  opcua-msg (chan) (token) (seq) (req-id) (body) =
+   let framed = opcua-u32-le chan & opcua-u32-le token & opcua-u32-le seq & opcua-u32-le req-id & body
+   in opcua-msg-header opcua-type-msg opcua-chunk-final (8 + list-length framed) & framed

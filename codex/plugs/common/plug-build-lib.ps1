@@ -28,12 +28,25 @@ function Add-PlugChapter {
     param(
         [System.Collections.Generic.List[string]]$Lines,
         [string]$Path,
-        [string[]]$StripCites = @()
+        [string[]]$StripCites = @(),
+        [string]$Quire = ''
     )
+    # Prefix the chapter name with the plug's quire (e.g. Riscv--RiscVPlug) so the
+    # compiler's quire-based effect-exemption (TypeChecker quire-effect-exempt)
+    # recognizes plug code as trusted. Without the prefix slug-quire cannot map the
+    # chapter to its quire and CDX2031 (Device.Port effect) wrongly fires on the
+    # plug's own port-I/O serial output. Mirrors Resolve-PlugForewords' prefixing.
+    $renamed = $false
     foreach ($l in [System.IO.File]::ReadAllLines($Path)) {
         $skip = $false
         foreach ($sc in $StripCites) { if ($l -match "cites.*$sc") { $skip = $true } }
-        if (-not $skip) { $Lines.Add($l) }
+        if ($skip) { continue }
+        if ($Quire -and (-not $renamed) -and $l -match '^Chapter:\s*(.+?)\s*$') {
+            $Lines.Add("Chapter: $Quire--$($matches[1])")
+            $renamed = $true
+        } else {
+            $Lines.Add($l)
+        }
     }
     $Lines.Add(''); $Lines.Add('')
 }
@@ -123,11 +136,18 @@ function Build-TranspilerPlug {
     $logFile   = Join-Path $outDir 'build.log'
     New-Item -ItemType Directory -Force -Path $outDir | Out-Null
 
+    # The plug's own chapters are trusted low-level code (they do port-I/O for
+    # their serial wire protocol). Tag them with the plug's quire so the compiler
+    # exempts them from the effect-declaration check, like the compiler/kernel/os
+    # quires. Native-backend plug names map to the quires already in the exempt
+    # list (riscv->Riscv, arm64->Arm64, pe->Pe, elf->Elf, img->Img).
+    $plugQuire = $PlugName.Substring(0,1).ToUpper() + $PlugName.Substring(1)
+
     $lines = [System.Collections.Generic.List[string]]::new()
-    Add-PlugChapter -Lines $lines -Path (Join-Path $script:PlugBuildRepo 'codex\plugs\common\PlugTypes.codex')
-    Add-PlugChapter -Lines $lines -Path (Join-Path $script:PlugBuildRepo 'codex\plugs\common\IRTextParser.codex')
+    Add-PlugChapter -Lines $lines -Path (Join-Path $script:PlugBuildRepo 'codex\plugs\common\PlugTypes.codex') -Quire $plugQuire
+    Add-PlugChapter -Lines $lines -Path (Join-Path $script:PlugBuildRepo 'codex\plugs\common\IRTextParser.codex') -Quire $plugQuire
     foreach ($ch in $Chapters) {
-        Add-PlugChapter -Lines $lines -Path (Join-Path $PlugDir "$ch.codex")
+        Add-PlugChapter -Lines $lines -Path (Join-Path $PlugDir "$ch.codex") -Quire $plugQuire
     }
 
     $preLines = Resolve-PlugForewords $lines

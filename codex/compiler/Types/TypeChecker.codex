@@ -8,18 +8,41 @@ Chapter: Type Checker
  Bidirectional type checker for Codex.
 
 Section: Resolve Type Expression
+
+ A declared effect bracket on an arrow's result lands ON THE ARROW
+ as its row — concrete labels and tail together (stage 3b migration,
+ EffectRows.md §12). Only the standalone effectful-VALUE form (an
+ AEffectType that is not an arrow's result, e.g. `read-line :
+ [Console] (Maybe Text)`) still resolves to EffectfulTy (§4).
+
   resolve-type-expr : List TypeBinding, ATypeExpr -> CodexType
   resolve-type-expr (tdm) (texpr) =
    when texpr
     is ANamedType (name) (s) -> resolve-type-name tdm (name.value)
-    is AFunType (param) (ret) (s) -> deck-record (FunTy (resolve-type-expr tdm param) (resolve-type-expr tdm ret))
+    is AFunType (param) (ret) (s) ->
+     when ret
+      is AEffectType (effs) (scopes) (tail) (r2) (s2) ->
+       let row = make-row-from-names effs scopes (if list-length tail == 0 then "" else (list-at tail 0).value)
+       in deck-record (FunTy (resolve-type-expr tdm param) row (resolve-type-expr tdm r2))
+      is otherwise -> deck-record (FunTy (resolve-type-expr tdm param) empty-row (resolve-type-expr tdm ret))
     is AAppType (ctor) (args) (s) -> resolve-applied-type tdm ctor args
-    is AEffectType (effs) (scopes) (ret) (s) -> deck-record (EffectfulTy effs scopes (resolve-type-expr tdm ret))
+    is AEffectType (effs) (scopes) (tail) (ret) (s) -> deck-record (EffectfulTy effs scopes (resolve-type-expr tdm ret))
     is ABoundedIntType (base) (lo) (hi) (mode) (s) -> resolve-bounded-int-type tdm base lo hi mode
     is APropEqType (left) (right) (s) -> deck-record (PropEqTy (resolve-type-expr tdm left) (resolve-type-expr tdm right))
     is AConstrainedType (cn) (cv) (body) (s) -> resolve-type-expr tdm body
-    is ALinearType (inner) (s) -> resolve-type-expr tdm inner
+    is ALinearType (inner) (s) -> deck-record (LinearTy (resolve-type-expr tdm inner))
     is AForallType (v) (vt) (p) (s) -> ProofTy
+
+  make-row-from-names : List Name, List Text, Text -> EffectRow
+  make-row-from-names (effs) (scopes) (tail-name) =
+   let labels = build-effect-labels effs scopes 0 (list-length effs) []
+   in deck-record (EffectRow { labels = deck-record (sort-labels-canonical labels 0 (list-length labels) []), tail-name = tail-name, tail-id = __narrow (-1) })
+
+  build-effect-labels : List Name, List Text, Integer, Integer, List EffectLabel -> List EffectLabel
+  build-effect-labels (effs) (scopes) (i) (len) (acc) =
+   if i == len then acc
+   else let sc = if i < list-length scopes then list-at scopes i else ""
+   in build-effect-labels effs scopes (i + 1) len (list-push acc (deck-record (EffectLabel { name = list-at effs i, scope = sc })))
 
   resolve-bounded-int-type : List TypeBinding, ATypeExpr, Integer, Integer, OverflowMode -> CodexType
   resolve-bounded-int-type (tdm) (base) (lo) (hi) (mode) =
@@ -408,9 +431,18 @@ Section: Parameterize Type
    else let code = char-code (char-at name 0)
    in code >= char-code 'e' & code <= char-code 'z'
 
+ A ParamEntry records one lowercase signature name and the fresh
+ variable id it was assigned. Type names and effect-row tails share
+ the entry list (and the unifier's id counter) but are distinct
+ kinds: is-row tells wrap-forall-from-entries which binder to build
+ (ForAllTy or ForAllEff), and find-param-entry matches name AND kind,
+ so a signature using the same lowercase letter as a type variable
+ and as a row tail gets two independent variables.
+
   ParamEntry = record {
    param-name : Text,
-   var-id : Integer between 0 and 4294967295
+   var-id : Integer between 0 and 4294967295,
+   is-row : Boolean
   }
 
   ParamResult = record {
@@ -433,7 +465,9 @@ Section: Parameterize Type
   wrap-forall-from-entries (ty) (entries) (i) (len) =
    if i == len then ty
    else let e = list-at entries i
-   in deck-record (ForAllTy (e.var-id) (wrap-forall-from-entries ty entries (i + 1) len))
+   in let inner = wrap-forall-from-entries ty entries (i + 1) len
+   in if e.is-row then deck-record (ForAllEff (e.var-id) inner)
+      else deck-record (ForAllTy (e.var-id) inner)
 
   WalkResult = record {
    walked : CodexType,
@@ -449,14 +483,15 @@ Section: Parameterize Type
     is ConstructedTy (name) (args) ->
      if is-value-name (name.value)
       then
-       let looked = find-param-entry entries (name.value) 0 (list-length entries)
-       in if looked >= 0 then if list-length args == 0 then WalkResult { walked = TypeVar looked, entries = entries, state = st } else let ar = parameterize-walk st entries (list-at args 0) in WalkResult { walked = deck-record (TypeApply (TypeVar looked) (ar.walked)), entries = ar.entries, state = ar.state }
+       let looked = find-param-entry entries (name.value) False 0 (list-length entries)
+       in if looked >= 0 then if list-length args == 0 then WalkResult { walked = TypeVar (__narrow looked), entries = entries, state = st } else let ar = parameterize-walk st entries (list-at args 0) in WalkResult { walked = deck-record (TypeApply (TypeVar (__narrow looked)) (ar.walked)), entries = ar.entries, state = ar.state }
        else let (fr-ty, fr-st) = fresh-and-advance st
        in when fr-ty
           is TypeVar (new-id) ->
            let new-entry = ParamEntry {
             param-name = name.value,
-            var-id = new-id
+            var-id = new-id,
+            is-row = False
            }
        in if list-length args == 0 then WalkResult { walked = fr-ty, entries = list-push entries new-entry, state = fr-st } else let ar = parameterize-walk fr-st (list-push entries new-entry) (list-at args 0) in WalkResult { walked = deck-record (TypeApply fr-ty (ar.walked)), entries = ar.entries, state = ar.state }
           is otherwise -> WalkResult {
@@ -465,24 +500,49 @@ Section: Parameterize Type
            state = fr-st
           }
       else parameterize-walk-children st entries ty
-    is FunTy (param) (ret) ->
+    is FunTy (param) (row) (ret) ->
      let pr = parameterize-walk st entries param
-     in let rr = parameterize-walk (pr.state) (pr.entries) ret
+     in let (row2, row-entries, row-st) = parameterize-row (pr.state) (pr.entries) row
+     in let rr = parameterize-walk row-st row-entries ret
      in WalkResult {
-      walked = deck-record (FunTy (pr.walked) (rr.walked)),
+      walked = deck-record (FunTy (pr.walked) row2 (rr.walked)),
       entries = rr.entries,
       state = rr.state
      }
     is otherwise -> parameterize-walk-children st entries ty
 
+ parameterize-row assigns a row-variable id to a source tail name. A
+ row without a tail name passes through untouched (the interned
+ empty-row included); a tail already carrying an id passes through
+ (parameterization runs once per signature). A named tail either
+ reuses the id of an earlier occurrence in the same signature — that
+ sharing is what makes map's argument row and result row the SAME
+ variable — or mints a fresh id from the unifier's shared counter and
+ records a row-kind entry for the ForAllEff wrap.
+
+  parameterize-row : UnificationState, List ParamEntry, EffectRow -> (EffectRow, List ParamEntry, UnificationState)
+  parameterize-row (st) (entries) (row) =
+   if text-length (row.tail-name) == 0 then (row, entries, st)
+   else if row.tail-id >= 0 then (row, entries, st)
+   else let looked = find-param-entry entries (row.tail-name) True 0 (list-length entries)
+   in if looked >= 0 then (deck-record (row-with-tail-id row looked), entries, st)
+   else let (new-id, fr-st) = fresh-row-id st
+   in let new-entry = ParamEntry {
+    param-name = row.tail-name,
+    var-id = __narrow new-id,
+    is-row = True
+   }
+   in (deck-record (row-with-tail-id row new-id), list-push entries new-entry, fr-st)
+
   parameterize-walk-children : UnificationState, List ParamEntry, CodexType -> WalkResult
   parameterize-walk-children (st) (entries) (ty) =
    when ty
-    is FunTy (param) (ret) ->
+    is FunTy (param) (row) (ret) ->
      let pr = parameterize-walk st entries param
-     in let rr = parameterize-walk (pr.state) (pr.entries) ret
+     in let (row2, row-entries, row-st) = parameterize-row (pr.state) (pr.entries) row
+     in let rr = parameterize-walk row-st row-entries ret
      in WalkResult {
-      walked = deck-record (FunTy (pr.walked) (rr.walked)),
+      walked = deck-record (FunTy (pr.walked) row2 (rr.walked)),
       entries = rr.entries,
       state = rr.state
      }
@@ -506,6 +566,20 @@ Section: Parameterize Type
       walked = deck-record (ForAllTy id (br.walked)),
       entries = br.entries,
       state = br.state
+     }
+    is ForAllEff (id) (body) ->
+     let br = parameterize-walk st entries body
+     in WalkResult {
+      walked = deck-record (ForAllEff id (br.walked)),
+      entries = br.entries,
+      state = br.state
+     }
+    is EffectfulTy (effs) (sc) (ret) ->
+     let rr = parameterize-walk st entries ret
+     in WalkResult {
+      walked = deck-record (EffectfulTy effs sc (rr.walked)),
+      entries = rr.entries,
+      state = rr.state
      }
     is ConstructedTy (name) (args) ->
      let args-r = parameterize-walk-list st entries args 0 (list-length args) []
@@ -534,6 +608,13 @@ Section: Parameterize Type
      let fr = parameterize-walk st entries tf
      in let ar = parameterize-walk (fr.state) (fr.entries) ta
      in WalkResult { walked = deck-record (TypeApply (fr.walked) (ar.walked)), entries = ar.entries, state = ar.state }
+    is LinearTy (linner) ->
+     let lr = parameterize-walk st entries linner
+     in WalkResult {
+      walked = deck-record (LinearTy (lr.walked)),
+      entries = lr.entries,
+      state = lr.state
+     }
     is otherwise -> WalkResult {
      walked = ty,
      entries = entries,
@@ -577,12 +658,12 @@ Section: Parameterize Type
    in let c2 = deck-record (SumCtor { name = c.name, fields = r.walked-list, return-type = rr.walked-list })
    in parameterize-walk-sum-ctors (rr.state) (rr.entries) ctors (i + 1) len (list-push acc c2)
 
-  find-param-entry : List ParamEntry, Text, Integer, Integer -> Integer
-  find-param-entry (entries) (name) (i) (len) =
+  find-param-entry : List ParamEntry, Text, Boolean, Integer, Integer -> Integer
+  find-param-entry (entries) (name) (want-row) (i) (len) =
    if i == len then -1
    else let e = list-at entries i
-   in if e.param-name == name then e.var-id
-      else find-param-entry entries name (i + 1) len
+   in if e.param-name == name & e.is-row == want-row then e.var-id
+      else find-param-entry entries name want-row (i + 1) len
 
   WalkListResult = record {
    walked-list : List CodexType,
@@ -608,41 +689,118 @@ Section: Check Definition
 
   check-def-normal : UnificationState, TypeEnv, ADef, List RenameEntry -> CheckResult
   check-def-normal (st) (env) (def) (renames) =
-   let rn = resolve-def-name renames (def.name.value) (def.chapter-slug)
-   in let declared = resolve-declared-type st env def renames
+   let st0 = __record-set st "effect-exempt" (def-effect-exempt def)
+   in let rn = resolve-def-name renames (def.name.value) (def.chapter-slug)
+   in let declared = resolve-declared-type st0 env def renames
    in let linked-state = if list-length (def.declared-type) == 0
         then let (_, link-st) = unify (declared.state) (env-lookup (declared.env) rn) (declared.expected-type) (def.span) in link-st
         else declared.state
    in let env2 = bind-def-params linked-state (declared.env) (def.params) (declared.expected-type) 0 (list-length (def.params))
    in let body-r = infer-expr (env2.state) (env2.env) (def.body)
-   in let (_, u-st) = unify (body-r.state) (env2.remaining-type) (body-r.inferred-type) (aexpr-span (def.body))
-   in let effect-checked = check-effect-subset u-st (env2.remaining-type) (deep-resolve u-st (body-r.inferred-type)) (aexpr-span (def.body))
+   in let remaining-inner = when deep-resolve (body-r.state) (env2.remaining-type)
+        is EffectfulTy (res) (rsc) (rinner) -> rinner
+        is otherwise -> env2.remaining-type
+   in let (_, u-st) = unify (body-r.state) remaining-inner (body-r.inferred-type) (aexpr-span (def.body))
+   in let ret-checked = lint-return-narrowing u-st (env2.env) (def.body) (body-r.inferred-type) remaining-inner (aexpr-span (def.body))
+   in let effect-checked = if def-effect-exempt def then ret-checked else check-effect-row-subset ret-checked (declared-performing-row (declared.expected-type) (list-length (def.params))) (body-r.effect-row) (aexpr-span (def.body))
    in let env-type = env-lookup env rn
    in let tied-state = when env-type
         is ForAllTy (id) (body) -> let (_, tied-u) = unify effect-checked (declared.expected-type) (strip-forall-ty env-type) (def.span) in tied-u
+        is ForAllEff (id) (body) -> let (_, tied-u) = unify effect-checked (declared.expected-type) (strip-forall-ty env-type) (def.span) in tied-u
         is otherwise -> effect-checked
+   in let row-tied = if list-length (def.declared-type) == 0
+        then let (_, row-u) = unify-row tied-state (last-arrow-row (declared.expected-type)) (body-r.effect-row) (def.span) in row-u
+        else tied-state
    in CheckResult {
     inferred-type = declared.expected-type,
-    state = tied-state
+    effect-row = body-r.effect-row,
+    state = row-tied
    }
 
-  check-effect-subset : UnificationState, CodexType, CodexType, SourceSpan -> UnificationState
-  check-effect-subset (st) (declared) (body) (span) =
-   let declared-effs = extract-effects declared
-   in let body-effs = extract-effects body
-   in find-uncovered-effect st body-effs declared-effs span 0 (list-length body-effs)
+ A bounded return is a refined position (the postcondition of
+ BoundedSignatures.md section 3): the body's result must inhabit the
+ declared bound. When the declared return resolves to a bounded
+ Integer, run the same hybrid lint the parameter and field positions
+ use, on the body expression against the return's bound. Range
+ propagation to callers is deferred to stage B behind the runtime
+ postcondition guard (section 4).
 
-  extract-effects : CodexType -> List Name
-  extract-effects (ty) =
+  lint-return-narrowing : UnificationState, TypeEnv, AExpr, CodexType, CodexType, SourceSpan -> UnificationState
+  lint-return-narrowing (st) (env) (body) (body-ty) (ret-ty) (span) =
+   when deep-resolve st ret-ty
+    is IntegerTy (lo) (hi) (mode) ->
+     if lo <= i64-min & hi >= i64-max then st
+     else lint-narrowing-check st env body body-ty (deck-record (IntegerTy lo hi mode)) span "bounded return"
+    is otherwise -> st
+
+ An undeclared def's synthesized arrow carries a fresh row variable
+ on its innermost (performing) arrow; the body's ambient row unifies
+ into it above, so callers checked in any order see the def's real
+ effects through resolution. A declared def's row is checked against
+ its signature by row-le at stage 3b, not unified here.
+
+  last-arrow-row : CodexType -> EffectRow
+  last-arrow-row (ty) =
    when ty
-    is EffectfulTy (effs) (sc) (inner) -> effs
+    is FunTy (p) (row) (r) ->
+     when r
+      is FunTy (p2) (row2) (r2) -> last-arrow-row r
+      is otherwise -> row
+    is otherwise -> empty-row
+
+ The def boundary compares the body's AMBIENT row against the row the
+ signature declares on the def's performing arrow (the arrow consumed
+ by the last parameter), or against the effect set of an effectful
+ VALUE signature. Coverage uses the dotted sub-effect lattice via
+ effect-covered-by; row tails are ignored here — a body tail that is
+ the signature's own row variable is trivially allowed, and any other
+ unsolved tail absorbed nothing, so it defaults to empty. Scope
+ literals ride the labels but are not checked at this boundary; scope
+ enforcement stays with the capability machinery.
+
+  check-effect-row-subset : UnificationState, EffectRow, EffectRow, SourceSpan -> UnificationState
+  check-effect-row-subset (st) (declared-row) (body-row) (span) =
+   let d = resolve-row st declared-row
+   in let b = resolve-row st body-row
+   in let declared-names = push-label-names (d.labels) 0 (list-length (d.labels)) []
+   in let body-names = push-label-names (b.labels) 0 (list-length (b.labels)) []
+   in find-uncovered-effect st body-names declared-names span 0 (list-length body-names)
+
+  declared-performing-row : CodexType, Integer -> EffectRow
+  declared-performing-row (ty) (pcount) =
+   when ty
+    is ForAllTy (id) (b) -> declared-performing-row b pcount
+    is ForAllEff (id) (b) -> declared-performing-row b pcount
+    is FunTy (p) (row) (r) -> if pcount <= 1 then row else declared-performing-row r (pcount - 1)
+    is EffectfulTy (effs) (sc) (inner) -> make-row-from-names effs sc ""
+    is otherwise -> empty-row
+
+ collect-effect-names gathers every declared effect name reachable on
+ a type's performing spine: arrow-row labels down the curried chain
+ (never into parameter types — a parameter's effects are the
+ caller's) plus the effect set of an effectful value type. The
+ punctual bare-I/O check and the opening capability check read
+ declared effects through this, row and value forms alike.
+
+ The FunTy arm deliberately uses parenthesized for-sugar as a binary
+ operand: this exact shape is the FabledTreasureMap entry-9 printer
+ regression (an emitted for-expr in operand position must keep its
+ parentheses), and living here it is re-proven by the text fixed
+ point on every build.
+
+  collect-effect-names : CodexType -> List Name
+  collect-effect-names (ty) =
+   when ty
+    is FunTy (p) (row) (r) -> (for l in (row.labels) -> l.name) & collect-effect-names r
+    is ForAllTy (id) (b) -> collect-effect-names b
+    is ForAllEff (id) (b) -> collect-effect-names b
+    is EffectfulTy (effs) (sc) (inner) -> effs & collect-effect-names inner
     is otherwise -> []
 
-  extract-scopes : CodexType -> List Text
-  extract-scopes (ty) =
-   when ty
-    is EffectfulTy (effs) (sc) (inner) -> sc
-    is otherwise -> []
+  push-label-names : List EffectLabel, Integer, Integer, List Name -> List Name
+  push-label-names (ls) (i) (len) (acc) =
+   if i == len then acc
+   else push-label-names ls (i + 1) len (list-push acc ((list-at ls i).name))
 
   find-uncovered-effect : UnificationState, List Name, List Name, SourceSpan, Integer, Integer -> UnificationState
   find-uncovered-effect (st) (body-effs) (declared-effs) (span) (i) (len) =
@@ -658,10 +816,14 @@ Section: Check Definition
    in if dot-pos >= 0 then name-list-has declared (substring body-eff 0 dot-pos)
       else False
 
+ find-dot derives the dot's code from a literal because internal text
+ is CCE: a bare 46 is ASCII thinking, and in CCE code 46 is the letter
+ H, which made the dotted sub-effect relation dead code until CL 6509.
+
   find-dot : Text, Integer, Integer -> Integer
   find-dot (s) (i) (len) =
    if i == len then 0 - 1
-   else if char-code (char-at s i) == 46 then i
+   else if char-code (char-at s i) == char-code (char-at "." 0) then i
    else find-dot s (i + 1) len
 
   name-list-has : List Name, Text -> Boolean
@@ -672,6 +834,41 @@ Section: Check Definition
    if i == len then False
    else if (list-at names i).value == target then True
    else name-list-has-loop names target (i + 1) len
+
+ Capability effect exemption (CapabilityProbe.md section 7). The
+ hardware intrinsics carry Device.* effect rows so that application
+ and library code doing raw I/O must declare it. But at a hardware
+ boundary the declaration is theater -- a driver is expected to do
+ I/O. So the OWNED HARDWARE STACK is exempt at QUIRE granularity: a
+ def whose quire is the compiler, kernel, OS, boards, or plugs may
+ use the intrinsics without declaring the effect. The quire is the
+ prefix before "--" in the concat-mangled chapter slug (an unprefixed
+ slug is its own quire, e.g. the compiler root "Opening"). Foreword
+ and app code are NOT exempt -- foreword is the surface external code
+ consumes, so its declarations are the value; apps are the threat
+ surface the discipline exists for. This slice skips the effect-row
+ check for exempt defs; full infer-and-propagate through exempt
+ wrappers (the app-calls-kernel-directly path) is later work.
+
+  slug-find-dashes : Text, Integer, Integer -> Integer
+  slug-find-dashes (s) (i) (len) =
+   if i + 1 >= len then 0 - 1
+   else if (char-code (char-at s i) == char-code (char-at "-" 0)) & (char-code (char-at s (i + 1)) == char-code (char-at "-" 0)) then i
+   else slug-find-dashes s (i + 1) len
+
+  slug-quire : Text -> Text
+  slug-quire (slug) =
+   let p = slug-find-dashes slug 0 (text-length slug)
+   in if p >= 0 then substring slug 0 p else slug
+
+  quire-effect-exempt : Text -> Boolean
+  quire-effect-exempt (q) =
+   q == "Opening" | q == "Ast" | q == "Core" | q == "Emit" | q == "IR" | q == "Semantics" | q == "Syntax" | q == "Types"
+   | q == "Kernel" | q == "Net" | q == "Sched" | q == "Dev" | q == "Trust" | q == "Observe" | q == "Replay" | q == "Verify" | q == "Os" | q == "Boards"
+   | q == "Riscv" | q == "Arm64" | q == "Pe" | q == "Elf" | q == "Img"
+
+  def-effect-exempt : ADef -> Boolean
+  def-effect-exempt (def) = quire-effect-exempt (slug-quire (def.chapter-slug))
 
   DefSetup = record {
    expected-type : CodexType,
@@ -705,13 +902,15 @@ Section: Check Definition
   build-undeclared-fun-type (st) (pcount) =
    let (body-ty, body-st) = fresh-and-advance st
    in if pcount == 0 then (body-ty, body-st)
-   else build-fun-type-loop body-st pcount body-ty
+   else let (row-id, row-st) = fresh-row-id body-st
+   in let (p-ty, p-st) = fresh-and-advance row-st
+   in build-fun-type-loop p-st (pcount - 1) (FunTy p-ty (deck-record (row-var row-id)) body-ty)
 
   build-fun-type-loop : UnificationState, Integer, CodexType -> (CodexType, UnificationState)
   build-fun-type-loop (st) (n) (acc) =
    if n == 0 then (acc, st)
    else let (fr-ty, fr-st) = fresh-and-advance st
-   in build-fun-type-loop fr-st (n - 1) (FunTy fr-ty acc)
+   in build-fun-type-loop fr-st (n - 1) (FunTy fr-ty empty-row acc)
 
   DefParamResult = record {
    state : UnificationState,
@@ -728,13 +927,33 @@ Section: Check Definition
    }
    else let p = list-at params i
    in when remaining
-     is FunTy (param-ty) (ret-ty) ->
-      let env2 = env-bind-local env (p.name.value) param-ty
-   in bind-def-params st env2 params ret-ty (i + 1) len
+     is FunTy (param-ty) (row) (ret-ty) ->
+      let bound-ty = strip-linear-ty param-ty
+      in let env2 = env-bind-local env (p.name.value) bound-ty
+   in let env3 = bind-param-range env2 (p.name.value) bound-ty
+   in bind-def-params st env3 params ret-ty (i + 1) len
      is otherwise ->
       let (fr-ty, fr-st) = fresh-and-advance st
    in let env2 = env-bind-local env (p.name.value) fr-ty
    in bind-def-params fr-st env2 params remaining (i + 1) len
+
+ A bounded parameter's declared range is a sound fact inside the body
+ because stage B's entry guard enforces it at runtime
+ (BoundedSignatures.md section 4). Recording it into local-ranges lets
+ the narrowing lint prove a store of the parameter into an
+ equal-or-wider bounded field. Only OvError bounds narrower than the
+ full i64 range are recorded; a plain Integer parameter adds nothing.
+
+  bind-param-range : TypeEnv, Text, CodexType -> TypeEnv
+  bind-param-range (env) (name) (ty) =
+   when ty
+    is IntegerTy (lo) (hi) (mode) ->
+     when mode
+      is OvError ->
+       if lo <= i64-min & hi >= i64-max then env
+       else env-add-local-range env name lo hi
+      is otherwise -> env
+    is otherwise -> env
 
 Section: Check Chapter
   ChapterResult = record {
@@ -783,8 +1002,17 @@ Section: Check Chapter
     is ALetExpr (bs) (b) (s) -> check-rt-no-lambda (check-rt-let-binds st bs fn 0 (list-length bs)) b fn
     is AApplyExpr (f) (a) (s) -> check-rt-no-lambda (check-rt-no-lambda st f fn) a fn
     is ABinaryExpr (l) (op) (r) (s) -> check-rt-no-lambda (check-rt-no-lambda st l fn) r fn
+    is AUnaryExpr (x) (s) -> check-rt-no-lambda st x fn
     is AMatchExpr (sc) (arms) (s) -> check-rt-no-lambda-arms (check-rt-no-lambda st sc fn) arms fn 0 (list-length arms)
-    is AActExpr (stmts) (s) -> st
+    is AListExpr (elems) (s) -> check-rt-lambda-elems st elems fn 0 (list-length elems)
+    is ARecordExpr (n) (fields) (s) -> check-rt-lambda-fields st fields fn 0 (list-length fields)
+    is AFieldAccess (obj) (f) (s) -> check-rt-no-lambda st obj fn
+    is AActExpr (stmts) (s) -> check-rt-lambda-stmts st stmts fn 0 (list-length stmts)
+    is ATryExpr (mx) (b) (fb) (fl) (s) -> check-rt-lambda-stmts (check-rt-lambda-stmts (check-rt-lambda-stmts st b fn 0 (list-length b)) fb fn 0 (list-length fb)) fl fn 0 (list-length fl)
+    is AHandleExpr (eff) (b) (cls) (s) -> check-rt-lambda-clauses (check-rt-no-lambda st b fn) cls fn 0 (list-length cls)
+    is AWithTimeoutExpr (t) (effs) (scopes) (b) (s) -> check-rt-no-lambda st b fn
+    is AFieldAssignExpr (rec) (f) (val) (s) -> check-rt-no-lambda (check-rt-no-lambda st rec fn) val fn
+    is ALazyExpr (inner) (s) -> check-rt-no-lambda st inner fn
     is otherwise -> st
 
   check-rt-let-binds : UnificationState, List ALetBind, Text, Integer, Integer -> UnificationState
@@ -797,7 +1025,29 @@ Section: Check Chapter
   check-rt-no-lambda-arms (st) (arms) (fn) (i) (len) =
    if i >= len then st
    else let arm = list-at arms i
-   in check-rt-no-lambda-arms (check-rt-no-lambda st (arm.body) fn) arms fn (i + 1) len
+   in check-rt-no-lambda-arms (check-rt-no-lambda (check-rt-no-lambda st (arm.guard) fn) (arm.body) fn) arms fn (i + 1) len
+
+  check-rt-lambda-elems : UnificationState, List AExpr, Text, Integer, Integer -> UnificationState
+  check-rt-lambda-elems (st) (elems) (fn) (i) (len) =
+   if i >= len then st
+   else check-rt-lambda-elems (check-rt-no-lambda st (list-at elems i) fn) elems fn (i + 1) len
+
+  check-rt-lambda-fields : UnificationState, List AFieldExpr, Text, Integer, Integer -> UnificationState
+  check-rt-lambda-fields (st) (fields) (fn) (i) (len) =
+   if i >= len then st
+   else check-rt-lambda-fields (check-rt-no-lambda st ((list-at fields i).value) fn) fields fn (i + 1) len
+
+  check-rt-lambda-stmts : UnificationState, List AActStmt, Text, Integer, Integer -> UnificationState
+  check-rt-lambda-stmts (st) (stmts) (fn) (i) (len) =
+   if i >= len then st
+   else when (list-at stmts i)
+    is AActExprStmt (e) (s) -> check-rt-lambda-stmts (check-rt-no-lambda st e fn) stmts fn (i + 1) len
+    is AActBindStmt (n) (e) (s) -> check-rt-lambda-stmts (check-rt-no-lambda st e fn) stmts fn (i + 1) len
+
+  check-rt-lambda-clauses : UnificationState, List AHandleClause, Text, Integer, Integer -> UnificationState
+  check-rt-lambda-clauses (st) (cls) (fn) (i) (len) =
+   if i >= len then st
+   else check-rt-lambda-clauses (check-rt-no-lambda st ((list-at cls i).body) fn) cls fn (i + 1) len
 
   is-rt-unsafe-name : Text -> Boolean
   is-rt-unsafe-name (n) =
@@ -805,16 +1055,26 @@ Section: Check Chapter
 
   is-rt-safe-builtin : Text -> Boolean
   is-rt-safe-builtin (n) =
-   n == "list-at" | n == "list-length" | n == "show" | n == "integer-to-text" | n == "text-length" | n == "text-at" | n == "text-starts-with" | n == "text-compare" | n == "array-at" | n == "array-length" | n == "bit-and" | n == "bit-or" | n == "bit-xor" | n == "bit-shl" | n == "bit-shr" | n == "bit-shru" | n == "bit-not" | n == "int-mod" | n == "abs" | n == "min" | n == "max"
+   n == "list-at" | n == "list-length" | n == "text-length" | n == "text-at" | n == "array-at" | n == "array-length" | n == "bit-and" | n == "bit-or" | n == "bit-xor" | n == "bit-shl" | n == "bit-shr" | n == "bit-shru" | n == "bit-not" | n == "int-mod" | n == "abs" | n == "min" | n == "max"
 
   check-rt-calls : UnificationState, AExpr, Text, List Text -> UnificationState
   check-rt-calls (st) (expr) (fn) (rt-names) =
    when expr
-    is AApplyExpr (f) (a) (s) -> let st1 = check-rt-calls st a fn rt-names in when f is ANameExpr (n) (ns) -> if is-rt-name rt-names (n.value) 0 (list-length rt-names) | is-rt-safe-builtin (n.value) then st1 else __record-set st1 "bag" (bag-add (st1.bag) (make-error cdx-rt-calls-unsafe ("punctual function '" & fn & "' calls '" & n.value & "' which is not punctual") ns)) is otherwise -> check-rt-calls st1 f fn rt-names
+    is AApplyExpr (f) (a) (s) -> let st1 = check-rt-calls st a fn rt-names in when f is ANameExpr (n) (ns) -> if is-rt-name rt-names (n.value) 0 (list-length rt-names) | is-rt-safe-builtin (n.value) then st1 else __record-set st1 "bag" (bag-add (st1.bag) (make-error cdx-rt-calls-unsafe ("punctual function '" & fn & "' calls '" & n.value & "' which is not punctual") ns)) is AApplyExpr (f2) (a2) (s2) -> check-rt-calls st1 f fn rt-names is otherwise -> check-rt-calls (__record-set st1 "bag" (bag-add (st1.bag) (make-error cdx-rt-calls-unsafe ("punctual function '" & fn & "' calls through a computed head; a punctual call must name its callee") s))) f fn rt-names
     is AIfExpr (c) (t) (e) (s) -> check-rt-calls (check-rt-calls (check-rt-calls st c fn rt-names) t fn rt-names) e fn rt-names
     is ALetExpr (bs) (b) (s) -> check-rt-calls (check-rt-calls-let-binds st bs fn rt-names 0 (list-length bs)) b fn rt-names
     is ABinaryExpr (l) (op) (r) (s) -> check-rt-calls (check-rt-calls st l fn rt-names) r fn rt-names
+    is AUnaryExpr (x) (s) -> check-rt-calls st x fn rt-names
     is AMatchExpr (sc) (arms) (s) -> check-rt-calls-match-arms (check-rt-calls st sc fn rt-names) arms fn rt-names 0 (list-length arms)
+    is AListExpr (elems) (s) -> check-rt-calls-elems st elems fn rt-names 0 (list-length elems)
+    is ARecordExpr (n) (fields) (s) -> check-rt-calls-fields st fields fn rt-names 0 (list-length fields)
+    is AFieldAccess (obj) (f) (s) -> check-rt-calls st obj fn rt-names
+    is AActExpr (stmts) (s) -> check-rt-calls-stmts st stmts fn rt-names 0 (list-length stmts)
+    is ATryExpr (mx) (b) (fb) (fl) (s) -> check-rt-calls-stmts (check-rt-calls-stmts (check-rt-calls-stmts st b fn rt-names 0 (list-length b)) fb fn rt-names 0 (list-length fb)) fl fn rt-names 0 (list-length fl)
+    is AHandleExpr (eff) (b) (cls) (s) -> check-rt-calls-clauses (check-rt-calls st b fn rt-names) cls fn rt-names 0 (list-length cls)
+    is AWithTimeoutExpr (t) (effs) (scopes) (b) (s) -> check-rt-calls st b fn rt-names
+    is AFieldAssignExpr (rec) (f) (val) (s) -> check-rt-calls (check-rt-calls st rec fn rt-names) val fn rt-names
+    is ALazyExpr (inner) (s) -> check-rt-calls st inner fn rt-names
     is otherwise -> st
 
   check-rt-calls-let-binds : UnificationState, List ALetBind, Text, List Text, Integer, Integer -> UnificationState
@@ -827,7 +1087,29 @@ Section: Check Chapter
   check-rt-calls-match-arms (st) (arms) (fn) (rt-names) (i) (len) =
    if i >= len then st
    else let arm = list-at arms i
-   in check-rt-calls-match-arms (check-rt-calls st (arm.body) fn rt-names) arms fn rt-names (i + 1) len
+   in check-rt-calls-match-arms (check-rt-calls (check-rt-calls st (arm.guard) fn rt-names) (arm.body) fn rt-names) arms fn rt-names (i + 1) len
+
+  check-rt-calls-elems : UnificationState, List AExpr, Text, List Text, Integer, Integer -> UnificationState
+  check-rt-calls-elems (st) (elems) (fn) (rt-names) (i) (len) =
+   if i >= len then st
+   else check-rt-calls-elems (check-rt-calls st (list-at elems i) fn rt-names) elems fn rt-names (i + 1) len
+
+  check-rt-calls-fields : UnificationState, List AFieldExpr, Text, List Text, Integer, Integer -> UnificationState
+  check-rt-calls-fields (st) (fields) (fn) (rt-names) (i) (len) =
+   if i >= len then st
+   else check-rt-calls-fields (check-rt-calls st ((list-at fields i).value) fn rt-names) fields fn rt-names (i + 1) len
+
+  check-rt-calls-stmts : UnificationState, List AActStmt, Text, List Text, Integer, Integer -> UnificationState
+  check-rt-calls-stmts (st) (stmts) (fn) (rt-names) (i) (len) =
+   if i >= len then st
+   else when (list-at stmts i)
+    is AActExprStmt (e) (s) -> check-rt-calls-stmts (check-rt-calls st e fn rt-names) stmts fn rt-names (i + 1) len
+    is AActBindStmt (n) (e) (s) -> check-rt-calls-stmts (check-rt-calls st e fn rt-names) stmts fn rt-names (i + 1) len
+
+  check-rt-calls-clauses : UnificationState, List AHandleClause, Text, List Text, Integer, Integer -> UnificationState
+  check-rt-calls-clauses (st) (cls) (fn) (rt-names) (i) (len) =
+   if i >= len then st
+   else check-rt-calls-clauses (check-rt-calls st ((list-at cls i).body) fn rt-names) cls fn rt-names (i + 1) len
 
   check-rt-no-alloc : UnificationState, AExpr, Text -> UnificationState
   check-rt-no-alloc (st) (expr) (fn) =
@@ -838,7 +1120,27 @@ Section: Check Chapter
     is ALetExpr (bs) (b) (s) -> check-rt-no-alloc (check-rt-alloc-let-binds st bs fn 0 (list-length bs)) b fn
     is AApplyExpr (f) (a) (s) -> check-rt-no-alloc (check-rt-no-alloc st f fn) a fn
     is AMatchExpr (sc) (arms) (s) -> check-rt-alloc-match-arms (check-rt-no-alloc st sc fn) arms fn 0 (list-length arms)
+    is ARecordExpr (n) (fields) (s) -> check-rt-alloc-fields (__record-set st "bag" (bag-add (st.bag) (make-error cdx-rt-heap-alloc ("[HardRealtime] function '" & fn & "' constructs record '" & (n.value) & "' (heap allocation)") s))) fields fn 0 (list-length fields)
+    is AListExpr (elems) (s) -> check-rt-alloc-elems (__record-set st "bag" (bag-add (st.bag) (make-error cdx-rt-heap-alloc ("[HardRealtime] function '" & fn & "' builds a list literal (heap allocation)") s))) elems fn 0 (list-length elems)
+    is AUnaryExpr (x) (s) -> check-rt-no-alloc st x fn
+    is AFieldAccess (obj) (f) (s) -> check-rt-no-alloc st obj fn
+    is AActExpr (stmts) (s) -> check-rt-alloc-stmts st stmts fn 0 (list-length stmts)
+    is ATryExpr (mx) (b) (fb) (fl) (s) -> check-rt-alloc-stmts (check-rt-alloc-stmts (check-rt-alloc-stmts st b fn 0 (list-length b)) fb fn 0 (list-length fb)) fl fn 0 (list-length fl)
+    is AHandleExpr (eff) (b) (cls) (s) -> check-rt-alloc-clauses (check-rt-no-alloc st b fn) cls fn 0 (list-length cls)
+    is AWithTimeoutExpr (t) (effs) (scopes) (b) (s) -> check-rt-no-alloc st b fn
+    is AFieldAssignExpr (rec) (f) (val) (s) -> check-rt-no-alloc (check-rt-no-alloc st rec fn) val fn
+    is ALazyExpr (inner) (s) -> check-rt-no-alloc st inner fn
     is otherwise -> st
+
+  check-rt-alloc-fields : UnificationState, List AFieldExpr, Text, Integer, Integer -> UnificationState
+  check-rt-alloc-fields (st) (fields) (fn) (i) (len) =
+   if i >= len then st
+   else check-rt-alloc-fields (check-rt-no-alloc st ((list-at fields i).value) fn) fields fn (i + 1) len
+
+  check-rt-alloc-elems : UnificationState, List AExpr, Text, Integer, Integer -> UnificationState
+  check-rt-alloc-elems (st) (elems) (fn) (i) (len) =
+   if i >= len then st
+   else check-rt-alloc-elems (check-rt-no-alloc st (list-at elems i) fn) elems fn (i + 1) len
 
   check-rt-alloc-let-binds : UnificationState, List ALetBind, Text, Integer, Integer -> UnificationState
   check-rt-alloc-let-binds (st) (bs) (fn) (i) (len) =
@@ -850,23 +1152,30 @@ Section: Check Chapter
   check-rt-alloc-match-arms (st) (arms) (fn) (i) (len) =
    if i >= len then st
    else let arm = list-at arms i
-   in check-rt-alloc-match-arms (check-rt-no-alloc st (arm.body) fn) arms fn (i + 1) len
+   in check-rt-alloc-match-arms (check-rt-no-alloc (check-rt-no-alloc st (arm.guard) fn) (arm.body) fn) arms fn (i + 1) len
 
-  is-rt-unsafe-effect : Text -> Boolean
-  is-rt-unsafe-effect (e) =
-   e == "Console" | e == "FileSystem" | e == "Network"
+  check-rt-alloc-stmts : UnificationState, List AActStmt, Text, Integer, Integer -> UnificationState
+  check-rt-alloc-stmts (st) (stmts) (fn) (i) (len) =
+   if i >= len then st
+   else when (list-at stmts i)
+    is AActExprStmt (e) (s) -> check-rt-alloc-stmts (check-rt-no-alloc st e fn) stmts fn (i + 1) len
+    is AActBindStmt (n) (e) (s) -> check-rt-alloc-stmts (check-rt-no-alloc st e fn) stmts fn (i + 1) len
+
+  check-rt-alloc-clauses : UnificationState, List AHandleClause, Text, Integer, Integer -> UnificationState
+  check-rt-alloc-clauses (st) (cls) (fn) (i) (len) =
+   if i >= len then st
+   else check-rt-alloc-clauses (check-rt-no-alloc st ((list-at cls i).body) fn) cls fn (i + 1) len
 
   check-rt-effects : UnificationState, CodexType, Text, SourceSpan -> UnificationState
   check-rt-effects (st) (ty) (fn) (span) =
-   let effs = extract-effects ty
+   let effs = collect-effect-names ty
    in check-rt-effects-loop st effs fn span 0 (list-length effs)
 
   check-rt-effects-loop : UnificationState, List Name, Text, SourceSpan, Integer, Integer -> UnificationState
   check-rt-effects-loop (st) (effs) (fn) (span) (i) (len) =
    if i >= len then st
    else let e = list-at effs i
-   in if is-rt-unsafe-effect (e.value) then check-rt-effects-loop (__record-set st "bag" (bag-add (st.bag) (make-error cdx-rt-bare-io ("punctual function '" & fn & "' declares unbounded I/O effect '" & e.value & "'") span))) effs fn span (i + 1) len
-   else check-rt-effects-loop st effs fn span (i + 1) len
+   in check-rt-effects-loop (__record-set st "bag" (bag-add (st.bag) (make-error cdx-rt-bare-io ("punctual function '" & fn & "' declares effect '" & e.value & "'; bounded execution requires an effect-free signature") span))) effs fn span (i + 1) len
 
   has-self-call : AExpr, Text -> Boolean
   has-self-call (expr) (fn) =
@@ -874,10 +1183,177 @@ Section: Check Chapter
     is ANameExpr (n) (s) -> n.value == fn
     is AApplyExpr (f) (a) (s) -> has-self-call f fn | has-self-call a fn
     is AIfExpr (c) (t) (e) (s) -> has-self-call c fn | has-self-call t fn | has-self-call e fn
-    is ALetExpr (bs) (b) (s) -> has-self-call b fn
+    is ALetExpr (bs) (b) (s) -> has-self-call-binds bs fn 0 (list-length bs) | has-self-call b fn
     is ABinaryExpr (l) (op) (r) (s) -> has-self-call l fn | has-self-call r fn
-    is AMatchExpr (sc) (arms) (s) -> has-self-call sc fn
+    is AUnaryExpr (x) (s) -> has-self-call x fn
+    is AMatchExpr (sc) (arms) (s) -> has-self-call sc fn | has-self-call-arms arms fn 0 (list-length arms)
+    is ALambdaExpr (ps) (b) (s) -> has-self-call b fn
+    is AListExpr (elems) (s) -> has-self-call-list elems fn 0 (list-length elems)
+    is ARecordExpr (n) (fields) (s) -> has-self-call-fields fields fn 0 (list-length fields)
+    is AFieldAccess (obj) (f) (s) -> has-self-call obj fn
+    is AActExpr (stmts) (s) -> has-self-call-stmts stmts fn 0 (list-length stmts)
+    is ATryExpr (mx) (b) (fb) (fl) (s) -> has-self-call-stmts b fn 0 (list-length b) | has-self-call-stmts fb fn 0 (list-length fb) | has-self-call-stmts fl fn 0 (list-length fl)
+    is AHandleExpr (eff) (b) (cls) (s) -> has-self-call b fn
+    is AWithTimeoutExpr (t) (effs) (scopes) (b) (s) -> has-self-call b fn
+    is AFieldAssignExpr (rec) (f) (val) (s) -> has-self-call rec fn | has-self-call val fn
+    is ALazyExpr (inner) (s) -> has-self-call inner fn
     is otherwise -> False
+
+  has-self-call-arms : List AMatchArm, Text, Integer, Integer -> Boolean
+  has-self-call-arms (arms) (fn) (i) (len) =
+   if i >= len then False
+   else let arm = list-at arms i
+   in if has-self-call (arm.guard) fn | has-self-call (arm.body) fn then True
+   else has-self-call-arms arms fn (i + 1) len
+
+  has-self-call-binds : List ALetBind, Text, Integer, Integer -> Boolean
+  has-self-call-binds (bs) (fn) (i) (len) =
+   if i >= len then False
+   else if has-self-call ((list-at bs i).value) fn then True
+   else has-self-call-binds bs fn (i + 1) len
+
+  has-self-call-list : List AExpr, Text, Integer, Integer -> Boolean
+  has-self-call-list (elems) (fn) (i) (len) =
+   if i >= len then False
+   else if has-self-call (list-at elems i) fn then True
+   else has-self-call-list elems fn (i + 1) len
+
+  has-self-call-fields : List AFieldExpr, Text, Integer, Integer -> Boolean
+  has-self-call-fields (fields) (fn) (i) (len) =
+   if i >= len then False
+   else if has-self-call ((list-at fields i).value) fn then True
+   else has-self-call-fields fields fn (i + 1) len
+
+  has-self-call-stmts : List AActStmt, Text, Integer, Integer -> Boolean
+  has-self-call-stmts (stmts) (fn) (i) (len) =
+   if i >= len then False
+   else when (list-at stmts i)
+    is AActExprStmt (e) (s) -> if has-self-call e fn then True else has-self-call-stmts stmts fn (i + 1) len
+    is AActBindStmt (n) (e) (s) -> if has-self-call e fn then True else has-self-call-stmts stmts fn (i + 1) len
+
+Section: Punctual Mutual Recursion
+
+ has-self-call rejects direct self-recursion per def. A cycle THROUGH
+ other punctual functions (f calls g, g calls f) is equally unbounded
+ but invisible to a per-def scan, so after all defs are checked the
+ punctual call graph is walked. An edge is any mention of another
+ punctual def's name in a punctual body -- over-approximate on
+ purpose, so a punctual function reference passed as a value still
+ pins the cycle. A def that can reach itself through one or more
+ OTHER punctual defs is rejected with CDX6005. Direct self-loops
+ contribute no edge; has-self-call owns those, so a single mistake
+ is reported once.
+
+  RtEdges = record {
+   re-fn : Text,
+   re-calls : List Text
+  }
+
+  collect-rt-mentions : AExpr, Text, List Text, List Text -> List Text
+  collect-rt-mentions (e) (self) (rt-names) (acc) =
+   when e
+    is ANameExpr (n) (s) ->
+     if (n.value) == self then acc
+     else if is-rt-name rt-names (n.value) 0 (list-length rt-names)
+      then if text-in-list acc (n.value) 0 (list-length acc) then acc else list-push acc (n.value)
+      else acc
+    is AApplyExpr (f) (a) (s) -> collect-rt-mentions a self rt-names (collect-rt-mentions f self rt-names acc)
+    is ABinaryExpr (l) (op) (r) (s) -> collect-rt-mentions r self rt-names (collect-rt-mentions l self rt-names acc)
+    is AUnaryExpr (x) (s) -> collect-rt-mentions x self rt-names acc
+    is AIfExpr (c) (t) (el) (s) -> collect-rt-mentions el self rt-names (collect-rt-mentions t self rt-names (collect-rt-mentions c self rt-names acc))
+    is ALetExpr (bs) (b) (s) -> collect-rt-mentions b self rt-names (collect-rt-mentions-binds bs self rt-names acc 0 (list-length bs))
+    is AMatchExpr (sc) (arms) (s) -> collect-rt-mentions-arms arms self rt-names (collect-rt-mentions sc self rt-names acc) 0 (list-length arms)
+    is ALambdaExpr (ps) (b) (s) -> collect-rt-mentions b self rt-names acc
+    is AListExpr (elems) (s) -> collect-rt-mentions-list elems self rt-names acc 0 (list-length elems)
+    is ARecordExpr (n) (fields) (s) -> collect-rt-mentions-fields fields self rt-names acc 0 (list-length fields)
+    is AFieldAccess (obj) (f) (s) -> collect-rt-mentions obj self rt-names acc
+    is AActExpr (stmts) (s) -> collect-rt-mentions-stmts stmts self rt-names acc 0 (list-length stmts)
+    is ATryExpr (mx) (b) (fb) (fl) (s) -> collect-rt-mentions-stmts fl self rt-names (collect-rt-mentions-stmts fb self rt-names (collect-rt-mentions-stmts b self rt-names acc 0 (list-length b)) 0 (list-length fb)) 0 (list-length fl)
+    is AHandleExpr (eff) (b) (cls) (s) -> collect-rt-mentions-clauses cls self rt-names (collect-rt-mentions b self rt-names acc) 0 (list-length cls)
+    is AWithTimeoutExpr (t) (effs) (scopes) (b) (s) -> collect-rt-mentions b self rt-names acc
+    is AFieldAssignExpr (rec) (f) (val) (s) -> collect-rt-mentions val self rt-names (collect-rt-mentions rec self rt-names acc)
+    is ALazyExpr (inner) (s) -> collect-rt-mentions inner self rt-names acc
+    is otherwise -> acc
+
+  collect-rt-mentions-binds : List ALetBind, Text, List Text, List Text, Integer, Integer -> List Text
+  collect-rt-mentions-binds (bs) (self) (rt-names) (acc) (i) (len) =
+   if i >= len then acc
+   else collect-rt-mentions-binds bs self rt-names (collect-rt-mentions ((list-at bs i).value) self rt-names acc) (i + 1) len
+
+  collect-rt-mentions-arms : List AMatchArm, Text, List Text, List Text, Integer, Integer -> List Text
+  collect-rt-mentions-arms (arms) (self) (rt-names) (acc) (i) (len) =
+   if i >= len then acc
+   else let arm = list-at arms i
+   in collect-rt-mentions-arms arms self rt-names (collect-rt-mentions (arm.body) self rt-names (collect-rt-mentions (arm.guard) self rt-names acc)) (i + 1) len
+
+  collect-rt-mentions-list : List AExpr, Text, List Text, List Text, Integer, Integer -> List Text
+  collect-rt-mentions-list (elems) (self) (rt-names) (acc) (i) (len) =
+   if i >= len then acc
+   else collect-rt-mentions-list elems self rt-names (collect-rt-mentions (list-at elems i) self rt-names acc) (i + 1) len
+
+  collect-rt-mentions-fields : List AFieldExpr, Text, List Text, List Text, Integer, Integer -> List Text
+  collect-rt-mentions-fields (fields) (self) (rt-names) (acc) (i) (len) =
+   if i >= len then acc
+   else collect-rt-mentions-fields fields self rt-names (collect-rt-mentions ((list-at fields i).value) self rt-names acc) (i + 1) len
+
+  collect-rt-mentions-clauses : List AHandleClause, Text, List Text, List Text, Integer, Integer -> List Text
+  collect-rt-mentions-clauses (cls) (self) (rt-names) (acc) (i) (len) =
+   if i >= len then acc
+   else collect-rt-mentions-clauses cls self rt-names (collect-rt-mentions ((list-at cls i).body) self rt-names acc) (i + 1) len
+
+  collect-rt-mentions-stmts : List AActStmt, Text, List Text, List Text, Integer, Integer -> List Text
+  collect-rt-mentions-stmts (stmts) (self) (rt-names) (acc) (i) (len) =
+   if i >= len then acc
+   else when (list-at stmts i)
+    is AActExprStmt (e) (s) -> collect-rt-mentions-stmts stmts self rt-names (collect-rt-mentions e self rt-names acc) (i + 1) len
+    is AActBindStmt (n) (e) (s) -> collect-rt-mentions-stmts stmts self rt-names (collect-rt-mentions e self rt-names acc) (i + 1) len
+
+  build-rt-edges : List ADef, List Text, Integer, Integer, List RtEdges -> List RtEdges
+  build-rt-edges (defs) (rt-names) (i) (len) (acc) =
+   if i >= len then acc
+   else let d = list-at defs i
+   in if is-rt-name rt-names (d.name.value) 0 (list-length rt-names)
+      then build-rt-edges defs rt-names (i + 1) len (list-push acc (deck-record (RtEdges { re-fn = d.name.value, re-calls = collect-rt-mentions (d.body) (d.name.value) rt-names [] })))
+      else build-rt-edges defs rt-names (i + 1) len acc
+
+  rt-edges-for : List RtEdges, Text -> List Text
+  rt-edges-for (g) (fn) = rt-edges-for-loop g fn 0 (list-length g)
+
+  rt-edges-for-loop : List RtEdges, Text, Integer, Integer -> List Text
+  rt-edges-for-loop (g) (fn) (i) (len) =
+   if i >= len then []
+   else let e = list-at g i
+   in if (e.re-fn) == fn then e.re-calls
+   else rt-edges-for-loop g fn (i + 1) len
+
+  rt-reaches : List RtEdges, Text, Text, List Text -> Boolean
+  rt-reaches (g) (cur) (target) (visited) =
+   if cur == target then True
+   else if text-in-list visited cur 0 (list-length visited) then False
+   else let ns = rt-edges-for g cur
+   in rt-reaches-any g ns target (list-push visited cur) 0 (list-length ns)
+
+  rt-reaches-any : List RtEdges, List Text, Text, List Text, Integer, Integer -> Boolean
+  rt-reaches-any (g) (ns) (target) (visited) (i) (len) =
+   if i >= len then False
+   else if rt-reaches g (list-at ns i) target visited then True
+   else rt-reaches-any g ns target visited (i + 1) len
+
+  check-rt-cycles : List ADef, List Text, UnificationState -> UnificationState
+  check-rt-cycles (defs) (rt-names) (st) =
+   if list-length rt-names == 0 then st
+   else let g = build-rt-edges defs rt-names 0 (list-length defs) []
+   in check-rt-cycles-loop g defs 0 (list-length defs) st
+
+  check-rt-cycles-loop : List RtEdges, List ADef, Integer, Integer, UnificationState -> UnificationState
+  check-rt-cycles-loop (g) (defs) (i) (len) (st) =
+   if i >= len then st
+   else let d = list-at defs i
+   in let calls = rt-edges-for g (d.name.value)
+   in let st2 = if rt-reaches-any g calls (d.name.value) [] 0 (list-length calls)
+       then __record-set st "bag" (bag-add (st.bag) (make-error cdx-rt-unbounded-recursion ("punctual function '" & (d.name.value) & "' is mutually recursive through another punctual function; bounded execution cannot be proven") (d.span)))
+       else st
+   in check-rt-cycles-loop g defs (i + 1) len st2
 
   check-chapter : AChapter, List RenameEntry, SkipListText, List ChapterAssignment -> ChapterResult
   check-chapter (mod) (renames) (colliding) (assignments) =
@@ -893,16 +1369,20 @@ Section: Check Chapter
    in let def-count = list-length (mod.defs)
    in let pre-st = deck-record (UnificationState {
     substitutions = copy-list-with-headroom (env3.state.substitutions) (def-count * 12),
+    row-substitutions = copy-list-with-headroom (env3.state.row-substitutions) (def-count * 2),
     next-id = env3.state.next-id,
+    next-row-id = env3.state.next-row-id,
     bag = env3.state.bag,
-    expr-types = copy-list-with-headroom (env3.state.expr-types) (def-count * 56)
+    expr-types = copy-list-with-headroom (env3.state.expr-types) (def-count * 56),
+    effect-exempt = False
    })
    in let acc0 = deck-record (__list-with-capacity def-count)
    in let slug-cache = for a in assignments -> slugify (a.chapter-slug)
    in let exit = __deck-exit
    in let result = check-all-defs pre-st sorted-env (mod.defs) 0 def-count acc0 renames colliding assignments (mod.citations) slug-cache "" [] (mod.rt-names) tdm
    in let enter = __deck-enter
-   in __record-set result "state" (check-stale-reads (mod.defs) (result.state))
+   in let cycle-st = check-rt-cycles (mod.defs) (mod.rt-names) (result.state)
+   in __record-set result "state" (check-stale-reads (mod.defs) cycle-st)
 
   add-diagnostics-to-state : UnificationState, List Diagnostic, Integer, Integer -> UnificationState
   add-diagnostics-to-state (st) (diags) (i) (len) =
@@ -918,20 +1398,52 @@ Section: Check Chapter
    }
    else let def = list-at defs i
    in let resolved-name = resolve-def-name renames (def.name.value) (def.chapter-slug)
+   in let env0 = register-const-range env resolved-name def
    in let ty = if list-length (def.declared-type) == 0 then let (fr-ty, fr-st) = fresh-and-advance st
-   in let env2 = env-bind env resolved-name fr-ty
+   in let env2 = env-bind env0 resolved-name fr-ty
    in LetBindResult {
           state = fr-st,
           env = env2
          }
    else let resolved0 = resolve-type-expr tdm (list-at (def.declared-type) 0)
    in let resolved = normalize-prop-eq defs resolved0
-   in let pr = parameterize-type st resolved
+   in let guarded = check-effectful-arrow-value st resolved (def.span)
+   in let pr = parameterize-type guarded resolved
    in LetBindResult {
           state = pr.state,
-          env = env-bind env resolved-name (pr.parameterized)
+          env = env-bind env0 resolved-name (pr.parameterized)
          }
    in register-all-defs (ty.state) (ty.env) tdm defs (i + 1) len renames
+
+ A zero-parameter def whose body is an integer literal is a constant
+ with a known value; its [n, n] range is recorded in the env's
+ const-range table for the narrowing lint. The registered TYPE stays
+ the declared one — refining it would make two distinct constants
+ disjoint under unification (BoundsProverReach.md).
+
+  register-const-range : TypeEnv, Text, ADef -> TypeEnv
+  register-const-range (env) (name) (def) =
+   if list-length (def.params) > 0 then env
+   else when def.body
+    is ALitExpr (val) (kind) (s) ->
+     when kind
+      is IntLit -> env-add-const-range env name (lit-text-to-integer val)
+      is otherwise -> env
+    is otherwise -> env
+
+ Post-stage-4 an EffectfulTy may wrap only a value type (§4): an
+ effect bracket around a function type in a VALUE signature would
+ revive the transitional form the migration retired, so it is
+ rejected at registration with the fix in the message.
+
+  check-effectful-arrow-value : UnificationState, CodexType, SourceSpan -> UnificationState
+  check-effectful-arrow-value (st) (ty) (span) =
+   when ty
+    is EffectfulTy (effs) (sc) (inner) ->
+     when inner
+      is FunTy (p) (row) (r) -> add-unify-error st cdx-effectful-arrow-value "an effect bracket cannot wrap a function type in a value signature; write the effect on the arrow it decorates: A -> [E] B" span
+      is otherwise -> st
+    is otherwise -> st
 
   register-effect-ops : UnificationState, TypeEnv, List TypeBinding, List AEffectDef, Integer, Integer -> LetBindResult
   register-effect-ops (st) (env) (tdm) (effs) (i) (len) =
@@ -1002,9 +1514,12 @@ Section: Check Chapter
   check-all-defs (st) (env) (defs) (i) (len) (acc) (renames) (colliding) (assignments) (citations) (slug-cache) (cur-slug) (cur-chapter-rn) (rt-names) (tdm) =
    if i == len then let final-st = deck-record (UnificationState {
     substitutions = copy-list-with-headroom (st.substitutions) 0,
+    row-substitutions = copy-list-with-headroom (st.row-substitutions) 0,
     next-id = st.next-id,
+    next-row-id = st.next-row-id,
     bag = st.bag,
-    expr-types = copy-list-with-headroom (st.expr-types) 0
+    expr-types = copy-list-with-headroom (st.expr-types) 0,
+    effect-exempt = False
    })
    in deck-record (ChapterResult {
     types = acc,
@@ -1014,13 +1529,13 @@ Section: Check Chapter
    else let def = list-at defs i
    in let chapter-rn = if def.chapter-slug == cur-slug then cur-chapter-rn
       else apply-cite-overrides (build-chapter-rename-map colliding assignments (def.chapter-slug)) citations colliding assignments slug-cache (def.chapter-slug) 0
-   in let fresh-env = __record-set (__record-set env "locals" empty-type-bindings) "chapter-renames" chapter-rn
+   in let fresh-env = __record-set (__record-set (__record-set env "locals" empty-type-bindings) "chapter-renames" chapter-rn) "local-ranges" []
    in let r = check-def st fresh-env defs tdm def renames
    in let lin-st = check-linearity-def def fresh-env (r.state)
    in let rt-chk = is-rt-name rt-names (def.name.value) 0 (list-length rt-names)
    in let rt-st1 = if rt-chk then check-rt-calls (check-rt-no-alloc (check-rt-no-lambda lin-st (def.body) (def.name.value)) (def.body) (def.name.value)) (def.body) (def.name.value) rt-names else lin-st
    in let rt-st2 = if rt-chk & has-self-call (def.body) (def.name.value) then __record-set rt-st1 "bag" (bag-add (rt-st1.bag) (make-error cdx-rt-unbounded-recursion ("punctual function '" & def.name.value & "' is self-recursive") (aexpr-span (def.body)))) else rt-st1
-   in let rt-st = if rt-chk then check-rt-effects rt-st2 (strip-fun-args (r.inferred-type)) (def.name.value) (aexpr-span (def.body)) else rt-st2
+   in let rt-st = if rt-chk then check-rt-effects rt-st2 (r.inferred-type) (def.name.value) (aexpr-span (def.body)) else rt-st2
    in let resolved = deep-resolve rt-st (r.inferred-type)
    in let entry = deck-record (TypeBinding {
     name = resolve-def-name renames (def.name.value) (def.chapter-slug),
@@ -1111,7 +1626,7 @@ Section: Induction Checking
 
   check-induction-ctors : UnificationState, TypeEnv, List ADef, List TypeBinding, Text, Text, CodexType, CodexType, List SumCtor, List AMatchArm, SourceSpan, Integer, Integer -> CheckResult
   check-induction-ctors (st) (env) (defs) (tdm) (nName) (tname) (lhsTy) (rhsTy) (ctors) (arms) (sp) (i) (len) =
-   if i == len then CheckResult { inferred-type = ProofTy, state = st }
+   if i == len then CheckResult { inferred-type = ProofTy, effect-row = empty-row, state = st }
    else let c = list-at ctors i
    in let ai = find-arm-for-ctor arms (c.name.value) 0 (list-length arms)
    in let st2 = if ai < 0
@@ -1206,7 +1721,7 @@ Section: Induction Checking
 
   induction-unproven : UnificationState, SourceSpan -> CheckResult
   induction-unproven (st) (sp) =
-   CheckResult { inferred-type = ProofTy, state = induction-unproven-st st sp }
+   CheckResult { inferred-type = ProofTy, effect-row = empty-row, state = induction-unproven-st st sp }
 
   induction-unproven-st : UnificationState, SourceSpan -> UnificationState
   induction-unproven-st (st) (sp) =
@@ -1301,24 +1816,79 @@ Section: Linearity Checking
  container you own and may *read* as often as you like — reading a field
  does not spend it. What you may not do is hand the same record to two
  owners. So for a mutable parameter `consume-of` counts only the
- *consuming* positions (passing it on, aliasing it to a new binding,
- returning it) and never the reads (`r.field`); if any single path
- consumes it more than once, that is aliasing (CDX2062). Branches take
- the worst path (max), not a sum, because only one path runs.
+ *consuming* positions (passing it on, storing it, returning it) and
+ never the reads (`r.field`); if any single path consumes it more
+ than once, that is aliasing (CDX2062). Branches take the worst path
+ (max), not a sum, because only one path runs.
 
- This slice enforces both for function parameters; tracking ownership
- through arbitrary let-bound locals is later work.
+ Ownership flows through let-bound locals: a bind whose value is a
+ bare mention of the tracked owner is a MOVE. The walk re-roots on
+ the new name (which inherits the exactly-once obligation), and any
+ residual mention of the old name is a use-after-move, tallied in
+ the `dead` field. Tracking ownership through argument boundaries,
+ returns, captures, and containers is later work (stages 3 and 4 of
+ LinearOwnership.md).
 
   LinResult = record {
    count : Integer,
-   ok : Boolean
+   ok : Boolean,
+   dead : Integer,
+   ret : Boolean,
+   esc : Text,
+   cap : Text
   }
 
+ `ret` marks a bare mention of the tracked owner in tail (return)
+ position; `esc` carries the name of the first callee that received
+ the owner through a plain (non-linear) parameter; `cap` names the
+ first context that captured the owner and may run zero or many
+ times (a handler clause, an escaping closure). Empty text = none.
+
+  lin-zero : LinResult
+  lin-zero = LinResult { count = 0, ok = True, dead = 0, ret = False, esc = "", cap = "" }
+
+  lin-one : LinResult
+  lin-one = LinResult { count = 1, ok = True, dead = 0, ret = False, esc = "", cap = "" }
+
+  lin-use : Boolean -> LinResult
+  lin-use (tail) = LinResult { count = 1, ok = True, dead = 0, ret = tail, esc = "", cap = "" }
+
+  lin-esc-first : Text, Text -> Text
+  lin-esc-first (a) (b) = if a == "" then b else a
+
+  lin-flags : LinResult -> Boolean
+  lin-flags (c) =
+   if c.count > 0 then True
+   else if (c.dead) > 0 then True
+   else if (c.esc) /= "" then True
+   else (c.cap) /= ""
+
   lin-seq : LinResult, LinResult -> LinResult
-  lin-seq (a) (b) = LinResult { count = a.count + b.count, ok = a.ok & b.ok }
+  lin-seq (a) (b) = LinResult { count = a.count + b.count, ok = a.ok & b.ok, dead = a.dead + b.dead, ret = (a.ret) | (b.ret), esc = lin-esc-first (a.esc) (b.esc), cap = lin-esc-first (a.cap) (b.cap) }
 
   lin-branch : LinResult, LinResult -> LinResult
-  lin-branch (a) (b) = LinResult { count = a.count, ok = a.ok & b.ok & (a.count == b.count) }
+  lin-branch (a) (b) = LinResult { count = a.count, ok = a.ok & b.ok & (a.count == b.count), dead = a.dead + b.dead, ret = (a.ret) | (b.ret), esc = lin-esc-first (a.esc) (b.esc), cap = lin-esc-first (a.cap) (b.cap) }
+
+  lin-path-max : LinResult, LinResult -> LinResult
+  lin-path-max (a) (b) = LinResult { count = if a.count >= b.count then a.count else b.count, ok = a.ok & b.ok, dead = a.dead + b.dead, ret = (a.ret) | (b.ret), esc = lin-esc-first (a.esc) (b.esc), cap = lin-esc-first (a.cap) (b.cap) }
+
+ A move joins two walks of the remainder: the live chain rooted at
+ the new owner, and the dead walk of the old name, every mention of
+ which is a violation. A branch-imbalanced dead mention still counts
+ as at least one. The live chain keeps the tail obligation, so
+ returning the current owner bare still marks `ret`.
+
+  lin-move-join : LinResult, LinResult -> LinResult
+  lin-move-join (moved) (dead) = LinResult { count = moved.count, ok = moved.ok, dead = (moved.dead) + (dead.dead) + (dead.count) + (if dead.ok then 0 else 1), ret = moved.ret, esc = lin-esc-first (moved.esc) (dead.esc), cap = lin-esc-first (moved.cap) (dead.cap) }
+
+ A retaining bind (a capturing closure, a partial application, a
+ container stash) folds three walks: the bind value itself (whose
+ first mention is the sanctioned move in; extras are double-uses),
+ the live chain rooted at the new binding, and the dead walk of the
+ old name.
+
+  lin-retain-join : LinResult, LinResult, LinResult -> LinResult
+  lin-retain-join (c) (moved) (dead) = LinResult { count = (moved.count) + (if c.count > 0 then (c.count) - 1 else 0), ok = c.ok & moved.ok, dead = (c.dead) + (moved.dead) + (dead.count) + (dead.dead) + (if dead.ok then 0 else 1), ret = moved.ret, esc = lin-esc-first (c.esc) (lin-esc-first (moved.esc) (dead.esc)), cap = lin-esc-first (c.cap) (lin-esc-first (moved.cap) (dead.cap)) }
 
   is-linear-atype : ATypeExpr -> Boolean
   is-linear-atype (t) =
@@ -1340,75 +1910,231 @@ Section: Linearity Checking
    else if apat-binds-name (list-at subs i) v then True
    else apat-list-binds-name subs v (i + 1) len
 
-  lin-of : Text, AExpr -> LinResult
-  lin-of (v) (e) =
+ The walk carries the environment (to read callee signatures at
+ argument boundaries) and a tail flag (True only where the
+ expression's value is the def's return value). Act-block statement
+ values are conservatively non-tail.
+
+  lin-of : TypeEnv, Text, Boolean, AExpr -> LinResult
+  lin-of (env) (v) (tail) (e) =
    when e
-    is ANameExpr (n) (s) -> LinResult { count = if n.value == v then 1 else 0, ok = True }
-    is AApplyExpr (f) (a) (s) -> lin-seq (lin-of v f) (lin-of v a)
-    is ABinaryExpr (l) (op) (r) (s) -> lin-seq (lin-of v l) (lin-of v r)
-    is AUnaryExpr (x) (s) -> lin-of v x
-    is AIfExpr (c) (t) (el) (s) -> lin-seq (lin-of v c) (lin-branch (lin-of v t) (lin-of v el))
-    is ALetExpr (binds) (body) (s) -> lin-let v binds body 0 (list-length binds)
-    is ALambdaExpr (params) (body) (s) -> if name-list-has params v then LinResult { count = 0, ok = True } else lin-of v body
-    is AHandleExpr (eff) (body) (clauses) (s) -> lin-seq (lin-of v body) (lin-clauses v clauses 0 (list-length clauses))
-    is AWithTimeoutExpr (t) (effs) (scopes) (body) (s) -> lin-of v body
-    is AMatchExpr (scrut) (arms) (s) -> lin-seq (lin-of v scrut) (lin-arms v arms 0 (list-length arms))
-    is AListExpr (elems) (s) -> lin-list v elems 0 (list-length elems)
-    is ARecordExpr (n) (fields) (s) -> lin-fields v fields 0 (list-length fields)
-    is AFieldAccess (obj) (f) (s) -> lin-of v obj
-    is AActExpr (stmts) (s) -> lin-stmts v stmts 0 (list-length stmts)
-    is ATryExpr (max) (body) (fb) (fail) (s) -> lin-seq (lin-stmts v body 0 (list-length body)) (lin-seq (lin-stmts v fb 0 (list-length fb)) (lin-stmts v fail 0 (list-length fail)))
-    is AFieldAssignExpr (rec) (f) (val) (s) -> lin-seq (lin-of v rec) (lin-of v val)
-    is ALazyExpr (inner) (s) -> lin-of v inner
-    is otherwise -> LinResult { count = 0, ok = True }
+    is ANameExpr (n) (s) -> if n.value == v then lin-use tail else lin-zero
+    is AApplyExpr (f) (a) (s) -> lin-spine env v (apply-head-name e) e
+    is ABinaryExpr (l) (op) (r) (s) -> lin-seq (lin-of env v False l) (lin-of env v False r)
+    is AUnaryExpr (x) (s) -> lin-of env v False x
+    is AIfExpr (c) (t) (el) (s) -> lin-seq (lin-of env v False c) (lin-branch (lin-of env v tail t) (lin-of env v tail el))
+    is ALetExpr (binds) (body) (s) -> lin-let env v tail binds body 0 (list-length binds)
+    is ALambdaExpr (params) (body) (s) -> if name-list-has params v then lin-zero else lin-lambda-node env v tail body
+    is AHandleExpr (eff) (body) (clauses) (s) -> lin-seq (lin-of env v False body) (lin-clauses env v clauses 0 (list-length clauses))
+    is AWithTimeoutExpr (t) (effs) (scopes) (body) (s) -> lin-of env v tail body
+    is AMatchExpr (scrut) (arms) (s) -> lin-seq (lin-of env v False scrut) (lin-arms env v tail arms 0 (list-length arms))
+    is AListExpr (elems) (s) -> lin-list env v elems 0 (list-length elems)
+    is ARecordExpr (n) (fields) (s) -> lin-fields env v fields 0 (list-length fields)
+    is AFieldAccess (obj) (f) (s) -> lin-of env v False obj
+    is AActExpr (stmts) (s) -> lin-stmts env v stmts 0 (list-length stmts)
+    is ATryExpr (max) (body) (fb) (fail) (s) -> lin-seq (lin-stmts env v body 0 (list-length body)) (lin-seq (lin-stmts env v fb 0 (list-length fb)) (lin-stmts env v fail 0 (list-length fail)))
+    is AFieldAssignExpr (rec) (f) (val) (s) -> lin-seq (lin-of env v False rec) (lin-of env v False val)
+    is ALazyExpr (inner) (s) -> lin-of env v False inner
+    is otherwise -> lin-zero
 
-  lin-let : Text, List ALetBind, AExpr, Integer, Integer -> LinResult
-  lin-let (v) (binds) (body) (i) (len) =
-   if i >= len then lin-of v body
+ The argument boundary: a bare mention of the tracked owner in
+ argument position is sanctioned only when the callee's parameter at
+ that position is declared linear in its registered signature (stage
+ 1 left the LinearTy wrapper there for exactly this read). freeze's
+ own `linear a` parameter makes it the door with no special case. An
+ unknown or unregistered callee (a function value, a lambda head) is
+ conservatively a plain boundary.
+
+  lin-spine : TypeEnv, Text, Text, AExpr -> LinResult
+  lin-spine (env) (v) (head) (e) =
+   when e
+    is AApplyExpr (f) (a) (s) -> lin-seq (lin-spine env v head f) (lin-arg env v head (apply-arg-count f) a)
+    is otherwise -> lin-of env v False e
+
+  lin-arg : TypeEnv, Text, Text, Integer, AExpr -> LinResult
+  lin-arg (env) (v) (head) (k) (a) =
+   when a
+    is ANameExpr (n) (s) -> if (n.value) == v then lin-arg-use env head k else lin-zero
+    is ALambdaExpr (ps) (bd) (s) -> lin-arg-lambda (lin-of env v False a)
+    is otherwise -> lin-of env v False a
+
+ A capturing closure handed to a callee escapes into an unknown call
+ discipline - the callee may invoke it any number of times. A
+ capturing closure in tail position escapes to the caller the same
+ way, so it takes the return obligation (sanctioned only by a
+ linear-declared return type).
+
+  lin-arg-lambda : LinResult -> LinResult
+  lin-arg-lambda (c) =
+   if lin-flags c
+    then LinResult { count = c.count, ok = c.ok, dead = c.dead, ret = False, esc = c.esc, cap = lin-esc-first (c.cap) "a closure passed as an argument" }
+    else c
+
+  lin-lambda-node : TypeEnv, Text, Boolean, AExpr -> LinResult
+  lin-lambda-node (env) (v) (tail) (body) =
+   let c = lin-of env v False body
+   in if tail
+    then (if lin-flags c then LinResult { count = c.count, ok = c.ok, dead = c.dead, ret = True, esc = c.esc, cap = c.cap } else c)
+    else c
+
+  lin-arg-use : TypeEnv, Text, Integer -> LinResult
+  lin-arg-use (env) (head) (k) =
+   if callee-param-linear env head k then lin-one
+   else LinResult { count = 1, ok = True, dead = 0, ret = False, esc = if head == "" then "a function value" else head, cap = "" }
+
+  callee-param-linear : TypeEnv, Text, Integer -> Boolean
+  callee-param-linear (env) (head) (k) =
+   if head == "" then False
+   else let resolved = rename-lookup (env.chapter-renames) head
+   in if env-has env resolved then registered-param-is-linear (env-lookup env resolved) k
+   else False
+
+  registered-param-is-linear : CodexType, Integer -> Boolean
+  registered-param-is-linear (ty) (k) =
+   when ty
+    is FunTy (p) (row) (r) -> if k <= 0 then param-is-linear p else registered-param-is-linear r (k - 1)
+    is ForAllTy (id) (body) -> registered-param-is-linear body k
+    is ForAllEff (id) (body) -> registered-param-is-linear body k
+    is otherwise -> False
+
+  param-is-linear : CodexType -> Boolean
+  param-is-linear (ty) =
+   when ty
+    is LinearTy (inner) -> True
+    is otherwise -> False
+
+  lin-bind-is-alias : ALetBind, Text -> Boolean
+  lin-bind-is-alias (b) (v) =
+   when (b.value)
+    is ANameExpr (n) (s) -> (n.value) == v
+    is otherwise -> False
+
+ A bind RETAINS the owner when its value still holds the resource
+ after the bind: a lambda that captures it, a partial application
+ (by registered arity) that consumed it into a closure environment,
+ or a list/record literal that stashes the bare name (possibly
+ nested in further literals). The binding then owns the chain: a
+ closure is call-once, a container is consume-once, and the
+ boundary and count rules compose from there. A container element
+ that merely CONSUMES the owner through a call (`[consume n]`) is
+ not a stash - the container holds a plain result.
+
+  lin-stash-elem : AExpr, Text -> Boolean
+  lin-stash-elem (e) (v) =
+   when e
+    is ANameExpr (n) (s) -> (n.value) == v
+    is AListExpr (elems) (s) -> lin-stash-list elems v 0 (list-length elems)
+    is ARecordExpr (nm) (fields) (s) -> lin-stash-fields fields v 0 (list-length fields)
+    is otherwise -> False
+
+  lin-stash-list : List AExpr, Text, Integer, Integer -> Boolean
+  lin-stash-list (elems) (v) (i) (len) =
+   if i >= len then False
+   else if lin-stash-elem (list-at elems i) v then True
+   else lin-stash-list elems v (i + 1) len
+
+  lin-stash-fields : List AFieldExpr, Text, Integer, Integer -> Boolean
+  lin-stash-fields (fields) (v) (i) (len) =
+   if i >= len then False
+   else if lin-stash-elem (list-at fields i).value v then True
+   else lin-stash-fields fields v (i + 1) len
+
+  registered-fun-param-count : CodexType -> Integer
+  registered-fun-param-count (ty) =
+   when ty
+    is FunTy (p) (row) (r) -> 1 + registered-fun-param-count r
+    is ForAllTy (id) (body) -> registered-fun-param-count body
+    is ForAllEff (id) (body) -> registered-fun-param-count body
+    is otherwise -> 0
+
+  lin-bind-partial : TypeEnv, AExpr -> Boolean
+  lin-bind-partial (env) (e) =
+   let head = apply-head-name e
+   in if head == "" then False
+   else let resolved = rename-lookup (env.chapter-renames) head
+   in if env-has env resolved
+    then (apply-arg-count e) < (registered-fun-param-count (env-lookup env resolved))
+    else False
+
+  lin-bind-retains : TypeEnv, ALetBind, Text, LinResult -> Boolean
+  lin-bind-retains (env) (b) (v) (c) =
+   when (b.value)
+    is ALambdaExpr (ps) (bd) (s) -> lin-flags c
+    is AApplyExpr (f) (a) (s) -> if lin-flags c then lin-bind-partial env (b.value) else False
+    is AListExpr (elems) (s) -> lin-stash-elem (b.value) v
+    is ARecordExpr (nm) (fields) (s) -> lin-stash-elem (b.value) v
+    is otherwise -> False
+
+  lin-let : TypeEnv, Text, Boolean, List ALetBind, AExpr, Integer, Integer -> LinResult
+  lin-let (env) (v) (tail) (binds) (body) (i) (len) =
+   if i >= len then lin-of env v tail body
    else let b = list-at binds i
-   in let here = lin-of v (b.value)
-   in if (b.name.value) == v then here
-   else lin-seq here (lin-let v binds body (i + 1) len)
+   in if lin-bind-is-alias b v then lin-let-moved env v (b.name.value) tail binds body (i + 1) len
+   else let here = lin-of env v False (b.value)
+   in if lin-bind-retains env b v here then lin-let-retained env v (b.name.value) tail here binds body (i + 1) len
+   else if (b.name.value) == v then here
+   else lin-seq here (lin-let env v tail binds body (i + 1) len)
 
-  lin-list : Text, List AExpr, Integer, Integer -> LinResult
-  lin-list (v) (elems) (i) (len) =
-   if i >= len then LinResult { count = 0, ok = True }
-   else lin-seq (lin-of v (list-at elems i)) (lin-list v elems (i + 1) len)
+ The index i is already the bind AFTER the alias. A self-alias
+ (let n = n) transfers to the same name, so the walk simply
+ continues under it; a self-named retain keeps only the bind
+ value's own judgment (the rest is shadowed).
 
-  lin-fields : Text, List AFieldExpr, Integer, Integer -> LinResult
-  lin-fields (v) (fields) (i) (len) =
-   if i >= len then LinResult { count = 0, ok = True }
-   else lin-seq (lin-of v (list-at fields i).value) (lin-fields v fields (i + 1) len)
+  lin-let-moved : TypeEnv, Text, Text, Boolean, List ALetBind, AExpr, Integer, Integer -> LinResult
+  lin-let-moved (env) (v) (h) (tail) (binds) (body) (i) (len) =
+   if h == v then lin-let env v tail binds body i len
+   else lin-move-join (lin-let env h tail binds body i len) (lin-let env v False binds body i len)
 
-  lin-stmts : Text, List AActStmt, Integer, Integer -> LinResult
-  lin-stmts (v) (stmts) (i) (len) =
-   if i >= len then LinResult { count = 0, ok = True }
+  lin-let-retained : TypeEnv, Text, Text, Boolean, LinResult, List ALetBind, AExpr, Integer, Integer -> LinResult
+  lin-let-retained (env) (v) (h) (tail) (c) (binds) (body) (i) (len) =
+   if h == v then c
+   else lin-retain-join c (lin-let env h tail binds body i len) (lin-let env v False binds body i len)
+
+  lin-list : TypeEnv, Text, List AExpr, Integer, Integer -> LinResult
+  lin-list (env) (v) (elems) (i) (len) =
+   if i >= len then lin-zero
+   else lin-seq (lin-of env v False (list-at elems i)) (lin-list env v elems (i + 1) len)
+
+  lin-fields : TypeEnv, Text, List AFieldExpr, Integer, Integer -> LinResult
+  lin-fields (env) (v) (fields) (i) (len) =
+   if i >= len then lin-zero
+   else lin-seq (lin-of env v False (list-at fields i).value) (lin-fields env v fields (i + 1) len)
+
+  lin-stmts : TypeEnv, Text, List AActStmt, Integer, Integer -> LinResult
+  lin-stmts (env) (v) (stmts) (i) (len) =
+   if i >= len then lin-zero
    else when (list-at stmts i)
-    is AActExprStmt (e) (s) -> lin-seq (lin-of v e) (lin-stmts v stmts (i + 1) len)
-    is AActBindStmt (n) (e) (s) -> if (n.value) == v then lin-of v e else lin-seq (lin-of v e) (lin-stmts v stmts (i + 1) len)
+    is AActExprStmt (e) (s) -> lin-seq (lin-of env v False e) (lin-stmts env v stmts (i + 1) len)
+    is AActBindStmt (n) (e) (s) -> if (n.value) == v then lin-of env v False e else lin-seq (lin-of env v False e) (lin-stmts env v stmts (i + 1) len)
 
-  lin-arms : Text, List AMatchArm, Integer, Integer -> LinResult
-  lin-arms (v) (arms) (i) (len) =
-   if i >= len then LinResult { count = 0, ok = True }
+  lin-arms : TypeEnv, Text, Boolean, List AMatchArm, Integer, Integer -> LinResult
+  lin-arms (env) (v) (tail) (arms) (i) (len) =
+   if i >= len then lin-zero
    else let arm = list-at arms i
-   in let this = if apat-binds-name (arm.pattern) v then LinResult { count = 0, ok = True }
-       else lin-seq (lin-of v (arm.guard)) (lin-of v (arm.body))
+   in let this = if apat-binds-name (arm.pattern) v then lin-zero
+       else lin-seq (lin-of env v False (arm.guard)) (lin-of env v tail (arm.body))
    in if i + 1 >= len then this
-   else lin-branch this (lin-arms v arms (i + 1) len)
+   else lin-branch this (lin-arms env v tail arms (i + 1) len)
 
   clause-binds-name : AHandleClause, Text -> Boolean
   clause-binds-name (cl) (v) =
    if name-list-has (cl.params) v then True else (cl.resume-name.value) == v
 
-  lin-clauses : Text, List AHandleClause, Integer, Integer -> LinResult
-  lin-clauses (v) (clauses) (i) (len) =
-   if i >= len then LinResult { count = 0, ok = True }
-   else let cl = list-at clauses i
-   in let here = if clause-binds-name cl v then LinResult { count = 0, ok = True } else lin-of v (cl.body)
-   in lin-seq here (lin-clauses v clauses (i + 1) len)
+ A handler clause body may run zero or many times, so any mention of
+ the tracked owner inside one is a capture violation.
 
-  consume-max : Integer, Integer -> Integer
-  consume-max (a) (b) = if a >= b then a else b
+  lin-clause-guard : LinResult -> LinResult
+  lin-clause-guard (c) =
+   if lin-flags c
+    then LinResult { count = c.count, ok = c.ok, dead = c.dead, ret = False, esc = c.esc, cap = lin-esc-first (c.cap) "a handler clause" }
+    else c
+
+  lin-clauses : TypeEnv, Text, List AHandleClause, Integer, Integer -> LinResult
+  lin-clauses (env) (v) (clauses) (i) (len) =
+   if i >= len then lin-zero
+   else let cl = list-at clauses i
+   in let here = if clause-binds-name cl v then lin-zero else lin-clause-guard (lin-of env v False (cl.body))
+   in lin-seq here (lin-clauses env v clauses (i + 1) len)
 
   apply-arg-count : AExpr -> Integer
   apply-arg-count (e) =
@@ -1451,9 +2177,11 @@ Section: Linearity Checking
      if (n.value) == target then True
      else if type-list-mentions-mut env args target (fuel - 1) then True
      else type-mentions-mut env (resolve-constructed-to-record env (n.value)) target (fuel - 1)
-    is FunTy (p) (r) -> type-mentions-mut env r target (fuel - 1)
+    is FunTy (p) (row) (r) -> type-mentions-mut env r target (fuel - 1)
     is ForAllTy (id) (body) -> type-mentions-mut env body target (fuel - 1)
+    is ForAllEff (id) (body) -> type-mentions-mut env body target (fuel - 1)
     is EffectfulTy (effs) (labels) (inner) -> type-mentions-mut env inner target (fuel - 1)
+    is LinearTy (linner) -> type-mentions-mut env linner target (fuel - 1)
     is otherwise -> False
 
   type-list-mentions-mut : TypeEnv, List CodexType, Text, Integer -> Boolean
@@ -1485,88 +2213,98 @@ Section: Linearity Checking
     then type-mentions-mut env (peel-returns-n (env-lookup env resolved) (apply-arg-count e)) target 8
     else False
 
-  consume-read : TypeEnv, Text, Text, AExpr -> Integer
+  consume-read : TypeEnv, Text, Text, AExpr -> LinResult
   consume-read (env) (target) (v) (obj) =
    when obj
-    is ANameExpr (n) (s) -> 0
+    is ANameExpr (n) (s) -> lin-zero
     is otherwise -> consume-of env target v obj
 
-  consume-of : TypeEnv, Text, Text, AExpr -> Integer
+  consume-of : TypeEnv, Text, Text, AExpr -> LinResult
   consume-of (env) (target) (v) (e) =
    when e
-    is ANameExpr (n) (s) -> if n.value == v then 1 else 0
+    is ANameExpr (n) (s) -> if n.value == v then lin-one else lin-zero
     is AFieldAccess (obj) (f) (s) -> consume-read env target v obj
     is AApplyExpr (f) (a) (s) ->
      let threads = if spine-has-bare v e then apply-threads env target e else False
      in consume-spine env target v threads e
-    is ABinaryExpr (l) (op) (r) (s) -> (consume-of env target v l) + (consume-of env target v r)
+    is ABinaryExpr (l) (op) (r) (s) -> lin-seq (consume-of env target v l) (consume-of env target v r)
     is AUnaryExpr (x) (s) -> consume-of env target v x
-    is AIfExpr (c) (t) (el) (s) -> (consume-of env target v c) + (consume-max (consume-of env target v t) (consume-of env target v el))
+    is AIfExpr (c) (t) (el) (s) -> lin-seq (consume-of env target v c) (lin-path-max (consume-of env target v t) (consume-of env target v el))
     is ALetExpr (binds) (body) (s) -> consume-let env target v binds body 0 (list-length binds)
-    is ALambdaExpr (params) (body) (s) -> if name-list-has params v then 0 else consume-of env target v body
-    is AHandleExpr (eff) (body) (clauses) (s) -> (consume-of env target v body) + (consume-clauses env target v clauses 0 (list-length clauses))
+    is ALambdaExpr (params) (body) (s) -> if name-list-has params v then lin-zero else consume-of env target v body
+    is AHandleExpr (eff) (body) (clauses) (s) -> lin-seq (consume-of env target v body) (consume-clauses env target v clauses 0 (list-length clauses))
     is AWithTimeoutExpr (t) (effs) (scopes) (body) (s) -> consume-of env target v body
-    is AMatchExpr (scrut) (arms) (s) -> (consume-of env target v scrut) + (consume-arms env target v arms 0 (list-length arms))
+    is AMatchExpr (scrut) (arms) (s) -> lin-seq (consume-of env target v scrut) (consume-arms env target v arms 0 (list-length arms))
     is AListExpr (elems) (s) -> consume-list env target v elems 0 (list-length elems)
     is ARecordExpr (n) (fields) (s) -> consume-fields env target v fields 0 (list-length fields)
     is AActExpr (stmts) (s) -> consume-stmts env target v stmts 0 (list-length stmts)
-    is ATryExpr (max) (body) (fb) (fail) (s) -> (consume-stmts env target v body 0 (list-length body)) + (consume-max (consume-stmts env target v fb 0 (list-length fb)) (consume-stmts env target v fail 0 (list-length fail)))
-    is AFieldAssignExpr (rec) (f) (val) (s) -> (consume-read env target v rec) + (consume-of env target v val)
+    is ATryExpr (max) (body) (fb) (fail) (s) -> lin-seq (consume-stmts env target v body 0 (list-length body)) (lin-path-max (consume-stmts env target v fb 0 (list-length fb)) (consume-stmts env target v fail 0 (list-length fail)))
+    is AFieldAssignExpr (rec) (f) (val) (s) -> lin-seq (consume-read env target v rec) (consume-of env target v val)
     is ALazyExpr (inner) (s) -> consume-of env target v inner
-    is otherwise -> 0
+    is otherwise -> lin-zero
 
-  consume-spine : TypeEnv, Text, Text, Boolean, AExpr -> Integer
+  consume-spine : TypeEnv, Text, Text, Boolean, AExpr -> LinResult
   consume-spine (env) (target) (v) (threads) (e) =
    when e
-    is AApplyExpr (f) (a) (s) -> (consume-spine env target v threads f) + (consume-arg env target v threads a)
+    is AApplyExpr (f) (a) (s) -> lin-seq (consume-spine env target v threads f) (consume-arg env target v threads a)
     is otherwise -> consume-of env target v e
 
-  consume-arg : TypeEnv, Text, Text, Boolean, AExpr -> Integer
+  consume-arg : TypeEnv, Text, Text, Boolean, AExpr -> LinResult
   consume-arg (env) (target) (v) (threads) (a) =
    when a
-    is ANameExpr (n) (s) -> if (n.value == v) then (if threads then 1 else 0) else 0
+    is ANameExpr (n) (s) -> if (n.value == v) then (if threads then lin-one else lin-zero) else lin-zero
     is otherwise -> consume-of env target v a
 
-  consume-let : TypeEnv, Text, Text, List ALetBind, AExpr, Integer, Integer -> Integer
+  consume-let : TypeEnv, Text, Text, List ALetBind, AExpr, Integer, Integer -> LinResult
   consume-let (env) (target) (v) (binds) (body) (i) (len) =
    if i >= len then consume-of env target v body
    else let b = list-at binds i
-   in let here = consume-of env target v (b.value)
+   in if lin-bind-is-alias b v then consume-let-moved env target v (b.name.value) binds body (i + 1) len
+   else let here = consume-of env target v (b.value)
    in if (b.name.value) == v then here
-   else here + (consume-let env target v binds body (i + 1) len)
+   else lin-seq here (consume-let env target v binds body (i + 1) len)
 
-  consume-list : TypeEnv, Text, Text, List AExpr, Integer, Integer -> Integer
+ The dead walk of a moved-from mutable name counts EVERY mention,
+ reads included: after the transfer the old name is a stale alias,
+ exactly the hazard the discipline exists to forbid.
+
+  consume-let-moved : TypeEnv, Text, Text, Text, List ALetBind, AExpr, Integer, Integer -> LinResult
+  consume-let-moved (env) (target) (v) (h) (binds) (body) (i) (len) =
+   if h == v then consume-let env target v binds body i len
+   else lin-move-join (consume-let env target h binds body i len) (lin-let env v False binds body i len)
+
+  consume-list : TypeEnv, Text, Text, List AExpr, Integer, Integer -> LinResult
   consume-list (env) (target) (v) (elems) (i) (len) =
-   if i >= len then 0
-   else (consume-of env target v (list-at elems i)) + (consume-list env target v elems (i + 1) len)
+   if i >= len then lin-zero
+   else lin-seq (consume-of env target v (list-at elems i)) (consume-list env target v elems (i + 1) len)
 
-  consume-fields : TypeEnv, Text, Text, List AFieldExpr, Integer, Integer -> Integer
+  consume-fields : TypeEnv, Text, Text, List AFieldExpr, Integer, Integer -> LinResult
   consume-fields (env) (target) (v) (fields) (i) (len) =
-   if i >= len then 0
-   else (consume-of env target v (list-at fields i).value) + (consume-fields env target v fields (i + 1) len)
+   if i >= len then lin-zero
+   else lin-seq (consume-of env target v (list-at fields i).value) (consume-fields env target v fields (i + 1) len)
 
-  consume-stmts : TypeEnv, Text, Text, List AActStmt, Integer, Integer -> Integer
+  consume-stmts : TypeEnv, Text, Text, List AActStmt, Integer, Integer -> LinResult
   consume-stmts (env) (target) (v) (stmts) (i) (len) =
-   if i >= len then 0
+   if i >= len then lin-zero
    else when (list-at stmts i)
-    is AActExprStmt (e) (s) -> (consume-of env target v e) + (consume-stmts env target v stmts (i + 1) len)
-    is AActBindStmt (n) (e) (s) -> if (n.value) == v then consume-of env target v e else (consume-of env target v e) + (consume-stmts env target v stmts (i + 1) len)
+    is AActExprStmt (e) (s) -> lin-seq (consume-of env target v e) (consume-stmts env target v stmts (i + 1) len)
+    is AActBindStmt (n) (e) (s) -> if (n.value) == v then consume-of env target v e else lin-seq (consume-of env target v e) (consume-stmts env target v stmts (i + 1) len)
 
-  consume-arms : TypeEnv, Text, Text, List AMatchArm, Integer, Integer -> Integer
+  consume-arms : TypeEnv, Text, Text, List AMatchArm, Integer, Integer -> LinResult
   consume-arms (env) (target) (v) (arms) (i) (len) =
-   if i >= len then 0
+   if i >= len then lin-zero
    else let arm = list-at arms i
-   in let this = if apat-binds-name (arm.pattern) v then 0
-       else (consume-of env target v (arm.guard)) + (consume-of env target v (arm.body))
+   in let this = if apat-binds-name (arm.pattern) v then lin-zero
+       else lin-seq (consume-of env target v (arm.guard)) (consume-of env target v (arm.body))
    in if i + 1 >= len then this
-   else consume-max this (consume-arms env target v arms (i + 1) len)
+   else lin-path-max this (consume-arms env target v arms (i + 1) len)
 
-  consume-clauses : TypeEnv, Text, Text, List AHandleClause, Integer, Integer -> Integer
+  consume-clauses : TypeEnv, Text, Text, List AHandleClause, Integer, Integer -> LinResult
   consume-clauses (env) (target) (v) (clauses) (i) (len) =
-   if i >= len then 0
+   if i >= len then lin-zero
    else let cl = list-at clauses i
-   in let here = if clause-binds-name cl v then 0 else consume-of env target v (cl.body)
-   in here + (consume-clauses env target v clauses (i + 1) len)
+   in let here = if clause-binds-name cl v then lin-zero else consume-of env target v (cl.body)
+   in lin-seq here (consume-clauses env target v clauses (i + 1) len)
 
   atype-core-name : ATypeExpr -> Text
   atype-core-name (t) =
@@ -1594,20 +2332,56 @@ Section: Linearity Checking
   check-one-param (def) (env) (pty) (p) (st) =
    let tn = atype-core-name pty
    in if env-has env ("__mutable-" & tn) then check-one-mutable-param def env tn p st
-   else if is-linear-atype pty then check-one-linear-param def p st
+   else if is-linear-atype pty then check-one-linear-param def env p st
    else st
 
   check-one-mutable-param : ADef, TypeEnv, Text, AParam, UnificationState -> UnificationState
   check-one-mutable-param (def) (env) (tn) (p) (st) =
-   let c = consume-of env tn (p.name.value) (def.body)
-   in if c > 1
-    then add-unify-error st cdx-mutable-alias ("In '" & (def.name.value) & "', mutable record '" & (p.name.value) & "' is consumed " & integer-to-text c & " times on a single path; a mutable record may be passed on or aliased at most once") (p.span)
+   let r = consume-of env tn (p.name.value) (def.body)
+   in if (r.dead) > 0
+    then add-unify-error st cdx-mutable-alias ("In '" & (def.name.value) & "', mutable record '" & (p.name.value) & "' was moved to a new owner by a let binding and then mentioned again; after a move the original name is dead") (p.span)
+    else if (r.count) > 1
+    then add-unify-error st cdx-mutable-alias ("In '" & (def.name.value) & "', mutable record '" & (p.name.value) & "' is consumed " & integer-to-text (r.count) & " times on a single path; a mutable record may be handed to a new owner at most once") (p.span)
     else st
 
-  check-one-linear-param : ADef, AParam, UnificationState -> UnificationState
-  check-one-linear-param (def) (p) (st) =
-   let r = lin-of (p.name.value) (def.body)
-   in if r.ok == False
+ A bare return of the owner is sanctioned only when the def's
+ declared return type is itself linear. The freeze identity is the
+ one exempt door: its whole meaning is shedding the wrapper.
+
+  afun-return-after : ATypeExpr, Integer -> ATypeExpr
+  afun-return-after (dt) (k) =
+   if k <= 0 then dt
+   else when dt
+    is AFunType (pty) (rty) (s) -> afun-return-after rty (k - 1)
+    is otherwise -> dt
+
+  is-freeze-door : ADef -> Boolean
+  is-freeze-door (def) =
+   if (def.name.value) == "freeze"
+    then when (def.body)
+     is ANameExpr (n) (s) -> True
+     is otherwise -> False
+    else False
+
+  linear-return-sanctioned : ADef -> Boolean
+  linear-return-sanctioned (def) =
+   if list-length (def.declared-type) == 0 then False
+   else if is-freeze-door def then True
+   else is-linear-atype (afun-return-after (list-at (def.declared-type) 0) (list-length (def.params)))
+
+  check-one-linear-param : ADef, TypeEnv, AParam, UnificationState -> UnificationState
+  check-one-linear-param (def) (env) (p) (st) =
+   let r = lin-of env (p.name.value) True (def.body)
+   in let bad-ret = if r.ret then (if linear-return-sanctioned def then False else True) else False
+   in if (r.dead) > 0
+    then add-unify-error st cdx-use-after-consume ("Linear value '" & (p.name.value) & "' was moved to a new owner by a let binding and then mentioned again; after a move the original name is dead") (p.span)
+    else if (r.cap) /= ""
+    then add-unify-error st cdx-linear-capture ("Linear value '" & (p.name.value) & "' is captured by " & (r.cap) & ", which may run zero or many times; a linear value may be captured only by a let-bound closure, which is then called exactly once") (p.span)
+    else if (r.esc) /= ""
+    then add-unify-error st cdx-linear-escape ("Linear value '" & (p.name.value) & "' is passed to a plain (non-linear) parameter of '" & (r.esc) & "'; a linear value moves only through parameters declared linear. Use freeze to exit the discipline deliberately") (p.span)
+    else if bad-ret
+    then add-unify-error st cdx-linear-return ("Linear value '" & (p.name.value) & "' is returned from '" & (def.name.value) & "', whose return type is not declared linear; that is an unsanctioned freeze. Declare the return linear, or consume the value with freeze") (p.span)
+    else if r.ok == False
     then add-unify-error st cdx-use-after-consume ("Linear value '" & (p.name.value) & "' is used a different number of times across branches; each branch must use it exactly once") (p.span)
     else if r.count > 1
     then add-unify-error st cdx-use-after-consume ("Linear value '" & (p.name.value) & "' is used " & integer-to-text (r.count) & " times; a linear value must be used exactly once") (p.span)
@@ -1969,7 +2743,7 @@ Section: Register Type Definitions
      }
     is AUnitTypeDef (name) (base-texpr) (s) ->
      let unit-ty = lookup-type-def tdm (name.value)
-     in let ctor-ty = deck-record (FunTy (resolve-type-expr tdm base-texpr) unit-ty)
+     in let ctor-ty = deck-record (FunTy (resolve-type-expr tdm base-texpr) empty-row unit-ty)
      in LetBindResult {
       state = st,
       env = env-bind env (name.value) ctor-ty
@@ -2006,14 +2780,14 @@ Section: Register Type Definitions
   build-ctor-type (tdm) (fields) (result) (i) (len) =
    if i == len then result
    else let rest = build-ctor-type tdm fields result (i + 1) len
-   in deck-record (FunTy (resolve-type-expr tdm (list-at fields i)) rest)
+   in deck-record (FunTy (resolve-type-expr tdm (list-at fields i)) empty-row rest)
 
   build-record-ctor-type : List TypeBinding, List ARecordFieldDef, CodexType, Integer, Integer -> CodexType
   build-record-ctor-type (tdm) (fields) (result) (i) (len) =
    if i == len then result
    else let f = list-at fields i
    in let rest = build-record-ctor-type tdm fields result (i + 1) len
-   in deck-record (FunTy (resolve-type-expr tdm (f.type-expr)) rest)
+   in deck-record (FunTy (resolve-type-expr tdm (f.type-expr)) empty-row rest)
 
 Section: Type Arity Check
   FlatAppResult = record {
@@ -2055,7 +2829,7 @@ Section: Type Arity Check
                    else acc
      in check-arity-in-expr-list tdm (flat.args) 0 (list-length (flat.args)) acc2
     is AFunType (param) (ret) (s) -> check-arity-in-expr tdm ret (check-arity-in-expr tdm param acc)
-    is AEffectType (effs) (scopes) (ret) (s) -> check-arity-in-expr tdm ret acc
+    is AEffectType (effs) (scopes) (tail) (ret) (s) -> check-arity-in-expr tdm ret acc
     is ALinearType (inner) (s) -> check-arity-in-expr tdm inner acc
     is otherwise -> acc
 
@@ -2111,22 +2885,15 @@ Section: Capability Checker
   check-opening-capabilities : List TypeBinding -> List Diagnostic
   check-opening-capabilities (types) =
    let opening-ty = find-opening-type types 0 (list-length types)
-   in let effs = extract-effects opening-ty
+   in let effs = collect-effect-names opening-ty
    in check-cap-list effs granted-capabilities 0 (list-length effs)
 
   find-opening-type : List TypeBinding, Integer, Integer -> CodexType
   find-opening-type (types) (i) (len) =
    if i == len then NothingTy
    else let t = list-at types i
-   in if t.name == "opening" then strip-fun-args-for-cap (t.bound-type)
+   in if t.name == "opening" then t.bound-type
       else find-opening-type types (i + 1) len
-
-  strip-fun-args-for-cap : CodexType -> CodexType
-  strip-fun-args-for-cap (ty) =
-   when ty
-    is FunTy (p) (r) -> strip-fun-args-for-cap r
-    is ForAllTy (id) (body) -> strip-fun-args-for-cap body
-    is otherwise -> ty
 
   check-cap-list : List Name, List Text, Integer, Integer -> List Diagnostic
   check-cap-list (effs) (granted) (i) (len) =

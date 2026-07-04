@@ -64,6 +64,7 @@ $QuireDirs = @{
     'Site' = 'apps\site'
     'Boards' = 'codex\boards'
     'Guios' = 'apps\guios'
+    'Ideas' = 'apps\ideas'
     'Circuits' = 'apps\circuits\Core'
     'CircuitsSch' = 'apps\circuits\SchematicEditor'
     'CircuitsSym' = 'apps\circuits\SymbolEditor'

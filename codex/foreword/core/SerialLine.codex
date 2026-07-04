@@ -1,0 +1,174 @@
+Chapter: SerialLine
+  cites Foreword chapter Board (UartConfig, default-uart-config)
+  cites Foreword chapter Linear (freeze)
+
+ A serial line HAL layered on the UART configuration in Board. Where
+ the board UART drivers move raw bytes, this chapter models the line
+ discipline that Modbus RTU and other fieldbus protocols ride on:
+ RS232 (full-duplex, point to point), RS485 half-duplex (a shared
+ two-wire bus where a driver-enable gates transmission), and RS485
+ full-duplex (four-wire, separate transmit and receive pairs).
+
+ The open port is a uniquely owned mutable resource: the type system
+ forbids aliasing it (CDX2062), so the same line cannot be handed to
+ two owners or used after it is passed on. On a half-duplex bus the
+ driver-enable is itself a resource -- a linear grant that must be
+ released exactly once (forgetting is CDX2063), so the bus is never
+ left driven.
+
+Section: Line Mode
+
+  SerialMode =
+    | ModeRs232
+    | ModeRs485HalfDuplex
+    | ModeRs485FullDuplex
+
+Section: Line Direction
+
+ On a half-duplex bus the line is either receiving (driver disabled,
+ the safe idle state) or driving (driver enabled, transmitting).
+
+  LineDirection =
+    | DirReceive
+    | DirDrive
+
+  dir-is-drive : LineDirection -> Boolean
+  dir-is-drive (dir) = when dir is DirDrive -> True is otherwise -> False
+
+  dir-is-receive : LineDirection -> Boolean
+  dir-is-receive (dir) = when dir is DirReceive -> True is otherwise -> False
+
+Section: Configuration
+
+  SerialLineConfig = record {
+   uart : UartConfig,
+   mode : SerialMode,
+   de-active-high : Boolean
+  }
+
+  rs232-config : SerialLineConfig
+  rs232-config = SerialLineConfig {
+   uart = default-uart-config,
+   mode = ModeRs232,
+   de-active-high = True
+  }
+
+  rs485-half-config : SerialLineConfig
+  rs485-half-config = SerialLineConfig {
+   uart = default-uart-config,
+   mode = ModeRs485HalfDuplex,
+   de-active-high = True
+  }
+
+  rs485-full-config : SerialLineConfig
+  rs485-full-config = SerialLineConfig {
+   uart = default-uart-config,
+   mode = ModeRs485FullDuplex,
+   de-active-high = True
+  }
+
+Section: The Port Resource
+
+ A port opens in the receive direction: on a shared bus a node must
+ not drive the line until it explicitly enables its driver.
+
+  mutable SerialPort = record {
+   mode : SerialMode,
+   direction : LineDirection,
+   tx-bytes : Integer,
+   rx-bytes : Integer,
+   faults : Integer
+  }
+
+  serial-open : SerialLineConfig -> mutable SerialPort
+  serial-open (cfg) =
+   SerialPort {
+    mode = cfg.mode,
+    direction = DirReceive,
+    tx-bytes = 0,
+    rx-bytes = 0,
+    faults = 0
+   }
+
+Section: Direction Control
+
+  serial-drive-enable : mutable SerialPort -> mutable SerialPort
+  serial-drive-enable (port) =
+   port.direction = DirDrive
+   port
+
+  serial-drive-disable : mutable SerialPort -> mutable SerialPort
+  serial-drive-disable (port) =
+   port.direction = DirReceive
+   port
+
+Section: Discipline
+
+ Transmitting is permitted whenever the line is not a half-duplex bus,
+ or when the driver is enabled. Receiving is permitted whenever the
+ line is not half-duplex, or when the driver is disabled. A transfer
+ that violates the discipline is counted as a fault and moves no
+ bytes, rather than corrupting a shared bus.
+
+  serial-tx-allowed : SerialMode, LineDirection -> Boolean
+  serial-tx-allowed (mode) (dir) =
+   when mode
+    is ModeRs485HalfDuplex -> dir-is-drive dir
+    is otherwise -> True
+
+  serial-rx-allowed : SerialMode, LineDirection -> Boolean
+  serial-rx-allowed (mode) (dir) =
+   when mode
+    is ModeRs485HalfDuplex -> dir-is-receive dir
+    is otherwise -> True
+
+Section: Transfers
+
+  serial-transmit : mutable SerialPort, List Integer -> mutable SerialPort
+  serial-transmit (port) (bytes) =
+   let allowed = serial-tx-allowed port.mode port.direction
+   in let n = list-length bytes
+   in port.tx-bytes = port.tx-bytes + (if allowed then n else 0)
+   in port.faults = port.faults + (if allowed then 0 else 1)
+   in port
+
+  serial-receive : mutable SerialPort, Integer -> mutable SerialPort
+  serial-receive (port) (count) =
+   let allowed = serial-rx-allowed port.mode port.direction
+   in port.rx-bytes = port.rx-bytes + (if allowed then count else 0)
+   in port.faults = port.faults + (if allowed then 0 else 1)
+   in port
+
+Section: Queries
+
+  serial-tx-bytes : mutable SerialPort -> Integer
+  serial-tx-bytes (port) = port.tx-bytes
+
+  serial-rx-bytes : mutable SerialPort -> Integer
+  serial-rx-bytes (port) = port.rx-bytes
+
+  serial-faults : mutable SerialPort -> Integer
+  serial-faults (port) = port.faults
+
+  serial-direction-code : mutable SerialPort -> Integer
+  serial-direction-code (port) = when port.direction is DirDrive -> 1 is otherwise -> 0
+
+  serial-close : mutable SerialPort -> Integer
+  serial-close (port) = port.tx-bytes
+
+Section: Bus Grant
+
+ On a shared RS485 bus, permission to drive the line is a resource:
+ acquire it before transmitting, thread it through each transmission,
+ and release it exactly once so other nodes can take the bus. The
+ grant is linear -- the compiler rejects a path that drops it (leaving
+ the bus driven) or one that reuses it after release.
+
+  serial-bus-acquire : Integer -> linear Integer
+  serial-bus-acquire (node-id) = node-id
+
+  serial-bus-transmit : linear Integer, List Integer -> linear Integer
+  serial-bus-transmit (grant) (bytes) = grant
+
+  serial-bus-release : linear Integer -> Integer
+  serial-bus-release (grant) = freeze grant

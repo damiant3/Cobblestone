@@ -1,0 +1,45 @@
+Chapter: Sixlowpan
+
+ 6LoWPAN (RFC 4944 / 6282), the adaptation layer that carries IPv6 over
+ IEEE 802.15.4 so constrained mesh nodes (Thread, Zigbee IP) can speak
+ IP. Each adaptation header starts with a dispatch byte. This chapter
+ builds the IPHC (IP header compression) base header -- the two-byte
+ field of compression flags -- and the fragmentation headers (FRAG1 and
+ subsequent FRAGN) that split a datagram larger than one 802.15.4 frame.
+
+Section: Dispatch Bytes
+
+  lowpan-dispatch-nalp : Integer = #00
+  lowpan-dispatch-ipv6 : Integer = #41
+  lowpan-dispatch-frag1 : Integer = #C0
+  lowpan-dispatch-fragn : Integer = #E0
+  lowpan-dispatch-mesh : Integer = #80
+
+Section: IPHC Base Header
+
+ The IPHC base is two bytes. The first: 011 (dispatch), traffic class
+ and flow label compression (TF, 2 bits), next-header compression (NH,
+ 1 bit), hop-limit compression (HLIM, 2 bits). The second: context
+ identifier extension (CID), source address compression (SAC), source
+ address mode (SAM, 2 bits), multicast (M), destination address
+ compression (DAC), destination address mode (DAM, 2 bits).
+
+  lowpan-iphc : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> List Integer
+  lowpan-iphc (tf) (nh) (hlim) (cid) (sac) (sam) (m) (dac) (dam) =
+   let byte0 = bit-or #60 (bit-or (bit-shl tf 3) (bit-or (bit-shl nh 2) hlim))
+   in let byte1 = bit-or (bit-shl cid 7) (bit-or (bit-shl sac 6) (bit-or (bit-shl sam 4) (bit-or (bit-shl m 3) (bit-or (bit-shl dac 2) dam))))
+   in [byte0, byte1]
+
+Section: Fragmentation
+
+ The FRAG1 header of the first fragment carries the total datagram size
+ (11 bits) and a tag identifying the datagram (16 bits). Each FRAGN
+ header adds an 8-bit offset in units of eight octets.
+
+  lowpan-frag1 : Integer, Integer -> List Integer
+  lowpan-frag1 (datagram-size) (tag) =
+   [bit-or lowpan-dispatch-frag1 (bit-and (bit-shru datagram-size 8) 7), bit-and datagram-size 255, bit-and (bit-shru tag 8) 255, bit-and tag 255]
+
+  lowpan-fragn : Integer, Integer, Integer -> List Integer
+  lowpan-fragn (datagram-size) (tag) (offset) =
+   [bit-or lowpan-dispatch-fragn (bit-and (bit-shru datagram-size 8) 7), bit-and datagram-size 255, bit-and (bit-shru tag 8) 255, bit-and tag 255, bit-and offset 255]

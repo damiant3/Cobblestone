@@ -1,0 +1,126 @@
+Chapter: Bacnet
+
+ BACnet/IP (ANSI/ASHRAE 135), the building-automation protocol for HVAC,
+ lighting, access control, and metering in commercial buildings. A
+ message is a BVLC header (0x81, function, two-byte length) wrapping an
+ NPDU (network layer) and an APDU (application layer). The APDU encodes
+ objects and properties with tagged data: a context tag is
+ (tag-number << 4) | 0x08 | length, an object identifier packs a 10-bit
+ type and a 22-bit inst into four bytes. This chapter builds a
+ confirmed ReadProperty request; more services follow the same tag
+ machinery.
+
+Section: Object Types
+
+  bacnet-obj-analog-input : Integer = 0
+  bacnet-obj-analog-output : Integer = 1
+  bacnet-obj-analog-value : Integer = 2
+  bacnet-obj-binary-input : Integer = 3
+  bacnet-obj-binary-output : Integer = 4
+  bacnet-obj-binary-value : Integer = 5
+  bacnet-obj-device : Integer = 8
+  bacnet-obj-multi-state-value : Integer = 19
+
+Section: Property Identifiers
+
+  bacnet-prop-description : Integer = 28
+  bacnet-prop-object-name : Integer = 77
+  bacnet-prop-object-type : Integer = 79
+  bacnet-prop-present-value : Integer = 85
+  bacnet-prop-status-flags : Integer = 111
+  bacnet-prop-units : Integer = 117
+
+Section: Services and BVLC
+
+  bacnet-svc-read-property : Integer = 12
+  bacnet-svc-read-property-multiple : Integer = 14
+  bacnet-svc-write-property : Integer = 15
+
+  bacnet-bvlc-original-unicast : Integer = #0A
+  bacnet-bvlc-original-broadcast : Integer = #0B
+
+Section: Tag Encoding
+
+ A context tag carries the tag number in the high nibble, the class bit
+ (0x08), and the content length in the low nibble.
+
+  bacnet-object-id-bytes : Integer, Integer -> List Integer
+  bacnet-object-id-bytes (obj-type) (inst) =
+   let v = bit-or (bit-shl obj-type 22) inst
+   in [bit-and (bit-shru v 24) 255, bit-and (bit-shru v 16) 255, bit-and (bit-shru v 8) 255, bit-and v 255]
+
+  bacnet-context-object-id : Integer, Integer, Integer -> List Integer
+  bacnet-context-object-id (tag-num) (obj-type) (inst) =
+   [bit-or (bit-or (bit-shl tag-num 4) 8) 4] & bacnet-object-id-bytes obj-type inst
+
+  bacnet-context-unsigned : Integer, Integer -> List Integer
+  bacnet-context-unsigned (tag-num) (v) =
+   let content = if v < 256 then [v] else [bit-and (bit-shru v 8) 255, bit-and v 255]
+   in [bit-or (bit-or (bit-shl tag-num 4) 8) (list-length content)] & content
+
+Section: Network and Link Layers
+
+  bacnet-npdu : Integer -> List Integer
+  bacnet-npdu (control) = [1, control]
+
+  bacnet-bvlc : Integer, List Integer -> List Integer
+  bacnet-bvlc (function) (payload) =
+   let total = 4 + list-length payload
+   in [#81, function, bit-and (bit-shru total 8) 255, bit-and total 255] & payload
+
+Section: ReadProperty
+
+ A confirmed request APDU: PDU type 0 with no flags, the max-segments /
+ max-response octet (0x05 = up to 1476 bytes), the invoke id, the
+ service choice, then the object identifier (context 0) and the
+ property identifier (context 1). The NPDU control 0x04 requests a reply.
+
+  bacnet-read-property-apdu : Integer, Integer, Integer, Integer -> List Integer
+  bacnet-read-property-apdu (invoke-id) (obj-type) (inst) (prop-id) =
+   [0, 5, invoke-id, bacnet-svc-read-property] & bacnet-context-object-id 0 obj-type inst & bacnet-context-unsigned 1 prop-id
+
+  bacnet-build-read-property : Integer, Integer, Integer, Integer -> List Integer
+  bacnet-build-read-property (invoke-id) (obj-type) (inst) (prop-id) =
+   bacnet-bvlc bacnet-bvlc-original-unicast (bacnet-npdu #04 & bacnet-read-property-apdu invoke-id obj-type inst prop-id)
+
+Section: Application-Tagged Values
+
+ An application-tagged value carries the tag number in the high nibble
+ and the length in the low nibble. Unsigned uses tag 2, Real (a 32-bit
+ IEEE-754 float, big-endian) uses tag 4, Enumerated uses tag 9.
+
+  bacnet-u32-be : Integer -> List Integer
+  bacnet-u32-be (v) =
+   [bit-and (bit-shru v 24) 255, bit-and (bit-shru v 16) 255, bit-and (bit-shru v 8) 255, bit-and v 255]
+
+  bacnet-app-unsigned : Integer -> List Integer
+  bacnet-app-unsigned (v) =
+   if v < 256 then [bit-or (bit-shl 2 4) 1, v]
+   else [bit-or (bit-shl 2 4) 2, bit-and (bit-shru v 8) 255, bit-and v 255]
+
+  bacnet-app-enumerated : Integer -> List Integer
+  bacnet-app-enumerated (v) = [bit-or (bit-shl 9 4) 1, v]
+
+  bacnet-app-real : Real approximate -> List Integer
+  bacnet-app-real (r) =
+   [bit-or (bit-shl 4 4) 4] & bacnet-u32-be (real-approx-to-bits r)
+
+Section: WriteProperty
+
+ A WriteProperty request adds the property value, wrapped in an opening
+ and closing context tag 3, after the object and property identifiers.
+ An opening tag is (tag << 4) | 0x0E, a closing tag (tag << 4) | 0x0F.
+
+  bacnet-open-tag : Integer -> Integer
+  bacnet-open-tag (tag-num) = bit-or (bit-shl tag-num 4) #0E
+
+  bacnet-close-tag : Integer -> Integer
+  bacnet-close-tag (tag-num) = bit-or (bit-shl tag-num 4) #0F
+
+  bacnet-write-property-apdu : Integer, Integer, Integer, Integer, List Integer -> List Integer
+  bacnet-write-property-apdu (invoke-id) (obj-type) (inst) (prop-id) (value) =
+   [0, 5, invoke-id, bacnet-svc-write-property] & bacnet-context-object-id 0 obj-type inst & bacnet-context-unsigned 1 prop-id & [bacnet-open-tag 3] & value & [bacnet-close-tag 3]
+
+  bacnet-build-write-property : Integer, Integer, Integer, Integer, List Integer -> List Integer
+  bacnet-build-write-property (invoke-id) (obj-type) (inst) (prop-id) (value) =
+   bacnet-bvlc bacnet-bvlc-original-unicast (bacnet-npdu #04 & bacnet-write-property-apdu invoke-id obj-type inst prop-id value)

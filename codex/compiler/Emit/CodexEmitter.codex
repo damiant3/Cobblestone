@@ -58,7 +58,10 @@ Section: Type Definition Emission
     is ANamedType (name) (s) -> name.value
     is AFunType (p) (r) (s) -> emit-fun-param-chain p r
     is AAppType (base) (args) (s) -> emit-type-expr base & " " & emit-type-expr-args args 0
-    is AEffectType (effs) (scopes) (ret) (s) -> "[" & emit-effect-names effs 0 & "] " & emit-type-expr ret
+    is AEffectType (effs) (scopes) (tail) (ret) (s) ->
+     if list-length tail == 0 then "[" & emit-effect-names effs 0 & "] " & emit-type-expr ret
+     else if list-length effs == 0 then "[" & (list-at tail 0).value & "] " & emit-type-expr ret
+     else "[" & emit-effect-names effs 0 & ", " & (list-at tail 0).value & "] " & emit-type-expr ret
     is ABoundedIntType (b) (lo) (hi) (mode) (s) -> emit-type-expr b & " between " & integer-to-text lo & " and " & integer-to-text hi & emit-overflow-mode mode
     is ALinearType (inner) (s) -> "linear " & emit-type-expr inner
     is otherwise -> "Unknown"
@@ -69,6 +72,11 @@ Section: Type Definition Emission
     is OvError -> ""
     is OvWrapping -> " wrapping"
     is OvClamping -> " clamping"
+
+  emit-integer-ty : Integer, Integer, OverflowMode -> Text
+  emit-integer-ty (lo) (hi) (mode) =
+   if lo <= i64-min & hi >= i64-max then "Integer"
+   else "Integer between " & integer-to-text lo & " and " & integer-to-text hi & emit-overflow-mode mode
 
   emit-fun-param-chain : ATypeExpr, ATypeExpr -> Text
   emit-fun-param-chain (p) (r) =
@@ -132,10 +140,12 @@ Section: TypeVar Normalization
    when ty
     is TypeVar (id) -> tvar-map-insert m id
     is ForAllTy (id) (body) -> collect-tvars body (tvar-map-insert m id)
-    is FunTy (p) (r) -> collect-tvars r (collect-tvars p m)
+    is ForAllEff (id) (body) -> collect-tvars body m
+    is FunTy (p) (row) (r) -> collect-tvars r (collect-tvars p m)
     is ListTy (elem) | LinkedListTy (elem) -> collect-tvars elem m
     is EffectfulTy (effs) (sc) (ret) -> collect-tvars ret m
     is ConstructedTy (name) (args) -> collect-tvars-list args 0 m
+    is LinearTy (linner) -> collect-tvars linner m
     is otherwise -> m
 
   collect-tvars-list : List CodexType, Integer, TypeVarMap -> TypeVarMap
@@ -146,13 +156,15 @@ Section: TypeVar Normalization
   normalize-type : CodexType, TypeVarMap -> CodexType
   normalize-type (ty) (m) =
    when ty
-    is TypeVar (id) -> TypeVar (tvar-map-lookup (m.entries) id 0)
-    is ForAllTy (id) (body) -> ForAllTy (tvar-map-lookup (m.entries) id 0) (normalize-type body m)
-    is FunTy (p) (r) -> FunTy (normalize-type p m) (normalize-type r m)
+    is TypeVar (id) -> TypeVar (__narrow (tvar-map-lookup (m.entries) id 0))
+    is ForAllTy (id) (body) -> ForAllTy (__narrow (tvar-map-lookup (m.entries) id 0)) (normalize-type body m)
+    is ForAllEff (id) (body) -> ForAllEff id (normalize-type body m)
+    is FunTy (p) (row) (r) -> FunTy (normalize-type p m) row (normalize-type r m)
     is ListTy (elem) -> ListTy (normalize-type elem m)
     is LinkedListTy (elem) -> LinkedListTy (normalize-type elem m)
     is EffectfulTy (effs) (sc) (ret) -> EffectfulTy effs sc (normalize-type ret m)
     is ConstructedTy (name) (args) -> ConstructedTy name (normalize-type-list args 0 m)
+    is LinearTy (linner) -> LinearTy (normalize-type linner m)
     is otherwise -> ty
 
   normalize-type-list : List CodexType, Integer, TypeVarMap -> List CodexType
@@ -166,10 +178,18 @@ Section: TypeVar Normalization
       else normalize-type ty m
 
 Section: CodexType Emission
+
+ A bounded IntegerTy prints its bound. Dropping it emitted signatures
+ whose stage-B guards and propagated param ranges silently vanished
+ from the text round-trip - stage1 compiled with the parameters
+ unbounded, which the CDX2051 promotion turned from a masked warning
+ into a build failure. Full-range prints bare Integer, so unbounded
+ signatures round-trip byte-identically.
+
   emit-type : CodexType -> Text
   emit-type (ty) =
    when ty
-    is IntegerTy (lo) (hi) (mode) -> "Integer"
+    is IntegerTy (lo) (hi) (mode) -> emit-integer-ty lo hi mode
     is RealTy -> "Real"
     is RealApproxTy -> "Real approximate"
     is RealTrappingTy -> "Real trapping"
@@ -179,11 +199,12 @@ Section: CodexType Emission
     is CharTy -> "Char"
     is VoidTy | NothingTy -> "Nothing"
     is ErrorTy -> "Unknown"
-    is FunTy (p) (r) -> emit-fun-params p r
+    is FunTy (p) (row) (r) -> emit-fun-params p row r
     is ListTy (elem) -> "List " & wrap-complex elem
     is LinkedListTy (elem) -> "LinkedList " & wrap-complex elem
     is TypeVar (id) -> "a" & integer-to-text id
     is ForAllTy (id) (body) -> emit-type body
+    is ForAllEff (id) (body) -> emit-type body
     is SumTy (name) (ty-args) (ctors) | RecordTy (name) (args) (fields) -> name.value
     is ConstructedTy (name) (args) ->
      if is-tup-type-name (name.value) (list-length args) then "(" & emit-tuple-type-elems args 0 (list-length args) & ")"
@@ -193,24 +214,47 @@ Section: CodexType Emission
     is UnitTy (name) (inner) -> name.value
     is VectorTy (n) (t) -> "Vector " & integer-to-text n & " " & wrap-complex t
     is VectorMaskTy (n) -> "VectorMask " & integer-to-text n
+    is LinearTy (linner) -> "linear " & wrap-complex linner
     is otherwise -> "Unknown"
 
-  emit-fun-params : CodexType, CodexType -> Text
-  emit-fun-params (p) (r) =
+ The row prints only at the arrow whose result it decorates: a tail
+ merges into the result's effect bracket ([Audit, e]) or opens its
+ own ([e]) when the result carries no concrete effects. An empty row
+ prints nothing, so pure signatures are byte-identical to the
+ pre-row rendering — the text fixed point depends on this.
+
+  emit-fun-params : CodexType, EffectRow, CodexType -> Text
+  emit-fun-params (p) (row) (r) =
    when r
-    is FunTy (p2) (r2) -> wrap-fun-param p & ", " & emit-fun-params p2 r2
-    is otherwise -> wrap-fun-param p & " -> " & emit-type r
+    is FunTy (p2) (row2) (r2) -> wrap-fun-param p & ", " & emit-fun-params p2 row2 r2
+    is otherwise -> wrap-fun-param p & " -> " & emit-row-result row r
+
+  emit-row-result : EffectRow, CodexType -> Text
+  emit-row-result (row) (r) =
+   let has-labels = list-length (row.labels) > 0
+   in let has-tail = text-length (row.tail-name) > 0
+   in if has-labels == False & has-tail == False then emit-type r
+   else let tail-part = if has-tail then (if has-labels then ", " else "") & row.tail-name else ""
+   in "[" & emit-row-labels (row.labels) 0 & tail-part & "] " & emit-type r
+
+  emit-row-labels : List EffectLabel, Integer -> Text
+  emit-row-labels (ls) (i) =
+   if i == list-length ls then ""
+   else let l = list-at ls i
+   in let sep = if i > 0 then ", " else ""
+   in let scope-part = if text-length (l.scope) > 0 then " \"" & (l.scope) & "\"" else ""
+   in sep & (l.name.value) & scope-part & emit-row-labels ls (i + 1)
 
   wrap-fun-param : CodexType -> Text
   wrap-fun-param (ty) =
    when ty
-    is FunTy (p) (r) -> "(" & emit-type ty & ")"
+    is FunTy (p) (row) (r) -> "(" & emit-type ty & ")"
     is otherwise -> emit-type ty
 
   wrap-complex : CodexType -> Text
   wrap-complex (ty) =
    when ty
-    is FunTy (p) (r) | ListTy (elem) | LinkedListTy (elem) -> "(" & emit-type ty & ")"
+    is FunTy (p) (row) (r) | ListTy (elem) | LinkedListTy (elem) -> "(" & emit-type ty & ")"
     is ConstructedTy (name) (args) ->
      if list-length args == 0 then name.value
      else "(" & emit-type ty & ")"
@@ -303,12 +347,20 @@ Section: Binary Operators
   emit-binary (op) (l) (r) (ctors) (indent) =
    wrap-binary-left op l ctors indent & " " & bin-op-text op & " " & wrap-binary-right op r ctors indent
 
+ An application that prints as for-sugar must parenthesize as a
+ binary operand: an unwrapped `for x in xs -> body & rest` re-parses
+ with `& rest` inside the for-body — a silently different program
+ (FabledTreasureMap entry 9). Plain applications bind tighter than
+ any operator and need no wrap.
+
   wrap-binary-left : IRBinaryOp, IRExpr, List Text, Integer -> Text
   wrap-binary-left (parent-op) (e) (ctors) (indent) =
    when e
     is IrBinary (child-op) (l2) (r2) (ty) (sp) -> if bin-op-prec child-op < bin-op-prec parent-op then "(" & emit-expr e ctors indent & ")"
     else emit-expr e ctors indent
     is IrIf (c) (t) (el) (ty) (sp) -> "(" & emit-expr e ctors indent & ")"
+    is IrApply (f2) (a2) (ty) (sp) -> if apply-prints-as-for e then "(" & emit-expr e ctors indent & ")"
+    else emit-expr e ctors indent
     is otherwise -> emit-expr e ctors indent
 
   wrap-binary-right : IRBinaryOp, IRExpr, List Text, Integer -> Text
@@ -317,7 +369,14 @@ Section: Binary Operators
     is IrBinary (child-op) (l2) (r2) (ty) (sp) -> if needs-right-wrap parent-op child-op then "(" & emit-expr e ctors indent & ")"
     else emit-expr e ctors indent
     is IrIf (c) (t) (el) (ty) (sp) -> "(" & emit-expr e ctors indent & ")"
+    is IrApply (f2) (a2) (ty) (sp) -> if apply-prints-as-for e then "(" & emit-expr e ctors indent & ")"
+    else emit-expr e ctors indent
     is otherwise -> emit-expr e ctors indent
+
+  apply-prints-as-for : IRExpr -> Boolean
+  apply-prints-as-for (e) =
+   let chain = collect-apply-chain e []
+   in is-for-expr (chain.root) (chain.args)
 
   needs-right-wrap : IRBinaryOp, IRBinaryOp -> Boolean
   needs-right-wrap (parent) (child) =

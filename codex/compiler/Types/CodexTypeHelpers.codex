@@ -9,28 +9,47 @@ Section: Function-Type Peeling
   peel-fun-param : CodexType -> CodexType
   peel-fun-param (ty) =
    when ty
-    is FunTy (p) (r) -> p
+    is FunTy (p) (row) (r) -> p
     is ForAllTy (id) (body) -> peel-fun-param body
+    is ForAllEff (id) (body) -> peel-fun-param body
     is otherwise -> ErrorTy
 
   peel-fun-return : CodexType -> CodexType
   peel-fun-return (ty) =
    when ty
-    is FunTy (p) (r) -> r
+    is FunTy (p) (row) (r) -> r
     is ForAllTy (id) (body) -> peel-fun-return body
+    is ForAllEff (id) (body) -> peel-fun-return body
     is otherwise -> ErrorTy
 
   strip-fun-args : CodexType -> CodexType
   strip-fun-args (ty) =
    when ty
-    is FunTy (p) (r) -> strip-fun-args r
+    is FunTy (p) (row) (r) -> strip-fun-args r
     is ForAllTy (id) (body) -> strip-fun-args body
+    is ForAllEff (id) (body) -> strip-fun-args body
     is otherwise -> ty
 
   strip-forall-ty : CodexType -> CodexType
   strip-forall-ty (ty) =
    when ty
     is ForAllTy (id) (body) -> strip-forall-ty body
+    is ForAllEff (id) (body) -> strip-forall-ty body
+    is otherwise -> ty
+
+Section: Linearity Marker
+
+ LinearTy marks a declared-linear position (LinearOwnership.md stage
+ 1). It is transparent to unification and representation: unify-at
+ strips both sides at entry so no substitution ever carries the
+ wrapper, and bind-def-params binds parameters stripped so body
+ inference and the IR never see it. The wrapper survives only on the
+ registered signature, where the stage-2 ownership walk will read it.
+
+  strip-linear-ty : CodexType -> CodexType
+  strip-linear-ty (ty) =
+   when ty
+    is LinearTy (inner) -> strip-linear-ty inner
     is otherwise -> ty
 
 Section: Hardware Integer Width
@@ -76,6 +95,7 @@ Section: Hardware Integer Width
    when ty
     is IntegerTy (lo) (hi) (mode) -> bounds-to-hw-width lo hi
     is UnitTy (name) (inner) -> integer-ty-hw-width inner
+    is LinearTy (inner) -> integer-ty-hw-width inner
     is otherwise -> HwI64
 
 Page 1

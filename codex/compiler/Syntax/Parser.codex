@@ -235,13 +235,13 @@ Section: Type Parsing
 
   parse-effect-type : ParseState -> ParseTypeResult
   parse-effect-type (st) =
-   let (eff-names, st-effs, eff-scopes) = parse-effect-names st [] []
+   let (eff-names, st-effs, eff-scopes, eff-tail) = parse-effect-names st [] [] []
    in let ret = parse-type st-effs
-   in unwrap-type-ok ret (finish-effect-type eff-names eff-scopes)
+   in unwrap-type-ok ret (finish-effect-type eff-names eff-scopes eff-tail)
 
-  finish-effect-type : List Token, List Token, TypeExpr, ParseState -> ParseTypeResult
-  finish-effect-type (effs) (scopes) (ret) (st) =
-   TypeOk (deck-record (EffectTypeExpr effs scopes ret)) st
+  finish-effect-type : List Token, List Token, List Token, TypeExpr, ParseState -> ParseTypeResult
+  finish-effect-type (effs) (scopes) (tail) (ret) (st) =
+   TypeOk (deck-record (EffectTypeExpr effs scopes tail ret)) st
 
   empty-scope-tok : Token = Token {
    kind = TextLiteral,
@@ -253,27 +253,49 @@ Section: Type Parsing
    file-id = 0
   }
 
-  parse-effect-names : ParseState, LinkedList Token, LinkedList Token -> (List Token, ParseState, List Token)
-  parse-effect-names (st) (acc) (sacc) =
-   if is-done st then (deck-record (__linked-list-to-list acc), st, deck-record (__linked-list-to-list sacc))
-   else if is-right-bracket (current-kind st) then (deck-record (__linked-list-to-list acc), advance st, deck-record (__linked-list-to-list sacc))
-   else if is-comma (current-kind st) then parse-effect-names (advance st) acc sacc
-   else if is-ident (current-kind st) | is-type-ident (current-kind st) then
+ Inside effect brackets the identifier case is load-bearing
+ (EffectRows.md section 3): a PascalCase identifier is a concrete
+ effect name; a lowercase identifier is the row's tail variable. A
+ row names at most one tail (CDX1120), and a tail is bare — no scope
+ literal, no dotted sub-effect (CDX1121).
+
+  parse-effect-names : ParseState, LinkedList Token, LinkedList Token, List Token -> (List Token, ParseState, List Token, List Token)
+  parse-effect-names (st) (acc) (sacc) (tacc) =
+   if is-done st then (deck-record (__linked-list-to-list acc), st, deck-record (__linked-list-to-list sacc), tacc)
+   else if is-right-bracket (current-kind st) then (deck-record (__linked-list-to-list acc), advance st, deck-record (__linked-list-to-list sacc), tacc)
+   else if is-comma (current-kind st) then parse-effect-names (advance st) acc sacc tacc
+   else if is-ident (current-kind st) then parse-row-tail st acc sacc tacc
+   else if is-type-ident (current-kind st) then
     let tok = current st
     in let st2 = advance st
-    in if is-dot (current-kind st2) then parse-dotted-effect st2 tok acc sacc
-       else parse-effect-with-scope st2 tok acc sacc
-   else parse-effect-names (advance st) acc sacc
+    in if is-dot (current-kind st2) then parse-dotted-effect st2 tok acc sacc tacc
+       else parse-effect-with-scope st2 tok acc sacc tacc
+   else parse-effect-names (advance st) acc sacc tacc
 
-  parse-effect-with-scope : ParseState, Token, LinkedList Token, LinkedList Token -> (List Token, ParseState, List Token)
-  parse-effect-with-scope (st) (name-tok) (acc) (sacc) =
+  parse-row-tail : ParseState, LinkedList Token, LinkedList Token, List Token -> (List Token, ParseState, List Token, List Token)
+  parse-row-tail (st) (acc) (sacc) (tacc) =
+   let tok = current st
+   in let st2 = advance st
+   in if is-dot (current-kind st2) then
+       let st3 = __record-set st2 "bag" (bag-add (st2.bag) (make-error cdx-row-tail-decorated ("a row variable is a bare lowercase identifier; '" & token-text tok & "' cannot take a dotted sub-effect") (token-to-span tok)))
+       in parse-dotted-effect st3 tok acc sacc tacc
+      else if is-text-lit (current-kind st2) then
+       let st3 = __record-set st2 "bag" (bag-add (st2.bag) (make-error cdx-row-tail-decorated ("a row variable is a bare lowercase identifier; '" & token-text tok & "' cannot take a scope literal") (token-to-span tok)))
+       in parse-effect-names (advance st3) acc sacc (list-push tacc tok)
+      else if list-length tacc > 0 then
+       let st3 = __record-set st2 "bag" (bag-add (st2.bag) (make-error cdx-row-two-tails ("an effect row may name at most one row variable; found '" & token-text tok & "' after an earlier row variable") (token-to-span tok)))
+       in parse-effect-names st3 acc sacc tacc
+      else parse-effect-names st2 acc sacc (list-push tacc tok)
+
+  parse-effect-with-scope : ParseState, Token, LinkedList Token, LinkedList Token, List Token -> (List Token, ParseState, List Token, List Token)
+  parse-effect-with-scope (st) (name-tok) (acc) (sacc) (tacc) =
    if is-text-lit (current-kind st) then
     let scope-tok = current st
-    in parse-effect-names (advance st) (__linked-list-push acc name-tok) (__linked-list-push sacc scope-tok)
-   else parse-effect-names st (__linked-list-push acc name-tok) (__linked-list-push sacc empty-scope-tok)
+    in parse-effect-names (advance st) (__linked-list-push acc name-tok) (__linked-list-push sacc scope-tok) tacc
+   else parse-effect-names st (__linked-list-push acc name-tok) (__linked-list-push sacc empty-scope-tok) tacc
 
-  parse-dotted-effect : ParseState, Token, LinkedList Token, LinkedList Token -> (List Token, ParseState, List Token)
-  parse-dotted-effect (st) (base-tok) (acc) (sacc) =
+  parse-dotted-effect : ParseState, Token, LinkedList Token, LinkedList Token, List Token -> (List Token, ParseState, List Token, List Token)
+  parse-dotted-effect (st) (base-tok) (acc) (sacc) (tacc) =
    let st2 = advance st
    in if is-ident (current-kind st2) | is-type-ident (current-kind st2) then
     let sub = current st2
@@ -286,8 +308,8 @@ Section: Type Parsing
      column = base-tok.column,
      file-id = base-tok.file-id
     })
-    in parse-effect-with-scope (advance st2) combined acc sacc
-   else parse-effect-names st2 (__linked-list-push acc base-tok) (__linked-list-push sacc empty-scope-tok)
+    in parse-effect-with-scope (advance st2) combined acc sacc tacc
+   else parse-effect-names st2 (__linked-list-push acc base-tok) (__linked-list-push sacc empty-scope-tok) tacc
 
   parse-type-args : TypeExpr, ParseState -> ParseTypeResult
   parse-type-args (base-type) (st) =
@@ -1229,7 +1251,7 @@ Section: Prose-Notation Consistency
    else if token-text ((list-at type-defs i).name) == name then i
    else find-type-def-named type-defs name (i + 1)
 
-  check-prose-type-name : Text, List TypeDef, Integer, Text, List Diagnostic -> List Diagnostic
+  check-prose-type-name : Text, List TypeDef, Integer between 0 and 65535, Text, List Diagnostic -> List Diagnostic
   check-prose-type-name (template-name) (type-defs) (diag-code) (kind) (acc) =
    let found = find-type-def-named type-defs template-name 0
    in if found < 0 then list-push acc (make-warning diag-code ("Prose declares " & kind & " '" & template-name & "' but no type definition with that name exists") synthetic-span)

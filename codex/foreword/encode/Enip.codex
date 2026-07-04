@@ -1,0 +1,98 @@
+Chapter: Enip
+
+ EtherNet/IP with CIP (Common Industrial Protocol), the factory-floor
+ automation stack standardized by ODVA and ubiquitous on Allen-Bradley
+ / Rockwell equipment. An EtherNet/IP message is a 24-byte
+ encapsulation header (command, data length, session handle, status,
+ an eight-byte sender context, and options) followed by command data.
+ Explicit CIP messaging rides inside SendRRData as a Common Packet
+ Format list wrapping a CIP request (service, request path, data).
+ All encapsulation fields are little-endian. Each builder returns a
+ List Integer.
+
+ The encapsulation length field counts only the data that follows the
+ 24-byte header, not the header itself.
+
+Section: Byte Helpers
+
+  enip-u16-le : Integer -> List Integer
+  enip-u16-le (v) = [bit-and v 255, bit-and (bit-shru v 8) 255]
+
+  enip-u32-le : Integer -> List Integer
+  enip-u32-le (v) =
+   [bit-and v 255, bit-and (bit-shru v 8) 255,
+    bit-and (bit-shru v 16) 255, bit-and (bit-shru v 24) 255]
+
+Section: Encapsulation Header
+
+ The sender context is an eight-octet field the originator chooses and
+ the target echoes; a request commonly leaves it zero.
+
+  enip-context-zero : List Integer = [0, 0, 0, 0, 0, 0, 0, 0]
+
+  enip-cmd-nop : Integer = #0000
+  enip-cmd-list-services : Integer = #0004
+  enip-cmd-list-identity : Integer = #0063
+  enip-cmd-list-interfaces : Integer = #0064
+  enip-cmd-register-session : Integer = #0065
+  enip-cmd-unregister-session : Integer = #0066
+  enip-cmd-send-rr-data : Integer = #006F
+  enip-cmd-send-unit-data : Integer = #0070
+
+  enip-header : Integer, Integer, Integer, Integer, Integer -> List Integer
+  enip-header (command) (length) (session) (status) (options) =
+   enip-u16-le command & enip-u16-le length & enip-u32-le session & enip-u32-le status & enip-context-zero & enip-u32-le options
+
+  enip-frame : Integer, Integer, Integer, Integer, List Integer -> List Integer
+  enip-frame (command) (session) (status) (options) (data) =
+   enip-header command (list-length data) session status options & data
+
+Section: Register Session
+
+ RegisterSession opens an explicit-messaging session. Its data is a
+ requested protocol version (1) and an options-flags field (0). The
+ target replies with the same command carrying the granted session
+ handle in the header.
+
+  enip-register-session : List Integer
+  enip-register-session =
+   enip-frame enip-cmd-register-session 0 0 0 (enip-u16-le 1 & enip-u16-le 0)
+
+Section: CIP Request
+
+ A CIP explicit request is a service code, a request-path size measured
+ in 16-bit words, and the request path itself. The path is an EPATH of
+ logical segments: 0x20 selects a class, 0x24 an instance, 0x30 an
+ attribute, each followed by its eight-bit value.
+
+  cip-svc-get-attr-all : Integer = #01
+  cip-svc-get-attr-single : Integer = #0E
+  cip-svc-set-attr-single : Integer = #10
+
+  cip-epath-class-instance-attr : Integer, Integer, Integer -> List Integer
+  cip-epath-class-instance-attr (cls) (inst) (attr) =
+   [#20, cls, #24, inst, #30, attr]
+
+  cip-request : Integer, List Integer -> List Integer
+  cip-request (service) (path) =
+   [service, (list-length path) / 2] & path
+
+  cip-get-attr-single : Integer, Integer, Integer -> List Integer
+  cip-get-attr-single (cls) (inst) (attr) =
+   cip-request cip-svc-get-attr-single (cip-epath-class-instance-attr cls inst attr)
+
+Section: SendRRData
+
+ SendRRData carries an unconnected explicit request. Its data is an
+ interface handle (0 for CIP), a timeout, and a Common Packet Format
+ list: an item count of two, a null address item (type 0x0000, length
+ 0), and an unconnected data item (type 0x00B2) whose length prefixes
+ the embedded CIP request.
+
+  enip-cpf-unconnected : List Integer -> List Integer
+  enip-cpf-unconnected (cip) =
+   enip-u16-le 2 & enip-u16-le #0000 & enip-u16-le 0 & enip-u16-le #00B2 & enip-u16-le (list-length cip) & cip
+
+  enip-send-rr-data : Integer, Integer, List Integer -> List Integer
+  enip-send-rr-data (session) (timeout) (cip) =
+   enip-frame enip-cmd-send-rr-data session 0 0 (enip-u32-le 0 & enip-u16-le timeout & enip-cpf-unconnected cip)

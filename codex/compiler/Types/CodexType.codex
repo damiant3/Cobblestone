@@ -15,11 +15,11 @@ Section: Primitive Types
    | VoidTy
    | NothingTy
    | ErrorTy
-   | FunTy (CodexType) (CodexType)
+   | FunTy (CodexType) (EffectRow) (CodexType)
    | ListTy (CodexType)
    | LinkedListTy (CodexType)
-   | TypeVar (Integer)
-   | ForAllTy (Integer) (CodexType)
+   | TypeVar (Integer between 0 and 4294967295)
+   | ForAllTy (Integer between 0 and 4294967295) (CodexType)
    | SumTy (Name) (List CodexType) (List SumCtor)
    | RecordTy (Name) (List CodexType) (List RecordField)
    | ConstructedTy (Name) (List CodexType)
@@ -31,6 +31,8 @@ Section: Primitive Types
    | VectorMaskTy (Integer)
    | TypeCon (Name)
    | TypeApply (CodexType) (CodexType)
+   | ForAllEff (Integer between 0 and 4294967295) (CodexType)
+   | LinearTy (CodexType)
 
   SumCtor = record {
    name : Name,
@@ -42,6 +44,56 @@ Section: Primitive Types
    name : Name,
    type-val : CodexType
   }
+
+Section: Effect Rows
+
+ The effect row on an arrow (EffectRows.md). A row is a set of effect
+ labels plus an optional row variable. tail-name is the source-level
+ lowercase identifier, "" when the row was not written with a tail.
+ tail-id is the numeric row-variable id: -1 means no id (a closed
+ row, or a source tail not yet parameterized); ids at 0 and above are
+ assigned at signature parameterization from the unifier's shared
+ 32-bit counter, bound under a ForAllEff binder, freshened at
+ instantiation, and solved against the unifier's row-substitution
+ table. Rows are deliberately not CodexTypes: a type position can
+ never resolve to a row, so a kind confusion is unrepresentable.
+ Labels are kept name-then-scope sorted and duplicate-free by
+ construction; rows are idempotent sets, never multisets. Through
+ stage 2 rows remain inert — concrete effects still ride in
+ EffectfulTy until stage 3 migrates them onto the arrow and enforces
+ the row at declared boundaries. All pure arrows share the single
+ interned empty-row; do not allocate a fresh empty row per arrow.
+
+  EffectLabel = record {
+   name : Name,
+   scope : Text
+  }
+
+  EffectRow = record {
+   labels : List EffectLabel,
+   tail-name : Text,
+   tail-id : Integer between -1 and 4294967295
+  }
+
+  empty-row : EffectRow = EffectRow { labels = [], tail-name = "", tail-id = __narrow (-1) }
+
+  tail-only-row : Text -> EffectRow
+  tail-only-row (name) = EffectRow { labels = [], tail-name = name, tail-id = __narrow (-1) }
+
+  row-var : Integer -> EffectRow
+  row-var (id) = EffectRow { labels = [], tail-name = "", tail-id = __narrow id }
+
+  concrete-row : Text -> EffectRow
+  concrete-row (name) = EffectRow { labels = [EffectLabel { name = Name { value = name }, scope = "" }], tail-name = "", tail-id = __narrow (-1) }
+
+  row-with-tail-id : EffectRow, Integer -> EffectRow
+  row-with-tail-id (row) (id) = EffectRow { labels = row.labels, tail-name = row.tail-name, tail-id = __narrow id }
+
+  row-is-empty : EffectRow -> Boolean
+  row-is-empty (row) = list-length (row.labels) == 0 & text-length (row.tail-name) == 0 & row.tail-id < 0
+
+  row-is-open : EffectRow -> Boolean
+  row-is-open (row) = row.tail-id >= 0
 
 Section: Overflow Modes
 
@@ -74,7 +126,12 @@ Section: Pointer Classification
  (1), Char and Number (8, but not pointers). Everything heap-allocated
  is an 8-byte pointer. Nullary ctors are heap-boxed too (emit-nullary-ctor
  allocates 8 bytes and stores the tag), so ALL SumTy values are pointers.
- EffectfulTy and ForAllTy classify by their underlying value type.
+ EffectfulTy, ForAllTy, ForAllEff, and LinearTy classify by their
+ underlying value type. LinearTy is the ownership marker from
+ LinearOwnership.md stage 1: it survives resolution so later stages
+ can read declared linearity, but it is representation-transparent
+ everywhere — width, layout, unification, and the IR wire all see
+ the inner type.
 
  TypeVar is the one undecidable case: a polymorphic field's runtime
  representation depends on its instantiation. Classified conservatively
@@ -85,13 +142,15 @@ Section: Pointer Classification
   is-pointer-type (ty) =
    when ty
     is IntegerTy (lo) (hi) (mode) | RealTy | RealApproxTy | RealTrappingTy | RealSaturatingTy | BooleanTy | CharTy | VoidTy | NothingTy | ErrorTy | ProofTy | PropEqTy (a) (b) -> False
-    is TextTy | ListTy (e) | LinkedListTy (e) | RecordTy (n) (a) (f) | SumTy (n) (a) (c) | ConstructedTy (n) (a) | FunTy (p) (r) | VectorTy (vn) (vt) | VectorMaskTy (mn) -> True
+    is TextTy | ListTy (e) | LinkedListTy (e) | RecordTy (n) (a) (f) | SumTy (n) (a) (c) | ConstructedTy (n) (a) | FunTy (p) (row) (r) | VectorTy (vn) (vt) | VectorMaskTy (mn) -> True
     is EffectfulTy (e) (s) (r) -> is-pointer-type r
     is ForAllTy (i) (b) -> is-pointer-type b
+    is ForAllEff (i) (b) -> is-pointer-type b
     is TypeVar (i) -> True
     is UnitTy (n) (inner) -> is-pointer-type inner
     is TypeCon (n) -> False
     is TypeApply (f) (a) -> True
+    is LinearTy (inner) -> is-pointer-type inner
 
 Page 1
 

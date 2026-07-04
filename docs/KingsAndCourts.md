@@ -48,7 +48,7 @@ The compiler enforces five structural restrictions at compile time:
 | CDX6001 | Cannot call non-punctual or non-safe-builtin functions | Transitivity — one unbounded callee breaks the guarantee |
 | CDX6002 | Cannot use heap allocation | Bare-metal has no GC; heap allocation is unbounded in time |
 | CDX6003 | Cannot use closures or lambdas | Unpredictable allocation from capture |
-| CDX6004 | Cannot perform bare I/O | I/O latency is unbounded without explicit timeout |
+| CDX6004 | Must be effect-free (any effect rejected) | A handler's latency is unbounded from the caller's seat; I/O is only the worst case |
 | CDX6005 | Cannot use self-recursion | Unbounded stack depth |
 
 The emitter counts instructions per punctual function (CDX6010). An

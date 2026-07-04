@@ -1,0 +1,58 @@
+Chapter: Fins
+
+ FINS (Factory Interface Network Service), the command protocol of
+ Omron SYSMAC PLCs -- common in packaging, material handling, and
+ semiconductor equipment, and the Omron member of the PLC family beside
+ EtherNet/IP, S7comm, and MELSEC. A command opens with a ten-octet
+ header naming the information control field, the gateway count, and
+ the destination and source network/node/unit route, then a service
+ identifier; the command code and its parameters follow. Addresses are
+ big-endian. Each builder returns a List Integer.
+
+Section: Byte Helper
+
+  fins-u16-be : Integer -> List Integer
+  fins-u16-be (v) = [bit-and (bit-shru v 8) 255, bit-and v 255]
+
+Section: Header
+
+ The information control field 0x80 marks a command that requires a
+ response; the gateway count is 0x02. Network, unit, and the reserved
+ fields are zero for a direct local exchange, leaving the destination
+ node, source node, and service id to the caller.
+
+  fins-header : Integer, Integer, Integer -> List Integer
+  fins-header (dest-node) (src-node) (sid) =
+   [#80, #00, #02, #00, dest-node, #00, #00, src-node, #00, sid]
+
+Section: Commands and Areas
+
+  fins-cmd-mem-read : Integer = #0101
+  fins-cmd-mem-write : Integer = #0102
+
+  fins-area-cio : Integer = #B0
+  fins-area-work : Integer = #B1
+  fins-area-hold : Integer = #B2
+  fins-area-dm : Integer = #82
+
+Section: Memory Area Access
+
+ A memory-area access names an area code, a two-octet beginning word
+ address, a bit offset (zero for word access), and a two-octet item
+ count. A write appends the word values.
+
+  fins-mem-read : Integer, Integer, Integer, Integer, Integer, Integer -> List Integer
+  fins-mem-read (dest-node) (src-node) (sid) (area) (address) (count) =
+   fins-header dest-node src-node sid & fins-u16-be fins-cmd-mem-read & [area] & fins-u16-be address & [#00] & fins-u16-be count
+
+  fins-words-be : List Integer -> List Integer
+  fins-words-be (words) = fins-words-loop words 0 (list-length words) []
+
+  fins-words-loop : List Integer, Integer, Integer, List Integer -> List Integer
+  fins-words-loop (words) (i) (len) (acc) =
+   if i >= len then acc
+   else fins-words-loop words (i + 1) len (acc & fins-u16-be (list-at words i))
+
+  fins-mem-write : Integer, Integer, Integer, Integer, Integer, List Integer -> List Integer
+  fins-mem-write (dest-node) (src-node) (sid) (area) (address) (words) =
+   fins-header dest-node src-node sid & fins-u16-be fins-cmd-mem-write & [area] & fins-u16-be address & [#00] & fins-u16-be (list-length words) & fins-words-be words

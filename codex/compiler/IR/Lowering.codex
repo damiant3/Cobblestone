@@ -64,6 +64,7 @@ Section: Expression Lowering
      in let stripped-rec-ty = when rec-ty
         is EffectfulTy (effs) (sc) (ret) -> deep-resolve (ctx.ust) ret
         is ForAllTy (id) (body) -> deep-resolve (ctx.ust) body
+        is ForAllEff (id) (body) -> deep-resolve (ctx.ust) body
         is otherwise -> rec-ty
      in let resolved-rec-ty = when stripped-rec-ty
         is RecordTy (rn) (ra) (rf) -> stripped-rec-ty
@@ -308,7 +309,7 @@ Section: Expression Lowering
   lower-compare-prim : CodexType, IRExpr, IRExpr, SourceSpan -> IRExpr
   lower-compare-prim (lt) (l-ir) (r-ir) (sp) =
    when lt
-    is TextTy -> deck-record (IrApply (deck-record (IrApply (deck-record (IrName "text-compare" (FunTy TextTy (FunTy TextTy int-ty-default)) sp)) l-ir (FunTy TextTy int-ty-default) sp)) r-ir int-ty-default sp)
+    is TextTy -> deck-record (IrApply (deck-record (IrApply (deck-record (IrName "text-compare" (FunTy TextTy empty-row (FunTy TextTy empty-row int-ty-default)) sp)) l-ir (FunTy TextTy empty-row int-ty-default) sp)) r-ir int-ty-default sp)
     is otherwise -> gen-int-compare l-ir r-ir sp
 
   gen-int-compare : IRExpr, IRExpr, SourceSpan -> IRExpr
@@ -394,7 +395,7 @@ Section: Expression Lowering
       is UnitTy (to-name) (to-inner) ->
        if from-name.value == to-name.value then arg-ir
        else let conv-name = from-name.value & "-to-" & to-name.value
-       in let conv-fn-ty = deck-record (FunTy arg-actual expected-ty)
+       in let conv-fn-ty = deck-record (FunTy arg-actual empty-row expected-ty)
        in deck-record (IrApply (deck-record (IrName conv-name conv-fn-ty sp)) arg-ir expected-ty sp)
       is otherwise -> arg-ir
     is otherwise -> arg-ir
@@ -563,7 +564,7 @@ Section: Let and Lambda
   get-lambda-return (ty) (n) =
    if n == 0 then ty
    else when ty
-    is FunTy (p) (r) -> get-lambda-return r (n - 1)
+    is FunTy (p) (row) (r) -> get-lambda-return r (n - 1)
     is otherwise -> ErrorTy
 
 Section: Match Lowering
@@ -639,7 +640,7 @@ Section: Match Lowering
   bind-ctor-pattern-fields (ctx) (sub-pats) (ctor-ty) (i) (len) =
    if i == len then ctx
    else when ctor-ty
-     is FunTy (param-ty) (ret-ty) ->
+     is FunTy (param-ty) (row) (ret-ty) ->
       let ctx2 = bind-pattern-to-ctx ctx (list-at sub-pats i) param-ty
       in bind-ctor-pattern-fields ctx2 sub-pats ret-ty (i + 1) len
      is otherwise ->
@@ -712,6 +713,7 @@ Section: Match Lowering
     is ConstructedTy (n) (args) -> args
     is EffectfulTy (effs) (sc) (ret) -> extract-scrut-args ret
     is ForAllTy (id) (body) -> extract-scrut-args body
+    is ForAllEff (id) (body) -> extract-scrut-args body
     is otherwise -> []
 
   collect-sum-type-params : List SumCtor, Integer, Integer, List Text -> List Text
@@ -734,7 +736,7 @@ Section: Match Lowering
        then list-push acc (name.value)
        else acc
      else collect-type-param-names-in-types args 0 (list-length args) acc
-    is FunTy (p) (r) ->
+    is FunTy (p) (row) (r) ->
      collect-type-param-names-in-type r (collect-type-param-names-in-type p acc)
     is ListTy (e) | LinkedListTy (e) -> collect-type-param-names-in-type e acc
     is otherwise -> acc
@@ -783,7 +785,7 @@ Section: Match Lowering
     is ConstructedTy (name) (args) ->
      if list-length args == 0 then lookup-subst subst (name.value) ty
      else ConstructedTy name (for a in args -> apply-ctor-subst subst a)
-    is FunTy (p) (r) -> FunTy (apply-ctor-subst subst p) (apply-ctor-subst subst r)
+    is FunTy (p) (row) (r) -> FunTy (apply-ctor-subst subst p) row (apply-ctor-subst subst r)
     is ListTy (e) -> ListTy (apply-ctor-subst subst e)
     is LinkedListTy (e) -> LinkedListTy (apply-ctor-subst subst e)
     is EffectfulTy (effs) (sc) (r) -> EffectfulTy effs sc (apply-ctor-subst subst r)
@@ -813,7 +815,7 @@ Section: Collections and Act
    in when resolved
     is LinkedListTy (e) ->
      let ll-ty = deck-record (LinkedListTy e)
-     in deck-record (IrApply (deck-record (IrName "__linked-list-empty" (deck-record (FunTy int-ty-default ll-ty)) sp)) (deck-record (IrIntLit 0 sp)) ll-ty sp)
+     in deck-record (IrApply (deck-record (IrName "__linked-list-empty" (deck-record (FunTy int-ty-default empty-row ll-ty)) sp)) (deck-record (IrIntLit 0 sp)) ll-ty sp)
     is ListTy (e) -> deck-record (IrList [] e sp)
     is otherwise -> deck-record (IrList [] ErrorTy sp)
 
@@ -985,7 +987,7 @@ Section: Collections and Act
   build-lambda-type : List Text, CodexType, Integer -> CodexType
   build-lambda-type (params) (ret) (i) =
    if i >= list-length params then ret
-   else FunTy int-ty-default (build-lambda-type params ret (i + 1))
+   else FunTy int-ty-default empty-row (build-lambda-type params ret (i + 1))
 
 Section: Definition Lowering
   lower-def : ADef, List TypeBinding, UnificationState, List RenameEntry, List RenameEntry -> IRDef
@@ -1064,7 +1066,7 @@ Section: Definition Lowering
   get-return-type-n (ty) (n) =
    if n == 0 then ty
    else when ty
-    is FunTy (p) (r) -> get-return-type-n r (n - 1)
+    is FunTy (p) (row) (r) -> get-return-type-n r (n - 1)
     is otherwise -> ty
 
   lower-chapter : AChapter, List TypeBinding, UnificationState, List Text, List RenameEntry, SkipListText, List ChapterAssignment -> IRChapter
@@ -1227,11 +1229,48 @@ Section: Leaf Inlining
    in let pnames = for p in (d.params) -> p.name
    in let np = list-length pnames
    in let ok = if d.name == "deck-record" then 0 - 1
+      else if has-bounded-boundary d then 0 - 1
       else if np >= 1 & np <= 3 then leaf-body-ok (d.body) pnames 12
       else 0 - 1
    in if ok >= 0
       then collect-leaf-defs defs (i + 1) (list-push acc (deck-record (InlineLeaf { il-name = d.name, il-params = pnames, il-body = d.body })))
    else collect-leaf-defs defs (i + 1) acc
+
+ A function with a bounded parameter or return is enforced by
+ runtime guards at its callee entry and epilogue (BoundedSignatures.md
+ stage B). Inlining would splice its body into the caller and bypass
+ those guards, so a bounded-boundary function is never an inline
+ candidate. The full-range bounds are read from int-ty-default so the
+ check needs no i64 constants in this chapter.
+
+  has-bounded-boundary : IRDef -> Boolean
+  has-bounded-boundary (d) =
+   if any-bounded-param (d.params) 0 then True
+   else is-bounded-int (return-bound-in (d.type-val) (list-length (d.params)))
+
+  any-bounded-param : List IRParam, Integer -> Boolean
+  any-bounded-param (ps) (i) =
+   if i >= list-length ps then False
+   else if is-bounded-int ((list-at ps i).type-val) then True
+   else any-bounded-param ps (i + 1)
+
+  is-bounded-int : CodexType -> Boolean
+  is-bounded-int (ty) =
+   when ty
+    is IntegerTy (lo) (hi) (mode) ->
+     when mode
+      is OvError -> when int-ty-default is IntegerTy (dlo) (dhi) (dm) -> lo /= dlo | hi /= dhi is otherwise -> False
+      is otherwise -> False
+    is otherwise -> False
+
+  return-bound-in : CodexType, Integer -> CodexType
+  return-bound-in (ty) (n) =
+   if n <= 0 then ty
+   else when ty
+    is FunTy (p) (row) (r) -> return-bound-in r (n - 1)
+    is ForAllTy (id) (b) -> return-bound-in b n
+    is ForAllEff (id) (b) -> return-bound-in b n
+    is otherwise -> ty
 
   find-leaf-def : List InlineLeaf, Text, Integer -> Integer
   find-leaf-def (cands) (n) (i) =

@@ -1,0 +1,183 @@
+Chapter: Lorawan
+  cites Foreword chapter Cmac
+  cites Foreword chapter Aes
+
+ LoRaWAN 1.0.x MAC layer for wide-area IoT. Builds an uplink data frame:
+ the PHYPayload is MHDR | MACPayload | MIC, where MACPayload is
+ FHDR | FPort | FRMPayload. The FRMPayload is encrypted with an
+ AES-128 counter-mode keystream (AppSKey), and the 4-byte MIC is an
+ AES-CMAC (NwkSKey) over a B0 prefix block plus the message, per the
+ LoRaWAN specification. All multi-byte header fields are little-endian.
+
+ This chapter covers unconfirmed and confirmed uplink data frames. The
+ join procedure, downlink frames, and FOpts MAC commands are later
+ additions.
+
+Section: Message Types
+
+  lw-mtype-join-request : Integer = 0
+  lw-mtype-join-accept : Integer = 1
+  lw-mtype-unconfirmed-up : Integer = 2
+  lw-mtype-unconfirmed-down : Integer = 3
+  lw-mtype-confirmed-up : Integer = 4
+  lw-mtype-confirmed-down : Integer = 5
+
+  lw-dir-up : Integer = 0
+  lw-dir-down : Integer = 1
+
+ The MAC header packs the message type in the top three bits; RFU and
+ the LoRaWAN major version (0) occupy the rest.
+
+  lw-mhdr : Integer -> Integer
+  lw-mhdr (mtype) = bit-shl mtype 5
+
+Section: Little-Endian Helpers
+
+  lw-u16-le : Integer -> List Integer
+  lw-u16-le (v) = [bit-and v 255, bit-and (bit-shru v 8) 255]
+
+  lw-u32-le : Integer -> List Integer
+  lw-u32-le (v) = [bit-and v 255, bit-and (bit-shru v 8) 255, bit-and (bit-shru v 16) 255, bit-and (bit-shru v 24) 255]
+
+Section: FRMPayload Encryption
+
+ LoRaWAN encrypts the frame payload with an AES-128 keystream. For each
+ 16-byte block i (1-based) it encrypts a counter block Ai and XORs the
+ result into the payload. FPort 0 payloads use the NwkSKey; all others
+ use the AppSKey (the caller passes the right key).
+
+  lw-block-ai : Integer, Integer, Integer, Integer -> List Integer
+  lw-block-ai (devaddr) (dir) (fcnt) (i) =
+   [1, 0, 0, 0, 0, dir] & lw-u32-le devaddr & lw-u32-le fcnt & [0, i]
+
+  lw-encrypt-payload : List Integer, Integer, Integer, Integer, List Integer -> List Integer
+  lw-encrypt-payload (key) (devaddr) (dir) (fcnt) (payload) =
+   lw-crypt-loop (aes-expand-key-128 key) devaddr dir fcnt payload 0 (list-length payload) 1 []
+
+  lw-crypt-loop : List Integer, Integer, Integer, Integer, List Integer, Integer, Integer, Integer, List Integer -> List Integer
+  lw-crypt-loop (exp) (devaddr) (dir) (fcnt) (payload) (off) (len) (blocknum) (acc) =
+   if off >= len then acc
+   else let s = aes-encrypt-block (lw-block-ai devaddr dir fcnt blocknum) exp
+   in lw-crypt-loop exp devaddr dir fcnt payload (off + 16) len (blocknum + 1) (acc & lw-xor-chunk payload off len s 0 [])
+
+  lw-xor-chunk : List Integer, Integer, Integer, List Integer, Integer, List Integer -> List Integer
+  lw-xor-chunk (payload) (off) (len) (s) (j) (acc) =
+   if j >= 16 then acc
+   else if off + j >= len then acc
+   else lw-xor-chunk payload off len s (j + 1) (list-push acc (bit-xor (list-at payload (off + j)) (list-at s j)))
+
+Section: Message Integrity Code
+
+ The MIC is the first four bytes of an AES-CMAC over a 16-byte B0 block
+ followed by the whole MHDR|MACPayload message.
+
+  lw-b0 : Integer, Integer, Integer, Integer -> List Integer
+  lw-b0 (devaddr) (dir) (fcnt) (msglen) =
+   [#49, 0, 0, 0, 0, dir] & lw-u32-le devaddr & lw-u32-le fcnt & [0, msglen]
+
+  lw-take4 : List Integer -> List Integer
+  lw-take4 (bs) = [list-at bs 0, list-at bs 1, list-at bs 2, list-at bs 3]
+
+  lw-mic : List Integer, Integer, Integer, Integer, List Integer -> List Integer
+  lw-mic (nwkskey) (devaddr) (dir) (fcnt) (msg) =
+   lw-take4 (aes-cmac nwkskey (lw-b0 devaddr dir fcnt (list-length msg) & msg))
+
+Section: Uplink Frame
+
+ Assemble a complete uplink PHYPayload: encrypt the payload, build the
+ message header and frame header, compute the MIC over the whole
+ message, and append it.
+
+  lw-build-data : List Integer, List Integer, Integer, Integer, Integer, Integer, Integer, List Integer, Integer -> List Integer
+  lw-build-data (nwkskey) (appskey) (mtype) (devaddr) (fctrl) (fcnt) (fport) (payload) (dir) =
+   let enc = lw-encrypt-payload appskey devaddr dir fcnt payload
+   in let msg = [lw-mhdr mtype] & lw-u32-le devaddr & [fctrl] & lw-u16-le fcnt & [fport] & enc
+   in msg & lw-mic nwkskey devaddr dir fcnt msg
+
+  lw-build-uplink : List Integer, List Integer, Integer, Integer, Integer, Integer, Integer, List Integer -> List Integer
+  lw-build-uplink (nwkskey) (appskey) (mtype) (devaddr) (fctrl) (fcnt) (fport) (payload) =
+   lw-build-data nwkskey appskey mtype devaddr fctrl fcnt fport payload lw-dir-up
+
+  lw-build-downlink : List Integer, List Integer, Integer, Integer, Integer, Integer, Integer, List Integer -> List Integer
+  lw-build-downlink (nwkskey) (appskey) (mtype) (devaddr) (fctrl) (fcnt) (fport) (payload) =
+   lw-build-data nwkskey appskey mtype devaddr fctrl fcnt fport payload lw-dir-down
+
+Section: Over-the-Air Activation (Join)
+
+ A join-request carries the join/application EUI and device EUI (each
+ eight little-endian bytes) and a device nonce; its MIC is an AES-CMAC
+ over the whole message under the AppKey. After a successful join both
+ sides derive the session keys from the AppKey, the application nonce,
+ the network id, and the device nonce: NwkSKey from a block prefixed
+ with 0x01 and AppSKey from one prefixed with 0x02.
+
+  lw-build-join-request : List Integer, List Integer, List Integer, Integer -> List Integer
+  lw-build-join-request (appkey) (join-eui) (dev-eui) (dev-nonce) =
+   let msg = [lw-mhdr lw-mtype-join-request] & join-eui & dev-eui & lw-u16-le dev-nonce
+   in msg & lw-take4 (aes-cmac appkey msg)
+
+  lw-derive-session-key : List Integer, Integer, List Integer, List Integer, Integer -> List Integer
+  lw-derive-session-key (appkey) (kind) (app-nonce) (net-id) (dev-nonce) =
+   aes-encrypt-block ([kind] & app-nonce & net-id & lw-u16-le dev-nonce & [0, 0, 0, 0, 0, 0, 0]) (aes-expand-key-128 appkey)
+
+  lw-derive-nwkskey : List Integer, List Integer, List Integer, Integer -> List Integer
+  lw-derive-nwkskey (appkey) (app-nonce) (net-id) (dev-nonce) =
+   lw-derive-session-key appkey 1 app-nonce net-id dev-nonce
+
+  lw-derive-appskey : List Integer, List Integer, List Integer, Integer -> List Integer
+  lw-derive-appskey (appkey) (app-nonce) (net-id) (dev-nonce) =
+   lw-derive-session-key appkey 2 app-nonce net-id dev-nonce
+
+Section: Join-Accept
+
+ The network answers a join-request with a join-accept whose body is
+ encrypted with AES in the decrypt direction, so the device recovers it
+ by ENCRYPTING the ciphertext under the AppKey. The recovered 16-byte
+ block is AppNonce (3), NetID (3), DevAddr (4, little-endian), DLSettings
+ (1), RxDelay (1), and a 4-byte MIC. The MIC covers the join-accept MHDR
+ (0x20) and the first twelve recovered bytes.
+
+  lw-mhdr-join-accept : Integer = #20
+
+  lw-decrypt-join-accept : List Integer, List Integer -> List Integer
+  lw-decrypt-join-accept (appkey) (encrypted) =
+   lw-ja-decrypt-loop (aes-expand-key-128 appkey) encrypted 0 (list-length encrypted) []
+
+  lw-ja-decrypt-loop : List Integer, List Integer, Integer, Integer, List Integer -> List Integer
+  lw-ja-decrypt-loop (exp) (enc) (off) (len) (acc) =
+   if off >= len then acc
+   else lw-ja-decrypt-loop exp enc (off + 16) len (acc & aes-encrypt-block (aes-get-block enc off) exp)
+
+  lw-slice : List Integer, Integer, Integer -> List Integer
+  lw-slice (xs) (off) (count) = lw-slice-loop xs off count 0 []
+
+  lw-slice-loop : List Integer, Integer, Integer, Integer, List Integer -> List Integer
+  lw-slice-loop (xs) (off) (count) (i) (acc) =
+   if i >= count then acc else lw-slice-loop xs off count (i + 1) (list-push acc (list-at xs (off + i)))
+
+  lw-ja-app-nonce : List Integer -> List Integer
+  lw-ja-app-nonce (dec) = lw-slice dec 0 3
+
+  lw-ja-net-id : List Integer -> List Integer
+  lw-ja-net-id (dec) = lw-slice dec 3 3
+
+  lw-ja-devaddr : List Integer -> Integer
+  lw-ja-devaddr (dec) =
+   bit-or (bit-or (bit-shl (list-at dec 9) 24) (bit-shl (list-at dec 8) 16)) (bit-or (bit-shl (list-at dec 7) 8) (list-at dec 6))
+
+  lw-ja-dlsettings : List Integer -> Integer
+  lw-ja-dlsettings (dec) = list-at dec 10
+
+  lw-ja-rx-delay : List Integer -> Integer
+  lw-ja-rx-delay (dec) = list-at dec 11
+
+  lw-ja-mic : List Integer -> List Integer
+  lw-ja-mic (dec) = lw-slice dec 12 4
+
+  lw-ja-verify : List Integer, List Integer -> Boolean
+  lw-ja-verify (appkey) (dec) =
+   let computed = lw-take4 (aes-cmac appkey ([lw-mhdr-join-accept] & lw-slice dec 0 12))
+   in if list-at computed 0 /= list-at dec 12 then False
+   else if list-at computed 1 /= list-at dec 13 then False
+   else if list-at computed 2 /= list-at dec 14 then False
+   else list-at computed 3 == list-at dec 15

@@ -1,0 +1,91 @@
+Chapter: S7comm
+
+ S7comm, the Siemens S7 communication protocol spoken by SIMATIC S7
+ PLCs (S7-300/400/1200/1500) over ISO-on-TCP. Three layers stack on a
+ TCP stream: TPKT (RFC 1006) frames the payload with a version octet
+ and a big-endian total length; COTP (ISO 8073 / X.224) carries either
+ a connection request that negotiates TSAPs or a minimal data unit;
+ and the S7 protocol itself (protocol id 0x32) carries jobs -- Setup
+ Communication to negotiate the PDU size, and Read/Write Var to move
+ process data. Unlike the little-endian fieldbuses, every multi-octet
+ S7 field is big-endian. Each builder returns a List Integer.
+
+Section: Byte Helper
+
+  s7-u16-be : Integer -> List Integer
+  s7-u16-be (v) = [bit-and (bit-shru v 8) 255, bit-and v 255]
+
+Section: TPKT
+
+ TPKT prefixes the payload with version 3, a reserved zero, and a
+ two-octet length covering the four-octet TPKT header plus the payload.
+
+  s7-tpkt : List Integer -> List Integer
+  s7-tpkt (payload) = [#03, #00] & s7-u16-be (4 + list-length payload) & payload
+
+Section: COTP
+
+ The connection request (CR, PDU type 0xE0) negotiates a preferred
+ TPDU size and the calling and called transport service access points.
+ A length indicator counts every octet after itself. The minimal data
+ unit (DT, 0xF0) marks end-of-transmission for a single S7 payload.
+
+  s7-cotp-dt : List Integer = [#02, #F0, #80]
+
+  s7-cotp-cr-params : Integer, List Integer, List Integer -> List Integer
+  s7-cotp-cr-params (tpdu-size) (src-tsap) (dst-tsap) =
+   [#C0, #01, tpdu-size] & [#C1, list-length src-tsap] & src-tsap & [#C2, list-length dst-tsap] & dst-tsap
+
+  s7-cotp-cr : Integer, Integer, Integer, List Integer, List Integer -> List Integer
+  s7-cotp-cr (src-ref) (dst-ref) (tpdu-size) (src-tsap) (dst-tsap) =
+   let body = [#E0] & s7-u16-be dst-ref & s7-u16-be src-ref & [#00] & s7-cotp-cr-params tpdu-size src-tsap dst-tsap
+   in [list-length body] & body
+
+Section: S7 Header
+
+ An S7 job opens with the protocol id 0x32, a message type (ROSCTR;
+ 1 is a job request), a two-octet redundancy identification (zero), a
+ PDU reference the client chooses, and the byte lengths of the
+ parameter and data sections that follow.
+
+  s7-rosctr-job : Integer = 1
+
+  s7-header : Integer, Integer, Integer, Integer -> List Integer
+  s7-header (rosctr) (pdu-ref) (param-len) (data-len) =
+   [#32, rosctr] & s7-u16-be 0 & s7-u16-be pdu-ref & s7-u16-be param-len & s7-u16-be data-len
+
+Section: Setup Communication
+
+ Setup Communication (function 0xF0) negotiates the maximum number of
+ outstanding calls in each direction and the maximum PDU size.
+
+  s7-setup : Integer, Integer, Integer, Integer -> List Integer
+  s7-setup (pdu-ref) (max-called) (max-calling) (pdu-size) =
+   let param = [#F0, #00] & s7-u16-be max-called & s7-u16-be max-calling & s7-u16-be pdu-size
+   in s7-header s7-rosctr-job pdu-ref (list-length param) 0 & param
+
+Section: Read Var
+
+ A Read Var request (function 0x04) lists item specifications. Each
+ item names an area, a data-block number, a transport size, an element
+ count, and a start address expressed as a bit offset (the byte
+ address times eight). Area 0x84 is a data block; 0x81/0x82/0x83 are
+ the process inputs, outputs, and flags.
+
+  s7-area-input : Integer = #81
+  s7-area-output : Integer = #82
+  s7-area-flag : Integer = #83
+  s7-area-db : Integer = #84
+
+  s7-addr3 : Integer -> List Integer
+  s7-addr3 (bit-addr) =
+   [bit-and (bit-shru bit-addr 16) 255, bit-and (bit-shru bit-addr 8) 255, bit-and bit-addr 255]
+
+  s7-read-item : Integer, Integer, Integer, Integer -> List Integer
+  s7-read-item (area) (db) (count) (start-byte) =
+   [#12, #0A, #10, #02] & s7-u16-be count & s7-u16-be db & [area] & s7-addr3 (start-byte * 8)
+
+  s7-read-var-single : Integer, List Integer -> List Integer
+  s7-read-var-single (pdu-ref) (item) =
+   let param = [#04, 1] & item
+   in s7-header s7-rosctr-job pdu-ref (list-length param) 0 & param

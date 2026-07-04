@@ -112,7 +112,7 @@ Section: Record Types
 
   EmitResult = record {
    state : CodegenState,
-   reg : Integer between 0 and 4294967295
+   reg : Integer between 0 and 65535
   }
 
   TrampolineResult = record {
@@ -566,15 +566,15 @@ Section: State Helpers
    insn-count = 0
   }
 
-  st-add-error : CodegenState, Integer, Text, SourceSpan -> CodegenState
+  st-add-error : CodegenState, Integer between 0 and 65535, Text, SourceSpan -> CodegenState
   st-add-error (st) (code) (msg) (sp) =
    __record-set st "bag" (bag-add (st.bag) (make-error code msg sp))
 
-  st-add-info : CodegenState, Integer, Text, SourceSpan -> CodegenState
+  st-add-info : CodegenState, Integer between 0 and 65535, Text, SourceSpan -> CodegenState
   st-add-info (st) (code) (msg) (sp) =
    __record-set st "bag" (bag-add (st.bag) (make-info code msg sp))
 
-  st-add-warning : CodegenState, Integer, Text, SourceSpan -> CodegenState
+  st-add-warning : CodegenState, Integer between 0 and 65535, Text, SourceSpan -> CodegenState
   st-add-warning (st) (code) (msg) (sp) =
    __record-set st "bag" (bag-add (st.bag) (make-warning code msg sp))
 
@@ -604,7 +604,7 @@ Section: State Helpers
   fresh-empty-locals : Integer -> List LocalBinding
   fresh-empty-locals (x) = []
 
-  codegen-carry-forward : CodegenState, Integer, Integer, Integer -> CodegenState
+  codegen-carry-forward : CodegenState, Integer between 0 and 4294967295, Integer between 0 and 4294967295, Integer between 0 and 4294967295 -> CodegenState
   codegen-carry-forward (st) (new-code-len) (new-data-len) (new-emit-work) =
    CodegenState {
     workspace = st.workspace,
@@ -708,7 +708,7 @@ Section: Register Allocation
    in let reg = list-at pool idx
    in EmitResult {
    state = __record-set st "next-temp" (st.next-temp + 1),
-   reg = reg
+   reg = __narrow reg
   }
 
  When a value is still live in a temp register, every temp allocated
@@ -734,7 +734,7 @@ Section: Register Allocation
    in if st.next-local < list-length regs then let reg = list-at regs (st.next-local)
    in EmitResult {
    state = __record-set st-pk "next-local" nl,
-   reg = reg
+   reg = __narrow reg
   }
    else let slot = spill-base + st.spill-count
    in let sc = st.spill-count + 1
@@ -742,7 +742,7 @@ Section: Register Allocation
    in let st2 = __record-set st1 "spill-count" sc
    in EmitResult {
    state = __record-set st2 "peak-spill" (if sc > st2.peak-spill then sc else st2.peak-spill),
-   reg = slot
+   reg = __narrow slot
   }
 
   store-local : CodegenState, Integer, Integer -> CodegenState
@@ -754,7 +754,7 @@ Section: Register Allocation
    else let offset = -((local - spill-base + 1) * 8 + 32)
    in st-append-code st (mov-store reg-rbp value-reg offset)
 
-  load-local-scratch-for : Integer -> Integer
+  load-local-scratch-for : Integer -> Integer between 0 and 15
   load-local-scratch-for (toggle) =
    let idx = int-mod toggle 3
    in if idx == 0 then reg-r8
@@ -765,7 +765,7 @@ Section: Register Allocation
   load-local (st) (local) =
    if local < spill-base then EmitResult {
    state = st,
-   reg = local
+   reg = __narrow local
   }
    else let scratch = load-local-scratch-for (st.load-local-toggle)
    in let offset = if st.omit-frame-pointer then (local - spill-base) * 8
@@ -806,10 +806,7 @@ Section: Byte Patching
 
   st-add-deferred-patch : CodegenState, PatchEntry -> CodegenState
   st-add-deferred-patch (st) (entry) =
-   let r1 = __buf-write-byte (st.workspace.code-buffer) (entry.pos) (entry.b0)
-   in let r2 = __buf-write-byte (st.workspace.code-buffer) (entry.pos + 1) (entry.b1)
-   in let r3 = __buf-write-byte (st.workspace.code-buffer) (entry.pos + 2) (entry.b2)
-   in let r4 = __buf-write-byte (st.workspace.code-buffer) (entry.pos + 3) (entry.b3)
+   let r1 = buf-write-i32 (st.workspace.code-buffer) (entry.pos) (entry.value)
    in st
 
   patch-jcc-at : CodegenState, Integer, Integer -> CodegenState
@@ -829,21 +826,14 @@ Section: Byte Patching
 
   PatchEntry = record {
    pos : Integer between 0 and 4294967295,
-   b0 : Integer between 0 and 255,
-   b1 : Integer between 0 and 255,
-   b2 : Integer between 0 and 255,
-   b3 : Integer between 0 and 255
+   value : Integer
   }
 
   make-i32-patch : Integer, Integer -> PatchEntry
   make-i32-patch (pos) (value) =
-   let bs = write-i32 value
-   in PatchEntry {
-    pos = pos,
-    b0 = list-at bs 0,
-    b1 = list-at bs 1,
-    b2 = list-at bs 2,
-    b3 = list-at bs 3
+   PatchEntry {
+    pos = __narrow pos,
+    value = value
   }
 
   apply-all-patches : List Integer, List PatchEntry -> List Integer
@@ -861,10 +851,10 @@ Section: Byte Patching
   find-patch-byte (patches) (i) (j) (len) =
    if j == len then -1
    else let p = list-at patches j
-   in if i == p.pos then p.b0
-      else if i == p.pos + 1 then p.b1
-      else if i == p.pos + 2 then p.b2
-      else if i == p.pos + 3 then p.b3
+   in if i == p.pos then int-mod (p.value) 256
+      else if i == p.pos + 1 then int-mod (floor-div (p.value) 256) 256
+      else if i == p.pos + 2 then int-mod (floor-div (p.value) 65536) 256
+      else if i == p.pos + 3 then int-mod (floor-div (p.value) 16777216) 256
       else find-patch-byte patches i (j + 1) len
 
   collect-call-patches : List Integer, List Text, OffsetTable, Integer, List PatchEntry -> List PatchEntry

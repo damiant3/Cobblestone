@@ -1,0 +1,127 @@
+Chapter: Dnp3
+
+ DNP3 (Distributed Network Protocol) data-link layer, the SCADA
+ workhorse for electric, water, and utility telemetry (IEEE 1815).
+ A link frame is a 10-byte header block (start bytes 0x0564, length,
+ control, destination, source, CRC) followed by user data carried in
+ blocks of up to 16 octets, each block followed by its own CRC. All
+ addresses are little-endian. Each builder returns a List Integer.
+
+ The length field counts the control, destination, and source octets
+ (5) plus the user data, but not the start bytes, the length octet
+ itself, or any CRC.
+
+Section: CRC-16/DNP
+
+ CRC-16/DNP: reflected polynomial 0x3D65 (0xA6BC in reflected form),
+ initial value 0x0000, final xor 0xFFFF. The check value over the
+ ASCII string "123456789" is 0xEA82.
+
+  dnp3-crc16 : List Integer -> Integer
+  dnp3-crc16 (bs) = bit-xor (dnp3-crc-loop 0 bs 0 (list-length bs)) #FFFF
+
+  dnp3-crc-loop : Integer, List Integer, Integer, Integer -> Integer
+  dnp3-crc-loop (crc) (bs) (i) (len) =
+   if i >= len then crc
+   else dnp3-crc-loop (dnp3-crc-byte (bit-xor crc (list-at bs i)) 0) bs (i + 1) len
+
+  dnp3-crc-byte : Integer, Integer -> Integer
+  dnp3-crc-byte (crc) (k) =
+   if k >= 8 then crc
+   else if bit-and crc 1 == 1
+     then dnp3-crc-byte (bit-xor (bit-shru crc 1) #A6BC) (k + 1)
+     else dnp3-crc-byte (bit-shru crc 1) (k + 1)
+
+Section: Byte Helpers
+
+  dnp3-u16-le : Integer -> List Integer
+  dnp3-u16-le (v) = [bit-and v 255, bit-and (bit-shru v 8) 255]
+
+  dnp3-crc-suffix : List Integer -> List Integer
+  dnp3-crc-suffix (bs) = dnp3-u16-le (dnp3-crc16 bs)
+
+  dnp3-slice : List Integer, Integer, Integer -> List Integer
+  dnp3-slice (data) (off) (count) = dnp3-slice-loop data off count 0 []
+
+  dnp3-slice-loop : List Integer, Integer, Integer, Integer, List Integer -> List Integer
+  dnp3-slice-loop (data) (off) (count) (i) (acc) =
+   if i >= count then acc
+   else dnp3-slice-loop data off count (i + 1) (list-push acc (list-at data (off + i)))
+
+Section: Control Octets
+
+ Common primary-station control octets (DIR + PRM set, function code
+ in the low nibble).
+
+  dnp3-ctrl-reset-link : Integer = #C0
+  dnp3-ctrl-test-link : Integer = #C2
+  dnp3-ctrl-confirmed-data : Integer = #C3
+  dnp3-ctrl-unconfirmed-data : Integer = #C4
+  dnp3-ctrl-request-status : Integer = #C9
+
+Section: Header Block
+
+  dnp3-start-1 : Integer = #05
+  dnp3-start-2 : Integer = #64
+
+  dnp3-header : Integer, Integer, Integer, Integer -> List Integer
+  dnp3-header (ctrl) (dest) (src) (datalen) =
+   [dnp3-start-1, dnp3-start-2, 5 + datalen, ctrl] & dnp3-u16-le dest & dnp3-u16-le src
+
+  dnp3-header-block : Integer, Integer, Integer, Integer -> List Integer
+  dnp3-header-block (ctrl) (dest) (src) (datalen) =
+   let h = dnp3-header ctrl dest src datalen
+   in h & dnp3-crc-suffix h
+
+Section: Data Blocks
+
+ User data is split into 16-octet blocks, each followed by its own CRC.
+
+  dnp3-data-blocks : List Integer -> List Integer
+  dnp3-data-blocks (data) = dnp3-data-loop data 0 (list-length data) []
+
+  dnp3-data-loop : List Integer, Integer, Integer, List Integer -> List Integer
+  dnp3-data-loop (data) (off) (len) (acc) =
+   if off >= len then acc
+   else let count = if len - off < 16 then len - off else 16
+   in let chunk = dnp3-slice data off count
+   in dnp3-data-loop data (off + 16) len (acc & chunk & dnp3-crc-suffix chunk)
+
+Section: Application Layer
+
+ The application layer inside the frame: an application control octet
+ (FIR, FIN, CON, UNS, and a sequence number) and a function code,
+ followed by object headers. An object header names a group and
+ variation and a qualifier: 0x06 selects all objects of that type,
+ 0x00 an 8-bit start/stop index range. Class-data reads use group 60
+ with variation 1..4 for classes 0..3.
+
+  dnp3-app-fc-read : Integer = 1
+  dnp3-app-fc-write : Integer = 2
+  dnp3-app-fc-select : Integer = 3
+  dnp3-app-fc-operate : Integer = 4
+  dnp3-app-fc-direct-operate : Integer = 5
+  dnp3-app-fc-cold-restart : Integer = 13
+
+  dnp3-app-header : Integer, Integer -> List Integer
+  dnp3-app-header (seq) (function) = [bit-or #C0 seq, function]
+
+  dnp3-obj-all : Integer, Integer -> List Integer
+  dnp3-obj-all (group) (variation) = [group, variation, #06]
+
+  dnp3-obj-range8 : Integer, Integer, Integer, Integer -> List Integer
+  dnp3-obj-range8 (group) (variation) (start) (stop) = [group, variation, #00, start, stop]
+
+  dnp3-read-class : Integer, Integer -> List Integer
+  dnp3-read-class (seq) (class-variation) =
+   dnp3-app-header seq dnp3-app-fc-read & dnp3-obj-all 60 class-variation
+
+  dnp3-read-range : Integer, Integer, Integer, Integer, Integer -> List Integer
+  dnp3-read-range (seq) (group) (variation) (start) (stop) =
+   dnp3-app-header seq dnp3-app-fc-read & dnp3-obj-range8 group variation start stop
+
+Section: Frame
+
+  dnp3-build-frame : Integer, Integer, Integer, List Integer -> List Integer
+  dnp3-build-frame (ctrl) (dest) (src) (data) =
+   dnp3-header-block ctrl dest src (list-length data) & dnp3-data-blocks data

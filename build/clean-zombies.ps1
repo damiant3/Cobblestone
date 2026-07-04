@@ -18,6 +18,16 @@ $killed = $false
 
 foreach ($name in 'qemu-system-x86_64', 'codex-vm', 'wsl') {
     $procs = Get-Process -Name $name -ErrorAction SilentlyContinue
+    if ($name -eq 'codex-vm' -and $procs) {
+        # Spare long-running SERVER VMs (webservices booted with -portfwd,
+        # e.g. apps/ideas). Compile/test VMs never use -portfwd, so any
+        # codex-vm with it on the command line is deliberately serving,
+        # not an orphan. Killing it breaks another agent's live demo.
+        $procs = @($procs | Where-Object {
+            $cl = (Get-CimInstance Win32_Process -Filter "ProcessId=$($_.Id)" -ErrorAction SilentlyContinue).CommandLine
+            "$cl" -notlike '*-portfwd*'
+        })
+    }
     if ($procs) {
         if ($name -eq 'codex-vm') {
             foreach ($p in $procs) {

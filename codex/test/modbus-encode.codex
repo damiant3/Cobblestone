@@ -1,0 +1,117 @@
+Chapter: ModbusEncodeTest
+
+  cites Encode chapter Modbus
+
+ Exercise the Modbus module: read/write request PDUs, CRC-16,
+ RTU and TCP framing, and response parsing. Each check contributes
+ 1 to the total; opening returns the count of passing checks.
+ The CRC known-answer (0x0A84 for 01 03 00 00 00 01) is verified
+ against an independent implementation, and the whole-frame CRC-zero
+ property is checked separately so a wrong constant cannot hide a
+ wrong algorithm.
+
+Section: Helpers
+
+  bytes-eq : List Integer, List Integer -> Boolean
+  bytes-eq (a) (b) =
+   if list-length a /= list-length b then False
+   else bytes-eq-loop a b 0 (list-length a)
+
+  bytes-eq-loop : List Integer, List Integer, Integer, Integer -> Boolean
+  bytes-eq-loop (a) (b) (i) (len) =
+   if i >= len then True
+   else if list-at a i /= list-at b i then False
+   else bytes-eq-loop a b (i + 1) len
+
+  flag : Boolean -> Integer
+  flag (b) = if b then 1 else 0
+
+Section: Checks
+
+  check-read-holding : Integer
+  check-read-holding =
+   flag (bytes-eq (modbus-read-holding-registers 0 1) [3, 0, 0, 0, 1])
+
+  check-crc-known : Integer
+  check-crc-known =
+   flag (modbus-crc16 [1, 3, 0, 0, 0, 1] == #0A84)
+
+  check-rtu-frame : Integer
+  check-rtu-frame =
+   flag (bytes-eq (modbus-rtu-frame 1 (modbus-read-holding-registers 0 1)) [1, 3, 0, 0, 0, 1, 132, 10])
+
+  check-rtu-selfcheck : Integer
+  check-rtu-selfcheck =
+   flag (modbus-rtu-check (modbus-rtu-frame 1 (modbus-read-holding-registers 0 1)))
+
+  check-tcp-frame : Integer
+  check-tcp-frame =
+   flag (bytes-eq (modbus-tcp-frame 1 1 (modbus-read-holding-registers 0 1)) [0, 1, 0, 0, 0, 6, 1, 3, 0, 0, 0, 1])
+
+  check-write-register : Integer
+  check-write-register =
+   flag (bytes-eq (modbus-write-single-register 1 #1234) [6, 0, 1, 18, 52])
+
+  check-write-coil : Integer
+  check-write-coil =
+   flag (bytes-eq (modbus-write-single-coil 5 True) [5, 0, 5, 255, 0])
+
+  check-write-multiple : Integer
+  check-write-multiple =
+   flag (bytes-eq (modbus-write-multiple-registers 0 [10, 258]) [16, 0, 0, 0, 2, 4, 0, 10, 1, 2])
+
+  check-parse-registers : Integer
+  check-parse-registers =
+   flag (bytes-eq (modbus-parse-registers [3, 2, 0, 42]) [42])
+
+  check-exception : Integer
+  check-exception =
+   flag (if modbus-is-exception [131, 2] then modbus-exception-code [131, 2] == 2 else False)
+
+  check-write-coils : Integer
+  check-write-coils =
+   flag (bytes-eq (modbus-write-multiple-coils 19 [True, False, True, True, False, False, True, True, True, False]) [15, 0, 19, 0, 10, 2, 205, 1])
+
+  check-parse-coils : Integer
+  check-parse-coils =
+   flag (bytes-eq (modbus-write-multiple-coils 0 (modbus-parse-coils [1, 2, 205, 1] 10)) [15, 0, 0, 0, 10, 2, 205, 1])
+
+  check-lrc : Integer
+  check-lrc =
+   flag (modbus-lrc [1, 3, 0, 0, 0, 1] == #FB)
+
+  check-ascii-frame : Integer
+  check-ascii-frame =
+   flag (bytes-eq (modbus-ascii-frame 1 (modbus-read-holding-registers 0 1)) [58, 48, 49, 48, 51, 48, 48, 48, 48, 48, 48, 48, 49, 70, 66, 13, 10])
+
+  check-exception-status : Integer
+  check-exception-status =
+   flag (bytes-eq modbus-read-exception-status [7])
+
+  check-mask-write : Integer
+  check-mask-write =
+   flag (bytes-eq (modbus-mask-write-register 4 #00F2 #0025) [22, 0, 4, 0, 242, 0, 37])
+
+  check-read-write-multiple : Integer
+  check-read-write-multiple =
+   flag (bytes-eq (modbus-read-write-multiple-registers 3 6 14 [#00FF, #00FF, #00FF]) [23, 0, 3, 0, 6, 0, 14, 0, 3, 6, 0, 255, 0, 255, 0, 255])
+
+  opening : Integer =
+   let a = check-read-holding
+   in let b = check-crc-known
+   in let c = check-rtu-frame
+   in let d = check-rtu-selfcheck
+   in let e = check-tcp-frame
+   in let f = check-write-register
+   in let g = check-write-coil
+   in let h = check-write-multiple
+   in let i = check-parse-registers
+   in let j = check-exception
+   in let k = check-write-coils
+   in let l = check-parse-coils
+   in let m = check-lrc
+   in let n = check-ascii-frame
+   in let o = check-exception-status
+   in let p = check-mask-write
+   in let q = check-read-write-multiple
+   in a + b + c + d + e + f + g + h + i + j + k + l + m + n + o + p + q

@@ -1,0 +1,72 @@
+Chapter: Sntp
+
+ SNTP (Simple Network Time Protocol, RFC 4330) -- the lightweight NTP
+ subset that IoT devices use to set their clock, which TLS certificate
+ validation, logging, and coordination all depend on. A packet is 48
+ bytes: a leap/version/mode octet, stratum, poll, precision, root delay
+ and dispersion, reference id, and four 64-bit timestamps (reference,
+ originate, receive, transmit). A client request is mostly zeros with
+ the mode set to client and, optionally, a transmit timestamp. NTP
+ timestamps count seconds since 1900; Unix time counts from 1970.
+
+Section: Constants
+
+ The leap/version/mode octet packs LI (bits 7-6), version (bits 5-3),
+ and mode (bits 2-0). Mode 3 is client, mode 4 is server. Version 4.
+
+  sntp-mode-client : Integer = 3
+  sntp-mode-server : Integer = 4
+  sntp-version-4 : Integer = 4
+
+  sntp-flags-client : Integer = #23
+  sntp-ntp-epoch-offset : Integer = 2208988800
+
+Section: Helpers
+
+  sntp-flags : Integer, Integer, Integer -> Integer
+  sntp-flags (li) (version) (mode) =
+   bit-or (bit-or (bit-shl li 6) (bit-shl version 3)) mode
+
+  sntp-zeros : Integer, List Integer -> List Integer
+  sntp-zeros (n) (acc) =
+   if n <= 0 then acc else sntp-zeros (n - 1) (list-push acc 0)
+
+  sntp-u32-be : Integer -> List Integer
+  sntp-u32-be (v) =
+   [bit-and (bit-shru v 24) 255, bit-and (bit-shru v 16) 255, bit-and (bit-shru v 8) 255, bit-and v 255]
+
+  sntp-read-u32-be : List Integer, Integer -> Integer
+  sntp-read-u32-be (packet) (off) =
+   bit-or (bit-or (bit-or (bit-shl (list-at packet off) 24) (bit-shl (list-at packet (off + 1)) 16)) (bit-shl (list-at packet (off + 2)) 8)) (list-at packet (off + 3))
+
+Section: Request
+
+ A client request: the client flags octet, then zeros through byte 39,
+ the transmit timestamp seconds (bytes 40-43), and a zero fraction
+ (bytes 44-47).
+
+  sntp-build-request : Integer -> List Integer
+  sntp-build-request (transmit-seconds) =
+   [sntp-flags-client] & sntp-zeros 39 [] & sntp-u32-be transmit-seconds & sntp-zeros 4 []
+
+Section: Response Accessors
+
+  sntp-mode : List Integer -> Integer
+  sntp-mode (packet) = bit-and (list-at packet 0) 7
+
+  sntp-version : List Integer -> Integer
+  sntp-version (packet) = bit-and (bit-shru (list-at packet 0) 3) 7
+
+  sntp-stratum : List Integer -> Integer
+  sntp-stratum (packet) = list-at packet 1
+
+  sntp-transmit-seconds : List Integer -> Integer
+  sntp-transmit-seconds (packet) = sntp-read-u32-be packet 40
+
+Section: Epoch Conversion
+
+  sntp-ntp-to-unix : Integer -> Integer
+  sntp-ntp-to-unix (ntp-seconds) = ntp-seconds - sntp-ntp-epoch-offset
+
+  sntp-unix-to-ntp : Integer -> Integer
+  sntp-unix-to-ntp (unix-seconds) = unix-seconds + sntp-ntp-epoch-offset

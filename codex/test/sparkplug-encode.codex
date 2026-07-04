@@ -1,0 +1,101 @@
+Chapter: SparkplugEncodeTest
+
+  cites Encode chapter Sparkplug
+
+ Exercise the Sparkplug B module: topic namespace, Protobuf metric and
+ payload encoding, sequence wrap, and MQTT message building. Metric and
+ payload byte sequences are checked against an independent Protobuf
+ encoder. opening returns the count of passing checks.
+
+Section: Helpers
+
+  bytes-eq : List Integer, List Integer -> Boolean
+  bytes-eq (a) (b) =
+   if list-length a /= list-length b then False
+   else bytes-eq-loop a b 0 (list-length a)
+
+  bytes-eq-loop : List Integer, List Integer, Integer, Integer -> Boolean
+  bytes-eq-loop (a) (b) (i) (len) =
+   if i >= len then True
+   else if list-at a i /= list-at b i then False
+   else bytes-eq-loop a b (i + 1) len
+
+  text-bytes : Text -> List Integer
+  text-bytes (s) = text-bytes-loop s 0 (text-length s) []
+
+  text-bytes-loop : Text, Integer, Integer, List Integer -> List Integer
+  text-bytes-loop (s) (i) (len) (acc) =
+   if i >= len then acc
+   else text-bytes-loop s (i + 1) len (list-push acc (char-code (char-at s i)))
+
+  text-eq : Text, Text -> Boolean
+  text-eq (a) (b) = bytes-eq (text-bytes a) (text-bytes b)
+
+  flag : Boolean -> Integer
+  flag (b) = if b then 1 else 0
+
+Section: Checks
+
+  check-node-topic : Integer
+  check-node-topic =
+   flag (text-eq (spb-node-topic "grp" spb-msg-nbirth "node1") "spBv1.0/grp/NBIRTH/node1")
+
+  check-device-topic : Integer
+  check-device-topic =
+   flag (text-eq (spb-device-topic "grp" spb-msg-ddata "node1" "dev1") "spBv1.0/grp/DDATA/node1/dev1")
+
+  check-metric-int : Integer
+  check-metric-int =
+   flag (bytes-eq (spb-encode-metric (spb-metric "temp" spb-dt-int32 (SpbInt 42))) [10, 4, 116, 101, 109, 112, 32, 3, 80, 42])
+
+  check-payload : Integer
+  check-payload =
+   flag (bytes-eq (spb-encode-payload (SpbPayload { timestamp = 0, seq = 5, metrics = [spb-metric "temp" spb-dt-int32 (SpbInt 42)] })) [8, 0, 18, 10, 10, 4, 116, 101, 109, 112, 32, 3, 80, 42, 24, 5])
+
+  check-metric-bool : Integer
+  check-metric-bool =
+   flag (bytes-eq (spb-encode-metric (spb-metric "on" spb-dt-boolean (SpbBool True))) [10, 2, 111, 110, 32, 11, 112, 1])
+
+  check-metric-string : Integer
+  check-metric-string =
+   flag (bytes-eq (spb-encode-metric (spb-metric "label" spb-dt-string (SpbString "hi"))) [10, 5, 108, 97, 98, 101, 108, 32, 12, 122, 2, 104, 105])
+
+  check-metric-alias : Integer
+  check-metric-alias =
+   flag (bytes-eq (spb-encode-metric (SpbMetric { name = "x", alias = 7, datatype = spb-dt-int32, value = SpbInt 1 })) [10, 1, 120, 16, 7, 32, 3, 80, 1])
+
+  check-metric-null : Integer
+  check-metric-null =
+   flag (bytes-eq (spb-encode-metric (spb-metric "q" spb-dt-int32 SpbNull)) [10, 1, 113, 32, 3, 56, 1])
+
+  check-metric-float : Integer
+  check-metric-float =
+   flag (bytes-eq (spb-encode-metric (spb-metric "f" spb-dt-float (SpbFloat (to-real-approx 1.0)))) [10, 1, 102, 32, 9, 101, 0, 0, 128, 63])
+
+  check-metric-double : Integer
+  check-metric-double =
+   flag (bytes-eq (spb-encode-metric (spb-metric "d" spb-dt-double (SpbDouble 1.0))) [10, 1, 100, 32, 10, 105, 0, 0, 0, 0, 0, 0, 240, 63])
+
+  check-seq : Integer
+  check-seq =
+   flag (if spb-next-seq 255 == 0 then spb-next-seq 4 == 5 else False)
+
+  check-nbirth-publish : Integer
+  check-nbirth-publish =
+   let pkt = spb-nbirth "grp" "node1" (SpbPayload { timestamp = 0, seq = 0, metrics = [spb-bdseq-metric 1] })
+   in flag (if list-length pkt > 0 then list-at pkt 0 == 48 else False)
+
+  opening : Integer =
+   let a = check-node-topic
+   in let b = check-device-topic
+   in let c = check-metric-int
+   in let d = check-payload
+   in let e = check-metric-bool
+   in let f = check-metric-string
+   in let g = check-metric-alias
+   in let h = check-metric-null
+   in let i = check-seq
+   in let j = check-nbirth-publish
+   in let k = check-metric-float
+   in let l = check-metric-double
+   in a + b + c + d + e + f + g + h + i + j + k + l

@@ -65,6 +65,10 @@ Section: Parser
 
   cdx-prose-banned-word : Integer = 1110
 
+  cdx-row-two-tails : Integer = 1120
+
+  cdx-row-tail-decorated : Integer = 1121
+
 Section: Type checker and Codegen
   cdx-ir-error : Integer = 2000
 
@@ -96,6 +100,8 @@ Section: Type checker and Codegen
 
   cdx-no-class-instance : Integer = 2052
 
+  cdx-narrowing-proven : Integer = 2053
+
   cdx-field-assign-immutable : Integer = 2060
 
   cdx-use-after-consume : Integer = 2061
@@ -106,9 +112,23 @@ Section: Type checker and Codegen
 
   cdx-linear-unused : Integer = 2063
 
+  cdx-linear-escape : Integer = 2065
+
+  cdx-linear-return : Integer = 2066
+
+  cdx-linear-capture : Integer = 2067
+
   cdx-real-equality-banned : Integer = 2085
 
   cdx-nothing-as-value : Integer = 2086
+
+  cdx-row-mismatch : Integer = 2090
+
+  cdx-row-infinite : Integer = 2091
+
+  cdx-handler-unused : Integer = 2092
+
+  cdx-effectful-arrow-value : Integer = 2094
 
   cdx-non-exhaustive-match : Integer = 2070
 
@@ -157,7 +177,7 @@ Section: Hard Realtime
   cdx-rt-wcet-exceeded : Integer = 6011
 
 Section: Registry entry constructor
-  mk-cdx : Integer, Text, Integer, Integer, Text -> CdxCodeInfo
+  mk-cdx : Integer between 0 and 65535, Text, Integer between 0 and 3, Integer between 0 and 15, Text -> CdxCodeInfo
   mk-cdx (code) (name) (sev) (phase) (summary) =
    CdxCodeInfo {
     code = code,
@@ -193,12 +213,16 @@ Section: Registry
     mk-cdx cdx-deck-overflow "DeckOverflow" sev-error phase-infrastructure "Phase deck allocation exceeded its survey budget; the input is too large or the survey multiplier is too low.",
     mk-cdx cdx-escape-violation "EscapeViolation" sev-warning phase-infrastructure "Deck pointer targets bivy address; data will be stale after phase-compact. The producing function allocated scratch into the deck.",
     mk-cdx cdx-narrowing-record-set-literal "NarrowingRecordSetLiteral" sev-error phase-type-checker "A bounded-Integer field is being assigned a literal value that does not fit the field's declared bound; the codegen narrow-store would silently truncate at runtime. Adjust the literal or widen the field bound.",
-    mk-cdx cdx-narrowing-record-set "NarrowingRecordSet" sev-warning phase-type-checker "A bounded-Integer field is being assigned a value whose static type is wider than the field's declared bound; the codegen narrow-store will silently truncate if the runtime value exceeds the bound.",
+    mk-cdx cdx-narrowing-record-set "NarrowingRecordSet" sev-error phase-type-checker "A bounded-Integer position is being assigned a value whose static range cannot be proven within the declared bound. Prove the range (a bounded field, parameter, return, or literal-defined constant the prover can see) or assert it with __narrow, which traps at runtime if the value is out of range.",
     mk-cdx cdx-no-class-instance "NoClassInstance" sev-error phase-type-checker "A class operation (show, ==, compare) was applied to a type with no instance for it. Derive the class on the type (deriving Show/Eq/Ord) or use a manual conversion.",
+    mk-cdx cdx-narrowing-proven "NarrowingProven" sev-info phase-type-checker "The value expression's proven range fits the bounded-Integer field's declared bound; the narrowing warning is elided. Checker-side analog of BoundsProven.",
     mk-cdx cdx-use-after-consume "UseAfterConsume" sev-error phase-type-checker "Mutable binding was already consumed (moved); use after consume is not permitted.",
     mk-cdx cdx-stale-read-after-update "StaleReadAfterUpdate" sev-warning phase-type-checker "A field is read from a record after that record was updated in place by a call whose result was bound to a different name. __record-set mutates the record, so the original binding now aliases the updated one and the read sees the new value, not the old. Thread the updated binding, or capture the field into a let before the call.",
     mk-cdx cdx-mutable-alias "MutableAlias" sev-error phase-type-checker "Mutable record cannot be aliased; exactly one binding may hold it at a time.",
     mk-cdx cdx-linear-unused "LinearUnused" sev-error phase-type-checker "A linear value must be used exactly once, but this one is never used (linear leak).",
+    mk-cdx cdx-linear-escape "LinearEscape" sev-error phase-type-checker "A linear value moves into a callee only through a parameter declared linear; passing it to a plain parameter sheds the discipline. Use freeze to exit linearity deliberately.",
+    mk-cdx cdx-linear-return "LinearReturn" sev-error phase-type-checker "A linear value is returned from a function whose return type is not declared linear; that is an unsanctioned freeze. Declare the return linear, or consume the value with freeze.",
+    mk-cdx cdx-linear-capture "LinearCapture" sev-error phase-type-checker "A linear value is captured by a context that may run zero or many times (a handler clause, or a closure that escapes). A linear value may be captured only by a let-bound closure, which is then called exactly once.",
     mk-cdx cdx-non-exhaustive-match "NonExhaustiveMatch" sev-error phase-type-checker "Match expression does not cover all constructors of the scrutinee type.",
     mk-cdx cdx-int-literal-overflow "IntLiteralOverflow" sev-error phase-type-checker "An integer literal exceeds 64 bits (decimal max 9223372036854775807, hash form max 16 hex digits); the value would be silently truncated. Split the constant or compute it from smaller parts.",
     mk-cdx cdx-unknown-pattern-ctor "UnknownPatternCtor" sev-error phase-type-checker "A pattern names a constructor that is not in scope; the arm could never match and the when would fall through silently at runtime. Check the constructor names of the scrutinee's type.",
@@ -217,6 +241,12 @@ Section: Registry
     mk-cdx cdx-prose-banned-word "ProseBannedWord" sev-warning phase-parser "A banned word was used in load-bearing prose; replace it with the suggested substitute.",
     mk-cdx cdx-multiline-application "MultilineApplication" sev-error phase-parser "Application ends at newline but the next line begins with an indented '(' or '['. The continuation would be silently dropped from the application. Place all arguments on one line, wrap the whole application in parentheses, or bind the bracketed value with a let.",
     mk-cdx cdx-chained-arrow-type "ChainedArrowType" sev-error phase-parser "A type uses chained '->' (A -> B -> C); write multi-parameter types with commas: A, B -> C.",
+    mk-cdx cdx-row-two-tails "RowTwoTails" sev-error phase-parser "An effect row may name at most one row variable (lowercase identifier); a row like [e, f] is ill-formed.",
+    mk-cdx cdx-row-tail-decorated "RowTailDecorated" sev-error phase-parser "A row variable is a bare lowercase identifier; scopes and dotted sub-effects attach to concrete PascalCase effects only.",
+    mk-cdx cdx-row-mismatch "RowMismatch" sev-error phase-type-checker "Two effect rows could not be unified: an effect performed on one side is not allowed by the other, and no row variable is free to absorb the difference.",
+    mk-cdx cdx-row-infinite "RowInfinite" sev-error phase-type-checker "Row occurs check failed - a row variable would absorb a row that already contains it, producing an infinite effect row.",
+    mk-cdx cdx-handler-unused "HandlerUnused" sev-warning phase-type-checker "A handler encloses a body whose effect row cannot perform the handled effect; the handler is legal but discharges nothing.",
+    mk-cdx cdx-effectful-arrow-value "EffectfulArrowValue" sev-error phase-type-checker "An effect bracket cannot wrap a function type in a value signature; effects belong on the arrow they decorate: write A -> [E] B.",
     mk-cdx cdx-rt-calls-unsafe "RtCallsUnsafe" sev-error phase-type-checker "A [HardRealtime] function calls a function that is not [HardRealtime]-safe.",
     mk-cdx cdx-rt-heap-alloc "RtHeapAlloc" sev-error phase-type-checker "A [HardRealtime] function uses heap allocation.",
     mk-cdx cdx-rt-closure "RtClosure" sev-error phase-type-checker "A [HardRealtime] function uses a closure or lambda.",

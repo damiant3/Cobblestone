@@ -1,0 +1,266 @@
+Chapter: CsAst
+  cites Codex chapter Text
+  cites Codex chapter Lists
+
+ A small C# abstract syntax tree. Instead of concatenating raw C#
+ strings, the plug builds a tree of named constructs -- usings, a
+ namespace, classes, fields, methods, and parameters -- and a walker
+ renders it. Method bodies and the IR-transpiled members remain raw C#
+ text (the IR expression emitter produces those, and modelling every
+ statement/expression is a separate, larger effort). This gives the file
+ scaffolding and the runtime/WPF builtins a proper representation rather
+ than a wall of string literals.
+
+ We say:
+
+Section: Nodes
+
+  CsUsing = record { ns : Text }
+
+  CsParam = record {
+    ptype : Text,
+    pname : Text,
+    default-val : Text
+  }
+
+  CsField = record {
+    modifiers : Text,
+    ftype : Text,
+    fname : Text,
+    finit : Text
+  }
+
+  CsMethod = record {
+    modifiers : Text,
+    ret-type : Text,
+    mname : Text,
+    params : List CsParam,
+    body : Text
+  }
+
+  CsClass = record {
+    modifiers : Text,
+    cname : Text,
+    base-type : Text,
+    fields : List CsField,
+    methods : List CsMethod,
+    raw-members : Text
+  }
+
+  CsFile = record {
+    usings : List CsUsing,
+    ns-name : Text,
+    classes : List CsClass
+  }
+
+Section: Constructors
+
+  cs-using : Text -> CsUsing
+  cs-using (n) = CsUsing { ns = n }
+
+  cs-param : Text, Text -> CsParam
+  cs-param (t) (n) = CsParam { ptype = t, pname = n, default-val = "" }
+
+  cs-param-def : Text, Text, Text -> CsParam
+  cs-param-def (t) (n) (d) = CsParam { ptype = t, pname = n, default-val = d }
+
+  cs-field : Text, Text, Text, Text -> CsField
+  cs-field (m) (t) (n) (init) = CsField { modifiers = m, ftype = t, fname = n, finit = init }
+
+  cs-method : Text, Text, Text, List CsParam, Text -> CsMethod
+  cs-method (m) (r) (n) (ps) (b) = CsMethod { modifiers = m, ret-type = r, mname = n, params = ps, body = b }
+
+Section: Rendering -- Indentation
+
+  cs-ind : Integer -> Text
+  cs-ind (n) = if n <= 0 then "" else "    " & cs-ind (n - 1)
+
+Section: Rendering -- Usings
+
+  render-usings : List CsUsing, Integer, Integer, Text -> Text
+  render-usings (us) (i) (len) (acc) =
+    if i >= len then acc
+    else render-usings us (i + 1) len (acc & "using " & (list-at us i).ns & ";\n")
+
+Section: Rendering -- Params
+
+  render-param : CsParam -> Text
+  render-param (p) =
+    if text-length (p.default-val) > 0 then p.ptype & " " & p.pname & " = " & p.default-val
+    else p.ptype & " " & p.pname
+
+  render-params : List CsParam, Integer, Integer, Text -> Text
+  render-params (ps) (i) (len) (acc) =
+    if i >= len then acc
+    else let sep = if i > 0 then ", " else ""
+    in render-params ps (i + 1) len (acc & sep & render-param (list-at ps i))
+
+Section: Rendering -- Fields
+
+  render-field : CsField, Integer -> Text
+  render-field (f) (depth) =
+    let init = if text-length (f.finit) > 0 then " = " & f.finit else ""
+    in cs-ind depth & f.modifiers & " " & f.ftype & " " & f.fname & init & ";\n"
+
+  render-fields : List CsField, Integer, Integer, Integer, Text -> Text
+  render-fields (fs) (i) (len) (depth) (acc) =
+    if i >= len then acc
+    else render-fields fs (i + 1) len depth (acc & render-field (list-at fs i) depth)
+
+Section: Rendering -- Methods
+
+  render-method : CsMethod, Integer -> Text
+  render-method (m) (depth) =
+    cs-ind depth & m.modifiers & " " & m.ret-type & " " & m.mname & "("
+      & render-params (m.params) 0 (list-length (m.params)) "" & ") {\n"
+      & m.body
+      & cs-ind depth & "}\n\n"
+
+  render-methods : List CsMethod, Integer, Integer, Integer, Text -> Text
+  render-methods (ms) (i) (len) (depth) (acc) =
+    if i >= len then acc
+    else render-methods ms (i + 1) len depth (acc & render-method (list-at ms i) depth)
+
+Section: Rendering -- Class and File
+
+  render-class : CsClass, Integer -> Text
+  render-class (c) (depth) =
+    let base = if text-length (c.base-type) > 0 then " : " & c.base-type else ""
+    in cs-ind depth & c.modifiers & " class " & c.cname & base & "\n" & cs-ind depth & "{\n"
+      & render-fields (c.fields) 0 (list-length (c.fields)) (depth + 1) ""
+      & render-methods (c.methods) 0 (list-length (c.methods)) (depth + 1) ""
+      & c.raw-members
+      & cs-ind depth & "}\n"
+
+  render-classes : List CsClass, Integer, Integer, Integer, Text -> Text
+  render-classes (cs) (i) (len) (depth) (acc) =
+    if i >= len then acc
+    else render-classes cs (i + 1) len depth (acc & render-class (list-at cs i) depth)
+
+  render-cs-file : CsFile -> Text
+  render-cs-file (f) =
+    render-usings (f.usings) 0 (list-length (f.usings)) ""
+      & "\nnamespace " & f.ns-name & "\n{\n"
+      & render-classes (f.classes) 0 (list-length (f.classes)) 1 ""
+      & "}\n"
+
+Section: Expression and Statement AST
+
+ The full C# expression / statement tree. The emitter walks IR into these
+ nodes and render-cs-expr / render-cs-stmt produce text. CsRaw is the
+ escape hatch for the few platform-specific fragments (BitConverter,
+ Task.Run) not worth their own node.
+
+  CsExpr =
+   | CsLitInt (Integer)
+   | CsLitStr (Text)
+   | CsLitBool (Boolean)
+   | CsName (Text)
+   | CsRaw (Text)
+   | CsNeg (CsExpr)
+   | CsNot (CsExpr)
+   | CsBin (CsExpr) (Text) (CsExpr)
+   | CsCall (CsExpr) (List CsExpr)
+   | CsMethodCall (CsExpr) (Text) (List CsExpr)
+   | CsMember (CsExpr) (Text)
+   | CsIndexStr (CsExpr) (Text)
+   | CsAssignIndex (CsExpr) (Text) (CsExpr)
+   | CsTernary (CsExpr) (CsExpr) (CsExpr)
+   | CsLambda (List Text) (CsExpr)
+   | CsCast (Text) (CsExpr)
+   | CsNewList (List CsExpr)
+   | CsDict (List CsDictEntry)
+   | CsThrowExpr (Text)
+   | CsIife (List CsStmt)
+
+  CsDictEntry = record { key : Text, val : CsExpr }
+
+  CsStmt =
+   | CsLocal (Text) (CsExpr)
+   | CsExprStmt (CsExpr)
+   | CsReturn (CsExpr)
+   | CsReturnNull
+   | CsIf (CsExpr) (List CsStmt)
+   | CsThrowStmt (Text)
+   | CsRawStmt (Text)
+
+Section: Expression Rendering
+
+  cs-str-esc : Text -> Text
+  cs-str-esc (s) =
+    let s1 = text-replace s "\\" "\\\\"
+    in let s2 = text-replace s1 "\"" "\\\""
+    in text-replace s2 "\n" "\\n"
+
+  render-arg-list : List CsExpr, Integer, Integer, Text -> Text
+  render-arg-list (args) (i) (len) (acc) =
+    if i >= len then acc
+    else let sep = if i > 0 then ", " else ""
+    in render-arg-list args (i + 1) len (acc & sep & render-cs-expr (list-at args i))
+
+  render-lambda-params : List Text, Integer, Integer, Text -> Text
+  render-lambda-params (ps) (i) (len) (acc) =
+    if i >= len then acc
+    else let sep = if i > 0 then ", " else ""
+    in render-lambda-params ps (i + 1) len (acc & sep & list-at ps i)
+
+  render-dict-entries : List CsDictEntry, Integer, Integer, Text -> Text
+  render-dict-entries (es) (i) (len) (acc) =
+    if i >= len then acc
+    else let e = list-at es i
+    in render-dict-entries es (i + 1) len (acc & ", [\"" & e.key & "\"] = " & render-cs-expr (e.val))
+
+  render-cs-expr : CsExpr -> Text
+  render-cs-expr (e) =
+    when e
+      is CsLitInt (n) -> show n & "L"
+      is CsLitStr (s) -> "\"" & cs-str-esc s & "\""
+      is CsLitBool (b) -> if b then "true" else "false"
+      is CsName (n) -> n
+      is CsRaw (t) -> t
+      is CsNeg (x) -> "(-(" & render-cs-expr x & "))"
+      is CsNot (x) -> "(!(" & render-cs-expr x & "))"
+      is CsBin (l) (op) (r) -> "(" & render-cs-expr l & " " & op & " " & render-cs-expr r & ")"
+      is CsCall (f) (args) -> render-cs-expr f & "(" & render-arg-list args 0 (list-length args) "" & ")"
+      is CsMethodCall (obj) (m) (args) -> render-cs-expr obj & "." & m & "(" & render-arg-list args 0 (list-length args) "" & ")"
+      is CsMember (obj) (m) -> render-cs-expr obj & "." & m
+      is CsIndexStr (obj) (k) -> "((" & render-cs-expr obj & ")[\"" & k & "\"])"
+      is CsAssignIndex (obj) (k) (v) -> "((" & render-cs-expr obj & ")[\"" & k & "\"] = " & render-cs-expr v & ")"
+      is CsTernary (c) (t) (el) -> "(" & render-cs-expr c & " ? " & render-cs-expr t & " : " & render-cs-expr el & ")"
+      is CsLambda (ps) (body) -> "((" & render-lambda-params ps 0 (list-length ps) "" & ") => " & render-cs-expr body & ")"
+      is CsCast (ty) (x) -> "((" & ty & ")" & render-cs-expr x & ")"
+      is CsNewList (elems) -> "new List<dynamic> { " & render-arg-list elems 0 (list-length elems) "" & " }"
+      is CsDict (entries) -> "new Dictionary<string,dynamic> { " & render-dict-tail entries & " }"
+      is CsThrowExpr (msg) -> "throw new Exception(\"" & cs-str-esc msg & "\")"
+      is CsIife (stmts) -> "((Func<dynamic>)(() => {\n" & render-cs-stmts stmts 4 & cs-ind 3 & "}))()"
+
+ The dict always leads with the _type entry the emitter supplies as the
+ first CsDictEntry; render-dict-tail drops the leading comma.
+
+  render-dict-tail : List CsDictEntry -> Text
+  render-dict-tail (es) =
+    if list-length es == 0 then ""
+    else let first = list-at es 0
+    in "[\"" & first.key & "\"] = " & render-cs-expr (first.val)
+      & render-dict-entries es 1 (list-length es) ""
+
+Section: Statement Rendering
+
+  render-cs-stmt : CsStmt, Integer -> Text
+  render-cs-stmt (s) (depth) =
+    when s
+      is CsLocal (name) (val) -> cs-ind depth & "dynamic " & name & " = " & render-cs-expr val & ";\n"
+      is CsExprStmt (e) -> cs-ind depth & render-cs-expr e & ";\n"
+      is CsReturn (e) -> cs-ind depth & "return " & render-cs-expr e & ";\n"
+      is CsReturnNull -> cs-ind depth & "return null;\n"
+      is CsIf (c) (body) -> cs-ind depth & "if (" & render-cs-expr c & ") {\n" & render-cs-stmts body (depth + 1) & cs-ind depth & "}\n"
+      is CsThrowStmt (msg) -> cs-ind depth & "throw new Exception(\"" & cs-str-esc msg & "\");\n"
+      is CsRawStmt (t) -> t
+
+  render-cs-stmts : List CsStmt, Integer -> Text
+  render-cs-stmts (ss) (depth) = render-cs-stmts-loop ss 0 (list-length ss) depth ""
+
+  render-cs-stmts-loop : List CsStmt, Integer, Integer, Integer, Text -> Text
+  render-cs-stmts-loop (ss) (i) (len) (depth) (acc) =
+    if i >= len then acc
+    else render-cs-stmts-loop ss (i + 1) len depth (acc & render-cs-stmt (list-at ss i) depth)

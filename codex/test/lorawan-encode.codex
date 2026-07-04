@@ -1,0 +1,124 @@
+Chapter: LorawanEncodeTest
+
+  cites Encode chapter Lorawan
+
+ Exercise the LoRaWAN uplink builder: FRMPayload encryption (single and
+ multi-block CTR), MIC computation, MHDR packing, and the full
+ PHYPayload assembly. Byte sequences are checked against an independent
+ implementation (AES-CTR + AES-CMAC verified against RFC 4493).
+ DevAddr 0x26011BDA, FCnt 1, NwkSKey 2b7e1516..., AppSKey 000102...0f.
+ opening returns the count of passing checks.
+
+Section: Helpers
+
+  bytes-eq : List Integer, List Integer -> Boolean
+  bytes-eq (a) (b) =
+   if list-length a /= list-length b then False
+   else bytes-eq-loop a b 0 (list-length a)
+
+  bytes-eq-loop : List Integer, List Integer, Integer, Integer -> Boolean
+  bytes-eq-loop (a) (b) (i) (len) =
+   if i >= len then True
+   else if list-at a i /= list-at b i then False
+   else bytes-eq-loop a b (i + 1) len
+
+  flag : Boolean -> Integer
+  flag (b) = if b then 1 else 0
+
+Section: Keys
+
+  nwkskey : List Integer
+  nwkskey = [43, 126, 21, 22, 40, 174, 210, 166, 171, 247, 21, 136, 9, 207, 79, 60]
+
+  appskey : List Integer
+  appskey = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
+
+  devaddr : Integer = #26011BDA
+
+Section: Checks
+
+  check-encrypt : Integer
+  check-encrypt =
+   flag (bytes-eq (lw-encrypt-payload appskey devaddr lw-dir-up 1 [1, 2, 3]) [211, 241, 167])
+
+  check-encrypt-multiblock : Integer
+  check-encrypt-multiblock =
+   flag (bytes-eq (lw-encrypt-payload appskey devaddr lw-dir-up 1 [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17]) [211, 241, 167, 152, 150, 167, 172, 207, 154, 145, 113, 113, 194, 243, 144, 115, 121])
+
+  check-mic : Integer
+  check-mic =
+   flag (bytes-eq (lw-mic nwkskey devaddr lw-dir-up 1 [64, 218, 27, 1, 38, 0, 1, 0, 1, 211, 241, 167]) [80, 244, 181, 72])
+
+  check-mhdr : Integer
+  check-mhdr =
+   flag (if lw-mhdr lw-mtype-unconfirmed-up == 64 then lw-mhdr lw-mtype-confirmed-up == 128 else False)
+
+  check-uplink : Integer
+  check-uplink =
+   flag (bytes-eq (lw-build-uplink nwkskey appskey lw-mtype-unconfirmed-up devaddr 0 1 1 [1, 2, 3]) [64, 218, 27, 1, 38, 0, 1, 0, 1, 211, 241, 167, 80, 244, 181, 72])
+
+  check-downlink : Integer
+  check-downlink =
+   flag (bytes-eq (lw-build-downlink nwkskey appskey lw-mtype-unconfirmed-down devaddr 0 1 1 [1, 2, 3]) [96, 218, 27, 1, 38, 0, 1, 0, 1, 99, 182, 117, 177, 141, 14, 111])
+
+ OTAA join: the app key here is the same RFC key bytes as nwkskey. JoinEUI
+ 0x0102030405060708 and DevEUI 0x1112131415161718 (little-endian), DevNonce
+ 0x1234, AppNonce 0x010203, NetID 0x000013.
+
+  join-eui : List Integer
+  join-eui = [8, 7, 6, 5, 4, 3, 2, 1]
+
+  dev-eui : List Integer
+  dev-eui = [24, 23, 22, 21, 20, 19, 18, 17]
+
+  check-join-request : Integer
+  check-join-request =
+   flag (bytes-eq (lw-build-join-request nwkskey join-eui dev-eui #1234) [0, 8, 7, 6, 5, 4, 3, 2, 1, 24, 23, 22, 21, 20, 19, 18, 17, 52, 18, 29, 65, 32, 76])
+
+  check-nwkskey : Integer
+  check-nwkskey =
+   flag (bytes-eq (lw-derive-nwkskey nwkskey [3, 2, 1] [19, 0, 0] #1234) [77, 26, 197, 48, 200, 26, 115, 95, 223, 228, 108, 11, 205, 231, 172, 163])
+
+  check-appskey : Integer
+  check-appskey =
+   flag (bytes-eq (lw-derive-appskey nwkskey [3, 2, 1] [19, 0, 0] #1234) [41, 212, 95, 249, 159, 219, 230, 187, 200, 14, 73, 22, 164, 152, 71, 122])
+
+ Join-accept: the AppKey here is the RFC key (nwkskey binding). The
+ encrypted body decrypts to AppNonce 0x010203, NetID 0x000013, DevAddr
+ 0x26011BDA, DLSettings 0, RxDelay 1, and a valid MIC.
+
+  ja-encrypted : List Integer
+  ja-encrypted = [33, 214, 105, 144, 145, 91, 11, 0, 82, 203, 19, 0, 42, 25, 64, 126]
+
+  check-ja-decrypt : Integer
+  check-ja-decrypt =
+   flag (bytes-eq (lw-decrypt-join-accept nwkskey ja-encrypted) [3, 2, 1, 19, 0, 0, 218, 27, 1, 38, 0, 1, 55, 70, 12, 107])
+
+  check-ja-devaddr : Integer
+  check-ja-devaddr =
+   flag (lw-ja-devaddr (lw-decrypt-join-accept nwkskey ja-encrypted) == #26011BDA)
+
+  check-ja-fields : Integer
+  check-ja-fields =
+   let dec = lw-decrypt-join-accept nwkskey ja-encrypted
+   in flag (if bytes-eq (lw-ja-app-nonce dec) [3, 2, 1] then if bytes-eq (lw-ja-net-id dec) [19, 0, 0] then lw-ja-rx-delay dec == 1 else False else False)
+
+  check-ja-verify : Integer
+  check-ja-verify =
+   flag (lw-ja-verify nwkskey (lw-decrypt-join-accept nwkskey ja-encrypted))
+
+  opening : Integer =
+   let a = check-encrypt
+   in let b = check-encrypt-multiblock
+   in let c = check-mic
+   in let d = check-mhdr
+   in let e = check-uplink
+   in let e2 = check-downlink
+   in let f = check-join-request
+   in let g = check-nwkskey
+   in let h = check-appskey
+   in let i = check-ja-decrypt
+   in let j = check-ja-devaddr
+   in let k = check-ja-fields
+   in let l = check-ja-verify
+   in a + b + c + d + e + e2 + f + g + h + i + j + k + l

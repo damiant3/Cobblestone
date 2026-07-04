@@ -37,7 +37,7 @@ Section: Function Application
    else let d = list-at defs i
    in build-x86-arities defs (i + 1) len (list-push acc (UserArity {
      name = d.name,
-     arity = list-length (d.params)
+     arity = __narrow (list-length (d.params))
     }))
 
   sort-x86-arities : List UserArity -> List UserArity
@@ -158,14 +158,14 @@ Section: Function Application
                     in when resolved-result-ty
                      is SumTy (sname) (args) (ctors) ->
                       let tag = find-ctor-tag ctors (flat.func-name) 0
-              in if tag >= 0 then emit-sum-ctor st (flat.args) tag
+              in if tag >= 0 then emit-sum-ctor st (flat.args) ((list-at ctors tag).fields) tag
                          else let is-local-sum = lookup-local (st.locals) (flat.func-name) >= 0
                          in if is-local-sum then emit-indirect-call st flat
                          else emit-direct-call st flat
                      is UnitTy (uname) (inner) ->
                       if flat.func-name == uname.value & list-length (flat.args) == 1 then emit-expr st (list-at (flat.args) 0)
                       else emit-direct-call st flat
-                     is FunTy (pt) (rt) ->
+                     is FunTy (pt) (row) (rt) ->
                       let is-local = lookup-local (st.locals) (flat.func-name) >= 0
               in if is-local then emit-indirect-call st flat
                          else emit-partial-application st (flat.func-name) (flat.args)
@@ -588,26 +588,25 @@ Section: Function Application
    reg = reg-rax
   }
 
-  emit-sum-ctor : CodegenState, List IRExpr, Integer -> EmitResult
-  emit-sum-ctor (st) (args) (tag) =
+  emit-sum-ctor : CodegenState, List IRExpr, List CodexType, Integer -> EmitResult
+  emit-sum-ctor (st) (args) (tys) (tag) =
    let saved = save-args-loop (st-set-tail-pos st False) args 0 []
-   in let field-count = list-length args
-   in let total-size = (1 + field-count) * 8
+   in let total-size = sum-ctor-total-size tys
    in let alloc = emit-bivy-alloc (saved.state) total-size
    in let tag-tmp = alloc-temp (alloc.state)
    in let st4 = st-append-code (tag-tmp.state) (li (tag-tmp.reg) tag)
    in let ptr-load1 = load-local st4 (alloc.ptr-loc)
    in let st5 = st-append-code (ptr-load1.state) (mov-store (ptr-load1.reg) (tag-tmp.reg) 0)
-   in let st6 = emit-store-ctor-fields st5 (saved.locals) (alloc.ptr-loc) 0
+   in let st6 = emit-store-ctor-fields st5 (saved.locals) tys (alloc.ptr-loc) 0
    in load-local st6 (alloc.ptr-loc)
 
-  emit-store-ctor-fields : CodegenState, List Integer, Integer, Integer -> CodegenState
-  emit-store-ctor-fields (st) (field-locals) (ptr-loc) (i) =
+  emit-store-ctor-fields : CodegenState, List Integer, List CodexType, Integer, Integer -> CodegenState
+  emit-store-ctor-fields (st) (field-locals) (tys) (ptr-loc) (i) =
    if i == list-length field-locals then st
    else let val = load-local st (list-at field-locals i)
    in let ptr = load-local (val.state) ptr-loc
-   in let st1 = st-append-code (ptr.state) (mov-store (ptr.reg) (val.reg) (8 + i * 8))
-   in emit-store-ctor-fields st1 field-locals ptr-loc (i + 1)
+   in let st1 = st-append-code (ptr.state) (emit-narrow-store (field-byte-width (list-at tys i)) (ptr.reg) (val.reg) (sum-ctor-field-offset tys i))
+   in emit-store-ctor-fields st1 field-locals tys ptr-loc (i + 1)
 
 Section: Closures and Partial Application
   emit-load-rodata-addr : CodegenState, Integer, Integer -> CodegenState
@@ -685,21 +684,8 @@ Section: Closures and Partial Application
    in let func-offset = offset-table-lookup offset-map target
    in if func-offset == -1 then collect-func-addr-patches patch-offsets targets offset-map text-base (i + 1) acc
       else let addr = text-base + func-offset
-      in let addr-bytes = write-i64 addr
-      in let p0 = PatchEntry {
-       pos = po,
-       b0 = list-at addr-bytes 0,
-       b1 = list-at addr-bytes 1,
-       b2 = list-at addr-bytes 2,
-       b3 = list-at addr-bytes 3
-      }
-      in let p1 = PatchEntry {
-       pos = po + 4,
-       b0 = list-at addr-bytes 4,
-       b1 = list-at addr-bytes 5,
-       b2 = list-at addr-bytes 6,
-       b3 = list-at addr-bytes 7
-      }
+      in let p0 = make-i32-patch po (bit-and addr 4294967295)
+      in let p1 = make-i32-patch (po + 4) (floor-div addr 4294967296)
       in collect-func-addr-patches patch-offsets targets offset-map text-base (i + 1) (list-push (list-push acc p0) p1)
 
   collect-rodata-patches : List Integer, List Integer, Integer, Integer, List PatchEntry -> List PatchEntry
@@ -708,21 +694,8 @@ Section: Closures and Partial Application
    else let po = list-at patch-offsets i
    in let ro = list-at rodata-offsets i
    in let addr = data-vaddr + ro
-   in let addr-bytes = write-i64 addr
-   in let p0 = PatchEntry {
-    pos = po,
-    b0 = list-at addr-bytes 0,
-    b1 = list-at addr-bytes 1,
-    b2 = list-at addr-bytes 2,
-    b3 = list-at addr-bytes 3
-  }
-   in let p1 = PatchEntry {
-    pos = po + 4,
-    b0 = list-at addr-bytes 4,
-    b1 = list-at addr-bytes 5,
-    b2 = list-at addr-bytes 6,
-    b3 = list-at addr-bytes 7
-  }
+   in let p0 = make-i32-patch po (bit-and addr 4294967295)
+   in let p1 = make-i32-patch (po + 4) (floor-div addr 4294967296)
    in collect-rodata-patches patch-offsets rodata-offsets data-vaddr (i + 1) (list-push (list-push acc p0) p1)
 
 Section: Record Emission
@@ -730,7 +703,7 @@ Section: Record Emission
   resolve-constructed-raw (raw) (fallback) =
    when raw
     is RecordTy (rn) (ra) (rf) | SumTy (sn) (sa) (sc) -> raw
-    is FunTy (p) (r) -> strip-fun-args-emitter r
+    is FunTy (p) (row) (r) -> strip-fun-args-emitter r
     is otherwise -> fallback
 
   resolve-constructed-ty : CodegenState, CodexType -> CodexType
@@ -742,12 +715,13 @@ Section: Record Emission
      in resolve-constructed-raw raw ty
     is EffectfulTy (effs) (sc) (ret) -> resolve-constructed-ty st ret
     is ForAllTy (id) (body) -> resolve-constructed-ty st body
+    is ForAllEff (id) (body) -> resolve-constructed-ty st body
     is otherwise -> ty
 
   strip-fun-args-emitter : CodexType -> CodexType
   strip-fun-args-emitter (ty) =
    when ty
-    is FunTy (p) (r) -> strip-fun-args-emitter r
+    is FunTy (p) (row) (r) -> strip-fun-args-emitter r
     is otherwise -> ty
 
   bsearch-type-binding-pos : List TypeBinding, Text, Integer, Integer -> Integer
@@ -792,6 +766,7 @@ Section: Record Emission
     is IntegerTy (lo) (hi) (mode) -> hw-width-bytes (bounds-to-hw-width lo hi)
     is BooleanTy -> 1
     is UnitTy (n) (inner) -> field-byte-width inner
+    is LinearTy (linner) -> field-byte-width linner
     is otherwise -> 8
 
   field-byte-signed : CodexType -> Boolean
@@ -799,10 +774,54 @@ Section: Record Emission
    when ty
     is IntegerTy (lo) (hi) (mode) -> hw-width-signed (bounds-to-hw-width lo hi)
     is UnitTy (n) (inner) -> field-byte-signed inner
+    is LinearTy (linner) -> field-byte-signed linner
     is otherwise -> False
 
   round-up-to-8 : Integer -> Integer
   round-up-to-8 (n) = (n + 7) / 8 * 8
+
+ A sum-constructor value is [tag : 8 bytes][fields]. Fields pack by
+ declared width (1/2/4/8) instead of a flat 8-byte slot each, laid out
+ widest-first exactly like a record (see accumulate-offset-width-sort):
+ the 8-byte fields come first at aligned offsets, then 4/2/1, so every
+ field lands at its natural alignment with no padding. A ctor whose
+ fields are all 8-byte (pointers / plain Integer) lays out identically
+ to the old 8 + i*8, so all-pointer variants are byte-identical. Every
+ site that reads or writes a ctor field -- construction, pattern
+ extraction, equality, print, and the pointer-map walk -- MUST derive
+ the offset from sum-ctor-field-offset so writers and readers agree.
+
+  sum-field-widths-total : List CodexType, Integer, Integer -> Integer
+  sum-field-widths-total (tys) (i) (acc) =
+   if i == list-length tys then acc
+   else sum-field-widths-total tys (i + 1) (acc + field-byte-width (list-at tys i))
+
+  sum-ctor-total-size : List CodexType -> Integer
+  sum-ctor-total-size (tys) = round-up-to-8 (8 + sum-field-widths-total tys 0 0)
+
+  sum-ctor-fields-before : List CodexType, Integer, Integer, Integer, Integer -> Integer
+  sum-ctor-fields-before (tys) (target-w) (target-i) (j) (acc) =
+   if j == list-length tys then acc
+   else let jw = field-byte-width (list-at tys j)
+   in if jw > target-w then sum-ctor-fields-before tys target-w target-i (j + 1) (acc + jw)
+      else if jw == target-w & j < target-i then sum-ctor-fields-before tys target-w target-i (j + 1) (acc + jw)
+      else sum-ctor-fields-before tys target-w target-i (j + 1) acc
+
+  sum-ctor-field-offset : List CodexType, Integer -> Integer
+  sum-ctor-field-offset (tys) (i) =
+   8 + sum-ctor-fields-before tys (field-byte-width (list-at tys i)) i 0 0
+
+  ctor-field-types-find : List SumCtor, Text, Integer -> List CodexType
+  ctor-field-types-find (ctors) (name) (i) =
+   if i == list-length ctors then []
+   else if (list-at ctors i).name.value == name then (list-at ctors i).fields
+   else ctor-field-types-find ctors name (i + 1)
+
+  ctor-field-types : CodexType, Text -> List CodexType
+  ctor-field-types (ty) (name) =
+   when ty
+    is SumTy (n) (a) (ctors) -> ctor-field-types-find ctors name 0
+    is otherwise -> []
 
   emit-narrow-store : Integer, Integer, Integer, Integer -> List Integer
   emit-narrow-store (width) (rd) (rs) (offset) =
@@ -1060,7 +1079,7 @@ Section: Narrow-store with overflow-mode dispatch
    in if f.name.value == target then f.type-val
       else find-target-type fields target (i + 1)
 
-  accumulate-offset-width-sort : List RecordField, Text, Integer, Integer, Integer -> Integer
+  accumulate-offset-width-sort : List RecordField, Text, Integer, Integer, Integer between 0 and 65535 -> Integer between 0 and 65535
   accumulate-offset-width-sort (fields) (target-name) (target-w) (i) (acc) =
    if i == list-length fields then acc
    else let f = list-at fields i
@@ -1125,7 +1144,7 @@ Section: Pointer-Map Walk
    if i == len then acc
    else let ety = list-at tys i
    in if is-pointer-type ety
-      then let child = peek-qword ptr (8 + i * 8)
+      then let child = peek-qword ptr (sum-ctor-field-offset tys i)
            in let sub = ptr-in-range child lo hi + pmap-walk child ety defs lo hi (fuel - 1)
            in pmap-walk-ctor tys ptr defs (i + 1) len lo hi fuel (acc + sub)
       else pmap-walk-ctor tys ptr defs (i + 1) len lo hi fuel acc
@@ -1251,6 +1270,18 @@ Section: Self-Type-Table Emission
    let t = emit-const-text buf len (nm.value)
    in ConstEmit { len = buf-write-i64 buf (t.len) (vaddr + t.off), off = t.len }
 
+ NOTE (ctor field packing): const-box lays out a boxed variant as a
+ tag word followed by one 8-byte word per field, i.e. the pre-packing
+ 8 + i*8 layout. Runtime-constructed variants now pack fields by width
+ (sum-ctor-field-offset), so a const-boxed CodexType is NOT byte-layout
+ compatible with a runtime one. This only matters when the const
+ TypeBinding table is pattern-matched at runtime -- exclusively the
+ pmap / escape-check walk, which is gated off (flags.escape-check =
+ False by default), so normal builds, the fixed point, and the battery
+ never read these boxes by field offset. To make -EscapeCheck correct
+ again, const-box for a variant must pack fields by field-byte-width at
+ sum-ctor-field-offset just like emit-store-ctor-fields.
+
   emit-const-codextype : Integer, Integer, Integer, CodexType, Integer -> ConstEmit
   emit-const-codextype (buf) (len) (vaddr) (ty) (fuel) =
    if fuel <= 0 then const-box buf len 7 []
@@ -1263,11 +1294,12 @@ Section: Self-Type-Table Emission
     is VoidTy -> const-box buf len 5 []
     is NothingTy -> const-box buf len 6 []
     is ErrorTy -> const-box buf len 7 []
-    is FunTy (p) (r) -> const-box buf len 8 [0, 0]
+    is FunTy (p) (row) (r) -> const-box buf len 8 [0, 0]
     is ListTy (elem) -> let c = emit-const-codextype buf len vaddr elem (fuel - 1) in const-box buf (c.len) 9 [vaddr + c.off]
     is LinkedListTy (elem) -> const-box buf len 10 [0]
     is TypeVar (i) -> const-box buf len 11 [0]
     is ForAllTy (i) (b) -> let c = emit-const-codextype buf len vaddr b (fuel - 1) in const-box buf (c.len) 12 [0, vaddr + c.off]
+    is ForAllEff (i) (b) -> let c = emit-const-codextype buf len vaddr b (fuel - 1) in const-box buf (c.len) 12 [0, vaddr + c.off]
     is SumTy (n) (a) (ctors) | RecordTy (n) (a) (fields) | ConstructedTy (n) (a) -> let nm = emit-const-name buf len vaddr n in const-box buf (nm.len) 15 [vaddr + nm.off, 0]
     is EffectfulTy (e) (s) (r) -> let c = emit-const-codextype buf len vaddr r (fuel - 1) in const-box buf (c.len) 16 [0, 0, vaddr + c.off]
     is ProofTy -> const-box buf len 17 []
@@ -1280,6 +1312,7 @@ Section: Self-Type-Table Emission
     is RealSaturatingTy -> const-box buf len 24 []
     is TypeCon (n) -> let nm = emit-const-name buf len vaddr n in const-box buf (nm.len) 15 [vaddr + nm.off, 0]
     is TypeApply (f) (a) -> const-box buf len 7 []
+    is LinearTy (linner) -> emit-const-codextype buf len vaddr linner (fuel - 1)
 
   emit-const-codextype-top : Integer, Integer, Integer, CodexType -> ConstEmit
   emit-const-codextype-top (buf) (len) (vaddr) (ty) =
@@ -1373,7 +1406,7 @@ Section: Self-Type-Table Emission
   resolve-constructed-raw-ty (raw) =
    when raw
     is RecordTy (rn) (ra) (rf) | SumTy (sn) (sa) (sc) -> raw
-    is FunTy (p) (r) -> strip-fun-args-emitter r
+    is FunTy (p) (row) (r) -> strip-fun-args-emitter r
     is otherwise -> raw
 
   collect-ctd-in-tylist : List CodexType, Integer, Integer, List Text -> List Text
@@ -1400,8 +1433,9 @@ Section: Self-Type-Table Emission
     is RecordTy (n) (a) (fields) | SumTy (n) (a) (ctors) -> list-push acc (n.value)
     is ListTy (e) | LinkedListTy (e) -> collect-ctd-in-type e acc
     is ForAllTy (i) (b) -> collect-ctd-in-type b acc
+    is ForAllEff (i) (b) -> collect-ctd-in-type b acc
     is EffectfulTy (ef) (s) (r) -> collect-ctd-in-type r acc
-    is FunTy (p) (r) -> collect-ctd-in-type r (collect-ctd-in-type p acc)
+    is FunTy (p) (row) (r) -> collect-ctd-in-type r (collect-ctd-in-type p acc)
     is otherwise -> acc
 
   collect-ctd-roots : CodexType, List Text -> List Text
@@ -1468,7 +1502,7 @@ Section: Self-Type-Table Emission
    in let w = field-byte-width (f.type-val)
    in build-widths-by-rank fields sorted (i + 1) n (list-set-at acc rank w)
 
-  cumsum-widths : List Integer, Integer, Integer, List Integer -> LayoutResult
+  cumsum-widths : List Integer, Integer, Integer between 0 and 65535, List Integer -> LayoutResult
   cumsum-widths (widths) (i) (acc-sum) (offsets) =
    if i == list-length widths then LayoutResult { offsets = offsets, byte-size = acc-sum }
    else let w = list-at widths i
@@ -1540,7 +1574,7 @@ Section: Self-Type-Table Emission
     is otherwise ->
      let sorted = skip-list-text-from-list (field-local-names (evaled.field-locals) 0 [])
      in let n = list-length (evaled.field-locals)
-     in RecordLayoutPair { sorted = sorted, layout = LayoutResult { offsets = [], byte-size = n * 8 }, by-list = True }
+     in RecordLayoutPair { sorted = sorted, layout = LayoutResult { offsets = [], byte-size = __narrow (n * 8) }, by-list = True }
    in let total-size = round-up-to-8 (layout-pair.layout.byte-size)
    in let alloc = emit-bivy-alloc (evaled.state) total-size
    in let st4 = when resolved-ty
@@ -1705,7 +1739,8 @@ Section: Pattern Matching
      in let st2 = st-append-code st1 (cmp-ri (tag-reg.reg) expected-tag)
      in let jcc-pos = st2.code-len
      in let st3 = st-append-code st2 (jcc cc-ne 0)
-     in let st4 = bind-ctor-fields st3 scrut-loc sub-pats 0
+     in let field-tys = ctor-field-types resolve-ty name
+     in let st4 = bind-ctor-fields st3 scrut-loc sub-pats field-tys 0
      in EmitPatternResult {
       state = st4,
       next-branch-patch = jcc-pos
@@ -1763,8 +1798,8 @@ Section: Pattern Matching
     is IrWildPat (sp) -> emit-vec-lane-checks st scrut-loc pats result-loc (i + 1) n
     is otherwise -> emit-vec-lane-checks st scrut-loc pats result-loc (i + 1) n
 
-  bind-ctor-fields : CodegenState, Integer, List IRPat, Integer -> CodegenState
-  bind-ctor-fields (st) (scrut-loc) (sub-pats) (i) =
+  bind-ctor-fields : CodegenState, Integer, List IRPat, List CodexType, Integer -> CodegenState
+  bind-ctor-fields (st) (scrut-loc) (sub-pats) (tys) (i) =
    if i == list-length sub-pats then st
    else let sub = list-at sub-pats i
    in when sub
@@ -1772,10 +1807,14 @@ Section: Pattern Matching
       let field-loc = alloc-local st
    in let scrut-load = load-local (field-loc.state) scrut-loc
    in let field-val = alloc-temp (scrut-load.state)
-   in let st1 = st-append-code (field-val.state) (mov-load (field-val.reg) (scrut-load.reg) ((1 + i) * 8))
+   in let packed = i < list-length tys
+   in let fw = if packed then field-byte-width (list-at tys i) else 8
+   in let fsigned = if packed then field-byte-signed (list-at tys i) else False
+   in let foff = if packed then sum-ctor-field-offset tys i else (1 + i) * 8
+   in let st1 = st-append-code (field-val.state) (emit-narrow-load fw fsigned (field-val.reg) (scrut-load.reg) foff)
    in let st2 = store-local st1 (field-loc.reg) (field-val.reg)
-   in bind-ctor-fields (add-local st2 name (field-loc.reg)) scrut-loc sub-pats (i + 1)
-     is otherwise -> bind-ctor-fields st scrut-loc sub-pats (i + 1)
+   in bind-ctor-fields (add-local st2 name (field-loc.reg)) scrut-loc sub-pats tys (i + 1)
+     is otherwise -> bind-ctor-fields st scrut-loc sub-pats tys (i + 1)
 
   patch-match-end-jumps : CodegenState, List Integer, Integer -> CodegenState
   patch-match-end-jumps (st) (patches) (i) =
