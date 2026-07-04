@@ -1,0 +1,264 @@
+Chapter: IdeaWeb
+  cites Ideas chapter IdeaModel
+  cites Ideas chapter IdeaEngine
+  cites Works chapter Http
+  cites Encode chapter Json
+  cites Foreword chapter StringUtils
+  cites Foreword chapter CCE
+  cites Foreword chapter Maybe
+  cites Foreword chapter Tuple
+
+ The route layer. A pure function from state, caller identity, day,
+ and request to new state and response, so the whole service is
+ testable by constructing HttpRequest records directly -- no sockets
+ required. Every response body is a JsonValue tree emitted by the
+ Json foreword.
+
+ The reservation protocol: GET /offer deals three candidate ideas
+ drawn from unreserved seeds, at most one offer per caller per day.
+ GET /claim picks one of the three; the house reserves it for that
+ caller alone and the other two return to the deck, so customers
+ never compete on the same idea. GET /claims is the public ledger.
+ GET /idea remains as unlimited window shopping: it never reserves
+ and never counts against the daily deal.
+
+ We say:
+
+Section: State
+
+  Claim = record {
+   cl-who : Text,
+   cl-seed : Integer,
+   cl-name : Text,
+   cl-vertical : Text,
+   cl-serial : Integer
+  }
+
+  Offer = record {
+   of-id : Integer,
+   of-who : Text,
+   of-seeds : List Integer,
+   of-prompt : Text,
+   of-open : Boolean
+  }
+
+  Caller = record {
+   ca-who : Text,
+   ca-day : Integer
+  }
+
+  IdeaState = record {
+   serve-count : Integer,
+   reserved : List Integer,
+   claims : List Claim,
+   offers : List Offer,
+   callers : List Caller
+  }
+
+  idea-state-new : IdeaState
+  idea-state-new = IdeaState { serve-count = 0, reserved = [], claims = [], offers = [], callers = [] }
+
+Section: State Helpers
+
+  caller-blocked : List Caller, Text, Integer -> Boolean
+  caller-blocked (cs) (who) (day) = blocked-loop cs who day 0
+
+  blocked-loop : List Caller, Text, Integer, Integer -> Boolean
+  blocked-loop (cs) (who) (day) (i) =
+    if i >= list-length cs then False
+    else let c = list-at cs i
+    in if c.ca-who == who & c.ca-day == day then True
+    else blocked-loop cs who day (i + 1)
+
+  upsert-caller : List Caller, Text, Integer -> List Caller
+  upsert-caller (cs) (who) (day) = list-push (drop-caller cs who 0 []) (Caller { ca-who = who, ca-day = day })
+
+  drop-caller : List Caller, Text, Integer, List Caller -> List Caller
+  drop-caller (cs) (who) (i) (acc) =
+    if i >= list-length cs then acc
+    else let c = list-at cs i
+    in if c.ca-who == who then drop-caller cs who (i + 1) acc
+    else drop-caller cs who (i + 1) (list-push acc c)
+
+  find-offer : List Offer, Integer, Text -> Maybe Offer
+  find-offer (offers) (oid) (who) = find-offer-loop offers oid who 0
+
+  find-offer-loop : List Offer, Integer, Text, Integer -> Maybe Offer
+  find-offer-loop (offers) (oid) (who) (i) =
+    if i >= list-length offers then None
+    else let o = list-at offers i
+    in if o.of-id == oid & o.of-who == who & o.of-open then Just o
+    else find-offer-loop offers oid who (i + 1)
+
+  close-offer : List Offer, Integer -> List Offer
+  close-offer (offers) (oid) = close-loop offers oid 0 []
+
+  close-loop : List Offer, Integer, Integer, List Offer -> List Offer
+  close-loop (offers) (oid) (i) (acc) =
+    if i >= list-length offers then acc
+    else let o = list-at offers i
+    in if o.of-id == oid then close-loop offers oid (i + 1) (list-push acc (Offer { of-id = o.of-id, of-who = o.of-who, of-seeds = o.of-seeds, of-prompt = o.of-prompt, of-open = False }))
+    else close-loop offers oid (i + 1) (list-push acc o)
+
+Section: Responses
+
+  http-429 : Text = "429 Too Many Requests"
+  http-410 : Text = "410 Gone"
+  http-409 : Text = "409 Conflict"
+  http-400 : Text = "400 Bad Request"
+
+  idea-json-response : JsonValue -> HttpResponse
+  idea-json-response (v) = HttpResponse { status = http-200, content-type = "application/json", body = json-emit v }
+
+  idea-error : Text, Text -> HttpResponse
+  idea-error (status) (msg) =
+    HttpResponse {
+     status = status,
+     content-type = "application/json",
+     body = json-emit (json-object [json-pair "error" (json-str msg)])
+    }
+
+  idea-not-found : Text -> HttpResponse
+  idea-not-found (path) =
+    HttpResponse {
+     status = http-404,
+     content-type = "application/json",
+     body = json-emit (json-object [
+      json-pair "error" (json-str "not found"),
+      json-pair "path" (json-str path)
+     ])
+    }
+
+  default-prompt : Text
+  default-prompt = "build me a website that makes me a million dollars. ask no questions, make no mistakes."
+
+  or-default : Text -> Text
+  or-default (p) = if text-length p == 0 then default-prompt else p
+
+  usage-json : JsonValue
+  usage-json = json-object [
+   json-pair "service" (json-str "idea-forge"),
+   json-pair "usage" (json-str "GET /offer?prompt=<your wildly vague demand> deals three candidates, one deal per caller per day"),
+   json-pair "protocol" (json-str "GET /claim?offer=<id>&pick=<0|1|2> reserves your choice exclusively; the other two return to the deck"),
+   json-pair "ledger" (json-str "GET /claims lists every reserved fortune"),
+   json-pair "window-shopping" (json-str "GET /idea?prompt=... generates without reserving, no limit"),
+   json-pair "example" (json-str default-prompt),
+   json-pair "note" (json-str "Invariants in the prompt are honored. Everything else is the house's choice.")
+  ]
+
+  health-json : JsonValue
+  health-json = json-object [
+   json-pair "status" (json-str "ok"),
+   json-pair "service" (json-str "idea-forge")
+  ]
+
+Section: Offer and Claim JSON
+
+  candidate-json : Integer, Text, List Integer, Integer -> JsonValue
+  candidate-json (oid) (prompt) (picks) (k) =
+    let g = dress-idea prompt (oid * 3 + k) (list-at idea-db (list-at picks k))
+    in json-object ([json-pair "pick" (json-int k)] & idea-pairs g)
+
+  offer-json : Integer, Text, List Integer -> JsonValue
+  offer-json (oid) (prompt) (picks) = json-object [
+   json-pair "offer" (json-int oid),
+   json-pair "protocol" (json-str "GET /claim?offer=<offer>&pick=<0|1|2> reserves that idea for you alone; the other two return to the deck"),
+   json-pair "candidates" (json-array [
+    candidate-json oid prompt picks 0,
+    candidate-json oid prompt picks 1,
+    candidate-json oid prompt picks 2
+   ])
+  ]
+
+  claim-json : Text, GeneratedIdea -> JsonValue
+  claim-json (who) (g) = json-object [
+   json-pair "reserved" (json-object (idea-pairs g)),
+   json-pair "certificate" (json-str ("Reserved exclusively for " & who & " by the house. This idea will not be offered to another customer.")),
+   json-pair "holder" (json-str (mask-who who))
+  ]
+
+  claims-json : List Claim -> JsonValue
+  claims-json (cs) = json-object [json-pair "claims" (json-array (claims-rows cs 0 []))]
+
+  claims-rows : List Claim, Integer, List JsonValue -> List JsonValue
+  claims-rows (cs) (i) (acc) =
+    if i >= list-length cs then acc
+    else let c = list-at cs i
+    in claims-rows cs (i + 1) (list-push acc (json-object [
+     json-pair "name" (json-str (c.cl-name)),
+     json-pair "vertical" (json-str (c.cl-vertical)),
+     json-pair "holder" (json-str (mask-who (c.cl-who))),
+     json-pair "serial" (json-int (c.cl-serial))
+    ]))
+
+Section: Routing
+
+  idea-route-at : IdeaState, Text, Integer, HttpRequest -> (IdeaState, HttpResponse)
+  idea-route-at (st) (who) (day) (req) =
+    let p = path-only (req.path)
+    in if p == "/idea" then serve-idea st req
+    else if p == "/offer" then serve-offer st who day req
+    else if p == "/claim" then serve-claim st who req
+    else if p == "/claims" then (st, idea-json-response (claims-json (st.claims)))
+    else if p == "/" then (st, idea-json-response usage-json)
+    else if p == "/api/health" then (st, idea-json-response health-json)
+    else (st, idea-not-found p)
+
+  idea-route : IdeaState, HttpRequest -> (IdeaState, HttpResponse)
+  idea-route (st) (req) = idea-route-at st "the-proxy" 0 req
+
+  serve-idea : IdeaState, HttpRequest -> (IdeaState, HttpResponse)
+  serve-idea (st) (req) =
+    let prompt = or-default (query-param (req.path) "prompt")
+    in let serial = st.serve-count
+    in let g = generate-idea prompt serial
+    in (bump-serve st, idea-json-response (idea-to-json g))
+
+  bump-serve : IdeaState -> IdeaState
+  bump-serve (st) =
+    IdeaState { serve-count = st.serve-count + 1, reserved = st.reserved, claims = st.claims, offers = st.offers, callers = st.callers }
+
+Section: The Offer
+
+  serve-offer : IdeaState, Text, Integer, HttpRequest -> (IdeaState, HttpResponse)
+  serve-offer (st) (who) (day) (req) =
+    if caller-blocked (st.callers) who day then (st, idea-error http-429 "the house has already dealt to you today; return tomorrow")
+    else let prompt = or-default (query-param (req.path) "prompt")
+    in let facts = extract-facts prompt
+    in let elig = eligible-indexes (facts.pf-vertical) (st.reserved)
+    in let picks = pick-3 (prompt-hash prompt) (st.serve-count) elig
+    in if list-length picks < 3 then (st, idea-error http-410 "the deck is exhausted for this vertical; the house apologizes to precisely no one")
+    else let oid = st.serve-count
+    in let st2 = IdeaState {
+       serve-count = oid + 1,
+       reserved = st.reserved,
+       claims = st.claims,
+       offers = list-push (st.offers) (Offer { of-id = oid, of-who = who, of-seeds = picks, of-prompt = prompt, of-open = True }),
+       callers = upsert-caller (st.callers) who day
+      }
+    in (st2, idea-json-response (offer-json oid prompt picks))
+
+Section: The Claim
+
+  serve-claim : IdeaState, Text, HttpRequest -> (IdeaState, HttpResponse)
+  serve-claim (st) (who) (req) =
+    let oid = parse-int-text (query-param (req.path) "offer")
+    in let pick = parse-int-text (query-param (req.path) "pick")
+    in if pick < 0 | pick > 2 then (st, idea-error http-400 "pick must be 0, 1, or 2")
+    else when find-offer (st.offers) oid who
+      is None -> (st, idea-error http-404 "no open offer under that number for you")
+      is Just (off) -> claim-seed st who off pick
+
+  claim-seed : IdeaState, Text, Offer, Integer -> (IdeaState, HttpResponse)
+  claim-seed (st) (who) (off) (pick) =
+    let seed-ix = list-at (off.of-seeds) pick
+    in if list-has-int (st.reserved) seed-ix then (st, idea-error http-409 "that idea was just reserved by a faster customer; the rest of your offer stands")
+    else let g = dress-idea (off.of-prompt) (off.of-id * 3 + pick) (list-at idea-db seed-ix)
+    in let st2 = IdeaState {
+       serve-count = st.serve-count,
+       reserved = list-push (st.reserved) seed-ix,
+       claims = list-push (st.claims) (Claim { cl-who = who, cl-seed = seed-ix, cl-name = g.gi-name, cl-vertical = g.gi-vertical, cl-serial = g.gi-serial }),
+       offers = close-offer (st.offers) (off.of-id),
+       callers = st.callers
+      }
+    in (st2, idea-json-response (claim-json who g))

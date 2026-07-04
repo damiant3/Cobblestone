@@ -1,0 +1,63 @@
+Chapter: Knx
+
+ KNX / KNXnet/IP, the European building-automation standard (ISO/IEC
+ 14543) for lighting, blinds, HVAC, and energy management. A device
+ sends a group telegram carried in a cEMI frame, wrapped in a KNXnet/IP
+ header for transport over IP (routing on multicast, or tunnelling over
+ a connection). This chapter builds a group-value-write telegram and its
+ KNXnet/IP routing frame. Addresses are 16-bit big-endian.
+
+Section: Addresses
+
+ A three-level group address packs a 5-bit main group, a 3-bit middle
+ group, and an 8-bit sub group. An individual (physical) address packs
+ a 4-bit area, a 4-bit line, and an 8-bit device.
+
+  knx-group-address : Integer, Integer, Integer -> Integer
+  knx-group-address (main) (middle) (sub) =
+   bit-or (bit-or (bit-shl main 11) (bit-shl middle 8)) sub
+
+  knx-individual-address : Integer, Integer, Integer -> Integer
+  knx-individual-address (area) (line) (device) =
+   bit-or (bit-or (bit-shl area 12) (bit-shl line 8)) device
+
+Section: Constants
+
+  knx-mc-l-data-req : Integer = #11
+  knx-mc-l-data-ind : Integer = #29
+
+  knx-service-routing-indication : Integer = #0530
+  knx-service-tunnelling-request : Integer = #0420
+
+  knx-apci-group-write : Integer = #80
+
+Section: Helpers
+
+  knx-u16-be : Integer -> List Integer
+  knx-u16-be (v) = [bit-and (bit-shru v 8) 255, bit-and v 255]
+
+Section: cEMI Group Write
+
+ A cEMI L_Data.req: message code, additional-info length (0), control
+ field 1 (0xBC standard frame), control field 2 (0xE0 group address,
+ hop count 6), source and destination addresses, NPDU length, then the
+ transport/application octets. A small (up to six bit) group value is
+ packed directly into the GroupValueWrite APCI octet.
+
+  knx-cemi-group-write : Integer, Integer, Integer -> List Integer
+  knx-cemi-group-write (src) (dst) (value6) =
+   [knx-mc-l-data-req, 0, #BC, #E0] & knx-u16-be src & knx-u16-be dst & [1, 0, bit-or knx-apci-group-write value6]
+
+Section: KNXnet/IP Frame
+
+ The KNXnet/IP header: header length (6), protocol version (0x10), the
+ two-byte service type, and the two-byte total length including the
+ header.
+
+  knx-frame : Integer, List Integer -> List Integer
+  knx-frame (service) (body) =
+   [6, #10] & knx-u16-be service & knx-u16-be (6 + list-length body) & body
+
+  knx-routing-group-write : Integer, Integer, Integer -> List Integer
+  knx-routing-group-write (src) (dst) (value6) =
+   knx-frame knx-service-routing-indication (knx-cemi-group-write src dst value6)

@@ -1,0 +1,68 @@
+Chapter: BleAtt
+
+ Bluetooth Low Energy ATT (Attribute Protocol) and its L2CAP wrapper --
+ the layer every BLE sensor and actuator speaks (GATT is built directly
+ on ATT). A PDU is a one-byte opcode followed by opcode-specific fields;
+ attribute handles are 16-bit little-endian. ATT runs over the fixed
+ L2CAP channel 0x0004. This chapter builds the common client and server
+ PDUs and the L2CAP frame around them.
+
+Section: Opcodes
+
+  att-op-error : Integer = #01
+  att-op-exchange-mtu-request : Integer = #02
+  att-op-read-request : Integer = #0A
+  att-op-read-response : Integer = #0B
+  att-op-write-request : Integer = #12
+  att-op-write-response : Integer = #13
+  att-op-notification : Integer = #1B
+  att-op-indication : Integer = #1D
+  att-op-write-command : Integer = #52
+
+  l2cap-cid-att : Integer = #04
+
+Section: Helpers
+
+  att-u16-le : Integer -> List Integer
+  att-u16-le (v) = [bit-and v 255, bit-and (bit-shru v 8) 255]
+
+Section: Client PDUs
+
+  att-exchange-mtu-request : Integer -> List Integer
+  att-exchange-mtu-request (mtu) = [att-op-exchange-mtu-request] & att-u16-le mtu
+
+  att-read-request : Integer -> List Integer
+  att-read-request (handle) = [att-op-read-request] & att-u16-le handle
+
+  att-write-request : Integer, List Integer -> List Integer
+  att-write-request (handle) (value) = [att-op-write-request] & att-u16-le handle & value
+
+  att-write-command : Integer, List Integer -> List Integer
+  att-write-command (handle) (value) = [att-op-write-command] & att-u16-le handle & value
+
+Section: Server PDUs
+
+  att-read-response : List Integer -> List Integer
+  att-read-response (value) = [att-op-read-response] & value
+
+  att-notification : Integer, List Integer -> List Integer
+  att-notification (handle) (value) = [att-op-notification] & att-u16-le handle & value
+
+  att-indication : Integer, List Integer -> List Integer
+  att-indication (handle) (value) = [att-op-indication] & att-u16-le handle & value
+
+  att-error-response : Integer, Integer, Integer -> List Integer
+  att-error-response (request-op) (handle) (error-code) =
+   [att-op-error, request-op] & att-u16-le handle & [error-code]
+
+Section: L2CAP Frame
+
+ An L2CAP basic frame: a two-byte payload length, a two-byte channel
+ id, then the payload. ATT uses channel 0x0004.
+
+  l2cap-frame : Integer, List Integer -> List Integer
+  l2cap-frame (cid) (payload) =
+   att-u16-le (list-length payload) & att-u16-le cid & payload
+
+  att-l2cap : List Integer -> List Integer
+  att-l2cap (pdu) = l2cap-frame l2cap-cid-att pdu

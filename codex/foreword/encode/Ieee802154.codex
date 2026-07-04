@@ -1,0 +1,64 @@
+Chapter: Ieee802154
+
+ IEEE 802.15.4 MAC framing -- the low-rate wireless link layer beneath
+ Zigbee, Thread, and 6LoWPAN mesh networks. A frame is a frame-control
+ field (two bytes), a sequence number, addressing (PAN ids and short or
+ extended addresses), the payload, and a two-byte frame check sequence.
+ All multi-byte fields are little-endian. The FCS is a CRC-16/KERMIT
+ (polynomial 0x1021 reflected to 0x8408, initial value zero) over the
+ header and payload; its check value over "123456789" is 0x2189.
+
+Section: Frame Control
+
+  ieee-type-beacon : Integer = 0
+  ieee-type-data : Integer = 1
+  ieee-type-ack : Integer = 2
+  ieee-type-command : Integer = 3
+
+  ieee-addr-none : Integer = 0
+  ieee-addr-short : Integer = 2
+  ieee-addr-extended : Integer = 3
+
+ The frame-control field packs the frame type (bits 0-2), security
+ (3), frame pending (4), ack request (5), PAN id compression (6), the
+ destination addressing mode (10-11), the frame version (12-13), and
+ the source addressing mode (14-15).
+
+  ieee-fcf : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  ieee-fcf (ftype) (sec) (pending) (ackreq) (pancomp) (dest-mode) (frame-ver) (src-mode) =
+   bit-or (bit-or (bit-or (bit-or ftype (bit-shl sec 3)) (bit-or (bit-shl pending 4) (bit-shl ackreq 5))) (bit-or (bit-shl pancomp 6) (bit-shl dest-mode 10))) (bit-or (bit-shl frame-ver 12) (bit-shl src-mode 14))
+
+Section: Frame Check Sequence
+
+  ieee-fcs : List Integer -> Integer
+  ieee-fcs (bs) = ieee-fcs-loop 0 bs 0 (list-length bs)
+
+  ieee-fcs-loop : Integer, List Integer, Integer, Integer -> Integer
+  ieee-fcs-loop (crc) (bs) (i) (len) =
+   if i >= len then crc
+   else ieee-fcs-loop (ieee-fcs-byte (bit-xor crc (list-at bs i)) 0) bs (i + 1) len
+
+  ieee-fcs-byte : Integer, Integer -> Integer
+  ieee-fcs-byte (crc) (k) =
+   if k >= 8 then crc
+   else if bit-and crc 1 == 1
+     then ieee-fcs-byte (bit-xor (bit-shru crc 1) #8408) (k + 1)
+     else ieee-fcs-byte (bit-shru crc 1) (k + 1)
+
+Section: Helpers
+
+  ieee-u16-le : Integer -> List Integer
+  ieee-u16-le (v) = [bit-and v 255, bit-and (bit-shru v 8) 255]
+
+Section: Data Frame
+
+ A short-addressed data frame with PAN id compression (a single PAN, so
+ the source PAN id is omitted): frame control, sequence number,
+ destination PAN, destination short address, source short address,
+ payload, and the FCS appended low byte first.
+
+  ieee-build-data-short : Integer, Integer, Integer, Integer, List Integer -> List Integer
+  ieee-build-data-short (seq) (dest-pan) (dest-addr) (src-addr) (payload) =
+   let fcf = ieee-fcf ieee-type-data 0 0 0 1 ieee-addr-short 0 ieee-addr-short
+   in let mhr = ieee-u16-le fcf & [seq] & ieee-u16-le dest-pan & ieee-u16-le dest-addr & ieee-u16-le src-addr & payload
+   in mhr & ieee-u16-le (ieee-fcs mhr)

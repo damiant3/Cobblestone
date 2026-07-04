@@ -6,7 +6,7 @@ A foreword quire is a library package marked `"foreword": true` in its
 `codex.project.json`. Foreword modules compile before user code and
 make their types and functions automatically available.
 
-### codex.foreword (109 modules) — Core
+### codex.foreword (111 modules) — Core
 
 The standard library. Core types, collections, cryptography, text,
 data structures, networking, and system utilities.
@@ -16,11 +16,11 @@ data structures, networking, and system utilities.
 | Core types | List, Maybe, Result, Either, Pair, State |
 | Collections | Set, Deque, Queue, PriorityQueue, RingBuffer, CircularBuffer, Hamt, BPlusTree, SkipListText, Trie, IntervalTree, Graph, UnionFind, ElasticHash, FunnelHash, ElasticBloom |
 | Text | StringBuilder, StringUtils, TextScan, TextSearch, TextWrap, TabComplete, Format, Parse, Pattern, Regex, EditDistance |
-| Crypto | Aes, AesGcm, ChaCha20, Sha256, Sha512, Hmac, Hkdf, Pbkdf, Ed25519, DiffieHellman, ProofOfWork |
+| Crypto | Aes, AesGcm, ChaCha20, Sha256, Sha512, Hmac, Hkdf, Pbkdf, Cmac, Ed25519, DiffieHellman, ProofOfWork |
 | Math/Stats | MathLib, Decimal, NumberTheory, Probability, Statistics |
 | Time | DateTime, Time, Schedule, Scheduler, TimingWheel |
 | Encoding | CCE, Unicode, Locale |
-| IO/System | Console, FileSystem, Path, Fat16, Network, Channel, Concurrent, EventBus, Pipeline |
+| IO/System | Console, FileSystem, Path, Fat16, Fat32, Gpt, Network, Channel, Concurrent, EventBus, Pipeline, SerialLine |
 | Probabilistic | BloomFilter, BitSet, CountMinSketch, ConsistentHash |
 | Identity/Trust | Identity, FactStore, History, KvStore |
 | Misc | Camera, Display, Fuel, Iterate, Location, Logger, LruCache, Microphone, Random, RateLimiter, Rope, Sensors, Sort, Tls |
@@ -38,17 +38,21 @@ Activation, SparseLattice
 
 Deflate, Gzip, Brotli, Zstd, Lz4, Lz77, Huffman, Rle
 
-### codex.foreword.encode (38 modules) — Encoding and Codecs
+### codex.foreword.encode (63 modules) — Encoding and Codecs
 
 Data formats, image codecs, audio codecs, video codecs, protocols.
 
 | Category | Modules |
 |----------|---------|
-| Data | Base64, Hex, Json, Yaml, Toml, Csv, Ini, Markdown, Protobuf, MessagePack, Cbor, Bencode, Uri, Uuid, GrayCode, Crc32 |
+| Data | Base64, Hex, Json, Yaml, Toml, Csv, Ini, Markdown, Protobuf, MessagePack, Cbor, Bencode, Uri, Uuid, Jwt, GrayCode, Crc32 |
 | Image | Bmp, Png, Jpeg, Gif, Tiff, Qoi |
 | Audio | Wav, Flac, Mp3, Ogg, Midi |
 | Video | Mp4, Avi, VideoCodec |
-| Protocol | WebSocket, Smtp |
+| 3D/Font | Gltf, TrueType, TrueTypeWriter, FontGen |
+| Web/mail | WebSocket, Smtp |
+| IoT / MQTT | Mqtt, MqttSn, Coap, Lwm2m, Sparkplug, Sntp |
+| Industrial bus | Modbus, Dnp3, Bacnet, Knx, J1939, Canopen, Mbus, OpcUa, Iec104, Enip, S7comm, Melsec, Fins, Goose, Hart |
+| Wireless / mesh | Lorawan, Zigbee, Ieee802154, Sixlowpan, BleAtt |
 
 ### codex.foreword.game (26 modules) — Game Development
 

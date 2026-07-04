@@ -1,0 +1,84 @@
+Chapter: S7commEncodeTest
+
+  cites Encode chapter S7comm
+
+ Exercise the S7comm builders across all three layers: TPKT framing,
+ a COTP connection request and data unit, the S7 job header, Setup
+ Communication, and a Read Var request for a data-block item -- plus a
+ fully stacked TPKT/COTP/S7 read request. Every byte sequence is
+ checked against an independent reference computed by s7_truth.py.
+ opening returns the count of passing checks.
+
+Section: Helpers
+
+  bytes-eq : List Integer, List Integer -> Boolean
+  bytes-eq (a) (b) =
+   if list-length a /= list-length b then False
+   else bytes-eq-loop a b 0 (list-length a)
+
+  bytes-eq-loop : List Integer, List Integer, Integer, Integer -> Boolean
+  bytes-eq-loop (a) (b) (i) (len) =
+   if i >= len then True
+   else if list-at a i /= list-at b i then False
+   else bytes-eq-loop a b (i + 1) len
+
+  flag : Boolean -> Integer
+  flag (b) = if b then 1 else 0
+
+Section: Samples
+
+  sample-cr : List Integer
+  sample-cr = s7-cotp-cr 1 0 #0A [1, 0] [1, 2]
+
+  sample-setup : List Integer
+  sample-setup = s7-setup #0400 1 1 480
+
+  sample-item : List Integer
+  sample-item = s7-read-item s7-area-db 1 4 0
+
+  sample-read : List Integer
+  sample-read = s7-read-var-single #0500 sample-item
+
+Section: Checks
+
+  check-tpkt : Integer
+  check-tpkt = flag (bytes-eq (s7-tpkt [1, 2, 3]) [3, 0, 0, 7, 1, 2, 3])
+
+  check-cotp-cr : Integer
+  check-cotp-cr =
+   flag (bytes-eq sample-cr [17, 224, 0, 0, 0, 1, 0, 192, 1, 10, 193, 2, 1, 0, 194, 2, 1, 2])
+
+  check-tpkt-cr : Integer
+  check-tpkt-cr =
+   flag (bytes-eq (s7-tpkt sample-cr) [3, 0, 0, 22, 17, 224, 0, 0, 0, 1, 0, 192, 1, 10, 193, 2, 1, 0, 194, 2, 1, 2])
+
+  check-cotp-dt : Integer
+  check-cotp-dt = flag (bytes-eq s7-cotp-dt [2, 240, 128])
+
+  check-setup : Integer
+  check-setup =
+   flag (bytes-eq sample-setup [50, 1, 0, 0, 4, 0, 0, 8, 0, 0, 240, 0, 0, 1, 0, 1, 1, 224])
+
+  check-read-item : Integer
+  check-read-item =
+   flag (bytes-eq sample-item [18, 10, 16, 2, 0, 4, 0, 1, 132, 0, 0, 0])
+
+  check-read-var : Integer
+  check-read-var =
+   flag (bytes-eq sample-read [50, 1, 0, 0, 5, 0, 0, 14, 0, 0, 4, 1, 18, 10, 16, 2, 0, 4, 0, 1, 132, 0, 0, 0])
+
+  check-stacked : Integer
+  check-stacked =
+   let expect = [3, 0, 0, 31, 2, 240, 128, 50, 1, 0, 0, 5, 0, 0, 14, 0, 0, 4, 1, 18, 10, 16, 2, 0, 4, 0, 1, 132, 0, 0, 0]
+   in flag (bytes-eq (s7-tpkt (s7-cotp-dt & sample-read)) expect)
+
+  opening : Integer =
+   let a = check-tpkt
+   in let b = check-cotp-cr
+   in let c = check-tpkt-cr
+   in let d = check-cotp-dt
+   in let e = check-setup
+   in let f = check-read-item
+   in let g = check-read-var
+   in let h = check-stacked
+   in a + b + c + d + e + f + g + h

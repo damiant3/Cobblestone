@@ -381,6 +381,22 @@ Section: Function Emission
         then leaf-tail-args-direct args binders pnames (i + 1)
    else False
 
+ A let binds its body through emit-let, which emits that body via
+ emit-expr (value position) rather than the target-threading
+ emit-to-local. When the body is an if, the value-mode emitter parks
+ the comparison's left operand and the if's result in two anonymous
+ locals that the plain let count does not see. leaf-walk charges those
+ two so the minimal-leaf local prediction stays accurate and a shape
+ that overflows the four register locals is routed to the standard
+ emitter instead of mispredicting.
+
+  leaf-body-is-if : IRExpr -> Boolean
+  leaf-body-is-if (e) =
+   when e
+    is IrIf (c) (t) (el) (ty) (sp) -> True
+    is IrLet (n) (ty) (v) (b) (sp) -> leaf-body-is-if b
+    is otherwise -> False
+
   leaf-walk : CodegenState, IRExpr, Boolean, Boolean, List Text, Text, List Text, Integer -> Integer
   leaf-walk (st) (e) (tail) (dest) (binders) (fname) (pnames) (lets) =
    if lets < 0 then lets
@@ -404,7 +420,9 @@ Section: Function Emission
      else leaf-walk st el tail dest binders fname pnames (leaf-walk st t tail dest binders fname pnames (leaf-walk st c False False binders fname pnames lets))
     is IrLet (n) (ty) (v) (b) (sp) ->
      if leaf-name-index binders n 0 >= 0 then 0 - 1
-     else leaf-walk st b tail dest (list-push binders n) fname pnames (leaf-walk st v False True binders fname pnames (lets + 1))
+     else let vw = leaf-walk st v False True binders fname pnames (lets + 1)
+     in if vw < 0 then 0 - 1
+     else leaf-walk st b tail dest (list-push binders n) fname pnames (vw + (if leaf-body-is-if b then 2 else 0))
     is IrApply (f) (a) (ty) (sp) ->
      if tail then
       if is-self-call e fname then
@@ -453,7 +471,7 @@ Section: Function Emission
   leaf-result-is-fun : CodegenState, CodexType -> Boolean
   leaf-result-is-fun (st) (ty) =
    when resolve-constructed-ty st ty
-    is FunTy (p) (r) -> True
+    is FunTy (p) (row) (r) -> True
     is otherwise -> False
 
   leaf-arg-is-bound : IRExpr, List Text -> Boolean
@@ -631,7 +649,8 @@ Section: Function Emission
    in let nlocals = prof.lp-locals
    in let st2 = if use-arg-regs then st1 else emit-minimal-pushes st1 nlocals 0
    in let st2g = if prof.lp-has-calls then emit-minimal-guard st2 else st2
-   in let st3 = bind-params st2g (def.params) 0
+   in let st2h = emit-param-guards st2g (def.params) 0
+   in let st3 = bind-params st2h (def.params) 0
    in let st4 = if should-tco def then
        let tco-alloc = if prof.lp-temps > 0 then pre-alloc-tco-temps st3 0 prof.lp-temps []
         else TcoAllocResult { alloc-state = st3, alloc-locals = [] }
@@ -652,7 +671,8 @@ Section: Function Emission
    in let st6 = if st5.peak-local > nlocals | st5.peak-spill > 0 | call-broke
       then st-add-error st5 cdx-ir-error ("minimal leaf mispredict in '" & def.name & "'") (def.span)
       else st5
-   in let st7 = if use-arg-regs then st6 else emit-minimal-pops st6 nlocals
+   in let st6g = emit-return-guard st6 def
+   in let st7 = if use-arg-regs then st6g else emit-minimal-pops st6g nlocals
    in st-append-code st7 x86-ret
 
   emit-function : CodegenState, IRDef -> CodegenState
@@ -668,7 +688,8 @@ Section: Function Emission
    in let st2 = emit-prologue st1
    in let frame-patch-pos = st2.code-len
    in let st3 = st-append-code st2 (emit-sub-rsp-imm32 0)
-   in let st4 = bind-params st3 (def.params) 0
+   in let st3g = emit-param-guards st3 (def.params) 0
+   in let st4 = bind-params st3g (def.params) 0
    in let is-tco = should-tco def
    in let pnames = for p in (def.params) -> p.name
    in let needs-temps = if is-tco & list-length (def.params) <= 4 then tails-all-direct (def.body) True (def.name) pnames == False else is-tco
@@ -689,13 +710,82 @@ Section: Function Emission
       })
     else st4
    in let st6 = emit-to-local st5 (def.body) reg-rax (st5.tco.in-tail-pos)
-   in let st7 = emit-epilogue st6
+   in let st6g = emit-return-guard st6 def
+   in let st7 = emit-epilogue st6g
    in let used = if st7.peak-local > 4 then 4 else st7.peak-local
    in let unused = 4 - used
    in let frame-size = align-16 (st7.peak-spill * 8 + unused * 8)
    in let st8 = if frame-size == 0 then nop-sub-rsp st7 frame-patch-pos
    else st-add-deferred-patch st7 (make-i32-patch (frame-patch-pos + 3) frame-size)
    in nop-unused-pushes st8 func-start used (st7.omit-frame-pointer)
+
+ Bounded signatures, stage B (BoundedSignatures.md section 7). A
+ bounded parameter is a refined position enforced Eiffel-style at the
+ callee entry: each bounded parameter is range-checked in the
+ prologue, on the register it arrives in, before the body runs. An
+ out-of-range argument traps (UD2) - the same trap a bounded field
+ store emits. The guards run before bind-params, while arg-regs still
+ hold the incoming arguments (the prologue's callee-saved pushes do
+ not touch them). Only OvError bounds narrower than the full i64
+ range are guarded; a plain Integer parameter costs nothing.
+
+  emit-param-guards : CodegenState, List IRParam, Integer -> CodegenState
+  emit-param-guards (st) (params) (i) =
+   if i >= list-length params then st
+   else let p = list-at params i
+   in emit-param-guards (emit-one-param-guard st (p.type-val) i) params (i + 1)
+
+  emit-one-param-guard : CodegenState, CodexType, Integer -> CodegenState
+  emit-one-param-guard (st) (ty) (i) =
+   when ty
+    is IntegerTy (lo) (hi) (mode) ->
+     when mode
+      is OvError ->
+       if lo <= i64-min & hi >= i64-max then st
+       else if i < 6 then emit-range-trap st (list-at arg-regs i) lo hi
+       else let tmp = alloc-temp st
+            in let st1 = st-append-code (tmp.state) (mov-load (tmp.reg) reg-rbp (16 + (i - 6) * 8))
+            in emit-range-trap st1 (tmp.reg) lo hi
+      is otherwise -> st
+    is otherwise -> st
+
+ A range trap: cmp against the upper bound and trap if greater, then
+ against the lower bound and trap if less. The same two conditional
+ traps a bounded field store uses (emit-error-checked-store), minus
+ the store - a parameter or return value stays a full register, so
+ only its range is checked, not its storage width.
+
+  emit-range-trap : CodegenState, Integer, Integer, Integer -> CodegenState
+  emit-range-trap (st) (reg) (lo) (hi) =
+   emit-error-bound-trap (emit-error-bound-trap st reg hi 14) reg lo 13
+
+ The postcondition: a bounded return is range-checked on the result
+ register before the epilogue, unless the body statically proves the
+ result within the bound (value-fits-field, the emit prover's
+ interval elision - the same one a bounded field store uses, giving
+ the exact static/dynamic correspondence at the single return site).
+
+  emit-return-guard : CodegenState, IRDef -> CodegenState
+  emit-return-guard (st) (def) =
+   when return-bound-of (def.type-val) (list-length (def.params))
+    is IntegerTy (lo) (hi) (mode) ->
+     when mode
+      is OvError ->
+       if lo <= i64-min & hi >= i64-max then st
+       else if value-fits-field (def.body) (deck-record (IntegerTy lo hi mode))
+            then st-add-info st cdx-bounds-proven "bounds proven: return check elided" (def.span)
+            else emit-range-trap st reg-rax lo hi
+      is otherwise -> st
+    is otherwise -> st
+
+  return-bound-of : CodexType, Integer -> CodexType
+  return-bound-of (ty) (n) =
+   if n <= 0 then ty
+   else when ty
+    is FunTy (p) (row) (r) -> return-bound-of r (n - 1)
+    is ForAllTy (id) (b) -> return-bound-of b n
+    is ForAllEff (id) (b) -> return-bound-of b n
+    is otherwise -> ty
 
   accum-at-capacity : CodegenState -> Boolean
   accum-at-capacity (st) =
@@ -721,10 +811,10 @@ Section: Function Emission
   is-proof-def (d) =
    if is-proof-type (d.type-val) then True
    else when d.type-val
-    is FunTy (p) (r) ->
+    is FunTy (p) (row) (r) ->
      if is-proof-type r then True
      else when r
-      is FunTy (p2) (r2) -> is-proof-type r2
+      is FunTy (p2) (row2) (r2) -> is-proof-type r2
       is otherwise -> False
     is otherwise -> False
 
@@ -770,7 +860,7 @@ Section: Local Variable Management
   add-local (st) (name) (slot) =
    __record-set st "locals" ([LocalBinding {
      name = name,
-     slot = slot
+     slot = __narrow slot
     }] & (st.locals))
 
 Section: Expression Emission
@@ -1609,7 +1699,7 @@ Section: Expression Emission
      let tag = find-ctor-tag ctors name 0
      in if tag >= 0 then emit-nullary-ctor st tag
         else emit-name-as-call st name
-    is FunTy (pt) (rt) -> emit-partial-application st name []
+    is FunTy (pt) (row) (rt) -> emit-partial-application st name []
     is otherwise -> emit-name-as-call st name
 
   resolve-to-sum : CodexType -> CodexType
@@ -1946,7 +2036,7 @@ Section: Expression Emission
   emit-reg-right-inplace : CodegenState, IRBinaryOp, Integer, Integer -> EmitResult
   emit-reg-right-inplace (st) (op) (l-reg) (right-reg) =
    let st2 = st-append-code st (inplace-int-op op l-reg right-reg)
-   in EmitResult { state = __record-set st2 "next-temp" (st2.next-temp + 1), reg = l-reg }
+   in EmitResult { state = __record-set st2 "next-temp" (st2.next-temp + 1), reg = __narrow l-reg }
 
   emit-binary-reg-right : CodegenState, IRBinaryOp, IRExpr, Integer, IRExpr -> EmitResult
   emit-binary-reg-right (st) (op) (left) (right-reg) (right) =
@@ -2290,14 +2380,17 @@ Section: Expression Emission
   emit-sum-fields-eq : CodegenState, List CodexType, List CodexType, Integer, Integer, Integer, Integer, List Integer -> SumEqAccum
   emit-sum-fields-eq (st) (fields) (type-args) (l-loc) (r-loc) (i) (len) (ne-acc) =
    if i == len then SumEqAccum { state = st, ne-jumps = ne-acc, eq-jumps = [] }
-   else let field-ty = subst-field-type (list-at fields i) type-args
-   in let offset = (1 + i) * 8
+   else let decl-ty = list-at fields i
+   in let field-ty = subst-field-type decl-ty type-args
+   in let offset = sum-ctor-field-offset fields i
+   in let fw = field-byte-width decl-ty
+   in let fsigned = field-byte-signed decl-ty
    in let l-ld = load-local st l-loc
    in let l-field = alloc-temp (l-ld.state)
-   in let st1 = st-append-code (l-field.state) (mov-load (l-field.reg) (l-ld.reg) offset)
+   in let st1 = st-append-code (l-field.state) (emit-narrow-load fw fsigned (l-field.reg) (l-ld.reg) offset)
    in let r-ld = load-local st1 r-loc
    in let r-field = alloc-temp (r-ld.state)
-   in let st2 = st-append-code (r-field.state) (mov-load (r-field.reg) (r-ld.reg) offset)
+   in let st2 = st-append-code (r-field.state) (emit-narrow-load fw fsigned (r-field.reg) (r-ld.reg) offset)
    in let eq-result = emit-eq-op st2 (l-field.reg) (r-field.reg) field-ty
    in let st3 = st-append-code (eq-result.state) (cmp-ri (eq-result.reg) 0)
    in let ne-pos = st3.code-len

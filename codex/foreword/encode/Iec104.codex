@@ -1,0 +1,128 @@
+Chapter: Iec104
+
+ IEC 60870-5-104 (IEC 104), the TCP/IP telecontrol protocol for
+ electric power and utility SCADA -- the networked sibling of the
+ serial IEC 60870-5-101 and a European counterpart to DNP3. A frame
+ (APDU) is a 6-byte APCI header (start 0x68, an APDU-length octet, and
+ four control-field octets) optionally followed by an ASDU carrying
+ information objects. There is no checksum: TCP provides integrity.
+ All multi-octet fields are little-endian. Each builder returns a
+ List Integer.
+
+ The length octet counts the four control octets plus the ASDU, but
+ not the start byte or the length octet itself; a control frame with
+ no ASDU therefore has length 4.
+
+Section: Byte Helpers
+
+  i104-u16-le : Integer -> List Integer
+  i104-u16-le (v) = [bit-and v 255, bit-and (bit-shru v 8) 255]
+
+  i104-u24-le : Integer -> List Integer
+  i104-u24-le (v) =
+   [bit-and v 255, bit-and (bit-shru v 8) 255, bit-and (bit-shru v 16) 255]
+
+  i104-f32-le : Real approximate -> List Integer
+  i104-f32-le (v) =
+   let b = real-approx-to-bits v
+   in [bit-and b 255, bit-and (bit-shru b 8) 255,
+       bit-and (bit-shru b 16) 255, bit-and (bit-shru b 24) 255]
+
+Section: APCI Control Fields
+
+ Three control-field formats live in the four octets. I-format
+ (information transfer) carries a 15-bit send sequence number N(S)
+ across the first two octets and a 15-bit receive sequence number
+ N(R) across the last two, each shifted up by one so the low bit
+ stays clear. S-format (supervisory) acknowledges with N(R) only.
+ U-format (unnumbered) carries a single function in the first octet.
+
+  i104-ctrl-i : Integer, Integer -> List Integer
+  i104-ctrl-i (ns) (nr) =
+   [bit-and (ns * 2) #FE, bit-and (bit-shru ns 7) 255,
+    bit-and (nr * 2) #FE, bit-and (bit-shru nr 7) 255]
+
+  i104-ctrl-s : Integer -> List Integer
+  i104-ctrl-s (nr) =
+   [#01, #00, bit-and (nr * 2) #FE, bit-and (bit-shru nr 7) 255]
+
+  i104-ctrl-u : Integer -> List Integer
+  i104-ctrl-u (func) = [func, #00, #00, #00]
+
+ U-format function octets: the low two bits (0x03) mark the format,
+ and one higher bit selects the function and its direction (act/con).
+
+  i104-u-startdt-act : Integer = #07
+  i104-u-startdt-con : Integer = #0B
+  i104-u-stopdt-act : Integer = #13
+  i104-u-stopdt-con : Integer = #23
+  i104-u-testfr-act : Integer = #43
+  i104-u-testfr-con : Integer = #83
+
+Section: APDU
+
+  i104-start : Integer = #68
+
+  i104-apdu : List Integer, List Integer -> List Integer
+  i104-apdu (ctrl) (asdu) =
+   [i104-start, 4 + list-length asdu] & ctrl & asdu
+
+  i104-frame-i : Integer, Integer, List Integer -> List Integer
+  i104-frame-i (ns) (nr) (asdu) = i104-apdu (i104-ctrl-i ns nr) asdu
+
+  i104-frame-s : Integer -> List Integer
+  i104-frame-s (nr) = i104-apdu (i104-ctrl-s nr) []
+
+  i104-frame-u : Integer -> List Integer
+  i104-frame-u (func) = i104-apdu (i104-ctrl-u func) []
+
+Section: ASDU
+
+ The ASDU opens with a data-unit identifier: a type identification,
+ a variable structure qualifier (SQ flag plus the number of objects),
+ a two-octet cause of transmission (cause octet then originator
+ address), and a two-octet common address.
+
+  i104-vsq : Boolean, Integer -> Integer
+  i104-vsq (sq) (num) = bit-or (if sq then #80 else 0) (bit-and num #7F)
+
+  i104-asdu-header : Integer, Integer, Integer, Integer, Integer -> List Integer
+  i104-asdu-header (typ) (vsq) (cot) (org) (ca) =
+   [typ, vsq, cot, org] & i104-u16-le ca
+
+ Common causes of transmission.
+
+  i104-cot-spontaneous : Integer = 3
+  i104-cot-request : Integer = 5
+  i104-cot-activation : Integer = 6
+  i104-cot-activation-con : Integer = 7
+  i104-cot-inrogen : Integer = 20
+
+Section: Information Objects
+
+ Each information object opens with a three-octet information object
+ address, followed by the type-specific payload.
+
+  i104-io-single-point : Integer, Integer -> List Integer
+  i104-io-single-point (ioa) (siq) = i104-u24-le ioa & [siq]
+
+  i104-io-single-command : Integer, Integer -> List Integer
+  i104-io-single-command (ioa) (sco) = i104-u24-le ioa & [sco]
+
+  i104-io-measured-short-float : Integer, Real approximate, Integer -> List Integer
+  i104-io-measured-short-float (ioa) (value) (qds) =
+   i104-u24-le ioa & i104-f32-le value & [qds]
+
+  i104-io-interrogation : Integer, Integer -> List Integer
+  i104-io-interrogation (ioa) (qoi) = i104-u24-le ioa & [qoi]
+
+ Object type identifications.
+
+  i104-type-single-point : Integer = 1
+  i104-type-measured-short-float : Integer = 13
+  i104-type-single-command : Integer = 45
+  i104-type-interrogation : Integer = 100
+
+ Qualifier of interrogation: station (global) interrogation.
+
+  i104-qoi-station : Integer = 20

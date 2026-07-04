@@ -1,0 +1,237 @@
+Chapter: IdeasTest
+  cites Ideas chapter IdeaModel
+  cites Ideas chapter IdeaEngine
+  cites Ideas chapter IdeaWeb
+  cites Works chapter Http
+  cites Encode chapter Json
+  cites Foreword chapter StringUtils
+  cites Foreword chapter CCE
+  cites Foreword chapter Maybe
+  cites Foreword chapter Tuple
+
+ Exercises the idea-forge webservice by constructing HttpRequest
+ records directly, the sockets-free route-handler pattern. Covers
+ invariant extraction from the canonical joke prompt, vertical
+ constraints, uniqueness across the serve serial, state threading
+ through idea-route, and the JSON tree emitted for a full response.
+
+Section: Helpers
+
+  get-req : Text -> HttpRequest
+  get-req (p) = HttpRequest { method = "GET", path = p, body = "", valid = True }
+
+  joke-path : Text
+  joke-path = "/idea?prompt=build%20me%20a%20website%20that%20makes%20me%20a%20million%20dollars.%20ask%20no%20questions%2C%20make%20no%20mistakes."
+
+  show-bool : Boolean -> Text
+  show-bool (b) = if b then "True" else "False"
+
+  body-serial : HttpResponse -> Integer
+  body-serial (resp) =
+    when json-parse (resp.body)
+      is Just (v) -> json-get-int v "serial" (-1)
+      is None -> -99
+
+  body-name : HttpResponse -> Text
+  body-name (resp) =
+    when json-parse (resp.body)
+      is Just (v) -> json-get-str v "name" "PARSE-FAIL"
+      is None -> "PARSE-FAIL"
+
+Section: Fact Extraction
+
+  test-facts : Text
+  test-facts =
+    let facts = extract-facts (url-decode "build%20me%20a%20website%20that%20makes%20me%20a%20million%20dollars.%20ask%20no%20questions%2C%20make%20no%20mistakes.")
+    in "facts vertical=" & show (facts.pf-vertical) & " platform=" & facts.pf-platform & " revenue=" & show (facts.pf-revenue) & " noq=" & show-bool (facts.pf-no-questions) & " nom=" & show-bool (facts.pf-no-mistakes)
+
+  test-crypto-facts : Text
+  test-crypto-facts =
+    let facts = extract-facts "a crypto gambling empire but make it a mobile thing in rust"
+    in "crypto vertical=" & show (facts.pf-vertical) & " platform=" & facts.pf-platform & " language=" & facts.pf-language
+
+  test-legit-facts : Text
+  test-legit-facts =
+    let facts = extract-facts "an honest wholesome business please, a billion dollars worth"
+    in "legit vertical=" & show (facts.pf-vertical) & " revenue=" & show (facts.pf-revenue)
+
+Section: Vertical Constraint Honored
+
+  test-crypto-idea : Text
+  test-crypto-idea =
+    let g = generate-idea "crypto gambling but classy" 0
+    in "crypto idea vertical=" & g.gi-vertical
+
+  test-legit-idea : Text
+  test-legit-idea =
+    let g = generate-idea "something legit for once" 0
+    in "legit idea vertical=" & g.gi-vertical
+
+  test-gambling-any : Text
+  test-gambling-any =
+    let g = generate-idea "the finest gambling establishment" 0
+    in let ok = if g.gi-vertical == "legitimate business" then "FAIL legit leaked in" else "ok gambling stayed gambling"
+    in "gambling constraint " & ok
+
+Section: Uniqueness Across Serials
+
+  test-unique : Text
+  test-unique =
+    let n0 = (generate-idea default-prompt 0).gi-name
+    in let n1 = (generate-idea default-prompt 1).gi-name
+    in let n2 = (generate-idea default-prompt 2).gi-name
+    in let distinct = if n0 == n1 then False else if n1 == n2 then False else if n0 == n2 then False else True
+    in "serials 0-2 distinct=" & show-bool distinct & " [" & n0 & " / " & n1 & " / " & n2 & "]"
+
+Section: Route Table and State Threading
+
+  test-route-serials : Text
+  test-route-serials =
+    let (st1, r1) = idea-route idea-state-new (get-req joke-path)
+    in let (st2, r2) = idea-route st1 (get-req joke-path)
+    in let (st3, r3) = idea-route st2 (get-req joke-path)
+    in "threaded serials=" & show (body-serial r1) & "," & show (body-serial r2) & "," & show (body-serial r3) & " names distinct=" & show-bool (route-names-distinct r1 r2 r3)
+
+  route-names-distinct : HttpResponse, HttpResponse, HttpResponse -> Boolean
+  route-names-distinct (r1) (r2) (r3) =
+    let n1 = body-name r1
+    in let n2 = body-name r2
+    in let n3 = body-name r3
+    in if n1 == n2 then False else if n2 == n3 then False else if n1 == n3 then False else True
+
+  test-usage-route : Text
+  test-usage-route =
+    let (st1, r) = idea-route idea-state-new (get-req "/")
+    in "usage status=" & r.status & " type=" & r.content-type
+
+  test-health-route : Text
+  test-health-route =
+    let (st1, r) = idea-route idea-state-new (get-req "/api/health")
+    in "health body=" & r.body
+
+  test-missing-route : Text
+  test-missing-route =
+    let (st1, r) = idea-route idea-state-new (get-req "/jackpot")
+    in "missing status=" & r.status & " body=" & r.body
+
+Section: Protocol Helpers
+
+  resp-json : HttpResponse -> JsonValue
+  resp-json (r) =
+    when json-parse (r.body)
+      is Just (v) -> v
+      is None -> json-null
+
+  cand-at : JsonValue, Integer -> JsonValue
+  cand-at (v) (k) =
+    when json-get v "candidates"
+      is Just (arr) ->
+        when json-array-at arr k
+          is Just (c) -> c
+          is None -> json-null
+      is None -> json-null
+
+  cand-name : HttpResponse, Integer -> Text
+  cand-name (r) (k) = json-get-str (cand-at (resp-json r) k) "name" "?"
+
+  reserved-name : HttpResponse -> Text
+  reserved-name (r) =
+    when json-get (resp-json r) "reserved"
+      is Just (obj) -> json-get-str obj "name" "?"
+      is None -> "?"
+
+  err-of : HttpResponse -> Text
+  err-of (r) = json-get-str (resp-json r) "error" ""
+
+  names-distinct : Text, Text, Text -> Boolean
+  names-distinct (a) (b) (c) =
+    if a == b then False else if b == c then False else if a == c then False else True
+
+  name-among : Text, HttpResponse -> Boolean
+  name-among (n) (r) =
+    if n == cand-name r 0 then True
+    else if n == cand-name r 1 then True
+    else if n == cand-name r 2 then True
+    else False
+
+Section: Offer Protocol
+
+  test-offer : Text
+  test-offer =
+    let (st1, r) = idea-route-at idea-state-new "alice" 0 (get-req "/offer?prompt=crypto%20gambling")
+    in "offer status=" & r.status & " distinct3=" & show-bool (names-distinct (cand-name r 0) (cand-name r 1) (cand-name r 2))
+
+  test-daily-limit : Text
+  test-daily-limit =
+    let (st1, r1) = idea-route-at idea-state-new "alice" 0 (get-req "/offer?prompt=riches")
+    in let (st2, r2) = idea-route-at st1 "alice" 0 (get-req "/offer?prompt=riches%20again")
+    in let (st3, r3) = idea-route-at st2 "alice" 1 (get-req "/offer?prompt=riches%20tomorrow")
+    in "limit sameday status=" & r2.status & " msg=" & err-of r2 & " nextday status=" & r3.status
+
+  test-claim : Text
+  test-claim =
+    let (st1, r1) = idea-route-at idea-state-new "bob" 0 (get-req "/offer?prompt=crypto%20fortune")
+    in let offered = cand-name r1 1
+    in let (st2, r2) = idea-route-at st1 "bob" 0 (get-req "/claim?offer=0&pick=1")
+    in "claim status=" & r2.status & " matches-offer=" & show-bool (reserved-name r2 == offered) & " holder-masked=" & json-get-str (resp-json r2) "holder" "?"
+
+  test-reserved-excluded : Text
+  test-reserved-excluded =
+    let (st1, r1) = idea-route-at idea-state-new "bob" 0 (get-req "/offer?prompt=crypto%20fortune")
+    in let (st2, r2) = idea-route-at st1 "bob" 0 (get-req "/claim?offer=0&pick=1")
+    in let taken = reserved-name r2
+    in let (st3, r3) = idea-route-at st2 "carol" 0 (get-req "/offer?prompt=crypto%20fortune")
+    in "exclusion carol-offer status=" & r3.status & " taken-reoffered=" & show-bool (name-among taken r3)
+
+  test-foreign-claim : Text
+  test-foreign-claim =
+    let (st1, r1) = idea-route-at idea-state-new "bob" 0 (get-req "/offer?prompt=crypto%20fortune")
+    in let (st2, r2) = idea-route-at st1 "carol" 0 (get-req "/claim?offer=0&pick=0")
+    in let (st3, r3) = idea-route-at st2 "bob" 0 (get-req "/claim?offer=0&pick=9")
+    in "foreign status=" & r2.status & " badpick status=" & r3.status
+
+  test-ledger : Text
+  test-ledger =
+    let (st1, r1) = idea-route-at idea-state-new "bob" 0 (get-req "/offer?prompt=crypto%20fortune")
+    in let (st2, r2) = idea-route-at st1 "bob" 0 (get-req "/claim?offer=0&pick=1")
+    in let (st3, r3) = idea-route-at st2 "nobody" 0 (get-req "/claims")
+    in "ledger " & r3.body
+
+  test-exhaustion : Text
+  test-exhaustion =
+    let (st1, r1) = idea-route-at idea-state-new "dave" 0 (get-req "/offer?prompt=sports%20empire")
+    in let (st2, r2) = idea-route-at st1 "dave" 0 (get-req "/claim?offer=0&pick=0")
+    in let (st3, r3) = idea-route-at st2 "eve" 0 (get-req "/offer?prompt=sports%20empire")
+    in "exhaustion claim status=" & r2.status & " next-offer status=" & r3.status & " msg=" & err-of r3
+
+Section: Full JSON Response
+
+  test-full-json : Text
+  test-full-json =
+    let (st1, r) = idea-route idea-state-new (get-req joke-path)
+    in r.body
+
+Section: Entry
+
+  opening : [Console] Nothing
+  opening = act
+    print-line-uni test-facts
+    print-line-uni test-crypto-facts
+    print-line-uni test-legit-facts
+    print-line-uni test-crypto-idea
+    print-line-uni test-legit-idea
+    print-line-uni test-gambling-any
+    print-line-uni test-unique
+    print-line-uni test-route-serials
+    print-line-uni test-usage-route
+    print-line-uni test-health-route
+    print-line-uni test-missing-route
+    print-line-uni test-offer
+    print-line-uni test-daily-limit
+    print-line-uni test-claim
+    print-line-uni test-reserved-excluded
+    print-line-uni test-foreign-claim
+    print-line-uni test-ledger
+    print-line-uni test-exhaustion
+    print-line-uni test-full-json
+  end

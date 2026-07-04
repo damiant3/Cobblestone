@@ -1,0 +1,84 @@
+Chapter: Goose
+  cites Foreword chapter CCE
+
+ IEC 61850 GOOSE (Generic Object Oriented Substation Event), the fast
+ layer-2 multicast that carries protection and control signals between
+ substation intelligent electronic devices in milliseconds -- the
+ real-time complement to the DNP3 and IEC 104 SCADA telemetry. A GOOSE
+ Ethernet frame carries EtherType 0x88B8, an eight-octet link header
+ (APPID, length, two reserved fields), and an ASN.1 BER goosePdu whose
+ context-tagged fields describe the control block, dataset, sequence
+ counters, and the published data values. Lengths use the BER short
+ form; integers use minimal big-endian encoding with a leading zero
+ octet when the top bit would otherwise read as negative. Each builder
+ returns a List Integer.
+
+Section: BER Helpers
+
+  goose-u16-be : Integer -> List Integer
+  goose-u16-be (v) = [bit-and (bit-shru v 8) 255, bit-and v 255]
+
+  goose-tlv : Integer, List Integer -> List Integer
+  goose-tlv (tag) (val) = [tag, list-length val] & val
+
+  goose-text-bytes : Text, Integer, Integer, List Integer -> List Integer
+  goose-text-bytes (s) (i) (len) (acc) =
+   if i >= len then acc
+   else goose-text-bytes s (i + 1) len (list-push acc (to-unicode (char-code (char-at s i))))
+
+  goose-vstr : Integer, Text -> List Integer
+  goose-vstr (tag) (s) = goose-tlv tag (goose-text-bytes s 0 (text-length s) [])
+
+  goose-uint-bytes : Integer, List Integer -> List Integer
+  goose-uint-bytes (v) (acc) =
+   if v <= 0 then acc else goose-uint-bytes (bit-shru v 8) ([bit-and v 255] & acc)
+
+  goose-uint-fix : List Integer -> List Integer
+  goose-uint-fix (raw) = if bit-and (list-at raw 0) #80 == 0 then raw else [0] & raw
+
+  goose-uint-content : Integer -> List Integer
+  goose-uint-content (v) = if v == 0 then [0] else goose-uint-fix (goose-uint-bytes v [])
+
+  goose-integer : Integer, Integer -> List Integer
+  goose-integer (tag) (v) = goose-tlv tag (goose-uint-content v)
+
+  goose-boolean : Integer, Boolean -> List Integer
+  goose-boolean (tag) (b) = goose-tlv tag (if b then [#FF] else [#00])
+
+  goose-octets : Integer, List Integer -> List Integer
+  goose-octets (tag) (bs) = goose-tlv tag bs
+
+Section: Data Values
+
+ Inside allData each value is a context-tagged MMS Data choice; a
+ boolean is tag 0x83 with an all-ones or zero octet.
+
+  goose-data-boolean : Boolean -> List Integer
+  goose-data-boolean (b) = goose-tlv #83 (if b then [#FF] else [#00])
+
+Section: GOOSE PDU
+
+ The goosePdu is an APPLICATION 1 (0x61) sequence: the control-block
+ reference, the hold time, the dataset and GOOSE id, the publish
+ timestamp, the state and sequence numbers, the test and needs-commission
+ flags, the configuration revision, the dataset entry count, and the
+ data values (context tag 0x0B, encoded 0xAB).
+
+  goose-pdu : Text, Integer, Text, Text, List Integer, Integer, Integer, Boolean, Integer, Boolean, Integer, List Integer -> List Integer
+  goose-pdu (gocbref) (tal) (datset) (goid) (t8) (stnum) (sqnum) (test) (confrev) (ndscom) (numentries) (alldata) =
+   let body = goose-vstr #80 gocbref & goose-integer #81 tal & goose-vstr #82 datset & goose-vstr #83 goid & goose-octets #84 t8 & goose-integer #85 stnum & goose-integer #86 sqnum & goose-boolean #87 test & goose-integer #88 confrev & goose-boolean #89 ndscom & goose-integer #8A numentries & goose-tlv #AB alldata
+   in goose-tlv #61 body
+
+Section: Frame
+
+ The link header prefixes the goosePdu with the application identifier
+ and a length covering the eight-octet header plus the PDU. The Ethernet
+ frame prepends the destination and source addresses and EtherType 0x88B8.
+
+  goose-header : Integer, List Integer -> List Integer
+  goose-header (appid) (pdu) =
+   goose-u16-be appid & goose-u16-be (8 + list-length pdu) & goose-u16-be 0 & goose-u16-be 0 & pdu
+
+  goose-eth-frame : List Integer, List Integer, Integer, List Integer -> List Integer
+  goose-eth-frame (dst) (src) (appid) (pdu) =
+   dst & src & [#88, #B8] & goose-header appid pdu

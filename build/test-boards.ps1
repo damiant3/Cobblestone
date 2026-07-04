@@ -18,7 +18,8 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
 $Repo = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
-$RenodeExe = Join-Path $Repo 'tools\renode\renode.exe'
+. (Join-Path $PSScriptRoot 'renode-config.ps1')
+$RenodeExe = Get-RenodeExe -Repo $Repo
 $OutDir = Join-Path $PSScriptRoot 'output\boards'
 New-Item -ItemType Directory -Force $OutDir | Out-Null
 
@@ -27,9 +28,8 @@ $Stage0 = Join-Path $Repo 'build-output\bare-metal\Codex.cdx'
 New-Item -ItemType Directory -Force (Split-Path $Stage0) | Out-Null
 if (-not (Test-Path $Stage0)) { Copy-Item -Force $SeedCdx $Stage0 }
 
-if (-not (Test-Path $RenodeExe)) {
-    Write-Host "SKIP: Renode not installed at tools\renode\" -ForegroundColor Yellow
-    Write-Host "  Download from https://github.com/renode/renode/releases"
+if (-not $RenodeExe) {
+    Write-RenodeSkip
     exit 0
 }
 

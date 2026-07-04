@@ -341,7 +341,7 @@ Section: Register Allocation
 
   rv-bind-local : RvState, Text, Integer -> RvState
   rv-bind-local (st) (name) (reg) =
-   __record-set st "locals" (list-push (st.locals) (RvLocal { name = name, reg = reg }))
+   __record-set st "locals" (list-push (st.locals) (RvLocal { name = name, reg = __narrow reg }))
 
   rv-lookup-local : List RvLocal, Text, Integer -> Integer
   rv-lookup-local (locals) (name) (i) =
@@ -366,7 +366,8 @@ Section: Function Emission
    in let st5 = __record-set st4 "next-local" rv-s2
    in let st5a = __record-set st5 "peak-local" rv-s2
    in let st6 = __record-set st5a "spill-count" 0
-   in __record-set st6 "prologue-index" (st1.insn-count)
+   in let st6a = __record-set st6 "tco" default-rv-tco
+   in __record-set st6a "prologue-index" (st1.insn-count)
 
   rv-result-is-stable : IRExpr -> Boolean
   rv-result-is-stable (e) =
@@ -561,7 +562,7 @@ Section: NOP Compaction
 
   rv-idx-is-placeholder : Integer, RvState -> Boolean
   rv-idx-is-placeholder (idx) (st) =
-   rv-cp-has idx (st.call-patches) 0 | rv-fa-has idx (st.func-addr-fixups) 0 | rv-fa-has (idx - 1) (st.func-addr-fixups) 0 | rv-rf-has idx (st.rodata-fixups) 0
+   rv-cp-has idx (st.call-patches) 0 | rv-fa-has idx (st.func-addr-fixups) 0 | rv-fa-has (idx - 1) (st.func-addr-fixups) 0 | rv-rf-has idx (st.rodata-fixups) 0 | rv-rf-has (idx - 1) (st.rodata-fixups) 0
 
   rv-gather-nops : RvState, Integer, Integer, List Integer -> List Integer
   rv-gather-nops (st) (i) (stop) (acc) =
@@ -1030,10 +1031,7 @@ Section: Binary Emission
 
   rv-emit-binary : RvState, IRBinaryOp, IRExpr, IRExpr, CodexType -> RvEmitResult
   rv-emit-binary (st) (op) (left) (right) (ty) =
-   let checkpoint = st.next-local
-   in let res = rv-emit-binary-inner st op left right ty
-   in if rv-is-frameless-mode st then res
-   else RvEmitResult { state = __record-set (res.state) "next-local" checkpoint, reg = res.reg }
+   rv-emit-binary-inner st op left right ty
 
   rv-emit-binary-inner : RvState, IRBinaryOp, IRExpr, IRExpr, CodexType -> RvEmitResult
   rv-emit-binary-inner (st) (op) (left) (right) (ty) =
@@ -1070,6 +1068,7 @@ Section: Binary Emission
    when e
     is IrName (n) (t) (s) -> True
     is IrIntLit (v) (s) -> True
+    is IrNumLit (v) (s) -> True
     is IrBoolLit (v) (s) -> True
     is IrCharLit (v) (s) -> True
     is otherwise -> False
@@ -1286,6 +1285,32 @@ Section: Real Arithmetic
    in let st1 = rv-emit (rd.state) (rv-fmv-w-x rv-ft0 (vr.reg))
    in let st2 = rv-emit st1 (rv-fcvt-d-s rv-ft0 rv-ft0)
    in RvEmitResult { state = rv-emit st2 (rv-fmv-x-d (rd.reg) rv-ft0), reg = rd.reg }
+
+  rv-emit-real-to-bits : RvState, IRExpr -> RvEmitResult
+  rv-emit-real-to-bits (st) (arg) =
+   let vr = rv-emit-expr st arg
+   in let rd = rv-alloc-temp (vr.state)
+   in RvEmitResult { state = rv-emit (rd.state) (rv-mv (rd.reg) (vr.reg)), reg = rd.reg }
+
+  rv-emit-bits-to-real : RvState, IRExpr -> RvEmitResult
+  rv-emit-bits-to-real (st) (arg) =
+   let vr = rv-emit-expr st arg
+   in let rd = rv-alloc-temp (vr.state)
+   in RvEmitResult { state = rv-emit (rd.state) (rv-mv (rd.reg) (vr.reg)), reg = rd.reg }
+
+  rv-emit-real-approx-to-bits : RvState, IRExpr -> RvEmitResult
+  rv-emit-real-approx-to-bits (st) (arg) =
+   let vr = rv-emit-expr st arg
+   in let rd = rv-alloc-temp (vr.state)
+   in let st1 = rv-emit (rd.state) (rv-slli (rd.reg) (vr.reg) 32)
+   in RvEmitResult { state = rv-emit st1 (rv-srli (rd.reg) (rd.reg) 32), reg = rd.reg }
+
+  rv-emit-bits-to-real-approx : RvState, IRExpr -> RvEmitResult
+  rv-emit-bits-to-real-approx (st) (arg) =
+   let vr = rv-emit-expr st arg
+   in let rd = rv-alloc-temp (vr.state)
+   in let st1 = rv-emit (rd.state) (rv-fmv-w-x rv-ft0 (vr.reg))
+   in RvEmitResult { state = rv-emit st1 (rv-fmv-x-w (rd.reg) rv-ft0), reg = rd.reg }
 
   rv-emit-suggested-vector-width : RvState, IRExpr -> RvEmitResult
   rv-emit-suggested-vector-width (st) (arg) =

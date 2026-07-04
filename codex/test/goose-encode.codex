@@ -1,0 +1,72 @@
+Chapter: GooseEncodeTest
+
+  cites Encode chapter Goose
+
+ Exercise the IEC 61850 GOOSE builders: BER TLV, minimal big-endian
+ integer encoding (including a two-octet value), booleans, MMS data
+ booleans and an allData list, a full goosePdu with every context field,
+ and the link-layer GOOSE header. Every byte sequence is checked against
+ an independent reference computed by goose_truth.py. opening returns the
+ count of passing checks.
+
+Section: Helpers
+
+  bytes-eq : List Integer, List Integer -> Boolean
+  bytes-eq (a) (b) =
+   if list-length a /= list-length b then False
+   else bytes-eq-loop a b 0 (list-length a)
+
+  bytes-eq-loop : List Integer, List Integer, Integer, Integer -> Boolean
+  bytes-eq-loop (a) (b) (i) (len) =
+   if i >= len then True
+   else if list-at a i /= list-at b i then False
+   else bytes-eq-loop a b (i + 1) len
+
+  flag : Boolean -> Integer
+  flag (b) = if b then 1 else 0
+
+Section: Samples
+
+  sample-alldata : List Integer
+  sample-alldata = goose-data-boolean True & goose-data-boolean False
+
+  sample-pdu : List Integer
+  sample-pdu =
+   goose-pdu "IED1LD0/LLN0$GO$gcb0" 100 "IED1LD0/LLN0$DS" "IED1" [0, 0, 0, 0, 0, 0, 0, 0] 1 0 False 1 False 2 sample-alldata
+
+Section: Checks
+
+  check-tlv : Integer
+  check-tlv = flag (bytes-eq (goose-tlv #80 [1, 2, 3]) [128, 3, 1, 2, 3])
+
+  check-integer : Integer
+  check-integer = flag (bytes-eq (goose-integer #85 300) [133, 2, 1, 44])
+
+  check-boolean : Integer
+  check-boolean = flag (bytes-eq (goose-boolean #87 True) [135, 1, 255])
+
+  check-data-boolean : Integer
+  check-data-boolean = flag (bytes-eq (goose-data-boolean True) [131, 1, 255])
+
+  check-alldata : Integer
+  check-alldata = flag (bytes-eq sample-alldata [131, 1, 255, 131, 1, 0])
+
+  check-pdu : Integer
+  check-pdu =
+   let expect = [97, 84, 128, 20, 73, 69, 68, 49, 76, 68, 48, 47, 76, 76, 78, 48, 36, 71, 79, 36, 103, 99, 98, 48, 129, 1, 100, 130, 15, 73, 69, 68, 49, 76, 68, 48, 47, 76, 76, 78, 48, 36, 68, 83, 131, 4, 73, 69, 68, 49, 132, 8, 0, 0, 0, 0, 0, 0, 0, 0, 133, 1, 1, 134, 1, 0, 135, 1, 0, 136, 1, 1, 137, 1, 0, 138, 1, 2, 171, 6, 131, 1, 255, 131, 1, 0]
+   in flag (bytes-eq sample-pdu expect)
+
+  check-header : Integer
+  check-header =
+   let expect = [48, 1, 0, 94, 0, 0, 0, 0, 97, 84, 128, 20, 73, 69, 68, 49, 76, 68, 48, 47, 76, 76, 78, 48, 36, 71, 79, 36, 103, 99, 98, 48, 129, 1, 100, 130, 15, 73, 69, 68, 49, 76, 68, 48, 47, 76, 76, 78, 48, 36, 68, 83, 131, 4, 73, 69, 68, 49, 132, 8, 0, 0, 0, 0, 0, 0, 0, 0, 133, 1, 1, 134, 1, 0, 135, 1, 0, 136, 1, 1, 137, 1, 0, 138, 1, 2, 171, 6, 131, 1, 255, 131, 1, 0]
+   in flag (bytes-eq (goose-header #3001 sample-pdu) expect)
+
+  opening : Integer =
+   let a = check-tlv
+   in let b = check-integer
+   in let c = check-boolean
+   in let d = check-data-boolean
+   in let e = check-alldata
+   in let f = check-pdu
+   in let g = check-header
+   in a + b + c + d + e + f + g

@@ -45,10 +45,15 @@ Section: Construction
 
 Section: Frame Loop
 
-  bare-app-tick : BareApp -> BareApp
-  bare-app-tick (ba) =
-    let ri = raw-input-poll (ba.ba-input)
-    in let events = ri-collect-events ri (ba.ba-state).app-frame
+  bare-app-tick : BareApp -> [Device.Port] BareApp
+  bare-app-tick (ba) = act
+    ri <- raw-input-poll (ba.ba-input)
+    bare-app-tick-step ba ri
+  end
+
+  bare-app-tick-step : BareApp, RawInput -> BareApp
+  bare-app-tick-step (ba) (ri) =
+    let events = ri-collect-events ri (ba.ba-state).app-frame
     in let st2 = app-tick (ba.ba-state) 16 events
     in BareApp {
       ba-state = st2,
@@ -59,15 +64,18 @@ Section: Frame Loop
       ba-max-tris = ba.ba-max-tris
     }
 
-  bare-app-render : BareApp -> Integer
-  bare-app-render (ba) =
-    let bg = ((ba.ba-state).app-theme).th-palette
-    in let c = gr-clear (bg.pal-bg)
-    in let d = gr-clear-depth
-    in let gf = gf-new (ba.ba-max-tris)
+  bare-app-render : BareApp -> [Device.Port] Integer
+  bare-app-render (ba) = act
+    gr-clear ((((ba.ba-state).app-theme).th-palette).pal-bg)
+    gr-clear-depth
+    bare-app-flush-tris ba
+  end
+
+  bare-app-flush-tris : BareApp -> [Device.Port] Integer
+  bare-app-flush-tris (ba) =
+    let gf = gf-new (ba.ba-max-tris)
     in let gf2 = gr-render-tree gf ((ba.ba-state).app-root) ((ba.ba-state).app-theme) gr-depth-scene
     in let gf3 = gr-render-overlays gf2 ((ba.ba-state).app-overlays) ((ba.ba-state).app-theme) 0 (((ba.ba-state).app-overlays).os-count)
-    in let ignore = c + d
     in gr-flush (gf3.gf-idx)
 
 Section: Menu Helpers

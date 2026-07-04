@@ -8,8 +8,21 @@ Chapter: Unification
 
  Type unification for the Codex type checker. The UnificationState
  is threaded through all operations — it tracks type variable
- substitutions, a counter for generating fresh variables, and
- accumulated diagnostics.
+ substitutions, effect-row substitutions, a counter for generating
+ fresh variables, and accumulated diagnostics.
+
+ Row variables have their own id space and their own substitution
+ table: rows are not CodexTypes, so a type position can never resolve
+ to a row nor a row to a type, and a row id can never be confused
+ with a type-variable id because no operation accepts both. The table
+ is dense — slot i holds the binding for row id i, unbound slots hold
+ the self-row (row-var i), mirroring the TypeVar self-slot trick — so
+ lookup is a direct index. Stage 3 mints a row variable per
+ application site; an association list here would make resolution
+ quadratic in program size. Row ids share the 32-bit bound ruling
+ with type-variable ids. The table grows on first binding past its
+ length (fresh ids alone allocate nothing); an index past the end
+ reads as unbound.
 
 Section: State
   ExprTypeEntry = record {
@@ -19,9 +32,12 @@ Section: State
 
   mutable UnificationState = record {
    substitutions : List CodexType,
+   row-substitutions : List EffectRow,
    next-id : Integer between 0 and 4294967295,
+   next-row-id : Integer between 0 and 4294967295,
    bag : DiagnosticBag,
-   expr-types : List ExprTypeEntry
+   expr-types : List ExprTypeEntry,
+   effect-exempt : Boolean
   }
 
 Section: Construction
@@ -29,9 +45,12 @@ Section: Construction
   empty-unification-state =
    UnificationState {
     substitutions = deck-record [deck-record (TypeVar 0), deck-record (TypeVar 1)],
+    row-substitutions = [],
     next-id = 2,
+    next-row-id = 0,
     bag = empty-bag,
-    expr-types = []
+    expr-types = [],
+    effect-exempt = False
    }
 
 Section: Fresh Variables
@@ -50,6 +69,12 @@ Section: Fresh Variables
   fresh-and-advance : UnificationState -> (CodexType, UnificationState)
   fresh-and-advance (st) =
    (TypeVar (st.next-id), advance-id st)
+
+  fresh-row-id : UnificationState -> (Integer, UnificationState)
+  fresh-row-id (st) =
+   let id = st.next-row-id
+   in let __seq = st.next-row-id = __narrow (id + 1)
+   in (id, st)
 
 Section: Fuel Budget
 
@@ -138,7 +163,7 @@ Section: Expr Types
       else ErrorTy
 
 Section: Add Error
-  add-unify-error : UnificationState, Integer, Text, SourceSpan -> UnificationState
+  add-unify-error : UnificationState, Integer between 0 and 65535, Text, SourceSpan -> UnificationState
   add-unify-error (st) (code) (msg) (span) =
    let __seq = st.bag = bag-add (st.bag) (make-error code msg span)
    in st
@@ -154,31 +179,253 @@ Section: Occurs Check
    else let resolved = resolve-silent st ty
    in when resolved
     is TypeVar (id) -> id == var-id
-    is FunTy (param) (ret) -> occurs-in st var-id param (depth + 1) | occurs-in st var-id ret (depth + 1)
+    is FunTy (param) (row) (ret) -> occurs-in st var-id param (depth + 1) | occurs-in st var-id ret (depth + 1)
     is ListTy (elem) | LinkedListTy (elem) -> occurs-in st var-id elem (depth + 1)
     is TypeApply (tf) (ta) -> occurs-in st var-id tf (depth + 1) | occurs-in st var-id ta (depth + 1)
+    is LinearTy (inner) -> occurs-in st var-id inner (depth + 1)
     is otherwise -> False
+
+Section: Effect Row Substitution
+
+ Rows solve against their own table (see State above). make-row is
+ the canonical constructor: labels sorted by name then scope,
+ duplicate-free, so structural equality is set equality and the
+ merge in unify-row is a single linear walk. Rows in practice carry
+ at most a couple of labels; nothing here recurses into types.
+
+  label-compare : EffectLabel, EffectLabel -> Integer
+  label-compare (a) (b) =
+   let nc = text-compare (a.name.value) (b.name.value)
+   in if nc /= 0 then nc else text-compare (a.scope) (b.scope)
+
+  insert-label-sorted : List EffectLabel, EffectLabel, Integer, Integer, List EffectLabel, Boolean -> List EffectLabel
+  insert-label-sorted (xs) (x) (i) (len) (acc) (placed) =
+   if i == len then if placed then acc else list-push acc x
+   else let cur = list-at xs i
+   in let c = label-compare x cur
+   in if placed then insert-label-sorted xs x (i + 1) len (list-push acc cur) True
+      else if c == 0 then insert-label-sorted xs x (i + 1) len (list-push acc cur) True
+      else if c < 0 then insert-label-sorted xs x (i + 1) len (list-push (list-push acc x) cur) True
+      else insert-label-sorted xs x (i + 1) len (list-push acc cur) False
+
+  sort-labels-canonical : List EffectLabel, Integer, Integer, List EffectLabel -> List EffectLabel
+  sort-labels-canonical (xs) (i) (len) (acc) =
+   if i == len then acc
+   else sort-labels-canonical xs (i + 1) len (insert-label-sorted acc (list-at xs i) 0 (list-length acc) [] False)
+
+  make-row : List EffectLabel, Text, Integer -> EffectRow
+  make-row (labels) (tname) (tid) =
+   deck-record (EffectRow { labels = deck-record (sort-labels-canonical labels 0 (list-length labels) []), tail-name = tname, tail-id = __narrow tid })
+
+  labels-equal : List EffectLabel, List EffectLabel -> Boolean
+  labels-equal (xs) (ys) =
+   if list-length xs /= list-length ys then False
+   else labels-equal-loop xs ys 0 (list-length xs)
+
+  labels-equal-loop : List EffectLabel, List EffectLabel, Integer, Integer -> Boolean
+  labels-equal-loop (xs) (ys) (i) (len) =
+   if i == len then True
+   else if label-compare (list-at xs i) (list-at ys i) == 0 then labels-equal-loop xs ys (i + 1) len
+   else False
+
+ labels-minus walks two canonical lists with one sorted merge and
+ keeps the labels of the left list that the right list lacks.
+
+  labels-minus : List EffectLabel, List EffectLabel -> List EffectLabel
+  labels-minus (xs) (ys) =
+   labels-minus-merge xs ys 0 0 (list-length xs) (list-length ys) []
+
+  labels-minus-merge : List EffectLabel, List EffectLabel, Integer, Integer, Integer, Integer, List EffectLabel -> List EffectLabel
+  labels-minus-merge (xs) (ys) (i) (j) (xlen) (ylen) (acc) =
+   if i == xlen then acc
+   else if j == ylen then labels-minus-merge xs ys (i + 1) j xlen ylen (list-push acc (list-at xs i))
+   else let c = label-compare (list-at xs i) (list-at ys j)
+   in if c == 0 then labels-minus-merge xs ys (i + 1) (j + 1) xlen ylen acc
+      else if c < 0 then labels-minus-merge xs ys (i + 1) j xlen ylen (list-push acc (list-at xs i))
+      else labels-minus-merge xs ys i (j + 1) xlen ylen acc
+
+ A slot is unbound while it still holds its self-row. The occurs
+ check forbids binding row id i to a row whose tail chain reaches i,
+ so a stored binding can never look like the self-row.
+
+  row-slot-unbound : EffectRow, Integer -> Boolean
+  row-slot-unbound (slot) (id) =
+   slot.tail-id == id & list-length (slot.labels) == 0
+
+ Binding grows the table with self-row fillers up to the bound id, so
+ fresh ids alone allocate nothing and the table stays index-dense.
+
+  grow-row-substs : List EffectRow, Integer, Integer -> List EffectRow
+  grow-row-substs (entries) (len) (want) =
+   if len > want then entries
+   else grow-row-substs (list-push entries (deck-record (row-var len))) (len + 1) want
+
+  add-row-subst : UnificationState, Integer, EffectRow -> UnificationState
+  add-row-subst (st) (id) (row) =
+   let grown = grow-row-substs (st.row-substitutions) (list-length (st.row-substitutions)) id
+   in let __seq = st.row-substitutions = list-set-at grown id row
+   in st
+
+ resolve-row chases the tail substitution chain, merging the labels
+ gathered along the way into one canonical row whose tail is the
+ chain's final (unbound or closed) tail.
+
+  resolve-row : UnificationState, EffectRow -> EffectRow
+  resolve-row (st) (row) = resolve-row-at st row 0
+
+  resolve-row-at : UnificationState, EffectRow, Integer -> EffectRow
+  resolve-row-at (st) (row) (depth) =
+   if depth >= max-recursion-depth then row
+   else if row.tail-id < 0 then row
+   else let entries = st.row-substitutions
+   in if row.tail-id >= list-length entries then row
+   else let slot = list-at entries (row.tail-id)
+   in if row-slot-unbound slot (row.tail-id) then row
+   else let bound = resolve-row-at st slot (depth + 1)
+   in make-row ((row.labels) & (bound.labels)) (bound.tail-name) (bound.tail-id)
+
+ The row occurs check is a walk of the tail substitution chain — rows
+ do not nest, so there is no recursion into types. Binding a tail to
+ a row whose resolved chain reaches that same tail would create an
+ infinite row.
+
+  row-occurs : UnificationState, Integer, EffectRow, Integer -> Boolean
+  row-occurs (st) (tid) (row) (depth) =
+   if depth >= max-recursion-depth then True
+   else if row.tail-id < 0 then False
+   else if row.tail-id == tid then True
+   else let entries = st.row-substitutions
+   in if row.tail-id >= list-length entries then False
+   else let slot = list-at entries (row.tail-id)
+   in if row-slot-unbound slot (row.tail-id) then False
+   else row-occurs st tid slot (depth + 1)
+
+  row-desc : EffectRow -> Text
+  row-desc (row) =
+   "[" & row-desc-labels (row.labels) 0 (list-length (row.labels)) & row-desc-tail row (list-length (row.labels) > 0) & "]"
+
+  row-desc-labels : List EffectLabel, Integer, Integer -> Text
+  row-desc-labels (labels) (i) (len) =
+   if i == len then ""
+   else let l = list-at labels i
+   in let prefix = if i == 0 then "" else ", "
+   in let scope-part = if text-length (l.scope) > 0 then " \"" & (l.scope) & "\"" else ""
+   in prefix & (l.name.value) & scope-part & row-desc-labels labels (i + 1) len
+
+  row-desc-tail : EffectRow, Boolean -> Text
+  row-desc-tail (row) (have-labels) =
+   if row.tail-id < 0 then ""
+   else let sep = if have-labels then ", " else ""
+   in if text-length (row.tail-name) > 0 then sep & (row.tail-name)
+      else sep & "e" & integer-to-text (row.tail-id)
+
+Section: Row Unification
+
+ unify-row implements the ACI1 set-row algorithm (EffectRows.md
+ section 5): resolve both rows, cancel shared labels with one sorted
+ merge, then case on the tails. Label equality is EXACT — the dotted
+ sub-effect lattice lives only in the directed row-le check (stage
+ 3), never in symmetric unification. Under payload-free labels and
+ at most one tail per row this produces a unifier that is most
+ general up to ACI1 equivalence: the only candidate divergence —
+ re-adding a shared label into both tails — is collapsed by
+ idempotence.
+
+  rows-identical : EffectRow, EffectRow -> Boolean
+  rows-identical (a) (b) =
+   a.tail-id == b.tail-id & labels-equal (a.labels) (b.labels)
+
+  row-mismatch-msg : EffectRow, EffectRow -> Text
+  row-mismatch-msg (a) (b) =
+   "cannot reconcile effect rows " & row-desc a & " and " & row-desc b & ": an effect on one side is not allowed by the other"
+
+  unify-row : UnificationState, EffectRow, EffectRow, SourceSpan -> (Boolean, UnificationState)
+  unify-row (st) (r1) (r2) (span) =
+   let a = resolve-row st r1
+   in let b = resolve-row st r2
+   in if rows-identical a b then (True, st)
+   else let only1 = labels-minus (a.labels) (b.labels)
+   in let only2 = labels-minus (b.labels) (a.labels)
+   in if a.tail-id < 0 & b.tail-id < 0 then unify-row-both-closed st a b only1 only2 span
+   else if a.tail-id >= 0 & b.tail-id < 0 then unify-row-open-closed st a only1 only2 b span
+   else if a.tail-id < 0 & b.tail-id >= 0 then unify-row-open-closed st b only2 only1 a span
+   else if a.tail-id == b.tail-id then unify-row-both-closed st a b only1 only2 span
+   else unify-row-open-open st a b only1 only2 span
+
+ Closed against closed (and same-tail against same-tail: a tail
+ cannot absorb labels on one side of itself) requires the label sets
+ to already agree.
+
+  unify-row-both-closed : UnificationState, EffectRow, EffectRow, List EffectLabel, List EffectLabel, SourceSpan -> (Boolean, UnificationState)
+  unify-row-both-closed (st) (a) (b) (only1) (only2) (span) =
+   if list-length only1 == 0 & list-length only2 == 0 then (True, st)
+   else (False, add-unify-error st cdx-row-mismatch (row-mismatch-msg a b) span)
+
+ Open against closed: the closed side cannot absorb the open side's
+ extra labels, so those must be empty; the open tail then absorbs
+ exactly the closed side's leftovers and closes. The binding target
+ is a closed row, so no occurs check is needed on this path.
+
+  unify-row-open-closed : UnificationState, EffectRow, List EffectLabel, List EffectLabel, EffectRow, SourceSpan -> (Boolean, UnificationState)
+  unify-row-open-closed (st) (open-r) (open-only) (closed-only) (closed-r) (span) =
+   if list-length open-only /= 0 then (False, add-unify-error st cdx-row-mismatch (row-mismatch-msg open-r closed-r) span)
+   else (True, add-row-subst st (open-r.tail-id) (make-row closed-only "" (-1)))
+
+ row-union joins two ambient rows (the effects a compound expression
+ performs = the union of what its parts perform). A representable
+ row has at most one tail, so joining two open rows with distinct
+ tails EQUATES them (bind t1 := {| t2}) — the Koka shared-ambient
+ move: every performing site inside one body ends up sharing one
+ effect variable. That over-approximates (sound direction, section
+ 2) and never fails: both tails are unbound after resolution and
+ distinct, so no occurs violation is possible. An empty operand
+ returns the other unchanged — the all-pure case allocates nothing.
+
+  row-union : UnificationState, EffectRow, EffectRow -> (EffectRow, UnificationState)
+  row-union (st) (r1) (r2) =
+   let a = resolve-row st r1
+   in let b = resolve-row st r2
+   in if row-is-empty a then (b, st)
+   else if row-is-empty b then (a, st)
+   else if rows-identical a b then (a, st)
+   else let merged = (a.labels) & (b.labels)
+   in if a.tail-id < 0 then (make-row merged (b.tail-name) (b.tail-id), st)
+   else if b.tail-id < 0 then (make-row merged (a.tail-name) (a.tail-id), st)
+   else if a.tail-id == b.tail-id then (make-row merged (a.tail-name) (a.tail-id), st)
+   else let st2 = add-row-subst st (a.tail-id) (deck-record (row-var (b.tail-id)))
+   in (make-row merged (b.tail-name) (b.tail-id), st2)
+
+ Open against open with distinct tails: each tail absorbs the other
+ side's leftovers, sharing one fresh remainder. Both binding targets
+ end in the fresh tail, so a cycle is impossible by construction —
+ the occurs check stands as defense in depth.
+
+  unify-row-open-open : UnificationState, EffectRow, EffectRow, List EffectLabel, List EffectLabel, SourceSpan -> (Boolean, UnificationState)
+  unify-row-open-open (st) (a) (b) (only1) (only2) (span) =
+   let (t3, st2) = fresh-row-id st
+   in let bind-a = make-row only2 "" t3
+   in let bind-b = make-row only1 "" t3
+   in if row-occurs st2 (a.tail-id) bind-a 0 | row-occurs st2 (b.tail-id) bind-b 0
+      then (False, add-unify-error st2 cdx-row-infinite "effect row would be infinite (a row variable absorbs itself)" span)
+      else (True, add-row-subst (add-row-subst st2 (a.tail-id) bind-a) (b.tail-id) bind-b)
 
 Section: Unify
   unify : UnificationState, CodexType, CodexType, SourceSpan -> (Boolean, UnificationState)
   unify (st) (a) (b) (span) =
    unify-at st a b span 0
 
+ The EffectfulTy stripping arms are gone (stage 3b): an effectful
+ VALUE type unifies structurally — set-equal effect names and
+ unifiable inner types — and never silently sheds its effects
+ against a bare type. Concrete effects on ARROWS live in the row and
+ unify through unify-row inside unify-fun.
+
   unify-at : UnificationState, CodexType, CodexType, SourceSpan, Integer -> (Boolean, UnificationState)
   unify-at (st) (a) (b) (span) (depth) =
    if depth >= max-recursion-depth then (False, add-fuel-error st "unify" span)
-   else let ra = resolve-silent st a
-   in let rb = resolve-silent st b
-   in when ra
-    is EffectfulTy (effs-a) (sca) (ret-a) -> when rb
-     is EffectfulTy (effs-b) (scb) (ret-b) -> unify-at st ret-a ret-b span (depth + 1)
-     is TypeVar (id-b) -> unify-resolved st ra rb span (depth + 1)
-     is otherwise -> unify-at st ret-a rb span (depth + 1)
-    is otherwise -> when rb
-     is EffectfulTy (effs-b) (scb) (ret-b) -> when ra
-      is TypeVar (id-a) -> unify-resolved st ra rb span (depth + 1)
-      is otherwise -> unify-at st ra ret-b span (depth + 1)
-     is otherwise -> unify-resolved st ra rb span (depth + 1)
+   else let ra = strip-linear-ty (resolve-silent st a)
+   in let rb = strip-linear-ty (resolve-silent st b)
+   in unify-resolved st ra rb span (depth + 1)
 
   unify-resolved : UnificationState, CodexType, CodexType, SourceSpan, Integer -> (Boolean, UnificationState)
   unify-resolved (st) (a) (b) (span) (depth) =
@@ -312,8 +559,14 @@ Section: Unify
      is ProofTy | ErrorTy -> (True, st)
      is otherwise -> unify-mismatch st a b span
     is ErrorTy -> (True, st)
-    is FunTy (pa) (ra) -> when b
-     is FunTy (pb) (rb) -> unify-fun st pa ra pb rb span depth
+    is FunTy (pa) (rwa) (ra) -> when b
+     is FunTy (pb) (rwb) (rb) -> unify-fun st pa rwa ra pb rwb rb span depth
+     is ErrorTy -> (True, st)
+     is otherwise -> unify-mismatch st a b span
+    is EffectfulTy (ea) (sa) (ia) -> when b
+     is EffectfulTy (eb) (sb) (ib) ->
+      if name-sets-equal ea eb then unify-at st ia ib span (depth + 1)
+      else unify-mismatch st a b span
      is ErrorTy -> (True, st)
      is otherwise -> unify-mismatch st a b span
     is ListTy (ea) -> when b
@@ -360,6 +613,7 @@ Section: Unify
      is ErrorTy -> (True, st)
      is otherwise -> unify-mismatch st a b span
     is ForAllTy (id) (body) -> unify-at st body b span (depth + 1)
+    is ForAllEff (id) (body) -> unify-at st body b span (depth + 1)
     is UnitTy (na) (inner-a) -> when b
      is UnitTy (nb) (inner-b) ->
       unify-at st inner-a inner-b span (depth + 1)
@@ -396,12 +650,25 @@ Section: Unify
      is ErrorTy -> (True, st)
      is otherwise -> unify-mismatch st a b span
 
+ Same-named type constructors must be applied at the same arity.
+ Unifying only the common prefix and silently succeeding on the extra
+ arguments (either side) would let `Foo A B` unify with `Foo A`. The
+ declared-type arity checker (CDX2050) catches this in signatures, so
+ this is defense-in-depth for constructed types synthesized during
+ inference: a length mismatch is a type mismatch, not a match on the
+ overlap. The length is compared once at entry (len is the caller's
+ list-length args-a); the loop then walks the equal-length lists.
+
   unify-constructed-args : UnificationState, List CodexType, List CodexType, Integer, Integer, SourceSpan, Integer -> (Boolean, UnificationState)
   unify-constructed-args (st) (args-a) (args-b) (i) (len) (span) (depth) =
+   if len /= list-length args-b then (False, add-unify-error st cdx-type-mismatch "Type mismatch: type constructor applied at different arities" span)
+   else unify-cargs-loop st args-a args-b i len span depth
+
+  unify-cargs-loop : UnificationState, List CodexType, List CodexType, Integer, Integer, SourceSpan, Integer -> (Boolean, UnificationState)
+  unify-cargs-loop (st) (args-a) (args-b) (i) (len) (span) (depth) =
    if i == len then (True, st)
-   else if i >= list-length args-b then (True, st)
    else let (ok, st1) = unify-at st (list-at args-a i) (list-at args-b i) span (depth + 1)
-   in if ok then unify-constructed-args st1 args-a args-b (i + 1) len span depth
+   in if ok then unify-cargs-loop st1 args-a args-b (i + 1) len span depth
         else (ok, st1)
 
   unify-ctor-apply-peel : UnificationState, Name, List CodexType, CodexType, CodexType, SourceSpan, Integer -> (Boolean, UnificationState)
@@ -419,11 +686,24 @@ Section: Unify
    if i == k then acc
    else ctype-list-take xs (i + 1) k (list-push acc (list-at xs i))
 
-  unify-fun : UnificationState, CodexType, CodexType, CodexType, CodexType, SourceSpan, Integer -> (Boolean, UnificationState)
-  unify-fun (st) (pa) (ra) (pb) (rb) (span) (depth) =
+  unify-fun : UnificationState, CodexType, EffectRow, CodexType, CodexType, EffectRow, CodexType, SourceSpan, Integer -> (Boolean, UnificationState)
+  unify-fun (st) (pa) (rwa) (ra) (pb) (rwb) (rb) (span) (depth) =
    let (ok1, st1) = unify-at st pa pb span (depth + 1)
-   in if ok1 then unify-at st1 ra rb span (depth + 1)
+   in if ok1 then
+       let (ok2, st2) = unify-row st1 rwa rwb span
+       in if ok2 then unify-at st2 ra rb span (depth + 1)
+          else (ok2, st2)
       else (ok1, st1)
+
+  name-sets-equal : List Name, List Name -> Boolean
+  name-sets-equal (xs) (ys) =
+   names-all-in xs ys 0 (list-length xs) & names-all-in ys xs 0 (list-length ys)
+
+  names-all-in : List Name, List Name, Integer, Integer -> Boolean
+  names-all-in (xs) (ys) (i) (len) =
+   if i == len then True
+   else if name-list-has ys ((list-at xs i).value) then names-all-in xs ys (i + 1) len
+   else False
 
   unify-mismatch : UnificationState, CodexType, CodexType, SourceSpan -> (Boolean, UnificationState)
   unify-mismatch (st) (a) (b) (span) =
@@ -459,11 +739,12 @@ Section: Unify
     is VoidTy -> "Void"
     is NothingTy -> "Nothing"
     is ErrorTy -> "Error"
-    is FunTy (p) (r) -> "Fun"
+    is FunTy (p) (row) (r) -> "Fun"
     is ListTy (e) -> "List"
     is LinkedListTy (e) -> "LinkedList"
     is TypeVar (id) -> "T" & integer-to-text id
     is ForAllTy (id) (body) -> "ForAll"
+    is ForAllEff (id) (body) -> "ForAllEff"
     is EffectfulTy (effs) (sc) (ret) -> "Effectful"
     is ProofTy -> "Proof"
     is PropEqTy (a) (b) -> "PropEq[" & type-desc a & "," & type-desc b & "]"
@@ -478,6 +759,7 @@ Section: Unify
     is VectorMaskTy (n) -> "VectorMask " & integer-to-text n
     is TypeCon (name) -> "TCon:" & name.value
     is TypeApply (f) (a) -> "App[" & type-desc f & " " & type-desc a & "]"
+    is LinearTy (inner) -> "linear " & type-desc inner
 
   type-desc-args : List CodexType, Integer -> Text
   type-desc-args (args) (i) =
@@ -539,11 +821,28 @@ Section: List Pre-Allocation
 
 Section: GADT Snapshot
 
-  snapshot-substitutions : UnificationState -> List CodexType
-  snapshot-substitutions (st) = copy-list-with-headroom (st.substitutions) 16
+ The snapshot must cover both substitution tables: a speculative
+ unify inside a GADT arm can bind row tails as well as type
+ variables, and a restore that rolled back only one table would leave
+ the other holding bindings from the abandoned branch.
 
-  restore-substitutions : UnificationState, List CodexType -> UnificationState
-  restore-substitutions (st) (saved) = let __seq = __record-set st "substitutions" saved in st
+  SubstSnapshot = record {
+   snap-types : List CodexType,
+   snap-rows : List EffectRow
+  }
+
+  snapshot-substitutions : UnificationState -> SubstSnapshot
+  snapshot-substitutions (st) =
+   SubstSnapshot {
+    snap-types = copy-list-with-headroom (st.substitutions) 16,
+    snap-rows = copy-list-with-headroom (st.row-substitutions) 8
+   }
+
+  restore-substitutions : UnificationState, SubstSnapshot -> UnificationState
+  restore-substitutions (st) (saved) =
+   let __seq = __record-set st "substitutions" (saved.snap-types)
+   in let __seq2 = __record-set st "row-substitutions" (saved.snap-rows)
+   in st
 
 Page 1
 

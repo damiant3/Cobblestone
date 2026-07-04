@@ -1,0 +1,244 @@
+Chapter: Modbus
+
+ Modbus fieldbus protocol per the Modbus Application Protocol v1.1b3
+ and Modbus over Serial Line v1.02. The industrial workhorse for
+ talking to PLCs, meters, and sensors over RS485/RS232 (Modbus RTU)
+ or TCP (Modbus TCP). Each builder returns a List Integer (the raw
+ bytes). Transport is handled by the caller: a serial UART for RTU,
+ a TCP socket for TCP.
+
+ A Modbus message is a PDU (function code plus data). RTU wraps the
+ PDU with a unit address and a trailing CRC-16. TCP wraps the PDU
+ with a 7-byte MBAP header and no checksum (TCP already protects the
+ payload).
+
+Section: Function Codes
+
+  modbus-fc-read-coils : Integer = 1
+  modbus-fc-read-discrete-inputs : Integer = 2
+  modbus-fc-read-holding-registers : Integer = 3
+  modbus-fc-read-input-registers : Integer = 4
+  modbus-fc-write-single-coil : Integer = 5
+  modbus-fc-write-single-register : Integer = 6
+  modbus-fc-write-multiple-coils : Integer = 15
+  modbus-fc-write-multiple-registers : Integer = 16
+  modbus-fc-read-exception-status : Integer = 7
+  modbus-fc-diagnostics : Integer = 8
+  modbus-fc-mask-write-register : Integer = 22
+  modbus-fc-read-write-multiple-registers : Integer = 23
+
+Section: Exception Codes
+
+ Exception responses set the high bit of the function code (fc + 128)
+ and carry a one-byte exception code.
+
+  modbus-ex-illegal-function : Integer = 1
+  modbus-ex-illegal-data-address : Integer = 2
+  modbus-ex-illegal-data-value : Integer = 3
+  modbus-ex-server-device-failure : Integer = 4
+
+Section: Byte Helpers
+
+ A 16-bit value is transmitted big-endian on the wire (high byte
+ first) inside every PDU field.
+
+  modbus-u16 : Integer -> List Integer
+  modbus-u16 (v) = [bit-and (bit-shru v 8) 255, bit-and v 255]
+
+Section: CRC-16
+
+ CRC-16/Modbus: reflected polynomial 0xA001, initial value 0xFFFF,
+ no final xor. The RTU frame appends the CRC low byte first, then
+ the high byte. Running the CRC over a complete frame including its
+ own trailing CRC yields zero, which is how a receiver validates a
+ frame.
+
+  modbus-crc16 : List Integer -> Integer
+  modbus-crc16 (bs) = modbus-crc16-update #FFFF bs 0 (list-length bs)
+
+  modbus-crc16-update : Integer, List Integer, Integer, Integer -> Integer
+  modbus-crc16-update (crc) (bs) (i) (len) =
+   if i >= len then crc
+   else modbus-crc16-update (modbus-crc16-byte (bit-xor crc (list-at bs i)) 0) bs (i + 1) len
+
+  modbus-crc16-byte : Integer, Integer -> Integer
+  modbus-crc16-byte (crc) (k) =
+   if k >= 8 then crc
+   else if bit-and crc 1 == 1
+     then modbus-crc16-byte (bit-xor (bit-shru crc 1) #A001) (k + 1)
+     else modbus-crc16-byte (bit-shru crc 1) (k + 1)
+
+Section: Read Request PDUs
+
+ The four read functions share a shape: function code, starting
+ address (2 bytes), and quantity (2 bytes).
+
+  modbus-read-coils : Integer, Integer -> List Integer
+  modbus-read-coils (start) (qty) =
+   [modbus-fc-read-coils] & modbus-u16 start & modbus-u16 qty
+
+  modbus-read-discrete-inputs : Integer, Integer -> List Integer
+  modbus-read-discrete-inputs (start) (qty) =
+   [modbus-fc-read-discrete-inputs] & modbus-u16 start & modbus-u16 qty
+
+  modbus-read-holding-registers : Integer, Integer -> List Integer
+  modbus-read-holding-registers (start) (qty) =
+   [modbus-fc-read-holding-registers] & modbus-u16 start & modbus-u16 qty
+
+  modbus-read-input-registers : Integer, Integer -> List Integer
+  modbus-read-input-registers (start) (qty) =
+   [modbus-fc-read-input-registers] & modbus-u16 start & modbus-u16 qty
+
+Section: Write Request PDUs
+
+ Write single coil encodes the on state as 0xFF00 and off as 0x0000.
+
+  modbus-write-single-coil : Integer, Boolean -> List Integer
+  modbus-write-single-coil (addr) (on) =
+   [modbus-fc-write-single-coil] & modbus-u16 addr & modbus-u16 (if on then #FF00 else 0)
+
+  modbus-write-single-register : Integer, Integer -> List Integer
+  modbus-write-single-register (addr) (value) =
+   [modbus-fc-write-single-register] & modbus-u16 addr & modbus-u16 value
+
+  modbus-write-multiple-registers : Integer, List Integer -> List Integer
+  modbus-write-multiple-registers (start) (values) =
+   let qty = list-length values
+   in let byte-count = qty * 2
+   in [modbus-fc-write-multiple-registers] & modbus-u16 start & modbus-u16 qty & [byte-count] & modbus-encode-registers values 0 qty []
+
+  modbus-encode-registers : List Integer, Integer, Integer, List Integer -> List Integer
+  modbus-encode-registers (values) (i) (len) (acc) =
+   if i >= len then acc
+   else modbus-encode-registers values (i + 1) len (acc & modbus-u16 (list-at values i))
+
+ Write multiple coils packs the coil states into bytes, LSB first:
+ coil 0 is bit 0 of the first data byte. The byte count is the
+ quantity of coils rounded up to a whole number of bytes.
+
+  modbus-write-multiple-coils : Integer, List Boolean -> List Integer
+  modbus-write-multiple-coils (start) (coils) =
+   let qty = list-length coils
+   in let byte-count = bit-shru (qty + 7) 3
+   in [modbus-fc-write-multiple-coils] & modbus-u16 start & modbus-u16 qty & [byte-count] & modbus-pack-coils coils 0 byte-count []
+
+  modbus-pack-coils : List Boolean, Integer, Integer, List Integer -> List Integer
+  modbus-pack-coils (coils) (b) (byte-count) (acc) =
+   if b >= byte-count then acc
+   else modbus-pack-coils coils (b + 1) byte-count (list-push acc (modbus-pack-byte coils (b * 8) 0 0 (list-length coils)))
+
+  modbus-pack-byte : List Boolean, Integer, Integer, Integer, Integer -> Integer
+  modbus-pack-byte (coils) (base) (bit) (acc) (qty) =
+   if bit >= 8 then acc
+   else let idx = base + bit
+   in let set = if idx >= qty then 0 else if list-at coils idx then bit-shl 1 bit else 0
+   in modbus-pack-byte coils base (bit + 1) (bit-or acc set) qty
+
+Section: Diagnostic and Combined PDUs
+
+ Read Exception Status has no data. Mask Write Register applies an AND
+ mask then an OR mask to a holding register. Read/Write Multiple
+ Registers reads one block and writes another in a single transaction.
+
+  modbus-read-exception-status : List Integer
+  modbus-read-exception-status = [modbus-fc-read-exception-status]
+
+  modbus-mask-write-register : Integer, Integer, Integer -> List Integer
+  modbus-mask-write-register (addr) (and-mask) (or-mask) =
+   [modbus-fc-mask-write-register] & modbus-u16 addr & modbus-u16 and-mask & modbus-u16 or-mask
+
+  modbus-read-write-multiple-registers : Integer, Integer, Integer, List Integer -> List Integer
+  modbus-read-write-multiple-registers (read-start) (read-qty) (write-start) (write-values) =
+   let qty = list-length write-values
+   in [modbus-fc-read-write-multiple-registers] & modbus-u16 read-start & modbus-u16 read-qty & modbus-u16 write-start & modbus-u16 qty & [qty * 2] & modbus-encode-registers write-values 0 qty []
+
+Section: RTU Framing
+
+ Modbus RTU: unit address, PDU, then CRC-16 (low byte first).
+
+  modbus-rtu-frame : Integer, List Integer -> List Integer
+  modbus-rtu-frame (unit-id) (pdu) =
+   let body = [unit-id] & pdu
+   in let crc = modbus-crc16 body
+   in body & [bit-and crc 255, bit-and (bit-shru crc 8) 255]
+
+  modbus-rtu-check : List Integer -> Boolean
+  modbus-rtu-check (frame) = modbus-crc16 frame == 0
+
+Section: ASCII Framing
+
+ Modbus ASCII: a colon, then the unit address, PDU, and LRC rendered as
+ uppercase ASCII hex, then CR LF. The LRC is the two's complement of the
+ sum of the binary bytes (address plus PDU).
+
+  modbus-sum : List Integer, Integer, Integer, Integer -> Integer
+  modbus-sum (bytes) (i) (len) (acc) =
+   if i >= len then acc
+   else modbus-sum bytes (i + 1) len (acc + list-at bytes i)
+
+  modbus-lrc : List Integer -> Integer
+  modbus-lrc (bytes) = bit-and (256 - bit-and (modbus-sum bytes 0 (list-length bytes) 0) 255) 255
+
+  modbus-ascii-nibble : Integer -> Integer
+  modbus-ascii-nibble (n) = if n < 10 then n + 48 else n + 55
+
+  modbus-ascii-hex-byte : Integer -> List Integer
+  modbus-ascii-hex-byte (b) = [modbus-ascii-nibble (bit-shru b 4), modbus-ascii-nibble (bit-and b 15)]
+
+  modbus-ascii-hex : List Integer, Integer, Integer, List Integer -> List Integer
+  modbus-ascii-hex (bytes) (i) (len) (acc) =
+   if i >= len then acc
+   else modbus-ascii-hex bytes (i + 1) len (acc & modbus-ascii-hex-byte (list-at bytes i))
+
+  modbus-ascii-frame : Integer, List Integer -> List Integer
+  modbus-ascii-frame (unit-id) (pdu) =
+   let content = [unit-id] & pdu
+   in let full = content & [modbus-lrc content]
+   in [#3A] & modbus-ascii-hex full 0 (list-length full) [] & [#0D, #0A]
+
+Section: TCP Framing
+
+ Modbus TCP wraps the PDU in a 7-byte MBAP header: transaction id
+ (2), protocol id (2, always zero), length (2, counting the unit id
+ and PDU), and unit id (1). No CRC.
+
+  modbus-tcp-frame : Integer, Integer, List Integer -> List Integer
+  modbus-tcp-frame (txn) (unit-id) (pdu) =
+   let length = list-length pdu + 1
+   in modbus-u16 txn & [0, 0] & modbus-u16 length & [unit-id] & pdu
+
+Section: Response Parsing
+
+ A read-registers response is function code, byte count, then the
+ register values big-endian. Parse them into a List Integer of
+ 16-bit values.
+
+  modbus-parse-registers : List Integer -> List Integer
+  modbus-parse-registers (pdu) =
+   let count = list-at pdu 1
+   in modbus-parse-registers-loop pdu 2 (2 + count) []
+
+  modbus-parse-registers-loop : List Integer, Integer, Integer, List Integer -> List Integer
+  modbus-parse-registers-loop (pdu) (i) (stop) (acc) =
+   if i >= stop then acc
+   else modbus-parse-registers-loop pdu (i + 2) stop (list-push acc (bit-or (bit-shl (list-at pdu i) 8) (list-at pdu (i + 1))))
+
+ A read-coils response is function code, byte count, then packed
+ coil bits (LSB first). Unpack the requested quantity into booleans.
+
+  modbus-parse-coils : List Integer, Integer -> List Boolean
+  modbus-parse-coils (pdu) (quantity) = modbus-parse-coils-loop pdu quantity 0 []
+
+  modbus-parse-coils-loop : List Integer, Integer, Integer, List Boolean -> List Boolean
+  modbus-parse-coils-loop (pdu) (quantity) (i) (acc) =
+   if i >= quantity then acc
+   else modbus-parse-coils-loop pdu quantity (i + 1) (list-push acc (bit-and (bit-shru (list-at pdu (2 + bit-shru i 3)) (bit-and i 7)) 1 == 1))
+
+  modbus-is-exception : List Integer -> Boolean
+  modbus-is-exception (pdu) = list-at pdu 0 >= 128
+
+  modbus-exception-code : List Integer -> Integer
+  modbus-exception-code (pdu) = list-at pdu 1
+
+  modbus-exception-pdu : Integer, Integer -> List Integer
+  modbus-exception-pdu (fc) (code) = [bit-or fc 128, code]

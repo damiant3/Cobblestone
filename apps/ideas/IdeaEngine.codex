@@ -1,0 +1,332 @@
+Chapter: IdeaEngine
+  cites Ideas chapter IdeaModel
+  cites Encode chapter Json
+  cites Foreword chapter StringUtils
+  cites Foreword chapter CCE
+  cites Foreword chapter Maybe
+
+ The generation engine. A prompt arrives as ridiculously vague text.
+ The engine extracts every invariant the prompt actually pins down
+ (vertical, platform, language, revenue target, and the two famous
+ constraints: ask no questions, make no mistakes), then fills every
+ free dimension deterministically from the request serial and a hash
+ of the prompt, so the same prompt yields a fresh idea on every
+ request. The response is composed as a JsonValue tree and emitted by
+ the Json foreword; no JSON is assembled by string concatenation.
+
+ We say:
+
+Section: Url Decoding
+
+ Percent-decoding for query parameters. A plus sign is a space, a
+ percent sign followed by two hex digits is that byte, and anything
+ malformed passes through undecoded rather than failing.
+
+  hex-val : Integer -> Integer
+  hex-val (u) =
+    if u >= 48 & u <= 57 then u - 48
+    else if u >= 97 & u <= 102 then u - 87
+    else if u >= 65 & u <= 70 then u - 55
+    else 0
+
+  hex-pair : Text, Integer -> Integer
+  hex-pair (s) (i) =
+    hex-val (to-unicode (char-code (char-at s i))) * 16 + hex-val (to-unicode (char-code (char-at s (i + 1))))
+
+  url-decode : Text -> Text
+  url-decode (s) = url-decode-loop s 0 (text-length s) ""
+
+  url-decode-loop : Text, Integer, Integer, Text -> Text
+  url-decode-loop (s) (i) (len) (acc) =
+    if i >= len then acc
+    else let u = to-unicode (char-code (char-at s i))
+    in if u == 43 then url-decode-loop s (i + 1) len (acc & " ")
+    else if u == 37 & i + 2 < len then url-decode-loop s (i + 3) len (acc & char-to-text (code-to-char (from-unicode (hex-pair s (i + 1)))))
+    else url-decode-loop s (i + 1) len (acc & char-to-text (char-at s i))
+
+Section: Query Parsing
+
+  path-only : Text -> Text
+  path-only (path) =
+    let q = text-index-of path "?"
+    in if q < 0 then path else text-take path q
+
+  query-string : Text -> Text
+  query-string (path) =
+    let q = text-index-of path "?"
+    in if q < 0 then "" else text-drop path (q + 1)
+
+  query-param : Text, Text -> Text
+  query-param (path) (key) =
+    let qs = query-string path
+    in if text-length qs == 0 then ""
+    else find-q-param (text-split qs "&") key 0
+
+  find-q-param : List Text, Text, Integer -> Text
+  find-q-param (pairs) (key) (i) =
+    if i >= list-length pairs then ""
+    else let pair = list-at pairs i
+    in let eqpos = text-index-of pair "="
+    in if eqpos < 0 then find-q-param pairs key (i + 1)
+    else if text-take pair eqpos == key then url-decode (text-drop pair (eqpos + 1))
+    else find-q-param pairs key (i + 1)
+
+Section: Prompt Facts
+
+ The invariants a prompt pins down. A vertical constraint of zero
+ means unconstrained; six means any gambling vertical. Platform and
+ language are empty text when the prompt leaves them free.
+
+  PromptFacts = record {
+   pf-vertical : Integer,
+   pf-platform : Text,
+   pf-language : Text,
+   pf-revenue : Integer,
+   pf-no-questions : Boolean,
+   pf-no-mistakes : Boolean
+  }
+
+  extract-facts : Text -> PromptFacts
+  extract-facts (prompt) =
+    let p = text-to-lower prompt
+    in PromptFacts {
+     pf-vertical = detect-vertical p,
+     pf-platform = detect-platform p,
+     pf-language = detect-language p,
+     pf-revenue = detect-revenue p,
+     pf-no-questions = text-contains p "no questions",
+     pf-no-mistakes = text-contains p "no mistakes"
+    }
+
+  detect-vertical : Text -> Integer
+  detect-vertical (p) =
+    if text-contains p "crypto" | text-contains p "blockchain" | text-contains p "web3" then 1
+    else if text-contains p "vegas" | text-contains p "casino" then 2
+    else if text-contains p "stock" | text-contains p "wall street" | text-contains p "options" then 3
+    else if text-contains p "sports" | text-contains p "parlay" then 4
+    else if text-contains p "legit" | text-contains p "honest" | text-contains p "wholesome" then 5
+    else if text-contains p "gambl" | text-contains p "betting" then 6
+    else 0
+
+  detect-platform : Text -> Text
+  detect-platform (p) =
+    if text-contains p "mobile" then "mobile app"
+    else if text-contains p "api" | text-contains p "for agents" then "HTTP API for other agents"
+    else if text-contains p "extension" then "browser extension"
+    else if text-contains p "telegram" then "Telegram bot"
+    else if text-contains p "kiosk" then "kiosk network"
+    else if text-contains p "website" | text-contains p "web site" then "website"
+    else ""
+
+  detect-language : Text -> Text
+  detect-language (p) =
+    if text-contains p "rust" then "Rust"
+    else if text-contains p "typescript" | text-contains p "javascript" then "TypeScript"
+    else if text-contains p "python" then "Python"
+    else if text-contains p "cobol" then "COBOL, fulfilling Liskov's hopes at last"
+    else if text-contains p "codex" then "Codex"
+    else ""
+
+  detect-revenue : Text -> Integer
+  detect-revenue (p) =
+    if text-contains p "billion" then 1000000000
+    else if text-contains p "million" then 1000000
+    else 250000
+
+Section: Hashing and Selection
+
+ A small modular hash keyed on the prompt, combined with the request
+ serial under distinct prime strides per dimension, so successive
+ requests walk different orbits through each list. No two dimensions
+ share a stride and every list length is coprime to none of them,
+ which is fine: the point is variety, not cryptography.
+
+  prompt-hash : Text -> Integer
+  prompt-hash (s) = hash-loop s 0 (text-length s) 5381
+
+  hash-loop : Text, Integer, Integer, Integer -> Integer
+  hash-loop (s) (i) (len) (h) =
+    if i >= len then h
+    else hash-loop s (i + 1) len (int-mod (h * 33 + to-unicode (char-code (char-at s i))) 1000003)
+
+  pick-index : Integer, Integer, Integer, Integer -> Integer
+  pick-index (h) (serial) (stride) (n) = int-mod (h + serial * stride) n
+
+Section: Seed Filtering
+
+  seed-matches : IdeaSeed, Integer -> Boolean
+  seed-matches (s) (c) =
+    if c == 0 then True
+    else if c == 6 then vertical-id (s.seed-vertical) /= 5
+    else vertical-id (s.seed-vertical) == c
+
+  seeds-matching : Integer -> List IdeaSeed
+  seeds-matching (c) = filter-seeds idea-db c 0 []
+
+  filter-seeds : List IdeaSeed, Integer, Integer, List IdeaSeed -> List IdeaSeed
+  filter-seeds (db) (c) (i) (acc) =
+    if i >= list-length db then acc
+    else let s = list-at db i
+    in if seed-matches s c then filter-seeds db c (i + 1) (list-push acc s)
+    else filter-seeds db c (i + 1) acc
+
+Section: Generation
+
+  GeneratedIdea = record {
+   gi-name : Text,
+   gi-vertical : Text,
+   gi-concept : Text,
+   gi-monetization : Text,
+   gi-platform : Text,
+   gi-language : Text,
+   gi-twist : Text,
+   gi-audience : Text,
+   gi-revenue : Integer,
+   gi-questions : Integer,
+   gi-mistakes : Integer,
+   gi-confidence : Text,
+   gi-serial : Integer
+  }
+
+  generate-idea : Text, Integer -> GeneratedIdea
+  generate-idea (prompt) (serial) =
+    let facts = extract-facts prompt
+    in let h = prompt-hash prompt
+    in let pool = seeds-matching (facts.pf-vertical)
+    in dress-idea prompt serial (list-at pool (pick-index h serial 7919 (list-length pool)))
+
+  dress-idea : Text, Integer, IdeaSeed -> GeneratedIdea
+  dress-idea (prompt) (serial) (seed) =
+    let facts = extract-facts prompt
+    in let h = prompt-hash prompt
+    in let platform = if text-length (facts.pf-platform) > 0 then facts.pf-platform else list-at idea-platforms (pick-index h serial 104729 (list-length idea-platforms))
+    in let language = if text-length (facts.pf-language) > 0 then facts.pf-language else list-at idea-languages (pick-index h serial 1299709 (list-length idea-languages))
+    in let twist = list-at idea-twists (pick-index h serial 15485863 (list-length idea-twists))
+    in let audience = list-at idea-audiences (pick-index h serial 32452843 (list-length idea-audiences))
+    in GeneratedIdea {
+     gi-name = seed.seed-name,
+     gi-vertical = vertical-label (seed.seed-vertical),
+     gi-concept = seed.seed-concept,
+     gi-monetization = seed.seed-monetization,
+     gi-platform = platform,
+     gi-language = language,
+     gi-twist = twist,
+     gi-audience = audience,
+     gi-revenue = facts.pf-revenue,
+     gi-questions = if facts.pf-no-questions then 0 else 3,
+     gi-mistakes = if facts.pf-no-mistakes then 0 else 1,
+     gi-confidence = if facts.pf-no-mistakes then "absolute; mistakes are not in the vocabulary" else "high",
+     gi-serial = serial
+    }
+
+Section: Reservation Support
+
+ The offer protocol needs candidates drawn only from unreserved
+ seeds. eligible-indexes filters the database down to indexes that
+ match the vertical constraint and are not on the reserved list;
+ pick-3 selects three distinct indexes from that pool, spread by a
+ stride so consecutive offers do not cluster in one vertical run.
+
+  list-has-int : List Integer, Integer -> Boolean
+  list-has-int (xs) (x) = has-int-loop xs x 0
+
+  has-int-loop : List Integer, Integer, Integer -> Boolean
+  has-int-loop (xs) (x) (i) =
+    if i >= list-length xs then False
+    else if list-at xs i == x then True
+    else has-int-loop xs x (i + 1)
+
+  eligible-indexes : Integer, List Integer -> List Integer
+  eligible-indexes (c) (reserved) = eligible-loop c reserved 0 []
+
+  eligible-loop : Integer, List Integer, Integer, List Integer -> List Integer
+  eligible-loop (c) (reserved) (i) (acc) =
+    if i >= list-length idea-db then acc
+    else if seed-matches (list-at idea-db i) c & (list-has-int reserved i == False) then eligible-loop c reserved (i + 1) (list-push acc i)
+    else eligible-loop c reserved (i + 1) acc
+
+  pick-3 : Integer, Integer, List Integer -> List Integer
+  pick-3 (h) (serial) (elig) =
+    let n = list-length elig
+    in if n < 3 then []
+    else let start = pick-index h serial 7919 n
+    in let step = if n >= 6 then n / 3 else 1
+    in [list-at elig start, list-at elig (int-mod (start + step) n), list-at elig (int-mod (start + step + step) n)]
+
+Section: Request Plumbing
+
+ Small parsers the routes and the server shell share: integer query
+ values, a header scan for the proxy-supplied client address, and the
+ holder mask shown on the public claims board.
+
+  parse-int-text : Text -> Integer
+  parse-int-text (s) =
+    if text-length s == 0 then (-1)
+    else parse-int-loop s 0 (text-length s) 0
+
+  parse-int-loop : Text, Integer, Integer, Integer -> Integer
+  parse-int-loop (s) (i) (len) (acc) =
+    if i >= len then acc
+    else let u = to-unicode (char-code (char-at s i))
+    in if u >= 48 & u <= 57 then parse-int-loop s (i + 1) len (acc * 10 + (u - 48))
+    else -1
+
+  header-value : Text, Text -> Text
+  header-value (head) (key) =
+    let lower = text-to-lower head
+    in let m = text-index-of lower (key & ":")
+    in if m < 0 then ""
+    else trim-lead (read-header-line head (m + text-length key + 1) "")
+
+  read-header-line : Text, Integer, Text -> Text
+  read-header-line (s) (i) (acc) =
+    if i >= text-length s then acc
+    else let u = to-unicode (char-code (char-at s i))
+    in if u == 13 | u == 10 then acc
+    else read-header-line s (i + 1) (acc & char-to-text (char-at s i))
+
+  trim-lead : Text -> Text
+  trim-lead (s) =
+    if text-length s == 0 then s
+    else if to-unicode (char-code (char-at s 0)) == 32 then trim-lead (text-drop s 1)
+    else s
+
+  mask-who : Text -> Text
+  mask-who (w) =
+    let keep = if text-length w < 3 then text-length w else 3
+    in text-take w keep & "***"
+
+Section: Rendering
+
+  render-pitch : GeneratedIdea -> Text
+  render-pitch (g) =
+    g.gi-name & ": " & g.gi-concept & ". Ship it as a " & g.gi-platform & " for " & g.gi-audience & ", written in " & g.gi-language & ", where " & g.gi-twist & ". Monetization: " & g.gi-monetization & "."
+
+  idea-disclaimer : Text
+  idea-disclaimer = "Ideas are provided as-is. Revenue projections are aspirational fiction. The gambling ones are jokes; consult a lawyer, then a therapist."
+
+  idea-to-json : GeneratedIdea -> JsonValue
+  idea-to-json (g) = json-object (idea-pairs g)
+
+  idea-pairs : GeneratedIdea -> List JsonPair
+  idea-pairs (g) = [
+     json-pair "name" (json-str (g.gi-name)),
+     json-pair "vertical" (json-str (g.gi-vertical)),
+     json-pair "concept" (json-str (g.gi-concept)),
+     json-pair "invariants" (json-object [
+      json-pair "platform" (json-str (g.gi-platform)),
+      json-pair "language" (json-str (g.gi-language)),
+      json-pair "revenue-target" (json-int (g.gi-revenue)),
+      json-pair "questions-asked" (json-int (g.gi-questions)),
+      json-pair "mistakes-permitted" (json-int (g.gi-mistakes))
+     ]),
+     json-pair "composition" (json-object [
+      json-pair "twist" (json-str (g.gi-twist)),
+      json-pair "audience" (json-str (g.gi-audience)),
+      json-pair "monetization" (json-str (g.gi-monetization))
+     ]),
+     json-pair "confidence" (json-str (g.gi-confidence)),
+     json-pair "pitch" (json-str (render-pitch g)),
+     json-pair "serial" (json-int (g.gi-serial)),
+     json-pair "disclaimer" (json-str idea-disclaimer)
+    ]

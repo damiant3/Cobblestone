@@ -1,83 +1,38 @@
 # Backlog — Outstanding Work
 
-**Updated**: 2026-06-18
+**Updated**: 2026-07-02
+
+Open work only. Completed items are not archived here — the authoritative
+record of a closure is its changelist description in Perforce.
 
 ## Active — Ongoing
+
+### Fulfill the Vision Check (highest priority — no more surprises)
+
+| # | Item | Notes |
+|---|------|-------|
+| 1 | **Adversarially verify every BY-CONSTRUCTION claim actually holds** | LINEAR TYPES LEG COMPLETE 2026-07-03 (blu): probed (CL 6819, nine adversarial probes) and the LinearOwnership campaign shipped same day, stages 2-4 (CLs 6856, 6868, 6883): let-local aliasing is a tracked ownership move; argument boundaries admit linears only through linear-declared parameters (CDX2065, freeze is the door by its own signature); bare linear returns demand a linear return type (CDX2066); let-bound capturing closures are call-once; container stashes make the container the owner; handler-clause and escaping-closure capture rejected (CDX2067). ALL NINE routes closed, catalog green both directions, plus positive guards. As-built record + residual edges: `docs/Designs/Compiler/Active/LinearOwnership.md`. CAPABILITIES + PUNCTUAL LEGS PROBED (stage 0) 2026-07-03: seven adversarial probes, all compile clean, gaps documented. Punctual (`docs/Designs/Compiler/Active/PunctualProbe.md`): four of the five checks are AST walks covering only 5 node shapes, so unary/act-block/computed-head calls launder, CDX6004 blocklists 3 effects by name, and the safe-builtin allowlist admits show/list-length. Capabilities (`docs/Designs/Compiler/Active/CapabilityProbe.md`): manifest hardcoded empty, raw I/O intrinsics typed pure (a pure function does unmediated port/memory/block I/O), boot grants all caps - "no undeclared I/O" holds for library wrappers, fails for the intrinsics beneath. Probes pinned as `punctual-launder-*` / `cap-launder-*`. Effects were closed by EffectRows; bounded integers hardened by BoundedSignatures. ALL FIVE LEGS NOW PROBED; linear fully enforced, the other four scoped honestly in ClaimsCalibration. Fix campaigns (punctual coverage unification; capability effect-rows-on-intrinsics + manifest wiring) are the follow-on work. Original motivation: the effect-laundering hole (CL 6494) showed a headline claim -- `KingsAndCourts.md`: "a compromised library cannot silently exfiltrate data because the effect would not type-check" -- was presented as a *present mechanism* and was simply false; nobody had probed it. This is distinct from `docs/Designs/Compiler/Active/ClaimsCalibration.md`, which checks whether a claim is honestly *labeled* aspirational-vs-done. This item is the *verification* pass: for each by-construction safety claim (linear types prevent use-after-free/double-free, bounded integers prevent overflow, effect types prevent undeclared I/O, capability model prevents unauthorized access, punctual bounds execution), write an adversarial probe that *tries to break it* -- pass the effectful function to the generic HOF, alias the linear resource through a data structure, overflow the bounded int through arithmetic the prover can't see, call the unauthorized effect through an indirection -- and confirm the compiler rejects it. Every probe that compiles clean is a gap to scope and file (like effect rows). Findings and residual-trust position go in ClaimsCalibration.md / TrustedComputingBase.md. Motivation: surface the gaps by construction-test now, not when a claim is quoted back to us. |
 
 ### USB Install (Gap 4)
 
 | # | Item | Notes |
 |---|------|-------|
-| 1 | **End-to-end USB validation** | All driver/integration layers done (MSC, DriveManager, DevConsole, XHCI). Needs physical USB stick test on Asus + Dell. RAM now 8GB with MMIO-hole split; real hardware needs page-fault skip for the hole (deferred). |
+| 1 | **End-to-end USB validation** | All driver/integration layers done (MSC, DriveManager, DevConsole, XHCI). Needs a physical USB stick test on Asus + Dell. RAM is 8GB with an MMIO-hole split; real hardware still needs a page-fault skip for the unmapped hole (deferred). |
 
-### Memory
-
-| # | Item | Notes |
-|---|------|-------|
-| 1 | ~~**Non-contiguous physical memory (the real 8GB+)**~~ | DONE. `bare-metal-ram-size` = 8GB, page tables extended, build scripts updated to `-mem 8192`. VM memory map splits around MMIO hole. Real hardware unmapped-hole page-fault skip deferred. |
-
-### Compiler
+### Compiler — Effect System
 
 | # | Item | Notes |
 |---|------|-------|
-| 1 | **Phase discipline — remaining items** | `docs/Designs/Active/Compiler/PHASE-ARCHITECTURE.md`. Per-phase build/measure/compact and the RESOLVE/LIFT split are done. Open: deck-record toggle ratchet, escape-invariant enforcement, TCO-reset removal, per-phase survey tightening (lex 40x done CL 2306). |
+| 1 | **Full effect-row subtyping** | The argument-boundary effect check (CL 6494) closes the demonstrated laundering, but it is effect-subset checking on arguments, not a full effect system. Still open: a generic (type-variable) parameter carries no effect constraint, so an effectful function passed to a `map`-style `(a -> b)` is not caught; contravariant parameter positions are left lenient; `unify-at` strips `EffectfulTy` rather than enforcing subset. A complete fix adds effect variables and threads expected/actual polarity through all unify sites, so the check lives in unification instead of at the application boundary. |
 
-### Apps — Compile Health (2026-06-17 sweep)
-
-Fester swept all app tests 2026-06-17. Key findings:
-
-- **`cites Codex chapter General` removed** (CL 4602/4612 apps,
-  CL 4706 codex/test): 85 app tests + 58 core tests cited a chapter
-  that never existed. Removing it recovered 100+ test passes.
-- **All 53 remaining "failures" are batch heap exhaustion**, not code
-  bugs. Every failing test compiles individually. Lightest-first batch
-  sorting (CL 4609/4612) mitigates but does not eliminate the issue.
-- **27/27 web apps compile clean** through the HTML plug (build-apps.ps1,
-  CL 5737). 5 app bugs fixed: tasks (text-to-int), fitness (type mismatch),
-  notes (clipboard-write), piano (% -> int-mod), bridge (VoiceHierarchy API).
-- **360 foreword modules** (up from 305 at CL 4612).
+### SMP — Cross-Architecture
 
 | # | Item | Notes |
 |---|------|-------|
-| 1 | ~~**Batch heap exhaustion**~~ | DONE. 8GB RAM landed; batch VM memory increased. Previously-failing tests now pass. |
-| 2 | ~~**Bare `list-map` callers**~~ | DONE (CL 4848). `list-map` IS in foreword (ListUtils.codex). 22 files used it via transitive cites only — added explicit `cites Foreword chapter ListUtils` to all 22. |
-
-### SMP
-
-| # | Item | Notes |
-|---|------|-------|
-| 1 | **Phase 1 -- Atomic primitives** | DONE (CL 4626). 6 builtins: atomic-load, atomic-store, atomic-cas, atomic-add, atomic-exchange, memory-fence. x86-64 LOCK CMPXCHG/XADD/XCHG/MFENCE codegen. ARM64 and RISC-V backends not yet done. |
-| 2 | **Phase 2 -- Per-core bootstrap** | DONE. Opt-in via `-smp N` (default single-core). Boot reads core count from GPA 0xFF8; if <= 1, SMP init skipped. AP trampoline, INIT/STARTUP IPI, per-core stacks wired into boot sequence. VM creates N vCPUs + MADT entries. |
-| 3 | **Phase 3 -- Per-core scheduler** | DONE. CoreState module: per-core run queues, priority dequeue, work stealing from longest queue, balanced enqueue, idle tracking, schedule-step. AP entry reads LAPIC ID, sets per-core stack, enables LAPIC, signals ready. BSP spin-waits for all APs. |
-| 4 | **Phase 4 -- Per-core heap** | DONE. CoreHeap module: per-core arena splitting. Single-core: full 6MB-3GB heap. Multi-core: arenas start above AP stacks (7MB), page-aligned equal split, last core gets remainder. HWM tracking per arena. |
-| 5 | **Phase 5 -- IPI + lock-free channels** | DONE. IPI module: typed messages (SchedulerWake, TlbShootdown, PanicHalt), per-core mailboxes, targeted/broadcast/all-but-self delivery, convenience senders. LockFreeChannel module: MPSC circular buffer with head/tail indices, send-from-any-core, recv-on-owner, close, stats. All 5 SMP phases complete for x86-64. |
-
-### Library Gap Closure
-
-| # | Item | Notes |
-|---|------|-------|
-| 1 | ~~**BigInt**~~ | DONE (fester, 2026-06-18). `codex.foreword.core.BigInt` — sign + base-10000 limbs. add/sub/mul/divmod/compare/pow/factorial/gcd/mod, to-text/from-integer/to-integer. |
-
-### Encoding
-
-| # | Item | Notes |
-|---|------|-------|
-| 1 | ~~**CCE Tiers 2+ (CJK, rare scripts, emoji)**~~ | DONE (fester, 2026-06-18). Tier 2 block tables: CJK Unified (20992), CJK Extension A (6592), Hangul Syllables (11172), Hiragana (96), Katakana (96), CJK Symbols (64), Thai (256), Misc Symbols (512), Emoji (1024), Dingbats (256). Bidirectional to-unicode/from-unicode, 3-byte encode/decode (framing was already in place), classification (cce-is-cjk/hangul/kana/emoji), letter recognition extended. |
+| 1 | **SMP atomics + boot on ARM64 / RISC-V** | The full SMP stack (atomics, per-core bootstrap/scheduler/heap, IPI, lock-free channels) is complete for x86-64. The atomic builtins and the per-core boot path are not yet ported to the ARM64 and RISC-V backends. |
 
 ### GPU Compute
 
 | # | Item | Notes |
 |---|------|-------|
-| 1 | **Dual-target GPU compilation (PTX + SPIR-V)** | Design complete (CL 4424). **K0-K8 done** (fester, 2026-06-18): foreword.gpu quire (10 modules), Device/Gpu effects + capabilities, PTX plug with GPU intrinsics (special regs, warp shuffle, shared mem, atomics, barriers, math), verifier Phase 3/4 integration (CdxBinary + CdxVerifier), GpuProxy launch-ptx, gpu-dispatch.cu CUDA Driver API, vecadd E2E test (.skip -- needs GPU hardware). Only K9 (libdevice path) remains, deferred by design. |
-
-### Compiler — Phase Discipline
-
-| # | Item | Notes |
-|---|------|-------|
-| 1 | **LOWER deck survey accounts for IR depth** | The LOWER deck formula sizes budget by `def_count * multiplier`. Programs with few defs but deeply nested IR (large literal AST construction) overflow. Workaround: split into many small defs. Root fix: survey formula could factor in IR node count or tree depth, not just def count. See `docs/Test/KNOWN-CONDITIONS.md` and CL 5800. Low priority — workaround is simple. |
-
-### Tooling — Host Stability
-
-| # | Item | Notes |
-|---|------|-------|
-| 1 | ~~**build.ps1 -mem matches bare-metal-ram-size**~~ | RESOLVED. `bare-metal-ram-size` is now 8GB. Build scripts updated to `-mem 8192`. |
+| 1 | **Dual-target GPU: libdevice path (K9)** | PTX + SPIR-V dual-target compilation is built and passing (K0-K8): foreword.gpu quire, Device/Gpu effects, both plugs, verifier integration, CUDA Driver API dispatch. K9 (libdevice linking for transcendental math) remains, deferred by design. |

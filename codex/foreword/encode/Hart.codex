@@ -1,0 +1,73 @@
+Chapter: Hart
+
+ HART (Highway Addressable Remote Transducer), the field-instrument
+ protocol that carries digital messages over the 4-20 mA analog current
+ loops of process plants -- transmitters, valve positioners, and
+ controllers in oil and gas, chemical, and water treatment. A frame is
+ a run of 0xFF preamble octets, a delimiter announcing the frame and
+ address form, an address (a one-octet polling address or a five-octet
+ unique device identifier), a command, a byte count, the data, and a
+ one-octet longitudinal parity (XOR) checksum computed from the
+ delimiter through the last data octet. Each builder returns a
+ List Integer.
+
+Section: Delimiters
+
+ The delimiter's low bits name the frame type (STX from a master, ACK
+ from a field device); its high bit selects the short polling address
+ or the long unique-identifier address form.
+
+  hart-delim-stx-short : Integer = #02
+  hart-delim-ack-short : Integer = #06
+  hart-delim-stx-long : Integer = #82
+  hart-delim-ack-long : Integer = #86
+
+Section: Preamble and Checksum
+
+  hart-preamble : Integer -> List Integer
+  hart-preamble (n) = hart-preamble-loop n []
+
+  hart-preamble-loop : Integer, List Integer -> List Integer
+  hart-preamble-loop (n) (acc) =
+   if n <= 0 then acc else hart-preamble-loop (n - 1) (list-push acc #FF)
+
+  hart-checksum : List Integer -> Integer
+  hart-checksum (bytes) = hart-xor-loop bytes 0 (list-length bytes) 0
+
+  hart-xor-loop : List Integer, Integer, Integer, Integer -> Integer
+  hart-xor-loop (bytes) (i) (len) (acc) =
+   if i >= len then acc
+   else hart-xor-loop bytes (i + 1) len (bit-xor acc (list-at bytes i))
+
+Section: Addressing
+
+ A short address packs a four-bit polling address with a master bit
+ (the primary master sets it) and a burst-mode bit. A long address is
+ the device's five-octet unique identifier.
+
+  hart-short-address : Integer, Boolean -> Integer
+  hart-short-address (poll-addr) (master) =
+   bit-or (if master then #80 else 0) (bit-and poll-addr #0F)
+
+Section: Commands
+
+  hart-cmd-read-unique-id : Integer = 0
+  hart-cmd-read-pv : Integer = 1
+  hart-cmd-read-current-and-pv : Integer = 2
+  hart-cmd-read-dynamic-vars : Integer = 3
+  hart-cmd-set-polling-address : Integer = 6
+
+Section: Frames
+
+ Five preamble octets precede the message body; the checksum covers the
+ body from the delimiter through the data.
+
+  hart-short-frame : Integer, Integer, List Integer -> List Integer
+  hart-short-frame (address) (command) (data) =
+   let core = [hart-delim-stx-short, address, command, list-length data] & data
+   in hart-preamble 5 & core & [hart-checksum core]
+
+  hart-long-frame : List Integer, Integer, List Integer -> List Integer
+  hart-long-frame (uid) (command) (data) =
+   let core = [hart-delim-stx-long] & uid & [command, list-length data] & data
+   in hart-preamble 5 & core & [hart-checksum core]

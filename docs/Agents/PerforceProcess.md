@@ -99,6 +99,29 @@ is whether you snuck in an em dash. You almost certainly did.
 **Cause:** `p4 reopen -c <new-CL>` moves the file reference but the on-disk content stays as-is — including all edits from the original CL.
 **Fix:** If splitting a CL, revert the file first, then `p4 edit` it fresh in the target CL and make only the intended changes.
 
+### 5. Reverting before shelving — silently losing a fresh edit
+**Symptom:** You made a fix, ran the gate dance, and the built SUT
+does NOT contain your fix. The battery fails on a case you already
+verified passing; the gate `Sut.cdx` hash differs from a SUT you
+compiled by hand moments earlier.
+**Cause:** You ran `p4 revert` (or `p4 revert -w`) on a file that had a
+**newer on-disk edit than the shelf**, then `p4 unshelve`. The revert
+discarded your fresh edit, and the unshelve restored the OLDER shelved
+version. Shelving saves on-disk bytes at shelve time; a later edit that
+was never re-shelved is invisible to unshelve. The gate then builds the
+pre-fix code and everything downstream is stale.
+**Fix:** **Always `p4 shelve` (or `p4 shelve -f`) BEFORE `p4 revert`,
+every time**, so the shelf captures your latest on-disk bytes. The
+correct gate dance order is exactly: shelve → revert → sync -f → clean
+→ unshelve → build. If you edit a file AFTER unshelving (e.g. a fix
+mid-gate), you must re-`shelve -f` before the next revert or you lose
+it again.
+**Detect:** After a gate build, compare the gate `build/output/Sut.cdx`
+hash against a SUT you compiled by hand from the same source. A
+mismatch means the gate built different bytes than you think — usually
+a lost edit. `Get-FileHash build/output/Sut.cdx` is two seconds; a lost
+edit is an hour.
+
 ## CL Lifecycle
 
 ```

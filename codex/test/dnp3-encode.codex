@@ -1,0 +1,70 @@
+Chapter: Dnp3EncodeTest
+
+  cites Encode chapter Dnp3
+
+ Exercise the DNP3 data-link layer: CRC-16/DNP (verified against the
+ published check value 0xEA82 over "123456789"), header block, single
+ and multi-block data framing, and the empty frame. Byte sequences are
+ checked against an independent CRC-16/DNP implementation. opening
+ returns the count of passing checks.
+
+Section: Helpers
+
+  bytes-eq : List Integer, List Integer -> Boolean
+  bytes-eq (a) (b) =
+   if list-length a /= list-length b then False
+   else bytes-eq-loop a b 0 (list-length a)
+
+  bytes-eq-loop : List Integer, List Integer, Integer, Integer -> Boolean
+  bytes-eq-loop (a) (b) (i) (len) =
+   if i >= len then True
+   else if list-at a i /= list-at b i then False
+   else bytes-eq-loop a b (i + 1) len
+
+  flag : Boolean -> Integer
+  flag (b) = if b then 1 else 0
+
+Section: Checks
+
+  check-crc-check-value : Integer
+  check-crc-check-value =
+   flag (dnp3-crc16 [49, 50, 51, 52, 53, 54, 55, 56, 57] == #EA82)
+
+  check-crc-block : Integer
+  check-crc-block =
+   flag (dnp3-crc16 [1, 2, 3] == #A740)
+
+  check-frame : Integer
+  check-frame =
+   flag (bytes-eq (dnp3-build-frame dnp3-ctrl-unconfirmed-data 4 3 [1, 2, 3]) [5, 100, 8, 196, 4, 0, 3, 0, 180, 184, 1, 2, 3, 64, 167])
+
+  check-empty-frame : Integer
+  check-empty-frame =
+   flag (bytes-eq (dnp3-build-frame dnp3-ctrl-unconfirmed-data 4 3 []) [5, 100, 5, 196, 4, 0, 3, 0, 225, 218])
+
+  check-multiblock : Integer
+  check-multiblock =
+   flag (bytes-eq (dnp3-data-blocks [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17]) [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 242, 165, 17, 202, 123])
+
+  check-app-header : Integer
+  check-app-header =
+   flag (bytes-eq (dnp3-app-header 0 dnp3-app-fc-read) [192, 1])
+
+  check-read-class0 : Integer
+  check-read-class0 =
+   flag (bytes-eq (dnp3-read-class 0 1) [192, 1, 60, 1, 6])
+
+  check-read-range : Integer
+  check-read-range =
+   flag (bytes-eq (dnp3-read-range 0 1 2 0 9) [192, 1, 1, 2, 0, 0, 9])
+
+  opening : Integer =
+   let a = check-crc-check-value
+   in let b = check-crc-block
+   in let c = check-frame
+   in let d = check-empty-frame
+   in let e = check-multiblock
+   in let f = check-app-header
+   in let g = check-read-class0
+   in let h = check-read-range
+   in a + b + c + d + e + f + g + h

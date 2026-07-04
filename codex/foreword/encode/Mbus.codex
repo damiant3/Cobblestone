@@ -1,0 +1,54 @@
+Chapter: Mbus
+
+ M-Bus (Meter-Bus, EN 13757), the field bus for reading utility meters --
+ gas, water, electricity, and heat. Telegrams come in three shapes: a
+ single-character acknowledgement (0xE5), a short frame (a fixed
+ control/address request), and a long frame carrying a control-
+ information field and data. Frames are delimited by a start and a stop
+ (0x16) byte and protected by an 8-bit sum checksum over the control,
+ address, control-information, and data fields.
+
+Section: Control Fields
+
+  mbus-c-snd-nke : Integer = #40
+  mbus-c-snd-ud : Integer = #53
+  mbus-c-req-ud2 : Integer = #5B
+  mbus-c-rsp-ud : Integer = #08
+
+  mbus-ci-data-send : Integer = #51
+  mbus-ci-selection : Integer = #52
+
+Section: Delimiters
+
+  mbus-start-short : Integer = #10
+  mbus-start-long : Integer = #68
+  mbus-stop : Integer = #16
+  mbus-ack : Integer = #E5
+
+Section: Checksum
+
+  mbus-sum : List Integer, Integer, Integer, Integer -> Integer
+  mbus-sum (bytes) (i) (len) (acc) =
+   if i >= len then acc else mbus-sum bytes (i + 1) len (acc + list-at bytes i)
+
+  mbus-checksum : List Integer -> Integer
+  mbus-checksum (bytes) = bit-and (mbus-sum bytes 0 (list-length bytes) 0) 255
+
+Section: Frames
+
+  mbus-ack-frame : List Integer
+  mbus-ack-frame = [mbus-ack]
+
+  mbus-short-frame : Integer, Integer -> List Integer
+  mbus-short-frame (c) (a) =
+   [mbus-start-short, c, a, bit-and (c + a) 255, mbus-stop]
+
+ The long frame repeats the length (control, address, control-info, and
+ data octets) and the start byte, then the body, its checksum, and the
+ stop.
+
+  mbus-long-frame : Integer, Integer, Integer, List Integer -> List Integer
+  mbus-long-frame (c) (a) (ci) (data) =
+   let body = [c, a, ci] & data
+   in let len = list-length body
+   in [mbus-start-long, len, len, mbus-start-long] & body & [mbus-checksum body, mbus-stop]

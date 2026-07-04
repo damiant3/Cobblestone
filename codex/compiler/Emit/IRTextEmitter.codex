@@ -166,12 +166,14 @@ Section: CodexType Emission
    when ty
     is TypeVar (id) -> if ir-int-member acc id then acc else list-push acc id
     is ListTy (elem) | LinkedListTy (elem) -> ir-tvars-of-type elem acc
-    is FunTy (p) (r) -> ir-tvars-of-type r (ir-tvars-of-type p acc)
+    is FunTy (p) (row) (r) -> ir-tvars-of-type r (ir-tvars-of-type p acc)
     is ForAllTy (tid) (body) -> ir-tvars-of-type body acc
+    is ForAllEff (tid) (body) -> ir-tvars-of-type body acc
     is ConstructedTy (name) (args) | RecordTy (name) (args) (fields) | SumTy (name) (args) (ctors) -> ir-tvars-of-type-list args 0 acc
     is EffectfulTy (effs) (sc) (ret) -> ir-tvars-of-type ret acc
     is VectorTy (vn) (vt) -> ir-tvars-of-type vt acc
     is VectorMaskTy (n) -> acc
+    is LinearTy (linner) -> ir-tvars-of-type linner acc
     is otherwise -> acc
 
   ir-tvars-of-type-list : List CodexType, Integer, List Integer -> List Integer
@@ -203,11 +205,12 @@ Section: CodexType Emission
     is VoidTy -> "void"
     is NothingTy -> "nothing"
     is ErrorTy -> "error"
-    is FunTy (p) (r) -> "(fn " & ir-emit-type p & " " & ir-emit-type r & ")"
+    is FunTy (p) (row) (r) -> "(fn " & ir-emit-type p & " " & ir-emit-type r & ")"
     is ListTy (elem) -> "(list " & ir-emit-type elem & ")"
     is LinkedListTy (elem) -> "(llist " & ir-emit-type elem & ")"
     is TypeVar (id) -> "(tvar " & integer-to-text id & ")"
     is ForAllTy (id) (body) -> "(forall " & integer-to-text id & " " & ir-emit-type body & ")"
+    is ForAllEff (id) (body) -> ir-emit-type body
     is SumTy (name) (args) (ctors) -> "(sum " & ir-quote (name.value) & " (args" & ir-emit-type-list args 0 & ") (sum-ctors" & ir-emit-sum-ctors ctors 0 & "))"
     is RecordTy (name) (args) (fields) -> "(record-ty " & ir-quote (name.value) & " (args" & (if list-length args > 0 then ir-emit-type-list args 0 else ir-emit-tvar-args (ir-record-field-tvars fields 0 []) 0) & ") (record-fields" & ir-emit-record-fields fields 0 & "))"
     is ConstructedTy (name) (args) -> "(ctd " & ir-quote (name.value) & " (args" & ir-emit-type-list args 0 & "))"
@@ -215,6 +218,7 @@ Section: CodexType Emission
     is UnitTy (name) (inner) -> "(unit " & ir-quote (name.value) & " " & ir-emit-type inner & ")"
     is VectorTy (n) (t) -> "(vector " & integer-to-text n & " " & ir-emit-type t & ")"
     is VectorMaskTy (n) -> "(vector-mask " & integer-to-text n & ")"
+    is LinearTy (linner) -> ir-emit-type linner
     is otherwise -> "error"
 
   ir-emit-type-list : List CodexType, Integer -> Text
@@ -240,7 +244,9 @@ Section: ATypeExpr Emission
     is ANamedType (name) (s) -> "(a-named " & ir-quote (name.value) & ")"
     is AFunType (p) (r) (s) -> "(a-fun " & ir-emit-atype-expr p & " " & ir-emit-atype-expr r & ")"
     is AAppType (base) (args) (s) -> "(a-app " & ir-emit-atype-expr base & " (args" & ir-emit-atype-expr-list args 0 & "))"
-    is AEffectType (effs) (scopes) (r) (s) -> "(a-eff (effs" & ir-cat (ir-names-quoted effs 0 []) & ") (scopes" & ir-cat (ir-strs-quoted scopes 0 []) & ") " & ir-emit-atype-expr r & ")"
+    is AEffectType (effs) (scopes) (tail) (r) (s) ->
+     if list-length tail == 0 then "(a-eff (effs" & ir-cat (ir-names-quoted effs 0 []) & ") (scopes" & ir-cat (ir-strs-quoted scopes 0 []) & ") " & ir-emit-atype-expr r & ")"
+     else "(a-eff (effs" & ir-cat (ir-names-quoted effs 0 []) & ") (scopes" & ir-cat (ir-strs-quoted scopes 0 []) & ") (tail " & ir-quote ((list-at tail 0).value) & ") " & ir-emit-atype-expr r & ")"
     is ABoundedIntType (b) (lo) (hi) (mode) (s) -> "(a-bounded " & ir-emit-atype-expr b & " " & safe-int-text lo & " " & safe-int-text hi & " " & ov-mode-atom mode & ")"
     is ALinearType (inner) (s) -> "(a-linear " & ir-emit-atype-expr inner & ")"
     is otherwise -> "(a-unknown)"
@@ -278,7 +284,7 @@ Section: Type Parameter Inference
      ir-collect-atexpr-tparams r (ir-collect-atexpr-tparams p acc)
     is AAppType (base) (args) (s) ->
      ir-collect-atexpr-list-tparams args 0 (list-length args) (ir-collect-atexpr-tparams base acc)
-    is AEffectType (effs) (scopes) (r) (s) ->
+    is AEffectType (effs) (scopes) (tail) (r) (s) ->
      ir-collect-atexpr-tparams r acc
     is ABoundedIntType (b) (lo) (hi) (mode) (s) ->
      ir-collect-atexpr-tparams b acc

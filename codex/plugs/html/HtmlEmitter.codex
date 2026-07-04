@@ -9,7 +9,61 @@ Section: Keywords and Sanitization
 
   html-sanitize : Text -> Text
   html-sanitize (name) =
-   text-replace (text-replace name "-" "_") "'" ""
+   js-reserve-guard (text-replace (text-replace name "-" "_") "'" "")
+
+  js-reserve-guard : Text -> Text
+  js-reserve-guard (n) =
+   if is-js-reserved n then n & "_" else n
+
+  is-js-reserved : Text -> Boolean
+  is-js-reserved (n) =
+   if n == "new" then True
+   else if n == "var" then True
+   else if n == "const" then True
+   else if n == "function" then True
+   else if n == "return" then True
+   else if n == "typeof" then True
+   else if n == "void" then True
+   else if n == "this" then True
+   else if n == "switch" then True
+   else if n == "case" then True
+   else if n == "break" then True
+   else if n == "continue" then True
+   else if n == "default" then True
+   else if n == "throw" then True
+   else if n == "try" then True
+   else if n == "catch" then True
+   else if n == "finally" then True
+   else if n == "delete" then True
+   else if n == "do" then True
+   else if n == "while" then True
+   else if n == "for" then True
+   else if n == "of" then True
+   else if n == "yield" then True
+   else if n == "await" then True
+   else if n == "enum" then True
+   else if n == "export" then True
+   else if n == "import" then True
+   else if n == "extends" then True
+   else if n == "super" then True
+   else if n == "static" then True
+   else if n == "null" then True
+   else if n == "undefined" then True
+   else if n == "arguments" then True
+   else if n == "eval" then True
+   else False
+
+  html-field : Text -> Text
+  html-field (f) =
+   let slash = html-slash-pos f 0 (text-length f)
+   in if slash >= 0 then html-sanitize (substring f 0 slash)
+   else html-sanitize f
+
+  html-slash-pos : Text, Integer, Integer -> Integer
+  html-slash-pos (f) (i) (len) =
+   if i >= len then (-1)
+   else if char-to-text (char-at f i) == "/" then i
+   else html-slash-pos f (i + 1) len
 
   html-escape : Text -> Text
   html-escape (s) =
@@ -60,7 +114,7 @@ Section: Arity Map
    else let d = list-at defs i
    in build-arity-map defs (i + 1) (sorted-insert-arity acc (ArityEntry {
     name = d.name,
-    arity = list-length (d.params),
+    arity = __narrow (list-length (d.params)),
     generic-count = 0
    }))
 
@@ -121,8 +175,8 @@ Section: JavaScript Expression Emission
     is IrMatch (scrut) (branches) (ty) (sp) -> emit-js-match scrut branches arities indent
     is IrAct (stmts) (ty) (sp) -> emit-js-act stmts arities indent
     is IrRecord (name) (fields) (ty) (sp) -> emit-js-record name fields arities indent
-    is IrFieldAccess (rec) (field) (ty) (sp) -> emit-js-expr rec arities indent & "." & html-sanitize field
-    is IrFieldStore (rec) (field) (val) (ty) (sp) -> "(" & emit-js-expr rec arities indent & "." & html-sanitize field & " = " & emit-js-expr val arities indent & ")"
+    is IrFieldAccess (rec) (field) (ty) (sp) -> emit-js-expr rec arities indent & "." & html-field field
+    is IrFieldStore (rec) (field) (val) (ty) (sp) -> "(" & emit-js-expr rec arities indent & "." & html-field field & " = " & emit-js-expr val arities indent & ")"
     is IrFork (body) (ty) (sp) -> "Promise.resolve().then(() => " & emit-js-expr body arities indent & ")"
     is IrAwait (task) (ty) (sp) -> "(await " & emit-js-expr task arities indent & ")"
     is IrHandle (eff) (body) (clauses) (ty) (sp) -> "(console.warn('effect handler not supported in web target'), " & emit-js-expr body arities indent & ")"
@@ -365,6 +419,8 @@ Section: Definition Emission
    else if n == "mount-widget-themed" then True
    else if n == "mount-widget-into" then True
    else if n == "register-handlers" then True
+   else if n == "register-input-handler" then True
+   else if n == "play-tone" then True
    else if n == "state-get" then True
    else if n == "state-set" then True
    else if n == "state-get-text" then True
@@ -442,7 +498,7 @@ Section: Chapter Emission
   emit-html-chapter (m) (type-defs) =
    let arities = build-arity-map (m.defs) 0 []
    in let title = if m.chapter-title == "" then "Codex App" else m.chapter-title
-   in let builtins = "function print_line_uni(s) { const el = document.createElement('div'); el.textContent = s; document.getElementById('app').appendChild(el); }\nfunction print_line(s) { print_line_uni(s); }\nfunction show(n) { return String(n); }\nfunction text_length(s) { return s.length; }\nfunction text_replace(s, a, b) { return s.split(a).join(b); }\nfunction text_compare(a, b) { return a < b ? -1 : a > b ? 1 : 0; }\nfunction list_length(xs) { return xs.length; }\nfunction list_at(xs, i) { return xs[i]; }\nfunction list_push(xs, x) { return [...xs, x]; }\nfunction integer_to_text(n) { return String(n); }\nfunction char_code(c) { return c.charCodeAt ? c.charCodeAt(0) : c; }\nfunction char_at(s, i) { return s[i]; }\nfunction negate(n) { return -n; }\nfunction bit_xor(a,b){return (Math.trunc(a)^Math.trunc(b));}\nfunction bit_and(a,b){return (Math.trunc(a)&Math.trunc(b));}\nfunction bit_or(a,b){return (Math.trunc(a)|Math.trunc(b));}\nfunction bit_shl(a,n){return (Math.trunc(a)<<n);}\nfunction bit_shr(a,n){return (Math.trunc(a)>>n);}\nfunction bit_shru(a,n){return (Math.trunc(a)>>>n);}\nfunction bit_not(a){return (~Math.trunc(a));}\n\n"
+   in let builtins = "function print_line_uni(s) { const el = document.createElement('div'); el.textContent = s; document.getElementById('app').appendChild(el); }\nfunction print_line(s) { print_line_uni(s); }\nfunction show(n) { return String(n); }\nfunction text_length(s) { return s.length; }\nfunction text_replace(s, a, b) { return s.split(a).join(b); }\nfunction text_compare(a, b) { return a < b ? -1 : a > b ? 1 : 0; }\nfunction substring(s, start, len) { return s.slice(start, start + len); }\nfunction char_to_text(c) { return c; }\nfunction char_code_at(s, i) { return s.charCodeAt(i); }\nfunction int_mod(a, b) { return Math.trunc(a) % Math.trunc(b); }\nfunction list_snoc(xs, x) { return [...xs, x]; }\nfunction list_length(xs) { return xs.length; }\nfunction list_at(xs, i) { return xs[i]; }\nfunction list_push(xs, x) { return [...xs, x]; }\nfunction integer_to_text(n) { return String(n); }\nfunction char_code(c) { return c.charCodeAt ? c.charCodeAt(0) : c; }\nfunction char_at(s, i) { return s[i]; }\nfunction negate(n) { return -n; }\nfunction bit_xor(a,b){return (Math.trunc(a)^Math.trunc(b));}\nfunction bit_and(a,b){return (Math.trunc(a)&Math.trunc(b));}\nfunction bit_or(a,b){return (Math.trunc(a)|Math.trunc(b));}\nfunction bit_shl(a,n){return (Math.trunc(a)<<n);}\nfunction bit_shr(a,n){return (Math.trunc(a)>>n);}\nfunction bit_shru(a,n){return (Math.trunc(a)>>>n);}\nfunction bit_not(a){return (~Math.trunc(a));}\n\n"
    in let types-text = emit-js-type-defs type-defs 0
    in let defs-text = emit-js-defs (m.defs) 0 arities
    in let arity = lookup-arity arities "opening"

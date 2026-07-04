@@ -18,9 +18,10 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
 $Repo = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
-$RenodeExe = Join-Path $Repo 'tools\renode\renode.exe'
-if (-not (Test-Path $RenodeExe)) {
-    [Console]::Error.WriteLine("MISSING: $RenodeExe")
+. (Join-Path $PSScriptRoot 'renode-config.ps1')
+$RenodeExe = Get-RenodeExe -Repo $Repo
+if (-not $RenodeExe) {
+    [Console]::Error.WriteLine("MISSING: Renode (install to C:\Renode or set CODEX_RENODE_HOME)")
     exit 2
 }
 

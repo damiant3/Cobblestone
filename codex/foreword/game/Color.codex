@@ -12,7 +12,7 @@ Section: Types
 
 Section: Construction
   rgb : Integer, Integer, Integer -> Rgb
-  rgb (r) (g) (b) = Rgb { cr = r, cg = g, cb = b }
+  rgb (r) (g) (b) = Rgb { cr = __narrow r, cg = __narrow g, cb = __narrow b }
 
   rgb-black : Rgb
   rgb-black = Rgb { cr = 0, cg = 0, cb = 0 }
@@ -30,7 +30,7 @@ Section: Construction
   rgb-blue = Rgb { cr = 0, cg = 0, cb = 255 }
 
   rgb-from-packed : Integer -> Rgb
-  rgb-from-packed (packed) = Rgb { cr = bit-and (bit-shru packed 16) 255, cg = bit-and (bit-shru packed 8) 255, cb = bit-and packed 255 }
+  rgb-from-packed (packed) = Rgb { cr = __narrow (bit-and (bit-shru packed 16) 255), cg = __narrow (bit-and (bit-shru packed 8) 255), cb = __narrow (bit-and packed 255) }
 
   rgb-to-packed : Rgb -> Integer
   rgb-to-packed (c) = bit-or (bit-shl (c.cr) 16) (bit-or (bit-shl (c.cg) 8) (c.cb))
@@ -58,7 +58,7 @@ Section: Adjustments
   rgb-brightness (c) (delta) = Rgb { cr = col-clamp8 (c.cr + delta), cg = col-clamp8 (c.cg + delta), cb = col-clamp8 (c.cb + delta) }
 
   rgb-invert : Rgb -> Rgb
-  rgb-invert (c) = Rgb { cr = 255 - c.cr, cg = 255 - c.cg, cb = 255 - c.cb }
+  rgb-invert (c) = Rgb { cr = __narrow (255 - c.cr), cg = __narrow (255 - c.cg), cb = __narrow (255 - c.cb) }
 
   rgb-grayscale : Rgb -> Rgb
   rgb-grayscale (c) =
@@ -78,10 +78,10 @@ Section: HSL Conversion
     in let mn = col-min3 r g b
     in let l = (mx + mn) / 2
     in let delta = mx - mn
-    in if delta == 0 then Hsl { ch = 0, cs = 0, cl = l }
+    in if delta == 0 then Hsl { ch = 0, cs = 0, cl = __narrow l }
     else let s = if l > 500 then delta * 1000 / (2000 - mx - mn) else delta * 1000 / (mx + mn)
     in let h = col-hue r g b mx delta
-    in Hsl { ch = h, cs = s, cl = l }
+    in Hsl { ch = __narrow h, cs = __narrow s, cl = __narrow l }
 
   col-hue : Integer, Integer, Integer, Integer, Integer -> Integer
   col-hue (r) (g) (b) (mx) (delta) =
@@ -93,11 +93,11 @@ Section: HSL Conversion
   hsl-to-rgb : Hsl -> Rgb
   hsl-to-rgb (c) =
     if c.cs == 0 then let v = c.cl * 255 / 1000
-      in Rgb { cr = v, cg = v, cb = v }
+      in Rgb { cr = __narrow v, cg = __narrow v, cb = __narrow v }
     else let q = if c.cl < 500 then c.cl * (1000 + c.cs) / 1000 else c.cl + c.cs - c.cl * c.cs / 1000
     in let p = 2 * c.cl - q
     in let h = c.ch
-    in Rgb { cr = hsl-channel p q (h + 120), cg = hsl-channel p q h, cb = hsl-channel p q (h - 120) }
+    in Rgb { cr = __narrow (hsl-channel p q (h + 120)), cg = __narrow (hsl-channel p q h), cb = __narrow (hsl-channel p q (h - 120)) }
 
   hsl-channel : Integer, Integer, Integer -> Integer
   hsl-channel (p) (q) (h-raw) =
@@ -125,11 +125,11 @@ Section: Palette
   pal-rainbow-loop (steps) (i) (acc) =
     if i >= steps then acc
     else let h = i * 360 / steps
-    in pal-rainbow-loop steps (i + 1) (list-push acc (hsl-to-rgb (Hsl { ch = h, cs = 900, cl = 500 })))
+    in pal-rainbow-loop steps (i + 1) (list-push acc (hsl-to-rgb (Hsl { ch = __narrow h, cs = 900, cl = 500 })))
 
 Section: Helpers
-  col-clamp8 : Integer -> Integer
-  col-clamp8 (v) = if v < 0 then 0 else if v > 255 then 255 else v
+  col-clamp8 : Integer -> Integer between 0 and 255
+  col-clamp8 (v) = __narrow (if v < 0 then 0 else if v > 255 then 255 else v)
 
   col-max3 : Integer, Integer, Integer -> Integer
   col-max3 (a) (b) (c) = let ab = if a > b then a else b in if ab > c then ab else c
@@ -183,7 +183,7 @@ Section: Lolcat Rainbow
   lolcat-pal (idx) (hue-start) (hue-range) (sat) (lit) =
     let offset = lolcat-hue-mod idx hue-range
     in let hue = lolcat-hue-mod (hue-start + offset) 360
-    in rgb-to-packed (hsl-to-rgb (Hsl { ch = hue, cs = sat, cl = lit }))
+    in rgb-to-packed (hsl-to-rgb (Hsl { ch = __narrow hue, cs = __narrow sat, cl = __narrow lit }))
 
 Section: Formatting
   format-rgb : Rgb -> Text

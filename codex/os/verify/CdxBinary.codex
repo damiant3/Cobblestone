@@ -258,8 +258,14 @@ Section: Verification
   cdx-verify-content-hash : List Integer -> Boolean
   cdx-verify-content-hash (bytes) =
     let stored-hash = cdx-read-content-hash bytes
-    in let cap-off = read-le64 bytes 136
-    in let content = list-slice bytes cap-off (list-length bytes)
+    in let cap-end = read-le64 bytes 136 + read-le64 bytes 144
+    in let eff-end = read-le64 bytes 152 + read-le64 bytes 160
+    in let text-end = read-le64 bytes 168 + read-le64 bytes 176
+    in let ro-end = read-le64 bytes 184 + read-le64 bytes 192
+    in let e1 = if cap-end > eff-end then cap-end else eff-end
+    in let e2 = if text-end > ro-end then text-end else ro-end
+    in let content-end = if e1 > e2 then e1 else e2
+    in let content = list-slice bytes cdx-header-fixed-size content-end
     in let computed = sha256 content
     in let computed-bytes = hash-words-to-bytes computed
     in bytes-equal stored-hash computed-bytes 0 32
@@ -326,7 +332,7 @@ Section: Proof Encoding
     if i >= count then acc
     else let kind = list-at binary off
     in let hb = list-slice binary (off + 1) (off + 33)
-    in decode-proof-loop binary (off + 33) count (i + 1) (list-push acc (CdxProofEntry { kind = kind, hash-bytes = hb }))
+    in decode-proof-loop binary (off + 33) count (i + 1) (list-push acc (CdxProofEntry { kind = __narrow kind, hash-bytes = hb }))
 
   cdx-encode-signed-with-proofs : CdxBinaryParts, List Integer, List CdxProofEntry -> List Integer
   cdx-encode-signed-with-proofs (parts) (private-key) (proof-entries) =
@@ -347,7 +353,7 @@ Section: Proof Encoding
     in let content-hash-bytes = hash-words-to-bytes content-hash
     in let sig = ed25519-sign private-key public-key content-hash-bytes
     in let proofed-parts = CdxBinaryParts {
-      flags = bit-or (parts.flags) cdx-flag-has-proofs,
+      flags = __narrow (bit-or (parts.flags) cdx-flag-has-proofs),
       capabilities = parts.capabilities,
       effects = parts.effects,
       text-bytes = parts.text-bytes,

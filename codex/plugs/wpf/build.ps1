@@ -7,4 +7,4 @@ $ErrorActionPreference = 'Stop'
 
 . (Join-Path $PSScriptRoot '..' 'common' 'plug-build-lib.ps1')
 
-Build-TranspilerPlug -PlugDir $PSScriptRoot -PlugName 'wpf' -Chapters @('WpfEmitter', 'WpfPlug')
+Build-TranspilerPlug -PlugDir $PSScriptRoot -PlugName 'wpf' -Chapters @('CsAst', 'WpfEmitter', 'WpfPlug')

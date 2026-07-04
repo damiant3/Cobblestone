@@ -12,10 +12,11 @@ Section: Children Map
   codex-type-map-children : (CodexType -> CodexType), CodexType -> CodexType
   codex-type-map-children (f) (ty) =
    when ty
-    is FunTy (param) (ret) -> deck-record (FunTy (f param) (f ret))
+    is FunTy (param) (row) (ret) -> deck-record (FunTy (f param) row (f ret))
     is ListTy (elem) -> deck-record (ListTy (f elem))
     is LinkedListTy (elem) -> deck-record (LinkedListTy (f elem))
     is ForAllTy (id) (body) -> deck-record (ForAllTy id (f body))
+    is ForAllEff (id) (body) -> deck-record (ForAllEff id (f body))
     is EffectfulTy (effs) (sc) (ret) -> deck-record (EffectfulTy effs sc (f ret))
     is ConstructedTy (name) (args) -> deck-record (ConstructedTy name (for a in args -> f a))
     is SumTy (name) (args) (ctors) -> deck-record (SumTy name (for a in args -> f a) (for c in ctors -> deck-record (SumCtor { name = c.name, fields = for fld in (c.fields) -> f fld, return-type = for rt in (c.return-type) -> f rt })))
@@ -24,15 +25,17 @@ Section: Children Map
     is VectorTy (n) (t) -> deck-record (VectorTy n (f t))
     is VectorMaskTy (n) -> ty
     is TypeApply (tf) (ta) -> deck-record (TypeApply (f tf) (f ta))
+    is LinearTy (inner) -> deck-record (LinearTy (f inner))
     is otherwise -> ty
 
 Section: Children Fold
   codex-type-fold-children : (CodexType, a -> a), CodexType, a -> a
   codex-type-fold-children (f) (ty) (acc) =
    when ty
-    is FunTy (p) (r) -> f r (f p acc)
+    is FunTy (p) (row) (r) -> f r (f p acc)
     is ListTy (elem) | LinkedListTy (elem) -> f elem acc
     is ForAllTy (id) (body) -> f body acc
+    is ForAllEff (id) (body) -> f body acc
     is EffectfulTy (effs) (sc) (ret) -> f ret acc
     is ConstructedTy (name) (args) -> fold-children-list f args 0 (list-length args) acc
     is SumTy (name) (args) (ctors) -> fold-children-sum-ctors f ctors 0 (list-length ctors) (fold-children-list f args 0 (list-length args) acc)
@@ -41,6 +44,7 @@ Section: Children Fold
     is VectorTy (n) (t) -> f t acc
     is VectorMaskTy (n) -> acc
     is TypeApply (tf) (ta) -> f ta (f tf acc)
+    is LinearTy (inner) -> f inner acc
     is otherwise -> acc
 
   fold-children-list : (CodexType, a -> a), List CodexType, Integer, Integer, a -> a

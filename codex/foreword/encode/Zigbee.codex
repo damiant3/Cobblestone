@@ -1,0 +1,53 @@
+Chapter: Zigbee
+
+ Zigbee network (NWK) and application support (APS) layer framing, which
+ ride on top of the IEEE 802.15.4 MAC. The NWK header routes a frame
+ across the mesh (frame control, 16-bit destination and source, radius,
+ sequence); the APS header addresses an application endpoint (frame
+ control, destination endpoint, cluster and profile identifiers, source
+ endpoint, counter). All multi-byte fields are little-endian. This is
+ the Zigbee PRO 2007 frame format.
+
+Section: NWK Frame Control
+
+ The NWK frame control (two bytes): frame type (bits 0-1), protocol
+ version (2-5), discover route (6-7), multicast (8), security (9),
+ source route (10), destination IEEE (11), source IEEE (12).
+
+  zb-nwk-type-data : Integer = 0
+  zb-nwk-type-command : Integer = 1
+  zb-nwk-version : Integer = 2
+
+  zb-nwk-fc : Integer, Integer, Integer, Integer -> Integer
+  zb-nwk-fc (ftype) (version) (discover) (security) =
+   bit-or (bit-or ftype (bit-shl version 2)) (bit-or (bit-shl discover 6) (bit-shl security 9))
+
+Section: APS Frame Control
+
+ The APS frame control (one byte): frame type (bits 0-1), delivery mode
+ (2-3), ack format (4), security (5), ack request (6), extended header
+ (7). Delivery mode 0 is unicast.
+
+  zb-aps-type-data : Integer = 0
+  zb-aps-type-command : Integer = 1
+
+  zb-aps-fc : Integer, Integer, Integer, Integer -> Integer
+  zb-aps-fc (ftype) (delivery) (ackreq) (security) =
+   bit-or (bit-or ftype (bit-shl delivery 2)) (bit-or (bit-shl security 5) (bit-shl ackreq 6))
+
+Section: Helpers
+
+  zb-u16-le : Integer -> List Integer
+  zb-u16-le (v) = [bit-and v 255, bit-and (bit-shru v 8) 255]
+
+Section: NWK Frame
+
+  zb-build-nwk-data : Integer, Integer, Integer, Integer, List Integer -> List Integer
+  zb-build-nwk-data (dest) (src) (radius) (seq) (payload) =
+   zb-u16-le (zb-nwk-fc zb-nwk-type-data zb-nwk-version 0 0) & zb-u16-le dest & zb-u16-le src & [radius, seq] & payload
+
+Section: APS Frame
+
+  zb-build-aps-data : Integer, Integer, Integer, Integer, Integer, List Integer -> List Integer
+  zb-build-aps-data (dest-ep) (cluster) (profile) (src-ep) (counter) (payload) =
+   [zb-aps-fc zb-aps-type-data 0 0 0, dest-ep] & zb-u16-le cluster & zb-u16-le profile & [src-ep, counter] & payload

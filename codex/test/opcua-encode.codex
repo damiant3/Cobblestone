@@ -1,0 +1,120 @@
+Chapter: OpcUaEncodeTest
+
+  cites Encode chapter OpcUa
+
+ Exercise the OPC UA binary encoders and the UACP transport handshake:
+ UInt32, String (with the correct to-unicode wire bytes) and the null
+ string, all three NodeId forms, the message header, and full HELLO and
+ ACKNOWLEDGE messages. Every byte sequence is checked against an
+ independent reference computed by opcua_truth.py; the string bytes are
+ additionally checked against a hardcoded ASCII array so a wrong CCE
+ mapping cannot hide. opening returns the count of passing checks.
+
+Section: Helpers
+
+  bytes-eq : List Integer, List Integer -> Boolean
+  bytes-eq (a) (b) =
+   if list-length a /= list-length b then False
+   else bytes-eq-loop a b 0 (list-length a)
+
+  bytes-eq-loop : List Integer, List Integer, Integer, Integer -> Boolean
+  bytes-eq-loop (a) (b) (i) (len) =
+   if i >= len then True
+   else if list-at a i /= list-at b i then False
+   else bytes-eq-loop a b (i + 1) len
+
+  flag : Boolean -> Integer
+  flag (b) = if b then 1 else 0
+
+Section: Checks
+
+  check-u32 : Integer
+  check-u32 = flag (bytes-eq (opcua-u32-le #11223344) [68, 51, 34, 17])
+
+  check-string : Integer
+  check-string =
+   flag (bytes-eq (opcua-string "opc.tcp") [7, 0, 0, 0, 111, 112, 99, 46, 116, 99, 112])
+
+  check-string-null : Integer
+  check-string-null = flag (bytes-eq opcua-string-null [255, 255, 255, 255])
+
+  check-boolean : Integer
+  check-boolean = flag (bytes-eq (opcua-boolean True) [1])
+
+  check-nodeid-twobyte : Integer
+  check-nodeid-twobyte = flag (bytes-eq (opcua-nodeid-twobyte 85) [0, 85])
+
+  check-nodeid-fourbyte : Integer
+  check-nodeid-fourbyte = flag (bytes-eq (opcua-nodeid-fourbyte 1 1000) [1, 1, 232, 3])
+
+  check-nodeid-numeric : Integer
+  check-nodeid-numeric = flag (bytes-eq (opcua-nodeid-numeric 2 66666) [2, 2, 0, 106, 4, 1, 0])
+
+  check-header : Integer
+  check-header =
+   flag (bytes-eq (opcua-msg-header opcua-type-hel opcua-chunk-final 32) [72, 69, 76, 70, 32, 0, 0, 0])
+
+  check-hello : Integer
+  check-hello =
+   let expect = [72, 69, 76, 70, 56, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 24, 0, 0, 0, 111, 112, 99, 46, 116, 99, 112, 58, 47, 47, 108, 111, 99, 97, 108, 104, 111, 115, 116, 58, 52, 56, 52, 48]
+   in flag (bytes-eq (opcua-hello 0 65536 65536 16777216 0 "opc.tcp://localhost:4840") expect)
+
+  check-ack : Integer
+  check-ack =
+   let expect = [65, 67, 75, 70, 28, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0]
+   in flag (bytes-eq (opcua-ack 0 65536 65536 16777216 0) expect)
+
+Section: Secure Conversation Checks
+
+ The wide built-ins, the asymmetric security header (whose policy string is
+ checked against a hardcoded ASCII array), a RequestHeader, and the full
+ OpenSecureChannel (OPN) and GetEndpoints (MSG) service chunks, each checked
+ against opcua_truth.py.
+
+  test-request-header : List Integer
+  test-request-header = opcua-request-header (opcua-nodeid-twobyte 0) 0 1 0 0
+
+  check-u64 : Integer
+  check-u64 = flag (bytes-eq (opcua-u64-le #1122334455667788) [136, 119, 102, 85, 68, 51, 34, 17])
+
+  check-datetime : Integer
+  check-datetime = flag (bytes-eq (opcua-datetime 133000000000000000) [0, 128, 32, 155, 203, 130, 216, 1])
+
+  check-bytestring : Integer
+  check-bytestring = flag (bytes-eq (opcua-bytestring [1, 2, 3]) [3, 0, 0, 0, 1, 2, 3])
+
+  check-bytestring-null : Integer
+  check-bytestring-null = flag (bytes-eq opcua-bytestring-null [255, 255, 255, 255])
+
+  check-asym-header : Integer
+  check-asym-header =
+   let expect = [47, 0, 0, 0, 104, 116, 116, 112, 58, 47, 47, 111, 112, 99, 102, 111, 117, 110, 100, 97, 116, 105, 111, 110, 46, 111, 114, 103, 47, 85, 65, 47, 83, 101, 99, 117, 114, 105, 116, 121, 80, 111, 108, 105, 99, 121, 35, 78, 111, 110, 101, 255, 255, 255, 255, 255, 255, 255, 255]
+   in flag (bytes-eq opcua-asym-security-header-none expect)
+
+  check-request-header : Integer
+  check-request-header =
+   let expect = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 255, 255, 255, 255, 0, 0, 0, 0, 0, 0, 0]
+   in flag (bytes-eq test-request-header expect)
+
+  check-osc-body : Integer
+  check-osc-body =
+   let expect = [1, 0, 190, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 255, 255, 255, 255, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 255, 255, 255, 255, 128, 238, 54, 0]
+   in flag (bytes-eq (opcua-open-secure-channel-body test-request-header 0 0 1 3600000) expect)
+
+  check-opn : Integer
+  check-opn =
+   let expect = [79, 80, 78, 70, 132, 0, 0, 0, 0, 0, 0, 0, 47, 0, 0, 0, 104, 116, 116, 112, 58, 47, 47, 111, 112, 99, 102, 111, 117, 110, 100, 97, 116, 105, 111, 110, 46, 111, 114, 103, 47, 85, 65, 47, 83, 101, 99, 117, 114, 105, 116, 121, 80, 111, 108, 105, 99, 121, 35, 78, 111, 110, 101, 255, 255, 255, 255, 255, 255, 255, 255, 1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 190, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 255, 255, 255, 255, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 255, 255, 255, 255, 128, 238, 54, 0]
+   in flag (bytes-eq (opcua-opn 0 1 1 (opcua-open-secure-channel-body test-request-header 0 0 1 3600000)) expect)
+
+  check-get-endpoints-body : Integer
+  check-get-endpoints-body =
+   let expect = [1, 0, 172, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 255, 255, 255, 255, 0, 0, 0, 0, 0, 0, 0, 24, 0, 0, 0, 111, 112, 99, 46, 116, 99, 112, 58, 47, 47, 108, 111, 99, 97, 108, 104, 111, 115, 116, 58, 52, 56, 52, 48, 255, 255, 255, 255, 255, 255, 255, 255]
+   in flag (bytes-eq (opcua-get-endpoints-body test-request-header "opc.tcp://localhost:4840") expect)
+
+  check-msg : Integer
+  check-msg =
+   let expect = [77, 83, 71, 70, 93, 0, 0, 0, 5, 0, 0, 0, 7, 0, 0, 0, 51, 0, 0, 0, 52, 0, 0, 0, 1, 0, 172, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 255, 255, 255, 255, 0, 0, 0, 0, 0, 0, 0, 24, 0, 0, 0, 111, 112, 99, 46, 116, 99, 112, 58, 47, 47, 108, 111, 99, 97, 108, 104, 111, 115, 116, 58, 52, 56, 52, 48, 255, 255, 255, 255, 255, 255, 255, 255]
+   in flag (bytes-eq (opcua-msg 5 7 51 52 (opcua-get-endpoints-body test-request-header "opc.tcp://localhost:4840")) expect)
+
+  opening : Integer =
+   check-u32 + check-string + check-string-null + check-boolean + check-nodeid-twobyte + check-nodeid-fourbyte + check-nodeid-numeric + check-header + check-hello + check-ack + check-u64 + check-datetime + check-bytestring + check-bytestring-null + check-asym-header + check-request-header + check-osc-body + check-opn + check-get-endpoints-body + check-msg

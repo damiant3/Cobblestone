@@ -151,13 +151,18 @@ Section: Partition Entry Parsing
       gp-name = gpt-read-name buf (off + 56)
     }
 
-  gpt-read-entries : Integer, Integer, Integer, Integer, List GptPartition -> List GptPartition
+  gpt-read-entries : Integer, Integer, Integer, Integer, List GptPartition -> [Device.Block] List GptPartition
   gpt-read-entries (start-lba) (entry-size) (count) (i) (acc) =
     if i >= count then acc
-    else let entries-per-sector = 512 / entry-size
-    in let sector = start-lba + i / entries-per-sector
+    else act
+      buf <- block-read-sector (start-lba + i / (512 / entry-size))
+      gpt-read-entries-step start-lba entry-size count i acc buf
+    end
+
+  gpt-read-entries-step : Integer, Integer, Integer, Integer, List GptPartition, Integer -> [Device.Block] List GptPartition
+  gpt-read-entries-step (start-lba) (entry-size) (count) (i) (acc) (buf) =
+    let entries-per-sector = 512 / entry-size
     in let off-in-sector = (i - (i / entries-per-sector) * entries-per-sector) * entry-size
-    in let buf = block-read-sector sector
     in let entry = gpt-parse-entry buf off-in-sector
     in if gpt-guid-is-zero (entry.gp-type-guid) then acc
     else gpt-read-entries start-lba entry-size count (i + 1) (list-push acc entry)
@@ -170,27 +175,40 @@ Section: MBR Check
 
 Section: Read GPT
 
-  gpt-read : Maybe GptDisk
-  gpt-read =
-    let mbr-buf = block-read-sector 0
-    in if gpt-check-mbr mbr-buf == False then None
-    else let hdr-buf = block-read-sector 1
-    in if gpt-check-signature hdr-buf == False then None
-    else let entry-start-lba = gpt-read-u64 hdr-buf 72
-    in let entry-count = gpt-read-u32 hdr-buf 80
-    in let entry-size = gpt-read-u32 hdr-buf 84
-    in let disk-guid = gpt-read-guid hdr-buf 56
-    in let backup-lba = gpt-read-u64 hdr-buf 32
-    in let total-sectors = backup-lba + 1
-    in let parts = gpt-read-entries entry-start-lba entry-size entry-count 0 []
-    in Just (GptDisk {
+  gpt-read : [Device.Block] Maybe GptDisk
+  gpt-read = act
+    mbr-buf <- block-read-sector 0
+    gpt-read-after-mbr mbr-buf
+  end
+
+  gpt-read-after-mbr : Integer -> [Device.Block] Maybe GptDisk
+  gpt-read-after-mbr (mbr-buf) =
+    if gpt-check-mbr mbr-buf == False then None
+    else act
+      hdr-buf <- block-read-sector 1
+      gpt-read-after-hdr hdr-buf
+    end
+
+  gpt-read-after-hdr : Integer -> [Device.Block] Maybe GptDisk
+  gpt-read-after-hdr (hdr-buf) =
+    if gpt-check-signature hdr-buf == False then None
+    else let disk-guid = gpt-read-guid hdr-buf 56
+    in let total-sectors = gpt-read-u64 hdr-buf 32 + 1
+    in act
+      parts <- gpt-read-entries (gpt-read-u64 hdr-buf 72) (gpt-read-u32 hdr-buf 84) (gpt-read-u32 hdr-buf 80) 0 []
+      gpt-make-disk disk-guid total-sectors parts
+    end
+
+  gpt-make-disk : List Integer, Integer, List GptPartition -> Maybe GptDisk
+  gpt-make-disk (disk-guid) (total-sectors) (parts) =
+    Just (GptDisk {
       gd-disk-guid = disk-guid,
       gd-partition-count = list-length parts,
       gd-partitions = parts,
       gd-total-sectors = total-sectors
     })
 
-  gpt-read-partition : Integer -> Maybe GptPartition
+  gpt-read-partition : Integer -> [Device.Block] Maybe GptPartition
   gpt-read-partition (index) =
     when gpt-read
       is Just (disk) ->
@@ -226,16 +244,22 @@ Section: CRC32 for GPT
     in let idx = bit-and (bit-xor crc b) 255
     in gpt-rt-crc32-loop data (bit-xor (bit-shru crc 8) (list-at gpt-rt-crc32-table idx)) (i + 1) len
 
-  gpt-rt-crc32-sector : Integer, Integer, Integer -> Integer
+  gpt-rt-crc32-sector : Integer, Integer, Integer -> [Device.Block] Integer
   gpt-rt-crc32-sector (start-lba) (sector-count) (byte-len) =
     gpt-rt-crc32-sectors-loop start-lba sector-count byte-len 4294967295 0
 
-  gpt-rt-crc32-sectors-loop : Integer, Integer, Integer, Integer, Integer -> Integer
+  gpt-rt-crc32-sectors-loop : Integer, Integer, Integer, Integer, Integer -> [Device.Block] Integer
   gpt-rt-crc32-sectors-loop (lba) (remaining) (byte-len) (crc) (bytes-done) =
     if remaining <= 0 then bit-xor crc 4294967295
     else if bytes-done >= byte-len then bit-xor crc 4294967295
-    else let buf = block-read-sector lba
-    in let this-bytes = if byte-len - bytes-done < 512 then byte-len - bytes-done else 512
+    else act
+      buf <- block-read-sector lba
+      gpt-rt-crc32-sectors-step lba remaining byte-len crc bytes-done buf
+    end
+
+  gpt-rt-crc32-sectors-step : Integer, Integer, Integer, Integer, Integer, Integer -> [Device.Block] Integer
+  gpt-rt-crc32-sectors-step (lba) (remaining) (byte-len) (crc) (bytes-done) (buf) =
+    let this-bytes = if byte-len - bytes-done < 512 then byte-len - bytes-done else 512
     in let new-crc = gpt-rt-crc32-buf-loop buf crc 0 this-bytes
     in gpt-rt-crc32-sectors-loop (lba + 1) (remaining - 1) byte-len new-crc (bytes-done + this-bytes)
 
@@ -247,6 +271,9 @@ Section: CRC32 for GPT
     in gpt-rt-crc32-buf-loop buf (bit-xor (bit-shru crc 8) (list-at gpt-rt-crc32-table idx)) (i + 1) len
 
 Section: Write GPT
+
+  gpt-done : Integer -> Boolean
+  gpt-done (w) = True
 
   gpt-write-name-utf16 : Integer, Integer, Text, Integer -> Integer
   gpt-write-name-utf16 (buf) (off) (name) (i) =
@@ -265,12 +292,22 @@ Section: Write GPT
     else let w = poke-byte buf i 0
     in gpt-zero-loop buf (i + 1)
 
-  gpt-write-table : List GptPartitionSpec, Integer, List Integer -> Boolean
+  gpt-write-table : List GptPartitionSpec, Integer, List Integer -> [Device.Block] Boolean
   gpt-write-table (specs) (total-sectors) (disk-guid) =
     let entry-buf = alloc-bytes 512
     in let hdr-buf = alloc-bytes 512
     in let mbr-buf = alloc-bytes 512
-    in let z0 = gpt-zero-sector mbr-buf
+    in let m = gpt-build-protective-mbr mbr-buf total-sectors
+    in act
+      block-write-sector 0 mbr-buf
+      pe-crc <- gpt-write-entries (gpt-layout-partitions specs total-sectors 2048 []) entry-buf 2 0
+      gpt-build-header hdr-buf total-sectors disk-guid pe-crc
+      gpt-done (block-write-sector 1 hdr-buf)
+    end
+
+  gpt-build-protective-mbr : Integer, Integer -> Integer
+  gpt-build-protective-mbr (mbr-buf) (total-sectors) =
+    let z0 = gpt-zero-sector mbr-buf
     in let w0 = poke-byte mbr-buf 446 0
     in let w1 = poke-byte mbr-buf 449 2
     in let w2 = poke-byte mbr-buf 450 238
@@ -281,11 +318,11 @@ Section: Write GPT
     in let w6 = gpt-write-u32 mbr-buf 454 1
     in let w7 = gpt-write-u32 mbr-buf 458 mbr-sec
     in let w8 = poke-byte mbr-buf 510 85
-    in let w9 = poke-byte mbr-buf 511 170
-    in let w10 = block-write-sector 0 mbr-buf
-    in let parts = gpt-layout-partitions specs total-sectors 2048 []
-    in let pe-crc = gpt-write-entries parts entry-buf 2 0
-    in let z1 = gpt-zero-sector hdr-buf
+    in poke-byte mbr-buf 511 170
+
+  gpt-build-header : Integer, Integer, List Integer, Integer -> Integer
+  gpt-build-header (hdr-buf) (total-sectors) (disk-guid) (pe-crc) =
+    let z1 = gpt-zero-sector hdr-buf
     in let w11 = poke-byte hdr-buf 0 69
     in let w12 = poke-byte hdr-buf 1 70
     in let w13 = poke-byte hdr-buf 2 73
@@ -307,9 +344,7 @@ Section: Write GPT
     in let w29 = gpt-write-u32 hdr-buf 88 pe-crc
     in let hdr-bytes = gpt-read-buf-bytes hdr-buf 0 92 []
     in let hdr-crc = gpt-rt-crc32-bytes hdr-bytes 92
-    in let w30 = gpt-write-u32 hdr-buf 16 hdr-crc
-    in let w31 = block-write-sector 1 hdr-buf
-    in True
+    in gpt-write-u32 hdr-buf 16 hdr-crc
 
   gpt-read-buf-bytes : Integer, Integer, Integer, List Integer -> List Integer
   gpt-read-buf-bytes (buf) (off) (len) (acc) =
@@ -352,7 +387,7 @@ Section: Partition Layout
 
 Section: Write Partition Entries
 
-  gpt-write-entries : List GptPartEntry, Integer, Integer, Integer -> Integer
+  gpt-write-entries : List GptPartEntry, Integer, Integer, Integer -> [Device.Block] Integer
   gpt-write-entries (parts) (buf) (start-lba) (i) =
     if i >= 128 then
       gpt-rt-crc32-sector start-lba 32 (32 * 512)
@@ -361,9 +396,10 @@ Section: Write Partition Entries
       in let entries-per-sector = 512 / 128
       in let sector = start-lba + i / entries-per-sector
       in let off = (i - (i / entries-per-sector) * entries-per-sector) * 128
-      in if off == 0 then
-        let ws = block-write-sector sector buf
-        in gpt-write-entries parts buf start-lba (i + entries-per-sector)
+      in if off == 0 then act
+        block-write-sector sector buf
+        gpt-write-entries parts buf start-lba (i + entries-per-sector)
+      end
       else gpt-write-entries parts buf start-lba (i + 1)
     else let part = list-at parts i
     in let entries-per-sector = 512 / 128
@@ -375,9 +411,11 @@ Section: Write Partition Entries
     in let w2 = gpt-write-u64 buf (off + 32) (part.ge-start-lba)
     in let w3 = gpt-write-u64 buf (off + 40) (part.ge-end-lba)
     in let w4 = gpt-write-name-utf16 buf (off + 56) (part.ge-name) 0
-    in let need-flush = off + 128 >= 512
-    in let w5 = if need-flush then block-write-sector sector buf else 0
-    in gpt-write-entries parts buf start-lba (i + 1)
+    in if off + 128 >= 512 then act
+      block-write-sector sector buf
+      gpt-write-entries parts buf start-lba (i + 1)
+    end
+    else gpt-write-entries parts buf start-lba (i + 1)
 
 Section: Well-Known GUIDs
 
@@ -398,19 +436,21 @@ Section: Well-Known GUIDs
 
 Section: Quick Wipe
 
-  gpt-wipe-quick : Integer -> Boolean
+  gpt-wipe-quick : Integer -> [Device.Block] Boolean
   gpt-wipe-quick (total-sectors) =
     let buf = alloc-bytes 512
     in let z = gpt-zero-sector buf
-    in let w0 = gpt-wipe-sectors buf 0 2048
-    in let backup-start = total-sectors - 34
-    in let w1 = gpt-wipe-sectors buf backup-start 34
-    in True
+    in act
+      gpt-wipe-sectors buf 0 2048
+      gpt-done (gpt-wipe-sectors buf (total-sectors - 34) 34)
+    end
 
-  gpt-wipe-sectors : Integer, Integer, Integer -> Integer
+  gpt-wipe-sectors : Integer, Integer, Integer -> [Device.Block] Integer
   gpt-wipe-sectors (buf) (start) (count) =
     if count <= 0 then 0
-    else let w = block-write-sector start buf
-    in gpt-wipe-sectors buf (start + 1) (count - 1)
+    else act
+      block-write-sector start buf
+      gpt-wipe-sectors buf (start + 1) (count - 1)
+    end
 
 Page 1

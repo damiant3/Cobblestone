@@ -35,7 +35,7 @@ Each test `foo.codex` may have sidecars that control its behavior:
 
 A test with no sidecar compiles but is unverified (PASS_UNVERIFIED).
 
-## Current State (2026-06-26, CL 6111)
+## Current State (2026-07-04, CL 6993)
 
 99 individual tests consolidated into 11 smoke bundles (unit-smoke,
 rt-smoke, try-smoke, prose-smoke, linear-smoke, linear-errors,
@@ -46,18 +46,28 @@ multiple features in a single VM boot, cutting battery time ~60%.
 BVT mode (`build/build.ps1` default): runs a 10-test subset for
 fast iteration (~18s). Full battery: `build/test.ps1 -Jobs 4`.
 
-Cross-architecture testing: ARM64 135/135 (100%), RISC-V 135/135
-(100%). See the Cross-Architecture Battery section below.
+The default battery grew from ~192 to ~294 over the vision-check
+campaign: each closed by-construction hole shipped its adversarial
+probe as a `codex/test/errors/*.failing` negative test (linear
+laundering, effect laundering, capability laundering, bounded-signature
+out-of-range), and the IoT protocol build-out added ~25
+`*-encode.codex` known-answer tests.
+
+Cross-architecture testing: ARM64 135/135 (100%). RISC-V is at ~132 on
+the committed Renode board after a plug-repair campaign; parity work is
+ongoing (the earlier "135/135" was measured against an uncommitted
+large-memory emulator override, not the committed board). See the
+Cross-Architecture Battery section below.
 
 ### Default Battery (`build/test.ps1`)
 
 | Category | Count |
 |----------|-------|
-| PASS_EXPECTED | ~182 |
+| PASS_EXPECTED | ~294 |
 | PASS_FAILING | 0 |
-| SKIPPED | 10 |
+| SKIPPED | 15 |
 | FAIL | 0 |
-| **Total** | **~192** |
+| **Total** | **~294 pass / 0 fail / 15 skip** |
 
 ### Full Battery (`build/test.ps1 -Apps`)
 
@@ -185,7 +195,7 @@ pure-TCO, expanded frameless TCO with temp-only locals, direct
 arg-reg emission for N-arg calls, reordered mixed-TCO (call-first
 simple-after), last-arg skip in TCO shuffle.
 
-Renode board: RV64GC, PLIC/CLINT, NS16550 UART, 256 MB RAM at 0x80000000.
+Renode board: RV64GC, PLIC/CLINT, NS16550 UART, 1 GB RAM at 0x80000000.
 
 ### Plug Build
 

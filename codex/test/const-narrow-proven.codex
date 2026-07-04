@@ -1,0 +1,49 @@
+Chapter: ConstNarrowProven
+
+ First slice of the bounds-prover reach campaign
+ (BoundsProverReach.md): a value expression built from
+ literal-defined constants proves its range at a bounded store, so
+ the CDX2051 silent-truncation warning is elided and the CDX2053
+ proven info is reported instead. Covers the expression shapes the
+ checker-side analysis recognizes — a constant name, an
+ if-expression joining two constants, a let body, and a constant in
+ ctor-payload and __record-set position. The deliberately unprovable
+ store (a plain parameter) is rejected since CDX2051 became an error;
+ its twin lives in errors/narrowing-unproven. The sidecars assert the
+ proven diagnostic and the in-range runtime behavior.
+
+Section: Constants
+
+  code-a : Integer = 41
+
+  code-b : Integer = 202
+
+Section: Definitions
+
+  Entry = record {
+   code : Integer between 0 and 255
+  }
+
+  Wrapped =
+   | MkWrapped (Integer between 0 and 255)
+
+  unwrap : Wrapped -> Integer
+  unwrap (w) = when w
+   is MkWrapped (v) -> v
+
+  make-direct : Boolean -> Entry
+  make-direct (flag) = Entry { code = if flag then code-a else code-b }
+
+  make-via-let : Integer -> Entry
+  make-via-let (n) = Entry { code = let unused = n in code-a }
+
+  set-code : Entry -> Entry
+  set-code (e) = __record-set e "code" code-b
+
+  opening : [Console] Nothing = act
+   print-line-uni (integer-to-text ((make-direct True).code))
+   print-line-uni (integer-to-text ((make-direct False).code))
+   print-line-uni (integer-to-text ((make-via-let 7).code))
+   print-line-uni (integer-to-text (unwrap (MkWrapped code-b)))
+   print-line-uni (integer-to-text ((set-code (make-direct True)).code))
+  end

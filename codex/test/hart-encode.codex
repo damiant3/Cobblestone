@@ -1,0 +1,63 @@
+Chapter: HartEncodeTest
+
+  cites Encode chapter Hart
+
+ Exercise the HART builders: the longitudinal XOR checksum, short
+ address packing, short-frame requests (read unique id, read primary
+ variable, set polling address with data), and a long-address frame
+ with a five-octet unique identifier. Byte sequences and the checksum
+ are checked against an independent reference computed by hart_truth.py.
+ opening returns the count of passing checks.
+
+Section: Helpers
+
+  bytes-eq : List Integer, List Integer -> Boolean
+  bytes-eq (a) (b) =
+   if list-length a /= list-length b then False
+   else bytes-eq-loop a b 0 (list-length a)
+
+  bytes-eq-loop : List Integer, List Integer, Integer, Integer -> Boolean
+  bytes-eq-loop (a) (b) (i) (len) =
+   if i >= len then True
+   else if list-at a i /= list-at b i then False
+   else bytes-eq-loop a b (i + 1) len
+
+  flag : Boolean -> Integer
+  flag (b) = if b then 1 else 0
+
+Section: Checks
+
+  check-checksum : Integer
+  check-checksum = flag (hart-checksum [1, 2, 3] == 0)
+
+  check-short-address : Integer
+  check-short-address = flag (hart-short-address 0 True == 128)
+
+  check-short-cmd0 : Integer
+  check-short-cmd0 =
+   flag (bytes-eq (hart-short-frame (hart-short-address 0 True) hart-cmd-read-unique-id [])
+     [255, 255, 255, 255, 255, 2, 128, 0, 0, 130])
+
+  check-short-cmd1 : Integer
+  check-short-cmd1 =
+   flag (bytes-eq (hart-short-frame (hart-short-address 0 True) hart-cmd-read-pv [])
+     [255, 255, 255, 255, 255, 2, 128, 1, 0, 131])
+
+  check-short-cmd6 : Integer
+  check-short-cmd6 =
+   flag (bytes-eq (hart-short-frame (hart-short-address 0 True) hart-cmd-set-polling-address [5])
+     [255, 255, 255, 255, 255, 2, 128, 6, 1, 5, 128])
+
+  check-long-cmd0 : Integer
+  check-long-cmd0 =
+   flag (bytes-eq (hart-long-frame [#26, #06, #12, #34, #56] hart-cmd-read-unique-id [])
+     [255, 255, 255, 255, 255, 130, 38, 6, 18, 52, 86, 0, 0, 210])
+
+  opening : Integer =
+   let a = check-checksum
+   in let b = check-short-address
+   in let c = check-short-cmd0
+   in let d = check-short-cmd1
+   in let e = check-short-cmd6
+   in let f = check-long-cmd0
+   in a + b + c + d + e + f

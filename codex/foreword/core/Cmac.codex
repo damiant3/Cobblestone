@@ -1,0 +1,94 @@
+Chapter: Cmac
+  cites Foreword chapter Aes
+
+ AES-CMAC message authentication per RFC 4493 (NIST SP 800-38B). A
+ keyed 128-bit tag over an arbitrary-length message, built on AES-128.
+ CMAC is the MIC primitive for LoRaWAN and a building block for many
+ IoT security protocols. Operates on List Integer byte arrays; the key
+ and the tag are 16 bytes.
+
+ The construction derives two subkeys K1 and K2 from the encryption of
+ a zero block, then CBC-MAC-chains the message, XORing the final block
+ with K1 (message a whole number of blocks) or with K2 (final block
+ padded with 0x80 then zeros).
+
+Section: Constants
+
+  cmac-zero-block : List Integer = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+  cmac-rb-block : List Integer = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 135]
+
+Section: Subkey Generation
+
+ A subkey is the input block shifted left one bit; if the input's top
+ bit was set, the result is XORed with the Rb constant (0x87 in the
+ last byte).
+
+  cmac-msb : List Integer -> Integer
+  cmac-msb (block) = bit-and (bit-shru (list-at block 0) 7) 1
+
+  cmac-shift-left : List Integer -> List Integer
+  cmac-shift-left (block) = cmac-shift-loop block 0 16 []
+
+  cmac-shift-loop : List Integer, Integer, Integer, List Integer -> List Integer
+  cmac-shift-loop (block) (i) (n) (acc) =
+   if i >= n then acc
+   else let hi = bit-and (bit-shl (list-at block i) 1) 255
+   in let carry = if i + 1 < n then bit-and (bit-shru (list-at block (i + 1)) 7) 1 else 0
+   in cmac-shift-loop block (i + 1) n (list-push acc (bit-or hi carry))
+
+  cmac-subkey : List Integer -> List Integer
+  cmac-subkey (block) =
+   let shifted = cmac-shift-left block
+   in if cmac-msb block == 0 then shifted else aes-xor-blocks shifted cmac-rb-block
+
+Section: Padding
+
+ Pad a final partial block to 16 bytes: the message bytes, then 0x80,
+ then zeros.
+
+  cmac-pad : List Integer, Integer, Integer -> List Integer
+  cmac-pad (msg) (offset) (rem) = cmac-pad-loop msg offset rem 0 []
+
+  cmac-pad-loop : List Integer, Integer, Integer, Integer, List Integer -> List Integer
+  cmac-pad-loop (msg) (offset) (rem) (i) (acc) =
+   if i >= 16 then acc
+   else if i < rem then cmac-pad-loop msg offset rem (i + 1) (list-push acc (list-at msg (offset + i)))
+   else if i == rem then cmac-pad-loop msg offset rem (i + 1) (list-push acc 128)
+   else cmac-pad-loop msg offset rem (i + 1) (list-push acc 0)
+
+Section: CMAC
+
+ CBC-MAC chain over the leading complete blocks, producing the running
+ value X fed into the final block.
+
+  cmac-chain : List Integer, List Integer, Integer, Integer, List Integer -> List Integer
+  cmac-chain (msg) (exp) (i) (count) (x) =
+   if i >= count then x
+   else cmac-chain msg exp (i + 1) count (aes-encrypt-block (aes-xor-blocks x (aes-get-block msg (i * 16))) exp)
+
+  aes-cmac : List Integer, List Integer -> List Integer
+  aes-cmac (key) (msg) =
+   let exp = aes-expand-key-128 key
+   in let l = aes-encrypt-block cmac-zero-block exp
+   in let k1 = cmac-subkey l
+   in let k2 = cmac-subkey k1
+   in let len = list-length msg
+   in cmac-finish msg exp k1 k2 len (bit-and len 15) (bit-shru len 4)
+
+  cmac-finish : List Integer, List Integer, List Integer, List Integer, Integer, Integer, Integer -> List Integer
+  cmac-finish (msg) (exp) (k1) (k2) (len) (rem) (nblocks) =
+   if len == 0 then aes-encrypt-block (aes-xor-blocks (cmac-pad msg 0 0) k2) exp
+   else if rem == 0 then cmac-finish-full msg exp k1 (nblocks - 1)
+   else cmac-finish-partial msg exp k2 nblocks rem
+
+  cmac-finish-full : List Integer, List Integer, List Integer, Integer -> List Integer
+  cmac-finish-full (msg) (exp) (k1) (count) =
+   let x = cmac-chain msg exp 0 count cmac-zero-block
+   in let last = aes-xor-blocks (aes-get-block msg (count * 16)) k1
+   in aes-encrypt-block (aes-xor-blocks x last) exp
+
+  cmac-finish-partial : List Integer, List Integer, List Integer, Integer, Integer -> List Integer
+  cmac-finish-partial (msg) (exp) (k2) (nblocks) (rem) =
+   let x = cmac-chain msg exp 0 nblocks cmac-zero-block
+   in let last = aes-xor-blocks (cmac-pad msg (nblocks * 16) rem) k2
+   in aes-encrypt-block (aes-xor-blocks x last) exp

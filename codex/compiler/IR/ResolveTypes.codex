@@ -9,7 +9,7 @@ Section: Type Resolution
   strip-fun-args-resolve : CodexType -> CodexType
   strip-fun-args-resolve (ty) =
    when ty
-    is FunTy (p) (r) -> strip-fun-args-resolve r
+    is FunTy (p) (row) (r) -> strip-fun-args-resolve r
     is otherwise -> ty
 
   resolve-ty-deep : List TypeBinding, CodexType -> CodexType
@@ -20,18 +20,20 @@ Section: Type Resolution
      else let raw = lookup-type-bsearch tdefs (cname.value)
      in when raw
       is RecordTy (rn) (ra) (rf) | SumTy (sn) (sa) (sc) -> raw
-      is FunTy (p) (r) -> strip-fun-args-resolve r
+      is FunTy (p) (row) (r) -> strip-fun-args-resolve r
       is otherwise -> deck-record (ConstructedTy cname [])
-    is FunTy (p) (r) -> deck-record (FunTy (resolve-ty-deep tdefs p) (resolve-ty-deep tdefs r))
+    is FunTy (p) (row) (r) -> deck-record (FunTy (resolve-ty-deep tdefs p) row (resolve-ty-deep tdefs r))
     is ListTy (e) -> deck-record (ListTy (resolve-ty-deep tdefs e))
     is LinkedListTy (e) -> deck-record (LinkedListTy (resolve-ty-deep tdefs e))
     is ForAllTy (id) (body) -> deck-record (ForAllTy id (resolve-ty-deep tdefs body))
+    is ForAllEff (id) (body) -> deck-record (ForAllEff id (resolve-ty-deep tdefs body))
     is EffectfulTy (effs) (sc) (ret) -> deck-record (EffectfulTy effs sc (resolve-ty-deep tdefs ret))
     is UnitTy (n) (inner) -> deck-record (UnitTy n (resolve-ty-deep tdefs inner))
     is VectorTy (vn) (vt) -> deck-record (VectorTy vn (resolve-ty-deep tdefs vt))
     is VectorMaskTy (n) -> ty
     is TypeApply (tf) (ta) -> let rf = resolve-ty-deep tdefs tf in let ra = resolve-ty-deep tdefs ta in when rf is TypeCon (rn) -> if rn.value == "List" then deck-record (ListTy ra) else deck-record (ConstructedTy rn [ra]) is otherwise -> deck-record (TypeApply rf ra)
     is TypeCon (n) -> ty
+    is LinearTy (linner) -> resolve-ty-deep tdefs linner
     is otherwise -> ty
 
 Section: IR Rewrite

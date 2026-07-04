@@ -284,14 +284,21 @@ build/test.ps1 -Jobs 4
 ### Renode (cross-architecture board testing)
 
 Renode v1.16.1 provides cycle-accurate simulation for ARM64 and
-RISC-V 64 targets. Install the portable zip to `tools/renode/`.
+RISC-V 64 targets. Install the runtime **once per box** — extract the
+`renode-1.16.1.windows-portable-dotnet.zip` to `C:\Renode` (so
+`C:\Renode\renode.exe` exists), or set `$env:CODEX_RENODE_HOME` to any
+Renode install dir. Every workspace finds it via `build/renode-config.ps1`
+(`Get-RenodeExe`), which probes `CODEX_RENODE_HOME`, then `C:\Renode`,
+then `%LOCALAPPDATA%\Renode`, then a legacy `tools/renode/` copy. Only the
+board `.repl` files under `tools/renode/codex/` are tracked per-workspace;
+the ~120 MB runtime is not.
 
 **Board definitions** (in `tools/renode/codex/`):
 
 | Board | CPU | UART | RAM |
 |---|---|---|---|
-| `codex-arm64.repl` | Cortex-A53 (GICv3) | PL011 @ 0x09000000 | 256MB @ 0x40000000 |
-| `codex-riscv64.repl` | RV64GC (PLIC/CLINT) | NS16550 @ 0x10000000 | 256MB @ 0x80000000 |
+| `codex-arm64.repl` | Cortex-A53 (GICv3) | PL011 @ 0x09000000 | 1GB @ 0x40000000 |
+| `codex-riscv64.repl` | RV64GC (PLIC/CLINT) | NS16550 @ 0x10000000 | 1GB @ 0x80000000 |
 
 **Quick test** (requires plugs built first):
 
@@ -305,9 +312,9 @@ build/test-boards.ps1 -Arch riscv64      # RISC-V only
 protocol → compile-arm64/riscv.ps1 (ELF) → Renode (UART capture).
 
 **Setup from scratch**:
-1. Download Renode v1.16.1 portable zip from GitHub releases
-2. Extract to `tools/renode/`
-3. Create `tools/renode/codex/` with the `.repl` board files
+1. Download the Renode v1.16.1 `windows-portable-dotnet` zip from GitHub releases
+2. Extract box-wide to `C:\Renode` (or set `$env:CODEX_RENODE_HOME`)
+3. The `.repl` board files under `tools/renode/codex/` are already tracked
 4. Build plugs: `codex/plugs/arm64/build.ps1`, `codex/plugs/riscv/build.ps1`
 5. Run `build/test-boards.ps1`
 

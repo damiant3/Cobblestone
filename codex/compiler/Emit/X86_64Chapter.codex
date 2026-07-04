@@ -265,9 +265,10 @@ Section: Bare-Metal Start
   emit-opening-print-sum-fields (st) (fields) (formal-params) (actual-args) (sum-local) (i) (len) =
    if i >= len then st
    else let st0 = emit-serial-wait-and-send st 32
-   in let fty = resolve-field-type (list-at fields i) formal-params actual-args
+   in let decl-ty = list-at fields i
+   in let fty = resolve-field-type decl-ty formal-params actual-args
    in let sum-ld = load-local st0 (sum-local)
-   in let st1 = st-append-code (sum-ld.state) (mov-load reg-rax (sum-ld.reg) ((1 + i) * 8))
+   in let st1 = st-append-code (sum-ld.state) (emit-narrow-load (field-byte-width decl-ty) (field-byte-signed decl-ty) reg-rax (sum-ld.reg) (sum-ctor-field-offset fields i))
    in let st2 = emit-opening-print-field st1 fty
    in emit-opening-print-sum-fields st2 fields formal-params actual-args sum-local (i + 1) len
 
@@ -491,10 +492,7 @@ Section: Chapter Entry Point
 
   apply-one-patch-buf : Integer, PatchEntry -> Integer
   apply-one-patch-buf (base-addr) (p) =
-   __buf-write-byte base-addr (p.pos) (p.b0)
-   + __buf-write-byte base-addr (p.pos + 1) (p.b1)
-   + __buf-write-byte base-addr (p.pos + 2) (p.b2)
-   + __buf-write-byte base-addr (p.pos + 3) (p.b3)
+   buf-write-i32 base-addr (p.pos) (p.value)
 
   apply-all-patches-buf : Integer, List PatchEntry, Integer -> Integer
   apply-all-patches-buf (base-addr) (patches) (i) =
@@ -696,21 +694,8 @@ Section: Finalize
    else let po = list-at patch-offsets i
    in let tgt = list-at target-offsets i
    in let addr = text-base + tgt
-   in let addr-bytes = write-i64 addr
-   in let p0 = PatchEntry {
-    pos = po,
-    b0 = list-at addr-bytes 0,
-    b1 = list-at addr-bytes 1,
-    b2 = list-at addr-bytes 2,
-    b3 = list-at addr-bytes 3
-   }
-   in let p1 = PatchEntry {
-    pos = po + 4,
-    b0 = list-at addr-bytes 4,
-    b1 = list-at addr-bytes 5,
-    b2 = list-at addr-bytes 6,
-    b3 = list-at addr-bytes 7
-   }
+   in let p0 = make-i32-patch po (bit-and addr 4294967295)
+   in let p1 = make-i32-patch (po + 4) (floor-div addr 4294967296)
    in collect-direct-addr-patches patch-offsets target-offsets text-base (i + 1) (list-push (list-push acc p0) p1)
 
   build-offset-table-parallel : List Text, List Integer -> OffsetTable
@@ -734,8 +719,108 @@ Section: Finalize
    in let restored = __heap-restore hp
    in buf-copy-chunked dst (dst-off + chunk) src (src-off + chunk) (remaining - chunk)
 
-  x86-64-apply-patches-and-build-cdx : CodegenState, Integer, Boolean -> EmitChapterResult
-  x86-64-apply-patches-and-build-cdx (st) (far-jump-patch-pos) (has-oom) =
+Section: Capability Manifest
+
+ The manifest is derived from opening's resolved type: the effects
+ section lists every effect name on the performing spine, and the
+ capabilities section grants each effect's covering capability
+ (a dotted effect like Device.Port is covered by its base Device)
+ as a full-scope, unbounded-duration entry. The manifest sits after
+ rodata INSIDE the hashed and signed content, so the loader's fixed
+ 224-byte text offset is untouched and the signature covers what
+ the binary asks for. The verifier decodes both sections through
+ the header offsets, so file position is free to differ from the
+ verify-quire encoder's header-first layout.
+
+  manifest-opening-effects : List TypeBinding -> List Text
+  manifest-opening-effects (types) = manifest-find-opening types 0 (list-length types)
+
+  manifest-find-opening : List TypeBinding, Integer, Integer -> List Text
+  manifest-find-opening (types) (i) (len) =
+   if i >= len then []
+   else let t = list-at types i
+   in if t.name == "opening" then manifest-type-effects (t.bound-type) []
+      else manifest-find-opening types (i + 1) len
+
+  manifest-type-effects : CodexType, List Text -> List Text
+  manifest-type-effects (ty) (acc) =
+   when ty
+    is FunTy (p) (row) (r) -> manifest-type-effects r (manifest-label-names (row.labels) 0 (list-length (row.labels)) acc)
+    is ForAllTy (id) (b) -> manifest-type-effects b acc
+    is ForAllEff (id) (b) -> manifest-type-effects b acc
+    is EffectfulTy (effs) (sc) (inner) -> manifest-type-effects inner (manifest-name-values effs 0 (list-length effs) acc)
+    is otherwise -> acc
+
+  manifest-label-names : List EffectLabel, Integer, Integer, List Text -> List Text
+  manifest-label-names (ls) (i) (len) (acc) =
+   if i >= len then acc
+   else manifest-label-names ls (i + 1) len (manifest-add-name acc (((list-at ls i).name).value))
+
+  manifest-name-values : List Name, Integer, Integer, List Text -> List Text
+  manifest-name-values (ns) (i) (len) (acc) =
+   if i >= len then acc
+   else manifest-name-values ns (i + 1) len (manifest-add-name acc ((list-at ns i).value))
+
+  manifest-add-name : List Text, Text -> List Text
+  manifest-add-name (acc) (n) =
+   if manifest-name-in acc n 0 (list-length acc) then acc else list-push acc n
+
+  manifest-name-in : List Text, Text, Integer, Integer -> Boolean
+  manifest-name-in (xs) (n) (i) (len) =
+   if i >= len then False
+   else if list-at xs i == n then True
+   else manifest-name-in xs n (i + 1) len
+
+  manifest-effect-base : Text -> Text
+  manifest-effect-base (n) = manifest-base-loop n 0 (text-length n)
+
+  manifest-base-loop : Text, Integer, Integer -> Text
+  manifest-base-loop (n) (i) (len) =
+   if i >= len then n
+   else if char-code (char-at n i) == 46 then substring n 0 i
+   else manifest-base-loop n (i + 1) len
+
+  manifest-cap-id : Text -> Integer
+  manifest-cap-id (n) =
+   if n == "Console" then 0
+   else if n == "FileSystem" then 1
+   else if n == "Network" then 2
+   else if n == "Concurrent" then 3
+   else if n == "Device" then 4
+   else if n == "Gpu.Compute" then 5
+   else if n == "Gpu.Memory" then 6
+   else 0 - 1
+
+  manifest-cap-names : List Text, Integer, Integer, List Text -> List Text
+  manifest-cap-names (effs) (i) (len) (acc) =
+   if i >= len then acc
+   else let e = list-at effs i
+   in let cover = if manifest-cap-id e >= 0 then e else manifest-effect-base e
+   in if manifest-cap-id cover >= 0 then manifest-cap-names effs (i + 1) len (manifest-add-name acc cover)
+      else manifest-cap-names effs (i + 1) len acc
+
+  manifest-cap-bytes : List Text, Integer, Integer, List Integer -> List Integer
+  manifest-cap-bytes (caps) (i) (len) (acc) =
+   if i >= len then acc
+   else manifest-cap-bytes caps (i + 1) len (acc & cdx-le16 (manifest-cap-id (list-at caps i)) & cdx-le16 2 & cdx-le32 0 & cdx-le64 0)
+
+  manifest-text-bytes : Text, Integer, Integer, List Integer -> List Integer
+  manifest-text-bytes (s) (i) (len) (acc) =
+   if i >= len then acc
+   else manifest-text-bytes s (i + 1) len (list-push acc (char-code (char-at s i)))
+
+  manifest-eff-bytes : List Text, Integer, Integer, List Integer -> List Integer
+  manifest-eff-bytes (effs) (i) (len) (acc) =
+   if i >= len then acc
+   else let name = list-at effs i
+   in manifest-eff-bytes effs (i + 1) len (acc & cdx-le16 (text-length name) & manifest-text-bytes name 0 (text-length name) [])
+
+  manifest-effects-section : List Text -> List Integer
+  manifest-effects-section (effs) =
+   cdx-le16 (list-length effs) & manifest-eff-bytes effs 0 (list-length effs) []
+
+  x86-64-apply-patches-and-build-cdx : CodegenState, Integer, Boolean, List Text -> EmitChapterResult
+  x86-64-apply-patches-and-build-cdx (st) (far-jump-patch-pos) (has-oom) (manifest-effs) =
    let func-map = build-offset-table-parallel (st.fo-names) (st.fo-offsets)
    in let st2a = check-call-patch-targets st func-map 0
    in let st2b = check-func-addr-targets st2a func-map 0
@@ -757,8 +842,12 @@ Section: Finalize
    in let data-len = tbl.len
    in let text-aligned = align-up code-len 8
    in let content-len = text-aligned + data-len
-   in if content-len > st2d.workspace.code-capacity
-      then let st-err = st-add-error st2d cdx-resource-exhausted ("CDX content (" & integer-to-text content-len & " bytes) exceeds code-buffer capacity; raise code-buffer-size") synthetic-span
+   in let cap-names = manifest-cap-names manifest-effs 0 (list-length manifest-effs) []
+   in let cap-bytes = manifest-cap-bytes cap-names 0 (list-length cap-names) []
+   in let eff-bytes = if list-length manifest-effs == 0 then [] else manifest-effects-section manifest-effs
+   in let full-len = content-len + list-length cap-bytes + list-length eff-bytes
+   in if full-len > st2d.workspace.code-capacity
+      then let st-err = st-add-error st2d cdx-resource-exhausted ("CDX content (" & integer-to-text full-len & " bytes) exceeds code-buffer capacity; raise code-buffer-size") synthetic-span
        in EmitChapterResult {
         header-bytes = [],
         content-buf = 0,
@@ -769,34 +858,37 @@ Section: Finalize
        }
    else let zpad = __buf-write-bytes (st2d.workspace.code-buffer) code-len (cdx-zeros (text-aligned - code-len))
    in let cpy = buf-copy-chunked (st2d.workspace.code-buffer) text-aligned (st2d.workspace.data-buffer) 0 data-len
-   in let content-hash = sha256-buf (st2d.workspace.code-buffer) 0 content-len
+   in let wcap = __buf-write-bytes (st2d.workspace.code-buffer) content-len cap-bytes
+   in let weff = __buf-write-bytes (st2d.workspace.code-buffer) (content-len + list-length cap-bytes) eff-bytes
+   in let content-hash = sha256-buf (st2d.workspace.code-buffer) 0 full-len
    in let cdx-header-size = 224
-   in let cap-size = 0
-   in let text-offset = cdx-header-size + cap-size
+   in let text-offset = cdx-header-size
    in let rodata-offset = text-offset + text-aligned
+   in let cap-off-v = cdx-header-size + content-len
+   in let eff-off-v = cap-off-v + list-length cap-bytes
    in let func-count = list-length (st2d.fo-names)
    in let debug-map = build-debug-map (st2d.fo-names) (st2d.fo-offsets) code-len func-count
-   in let debug-off = if func-count > 0 then cdx-header-size + content-len else 0
-   in let header = cdx-build-header content-hash text-offset code-len rodata-offset data-len start-offset debug-off
+   in let debug-off = if func-count > 0 then cdx-header-size + full-len else 0
+   in let header = cdx-build-header content-hash text-offset code-len rodata-offset data-len start-offset debug-off cap-off-v (list-length cap-bytes) eff-off-v (list-length eff-bytes)
    in let smap = build-symbol-map (st2d.fo-names) (st2d.fo-offsets) bare-metal-load-addr code-len 0 func-count []
    in EmitChapterResult {
     header-bytes = header,
     content-buf = st2d.workspace.code-buffer,
-    content-len = content-len,
+    content-len = full-len,
     tail-bytes = debug-map,
     bag = st2d.bag,
     symbol-map = smap
    }
 
-  x86-64-finalize-cdx : CodegenState, Integer -> EmitChapterResult
-  x86-64-finalize-cdx (st1) (far-jump-patch-pos) =
+  x86-64-finalize-cdx : CodegenState, Integer, List Text -> EmitChapterResult
+  x86-64-finalize-cdx (st1) (far-jump-patch-pos) (manifest-effs) =
    let isr-result = emit-isr-stubs st1
    in let syscall-result = emit-syscall-handler (isr-result.state)
    in let st2 = emit-start (syscall-result.state) (isr-result.first-stub-vaddr) (syscall-result.handler-offset)
-   in x86-64-apply-patches-and-build-cdx st2 far-jump-patch-pos True
+   in x86-64-apply-patches-and-build-cdx st2 far-jump-patch-pos True manifest-effs
 
-  cdx-build-header : List Integer, Integer, Integer, Integer, Integer, Integer, Integer -> List Integer
-  cdx-build-header (hash) (text-off) (text-sz) (ro-off) (ro-sz) (entry-off) (debug-off) =
+  cdx-build-header : List Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> List Integer
+  cdx-build-header (hash) (text-off) (text-sz) (ro-off) (ro-sz) (entry-off) (debug-off) (cap-off-v) (cap-sz-v) (eff-off-v) (eff-sz-v) =
    let magic = [67, 68, 88, 49]
    in let version = cdx-le16 1
    in let flag-val = if debug-off > 0 then 19 else 3
@@ -804,10 +896,10 @@ Section: Finalize
    in let hash-bytes = cdx-hash-to-bytes hash 0 []
    in let author-hash = cdx-zeros 32
    in let reserved = cdx-zeros 64
-   in let cap-off = cdx-le64 224
-   in let cap-sz = cdx-le64 0
-   in let proof-off = cdx-le64 0
-   in let proof-sz = cdx-le64 0
+   in let cap-off = cdx-le64 cap-off-v
+   in let cap-sz = cdx-le64 cap-sz-v
+   in let proof-off = cdx-le64 eff-off-v
+   in let proof-sz = cdx-le64 eff-sz-v
    in let text = cdx-le64 text-off & cdx-le64 text-sz
    in let rodata = cdx-le64 ro-off & cdx-le64 ro-sz
    in let entry = cdx-le64 entry-off
@@ -943,9 +1035,9 @@ Section: Binary Debug Map (MAP1)
    in let st0a = emit-runtime-helpers st-ar
    in let dx = __deck-exit
    in let st1 = emit-all-defs st0a defs-lifted 0
-   in x86-64-finalize-cdx st1 (tramp.far-jump-patch-pos)
+   in x86-64-finalize-cdx st1 (tramp.far-jump-patch-pos) (manifest-opening-effects tdefs)
 
-  assign-effect-op-addrs : List Text, Integer, Integer, List EffectOpAddr -> List EffectOpAddr
+  assign-effect-op-addrs : List Text, Integer between 0 and 65535, Integer, List EffectOpAddr -> List EffectOpAddr
   assign-effect-op-addrs (names) (i) (len) (acc) =
    if i >= len then acc
    else assign-effect-op-addrs names (i + 1) len (list-push acc (EffectOpAddr { name = list-at names i, addr = handler-table-base-addr + i * 8 }))

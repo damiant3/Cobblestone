@@ -385,6 +385,36 @@ Measure-Phase 'test-bvt' {
     }
 }
 
+# -- binary backend plugs: must build clean with the just-proven compiler.
+# Native code-emitting backends only (riscv/arm64/elf/pe/img). The
+# transpiler/text plugs are secondary outputs and are NOT gated here. Plug
+# CDX is untracked build-output, so without this gate a compiler tightening
+# silently dark-ships every backend until someone rebuilds one by hand.
+Measure-Phase 'plug-binary' {
+    Copy-Item -Force $SutCdx (Join-Path $Repo 'build-output\bare-metal\Codex.cdx')
+    $binaryBackends = @('riscv','arm64','elf','pe','img')
+    $plugFail = @()
+    foreach ($bp in $binaryBackends) {
+        $bs = Join-Path $Repo "codex\plugs\$bp\build.ps1"
+        if (-not (Test-Path $bs)) { $plugFail += "$bp(no-build.ps1)"; continue }
+        & pwsh -NoProfile -File $bs *> $null
+        $cdx = Join-Path $Repo "codex\plugs\$bp\build-output\$bp-plug.cdx"
+        $blog = Join-Path $Repo "codex\plugs\$bp\build-output\build.log"
+        $bad = -not (Test-Path $cdx)
+        if ((Test-Path $blog) -and (Select-String -Path $blog -Pattern 'CODEGEN-ERRORS|error CDX' -Quiet)) { $bad = $true }
+        if ($bad) { $plugFail += $bp }
+    }
+    if ($plugFail.Count -gt 0) {
+        Write-Host ''
+        Write-Host "FAIL: binary plug build -- $($plugFail -join ', ')"
+        foreach ($bp in $plugFail) {
+            $blog = Join-Path $Repo "codex\plugs\$bp\build-output\build.log"
+            if (Test-Path $blog) { Get-Content $blog | Select-String 'error CDX|CODEGEN-ERRORS' | Select-Object -First 3 | ForEach-Object { Write-Host "  ${bp}: $($_.Line.Trim())" } }
+        }
+        exit 1
+    }
+}
+
 Write-Host 'Something remains suspended in mid-air for a moment before falling'
 Write-Host 'to earth with a heavy thud.'
 Write-Host ''

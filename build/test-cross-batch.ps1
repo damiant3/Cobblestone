@@ -20,7 +20,9 @@ Set-Location $Repo
 $plugName = if ($Arch -eq 'arm64') { 'arm64' } else { 'riscv' }
 $testDir = Join-Path $Repo 'codex\test'
 $compileScript = Join-Path $Repo "codex\plugs\$plugName\compile-$plugName.ps1"
-$renodeExe = Join-Path $Repo 'tools\renode\renode.exe'
+. (Join-Path $PSScriptRoot 'renode-config.ps1')
+$renodeExe = Get-RenodeExe -Repo $Repo
+if (-not $renodeExe -and -not $UseQemu) { Write-RenodeSkip; exit 0 }
 $boardRepl = Join-Path $Repo "tools\renode\codex\codex-${Arch}.repl"
 $outRoot = Join-Path $Repo "test-output-cross\$Arch"
 
@@ -89,7 +91,7 @@ Write-Host "Compile phase: $([math]::Round(($compileEnd - $compileStart).TotalSe
 
 # ---- Phase 2: Run (parallel) ----
 $emulatorLabel = if ($UseQemu) { "QEMU" } else { "Renode" }
-$qemuTimeoutMs = 500
+$qemuTimeoutMs = 3000
 $runJobs = if ($UseQemu) { [Math]::Max($Jobs, 8) } else { $Jobs }
 Write-Host "`n--- Phase 2: Run via $emulatorLabel (${runJobs} parallel slots) ---"
 $toRun = [System.Collections.Generic.List[hashtable]]::new()
@@ -137,15 +139,21 @@ $runResults = $toRun | ForEach-Object -ThrottleLimit $runJobs -Parallel {
         if (-not $binFile -or -not (Test-Path $binFile)) {
             $status = 'FAIL_RUNTIME'; $reason = 'no .bin file'
         } else {
+            # RISC-V guest RAM must cover the plug's boot stack pointer. Keep this -m
+            # in sync with rv-sp in codex/plugs/riscv/RiscVRuntime.codex (#BFFF0000,
+            # top of 1 GB) and the Renode dram size in tools/renode/codex/codex-riscv64.repl
+            # (size 0x40000000). All three must describe the same 1 GB @ 0x80000000.
+            # The RISC-V code is position-independent (PC-relative), so the flat .bin loaded
+            # at 0x80000000 for QEMU and the ELF loaded at 0x80000080 for Renode run identically.
             $machArgs = if ($arch -eq 'riscv64') {
-                @('-M','virt','-m','256M','-display','none','-monitor','none','-bios','none',
+                @('-M','virt','-m','1024M','-display','none','-monitor','none','-bios','none',
                   '-device',"loader,file=$binFile,addr=$loadAddr",'-serial',"file:$uartLogWin")
             } else {
                 @('-M','virt','-cpu','cortex-a53','-m','256M','-display','none','-monitor','none','-bios','none',
                   '-device',"loader,file=$binFile,addr=$loadAddr",'-serial',"file:$uartLogWin")
             }
             $proc = Start-Process -FilePath $qemuExe -ArgumentList $machArgs -PassThru -NoNewWindow
-            $proc.WaitForExit($timeoutMs)
+            $proc.WaitForExit($timeoutMs) | Out-Null
             if (-not $proc.HasExited) { try { $proc.Kill() } catch {} }
         }
     } else {
@@ -291,7 +299,10 @@ foreach ($kv in ($compiled.GetEnumerator() | Sort-Object Key)) {
     [void]$md.AppendLine("| $($kv.Key) | $($r.Status) | $ct | $rt | $note |")
 }
 
-$outFile = Join-Path $Repo "docs\Test\${Arch}_cross_results.md"
+# Results go to the untracked output tree, NOT docs/Test (a Perforce-tracked,
+# read-only path -- writing there crashed the run, and a per-run artifact does
+# not belong in version control).
+$outFile = Join-Path $Repo "test-output-cross\${Arch}_cross_results.md"
 New-Item -ItemType Directory -Force (Split-Path $outFile) | Out-Null
 [System.IO.File]::WriteAllText($outFile, $md.ToString(), [System.Text.UTF8Encoding]::new($false))
 

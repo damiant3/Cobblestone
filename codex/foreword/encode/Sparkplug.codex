@@ -1,0 +1,168 @@
+Chapter: Sparkplug
+  cites Encode chapter Mqtt
+  cites Encode chapter Protobuf
+  cites Foreword chapter Tuple
+
+ Sparkplug B (Eclipse Sparkplug 3.0) -- the open MQTT specification for
+ industrial IoT. A Sparkplug message is an MQTT PUBLISH on a structured
+ topic (spBv1.0/group/message-type/edge-node[/device]) carrying a
+ Protobuf-encoded Payload of Metrics. This chapter builds both: the
+ topic namespace and the payload encoder, layered on the existing Mqtt
+ and Protobuf modules.
+
+ Metric values here cover the integer, long, float, double, boolean,
+ string, and null datatypes. Float and double use IEEE-754 fixed-width
+ encoding (Protobuf fixed32 field 12, fixed64 field 13) via the
+ real-approx-to-bits / real-to-bits bitcast intrinsics.
+
+Section: Topic Namespace
+
+  spb-namespace : Text = "spBv1.0"
+
+  spb-msg-nbirth : Text = "NBIRTH"
+  spb-msg-ndeath : Text = "NDEATH"
+  spb-msg-ndata : Text = "NDATA"
+  spb-msg-ncmd : Text = "NCMD"
+  spb-msg-dbirth : Text = "DBIRTH"
+  spb-msg-ddeath : Text = "DDEATH"
+  spb-msg-ddata : Text = "DDATA"
+  spb-msg-dcmd : Text = "DCMD"
+
+  spb-node-topic : Text, Text, Text -> Text
+  spb-node-topic (group) (msg-type) (node) =
+   spb-namespace & "/" & group & "/" & msg-type & "/" & node
+
+  spb-device-topic : Text, Text, Text, Text -> Text
+  spb-device-topic (group) (msg-type) (node) (device) =
+   spb-node-topic group msg-type node & "/" & device
+
+Section: Data Types
+
+ The Sparkplug metric datatype enumeration (subset).
+
+  spb-dt-int8 : Integer = 1
+  spb-dt-int16 : Integer = 2
+  spb-dt-int32 : Integer = 3
+  spb-dt-int64 : Integer = 4
+  spb-dt-uint8 : Integer = 5
+  spb-dt-uint16 : Integer = 6
+  spb-dt-uint32 : Integer = 7
+  spb-dt-uint64 : Integer = 8
+  spb-dt-float : Integer = 9
+  spb-dt-double : Integer = 10
+  spb-dt-boolean : Integer = 11
+  spb-dt-string : Integer = 12
+
+Section: Metrics
+
+ A metric carries a name (or an alias, once a birth has established the
+ name-to-alias mapping), a datatype, and a value. The Protobuf Metric
+ message uses field 1 for name, 2 for alias, 4 for datatype, 7 for the
+ is-null flag, and the value fields 10 (int), 11 (long), 12 (float),
+ 13 (double), 14 (boolean), 15 (string).
+
+  SpbValue =
+    | SpbInt (Integer)
+    | SpbLong (Integer)
+    | SpbFloat (Real approximate)
+    | SpbDouble (Real)
+    | SpbBool (Boolean)
+    | SpbString (Text)
+    | SpbNull
+
+  SpbMetric = record {
+   name : Text,
+   alias : Integer,
+   datatype : Integer,
+   value : SpbValue
+  }
+
+  spb-metric : Text, Integer, SpbValue -> SpbMetric
+  spb-metric (name) (datatype) (value) =
+   SpbMetric { name = name, alias = 0, datatype = datatype, value = value }
+
+  spb-bdseq-metric : Integer -> SpbMetric
+  spb-bdseq-metric (n) =
+   SpbMetric { name = "bdSeq", alias = 0, datatype = spb-dt-int64, value = SpbLong n }
+
+  spb-encode-value : SpbValue -> List Integer
+  spb-encode-value (v) =
+   when v
+    is SpbInt (n) -> pb-encode-field-varint 10 n
+    is SpbLong (n) -> pb-encode-field-varint 11 n
+    is SpbFloat (f) -> pb-encode-field-fixed32 12 (real-approx-to-bits f)
+    is SpbDouble (d) -> pb-encode-field-fixed64 13 (real-to-bits d)
+    is SpbBool (b) -> pb-encode-field-varint 14 (if b then 1 else 0)
+    is SpbString (s) -> pb-encode-field-string 15 s
+    is SpbNull -> pb-encode-field-varint 7 1
+
+  spb-encode-metric : SpbMetric -> List Integer
+  spb-encode-metric (m) =
+   let name-part = if text-length (m.name) > 0 then pb-encode-field-string 1 (m.name) else []
+   in let alias-part = if m.alias > 0 then pb-encode-field-varint 2 (m.alias) else []
+   in let dt-part = pb-encode-field-varint 4 (m.datatype)
+   in name-part & alias-part & dt-part & spb-encode-value (m.value)
+
+Section: Payload
+
+ The Sparkplug Payload: field 1 timestamp, field 2 the repeated metrics
+ (each a length-delimited embedded Metric message), field 3 the sequence
+ number.
+
+  SpbPayload = record {
+   timestamp : Integer,
+   seq : Integer,
+   metrics : List SpbMetric
+  }
+
+  spb-encode-payload : SpbPayload -> List Integer
+  spb-encode-payload (p) =
+   let ts-part = pb-encode-field-varint 1 (p.timestamp)
+   in let metrics-part = spb-encode-metrics (p.metrics) 0 (list-length (p.metrics)) []
+   in let seq-part = pb-encode-field-varint 3 (p.seq)
+   in ts-part & metrics-part & seq-part
+
+  spb-encode-metrics : List SpbMetric, Integer, Integer, List Integer -> List Integer
+  spb-encode-metrics (metrics) (i) (len) (acc) =
+   if i >= len then acc
+   else spb-encode-metrics metrics (i + 1) len (acc & pb-encode-field-bytes 2 (spb-encode-metric (list-at metrics i)))
+
+Section: Sequence Number
+
+ The Sparkplug sequence number is a byte that increments on every
+ message from an edge node and wraps from 255 back to 0. A birth
+ message resets it to 0.
+
+  spb-next-seq : Integer -> Integer
+  spb-next-seq (n) = if n >= 255 then 0 else n + 1
+
+Section: Message Builders
+
+ A Sparkplug message is an MQTT PUBLISH at QoS 0 with the encoded
+ payload as its body.
+
+  spb-build-node-message : Text, Text, Text, SpbPayload -> List Integer
+  spb-build-node-message (group) (msg-type) (node) (payload) =
+   mqtt-build-publish (spb-node-topic group msg-type node) (spb-encode-payload payload) QosAtMostOnce False
+
+  spb-build-device-message : Text, Text, Text, Text, SpbPayload -> List Integer
+  spb-build-device-message (group) (msg-type) (node) (device) (payload) =
+   mqtt-build-publish (spb-device-topic group msg-type node device) (spb-encode-payload payload) QosAtMostOnce False
+
+  spb-nbirth : Text, Text, SpbPayload -> List Integer
+  spb-nbirth (group) (node) (payload) = spb-build-node-message group spb-msg-nbirth node payload
+
+  spb-ndata : Text, Text, SpbPayload -> List Integer
+  spb-ndata (group) (node) (payload) = spb-build-node-message group spb-msg-ndata node payload
+
+  spb-ndeath : Text, Text, SpbPayload -> List Integer
+  spb-ndeath (group) (node) (payload) = spb-build-node-message group spb-msg-ndeath node payload
+
+  spb-dbirth : Text, Text, Text, SpbPayload -> List Integer
+  spb-dbirth (group) (node) (device) (payload) = spb-build-device-message group spb-msg-dbirth node device payload
+
+  spb-ddata : Text, Text, Text, SpbPayload -> List Integer
+  spb-ddata (group) (node) (device) (payload) = spb-build-device-message group spb-msg-ddata node device payload
+
+  spb-ddeath : Text, Text, Text, SpbPayload -> List Integer
+  spb-ddeath (group) (node) (device) (payload) = spb-build-device-message group spb-msg-ddeath node device payload

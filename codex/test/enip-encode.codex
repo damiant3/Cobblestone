@@ -1,0 +1,58 @@
+Chapter: EnipEncodeTest
+
+  cites Encode chapter Enip
+
+ Exercise the EtherNet/IP + CIP builders: the encapsulation header,
+ RegisterSession, a CIP EPATH and Get_Attribute_Single request, and a
+ full SendRRData frame wrapping that request in a Common Packet Format
+ list. Every byte sequence is checked against an independent reference
+ computed by enip_truth.py. opening returns the count of passing checks.
+
+Section: Helpers
+
+  bytes-eq : List Integer, List Integer -> Boolean
+  bytes-eq (a) (b) =
+   if list-length a /= list-length b then False
+   else bytes-eq-loop a b 0 (list-length a)
+
+  bytes-eq-loop : List Integer, List Integer, Integer, Integer -> Boolean
+  bytes-eq-loop (a) (b) (i) (len) =
+   if i >= len then True
+   else if list-at a i /= list-at b i then False
+   else bytes-eq-loop a b (i + 1) len
+
+  flag : Boolean -> Integer
+  flag (b) = if b then 1 else 0
+
+Section: Checks
+
+  check-header : Integer
+  check-header =
+   flag (bytes-eq (enip-header enip-cmd-register-session 4 0 0 0)
+     [101, 0, 4, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0])
+
+  check-register-session : Integer
+  check-register-session =
+   flag (bytes-eq enip-register-session
+     [101, 0, 4, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0])
+
+  check-cip-epath : Integer
+  check-cip-epath =
+   flag (bytes-eq (cip-epath-class-instance-attr 4 1 3) [32, 4, 36, 1, 48, 3])
+
+  check-get-attr-single : Integer
+  check-get-attr-single =
+   flag (bytes-eq (cip-get-attr-single 4 1 3) [14, 3, 32, 4, 36, 1, 48, 3])
+
+  check-send-rr-data : Integer
+  check-send-rr-data =
+   let expect = [111, 0, 24, 0, 68, 51, 34, 17, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 10, 0, 2, 0, 0, 0, 0, 0, 178, 0, 8, 0, 14, 3, 32, 4, 36, 1, 48, 3]
+   in flag (bytes-eq (enip-send-rr-data #11223344 10 (cip-get-attr-single 4 1 3)) expect)
+
+  opening : Integer =
+   let a = check-header
+   in let b = check-register-session
+   in let c = check-cip-epath
+   in let d = check-get-attr-single
+   in let e = check-send-rr-data
+   in a + b + c + d + e

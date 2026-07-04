@@ -25,12 +25,9 @@ Set-Location (Join-Path $PSScriptRoot '..')
 [Environment]::CurrentDirectory = (Get-Location).Path
 
 $Repo = (Get-Location).Path
-$RenodeExe = Join-Path $Repo 'tools\renode\renode.exe'
-if (-not (Test-Path $RenodeExe)) {
-    Write-Host "SKIP: Renode not installed at tools\renode\" -ForegroundColor Yellow
-    Write-Host "  Download from https://github.com/renode/renode/releases"
-    exit 0
-}
+. (Join-Path $PSScriptRoot 'renode-config.ps1')
+$RenodeExe = Get-RenodeExe -Repo $Repo
+if (-not $RenodeExe) { Write-RenodeSkip; exit 0 }
 
 $SeedCdx = Join-Path $Repo 'seed\Codex.cdx'
 $Stage0 = Join-Path $Repo 'build-output\bare-metal\Codex.cdx'

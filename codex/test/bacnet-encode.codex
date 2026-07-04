@@ -1,0 +1,69 @@
+Chapter: BacnetEncodeTest
+
+  cites Encode chapter Bacnet
+
+ Exercise the BACnet/IP encoder: object-identifier packing, context-tag
+ length encoding (1- and 2-byte), and a full ReadProperty request frame.
+ Byte sequences checked against an independent implementation of the
+ tag/BVLC layout. opening returns the count of passing checks.
+
+Section: Helpers
+
+  bytes-eq : List Integer, List Integer -> Boolean
+  bytes-eq (a) (b) =
+   if list-length a /= list-length b then False
+   else bytes-eq-loop a b 0 (list-length a)
+
+  bytes-eq-loop : List Integer, List Integer, Integer, Integer -> Boolean
+  bytes-eq-loop (a) (b) (i) (len) =
+   if i >= len then True
+   else if list-at a i /= list-at b i then False
+   else bytes-eq-loop a b (i + 1) len
+
+  flag : Boolean -> Integer
+  flag (b) = if b then 1 else 0
+
+Section: Checks
+
+  check-read-property : Integer
+  check-read-property =
+   flag (bytes-eq (bacnet-build-read-property 1 bacnet-obj-analog-input 1 bacnet-prop-present-value) [129, 10, 0, 17, 1, 4, 0, 5, 1, 12, 12, 0, 0, 0, 1, 25, 85])
+
+  check-object-id : Integer
+  check-object-id =
+   flag (bytes-eq (bacnet-context-object-id 0 bacnet-obj-device 260) [12, 2, 0, 1, 4])
+
+  check-unsigned-1byte : Integer
+  check-unsigned-1byte =
+   flag (bytes-eq (bacnet-context-unsigned 1 85) [25, 85])
+
+  check-unsigned-2byte : Integer
+  check-unsigned-2byte =
+   flag (bytes-eq (bacnet-context-unsigned 1 512) [26, 2, 0])
+
+  check-app-unsigned : Integer
+  check-app-unsigned =
+   flag (bytes-eq (bacnet-app-unsigned 42) [33, 42])
+
+  check-app-real : Integer
+  check-app-real =
+   flag (bytes-eq (bacnet-app-real (to-real-approx 42.5)) [68, 66, 42, 0, 0])
+
+  check-write-property : Integer
+  check-write-property =
+   flag (bytes-eq (bacnet-write-property-apdu 1 bacnet-obj-analog-value 1 bacnet-prop-present-value (bacnet-app-unsigned 42)) [0, 5, 1, 15, 12, 0, 128, 0, 1, 25, 85, 62, 33, 42, 63])
+
+  check-build-write : Integer
+  check-build-write =
+   flag (bytes-eq (bacnet-build-write-property 1 bacnet-obj-analog-value 1 bacnet-prop-present-value (bacnet-app-unsigned 42)) [129, 10, 0, 21, 1, 4, 0, 5, 1, 15, 12, 0, 128, 0, 1, 25, 85, 62, 33, 42, 63])
+
+  opening : Integer =
+   let a = check-read-property
+   in let b = check-object-id
+   in let c = check-unsigned-1byte
+   in let d = check-unsigned-2byte
+   in let e = check-app-unsigned
+   in let f = check-app-real
+   in let g = check-write-property
+   in let h = check-build-write
+   in a + b + c + d + e + f + g + h

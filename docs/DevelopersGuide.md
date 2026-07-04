@@ -300,6 +300,17 @@ into a bounded slot. Use `__narrow` to assert the value is in range
   make-byte (n) = Byte { val = __narrow n }
 ```
 
+Bounds are enforced at the **function boundary**, not just at record
+construction (BoundedSignatures, 2026-07-03). A bounded parameter or
+return type is a real contract: a literal argument outside the range is
+a static error (CDX2050), a wider source raises CDX2051, and where the
+value cannot be proven at compile time the callee inserts a
+precondition/postcondition guard that traps at runtime (Eiffel-style
+design-by-contract). Previously these were cosmetic — `inc-byte`
+declared `Integer between 0 and 255` could silently return 301. The
+static bounds prover elides the guard when it can prove the value fits
+(CDX2053).
+
 ## Unit Types
 
 A `unit` declaration creates a distinct type wrapping another type.
@@ -386,7 +397,7 @@ at compile time. The compiler enforces five structural restrictions:
 | CDX6001 | Cannot call non-punctual or non-safe-builtin functions |
 | CDX6002 | Cannot use heap allocation |
 | CDX6003 | Cannot use closures or lambdas |
-| CDX6004 | Cannot perform bare I/O (Console, FileSystem, Network) |
+| CDX6004 | Must be effect-free (any effect in the signature is rejected) |
 | CDX6005 | Cannot use self-recursion |
 
 ```
@@ -536,8 +547,33 @@ linear a -> a` bridges them, consuming a uniquely-owned value and
 returning a shareable immutable one (the identity at runtime).
 
 Diagnostics: CDX2061 (linear used more than once / inconsistent across
-branches), CDX2063 (linear never used — leak), CDX2062 (mutable record
-aliased).
+branches / mentioned after a move), CDX2063 (linear never used — leak),
+CDX2062 (mutable record aliased), CDX2065 (linear passed to a plain
+parameter), CDX2066 (linear returned with a plain return type),
+CDX2067 (linear captured by a handler clause or escaping closure).
+
+**Current enforcement scope (2026-07-03, LinearOwnership complete).**
+The checker follows ownership through let-bound locals, across call
+boundaries, and into closures and containers. `let h = n` on a
+linear or mutable parameter is a *move* — `h` inherits the
+exactly-once obligation, and any later mention of `n` is an error
+("the original name is dead"). A linear value moves into a callee
+only through a parameter declared `linear` (CDX2065 — `freeze`'s
+own `linear a` parameter is what makes it the sanctioned exit); a
+bare linear return requires a `linear`-declared return type
+(CDX2066). A let-bound closure that captures a linear owns it and
+is call-once; a partial application through a linear parameter is
+the same discipline; a list or record literal stashing the bare
+value makes the container the owner (consume it whole — positional
+re-reads are double-uses or plain-boundary errors). A handler
+clause or an argument-escaping closure may not capture a linear at
+all (CDX2067 — clauses may run zero or many times). All nine
+adversarial laundering probes are enforced (`codex/test/errors/
+linear-launder-*`, `linear-capture-*`). Known un-tracked edges,
+documented in `docs/Designs/Compiler/Active/LinearOwnership.md`:
+locals minted from linear-returning calls (the checker tracks
+declared parameters, not call-produced locals), and container
+literals in argument or tail position.
 
 ## Vector Types (SIMD)
 
