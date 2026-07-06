@@ -1,0 +1,145 @@
+Chapter: ShadowSceneKernel
+  cites Gpu chapter DeviceEffect
+  cites Gpu chapter DeviceMath
+
+ The camera pass of shadow mapping. It ray-casts the scene (three spheres on a
+ checkered floor) from the camera, projects each hit into the light's orthographic
+ frame, reads the stored depth from the shadow map buffer, and darkens the point
+ if something nearer the light was recorded there -- a true shadow test, not a
+ shadow ray. The light orbits with the frame; the basis matches ShadowMapKernel.
+ Float math from DeviceMath.
+
+ We say:
+
+Section: Parameters
+
+  sc-width : Integer = 1024
+  sc-half-w : Integer = 512
+  sc-half-h : Integer = 384
+  sc-count : Integer = 3
+  sc-far : Integer = 8000000
+  sc-size : Real = 7.0
+  sc-dist : Real = 7.0
+
+Section: Scene
+
+  sc-cx : Integer -> Real
+  sc-cx (i) = if i == 0 then 0.0 else if i == 1 then 0.0 - 1.5 else 1.4
+
+  sc-cy : Integer -> Real
+  sc-cy (i) = if i == 0 then 1.05 else if i == 1 then 0.6 else 0.75
+
+  sc-cz : Integer -> Real
+  sc-cz (i) = if i == 0 then 0.0 else if i == 1 then 0.6 else 0.0 - 0.5
+
+  sc-rad : Integer -> Real
+  sc-rad (i) = if i == 0 then 0.85 else if i == 1 then 0.6 else 0.65
+
+  sc-colr : Integer -> Real
+  sc-colr (i) = if i == 0 then 0.90 else if i == 1 then 0.35 else 0.75
+
+  sc-colg : Integer -> Real
+  sc-colg (i) = if i == 0 then 0.55 else if i == 1 then 0.75 else 0.40
+
+  sc-colb : Integer -> Real
+  sc-colb (i) = if i == 0 then 0.30 else if i == 1 then 0.55 else 0.95
+
+  sc-hit : Real, Real, Real, Real, Real, Real, Integer -> Real
+  sc-hit (ox) (oy) (oz) (dx) (dy) (dz) (i) =
+    let lx = ox - sc-cx i
+    in let ly = oy - sc-cy i
+    in let lz = oz - sc-cz i
+    in let b = dx * lx + dy * ly + dz * lz
+    in let r = sc-rad i
+    in let c = lx * lx + ly * ly + lz * lz - r * r
+    in let disc = b * b - c
+    in if disc < 0.0 then 0.0 - 1.0
+    else let t = 0.0 - b - real-sqrt disc
+    in if t > 0.001 then t else 0.0 - 1.0
+
+  sc-nearest : Real, Real, Real, Real, Real, Real, Integer, Integer, Real -> Integer
+  sc-nearest (ox) (oy) (oz) (dx) (dy) (dz) (i) (bid) (bt) =
+    if i >= sc-count then bid
+    else let t = sc-hit ox oy oz dx dy dz i
+    in let take = if t > 0.001 then (if bt < 0.0 then 1 else if t < bt then 1 else 0) else 0
+    in if take == 1 then sc-nearest ox oy oz dx dy dz (i + 1) i t
+    else sc-nearest ox oy oz dx dy dz (i + 1) bid bt
+
+Section: Shading
+
+  sc-clampi : Integer, Integer, Integer -> Integer
+  sc-clampi (v) (lo) (hi) = if v < lo then lo else if v > hi then hi else v
+
+  sc-pack : Real, Real, Real -> Integer
+  sc-pack (r) (g) (b) =
+    let ri = sc-clampi (real-to-int (r * 255.0)) 0 255
+    in let gi = sc-clampi (real-to-int (g * 255.0)) 0 255
+    in let bi = sc-clampi (real-to-int (b * 255.0)) 0 255
+    in ri * 65536 + gi * 256 + bi
+
+  sc-checker : Real, Real -> Real
+  sc-checker (x) (z) =
+    let ix = real-to-int (x + 64.0)
+    in let iz = real-to-int (z + 64.0)
+    in let s = ix + iz
+    in if s - (s / 2) * 2 == 0 then 0.30 else 0.55
+
+Section: Shadow Scene Kernel
+
+  shadowmain-step : Integer, Integer, Integer, Integer -> [Device] Integer
+  shadowmain-step (shadowbuf) (outb) (frame) (gid) =
+    let px = gid - (gid / sc-width) * sc-width
+    in let py = gid / sc-width
+    in let fx = real-from-int (px - sc-half-w) / 384.0
+    in let fy = real-from-int (sc-half-h - py) / 384.0 - 0.12
+    in let rl = real-sqrt (fx * fx + fy * fy + 2.56)
+    in let dx = fx / rl
+    in let dy = fy / rl
+    in let dz = 1.6 / rl
+    in let ox = 0.0
+    in let oy = 1.7
+    in let oz = 0.0 - 6.0
+    in let sid = sc-nearest ox oy oz dx dy dz 0 (0 - 1) (0.0 - 1.0)
+    in let st = if sid < 0 then 1000.0 else sc-hit ox oy oz dx dy dz sid
+    in let ft = if dy < 0.0 - 0.0001 then (0.0 - 1.0 - oy) / dy else 0.0 - 1.0
+    in let usefloor = if ft > 0.001 then (if sid < 0 then 1 else if ft < st then 1 else 0) else 0
+    in let hitany = if usefloor == 1 then 1 else if sid >= 0 then 1 else 0
+    in if hitany == 0 then 6 * 65536 + 10 * 256 + 20
+    else let t = if usefloor == 1 then ft else st
+    in let hx = ox + dx * t
+    in let hy = oy + dy * t
+    in let hz = oz + dz * t
+    in let nx = if usefloor == 1 then 0.0 else (hx - sc-cx sid) / sc-rad sid
+    in let ny = if usefloor == 1 then 1.0 else (hy - sc-cy sid) / sc-rad sid
+    in let nz = if usefloor == 1 then 0.0 else (hz - sc-cz sid) / sc-rad sid
+    in let ar = if usefloor == 1 then sc-checker hx hz else sc-colr sid
+    in let ag = if usefloor == 1 then sc-checker hx hz else sc-colg sid
+    in let ab = if usefloor == 1 then sc-checker hx hz else sc-colb sid
+    in let la = real-from-int frame / 40.0
+    in let rlx = real-cos la * 0.62
+    in let rlz = real-sin la * 0.62
+    in let ll = real-sqrt (rlx * rlx + 0.6084 + rlz * rlz)
+    in let lx = rlx / ll
+    in let ly = (0.0 - 0.78) / ll
+    in let lz = rlz / ll
+    in let rgl = real-sqrt (lz * lz + lx * lx)
+    in let rx = lz / rgl
+    in let rz = 0.0 - lx / rgl
+    in let ux = ly * rz
+    in let uy = lz * rx - lx * rz
+    in let uz = 0.0 - ly * rx
+    in let rcx = hx - 0.0
+    in let rcy = hy - 0.35
+    in let rcz = hz - 0.0
+    in let lu = (rcx * rx + rcz * rz) / sc-size + 0.5
+    in let lv = (rcx * ux + rcy * uy + rcz * uz) / sc-size + 0.5
+    in let ld = (rcx * lx + rcy * ly + rcz * lz) + sc-dist
+    in act
+    stored <- device-load shadowbuf (sc-clampi (real-to-int (lv * 1024.0)) 0 1023 * 1024 + sc-clampi (real-to-int (lu * 1024.0)) 0 1023)
+    let inmap = if lu > 0.0 then (if lu < 1.0 then (if lv > 0.0 then (if lv < 1.0 then 1 else 0) else 0) else 0) else 0
+    in let shadowed = if inmap == 1 then (if stored < sc-far then (if real-to-int (ld * 256.0) > stored + 500 then 1 else 0) else 0) else 0
+    in let ndl = real-max 0.0 (0.0 - (nx * lx + ny * ly + nz * lz))
+    in let vis = if shadowed == 1 then 0.18 else 1.0
+    in let sh = 0.2 + ndl * 0.85 * vis
+    in device-store outb gid (sc-pack (ar * sh) (ag * sh) (ab * sh))
+    end

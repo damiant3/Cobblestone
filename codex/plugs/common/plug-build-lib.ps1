@@ -112,7 +112,15 @@ function Build-PlugCdx {
     )
     $compileScript = Join-Path $script:PlugBuildRepo 'build' 'compile.ps1'
     $compileArgs = @('-NoProfile', '-File', $compileScript, '-Src', $BundleSrc, '-Out', $OutFile, '-Log', $LogFile)
-    if ($Survey) { $compileArgs += @('-Survey', $Survey) }
+    # Plug source is type-dense: PlugTypes.codex packs ~40 types into ~370 lines
+    # (~15x normal type density) atop the full transitive foreword set. The
+    # self-compile check-mul default (BuildSettings survey-check-mul, tuned to the
+    # compiler's OWN modest need) under-reserves the CHECK deck for plug source,
+    # so pin the plug reservation to the historical plug-safe multiplier. compile.ps1
+    # survey parsing is last-wins, so a plug that sets its own check-mul overrides.
+    # Do NOT lower this unless a plug build overflows for an unrelated reason.
+    $plugSurvey = if ($Survey) { "check-mul:200,$Survey" } else { "check-mul:200" }
+    $compileArgs += @('-Survey', $plugSurvey)
     & pwsh @compileArgs 2>&1 | Out-Null
     if ($LASTEXITCODE -ne 0) {
         [Console]::Error.WriteLine("FAIL: compile errors; see $LogFile")

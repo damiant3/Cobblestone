@@ -86,8 +86,9 @@ As of 2026-07-04:
 - **Agent lifecycle**: local AI runtime (GGUF loader, inference),
   agent acquisition (bundled/USB/network, verification), coordinator
   (local/upstream escalation, role dispatch), first-boot wizard.
-- **GPU compute**: dual-target compilation via plugs — PTX (NVIDIA) and
-  SPIR-V (Vulkan/OpenCL) plugs built and compiling (157KB/152KB CDX).
+- **GPU compute**: multi-target compilation via plugs — PTX (NVIDIA),
+  SPIR-V (Vulkan/OpenCL), and WGSL (WebGPU/browser) plugs, each walking
+  the same `[Device]` IR so a GPU target is a plug, not a compiler change.
   Shared-memory proxy protocol for host-side dispatch. Device IR
   emission from compiler; plugs parse IR and emit target format.
   Kernels K5-K8 complete: warp primitives, shared memory, atomics,
@@ -121,13 +122,13 @@ As of 2026-07-04:
   builtin sets a flag the body's tail checks.
 - **Plug architecture**: emitters as standalone CDX programs. Compiler
   emits IR text; plug consumes IR via file I/O, emits target source.
-  **52 plugs (all building clean)** -- across languages (Ada, Babbage, C#,
+  **53 plugs (all building clean)** -- across languages (Ada, Babbage, C#,
   Clojure, COBOL, D, Elixir, Fortran, Go, Groovy, Haskell, Java,
   JavaScript, Julia, Kotlin, Lua, Nim, Objective-C, OCaml, Pascal,
   Perl, PHP, Python, Ruby, Rust, Scala, Scheme, Swift, TypeScript,
   WASM, Zig), UI frameworks (Angular, Electron, Flutter, GTK, HTML,
   Jetpack Compose, MAUI, Qt, React, Svelte, SwiftUI, Vue, WinForms,
-  WPF), GPU (PTX, SPIR-V), and binary formats (CDX, ELF, PE, IMG).
+  WPF), GPU (PTX, SPIR-V, WGSL), and binary formats (CDX, ELF, PE, IMG).
   Port forwarding in codex-vm enables host-to-guest TCP for plug data
   exchange.
 - **SIMD / Vector types**: `Vector N T` as a first-class type with
@@ -164,6 +165,9 @@ As of 2026-07-04:
   reduction). Flagship proof: `reverse (reverse xs) === xs` machine-checked
   by induction with a four-lemma chain (append-nil, append-assoc,
   reverse-append, reverse-reverse). All proofs erase -- zero runtime cost.
+  Proof definitions are acyclic by construction: a circular proof term is
+  rejected (CDX4023), so recursion in proofs is only sound through
+  structural induction; explicit `assume` axioms warn (CDX4021).
 - **Static bounds prover**: compiler proves bounded-integer range safety
   at compile time and elides runtime bounds checks (CDX4010). Handles
   literals, field access, int-mod, bit-and, negation. O(1) shallow
@@ -262,12 +266,12 @@ As of 2026-07-04:
 
 The compiler is a hard fixed point of itself on bare metal.
 
-**`seed/Codex.cdx`** (2,068,576 bytes, ~1.97 MB) — the canonical seed:
+**`seed/Codex.cdx`** (2,106,070 bytes, ~2.01 MB) — the canonical seed:
 
 | Algorithm | Digest |
 |---|---|
-| Content hash prefix | `8E4B20BD` |
-| SHA-256 | `8CA1E63BA4DEE7F7CA80821C490A7EE625E03A425345669E558FE29D70ABABF1` |
+| Content hash prefix | `C975EC8D` |
+| SHA-256 | `7CE0E86755E6489C05FD8BE9A8938FF5614CBF4E942D756AC0B81D36D57B6896` |
 
 The seed grew from ~1.83 MB to ~1.88 MB on 2026-07-01, absorbing the
 CCE output boundary (tier0/1/2 UTF-8 conversion), the proof infrastructure
@@ -276,7 +280,13 @@ operator, chained arrows, vestigial tokens). The seed now carries full
 Unicode output support and machine-checked proof verification. By
 2026-07-04 it reached ~1.97 MB as the by-construction safety campaign
 landed (effect rows, linear ownership, bounded signatures, capability
-effects) along with the industrial IoT protocol library.
+effects) along with the industrial IoT protocol library. By 2026-07-06
+it reached ~2.01 MB, absorbing blu's compiler memory-discipline campaign
+(memoized/hash-consed deep type copy, phase-memory escape invariant,
+CHECK/LOWER reservation-copy reclaim, survey-multiplier tightening) and
+the itoa most-negative-integer fix — self-compile heap dropped sharply
+(post-CHECK ~585 → ~372 MB) while the output stayed a byte-identical
+hard fixed point.
 
 **`seed/Codex.img`** (8,388,608 bytes) — bootable GPT disk image:
 
@@ -800,7 +810,7 @@ targets. From IR, three paths fan out:
   verification (byte-identical round-trip).
 - **IR text** serializes the typed IR as S-expressions. All plugs
   consume this: ARM64, RISC-V, WASM, the 29 transpiler plugs, and
-  the GPU plugs (PTX for NVIDIA, SPIR-V for Vulkan). Each plug is
+  the GPU plugs (PTX for NVIDIA, SPIR-V for Vulkan, WGSL for WebGPU). Each plug is
   a standalone CDX binary that receives IR over TCP.
 - **CDX path** adds Resolve (concrete types) and LambdaLifting,
   then emits x86-64 machine code as a signed CDX binary. Container
@@ -924,8 +934,8 @@ in 18 seconds.
 | BVT (16 tests) | 18s |
 | **Total** | **~140s** |
 
-The seed is a 1.97 MB CDX binary (content hash
-`8E4B20BDE30D72446E29D5B07B6CB62DAC459A6176938DEE001AD0080D148F73`).
+The seed is a 2.01 MB CDX binary (content hash
+`C975EC8D2055C2D96DE356F12E893C7604E6A5280F408A3AC5D8D3BF59D60D49`).
 The compiler is a hard fixed point of itself -- the output of
 self-compilation compiled by itself is byte-identical to itself.
 

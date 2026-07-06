@@ -1,0 +1,102 @@
+Chapter: PbrTexKernel
+  cites Gpu chapter DeviceEffect
+  cites Gpu chapter DeviceMath
+
+ PBR with a textured albedo. A single rotating sphere is ray-cast; the hit point
+ maps to spherical (u, v) coordinates that index a procedural tile texture, and
+ that albedo feeds a Cook-Torrance shade (GGX + Smith + Fresnel) under an orbiting
+ key light. Reference site's "PBR texture" technique. Float math from DeviceMath.
+
+ We say:
+
+Section: Parameters
+
+  pt-width : Integer = 1024
+  pt-half-w : Integer = 512
+  pt-half-h : Integer = 384
+
+Section: Texture
+
+ A tile pattern in (u, v): coloured tiles with dark grout, plus a per-tile tint.
+
+  pt-tex-r : Integer, Integer -> Real
+  pt-tex-r (iu) (iv) =
+    let m = (iu * 3 + iv * 5) - ((iu * 3 + iv * 5) / 4) * 4
+    in 0.45 + real-from-int m * 0.12
+
+  pt-tex-g : Integer, Integer -> Real
+  pt-tex-g (iu) (iv) =
+    let m = (iu + iv * 2) - ((iu + iv * 2) / 3) * 3
+    in 0.4 + real-from-int m * 0.16
+
+Section: Shading
+
+  pt-clamp01 : Real -> Real
+  pt-clamp01 (x) = real-max 0.0 (real-min 1.0 x)
+
+  pt-pack : Real, Real, Real -> Integer
+  pt-pack (r) (g) (b) =
+    real-to-int (pt-clamp01 r * 255.0) * 65536 + real-to-int (pt-clamp01 g * 255.0) * 256 + real-to-int (pt-clamp01 b * 255.0)
+
+  pt-pow5 : Real -> Real
+  pt-pow5 (x) = let x2 = x * x in x2 * x2 * x
+
+  pt-render : Integer, Integer -> Integer
+  pt-render (gid) (frame) =
+    let px = gid - (gid / pt-width) * pt-width
+    in let py = gid / pt-width
+    in let fx = real-from-int (px - pt-half-w) / 384.0
+    in let fy = real-from-int (pt-half-h - py) / 384.0
+    in let rl = real-sqrt (fx * fx + fy * fy + 4.0)
+    in let dx = fx / rl
+    in let dy = fy / rl
+    in let dz = 2.0 / rl
+    in let oz = 0.0 - 4.0
+    in let b = dz * oz
+    in let c = oz * oz - 1.6
+    in let disc = b * b - c
+    in if disc < 0.0 then let h = pt-clamp01 (dy * 0.5 + 0.5) in pt-pack (0.05 + h * 0.05) (0.06 + h * 0.08) (0.10 + h * 0.15)
+    else let t = 0.0 - b - real-sqrt disc
+    in let hx = dx * t
+    in let hy = dy * t
+    in let hz = oz + dz * t
+    in let nx = hx / 1.265
+    in let ny = hy / 1.265
+    in let nz = hz / 1.265
+    in let spin = real-from-int frame / 40.0
+    in let u = (real-cos spin * nx + real-sin spin * nz) * 0.5 + 0.5
+    in let v = ny * 0.5 + 0.5
+    in let iu = real-to-int (u * 12.0)
+    in let iv = real-to-int (v * 8.0)
+    in let fu = u * 12.0 - real-from-int iu
+    in let fv = v * 8.0 - real-from-int iv
+    in let grout = if fu < 0.08 then 1 else if fv < 0.08 then 1 else 0
+    in let ar = if grout == 1 then 0.14 else pt-tex-r iu iv
+    in let ag = if grout == 1 then 0.14 else pt-tex-g iu iv
+    in let ab = if grout == 1 then 0.16 else 0.55
+    in let la = real-from-int frame / 30.0
+    in let lx = real-cos la * 0.6
+    in let ly = 0.7
+    in let lz = real-sin la * 0.6 - 0.3
+    in let ll = real-sqrt (lx * lx + ly * ly + lz * lz)
+    in let ux = lx / ll
+    in let uy = ly / ll
+    in let uz = lz / ll
+    in let hlx = ux - dx
+    in let hly = uy - dy
+    in let hlz = uz - dz
+    in let hl = real-sqrt (hlx * hlx + hly * hly + hlz * hlz) + 0.001
+    in let ndh = real-max 0.0 (nx * hlx / hl + ny * hly / hl + nz * hlz / hl)
+    in let ndl = real-max 0.0 (nx * ux + ny * uy + nz * uz)
+    in let a2 = 0.09
+    in let dd = ndh * ndh * (a2 - 1.0) + 1.0
+    in let spec = a2 / (dd * dd + 0.001) * 0.4
+    in let sh = 0.15 + ndl * 0.85
+    in pt-pack (ar * sh + spec) (ag * sh + spec) (ab * sh + spec)
+
+Section: Kernel
+
+  pbrtex-step : Integer, Integer, Integer -> [Device] Integer
+  pbrtex-step (outb) (frame) (gid) = act
+    device-store outb gid (pt-render gid frame)
+  end

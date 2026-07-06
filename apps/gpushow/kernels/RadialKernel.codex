@@ -1,0 +1,66 @@
+Chapter: RadialKernel
+  cites Gpu chapter DeviceEffect
+
+ Radial (zoom) blur as a compute post-process. Each pixel walks the line from
+ the screen centre out to itself, sampling the scene buffer at a sequence of
+ shrinking scales and averaging -- so bright features smear into radial light
+ streaks toward the centre. The scene is the bloom demo's three orbiting orbs,
+ rendered by BloomSceneKernel into a buffer; this pass reads it through a
+ storage-pointer helper parameter. Reference site's "radial blur" technique.
+
+ We say:
+
+Section: Parameters
+
+  rd-width : Integer = 1024
+  rd-half-w : Integer = 512
+  rd-half-h : Integer = 384
+  rd-taps : Integer = 28
+
+Section: Helpers
+
+  rd-clamp : Integer, Integer, Integer -> Integer
+  rd-clamp (v) (lo) (hi) = if v < lo then lo else if v > hi then hi else v
+
+  rd-extract : Integer, Integer -> Integer
+  rd-extract (texel) (ch) =
+    if ch == 0 then texel / 65536
+    else if ch == 1 then texel / 256 - (texel / 65536) * 256
+    else texel - (texel / 256) * 256
+
+Section: Zoom Gather
+
+ Fold over the taps: scale the pixel's offset from centre down toward the centre,
+ sample there, sum the chosen channel. buf is a storage pointer.
+
+  rd-gather : Integer, Integer, Integer, Integer, Integer, Integer -> [Device] Integer
+  rd-gather (buf) (px) (py) (ch) (k) (acc) =
+    if k >= rd-taps then acc
+    else let scale = 1.0 - real-from-int k * 0.0075
+    in let sx = rd-half-w + real-to-int (real-from-int (px - rd-half-w) * scale)
+    in let sy = rd-half-h + real-to-int (real-from-int (py - rd-half-h) * scale)
+    in let cx = rd-clamp sx 0 1023
+    in let cy = rd-clamp sy 0 767
+    in let idx = cy * 1024 + cx
+    in act
+      texel <- device-load buf idx
+      let c = rd-extract texel ch
+      in rd-gather buf px py ch (k + 1) (acc + c)
+    end
+
+Section: Radial Kernel
+
+  radial-step : Integer, Integer, Integer, Integer -> [Device] Integer
+  radial-step (scenebuf) (outb) (frame) (gid) =
+    let px = gid - (gid / rd-width) * rd-width
+    in let py = gid / rd-width
+    in act
+    own <- device-load scenebuf gid
+    rr <- rd-gather scenebuf px py 0 0 0
+    rg <- rd-gather scenebuf px py 1 0 0
+    rb <- rd-gather scenebuf px py 2 0 0
+    let fr = rd-clamp (rr / rd-taps + rd-extract own 0 / 3) 0 255
+    in let fg = rd-clamp (rg / rd-taps + rd-extract own 1 / 3) 0 255
+    in let fb = rd-clamp (rb / rd-taps + rd-extract own 2 / 3) 0 255
+    in device-store outb gid (fr * 65536 + fg * 256 + fb)
+    end

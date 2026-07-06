@@ -1,0 +1,66 @@
+Chapter: MultisampleKernel
+  cites Gpu chapter DeviceEffect
+  cites Gpu chapter DeviceMath
+
+ Multisampling, shown as a split screen on a zone plate -- concentric rings that
+ get finer toward the edge, the classic aliasing torture test. The left half is
+ sampled once per pixel (jagged, moire); the right half averages a 4x4 grid of
+ sub-samples (smooth, anti-aliased). One GPU thread per pixel, the coverage fold
+ over the 16 sub-samples is lowered to a WGSL loop. This is the reference site's
+ "multisampling" technique. Float math from DeviceMath.
+
+ We say:
+
+Section: Parameters
+
+  ms-width : Integer = 1024
+  ms-half-w : Integer = 512
+  ms-half-h : Integer = 384
+
+Section: Zone Plate
+
+ Ring value at an offset from centre: 1 on a ring, 0 between. Rings tighten with
+ radius squared; the phase animates so the pattern breathes.
+
+  ms-ring : Real, Real, Real -> Real
+  ms-ring (cx) (cy) (phase) =
+    let r2 = cx * cx + cy * cy
+    in if real-sin (r2 * 0.0009 + phase) > 0.0 then 1.0 else 0.0
+
+ Average 16 sub-samples in a 4x4 grid across the pixel.
+
+  ms-super : Real, Real, Real, Integer, Real -> Real
+  ms-super (cx) (cy) (phase) (s) (acc) =
+    if s >= 16 then acc
+    else let sxi = s - (s / 4) * 4
+    in let syi = s / 4
+    in let ddx = real-from-int sxi * 0.25 - 0.375
+    in let ddy = real-from-int syi * 0.25 - 0.375
+    in ms-super cx cy phase (s + 1) (acc + ms-ring (cx + ddx) (cy + ddy) phase)
+
+Section: Kernel
+
+  ms-render : Integer, Integer -> Integer
+  ms-render (gid) (frame) =
+    let px = gid - (gid / ms-width) * ms-width
+    in let py = gid / ms-width
+    in let cx = real-from-int (px - ms-half-w)
+    in let cy = real-from-int (py - ms-half-h)
+    in let phase = real-from-int frame / 20.0
+    in let v = if px < ms-half-w then ms-ring cx cy phase else ms-super cx cy phase 0 0.0 / 16.0
+    in let edge = if px > ms-half-w - 2 & px < ms-half-w + 2 then 1 else 0
+    in if edge == 1 then 40 * 65536 + 90 * 256 + 130
+    else let tint-r = if px < ms-half-w then 0.75 else 0.55
+    in let tint-g = if px < ms-half-w then 0.60 else 0.80
+    in let tint-b = 0.90
+    in let ir = real-to-int (v * tint-r * 255.0)
+    in let ig = real-to-int (v * tint-g * 255.0)
+    in let ib = real-to-int (v * tint-b * 255.0)
+    in ir * 65536 + ig * 256 + ib
+
+Section: Multisample Kernel
+
+  multisample-step : Integer, Integer, Integer -> [Device] Integer
+  multisample-step (outb) (frame) (gid) = act
+    device-store outb gid (ms-render gid frame)
+  end

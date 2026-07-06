@@ -21,6 +21,7 @@
 | fitness | Activity rings, weekly bar chart, and workout history dashboard | [README](apps/fitness/README.md) |
 | games | 35 classic games with AI + CodexMagic collectible card game platform | [README](apps/games/README.md) |
 | globe | Earth visualization with 16 data overlays and turn-by-turn routing | [README](apps/globe/README.md) |
+| gpushow | WebGPU technique showcase: ~40 rendering demos with shaders generated from Codex `[Device]` kernels via the WGSL plug | [README](apps/gpushow/README.md) |
 | helm | Scalable comms: auto-clustering chat (River) + ranked voice (Bridge) | [README](apps/helm/README.md) |
 | ideas | Idea Forge: HTTP webservice generating unique business ideas from vague prompts | [README](apps/ideas/README.md) |
 | imagetools | Image editing utility: crop, resize, rotate, adjust, multi-format export | [README](apps/imagetools/README.md) |

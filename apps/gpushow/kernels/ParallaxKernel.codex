@@ -1,0 +1,99 @@
+Chapter: ParallaxKernel
+  cites Gpu chapter DeviceEffect
+  cites Gpu chapter DeviceMath
+
+ Parallax and bump mapping from Codex [Device] AST: a procedural brick wall. Each
+ pixel builds a per-texel height field (bricks raised, mortar recessed, bevelled
+ edges), offsets its texture coordinate along the view direction by that height
+ (parallax, so the bricks appear to stand proud of the mortar), then shades with
+ a normal derived from the height gradient (bump) under an orbiting light. Single
+ pass, all procedural. Reference site's "parallax mapping" technique. Float math
+ from DeviceMath.
+
+ We say:
+
+Section: Parameters
+
+  pa-width : Integer = 1024
+  pa-half-w : Integer = 512
+  pa-half-h : Integer = 384
+
+Section: Brick Height Field
+
+ Height in 0..1: 0 in the mortar grooves, ramping to 1 across a bevel onto the
+ brick face. Rows are offset half a brick.
+
+  pa-height : Real, Real -> Real
+  pa-height (u) (v) =
+    let iv = real-to-int (v / 70.0)
+    in let off = if iv - (iv / 2) * 2 == 0 then 0.0 else 65.0
+    in let uu = u + off
+    in let iu = real-to-int (uu / 130.0)
+    in let fu = uu - real-from-int iu * 130.0
+    in let fv = v - real-from-int iv * 70.0
+    in let du = real-min fu (130.0 - fu)
+    in let dv = real-min fv (70.0 - fv)
+    in let d = real-min du dv
+    in real-min 1.0 (real-max 0.0 ((d - 4.0) / 9.0))
+
+Section: Shading
+
+  pa-clamp01 : Real -> Real
+  pa-clamp01 (x) = real-max 0.0 (real-min 1.0 x)
+
+  pa-pack : Real, Real, Real -> Integer
+  pa-pack (r) (g) (b) =
+    let ri = real-to-int (pa-clamp01 r * 255.0)
+    in let gi = real-to-int (pa-clamp01 g * 255.0)
+    in let bi = real-to-int (pa-clamp01 b * 255.0)
+    in ri * 65536 + gi * 256 + bi
+
+Section: Kernel
+
+ Parallax-offset the coordinate along the view slant, rebuild the height there,
+ take a finite-difference normal, and light it with an orbiting key light. The
+ brick albedo varies per brick; the mortar is grey.
+
+  pa-render : Integer, Integer -> Integer
+  pa-render (gid) (frame) =
+    let px = real-from-int (gid - (gid / pa-width) * pa-width)
+    in let py = real-from-int (gid / pa-width)
+    in let vdx = (px - real-from-int pa-half-w) / 850.0
+    in let vdy = (py - real-from-int pa-half-h) / 850.0
+    in let h0 = pa-height px py
+    in let up = px + vdx * h0 * 36.0
+    in let vp = py + vdy * h0 * 36.0
+    in let h = pa-height up vp
+    in let hu1 = pa-height (up + 2.0) vp
+    in let hu0 = pa-height (up - 2.0) vp
+    in let hv1 = pa-height up (vp + 2.0)
+    in let hv0 = pa-height up (vp - 2.0)
+    in let nx = (hu0 - hu1) * 7.0
+    in let ny = (hv0 - hv1) * 7.0
+    in let nl = real-sqrt (nx * nx + ny * ny + 1.0)
+    in let ux = nx / nl
+    in let uy = ny / nl
+    in let uz = 1.0 / nl
+    in let ang = real-from-int frame / 28.0
+    in let lx = real-cos ang * 0.6
+    in let ly = real-sin ang * 0.6
+    in let lz = 0.62
+    in let ll = real-sqrt (lx * lx + ly * ly + lz * lz)
+    in let ndl = real-max 0.0 (ux * lx / ll + uy * ly / ll + uz * lz / ll)
+    in let ivp = real-to-int (vp / 70.0)
+    in let offp = if ivp - (ivp / 2) * 2 == 0 then 0.0 else 65.0
+    in let iup = real-to-int ((up + offp) / 130.0)
+    in let hue = iup * 2 + ivp * 3
+    in let hm = hue - (hue / 3) * 3
+    in let br = if h < 0.25 then 0.34 else 0.58 + real-from-int hm * 0.06
+    in let bg = if h < 0.25 then 0.33 else 0.26
+    in let bb = if h < 0.25 then 0.32 else 0.20
+    in let sh = 0.22 + ndl * 0.92
+    in pa-pack (br * sh) (bg * sh) (bb * sh)
+
+Section: Parallax Kernel
+
+  parallax-step : Integer, Integer, Integer -> [Device] Integer
+  parallax-step (outb) (frame) (gid) = act
+    device-store outb gid (pa-render gid frame)
+  end

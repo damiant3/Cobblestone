@@ -1,0 +1,177 @@
+Chapter: GltfKernel
+  cites Gpu chapter DeviceEffect
+  cites Gpu chapter DeviceMath
+
+ A real triangle mesh, ray-traced from Codex [Device] AST. The host uploads an
+ icosahedron (20 triangles, 9 fixed-point coordinates each) into a storage
+ buffer; one GPU thread per pixel inverse-rotates its ray into the mesh frame,
+ then folds over the triangles reading each one's vertices from the buffer and
+ running a Moller-Trumbore ray-triangle test, keeping the nearest hit. The winner
+ is re-read to build its face normal, and the facet is flat-shaded two-sided with
+ a per-face colour. This is the reference site's "glTF" technique -- arbitrary
+ mesh geometry from a buffer, reached through the storage-pointer helper
+ parameter feature (the force loop of the N-body demo, now over geometry).
+
+ Vertices are 1/1024 fixed point in the i32 buffer.
+
+ We say:
+
+Section: Parameters
+
+  gl-width : Integer = 1024
+  gl-half-w : Integer = 512
+  gl-half-h : Integer = 384
+  gl-tris : Integer = 20
+
+Section: Moller-Trumbore
+
+ Ray (o, d) against triangle (v0, v1, v2). Returns the hit distance, or -1.
+
+  gl-mt : Real, Real, Real, Real, Real, Real, Real, Real, Real, Real, Real, Real, Real, Real, Real -> Real
+  gl-mt (ox) (oy) (oz) (dx) (dy) (dz) (v0x) (v0y) (v0z) (v1x) (v1y) (v1z) (v2x) (v2y) (v2z) =
+    let e1x = v1x - v0x
+    in let e1y = v1y - v0y
+    in let e1z = v1z - v0z
+    in let e2x = v2x - v0x
+    in let e2y = v2y - v0y
+    in let e2z = v2z - v0z
+    in let pvx = dy * e2z - dz * e2y
+    in let pvy = dz * e2x - dx * e2z
+    in let pvz = dx * e2y - dy * e2x
+    in let det = e1x * pvx + e1y * pvy + e1z * pvz
+    in let adet = if det < 0.0 then 0.0 - det else det
+    in if adet < 0.00001 then 0.0 - 1.0
+    else let inv = 1.0 / det
+    in let tvx = ox - v0x
+    in let tvy = oy - v0y
+    in let tvz = oz - v0z
+    in let u = (tvx * pvx + tvy * pvy + tvz * pvz) * inv
+    in if u < 0.0 then 0.0 - 1.0
+    else if u > 1.0 then 0.0 - 1.0
+    else let qvx = tvy * e1z - tvz * e1y
+    in let qvy = tvz * e1x - tvx * e1z
+    in let qvz = tvx * e1y - tvy * e1x
+    in let vv = (dx * qvx + dy * qvy + dz * qvz) * inv
+    in if vv < 0.0 then 0.0 - 1.0
+    else if u + vv > 1.0 then 0.0 - 1.0
+    else let t = (e2x * qvx + e2y * qvy + e2z * qvz) * inv
+    in if t > 0.001 then t else 0.0 - 1.0
+
+Section: Nearest Triangle
+
+ Fold over the mesh reading each triangle's nine coordinates from the buffer
+ (storage pointer) and Moller-Trumbore testing it; returns the nearest tri id.
+
+  gl-nearest : Integer, Real, Real, Real, Real, Real, Real, Integer, Integer, Real -> [Device] Integer
+  gl-nearest (buf) (ox) (oy) (oz) (dx) (dy) (dz) (i) (best-id) (best-t) =
+    if i >= gl-tris then best-id
+    else act
+      a0 <- device-load buf (i * 9)
+      a1 <- device-load buf (i * 9 + 1)
+      a2 <- device-load buf (i * 9 + 2)
+      b0 <- device-load buf (i * 9 + 3)
+      b1 <- device-load buf (i * 9 + 4)
+      b2 <- device-load buf (i * 9 + 5)
+      c0 <- device-load buf (i * 9 + 6)
+      c1 <- device-load buf (i * 9 + 7)
+      c2 <- device-load buf (i * 9 + 8)
+      let t = gl-mt ox oy oz dx dy dz (real-from-int a0 / 1024.0) (real-from-int a1 / 1024.0) (real-from-int a2 / 1024.0) (real-from-int b0 / 1024.0) (real-from-int b1 / 1024.0) (real-from-int b2 / 1024.0) (real-from-int c0 / 1024.0) (real-from-int c1 / 1024.0) (real-from-int c2 / 1024.0)
+      in let take = if t > 0.001 then (if best-t < 0.0 then 1 else if t < best-t then 1 else 0) else 0
+      in let nid = if take == 1 then i else best-id
+      in let nt = if take == 1 then t else best-t
+      in gl-nearest buf ox oy oz dx dy dz (i + 1) nid nt
+    end
+
+Section: Shading
+
+  gl-clamp01 : Real -> Real
+  gl-clamp01 (x) = real-max 0.0 (real-min 1.0 x)
+
+  gl-pack : Real, Real, Real -> Integer
+  gl-pack (r) (g) (b) =
+    let ri = real-to-int (gl-clamp01 r * 255.0)
+    in let gi = real-to-int (gl-clamp01 g * 255.0)
+    in let bi = real-to-int (gl-clamp01 b * 255.0)
+    in ri * 65536 + gi * 256 + bi
+
+  gl-bg : Integer -> Integer
+  gl-bg (py) =
+    let h = real-from-int py / 768.0
+    in gl-pack (0.04 + h * 0.05) (0.05 + h * 0.09) (0.09 + h * 0.15)
+
+  gl-col-r : Integer -> Real
+  gl-col-r (i) = 0.45 + real-from-int (i - (i / 6) * 6) * 0.09
+
+  gl-col-g : Integer -> Real
+  gl-col-g (i) = 0.85 - real-from-int (i - (i / 5) * 5) * 0.08
+
+  gl-col-b : Integer -> Real
+  gl-col-b (i) = 0.55 + real-from-int (i - (i / 4) * 4) * 0.10
+
+Section: GLTF Kernel
+
+ Per pixel: build the ray, inverse-rotate into the mesh frame, find the nearest
+ triangle, re-read its vertices for the flat face normal, and two-sided shade.
+
+  gltf-step : Integer, Integer, Integer, Integer -> [Device] Integer
+  gltf-step (meshbuf) (outb) (frame) (gid) =
+    let px = gid - (gid / gl-width) * gl-width
+    in let py = gid / gl-width
+    in let fx = real-from-int (px - gl-half-w) / 384.0
+    in let fy = real-from-int (gl-half-h - py) / 384.0
+    in let rl = real-sqrt (fx * fx + fy * fy + 2.56)
+    in let dx0 = fx / rl
+    in let dy0 = fy / rl
+    in let dz0 = 1.6 / rl
+    in let ay = real-from-int frame / 38.0
+    in let ax = real-from-int frame / 57.0
+    in let cy = real-cos ay
+    in let sy = real-sin ay
+    in let cx = real-cos ax
+    in let sx = real-sin ax
+    in let oz0 = 0.0 - 3.2
+    in let oxa = oz0 * sy
+    in let oza = oz0 * cy
+    in let ox = oxa
+    in let oy = oza * sx
+    in let oz = oza * cx
+    in let dxa = dx0 * cy + dz0 * sy
+    in let dza = 0.0 - dx0 * sy + dz0 * cy
+    in let dx = dxa
+    in let dy = dy0 * cx + dza * sx
+    in let dz = 0.0 - dy0 * sx + dza * cx
+    in act
+      id <- gl-nearest meshbuf ox oy oz dx dy dz 0 (0 - 1) (0.0 - 1.0)
+      let safe = if id < 0 then 0 else id
+      in act
+      a0 <- device-load meshbuf (safe * 9)
+      a1 <- device-load meshbuf (safe * 9 + 1)
+      a2 <- device-load meshbuf (safe * 9 + 2)
+      b0 <- device-load meshbuf (safe * 9 + 3)
+      b1 <- device-load meshbuf (safe * 9 + 4)
+      b2 <- device-load meshbuf (safe * 9 + 5)
+      c0 <- device-load meshbuf (safe * 9 + 6)
+      c1 <- device-load meshbuf (safe * 9 + 7)
+      c2 <- device-load meshbuf (safe * 9 + 8)
+      let v0x = real-from-int a0 / 1024.0
+      in let v0y = real-from-int a1 / 1024.0
+      in let v0z = real-from-int a2 / 1024.0
+      in let e1x = real-from-int b0 / 1024.0 - v0x
+      in let e1y = real-from-int b1 / 1024.0 - v0y
+      in let e1z = real-from-int b2 / 1024.0 - v0z
+      in let e2x = real-from-int c0 / 1024.0 - v0x
+      in let e2y = real-from-int c1 / 1024.0 - v0y
+      in let e2z = real-from-int c2 / 1024.0 - v0z
+      in let nx0 = e1y * e2z - e1z * e2y
+      in let ny0 = e1z * e2x - e1x * e2z
+      in let nz0 = e1x * e2y - e1y * e2x
+      in let nl = real-sqrt (nx0 * nx0 + ny0 * ny0 + nz0 * nz0) + 0.00001
+      in let nx = nx0 / nl
+      in let ny = ny0 / nl
+      in let nz = nz0 / nl
+      in let ndl = nx * 0.35 + ny * 0.72 + nz * (0.0 - 0.60)
+      in let lit = 0.2 + (if ndl < 0.0 then 0.0 - ndl else ndl) * 0.85
+      in let out = if id < 0 then gl-bg py else gl-pack (gl-col-r id * lit) (gl-col-g id * lit) (gl-col-b id * lit)
+      in device-store outb gid out
+      end
+    end

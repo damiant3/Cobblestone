@@ -13,7 +13,7 @@ Chapter: Opening
   cites Emit chapter Codex Emitter (emit-codex-text-chapter, emit-type-defs, emit-def)
   cites Emit chapter IR Text Emitter (emit-ir-chapter, ir-prune-unreachable)
   cites Emit chapter Emit Allocator (emit-build)
-  cites Emit chapter X86-64 Code Generator (x86-64-emit-cdx, x86-64-emit-cdx-with-exit-mode, X86_64ExitMode, ExitRepl, Exit, X86_64WatchdogMode, WatchdogProgress, WatchdogPet, pmap-self-test, pmap-escape-count, utf8-to-cce)
+  cites Emit chapter X86-64 Code Generator (x86-64-emit-cdx, x86-64-emit-cdx-with-exit-mode, X86_64ExitMode, ExitRepl, Exit, X86_64WatchdogMode, WatchdogProgress, WatchdogPet, pmap-self-test, pmap-escape-count, pmap-escape-count-quiet, pmap-escape-list-quiet, utf8-to-cce)
   cites Semantics chapter Name Resolution (resolve-chapter, check-entry-point-duplicate, check-duplicate-cites, count-typecheck-units)
 
 Section: Compile Flags
@@ -241,6 +241,38 @@ Section: Frontend
    if enabled then pmap-selftest-result pmap-self-test
    else bag-from-list []
 
+ The deck-liveness map. Under -EscapeCheck, the emitter's input roots
+ are walked against earlier deck address ranges to measure which
+ sealed decks the late game still references. A zero count for a
+ segment means the emit inputs do not reach it and its space is a
+ candidate for reclamation; the pre-scope segment is recycled space
+ (the desugar-boundary compact reuses the lex/parse ranges), so hits
+ there mean the frontend keep deck, not dead lex data.
+
+  deck-live-warn : Text, Text, Integer -> DiagnosticBag
+  deck-live-warn (root-name) (seg) (n) =
+   bag-from-list [make-warning cdx-escape-violation ("DECK-LIVE " & root-name & " -> " & seg & ": " & show n & " ref(s)") synthetic-span]
+
+  sum-tylist-lens : List (List CodexType), Integer, Integer, Integer -> Integer
+  sum-tylist-lens (ls) (i) (len) (acc) =
+   if i == len then acc
+   else sum-tylist-lens ls (i + 1) len (acc + list-length (list-at ls i))
+
+  sum-fieldlist-lens : List (List RecordField), Integer, Integer, Integer -> Integer
+  sum-fieldlist-lens (ls) (i) (len) (acc) =
+   if i == len then acc
+   else sum-fieldlist-lens ls (i + 1) len (acc + list-length (list-at ls i))
+
+  sum-ctorlist-lens : List (List SumCtor), Integer, Integer, Integer -> Integer
+  sum-ctorlist-lens (ls) (i) (len) (acc) =
+   if i == len then acc
+   else sum-ctorlist-lens ls (i + 1) len (acc + list-length (list-at ls i))
+
+  sum-labellist-lens : List (List EffectLabel), Integer, Integer, Integer -> Integer
+  sum-labellist-lens (ls) (i) (len) (acc) =
+   if i == len then acc
+   else sum-labellist-lens ls (i + 1) len (acc + list-length (list-at ls i))
+
   pmap-selftest-result : Integer -> DiagnosticBag
   pmap-selftest-result (r) =
    if r == 3 then bag-from-list []
@@ -371,7 +403,7 @@ Section: Frontend
    in let h6 = __heap-save
    in let cite-bag = deck-record (check-duplicate-cites (scoped.citations))
    in let resolve-result = resolve-chapter scoped colliding assignments
-   in let resolve-bag = deck-record (bag-merge-all [parse-bag-d, cite-bag, resolve-result.bag, desugar-ov-bag, keep-ov-bag, desugar-esc-bag, pmap-selftest-bag (flags.escape-check)])
+   in let resolve-bag = deck-record (bag-merge-all [parse-bag-d, cite-bag, resolve-result.bag, desugar-ov-bag, keep-ov-bag, desugar-esc-bag, pmap-selftest-bag True])
    in let scope-metrics = phase-measure scope-phase
    in let scope-ov = check-deck-overflow (scope-metrics.deck-end - scope-metrics.deck-origin) scope-deck-height
    in let scope-ov-bag = if scope-ov == 1 then deck-overflow-bag "SCOPE" else no-overflow-bag
@@ -400,6 +432,8 @@ Section: Frontend
   compile-type-check (sr) (source-len) (flags) =
    let check-units = count-typecheck-units (sr.scoped.type-defs) 0 (list-length (sr.scoped.type-defs)) 0
    in let check-deck-height = (source-len * (flags.survey.check-mul) + check-units * (flags.survey.check-unit-mul)) * (flags.survey.headroom) / 100 + survey-check-base
+   in let keep-height = source-len * survey-check-keep-mul * (flags.survey.headroom) / 100 + survey-check-keep-base
+   in let keep-base = build keep-height
    in let check-base = build check-deck-height
    in let check-phase = phase-start
    in let check-result = deck-record (check-chapter (sr.scoped) (sr.renames) (sr.colliding) (sr.assignments))
@@ -416,14 +450,58 @@ Section: Frontend
    in if bag-has-errors check-bag
       then halted-checked check-bag check-heap-marks
       else let resolved-env = deck-record (for b in (check-result.env.bindings) -> deck-record (TypeBinding { name = b.name, bound-type = deep-resolve (check-result.state) (b.bound-type) }))
-      in let sorted-all = deck-record (sort-bindings (check-result.types & resolved-env))
-      in let sorted-et = sort-expr-types (check-result.state.expr-types)
+      in let sorted-all0 = deck-record (resolve-all-bindings (check-result.state) (sort-bindings (check-result.types & resolved-env)) 0 (list-length (check-result.types) + list-length resolved-env) (__list-with-capacity (list-length (check-result.types) + list-length resolved-env)))
+      in let sorted-et0 = deck-record (resolve-all-expr-types (check-result.state) (sort-expr-types (check-result.state.expr-types)) 0 (list-length (check-result.state.expr-types)) (__list-with-capacity (list-length (check-result.state.expr-types))))
+      in let memo-pop = list-length sorted-et0 * 32 + list-length sorted-all0 * 32 + 1024
+      in let memo-slots = memo-pow2-at-least (memo-pop * 2) 4096
+      in let memo-table = pitch (memo-slots * 8)
+      in let memo-z = __memset memo-table 0 (memo-slots * 8)
+      in let cons-slots = memo-pow2-at-least (memo-pop / 2) 4096
+      in let cons-table = pitch (cons-slots * 16)
+      in let cons-z = __memset cons-table 0 (cons-slots * 16)
+      in let mc = MemoCtx {
+       mc-table = memo-table,
+       mc-slots = memo-slots,
+       mc-shift = memo-shift-for memo-slots 64,
+       mc-floor = keep-base,
+       mc-ty = __list-with-capacity memo-pop,
+       mc-text = __list-with-capacity memo-pop,
+       mc-name = __list-with-capacity (memo-pop / 2 + 16),
+       mc-row = __list-with-capacity (memo-pop / 16 + 16),
+       mc-tylist = __list-with-capacity (memo-pop / 4 + 16),
+       mc-fieldlist = __list-with-capacity (memo-pop / 4 + 16),
+       mc-ctorlist = __list-with-capacity (memo-pop / 4 + 16),
+       mc-labellist = __list-with-capacity (memo-pop / 4 + 16),
+       mc-cons = cons-table,
+       mc-cons-slots = cons-slots,
+       mc-cons-shift = memo-shift-for cons-slots 64,
+       mc-cap-ty = memo-pop,
+       mc-cap-text = memo-pop,
+       mc-cap-name = memo-pop / 2 + 16,
+       mc-cap-row = memo-pop / 16 + 16,
+       mc-cap-list = memo-pop / 4 + 16
+      }
+      in let keep-set = __deck-set keep-base
+      in let keep-phase = phase-start
+      in let sorted-all = deck-record (copy-bindings-deep sorted-all0 mc)
+      in let sorted-et = deck-record (copy-expr-types-deep sorted-et0 mc)
+      in let kept-subs = deck-record (mcopy-types (check-result.state.substitutions) 0 mc)
+      in let kept-rows = deck-record (mcopy-rows (check-result.state.row-substitutions) mc)
+      in let kept-bag = deck-record (copy-sx-bag keep-base check-bag)
+      in let kept-ust-bag = deck-record (copy-sx-bag keep-base (check-result.state.bag))
+      in let kept-marks = deck-record (copy-list-with-headroom check-heap-marks 0)
+      in let kept-metrics = deck-record (for m in check-phase-metrics -> deck-record (PhaseMetrics { bivy-origin = m.bivy-origin, bivy-hwm = m.bivy-hwm, deck-origin = m.deck-origin, deck-end = m.deck-end }))
+      in let keep-metrics = phase-measure keep-phase
+      in let keep-ov = check-deck-overflow (keep-metrics.deck-end - keep-metrics.deck-origin) keep-height
+      in let keep-ov-bag = if keep-ov == 1 then deck-overflow-bag "CHECK-KEEP" else no-overflow-bag
+      in let keep-stat-bag = if flags.escape-check then deck-record (bag-from-list [make-warning cdx-escape-violation ("KEEP-STAT used=" & show (keep-metrics.deck-end - keep-metrics.deck-origin) & " ty=" & show (list-length (mc.mc-ty)) & " text=" & show (list-length (mc.mc-text)) & " name=" & show (list-length (mc.mc-name)) & " row=" & show (list-length (mc.mc-row)) & " tylists=" & show (list-length (mc.mc-tylist)) & "/" & show (sum-tylist-lens (mc.mc-tylist) 0 (list-length (mc.mc-tylist)) 0) & " fieldlists=" & show (list-length (mc.mc-fieldlist)) & "/" & show (sum-fieldlist-lens (mc.mc-fieldlist) 0 (list-length (mc.mc-fieldlist)) 0) & " ctorlists=" & show (list-length (mc.mc-ctorlist)) & "/" & show (sum-ctorlist-lens (mc.mc-ctorlist) 0 (list-length (mc.mc-ctorlist)) 0) & " labellists=" & show (list-length (mc.mc-labellist)) & "/" & show (sum-labellist-lens (mc.mc-labellist) 0 (list-length (mc.mc-labellist)) 0) & " subs=" & show (list-length kept-subs) & " et=" & show (list-length sorted-et) & " binds=" & show (list-length sorted-all)) synthetic-span]) else bag-from-list []
+      in let final-bag = deck-record (bag-merge-all [kept-bag, keep-ov-bag, keep-stat-bag])
       in let pre-sorted-ust = deck-record (UnificationState {
-       substitutions = check-result.state.substitutions,
-       row-substitutions = check-result.state.row-substitutions,
+       substitutions = kept-subs,
+       row-substitutions = kept-rows,
        next-id = check-result.state.next-id,
        next-row-id = check-result.state.next-row-id,
-       bag = check-result.state.bag,
+       bag = kept-ust-bag,
        expr-types = sorted-et,
        effect-exempt = False
       })
@@ -435,9 +513,9 @@ Section: Frontend
        renames = sr.renames,
        colliding = sr.colliding,
        assignments = sr.assignments,
-       bag = check-bag,
-       heap-marks = check-heap-marks,
-       phase-metrics = check-phase-metrics
+       bag = final-bag,
+       heap-marks = kept-marks,
+       phase-metrics = kept-metrics
       })
    in let sealed = compact-phase flags poison-check
    in result
@@ -541,7 +619,31 @@ Section: Frontend
    in let lower-esc-bag = escape-check-bag (flags.escape-check) lower-metrics "LOWER"
    in let resolve-esc-bag = escape-check-bag (flags.escape-check) resolve-metrics "RESOLVE"
    in let lift-esc-bag = escape-check-bag (flags.escape-check) lift-metrics "LIFT"
-   in let fe-bag = deck-record (bag-merge-all [checked.bag, lower-ov-bag, resolve-ov-bag, lift-ov-bag, lower-esc-bag, resolve-esc-bag, lift-esc-bag])
+   in let dl-bag = if flags.escape-check then
+       if list-length (checked.phase-metrics) >= 5 then
+        let m-lex = list-at (checked.phase-metrics) 0
+        in let m-scope = list-at (checked.phase-metrics) 3
+        in let m-check = list-at (checked.phase-metrics) 4
+        in let ir-root = address-of cdx-chapter
+        in let stds-root = address-of stds
+        in deck-record (bag-merge-all [
+         deck-live-warn "cdx-ir" "pre-scope" (pmap-escape-count-quiet ir-root "IRChapter" (m-lex.deck-origin) (m-scope.deck-origin)),
+         deck-live-warn "cdx-ir" "scope" (pmap-escape-count-quiet ir-root "IRChapter" (m-scope.deck-origin) (m-scope.deck-end)),
+         deck-live-warn "cdx-ir" "check" (pmap-escape-count-quiet ir-root "IRChapter" (m-check.deck-origin) (m-check.deck-end)),
+         deck-live-warn "cdx-ir" "lower" (pmap-escape-count-quiet ir-root "IRChapter" (lower-metrics.deck-origin) (lower-metrics.deck-end)),
+         deck-live-warn "stds" "pre-scope" (pmap-escape-list-quiet stds-root "TypeBinding" (m-lex.deck-origin) (m-scope.deck-origin)),
+         deck-live-warn "stds" "scope" (pmap-escape-list-quiet stds-root "TypeBinding" (m-scope.deck-origin) (m-scope.deck-end)),
+         deck-live-warn "stds" "check" (pmap-escape-list-quiet stds-root "TypeBinding" (m-check.deck-origin) (m-check.deck-end)),
+         deck-live-warn "stds" "lower" (pmap-escape-list-quiet stds-root "TypeBinding" (lower-metrics.deck-origin) (lower-metrics.deck-end)),
+         deck-live-warn "cdx-ir" "scope-scratch" (pmap-escape-count-quiet ir-root "IRChapter" (m-scope.deck-end) (m-scope.bivy-hwm)),
+         deck-live-warn "cdx-ir" "check-scratch" (pmap-escape-count-quiet ir-root "IRChapter" (m-check.deck-end) (m-check.bivy-hwm)),
+         deck-live-warn "cdx-ir" "lower-scratch" (pmap-escape-count-quiet ir-root "IRChapter" (lower-metrics.deck-end) (lower-metrics.bivy-hwm)),
+         deck-live-warn "stds" "scope-scratch" (pmap-escape-list-quiet stds-root "TypeBinding" (m-scope.deck-end) (m-scope.bivy-hwm)),
+         deck-live-warn "stds" "check-scratch" (pmap-escape-list-quiet stds-root "TypeBinding" (m-check.deck-end) (m-check.bivy-hwm)),
+         deck-live-warn "stds" "lower-scratch" (pmap-escape-list-quiet stds-root "TypeBinding" (lower-metrics.deck-end) (lower-metrics.bivy-hwm))])
+       else bag-from-list []
+      else bag-from-list []
+   in let fe-bag = deck-record (bag-merge-all [checked.bag, lower-ov-bag, resolve-ov-bag, lift-ov-bag, lower-esc-bag, resolve-esc-bag, lift-esc-bag, dl-bag])
    in let result = deck-record (CompileFrontend {
     type-defs = checked.scoped.type-defs,
     text-meta = tm,
@@ -1023,7 +1125,13 @@ Section: Entry Point
    in let h-pre-emit = __heap-save
    in let text = compile-text fe CtCodexText
    in let h-post-emit = __heap-save
-   in print-line-uni (format-heap-marks (fe.heap-marks & [h-pre-emit, h-post-emit]) & "EMIT-BYTES:" & integer-to-text (text-length text) & "\n")
+   in print-line-uni (format-heap-marks (fe.heap-marks & [h-pre-emit, h-post-emit]) & format-phase-decks (fe.phase-metrics) 0 (list-length (fe.phase-metrics)) "" & "EMIT-BYTES:" & integer-to-text (text-length text) & "\n")
+
+  format-phase-decks : List PhaseMetrics, Integer, Integer, Text -> Text
+  format-phase-decks (ms) (i) (len) (acc) =
+   if i == len then acc
+   else let m = list-at ms i
+   in format-phase-decks ms (i + 1) len (acc & "DECK-" & integer-to-text i & ":origin=" & integer-to-text (m.deck-origin) & " end=" & integer-to-text (m.deck-end) & " used=" & integer-to-text (m.deck-end - m.deck-origin) & " bivy-hwm=" & integer-to-text (m.bivy-hwm) & "\n")
 
   parse-mode-cmd : Text -> Text
   parse-mode-cmd (mode) =

@@ -1,0 +1,71 @@
+Chapter: BloomKernel
+  cites Gpu chapter DeviceEffect
+  cites Gpu chapter DeviceMath
+
+ The bloom composite pass. Each pixel gathers the bright pixels around it -- a
+ 40-tap golden-angle spiral read from the scene buffer through a storage-pointer
+ helper parameter -- keeps only the part of each tap above a brightness
+ threshold, and adds that glow to its own scene colour. Three passes of the fold
+ (one per channel) give a coloured halo. This is the reference site's "bloom"
+ technique as a two-pass compute post-process.
+
+ We say:
+
+Section: Parameters
+
+  bl-width : Integer = 1024
+  bl-height : Integer = 768
+  bl-taps : Integer = 40
+
+Section: Helpers
+
+  bl-clamp : Integer, Integer, Integer -> Integer
+  bl-clamp (v) (lo) (hi) = if v < lo then lo else if v > hi then hi else v
+
+  bl-extract : Integer, Integer -> Integer
+  bl-extract (texel) (ch) =
+    if ch == 0 then texel / 65536
+    else if ch == 1 then texel / 256 - (texel / 65536) * 256
+    else texel - (texel / 256) * 256
+
+Section: Glow Gather
+
+ Fold over the spiral taps: sample the scene buffer at each tap, take the amount
+ of the chosen channel above the threshold, and sum. buf is a storage pointer.
+
+  bl-glow : Integer, Integer, Integer, Integer, Integer, Integer -> [Device] Integer
+  bl-glow (buf) (px) (py) (ch) (k) (acc) =
+    if k >= bl-taps then acc
+    else let ang = real-from-int k * 2.399
+    in let rad = real-sqrt (real-from-int k) * 3.4
+    in let dx = real-to-int (real-cos ang * rad)
+    in let dy = real-to-int (real-sin ang * rad)
+    in let sx = bl-clamp (px + dx) 0 1023
+    in let sy = bl-clamp (py + dy) 0 767
+    in let idx = sy * 1024 + sx
+    in act
+      texel <- device-load buf idx
+      let c = bl-extract texel ch
+      in let bright = if c > 150 then c - 150 else 0
+      in bl-glow buf px py ch (k + 1) (acc + bright)
+    end
+
+Section: Bloom Kernel
+
+  bloom-step : Integer, Integer, Integer, Integer -> [Device] Integer
+  bloom-step (scenebuf) (outb) (frame) (gid) =
+    let px = gid - (gid / bl-width) * bl-width
+    in let py = gid / bl-width
+    in act
+    base <- device-load scenebuf gid
+    gr <- bl-glow scenebuf px py 0 0 0
+    gg <- bl-glow scenebuf px py 1 0 0
+    gb <- bl-glow scenebuf px py 2 0 0
+    let br = base / 65536
+    in let bg = base / 256 - (base / 65536) * 256
+    in let bb = base - (base / 256) * 256
+    in let fr = bl-clamp (br + gr / 34) 0 255
+    in let fg = bl-clamp (bg + gg / 34) 0 255
+    in let fb = bl-clamp (bb + gb / 34) 0 255
+    in device-store outb gid (fr * 65536 + fg * 256 + fb)
+    end

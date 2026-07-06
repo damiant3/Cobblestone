@@ -1,0 +1,77 @@
+Chapter: TextKernel
+  cites Gpu chapter DeviceEffect
+  cites Gpu chapter DeviceMath
+
+ A text overlay: the string "CODEX GPU" drawn from a 5x7 bitmap font, scrolling
+ as a marquee over a soft gradient, with a subtle drop shadow. One GPU thread per
+ pixel maps to a character cell and a glyph pixel; the glyph table is an if-ladder
+ of 5-bit rows. Reference site's "text overlay" technique. Float math from DeviceMath.
+
+ We say:
+
+Section: Parameters
+
+  tx-width : Integer = 1024
+  tx-cellw : Integer = 104
+  tx-rowh : Integer = 22
+  tx-nchar : Integer = 9
+
+Section: Font
+
+ 5-bit row (bit 4 = leftmost) of glyph `ch` at `row` (0 top .. 6 bottom).
+ ch: 0 C, 1 O, 2 D, 3 E, 4 X, 5 space, 6 G, 7 P, 8 U.
+
+  tx-row : Integer, Integer -> Integer
+  tx-row (ch) (row) =
+    if ch == 0 then (if row == 0 then 14 else if row == 1 then 17 else if row == 5 then 17 else if row == 6 then 14 else 16)
+    else if ch == 1 then (if row == 0 then 14 else if row == 6 then 14 else 17)
+    else if ch == 2 then (if row == 0 then 30 else if row == 6 then 30 else 17)
+    else if ch == 3 then (if row == 0 then 31 else if row == 3 then 30 else if row == 6 then 31 else 16)
+    else if ch == 4 then (if row == 2 then 10 else if row == 3 then 4 else if row == 4 then 10 else 17)
+    else if ch == 6 then (if row == 0 then 14 else if row == 1 then 17 else if row == 2 then 16 else if row == 3 then 23 else if row == 6 then 15 else 17)
+    else if ch == 7 then (if row == 0 then 30 else if row == 1 then 17 else if row == 2 then 17 else if row == 3 then 30 else 16)
+    else if ch == 8 then (if row == 6 then 14 else 17)
+    else 0
+
+  tx-bit : Integer, Integer, Integer -> Integer
+  tx-bit (ch) (col) (row) =
+    if col < 0 then 0 else if col > 4 then 0 else if row < 0 then 0 else if row > 6 then 0
+    else let rv = tx-row ch row
+    in rv / tx-pow2 (4 - col) - (rv / tx-pow2 (5 - col)) * 2
+
+  tx-pow2 : Integer -> Integer
+  tx-pow2 (n) = if n <= 0 then 1 else if n == 1 then 2 else if n == 2 then 4 else if n == 3 then 8 else if n == 4 then 16 else 32
+
+ Character at a marquee position: string is C O D E X _ G P U.
+
+  tx-char : Integer -> Integer
+  tx-char (i) =
+    let m = i - (i / tx-nchar) * tx-nchar
+    in if m == 0 then 0 else if m == 1 then 1 else if m == 2 then 2 else if m == 3 then 3 else if m == 4 then 4 else if m == 5 then 5 else if m == 6 then 6 else if m == 7 then 7 else 8
+
+Section: Kernel
+
+ A pixel is text if the glyph bit at its cell is set. A shifted lookup gives a
+ drop shadow. Marquee scrolls with the frame.
+
+  tx-ison : Integer, Integer, Integer -> Integer
+  tx-ison (px) (py) (frame) =
+    let sx = px + frame * 2
+    in let ci = sx / tx-cellw
+    in let cx = sx - ci * tx-cellw
+    in let col = (cx - 12) / 16
+    in let ry = py - 250
+    in let row = ry / tx-rowh
+    in if cx < 12 then 0 else if cx > 92 then 0 else if ry < 0 then 0 else if row > 6 then 0
+    else tx-bit (tx-char ci) col row
+
+  text-step : Integer, Integer, Integer -> [Device] Integer
+  text-step (outb) (frame) (gid) =
+    let px = gid - (gid / tx-width) * tx-width
+    in let py = gid / tx-width
+    in let on = tx-ison px py frame
+    in let shadow = tx-ison (px - 4) (py - 4) frame
+    in let bgb = 30 + py / 12
+    in act
+    device-store outb gid (if on == 1 then 255 * 65536 + 245 * 256 + 200 else if shadow == 1 then 8 * 65536 + 10 * 256 + 16 else 22 * 65536 + 26 * 256 + bgb)
+    end

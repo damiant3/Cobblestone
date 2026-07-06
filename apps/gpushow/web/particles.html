@@ -1,0 +1,131 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>gpushow -- compute particles (Codex-generated gravity wells)</title>
+<style>
+  html,body { margin:0; background:#04060c; color:#8aa; font:13px system-ui,sans-serif; }
+  #wrap { display:flex; flex-direction:column; align-items:center; gap:8px; padding:10px; }
+  canvas { background:#04060c; border:1px solid #10203a; }
+  #status { opacity:.7; }
+</style>
+<div id="wrap">
+  <canvas id="c" width="1024" height="768"></canvas>
+  <div id="status">initializing WebGPU...</div>
+</div>
+<script type="module">
+// The compute shader (swarm_step_main) is GENERATED FROM CODEX [Device] AST
+// by codex/plugs/wgsl (apps/gpushow/kernels/SwarmKernel.codex). Each thread
+// pulls its particle toward two orbiting gravity wells and integrates.
+// Two state buffers are ping-ponged each frame (read in -> write out). The
+// render shader (hand-written) unpacks px,py,vx,vy and draws speed-colored quads.
+
+const N = 20000;
+const status = document.getElementById('status');
+function fail(m){ status.textContent = 'ERROR: ' + m; window.__error = m; window.__ready = true; }
+
+// tiny deterministic PRNG so the screenshot is stable
+let seed = 0x1234567;
+function rnd(){ seed = (seed * 1103515245 + 12345) & 0x7fffffff; return seed / 0x7fffffff; }
+
+async function main(){
+  if (!navigator.gpu) return fail('navigator.gpu unavailable (needs secure context)');
+  const adapter = await navigator.gpu.requestAdapter();
+  if (!adapter) return fail('no GPU adapter');
+  const device = await adapter.requestDevice();
+  const canvas = document.getElementById('c');
+  const ctx = canvas.getContext('webgpu');
+  const format = navigator.gpu.getPreferredCanvasFormat();
+  ctx.configure({ device, format, alphaMode: 'opaque' });
+
+  const computeCode = await (await fetch('/kernels/ParticlesKernel.wgsl')).text();
+  const computeMod = device.createShaderModule({ code: computeCode });
+  const ci = await computeMod.getCompilationInfo();
+  const cErr = ci.messages.filter(m => m.type === 'error');
+  if (cErr.length) return fail('compute WGSL: ' + cErr[0].message);
+  const computePipe = device.createComputePipeline({
+    layout: 'auto', compute: { module: computeMod, entryPoint: 'particles_step_main' } });
+
+  // two ping-pong state buffers: [px, py, vx, vy] x N
+  const init = new Int32Array(N * 4);
+  for (let i = 0; i < N; i++) {
+    init[i*4+0] = Math.floor(rnd() * 1024);
+    init[i*4+1] = Math.floor(rnd() * 768);
+    init[i*4+2] = Math.floor((rnd()-0.5) * 220); init[i*4+3] = Math.floor((rnd()-0.5) * 220);
+  }
+  const mkBuf = () => device.createBuffer({ size: N*16, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
+  const bufs = [mkBuf(), mkBuf()];
+  device.queue.writeBuffer(bufs[0], 0, init);
+
+  const uni = device.createBuffer({ size: 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+  const computeBG = [0,1].map(s => device.createBindGroup({
+    layout: computePipe.getBindGroupLayout(0),
+    entries: [
+      { binding: 0, resource: { buffer: bufs[s] } },     // inb
+      { binding: 1, resource: { buffer: bufs[1-s] } },   // outb
+      { binding: 2, resource: { buffer: uni } },
+    ] }));
+
+  const renderCode = `
+    @group(0) @binding(0) var<storage, read> pts : array<i32>;
+    struct VOut { @builtin(position) pos : vec4f, @location(0) col : vec3f };
+    @vertex fn vs(@builtin(vertex_index) vi : u32, @builtin(instance_index) ii : u32) -> VOut {
+      let px = f32(pts[ii*4u]);
+      let py = f32(pts[ii*4u + 1u]);
+      let vx = f32(pts[ii*4u + 2u]);
+      let vy = f32(pts[ii*4u + 3u]);
+      let spd = clamp(sqrt(vx*vx + vy*vy) / 320.0, 0.0, 1.0);
+      var corners = array<vec2f,6>(
+        vec2f(-1,-1), vec2f(1,-1), vec2f(-1,1),
+        vec2f(-1,1),  vec2f(1,-1), vec2f(1,1));
+      let c = corners[vi] * 1.6;
+      let sx = (px + c.x) / 512.0 - 1.0;
+      let sy = 1.0 - (py + c.y) / 384.0;
+      var o : VOut;
+      o.pos = vec4f(sx, sy, 0.0, 1.0);
+      // slow = deep blue, fast = cyan-white
+      o.col = mix(vec3f(0.35,0.10,0.02), vec3f(1.0,0.85,0.5), spd) * 0.55;
+      return o;
+    }
+    @fragment fn fs(i : VOut) -> @location(0) vec4f { return vec4f(i.col, 1.0); }`;
+  const renderMod = device.createShaderModule({ code: renderCode });
+  const renderPipe = device.createRenderPipeline({
+    layout: 'auto',
+    vertex: { module: renderMod, entryPoint: 'vs' },
+    fragment: { module: renderMod, entryPoint: 'fs', targets: [{
+      format,
+      blend: { color: { srcFactor:'one', dstFactor:'one', operation:'add' },
+               alpha: { srcFactor:'one', dstFactor:'one', operation:'add' } } }] },
+    primitive: { topology: 'triangle-list' } });
+  const renderBG = [0,1].map(s => device.createBindGroup({
+    layout: renderPipe.getBindGroupLayout(0),
+    entries: [{ binding: 0, resource: { buffer: bufs[s] } }] }));
+
+  let frame = 0, src = 0;
+  window.__ready = false;
+  function tick(){
+    device.queue.writeBuffer(uni, 0, new Int32Array([frame, 0, 0, 0]));
+    const dst = 1 - src;
+    const enc = device.createCommandEncoder();
+    const cp = enc.beginComputePass();
+    cp.setPipeline(computePipe);
+    cp.setBindGroup(0, computeBG[src]);
+    cp.dispatchWorkgroups(Math.ceil(N / 64));
+    cp.end();
+    const view = ctx.getCurrentTexture().createView();
+    const rp = enc.beginRenderPass({ colorAttachments: [{
+      view, clearValue: { r:0.016, g:0.024, b:0.047, a:1 }, loadOp:'clear', storeOp:'store' }] });
+    rp.setPipeline(renderPipe);
+    rp.setBindGroup(0, renderBG[dst]);   // render the freshly-written buffer
+    rp.draw(6, N);
+    rp.end();
+    device.queue.submit([enc.finish()]);
+
+    src = dst;
+    frame = frame + 1;
+    window.__frame = frame;
+    if (frame > 1) { window.__ready = true; status.textContent = 'Codex-generated gravity-well compute -- ' + N + ' particles, frame ' + frame; }
+    requestAnimationFrame(tick);
+  }
+  requestAnimationFrame(tick);
+}
+main().catch(e => fail(String(e)));
+</script>

@@ -1,0 +1,105 @@
+Chapter: CubeKernel
+  cites Gpu chapter DeviceEffect
+  cites Gpu chapter DeviceMath
+
+ A shaded, spinning 3D cube rendered from Codex [Device] AST. One GPU thread per
+ pixel casts a ray, inverse-rotates it into the cube's local frame (so the cube
+ appears to spin), slab-tests it against the unit box, picks the entry face for
+ a per-face colour, and shades it with a fixed local key light. This is the
+ gateway to the reference site's mesh demos -- real 3D geometry rendered per
+ pixel from Codex, no fixed-function vertex stage. Float math from DeviceMath.
+
+ We say:
+
+Section: Parameters
+
+  cu-width : Integer = 1024
+  cu-half-w : Integer = 512
+  cu-half-h : Integer = 384
+
+Section: Shading Helpers
+
+  cu-clamp01 : Real -> Real
+  cu-clamp01 (x) = real-max 0.0 (real-min 1.0 x)
+
+  cu-pack : Real, Real, Real -> Integer
+  cu-pack (r) (g) (b) =
+    let ri = real-to-int (cu-clamp01 r * 255.0)
+    in let gi = real-to-int (cu-clamp01 g * 255.0)
+    in let bi = real-to-int (cu-clamp01 b * 255.0)
+    in ri * 65536 + gi * 256 + bi
+
+  cu-bg : Integer -> Integer
+  cu-bg (py) =
+    let h = real-from-int py / 768.0
+    in cu-pack (0.04 + h * 0.05) (0.05 + h * 0.08) (0.09 + h * 0.16)
+
+Section: Render
+
+ tmin/tmax slab test in local space; the axis whose near-plane is the entry
+ (equals tmin) gives the face normal (pointing against the ray on that axis).
+ Lighting is in local space with a fixed key light, so the shading spins with
+ the cube.
+
+  cu-render : Integer, Integer -> Integer
+  cu-render (gid) (frame) =
+    let px = gid - (gid / cu-width) * cu-width
+    in let py = gid / cu-width
+    in let fx = real-from-int (px - cu-half-w) / 384.0
+    in let fy = real-from-int (cu-half-h - py) / 384.0
+    in let rl = real-sqrt (fx * fx + fy * fy + 2.56)
+    in let dx = fx / rl
+    in let dy = fy / rl
+    in let dz = 1.6 / rl
+    in let ay = real-from-int frame / 34.0
+    in let ax = real-from-int frame / 51.0
+    in let cy = real-cos ay
+    in let sy = real-sin ay
+    in let cx = real-cos ax
+    in let sx = real-sin ax
+    in let oz0 = 0.0 - 3.4
+    in let oxa = oz0 * sy
+    in let oza = oz0 * cy
+    in let oxb = oxa
+    in let oyb = oza * sx
+    in let ozb = oza * cx
+    in let dxa = dx * cy + dz * sy
+    in let dza = 0.0 - dx * sy + dz * cy
+    in let dxb = dxa
+    in let dyb = dy * cx + dza * sx
+    in let dzb = 0.0 - dy * sx + dza * cx
+    in let t1x = (0.0 - 1.0 - oxb) / dxb
+    in let t2x = (1.0 - oxb) / dxb
+    in let nxr = real-min t1x t2x
+    in let fxr = real-max t1x t2x
+    in let t1y = (0.0 - 1.0 - oyb) / dyb
+    in let t2y = (1.0 - oyb) / dyb
+    in let nyr = real-min t1y t2y
+    in let fyr = real-max t1y t2y
+    in let t1z = (0.0 - 1.0 - ozb) / dzb
+    in let t2z = (1.0 - ozb) / dzb
+    in let nzr = real-min t1z t2z
+    in let fzr = real-max t1z t2z
+    in let tmin = real-max nxr (real-max nyr nzr)
+    in let tmax = real-min fxr (real-min fyr fzr)
+    in if tmin > tmax then cu-bg py
+    else if tmax < 0.001 then cu-bg py
+    else let nlx = if nxr >= nyr & nxr >= nzr then (if dxb > 0.0 then 0.0 - 1.0 else 1.0) else 0.0
+    in let nly = if nyr >= nxr & nyr >= nzr then (if dyb > 0.0 then 0.0 - 1.0 else 1.0) else 0.0
+    in let nlz = if nzr >= nxr & nzr >= nyr then (if dzb > 0.0 then 0.0 - 1.0 else 1.0) else 0.0
+    in let br = if nlx > 0.5 then 0.95 else if nlx < 0.0 - 0.5 then 0.85 else if nly > 0.5 then 0.35 else if nly < 0.0 - 0.5 then 0.30 else if nlz > 0.5 then 0.25 else 0.90
+    in let bg = if nlx > 0.5 then 0.35 else if nlx < 0.0 - 0.5 then 0.75 else if nly > 0.5 then 0.85 else if nly < 0.0 - 0.5 then 0.55 else if nlz > 0.5 then 0.55 else 0.80
+    in let bb = if nlx > 0.5 then 0.30 else if nlx < 0.0 - 0.5 then 0.35 else if nly > 0.5 then 0.45 else if nly < 0.0 - 0.5 then 0.85 else if nlz > 0.5 then 0.90 else 0.30
+    in let lx = 0.40
+    in let ly = 0.72
+    in let lz = 0.0 - 0.56
+    in let ndl = real-max 0.0 (nlx * lx + nly * ly + nlz * lz)
+    in let sh = 0.25 + ndl * 0.85
+    in cu-pack (br * sh) (bg * sh) (bb * sh)
+
+Section: Cube Kernel
+
+  cube-step : Integer, Integer, Integer -> [Device] Integer
+  cube-step (outb) (frame) (gid) = act
+    device-store outb gid (cu-render gid frame)
+  end

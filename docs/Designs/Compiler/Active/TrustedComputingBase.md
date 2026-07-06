@@ -57,6 +57,18 @@ hand-written boot/runtime stubs, and (transitively) the correctness of the
 toolchain that emitted the code. The first two are small and auditable.
 The third is Section 3.
 
+**The capability/effect exemption boundary (ruled 2026-07-03,
+`CapabilityProbe.md` §7).** The "no undeclared I/O" discipline is
+enforced for `codex.foreword.*`, apps, and external user code — the
+surface outsiders consume and the threat surface. The owned hardware
+stack (the compiler quire, `codex.kernel`, `codex.os.*`,
+`codex.boards`, `codex.plugs.*`) is quire-exempt: its defs route
+through effect inference (so effects still propagate to external
+callers) but are not required to declare rows. This exemption IS a TCB
+membership list — code inside it is trusted for the capability claim,
+not checked against it. Any audit of the "no undeclared I/O" claim
+starts from this list.
+
 ---
 
 ## 3. Toolchain TCB (building the seed and everything it compiles)
@@ -107,9 +119,14 @@ What actually backs correctness today, in descending order of strength:
    effects, bounded integers, exhaustiveness, the static bounds prover
    (CDX4010). These are real, mechanical checks.
 2. **The propositional-equality / proof layer** (`Refl`/`sym`/`trans`/
-   `cong`, now sound after the CL that fixed the vacuous `PropEqTy`
-   unifier arm — see `Induction.md`). Small today; the in-flight
-   induction + normalizer work makes it load-bearing.
+   `cong`/`app-cong`, normalizer, structural induction through the
+   flagship `reverse-reverse` — see `Induction.md`). Content checks
+   are sound (false equations and unsound induction steps reject),
+   proof definitions are acyclic by construction (circular proof
+   terms reject CDX4023 — probed and closed 2026-07-04,
+   `ProofTotalityProbe.md`; the six laundering probes are
+   `errors/proof-launder-*`), and `assume` axioms warn (CDX4021), so
+   the axiom set of any program is visible in its diagnostics.
 3. **The test battery** (~430 with `-Apps`, cross-arch parity) — empirical,
    not exhaustive.
 4. **The fixed point** — consistency, per above.

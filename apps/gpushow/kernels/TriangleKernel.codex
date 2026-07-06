@@ -1,0 +1,90 @@
+Chapter: TriangleKernel
+  cites Gpu chapter DeviceEffect
+
+ The canonical "hello triangle" -- but rasterized from Codex [Device] AST. One
+ GPU thread per pixel evaluates the three edge functions of a rotating triangle,
+ tests whether the pixel is inside, and Gouraud-interpolates the three vertex
+ colours (red, green, blue) by barycentric weights. This is the reference site's
+ "triangle" technique done as a compute rasterizer -- the geometry step is real
+ Codex, not a fixed-function vertex stage.
+
+ Integer fixed-point throughout: vertices in pixels, edge functions and
+ barycentric weights are exact integer areas.
+
+ We say:
+
+Section: Parameters
+
+  tr-width : Integer = 1024
+
+Section: Fixed-Point Trig
+
+  tr-wrap : Integer -> Integer
+  tr-wrap (a) = let m = a - (a / 6283) * 6283 in if m < 0 then m + 6283 else m
+
+  tr-sin-core : Integer -> Integer
+  tr-sin-core (x) =
+    let x2 = x * x / 1000
+    in let x3 = x2 * x / 1000
+    in let x5 = x3 * x2 / 1000
+    in x - x3 / 6 + x5 / 120
+
+  tr-sin : Integer -> Integer
+  tr-sin (raw) =
+    let a = tr-wrap raw
+    in if a <= 1570 then tr-sin-core a
+    else if a <= 3141 then tr-sin-core (3141 - a)
+    else if a <= 4712 then 0 - tr-sin-core (a - 3141)
+    else 0 - tr-sin-core (6283 - a)
+
+  tr-cos : Integer -> Integer
+  tr-cos (raw) = tr-sin (raw + 1570)
+
+Section: Vertices
+
+ Three vertices on a circle of radius 250 about the screen centre, 120 degrees
+ apart, spun by the frame. Angles in milliradians; trig returns 1/1000.
+
+  tr-vx : Integer, Integer -> Integer
+  tr-vx (frame) (k) = 512 + tr-cos (frame * 18 + k * 2094) * 250 / 1000
+
+  tr-vy : Integer, Integer -> Integer
+  tr-vy (frame) (k) = 384 + tr-sin (frame * 18 + k * 2094) * 250 / 1000
+
+Section: Rasterize
+
+ Edge function: twice the signed area of triangle (a, b, p). Inside the triangle
+ iff the three edge functions share a sign.
+
+  tr-edge : Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  tr-edge (ax) (ay) (bx) (by) (px) (py) =
+    (px - ax) * (by - ay) - (py - ay) * (bx - ax)
+
+  tr-render : Integer, Integer -> Integer
+  tr-render (gid) (frame) =
+    let px = gid - (gid / tr-width) * tr-width
+    in let py = gid / tr-width
+    in let ax = tr-vx frame 0
+    in let ay = tr-vy frame 0
+    in let bx = tr-vx frame 1
+    in let by = tr-vy frame 1
+    in let cx = tr-vx frame 2
+    in let cy = tr-vy frame 2
+    in let w0 = tr-edge bx by cx cy px py
+    in let w1 = tr-edge cx cy ax ay px py
+    in let w2 = tr-edge ax ay bx by px py
+    in let inside = (w0 >= 0 & w1 >= 0 & w2 >= 0) | (w0 <= 0 & w1 <= 0 & w2 <= 0)
+    in if inside == False then 0
+    else let sum = w0 + w1 + w2
+    in if sum == 0 then 0
+    else let r = w0 * 255 / sum
+    in let g = w1 * 255 / sum
+    in let b = w2 * 255 / sum
+    in r * 65536 + g * 256 + b
+
+Section: Triangle Kernel
+
+  triangle-step : Integer, Integer, Integer -> [Device] Integer
+  triangle-step (outb) (frame) (gid) = act
+    device-store outb gid (tr-render gid frame)
+  end

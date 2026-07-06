@@ -1,0 +1,77 @@
+Chapter: SsaoKernel
+  cites Gpu chapter DeviceEffect
+  cites Gpu chapter DeviceMath
+
+ Screen-space ambient occlusion over the shared G-buffer. Each pixel reads its
+ own hit distance, then samples a golden-angle spiral of neighbours' distances
+ from the depth buffer (through a storage-pointer helper parameter); a neighbour
+ that is modestly closer counts as an occluder. The occlusion fraction darkens
+ the pixel -- so contact creases between the clustered spheres go dark. A cheap
+ diffuse term (from the normal buffer) keeps the spheres readable. Reference
+ site's "screen space ambient occlusion" technique. Float math from DeviceMath.
+
+ We say:
+
+Section: Parameters
+
+  ss-width : Integer = 1024
+  ss-half-w : Integer = 512
+  ss-half-h : Integer = 384
+  ss-taps : Integer = 24
+  ss-miss : Integer = 8000000
+
+Section: Occlusion Gather
+
+  ss-clampi : Integer, Integer, Integer -> Integer
+  ss-clampi (v) (lo) (hi) = if v < lo then lo else if v > hi then hi else v
+
+ Fold over the spiral taps: sample the depth buffer at each neighbour; a
+ neighbour whose distance is modestly smaller (closer) than ours occludes. buf
+ is a storage pointer.
+
+  ss-gather : Integer, Integer, Integer, Integer, Integer, Integer -> [Device] Integer
+  ss-gather (buf) (px) (py) (mydep) (k) (acc) =
+    if k >= ss-taps then acc
+    else let ang = real-from-int k * 2.399
+    in let rad = real-sqrt (real-from-int k) * 4.5
+    in let sx = ss-clampi (px + real-to-int (real-cos ang * rad)) 0 1023
+    in let sy = ss-clampi (py + real-to-int (real-sin ang * rad)) 0 767
+    in let idx = sy * 1024 + sx
+    in act
+      ndep <- device-load buf idx
+      let diff = mydep - ndep
+      in let occ = if diff > 22 then (if diff < 520 then 1 else 0) else 0
+      in ss-gather buf px py mydep (k + 1) (acc + occ)
+    end
+
+Section: SSAO Kernel
+
+  ssao-step : Integer, Integer, Integer, Integer, Integer, Integer -> [Device] Integer
+  ssao-step (galb) (gnrm) (gdep) (outb) (frame) (gid) =
+    let px = gid - (gid / ss-width) * ss-width
+    in let py = gid / ss-width
+    in act
+    dep <- device-load gdep gid
+    alb <- device-load galb gid
+    nrm <- device-load gnrm gid
+    occ <- ss-gather gdep px py dep 0 0
+    let ao = real-max 0.18 (1.0 - real-from-int occ * 0.075)
+    in let nx = real-from-int (nrm / 65536) / 127.0 - 1.0
+    in let ny = real-from-int (nrm / 256 - (nrm / 65536) * 256) / 127.0 - 1.0
+    in let nz = real-from-int (nrm - (nrm / 256) * 256) / 127.0 - 1.0
+    in let ang = real-from-int frame / 30.0
+    in let lx = real-cos ang * 0.55
+    in let ly = 0.5
+    in let lz = real-sin ang * 0.55 - 0.55
+    in let ll = real-sqrt (lx * lx + ly * ly + lz * lz)
+    in let ndl = real-max 0.0 (nx * lx / ll + ny * ly / ll + nz * lz / ll)
+    in let sh = (0.33 + ndl * 0.52) * ao
+    in let ar = alb / 65536
+    in let ag = alb / 256 - (alb / 65536) * 256
+    in let ab = alb - (alb / 256) * 256
+    in let out = if dep >= ss-miss then 16 * 256 + 26
+      else ss-clampi (real-to-int (real-from-int ar * sh)) 0 255 * 65536
+        + ss-clampi (real-to-int (real-from-int ag * sh)) 0 255 * 256
+        + ss-clampi (real-to-int (real-from-int ab * sh)) 0 255
+    in device-store outb gid out
+    end

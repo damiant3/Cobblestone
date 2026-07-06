@@ -1110,58 +1110,67 @@ Section: Pointer-Map Walk
   ptr-in-range (p) (lo) (hi) =
    if p >= lo then if p < hi then 1 else 0 else 0
 
-  pmap-walk : Integer, CodexType, List TypeBinding, Integer, Integer, Integer -> Integer
-  pmap-walk (ptr) (ty) (defs) (lo) (hi) (fuel) =
+  pmap-escape-report : Integer, Text -> Integer
+  pmap-escape-report (q) (loc) =
+   if q == 1 then 1
+   else let w = print-line-uni ("CDX9003-AT: " & loc)
+   in 1
+
+  pmap-walk : Integer, CodexType, List TypeBinding, Integer, Integer, Integer, Integer, Text -> Integer
+  pmap-walk (ptr) (ty) (defs) (lo) (hi) (fuel) (q) (loc) =
    if fuel <= 0 then 0
    else if ptr == 0 then 0
    else when ty
-    is RecordTy (n) (a) (fields) -> pmap-walk-record ptr fields defs 0 (list-length fields) lo hi fuel 0
-    is SumTy (n) (a) (ctors) -> pmap-walk-sum ptr ctors defs lo hi fuel
-    is ListTy (elem) -> pmap-walk-list ptr elem defs lo hi fuel
-    is ConstructedTy (cn) (ca) -> pmap-walk ptr (lookup-type-binding defs (cn.value)) defs lo hi (fuel - 1)
+    is RecordTy (n) (a) (fields) -> pmap-walk-record ptr fields defs 0 (list-length fields) lo hi fuel 0 q (n.value)
+    is SumTy (n) (a) (ctors) -> pmap-walk-sum ptr ctors defs lo hi fuel q
+    is ListTy (elem) -> pmap-walk-list ptr elem defs lo hi fuel q loc
+    is ConstructedTy (cn) (ca) -> pmap-walk ptr (lookup-type-binding defs (cn.value)) defs lo hi (fuel - 1) q loc
     is otherwise -> 0
 
-  pmap-walk-record : Integer, List RecordField, List TypeBinding, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
-  pmap-walk-record (ptr) (fields) (defs) (i) (len) (lo) (hi) (fuel) (acc) =
+  pmap-walk-record : Integer, List RecordField, List TypeBinding, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Text -> Integer
+  pmap-walk-record (ptr) (fields) (defs) (i) (len) (lo) (hi) (fuel) (acc) (q) (loc) =
    if i == len then acc
    else let f = list-at fields i
    in if is-pointer-type (f.type-val)
       then let fot = cce-byte-offset-and-type fields (f.name.value)
            in let child = peek-qword ptr (fot.offset)
-           in let sub = ptr-in-range child lo hi + pmap-walk child (f.type-val) defs lo hi (fuel - 1)
-           in pmap-walk-record ptr fields defs (i + 1) len lo hi fuel (acc + sub)
-      else pmap-walk-record ptr fields defs (i + 1) len lo hi fuel acc
+           in let hit = if ptr-in-range child lo hi == 1 then pmap-escape-report q (loc & "." & (f.name.value)) else 0
+           in let sub = hit + pmap-walk child (f.type-val) defs lo hi (fuel - 1) q (f.name.value)
+           in pmap-walk-record ptr fields defs (i + 1) len lo hi fuel (acc + sub) q loc
+      else pmap-walk-record ptr fields defs (i + 1) len lo hi fuel acc q loc
 
-  pmap-walk-sum : Integer, List SumCtor, List TypeBinding, Integer, Integer, Integer -> Integer
-  pmap-walk-sum (ptr) (ctors) (defs) (lo) (hi) (fuel) =
+  pmap-walk-sum : Integer, List SumCtor, List TypeBinding, Integer, Integer, Integer, Integer -> Integer
+  pmap-walk-sum (ptr) (ctors) (defs) (lo) (hi) (fuel) (q) =
    let tag = peek-qword ptr 0
    in if tag >= list-length ctors then 0
       else let c = list-at ctors tag
-      in pmap-walk-ctor (c.fields) ptr defs 0 (list-length (c.fields)) lo hi fuel 0
+      in pmap-walk-ctor (c.fields) ptr defs 0 (list-length (c.fields)) lo hi fuel 0 q (c.name.value)
 
-  pmap-walk-ctor : List CodexType, Integer, List TypeBinding, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
-  pmap-walk-ctor (tys) (ptr) (defs) (i) (len) (lo) (hi) (fuel) (acc) =
+  pmap-walk-ctor : List CodexType, Integer, List TypeBinding, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Text -> Integer
+  pmap-walk-ctor (tys) (ptr) (defs) (i) (len) (lo) (hi) (fuel) (acc) (q) (loc) =
    if i == len then acc
    else let ety = list-at tys i
    in if is-pointer-type ety
       then let child = peek-qword ptr (sum-ctor-field-offset tys i)
-           in let sub = ptr-in-range child lo hi + pmap-walk child ety defs lo hi (fuel - 1)
-           in pmap-walk-ctor tys ptr defs (i + 1) len lo hi fuel (acc + sub)
-      else pmap-walk-ctor tys ptr defs (i + 1) len lo hi fuel acc
+           in let hit = if ptr-in-range child lo hi == 1 then pmap-escape-report q (loc & "#" & show i) else 0
+           in let sub = hit + pmap-walk child ety defs lo hi (fuel - 1) q loc
+           in pmap-walk-ctor tys ptr defs (i + 1) len lo hi fuel (acc + sub) q loc
+      else pmap-walk-ctor tys ptr defs (i + 1) len lo hi fuel acc q loc
 
-  pmap-walk-list : Integer, CodexType, List TypeBinding, Integer, Integer, Integer -> Integer
-  pmap-walk-list (ptr) (elem) (defs) (lo) (hi) (fuel) =
+  pmap-walk-list : Integer, CodexType, List TypeBinding, Integer, Integer, Integer, Integer, Text -> Integer
+  pmap-walk-list (ptr) (elem) (defs) (lo) (hi) (fuel) (q) (loc) =
    if is-pointer-type elem
-   then pmap-walk-list-elems ptr elem defs 0 (peek-qword ptr 0) lo hi fuel 0
+   then pmap-walk-list-elems ptr elem defs 0 (peek-qword ptr 0) lo hi fuel 0 q loc
    else 0
 
-  pmap-walk-list-elems : Integer, CodexType, List TypeBinding, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
-  pmap-walk-list-elems (ptr) (elem) (defs) (j) (count) (lo) (hi) (fuel) (acc) =
+  pmap-walk-list-elems : Integer, CodexType, List TypeBinding, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Text -> Integer
+  pmap-walk-list-elems (ptr) (elem) (defs) (j) (count) (lo) (hi) (fuel) (acc) (q) (loc) =
    if j == count then acc
    else if fuel <= 0 then acc
    else let child = peek-qword ptr (8 + j * 8)
-   in let sub = ptr-in-range child lo hi + pmap-walk child elem defs lo hi (fuel - 1)
-   in pmap-walk-list-elems ptr elem defs (j + 1) count lo hi fuel (acc + sub)
+   in let hit = if ptr-in-range child lo hi == 1 then pmap-escape-report q (loc & "[" & show j & "]") else 0
+   in let sub = hit + pmap-walk child elem defs lo hi (fuel - 1) q loc
+   in pmap-walk-list-elems ptr elem defs (j + 1) count lo hi fuel (acc + sub) q loc
 
  Runtime conformance check for pmap-walk (gated by -EscapeCheck at the call
  site; fires a diagnostic only on failure). This guards the pointer-map
@@ -1198,7 +1207,7 @@ Section: Pointer-Map Walk
    in let cap = __heap-save
    in let rec = PmTestRec { tr-num = 42, tr-ptr = sub, tr-inner = inner }
    in if rec.tr-num == 42
-      then pmap-walk cap (lookup-type-binding defs "PmTestRec") defs h0 cap 64
+      then pmap-walk cap (lookup-type-binding defs "PmTestRec") defs h0 cap 64 1 ""
       else 0 - 1
 
   pmap-escape-fuel : Integer = 1000000
@@ -1206,7 +1215,17 @@ Section: Pointer-Map Walk
   pmap-escape-count : Integer, Text, Integer, Integer -> Integer
   pmap-escape-count (root-addr) (type-name) (lo) (hi) =
    let defs = __self-type-defs
-   in pmap-walk root-addr (lookup-type-binding defs type-name) defs lo hi pmap-escape-fuel
+   in pmap-walk root-addr (lookup-type-binding defs type-name) defs lo hi pmap-escape-fuel 0 type-name
+
+  pmap-escape-count-quiet : Integer, Text, Integer, Integer -> Integer
+  pmap-escape-count-quiet (root-addr) (type-name) (lo) (hi) =
+   let defs = __self-type-defs
+   in pmap-walk root-addr (lookup-type-binding defs type-name) defs lo hi pmap-escape-fuel 1 type-name
+
+  pmap-escape-list-quiet : Integer, Text, Integer, Integer -> Integer
+  pmap-escape-list-quiet (root-addr) (elem-name) (lo) (hi) =
+   let defs = __self-type-defs
+   in pmap-walk root-addr (ListTy (ConstructedTy (Name { value = elem-name }) [])) defs lo hi pmap-escape-fuel 1 elem-name
 
 Section: Self-Type-Table Emission
 
@@ -1270,55 +1289,68 @@ Section: Self-Type-Table Emission
    let t = emit-const-text buf len (nm.value)
    in ConstEmit { len = buf-write-i64 buf (t.len) (vaddr + t.off), off = t.len }
 
- NOTE (ctor field packing): const-box lays out a boxed variant as a
- tag word followed by one 8-byte word per field, i.e. the pre-packing
- 8 + i*8 layout. Runtime-constructed variants now pack fields by width
- (sum-ctor-field-offset), so a const-boxed CodexType is NOT byte-layout
- compatible with a runtime one. This only matters when the const
- TypeBinding table is pattern-matched at runtime -- exclusively the
- pmap / escape-check walk, which is gated off (flags.escape-check =
- False by default), so normal builds, the fixed point, and the battery
- never read these boxes by field offset. To make -EscapeCheck correct
- again, const-box for a variant must pack fields by field-byte-width at
- sum-ctor-field-offset just like emit-store-ctor-fields.
+ NOTE (tag + packing fidelity): a const-emitted CodexType box must be
+ byte-compatible with a runtime-constructed one, because the pmap /
+ escape-check walk pattern-matches the table at runtime. Two past
+ drift classes broke this silently: (1) hardcoded tag literals rotted
+ when the CodexType constructor order changed (the table was written
+ with an ordering that predates the Real* variants moving next to
+ RealTy -- every tag from TextTy up was off, so lookup returned boxes
+ that decoded as the wrong constructor and pmap-walk fell through to
+ zero); (2) runtime variants pack fields by width
+ (sum-ctor-field-offset, wider first, declaration order within a
+ width) while const-box writes one 8-byte word per field -- identical
+ for the all-8-byte descriptor payloads the walk reads, divergent for
+ mixed-width ctors (ForAllTy's 4-byte id), whose slots are written in
+ width order below. Tags are now read off LIVE values at emit time
+ (live-type-tag: a boxed variant's value is its address; the first
+ qword is its tag), so the tag class of drift is closed by
+ construction. The always-on pmap self-test (opening.codex) is the
+ tripwire for the layout class.
+
+  live-type-tag : CodexType -> Integer
+  live-type-tag (ty) = peek-qword (address-of ty) 0
+
+  live-name-ref-tag : Name -> Integer
+  live-name-ref-tag (n) = live-type-tag (ConstructedTy n [])
 
   emit-const-codextype : Integer, Integer, Integer, CodexType, Integer -> ConstEmit
   emit-const-codextype (buf) (len) (vaddr) (ty) (fuel) =
-   if fuel <= 0 then const-box buf len 7 []
+   if fuel <= 0 then const-box buf len (live-type-tag ErrorTy) []
    else when ty
-    is IntegerTy (lo) (hi) (mode) -> const-box buf len 0 [lo, hi, 0]
-    is RealTy -> const-box buf len 1 []
-    is TextTy -> const-box buf len 2 []
-    is BooleanTy -> const-box buf len 3 []
-    is CharTy -> const-box buf len 4 []
-    is VoidTy -> const-box buf len 5 []
-    is NothingTy -> const-box buf len 6 []
-    is ErrorTy -> const-box buf len 7 []
-    is FunTy (p) (row) (r) -> const-box buf len 8 [0, 0]
-    is ListTy (elem) -> let c = emit-const-codextype buf len vaddr elem (fuel - 1) in const-box buf (c.len) 9 [vaddr + c.off]
-    is LinkedListTy (elem) -> const-box buf len 10 [0]
-    is TypeVar (i) -> const-box buf len 11 [0]
-    is ForAllTy (i) (b) -> let c = emit-const-codextype buf len vaddr b (fuel - 1) in const-box buf (c.len) 12 [0, vaddr + c.off]
-    is ForAllEff (i) (b) -> let c = emit-const-codextype buf len vaddr b (fuel - 1) in const-box buf (c.len) 12 [0, vaddr + c.off]
-    is SumTy (n) (a) (ctors) | RecordTy (n) (a) (fields) | ConstructedTy (n) (a) -> let nm = emit-const-name buf len vaddr n in const-box buf (nm.len) 15 [vaddr + nm.off, 0]
-    is EffectfulTy (e) (s) (r) -> let c = emit-const-codextype buf len vaddr r (fuel - 1) in const-box buf (c.len) 16 [0, 0, vaddr + c.off]
-    is ProofTy -> const-box buf len 17 []
-    is PropEqTy (a) (b) -> const-box buf len 18 [0, 0]
-    is UnitTy (n) (inner) -> let nm = emit-const-name buf len vaddr n in let c = emit-const-codextype buf (nm.len) vaddr inner (fuel - 1) in const-box buf (c.len) 19 [vaddr + nm.off, vaddr + c.off]
-    is VectorTy (vn) (vt) -> const-box buf len 20 [vn, 0]
-    is VectorMaskTy (n) -> const-box buf len 21 [n, 0]
-    is RealApproxTy -> const-box buf len 22 []
-    is RealTrappingTy -> const-box buf len 23 []
-    is RealSaturatingTy -> const-box buf len 24 []
-    is TypeCon (n) -> let nm = emit-const-name buf len vaddr n in const-box buf (nm.len) 15 [vaddr + nm.off, 0]
-    is TypeApply (f) (a) -> const-box buf len 7 []
+    is IntegerTy (lo) (hi) (mode) -> const-box buf len (live-type-tag ty) [lo, hi, 0]
+    is RealTy -> const-box buf len (live-type-tag ty) []
+    is TextTy -> const-box buf len (live-type-tag ty) []
+    is BooleanTy -> const-box buf len (live-type-tag ty) []
+    is CharTy -> const-box buf len (live-type-tag ty) []
+    is VoidTy -> const-box buf len (live-type-tag ty) []
+    is NothingTy -> const-box buf len (live-type-tag ty) []
+    is ErrorTy -> const-box buf len (live-type-tag ty) []
+    is FunTy (p) (row) (r) -> const-box buf len (live-type-tag ty) [0, 0, 0]
+    is ListTy (elem) -> let c = emit-const-codextype buf len vaddr elem (fuel - 1) in const-box buf (c.len) (live-type-tag ty) [vaddr + c.off]
+    is LinkedListTy (elem) -> const-box buf len (live-type-tag ty) [0]
+    is TypeVar (i) -> const-box buf len (live-type-tag ty) [0]
+    is ForAllTy (i) (b) -> let c = emit-const-codextype buf len vaddr b (fuel - 1) in const-box buf (c.len) (live-type-tag ty) [vaddr + c.off, 0]
+    is ForAllEff (i) (b) -> let c = emit-const-codextype buf len vaddr b (fuel - 1) in const-box buf (c.len) (live-type-tag (ForAllTy 0 b)) [vaddr + c.off, 0]
+    is SumTy (n) (a) (ctors) | RecordTy (n) (a) (fields) | ConstructedTy (n) (a) -> let nm = emit-const-name buf len vaddr n in const-box buf (nm.len) (live-name-ref-tag n) [vaddr + nm.off, 0]
+    is EffectfulTy (e) (s) (r) -> let c = emit-const-codextype buf len vaddr r (fuel - 1) in const-box buf (c.len) (live-type-tag ty) [0, 0, vaddr + c.off]
+    is ProofTy -> const-box buf len (live-type-tag ty) []
+    is PropEqTy (a) (b) -> const-box buf len (live-type-tag ty) [0, 0]
+    is UnitTy (n) (inner) -> let nm = emit-const-name buf len vaddr n in let c = emit-const-codextype buf (nm.len) vaddr inner (fuel - 1) in const-box buf (c.len) (live-type-tag ty) [vaddr + nm.off, vaddr + c.off]
+    is VectorTy (vn) (vt) -> const-box buf len (live-type-tag ty) [vn, 0]
+    is VectorMaskTy (n) -> const-box buf len (live-type-tag ty) [n]
+    is RealApproxTy -> const-box buf len (live-type-tag ty) []
+    is RealTrappingTy -> const-box buf len (live-type-tag ty) []
+    is RealSaturatingTy -> const-box buf len (live-type-tag ty) []
+    is TypeCon (n) -> let nm = emit-const-name buf len vaddr n in const-box buf (nm.len) (live-name-ref-tag n) [vaddr + nm.off, 0]
+    is TypeApply (f) (a) -> const-box buf len (live-type-tag ErrorTy) []
     is LinearTy (linner) -> emit-const-codextype buf len vaddr linner (fuel - 1)
 
   emit-const-codextype-top : Integer, Integer, Integer, CodexType -> ConstEmit
   emit-const-codextype-top (buf) (len) (vaddr) (ty) =
    when ty
-    is SumTy (n) (a) (ctors) -> let nm = emit-const-name buf len vaddr n in let cs = emit-const-ctorlist buf (nm.len) vaddr ctors 12 in const-box buf (cs.len) 13 [vaddr + nm.off, 0, vaddr + cs.off]
-    is RecordTy (n) (a) (fields) -> let nm = emit-const-name buf len vaddr n in let fs = emit-const-fieldlist buf (nm.len) vaddr fields 12 in const-box buf (fs.len) 14 [vaddr + nm.off, 0, vaddr + fs.off]
+    is SumTy (n) (a) (ctors) -> let nm = emit-const-name buf len vaddr n in let cs = emit-const-ctorlist buf (nm.len) vaddr ctors 12 in const-box buf (cs.len) (live-type-tag ty) [vaddr + nm.off, 0, vaddr + cs.off]
+    is RecordTy (n) (a) (fields) -> let nm = emit-const-name buf len vaddr n in let fs = emit-const-fieldlist buf (nm.len) vaddr fields 12 in const-box buf (fs.len) (live-type-tag ty) [vaddr + nm.off, 0, vaddr + fs.off]
     is otherwise -> emit-const-codextype buf len vaddr ty 12
 
   emit-const-recordfield : Integer, Integer, Integer, RecordField, Integer -> ConstEmit
@@ -1625,7 +1657,7 @@ Section: Self-Type-Table Emission
       reg = rd.reg
      }
     is otherwise ->
-     let st-err = st-add-error (rec-result.state) cdx-ir-error ("emit-field-access: unresolved type for field '" & field-name & "'") (ir-expr-span rec-expr)
+     let st-err = st-add-error (rec-result.state) cdx-ir-error ("emit-field-access: unresolved type for field '" & field-name & "' addr=" & show (address-of rec-ty) & " tag=" & show (peek-qword (address-of rec-ty) 0)) (ir-expr-span rec-expr)
      in let rd = alloc-temp st-err
      in EmitResult {
       state = st-append-code (rd.state) [15, 11],

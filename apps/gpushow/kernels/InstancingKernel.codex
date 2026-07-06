@@ -1,0 +1,146 @@
+Chapter: InstancingKernel
+  cites Gpu chapter DeviceEffect
+  cites Gpu chapter DeviceMath
+
+ Instancing from Codex [Device] AST: a 5x5 grid of shaded cubes, ray-cast per
+ pixel. Each thread inverse-rotates its ray about Y (so the whole field spins),
+ then folds over the 25 instances -- for each it translates the ray into that
+ instance's local frame and slab-tests the box -- keeping the nearest hit. The
+ winner is re-tested to recover the entry face for its normal, then shaded with a
+ key light and a per-instance colour. The instance fold is a tail recursion the
+ plug lowers to a WGSL loop. This is the reference site's "instancing" technique.
+
+ We say:
+
+Section: Parameters
+
+  in-width : Integer = 1024
+  in-half-w : Integer = 512
+  in-half-h : Integer = 384
+  in-count : Integer = 25
+  in-cols : Integer = 5
+
+Section: Instance Grid
+
+  in-gx : Integer -> Real
+  in-gx (i) = real-from-int (i - (i / in-cols) * in-cols - 2) * 1.25
+
+  in-gz : Integer -> Real
+  in-gz (i) = real-from-int (i / in-cols - 2) * 1.25
+
+  in-half : Real
+  in-half = 0.42
+
+  in-col-r : Integer -> Real
+  in-col-r (i) = 0.55 + real-from-int (i - (i / in-cols) * in-cols) * 0.09
+
+  in-col-g : Integer -> Real
+  in-col-g (i) = 0.45 + real-from-int (i / in-cols) * 0.10
+
+  in-col-b : Integer -> Real
+  in-col-b (i) = 0.85 - real-from-int (i - (i / in-cols) * in-cols) * 0.06
+
+Section: Box Slab
+
+ Entry t of a ray against an axis-aligned box of half-size in-half at the origin,
+ or -1 on a miss. Ray is already translated into the box's local frame.
+
+  in-box-t : Real, Real, Real, Real, Real, Real -> Real
+  in-box-t (ox) (oy) (oz) (dx) (dy) (dz) =
+    let s = in-half
+    in let t1x = (0.0 - s - ox) / dx
+    in let t2x = (s - ox) / dx
+    in let nx = real-min t1x t2x
+    in let fx = real-max t1x t2x
+    in let t1y = (0.0 - s - oy) / dy
+    in let t2y = (s - oy) / dy
+    in let ny = real-min t1y t2y
+    in let fy = real-max t1y t2y
+    in let t1z = (0.0 - s - oz) / dz
+    in let t2z = (s - oz) / dz
+    in let nz = real-min t1z t2z
+    in let fz = real-max t1z t2z
+    in let tmin = real-max nx (real-max ny nz)
+    in let tmax = real-min fx (real-min fy fz)
+    in if tmin > tmax then 0.0 - 1.0
+    else if tmax < 0.001 then 0.0 - 1.0
+    else if tmin < 0.001 then 0.0 - 1.0
+    else tmin
+
+  in-hit : Real, Real, Real, Real, Real, Real, Integer -> Real
+  in-hit (ox) (oy) (oz) (dx) (dy) (dz) (i) =
+    in-box-t (ox - in-gx i) oy (oz - in-gz i) dx dy dz
+
+Section: Nearest Instance
+
+  in-nearest : Real, Real, Real, Real, Real, Real, Integer, Integer, Real -> Integer
+  in-nearest (ox) (oy) (oz) (dx) (dy) (dz) (i) (best-id) (best-t) =
+    if i >= in-count then best-id
+    else let t = in-hit ox oy oz dx dy dz i
+    in let take = if t > 0.001 then (if best-t < 0.0 then 1 else if t < best-t then 1 else 0) else 0
+    in if take == 1 then in-nearest ox oy oz dx dy dz (i + 1) i t
+    else in-nearest ox oy oz dx dy dz (i + 1) best-id best-t
+
+Section: Shading
+
+  in-clamp01 : Real -> Real
+  in-clamp01 (x) = real-max 0.0 (real-min 1.0 x)
+
+  in-pack : Real, Real, Real -> Integer
+  in-pack (r) (g) (b) =
+    let ri = real-to-int (in-clamp01 r * 255.0)
+    in let gi = real-to-int (in-clamp01 g * 255.0)
+    in let bi = real-to-int (in-clamp01 b * 255.0)
+    in ri * 65536 + gi * 256 + bi
+
+  in-bg : Integer -> Integer
+  in-bg (py) =
+    let h = real-from-int py / 768.0
+    in in-pack (0.05 + h * 0.06) (0.06 + h * 0.09) (0.10 + h * 0.18)
+
+Section: Render
+
+  in-render : Integer, Integer -> Integer
+  in-render (gid) (frame) =
+    let px = gid - (gid / in-width) * in-width
+    in let py = gid / in-width
+    in let fx = real-from-int (px - in-half-w) / 384.0
+    in let fy = real-from-int (in-half-h - py) / 384.0
+    in let rl = real-sqrt (fx * fx + (fy - 0.35) * (fy - 0.35) + 2.25)
+    in let dx0 = fx / rl
+    in let dy0 = (fy - 0.35) / rl
+    in let dz0 = 1.5 / rl
+    in let ay = real-from-int frame / 40.0
+    in let cy = real-cos ay
+    in let sy = real-sin ay
+    in let ox0 = 0.0
+    in let oy0 = 2.2
+    in let oz0 = 0.0 - 6.2
+    in let ox = ox0 * cy + oz0 * sy
+    in let oz = 0.0 - ox0 * sy + oz0 * cy
+    in let dx = dx0 * cy + dz0 * sy
+    in let dz = 0.0 - dx0 * sy + dz0 * cy
+    in let id = in-nearest ox oy0 oz dx dy0 dz 0 (0 - 1) (0.0 - 1.0)
+    in if id < 0 then in-bg py
+    else let lx = ox - in-gx id
+    in let lz = oz - in-gz id
+    in let t = in-box-t lx oy0 lz dx dy0 dz
+    in let hx = lx + dx * t
+    in let hy = oy0 + dy0 * t
+    in let hz = lz + dz * t
+    in let ax = if hx < 0.0 then 0.0 - hx else hx
+    in let aay = if hy < 0.0 then 0.0 - hy else hy
+    in let az = if hz < 0.0 then 0.0 - hz else hz
+    in let nlx = if ax >= aay & ax >= az then (if hx > 0.0 then 1.0 else 0.0 - 1.0) else 0.0
+    in let nly = if aay >= ax & aay >= az then (if hy > 0.0 then 1.0 else 0.0 - 1.0) else 0.0
+    in let nlz = if az >= ax & az >= aay then (if hz > 0.0 then 1.0 else 0.0 - 1.0) else 0.0
+    in let ndl = real-max 0.0 (nlx * 0.40 + nly * 0.78 + nlz * (0.0 - 0.48))
+    in let sh = 0.22 + ndl * 0.88
+    in in-pack (in-col-r id * sh) (in-col-g id * sh) (in-col-b id * sh)
+
+Section: Instancing Kernel
+
+  instancing-step : Integer, Integer, Integer -> [Device] Integer
+  instancing-step (outb) (frame) (gid) = act
+    device-store outb gid (in-render gid frame)
+  end

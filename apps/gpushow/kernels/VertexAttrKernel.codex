@@ -1,0 +1,70 @@
+Chapter: VertexAttrKernel
+  cites Gpu chapter DeviceEffect
+  cites Gpu chapter DeviceMath
+
+ Vertex attributes: a spinning triangle whose three vertices each carry a colour
+ AND a texture coordinate. One thread per pixel computes the barycentric weights,
+ interpolates the vertex colours (left half) and the interpolated UV as a checker
+ (right half), so both attributes are shown being interpolated across the same
+ primitive. Reference site's "vertex attributes" technique. Float math from DeviceMath.
+
+ We say:
+
+Section: Parameters
+
+  va-width : Integer = 1024
+  va-half-w : Integer = 512
+
+Section: Trig
+
+  va-wrap : Integer -> Integer
+  va-wrap (a) = let m = a - (a / 6283) * 6283 in if m < 0 then m + 6283 else m
+
+  va-sin-core : Integer -> Integer
+  va-sin-core (x) = let x2 = x * x / 1000 in let x3 = x2 * x / 1000 in let x5 = x3 * x2 / 1000 in x - x3 / 6 + x5 / 120
+
+  va-sin : Integer -> Integer
+  va-sin (raw) = let a = va-wrap raw in if a <= 1570 then va-sin-core a else if a <= 3141 then va-sin-core (3141 - a) else if a <= 4712 then 0 - va-sin-core (a - 3141) else 0 - va-sin-core (6283 - a)
+
+  va-cos : Integer -> Integer
+  va-cos (raw) = va-sin (raw + 1570)
+
+Section: Kernel
+
+  va-edge : Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  va-edge (ax) (ay) (bx) (by) (px) (py) = (px - ax) * (by - ay) - (py - ay) * (bx - ax)
+
+  va-render : Integer, Integer -> Integer
+  va-render (gid) (frame) =
+    let px = gid - (gid / va-width) * va-width
+    in let py = gid / va-width
+    in let ax = 512 + va-cos (frame * 18) * 300 / 1000
+    in let ay = 384 + va-sin (frame * 18) * 300 / 1000
+    in let bx = 512 + va-cos (frame * 18 + 2094) * 300 / 1000
+    in let by = 384 + va-sin (frame * 18 + 2094) * 300 / 1000
+    in let cx = 512 + va-cos (frame * 18 + 4188) * 300 / 1000
+    in let cy = 384 + va-sin (frame * 18 + 4188) * 300 / 1000
+    in let w0 = va-edge bx by cx cy px py
+    in let w1 = va-edge cx cy ax ay px py
+    in let w2 = va-edge ax ay bx by px py
+    in let inside = (w0 >= 0 & w1 >= 0 & w2 >= 0) | (w0 <= 0 & w1 <= 0 & w2 <= 0)
+    in if inside == False then 14 * 65536 + 16 * 256 + 24
+    else let sum = w0 + w1 + w2
+    in if sum == 0 then 0
+    else if px < va-half-w then
+      let r = w0 * 255 / sum
+      in let g = w1 * 255 / sum
+      in let b = w2 * 255 / sum
+      in r * 65536 + g * 256 + b
+    else
+      let u = w1 * 512 / sum
+      in let v = w2 * 512 / sum
+      in let chk = (u / 40 + v / 40) - ((u / 40 + v / 40) / 2) * 2
+      in if chk == 0 then 230 * 65536 + 230 * 256 + 235 else 40 * 65536 + 44 * 256 + 60
+
+Section: Vertex Attr Kernel
+
+  vertexattr-step : Integer, Integer, Integer -> [Device] Integer
+  vertexattr-step (outb) (frame) (gid) = act
+    device-store outb gid (va-render gid frame)
+  end

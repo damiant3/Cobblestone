@@ -1,0 +1,68 @@
+Chapter: JuliaKernel
+  cites Gpu chapter DeviceEffect
+  cites Gpu chapter DeviceMath
+
+ An animated Julia set, as a [Device] compute kernel. One GPU thread per pixel
+ takes its position as the initial z, iterates z = z*z + c for a shared c that
+ orbits a circle with time, and colours by the escape count. The iteration is a
+ tail-recursive helper with float state -> the plug lowers it to a WGSL loop,
+ and the math is real f32 (smooth, unlike the fixed-point Mandelbrot).
+
+ real-sin / real-cos come from Gpu chapter DeviceMath (correct bodies, replaced
+ with hardware ops by the plug); real-from-int is the compiler builtin.
+
+ We say:
+
+Section: Parameters
+
+  jl-width : Integer = 1024
+  jl-half-w : Integer = 512
+  jl-half-h : Integer = 384
+  jl-max : Integer = 128
+
+  jl-mod : Integer, Integer -> Integer
+  jl-mod (x) (m) = x - (x / m) * m
+
+Section: Iteration
+
+ z = z*z + c until |z|^2 > 4 or the step cap; returns the escape count.
+
+  jl-iter : Real, Real, Real, Real, Integer -> Integer
+  jl-iter (zr) (zi) (cr) (ci) (n) =
+    if n >= jl-max then jl-max
+    else if zr * zr + zi * zi > 4.0 then n
+    else jl-iter (zr * zr - zi * zi + cr) (2.0 * zr * zi + ci) cr ci (n + 1)
+
+Section: Colour
+
+  jl-chan : Integer, Integer, Integer -> Integer
+  jl-chan (it) (mul) (phase) = jl-mod (it * mul + phase) 256
+
+  jl-color : Integer, Integer -> Integer
+  jl-color (it) (frame) =
+    if it >= jl-max then 0
+    else let f = frame
+    in let r = jl-chan it 8 (30 + f)
+    in let g = jl-chan it 5 (90 + f)
+    in let b = jl-chan it 11 (160 + f)
+    in r * 65536 + g * 256 + b
+
+Section: Render
+
+  jl-render : Integer, Integer -> Integer
+  jl-render (gid) (frame) =
+    let px = gid - (gid / jl-width) * jl-width
+    in let py = gid / jl-width
+    in let zr = real-from-int (px - jl-half-w) / 320.0
+    in let zi = real-from-int (py - jl-half-h) / 320.0
+    in let a = real-from-int frame / 40.0
+    in let cr = 0.7885 * real-cos a
+    in let ci = 0.7885 * real-sin a
+    in jl-color (jl-iter zr zi cr ci 0) frame
+
+Section: Julia Kernel
+
+  julia-step : Integer, Integer, Integer -> [Device] Integer
+  julia-step (outb) (frame) (gid) = act
+    device-store outb gid (jl-render gid frame)
+  end

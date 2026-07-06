@@ -1,0 +1,67 @@
+Chapter: StencilKernel
+  cites Gpu chapter DeviceEffect
+  cites Gpu chapter DeviceMath
+
+ A stencil-masked reveal. A rotating five-point star acts as a stencil: inside the
+ star a swirling colour pattern shows through, outside is dark, and the star
+ boundary is drawn as a bright outline -- the classic stencil use of masking one
+ pass by the shape of another. One thread per pixel; the polar angle uses a
+ rational atan2. Reference site's "stencil buffer" technique. Float math from DeviceMath.
+
+ We say:
+
+Section: Parameters
+
+  st-width : Integer = 1024
+  st-half-w : Integer = 512
+  st-half-h : Integer = 384
+
+Section: atan2
+
+  st-atan2 : Real, Real -> Real
+  st-atan2 (y) (x) =
+    let ax = if x < 0.0 then 0.0 - x else x
+    in let ay = if y < 0.0 then 0.0 - y else y
+    in let mn = real-min ax ay
+    in let mx = real-max ax ay
+    in let a = if mx > 0.0 then mn / mx else 0.0
+    in let a2 = a * a
+    in let base = a * (105.0 + 55.0 * a2) / (105.0 + a2 * (90.0 + 9.0 * a2))
+    in let r1 = if ay > ax then 1.5707963 - base else base
+    in let r2 = if x < 0.0 then 3.1415926 - r1 else r1
+    in if y < 0.0 then 0.0 - r2 else r2
+
+Section: Kernel
+
+  st-clamp01 : Real -> Real
+  st-clamp01 (x) = real-max 0.0 (real-min 1.0 x)
+
+  st-pack : Real, Real, Real -> Integer
+  st-pack (r) (g) (b) =
+    real-to-int (st-clamp01 r * 255.0) * 65536 + real-to-int (st-clamp01 g * 255.0) * 256 + real-to-int (st-clamp01 b * 255.0)
+
+  st-render : Integer, Integer -> Integer
+  st-render (gid) (frame) =
+    let px = real-from-int (gid - (gid / st-width) * st-width)
+    in let py = real-from-int (gid / st-width)
+    in let dx = px - 512.0
+    in let dy = py - 384.0
+    in let r = real-sqrt (dx * dx + dy * dy)
+    in let spin = real-from-int frame / 35.0
+    in let a = st-atan2 dy dx + spin
+    in let rb = 215.0 + 85.0 * real-cos (a * 5.0)
+    in let d = r - rb
+    in if d > 6.0 then st-pack (0.04 + py / 4000.0) 0.05 0.08
+    else if d > 0.0 - 6.0 then st-pack 0.6 0.95 1.0
+    else let t = real-from-int frame / 20.0
+    in let sr = 0.5 + 0.5 * real-sin (r * 0.05 + t)
+    in let sg = 0.5 + 0.5 * real-sin (a * 3.0 + r * 0.03 + t * 1.3)
+    in let sb = 0.5 + 0.5 * real-sin (a * 5.0 - t)
+    in st-pack sr sg sb
+
+Section: Stencil Kernel
+
+  stencil-step : Integer, Integer, Integer -> [Device] Integer
+  stencil-step (outb) (frame) (gid) = act
+    device-store outb gid (st-render gid frame)
+  end

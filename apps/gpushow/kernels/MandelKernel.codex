@@ -1,0 +1,68 @@
+Chapter: MandelKernel
+  cites Gpu chapter DeviceEffect
+
+ The Mandelbrot set, as a [Device] compute kernel. One GPU thread per pixel
+ maps its (px, py) to a point c in the complex plane, iterates z = z*z + c
+ counting steps until |z| escapes, and writes a colour from the escape count.
+ The iteration is a tail-recursive helper -- the WGSL plug lowers it to a
+ structured `loop`.
+
+ All arithmetic is integer fixed-point at scale 1000 (three fractional
+ digits). The escape test and the z-update stay well inside 32-bit range: on
+ the last in-set step |z|^2 <= 4e6, so z components stay under ~2000 and their
+ squares under ~1.6e7 -- no overflow.
+
+ We say:
+
+Section: Parameters
+
+  mb-width : Integer = 1024
+  mb-height : Integer = 768
+  mb-max : Integer = 96
+
+  mb-mod : Integer, Integer -> Integer
+  mb-mod (x) (m) = x - (x / m) * m
+
+Section: Iteration
+
+ z = z*z + c until |z|^2 > 4 (i.e. > 4e6 in scaled units) or the step cap.
+
+  mb-iter : Integer, Integer, Integer, Integer, Integer -> Integer
+  mb-iter (zr) (zi) (cr) (ci) (n) =
+    if n >= mb-max then mb-max
+    else if zr * zr + zi * zi > 4000000 then n
+    else mb-iter ((zr * zr - zi * zi) / 1000 + cr) (2 * zr * zi / 1000 + ci) cr ci (n + 1)
+
+Section: Plane Mapping
+
+ px in [0,1024) -> cr in [-2.5, 1.0]; py in [0,768) -> ci in [-1.2, 1.2].
+
+  mb-cr : Integer -> Integer
+  mb-cr (gid) = (mb-mod gid mb-width) * 3500 / mb-width - 2500
+
+  mb-ci : Integer -> Integer
+  mb-ci (gid) = (gid / mb-width) * 2400 / mb-height - 1200
+
+Section: Colour
+
+ Inside the set is black; escaped points get a smooth cycling palette that
+ drifts with frame.
+
+  mb-chan : Integer, Integer, Integer -> Integer
+  mb-chan (it) (mul) (phase) = mb-mod (it * mul + phase) 256
+
+  mb-color : Integer, Integer -> Integer
+  mb-color (it) (frame) =
+    if it >= mb-max then 0
+    else let f = frame * 2
+    in let r = mb-chan it 9 (f)
+    in let g = mb-chan it 6 (40 + f)
+    in let b = mb-chan it 13 (90 + f)
+    in r * 65536 + g * 256 + b
+
+Section: Mandelbrot Kernel
+
+  mandel-step : Integer, Integer, Integer -> [Device] Integer
+  mandel-step (outb) (frame) (gid) = act
+    device-store outb gid (mb-color (mb-iter 0 0 (mb-cr gid) (mb-ci gid) 0) frame)
+  end

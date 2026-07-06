@@ -23,6 +23,30 @@ Companion: `TrustedComputingBase.md` (what we trust vs. check vs. prove).
 
 ## Fixed (factual mislabel)
 
+- **"invalid proofs are type errors" → made TRUE in code, same day
+  (2026-07-04, blu).** Stage-0 probes showed the proof CONTENT checks
+  were real (wrong equations, unsound induction steps, false literal
+  equalities all reject CDX2001) but **totality was not checked**: a
+  circular proof term inhabited any proposition, silently, through
+  six routes — self-referential def (`bad = bad`), mutual defs,
+  generally-recursive prop-returning helper, `claim/proof/qed`
+  self-reference, an induction step citing the claim being proven as
+  a lemma (accepted as CHECKED, not CDX4022-unproven), and two
+  induction proofs citing each other. Ruling: fix the code to match
+  the goal instead of hedging the README. Fixed the same day:
+  `check-proof-cycles` rejects any proof definition that reaches
+  itself through the proof reference graph (CDX4023 CircularProof);
+  relevance is judged on deep-resolved checked types so undeclared
+  intermediaries are in the graph; the mention walk gained the
+  missing `AInductionExpr` arm (which also extends punctual's cycle
+  coverage). All six probes now live in `errors/*.failing`;
+  `proof-assume-axiom` pins the CDX4021 axiom warning (the explicit
+  `assume` door was already honest). Residual edges logged in
+  `docs/Designs/Language/Active/ProofTotalityProbe.md` §6.2
+  (cross-chapter DefMap if it ever ships; Option B positive grammar
+  as optional hardening). The README sentence stands unqualified
+  because the compiler now enforces it.
+
 - **"A linear value must be used exactly once on every path" →
   scope-qualified (2026-07-03).** The DevelopersGuide stated the
   linearity guarantee in the present tense with no scope. The stage-0
@@ -94,25 +118,26 @@ Companion: `TrustedComputingBase.md` (what we trust vs. check vs. prove).
   I/O; and boot grants process 0 every capability regardless of any
   manifest. Three probes compiled clean at stage 0
   (`codex/test/cap-launder-*`).
-  PARTIAL CLOSE (stage 1a, blu CL 6923, 2026-07-03): the `port-*`
-  intrinsics now carry `Device.Port`, so a pure-signature app/foreword
-  function can no longer drive an I/O port -- `cap-launder-pure-io` is
-  now an errors/.failing test (CDX2031 + CDX2033). The owned hardware
-  stack (compiler/kernel/os/boards/plugs) is quire-exempt by design (a
-  named TCB boundary, `CapabilityProbe.md` sec 7). STILL OPEN: block
-  I/O effect (`Device.Block` + Fat16 annotation), MMIO
-  (`poke-mmio`/`Device.Mmio` -- note heap `poke-byte` is intentionally
-  pure, so `cap-launder-pure-poke` awaits that reclassification), the
-  empty manifest (`build-cdx` still emits `cap-sz = 0`), and the OS
-  wiring (grant-all, loader->proc-table, boot caps). "No undeclared
-  I/O" now holds for the library wrappers AND for direct port I/O; the
-  remaining laundering surfaces are block, MMIO, and the manifest.
-  Details + campaign stages:
-  `docs/Designs/Compiler/Active/CapabilityProbe.md`. The
-  KingsAndCourts / CodexIoTPlan capability rows remain vision-doc
-  aspirations; their by-construction evidence class is earned
-  leg-by-leg as the campaign ships (port done, block/MMIO/manifest to
-  go).
+  CLOSED THROUGH STAGE 3 (blu CLs 6923/6946/6964/6999, 2026-07-03/04):
+  `port-*` carry `Device.Port`, `block-*` carry `Device.Block`, the
+  new `read-mmio`/`poke-mmio` carry `Device.Mmio` (heap `peek-*`/
+  `poke-byte` intentionally pure by the 7.3 ruling); the enforced
+  foreword io modules (Fat32, Gpt, GpuRender, InputSource, AppRunner)
+  declare their effects; and the capability manifest is REAL — every
+  binary carries a signed manifest derived from `opening`'s registered
+  type (effects + covering capabilities, inside the hashed+signed
+  content), with the verifier's cap/effect phases non-vacuous and the
+  content-hash range fixed. All three `cap-launder-pure-*` probes are
+  errors/.failing; `cap-manifest-derived` is the positive guard. The
+  owned hardware stack (compiler/kernel/os/boards/plugs) is
+  quire-exempt by ruling — a named TCB boundary (`CapabilityProbe.md`
+  sec 7, recorded in `TrustedComputingBase.md`). STILL OPEN (stage 4,
+  OS wiring, delegatable): boot still grants process 0 every
+  capability and `granted-capabilities` is grant-all — the manifest is
+  derived and verified but not yet ENFORCED by the loader/proc-table.
+  Until stage 4 lands, "rejected at load time" remains the one
+  unearned clause; say "carried and verified" instead. Details:
+  `docs/Designs/Compiler/Active/CapabilityProbe.md` sec 7.5.
 
 ## Fine as-is (aspirational / marketing — leave)
 

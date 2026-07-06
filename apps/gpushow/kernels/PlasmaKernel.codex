@@ -1,0 +1,68 @@
+Chapter: PlasmaKernel
+  cites Gpu chapter DeviceEffect
+
+ A classic demoscene plasma, as a [Device] compute kernel. One GPU thread
+ owns one pixel: it derives its (px, py) from the linear thread id, sums a few
+ fixed-point sine waves of position and time into an RGB colour, and writes the
+ packed pixel to the output buffer. The host renders the buffer to a fullscreen
+ quad. No neighbours, no loops -- pure per-pixel compute.
+
+ We say:
+
+Section: Screen
+
+  pl-width : Integer = 1024
+
+Section: Fixed-Point Trig
+
+  pl-wrap : Integer -> Integer
+  pl-wrap (a) = let m = a - (a / 6283) * 6283 in if m < 0 then m + 6283 else m
+
+  pl-sin-core : Integer -> Integer
+  pl-sin-core (x) =
+    let x2 = x * x / 1000
+    in let x3 = x2 * x / 1000
+    in let x5 = x3 * x2 / 1000
+    in x - x3 / 6 + x5 / 120
+
+  pl-sin : Integer -> Integer
+  pl-sin (raw) =
+    let a = pl-wrap raw
+    in if a <= 1570 then pl-sin-core a
+    else if a <= 3141 then pl-sin-core (3141 - a)
+    else if a <= 4712 then 0 - pl-sin-core (a - 3141)
+    else 0 - pl-sin-core (6283 - a)
+
+Section: Colour Field
+
+ Each channel is a mid-grey plus a sum of sine waves; the phases are offset so
+ the channels drift apart into rolling colour. px, py come from the thread id.
+
+  pl-px : Integer -> Integer
+  pl-px (gid) = gid - (gid / pl-width) * pl-width
+
+  pl-py : Integer -> Integer
+  pl-py (gid) = gid / pl-width
+
+  pl-channel : Integer, Integer, Integer -> Integer
+  pl-channel (wave) (phase) (t) =
+    let s = pl-sin (wave + phase + t) in 128 + s * 118 / 1000
+
+  pl-color : Integer, Integer -> Integer
+  pl-color (gid) (frame) =
+    let px = pl-px gid
+    in let py = pl-py gid
+    in let t = frame * 24
+    in let r = pl-channel (px * 11 + py * 4) 0 t
+    in let g = pl-channel (py * 12) 2094 (t + t / 2)
+    in let b = pl-channel ((px + py) * 7 + (pl-sin (px * 5 + t)) * 3) 4188 t
+    in r * 65536 + g * 256 + b
+
+Section: Plasma Kernel
+
+ One thread per pixel: write the packed RGB to out[gid].
+
+  plasma-step : Integer, Integer, Integer -> [Device] Integer
+  plasma-step (outb) (frame) (gid) = act
+    device-store outb gid (pl-color gid frame)
+  end

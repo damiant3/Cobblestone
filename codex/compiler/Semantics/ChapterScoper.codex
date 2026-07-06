@@ -2,6 +2,7 @@ Chapter: Chapter Scoper
   cites Codex chapter Text
   cites Codex chapter Characters
   cites Codex chapter Lists
+  cites Foreword chapter Sort
 
  Resolves name collisions across chapters by prefixing duplicate
  definition names with their chapter slug. Only colliding names
@@ -269,18 +270,48 @@ Section: Chapter Scoping Pipeline
 
   build-global-rename-table : List ChapterAssignment, SkipListText -> List RenameEntry
   build-global-rename-table (assignments) (colliding) =
-   build-global-renames assignments colliding 0 (list-length assignments) []
+   let pushed = build-global-renames assignments colliding (list-length assignments - 1) (__list-with-capacity (list-length assignments))
+   in dedupe-renames (sort-by pushed compare-rename-originals)
 
-  build-global-renames : List ChapterAssignment, SkipListText, Integer, Integer, List RenameEntry -> List RenameEntry
-  build-global-renames (assignments) (colliding) (i) (len) (acc) =
-   if i == len then acc
+ The table is built by a single reversed push pass, one merge sort,
+ and an adjacent dedupe - O(n log n). The previous per-entry
+ sorted-rename-insert rebuilt the whole immutable list on every
+ insert: O(n squared) ALLOCATION, and because the call site runs
+ inside deck-record the quadratic garbage landed on the scope deck
+ and was retained for the entire compile (~180 MB on the selfhost -
+ the largest single retained block in the compiler, found by the
+ MEASURE deck-span map). Winner preservation: the old leftmost-equal
+ bsearch returned the LAST-inserted duplicate; pushing in reverse
+ assignment order and relying on merge-sort stability puts that same
+ entry leftmost, and the dedupe keeps it.
+
+  compare-rename-originals : RenameEntry, RenameEntry -> Integer
+  compare-rename-originals (a) (b) = text-compare (a.original) (b.original)
+
+  build-global-renames : List ChapterAssignment, SkipListText, Integer, List RenameEntry -> List RenameEntry
+  build-global-renames (assignments) (colliding) (i) (acc) =
+   if i < 0 then acc
    else let a = list-at assignments i
    in if is-colliding colliding (a.def-name)
-      then build-global-renames assignments colliding (i + 1) len (sorted-rename-insert acc (RenameEntry {
+      then build-global-renames assignments colliding (i - 1) (list-push acc (RenameEntry {
             original = a.def-name,
             mangled = mangle-name (a.chapter-slug) (a.def-name)
            }))
-      else build-global-renames assignments colliding (i + 1) len acc
+      else build-global-renames assignments colliding (i - 1) acc
+
+  dedupe-renames : List RenameEntry -> List RenameEntry
+  dedupe-renames (entries) =
+   dedupe-renames-loop entries 0 (list-length entries) (__list-with-capacity (list-length entries))
+
+  dedupe-renames-loop : List RenameEntry, Integer, Integer, List RenameEntry -> List RenameEntry
+  dedupe-renames-loop (entries) (i) (len) (acc) =
+   if i == len then acc
+   else let e = list-at entries i
+   in if i > 0
+      then if (list-at entries (i - 1)).original == e.original
+           then dedupe-renames-loop entries (i + 1) len acc
+           else dedupe-renames-loop entries (i + 1) len (list-push acc e)
+      else dedupe-renames-loop entries (i + 1) len (list-push acc e)
 
   resolve-def-name : List RenameEntry, Text, Text -> Text
   resolve-def-name (renames) (name) (chapter-slug) =

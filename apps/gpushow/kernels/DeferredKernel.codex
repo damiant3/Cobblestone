@@ -1,0 +1,93 @@
+Chapter: DeferredKernel
+  cites Gpu chapter DeviceEffect
+  cites Gpu chapter DeviceMath
+
+ The lighting pass of deferred shading. It reads the G-buffer written by
+ GbufKernel -- albedo, normal, and hit distance -- reconstructs each pixel's
+ world position from the distance and its view ray, and accumulates twenty
+ coloured point lights orbiting the sphere cluster. Because shading reads the
+ G-buffer rather than re-tracing, adding lights costs one loop iteration each --
+ the deferred advantage. The light loop is a tail-recursive fold lowered to a
+ WGSL loop. Reference site's "deferred shading" technique.
+
+ We say:
+
+Section: Parameters
+
+  de-width : Integer = 1024
+  de-half-w : Integer = 512
+  de-half-h : Integer = 384
+  de-lights : Integer = 20
+  de-miss : Integer = 8000000
+
+Section: Light Palette
+
+  de-lr : Integer -> Real
+  de-lr (k) = let m = k - (k / 6) * 6 in if m == 0 then 1.0 else if m == 1 then 0.3 else if m == 2 then 0.35 else if m == 3 then 1.0 else if m == 4 then 0.9 else 0.4
+
+  de-lg : Integer -> Real
+  de-lg (k) = let m = k - (k / 6) * 6 in if m == 0 then 0.4 else if m == 1 then 0.5 else if m == 2 then 0.85 else if m == 3 then 0.85 else if m == 4 then 0.35 else 0.9
+
+  de-lb : Integer -> Real
+  de-lb (k) = let m = k - (k / 6) * 6 in if m == 0 then 0.3 else if m == 1 then 1.0 else if m == 2 then 0.6 else if m == 3 then 0.3 else if m == 4 then 0.9 else 0.9
+
+Section: Light Accumulation
+
+ Fold over the lights, summing one colour channel of the diffuse contribution
+ (scaled by 300). Lights orbit the cluster with the frame.
+
+  de-accum : Real, Real, Real, Real, Real, Real, Real, Integer, Integer, Integer -> Integer
+  de-accum (posx) (posy) (posz) (nx) (ny) (nz) (frame) (ch) (k) (acc) =
+    if k >= de-lights then acc
+    else let la = real-from-int k * 0.62 + frame
+    in let lx = real-cos la * 2.7
+    in let ly = real-sin (la * 0.6) * 1.6
+    in let lz = real-sin la * 2.7 - 0.4
+    in let ddx = lx - posx
+    in let ddy = ly - posy
+    in let ddz = lz - posz
+    in let d2 = ddx * ddx + ddy * ddy + ddz * ddz
+    in let dist = real-sqrt d2 + 0.001
+    in let ndl = real-max 0.0 (nx * ddx + ny * ddy + nz * ddz) / dist
+    in let atten = 4.2 / (0.5 + d2)
+    in let lc = if ch == 0 then de-lr k else if ch == 1 then de-lg k else de-lb k
+    in de-accum posx posy posz nx ny nz frame ch (k + 1) (acc + real-to-int (ndl * atten * lc * 300.0))
+
+Section: Deferred Kernel
+
+  de-clamp : Integer, Integer, Integer -> Integer
+  de-clamp (v) (lo) (hi) = if v < lo then lo else if v > hi then hi else v
+
+  deferred-step : Integer, Integer, Integer, Integer, Integer, Integer -> [Device] Integer
+  deferred-step (galb) (gnrm) (gdep) (outb) (frame) (gid) =
+    let px = gid - (gid / de-width) * de-width
+    in let py = gid / de-width
+    in let fx = real-from-int (px - de-half-w) / 384.0
+    in let fy = real-from-int (de-half-h - py) / 384.0
+    in let rl = real-sqrt (fx * fx + fy * fy + 3.24)
+    in let dx = fx / rl
+    in let dy = fy / rl
+    in let dz = 1.8 / rl
+    in act
+    alb <- device-load galb gid
+    nrm <- device-load gnrm gid
+    dep <- device-load gdep gid
+    let t = real-from-int dep / 256.0
+    in let posx = dx * t
+    in let posy = dy * t
+    in let posz = 0.0 - 5.0 + dz * t
+    in let nx = real-from-int (nrm / 65536) / 127.0 - 1.0
+    in let ny = real-from-int (nrm / 256 - (nrm / 65536) * 256) / 127.0 - 1.0
+    in let nz = real-from-int (nrm - (nrm / 256) * 256) / 127.0 - 1.0
+    in let ar = alb / 65536
+    in let ag = alb / 256 - (alb / 65536) * 256
+    in let ab = alb - (alb / 256) * 256
+    in let lr = de-accum posx posy posz nx ny nz (real-from-int frame / 26.0) 0 0 0
+    in let lg = de-accum posx posy posz nx ny nz (real-from-int frame / 26.0) 1 0 0
+    in let lb = de-accum posx posy posz nx ny nz (real-from-int frame / 26.0) 2 0 0
+    in let fr = de-clamp (ar * (26 + lr) / 255) 0 255
+    in let fg = de-clamp (ag * (26 + lg) / 255) 0 255
+    in let fb = de-clamp (ab * (26 + lb) / 255) 0 255
+    in let out = if dep >= de-miss then 20 * 256 + 30 else fr * 65536 + fg * 256 + fb
+    in device-store outb gid out
+    end

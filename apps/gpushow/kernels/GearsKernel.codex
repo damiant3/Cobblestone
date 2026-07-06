@@ -1,0 +1,84 @@
+Chapter: GearsKernel
+  cites Gpu chapter DeviceEffect
+  cites Gpu chapter DeviceMath
+
+ Rotating meshing gears, rasterized per pixel from Codex [Device] AST. Each gear
+ is an implicit shape: a pixel is inside if its radius from the gear centre is
+ below the tooth profile (a square wave of the polar angle) and outside the hub
+ hole. Three gears of different tooth counts spin at speeds inversely
+ proportional to their teeth and in alternating directions, so they mesh. The
+ polar angle uses a rational atan2 (no atan2 intrinsic needed). Reference site's
+ "gears" technique. Float math from DeviceMath.
+
+ We say:
+
+Section: Parameters
+
+  gr-width : Integer = 1024
+  gr-half-h : Integer = 384
+
+Section: Rational atan2
+
+  gr-atan2 : Real, Real -> Real
+  gr-atan2 (y) (x) =
+    let ax = if x < 0.0 then 0.0 - x else x
+    in let ay = if y < 0.0 then 0.0 - y else y
+    in let mn = real-min ax ay
+    in let mx = real-max ax ay
+    in let a = if mx > 0.0 then mn / mx else 0.0
+    in let a2 = a * a
+    in let base = a * (105.0 + 55.0 * a2) / (105.0 + a2 * (90.0 + 9.0 * a2))
+    in let r1 = if ay > ax then 1.5707963 - base else base
+    in let r2 = if x < 0.0 then 3.1415926 - r1 else r1
+    in if y < 0.0 then 0.0 - r2 else r2
+
+Section: Gear Shape
+
+ Shade contribution of a gear at (cx, cy): returns a lit intensity if the pixel
+ is inside the gear body, else -1.
+
+  gr-gear : Real, Real, Real, Real, Real, Real, Real -> Real
+  gr-gear (px) (py) (cx) (cy) (teeth) (rtip) (spin) =
+    let dx = px - cx
+    in let dy = py - cy
+    in let r = real-sqrt (dx * dx + dy * dy)
+    in if r > rtip then 0.0 - 1.0
+    else if r < rtip * 0.22 then 0.0 - 1.0
+    else let a = gr-atan2 dy dx + spin
+    in let k = real-to-int (a * teeth / 3.1415926 + 2000.0)
+    in let toothon = k - (k / 2) * 2
+    in let rroot = rtip * 0.80
+    in let outer = if toothon == 0 then rtip else rroot
+    in if r > outer then 0.0 - 1.0
+    else if r < rtip * 0.34 then 0.62
+    else if r < rtip * 0.42 then 0.30
+    else 0.55 + r / rtip * 0.45
+
+Section: Kernel
+
+  gr-render : Integer, Integer -> Integer
+  gr-render (gid) (frame) =
+    let px = real-from-int (gid - (gid / gr-width) * gr-width)
+    in let py = real-from-int (gid / gr-width)
+    in let f = real-from-int frame / 30.0
+    in let g0 = gr-gear px py 410.0 384.0 12.0 160.0 f
+    in let g1 = gr-gear px py 654.0 300.0 8.0 108.0 (0.0 - f * 1.5)
+    in let g2 = gr-gear px py 470.0 156.0 10.0 128.0 (0.0 - f * 1.2)
+    in if g2 >= 0.0 then gr-pack g2 0.55 0.72 0.95
+    else if g1 >= 0.0 then gr-pack g1 0.95 0.75 0.35
+    else if g0 >= 0.0 then gr-pack g0 0.85 0.35 0.30
+    else let h = py / 768.0 in gr-pack 1.0 (0.04 + h * 0.04) (0.05 + h * 0.06) (0.09 + h * 0.10)
+
+  gr-pack : Real, Real, Real, Real -> Integer
+  gr-pack (lit) (r) (g) (b) =
+    let ri = real-to-int (real-min 255.0 (lit * r * 255.0))
+    in let gi = real-to-int (real-min 255.0 (lit * g * 255.0))
+    in let bi = real-to-int (real-min 255.0 (lit * b * 255.0))
+    in ri * 65536 + gi * 256 + bi
+
+Section: Gears Kernel
+
+  gears-step : Integer, Integer, Integer -> [Device] Integer
+  gears-step (outb) (frame) (gid) = act
+    device-store outb gid (gr-render gid frame)
+  end

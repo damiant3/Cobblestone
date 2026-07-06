@@ -1,0 +1,206 @@
+Chapter: ReflectKernel
+  cites Gpu chapter DeviceEffect
+  cites Gpu chapter DeviceMath
+
+ Ray-tracing reflections as a [Device] compute kernel: the same three-sphere,
+ checkered-floor scene as the ray tracer, but every surface is a mirror. Each
+ pixel traces a primary ray, shades the nearest hit locally (diffuse + hard
+ shadow), then reflects the ray about the surface normal and traces one more
+ bounce, blending the reflected colour in by the surface's reflectivity. This
+ is the reference site's "ray tracing reflections" technique, from Codex AST.
+
+ The local shade is a shared helper (rf-local) reused for both the primary hit
+ and the reflected hit; the reflected colour is unpacked back to floats and
+ blended. Nearest-hit and shadow tests are tail-recursive folds the plug lowers
+ to WGSL loops. Real math from Gpu chapter DeviceMath.
+
+ We say:
+
+Section: Parameters
+
+  rf-width : Integer = 1024
+  rf-half-w : Integer = 512
+  rf-half-h : Integer = 384
+  rf-nobj : Integer = 4
+
+Section: Scene Table
+
+ Ids 0,1,2 are spheres; id 3 is the floor plane at y = -1.
+
+  rf-cx : Integer -> Real
+  rf-cx (i) = if i == 0 then 0.0 else if i == 1 then 0.0 - 1.7 else 1.6
+
+  rf-cy : Integer -> Real
+  rf-cy (i) = if i == 0 then 0.0 else if i == 1 then 0.0 - 0.35 else 0.0 - 0.45
+
+  rf-cz : Integer -> Real
+  rf-cz (i) = if i == 0 then 0.0 else if i == 1 then 0.5 else 0.0 - 0.4
+
+  rf-rad : Integer -> Real
+  rf-rad (i) = if i == 0 then 1.0 else if i == 1 then 0.65 else 0.55
+
+  rf-col-r : Integer -> Real
+  rf-col-r (i) = if i == 0 then 0.95 else if i == 1 then 0.25 else 0.75
+
+  rf-col-g : Integer -> Real
+  rf-col-g (i) = if i == 0 then 0.55 else if i == 1 then 0.85 else 0.40
+
+  rf-col-b : Integer -> Real
+  rf-col-b (i) = if i == 0 then 0.30 else if i == 1 then 0.80 else 0.98
+
+  rf-refl : Integer -> Real
+  rf-refl (i) = if i == 3 then 0.30 else 0.55
+
+Section: Intersection
+
+  rf-sphere-hit : Real, Real, Real, Real, Real, Real, Integer -> Real
+  rf-sphere-hit (ox) (oy) (oz) (dx) (dy) (dz) (i) =
+    let lx = ox - rf-cx i
+    in let ly = oy - rf-cy i
+    in let lz = oz - rf-cz i
+    in let b = dx * lx + dy * ly + dz * lz
+    in let r = rf-rad i
+    in let c = lx * lx + ly * ly + lz * lz - r * r
+    in let disc = b * b - c
+    in if disc < 0.0 then 0.0 - 1.0
+    else let t = 0.0 - b - real-sqrt disc
+    in if t > 0.001 then t else 0.0 - 1.0
+
+  rf-plane-hit : Real, Real -> Real
+  rf-plane-hit (oy) (dy) =
+    if dy > 0.0 - 0.0001 then 0.0 - 1.0
+    else let t = (0.0 - 1.0 - oy) / dy
+    in if t > 0.001 then t else 0.0 - 1.0
+
+  rf-hit : Real, Real, Real, Real, Real, Real, Integer -> Real
+  rf-hit (ox) (oy) (oz) (dx) (dy) (dz) (id) =
+    if id == 3 then rf-plane-hit oy dy
+    else rf-sphere-hit ox oy oz dx dy dz id
+
+  rf-nearest : Real, Real, Real, Real, Real, Real, Integer, Integer, Real -> Integer
+  rf-nearest (ox) (oy) (oz) (dx) (dy) (dz) (i) (best-id) (best-t) =
+    if i >= rf-nobj then best-id
+    else let t = rf-hit ox oy oz dx dy dz i
+    in let take = if t > 0.001 then (if best-t < 0.0 then 1 else if t < best-t then 1 else 0) else 0
+    in if take == 1 then rf-nearest ox oy oz dx dy dz (i + 1) i t
+    else rf-nearest ox oy oz dx dy dz (i + 1) best-id best-t
+
+  rf-shadowed : Real, Real, Real, Real, Real, Real, Integer -> Integer
+  rf-shadowed (ox) (oy) (oz) (dx) (dy) (dz) (i) =
+    if i >= 3 then 0
+    else let t = rf-sphere-hit ox oy oz dx dy dz i
+    in if t > 0.001 then 1
+    else rf-shadowed ox oy oz dx dy dz (i + 1)
+
+Section: Shading
+
+  rf-clamp01 : Real -> Real
+  rf-clamp01 (x) = real-max 0.0 (real-min 1.0 x)
+
+  rf-pack : Real, Real, Real -> Integer
+  rf-pack (r) (g) (b) =
+    let ri = real-to-int (rf-clamp01 r * 255.0)
+    in let gi = real-to-int (rf-clamp01 g * 255.0)
+    in let bi = real-to-int (rf-clamp01 b * 255.0)
+    in ri * 65536 + gi * 256 + bi
+
+  rf-sky : Real -> Integer
+  rf-sky (dy) =
+    let h = rf-clamp01 (dy * 0.5 + 0.5)
+    in rf-pack (0.05 + h * 0.06) (0.10 + h * 0.16) (0.24 + h * 0.40)
+
+  rf-checker : Real, Real -> Real
+  rf-checker (hx) (hz) =
+    let ix = real-to-int (hx + 64.0)
+    in let iz = real-to-int (hz + 64.0)
+    in let s = ix + iz
+    in if s - (s / 2) * 2 == 0 then 0.35 else 0.65
+
+ Unpack a packed colour back to a 0..1 float channel for blending.
+
+  rf-un-r : Integer -> Real
+  rf-un-r (p) = real-from-int (p / 65536) / 255.0
+
+  rf-un-g : Integer -> Real
+  rf-un-g (p) = real-from-int (p / 256 - (p / 65536) * 256) / 255.0
+
+  rf-un-b : Integer -> Real
+  rf-un-b (p) = real-from-int (p - (p / 256) * 256) / 255.0
+
+ Local shade of the hit on object id along ray (ox,oy,oz)+(dx,dy,dz): Lambert
+ from a rotating key light plus a hard shadow ray. No reflection here -- that is
+ composited by rf-render. Returns a packed colour.
+
+  rf-local : Real, Real, Real, Real, Real, Real, Integer, Integer -> Integer
+  rf-local (ox) (oy) (oz) (dx) (dy) (dz) (id) (frame) =
+    let t = rf-hit ox oy oz dx dy dz id
+    in let hx = ox + dx * t
+    in let hy = oy + dy * t
+    in let hz = oz + dz * t
+    in let nx = if id == 3 then 0.0 else (hx - rf-cx id) / rf-rad id
+    in let ny = if id == 3 then 1.0 else (hy - rf-cy id) / rf-rad id
+    in let nz = if id == 3 then 0.0 else (hz - rf-cz id) / rf-rad id
+    in let br = if id == 3 then rf-checker hx hz else rf-col-r id
+    in let bg = if id == 3 then rf-checker hx hz else rf-col-g id
+    in let bb = if id == 3 then rf-checker hx hz else rf-col-b id
+    in let ang = real-from-int frame / 24.0
+    in let lx = real-cos ang * 0.6
+    in let ly = 0.9
+    in let lz = real-sin ang * 0.6
+    in let ll = real-sqrt (lx * lx + ly * ly + lz * lz)
+    in let ux = lx / ll
+    in let uy = ly / ll
+    in let uz = lz / ll
+    in let ndl = real-max 0.0 (nx * ux + ny * uy + nz * uz)
+    in let sh = rf-shadowed (hx + nx * 0.002) (hy + ny * 0.002) (hz + nz * 0.002) ux uy uz 0
+    in let lit = if sh == 1 then 0.22 else 0.22 + ndl * 0.9
+    in rf-pack (br * lit) (bg * lit) (bb * lit)
+
+Section: Render
+
+ Per pixel: primary ray, nearest hit, local shade, then one mirror bounce.
+
+  rf-render : Integer, Integer -> Integer
+  rf-render (gid) (frame) =
+    let px = gid - (gid / rf-width) * rf-width
+    in let py = gid / rf-width
+    in let fx = real-from-int (px - rf-half-w) / 384.0
+    in let fy = real-from-int (rf-half-h - py) / 384.0
+    in let rl = real-sqrt (fx * fx + fy * fy + 2.89)
+    in let dx = fx / rl
+    in let dy = fy / rl
+    in let dz = 1.7 / rl
+    in let ox = 0.0
+    in let oy = 0.7
+    in let oz = 0.0 - 4.0
+    in let id0 = rf-nearest ox oy oz dx dy dz 0 (0 - 1) (0.0 - 1.0)
+    in if id0 < 0 then rf-sky dy
+    else let t0 = rf-hit ox oy oz dx dy dz id0
+    in let hx = ox + dx * t0
+    in let hy = oy + dy * t0
+    in let hz = oz + dz * t0
+    in let nx = if id0 == 3 then 0.0 else (hx - rf-cx id0) / rf-rad id0
+    in let ny = if id0 == 3 then 1.0 else (hy - rf-cy id0) / rf-rad id0
+    in let nz = if id0 == 3 then 0.0 else (hz - rf-cz id0) / rf-rad id0
+    in let p0 = rf-local ox oy oz dx dy dz id0 frame
+    in let dn = dx * nx + dy * ny + dz * nz
+    in let rx = dx - 2.0 * dn * nx
+    in let ry = dy - 2.0 * dn * ny
+    in let rz = dz - 2.0 * dn * nz
+    in let sx = hx + nx * 0.003
+    in let sy = hy + ny * 0.003
+    in let sz = hz + nz * 0.003
+    in let id1 = rf-nearest sx sy sz rx ry rz 0 (0 - 1) (0.0 - 1.0)
+    in let pr = if id1 < 0 then rf-sky ry else rf-local sx sy sz rx ry rz id1 frame
+    in let k = rf-refl id0
+    in let cr = rf-un-r p0 * (1.0 - k) + rf-un-r pr * k
+    in let cg = rf-un-g p0 * (1.0 - k) + rf-un-g pr * k
+    in let cb = rf-un-b p0 * (1.0 - k) + rf-un-b pr * k
+    in rf-pack cr cg cb
+
+Section: Reflect Kernel
+
+  reflect-step : Integer, Integer, Integer -> [Device] Integer
+  reflect-step (outb) (frame) (gid) = act
+    device-store outb gid (rf-render gid frame)
+  end

@@ -1,0 +1,68 @@
+Chapter: OcclusionKernel
+  cites Gpu chapter DeviceEffect
+  cites Gpu chapter DeviceMath
+
+ Occlusion queries as a depth-complexity visualisation. The camera ray passes
+ through a rotating field of translucent spheres; one thread per pixel counts how
+ many spheres the ray enters (the overdraw / occlusion count) and maps that count
+ to a heat colour -- blue where one surface is visible, through green and yellow
+ to red where many overlap. That per-pixel count is exactly what a hardware
+ occlusion query aggregates. Reference site's "occlusion queries" technique.
+ Float math from DeviceMath.
+
+ We say:
+
+Section: Parameters
+
+  oc-width : Integer = 1024
+  oc-half-w : Integer = 512
+  oc-half-h : Integer = 384
+  oc-count : Integer = 14
+
+Section: Field
+
+  oc-cx : Integer -> Real
+  oc-cx (i) = real-cos (real-from-int i * 1.1) * (0.8 + real-from-int (i - (i / 3) * 3))
+
+  oc-cy : Integer -> Real
+  oc-cy (i) = real-sin (real-from-int i * 1.7) * 1.3
+
+  oc-cz : Integer -> Real
+  oc-cz (i) = real-sin (real-from-int i * 0.9) * 1.4
+
+  oc-enters : Real, Real, Real, Real, Real, Real, Integer, Real, Integer -> Integer
+  oc-enters (ox) (oy) (oz) (dx) (dy) (dz) (i) (spin) (acc) =
+    if i >= oc-count then acc
+    else let cx = oc-cx i * real-cos spin - oc-cz i * real-sin spin
+    in let cz = oc-cx i * real-sin spin + oc-cz i * real-cos spin
+    in let lx = ox - cx
+    in let ly = oy - oc-cy i
+    in let lz = oz - cz
+    in let b = dx * lx + dy * ly + dz * lz
+    in let c = lx * lx + ly * ly + lz * lz - 0.64
+    in let disc = b * b - c
+    in let hit = if disc > 0.0 then (if 0.0 - b + real-sqrt disc > 0.0 then 1 else 0) else 0
+    in oc-enters ox oy oz dx dy dz (i + 1) spin (acc + hit)
+
+Section: Kernel
+
+  oc-pack : Real, Real, Real -> Integer
+  oc-pack (r) (g) (b) =
+    real-to-int (real-max 0.0 (real-min 1.0 r) * 255.0) * 65536 + real-to-int (real-max 0.0 (real-min 1.0 g) * 255.0) * 256 + real-to-int (real-max 0.0 (real-min 1.0 b) * 255.0)
+
+  occlusion-step : Integer, Integer, Integer -> [Device] Integer
+  occlusion-step (outb) (frame) (gid) =
+    let px = gid - (gid / oc-width) * oc-width
+    in let py = gid / oc-width
+    in let fx = real-from-int (px - oc-half-w) / 384.0
+    in let fy = real-from-int (oc-half-h - py) / 384.0
+    in let rl = real-sqrt (fx * fx + fy * fy + 4.0)
+    in let dx = fx / rl
+    in let dy = fy / rl
+    in let dz = 2.0 / rl
+    in let spin = real-from-int frame / 45.0
+    in let n = oc-enters 0.0 0.0 (0.0 - 5.0) dx dy dz 0 spin 0
+    in let f = real-from-int n / 6.0
+    in act
+    device-store outb gid (if n == 0 then 8 * 65536 + 10 * 256 + 16 else oc-pack (real-max 0.0 (f - 0.4) * 1.6) (real-min 1.0 (f * 1.4)) (real-max 0.0 (0.9 - f * 1.3)))
+    end

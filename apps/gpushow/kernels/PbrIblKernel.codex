@@ -1,0 +1,113 @@
+Chapter: PbrIblKernel
+  cites Gpu chapter DeviceEffect
+  cites Gpu chapter DeviceMath
+
+ PBR with image-based lighting: a row of metallic spheres of increasing roughness
+ reflecting a procedural environment (sky gradient, sun, ground). The reflection
+ is sampled in the mirror direction; roughness fades it toward the average sky so
+ rough metals look matte. A Fresnel rim and the sun's specular complete it. One
+ thread per pixel. Reference site's "PBR image based lighting". Float from DeviceMath.
+
+ We say:
+
+Section: Parameters
+
+  pi-width : Integer = 1024
+  pi-half-w : Integer = 512
+  pi-half-h : Integer = 384
+  pi-count : Integer = 6
+
+Section: Environment
+
+  pi-env-r : Real -> Real
+  pi-env-r (dy) = if dy > 0.0 then 0.22 + dy * 0.25 else 0.28 - dy * 0.10
+
+  pi-env-g : Real -> Real
+  pi-env-g (dy) = if dy > 0.0 then 0.38 + dy * 0.40 else 0.24 - dy * 0.06
+
+  pi-env-b : Real -> Real
+  pi-env-b (dy) = if dy > 0.0 then 0.62 + dy * 0.35 else 0.16 - dy * 0.02
+
+ A bright sun toward (0.5, 0.6, -0.6).
+
+  pi-sun : Real, Real, Real -> Real
+  pi-sun (dx) (dy) (dz) =
+    let d = dx * 0.6 + dy * 0.68 + dz * (0.0 - 0.68)
+    in if d > 0.0 then let p = d * d in p * p * p * p else 0.0
+
+Section: Scene
+
+  pi-cx : Integer -> Real
+  pi-cx (i) = real-from-int i * 1.15 - 2.9
+
+  pi-rough : Integer -> Real
+  pi-rough (i) = 0.04 + real-from-int i * 0.17
+
+  pi-hit : Real, Real, Real, Real, Real, Real, Integer -> Real
+  pi-hit (ox) (oy) (oz) (dx) (dy) (dz) (i) =
+    let lx = ox - pi-cx i
+    in let b = dx * lx + dy * oy + dz * oz
+    in let c = lx * lx + oy * oy + oz * oz - 0.2704
+    in let disc = b * b - c
+    in if disc < 0.0 then 0.0 - 1.0 else let t = 0.0 - b - real-sqrt disc in if t > 0.001 then t else 0.0 - 1.0
+
+  pi-nearest : Real, Real, Real, Real, Real, Real, Integer, Integer, Real -> Integer
+  pi-nearest (ox) (oy) (oz) (dx) (dy) (dz) (i) (bid) (bt) =
+    if i >= pi-count then bid
+    else let t = pi-hit ox oy oz dx dy dz i
+    in let take = if t > 0.001 then (if bt < 0.0 then 1 else if t < bt then 1 else 0) else 0
+    in if take == 1 then pi-nearest ox oy oz dx dy dz (i + 1) i t
+    else pi-nearest ox oy oz dx dy dz (i + 1) bid bt
+
+Section: Shading
+
+  pi-clamp01 : Real -> Real
+  pi-clamp01 (x) = real-max 0.0 (real-min 1.0 x)
+
+  pi-pack : Real, Real, Real -> Integer
+  pi-pack (r) (g) (b) =
+    real-to-int (pi-clamp01 r * 255.0) * 65536 + real-to-int (pi-clamp01 g * 255.0) * 256 + real-to-int (pi-clamp01 b * 255.0)
+
+  pi-render : Integer, Integer -> Integer
+  pi-render (gid) (frame) =
+    let px = gid - (gid / pi-width) * pi-width
+    in let py = gid / pi-width
+    in let fx = real-from-int (px - pi-half-w) / 384.0
+    in let fy = real-from-int (pi-half-h - py) / 384.0
+    in let rl = real-sqrt (fx * fx + fy * fy + 4.0)
+    in let dx = fx / rl
+    in let dy = fy / rl
+    in let dz = 2.0 / rl
+    in let oz = 0.0 - 5.0
+    in let id = pi-nearest 0.0 0.0 oz dx dy dz 0 (0 - 1) (0.0 - 1.0)
+    in if id < 0 then pi-pack (pi-env-r dy + pi-sun dx dy dz) (pi-env-g dy + pi-sun dx dy dz) (pi-env-b dy + pi-sun dx dy dz)
+    else let t = pi-hit 0.0 0.0 oz dx dy dz id
+    in let hx = dx * t
+    in let hy = dy * t
+    in let hz = oz + dz * t
+    in let nx = (hx - pi-cx id) / 0.52
+    in let ny = hy / 0.52
+    in let nz = hz / 0.52
+    in let vd = dx * nx + dy * ny + dz * nz
+    in let rx = dx - 2.0 * vd * nx
+    in let ry = dy - 2.0 * vd * ny
+    in let rz = dz - 2.0 * vd * nz
+    in let rough = pi-rough id
+    in let er = pi-env-r ry + pi-sun rx ry rz
+    in let eg = pi-env-g ry + pi-sun rx ry rz
+    in let eb = pi-env-b ry + pi-sun rx ry rz
+    in let mr = er * (1.0 - rough) + 0.42 * rough
+    in let mg = eg * (1.0 - rough) + 0.46 * rough
+    in let mb = eb * (1.0 - rough) + 0.55 * rough
+    in let fres = 0.08 + 0.92 * pi-clamp01 (1.0 + vd) * pi-clamp01 (1.0 + vd)
+    in let tint-r = 0.95
+    in let tint-g = 0.78
+    in let tint-b = 0.45
+    in pi-pack (mr * tint-r * (0.5 + fres * 0.6)) (mg * tint-g * (0.5 + fres * 0.6)) (mb * tint-b * (0.5 + fres * 0.6))
+
+Section: Kernel
+
+  pbribl-step : Integer, Integer, Integer -> [Device] Integer
+  pbribl-step (outb) (frame) (gid) = act
+    device-store outb gid (pi-render gid frame)
+  end

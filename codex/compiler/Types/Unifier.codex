@@ -117,15 +117,22 @@ Section: Expr Types
 
  Records per-expression resolved types keyed by span, for lowering to
  consult after type-checking finishes. Spans are keyed as a composite
- integer (file-id + offsets). Entries are appended unsorted during
- type-checking via list-push (O(1) per call), then merge-sorted once
- at the check-lower boundary via sort-expr-types (O(N log N)). Lookup
- after sort is O(log N) via binary search. Populated only from narrow
- inference sites (ANameExpr, ARecordExpr).
+ integer packed as file-id (16 bits) | start offset (32 bits) | span
+ length capped at 65535 (16 bits) - an exact 64-bit fit. The previous
+ decimal packing multiplied by 1e6 with the raw end offset in the low
+ field; any source past one megabyte overflowed the field and bled
+ into the start digits, silently aliasing distinct spans and
+ shadowing entries behind the binary search. Entries are appended
+ unsorted during type-checking via list-push (O(1) per call), then
+ merge-sorted once at the check-lower boundary via sort-expr-types
+ (O(N log N)). Lookup after sort is O(log N) via binary search.
+ Populated only from narrow inference sites (ANameExpr, ARecordExpr).
 
   expr-type-key : SourceSpan -> Integer
   expr-type-key (sp) =
-   (sp.file-id * 1000000000 + sp.start.offset) * 1000000 + sp.end.offset
+   let len = sp.end.offset - sp.start.offset
+   in let capped = if len > 65535 then 65535 else if len < 0 then 0 else len
+   in sp.file-id * 281474976710656 + sp.start.offset * 65536 + capped
 
   bsearch-expr-type-pos : List ExprTypeEntry, Integer, Integer, Integer -> Integer
   bsearch-expr-type-pos (entries) (k) (lo) (hi) =
@@ -805,6 +812,542 @@ Section: Deep Resolve
    when f
     is TypeCon (name) -> if name.value == "List" then deck-record (ListTy a) else if name.value == "LinkedList" then deck-record (LinkedListTy a) else deck-record (ConstructedTy name [a])
     is otherwise -> deck-record (TypeApply f a)
+
+Section: Deep Type Copy
+
+ A memoized structural deep copy of type graphs onto the CURRENT
+ allocator (call inside deck-record to land copies on a deck).
+ deep-resolve above SHARES every subtree that contains no type
+ variables, so resolved binding and expr-type graphs still point
+ into the scratch arena the checker worked in (check-all-defs runs
+ deck-exited), and the check compact poisons that scratch under the
+ survivors' feet. The memo table (open addressing, key32/val32
+ slots, Fibonacci top-bits index) maps each source box address to
+ its copy, so sharing topology is preserved and the copy volume is
+ the unique-box count, not the unshared traversal count (measured
+ 9x larger on the selfhost - an unmemoized copy exhausts the heap).
+ Copies are read back through four typed side lists; a slot value
+ is index+1 into its kind's list. A slot is claimed BEFORE children
+ are copied, so a cycle back-edge finds value 0 and receives the
+ ORIGINAL pointer instead of recursing forever. Boxes below the memo
+ FLOOR (the keep reservation base) are SHARED, not copied: nothing
+ rewinds R10 below the keep after the check compact, so parse- and
+ scope-era Texts, Names and type boxes - the bulk of the population
+ - survive in place and only check-era boxes are materialized into
+ the keep. Every degraded path (probe fuel exhausted, side list at
+ capacity, tag out of range, depth cap) returns the original box
+ unchanged - never wrong, only less deduplicated. The interned
+ empty-row is preserved so arrows keep sharing one empty row.
+ Null-tolerant (calloc-zero fields pass through unchanged).
+
+  MemoCtx = record {
+   mc-table : Integer,
+   mc-slots : Integer,
+   mc-shift : Integer,
+   mc-floor : Integer,
+   mc-ty : List CodexType,
+   mc-text : List Text,
+   mc-name : List Name,
+   mc-row : List EffectRow,
+   mc-tylist : List (List CodexType),
+   mc-fieldlist : List (List RecordField),
+   mc-ctorlist : List (List SumCtor),
+   mc-labellist : List (List EffectLabel),
+   mc-cons : Integer,
+   mc-cons-slots : Integer,
+   mc-cons-shift : Integer,
+   mc-cap-ty : Integer,
+   mc-cap-text : Integer,
+   mc-cap-name : Integer,
+   mc-cap-row : Integer,
+   mc-cap-list : Integer
+  }
+
+  memo-pow2-at-least : Integer, Integer -> Integer
+  memo-pow2-at-least (n) (p) =
+   if p >= n then p else memo-pow2-at-least n (p * 2)
+
+  memo-shift-for : Integer, Integer -> Integer
+  memo-shift-for (p) (s) =
+   if p <= 1 then s else memo-shift-for (p / 2) (s - 1)
+
+  memo-probe : Integer, MemoCtx -> Integer
+  memo-probe (a) (mc) =
+   let h = a * 2177342782468422677
+   in memo-probe-at a (mc.mc-table) (mc.mc-slots) (bit-shru h (mc.mc-shift)) 64
+
+  memo-probe-at : Integer, Integer, Integer, Integer, Integer -> Integer
+  memo-probe-at (a) (table) (slots) (idx) (fuel) =
+   if fuel == 0 then 0
+   else let slot = table + idx * 8
+   in let k = bit-and (peek-32 slot 0) 4294967295
+   in if k == bit-and a 4294967295 then slot
+   else if k == 0 then slot
+   else memo-probe-at a table slots (if idx + 1 == slots then 0 else idx + 1) (fuel - 1)
+
+  memo-slot-key : Integer -> Integer
+  memo-slot-key (slot) = bit-and (peek-32 slot 0) 4294967295
+
+ The cons layer. The address memo above deduplicates by SOURCE box;
+ the checker's AST-to-CodexType conversion materializes a full
+ distinct structure per mention, so address identity recovers almost
+ nothing across mentions. The cons table deduplicates by CONTENT: a
+ 64-bit key mixed from a node's tag, scalars, and the addresses of
+ its ALREADY-CANONICAL children (each key function canonicalizes
+ children through mcopy before mixing, so structurally equal trees
+ cascade to equal keys bottom-up with no construction on the hit
+ path). Slots are 16 bytes: the full 64-bit key plus a 32-bit
+ index+1 into the kind's side list. Hits compare the FULL key - at
+ half a million keys the 64-bit collision probability is on the
+ order of 1e-8 per compile, below hardware error rates, and the
+ fixed-point, battery and poison gates stand behind it. Every
+ degraded path (probe fuel, side list at capacity) constructs a
+ private copy - never wrong, only less deduplicated. OverflowMode
+ is keyed by ordinal, never by box address (a fresh mode box per
+ copy would make every IntegerTy key unique).
+
+  cons-mix : Integer, Integer -> Integer
+  cons-mix (h) (v) = h * 1099511628211 + v
+
+  cons-norm : Integer -> Integer
+  cons-norm (k) = if k == 0 then 1 else k
+
+  cons-probe : Integer, MemoCtx -> Integer
+  cons-probe (k) (mc) =
+   cons-probe-at k (mc.mc-cons) (mc.mc-cons-slots) (bit-shru (k * 2177342782468422677) (mc.mc-cons-shift)) 64
+
+  cons-probe-at : Integer, Integer, Integer, Integer, Integer -> Integer
+  cons-probe-at (k) (table) (slots) (idx) (fuel) =
+   if fuel == 0 then 0
+   else let slot = table + idx * 16
+   in let cur = peek-qword slot 0
+   in if cur == k then slot
+   else if cur == 0 then slot
+   else cons-probe-at k table slots (if idx + 1 == slots then 0 else idx + 1) (fuel - 1)
+
+  cons-slot-set : Integer, Integer, Integer -> Integer
+  cons-slot-set (slot) (k) (v) =
+   let vlo = poke-32 slot 0 (bit-and k 4294967295)
+   in let vhi = poke-32 (slot + 4) 0 (bit-shru k 32)
+   in poke-32 (slot + 8) 0 v
+
+  mode-ordinal : OverflowMode -> Integer
+  mode-ordinal (m) =
+   if address-of m == 0 then 0
+   else when m
+    is OvError -> 1
+    is OvWrapping -> 2
+    is OvClamping -> 3
+
+  mcopy-text : Text, MemoCtx -> Text
+  mcopy-text (t) (mc) =
+   let a = address-of t
+   in if a == 0 then t
+   else if a < mc.mc-floor then t
+   else mcopy-text-memo t a (memo-probe a mc) mc
+
+  mcopy-text-memo : Text, Integer, Integer, MemoCtx -> Text
+  mcopy-text-memo (t) (a) (slot) (mc) =
+   if slot == 0 then substring t 0 (text-length t)
+   else if memo-slot-key slot == bit-and a 4294967295 then mcopy-text-hit t slot mc
+   else mcopy-text-fresh t a slot mc
+
+  mcopy-text-hit : Text, Integer, MemoCtx -> Text
+  mcopy-text-hit (t) (slot) (mc) =
+   let v = peek-32 slot 4
+   in if v == 0 then t else list-at (mc.mc-text) (v - 1)
+
+  mcopy-text-fresh : Text, Integer, Integer, MemoCtx -> Text
+  mcopy-text-fresh (t) (a) (slot) (mc) =
+   let claimed = poke-32 slot 0 a
+   in let copy = substring t 0 (text-length t)
+   in let n = list-length (mc.mc-text)
+   in if n >= mc.mc-cap-text then copy
+   else let pushed = list-push (mc.mc-text) copy
+   in let vset = poke-32 slot 4 (n + 1)
+   in copy
+
+  mcopy-texts : List Text, MemoCtx -> List Text
+  mcopy-texts (ts) (mc) =
+   let a = address-of ts
+   in if a == 0 then ts
+   else if a < mc.mc-floor then ts
+   else for t in ts -> mcopy-text t mc
+
+  mcopy-name : Name, MemoCtx -> Name
+  mcopy-name (nm) (mc) =
+   let a = address-of nm
+   in if a == 0 then nm
+   else if a < mc.mc-floor then nm
+   else mcopy-name-memo nm a (memo-probe a mc) mc
+
+  mcopy-name-memo : Name, Integer, Integer, MemoCtx -> Name
+  mcopy-name-memo (nm) (a) (slot) (mc) =
+   if slot == 0 then Name { value = mcopy-text (nm.value) mc }
+   else if memo-slot-key slot == bit-and a 4294967295 then mcopy-name-hit nm slot mc
+   else mcopy-name-fresh nm a slot mc
+
+  mcopy-name-hit : Name, Integer, MemoCtx -> Name
+  mcopy-name-hit (nm) (slot) (mc) =
+   let v = peek-32 slot 4
+   in if v == 0 then nm else list-at (mc.mc-name) (v - 1)
+
+  mcopy-name-fresh : Name, Integer, Integer, MemoCtx -> Name
+  mcopy-name-fresh (nm) (a) (slot) (mc) =
+   let claimed = poke-32 slot 0 a
+   in let copy = Name { value = mcopy-text (nm.value) mc }
+   in let n = list-length (mc.mc-name)
+   in if n >= mc.mc-cap-name then copy
+   else let pushed = list-push (mc.mc-name) copy
+   in let vset = poke-32 slot 4 (n + 1)
+   in copy
+
+  mcopy-names : List Name, MemoCtx -> List Name
+  mcopy-names (ns) (mc) =
+   let a = address-of ns
+   in if a == 0 then ns
+   else if a < mc.mc-floor then ns
+   else for nm in ns -> mcopy-name nm mc
+
+  mcopy-row : EffectRow, MemoCtx -> EffectRow
+  mcopy-row (row) (mc) =
+   let a = address-of row
+   in if a == 0 then row
+   else if row-is-empty row then empty-row
+   else if a < mc.mc-floor then row
+   else mcopy-row-memo row a (memo-probe a mc) mc
+
+  mcopy-row-memo : EffectRow, Integer, Integer, MemoCtx -> EffectRow
+  mcopy-row-memo (row) (a) (slot) (mc) =
+   if slot == 0 then mcopy-row-node row mc
+   else if memo-slot-key slot == bit-and a 4294967295 then mcopy-row-hit row slot mc
+   else mcopy-row-fresh row a slot mc
+
+  mcopy-row-hit : EffectRow, Integer, MemoCtx -> EffectRow
+  mcopy-row-hit (row) (slot) (mc) =
+   let v = peek-32 slot 4
+   in if v == 0 then row else list-at (mc.mc-row) (v - 1)
+
+  mcopy-row-fresh : EffectRow, Integer, Integer, MemoCtx -> EffectRow
+  mcopy-row-fresh (row) (a) (slot) (mc) =
+   let claimed = poke-32 slot 0 a
+   in let k = cons-norm (mkey-row row mc)
+   in let v = cons-lookup k mc
+   in if v /= 0 then mcopy-row-adopt slot v mc
+   else let copy = mcopy-row-node row mc
+   in let v2 = cons-lookup k mc
+   in if v2 /= 0 then mcopy-row-adopt slot v2 mc
+   else let n = list-length (mc.mc-row)
+   in if n >= mc.mc-cap-row then copy
+   else let pushed = list-push (mc.mc-row) copy
+   in let aset = poke-32 slot 4 (n + 1)
+   in let cslot = cons-probe k mc
+   in let w = if cslot == 0 then 0 else cons-slot-set cslot k (n + 1)
+   in copy
+
+  mcopy-row-adopt : Integer, Integer, MemoCtx -> EffectRow
+  mcopy-row-adopt (slot) (v) (mc) =
+   let aset = poke-32 slot 4 v
+   in list-at (mc.mc-row) (v - 1)
+
+  mkey-row : EffectRow, MemoCtx -> Integer
+  mkey-row (row) (mc) =
+   cons-mix (cons-mix (cons-mix 601 (address-of (mcopy-labels (row.labels) mc))) (row.tail-id)) (mkey-textlen (row.tail-name))
+
+  mcopy-row-node : EffectRow, MemoCtx -> EffectRow
+  mcopy-row-node (row) (mc) =
+   EffectRow { labels = mcopy-labels (row.labels) mc, tail-name = mcopy-text (row.tail-name) mc, tail-id = row.tail-id }
+
+  mcopy-labels : List EffectLabel, MemoCtx -> List EffectLabel
+  mcopy-labels (ls) (mc) =
+   let a = address-of ls
+   in if a == 0 then ls
+   else if a < mc.mc-floor then ls
+   else let k = cons-norm (mkey-labels ls mc)
+   in let v = cons-lookup k mc
+   in if v /= 0 then list-at (mc.mc-labellist) (v - 1)
+   else mcopy-labels-insert ls k mc
+
+  mcopy-labels-insert : List EffectLabel, Integer, MemoCtx -> List EffectLabel
+  mcopy-labels-insert (ls) (k) (mc) =
+   let copy = mcopy-labels-node ls mc
+   in let v2 = cons-lookup k mc
+   in if v2 /= 0 then list-at (mc.mc-labellist) (v2 - 1)
+   else let cslot = cons-probe k mc
+   in if cslot == 0 then copy
+   else let n = list-length (mc.mc-labellist)
+   in if n >= mc.mc-cap-list then copy
+   else let pushed = list-push (mc.mc-labellist) copy
+   in let w = cons-slot-set cslot k (n + 1)
+   in copy
+
+  mcopy-labels-node : List EffectLabel, MemoCtx -> List EffectLabel
+  mcopy-labels-node (ls) (mc) =
+   for l in ls -> EffectLabel { name = mcopy-name (l.name) mc, scope = mcopy-text (l.scope) mc }
+
+  mkey-labels : List EffectLabel, MemoCtx -> Integer
+  mkey-labels (ls) (mc) =
+   mkey-labels-loop ls 0 (list-length ls) mc (cons-mix 401 (list-length ls))
+
+  mkey-labels-loop : List EffectLabel, Integer, Integer, MemoCtx, Integer -> Integer
+  mkey-labels-loop (ls) (i) (len) (mc) (acc) =
+   if i == len then acc
+   else let l = list-at ls i
+   in mkey-labels-loop ls (i + 1) len mc (cons-mix (cons-mix acc (address-of (mcopy-name (l.name) mc))) (address-of (mcopy-text (l.scope) mc)))
+
+  mcopy-rows : List EffectRow, MemoCtx -> List EffectRow
+  mcopy-rows (rs) (mc) =
+   if address-of rs == 0 then rs
+   else for r in rs -> mcopy-row r mc
+
+  mcopy-mode : OverflowMode -> OverflowMode
+  mcopy-mode (m) =
+   if address-of m == 0 then m
+   else when m
+    is OvError -> OvError
+    is OvWrapping -> OvWrapping
+    is OvClamping -> OvClamping
+
+  mcopy-types : List CodexType, Integer, MemoCtx -> List CodexType
+  mcopy-types (ts) (depth) (mc) =
+   let a = address-of ts
+   in if a == 0 then ts
+   else if a < mc.mc-floor then ts
+   else let k = cons-norm (mkey-types ts depth mc)
+   in let v = cons-lookup k mc
+   in if v /= 0 then list-at (mc.mc-tylist) (v - 1)
+   else mcopy-types-insert ts k depth mc
+
+  mcopy-types-insert : List CodexType, Integer, Integer, MemoCtx -> List CodexType
+  mcopy-types-insert (ts) (k) (depth) (mc) =
+   let copy = mcopy-types-node ts depth mc
+   in let v2 = cons-lookup k mc
+   in if v2 /= 0 then list-at (mc.mc-tylist) (v2 - 1)
+   else let cslot = cons-probe k mc
+   in if cslot == 0 then copy
+   else let n = list-length (mc.mc-tylist)
+   in if n >= mc.mc-cap-list then copy
+   else let pushed = list-push (mc.mc-tylist) copy
+   in let w = cons-slot-set cslot k (n + 1)
+   in copy
+
+  mcopy-types-node : List CodexType, Integer, MemoCtx -> List CodexType
+  mcopy-types-node (ts) (depth) (mc) =
+   for t in ts -> mcopy-type t depth mc
+
+  mkey-types : List CodexType, Integer, MemoCtx -> Integer
+  mkey-types (ts) (depth) (mc) =
+   mkey-types-loop ts 0 (list-length ts) depth mc (cons-mix 101 (list-length ts))
+
+  mkey-types-loop : List CodexType, Integer, Integer, Integer, MemoCtx, Integer -> Integer
+  mkey-types-loop (ts) (i) (len) (depth) (mc) (acc) =
+   if i == len then acc
+   else mkey-types-loop ts (i + 1) len depth mc (cons-mix acc (address-of (mcopy-type (list-at ts i) depth mc)))
+
+  mcopy-fields : List RecordField, Integer, MemoCtx -> List RecordField
+  mcopy-fields (fs) (depth) (mc) =
+   let a = address-of fs
+   in if a == 0 then fs
+   else if a < mc.mc-floor then fs
+   else let k = cons-norm (mkey-fields fs depth mc)
+   in let v = cons-lookup k mc
+   in if v /= 0 then list-at (mc.mc-fieldlist) (v - 1)
+   else mcopy-fields-insert fs k depth mc
+
+  mcopy-fields-insert : List RecordField, Integer, Integer, MemoCtx -> List RecordField
+  mcopy-fields-insert (fs) (k) (depth) (mc) =
+   let copy = mcopy-fields-node fs depth mc
+   in let v2 = cons-lookup k mc
+   in if v2 /= 0 then list-at (mc.mc-fieldlist) (v2 - 1)
+   else let cslot = cons-probe k mc
+   in if cslot == 0 then copy
+   else let n = list-length (mc.mc-fieldlist)
+   in if n >= mc.mc-cap-list then copy
+   else let pushed = list-push (mc.mc-fieldlist) copy
+   in let w = cons-slot-set cslot k (n + 1)
+   in copy
+
+  mcopy-fields-node : List RecordField, Integer, MemoCtx -> List RecordField
+  mcopy-fields-node (fs) (depth) (mc) =
+   for f in fs -> RecordField { name = mcopy-name (f.name) mc, type-val = mcopy-type (f.type-val) depth mc }
+
+  mkey-fields : List RecordField, Integer, MemoCtx -> Integer
+  mkey-fields (fs) (depth) (mc) =
+   mkey-fields-loop fs 0 (list-length fs) depth mc (cons-mix 201 (list-length fs))
+
+  mkey-fields-loop : List RecordField, Integer, Integer, Integer, MemoCtx, Integer -> Integer
+  mkey-fields-loop (fs) (i) (len) (depth) (mc) (acc) =
+   if i == len then acc
+   else let f = list-at fs i
+   in mkey-fields-loop fs (i + 1) len depth mc (cons-mix (cons-mix acc (address-of (mcopy-name (f.name) mc))) (address-of (mcopy-type (f.type-val) depth mc)))
+
+  mcopy-ctors : List SumCtor, Integer, MemoCtx -> List SumCtor
+  mcopy-ctors (cs) (depth) (mc) =
+   let a = address-of cs
+   in if a == 0 then cs
+   else if a < mc.mc-floor then cs
+   else let k = cons-norm (mkey-ctors cs depth mc)
+   in let v = cons-lookup k mc
+   in if v /= 0 then list-at (mc.mc-ctorlist) (v - 1)
+   else mcopy-ctors-insert cs k depth mc
+
+  mcopy-ctors-insert : List SumCtor, Integer, Integer, MemoCtx -> List SumCtor
+  mcopy-ctors-insert (cs) (k) (depth) (mc) =
+   let copy = mcopy-ctors-node cs depth mc
+   in let v2 = cons-lookup k mc
+   in if v2 /= 0 then list-at (mc.mc-ctorlist) (v2 - 1)
+   else let cslot = cons-probe k mc
+   in if cslot == 0 then copy
+   else let n = list-length (mc.mc-ctorlist)
+   in if n >= mc.mc-cap-list then copy
+   else let pushed = list-push (mc.mc-ctorlist) copy
+   in let w = cons-slot-set cslot k (n + 1)
+   in copy
+
+  mcopy-ctors-node : List SumCtor, Integer, MemoCtx -> List SumCtor
+  mcopy-ctors-node (cs) (depth) (mc) =
+   for c in cs -> SumCtor { name = mcopy-name (c.name) mc, fields = mcopy-types (c.fields) depth mc, return-type = mcopy-types (c.return-type) depth mc }
+
+  mkey-ctors : List SumCtor, Integer, MemoCtx -> Integer
+  mkey-ctors (cs) (depth) (mc) =
+   mkey-ctors-loop cs 0 (list-length cs) depth mc (cons-mix 301 (list-length cs))
+
+  mkey-ctors-loop : List SumCtor, Integer, Integer, Integer, MemoCtx, Integer -> Integer
+  mkey-ctors-loop (cs) (i) (len) (depth) (mc) (acc) =
+   if i == len then acc
+   else let c = list-at cs i
+   in mkey-ctors-loop cs (i + 1) len depth mc (cons-mix (cons-mix (cons-mix acc (address-of (mcopy-name (c.name) mc))) (address-of (mcopy-types (c.fields) depth mc))) (address-of (mcopy-types (c.return-type) depth mc)))
+
+  mcopy-type : CodexType, Integer, MemoCtx -> CodexType
+  mcopy-type (ty) (depth) (mc) =
+   let a = address-of ty
+   in if a == 0 then ty
+   else if a < mc.mc-floor then ty
+   else if depth >= max-recursion-depth then ty
+   else if peek-qword a 0 < 0 then ty
+   else if peek-qword a 0 > 28 then ty
+   else mcopy-type-memo ty a (memo-probe a mc) depth mc
+
+  mcopy-type-memo : CodexType, Integer, Integer, Integer, MemoCtx -> CodexType
+  mcopy-type-memo (ty) (a) (slot) (depth) (mc) =
+   if slot == 0 then mcopy-type-node ty depth mc
+   else if memo-slot-key slot == bit-and a 4294967295 then mcopy-type-hit ty slot mc
+   else mcopy-type-fresh ty a slot depth mc
+
+  mcopy-type-hit : CodexType, Integer, MemoCtx -> CodexType
+  mcopy-type-hit (ty) (slot) (mc) =
+   let v = peek-32 slot 4
+   in if v == 0 then ty else list-at (mc.mc-ty) (v - 1)
+
+  cons-lookup : Integer, MemoCtx -> Integer
+  cons-lookup (k) (mc) =
+   let slot = cons-probe k mc
+   in if slot == 0 then 0
+   else if peek-qword slot 0 == k then peek-32 (slot + 8) 0
+   else 0
+
+  mkey-textlen : Text -> Integer
+  mkey-textlen (t) =
+   if address-of t == 0 then 0
+   else text-length t
+
+  mcopy-type-fresh : CodexType, Integer, Integer, Integer, MemoCtx -> CodexType
+  mcopy-type-fresh (ty) (a) (slot) (depth) (mc) =
+   let claimed = poke-32 slot 0 a
+   in let k = cons-norm (mkey-type ty depth mc)
+   in let v = cons-lookup k mc
+   in if v /= 0 then mcopy-type-adopt slot v mc
+   else let copy = mcopy-type-node ty depth mc
+   in let v2 = cons-lookup k mc
+   in if v2 /= 0 then mcopy-type-adopt slot v2 mc
+   else let n = list-length (mc.mc-ty)
+   in if n >= mc.mc-cap-ty then copy
+   else let pushed = list-push (mc.mc-ty) copy
+   in let aset = poke-32 slot 4 (n + 1)
+   in let cslot = cons-probe k mc
+   in let w = if cslot == 0 then 0 else cons-slot-set cslot k (n + 1)
+   in copy
+
+  mcopy-type-adopt : Integer, Integer, MemoCtx -> CodexType
+  mcopy-type-adopt (slot) (v) (mc) =
+   let aset = poke-32 slot 4 v
+   in list-at (mc.mc-ty) (v - 1)
+
+  mkey-type : CodexType, Integer, MemoCtx -> Integer
+  mkey-type (ty) (depth) (mc) =
+   when ty
+    is IntegerTy (lo) (hi) (mode) -> cons-mix (cons-mix (cons-mix 1 lo) hi) (mode-ordinal mode)
+    is RealTy -> 2
+    is RealApproxTy -> 3
+    is RealTrappingTy -> 4
+    is RealSaturatingTy -> 5
+    is TextTy -> 6
+    is BooleanTy -> 7
+    is CharTy -> 8
+    is VoidTy -> 9
+    is NothingTy -> 10
+    is ErrorTy -> 11
+    is FunTy (p) (row) (r) -> cons-mix (cons-mix (cons-mix 12 (address-of (mcopy-type p (depth + 1) mc))) (address-of (mcopy-row row mc))) (address-of (mcopy-type r (depth + 1) mc))
+    is ListTy (e) -> cons-mix 13 (address-of (mcopy-type e (depth + 1) mc))
+    is LinkedListTy (e) -> cons-mix 14 (address-of (mcopy-type e (depth + 1) mc))
+    is TypeVar (i) -> cons-mix 15 i
+    is ForAllTy (i) (b) -> cons-mix (cons-mix 16 i) (address-of (mcopy-type b (depth + 1) mc))
+    is SumTy (n) (a) (ctors) -> cons-mix (cons-mix (cons-mix 17 (address-of (mcopy-name n mc))) (address-of (mcopy-types a (depth + 1) mc))) (address-of (mcopy-ctors ctors (depth + 1) mc))
+    is RecordTy (n) (a) (fields) -> cons-mix (cons-mix (cons-mix 18 (address-of (mcopy-name n mc))) (address-of (mcopy-types a (depth + 1) mc))) (address-of (mcopy-fields fields (depth + 1) mc))
+    is ConstructedTy (n) (a) -> cons-mix (cons-mix 19 (address-of (mcopy-name n mc))) (address-of (mcopy-types a (depth + 1) mc))
+    is EffectfulTy (effs) (sc) (r) -> cons-mix (cons-mix (cons-mix 20 (address-of (mcopy-names effs mc))) (address-of (mcopy-texts sc mc))) (address-of (mcopy-type r (depth + 1) mc))
+    is ProofTy -> 21
+    is PropEqTy (pa) (pb) -> cons-mix (cons-mix 22 (address-of (mcopy-type pa (depth + 1) mc))) (address-of (mcopy-type pb (depth + 1) mc))
+    is UnitTy (n) (inner) -> cons-mix (cons-mix 23 (address-of (mcopy-name n mc))) (address-of (mcopy-type inner (depth + 1) mc))
+    is VectorTy (vn) (vt) -> cons-mix (cons-mix 24 vn) (address-of (mcopy-type vt (depth + 1) mc))
+    is VectorMaskTy (mn) -> cons-mix 25 mn
+    is TypeCon (n) -> cons-mix 26 (address-of (mcopy-name n mc))
+    is TypeApply (tf) (ta) -> cons-mix (cons-mix 27 (address-of (mcopy-type tf (depth + 1) mc))) (address-of (mcopy-type ta (depth + 1) mc))
+    is ForAllEff (i) (b) -> cons-mix (cons-mix 28 i) (address-of (mcopy-type b (depth + 1) mc))
+    is LinearTy (inner) -> cons-mix 29 (address-of (mcopy-type inner (depth + 1) mc))
+
+  mcopy-type-node : CodexType, Integer, MemoCtx -> CodexType
+  mcopy-type-node (ty) (depth) (mc) =
+   when ty
+    is IntegerTy (lo) (hi) (mode) -> IntegerTy lo hi (mcopy-mode mode)
+    is RealTy -> RealTy
+    is RealApproxTy -> RealApproxTy
+    is RealTrappingTy -> RealTrappingTy
+    is RealSaturatingTy -> RealSaturatingTy
+    is TextTy -> TextTy
+    is BooleanTy -> BooleanTy
+    is CharTy -> CharTy
+    is VoidTy -> VoidTy
+    is NothingTy -> NothingTy
+    is ErrorTy -> ErrorTy
+    is FunTy (p) (row) (r) -> FunTy (mcopy-type p (depth + 1) mc) (mcopy-row row mc) (mcopy-type r (depth + 1) mc)
+    is ListTy (e) -> ListTy (mcopy-type e (depth + 1) mc)
+    is LinkedListTy (e) -> LinkedListTy (mcopy-type e (depth + 1) mc)
+    is TypeVar (i) -> TypeVar i
+    is ForAllTy (i) (b) -> ForAllTy i (mcopy-type b (depth + 1) mc)
+    is SumTy (n) (a) (ctors) -> SumTy (mcopy-name n mc) (mcopy-types a (depth + 1) mc) (mcopy-ctors ctors (depth + 1) mc)
+    is RecordTy (n) (a) (fields) -> RecordTy (mcopy-name n mc) (mcopy-types a (depth + 1) mc) (mcopy-fields fields (depth + 1) mc)
+    is ConstructedTy (n) (a) -> ConstructedTy (mcopy-name n mc) (mcopy-types a (depth + 1) mc)
+    is EffectfulTy (effs) (sc) (r) -> EffectfulTy (mcopy-names effs mc) (mcopy-texts sc mc) (mcopy-type r (depth + 1) mc)
+    is ProofTy -> ProofTy
+    is PropEqTy (a) (b) -> PropEqTy (mcopy-type a (depth + 1) mc) (mcopy-type b (depth + 1) mc)
+    is UnitTy (n) (inner) -> UnitTy (mcopy-name n mc) (mcopy-type inner (depth + 1) mc)
+    is VectorTy (vn) (vt) -> VectorTy vn (mcopy-type vt (depth + 1) mc)
+    is VectorMaskTy (mn) -> VectorMaskTy mn
+    is TypeCon (n) -> TypeCon (mcopy-name n mc)
+    is TypeApply (tf) (ta) -> TypeApply (mcopy-type tf (depth + 1) mc) (mcopy-type ta (depth + 1) mc)
+    is ForAllEff (i) (b) -> ForAllEff i (mcopy-type b (depth + 1) mc)
+    is LinearTy (inner) -> LinearTy (mcopy-type inner (depth + 1) mc)
+
+  copy-bindings-deep : List TypeBinding, MemoCtx -> List TypeBinding
+  copy-bindings-deep (bs) (mc) =
+   if address-of bs == 0 then bs
+   else for b in bs -> TypeBinding { name = mcopy-text (b.name) mc, bound-type = mcopy-type (b.bound-type) 0 mc }
+
+  copy-expr-types-deep : List ExprTypeEntry, MemoCtx -> List ExprTypeEntry
+  copy-expr-types-deep (es) (mc) =
+   if address-of es == 0 then es
+   else for e in es -> ExprTypeEntry { key = e.key, ty = mcopy-type (e.ty) 0 mc }
 
 Section: List Pre-Allocation
 

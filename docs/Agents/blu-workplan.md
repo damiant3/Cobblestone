@@ -1,6 +1,134 @@
-# Blu Agent Workplan — 2026-07-04
+# Blu Agent Workplan — 2026-07-05
 
-## Status: ACTIVE STREAM — Vision Check (BACKLOG item 1). Capability stages 1a/1b/2/3 + punctual FIX all SHIPPED. All five legs enforced AND every binary now carries a real capability manifest.
+## Status 2026-07-05 (late): TWO WINS SHIPPED to main (copy-up CL 7162).
+(1) CL 7130 - survey-check-mul default 200->40 (CHECK reservation peak
+978->~620 MB; source-only, no seed - reservation size does not affect
+emitted output). (2) CL 7161 - codex-vm.c watchpoint feature: `-hwwatch`
+DR0/DR7 hardware watchpoint + demand-aware value-filtered `-watch`
+(`-watch-val`, and watch_init now pre-commits+maps the watched 2 MB chunk
+so the host demand-commit can't clobber the RO page). Sample battery
+303/0, seed untouched (7CE0E867). blu == main on all 5 files.
+
+## ACTIVE THREAD: demand-paged arena (blu 7142, SHELVED, NOT on main).
+The #PF demand mechanism is proven (byte-identical self-compile on
+codex-vm+QEMU) but running the compiler under demand paging
+deterministically garbles diagnostic Text. Session 3 built the DR
+watchpoint (shipped) + a guest-side #DB recorder (in 7142) and caught the
+mechanism: a SINGLE heap store of the LEFT-operand pointer into the concat
+result. rsp is a NORMAL stack => NOT a stack-heap collision (that theory is
+dead). R8=R9=operand-ptr => the "R8/R9-staged binary operands" codegen opt
+is the prime suspect. NEXT (no VM roulette): read that emit path
+statically. Full writeup: docs/Designs/Compiler/Active/DemandPagedArena.md
+"Session 3". Resume recipe + tooling addresses in memory ir-bloat-campaign
+top block. OTHER AGENTS: do NOT touch demand paging or codex-vm watchpoints
+without syncing with blu; nothing of this is on main except 7130+7161.
+
+---
+
+## (history 2026-07-04) FOUR RESULTS SHIPPED TODAY. (1) Circular proofs reject CDX4023. (2) Escape instrument repaired + 2 real dangling pointers fixed. (3) Deck-liveness map shipped (one strand pins ~106 MB). (4) POISON-COMPACT WAS RED ON MAIN — pre-existing, all seeds; diagnosed to the root (scope output + checker tables in scratch), sorted-et spine fix shipped, campaign staged in PHASE-ARCHITECTURE.md.
+
+**MAKE-IT-GREEN SESSION (late evening).** Piecewise with full gates
+per piece (the lesson applied). Piece A (copy-bindings-deep at
+sorted-all): GATE-GREEN, one-pass, SHIPPED - binding graphs severed
+from check scratch; poison counter unmoved (21 - the failing sites
+read expr-type ANNOTATIONS, not bindings). Piece B
+(copy-expr-types-deep): deterministic GPF on the SUT's own
+self-compile - misaligned garbage pointer INSIDE walked graphs
+while check scratch is FULLY ALIVE => **the expr-types table
+contains invalid type nodes at check tail in NORMAL compiles** (the
+table lowering uses to type IR - a live latent-miscompilation
+vector; validity guards just move the crash to the next stage's
+layout). THE NEXT PROBE: validate ty at record-expr-type time
+(tag+alignment+span diagnostic) to catch the producer red-handed;
+fix producer; land piece B (prototype evidence: clears 13/21
+poison sites); pre-resolve annotations; green. ALSO LEARNED: the
+scratch-range map segments are CONFOUNDED (later decks legitimately
+recycle earlier scratch addresses) - scope-achapter output is
+actually deck-resident (precise walk 0); poison + addr/tag
+forensics are the only scratch ground truth. Scope
+reservation-copy stage CANCELLED as unnecessary.
+
+**POISON-COMPACT SESSION NOTES (evening).** Damian: "we have phase
+specific poison to catch any breakages, be sure you test clean
+there." Baseline was ALREADY RED (21 CDX2000 unresolved-type at
+emit, identical on seeds 8CA1E63B/09DF0CE4/current) - the second
+existed-but-unwatched detector today. Forensic method that worked:
+instrument the emit error with addr= + tag= (peek-qword of the
+annotation) - a repeated poison byte names the guilty phase (0xA5 =
+CHECK). Findings: (a) sort-expr-types was the ONE un-deck-wrapped
+allocation in the check tail (spine of the table lowering reads) -
+FIXED this CL; (b) binding/expr-type graphs live in check scratch
+(check-all-defs runs deck-exited; deep-resolve SHARES typevar-free
+subtrees) - a prototype deep copier took poison 21->8 but FAILED
+the TEXT-mode gate on its first full pipeline run (lesson: the
+poison iteration loop never normal-mode self-compiled the
+intermediate binaries - always run the full pipeline before
+trusting a compiler change); (c) the residual 8 = TypeVar
+annotations resolved at LOWER through poisoned substitutions;
+wholesale substitution copy/pre-resolve GPFs (CR2=0 = non-canonical
+poison ptr, NOT a page fault) because the substitution graphs
+ALREADY dangle into SCOPE-poisoned scratch - scope-achapter runs
+outside deck-record, its output survives by overwrite-luck.
+CAMPAIGN (PHASE-ARCHITECTURE.md): (1) scope output
+reservation-copy, (2) check-tail deep copies + pre-resolve
+(resolve-all-expr-types is dead code awaiting this), (3) poison
+green + byte-identical = the gate that also unlocks sever/reclaim.
+Traps: for/list-map is loop-based (not a stack risk); substitutions
+slots are valid self-TypeVar boxes (fresh-var), nulls come from
+calloc-zero fields; GPF leaves CR2 stale - CR2=0 with a halt at
+__interrupt_common usually means a poison-byte dereference.
+
+**PHASE-MEMORY ESCAPE SESSION (2026-07-04 afternoon).** Damian asked
+for a swing at "the phase memory stuff... a nut nobody can crack."
+Root cause of the un-crackability: the escape-invariant instrument
+itself was broken and reporting green. `pmap-walk self-test FAILED:
+got 0 (expect 3)` fired on every -EscapeCheck run; the const
+self-type table's HARDCODED tags predated a CodexType reorder (every
+tag from TextTy up wrong -> descriptors decoded as wrong ctors ->
+walk fell through to 0), plus the known width-packing NOTE. Fixes:
+live-type-tag (tags read off live values at emit -> tag drift
+impossible by construction), width-ordered mixed-width slots,
+pmap-selftest-bag True (always-on tripwire, warning not error - a
+gen-1 bootstrap binary must still compile gen 2), locator params
+threaded through the walk (CDX9003-AT: Type.field, no per-visit
+allocation - Rule 8). First real measurement: PARSE/Document clean;
+SCOPE/AChapter had 2 REAL dangling pointers -> copy-as-chapter
+shallow-copied rt-budgets + conversions (fields added after the
+copier; emitter reads rt-budgets for CDX6010 budgets = latent
+corruption). Deep-copy fix; post-fix precise count 0. Two-pass
+bootstrap (rodata table change), converged one-pass on pass 2.
+REMAINING (next stages, delegatable candidates): precise roots for
+CHECK/LOWER outputs (conservative scan shows 121k/197k
+false-positive-dominated hits, untriaged), then the copying
+compactor the walker was built to drive; survey tightening;
+TCO-reset removal.
+
+**PROOF TOTALITY PROBED AND FIXED (blu, 2026-07-04, stages 0+1 in
+one day).** The Chlipala audit leg: proof CONTENT checks were sound
+(re-verified) but totality was unchecked — six routes each "proved"
+a FALSE proposition silently (`bad = bad`, mutual defs, recursive
+prop-returning helper, qed-sugar self-ref, induction step citing the
+claim under proof as a lemma, mutual lemma citation). Damian's
+ruling: fix the code to match the goal, no README hedging. Stage 1
+shipped: `check-proof-cycles` in TypeChecker (Section: Proof
+Acyclicity) — relevance from DEEP-RESOLVED checked types
+(result.types, index-aligned with mod.defs; catches undeclared
+intermediaries), exhaustive fuel-capped type walk incl. SumTy ctor
+payloads/RecordTy fields, edges via collect-rt-mentions with
+self="" (self-mentions ARE edges here), rt-reaches reused verbatim;
+NEW AInductionExpr arm in collect-rt-mentions (was missing — the
+punctual under-coverage lesson; without it the two lemma routes slip
+the check). CDX4023 CircularProof (CdxCodes). is-proof-def
+(X86_64.codex) generalized to any arity via is-proof-return (no
+EffectfulTy arm — erasing an effectful prop-returning def would
+delete its effects). Gates: one-pass hard fixed point FIRST build
+(Sut === stage1, 0 non-sig byte diffs; selfhost has no proof defs so
+the check early-outs), BVT 46/0, full battery + self-verify + seed
+in the CL. Residual edges logged (ProofTotalityProbe.md 6.2):
+cross-chapter DefMap (not constructible today), Option B grammar,
+stale CDX4022 registry description (val's lane). Prior legs
+spot-verified green same session. Capability stage 4 (OS wiring)
+remains the one open Vision Check item — delegatable, kernel agent.
 
 **CAPABILITY STAGE 3 SHIPPED (blu CL 6994 + seed FC795D76...,
 docs 6996, 2026-07-04).** The emitter derives the capability manifest

@@ -1,0 +1,61 @@
+Chapter: TexMipmapKernel
+  cites Gpu chapter DeviceEffect
+  cites Gpu chapter DeviceMath
+
+ Texture mipmapping shown on a perspective floor. Near the camera the checker
+ texture is sampled at full detail; with distance the pixel selects a coarser mip
+ level (a larger, smoother average) so the far floor stops shimmering. The chosen
+ mip level tints the floor faintly so the LOD bands are visible. Reference site's
+ "texture mipmap generation" technique. Float math from DeviceMath.
+
+ We say:
+
+Section: Parameters
+
+  tm-width : Integer = 1024
+  tm-half-w : Integer = 512
+  tm-horizon : Integer = 300
+  tm-focal : Integer = 420
+  tm-scale : Integer = 52000
+
+Section: Mip Sampling
+
+ Checker value at a given mip cell size (larger cell = coarser mip). At coarse
+ mips the checker averages toward 0.5.
+
+  tm-checker : Integer, Integer, Integer -> Real
+  tm-checker (u) (v) (cell) =
+    let s = u / cell + v / cell
+    in if s - (s / 2) * 2 == 0 then 0.72 else 0.34
+
+Section: Kernel
+
+  tm-clamp01 : Real -> Real
+  tm-clamp01 (x) = real-max 0.0 (real-min 1.0 x)
+
+  tm-pack : Real, Real, Real -> Integer
+  tm-pack (r) (g) (b) =
+    real-to-int (tm-clamp01 r * 255.0) * 65536 + real-to-int (tm-clamp01 g * 255.0) * 256 + real-to-int (tm-clamp01 b * 255.0)
+
+  texmipmap-step : Integer, Integer, Integer -> [Device] Integer
+  texmipmap-step (outb) (frame) (gid) =
+    let px = gid - (gid / tm-width) * tm-width
+    in let py = gid / tm-width
+    in let sy = py - tm-horizon
+    in if sy <= 0 then act device-store outb gid (18 * 65536 + 26 * 256 + 48) end
+    else let d = tm-scale / sy
+    in let wx = (px - tm-half-w) * d / tm-focal + frame * 2
+    in let wz = d
+    in let u = wx - (wx / 4096) * 4096
+    in let uu = if u < 0 then u + 4096 else u
+    in let vv = wz - (wz / 4096) * 4096
+    in let lod = if sy > 220 then 0 else if sy > 120 then 1 else if sy > 60 then 2 else if sy > 30 then 3 else 4
+    in let cell = 32 * (lod + 1)
+    in let base = tm-checker uu vv cell
+    in let fade = if base > 0.5 then base else base + real-from-int lod * 0.02
+    in let tintr = 1.0 + real-from-int lod * 0.0
+    in let tintg = 1.0 - real-from-int lod * 0.06
+    in let tintb = 1.0 - real-from-int lod * 0.11
+    in act
+    device-store outb gid (tm-pack (fade * tintr) (fade * tintg) (fade * tintb))
+    end

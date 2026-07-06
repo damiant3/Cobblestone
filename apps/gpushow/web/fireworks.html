@@ -1,0 +1,137 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>gpushow -- fireworks (Codex-generated WGSL compute)</title>
+<style>
+  html,body { margin:0; background:#05030a; color:#c8c4b4; font:13px system-ui,sans-serif; }
+  #wrap { display:flex; flex-direction:column; align-items:center; gap:8px; padding:10px; }
+  canvas { background:#05030a; border:1px solid #141634; image-rendering:pixelated; }
+  #status { opacity:.7; }
+</style>
+<div id="wrap">
+  <canvas id="c" width="1024" height="768"></canvas>
+  <div id="status">initializing WebGPU...</div>
+</div>
+<script type="module">
+// The compute shader (fw_burst_spark_main) is GENERATED FROM CODEX [Device] AST
+// by codex/plugs/wgsl. The render shader + host wiring below are hand-written
+// (render-stage WGSL emission is a later plug extension). One thread per spark:
+// the compute pass packs each spark's (brightness, x, y) into out_buf[gid];
+// the render pass unpacks and draws additive quads.
+
+const N = 2600;              // sparks (one GPU thread each)
+const CX = 512, CY = 300;    // burst origin
+const status = document.getElementById('status');
+
+function fail(msg) { status.textContent = 'ERROR: ' + msg; window.__error = msg; window.__ready = true; }
+
+async function main() {
+  if (!navigator.gpu) return fail('navigator.gpu unavailable (needs a secure context)');
+  const adapter = await navigator.gpu.requestAdapter();
+  if (!adapter) return fail('no GPU adapter');
+  const device = await adapter.requestDevice();
+  const canvas = document.getElementById('c');
+  const ctx = canvas.getContext('webgpu');
+  const format = navigator.gpu.getPreferredCanvasFormat();
+  ctx.configure({ device, format, alphaMode: 'opaque' });
+
+  // --- Codex-generated compute shader ---
+  const computeCode = await (await fetch('/kernels/FireworksKernel.wgsl')).text();
+  const computeMod = device.createShaderModule({ code: computeCode });
+  const ci = await computeMod.getCompilationInfo();
+  const cErr = ci.messages.filter(m => m.type === 'error');
+  if (cErr.length) return fail('compute WGSL: ' + cErr[0].message);
+
+  const computePipe = device.createComputePipeline({
+    layout: 'auto',
+    compute: { module: computeMod, entryPoint: 'fw_burst_spark_main' },
+  });
+
+  // out_buf: one packed i32 per spark. Storage (compute read_write + render read).
+  const outBuf = device.createBuffer({ size: N * 4, usage: GPUBufferUsage.STORAGE });
+  // U_fw_burst_spark { cx, cy, frame, nspark }
+  const uni = device.createBuffer({ size: 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+  const computeBG = device.createBindGroup({
+    layout: computePipe.getBindGroupLayout(0),
+    entries: [
+      { binding: 0, resource: { buffer: outBuf } },
+      { binding: 1, resource: { buffer: uni } },
+    ],
+  });
+
+  // --- hand-written render shader ---
+  const renderCode = `
+    @group(0) @binding(0) var<storage, read> pts : array<i32>;
+    struct VOut { @builtin(position) pos : vec4f, @location(0) bright : f32 };
+    @vertex fn vs(@builtin(vertex_index) vi : u32, @builtin(instance_index) ii : u32) -> VOut {
+      let u = bitcast<u32>(pts[ii]);
+      let py = f32(u & 4095u);
+      let px = f32((u >> 12u) & 4095u);
+      let bright = f32(u >> 24u) / 255.0;
+      var corners = array<vec2f,6>(
+        vec2f(-1,-1), vec2f(1,-1), vec2f(-1,1),
+        vec2f(-1,1),  vec2f(1,-1), vec2f(1,1));
+      let sz = 2.2;
+      let c = corners[vi];
+      let sx = (px + c.x * sz) / 512.0 - 1.0;
+      let sy = 1.0 - (py + c.y * sz) / 384.0;
+      var o : VOut;
+      o.pos = vec4f(sx, sy, 0.0, 1.0);
+      o.bright = bright;
+      return o;
+    }
+    @fragment fn fs(i : VOut) -> @location(0) vec4f {
+      return vec4f(1.0, 0.72, 0.32, 1.0) * i.bright;
+    }`;
+  const renderMod = device.createShaderModule({ code: renderCode });
+  const renderPipe = device.createRenderPipeline({
+    layout: 'auto',
+    vertex: { module: renderMod, entryPoint: 'vs' },
+    fragment: {
+      module: renderMod, entryPoint: 'fs',
+      targets: [{
+        format,
+        blend: {
+          color: { srcFactor: 'one', dstFactor: 'one', operation: 'add' },
+          alpha: { srcFactor: 'one', dstFactor: 'one', operation: 'add' },
+        },
+      }],
+    },
+    primitive: { topology: 'triangle-list' },
+  });
+  const renderBG = device.createBindGroup({
+    layout: renderPipe.getBindGroupLayout(0),
+    entries: [{ binding: 0, resource: { buffer: outBuf } }],
+  });
+
+  let frame = 0;
+  window.__ready = false;
+  function tick() {
+    device.queue.writeBuffer(uni, 0, new Int32Array([CX, CY, frame, N]));
+    const enc = device.createCommandEncoder();
+    // compute: run the Codex-generated kernel, one thread per spark
+    const cp = enc.beginComputePass();
+    cp.setPipeline(computePipe);
+    cp.setBindGroup(0, computeBG);
+    cp.dispatchWorkgroups(Math.ceil(N / 64));
+    cp.end();
+    // render: draw the sparks
+    const view = ctx.getCurrentTexture().createView();
+    const rp = enc.beginRenderPass({
+      colorAttachments: [{ view, clearValue: { r: 0.02, g: 0.012, b: 0.04, a: 1 }, loadOp: 'clear', storeOp: 'store' }],
+    });
+    rp.setPipeline(renderPipe);
+    rp.setBindGroup(0, renderBG);
+    rp.draw(6, N);
+    rp.end();
+    device.queue.submit([enc.finish()]);
+
+    frame = frame + 1;
+    if (frame >= 200) frame = 0;   // relaunch the burst
+    window.__frame = frame;
+    if (frame > 1) { window.__ready = true; status.textContent = 'Codex-generated compute + WebGPU render -- ' + N + ' sparks'; }
+    requestAnimationFrame(tick);
+  }
+  requestAnimationFrame(tick);
+}
+main().catch(e => fail(String(e)));
+</script>
