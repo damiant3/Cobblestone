@@ -1,0 +1,77 @@
+Chapter: DeviceMath
+
+ Real-valued math for [Device] kernels. On the GPU, the transpiler plugs (WGSL,
+ PTX, SPIR-V) replace calls to these functions with the corresponding hardware
+ instruction -- `real-sqrt` becomes the native square-root op, `real-sin` the
+ native sine, and so on -- and the bodies below are never emitted. The bodies
+ are the correct, portable fallback: they exist so the source type-checks and
+ so a kernel compiled for a target without the intrinsic (e.g. a CPU backend)
+ still computes the right answer. Nothing here lies: `real-sqrt` really is a
+ square root.
+
+ Integer conversion uses the compiler's own `real-from-int` / `real-to-int`
+ builtins directly -- no wrapper needed.
+
+ We say:
+
+Section: Clamps and Selection
+
+  real-min : Real, Real -> Real
+  real-min (a) (b) = if a < b then a else b
+
+  real-max : Real, Real -> Real
+  real-max (a) (b) = if a > b then a else b
+
+  real-abs : Real -> Real
+  real-abs (x) = if x < 0.0 then 0.0 - x else x
+
+Section: Square Root
+
+ Newton-Raphson: five refinement steps from a cheap seed converge to f32
+ precision across the range these kernels use.
+
+  real-sqrt : Real -> Real
+  real-sqrt (x) =
+    if x <= 0.0 then 0.0
+    else let g0 = x * 0.5 + 0.5
+    in let g1 = (g0 + x / g0) * 0.5
+    in let g2 = (g1 + x / g1) * 0.5
+    in let g3 = (g2 + x / g2) * 0.5
+    in let g4 = (g3 + x / g3) * 0.5
+    in (g4 + x / g4) * 0.5
+
+Section: Sine and Cosine
+
+ Range-reduce to [-pi, pi], then a 7th-order Taylor series. cos is sin shifted
+ by a quarter turn.
+
+  dm-two-pi : Real
+  dm-two-pi = 6.283185307
+
+  dm-pi : Real
+  dm-pi = 3.141592654
+
+  dm-half-pi : Real
+  dm-half-pi = 1.570796327
+
+  dm-reduce : Real -> Real
+  dm-reduce (x) =
+    let k = real-from-int (real-to-int (x / dm-two-pi))
+    in let r = x - k * dm-two-pi
+    in if r > dm-pi then r - dm-two-pi
+       else if r < 0.0 - dm-pi then r + dm-two-pi
+       else r
+
+  dm-sin-poly : Real -> Real
+  dm-sin-poly (r) =
+    let r2 = r * r
+    in let r3 = r2 * r
+    in let r5 = r3 * r2
+    in let r7 = r5 * r2
+    in r - r3 / 6.0 + r5 / 120.0 - r7 / 5040.0
+
+  real-sin : Real -> Real
+  real-sin (x) = dm-sin-poly (dm-reduce x)
+
+  real-cos : Real -> Real
+  real-cos (x) = dm-sin-poly (dm-reduce (x + dm-half-pi))

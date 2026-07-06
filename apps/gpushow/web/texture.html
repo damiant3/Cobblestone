@@ -1,0 +1,114 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>gpushow -- Texture (Codex-generated Mode-7 sampler)</title>
+<style>
+  html,body { margin:0; background:#05060c; color:#8aa; font:13px system-ui,sans-serif; }
+  #wrap { display:flex; flex-direction:column; align-items:center; gap:8px; padding:10px; }
+  canvas { border:1px solid #182a4a; }
+  #status { opacity:.7; }
+</style>
+<div id="wrap">
+  <canvas id="c" width="1024" height="768"></canvas>
+  <div id="status">initializing WebGPU...</div>
+</div>
+<script type="module">
+// texture_step_main is GENERATED FROM CODEX [Device] AST (TextureKernel.codex).
+// One GPU thread per pixel projects onto a perspective ground plane, tiles the
+// world coordinate into a 256x256 texture uploaded to a storage buffer, samples
+// the texel (device-load) and fogs by distance. The render pass (hand-written)
+// blits the colour buffer to a fullscreen triangle.
+
+const W = 1024, H = 768, N = W * H;
+const status = document.getElementById('status');
+function fail(m){ status.textContent = 'ERROR: ' + m; window.__error = m; window.__ready = true; }
+
+// Procedural 256x256 texture: colourful tiles with grout lines, packed 0xRRGGBB.
+function makeTexture(){
+  const T = new Int32Array(256 * 256);
+  for (let v = 0; v < 256; v++) for (let u = 0; u < 256; u++) {
+    const tu = u >> 5, tv = v >> 5;              // 8x8 tiles of 32px
+    const grout = (u & 31) < 2 || (v & 31) < 2;
+    let r, g, b;
+    if (grout) { r = 24; g = 26; b = 34; }
+    else {
+      const hue = ((tu * 5 + tv * 3) % 8) / 8;
+      const c = Math.floor(190 + 60 * Math.sin((u + v) * 0.15));
+      r = Math.floor(90 + 140 * Math.abs(Math.sin(hue * 6.283)));
+      g = Math.floor(90 + 120 * Math.abs(Math.sin(hue * 6.283 + 2.1)));
+      b = Math.floor(90 + 130 * Math.abs(Math.sin(hue * 6.283 + 4.2)));
+      // subtle per-texel sparkle
+      r = Math.min(255, (r * c) >> 8); g = Math.min(255, (g * c) >> 8); b = Math.min(255, (b * c) >> 8);
+    }
+    T[v * 256 + u] = (r << 16) | (g << 8) | b;
+  }
+  return T;
+}
+
+async function main(){
+  if (!navigator.gpu) return fail('navigator.gpu unavailable (needs secure context)');
+  const adapter = await navigator.gpu.requestAdapter();
+  if (!adapter) return fail('no GPU adapter');
+  const device = await adapter.requestDevice();
+  const ctx = document.getElementById('c').getContext('webgpu');
+  const format = navigator.gpu.getPreferredCanvasFormat();
+  ctx.configure({ device, format, alphaMode: 'opaque' });
+
+  const computeCode = await (await fetch('/kernels/TextureKernel.wgsl')).text();
+  const computeMod = device.createShaderModule({ code: computeCode });
+  const ci = await computeMod.getCompilationInfo();
+  if (ci.messages.some(m => m.type === 'error')) return fail('compute WGSL: ' + ci.messages.find(m=>m.type==='error').message);
+  const computePipe = device.createComputePipeline({
+    layout: 'auto', compute: { module: computeMod, entryPoint: 'texture_step_main' } });
+
+  const texData = makeTexture();
+  const texBuf = device.createBuffer({ size: texData.byteLength, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
+  device.queue.writeBuffer(texBuf, 0, texData);
+  const outBuf = device.createBuffer({ size: N * 4, usage: GPUBufferUsage.STORAGE });
+  const uni = device.createBuffer({ size: 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+  const computeBG = device.createBindGroup({
+    layout: computePipe.getBindGroupLayout(0),
+    entries: [ { binding: 0, resource: { buffer: texBuf } },
+               { binding: 1, resource: { buffer: outBuf } },
+               { binding: 2, resource: { buffer: uni } } ] });
+
+  const renderCode = `
+    @group(0) @binding(0) var<storage, read> pts : array<i32>;
+    @vertex fn vs(@builtin(vertex_index) vi : u32) -> @builtin(position) vec4f {
+      var p = array<vec2f,3>(vec2f(-1,-1), vec2f(3,-1), vec2f(-1,3));
+      return vec4f(p[vi], 0.0, 1.0);
+    }
+    @fragment fn fs(@builtin(position) pos : vec4f) -> @location(0) vec4f {
+      let x = i32(pos.x); let y = i32(pos.y);
+      let c = bitcast<u32>(pts[y * ${W} + x]);
+      return vec4f(f32((c >> 16u) & 255u) / 255.0, f32((c >> 8u) & 255u) / 255.0, f32(c & 255u) / 255.0, 1.0);
+    }`;
+  const renderMod = device.createShaderModule({ code: renderCode });
+  const renderPipe = device.createRenderPipeline({
+    layout: 'auto',
+    vertex: { module: renderMod, entryPoint: 'vs' },
+    fragment: { module: renderMod, entryPoint: 'fs', targets: [{ format }] },
+    primitive: { topology: 'triangle-list' } });
+  const renderBG = device.createBindGroup({
+    layout: renderPipe.getBindGroupLayout(0), entries: [{ binding: 0, resource: { buffer: outBuf } }] });
+
+  let frame = 0;
+  window.__ready = false;
+  function tick(){
+    device.queue.writeBuffer(uni, 0, new Int32Array([frame, 0, 0, 0]));
+    const enc = device.createCommandEncoder();
+    const cp = enc.beginComputePass();
+    cp.setPipeline(computePipe); cp.setBindGroup(0, computeBG);
+    cp.dispatchWorkgroups(Math.ceil(N / 64)); cp.end();
+    const rp = enc.beginRenderPass({ colorAttachments: [{
+      view: ctx.getCurrentTexture().createView(), clearValue: {r:0,g:0,b:0,a:1}, loadOp:'clear', storeOp:'store' }] });
+    rp.setPipeline(renderPipe); rp.setBindGroup(0, renderBG); rp.draw(3); rp.end();
+    device.queue.submit([enc.finish()]);
+    frame = frame + 1;
+    window.__frame = frame;
+    if (frame > 1) { window.__ready = true; status.textContent = 'Codex-generated texture mapping -- Mode-7 ground, uploaded 256x256 texture'; }
+    requestAnimationFrame(tick);
+  }
+  requestAnimationFrame(tick);
+}
+main().catch(e => fail(String(e)));
+</script>

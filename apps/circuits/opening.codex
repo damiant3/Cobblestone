@@ -206,20 +206,26 @@ Section: Init
 
 Section: Entry
 
-  opening : [Console] Nothing = act
-    let result = app-loop app-init
-    in print-line ("Codex Circuits | " & (show result) & " frames")
+  opening : [Console, Device.Port] Nothing = act
+    result <- app-loop app-init
+    print-line ("Codex Circuits | " & (show result) & " frames")
   end
 
 Section: Main Loop
 
-  app-loop : AppState -> Integer
-  app-loop (st) =
-    let inp = raw-input-poll (st.as-input)
-    in let st2 = process-all st inp
+  app-loop : AppState -> [Device.Port] Integer
+  app-loop (st) = act
+    inp <- raw-input-poll (st.as-input)
+    let st2 = process-all st inp
     in if st2.as-quit == 1 then st2.as-frame
-    else let total = render-frame st2
-    in app-loop st2
+    else app-loop-render st2
+  end
+
+  app-loop-render : AppState -> [Device.Port] Integer
+  app-loop-render (st) = act
+    total <- render-frame st
+    app-loop st
+  end
 
 Section: Master Input
 
@@ -859,11 +865,11 @@ Section: Mouse Handling
 
 Section: Render Frame
 
-  render-frame : AppState -> Integer
-  render-frame (st) =
-    let cl = port-out-32 1025 col-bg
-    in let cd = cl + port-out-32 1026 0
-    in let n0 = 0
+  render-frame : AppState -> [Device.Port] Integer
+  render-frame (st) = act
+    cl <- port-out-32 1025 col-bg
+    cd <- port-out-32 1026 0
+    let n0 = 0
     in let n1 = draw-menubar-bg n0 st
     in let n2 = draw-menubar-text n1 st
     in let n3 = draw-tab-bar-bg n2 (st.as-tab)
@@ -875,6 +881,7 @@ Section: Render Frame
     in let nf = if st.as-menu-open /= menu-none then draw-dropdown ne st else ne
     in let ng = if st.as-show-help == 1 then draw-help-gpu nf else nf
     in port-out-32 1024 ng
+  end
 
   render-schematic-view : Integer, AppState -> Integer
   render-schematic-view (n) (st) =

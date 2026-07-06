@@ -1,0 +1,826 @@
+Chapter: WGSL Emitter
+  cites Codex chapter Text
+  cites Codex chapter Characters
+  cites Codex chapter Lists
+  cites Foreword chapter CCE
+
+ Generates WGSL (WebGPU Shading Language) compute shaders from the Codex
+ typed IR. Unlike the PTX and SPIR-V plugs, WGSL is a high-level
+ structured language: no SSA, no basic blocks, real if/else and operators,
+ and storage buffers instead of raw pointers.
+
+ A function whose last parameter is named "gid" (and which has at least two
+ parameters) is treated as a compute kernel. Its buffer parameters -- the
+ ones used as the base of a device-load/device-store -- become module-scope
+ storage bindings; its remaining scalar parameters become a uniform struct;
+ gid comes from @builtin(global_invocation_id). Every other function becomes
+ a plain WGSL helper function.
+
+ Each kernel is namespaced (its own bind group and a name prefix on its
+ bindings) so multiple kernels coexist in one module without binding or
+ identifier collisions.
+
+Section: Name Sanitization
+
+  wgsl-sanitize : Text -> Text
+  wgsl-sanitize (name) =
+   text-replace name "-" "_"
+
+Section: Context
+
+  WgslCtx = record {
+   type-defs : List ATypeDef,
+   indent : Text,
+   buffers : List Text,
+   kprefix : Text
+  }
+
+  empty-wgsl-ctx : List ATypeDef -> WgslCtx
+  empty-wgsl-ctx (tds) =
+   WgslCtx { type-defs = tds, indent = "  ", buffers = [], kprefix = "" }
+
+  wgsl-contains : List Text, Text -> Boolean
+  wgsl-contains (xs) (name) =
+   wgsl-contains-loop xs name 0
+
+  wgsl-contains-loop : List Text, Text, Integer -> Boolean
+  wgsl-contains-loop (xs) (name) (i) =
+   if i >= list-length xs then False
+   else if (list-at xs i) == name then True
+   else wgsl-contains-loop xs name (i + 1)
+
+  wgsl-buf-name : WgslCtx, Text -> Text
+  wgsl-buf-name (ctx) (base) =
+   if ctx.kprefix == "" then "(*" & wgsl-sanitize base & ")"
+   else ctx.kprefix & "_" & wgsl-sanitize base & "_buf"
+
+Section: Float Support
+
+ Codex Real is f64; WGSL has only f32. IrNumLit carries the f64 bit pattern,
+ which we convert to f32 bits and emit as a bitcast literal (exact to f32).
+ Storage buffers stay i32 -- only in-kernel math is float -- so device-load and
+ device-store coerce at the boundary. Field extraction uses raw bit ops so it
+ is correct regardless of the sign bit.
+
+  wgsl-is-real : CodexType -> Boolean
+  wgsl-is-real (ty) =
+   when ty
+    is RealTy -> True
+    is RealApproxTy -> True
+    is RealTrappingTy -> True
+    is RealSaturatingTy -> True
+    is FunTy (param) (ret) -> wgsl-is-real ret
+    is EffectfulTy (names) (texts) (inner) -> wgsl-is-real inner
+    is otherwise -> False
+
+  wgsl-ty-text : CodexType -> Text
+  wgsl-ty-text (ty) = if wgsl-is-real ty then "f32" else "i32"
+
+  wgsl-f32-bits : Integer -> Integer
+  wgsl-f32-bits (n) =
+   let sign = bit-and (bit-shru n 63) 1
+   in let exp = bit-and (bit-shru n 52) 2047
+   in let mant = bit-and n 4503599627370495
+   in let mant32 = bit-shru mant 29
+   in if exp == 0 then bit-shl sign 31
+   else if exp == 2047 then bit-or (bit-shl sign 31) (bit-or (bit-shl 255 23) mant32)
+   else let exp32 = exp - 1023 + 127
+   in if exp32 <= 0 then bit-shl sign 31
+   else if exp32 >= 255 then bit-or (bit-shl sign 31) (bit-shl 255 23)
+   else bit-or (bit-shl sign 31) (bit-or (bit-shl exp32 23) mant32)
+
+  wgsl-f32-lit : Integer -> Text
+  wgsl-f32-lit (n) = "bitcast<f32>(" & integer-to-text (wgsl-f32-bits n) & "u)"
+
+  wgsl-fexpr : WgslCtx, IRExpr -> Text
+  wgsl-fexpr (ctx) (e) =
+   if wgsl-is-real (ir-expr-type e) then wgsl-expr ctx e
+   else "f32(" & wgsl-expr ctx e & ")"
+
+  wgsl-iexpr : WgslCtx, IRExpr -> Text
+  wgsl-iexpr (ctx) (e) =
+   if wgsl-is-real (ir-expr-type e) then "i32(" & wgsl-expr ctx e & ")"
+   else wgsl-expr ctx e
+
+Section: Binary Op Mapping
+
+  wgsl-bin-op : IRBinaryOp -> Text
+  wgsl-bin-op (op) =
+   when op
+    is IrAddInt -> "+"
+    is IrSubInt -> "-"
+    is IrMulInt -> "*"
+    is IrDivInt -> "/"
+    is IrRemInt -> "%"
+    is IrPowInt -> "*"
+    is IrAddNum | IrAddVec | IrAddRealApprox | IrAddRealTrapping | IrAddRealSaturating -> "+"
+    is IrSubNum | IrSubVec | IrSubRealApprox | IrSubRealTrapping | IrSubRealSaturating -> "-"
+    is IrMulNum | IrMulVec | IrMulRealApprox | IrMulRealTrapping | IrMulRealSaturating -> "*"
+    is IrDivNum | IrDivVec | IrDivRealApprox | IrDivRealTrapping | IrDivRealSaturating -> "/"
+    is IrEq -> "=="
+    is IrNotEq -> "!="
+    is IrLt | IrLtVec -> "<"
+    is IrGt | IrGtVec -> ">"
+    is IrLtEq | IrLtEqVec -> "<="
+    is IrGtEq | IrGtEqVec -> ">="
+    is IrAnd -> "&"
+    is IrOr -> "|"
+    is IrAppendText -> "+"
+    is IrAppendList -> "+"
+    is IrConsList -> "+"
+    is IrApproxEq -> "=="
+    is IrApproxEqExact -> "=="
+
+Section: Math Intrinsics
+
+  wgsl-is-math-intrinsic : Text -> Boolean
+  wgsl-is-math-intrinsic (name) =
+   if name == "cordic-sin" then True
+   else if name == "cordic-cos" then True
+   else if name == "cordic-tan" then True
+   else if name == "real-sin" then True
+   else if name == "real-cos" then True
+   else if name == "real-sqrt" then True
+   else if name == "real-abs" then True
+   else if name == "real-min" then True
+   else if name == "real-max" then True
+   else if name == "real-floor" then True
+   else if name == "real-ceil" then True
+   else if name == "real-from-int" then True
+   else if name == "real-to-int" then True
+   else if name == "__int-to-real" then True
+   else if name == "__real-to-int" then True
+   else False
+
+  wgsl-math-builtin : Text -> Text
+  wgsl-math-builtin (name) =
+   if name == "cordic-sin" then "sin"
+   else if name == "cordic-cos" then "cos"
+   else if name == "cordic-tan" then "tan"
+   else if name == "real-sin" then "sin"
+   else if name == "real-cos" then "cos"
+   else if name == "real-sqrt" then "sqrt"
+   else if name == "real-abs" then "abs"
+   else if name == "real-min" then "min"
+   else if name == "real-max" then "max"
+   else if name == "real-floor" then "floor"
+   else if name == "real-ceil" then "ceil"
+   else if name == "real-from-int" then "f32"
+   else if name == "real-to-int" then "i32"
+   else if name == "__int-to-real" then "f32"
+   else if name == "__real-to-int" then "i32"
+   else name
+
+  wgsl-is-device-load : Text -> Boolean
+  wgsl-is-device-load (name) =
+   if name == "device-load" then True
+   else if name == "device-load-f64" then True
+   else False
+
+  wgsl-is-device-store : Text -> Boolean
+  wgsl-is-device-store (name) =
+   if name == "device-store" then True
+   else if name == "device-store-f64" then True
+   else False
+
+Section: Expression Emission
+
+ wgsl-expr produces a pure WGSL expression string. Statements (let chains,
+ device stores, act binds) are handled by wgsl-body and wgsl-act.
+
+  wgsl-expr : WgslCtx, IRExpr -> Text
+  wgsl-expr (ctx) (e) = wgsl-expr-at ctx e 0
+
+  wgsl-expr-at : WgslCtx, IRExpr, Integer -> Text
+  wgsl-expr-at (ctx) (e) (depth) =
+   if depth >= 256 then "0"
+   else when e
+    is IrIntLit (n) (sp) -> integer-to-text n
+    is IrNumLit (n) (sp) -> wgsl-f32-lit n
+    is IrBoolLit (b) (sp) -> if b then "true" else "false"
+    is IrCharLit (n) (sp) -> integer-to-text n
+    is IrTextLit (s) (sp) -> "0"
+    is IrName (n) (ty) (sp) ->
+     if n == "True" then "true"
+     else if n == "False" then "false"
+     else wgsl-sanitize n
+    is IrBinary (op) (l) (r) (ty) (sp) ->
+     wgsl-emit-binary ctx op l r ty
+    is IrNegate (operand) (sp) ->
+     "(-" & wgsl-expr-at ctx operand (depth + 1) & ")"
+    is IrIf (cond) (th) (el) (ty) (sp) ->
+     "select(" & wgsl-expr-at ctx el (depth + 1) & ", " & wgsl-expr-at ctx th (depth + 1) & ", " & wgsl-expr-at ctx cond (depth + 1) & ")"
+    is IrLet (name) (ty) (val) (body) (sp) ->
+     wgsl-expr-at ctx body (depth + 1)
+    is IrApply (f) (a) (ty) (sp) ->
+     wgsl-expr-apply ctx e depth
+    is IrLambda (params) (body) (ty) (sp) ->
+     wgsl-expr-at ctx body (depth + 1)
+    is IrList (elems) (ty) (sp) -> "0"
+    is IrMatch (scrut) (branches) (ty) (sp) -> "0"
+    is IrAct (stmts) (ty) (sp) -> "0"
+    is IrHandle (eff) (body) (clauses) (ty) (sp) ->
+     wgsl-expr-at ctx body (depth + 1)
+    is IrWithTimeout (secs) (effs) (scopes) (body) (ty) (sp) ->
+     wgsl-expr-at ctx body (depth + 1)
+    is IrRecord (name) (fields) (ty) (sp) -> "0"
+    is IrFieldAccess (rec) (field) (ty) (sp) ->
+     wgsl-expr-at ctx rec (depth + 1) & "." & wgsl-sanitize field
+    is IrFieldStore (rec) (field) (val) (ty) (sp) -> "0"
+    is IrFork (body) (ty) (sp) ->
+     wgsl-expr-at ctx body (depth + 1)
+    is IrAwait (task) (ty) (sp) ->
+     wgsl-expr-at ctx task (depth + 1)
+    is IrTry (max) (body) (fb) (fail-stmts) (ty) (sp) -> "0"
+    is IrError (msg) (ty) (sp) -> "0"
+
+  wgsl-expr-apply : WgslCtx, IRExpr, Integer -> Text
+  wgsl-expr-apply (ctx) (e) (depth) =
+   let chain = collect-apply-chain e []
+   in when (chain.root)
+    is IrName (n) (ty) (sp) ->
+     if wgsl-is-device-load n then wgsl-emit-device-load ctx (chain.args) depth
+     else if wgsl-is-math-intrinsic n then wgsl-math-builtin n & "(" & wgsl-emit-fargs ctx (chain.args) depth & ")"
+     else wgsl-sanitize n & "(" & wgsl-emit-args ctx (chain.args) depth & ")"
+    is otherwise -> "0"
+
+  wgsl-emit-device-load : WgslCtx, List IRExpr, Integer -> Text
+  wgsl-emit-device-load (ctx) (args) (depth) =
+   if list-length args < 2 then "0"
+   else let base = list-at args 0
+   in let idx = list-at args 1
+   in wgsl-load-base ctx base & "[" & wgsl-expr-at ctx idx (depth + 1) & "]"
+
+  wgsl-load-base : WgslCtx, IRExpr -> Text
+  wgsl-load-base (ctx) (base) =
+   when base
+    is IrName (n) (ty) (sp) -> wgsl-buf-name ctx n
+    is otherwise -> "0"
+
+  wgsl-emit-args : WgslCtx, List IRExpr, Integer -> Text
+  wgsl-emit-args (ctx) (args) (depth) =
+   wgsl-emit-args-loop ctx args 0 "" depth
+
+  wgsl-emit-args-loop : WgslCtx, List IRExpr, Integer, Text, Integer -> Text
+  wgsl-emit-args-loop (ctx) (args) (i) (acc) (depth) =
+   if i >= list-length args then acc
+   else let sep = if i == 0 then "" else ", "
+   in let piece = wgsl-arg-piece ctx (list-at args i) depth
+   in wgsl-emit-args-loop ctx args (i + 1) (acc & sep & piece) depth
+
+ A buffer argument passed to a helper becomes a storage pointer: inside a kernel
+ (kprefix set) the buffer is a module binding, so pass its address; inside a
+ helper (kprefix empty) the buffer is already a pointer parameter, so pass it
+ through by name.
+
+  wgsl-arg-piece : WgslCtx, IRExpr, Integer -> Text
+  wgsl-arg-piece (ctx) (a) (depth) =
+   when a
+    is IrName (n) (ty) (sp) ->
+     if wgsl-contains (ctx.buffers) n then
+      (if ctx.kprefix == "" then wgsl-sanitize n
+       else "&" & ctx.kprefix & "_" & wgsl-sanitize n & "_buf")
+     else wgsl-expr-at ctx a (depth + 1)
+    is otherwise -> wgsl-expr-at ctx a (depth + 1)
+
+  wgsl-emit-binary : WgslCtx, IRBinaryOp, IRExpr, IRExpr, CodexType -> Text
+  wgsl-emit-binary (ctx) (op) (l) (r) (ty) =
+   if (wgsl-is-real ty | wgsl-is-real (ir-expr-type l)) | wgsl-is-real (ir-expr-type r) then
+    "(" & wgsl-fexpr ctx l & " " & wgsl-bin-op op & " " & wgsl-fexpr ctx r & ")"
+   else "(" & wgsl-iexpr ctx l & " " & wgsl-bin-op op & " " & wgsl-iexpr ctx r & ")"
+
+  wgsl-emit-fargs : WgslCtx, List IRExpr, Integer -> Text
+  wgsl-emit-fargs (ctx) (args) (depth) =
+   wgsl-emit-fargs-loop ctx args 0 ""
+
+  wgsl-emit-fargs-loop : WgslCtx, List IRExpr, Integer, Text -> Text
+  wgsl-emit-fargs-loop (ctx) (args) (i) (acc) =
+   if i >= list-length args then acc
+   else let sep = if i == 0 then "" else ", "
+   in wgsl-emit-fargs-loop ctx args (i + 1) (acc & sep & wgsl-fexpr ctx (list-at args i))
+
+Section: Statement Body Emission
+
+ wgsl-body emits a statement block for a function or kernel body. Let
+ bindings become WGSL let statements; a tail if becomes structured
+ if/else; a tail device-store becomes an assignment; any other tail
+ becomes a return (for helper functions) or a bare store (for kernels).
+
+  wgsl-body : WgslCtx, IRExpr, Boolean, Integer -> Text
+  wgsl-body (ctx) (e) (is-kernel) (depth) =
+   if depth >= 256 then ctx.indent & "return 0;\n"
+   else when e
+    is IrLet (name) (ty) (val) (body) (sp) ->
+     ctx.indent & "let " & wgsl-sanitize name & " = " & wgsl-expr ctx val & ";\n"
+      & wgsl-body ctx body is-kernel (depth + 1)
+    is IrIf (cond) (th) (el) (ty) (sp) ->
+     ctx.indent & "if (" & wgsl-expr ctx cond & ") {\n"
+      & wgsl-body ctx th is-kernel (depth + 1)
+      & ctx.indent & "} else {\n"
+      & wgsl-body ctx el is-kernel (depth + 1)
+      & ctx.indent & "}\n"
+    is IrAct (stmts) (ty) (sp) ->
+     wgsl-act ctx stmts is-kernel 0 depth
+    is IrApply (f) (a) (ty) (sp) ->
+     wgsl-body-tail ctx e is-kernel depth
+    is otherwise ->
+     wgsl-body-tail ctx e is-kernel depth
+
+  wgsl-body-tail : WgslCtx, IRExpr, Boolean, Integer -> Text
+  wgsl-body-tail (ctx) (e) (is-kernel) (depth) =
+   let chain = collect-apply-chain e []
+   in when (chain.root)
+    is IrName (n) (ty) (sp) ->
+     if wgsl-is-device-store n then wgsl-emit-device-store ctx (chain.args) depth
+     else wgsl-tail-value ctx e is-kernel
+    is otherwise -> wgsl-tail-value ctx e is-kernel
+
+  wgsl-tail-value : WgslCtx, IRExpr, Boolean -> Text
+  wgsl-tail-value (ctx) (e) (is-kernel) =
+   if is-kernel then ctx.indent & "_ = " & wgsl-expr ctx e & ";\n"
+   else ctx.indent & "return " & wgsl-expr ctx e & ";\n"
+
+  wgsl-emit-device-store : WgslCtx, List IRExpr, Integer -> Text
+  wgsl-emit-device-store (ctx) (args) (depth) =
+   if list-length args < 3 then ctx.indent & "// bad device-store\n"
+   else let base = list-at args 0
+   in let idx = list-at args 1
+   in let val = list-at args 2
+   in ctx.indent & wgsl-load-base ctx base & "[" & wgsl-expr ctx idx & "] = " & wgsl-iexpr ctx val & ";\n"
+
+  wgsl-is-store-expr : IRExpr -> Boolean
+  wgsl-is-store-expr (e) =
+   let chain = collect-apply-chain e []
+   in when (chain.root)
+    is IrName (n) (ty) (sp) -> wgsl-is-device-store n
+    is otherwise -> False
+
+  wgsl-store-stmt : WgslCtx, IRExpr -> Text
+  wgsl-store-stmt (ctx) (e) =
+   let chain = collect-apply-chain e []
+   in wgsl-emit-device-store ctx (chain.args) 0
+
+Section: Act Block Emission
+
+  wgsl-act : WgslCtx, List IRActStmt, Boolean, Integer, Integer -> Text
+  wgsl-act (ctx) (stmts) (is-kernel) (i) (depth) =
+   if i >= list-length stmts then (if is-kernel then "" else ctx.indent & "return 0;\n")
+   else let s = list-at stmts i
+   in let is-last = i == list-length stmts - 1
+   in when s
+    is IrDoBind (name) (ty) (val) (sp) ->
+     (if wgsl-is-store-expr val then wgsl-store-stmt ctx val
+      else ctx.indent & "let " & wgsl-sanitize name & " = " & wgsl-expr ctx val & ";\n")
+      & wgsl-act ctx stmts is-kernel (i + 1) depth
+    is IrDoExec (e) (sp) ->
+     if is-last then wgsl-body ctx e is-kernel (depth + 1)
+     else (if wgsl-is-store-expr e then wgsl-store-stmt ctx e
+           else ctx.indent & "_ = " & wgsl-expr ctx e & ";\n")
+      & wgsl-act ctx stmts is-kernel (i + 1) depth
+
+Section: Buffer Discovery
+
+ Scan a kernel body for the parameter names used as the base (first
+ argument) of a device-load or device-store. Those parameters are the
+ storage buffers.
+
+  wgsl-collect-buffers : IRExpr, List Text -> List Text
+  wgsl-collect-buffers (e) (acc) =
+   when e
+    is IrApply (f) (a) (ty) (sp) ->
+     let chain = collect-apply-chain e []
+     in let acc1 = wgsl-scan-apply-base (chain.root) (chain.args) acc
+     in wgsl-collect-args (chain.args) acc1
+    is IrLet (name) (ty) (val) (body) (sp) ->
+     wgsl-collect-buffers body (wgsl-collect-buffers val acc)
+    is IrIf (cond) (th) (el) (ty) (sp) ->
+     wgsl-collect-buffers el (wgsl-collect-buffers th (wgsl-collect-buffers cond acc))
+    is IrBinary (op) (l) (r) (ty) (sp) ->
+     wgsl-collect-buffers r (wgsl-collect-buffers l acc)
+    is IrNegate (operand) (sp) ->
+     wgsl-collect-buffers operand acc
+    is IrAct (stmts) (ty) (sp) ->
+     wgsl-collect-act stmts acc 0
+    is otherwise -> acc
+
+  wgsl-scan-apply-base : IRExpr, List IRExpr, List Text -> List Text
+  wgsl-scan-apply-base (root) (args) (acc) =
+   when root
+    is IrName (n) (ty) (sp) ->
+     if (wgsl-is-device-load n | wgsl-is-device-store n) then
+      (if list-length args >= 1 then wgsl-add-base (list-at args 0) acc else acc)
+     else acc
+    is otherwise -> acc
+
+  wgsl-add-base : IRExpr, List Text -> List Text
+  wgsl-add-base (base) (acc) =
+   when base
+    is IrName (n) (ty) (sp) -> if wgsl-contains acc n then acc else list-push acc n
+    is otherwise -> acc
+
+  wgsl-collect-args : List IRExpr, List Text -> List Text
+  wgsl-collect-args (args) (acc) =
+   wgsl-collect-args-loop args acc 0
+
+  wgsl-collect-args-loop : List IRExpr, List Text, Integer -> List Text
+  wgsl-collect-args-loop (args) (acc) (i) =
+   if i >= list-length args then acc
+   else wgsl-collect-args-loop args (wgsl-collect-buffers (list-at args i) acc) (i + 1)
+
+  wgsl-collect-act : List IRActStmt, List Text, Integer -> List Text
+  wgsl-collect-act (stmts) (acc) (i) =
+   if i >= list-length stmts then acc
+   else let s = list-at stmts i
+   in when s
+    is IrDoBind (name) (ty) (val) (sp) ->
+     wgsl-collect-act stmts (wgsl-collect-buffers val acc) (i + 1)
+    is IrDoExec (e) (sp) ->
+     wgsl-collect-act stmts (wgsl-collect-buffers e acc) (i + 1)
+
+Section: Function Classification
+
+  wgsl-is-kernel : IRDef -> Boolean
+  wgsl-is-kernel (d) =
+   if list-length (d.params) < 2 then False
+   else (list-at (d.params) (list-length (d.params) - 1)).name == "gid"
+
+Section: Helper Function Emission
+
+  wgsl-emit-params : List IRParam, Integer -> Text
+  wgsl-emit-params (params) (i) =
+   if i >= list-length params then ""
+   else let sep = if i == 0 then "" else ", "
+   in let p = list-at params i
+   in sep & wgsl-sanitize (p.name) & " : " & wgsl-ty-text (p.type-val) & wgsl-emit-params params (i + 1)
+
+ A helper that uses a parameter as a device-load/store base takes that buffer as
+ a storage pointer. hbufs is the set of such parameter names; the helper ctx
+ carries them (kprefix empty) so device-load emits `(*p)[i]` and the parameter
+ is typed `ptr<storage, array<i32>, read_write>`.
+
+  wgsl-helper-ctx : WgslCtx, List Text -> WgslCtx
+  wgsl-helper-ctx (ctx) (hbufs) =
+   WgslCtx { type-defs = ctx.type-defs, indent = ctx.indent, buffers = hbufs, kprefix = "" }
+
+  wgsl-emit-params-b : List IRParam, List Text, Integer -> Text
+  wgsl-emit-params-b (params) (bufs) (i) =
+   if i >= list-length params then ""
+   else let sep = if i == 0 then "" else ", "
+   in let p = list-at params i
+   in let ty = if wgsl-contains bufs (p.name) then "ptr<storage, array<i32>, read_write>" else wgsl-ty-text (p.type-val)
+   in sep & wgsl-sanitize (p.name) & " : " & ty & wgsl-emit-params-b params bufs (i + 1)
+
+  wgsl-emit-helper : WgslCtx, IRDef -> Text
+  wgsl-emit-helper (ctx) (d) =
+   let hbufs = wgsl-collect-buffers (d.body) []
+   in let hctx = wgsl-helper-ctx ctx hbufs
+   in if wgsl-is-self-recursive d then wgsl-emit-loop-helper hctx d
+   else let name = wgsl-sanitize (d.name)
+   in let params = wgsl-emit-params-b (d.params) hbufs 0
+   in let body = wgsl-body hctx (d.body) False 0
+   in "fn " & name & "(" & params & ") -> " & wgsl-ty-text (d.type-val) & " {\n" & body & "}\n\n"
+
+Section: Recursion to Loop
+
+ WGSL has no recursion. A tail-self-recursive helper is lowered to a `loop`:
+ its parameters become mutable `var`s, the base cases `return`, and each tail
+ self-call becomes a parallel move of the arguments into the vars followed by
+ `continue`. Arguments are evaluated into temporaries first so the moves do not
+ clobber values still needed by later arguments.
+
+  wgsl-is-self-recursive : IRDef -> Boolean
+  wgsl-is-self-recursive (d) =
+   wgsl-contains (wgsl-collect-calls (d.body) []) (d.name)
+
+  wgsl-loop-params : List IRParam, Integer -> Text
+  wgsl-loop-params (ps) (i) =
+   if i >= list-length ps then ""
+   else let sep = if i == 0 then "" else ", "
+   in let p = list-at ps i
+   in sep & wgsl-sanitize (p.name) & "__a : " & wgsl-ty-text (p.type-val) & wgsl-loop-params ps (i + 1)
+
+  wgsl-loop-vars : List IRParam, Integer -> Text
+  wgsl-loop-vars (ps) (i) =
+   if i >= list-length ps then ""
+   else let n = wgsl-sanitize ((list-at ps i).name)
+   in "  var " & n & " = " & n & "__a;\n" & wgsl-loop-vars ps (i + 1)
+
+  wgsl-loop-move-temps : WgslCtx, List IRExpr, Integer -> Text
+  wgsl-loop-move-temps (ctx) (args) (i) =
+   if i >= list-length args then ""
+   else "    let _mv" & integer-to-text i & " = " & wgsl-expr ctx (list-at args i) & ";\n"
+    & wgsl-loop-move-temps ctx args (i + 1)
+
+  wgsl-loop-move-assign : List IRParam, Integer -> Text
+  wgsl-loop-move-assign (ps) (i) =
+   if i >= list-length ps then ""
+   else "    " & wgsl-sanitize ((list-at ps i).name) & " = _mv" & integer-to-text i & ";\n"
+    & wgsl-loop-move-assign ps (i + 1)
+
+  wgsl-loop-move : WgslCtx, List IRParam, List IRExpr -> Text
+  wgsl-loop-move (ctx) (ps) (args) =
+   wgsl-loop-move-temps-b ctx ps args (ctx.buffers) 0 & wgsl-loop-move-assign-b ps (ctx.buffers) 0 & "    continue;\n"
+
+ Buffer (pointer) parameters are loop-invariant: they are not vars and are not
+ reassigned on the tail call, so skip their move temp and their move assign.
+
+  wgsl-loop-move-temps-b : WgslCtx, List IRParam, List IRExpr, List Text, Integer -> Text
+  wgsl-loop-move-temps-b (ctx) (ps) (args) (bufs) (i) =
+   if i >= list-length args then ""
+   else let is-buf = if i < list-length ps then wgsl-contains bufs ((list-at ps i).name) else False
+   in let piece = if is-buf then "" else "    let _mv" & integer-to-text i & " = " & wgsl-expr ctx (list-at args i) & ";\n"
+   in piece & wgsl-loop-move-temps-b ctx ps args bufs (i + 1)
+
+  wgsl-loop-move-assign-b : List IRParam, List Text, Integer -> Text
+  wgsl-loop-move-assign-b (ps) (bufs) (i) =
+   if i >= list-length ps then ""
+   else let p = list-at ps i
+   in let piece = if wgsl-contains bufs (p.name) then "" else "    " & wgsl-sanitize (p.name) & " = _mv" & integer-to-text i & ";\n"
+   in piece & wgsl-loop-move-assign-b ps bufs (i + 1)
+
+  wgsl-loop-tail : WgslCtx, Text, List IRParam, IRExpr -> Text
+  wgsl-loop-tail (ctx) (selfn) (ps) (e) =
+   let chain = collect-apply-chain e []
+   in when (chain.root)
+    is IrName (n) (ty) (sp) ->
+     if n == selfn then wgsl-loop-move ctx ps (chain.args)
+     else "    return " & wgsl-expr ctx e & ";\n"
+    is otherwise -> "    return " & wgsl-expr ctx e & ";\n"
+
+  wgsl-loop-body : WgslCtx, Text, List IRParam, IRExpr, Integer -> Text
+  wgsl-loop-body (ctx) (selfn) (ps) (e) (depth) =
+   if depth >= 256 then "    return 0;\n"
+   else when e
+    is IrLet (n) (ty) (v) (b) (sp) ->
+     "    let " & wgsl-sanitize n & " = " & wgsl-expr ctx v & ";\n"
+      & wgsl-loop-body ctx selfn ps b (depth + 1)
+    is IrIf (c) (t) (el) (ty) (sp) ->
+     "    if (" & wgsl-expr ctx c & ") {\n"
+      & wgsl-loop-body ctx selfn ps t (depth + 1)
+      & "    } else {\n"
+      & wgsl-loop-body ctx selfn ps el (depth + 1)
+      & "    }\n"
+    is IrAct (stmts) (ty) (sp) ->
+     wgsl-loop-act ctx selfn ps stmts 0 depth
+    is otherwise ->
+     wgsl-loop-tail ctx selfn ps e
+
+ A loop iteration whose body is an act block (e.g. a buffer-reading fold that
+ device-loads other elements each step): each act bind becomes a `let`, and the
+ final statement is processed as the loop tail so a self-call still becomes a
+ parallel-move + continue.
+
+  wgsl-loop-act : WgslCtx, Text, List IRParam, List IRActStmt, Integer, Integer -> Text
+  wgsl-loop-act (ctx) (selfn) (ps) (stmts) (i) (depth) =
+   if i >= list-length stmts then "    return 0;\n"
+   else let s = list-at stmts i
+   in let is-last = i == list-length stmts - 1
+   in when s
+    is IrDoBind (name) (ty) (val) (sp) ->
+     "    let " & wgsl-sanitize name & " = " & wgsl-expr ctx val & ";\n"
+      & wgsl-loop-act ctx selfn ps stmts (i + 1) depth
+    is IrDoExec (e) (sp) ->
+     if is-last then wgsl-loop-body ctx selfn ps e (depth + 1)
+     else "    _ = " & wgsl-expr ctx e & ";\n" & wgsl-loop-act ctx selfn ps stmts (i + 1) depth
+
+  wgsl-loop-params-b : List IRParam, List Text, Integer -> Text
+  wgsl-loop-params-b (ps) (bufs) (i) =
+   if i >= list-length ps then ""
+   else let sep = if i == 0 then "" else ", "
+   in let p = list-at ps i
+   in let piece = if wgsl-contains bufs (p.name)
+      then wgsl-sanitize (p.name) & " : ptr<storage, array<i32>, read_write>"
+      else wgsl-sanitize (p.name) & "__a : " & wgsl-ty-text (p.type-val)
+   in sep & piece & wgsl-loop-params-b ps bufs (i + 1)
+
+  wgsl-loop-vars-b : List IRParam, List Text, Integer -> Text
+  wgsl-loop-vars-b (ps) (bufs) (i) =
+   if i >= list-length ps then ""
+   else let p = list-at ps i
+   in let piece = if wgsl-contains bufs (p.name) then ""
+      else "  var " & wgsl-sanitize (p.name) & " = " & wgsl-sanitize (p.name) & "__a;\n"
+   in piece & wgsl-loop-vars-b ps bufs (i + 1)
+
+  wgsl-emit-loop-helper : WgslCtx, IRDef -> Text
+  wgsl-emit-loop-helper (ctx) (d) =
+   "fn " & wgsl-sanitize (d.name) & "(" & wgsl-loop-params-b (d.params) (ctx.buffers) 0 & ") -> " & wgsl-ty-text (d.type-val) & " {\n"
+    & wgsl-loop-vars-b (d.params) (ctx.buffers) 0
+    & "  loop {\n"
+    & wgsl-loop-body ctx (d.name) (d.params) (d.body) 0
+    & "  }\n}\n\n"
+
+Section: Kernel Emission
+
+  wgsl-scalar-params : List IRParam, List Text, Integer, List Text -> List Text
+  wgsl-scalar-params (params) (buffers) (i) (acc) =
+   if i >= list-length params then acc
+   else let p = list-at params i
+   in let is-gid = p.name == "gid"
+   in let is-buf = wgsl-contains buffers (p.name)
+   in let acc1 = if (is-gid | is-buf) then acc else list-push acc (p.name)
+   in wgsl-scalar-params params buffers (i + 1) acc1
+
+  wgsl-emit-buffer-decls : Text, List Text, Integer -> Text
+  wgsl-emit-buffer-decls (kprefix) (buffers) (i) =
+   if i >= list-length buffers then ""
+   else let b = list-at buffers i
+   in "@group(0) @binding(" & integer-to-text i & ") var<storage, read_write> "
+    & kprefix & "_" & wgsl-sanitize b & "_buf : array<i32>;\n"
+    & wgsl-emit-buffer-decls kprefix buffers (i + 1)
+
+  wgsl-emit-uniform-fields : List Text, Integer -> Text
+  wgsl-emit-uniform-fields (scalars) (i) =
+   if i >= list-length scalars then ""
+   else "  " & wgsl-sanitize (list-at scalars i) & " : i32,\n" & wgsl-emit-uniform-fields scalars (i + 1)
+
+  wgsl-emit-scalar-lets : Text, Text, List Text, Integer -> Text
+  wgsl-emit-scalar-lets (indent) (uvar) (scalars) (i) =
+   if i >= list-length scalars then ""
+   else let s = wgsl-sanitize (list-at scalars i)
+   in indent & "let " & s & " = " & uvar & "." & s & ";\n" & wgsl-emit-scalar-lets indent uvar scalars (i + 1)
+
+  wgsl-emit-kernel : WgslCtx, IRDef -> Text
+  wgsl-emit-kernel (ctx) (d) =
+   let kname = wgsl-sanitize (d.name)
+   in let buffers = wgsl-collect-buffers (d.body) []
+   in let scalars = wgsl-scalar-params (d.params) buffers 0 []
+   in let kctx = WgslCtx { type-defs = ctx.type-defs, indent = "  ", buffers = buffers, kprefix = kname }
+   in let buf-decls = wgsl-emit-buffer-decls kname buffers 0
+   in let uvar = "u_" & kname
+   in let has-scalars = list-length scalars > 0
+   in let ubinding = integer-to-text (list-length buffers)
+   in let uni-decl = if has-scalars then
+       "struct U_" & kname & " {\n" & wgsl-emit-uniform-fields scalars 0 & "}\n"
+       & "@group(0) @binding(" & ubinding & ") var<uniform> " & uvar & " : U_" & kname & ";\n"
+      else ""
+   in let scalar-lets = if has-scalars then wgsl-emit-scalar-lets "  " uvar scalars 0 else ""
+   in let body = wgsl-body kctx (d.body) True 0
+   in buf-decls & uni-decl
+    & "\n@compute @workgroup_size(64)\n"
+    & "fn " & kname & "_main(@builtin(global_invocation_id) gid_vec : vec3<u32>) {\n"
+    & "  let gid = i32(gid_vec.x);\n"
+    & scalar-lets
+    & body
+    & "}\n\n"
+
+Section: Reachability
+
+ Only helper functions transitively called from a kernel are emitted, so
+ unused foreword glue (thread-index accessors and the like, pulled in by
+ cites) never lands in the shader module as invalid WGSL. Kernel-less
+ modules fall back to emitting every helper.
+
+  wgsl-add-name : Text, List Text -> List Text
+  wgsl-add-name (n) (acc) =
+   if wgsl-contains acc n then acc else list-push acc n
+
+  wgsl-collect-calls : IRExpr, List Text -> List Text
+  wgsl-collect-calls (e) (acc) =
+   when e
+    is IrApply (f) (a) (ty) (sp) ->
+     let chain = collect-apply-chain e []
+     in let acc1 = when (chain.root)
+       is IrName (n) (nty) (nsp) -> wgsl-add-name n acc
+       is otherwise -> acc
+     in wgsl-collect-calls-args (chain.args) acc1 0
+    is IrLet (name) (ty) (val) (body) (sp) ->
+     wgsl-collect-calls body (wgsl-collect-calls val acc)
+    is IrIf (cond) (th) (el) (ty) (sp) ->
+     wgsl-collect-calls el (wgsl-collect-calls th (wgsl-collect-calls cond acc))
+    is IrBinary (op) (l) (r) (ty) (sp) ->
+     wgsl-collect-calls r (wgsl-collect-calls l acc)
+    is IrNegate (operand) (sp) ->
+     wgsl-collect-calls operand acc
+    is IrAct (stmts) (ty) (sp) ->
+     wgsl-collect-calls-act stmts acc 0
+    is IrName (n) (ty) (sp) ->
+     wgsl-add-name n acc
+    is otherwise -> acc
+
+  wgsl-collect-calls-args : List IRExpr, List Text, Integer -> List Text
+  wgsl-collect-calls-args (args) (acc) (i) =
+   if i >= list-length args then acc
+   else wgsl-collect-calls-args args (wgsl-collect-calls (list-at args i) acc) (i + 1)
+
+  wgsl-collect-calls-act : List IRActStmt, List Text, Integer -> List Text
+  wgsl-collect-calls-act (stmts) (acc) (i) =
+   if i >= list-length stmts then acc
+   else let s = list-at stmts i
+   in when s
+    is IrDoBind (name) (ty) (val) (sp) ->
+     wgsl-collect-calls-act stmts (wgsl-collect-calls val acc) (i + 1)
+    is IrDoExec (e) (sp) ->
+     wgsl-collect-calls-act stmts (wgsl-collect-calls e acc) (i + 1)
+
+  wgsl-kernel-calls : List IRDef, List Text, Integer -> List Text
+  wgsl-kernel-calls (defs) (acc) (i) =
+   if i >= list-length defs then acc
+   else let d = list-at defs i
+   in if wgsl-is-kernel d then wgsl-kernel-calls defs (wgsl-collect-calls (d.body) acc) (i + 1)
+   else wgsl-kernel-calls defs acc (i + 1)
+
+  wgsl-add-callees : List IRDef, List Text, Integer -> List Text
+  wgsl-add-callees (defs) (acc) (i) =
+   if i >= list-length defs then acc
+   else let d = list-at defs i
+   in if (((wgsl-is-kernel d) | (wgsl-contains acc (d.name) == False)) | wgsl-is-math-intrinsic (d.name)) then wgsl-add-callees defs acc (i + 1)
+   else wgsl-add-callees defs (wgsl-collect-calls (d.body) acc) (i + 1)
+
+  wgsl-expand-reach : List IRDef, List Text, Integer -> List Text
+  wgsl-expand-reach (defs) (acc) (iters) =
+   if iters <= 0 then acc
+   else wgsl-expand-reach defs (wgsl-add-callees defs acc 0) (iters - 1)
+
+  wgsl-reachable : List IRDef -> List Text
+  wgsl-reachable (defs) =
+   let seed = wgsl-kernel-calls defs [] 0
+   in wgsl-expand-reach defs seed (list-length defs)
+
+  wgsl-has-kernel : List IRDef, Integer -> Boolean
+  wgsl-has-kernel (defs) (i) =
+   if i >= list-length defs then False
+   else if wgsl-is-kernel (list-at defs i) then True
+   else wgsl-has-kernel defs (i + 1)
+
+Section: Chapter Emission
+
+ WGSL has no forward declarations: a function or module-scope const must be
+ declared before it is used, and the IR does not hand us defs in dependency
+ order. So helpers are emitted by a topological pass -- a def is emitted once
+ every callee it references (that is itself in the emit set) has been emitted.
+ Nullary defs become WGSL `const`s. Kernels come last.
+
+  EmitAcc = record {
+   text : Text,
+   done : List Text
+  }
+
+  wgsl-join-names : List Text, Integer -> Text
+  wgsl-join-names (xs) (i) =
+   if i >= list-length xs then "" else (list-at xs i) & " " & wgsl-join-names xs (i + 1)
+
+  wgsl-all-helper-names : List IRDef, Integer, List Text -> List Text
+  wgsl-all-helper-names (defs) (i) (acc) =
+   if i >= list-length defs then acc
+   else let d = list-at defs i
+   in if (wgsl-is-kernel d | wgsl-is-math-intrinsic (d.name)) then wgsl-all-helper-names defs (i + 1) acc
+   else wgsl-all-helper-names defs (i + 1) (list-push acc (d.name))
+
+  wgsl-intersect : List Text, List Text, Integer, List Text -> List Text
+  wgsl-intersect (xs) (ys) (i) (acc) =
+   if i >= list-length xs then acc
+   else let x = list-at xs i
+   in if wgsl-contains ys x then wgsl-intersect xs ys (i + 1) (list-push acc x)
+   else wgsl-intersect xs ys (i + 1) acc
+
+  wgsl-emit-one : WgslCtx, IRDef -> Text
+  wgsl-emit-one (ctx) (d) =
+   if list-length (d.params) == 0 then
+    "const " & wgsl-sanitize (d.name) & " : " & wgsl-ty-text (d.type-val) & " = " & wgsl-expr ctx (d.body) & ";\n"
+   else wgsl-emit-helper ctx d
+
+  wgsl-ready-callees : List Text, List Text, List Text, Text, Integer -> Boolean
+  wgsl-ready-callees (cs) (emitset) (done) (selfname) (i) =
+   if i >= list-length cs then True
+   else let c = list-at cs i
+   in if ((c == selfname) | (wgsl-contains emitset c == False)) then wgsl-ready-callees cs emitset done selfname (i + 1)
+   else if wgsl-contains done c then wgsl-ready-callees cs emitset done selfname (i + 1)
+   else False
+
+  wgsl-topo-pass : WgslCtx, List IRDef, List Text, EmitAcc, Integer -> EmitAcc
+  wgsl-topo-pass (ctx) (defs) (emitset) (acc) (i) =
+   if i >= list-length defs then acc
+   else let d = list-at defs i
+   in let skip = ((wgsl-is-kernel d) | (wgsl-contains emitset (d.name) == False)) | (wgsl-contains (acc.done) (d.name))
+   in if skip then wgsl-topo-pass ctx defs emitset acc (i + 1)
+   else let cs = wgsl-collect-calls (d.body) []
+   in if wgsl-ready-callees cs emitset (acc.done) (d.name) 0 then
+     wgsl-topo-pass ctx defs emitset (EmitAcc { text = (acc.text) & wgsl-emit-one ctx d, done = list-push (acc.done) (d.name) }) (i + 1)
+   else wgsl-topo-pass ctx defs emitset acc (i + 1)
+
+  wgsl-topo-loop : WgslCtx, List IRDef, List Text, EmitAcc, Integer -> EmitAcc
+  wgsl-topo-loop (ctx) (defs) (emitset) (acc) (iters) =
+   if iters <= 0 then acc
+   else let acc2 = wgsl-topo-pass ctx defs emitset acc 0
+   in if list-length (acc2.done) == list-length (acc.done) then acc2
+   else wgsl-topo-loop ctx defs emitset acc2 (iters - 1)
+
+  wgsl-emit-kernels : WgslCtx, List IRDef, Integer -> Text
+  wgsl-emit-kernels (ctx) (defs) (i) =
+   if i >= list-length defs then ""
+   else let d = list-at defs i
+   in if wgsl-is-kernel d then wgsl-emit-kernel ctx d & wgsl-emit-kernels ctx defs (i + 1)
+   else wgsl-emit-kernels ctx defs (i + 1)
+
+  emit-wgsl-chapter : IRChapter, List ATypeDef -> Text
+  emit-wgsl-chapter (ch) (tds) =
+   let ctx = empty-wgsl-ctx tds
+   in let has-k = wgsl-has-kernel (ch.defs) 0
+   in let alldefs = wgsl-all-helper-names (ch.defs) 0 []
+   in let emitset = if has-k then wgsl-intersect (wgsl-reachable (ch.defs)) alldefs 0 [] else alldefs
+   in let acc0 = EmitAcc { text = "", done = [] }
+   in let helpers = (wgsl-topo-loop ctx (ch.defs) emitset acc0 (list-length (ch.defs) + 1)).text
+   in "// Generated by Codex WGSL Plug\n"
+    & "// Compute shaders lowered from Codex [Device] kernels.\n\n"
+    & helpers
+    & wgsl-emit-kernels ctx (ch.defs) 0

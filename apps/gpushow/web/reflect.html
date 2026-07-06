@@ -1,0 +1,88 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>gpushow -- Ray-tracing reflections (Codex-generated compute)</title>
+<style>
+  html,body { margin:0; background:#05060c; color:#8aa; font:13px system-ui,sans-serif; }
+  #wrap { display:flex; flex-direction:column; align-items:center; gap:8px; padding:10px; }
+  canvas { border:1px solid #182a4a; }
+  #status { opacity:.7; }
+</style>
+<div id="wrap">
+  <canvas id="c" width="1024" height="768"></canvas>
+  <div id="status">initializing WebGPU...</div>
+</div>
+<script type="module">
+// reflect_step_main is GENERATED FROM CODEX [Device] AST (ReflectKernel.codex).
+// One GPU thread per pixel casts a primary ray into a fixed scene of three
+// analytic spheres on a checkered floor, folds over the object table to find
+// the nearest hit (tail-recursive -> WGSL loop), and shades it with a rotating
+// key light plus a hard shadow ray. The render pass (hand-written) blits the
+// colour buffer to a fullscreen triangle.
+
+const W = 1024, H = 768, N = W * H;
+const status = document.getElementById('status');
+function fail(m){ status.textContent = 'ERROR: ' + m; window.__error = m; window.__ready = true; }
+
+async function main(){
+  if (!navigator.gpu) return fail('navigator.gpu unavailable (needs secure context)');
+  const adapter = await navigator.gpu.requestAdapter();
+  if (!adapter) return fail('no GPU adapter');
+  const device = await adapter.requestDevice();
+  const ctx = document.getElementById('c').getContext('webgpu');
+  const format = navigator.gpu.getPreferredCanvasFormat();
+  ctx.configure({ device, format, alphaMode: 'opaque' });
+
+  const computeCode = await (await fetch('/kernels/ReflectKernel.wgsl')).text();
+  const computeMod = device.createShaderModule({ code: computeCode });
+  const ci = await computeMod.getCompilationInfo();
+  if (ci.messages.some(m => m.type === 'error')) return fail('compute WGSL: ' + ci.messages.find(m=>m.type==='error').message);
+  const computePipe = device.createComputePipeline({
+    layout: 'auto', compute: { module: computeMod, entryPoint: 'reflect_step_main' } });
+
+  const outBuf = device.createBuffer({ size: N * 4, usage: GPUBufferUsage.STORAGE });
+  const uni = device.createBuffer({ size: 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+  const computeBG = device.createBindGroup({
+    layout: computePipe.getBindGroupLayout(0),
+    entries: [ { binding: 0, resource: { buffer: outBuf } }, { binding: 1, resource: { buffer: uni } } ] });
+
+  const renderCode = `
+    @group(0) @binding(0) var<storage, read> pts : array<i32>;
+    @vertex fn vs(@builtin(vertex_index) vi : u32) -> @builtin(position) vec4f {
+      var p = array<vec2f,3>(vec2f(-1,-1), vec2f(3,-1), vec2f(-1,3));
+      return vec4f(p[vi], 0.0, 1.0);
+    }
+    @fragment fn fs(@builtin(position) pos : vec4f) -> @location(0) vec4f {
+      let x = i32(pos.x); let y = i32(pos.y);
+      let c = bitcast<u32>(pts[y * ${W} + x]);
+      return vec4f(f32((c >> 16u) & 255u) / 255.0, f32((c >> 8u) & 255u) / 255.0, f32(c & 255u) / 255.0, 1.0);
+    }`;
+  const renderMod = device.createShaderModule({ code: renderCode });
+  const renderPipe = device.createRenderPipeline({
+    layout: 'auto',
+    vertex: { module: renderMod, entryPoint: 'vs' },
+    fragment: { module: renderMod, entryPoint: 'fs', targets: [{ format }] },
+    primitive: { topology: 'triangle-list' } });
+  const renderBG = device.createBindGroup({
+    layout: renderPipe.getBindGroupLayout(0), entries: [{ binding: 0, resource: { buffer: outBuf } }] });
+
+  let frame = 0;
+  window.__ready = false;
+  function tick(){
+    device.queue.writeBuffer(uni, 0, new Int32Array([frame, 0, 0, 0]));
+    const enc = device.createCommandEncoder();
+    const cp = enc.beginComputePass();
+    cp.setPipeline(computePipe); cp.setBindGroup(0, computeBG);
+    cp.dispatchWorkgroups(Math.ceil(N / 64)); cp.end();
+    const rp = enc.beginRenderPass({ colorAttachments: [{
+      view: ctx.getCurrentTexture().createView(), clearValue: {r:0,g:0,b:0,a:1}, loadOp:'clear', storeOp:'store' }] });
+    rp.setPipeline(renderPipe); rp.setBindGroup(0, renderBG); rp.draw(3); rp.end();
+    device.queue.submit([enc.finish()]);
+    frame = frame + 1;
+    window.__frame = frame;
+    if (frame > 1) { window.__ready = true; status.textContent = 'Codex-generated reflections -- mirror spheres, one bounce, ' + (N/1000|0) + 'k primary rays'; }
+    requestAnimationFrame(tick);
+  }
+  requestAnimationFrame(tick);
+}
+main().catch(e => fail(String(e)));
+</script>

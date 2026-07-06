@@ -2242,6 +2242,12 @@ static const char *screenshot_path = NULL;
 static int screenshot_delay_ms = 3000;
 static int gpu_frame_count = 0;
 static volatile int gpu_frame_ready = 0;
+static int gpu_cine = 0;               /* cinematic mode: additive sparks + bloom + grade (opt-in via port 0x410) */
+static long long gpu_cine_last = 0;    /* QPC of previous cine frame, for 60fps pacing */
+static void gpu_cinematic_post(void);
+static void gpu_cine_pace(void);
+static void gpu_composite_band(unsigned int *fb, int w, int h, int y0, int y1);
+static void sync_shadow_buffers(void);
 static int gpu_last_tri_count = 0;
 static float gpu_light[3] = {0, 0, -1};
 static float gpu_eye[3] = {0, 0, -1};
@@ -2436,6 +2442,16 @@ static DWORD WINAPI vga_thread(LPVOID param) {
 
 static void vga_start(void) {
     if (vga_headless) return;
+    /* Single-instance guard for DISPLAY windows only. Headless VMs (compiles,
+       the -Jobs N test harness) stay unrestricted -- the whp_mutex already
+       serializes their partition ops. But two on-screen WHP display VMs can
+       hang or bug-check the host, so refuse a second window. */
+    HANDLE inst = CreateMutexA(NULL, TRUE, "Global\\CodexVmDisplayWindow");
+    if (inst && GetLastError() == ERROR_ALREADY_EXISTS) {
+        fprintf(stderr, "ERROR: another codex-vm display window is already running.\n");
+        fprintf(stderr, "Close it first -- running two on-screen WHP VMs can hang the host.\n");
+        exit(1);
+    }
     CreateThread(NULL, 0, vga_thread, NULL, 0, NULL);
 }
 
@@ -3101,11 +3117,35 @@ static int pit_vector = 32;
 static LARGE_INTEGER perf_freq;
 static LARGE_INTEGER last_tick;
 
-/* Watchpoint */
+/* Watchpoint (page-protection based) */
 static unsigned long long watch_addr = 0;
 static int watch_size = 8;
 static unsigned char watch_prev[64];
 static int watch_active = 0;
+static unsigned long long watch_val = 0;   /* -watch-val: only report writes of this value */
+static int watch_val_set = 0;
+static int r10dump = 0;   /* -r10dump: print guest R10 at each serial-output newline */
+static unsigned long long dumpmem_addr = 0, dumpmem_len = 0;  /* -dumpmem: hexdump at exit */
+
+/* Guest-armable watchpoint: the guest computes a runtime heap address and arms
+ * the synchronous page-watch itself via I/O ports 0x411 (addr lo32), 0x412
+ * (addr hi32), 0x413 (arm: assemble addr, watch_size=64, report all writes).
+ * This catches a corruption at a runtime-determined address on the demand seed
+ * without the interactive debugger, which is ~1000x too slow under demand
+ * (it intercepts every #PF). See handle_io ports 0x411-0x413. */
+static unsigned int guest_watch_lo = 0, guest_watch_hi = 0;
+static int watch_report_all = 0;  /* guest-arm: log every changed 8B slot + writer RIP, continue */
+
+/* Hardware watchpoint via debug registers (DR0/DR7). Traps the exact
+ * linear address on access regardless of guest paging, so it does not
+ * collide with the guest's own demand-paging #PF handler the way the
+ * page-protection watch's host memory-access exits can. */
+static unsigned long long hw_watch_addr = 0;
+static int hw_watch_active = 0;
+static int hw_watch_rw = 1;    /* DR7 R/W0: 1=write(01b), 3=read/write(11b) */
+static int hw_watch_len = 8;   /* 1, 2, 4, or 8 bytes */
+static int hw_watch_hits = 0;
+static void hw_watch_init(void);
 
 static void die(const char *msg) { fprintf(stderr, "FATAL: %s\n", msg); exit(1); }
 
@@ -4583,20 +4623,57 @@ static int watch_hit_count = 0;
 static void watch_init(void) {
     if (!watch_addr || watch_addr >= guest_mem_size) return;
     watch_page_base = watch_addr & ~0xFFFULL;
+
+    /* Demand builds reserve guest RAM and commit/map it lazily in 2MB chunks
+       (see the demand-commit path). If the watched page's chunk is not yet
+       committed+mapped, WHvUnmapGpaRange fails and the watch never arms, and
+       a later demand-commit would remap the whole 2MB chunk WRITABLE, silently
+       clobbering the read-only watch. Fix both: commit+map the whole chunk now
+       so the demand-commit never touches it, then carve the 4KB page RO. */
+    unsigned long long chunk = 2ULL * 1024 * 1024;
+    unsigned long long cbase = (watch_page_base / chunk) * chunk;
+    unsigned long long clen = chunk;
+    if (cbase + clen > guest_mem_size) clen = guest_mem_size - cbase;
+    VirtualAlloc((unsigned char*)guest_mem + cbase, (size_t)clen, MEM_COMMIT, PAGE_READWRITE);
+    WHvUnmapGpaRange(partition, cbase, clen);   /* ignore failure: may be unmapped */
+    WHvMapGpaRange(partition, (unsigned char*)guest_mem + cbase, cbase, clen,
+        WHvMapGpaRangeFlagRead | WHvMapGpaRangeFlagWrite | WHvMapGpaRangeFlagExecute);
+
     memcpy(watch_prev, (unsigned char*)guest_mem + watch_addr, watch_size);
     watch_active = 1;
-    fprintf(stderr, "WATCH: 0x%llx (%d bytes), page 0x%llx\n", watch_addr, watch_size, watch_page_base);
+    fprintf(stderr, "WATCH: 0x%llx (%d bytes), page 0x%llx, chunk 0x%llx\n",
+        watch_addr, watch_size, watch_page_base, cbase);
+    if (watch_val_set) fprintf(stderr, "WATCH: value filter = 0x%llx\n", watch_val);
     fprintf(stderr, "WATCH: initial value=");
     for (int i = 0; i < watch_size; i++) fprintf(stderr, "%02x", watch_prev[i]);
     fprintf(stderr, "\n");
 
-    /* Remap the watched page as read+execute only (no write) */
-    HRESULT hr = WHvUnmapGpaRange(partition, watch_page_base, 4096);
-    if (FAILED(hr)) { fprintf(stderr, "WHvUnmapGpaRange: 0x%lx\n", hr); return; }
-    hr = WHvMapGpaRange(partition, (unsigned char*)guest_mem + watch_page_base,
+    /* Carve the watched 4KB page out of the chunk as read+execute only. */
+    WHvUnmapGpaRange(partition, watch_page_base, 4096);
+    HRESULT hr = WHvMapGpaRange(partition, (unsigned char*)guest_mem + watch_page_base,
         watch_page_base, 4096, WHvMapGpaRangeFlagRead | WHvMapGpaRangeFlagExecute);
-    if (FAILED(hr)) { fprintf(stderr, "WHvMapGpaRange(RX): 0x%lx\n", hr); return; }
+    if (FAILED(hr)) { fprintf(stderr, "WHvMapGpaRange(RX): 0x%lx\n", hr); watch_active = 0; return; }
     fprintf(stderr, "WATCH: page 0x%llx set to READ-ONLY (write traps enabled)\n", watch_page_base);
+}
+
+static void hw_watch_init(void) {
+    if (!hw_watch_active) return;
+    /* DR7 LEN encoding: 00=1B, 01=2B, 11=4B, 10=8B */
+    int lenbits = (hw_watch_len == 1) ? 0 : (hw_watch_len == 2) ? 1
+                : (hw_watch_len == 8) ? 2 : 3;
+    unsigned long long dr7 = (1ULL << 0)     /* L0: local enable DR0 */
+        | (1ULL << 8)                        /* LE: local exact */
+        | ((unsigned long long)(hw_watch_rw & 3) << 16)   /* R/W0 */
+        | ((unsigned long long)(lenbits & 3) << 18);      /* LEN0 */
+    WHV_REGISTER_NAME names[3] = { WHvX64RegisterDr0, WHvX64RegisterDr6, WHvX64RegisterDr7 };
+    WHV_REGISTER_VALUE vals[3];
+    memset(vals, 0, sizeof(vals));
+    vals[0].Reg64 = hw_watch_addr;   /* DR0 = watched linear address */
+    vals[1].Reg64 = 0;               /* DR6 = clear status */
+    vals[2].Reg64 = dr7;
+    HRESULT hr = WHvSetVirtualProcessorRegisters(partition, 0, names, 3, vals);
+    fprintf(stderr, "HWWATCH: DR0=0x%llx DR7=0x%llx rw=%d len=%d (hr=0x%lx)\n",
+        hw_watch_addr, dr7, hw_watch_rw, hw_watch_len, (unsigned long)hr);
 }
 
 static void dump_guest_regs(const char *reason, unsigned long long gpa) {
@@ -4645,83 +4722,106 @@ static int handle_watch_write(WHV_RUN_VP_EXIT_CONTEXT *ctx) {
 
     watch_hit_count++;
 
-    /* Check if this write overlaps our specific watched bytes */
-    int targets_watch = (gpa + 8 > watch_addr && gpa < watch_addr + (unsigned long long)watch_size);
-    if (targets_watch) {
-        dump_guest_regs("WRITE TO WATCHED ADDRESS", gpa);
-        fprintf(stderr, "WATCH: instruction bytes (%d): ", ctx->MemoryAccess.InstructionByteCount);
-        for (int i = 0; i < ctx->MemoryAccess.InstructionByteCount && i < 16; i++)
-            fprintf(stderr, "%02x ", ctx->MemoryAccess.InstructionBytes[i]);
-        fprintf(stderr, "\n");
-        return 2;
-    }
+    /* The writing instruction's RIP is the RIP at this memory-access exit. */
+    unsigned long long writer_rip = ctx->VpContext.Rip;
 
-    /* Non-target write on the same page. Emulate by temporarily unprotecting,
-       executing JUST this one instruction via the WHP instruction emulator
-       approach: unprotect → run → immediately cancel → re-protect.
-
-       But since cancel has latency, instead: unprotect, re-protect immediately
-       (the TLB might still have the writable entry), then resume. The CPU will
-       re-walk page tables on the next access and trap again if needed.
-
-       Actually simplest: just make writable, run until next exit, re-protect.
-       But we proved that loses the corruption. So instead: make writable,
-       immediately set the page writable in guest_mem, advance RIP past the
-       instruction, and don't run the VP at all. */
-
-    /* Perform the store ourselves: read instruction length, advance RIP */
-    unsigned int ilen = ctx->VpContext.InstructionLength;
-    if (ilen == 0) ilen = 1;  /* safety */
-
-    /* Make page writable momentarily so guest memory is coherent */
+    /* Let the write execute: unprotect the page, single-step the faulting
+       instruction via RFLAGS.TF (a real single-step; the old interrupt-window
+       trick did NOT retire a store under demand, so it re-trapped forever),
+       then re-protect. The TF #DB is host-intercepted (ExceptionExitBitmap
+       bit 1); we clear TF after. */
     WHvUnmapGpaRange(partition, watch_page_base, 4096);
     WHvMapGpaRange(partition, (unsigned char*)guest_mem + watch_page_base,
         watch_page_base, 4096, WHvMapGpaRangeFlagRead | WHvMapGpaRangeFlagWrite | WHvMapGpaRangeFlagExecute);
+    {
+        WHV_REGISTER_NAME fn = WHvX64RegisterRflags;
+        WHV_REGISTER_VALUE fv;
+        WHvGetVirtualProcessorRegisters(partition, 0, &fn, 1, &fv);
+        WHV_REGISTER_NAME names[2] = { WHvX64RegisterRflags, WHvRegisterInternalActivityState };
+        WHV_REGISTER_VALUE vals[2];
+        memset(vals, 0, sizeof(vals));
+        vals[0].Reg64 = fv.Reg64 | 0x100ULL;   /* set TF */
+        WHvSetVirtualProcessorRegisters(partition, 0, names, 2, vals);
+        WHV_RUN_VP_EXIT_CONTEXT step_ctx;
+        WHvRunVirtualProcessor(partition, 0, &step_ctx, sizeof(step_ctx));
+        if (step_ctx.ExitReason == WHvRunVpExitReasonX64IoPortAccess) handle_io(&step_ctx);
+        /* clear TF so we don't keep single-stepping the guest */
+        WHvGetVirtualProcessorRegisters(partition, 0, &fn, 1, &fv);
+        fv.Reg64 &= ~0x100ULL;
+        WHvSetVirtualProcessorRegisters(partition, 0, &fn, 1, &fv);
+    }
 
-    /* Execute just this one instruction by running with immediate cancel */
-    /* Actually: use a simpler trick — request an interrupt window exit,
-       which fires after the very next instruction */
-    WHV_REGISTER_NAME names[2];
-    WHV_REGISTER_VALUE vals[2];
-    memset(vals, 0, sizeof(vals));
-    names[0] = WHvRegisterDeliverabilityNotifications;
-    vals[0].DeliverabilityNotifications.InterruptNotification = 1;
-    names[1] = WHvRegisterInternalActivityState;
-    WHvSetVirtualProcessorRegisters(partition, 0, names, 2, vals);
-
-    WHV_RUN_VP_EXIT_CONTEXT step_ctx;
-    WHvRunVirtualProcessor(partition, 0, &step_ctx, sizeof(step_ctx));
-
-    /* Check if target changed */
+    /* Did the watched bytes change, and (if a value filter is set) to the
+       value we care about? If so, report the writer. Then always re-protect
+       and continue, so we can observe every writer, not just the first. */
     unsigned char *cur = (unsigned char*)guest_mem + watch_addr;
+    int reported = 0;
+    if (watch_report_all) {
+        /* Guest-armed: log the raw write target (GPA) + writer RIP for every
+           trapping write on the page, plus any changed 8-byte slot in the
+           watched window. Shows exactly where the just-armed code writes. */
+        if (watch_hit_count <= 400) {
+            WHV_REGISTER_NAME sn[2] = { WHvX64RegisterRsp, WHvX64RegisterR10 };
+            WHV_REGISTER_VALUE sv[2]; memset(sv, 0, sizeof(sv));
+            WHvGetVirtualProcessorRegisters(partition, 0, sn, 2, sv);
+            fprintf(stderr, "WATCH-PG #%d RIP=0x%llx GPA=0x%llx RSP=0x%llx R10=0x%llx\n",
+                    watch_hit_count, writer_rip, gpa, sv[0].Reg64, sv[1].Reg64);
+        }
+        if (memcmp(cur, watch_prev, watch_size) != 0) {
+            for (int s = 0; s + 8 <= watch_size; s += 8) {
+                if (memcmp(cur + s, watch_prev + s, 8) != 0) {
+                    unsigned long long nv = 0; memcpy(&nv, cur + s, 8);
+                    fprintf(stderr, "WATCH-W #%d RIP=0x%llx +%d = 0x%llx\n",
+                            watch_hit_count, writer_rip, s, nv);
+                }
+            }
+            memcpy(watch_prev, cur, watch_size);
+        }
+        /* Bound the burst: the watched heap page is hot, so disarm after a short
+           window (which covers the just-armed concat + the corrupting store) and
+           let the page go RW again so the run completes instead of storming. */
+        if (watch_hit_count >= 400) {
+            WHvUnmapGpaRange(partition, watch_page_base, 4096);
+            WHvMapGpaRange(partition, (unsigned char*)guest_mem + watch_page_base,
+                watch_page_base, 4096,
+                WHvMapGpaRangeFlagRead | WHvMapGpaRangeFlagWrite | WHvMapGpaRangeFlagExecute);
+            watch_active = 0; watch_report_all = 0;
+            fprintf(stderr, "GUEST-ARM WATCH: disarmed after %d writes\n", watch_hit_count);
+            return 1;
+        }
+        WHvUnmapGpaRange(partition, watch_page_base, 4096);
+        WHvMapGpaRange(partition, (unsigned char*)guest_mem + watch_page_base,
+            watch_page_base, 4096, WHvMapGpaRangeFlagRead | WHvMapGpaRangeFlagExecute);
+        return 1;
+    }
     if (memcmp(cur, watch_prev, watch_size) != 0) {
-        fprintf(stderr, "\nWATCH: TARGET MODIFIED after emulating hit #%d!\n", watch_hit_count);
-        fprintf(stderr, "Emulated instruction was at RIP=0x%llx\n", ctx->VpContext.Rip);
-        dump_guest_regs("state after target modification", gpa);
-        fprintf(stderr, "MEM[0x%llx]=", watch_addr);
-        for (int i = 0; i < watch_size; i++) fprintf(stderr, "%02x", cur[i]);
-        fprintf(stderr, " (prev=");
-        for (int i = 0; i < watch_size; i++) fprintf(stderr, "%02x", watch_prev[i]);
-        fprintf(stderr, ")\n");
+        unsigned long long newval = 0, oldval = 0;
+        int n = watch_size < 8 ? watch_size : 8;
+        memcpy(&newval, cur, n);
+        memcpy(&oldval, watch_prev, n);
+        if (!watch_val_set || newval == watch_val) {
+            fprintf(stderr, "\n=== WATCH WRITE #%d: writer RIP=0x%llx  [0x%llx] 0x%llx -> 0x%llx ===\n",
+                watch_hit_count, writer_rip, watch_addr, oldval, newval);
+            dump_guest_regs("writer state", gpa);
+            reported = 1;
+        }
         memcpy(watch_prev, cur, watch_size);
-        return 2;
     }
 
-    /* Handle the step exit if it was an I/O or other event */
-    if (step_ctx.ExitReason == WHvRunVpExitReasonX64IoPortAccess) {
-        handle_io(&step_ctx);
-    }
-
-    /* Re-protect */
+    /* Re-protect the page RO for the next write. */
     WHvUnmapGpaRange(partition, watch_page_base, 4096);
     WHvMapGpaRange(partition, (unsigned char*)guest_mem + watch_page_base,
         watch_page_base, 4096, WHvMapGpaRangeFlagRead | WHvMapGpaRangeFlagExecute);
 
+    /* With no value filter, stop on the first real write (old behaviour).
+       With a value filter, keep running to catch every matching write. */
+    if (reported && !watch_val_set) return 2;
     return 1;
 }
 
 /* forward declarations for GPU rasterizer */
 static void gpu_clear_fb(int color);
+static void gpu_fade_clear(int color);
 static void gpu_clear_depth(void);
 static void gpu_rasterize_triangles(int count);
 static void gpu_rasterize_band(unsigned int *fb, unsigned int *db, unsigned char *cmd,
@@ -4766,7 +4866,15 @@ static void handle_io(WHV_RUN_VP_EXIT_CONTEXT *ctx) {
         }
         /* COM1 OUT: buffer the byte for file output */
         if (port >= 0x3F8 && port <= 0x3FF) {
-            if (port == 0x3F8) output_buf_write((unsigned char)val);
+            if (port == 0x3F8) {
+                output_buf_write((unsigned char)val);
+                if (r10dump && (unsigned char)val == '\n') {
+                    WHV_REGISTER_NAME rns[2] = { WHvX64RegisterR10, WHvX64RegisterRsp };
+                    WHV_REGISTER_VALUE rvs[2];
+                    WHvGetVirtualProcessorRegisters(partition, 0, rns, 2, rvs);
+                    fprintf(stderr, "R10DUMP: R10=0x%llx RSP=0x%llx\n", rvs[0].Reg64, rvs[1].Reg64);
+                }
+            }
         }
         /* COM2 OUT: detect HEAP: for clean exit (old-seed compat) */
         else if (port >= 0x2F8 && port <= 0x2FF) {
@@ -4873,10 +4981,66 @@ static void handle_io(WHV_RUN_VP_EXIT_CONTEXT *ctx) {
         /* GPU triangle rasterizer commands */
         else if (port == 0x400) {
             gpu_rasterize_triangles(val);
-            gpu_atmosphere_glow();
+            if (gpu_cine) { gpu_cinematic_post(); sync_shadow_buffers(); gpu_cine_pace(); }
+            else gpu_atmosphere_glow();
+        }
+        else if (port == 0x410) {
+            gpu_cine = (int)val;
+        }
+        /* Guest-armable page-watch (ports 0x411 lo, 0x412 hi, 0x413 arm) */
+        else if (port == 0x411) { guest_watch_lo = (unsigned int)val; }
+        else if (port == 0x412) { guest_watch_hi = (unsigned int)val; }
+        else if (port == 0x413) {
+            /* Read the guest's live R10 (bump allocator) at this exit: that is
+               exactly where the very next heap allocation (the concat result)
+               will land, with no staleness from act-block machinery. */
+            WHV_REGISTER_NAME rn = WHvX64RegisterR10;
+            WHV_REGISTER_VALUE rv; memset(&rv, 0, sizeof(rv));
+            WHvGetVirtualProcessorRegisters(partition, 0, &rn, 1, &rv);
+            watch_addr = rv.Reg64;
+            watch_size = 64;      /* cover result+0..63 */
+            watch_val_set = 0;    /* report every write to the watched bytes */
+            watch_report_all = 1; /* log every changed slot + RIP, keep running */
+            watch_hit_count = 0;
+            fprintf(stderr, "GUEST-ARM WATCH: addr=0x%llx size=%d (guest port 0x413, tag=%llu)\n",
+                    watch_addr, watch_size, (unsigned long long)val);
+            watch_init();
+        }
+        /* Guest-armed DR (hardware) watch at live R10 + val(offset). DR traps
+           AFTER the write (no single-step) so it works under demand where the
+           page-watch's single-step-over-write fails. #DB is host-intercepted. */
+        else if (port == 0x414) {
+            WHV_REGISTER_NAME rn = WHvX64RegisterR10;
+            WHV_REGISTER_VALUE rv; memset(&rv, 0, sizeof(rv));
+            WHvGetVirtualProcessorRegisters(partition, 0, &rn, 1, &rv);
+            hw_watch_addr = rv.Reg64 + (unsigned long long)val;
+            hw_watch_len = 8; hw_watch_rw = 1; hw_watch_active = 1; hw_watch_hits = 0;
+            fprintf(stderr, "GUEST-ARM HWWATCH: DR0=0x%llx (R10=0x%llx + off=%llu)\n",
+                    hw_watch_addr, rv.Reg64, (unsigned long long)val);
+            hw_watch_init();
+        }
+        /* Arm DR at an EXPLICIT guest-provided address (0x411 lo, 0x412 hi) + val offset. */
+        else if (port == 0x415) {
+            unsigned long long a = ((unsigned long long)guest_watch_hi << 32) | guest_watch_lo;
+            hw_watch_addr = a + (unsigned long long)val;
+            hw_watch_len = 8; hw_watch_rw = 1; hw_watch_active = 1; hw_watch_hits = 0;
+            fprintf(stderr, "GUEST-ARM HWWATCH(explicit): DR0=0x%llx (addr=0x%llx + off=%llu)\n",
+                    hw_watch_addr, a, (unsigned long long)val);
+            hw_watch_init();
+        }
+        /* Print an explicit guest-provided address (0x411 lo, 0x412 hi) + hexdump 64B. */
+        else if (port == 0x416) {
+            unsigned long long a = ((unsigned long long)guest_watch_hi << 32) | guest_watch_lo;
+            fprintf(stderr, "GUEST-ADDR: 0x%llx (tag=%llu) bytes=", a, (unsigned long long)val);
+            if (a + 64 <= guest_mem_size)
+                for (int i = 0; i < 64; i++) fprintf(stderr, "%02x", *((unsigned char*)guest_mem + a + i));
+            fprintf(stderr, "\n");
         }
         else if (port == 0x401) {
             gpu_clear_fb(val);
+        }
+        else if (port == 0x40E) {
+            gpu_fade_clear(val);
         }
         else if (port == 0x402) {
             gpu_clear_depth();
@@ -5308,6 +5472,24 @@ static void gpu_clear_fb(int color) {
     for (int i = 0; i < total; i++) fb[i] = (unsigned int)color;
 }
 
+/* Persistence clear: blend the frame ~7/8 toward the target color instead
+   of wiping it, so moving sparks leave fading long-exposure trails. */
+static void gpu_fade_clear(int color) {
+    gpu_frame_ready = 0;
+    if (!gop_active || GOP_FB_ADDR + (unsigned long long)gop_width * gop_height * 4 > guest_mem_size) return;
+    unsigned int *fb = (unsigned int *)((unsigned char *)guest_mem + GOP_FB_ADDR);
+    int total = gop_width * gop_height;
+    int tr = (color>>16)&0xFF, tg = (color>>8)&0xFF, tb = color&0xFF;
+    for (int i = 0; i < total; i++) {
+        unsigned int p = fb[i];
+        int r = (p>>16)&0xFF, g = (p>>8)&0xFF, b = p&0xFF;
+        r = tr + (r - tr) * 7 / 8;
+        g = tg + (g - tg) * 7 / 8;
+        b = tb + (b - tb) * 7 / 8;
+        fb[i] = ((unsigned int)r<<16)|((unsigned int)g<<8)|(unsigned int)b;
+    }
+}
+
 static void gpu_clear_depth(void) {
     if (GPU_DEPTH_ADDR + (unsigned long long)gop_width * gop_height * 4 > guest_mem_size) return;
     unsigned int *db = (unsigned int *)((unsigned char *)guest_mem + GPU_DEPTH_ADDR);
@@ -5595,6 +5777,7 @@ typedef struct {
     unsigned int *db;
     unsigned char *cmd;
     int w, h, count;
+    int job;
     int band_y0, band_y1;
     HANDLE done_event;
 } GpuBand;
@@ -5611,7 +5794,8 @@ static DWORD WINAPI gpu_band_thread(LPVOID param) {
         WaitForSingleObject(gpu_start_events[id], INFINITE);
         if (!gpu_threads_running) break;
         GpuBand *b = &gpu_bands[id];
-        gpu_rasterize_band(b->fb, b->db, b->cmd, b->w, b->h, b->count, b->band_y0, b->band_y1);
+        if (b->job == 1) gpu_composite_band(b->fb, b->w, b->h, b->band_y0, b->band_y1);
+        else gpu_rasterize_band(b->fb, b->db, b->cmd, b->w, b->h, b->count, b->band_y0, b->band_y1);
         SetEvent(b->done_event);
     }
     return 0;
@@ -5639,7 +5823,9 @@ static void gpu_rasterize_band(unsigned int *fb, unsigned int *db, unsigned char
         unsigned int c0 = (unsigned int)tri[6], c1 = (unsigned int)tri[7], c2 = (unsigned int)tri[8];
         int d0 = tri[9], d1 = tri[10], d2 = tri[11];
         int u0 = tri[12], v0t = tri[13], u1 = tri[14], v1t = tri[15], u2 = tri[16], v2t = tri[17];
+        int additive = 0;
         int use_texture = (u0 | v0t | u1 | v1t | u2 | v2t) != 0;
+        if (gpu_cine) { additive = u0; use_texture = 0; }  /* u0: 0 opaque, 1 hard-add, 2 soft radial sprite (center u1,v1t radius u2) */
         int minx = x0 < x1 ? (x0 < x2 ? x0 : x2) : (x1 < x2 ? x1 : x2);
         int miny = y0 < y1 ? (y0 < y2 ? y0 : y2) : (y1 < y2 ? y1 : y2);
         int maxx = x0 > x1 ? (x0 > x2 ? x0 : x2) : (x1 > x2 ? x1 : x2);
@@ -5662,7 +5848,29 @@ static void gpu_rasterize_band(unsigned int *fb, unsigned int *db, unsigned char
                 if (bw0 >= 0 && bw1 >= 0 && bw2 >= 0) {
                     int depth = (d0 * bw0 + d1 * bw1 + d2 * bw2) / abs_area;
                     int idx = y * w + x;
-                    if ((unsigned int)depth < db[idx]) {
+                    if (additive == 1) {
+                        unsigned int ap = gpu_lerp_color(c0, c1, c2, bw0, bw1, bw2, abs_area);
+                        unsigned int dst = fb[idx];
+                        int arr = (int)((dst>>16)&0xFF) + (int)((ap>>16)&0xFF); if (arr > 255) arr = 255;
+                        int agg = (int)((dst>>8)&0xFF) + (int)((ap>>8)&0xFF); if (agg > 255) agg = 255;
+                        int abb = (int)(dst&0xFF) + (int)(ap&0xFF); if (abb > 255) abb = 255;
+                        fb[idx] = ((unsigned int)arr<<16)|((unsigned int)agg<<8)|(unsigned int)abb;
+                    } else if (additive == 2) {
+                        int ddx = x - u1, ddy = y - v1t;
+                        int dr2 = ddx*ddx + ddy*ddy;
+                        int r2 = u2*u2;
+                        if (r2 > 0 && dr2 < r2) {
+                            float tt = 1.0f - (float)dr2/(float)r2;
+                            float ff = tt*tt;
+                            unsigned int ap = gpu_lerp_color(c0, c1, c2, bw0, bw1, bw2, abs_area);
+                            int cr=(int)(((ap>>16)&0xFF)*ff), cg=(int)(((ap>>8)&0xFF)*ff), cb=(int)((ap&0xFF)*ff);
+                            unsigned int dst = fb[idx];
+                            int arr=(int)((dst>>16)&0xFF)+cr; if(arr>255)arr=255;
+                            int agg=(int)((dst>>8)&0xFF)+cg; if(agg>255)agg=255;
+                            int abb=(int)(dst&0xFF)+cb; if(abb>255)abb=255;
+                            fb[idx]=((unsigned int)arr<<16)|((unsigned int)agg<<8)|(unsigned int)abb;
+                        }
+                    } else if ((unsigned int)depth < db[idx]) {
                         unsigned int pixel;
                         if (use_texture) {
                             int u_interp = (u0 * bw0 + u1 * bw1 + u2 * bw2) / abs_area;
@@ -5753,6 +5961,7 @@ static void gpu_rasterize_triangles(int count) {
         gpu_bands[i].fb = fb;
         gpu_bands[i].db = db;
         gpu_bands[i].cmd = cmd;
+        gpu_bands[i].job = 0;
         gpu_bands[i].w = w;
         gpu_bands[i].h = h;
         gpu_bands[i].count = count;
@@ -5816,6 +6025,130 @@ static void gpu_atmosphere_glow(void) {
     }
 }
 
+/* ── Cinematic post: additive bloom + tonemap + teal/orange grade + vignette ── */
+static float *cine_bloom = NULL;
+static float *cine_tmp = NULL;
+
+/* Composite one horizontal band: add bloom, tonemap, grade, vignette.
+   Runs on the worker pool so the post pass holds a steady frame rate. */
+static void gpu_composite_band(unsigned int *fb, int w, int h, int y0, int y1) {
+    int bw = w / 4;
+    float cxf = w*0.5f, cyf = h*0.5f;
+    float maxd2 = cxf*cxf + cyf*cyf;
+    for (int y = y0; y <= y1; y++) {
+        for (int x = 0; x < w; x++) {
+            int idx = y*w + x;
+            unsigned int p = fb[idx];
+            float r = (float)((p>>16)&0xFF), g = (float)((p>>8)&0xFF), b = (float)(p&0xFF);
+            int bi = ((y>>2)*bw + (x>>2))*3;
+            r += cine_bloom[bi]*0.9f; g += cine_bloom[bi+1]*0.9f; b += cine_bloom[bi+2]*0.9f;
+            float rn = r/255.0f, gn = g/255.0f, bn = b/255.0f;
+            float ex = 1.25f; rn*=ex; gn*=ex; bn*=ex;
+            rn = rn/(1.0f+rn); gn = gn/(1.0f+gn); bn = bn/(1.0f+bn);
+            rn = (rn-0.5f)*1.28f + 0.5f;
+            gn = (gn-0.5f)*1.28f + 0.5f;
+            bn = (bn-0.5f)*1.28f + 0.5f;
+            float luma = 0.299f*rn + 0.587f*gn + 0.114f*bn;
+            float s = luma - 0.5f;
+            rn += s*0.12f; bn -= s*0.10f; gn += s*0.015f;
+            if (luma < 0.5f) { float sh = (0.5f-luma)*0.14f; bn += sh; gn += sh*0.5f; }
+            float dx = x-cxf, dy = y-cyf; float vd = (dx*dx+dy*dy)/maxd2;
+            float vig = 1.0f - 0.5f*vd;
+            rn*=vig; gn*=vig; bn*=vig;
+            int R=(int)(rn*255.0f), G=(int)(gn*255.0f), B=(int)(bn*255.0f);
+            if(R<0)R=0; if(R>255)R=255; if(G<0)G=0; if(G>255)G=255; if(B<0)B=0; if(B>255)B=255;
+            fb[idx] = ((unsigned int)R<<16)|((unsigned int)G<<8)|(unsigned int)B;
+        }
+    }
+}
+
+static void gpu_cinematic_post(void) {
+    if (!gop_active) return;
+    int w = gop_width, h = gop_height;
+    if (GOP_FB_ADDR + (unsigned long long)w * h * 4 > guest_mem_size) return;
+    unsigned int *fb = (unsigned int *)((unsigned char *)guest_mem + GOP_FB_ADDR);
+    int bw = w / 4, bh = h / 4;
+    if (bw < 1 || bh < 1) return;
+    size_t bcap = (size_t)(GOP_MAX_W/2) * (GOP_MAX_H/2) * 3;
+    if (!cine_bloom) cine_bloom = (float *)malloc(sizeof(float) * bcap);
+    if (!cine_tmp)   cine_tmp   = (float *)malloc(sizeof(float) * bcap);
+    if (!cine_bloom || !cine_tmp) return;
+    /* bright pass into half-res bloom buffer */
+    for (int y = 0; y < bh; y++) {
+        for (int x = 0; x < bw; x++) {
+            unsigned int p = fb[(y*4)*w + (x*4)];
+            float r = (float)((p>>16)&0xFF), g = (float)((p>>8)&0xFF), b = (float)(p&0xFF);
+            float lum = 0.299f*r + 0.587f*g + 0.114f*b;
+            float t = lum - 78.0f; if (t < 0) t = 0;
+            float k = t / 170.0f; if (k > 1.5f) k = 1.5f;
+            int i = (y*bw + x) * 3;
+            cine_bloom[i] = r*k; cine_bloom[i+1] = g*k; cine_bloom[i+2] = b*k;
+        }
+    }
+    /* separable gaussian blur, 2 iterations (soft wide bloom) */
+    static const float wt[5] = {0.2270f, 0.1940f, 0.1216f, 0.0540f, 0.0162f};
+    for (int pass = 0; pass < 2; pass++) {
+        for (int y = 0; y < bh; y++) {
+            for (int x = 0; x < bw; x++) {
+                float ar=0,ag=0,ab=0;
+                for (int k = -4; k <= 4; k++) {
+                    int xx = x + k; if (xx < 0) xx = 0; if (xx >= bw) xx = bw-1;
+                    float ww = wt[k<0?-k:k]; int i = (y*bw+xx)*3;
+                    ar += cine_bloom[i]*ww; ag += cine_bloom[i+1]*ww; ab += cine_bloom[i+2]*ww;
+                }
+                int o=(y*bw+x)*3; cine_tmp[o]=ar; cine_tmp[o+1]=ag; cine_tmp[o+2]=ab;
+            }
+        }
+        for (int y = 0; y < bh; y++) {
+            for (int x = 0; x < bw; x++) {
+                float ar=0,ag=0,ab=0;
+                for (int k = -4; k <= 4; k++) {
+                    int yy = y + k; if (yy < 0) yy = 0; if (yy >= bh) yy = bh-1;
+                    float ww = wt[k<0?-k:k]; int i = (yy*bw+x)*3;
+                    ar += cine_tmp[i]*ww; ag += cine_tmp[i+1]*ww; ab += cine_tmp[i+2]*ww;
+                }
+                int o=(y*bw+x)*3; cine_bloom[o]=ar; cine_bloom[o+1]=ag; cine_bloom[o+2]=ab;
+            }
+        }
+    }
+    /* composite + grade across the worker pool for a steady frame rate */
+    if (gpu_thread_count > 0) {
+        int band_h = h / gpu_thread_count;
+        HANDLE cdone[GPU_MAX_THREADS];
+        for (int i = 0; i < gpu_thread_count; i++) {
+            gpu_bands[i].job = 1;
+            gpu_bands[i].fb = fb;
+            gpu_bands[i].w = w; gpu_bands[i].h = h;
+            gpu_bands[i].band_y0 = i*band_h;
+            gpu_bands[i].band_y1 = (i==gpu_thread_count-1) ? h-1 : (i+1)*band_h-1;
+            cdone[i] = gpu_bands[i].done_event;
+            SetEvent(gpu_start_events[i]);
+        }
+        WaitForMultipleObjects(gpu_thread_count, cdone, TRUE, INFINITE);
+    } else {
+        gpu_composite_band(fb, w, h, 0, h-1);
+    }
+}
+
+__declspec(dllimport) unsigned int __stdcall timeBeginPeriod(unsigned int);
+static void gpu_cine_pace(void) {
+    static long long freq = 0;
+    LARGE_INTEGER li;
+    if (!freq) { timeBeginPeriod(1); QueryPerformanceFrequency(&li); freq = li.QuadPart ? li.QuadPart : 1; }
+    QueryPerformanceCounter(&li);
+    long long now = li.QuadPart;
+    if (gpu_cine_last) {
+        double elapsed_ms = (double)(now - gpu_cine_last) * 1000.0 / (double)freq;
+        double target = 16.6; /* ~60 fps cap */
+        if (elapsed_ms < target) {
+            int sms = (int)(target - elapsed_ms);
+            if (sms > 0 && sms < 100) Sleep(sms);
+            QueryPerformanceCounter(&li); now = li.QuadPart;
+        }
+    }
+    gpu_cine_last = now;
+}
+
 /* ── Shadow buffer sync (main thread only, between VP exits) ───────── */
 
 static void sync_shadow_buffers(void) {
@@ -5870,6 +6203,13 @@ int main(int argc, char **argv) {
         else if (!strcmp(argv[i], "-output") && i+1 < argc) output_file = argv[++i];
         else if (!strcmp(argv[i], "-watch") && i+1 < argc) watch_addr = strtoull(argv[++i], NULL, 0);
         else if (!strcmp(argv[i], "-watch-size") && i+1 < argc) watch_size = atoi(argv[++i]);
+        else if (!strcmp(argv[i], "-watch-val") && i+1 < argc) { watch_val = strtoull(argv[++i], NULL, 0); watch_val_set = 1; }
+        else if (!strcmp(argv[i], "-watchall") && i+1 < argc) { watch_addr = strtoull(argv[++i], NULL, 0); watch_report_all = 1; watch_size = 64; }
+        else if (!strcmp(argv[i], "-r10dump")) r10dump = 1;
+        else if (!strcmp(argv[i], "-dumpmem") && i+2 < argc) { dumpmem_addr = strtoull(argv[++i], NULL, 0); dumpmem_len = strtoull(argv[++i], NULL, 0); }
+        else if (!strcmp(argv[i], "-hwwatch") && i+1 < argc) { hw_watch_addr = strtoull(argv[++i], NULL, 0); hw_watch_active = 1; }
+        else if (!strcmp(argv[i], "-hwwatch-rw")) hw_watch_rw = 3;
+        else if (!strcmp(argv[i], "-hwwatch-len") && i+1 < argc) hw_watch_len = atoi(argv[++i]);
         else if (!strcmp(argv[i], "-debug")) debug_mode = 1;
         else if (!strcmp(argv[i], "-break") && i+1 < argc) {
             debug_mode = 1;
@@ -6077,6 +6417,8 @@ int main(int argc, char **argv) {
     WHV_REGISTER_VALUE shadow_gprs[16];
     int shadow_valid = 0;
 
+    hw_watch_init();
+
     for (;;) {
         /* ── Pre-run: inject pending interrupt if guest is ready ── */
         if (pending_irq >= 0) {
@@ -6247,7 +6589,30 @@ int main(int argc, char **argv) {
             unsigned long long exc_rip = ctx.VpContext.Rip;
             fprintf(stderr, "EXC: vec=%d RIP=0x%llx exits=%llu\n", vec, exc_rip, exits);
             if (vec == 1 || vec == 3) {
-                /* #DB (single-step) or #BP (INT3 breakpoint) */
+                /* #DB (single-step / debug-reg watchpoint) or #BP (INT3) */
+                if (vec == 1 && hw_watch_active) {
+                    /* Distinguish a DR data-breakpoint hit from a single-step
+                     * by inspecting DR6 (B0..B3 set => a DRn matched). */
+                    WHV_REGISTER_NAME d6n = WHvX64RegisterDr6;
+                    WHV_REGISTER_VALUE d6v;
+                    WHvGetVirtualProcessorRegisters(partition, 0, &d6n, 1, &d6v);
+                    if (d6v.Reg64 & 0xF) {
+                        hw_watch_hits++;
+                        unsigned long long wv = 0;
+                        if (hw_watch_addr + 8 <= guest_mem_size)
+                            memcpy(&wv, (unsigned char*)guest_mem + hw_watch_addr, 8);
+                        char rr[224];
+                        snprintf(rr, sizeof(rr),
+                            "HW WATCHPOINT #%d watch=0x%llx now=0x%llx (RIP is the instruction AFTER the access)",
+                            hw_watch_hits, hw_watch_addr, wv);
+                        dbg_crash_report(rr, hw_watch_addr, -1, g_kernel_path);
+                        /* clear DR6 status so the next match reports cleanly */
+                        WHV_REGISTER_VALUE z; z.Reg64 = 0;
+                        WHvSetVirtualProcessorRegisters(partition, 0, &d6n, 1, &z);
+                        if (hw_watch_hits >= 500) { fprintf(stderr, "HWWATCH: 500 hits, stopping.\n"); goto done; }
+                        break;  /* resume guest at RIP (data #DB is a trap) */
+                    }
+                }
                 if (vec == 1) {
                     /* Clear TF for single-step */
                     WHV_REGISTER_NAME fn = WHvX64RegisterRflags;
@@ -6617,6 +6982,20 @@ done:
         }
     }
     drain_guest_output();
+    if (dumpmem_addr && guest_mem && dumpmem_addr + dumpmem_len <= guest_mem_size) {
+        fprintf(stderr, "DUMPMEM 0x%llx len %llu:\n", dumpmem_addr, dumpmem_len);
+        unsigned char *base = (unsigned char*)guest_mem + dumpmem_addr;
+        for (unsigned long long off = 0; off < dumpmem_len; off += 16) {
+            fprintf(stderr, "  0x%llx:", dumpmem_addr + off);
+            for (int j = 0; j < 16 && off+j < dumpmem_len; j++) fprintf(stderr, " %02x", base[off+j]);
+            fprintf(stderr, "  |");
+            for (int j = 0; j < 16 && off+j < dumpmem_len; j++) {
+                unsigned char c = base[off+j];
+                fprintf(stderr, "%c", (c >= 32 && c < 127) ? c : '.');
+            }
+            fprintf(stderr, "|\n");
+        }
+    }
     if (output_file) dump_output_file(output_file);
     cleanup_whp();  /* also runs via atexit if we exit abnormally */
     if (ide.data) free(ide.data);

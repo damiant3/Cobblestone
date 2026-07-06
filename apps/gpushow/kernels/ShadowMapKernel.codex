@@ -1,0 +1,86 @@
+Chapter: ShadowMapKernel
+  cites Gpu chapter DeviceEffect
+  cites Gpu chapter DeviceMath
+
+ The depth pass of shadow mapping. The light is an orbiting directional source;
+ this pass renders the scene from the light's point of view into a 1024x1024
+ orthographic shadow map. One thread per shadow-map texel casts a ray along the
+ light direction from the light plane, finds the nearest of three spheres, and
+ stores the hit distance (or a large sentinel). The camera pass reads this buffer
+ to decide what is in shadow. Float math from DeviceMath.
+
+ We say:
+
+Section: Parameters
+
+  sm-res : Integer = 1024
+  sm-count : Integer = 3
+  sm-far : Integer = 8000000
+  sm-size : Real = 7.0
+  sm-dist : Real = 7.0
+
+Section: Scene
+
+  sm-cx : Integer -> Real
+  sm-cx (i) = if i == 0 then 0.0 else if i == 1 then 0.0 - 1.5 else 1.4
+
+  sm-cy : Integer -> Real
+  sm-cy (i) = if i == 0 then 1.05 else if i == 1 then 0.6 else 0.75
+
+  sm-cz : Integer -> Real
+  sm-cz (i) = if i == 0 then 0.0 else if i == 1 then 0.6 else 0.0 - 0.5
+
+  sm-rad : Integer -> Real
+  sm-rad (i) = if i == 0 then 0.85 else if i == 1 then 0.6 else 0.65
+
+  sm-hit : Real, Real, Real, Real, Real, Real, Integer -> Real
+  sm-hit (ox) (oy) (oz) (dx) (dy) (dz) (i) =
+    let lx = ox - sm-cx i
+    in let ly = oy - sm-cy i
+    in let lz = oz - sm-cz i
+    in let b = dx * lx + dy * ly + dz * lz
+    in let r = sm-rad i
+    in let c = lx * lx + ly * ly + lz * lz - r * r
+    in let disc = b * b - c
+    in if disc < 0.0 then 0.0 - 1.0
+    else let t = 0.0 - b - real-sqrt disc
+    in if t > 0.0 then t else 0.0 - 1.0
+
+  sm-nearest : Real, Real, Real, Real, Real, Real, Integer, Real -> Real
+  sm-nearest (ox) (oy) (oz) (dx) (dy) (dz) (i) (best) =
+    if i >= sm-count then best
+    else let t = sm-hit ox oy oz dx dy dz i
+    in let nb = if t > 0.0 then (if best < 0.0 then t else if t < best then t else best) else best
+    in sm-nearest ox oy oz dx dy dz (i + 1) nb
+
+Section: Depth Kernel
+
+ The light direction orbits; its basis is derived from world-up. The texel maps
+ to a start point on the light plane; the ray marches along the light direction.
+
+  shadowmap-step : Integer, Integer, Integer -> [Device] Integer
+  shadowmap-step (shadowbuf) (frame) (gid) =
+    let tu = real-from-int (gid - (gid / sm-res) * sm-res) / 1024.0
+    in let tv = real-from-int (gid / sm-res) / 1024.0
+    in let la = real-from-int frame / 40.0
+    in let rlx = real-cos la * 0.62
+    in let rlz = real-sin la * 0.62
+    in let ll = real-sqrt (rlx * rlx + 0.6084 + rlz * rlz)
+    in let lx = rlx / ll
+    in let ly = (0.0 - 0.78) / ll
+    in let lz = rlz / ll
+    in let rgl = real-sqrt (lz * lz + lx * lx)
+    in let rx = lz / rgl
+    in let ry = 0.0
+    in let rz = 0.0 - lx / rgl
+    in let ux = ly * rz - lz * ry
+    in let uy = lz * rx - lx * rz
+    in let uz = lx * ry - ly * rx
+    in let ox = 0.0 - lx * sm-dist + (tu - 0.5) * sm-size * rx + (tv - 0.5) * sm-size * ux
+    in let oy = 0.35 - ly * sm-dist + (tu - 0.5) * sm-size * ry + (tv - 0.5) * sm-size * uy
+    in let oz = 0.0 - lz * sm-dist + (tu - 0.5) * sm-size * rz + (tv - 0.5) * sm-size * uz
+    in let t = sm-nearest ox oy oz lx ly lz 0 (0.0 - 1.0)
+    in let depv = if t < 0.0 then sm-far else real-to-int (t * 256.0)
+    in act
+    device-store shadowbuf gid depv
+    end

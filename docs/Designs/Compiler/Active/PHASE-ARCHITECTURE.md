@@ -6,8 +6,216 @@ place across all 8 frontend phases (CLs 500, 552, 632–645, 2135,
 2169). ConstructedTy resolution and lambda lifting were extracted
 from the x86 emitter into their own phases with independent compact
 cycles (CLs 2135, 2148, 2157, 2169). The emitter wall is enforced
-(CL 644). Outstanding: escape invariant enforcement, TCO reset
-removal, survey tightening, lower-phase bivy reduction.
+(CL 644). **Escape-invariant enforcement is live for the pinned
+roots (2026-07-04, blu — see "Escape invariant: instrument repair
+and first real result" below): the pmap precise walker works, its
+self-test runs on every compile, escape hits self-locate, and the
+first real measurement found and fixed two genuine dangling deck
+pointers (AChapter.rt-budgets / AChapter.conversions shallow-copied
+by copy-as-chapter).** Outstanding: precise roots for the CHECK and
+LOWER phases, TCO reset removal, survey tightening, lower-phase bivy
+reduction.
+
+## Escape invariant: instrument repair and first real result (2026-07-04)
+
+Why this stayed uncracked: the enforcement scaffolding existed
+(conservative deck scan + a pmap typed walker behind `-EscapeCheck`),
+but the instrument itself had silently rotted, so every "PRECISE
+escape: 0" was vacuous and the conservative counts (hundreds of
+thousands of hits, mostly integers that happen to look like bivy
+addresses) were untriageable. Two drift classes had broken the
+walker, and its own self-test knew (`pmap-walk self-test FAILED: got
+0 (expect 3)`) — but the failure was a warning behind an off-by-
+default flag, so nobody saw it.
+
+Fixed (blu, same day):
+
+1. **Tag drift closed by construction.** `emit-const-codextype`
+   hardcoded CodexType tag literals from an ordering that predates
+   the Real* variants moving next to RealTy — every tag from TextTy
+   up was wrong, so table descriptors decoded as the wrong
+   constructor and the walk fell through to zero. Tags are now read
+   off LIVE CodexType values at emit time (`live-type-tag`: a boxed
+   variant's value is its address; qword 0 is its tag), so tag
+   renumbering can never desynchronize the table again. Mixed-width
+   ctor slots (ForAllTy's 4-byte id) are written in width order to
+   match `sum-ctor-field-offset`.
+2. **The self-test is always-on.** `pmap-selftest-bag True` in the
+   compile pipeline — every compile of every program checks the
+   running compiler's own baked table (cost: four small allocations
+   and a three-pointer walk). Layout drift now fires a CDX9003
+   warning in every battery log instead of hiding for months. It is
+   a warning, not an error, deliberately: a generation-1 bootstrap
+   binary (new emission code, old-seed-emitted table) must still be
+   able to compile generation 2.
+3. **Escape hits self-locate.** The walker threads a location
+   context (record type + field name, existing Texts only — no
+   per-visit allocation) and prints `CDX9003-AT: <Type.field>` at
+   each hit under `-EscapeCheck`.
+
+First real measurement (selfhost, seed AB11135E generation): PARSE
+root Document — clean. SCOPE root AChapter — **2 real dangling
+pointers**: `AChapter.rt-budgets` and `AChapter.conversions`,
+shallow-copied by `copy-as-chapter` while every sibling field is
+deep-copied (the fields were added after the copier was written —
+rt-budgets with `punctual`, conversions with unit types). Both
+pointed into the reclaimed SCOPE bivy; the emitter reads rt-budgets
+for CDX6010/6011 budgets, i.e. the exact BS3 `sort-bindings-loop`
+latent-corruption class. Fixed in the same CL (deep copies). After
+the fix: SCOPE/AChapter precise count is 0.
+
+The residual honest gaps: precise walks are pinned only for the
+PARSE (Document) and SCOPE (AChapter) roots; CHECK and LOWER outputs
+have no typed root walk yet, and the conservative scan alone cannot
+distinguish their real escapes from false positives. The copying
+compactor this machinery is meant to drive stays blocked on
+extending the precise roots, not on the walker anymore.
+
+## The deck-liveness map (2026-07-04, second result)
+
+The founding intent for this architecture (Damian): decks hold
+durables deeply, bivies hold scratch, run a phase in bivy and
+deep-copy the survivors back when needed, and remove late-phase
+dependencies on early decks so the early decks become dead space the
+late game can overwrite. Four prior runs at "the memory issue"
+stalled because nobody could prove which decks were actually dead —
+the escape instrument was broken, so liveness was guesswork.
+
+With the walker repaired, the map is now a diagnostic: under
+`-EscapeCheck`, `compile-frontend-cdx` walks the emitter's exact
+inputs (`cdx-ir`, the IRChapter; `stds`, the sorted TypeBindings —
+the ONLY two values `x86-64-emit-cdx` receives) against the live
+deck segments and reports `DECK-LIVE <root> -> <segment>: N ref(s)`.
+
+First measurement (selfhost, CDX mode, seed 09DF0CE4 generation):
+
+| emit input | pre-scope (frontend keep) | SCOPE | CHECK | LOWER |
+|---|---|---|---|---|
+| cdx-ir | 0 | 0 | 0 | 0 |
+| stds | 0 | 0 | **3,511** | 0 |
+
+Two conclusions. First, the IR is fully self-contained: the LOWER
+reservation-copy (`rewrite-ir-defs`) carried every name forward, so
+the long-standing worry that emit-time names still point into the
+lexer/scoper decks is FALSE for the CDX path. Second, the entire
+dead-middle prize hangs on one strand: `sort-bindings` copies the
+TypeBinding list spine into the RESOLVE deck but the `bound-type`
+CodexType graphs behind it still live in the CHECK deck — 3,511
+pointers pinning the single biggest deck (~69 MB, plus transitively
+the ~37 MB of frontend-keep + SCOPE below it, since nothing else
+from the emit inputs reaches those either).
+
+## Poison-compact: the second broken-watchdog finding (2026-07-04, third result)
+
+Damian's directive to "test clean" under the phase-specific poison
+(`-PoisonCompact`: each compact fills its reclaimed range with a
+per-phase byte, 0xA1 lex .. 0xA9 frontend) found the same pattern as
+the escape walker: **the detector existed and the selfhost was
+already red on main** — 21 CDX2000 `unresolved type` errors at emit,
+identical on every seed generation tested (8CA1E63B, 09DF0CE4,
+current). Nobody had been running the gate.
+
+Diagnosis chain (each step verified by rebuild + rerun; the emit
+error was instrumented to print the annotation address + first
+qword, and a repeated poison byte names the guilty phase):
+
+1. Tags read 0xA5 = CHECK's poison: emit reads type data that died
+   at the check compact. The holes are all one class (durables left
+   in scratch): `sort-expr-types` was the one un-deck-wrapped
+   allocation in the CHECK tail (the sorted expr-types SPINE — the
+   exact table lowering reads; deck-wrapped this CL), and the
+   binding/expr-type GRAPHS behind it live in check SCRATCH because
+   `check-all-defs` runs deck-exited and `deep-resolve` SHARES every
+   typevar-free subtree instead of copying.
+2. A prototype structural type copier (depth-capped, null-tolerant)
+   at the CHECK tail took the failure set from 21 sites to 8 under
+   poison — the residual 8 are annotations still carrying TypeVars,
+   resolved at LOWER time through the (by then poisoned)
+   check-scratch substitutions table. Copying or pre-resolving the
+   substitutions wholesale CRASHES under poison — GPF (CR2=0,
+   non-canonical poison-byte pointers) — because the substitution
+   graphs already dangle into SCOPE-poisoned scratch at check time:
+   the live compile only ever touches the check-era subset of those
+   graphs; any full sweep walks into the dead zone. The prototype
+   also failed the TEXT-mode gate on its first full pipeline run,
+   so it ships with the campaign stage below, not tonight — the
+   diagnosis is the deliverable; the copies must land phase-by-phase
+   with the gates.
+3. Root: the SCOPE phase output is not deck-disciplined
+   (`scope-achapter` runs outside `deck-record`; its result graph
+   lives in scope scratch and survives by overwrite-luck). This is
+   the founding "put the durables on deck, all of them, deeply"
+   discipline, unfinished for SCOPE and the checker's tables.
+
+## Campaign outcome: GREEN (2026-07-05, blu CLs 7098 + 7100)
+
+The "invalid nodes" finding above was REFUTED by four probe cycles
+before the fix landed; the record is kept because the reframe is
+the lesson:
+
+1. A 200 MB dead pad at the check tail (geometry probe)
+   self-compiles clean and fixed-points — downstream is not
+   layout-sensitive.
+2. A crash-proof read-only deep walk of every expr-type graph
+   (range-check BEFORE peek) found 87,518 entries, 30,055,417 node
+   visits, ZERO invalid nodes. The "misaligned garbage" diagnosis
+   was an artifact of the alignment heuristic — heap boxes are not
+   8-aligned, and the guard silently skipped ~87k VALID nodes.
+3. A memoized re-walk visits only 3.37M nodes: ~9x sharing
+   multiplicity. The unguarded prototype was not walking into bad
+   data — it was UNSHARING the closure into 2-3 GB of copies on a
+   3 GB machine and marching R10 through the stack. The guarded
+   prototype's "layout-dependent" crashes were the alignment
+   guard's parity-random pruning making the copy volume a
+   per-build lottery (measured swinging 7.84M to 96.7k boxes
+   between consecutive builds).
+4. lookup-expr-type instrumentation: lowering consults 98.2% of
+   entries — no lazy-subset shortcut exists.
+
+**As built (CL 7098):** the Deep Type Copy section is a MEMOIZED
+graph copy — open-addressing address-to-copy table (key32/val32,
+Fibonacci top-bits index, probe fuel, claim-before-recurse so
+cycle back-edges receive originals), four typed side lists as the
+read-back vehicle, alignment guard deleted, every degraded path
+returns the original box. The check tail runs sort, then
+`resolve-all-bindings` / `resolve-all-expr-types` (pre-resolve
+WHILE the substitutions are alive — essential: copies alone scored
+21 to 20 because lowering's deep-resolve on typevar-carrying
+entries pulls original scratch subtrees back in through the
+substitutions table), then copies both closures through ONE shared
+memo. Result: poison 21 -> 0 with the poisoned output
+byte-identical to the normal compile.
+
+**Reclaim as built (CL 7100):** CHECK reservation-copy in the
+parse-keep shape. A check-keep deck is reserved BELOW the check
+scratch deck (`survey-check-keep-mul` 64, base 4 MB; CDX9002
+headroom-retry as the net); CHECK plus the tail sorts and
+pre-resolve run on scratch; `__deck-set` points the deck at the
+reservation and the memo copies land there with the full survivor
+set (substitutions and row-substitutions through the same memo,
+both bags via `copy-sx-bag`, heap-marks spine, phase-metrics
+rebuilt); one compact reclaims the scratch deck, the pre-resolve
+intermediates, the memo table and side lists, and the reservation
+tail. Post-check-compact mark: 585.4 MB (memo, pre-reclaim) ->
+371.6 MB — BELOW the 429.9 MB pre-memo baseline, because the
+superseded check deck is reclaimed too. Poison stays green and
+byte-identical; the DECK-LIVE emit-input map reads zero into every
+pre-keep segment.
+
+Remaining items:
+
+1. **Pin:** keep the DECK-LIVE map in an `-EscapeCheck` battery run
+   so a future field addition that re-pins a dead deck is caught
+   the day it lands (the copy-as-chapter lesson generalized).
+   Caveat learned: after address recycling the map's SEGMENT LABELS
+   decay (the keep layer reports under old scratch ranges; ranges
+   from different phase metrics overlap) — treat poison-compact as
+   ground truth and the map as a relative-motion instrument.
+2. **Transient peak:** the CHECK reservation itself (survey mul,
+   was 400 for plug type-density) dominates the in-phase peak
+   (~1.5 GB with the keep reservation added). DynamicSurvey's
+   CDX9002 auto-retry makes lowering the default safe; halved to
+   200 in the CL that carries this doc update.
 
 **Empirical limit observed (2026-05-02 audit):** within-phase scratch
 that the discipline reclaims is small — bivy-usage measured at 16

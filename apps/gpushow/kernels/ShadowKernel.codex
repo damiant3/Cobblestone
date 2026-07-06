@@ -1,0 +1,189 @@
+Chapter: ShadowKernel
+  cites Gpu chapter DeviceEffect
+  cites Gpu chapter DeviceMath
+
+ Ray-traced soft shadows as a [Device] compute kernel. The same three-sphere,
+ checkered-floor scene, lit by an overhead AREA light: each pixel that sees a
+ surface casts a 3x3 grid of shadow rays toward points spread across the light
+ disk and averages the visibility, so shadows have a soft penumbra instead of a
+ hard edge. This is the reference site's "ray traced shadows" technique, from
+ Codex [Device] AST. The soft-shadow sampler and the per-sample occlusion test
+ are tail-recursive folds the plug lowers to nested WGSL loops. Real math from
+ Gpu chapter DeviceMath.
+
+ We say:
+
+Section: Parameters
+
+  sd-width : Integer = 1024
+  sd-half-w : Integer = 512
+  sd-half-h : Integer = 384
+  sd-nobj : Integer = 4
+  sd-samples : Integer = 9
+
+Section: Scene Table
+
+  sd-cx : Integer -> Real
+  sd-cx (i) = if i == 0 then 0.0 else if i == 1 then 0.0 - 1.7 else 1.6
+
+  sd-cy : Integer -> Real
+  sd-cy (i) = if i == 0 then 0.0 else if i == 1 then 0.0 - 0.35 else 0.0 - 0.45
+
+  sd-cz : Integer -> Real
+  sd-cz (i) = if i == 0 then 0.0 else if i == 1 then 0.5 else 0.0 - 0.4
+
+  sd-rad : Integer -> Real
+  sd-rad (i) = if i == 0 then 1.0 else if i == 1 then 0.65 else 0.55
+
+  sd-col-r : Integer -> Real
+  sd-col-r (i) = if i == 0 then 0.90 else if i == 1 then 0.35 else 0.80
+
+  sd-col-g : Integer -> Real
+  sd-col-g (i) = if i == 0 then 0.55 else if i == 1 then 0.75 else 0.45
+
+  sd-col-b : Integer -> Real
+  sd-col-b (i) = if i == 0 then 0.35 else if i == 1 then 0.55 else 0.95
+
+Section: Intersection
+
+  sd-sphere-hit : Real, Real, Real, Real, Real, Real, Integer -> Real
+  sd-sphere-hit (ox) (oy) (oz) (dx) (dy) (dz) (i) =
+    let lx = ox - sd-cx i
+    in let ly = oy - sd-cy i
+    in let lz = oz - sd-cz i
+    in let b = dx * lx + dy * ly + dz * lz
+    in let r = sd-rad i
+    in let c = lx * lx + ly * ly + lz * lz - r * r
+    in let disc = b * b - c
+    in if disc < 0.0 then 0.0 - 1.0
+    else let t = 0.0 - b - real-sqrt disc
+    in if t > 0.001 then t else 0.0 - 1.0
+
+  sd-plane-hit : Real, Real -> Real
+  sd-plane-hit (oy) (dy) =
+    if dy > 0.0 - 0.0001 then 0.0 - 1.0
+    else let t = (0.0 - 1.0 - oy) / dy
+    in if t > 0.001 then t else 0.0 - 1.0
+
+  sd-hit : Real, Real, Real, Real, Real, Real, Integer -> Real
+  sd-hit (ox) (oy) (oz) (dx) (dy) (dz) (id) =
+    if id == 3 then sd-plane-hit oy dy
+    else sd-sphere-hit ox oy oz dx dy dz id
+
+  sd-nearest : Real, Real, Real, Real, Real, Real, Integer, Integer, Real -> Integer
+  sd-nearest (ox) (oy) (oz) (dx) (dy) (dz) (i) (best-id) (best-t) =
+    if i >= sd-nobj then best-id
+    else let t = sd-hit ox oy oz dx dy dz i
+    in let take = if t > 0.001 then (if best-t < 0.0 then 1 else if t < best-t then 1 else 0) else 0
+    in if take == 1 then sd-nearest ox oy oz dx dy dz (i + 1) i t
+    else sd-nearest ox oy oz dx dy dz (i + 1) best-id best-t
+
+Section: Soft Shadow
+
+ The occlusion test: any sphere hit along the shadow ray blocks the sample.
+
+  sd-occluded : Real, Real, Real, Real, Real, Real, Integer -> Integer
+  sd-occluded (ox) (oy) (oz) (dx) (dy) (dz) (i) =
+    if i >= 3 then 0
+    else let t = sd-sphere-hit ox oy oz dx dy dz i
+    in if t > 0.001 then 1
+    else sd-occluded ox oy oz dx dy dz (i + 1)
+
+ Light samples: a 3x3 grid across a disk at height 6, radius ~1.1.
+
+  sd-off-x : Integer -> Real
+  sd-off-x (i) = real-from-int (i - (i / 3) * 3 - 1) * 1.1
+
+  sd-off-z : Integer -> Real
+  sd-off-z (i) = real-from-int (i / 3 - 1) * 1.1
+
+ Fold over the 9 light samples, counting how many are visible from the hit
+ point (each is a normalized shadow ray toward that light-disk point). The disk
+ is centred at (lx, 6, lz), which orbits with the frame so the shadows sweep.
+
+  sd-soft : Real, Real, Real, Real, Real, Integer, Integer -> Integer
+  sd-soft (hx) (hy) (hz) (lx) (lz) (i) (acc) =
+    if i >= sd-samples then acc
+    else let ddx = lx + sd-off-x i - hx
+    in let ddy = 6.0 - hy
+    in let ddz = lz + sd-off-z i - hz
+    in let dl = real-sqrt (ddx * ddx + ddy * ddy + ddz * ddz)
+    in let ux = ddx / dl
+    in let uy = ddy / dl
+    in let uz = ddz / dl
+    in let occ = sd-occluded (hx + ux * 0.003) (hy + uy * 0.003) (hz + uz * 0.003) ux uy uz 0
+    in let vis = if occ == 1 then 0 else 1
+    in sd-soft hx hy hz lx lz (i + 1) (acc + vis)
+
+Section: Shading
+
+  sd-clamp01 : Real -> Real
+  sd-clamp01 (x) = real-max 0.0 (real-min 1.0 x)
+
+  sd-pack : Real, Real, Real -> Integer
+  sd-pack (r) (g) (b) =
+    let ri = real-to-int (sd-clamp01 r * 255.0)
+    in let gi = real-to-int (sd-clamp01 g * 255.0)
+    in let bi = real-to-int (sd-clamp01 b * 255.0)
+    in ri * 65536 + gi * 256 + bi
+
+  sd-sky : Real -> Integer
+  sd-sky (dy) =
+    let h = sd-clamp01 (dy * 0.5 + 0.5)
+    in sd-pack (0.06 + h * 0.07) (0.10 + h * 0.15) (0.24 + h * 0.40)
+
+  sd-checker : Real, Real -> Real
+  sd-checker (hx) (hz) =
+    let ix = real-to-int (hx + 64.0)
+    in let iz = real-to-int (hz + 64.0)
+    in let s = ix + iz
+    in if s - (s / 2) * 2 == 0 then 0.38 else 0.66
+
+Section: Render
+
+ Per pixel: primary ray, nearest hit, Lambert toward the light centre scaled by
+ the fraction of the light disk that is visible (the soft shadow term).
+
+  sd-render : Integer, Integer -> Integer
+  sd-render (gid) (frame) =
+    let px = gid - (gid / sd-width) * sd-width
+    in let py = gid / sd-width
+    in let fx = real-from-int (px - sd-half-w) / 384.0
+    in let fy = real-from-int (sd-half-h - py) / 384.0
+    in let rl = real-sqrt (fx * fx + fy * fy + 2.89)
+    in let dx = fx / rl
+    in let dy = fy / rl
+    in let dz = 1.7 / rl
+    in let ox = 0.0
+    in let oy = 0.7
+    in let oz = 0.0 - 4.0
+    in let id = sd-nearest ox oy oz dx dy dz 0 (0 - 1) (0.0 - 1.0)
+    in if id < 0 then sd-sky dy
+    else let t = sd-hit ox oy oz dx dy dz id
+    in let hx = ox + dx * t
+    in let hy = oy + dy * t
+    in let hz = oz + dz * t
+    in let nx = if id == 3 then 0.0 else (hx - sd-cx id) / sd-rad id
+    in let ny = if id == 3 then 1.0 else (hy - sd-cy id) / sd-rad id
+    in let nz = if id == 3 then 0.0 else (hz - sd-cz id) / sd-rad id
+    in let br = if id == 3 then sd-checker hx hz else sd-col-r id
+    in let bg = if id == 3 then sd-checker hx hz else sd-col-g id
+    in let bb = if id == 3 then sd-checker hx hz else sd-col-b id
+    in let ang = real-from-int frame / 30.0
+    in let lx = real-cos ang * 3.0
+    in let lz = real-sin ang * 3.0
+    in let lcx = lx - hx
+    in let lcy = 6.0 - hy
+    in let lcz = lz - hz
+    in let lcl = real-sqrt (lcx * lcx + lcy * lcy + lcz * lcz)
+    in let ndl = real-max 0.0 (nx * lcx / lcl + ny * lcy / lcl + nz * lcz / lcl)
+    in let vis = real-from-int (sd-soft hx hy hz lx lz 0 0) / 9.0
+    in let lit = 0.18 + ndl * 0.92 * vis
+    in sd-pack (br * lit) (bg * lit) (bb * lit)
+
+Section: Shadow Kernel
+
+  shadow-step : Integer, Integer, Integer -> [Device] Integer
+  shadow-step (outb) (frame) (gid) = act
+    device-store outb gid (sd-render gid frame)
+  end

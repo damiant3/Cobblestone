@@ -1,0 +1,76 @@
+Chapter: TextureKernel
+  cites Gpu chapter DeviceEffect
+
+ Texture mapping from Codex [Device] AST: a Mode-7-style perspective ground
+ plane. One GPU thread per pixel projects the pixel onto an infinite textured
+ floor, tiles the world coordinate into a 256x256 texture the host uploaded into
+ a storage buffer, samples the texel (device-load), and fogs it by distance. The
+ floor scrolls with the frame. This is the reference site's "texture" technique
+ -- the sampling and perspective are real Codex, reading a real uploaded texture.
+
+ The texture is a 256x256 array of packed RGB integers at binding 0; the output
+ framebuffer is binding 1. Integer fixed point throughout.
+
+ We say:
+
+Section: Parameters
+
+  tx-width : Integer = 1024
+  tx-half-w : Integer = 512
+  tx-horizon : Integer = 300
+  tx-focal : Integer = 420
+  tx-scale : Integer = 52000
+
+Section: Tiling and Colour
+
+  tx-tile : Integer -> Integer
+  tx-tile (w) = let m = w - (w / 256) * 256 in if m < 0 then m + 256 else m
+
+  tx-sky : Integer -> Integer
+  tx-sky (py) =
+    let h = py * 255 / tx-horizon
+    in let r = 20 + h * 20 / 255
+    in let g = 30 + h * 40 / 255
+    in let b = 60 + h * 120 / 255
+    in r * 65536 + g * 256 + b
+
+ Fog by screen-space depth: far (near the horizon, small sy) fades to a haze.
+
+  tx-shade : Integer, Integer -> Integer
+  tx-shade (texel) (fog) =
+    let r = texel / 65536
+    in let g = texel / 256 - (texel / 65536) * 256
+    in let b = texel - (texel / 256) * 256
+    in let hr = 60
+    in let hg = 70
+    in let hb = 95
+    in let sr = (r * fog + hr * (256 - fog)) / 256
+    in let sg = (g * fog + hg * (256 - fog)) / 256
+    in let sb = (b * fog + hb * (256 - fog)) / 256
+    in sr * 65536 + sg * 256 + sb
+
+Section: Texture Kernel
+
+ Per pixel: below the horizon, perspective-divide to a ground distance, find the
+ world coordinate (scrolling with the frame), tile it into the texture, sample,
+ and fog. Above the horizon, draw the sky. The texel is always loaded (index 0
+ for sky pixels) so the device-load is unconditional.
+
+  texture-step : Integer, Integer, Integer, Integer -> [Device] Integer
+  texture-step (texbuf) (outb) (frame) (gid) =
+    let px = gid - (gid / tx-width) * tx-width
+    in let py = gid / tx-width
+    in let sy = py - tx-horizon
+    in let sky = sy <= 0
+    in let d = if sky then 1 else tx-scale / sy
+    in let wx = (px - tx-half-w) * d / tx-focal
+    in let wz = d + frame * 3
+    in let u = tx-tile wx
+    in let v = tx-tile wz
+    in let idx = if sky then 0 else v * 256 + u
+    in let fog = if sy > 256 then 256 else sy
+    in act
+    texel <- device-load texbuf idx
+    let out = if sky then tx-sky py else tx-shade texel fog
+    in device-store outb gid out
+    end

@@ -1,0 +1,88 @@
+Chapter: FireworksKernel
+  cites Gpu chapter DeviceEffect
+  cites Gpu chapter Thread
+
+ The [Device] shader form of the bare-metal fireworks simulation. One GPU
+ thread owns one spark. Each thread derives its spark's launch angle and
+ speed from its global index, integrates the ballistic arc under gravity
+ for the current frame, fades the color over the spark's life, and writes
+ the packed pixel back to a global output buffer. Compiled through the PTX
+ and SPIR-V plugs, the [Device]-effected kernels below become real GPU
+ shader code -- the same physics the CPU preview runs, now per-thread.
+
+ The kernel entry points take a trailing `gid` parameter: the PTX plug
+ wraps each in a launch stub that computes the global thread id as
+ thread-idx-x + block-idx-x * block-dim-x and dispatches one invocation
+ per spark. Angles are milliradian-scaled (0..6283) and the trig helpers
+ return 1/1000 fixed point, so all arithmetic stays integer and the GPU
+ spark positions match the host preview exactly. The trig is pure device
+ math; only the kernels that touch global memory carry the Device effect.
+
+ We say:
+
+Section: Fixed-Point Trig
+
+  fw-wrap : Integer -> Integer
+  fw-wrap (a) = let m = a - (a / 6283) * 6283 in if m < 0 then m + 6283 else m
+
+  fw-sin-core : Integer -> Integer
+  fw-sin-core (x) =
+    let x2 = x * x / 1000
+    in let x3 = x2 * x / 1000
+    in let x5 = x3 * x2 / 1000
+    in x - x3 / 6 + x5 / 120
+
+  fw-sin : Integer -> Integer
+  fw-sin (raw) =
+    let a = fw-wrap raw
+    in if a <= 1570 then fw-sin-core a
+    else if a <= 3141 then fw-sin-core (3141 - a)
+    else if a <= 4712 then 0 - fw-sin-core (a - 3141)
+    else 0 - fw-sin-core (6283 - a)
+
+  fw-cos : Integer -> Integer
+  fw-cos (raw) = fw-sin (raw + 1570)
+
+  fw-jit-speed : Integer -> Integer
+  fw-jit-speed (gid) = 260 + (gid * 37 - (gid / 29) * 29 * 37)
+
+Section: Spark Kernel
+
+ fw-burst-spark: procedural burst. The spark index gives its ray angle
+ and a jittered speed; the thread integrates x/y under gravity, fades the
+ brightness over life, and packs (brightness, x, y) into one word stored
+ at out[gid]. The trig is pure; the single global write is the tail.
+
+  fw-burst-spark : Integer, Integer, Integer, Integer, Integer, Integer -> [Device] Integer
+  fw-burst-spark (out) (cx) (cy) (frame) (nspark) (gid) =
+    let ang = fw-wrap (gid * 6283 / nspark)
+    in let spd = fw-jit-speed gid
+    in let vx = fw-cos ang * spd / 1000
+    in let vy = fw-sin ang * spd / 1000
+    in let px = cx + vx * frame / 256
+    in let py = cy + vy * frame / 256 + 20 * frame * frame / 512
+    in let life = 200 - frame
+    in let bright = if life < 0 then 0 else life * 255 / 200
+    in let packed = bright * 16777216 + px * 4096 + py
+    in device-store out gid packed
+
+Section: Integrate Kernel
+
+ fw-integrate: read-modify-write. Each thread loads its spark's four
+ packed state words (x, y, vx, vy) from the state buffer, advances one
+ frame of ballistic motion, and stores the new screen position to out.
+ The four global reads are act-bound; the store is the tail.
+
+  fw-integrate : Integer, Integer, Integer, Integer, Integer -> [Device] Integer
+  fw-integrate (state) (out) (frame) (grav) (gid) = act
+    px0 <- device-load state (gid * 4)
+    py0 <- device-load state (gid * 4 + 1)
+    vx <- device-load state (gid * 4 + 2)
+    vy <- device-load state (gid * 4 + 3)
+    let px = px0 + vx * frame / 256
+    in let py = py0 + vy * frame / 256 + grav * frame * frame / 512
+    in let packed = px * 65536 + py
+    in device-store out gid packed
+  end
+
+Page 1

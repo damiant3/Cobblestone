@@ -1,0 +1,279 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Codex GPU Showcase</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  :root { --bg:#05060c; --panel:#0c1020; --line:#18224a; --fg:#c9d2e6; --dim:#7f8bb0; --accent:#6fb7ff; }
+  * { box-sizing: border-box; }
+  html,body { margin:0; background:
+    radial-gradient(1200px 600px at 70% -10%, #10203f 0%, transparent 60%),
+    radial-gradient(900px 500px at 10% 110%, #1a1030 0%, transparent 55%),
+    var(--bg);
+    color:var(--fg); font:15px/1.55 system-ui,Segoe UI,sans-serif; min-height:100vh; }
+  .wrap { max-width:1040px; margin:0 auto; padding:48px 22px 64px; }
+  h1 { font-size:34px; margin:0 0 6px; letter-spacing:-.5px;
+       background:linear-gradient(90deg,#8fd0ff,#c8b6ff); -webkit-background-clip:text; background-clip:text; color:transparent; }
+  .tag { color:var(--dim); font-size:15px; margin:0 0 26px; }
+  .lead { color:var(--fg); background:var(--panel); border:1px solid var(--line);
+          border-radius:12px; padding:16px 18px; margin:0 0 30px; }
+  .lead code { color:var(--accent); background:#0a1226; padding:1px 6px; border-radius:5px; font-size:13px; }
+  .grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(300px,1fr)); gap:20px; }
+  .card { background:var(--panel); border:1px solid var(--line); border-radius:14px; overflow:hidden;
+          display:flex; flex-direction:column; transition:transform .12s, border-color .12s; }
+  .card:hover { transform:translateY(-3px); border-color:#2c4a8c; }
+  .card a.thumblink { text-decoration:none; color:inherit; }
+  .thumb { aspect-ratio:4/3; background:#000 center/cover no-repeat; border-bottom:1px solid var(--line); }
+  .body { padding:14px 16px 16px; }
+  .body h2 { margin:0 0 4px; font-size:18px; }
+  .body p { margin:0 0 10px; color:var(--dim); font-size:13.5px; }
+  .src { font-size:12px; color:var(--accent); font-family:ui-monospace,Consolas,monospace; }
+  .acts { display:flex; align-items:center; gap:14px; margin-top:11px; }
+  .acts a.run { font-size:13px; color:#bfe0ff; text-decoration:none; }
+  .acts a.run:hover { text-decoration:underline; }
+  .srcbtn { font:12px ui-monospace,Consolas,monospace; color:#9cdcfe; background:#0a1226;
+            border:1px solid var(--line); border-radius:6px; padding:4px 9px; cursor:pointer; }
+  .srcbtn:hover { border-color:#2c4a8c; background:#0d1730; }
+  footer { color:var(--dim); font-size:13px; margin-top:34px; border-top:1px solid var(--line); padding-top:16px; }
+  .pipe { font-family:ui-monospace,Consolas,monospace; font-size:12.5px; color:#9fb0d8; white-space:pre; overflow-x:auto; }
+
+  /* source modal -- VSCode Dark+ */
+  .overlay { position:fixed; inset:0; background:rgba(0,0,0,.62); display:none;
+             align-items:center; justify-content:center; padding:28px; z-index:50; }
+  .overlay.show { display:flex; }
+  .viewer { background:#1e1e1e; border:1px solid #333; border-radius:10px; width:min(920px,100%);
+            max-height:86vh; display:flex; flex-direction:column; box-shadow:0 24px 70px rgba(0,0,0,.6); overflow:hidden; }
+  .vbar { display:flex; align-items:center; gap:10px; padding:9px 14px; background:#252526; border-bottom:1px solid #333; }
+  .vbar .fname { font:12.5px ui-monospace,Consolas,monospace; color:#cccccc; }
+  .vbar .dot { width:12px; height:12px; border-radius:50%; }
+  .vbar .close { margin-left:auto; color:#c5c5c5; background:none; border:none; font-size:18px; cursor:pointer; line-height:1; }
+  .vbar .close:hover { color:#fff; }
+  .code { margin:0; overflow:auto; padding:12px 0; font:13px/1.5 ui-monospace,Consolas,"Courier New",monospace;
+          background:#1e1e1e; color:#d4d4d4; }
+  .code .ln { display:flex; white-space:pre; }
+  .code .lno { width:46px; min-width:46px; text-align:right; padding-right:16px; color:#6e7681; user-select:none; }
+  .code .lc { flex:1; padding-right:18px; }
+  .tok-header{color:#569cd6;font-weight:600}
+  .tok-heading{color:#4ec9b0}
+  .tok-prose{color:#6a9955;font-style:italic}
+  .tok-dim{color:#6a6a6a}
+  .tok-kw{color:#c586c0}
+  .tok-proof{color:#c586c0;font-style:italic}
+  .tok-string{color:#ce9178}
+  .tok-number{color:#b5cea8}
+  .tok-effect{color:#4ec9b0}
+  .tok-op{color:#d4d4d4}
+  .tok-type{color:#4ec9b0}
+  .tok-bool{color:#569cd6}
+  .tok-func{color:#dcdcaa}
+  .tok-var{color:#9cdcfe}
+  .tok-annotation{color:#569cd6}
+  .tok-punct{color:#d4d4d4}
+</style>
+<div class="wrap">
+  <h1>Codex GPU Showcase</h1>
+  <p class="tag">WebGPU compute demos whose shaders are generated from Codex source.</p>
+
+  <div class="lead">
+    Every compute shader on this page is written in <b>Codex</b> as a
+    <code>[Device]</code>-effected kernel, then compiled to <b>WGSL</b> by a
+    self-hosted transpiler plug (<code>codex/plugs/wgsl</code>) and run in the
+    browser via WebGPU. No hand-written shader logic in the compute pass -- it
+    is lowered from the same typed AST the Codex compiler uses. Hit
+    <b>&lt;/&gt; Source</b> on any card to read the Codex that generated it.
+    <div class="pipe">  kernel.codex --[compile -IrCce]--&gt; IR --[wgsl-plug]--&gt; kernel.wgsl --[WebGPU]--&gt; pixels</div>
+  </div>
+
+  <div class="grid" id="grid"></div>
+
+  <footer>
+    39 demos &middot; shaders generated from <code>.codex</code> via the WGSL plug &middot;
+    validated on WebGPU (Chrome). The full Sascha-Willems / pooyaeimandar reference set, all from Codex.
+  </footer>
+</div>
+
+<div class="overlay" id="overlay">
+  <div class="viewer">
+    <div class="vbar">
+      <span class="dot" style="background:#ff5f56"></span>
+      <span class="dot" style="background:#ffbd2e"></span>
+      <span class="dot" style="background:#27c93f"></span>
+      <span class="fname" id="fname"></span>
+      <button class="close" id="close" title="close">&times;</button>
+    </div>
+    <pre class="code" id="code"></pre>
+  </div>
+</div>
+
+<script>
+const DEMOS = [
+  { id:'fireworks', name:'Fireworks', img:'fireworks-m2.png', kernel:'FireworksKernel.codex',
+    desc:'One GPU thread per spark: a ballistic burst integrated under gravity, packed into a storage buffer and drawn as additive quads.' },
+  { id:'swarm', name:'Swarm', img:'swarm-m3.png', kernel:'SwarmKernel.codex',
+    desc:'8000 particles ease their velocity toward a curl-y procedural flow field, double-buffered each frame -- a murmuration from a few lines of Codex.' },
+  { id:'plasma', name:'Plasma', img:'plasma.png', kernel:'PlasmaKernel.codex',
+    desc:'One GPU thread per pixel -- 786k of them -- each summing fixed-point sine waves of position and time into rolling colour. A demoscene classic.' },
+  { id:'mandelbrot', name:'Mandelbrot', img:'mandelbrot.png', kernel:'MandelKernel.codex',
+    desc:'Per-pixel escape-time fractal. The iteration is a tail-recursive Codex helper the plug lowers to a WGSL loop -- first demo to exercise iteration.' },
+  { id:'raymarch', name:'Raymarch', img:'raymarch.png', kernel:'RaymarchKernel.codex',
+    desc:'A 3D SDF scene sphere-traced per pixel, with diffuse lighting from a rotating light. Exercises both float (f32) math and the march loop -- all from Codex Real.' },
+  { id:'julia', name:'Julia', img:'julia.png', kernel:'JuliaKernel.codex',
+    desc:'An animated Julia set: per-pixel float iteration with a seed that orbits with time, so the fractal morphs. Smooth (no fixed-point banding), lowered to a loop.' },
+  { id:'raytrace', name:'Ray tracing', img:'raytrace.png', kernel:'RaytraceKernel.codex',
+    desc:'A Whitted ray tracer: one thread per pixel casts a primary ray at three analytic spheres on a checkered floor, folds over the object table for the nearest hit (loop), and shades with a rotating key light plus a hard shadow ray.' },
+  { id:'reflect', name:'Reflections', img:'reflect.png', kernel:'ReflectKernel.codex',
+    desc:'Ray-traced reflections: the same scene, but mirror surfaces. Each pixel shades the primary hit, reflects the ray about the normal, and traces one more bounce -- the spheres reflect the floor, the sky, and each other.' },
+  { id:'shadows', name:'Soft shadows', img:'shadows.png', kernel:'ShadowKernel.codex',
+    desc:'Ray-traced soft shadows: an overhead area light sampled on a 3x3 grid. Each shaded point averages nine shadow rays across the light disk, so the shadows fall off with a soft penumbra instead of a hard edge.' },
+  { id:'particles', name:'Compute particles', img:'particles.png', kernel:'ParticlesKernel.codex',
+    desc:'20000 particles, one per GPU thread, pulled by two gravity wells orbiting the centre. Softened inverse-square attraction, light damping, toroidal wrap, double-buffered each frame -- drawn as speed-coloured additive points.' },
+  { id:'nbody', name:'N-body', img:'nbody.png', kernel:'NbodyKernel.codex',
+    desc:'All-pairs gravity: every one of 1024 bodies sums the pull of every other body -- an O(N^2) force loop that reads the whole state buffer each step. The buffer is passed to the force fold as a storage pointer, a WGSL plug feature added for this demo. The disk fragments into orbiting clusters.' },
+  { id:'triangle', name:'Triangle', img:'triangle.png', kernel:'TriangleKernel.codex',
+    desc:'The hello-world triangle, rasterized from Codex: one thread per pixel evaluates the three edge functions of a rotating triangle and Gouraud-interpolates the RGB vertex colours by barycentric weights. The geometry step is real Codex AST, not a fixed-function vertex stage.' },
+  { id:'texture', name:'Texture', img:'texture.png', kernel:'TextureKernel.codex',
+    desc:'Texture mapping: a Mode-7 perspective ground plane. Each pixel projects onto the floor, tiles the world coordinate into a 256x256 texture uploaded to a storage buffer, samples the texel, and fogs by distance -- a real uploaded texture read from Codex, scrolling with the frame.' },
+  { id:'cube', name:'3D cube', img:'cube.png', kernel:'CubeKernel.codex',
+    desc:'A spinning shaded cube: each pixel casts a ray, inverse-rotates it into the cube local frame, slab-tests the unit box, picks the entry face for a per-face colour, and shades with a key light. Real 3D geometry per pixel -- the gateway to mesh and instancing demos.' },
+  { id:'instancing', name:'Instancing', img:'instancing.png', kernel:'InstancingKernel.codex',
+    desc:'A spinning 5x5 grid of shaded cubes. Each pixel folds over the 25 instances -- translating the ray into each cube local frame and slab-testing -- keeps the nearest, recovers its face normal, and shades with a per-instance colour. The instance fold is a tail recursion lowered to a WGSL loop.' },
+  { id:'pbr', name:'PBR', img:'pbr.png', kernel:'PbrKernel.codex',
+    desc:'Physically-based rendering: a row of gold spheres of increasing roughness, shaded with the Cook-Torrance microfacet BRDF -- GGX distribution, Smith geometry, Schlick Fresnel. The whole BRDF is multiply/divide/sqrt from DeviceMath (no pow needed), and the key light orbits so the highlights sweep.' },
+  { id:'gltf', name:'glTF mesh', img:'gltf.png', kernel:'GltfKernel.codex',
+    desc:'A real triangle mesh: the host uploads an icosahedron (20 tris) into a buffer, and each pixel folds over the triangles with a Moller-Trumbore test that reads vertices through a storage-pointer helper param, keeps the nearest hit, and flat-shades the facet. Arbitrary mesh geometry ray-traced from Codex AST.' },
+  { id:'d20', name:'d20', img:'d20.png', kernel:'D20Kernel.codex',
+    desc:'The mesh, numbered: a rolling twenty-sided die. On a hit the kernel recovers the barycentric coordinates, maps them into the face\'s equilateral frame, and stamps the face number (1-20) with a 3x5 bitmap font -- white numerals engraved on a crimson die, ray-traced from a buffer.' },
+  { id:'bloom', name:'Bloom', img:'bloom.png', kernel:'BloomKernel.codex',
+    desc:'A two-pass compute post-process: pass one renders three bright orbiting orbs with blown-out cores; pass two gathers a 40-tap golden-angle spiral of bright pixels around each pixel (read from the scene buffer through a storage-pointer helper param) into a coloured glow and composites it. Two Codex kernels.' },
+  { id:'multisample', name:'Multisampling', img:'multisample.png', kernel:'MultisampleKernel.codex',
+    desc:'A zone plate -- concentric rings that tighten toward the edge, the classic aliasing test -- split down the middle: the left half is sampled once per pixel (jagged, moire), the right half averages a 4x4 grid of sub-samples per pixel (smooth). The 16-sample coverage fold is lowered to a WGSL loop.' },
+  { id:'radial', name:'Radial blur', img:'radial.png', kernel:'RadialKernel.codex',
+    desc:'A zoom-blur post-process over the bloom scene: each pixel walks the line from the screen centre out to itself, sampling the scene buffer at shrinking scales (through a storage-pointer helper param) and averaging, so bright features smear into radial light streaks. Two Codex kernels.' },
+  { id:'gears', name:'Gears', img:'gears.png', kernel:'GearsKernel.codex',
+    desc:'Three meshing gears rasterized per pixel: each gear is an implicit shape -- a pixel is inside when its radius sits under a square-wave tooth profile of the polar angle (a rational atan2, no intrinsic) and outside the hub. Tooth counts and speeds are inversely matched, in alternating directions, so they mesh.' },
+  { id:'parallax', name:'Parallax', img:'parallax.png', kernel:'ParallaxKernel.codex',
+    desc:'Parallax + bump mapping on a procedural brick wall. Each pixel builds a bevelled height field (bricks raised, mortar recessed), offsets its texture coordinate along the view direction by that height so the bricks stand proud, then shades a gradient normal under an orbiting light.' },
+  { id:'deferred', name:'Deferred', img:'deferred.png', kernel:'DeferredKernel.codex',
+    desc:'Deferred shading. A geometry pass ray-casts a sphere cluster and writes a G-buffer (albedo, normal, depth); the lighting pass reads it, reconstructs each pixel\'s position from depth, and sums twenty orbiting coloured point lights -- so each extra light is just one more loop iteration. Two Codex kernels + a shared G-buffer.' },
+  { id:'ssao', name:'SSAO', img:'ssao.png', kernel:'SsaoKernel.codex',
+    desc:'Screen-space ambient occlusion over the same G-buffer. Each pixel samples a spiral of neighbours\' depths; neighbours that are modestly closer count as occluders, and the occlusion fraction darkens the pixel -- so the contact creases between the clustered spheres go dark. Reads the depth buffer through a storage-pointer helper param.' },
+  { id:'shadowmap', name:'Shadow mapping', img:'shadowmap.png', kernel:'ShadowSceneKernel.codex',
+    desc:'Real shadow mapping. A first pass renders the scene depth from the orbiting light into a 1024x1024 shadow map; the camera pass ray-casts three spheres on a checkered floor, projects each hit into the light\'s orthographic frame, reads the stored depth, and darkens the point if something nearer the light was recorded there -- a depth test, not a shadow ray. Two Codex kernels.' },
+  { id:'pbribl', name:'PBR IBL', img:'pbribl.png', kernel:'PbrIblKernel.codex',
+    desc:'PBR with image-based lighting: metallic spheres of increasing roughness reflect a procedural environment (sky gradient, sun, ground) in the mirror direction. Roughness fades the reflection toward the average sky, and a Fresnel rim brightens the grazing edges.' },
+  { id:'cubemap', name:'Cubemap', img:'cubemap.png', kernel:'CubemapKernel.codex',
+    desc:'A skybox sampled per pixel: each camera ray direction (panning with the frame) evaluates a procedural environment -- sky gradient, a warm sun with a glow, banded clouds, and a dark ground below the horizon. A procedural cube in place of six loaded faces.' },
+  { id:'pbrtex', name:'PBR texture', img:'pbrtex.png', kernel:'PbrTexKernel.codex',
+    desc:'PBR with a textured albedo: a rotating sphere maps its hit point to spherical (u,v) that index a procedural tile texture, and that albedo feeds a Cook-Torrance shade under an orbiting key light -- coloured tiles with grout under a sharp specular.' },
+  { id:'texarray', name:'Texture array', img:'texarray.png', kernel:'TexArrayKernel.codex',
+    desc:'A texture array shown as a 3x2 grid of panels that cycle through six procedural layers -- rings, checker, dots, stripes, weave, gradient. Each pixel picks its panel (which layer) and its local coordinate; the layer offset scrolls with the frame.' },
+  { id:'texmipmap', name:'Texture mipmap', img:'texmipmap.png', kernel:'TexMipmapKernel.codex',
+    desc:'Mipmapping on a perspective floor: near the camera the checker is full detail, and with distance the pixel selects a coarser mip (a larger cell that averages toward grey) so the far floor stops shimmering -- the LOD level tints the floor faintly so the bands are visible.' },
+  { id:'text', name:'Text overlay', img:'text.png', kernel:'TextKernel.codex',
+    desc:'A text overlay: "CODEX GPU" drawn from a 5x7 bitmap font (an if-ladder of 5-bit rows), scrolling as a marquee with a drop shadow. Each pixel maps to a character cell and a glyph pixel.' },
+  { id:'vertexattr', name:'Vertex attributes', img:'vertexattr.png', kernel:'VertexAttrKernel.codex',
+    desc:'A spinning triangle whose three vertices each carry a colour and a texture coordinate. Each pixel computes barycentric weights and shows the interpolated colour (left half) and the interpolated UV as a checker (right half) -- two attributes across one primitive.' },
+  { id:'stencil', name:'Stencil', img:'stencil.png', kernel:'StencilKernel.codex',
+    desc:'A stencil-masked reveal: a rotating five-point star masks one pass by the shape of another -- inside the star a swirling colour pattern shows through, outside is dark, and the boundary is drawn as a bright outline. The polar angle uses a rational atan2.' },
+  { id:'cpuparticles', name:'CPU particles', img:'cpuparticles.png', kernel:'CpuParticlesKernel.codex',
+    desc:'A particle fountain: 14000 particles spout from a source, arc under gravity, and respawn when they fall off screen. Each thread reads its (px,py,vx,vy) from the input buffer, integrates, and writes the output; the host ping-pongs the two and draws speed-coloured additive points.' },
+  { id:'alphacov', name:'Alpha to coverage', img:'alphacov.png', kernel:'AlphaCoverageKernel.codex',
+    desc:'Alpha-to-coverage as a split screen of alpha-cutout circles: left, one alpha sample per pixel (hard jagged edges); right, a 4x4 grid of coverage samples averaged (smooth anti-aliased edges) -- what alpha-to-coverage buys you. The coverage fold is a WGSL loop.' },
+  { id:'pipelines', name:'Pipelines', img:'pipelines.png', kernel:'PipelinesKernel.codex',
+    desc:'Multiple pipelines: a row of six identical spheres, each shaded by a different material -- flat, Lambert, Phong, toon/cel, normal-visualisation, and Fresnel rim -- to show many render pipelines running over one scene.' },
+  { id:'occlusion', name:'Occlusion queries', img:'occlusion.png', kernel:'OcclusionKernel.codex',
+    desc:'Occlusion queries as a depth-complexity heatmap: the ray passes through a rotating field of overlapping spheres and counts how many it enters, mapping that overdraw count to a heat colour (blue -> green -> yellow -> red) -- what a hardware occlusion query aggregates.' },
+  { id:'omnishadow', name:'Omni shadows', img:'omnishadow.png', kernel:'OmniShadowKernel.codex',
+    desc:'Omni-directional shadows from a point light: a bright point light sits among a ring of spheres on a floor, and every shaded point casts a shadow ray toward the light tested against all spheres -- so each sphere throws shadows that radiate outward onto its neighbours and the floor.' },
+];
+
+const grid = document.getElementById('grid');
+for (const d of DEMOS) {
+  const card = document.createElement('div');
+  card.className = 'card';
+  card.innerHTML = `
+    <a class="thumblink" href="/web/${d.id}.html">
+      <div class="thumb" style="background-image:url('/screenshots/${d.img}')"></div>
+    </a>
+    <div class="body">
+      <h2>${d.name}</h2>
+      <p>${d.desc}</p>
+      <div class="src">apps/gpushow/kernels/${d.kernel}</div>
+      <div class="acts">
+        <a class="run" href="/web/${d.id}.html">Run live &rarr;</a>
+        <button class="srcbtn" data-kernel="${d.kernel}">&lt;/&gt; Source</button>
+      </div>
+    </div>`;
+  card.querySelector('.srcbtn').addEventListener('click', () => openSource(d.kernel));
+  grid.appendChild(card);
+}
+
+// --- Codex syntax highlighter (ports tools/vscode/syntaxes/codex.tmLanguage.json, Dark+ colors) ---
+const KW = new Set(('let in between if then else when where is otherwise act end record cites effect with '
+  + 'with-timeout linear mutable punctual unit class instance lazy trying revised for').split(' '));
+const PROOF = new Set(['claim','proof','qed','forall','exists','induction']);
+const BOOL = new Set(['True','False','None','Nothing']);
+const esc = s => s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+const span = (t, s) => `<span class="tok-${t}">${esc(s)}</span>`;
+
+function inlineTokens(s) {
+  let out = '', i = 0;
+  const uni = '→←≡≠≤≥⊢⊗∀∃';
+  while (i < s.length) {
+    const rest = s.slice(i), c = s[i];
+    let m;
+    if (c === ' ' || c === '\t') { let j=i; while(j<s.length && (s[j]===' '||s[j]==='\t')) j++; out+=esc(s.slice(i,j)); i=j; continue; }
+    if (c === '"') { let j=i+1; while(j<s.length && s[j]!=='"'){ if(s[j]==='\\')j++; j++; } j=Math.min(j+1,s.length); out+=span('string', s.slice(i,j)); i=j; continue; }
+    if (c === "'" && (m=/^'(\\.|[^'\\])'/.exec(rest))) { out+=span('string', m[0]); i+=m[0].length; continue; }
+    if (c === '#' && (m=/^#[0-9a-fA-F][0-9a-fA-F_]*/.exec(rest))) { out+=span('number', m[0]); i+=m[0].length; continue; }
+    if (c >= '0' && c <= '9') { m=/^[0-9][0-9_]*(\.[0-9][0-9_]*)?/.exec(rest); out+=span('number', m[0]); i+=m[0].length; continue; }
+    if (c === '[' && (m=/^\[([A-Z][A-Za-z0-9]*(?:\.[A-Za-z0-9]+)?)\]/.exec(rest))) { out+=span('effect', m[0]); i+=m[0].length; continue; }
+    if (c === '@' && (m=/^@[a-z][a-z0-9-]*/.exec(rest))) { out+=span('annotation', m[0]); i+=m[0].length; continue; }
+    if (uni.includes(c)) { out+=span('op', c); i++; continue; }
+    if (m=/^(->|<-|=>|===|\/=|<=|>=|==|\+\+|::|\|-|\|>)/.exec(rest)) { out+=span('op', m[0]); i+=m[0].length; continue; }
+    if ('=+-*/^&<>|'.includes(c)) { out+=span('op', c); i++; continue; }
+    if (c >= 'A' && c <= 'Z') { m=/^[A-Za-z0-9]+/.exec(rest); const w=m[0]; out+=span(BOOL.has(w)?'bool':'type', w); i+=w.length; continue; }
+    if (c >= 'a' && c <= 'z') { m=/^[a-z][a-z0-9]*(-[a-z][a-z0-9]*)*/.exec(rest); const w=m[0]; out+=span(KW.has(w)?'kw':PROOF.has(w)?'proof':'var', w); i+=w.length; continue; }
+    if ('(),.{}'.includes(c)) { let j=i; while(j<s.length && '(),.{}'.includes(s[j])) j++; out+=span('punct', s.slice(i,j)); i=j; continue; }
+    out += esc(c); i++;
+  }
+  return out;
+}
+
+function highlightLine(line) {
+  let m = /^(Chapter|Section|Foreword):(.*)$/.exec(line);
+  if (m) return span('header', m[1]+':') + span('heading', m[2]);
+  if (/^\s*We say:\s*$/.test(line)) return span('prose', line);
+  if (/^\s*Page\s+\d+/.test(line)) return span('dim', line);
+  m = /^(\s*)([a-z][a-z0-9]*(?:-[a-z][a-z0-9]*)*)(\s*:.*|\s+\(.*|\s+=.*)$/.exec(line);
+  if (m) return esc(m[1]) + span('func', m[2]) + inlineTokens(m[3]);
+  return inlineTokens(line);
+}
+
+function renderCode(src) {
+  const lines = src.replace(/\r/g,'').split('\n');
+  return lines.map((ln, i) =>
+    `<div class="ln"><span class="lno">${i+1}</span><span class="lc">${highlightLine(ln) || ' '}</span></div>`
+  ).join('');
+}
+
+const overlay = document.getElementById('overlay');
+async function openSource(kernel) {
+  document.getElementById('fname').textContent = 'apps/gpushow/kernels/' + kernel;
+  const codeEl = document.getElementById('code');
+  codeEl.innerHTML = '<div class="ln"><span class="lc">loading...</span></div>';
+  overlay.classList.add('show');
+  try {
+    const src = await (await fetch('/kernels/' + kernel)).text();
+    codeEl.innerHTML = renderCode(src);
+  } catch (e) { codeEl.textContent = 'failed to load ' + kernel + ': ' + e; }
+}
+function closeSource(){ overlay.classList.remove('show'); }
+document.getElementById('close').addEventListener('click', closeSource);
+overlay.addEventListener('click', e => { if (e.target === overlay) closeSource(); });
+document.addEventListener('keydown', e => { if (e.key === 'Escape') closeSource(); });
+
+// auto-open for screenshot testing: index.html?src=KernelName.codex
+const q = new URLSearchParams(location.search).get('src');
+if (q) openSource(q);
+window.__ready = true; window.__frame = 100;
+</script>

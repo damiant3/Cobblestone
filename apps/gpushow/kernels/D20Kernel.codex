@@ -1,0 +1,257 @@
+Chapter: D20Kernel
+  cites Gpu chapter DeviceEffect
+  cites Gpu chapter DeviceMath
+
+ A rolling twenty-sided die, ray-traced from Codex [Device] AST. The same
+ icosahedron mesh as the glTF demo (20 triangles in a storage buffer), but each
+ face is numbered: when a pixel hits a triangle the kernel recovers the hit's
+ barycentric coordinates, maps them into the face's equilateral frame, and
+ stamps the face number (1..20) with a 3x5 bitmap-font glyph in white on a deep
+ crimson die. The triangle fold reads vertices through the storage-pointer helper
+ parameter and runs Moller-Trumbore, exactly like the glTF demo.
+
+ We say:
+
+Section: Parameters
+
+  d2-width : Integer = 1024
+  d2-half-w : Integer = 512
+  d2-half-h : Integer = 384
+  d2-tris : Integer = 20
+
+Section: Moller-Trumbore
+
+  d2-mt : Real, Real, Real, Real, Real, Real, Real, Real, Real, Real, Real, Real, Real, Real, Real -> Real
+  d2-mt (ox) (oy) (oz) (dx) (dy) (dz) (v0x) (v0y) (v0z) (v1x) (v1y) (v1z) (v2x) (v2y) (v2z) =
+    let e1x = v1x - v0x
+    in let e1y = v1y - v0y
+    in let e1z = v1z - v0z
+    in let e2x = v2x - v0x
+    in let e2y = v2y - v0y
+    in let e2z = v2z - v0z
+    in let pvx = dy * e2z - dz * e2y
+    in let pvy = dz * e2x - dx * e2z
+    in let pvz = dx * e2y - dy * e2x
+    in let det = e1x * pvx + e1y * pvy + e1z * pvz
+    in let adet = if det < 0.0 then 0.0 - det else det
+    in if adet < 0.00001 then 0.0 - 1.0
+    else let inv = 1.0 / det
+    in let tvx = ox - v0x
+    in let tvy = oy - v0y
+    in let tvz = oz - v0z
+    in let u = (tvx * pvx + tvy * pvy + tvz * pvz) * inv
+    in if u < 0.0 then 0.0 - 1.0
+    else if u > 1.0 then 0.0 - 1.0
+    else let qvx = tvy * e1z - tvz * e1y
+    in let qvy = tvz * e1x - tvx * e1z
+    in let qvz = tvx * e1y - tvy * e1x
+    in let vv = (dx * qvx + dy * qvy + dz * qvz) * inv
+    in if vv < 0.0 then 0.0 - 1.0
+    else if u + vv > 1.0 then 0.0 - 1.0
+    else let t = (e2x * qvx + e2y * qvy + e2z * qvz) * inv
+    in if t > 0.001 then t else 0.0 - 1.0
+
+Section: Nearest Triangle
+
+  d2-nearest : Integer, Real, Real, Real, Real, Real, Real, Integer, Integer, Real -> [Device] Integer
+  d2-nearest (buf) (ox) (oy) (oz) (dx) (dy) (dz) (i) (best-id) (best-t) =
+    if i >= d2-tris then best-id
+    else act
+      a0 <- device-load buf (i * 9)
+      a1 <- device-load buf (i * 9 + 1)
+      a2 <- device-load buf (i * 9 + 2)
+      b0 <- device-load buf (i * 9 + 3)
+      b1 <- device-load buf (i * 9 + 4)
+      b2 <- device-load buf (i * 9 + 5)
+      c0 <- device-load buf (i * 9 + 6)
+      c1 <- device-load buf (i * 9 + 7)
+      c2 <- device-load buf (i * 9 + 8)
+      let t = d2-mt ox oy oz dx dy dz (real-from-int a0 / 1024.0) (real-from-int a1 / 1024.0) (real-from-int a2 / 1024.0) (real-from-int b0 / 1024.0) (real-from-int b1 / 1024.0) (real-from-int b2 / 1024.0) (real-from-int c0 / 1024.0) (real-from-int c1 / 1024.0) (real-from-int c2 / 1024.0)
+      in let take = if t > 0.001 then (if best-t < 0.0 then 1 else if t < best-t then 1 else 0) else 0
+      in let nid = if take == 1 then i else best-id
+      in let nt = if take == 1 then t else best-t
+      in d2-nearest buf ox oy oz dx dy dz (i + 1) nid nt
+    end
+
+Section: Digit Font
+
+ 3 wide by 5 tall glyphs packed as five 3-bit rows (top row in the high bits,
+ left column in each row's high bit).
+
+  d2-glyph : Integer -> Integer
+  d2-glyph (d) =
+    if d == 0 then 31599
+    else if d == 1 then 11415
+    else if d == 2 then 29671
+    else if d == 3 then 29647
+    else if d == 4 then 23497
+    else if d == 5 then 31183
+    else if d == 6 then 31215
+    else if d == 7 then 29266
+    else if d == 8 then 31727
+    else 31695
+
+ Is glyph pixel (col, row) of digit d set? col 0 left..2 right, row 0 top..4 bottom.
+
+  d2-glyph-on : Integer, Integer, Integer -> Integer
+  d2-glyph-on (d) (col) (row) =
+    if col < 0 then 0
+    else if col > 2 then 0
+    else if row < 0 then 0
+    else if row > 4 then 0
+    else let g = d2-glyph d
+    in let rowval = g / d2-pow8 (4 - row) - (g / d2-pow8 (5 - row)) * 8
+    in let bit = rowval / d2-pow2 (2 - col) - (rowval / d2-pow2 (3 - col)) * 2
+    in bit
+
+  d2-pow8 : Integer -> Integer
+  d2-pow8 (n) =
+    if n <= 0 then 1
+    else if n == 1 then 8
+    else if n == 2 then 64
+    else if n == 3 then 512
+    else if n == 4 then 4096
+    else 32768
+
+  d2-pow2 : Integer -> Integer
+  d2-pow2 (n) =
+    if n <= 0 then 1
+    else if n == 1 then 2
+    else if n == 2 then 4
+    else 8
+
+ Number stamp: is the face-local point (qx, qy) inside a lit glyph pixel of the
+ face's number (id + 1)? Returns 1 if on a number stroke.
+
+  d2-on-number : Integer, Real, Real -> Integer
+  d2-on-number (id) (qx) (qy) =
+    let m = id + 1
+    in let nd = if m < 10 then 1 else 2
+    in let gw = 0.115
+    in let tw = real-from-int nd * gw
+    in let th = 0.21
+    in let tx = (qx + tw * 0.5) / tw
+    in let ty = (th * 0.5 - qy) / th
+    in if tx < 0.0 then 0
+    else if tx > 1.0 then 0
+    else if ty < 0.0 then 0
+    else if ty > 1.0 then 0
+    else let totalcols = nd * 3
+    in let gcol = real-to-int (tx * real-from-int totalcols)
+    in let cell = gcol / 3
+    in let col = gcol - cell * 3
+    in let row = real-to-int (ty * 5.0)
+    in let digit = if nd == 1 then m else if cell == 0 then m / 10 else m - (m / 10) * 10
+    in d2-glyph-on digit col row
+
+Section: Shading
+
+  d2-clamp01 : Real -> Real
+  d2-clamp01 (x) = real-max 0.0 (real-min 1.0 x)
+
+  d2-pack : Real, Real, Real -> Integer
+  d2-pack (r) (g) (b) =
+    let ri = real-to-int (d2-clamp01 r * 255.0)
+    in let gi = real-to-int (d2-clamp01 g * 255.0)
+    in let bi = real-to-int (d2-clamp01 b * 255.0)
+    in ri * 65536 + gi * 256 + bi
+
+  d2-bg : Integer -> Integer
+  d2-bg (py) =
+    let h = real-from-int py / 768.0
+    in d2-pack (0.03 + h * 0.04) (0.03 + h * 0.05) (0.05 + h * 0.09)
+
+Section: D20 Kernel
+
+  d20-step : Integer, Integer, Integer, Integer -> [Device] Integer
+  d20-step (meshbuf) (outb) (frame) (gid) =
+    let px = gid - (gid / d2-width) * d2-width
+    in let py = gid / d2-width
+    in let fx = real-from-int (px - d2-half-w) / 384.0
+    in let fy = real-from-int (d2-half-h - py) / 384.0
+    in let rl = real-sqrt (fx * fx + fy * fy + 2.56)
+    in let dx0 = fx / rl
+    in let dy0 = fy / rl
+    in let dz0 = 1.6 / rl
+    in let ay = real-from-int frame / 46.0
+    in let ax = real-from-int frame / 71.0
+    in let cyv = real-cos ay
+    in let syv = real-sin ay
+    in let cxv = real-cos ax
+    in let sxv = real-sin ax
+    in let oz0 = 0.0 - 3.2
+    in let ox = oz0 * syv
+    in let oza = oz0 * cyv
+    in let oy = oza * sxv
+    in let oz = oza * cxv
+    in let dxa = dx0 * cyv + dz0 * syv
+    in let dza = 0.0 - dx0 * syv + dz0 * cyv
+    in let dx = dxa
+    in let dy = dy0 * cxv + dza * sxv
+    in let dz = 0.0 - dy0 * sxv + dza * cxv
+    in act
+      id <- d2-nearest meshbuf ox oy oz dx dy dz 0 (0 - 1) (0.0 - 1.0)
+      let safe = if id < 0 then 0 else id
+      in act
+      a0 <- device-load meshbuf (safe * 9)
+      a1 <- device-load meshbuf (safe * 9 + 1)
+      a2 <- device-load meshbuf (safe * 9 + 2)
+      b0 <- device-load meshbuf (safe * 9 + 3)
+      b1 <- device-load meshbuf (safe * 9 + 4)
+      b2 <- device-load meshbuf (safe * 9 + 5)
+      c0 <- device-load meshbuf (safe * 9 + 6)
+      c1 <- device-load meshbuf (safe * 9 + 7)
+      c2 <- device-load meshbuf (safe * 9 + 8)
+      let v0x = real-from-int a0 / 1024.0
+      in let v0y = real-from-int a1 / 1024.0
+      in let v0z = real-from-int a2 / 1024.0
+      in let v1x = real-from-int b0 / 1024.0
+      in let v1y = real-from-int b1 / 1024.0
+      in let v1z = real-from-int b2 / 1024.0
+      in let v2x = real-from-int c0 / 1024.0
+      in let v2y = real-from-int c1 / 1024.0
+      in let v2z = real-from-int c2 / 1024.0
+      in let e1x = v1x - v0x
+      in let e1y = v1y - v0y
+      in let e1z = v1z - v0z
+      in let e2x = v2x - v0x
+      in let e2y = v2y - v0y
+      in let e2z = v2z - v0z
+      in let nx0 = e1y * e2z - e1z * e2y
+      in let ny0 = e1z * e2x - e1x * e2z
+      in let nz0 = e1x * e2y - e1y * e2x
+      in let nl = real-sqrt (nx0 * nx0 + ny0 * ny0 + nz0 * nz0) + 0.00001
+      in let nx = nx0 / nl
+      in let ny = ny0 / nl
+      in let nz = nz0 / nl
+      in let t = d2-mt ox oy oz dx dy dz v0x v0y v0z v1x v1y v1z v2x v2y v2z
+      in let hx = ox + dx * t
+      in let hy = oy + dy * t
+      in let hz = oz + dz * t
+      in let d00 = e1x * e1x + e1y * e1y + e1z * e1z
+      in let d01 = e1x * e2x + e1y * e2y + e1z * e2z
+      in let d11 = e2x * e2x + e2y * e2y + e2z * e2z
+      in let vpx = hx - v0x
+      in let vpy = hy - v0y
+      in let vpz = hz - v0z
+      in let d20 = vpx * e1x + vpy * e1y + vpz * e1z
+      in let d21 = vpx * e2x + vpy * e2y + vpz * e2z
+      in let denom = d00 * d11 - d01 * d01 + 0.00001
+      in let bv = (d11 * d20 - d01 * d21) / denom
+      in let bw = (d00 * d21 - d01 * d20) / denom
+      in let bu = 1.0 - bv - bw
+      in let qx = bv * (0.0 - 0.54) + bw * 0.54
+      in let qy = bu * 0.62 + bv * (0.0 - 0.31) + bw * (0.0 - 0.31)
+      in let onnum = d2-on-number safe qx qy
+      in let ndl = nx * 0.35 + ny * 0.72 + nz * (0.0 - 0.60)
+      in let lit = 0.24 + (if ndl < 0.0 then 0.0 - ndl else ndl) * 0.82
+      in let facer = 0.72 * lit
+      in let faceg = 0.10 * lit
+      in let faceb = 0.12 * lit
+      in let numv = 0.55 + lit * 0.5
+      in let out = if id < 0 then d2-bg py
+        else if onnum == 1 then d2-pack numv numv numv
+        else d2-pack facer faceg faceb
+      in device-store outb gid out
+      end
+    end

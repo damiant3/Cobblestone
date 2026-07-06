@@ -1,0 +1,114 @@
+Chapter: RaymarchKernel
+  cites Gpu chapter DeviceEffect
+  cites Gpu chapter DeviceMath
+
+ A raymarched 3D scene as a [Device] compute kernel: one GPU thread per pixel
+ casts a ray, sphere-traces a signed-distance field (a sphere on a floor),
+ shades the hit with diffuse lighting from a rotating light, and writes a
+ packed colour. This exercises both new plug features at once -- float (f32)
+ math generated from Codex Real, and the march loop generated from a tail-
+ recursive Codex helper.
+
+ Real math (real-sqrt, real-sin, real-cos, real-min, real-max) comes from
+ Gpu chapter DeviceMath, which has correct portable bodies; the plug replaces
+ the calls with hardware ops on the GPU. Integer conversion uses the compiler
+ builtins real-from-int / real-to-int.
+
+ We say:
+
+Section: Parameters
+
+  rm-width : Integer = 1024
+  rm-half-w : Integer = 512
+  rm-half-h : Integer = 384
+  rm-steps : Integer = 80
+
+Section: Scene SDF
+
+ A unit sphere at the origin sitting on a floor plane at y = -1.1. The scene
+ distance is the nearer of the two.
+
+  rm-sphere : Real, Real, Real -> Real
+  rm-sphere (px) (py) (pz) = real-sqrt (px * px + py * py + pz * pz) - 1.0
+
+  rm-scene : Real, Real, Real -> Real
+  rm-scene (px) (py) (pz) = real-min (rm-sphere px py pz) (py + 1.1)
+
+Section: March
+
+ Sphere tracing: step along the ray by the scene distance until we are within
+ epsilon of a surface (return t) or exceed the far plane / step budget
+ (return -1). Tail-recursive -> WGSL loop.
+
+  rm-march : Real, Real, Real, Real, Real, Real, Real, Integer -> Real
+  rm-march (ox) (oy) (oz) (dx) (dy) (dz) (t) (i) =
+    if i >= rm-steps then 0.0 - 1.0
+    else let px = ox + dx * t
+    in let py = oy + dy * t
+    in let pz = oz + dz * t
+    in let d = rm-scene px py pz
+    in if d < 0.002 then t
+    else if t > 30.0 then 0.0 - 1.0
+    else rm-march ox oy oz dx dy dz (t + d) (i + 1)
+
+Section: Shading Helpers
+
+  rm-clamp01 : Real -> Real
+  rm-clamp01 (x) = real-max 0.0 (real-min 1.0 x)
+
+  rm-pack : Real, Real, Real -> Integer
+  rm-pack (r) (g) (b) =
+    let ri = real-to-int (rm-clamp01 r * 255.0)
+    in let gi = real-to-int (rm-clamp01 g * 255.0)
+    in let bi = real-to-int (rm-clamp01 b * 255.0)
+    in ri * 65536 + gi * 256 + bi
+
+  rm-sky : Real -> Integer
+  rm-sky (fy) =
+    let h = rm-clamp01 (fy * 0.5 + 0.5)
+    in rm-pack (0.10 + h * 0.10) (0.16 + h * 0.24) (0.36 + h * 0.42)
+
+Section: Render
+
+ Per pixel: build the ray, march, and either shade the hit or draw sky.
+
+  rm-render : Integer, Integer -> Integer
+  rm-render (gid) (frame) =
+    let px = gid - (gid / rm-width) * rm-width
+    in let py = gid / rm-width
+    in let fx = real-from-int (px - rm-half-w) / 384.0
+    in let fy = real-from-int (rm-half-h - py) / 384.0
+    in let rl = real-sqrt (fx * fx + fy * fy + 2.25)
+    in let dx = fx / rl
+    in let dy = fy / rl
+    in let dz = 1.5 / rl
+    in let oz = 0.0 - 3.5
+    in let t = rm-march 0.0 0.0 oz dx dy dz 0.0 0
+    in if t < 0.0 then rm-sky fy
+    else let hx = dx * t
+    in let hy = dy * t
+    in let hz = oz + dz * t
+    in let e = 0.002
+    in let nx = rm-scene (hx + e) hy hz - rm-scene (hx - e) hy hz
+    in let ny = rm-scene hx (hy + e) hz - rm-scene hx (hy - e) hz
+    in let nz = rm-scene hx hy (hz + e) - rm-scene hx hy (hz - e)
+    in let nl = real-sqrt (nx * nx + ny * ny + nz * nz) + 0.0001
+    in let ux = nx / nl
+    in let uy = ny / nl
+    in let uz = nz / nl
+    in let ang = real-from-int frame / 24.0
+    in let ldx = real-cos ang
+    in let ldy = 0.75
+    in let ldz = real-sin ang
+    in let ll = real-sqrt (ldx * ldx + ldy * ldy + ldz * ldz)
+    in let diff = real-max 0.0 (ux * ldx / ll + uy * ldy / ll + uz * ldz / ll)
+    in let sh = diff * 0.85 + 0.15
+    in if hy < 0.0 - 1.0 then rm-pack (0.45 * sh) (0.47 * sh) (0.52 * sh)
+    else rm-pack (0.95 * sh) (0.55 * sh) (0.25 * sh)
+
+Section: Raymarch Kernel
+
+  raymarch-step : Integer, Integer, Integer -> [Device] Integer
+  raymarch-step (outb) (frame) (gid) = act
+    device-store outb gid (rm-render gid frame)
+  end

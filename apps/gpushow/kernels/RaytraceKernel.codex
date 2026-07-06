@@ -1,0 +1,191 @@
+Chapter: RaytraceKernel
+  cites Gpu chapter DeviceEffect
+  cites Gpu chapter DeviceMath
+
+ A whitted-style ray tracer as a [Device] compute kernel: one GPU thread per
+ pixel casts a primary ray into a fixed scene of three analytic spheres on a
+ checkered floor, finds the nearest hit, and shades it with a rotating key
+ light and a hard shadow ray. This is the reference site's "compute shader ray
+ tracing" technique, generated entirely from Codex [Device] AST.
+
+ The scene is data-driven: the sphere table is a set of if-ladder accessors
+ (sphere index -> centre / radius / colour), so the nearest-hit search and the
+ shadow test are tail-recursive folds over the object index -- the plug lowers
+ them to WGSL loops. Real math (real-sqrt, real-sin, real-cos, real-min,
+ real-max) comes from Gpu chapter DeviceMath; integer conversion uses the
+ real-from-int / real-to-int builtins.
+
+ We say:
+
+Section: Parameters
+
+  rt-width : Integer = 1024
+  rt-half-w : Integer = 512
+  rt-half-h : Integer = 384
+  rt-nobj : Integer = 4
+
+Section: Scene Table
+
+ Object ids 0, 1, 2 are spheres; id 3 is the floor plane at y = -1. The sphere
+ table is fixed at compile time via if-ladder accessors.
+
+  rt-cx : Integer -> Real
+  rt-cx (i) = if i == 0 then 0.0 else if i == 1 then 0.0 - 1.7 else 1.6
+
+  rt-cy : Integer -> Real
+  rt-cy (i) = if i == 0 then 0.0 else if i == 1 then 0.0 - 0.35 else 0.0 - 0.45
+
+  rt-cz : Integer -> Real
+  rt-cz (i) = if i == 0 then 0.0 else if i == 1 then 0.5 else 0.0 - 0.4
+
+  rt-rad : Integer -> Real
+  rt-rad (i) = if i == 0 then 1.0 else if i == 1 then 0.65 else 0.55
+
+  rt-col-r : Integer -> Real
+  rt-col-r (i) = if i == 0 then 0.95 else if i == 1 then 0.20 else 0.70
+
+  rt-col-g : Integer -> Real
+  rt-col-g (i) = if i == 0 then 0.45 else if i == 1 then 0.80 else 0.35
+
+  rt-col-b : Integer -> Real
+  rt-col-b (i) = if i == 0 then 0.22 else if i == 1 then 0.75 else 0.95
+
+Section: Intersection
+
+ Ray-sphere with a unit direction: b = dot(o - c, d), disc = b*b - (|o-c|^2 - r^2),
+ nearest root t = -b - sqrt(disc). Returns t, or -1 for a miss.
+
+  rt-sphere-hit : Real, Real, Real, Real, Real, Real, Integer -> Real
+  rt-sphere-hit (ox) (oy) (oz) (dx) (dy) (dz) (i) =
+    let lx = ox - rt-cx i
+    in let ly = oy - rt-cy i
+    in let lz = oz - rt-cz i
+    in let b = dx * lx + dy * ly + dz * lz
+    in let r = rt-rad i
+    in let c = lx * lx + ly * ly + lz * lz - r * r
+    in let disc = b * b - c
+    in if disc < 0.0 then 0.0 - 1.0
+    else let t = 0.0 - b - real-sqrt disc
+    in if t > 0.001 then t else 0.0 - 1.0
+
+ The floor is the plane y = -1. t = (-1 - oy) / dy when the ray points down.
+
+  rt-plane-hit : Real, Real -> Real
+  rt-plane-hit (oy) (dy) =
+    if dy > 0.0 - 0.0001 then 0.0 - 1.0
+    else let t = (0.0 - 1.0 - oy) / dy
+    in if t > 0.001 then t else 0.0 - 1.0
+
+ Distance to object id (spheres 0..2, plane 3).
+
+  rt-hit : Real, Real, Real, Real, Real, Real, Integer -> Real
+  rt-hit (ox) (oy) (oz) (dx) (dy) (dz) (id) =
+    if id == 3 then rt-plane-hit oy dy
+    else rt-sphere-hit ox oy oz dx dy dz id
+
+Section: Nearest Hit
+
+ Fold over object index carrying the best id and its t; tail-recursive -> loop.
+ Returns the nearest object id, or -1 on a full miss. t is recovered by
+ re-intersecting the winner (cheap, avoids returning a pair).
+
+  rt-nearest : Real, Real, Real, Real, Real, Real, Integer, Integer, Real -> Integer
+  rt-nearest (ox) (oy) (oz) (dx) (dy) (dz) (i) (best-id) (best-t) =
+    if i >= rt-nobj then best-id
+    else let t = rt-hit ox oy oz dx dy dz i
+    in let take = if t > 0.001 then (if best-t < 0.0 then 1 else if t < best-t then 1 else 0) else 0
+    in if take == 1 then rt-nearest ox oy oz dx dy dz (i + 1) i t
+    else rt-nearest ox oy oz dx dy dz (i + 1) best-id best-t
+
+Section: Shadow Test
+
+ Any sphere between the hit point and the light puts the point in shadow. Fold
+ over the three spheres; return 1 if occluded.
+
+  rt-shadowed : Real, Real, Real, Real, Real, Real, Integer -> Integer
+  rt-shadowed (ox) (oy) (oz) (dx) (dy) (dz) (i) =
+    if i >= 3 then 0
+    else let t = rt-sphere-hit ox oy oz dx dy dz i
+    in if t > 0.001 then 1
+    else rt-shadowed ox oy oz dx dy dz (i + 1)
+
+Section: Shading Helpers
+
+  rt-clamp01 : Real -> Real
+  rt-clamp01 (x) = real-max 0.0 (real-min 1.0 x)
+
+  rt-pack : Real, Real, Real -> Integer
+  rt-pack (r) (g) (b) =
+    let ri = real-to-int (rt-clamp01 r * 255.0)
+    in let gi = real-to-int (rt-clamp01 g * 255.0)
+    in let bi = real-to-int (rt-clamp01 b * 255.0)
+    in ri * 65536 + gi * 256 + bi
+
+  rt-sky : Real -> Integer
+  rt-sky (dy) =
+    let h = rt-clamp01 (dy * 0.5 + 0.5)
+    in rt-pack (0.05 + h * 0.06) (0.09 + h * 0.14) (0.22 + h * 0.34)
+
+ Checker parity from truncated floor coordinates (offset to stay positive in
+ view, so truncation behaves like floor).
+
+  rt-checker : Real, Real -> Real
+  rt-checker (hx) (hz) =
+    let ix = real-to-int (hx + 64.0)
+    in let iz = real-to-int (hz + 64.0)
+    in let s = ix + iz
+    in if s - (s / 2) * 2 == 0 then 0.32 else 0.62
+
+Section: Render
+
+ Per pixel: build the primary ray, find the nearest hit, compute the surface
+ normal and albedo, then Lambert shade with a rotating key light and a hard
+ shadow ray. Misses draw the sky gradient.
+
+  rt-render : Integer, Integer -> Integer
+  rt-render (gid) (frame) =
+    let px = gid - (gid / rt-width) * rt-width
+    in let py = gid / rt-width
+    in let fx = real-from-int (px - rt-half-w) / 384.0
+    in let fy = real-from-int (rt-half-h - py) / 384.0
+    in let rl = real-sqrt (fx * fx + fy * fy + 2.89)
+    in let dx = fx / rl
+    in let dy = fy / rl
+    in let dz = 1.7 / rl
+    in let ox = 0.0
+    in let oy = 0.7
+    in let oz = 0.0 - 4.0
+    in let id = rt-nearest ox oy oz dx dy dz 0 (0 - 1) (0.0 - 1.0)
+    in if id < 0 then rt-sky dy
+    else let t = rt-hit ox oy oz dx dy dz id
+    in let hx = ox + dx * t
+    in let hy = oy + dy * t
+    in let hz = oz + dz * t
+    in let nx = if id == 3 then 0.0 else (hx - rt-cx id) / rt-rad id
+    in let ny = if id == 3 then 1.0 else (hy - rt-cy id) / rt-rad id
+    in let nz = if id == 3 then 0.0 else (hz - rt-cz id) / rt-rad id
+    in let br = if id == 3 then rt-checker hx hz else rt-col-r id
+    in let bg = if id == 3 then rt-checker hx hz else rt-col-g id
+    in let bb = if id == 3 then rt-checker hx hz else rt-col-b id
+    in let ang = real-from-int frame / 24.0
+    in let lx = real-cos ang * 0.6
+    in let ly = 0.9
+    in let lz = real-sin ang * 0.6
+    in let ll = real-sqrt (lx * lx + ly * ly + lz * lz)
+    in let ux = lx / ll
+    in let uy = ly / ll
+    in let uz = lz / ll
+    in let ndl = real-max 0.0 (nx * ux + ny * uy + nz * uz)
+    in let sx = hx + nx * 0.002
+    in let sy = hy + ny * 0.002
+    in let sz = hz + nz * 0.002
+    in let sh = rt-shadowed sx sy sz ux uy uz 0
+    in let lit = if sh == 1 then 0.2 else 0.2 + ndl * 0.9
+    in rt-pack (br * lit) (bg * lit) (bb * lit)
+
+Section: Raytrace Kernel
+
+  raytrace-step : Integer, Integer, Integer -> [Device] Integer
+  raytrace-step (outb) (frame) (gid) = act
+    device-store outb gid (rt-render gid frame)
+  end

@@ -47,8 +47,8 @@ $phaseSurveyField = @{
 # Mirrors codex/compiler/Core/BuildSettings.codex survey-*-mul / survey-headroom.
 # Only a starting point for escalation; doubling converges even if these drift.
 $surveyDefaultMul = @{
-    'lex-mul' = 40; 'parse-mul' = 265; 'desugar-mul' = 21; 'scope-mul' = 52; 'check-mul' = 400;
-    'check-unit-mul' = 296000; 'lower-mul' = 42200; 'resolve-mul' = 3600; 'lift-mul' = 7600; 'headroom' = 120
+    'lex-mul' = 40; 'parse-mul' = 265; 'desugar-mul' = 21; 'scope-mul' = 52; 'check-mul' = 40;
+    'check-unit-mul' = 148000; 'lower-mul' = 42200; 'resolve-mul' = 3600; 'lift-mul' = 7600; 'headroom' = 120
 }
 $surveyOverrides = @{}
 if ($Survey) {

@@ -1,0 +1,44 @@
+Chapter: CpuParticlesKernel
+  cites Gpu chapter DeviceEffect
+
+ A particle fountain: particles spout from a source at the bottom, arc under
+ gravity, and respawn when they fall off screen. One GPU thread per particle
+ reads its (px, py, vx, vy) from the input buffer, integrates with gravity, and
+ writes the output buffer; the host ping-pongs the two and draws speed-coloured
+ additive points. Reference site's "CPU particle system" as a compute fountain.
+ Integer fixed point (position in pixels, velocity in 1/16 pixel).
+
+ We say:
+
+Section: Parameters
+
+  cp-width : Integer = 1024
+  cp-grav : Integer = 60
+
+Section: Fountain Kernel
+
+  cp-step : Integer, Integer, Integer, Integer -> [Device] Integer
+  cp-step (inb) (outb) (frame) (gid) = act
+    px <- device-load inb (gid * 4)
+    py <- device-load inb (gid * 4 + 1)
+    vx <- device-load inb (gid * 4 + 2)
+    vy <- device-load inb (gid * 4 + 3)
+    let nvy = vy + cp-grav
+    in let mx = px + vx
+    in let my = py + nvy
+    in let off = if my > 12288 then 1 else if mx < 0 then 1 else if mx > 16384 then 1 else 0
+    in let seed = gid * 2657 + frame * 131
+    in let h1 = seed - (seed / 131) * 131
+    in let h2 = (seed * 7) - ((seed * 7) / 173) * 173
+    in let h3 = (seed * 17) - ((seed * 17) / 97) * 97
+    in let rpx = if off == 1 then 8192 + (h1 - 65) * 20 else mx
+    in let rpy = if off == 1 then 12200 else my
+    in let rvx = if off == 1 then (h2 - 86) * 9 else vx
+    in let rvy = if off == 1 then 0 - (760 + h3 * 5) else nvy
+    in act
+    s0 <- device-store outb (gid * 4) rpx
+    s1 <- device-store outb (gid * 4 + 1) rpy
+    s2 <- device-store outb (gid * 4 + 2) rvx
+    device-store outb (gid * 4 + 3) rvy
+    end
+  end

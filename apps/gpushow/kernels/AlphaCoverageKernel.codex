@@ -1,0 +1,68 @@
+Chapter: AlphaCoverageKernel
+  cites Gpu chapter DeviceEffect
+
+ Alpha-to-coverage, shown as a split screen of alpha-cutout circles over a
+ gradient. Left: one alpha sample per pixel, so the cutout edges are hard and
+ jagged. Right: a 4x4 grid of coverage samples per pixel is averaged, so the
+ same cutouts get smooth, anti-aliased edges -- what alpha-to-coverage buys you.
+ One thread per pixel; the coverage fold is lowered to a WGSL loop. Reference
+ site's "multisampling alpha to coverage" technique.
+
+ We say:
+
+Section: Parameters
+
+  ac-width : Integer = 1024
+  ac-half-w : Integer = 512
+
+Section: Coverage
+
+ 1 on a bar of a rotated fine grate, else 0 (the hard alpha test). Rotating the
+ grid makes the thin diagonal bars a high-frequency alpha edge that aliases badly
+ at one sample per pixel.
+
+  ac-in : Integer, Integer -> Integer
+  ac-in (px) (py) =
+    let rx = (px * 222 - py * 128) / 256 + 4096
+    in let ry = (px * 128 + py * 222) / 256 + 4096
+    in if rx - (rx / 20) * 20 < 6 then 1 else if ry - (ry / 20) * 20 < 6 then 1 else 0
+
+ The same grate at 4x resolution (same on-screen size) for the coverage samples.
+
+  ac-in4 : Integer, Integer -> Integer
+  ac-in4 (px) (py) =
+    let rx = (px * 222 - py * 128) / 256 + 16384
+    in let ry = (px * 128 + py * 222) / 256 + 16384
+    in if rx - (rx / 80) * 80 < 24 then 1 else if ry - (ry / 80) * 80 < 24 then 1 else 0
+
+ Average 16 sub-samples of the alpha test across the pixel.
+
+  ac-super : Integer, Integer, Integer, Integer -> Integer
+  ac-super (px) (py) (s) (acc) =
+    if s >= 16 then acc
+    else let dx = s - (s / 4) * 4
+    in let dy = s / 4
+    in ac-super px py (s + 1) (acc + ac-in4 (px * 4 + dx) (py * 4 + dy))
+
+Section: Kernel
+
+  alphacov-step : Integer, Integer, Integer -> [Device] Integer
+  alphacov-step (outb) (frame) (gid) =
+    let px = gid - (gid / ac-width) * ac-width
+    in let py = gid / ac-width
+    in let tcx = px / 34
+    in let tcy = py / 34
+    in let hue = tcx * 3 + tcy * 5
+    in let hm = hue - (hue / 6) * 6
+    in let fr = if hm == 0 then 240 else if hm == 1 then 90 else if hm == 2 then 250 else if hm == 3 then 120 else if hm == 4 then 250 else 80
+    in let fg = if hm == 0 then 120 else if hm == 1 then 220 else if hm == 2 then 90 else if hm == 3 then 200 else if hm == 4 then 210 else 200
+    in let fb = if hm == 0 then 70 else if hm == 1 then 120 else if hm == 2 then 200 else if hm == 3 then 240 else if hm == 4 then 90 else 240
+    in let cov256 = if px < ac-half-w then ac-in px py * 256 else ac-super px py 0 0 * 16
+    in let bgr = 20 + py / 24
+    in let bgb = 40 + px / 24
+    in let ored = (fr * cov256 + bgr * (256 - cov256)) / 256
+    in let ogreen = (fg * cov256 + 24 * (256 - cov256)) / 256
+    in let oblue = (fb * cov256 + bgb * (256 - cov256)) / 256
+    in act
+    device-store outb gid (ored * 65536 + ogreen * 256 + oblue)
+    end

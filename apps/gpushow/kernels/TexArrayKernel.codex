@@ -1,0 +1,60 @@
+Chapter: TexArrayKernel
+  cites Gpu chapter DeviceEffect
+  cites Gpu chapter DeviceMath
+
+ A texture array: one procedural texture per layer, shown as a 3x2 grid of panels
+ that cycle through the array. Each pixel picks its panel (which layer) and its
+ local coordinate, then a per-layer procedural pattern (checker, stripes, dots,
+ rings, weave, gradient) is evaluated. The layer offset scrolls with the frame so
+ the panels advance through the array. Reference site's "texture array" technique.
+ Float math from DeviceMath.
+
+ We say:
+
+Section: Parameters
+
+  ta-width : Integer = 1024
+  ta-height : Integer = 768
+
+Section: Layers
+
+  ta-clamp01 : Real -> Real
+  ta-clamp01 (x) = real-max 0.0 (real-min 1.0 x)
+
+  ta-pack : Real, Real, Real -> Integer
+  ta-pack (r) (g) (b) =
+    real-to-int (ta-clamp01 r * 255.0) * 65536 + real-to-int (ta-clamp01 g * 255.0) * 256 + real-to-int (ta-clamp01 b * 255.0)
+
+ Value 0..1 of layer `l` at local pixel (lx, ly) in a panel.
+
+  ta-layer : Integer, Integer, Integer -> Real
+  ta-layer (l) (lx) (ly) =
+    let m = l - (l / 6) * 6
+    in if m == 0 then (if (lx / 20 + ly / 20) - ((lx / 20 + ly / 20) / 2) * 2 == 0 then 1.0 else 0.15)
+    else if m == 1 then (if lx - (lx / 24) * 24 < 12 then 1.0 else 0.2)
+    else if m == 2 then (let cx = lx - (lx / 32) * 32 - 16 in let cy = ly - (ly / 32) * 32 - 16 in if cx * cx + cy * cy < 90 then 1.0 else 0.18)
+    else if m == 3 then (let cx = lx - 170 in let cy = ly - 120 in let d = real-sqrt (real-from-int (cx * cx + cy * cy)) in if real-sin (d * 0.18) > 0.0 then 0.95 else 0.2)
+    else if m == 4 then (if (lx - (lx / 22) * 22 < 11) then (if ly - (ly / 22) * 22 < 11 then 0.9 else 0.3) else (if ly - (ly / 22) * 22 < 11 then 0.3 else 0.9))
+    else ta-clamp01 (real-from-int (lx + ly) / 460.0)
+
+Section: Kernel
+
+  texarray-step : Integer, Integer, Integer -> [Device] Integer
+  texarray-step (outb) (frame) (gid) =
+    let px = gid - (gid / ta-width) * ta-width
+    in let py = gid / ta-width
+    in let col = px / 342
+    in let row = py / 384
+    in let panel = row * 3 + col
+    in let lx = px - col * 342
+    in let ly = py - row * 384
+    in let border = if lx < 3 then 1 else if lx > 338 then 1 else if ly < 3 then 1 else if ly > 380 then 1 else 0
+    in let l = panel + frame / 30
+    in let v = ta-layer l lx ly
+    in let m = l - (l / 6) * 6
+    in let tr = if m == 0 then 0.9 else if m == 1 then 0.4 else if m == 2 then 0.95 else if m == 3 then 0.5 else if m == 4 then 0.85 else 0.6
+    in let tg = if m == 0 then 0.5 else if m == 1 then 0.85 else if m == 2 then 0.4 else if m == 3 then 0.7 else if m == 4 then 0.5 else 0.9
+    in let tb = if m == 0 then 0.3 else if m == 1 then 0.5 else if m == 2 then 0.5 else if m == 3 then 0.95 else if m == 4 then 0.9 else 0.4
+    in act
+    device-store outb gid (if border == 1 then 20 * 65536 + 24 * 256 + 34 else ta-pack (v * tr) (v * tg) (v * tb))
+    end

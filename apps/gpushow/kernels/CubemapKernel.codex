@@ -1,0 +1,87 @@
+Chapter: CubemapKernel
+  cites Gpu chapter DeviceEffect
+  cites Gpu chapter DeviceMath
+
+ A cubemap skybox, sampled per pixel from Codex [Device] AST. Each pixel's camera
+ ray direction (panning with the frame) samples a procedural environment: a sky
+ gradient, a warm sun with a glow, banded clouds, and a dark ground below the
+ horizon. Reference site's "texture cubemap" technique (a procedural cube instead
+ of six loaded faces). Float math from DeviceMath.
+
+ We say:
+
+Section: Parameters
+
+  cm-width : Integer = 1024
+  cm-half-w : Integer = 512
+  cm-half-h : Integer = 384
+
+Section: Sky
+
+  cm-clamp01 : Real -> Real
+  cm-clamp01 (x) = real-max 0.0 (real-min 1.0 x)
+
+  cm-pack : Real, Real, Real -> Integer
+  cm-pack (r) (g) (b) =
+    real-to-int (cm-clamp01 r * 255.0) * 65536 + real-to-int (cm-clamp01 g * 255.0) * 256 + real-to-int (cm-clamp01 b * 255.0)
+
+  cm-noise : Real, Real -> Real
+  cm-noise (x) (z) =
+    real-sin (x * 0.9) * real-cos (z * 0.8)
+    + real-sin (x * 1.9 + 1.3) * real-cos (z * 2.1) * 0.5
+    + real-sin (x * 3.3 - z * 1.4) * 0.25
+
+ Clouds live on a horizontal plane above the camera: a ray going up (dy > 0)
+ hits the plane at distance 1.3 / dy, and the plane coordinate there indexes the
+ cloud noise -- so the clouds recede to the horizon in proper perspective and
+ read as an overhead cloud layer rather than screen-space swirls.
+
+  cm-cloud : Real, Real, Real, Integer -> Real
+  cm-cloud (dx) (dz) (dy) (frame) =
+    let t = 1.3 / dy
+    in let cx = dx * t * 1.4 + real-from-int frame / 42.0
+    in let cz = dz * t * 1.4
+    in let n = cm-noise cx cz
+    in cm-clamp01 ((n - 0.12) * 1.3) * cm-clamp01 (dy * 5.0)
+
+ A compact sun glow, dot^14.
+
+  cm-sun : Real -> Real
+  cm-sun (d) =
+    if d <= 0.0 then 0.0
+    else let d2 = d * d in let d4 = d2 * d2 in d4 * d4 * d4 * d2
+
+  cm-render : Integer, Integer -> Integer
+  cm-render (gid) (frame) =
+    let px = gid - (gid / cm-width) * cm-width
+    in let py = gid / cm-width
+    in let fx = real-from-int (px - cm-half-w) / 512.0
+    in let fy = real-from-int (cm-half-h - py) / 384.0
+    in let yaw = real-from-int frame / 60.0
+    in let ca = real-cos yaw
+    in let sa = real-sin yaw
+    in let rl = real-sqrt (fx * fx + fy * fy + 1.0)
+    in let dx0 = fx / rl
+    in let dy = fy / rl
+    in let dz0 = 1.0 / rl
+    in let dx = dx0 * ca + dz0 * sa
+    in let dz = 0.0 - dx0 * sa + dz0 * ca
+    in let sund = dx * 0.42 + dy * 0.34 - dz * 0.84
+    in let glow = cm-sun sund * 0.7
+    in let disk = if sund > 0.9965 then 1.6 else 0.0
+    in if dy < 0.0 - 0.02 then cm-pack (0.10 - dy * 0.05) (0.09 - dy * 0.04) 0.08
+    else let cloudv = if dy > 0.03 then cm-cloud dx dz dy frame else 0.0
+    in let base-r = 0.30 + dy * 0.10
+    in let base-g = 0.50 + dy * 0.30
+    in let base-b = 0.82 + dy * 0.15
+    in let skr = base-r + glow * 0.9 + disk
+    in let skg = base-g + glow * 0.78 + disk
+    in let skb = base-b + glow * 0.45 + disk
+    in cm-pack (skr * (1.0 - cloudv) + cloudv) (skg * (1.0 - cloudv) + cloudv) (skb * (1.0 - cloudv) + cloudv)
+
+Section: Kernel
+
+  cubemap-step : Integer, Integer, Integer -> [Device] Integer
+  cubemap-step (outb) (frame) (gid) = act
+    device-store outb gid (cm-render gid frame)
+  end

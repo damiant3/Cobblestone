@@ -1263,6 +1263,7 @@ Section: Punctual Mutual Recursion
     is AIfExpr (c) (t) (el) (s) -> collect-rt-mentions el self rt-names (collect-rt-mentions t self rt-names (collect-rt-mentions c self rt-names acc))
     is ALetExpr (bs) (b) (s) -> collect-rt-mentions b self rt-names (collect-rt-mentions-binds bs self rt-names acc 0 (list-length bs))
     is AMatchExpr (sc) (arms) (s) -> collect-rt-mentions-arms arms self rt-names (collect-rt-mentions sc self rt-names acc) 0 (list-length arms)
+    is AInductionExpr (sc) (arms) (s) -> collect-rt-mentions-arms arms self rt-names (collect-rt-mentions sc self rt-names acc) 0 (list-length arms)
     is ALambdaExpr (ps) (b) (s) -> collect-rt-mentions b self rt-names acc
     is AListExpr (elems) (s) -> collect-rt-mentions-list elems self rt-names acc 0 (list-length elems)
     is ARecordExpr (n) (fields) (s) -> collect-rt-mentions-fields fields self rt-names acc 0 (list-length fields)
@@ -1355,6 +1356,102 @@ Section: Punctual Mutual Recursion
        else st
    in check-rt-cycles-loop g defs (i + 1) len st2
 
+Section: Proof Acyclicity
+
+ A proof term cannot assume its own conclusion. Declared types are
+ registered before any body is checked (as ordinary mutual recursion
+ requires), so without this check a proof definition whose body
+ mentions itself - directly, mutually, through a recursive
+ proof-returning helper, or by citing the claim under proof as a
+ lemma inside an induction arm - type-checks trivially and erasure
+ hides the divergence forever (ProofTotalityProbe.md). The check:
+ a definition is proof-relevant when its deep-resolved checked type
+ mentions ProofTy or PropEqTy anywhere (resolved, not declared, so
+ an undeclared intermediary def whose inferred type unifies to a
+ proposition is still in the graph). Edges are every body mention of
+ a proof-relevant name, collected with the same exhaustive walk the
+ punctual cycle check uses, with self passed as the empty name so
+ direct self-mentions are edges too. Any proof-relevant definition
+ that reaches itself is rejected with CDX4023. The recursion a proof
+ legitimately needs is structural induction, which discharges
+ subgoals through inductive-hypothesis bindings, never through a
+ name cycle; sound lemma chains are DAGs and pass unchanged. The
+ type walk is fuel-capped and answers proof-relevant on exhaustion,
+ so a pathological type errs toward checking, never toward silence.
+
+  type-mentions-proof : CodexType, Integer -> Boolean
+  type-mentions-proof (ty) (fuel) =
+   if fuel <= 0 then True
+   else when ty
+    is ProofTy | PropEqTy (a) (b) -> True
+    is FunTy (p) (row) (r) -> type-mentions-proof p (fuel - 1) | type-mentions-proof r (fuel - 1)
+    is ListTy (e) -> type-mentions-proof e (fuel - 1)
+    is LinkedListTy (e) -> type-mentions-proof e (fuel - 1)
+    is ForAllTy (id) (b) -> type-mentions-proof b (fuel - 1)
+    is ForAllEff (id) (b) -> type-mentions-proof b (fuel - 1)
+    is EffectfulTy (effs) (sc) (r) -> type-mentions-proof r (fuel - 1)
+    is UnitTy (n) (inner) -> type-mentions-proof inner (fuel - 1)
+    is LinearTy (inner) -> type-mentions-proof inner (fuel - 1)
+    is VectorTy (n) (e) -> type-mentions-proof e (fuel - 1)
+    is TypeApply (f) (a) -> type-mentions-proof f (fuel - 1) | type-mentions-proof a (fuel - 1)
+    is ConstructedTy (n) (args) -> types-mention-proof args (fuel - 1) 0 (list-length args)
+    is SumTy (n) (args) (ctors) -> types-mention-proof args (fuel - 1) 0 (list-length args) | ctors-mention-proof ctors (fuel - 1) 0 (list-length ctors)
+    is RecordTy (n) (args) (fields) -> types-mention-proof args (fuel - 1) 0 (list-length args) | fields-mention-proof fields (fuel - 1) 0 (list-length fields)
+    is otherwise -> False
+
+  types-mention-proof : List CodexType, Integer, Integer, Integer -> Boolean
+  types-mention-proof (ts) (fuel) (i) (len) =
+   if i >= len then False
+   else if type-mentions-proof (list-at ts i) fuel then True
+   else types-mention-proof ts fuel (i + 1) len
+
+  ctors-mention-proof : List SumCtor, Integer, Integer, Integer -> Boolean
+  ctors-mention-proof (ctors) (fuel) (i) (len) =
+   if i >= len then False
+   else if types-mention-proof ((list-at ctors i).fields) fuel 0 (list-length ((list-at ctors i).fields)) then True
+   else ctors-mention-proof ctors fuel (i + 1) len
+
+  fields-mention-proof : List RecordField, Integer, Integer, Integer -> Boolean
+  fields-mention-proof (fields) (fuel) (i) (len) =
+   if i >= len then False
+   else if type-mentions-proof ((list-at fields i).type-val) fuel then True
+   else fields-mention-proof fields fuel (i + 1) len
+
+  build-proof-names : List ADef, List TypeBinding, Integer, Integer, List Text -> List Text
+  build-proof-names (defs) (types) (i) (len) (acc) =
+   if i >= len then acc
+   else if i >= list-length types then acc
+   else if type-mentions-proof ((list-at types i).bound-type) 64
+    then build-proof-names defs types (i + 1) len (list-push acc ((list-at defs i).name.value))
+    else build-proof-names defs types (i + 1) len acc
+
+  build-proof-edges : List ADef, List Text, Integer, Integer, List RtEdges -> List RtEdges
+  build-proof-edges (defs) (names) (i) (len) (acc) =
+   if i >= len then acc
+   else let d = list-at defs i
+   in if is-rt-name names (d.name.value) 0 (list-length names)
+      then build-proof-edges defs names (i + 1) len (list-push acc (deck-record (RtEdges { re-fn = d.name.value, re-calls = collect-rt-mentions (d.body) "" names [] })))
+      else build-proof-edges defs names (i + 1) len acc
+
+  check-proof-cycles : List ADef, List TypeBinding, UnificationState -> UnificationState
+  check-proof-cycles (defs) (types) (st) =
+   let names = build-proof-names defs types 0 (list-length defs) []
+   in if list-length names == 0 then st
+   else let g = build-proof-edges defs names 0 (list-length defs) []
+   in check-proof-cycles-loop g defs names 0 (list-length defs) st
+
+  check-proof-cycles-loop : List RtEdges, List ADef, List Text, Integer, Integer, UnificationState -> UnificationState
+  check-proof-cycles-loop (g) (defs) (names) (i) (len) (st) =
+   if i >= len then st
+   else let d = list-at defs i
+   in if is-rt-name names (d.name.value) 0 (list-length names)
+      then let calls = rt-edges-for g (d.name.value)
+       in let st2 = if rt-reaches-any g calls (d.name.value) [] 0 (list-length calls)
+           then __record-set st "bag" (bag-add (st.bag) (make-error cdx-circular-proof ("circular proof: '" & (d.name.value) & "' justifies itself, directly or through other proof definitions or cited lemmas; a proof term cannot assume its own conclusion. Recursion in a proof is only sound through structural induction, and lemma chains must be acyclic. To assert this equality without proof, use 'assume'.") (d.span)))
+           else st
+       in check-proof-cycles-loop g defs names (i + 1) len st2
+      else check-proof-cycles-loop g defs names (i + 1) len st
+
   check-chapter : AChapter, List RenameEntry, SkipListText, List ChapterAssignment -> ChapterResult
   check-chapter (mod) (renames) (colliding) (assignments) =
    let tdm = build-type-def-map (mod.type-defs) 0 (list-length (mod.type-defs)) []
@@ -1382,7 +1479,8 @@ Section: Punctual Mutual Recursion
    in let result = check-all-defs pre-st sorted-env (mod.defs) 0 def-count acc0 renames colliding assignments (mod.citations) slug-cache "" [] (mod.rt-names) tdm
    in let enter = __deck-enter
    in let cycle-st = check-rt-cycles (mod.defs) (mod.rt-names) (result.state)
-   in __record-set result "state" (check-stale-reads (mod.defs) cycle-st)
+   in let proof-st = check-proof-cycles (mod.defs) (result.types) cycle-st
+   in __record-set result "state" (check-stale-reads (mod.defs) proof-st)
 
   add-diagnostics-to-state : UnificationState, List Diagnostic, Integer, Integer -> UnificationState
   add-diagnostics-to-state (st) (diags) (i) (len) =

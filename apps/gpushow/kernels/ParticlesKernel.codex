@@ -1,0 +1,113 @@
+Chapter: ParticlesKernel
+  cites Gpu chapter DeviceEffect
+
+ A GPU compute particle system as a [Device] kernel: 20000 particles, one per
+ thread, each pulled by two gravity wells that orbit the centre. Each thread
+ reads its particle's state (px, py, vx, vy) from an input buffer, accumulates
+ a softened inverse-square attraction toward both wells, integrates with light
+ damping, wraps toroidally, and writes the new state to an output buffer. The
+ host ping-pongs the two buffers and draws speed-coloured additive points. This
+ is the reference site's "compute particles" technique, from Codex [Device] AST.
+
+ All fixed-point integer arithmetic (positions in pixels, velocity in 1/16
+ pixels) so the buffer stays i32 and matches the host exactly. No neighbour
+ reads -- each particle sees only its own state and the two analytic wells.
+
+ We say:
+
+Section: Screen
+
+  pa-width : Integer = 1024
+  pa-height : Integer = 768
+
+Section: Fixed-Point Trig
+
+  pa-wrap : Integer -> Integer
+  pa-wrap (a) = let m = a - (a / 6283) * 6283 in if m < 0 then m + 6283 else m
+
+  pa-sin-core : Integer -> Integer
+  pa-sin-core (x) =
+    let x2 = x * x / 1000
+    in let x3 = x2 * x / 1000
+    in let x5 = x3 * x2 / 1000
+    in x - x3 / 6 + x5 / 120
+
+  pa-sin : Integer -> Integer
+  pa-sin (raw) =
+    let a = pa-wrap raw
+    in if a <= 1570 then pa-sin-core a
+    else if a <= 3141 then pa-sin-core (3141 - a)
+    else if a <= 4712 then 0 - pa-sin-core (a - 3141)
+    else 0 - pa-sin-core (6283 - a)
+
+  pa-cos : Integer -> Integer
+  pa-cos (raw) = pa-sin (raw + 1570)
+
+Section: Gravity Wells
+
+ Two wells orbit the centre in antiphase. Angle advances with the frame.
+
+  pa-ax0 : Integer -> Integer
+  pa-ax0 (frame) = 512 + pa-cos (frame * 34) * 270 / 1000
+
+  pa-ay0 : Integer -> Integer
+  pa-ay0 (frame) = 384 + pa-sin (frame * 34) * 180 / 1000
+
+  pa-ax1 : Integer -> Integer
+  pa-ax1 (frame) = 512 - pa-cos (frame * 34) * 270 / 1000
+
+  pa-ay1 : Integer -> Integer
+  pa-ay1 (frame) = 384 - pa-sin (frame * 34) * 180 / 1000
+
+ Softened attraction toward a well: acceleration component along one axis.
+ inv falls off with distance-squared; the divide keeps it bounded near a well.
+
+  pa-acc : Integer, Integer, Integer, Integer -> Integer
+  pa-acc (px) (py) (ax) (ay) =
+    let dx = ax - px
+    in let dy = ay - py
+    in let d2 = dx * dx + dy * dy
+    in let inv = 260000 / (d2 / 256 + 500)
+    in dx * inv / 11000
+
+  pa-acc-y : Integer, Integer, Integer, Integer -> Integer
+  pa-acc-y (px) (py) (ax) (ay) =
+    let dx = ax - px
+    in let dy = ay - py
+    in let d2 = dx * dx + dy * dy
+    in let inv = 260000 / (d2 / 256 + 500)
+    in dy * inv / 11000
+
+Section: Wrap
+
+  pa-wrap-pos : Integer, Integer -> Integer
+  pa-wrap-pos (v) (m) = let r = v - (v / m) * m in if r < 0 then r + m else r
+
+Section: Particle Kernel
+
+ One thread per particle. Read state from inb, integrate under both wells,
+ write advanced state to outb.
+
+  particles-step : Integer, Integer, Integer, Integer -> [Device] Integer
+  particles-step (inb) (outb) (frame) (gid) = act
+    px <- device-load inb (gid * 4)
+    py <- device-load inb (gid * 4 + 1)
+    vx <- device-load inb (gid * 4 + 2)
+    vy <- device-load inb (gid * 4 + 3)
+    let ax0 = pa-ax0 frame
+    in let ay0 = pa-ay0 frame
+    in let ax1 = pa-ax1 frame
+    in let ay1 = pa-ay1 frame
+    in let accx = pa-acc px py ax0 ay0 + pa-acc px py ax1 ay1
+    in let accy = pa-acc-y px py ax0 ay0 + pa-acc-y px py ax1 ay1
+    in let nvx = vx - vx / 48 + accx
+    in let nvy = vy - vy / 48 + accy
+    in let npx = pa-wrap-pos (px + nvx / 16) pa-width
+    in let npy = pa-wrap-pos (py + nvy / 16) pa-height
+    in act
+    s0 <- device-store outb (gid * 4) npx
+    s1 <- device-store outb (gid * 4 + 1) npy
+    s2 <- device-store outb (gid * 4 + 2) nvx
+    device-store outb (gid * 4 + 3) nvy
+    end
+  end

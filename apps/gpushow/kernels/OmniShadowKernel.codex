@@ -1,0 +1,119 @@
+Chapter: OmniShadowKernel
+  cites Gpu chapter DeviceEffect
+  cites Gpu chapter DeviceMath
+
+ Omni-directional shadows from a point light. A bright point light sits among a
+ ring of spheres on a floor; for every shaded point a shadow ray is cast toward
+ the light and tested against all spheres, so each sphere casts shadows that
+ radiate outward in every direction and fall on its neighbours and the floor. One
+ thread per pixel. Reference site's "omni directional shadow mapping" technique
+ (point-light shadows). Float math from DeviceMath.
+
+ We say:
+
+Section: Parameters
+
+  om-width : Integer = 1024
+  om-half-w : Integer = 512
+  om-half-h : Integer = 384
+  om-count : Integer = 5
+
+Section: Scene
+
+  om-cx : Integer -> Real
+  om-cx (i) = real-cos (real-from-int i * 1.2566) * 1.7
+
+  om-cz : Integer -> Real
+  om-cz (i) = real-sin (real-from-int i * 1.2566) * 1.7
+
+  om-colr : Integer -> Real
+  om-colr (i) = if i == 0 then 0.9 else if i == 1 then 0.35 else if i == 2 then 0.4 else if i == 3 then 0.9 else 0.6
+
+  om-colg : Integer -> Real
+  om-colg (i) = if i == 0 then 0.5 else if i == 1 then 0.8 else if i == 2 then 0.85 else if i == 3 then 0.8 else 0.5
+
+  om-colb : Integer -> Real
+  om-colb (i) = if i == 0 then 0.35 else if i == 1 then 0.55 else if i == 2 then 0.5 else if i == 3 then 0.35 else 0.9
+
+  om-hit : Real, Real, Real, Real, Real, Real, Integer -> Real
+  om-hit (ox) (oy) (oz) (dx) (dy) (dz) (i) =
+    let lx = ox - om-cx i
+    in let lz = oz - om-cz i
+    in let b = dx * lx + dy * (oy + 0.4) + dz * lz
+    in let c = lx * lx + (oy + 0.4) * (oy + 0.4) + lz * lz - 0.36
+    in let disc = b * b - c
+    in if disc < 0.0 then 0.0 - 1.0 else let t = 0.0 - b - real-sqrt disc in if t > 0.001 then t else 0.0 - 1.0
+
+  om-nearest : Real, Real, Real, Real, Real, Real, Integer, Integer, Real -> Integer
+  om-nearest (ox) (oy) (oz) (dx) (dy) (dz) (i) (bid) (bt) =
+    if i >= om-count then bid
+    else let t = om-hit ox oy oz dx dy dz i
+    in let take = if t > 0.001 then (if bt < 0.0 then 1 else if t < bt then 1 else 0) else 0
+    in if take == 1 then om-nearest ox oy oz dx dy dz (i + 1) i t else om-nearest ox oy oz dx dy dz (i + 1) bid bt
+
+  om-shadow : Real, Real, Real, Real, Real, Real, Real, Integer -> Integer
+  om-shadow (ox) (oy) (oz) (dx) (dy) (dz) (maxt) (i) =
+    if i >= om-count then 0
+    else let t = om-hit ox oy oz dx dy dz i
+    in if t > 0.02 then (if t < maxt then 1 else om-shadow ox oy oz dx dy dz maxt (i + 1)) else om-shadow ox oy oz dx dy dz maxt (i + 1)
+
+Section: Kernel
+
+  om-checker : Real, Real -> Real
+  om-checker (hx) (hz) =
+    let ix = real-to-int (hx + 64.0)
+    in let iz = real-to-int (hz + 64.0)
+    in if (ix + iz) - ((ix + iz) / 2) * 2 == 0 then 0.35 else 0.6
+
+  om-pack : Real, Real, Real -> Integer
+  om-pack (r) (g) (b) =
+    real-to-int (real-max 0.0 (real-min 1.0 r) * 255.0) * 65536 + real-to-int (real-max 0.0 (real-min 1.0 g) * 255.0) * 256 + real-to-int (real-max 0.0 (real-min 1.0 b) * 255.0)
+
+  omnishadow-step : Integer, Integer, Integer -> [Device] Integer
+  omnishadow-step (outb) (frame) (gid) =
+    let px = gid - (gid / om-width) * om-width
+    in let py = gid / om-width
+    in let fx = real-from-int (px - om-half-w) / 384.0
+    in let fy = real-from-int (om-half-h - py) / 384.0 - 0.28
+    in let rl = real-sqrt (fx * fx + fy * fy + 2.56)
+    in let dx = fx / rl
+    in let dy = fy / rl
+    in let dz = 1.6 / rl
+    in let oy = 2.4
+    in let oz = 0.0 - 5.5
+    in let la = real-from-int frame / 40.0
+    in let lgx = real-cos la * 0.8
+    in let lgy = 1.1
+    in let lgz = real-sin la * 0.8
+    in let sid = om-nearest 0.0 oy oz dx dy dz 0 (0 - 1) (0.0 - 1.0)
+    in let st = if sid < 0 then 1000.0 else om-hit 0.0 oy oz dx dy dz sid
+    in let ft = if dy < 0.0 - 0.0001 then (0.0 - 1.0 - oy) / dy else 0.0 - 1.0
+    in let usefloor = if ft > 0.001 then (if sid < 0 then 1 else if ft < st then 1 else 0) else 0
+    in let hitany = if usefloor == 1 then 1 else if sid >= 0 then 1 else 0
+    in if hitany == 0 then 10 * 65536 + 12 * 256 + 22
+    else let t = if usefloor == 1 then ft else st
+    in let hx = dx * t
+    in let hy = oy + dy * t
+    in let hz = oz + dz * t
+    in let nx = if usefloor == 1 then 0.0 else (hx - om-cx sid) / 0.6
+    in let ny = if usefloor == 1 then 1.0 else (hy + 0.4) / 0.6
+    in let nz = if usefloor == 1 then 0.0 else (hz - om-cz sid) / 0.6
+    in let ldx = lgx - hx
+    in let ldy = lgy - hy
+    in let ldz = lgz - hz
+    in let ldist = real-sqrt (ldx * ldx + ldy * ldy + ldz * ldz)
+    in let ux = ldx / ldist
+    in let uy = ldy / ldist
+    in let uz = ldz / ldist
+    in let sh = om-shadow (hx + ux * 0.02) (hy + uy * 0.02) (hz + uz * 0.02) ux uy uz (ldist - 0.1) 0
+    in let ndl = real-max 0.0 (nx * ux + ny * uy + nz * uz)
+    in let atten = 3.5 / (0.6 + ldist * ldist)
+    in let vis = if sh == 1 then 0.12 else 1.0
+    in let lit = 0.14 + ndl * atten * vis * 2.2
+    in let chk = if usefloor == 1 then om-checker hx hz else 0.0
+    in let ar = if usefloor == 1 then chk else om-colr sid
+    in let ag = if usefloor == 1 then chk else om-colg sid
+    in let ab = if usefloor == 1 then chk else om-colb sid
+    in act
+    device-store outb gid (om-pack (ar * lit) (ag * lit) (ab * lit))
+    end

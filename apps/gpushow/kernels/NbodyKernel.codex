@@ -1,0 +1,93 @@
+Chapter: NbodyKernel
+  cites Gpu chapter DeviceEffect
+
+ An all-pairs gravitational N-body simulation as a [Device] compute kernel. One
+ GPU thread owns one body; each frame it loops over ALL the other bodies, reads
+ their positions from the shared state buffer, and sums a softened gravitational
+ pull -- the classic O(N^2) N-body kernel. This is the reference site's "N-body
+ simulation" technique, generated from Codex [Device] AST.
+
+ The per-body force is a tail-recursive fold over the body index that reads the
+ state buffer inside the loop: nb-fx / nb-fy take the buffer as a parameter and
+ device-load from it (act-bound, because device-load is an effect). The WGSL
+ plug lowers each act-block fold to a `loop` whose buffer parameter is a
+ `ptr<storage, array<i32>, read_write>`, and the kernel passes `&<buffer>` at the
+ call site -- the storage-pointer helper-parameter feature that also unlocks
+ neighbour boids.
+
+ Positions and velocities are 1/256-pixel fixed point in the i32 state buffer
+ (px, py, vx, vy per body); force math divides down to whole pixels first so the
+ squared distances stay well inside 32-bit range.
+
+ We say:
+
+Section: Parameters
+
+  nb-count : Integer = 1024
+  nb-width : Integer = 1024
+  nb-height : Integer = 768
+
+Section: Force Accumulation
+
+ Softened weight w = G / (d^2 + soft), pull component dx * w, summed over every
+ body. dx, dy are in whole pixels (positions shifted down from 1/256 fixed
+ point) so d^2 stays under ~1.6e6.
+
+  nb-fx : Integer, Integer, Integer, Integer, Integer -> [Device] Integer
+  nb-fx (buf) (myx) (myy) (j) (acc) =
+    if j >= nb-count then acc
+    else act
+      jx <- device-load buf (j * 4)
+      jy <- device-load buf (j * 4 + 1)
+      let dx = (jx - myx) / 256
+      in let dy = (jy - myy) / 256
+      in let d2 = dx * dx + dy * dy + 32
+      in let w = 9000 / d2
+      in nb-fx buf myx myy (j + 1) (acc + dx * w)
+    end
+
+  nb-fy : Integer, Integer, Integer, Integer, Integer -> [Device] Integer
+  nb-fy (buf) (myx) (myy) (j) (acc) =
+    if j >= nb-count then acc
+    else act
+      jx <- device-load buf (j * 4)
+      jy <- device-load buf (j * 4 + 1)
+      let dx = (jx - myx) / 256
+      in let dy = (jy - myy) / 256
+      in let d2 = dx * dx + dy * dy + 32
+      in let w = 9000 / d2
+      in nb-fy buf myx myy (j + 1) (acc + dy * w)
+    end
+
+Section: Wrap
+
+  nb-wrap : Integer, Integer -> Integer
+  nb-wrap (v) (m) = let r = v - (v / m) * m in if r < 0 then r + m else r
+
+Section: N-body Kernel
+
+ One thread per body: read own state from inb, sum the pull from every body,
+ integrate ballistically (vacuum -- no drag) with a velocity clamp for numerical
+ stability, wrap toroidally, write outb.
+
+  nbody-step : Integer, Integer, Integer, Integer -> [Device] Integer
+  nbody-step (inb) (outb) (frame) (gid) = act
+    px <- device-load inb (gid * 4)
+    py <- device-load inb (gid * 4 + 1)
+    vx <- device-load inb (gid * 4 + 2)
+    vy <- device-load inb (gid * 4 + 3)
+    fx <- nb-fx inb px py 0 0
+    fy <- nb-fy inb px py 0 0
+    let nvx = vx + fx / 32
+    in let nvy = vy + fy / 32
+    in let cvx = if nvx > 4200 then 4200 else if nvx < 0 - 4200 then 0 - 4200 else nvx
+    in let cvy = if nvy > 4200 then 4200 else if nvy < 0 - 4200 then 0 - 4200 else nvy
+    in let npx = nb-wrap (px + cvx) (nb-width * 256)
+    in let npy = nb-wrap (py + cvy) (nb-height * 256)
+    in act
+    s0 <- device-store outb (gid * 4) npx
+    s1 <- device-store outb (gid * 4 + 1) npy
+    s2 <- device-store outb (gid * 4 + 2) cvx
+    device-store outb (gid * 4 + 3) cvy
+    end
+  end

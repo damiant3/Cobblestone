@@ -1,0 +1,97 @@
+Chapter: SwarmKernel
+  cites Gpu chapter DeviceEffect
+
+ A flow-field swarm, as a [Device] compute kernel. One GPU thread owns one
+ particle. Each thread reads its particle's state (px, py, vx, vy) from an
+ input buffer, steers its velocity toward a procedural flow field derived
+ from position and time (fixed-point trig), integrates with inertia so the
+ paths curve smoothly, wraps around the screen, and writes the new state to
+ an output buffer. The host ping-pongs the two buffers each frame.
+
+ This is emitter-tractable today: pure helpers plus one act-block kernel with
+ buffer loads and stores, no per-neighbour loop. True neighbour-based boids
+ (separation/alignment/cohesion) needs a bounded loop over the state buffer,
+ which is recursion in Codex and requires recursion-to-loop lowering plus
+ storage-pointer helper parameters in the WGSL plug -- the next emitter
+ milestone.
+
+ We say:
+
+Section: Screen
+
+  sw-width : Integer = 1024
+  sw-height : Integer = 768
+  sw-speed : Integer = 9
+
+Section: Fixed-Point Trig
+
+  sw-wrap : Integer -> Integer
+  sw-wrap (a) = let m = a - (a / 6283) * 6283 in if m < 0 then m + 6283 else m
+
+  sw-sin-core : Integer -> Integer
+  sw-sin-core (x) =
+    let x2 = x * x / 1000
+    in let x3 = x2 * x / 1000
+    in let x5 = x3 * x2 / 1000
+    in x - x3 / 6 + x5 / 120
+
+  sw-sin : Integer -> Integer
+  sw-sin (raw) =
+    let a = sw-wrap raw
+    in if a <= 1570 then sw-sin-core a
+    else if a <= 3141 then sw-sin-core (3141 - a)
+    else if a <= 4712 then 0 - sw-sin-core (a - 3141)
+    else 0 - sw-sin-core (6283 - a)
+
+  sw-cos : Integer -> Integer
+  sw-cos (raw) = sw-sin (raw + 1570)
+
+Section: Flow Field
+
+ The flow angle at a point cycles across space and drifts with time, giving
+ a few large vortices that evolve. cos/sin of the angle give the target
+ velocity direction; sw-speed scales the magnitude.
+
+  sw-flow-ang : Integer, Integer, Integer -> Integer
+  sw-flow-ang (px) (py) (frame) =
+    sw-wrap ((sw-sin (px * 5 + frame * 4) + sw-sin (py * 5 - frame * 3)) * 3 + frame * 2)
+
+  sw-flow-vx : Integer, Integer, Integer -> Integer
+  sw-flow-vx (px) (py) (frame) = sw-cos (sw-flow-ang px py frame) * sw-speed / 1000
+
+  sw-flow-vy : Integer, Integer, Integer -> Integer
+  sw-flow-vy (px) (py) (frame) = sw-sin (sw-flow-ang px py frame) * sw-speed / 1000
+
+ Inertia: ease the velocity toward the flow so paths curve instead of
+ snapping. Positions wrap toroidally.
+
+  sw-new-vx : Integer, Integer, Integer, Integer -> Integer
+  sw-new-vx (px) (py) (vx) (frame) = (vx * 7 + sw-flow-vx px py frame) / 8
+
+  sw-new-vy : Integer, Integer, Integer, Integer -> Integer
+  sw-new-vy (px) (py) (vy) (frame) = (vy * 7 + sw-flow-vy px py frame) / 8
+
+  sw-wrap-pos : Integer, Integer -> Integer
+  sw-wrap-pos (v) (m) = let r = v - (v / m) * m in if r < 0 then r + m else r
+
+  sw-new-px : Integer, Integer, Integer, Integer -> Integer
+  sw-new-px (px) (py) (vx) (frame) = sw-wrap-pos (px + sw-new-vx px py vx frame) sw-width
+
+  sw-new-py : Integer, Integer, Integer, Integer -> Integer
+  sw-new-py (px) (py) (vy) (frame) = sw-wrap-pos (py + sw-new-vy px py vy frame) sw-height
+
+Section: Swarm Kernel
+
+ One thread per particle. Read state from inb, write advanced state to outb.
+
+  swarm-step : Integer, Integer, Integer, Integer -> [Device] Integer
+  swarm-step (inb) (outb) (frame) (gid) = act
+    px <- device-load inb (gid * 4)
+    py <- device-load inb (gid * 4 + 1)
+    vx <- device-load inb (gid * 4 + 2)
+    vy <- device-load inb (gid * 4 + 3)
+    s0 <- device-store outb (gid * 4) (sw-new-px px py vx frame)
+    s1 <- device-store outb (gid * 4 + 1) (sw-new-py px py vy frame)
+    s2 <- device-store outb (gid * 4 + 2) (sw-new-vx px py vx frame)
+    device-store outb (gid * 4 + 3) (sw-new-vy px py vy frame)
+  end
