@@ -35,31 +35,10 @@ $ErrorActionPreference = 'Stop'
 
 . (Join-Path $PSScriptRoot 'vm-config.ps1')
 
-# --- DynamicSurvey Phase 1: auto-retry on CDX9002 deck overflow ---
-# The compiler names the overflowing phase in the diagnostic ("Deck overflow
-# in CHECK; ..."). Map that phase to the survey multiplier that sizes its deck,
-# then escalate the override and retry rather than failing the compile.
-$phaseSurveyField = @{
-    'LEX' = 'lex-mul'; 'PARSE' = 'parse-mul'; 'PARSE-KEEP' = 'headroom';
-    'DESUGAR' = 'desugar-mul'; 'DESUGAR-KEEP' = 'headroom'; 'SCOPE' = 'scope-mul';
-    'CHECK' = 'check-mul'; 'LOWER' = 'lower-mul'; 'RESOLVE' = 'resolve-mul'; 'LIFT' = 'lift-mul'
-}
-# Mirrors codex/compiler/Core/BuildSettings.codex survey-*-mul / survey-headroom.
-# Only a starting point for escalation; doubling converges even if these drift.
-$surveyDefaultMul = @{
-    'lex-mul' = 40; 'parse-mul' = 265; 'desugar-mul' = 21; 'scope-mul' = 52; 'check-mul' = 40;
-    'check-unit-mul' = 148000; 'lower-mul' = 42200; 'resolve-mul' = 3600; 'lift-mul' = 7600; 'headroom' = 120
-}
-$surveyOverrides = @{}
-if ($Survey) {
-    foreach ($pair in ($Survey -split ',')) {
-        $kv = $pair -split ':', 2
-        if ($kv.Count -eq 2 -and $kv[1].Trim() -match '^\d+$') { $surveyOverrides[$kv[0].Trim()] = [int]$kv[1].Trim() }
-    }
-}
-function Get-SurveyString {
-    ($surveyOverrides.GetEnumerator() | Sort-Object Name | ForEach-Object { "$($_.Key):$($_.Value)" }) -join ','
-}
+# The survey multiplier system is gone: phase decks are fixed generous
+# floors and the heap range is demand-paged (BuildSettings Demand Decks).
+# -Survey is accepted and ignored for one transition cycle so callers
+# that still pass it do not break.
 
 $Stage0 = 'build-output\bare-metal\Codex.cdx'
 if (-not (Test-Path -PathType Leaf $Stage0)) {
@@ -128,8 +107,7 @@ try {
         [Console]::Error.WriteLine("These chapters are cited by bundled code but missing from the app build script.")
         [Console]::Error.WriteLine("Add them to the build script's chapter list, or remove the cites.")
     }
-    # Mode header (base flags; the survey= suffix is applied per attempt so a
-    # CDX9002 auto-retry can raise a multiplier without rebuilding the body).
+    # Mode header (base flags).
     $baseMode = if ($IrUni) { "IR-UNI" } elseif ($IrCce) { "IR-CCE" } else { "CDX" }
     if ($Prose) { $baseMode = "$baseMode prose" }
     if ($Repl) { $baseMode = "$baseMode repl" }
@@ -149,12 +127,7 @@ try {
     $bodyText = $bodyBuilder.ToString()
 
     $inputFile = [System.IO.Path]::GetTempFileName()
-    function Write-CompileInput {
-        $sv = Get-SurveyString
-        $modeLine = if ($sv) { "$baseMode survey=$sv" } else { $baseMode }
-        [System.IO.File]::WriteAllText($inputFile, "$modeLine`n$bodyText", [System.Text.UTF8Encoding]::new($false))
-    }
-    Write-CompileInput
+    [System.IO.File]::WriteAllText($inputFile, "$baseMode`n$bodyText", [System.Text.UTF8Encoding]::new($false))
 
     $outputFile = [System.IO.Path]::GetTempFileName()
     $stderrFile = [System.IO.Path]::GetTempFileName()
@@ -163,9 +136,6 @@ try {
     $curMem = $MemMB
     $attempt = 0
     $maxAttempts = 2
-    $surveyRetries = 0
-    $maxSurveyRetries = 5
-    $surveyRetry = $false
     :compile_loop while ($attempt -lt $maxAttempts) {
     $attempt++
     if (Test-Path $outputFile) { [System.IO.File]::WriteAllBytes($outputFile, [byte[]]::new(0)) }
@@ -210,22 +180,6 @@ try {
                 if ($el -and -not $el.StartsWith('WD:') -and -not $el.StartsWith('HEAP:') -and -not $el.StartsWith('STACK:')) {
                     [void]$errLines.Add($el)
                 }
-            }
-            # CDX9002 deck overflow is self-healing: raise the overflowing phase's
-            # survey multiplier and retry instead of failing.
-            $ovMatch = [regex]::Match(($errLines -join "`n"), 'Deck overflow in ([A-Za-z][A-Za-z-]*)')
-            if ($ovMatch.Success -and $surveyRetries -lt $maxSurveyRetries) {
-                $phase = $ovMatch.Groups[1].Value
-                $field = $phaseSurveyField[$phase]
-                if (-not $field) { $field = 'headroom' }
-                $cur = if ($surveyOverrides.ContainsKey($field)) { [Math]::Max($surveyOverrides[$field], $surveyDefaultMul[$field]) } else { $surveyDefaultMul[$field] }
-                $surveyOverrides[$field] = $cur * 2
-                $surveyRetries++
-                $maxAttempts++
-                [Console]::Error.WriteLine("  CDX9002 deck overflow in $phase, retrying with ${field}:$($surveyOverrides[$field]) (survey retry $surveyRetries/$maxSurveyRetries)")
-                Write-CompileInput
-                $surveyRetry = $true
-                break
             }
             foreach ($el in $errLines) { Add-Content -Path $Log -Value $el -Encoding UTF8 }
             exit 4
@@ -316,7 +270,6 @@ try {
         }
         "Binary size mismatch" | Add-Content -Path $Log -Encoding UTF8; exit 5
     }
-    if ($surveyRetry) { $surveyRetry = $false; continue compile_loop }
     if ($hitExc) { continue compile_loop }
     exit 4
     } # end compile_loop

@@ -31,7 +31,8 @@ if ($LASTEXITCODE -ne 0 -or -not (Test-Path $IrFile)) {
 }
 # -- Phase 2: IR text -> TypeScript via plug -------------------------------
 $stderrFile = [System.IO.Path]::GetTempFileName()
-    $proc = Start-Process -FilePath $script:CodexVmBin -ArgumentList @('-kernel', $PlugCdx, '-mem', '2048', '-headless') `
+try {
+    $proc = Start-Process -FilePath $script:CodexVmBin -ArgumentList @('-kernel', $PlugCdx, '-mem', '3072', '-headless') `
         -PassThru -WindowStyle Hidden -RedirectStandardError $stderrFile
     # Send IR over TCP to plug
     $listener = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, 9100)

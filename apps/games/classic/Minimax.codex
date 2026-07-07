@@ -3,13 +3,15 @@ Chapter: Minimax
   cites Games chapter TicTacToe
   cites Games chapter Connect4
 
- Iterative minimax search for bare-metal environments with limited stack.
- Instead of recursive calls that blow the stack, each search is performed
- with a flat loop: try every legal move, apply it, then for each response
- try every legal counter-move and evaluate statically. This gives effective
- depth-2 (two-ply) lookahead with call depth that never exceeds two
- function calls. Scores are integers: positive favors player 1, negative
- favors player 2.
+ Minimax search engines. Scores are integers: positive favors player 1,
+ negative favors player 2. Two engines live here. TicTacToe gets a
+ full-depth search: the game is at most nine plies deep, so the recursion
+ is bounded by the board itself - the score walk alternates between
+ ttt-mm-score and ttt-mm-fold, two frames per ply, never more than about
+ twenty frames, safe on the bare-metal stack. Connect4 keeps the iterative
+ two-ply engine: a flat loop that tries every legal move, then every legal
+ counter-move, and evaluates statically, so call depth never exceeds two
+ function calls regardless of game length.
 
  We say:
 
@@ -20,18 +22,7 @@ Section: Types
     eval-fn-id : Integer
   }
 
-Section: TicTacToe Iterative AI
-
- Score a finished or evaluated TicTacToe position from player 1's
- perspective. Win for 1 = +100, win for 2 = -100, draw or ongoing = 0.
-
-  ttt-static-score : TttBoard -> Integer
-  ttt-static-score (b) =
-    if b.game-over then
-      if b.winner == 1 then 100
-      else if b.winner == 2 then -100
-      else 0
-    else 0
+Section: TicTacToe Full-Depth Search
 
  Count empty squares remaining on the board.
 
@@ -41,68 +32,84 @@ Section: TicTacToe Iterative AI
     else if ttt-empty b i then ttt-empty-count b (i + 1) (acc + 1)
     else ttt-empty-count b (i + 1) acc
 
- Evaluate depth-1 response: given a board after our move, let the opponent
- try every legal reply and return the worst-case score for the maximizing
- player (player 1). Opponent minimizes.
+ Score a position by searching every line of play to the end of the game.
+ Scores are taken from player 1's perspective and discounted by depth so
+ the search prefers the fastest win and the slowest loss: a win at depth d
+ scores 100 - d, a loss scores d - 100, a draw scores 0.
 
-  ttt-min-response : TttBoard, Integer, Integer -> Integer
-  ttt-min-response (b) (col) (worst) =
-    if col >= 9 then worst
-    else if b.game-over then worst
-    else if ttt-empty b col == False then ttt-min-response b (col + 1) worst
-    else let after = ttt-move b col
-    in let s = ttt-static-score after
-    in let next-worst = if s < worst then s else worst
-    in ttt-min-response b (col + 1) next-worst
+  ttt-mm-score : TttBoard, Integer -> Integer
+  ttt-mm-score (b) (depth) =
+    if b.game-over then
+      if b.winner == 1 then 100 - depth
+      else if b.winner == 2 then depth - 100
+      else 0
+    else if b.current-player == 1 then ttt-mm-fold b 0 (-1000) depth
+    else ttt-mm-fold b 0 1000 depth
 
- Evaluate depth-1 response for maximizer (player 1 choosing best reply).
+ Fold over the nine squares: apply each legal move, score the child
+ position one ply deeper, and keep the maximum for player 1 or the
+ minimum for player 2.
 
-  ttt-max-response : TttBoard, Integer, Integer -> Integer
-  ttt-max-response (b) (col) (best) =
-    if col >= 9 then best
-    else if b.game-over then best
-    else if ttt-empty b col == False then ttt-max-response b (col + 1) best
-    else let after = ttt-move b col
-    in let s = ttt-static-score after
-    in let next-best = if s > best then s else best
-    in ttt-max-response b (col + 1) next-best
+  ttt-mm-fold : TttBoard, Integer, Integer, Integer -> Integer
+  ttt-mm-fold (b) (col) (acc) (depth) =
+    if col >= 9 then acc
+    else if ttt-empty b col == False then ttt-mm-fold b (col + 1) acc depth
+    else let s = ttt-mm-score (ttt-move b col) (depth + 1)
+    in let keep = ttt-mm-keep (b.current-player) s acc
+    in ttt-mm-fold b (col + 1) keep depth
 
- Score a single candidate move for the current player. After applying the
- move, if the game is over we return the static score immediately. Otherwise
- we let the opponent search their best reply (depth-1 lookahead) and return
- that. The current player is determined by b.current-player before the move.
+  ttt-mm-keep : Integer, Integer, Integer -> Integer
+  ttt-mm-keep (p) (s) (acc) =
+    if p == 1 then if s > acc then s else acc
+    else if s < acc then s else acc
 
-  ttt-score-move : TttBoard, Integer -> Integer
-  ttt-score-move (b) (pos) =
-    let after = ttt-move b pos
-    in if after.game-over then ttt-static-score after
-    else if b.current-player == 1 then ttt-min-response after 0 100
-    else ttt-max-response after 0 (-100)
+ Scan all nine squares and return the index of the best-scoring legal
+ move for the board's current player.
 
- Search all nine squares, track the best move and score for the current
- player. Returns the best column index found.
-
-  ttt-best-move : TttBoard, Integer, Integer, Integer -> Integer
-  ttt-best-move (b) (col) (best-col) (best-score) =
+  ttt-mm-pick : TttBoard, Integer, Integer, Integer -> Integer
+  ttt-mm-pick (b) (col) (best-col) (best-score) =
     if col >= 9 then best-col
-    else if b.game-over then best-col
-    else if ttt-empty b col == False then ttt-best-move b (col + 1) best-col best-score
-    else let s = ttt-score-move b col
-    in if b.current-player == 1 then
-      if s > best-score then ttt-best-move b (col + 1) col s
-      else ttt-best-move b (col + 1) best-col best-score
-    else
-      if s < best-score then ttt-best-move b (col + 1) col s
-      else ttt-best-move b (col + 1) best-col best-score
+    else if ttt-empty b col == False then ttt-mm-pick b (col + 1) best-col best-score
+    else let s = ttt-mm-score (ttt-move b col) 1
+    in let better = if b.current-player == 1 then s > best-score else s < best-score
+    in if better then ttt-mm-pick b (col + 1) col s
+    else ttt-mm-pick b (col + 1) best-col best-score
 
  Public entry point: return the best move index (0-8) for the board's
- current player using two-ply iterative search.
+ current player, searching the complete game tree. The one book move is
+ the empty board, where the search would visit nearly a million positions
+ to conclude what is already known: the center is a perfect opening.
 
-  ttt-iterative-ai : TttBoard -> Integer
-  ttt-iterative-ai (b) =
+  ttt-perfect-ai : TttBoard -> Integer
+  ttt-perfect-ai (b) =
     if b.game-over then -1
-    else let init-score = if b.current-player == 1 then -101 else 101
-    in ttt-best-move b 0 (-1) init-score
+    else if ttt-empty-count b 0 0 == 9 then 4
+    else let init = if b.current-player == 1 then -1000 else 1000
+    in ttt-mm-pick b 0 (-1) init
+
+Section: Zero-Player Game
+
+ Both seats play the full-depth search. Perfect play from both sides
+ always ends in a draw - the only winning move is not to play.
+
+  run-ttt-perfect : TttResult
+  run-ttt-perfect =
+    ttt-perfect-loop ttt-new 0
+
+  ttt-perfect-loop : TttBoard, Integer -> TttResult
+  ttt-perfect-loop (b) (moves) =
+    if b.game-over then TttResult { winner = b.winner, moves-made = moves }
+    else if moves > 9 then TttResult { winner = b.winner, moves-made = moves }
+    else let pos = ttt-perfect-ai b
+    in if pos < 0 then TttResult { winner = b.winner, moves-made = moves }
+    else ttt-perfect-loop (ttt-move b pos) (moves + 1)
+
+  format-ttt-perfect : TttResult -> Text
+  format-ttt-perfect (r) =
+    let w = if r.winner == 1 then "X wins"
+            else if r.winner == 2 then "O wins"
+            else "Draw"
+    in "TicTacToe (zero players, perfect play): " & w & " in " & show (r.moves-made) & " moves"
 
 Section: Connect4 Iterative AI
 

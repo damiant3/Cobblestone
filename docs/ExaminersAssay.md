@@ -35,7 +35,20 @@ Each test `foo.codex` may have sidecars that control its behavior:
 
 A test with no sidecar compiles but is unverified (PASS_UNVERIFIED).
 
-## Current State (2026-07-04, CL 6993)
+## Current State (2026-07-07, blu 7198, seed DDAB0BD2...)
+
+Default battery baseline is now **319 total / 304 pass / 0 fail /
+15 skip** on the demand-paged, survey-free seed: the compiler
+demand-pages its heap ([6 MB, 2 GB) commits on touch), phase decks are
+fixed generous floors, and every compiled test binary demand-boots.
+Validated the same day: all 52 plugs build, ARM64 + RISC-V board tests
+pass, +86 KB source-growth pingpong stays byte-identical, and
+`ttt-perfect` (first battery coverage of the games quire) joined the
+battery. The `-Apps` surface carries 33 pre-existing CDX2051 compile
+failures (the never-swept surface, QuartermastersMap dig 1) — verified
+identical on the prior seed.
+
+## Previous State (2026-07-04, CL 6993)
 
 99 individual tests consolidated into 11 smoke bundles (unit-smoke,
 rt-smoke, try-smoke, prose-smoke, linear-smoke, linear-errors,

@@ -195,8 +195,14 @@ deck during phase execution. Bivy usage is near-zero (only the 16-byte
 
 ### Phase Deck Layout (selfhost, ~1.39 MB source)
 
-Deck heights are computed from source length (S bytes), token count,
-or def count using survey multipliers in `codex/compiler/Core/BuildSettings.codex`.
+Deck heights are fixed generous floors (`codex/compiler/Core/
+BuildSettings.codex`, Demand Decks section). The heap range
+[6 MB, 2 GB) boots with its PD entries not-present and a #PF handler
+commits identity 2 MB pages on first touch, so a floor costs address
+space, not memory — physical consumption is what a phase actually
+writes. The survey-multiplier system that previously sized decks from
+source length was deleted 2026-07-07 (see
+`docs/Designs/Compiler/Done/DemandPagedArena.md`).
 The pipeline has 6 TEXT-mode frontend phases plus emit. CDX mode adds
 RESOLVE, LIFT, and INLINE between LOWER and EMIT (CL 2429 split the
 frontend so TEXT skips those). ConstructedTy resolution and lambda
@@ -225,19 +231,24 @@ dead decks are reclaimed at phase boundaries:
   first, bounded LOWER scratch above it, `rewrite-ir-chapter`
   deep-copies survivors into the reservation.
 
-| Phase | Survey | Pattern |
-|-------|--------|---------|
-| LEX | S x 40 + 1 MB | standard deck+compact |
-| PARSE keep | tokens x 160 + 1 MB | reservation-copy |
-| PARSE scratch | tokens x 265 + 1 MB | reclaimed at keep boundary |
-| DESUGAR | S x 21 + 1 MB | reclaimed at frontend keep boundary |
-| SCOPE | S x 52 + 1 MB | standard (starts at ~57 MB) |
-| CHECK | S x 400 + units x 296000 + 1 MB | standard |
-| LOWER | defs x 42200 + 8 MB | reservation-copy |
-| RESOLVE | S x 20000 + 8 MB (CDX only) | standard |
-| LIFT | S x 7600 + 8 MB (CDX only) | standard |
-| INLINE | S x 5000 + 8 MB (CDX only) | standard |
-| EMIT | per-func | streaming (CL 3793) |
+| Phase | Floor | Selfhost used (2026-07-07) | Pattern |
+|-------|-------|---------------------------|---------|
+| LEX | 96 MB | 21.4 MB | standard deck+compact |
+| PARSE keep | 64 MB | 9.1 MB | reservation-copy |
+| PARSE scratch | 192 MB | 32.6 MB | reclaimed at keep boundary |
+| DESUGAR | 64 MB | 16.3 MB | reclaimed at frontend keep boundary |
+| SCOPE | 96 MB | — | standard |
+| CHECK | 640 MB | 156.2 MB | standard |
+| CHECK keep | 96 MB | — | reservation-copy |
+| Frontend keep | 192 MB | — | reservation-copy |
+| LOWER | 320 MB | 115.5 MB | reservation-copy |
+| RESOLVE | 192 MB (CDX only) | — | standard |
+| LIFT | 96 MB (CDX only) | — | standard |
+| EMIT | per-func | — | streaming (CL 3793) |
+
+A phase that exceeds its floor halts with CDX9002 (DeckOverflow, now
+"deck floor exceeded") — retained as a hard guard, though the selfhost
+runs at 2-6x headroom under every floor.
 
 ### CHECK Deck Overflow (CL 2574/2596)
 
@@ -253,12 +264,13 @@ Three fixes: (1) `survey-headroom` (120%) now applies to CHECK,
 (2) `survey-check-mul` raised from 95 → 200 → 400, (3) CDX9002
 promoted from warning to error (halts cleanly on overflow).
 
-The survey formula with headroom:
-`deck_height = source_len × survey-check-mul × 120 / 100 + 1 MB`
-
-At `survey-check-mul = 400`: a 76 KB plug source gets
-`76339 × 480 + 1 MB ≈ 36.6 MB` for CHECK. This is sufficient
-for type-dense source.
+The survey-formula era ended 2026-07-07: multipliers could not be
+sized honestly (the settings were non-monotonic — 20 worked, 25 did
+not, 40 silently miscompiled a grown self-compile), and the fix was
+structural, not numeric. CHECK now reserves a flat 640 MB floor over
+demand-paged address space; type-dense plug source and the selfhost
+draw from the same reservation and pay only for pages they touch.
+The full account is in `docs/Designs/Compiler/Done/DemandPagingVictory.md`.
 
 Prior measurement (CL 2169, S ≈ 1,158,497 bytes) for comparison:
 
@@ -285,32 +297,29 @@ base     Reservation-copy pattern means dead decks are reclaimed.
 0x600000  │  init-phase-allocator (mountain base)│
           ├──────────────────────────────────────┤
           │  Frontend keep deck      ~25 MB      │  Copied survivors:
-          │  Survey: S × 40 + 2 MB               │  AChapter, assignments,
+          │  Floor: 192 MB                       │  AChapter, assignments,
           │  (LEX, PARSE-keep, DESUGAR decks     │  colliding, bags,
           │   were above -- RECLAIMED at the     │  heap-marks, metrics
           │   desugar boundary by phase-compact) │
           ├──────────────────────────────────────┤  deck-origin ~57 MB
           │  SCOPE deck                12.3 MB   │
-          │  Survey: S × 52 + 1 MB               │
+          │  Floor: 96 MB                        │
           │  Name bindings, slug-mangled names   │
           ├──────────────────────────────────────┤
           │  CHECK deck                69.4 MB   │
-          │  Survey: S × 400 + units × 296K + 1M │
+          │  Floor: 640 MB                       │
           │  Type environment, resolved types    │
           ├──────────────────────────────────────┤
           │  LOWER survivors (reservation-copy)  │
-          │  Survey: defs × 42200 + 8 MB         │
+          │  Floor: 320 MB                       │
           │  (LOWER scratch RECLAIMED at the     │
           │   RESOLVE reservation boundary)      │
           ├──────────────────────────────────────┤
           │  RESOLVE deck        (CDX only)      │
-          │  Survey: S × 20000 + 8 MB            │
+          │  Floor: 192 MB                       │
           ├──────────────────────────────────────┤
           │  LIFT deck           (CDX only)      │
-          │  Survey: S × 7600 + 8 MB             │
-          ├──────────────────────────────────────┤
-          │  INLINE deck         (CDX only)      │
-          │  Survey: S × 5000 + 8 MB             │
+          │  Floor: 96 MB                        │
           ├──────────────────────────────────────┤
           │  EMIT (streaming, CL 3793)           │
           │  EmitWorkspace (code 8 MB + data 2M) │
@@ -499,6 +508,37 @@ during `emit-process-setup`. After this point, only memory up to
 `bare-metal-ram-size` is mapped. Accessing addresses above this will
 page-fault.
 
+### Demand Paging (2026-07-07, hardened 2026-07-06 val CLs 7207-7210)
+
+Before the CR3 switch, boot clears the PD entries covering heap pages
+[6 MB, top) — the demand range. The top is computed from the actual
+RAM size (GPA 0xFE8): `min(1024, ram_pages - 32)` in 2 MB pages, so
+the top 64 MB of RAM always stays present for the boot stack and any
+`-mem` from ~128 MB boots. At 3 GB the top equals the 2 GB cap and
+the stack/GOP region [2 GB, 3 GB) is present from boot.
+
+The first touch of each 2 MB page raises #PF (vector 14). The
+vector-14 stub preserves the CPU error code; the handler grows the
+heap only for not-present faults (error-code P=0) inside the range —
+it writes the identity PDE (`(CR2 & ~0x1FFFFF) | 0x83 | NX`),
+increments the touched-page counter (cell 30688, the honest physical
+metric — the R10 HWM reports floor reservations), invlpg, iretq.
+Protection or reserved-bit faults (P=1), out-of-range faults, and
+every other vector fall through to the exception dump. NX matters:
+everything above the code boundary is non-executable in the boot
+mapping, and demand pages match it.
+
+Invariant: a stack must never point into a not-present page — the CPU
+cannot deliver a #PF frame onto the faulting stack — so spawn helpers
+pre-touch every 2 MB page of the stacks they carve from the heap
+(`emit-spawn-stack-pretouch`, unrolled at emit time from
+`proc-spawn-stack-size`). When the invariant is violated anyway, the
+double fault is delivered on the TSS IST1 emergency stack (TSS at
+0x13000, GDT at 0x12800, 2 KB stack below 0x14800) and produces the
+standard `!EXC` dump instead of a silent triple fault. BSP only —
+an AP double fault is still fatal (per-core TSS is future work, see
+`docs/Designs/Compiler/Active/DemandPagingHardening.md`).
+
 ## SMP Memory Model
 
 When codex-vm runs with `-smp N` (N > 1), the guest boots with
@@ -506,12 +546,16 @@ multiple virtual processors. The core count is written to GPA 0xFF8
 before boot; the boot code reads it to decide whether to send
 INIT/SIPI to start application processors.
 
-**Per-core stacks.** Each AP gets an independent stack. The BSP
-stack starts at `bare-metal-stack-top` (= `bare-metal-ram-size`).
-AP stacks are placed below the BSP's, spaced 64 KB apart:
-`AP[i] stack = stack-top - i * 0x10000`. The guest can override
-this by writing per-core stack addresses to a stack table at
-GPA 0x1000 before sending SIPI.
+**Per-core stacks.** Each AP gets an independent idle stack. The BSP
+stack starts at the actual RAM top (GPA 0xFE8). AP idle stacks live
+in always-present low memory — 16 KB each at
+`AP[i] stack = 0x20000 + i * 0x4000` ([0x20000, 0x60000), below the
+EBDA) — never in the demand-paged heap range, because an AP takes its
+first interrupt on this stack and the CPU cannot deliver a fault
+frame onto a not-present page. The guest writes these addresses to
+the stack table at GPA 0xF00 before SIPI; codex-vm falls back to
+`0xC0000000 - i * 0x10000` only for table entries left zero. Real
+work on an AP runs on scheduler-provided stacks.
 
 **Per-core heap.** The `CoreHeap` module
 (`codex/os/sched/CoreHeap.codex`) splits the bivy arena equally

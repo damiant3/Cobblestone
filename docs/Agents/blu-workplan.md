@@ -1,6 +1,20 @@
-# Blu Agent Workplan — 2026-07-05
+# Blu Agent Workplan — 2026-07-07
 
-## Status 2026-07-05 (late): TWO WINS SHIPPED to main (copy-up CL 7162).
+## Status 2026-07-07: DEMAND-PAGED ARENA SHIPPED, SURVEY SYSTEM DELETED
+(blu 7190-7200, LOCAL — copy-up pending, seed-carrying, Damian's call).
+Seed DDAB0BD288C93AAB: #PF handler + [6MB,2GB) demand range + fixed
+generous deck floors; SurveyConfig/multipliers/-Survey/DynamicSurvey
+deleted. Gates: one-pass fixed point, battery 319/304/0/15, self-verify,
+all 52 plugs, ARM64+RISC-V boards, +86KB growth pingpong, spawn-stack
+fix (pre-touch invariant). ROOT CAUSE of the week-long "demand bug":
+generation confounded with configuration — check-mul 40 miscompiled
+pass-2 silently; demand paging was innocent. Full story:
+docs/Designs/Compiler/Done/DemandPagingVictory.md. Also same day: the
+tic-tac-toe honesty fix (7188/7189, list-set-at aliasing + first games
+battery coverage). OTHER AGENTS: see QuartermastersMap dig 10 fleet
+note before merging down the new seed.
+
+## Prior status 2026-07-05 (late): TWO WINS SHIPPED to main (copy-up CL 7162).
 (1) CL 7130 - survey-check-mul default 200->40 (CHECK reservation peak
 978->~620 MB; source-only, no seed - reservation size does not affect
 emitted output). (2) CL 7161 - codex-vm.c watchpoint feature: `-hwwatch`

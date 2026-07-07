@@ -3864,6 +3864,26 @@ static DWORD WINAPI shutdown_event_thread(LPVOID arg) {
     return 0;
 }
 
+/* Host-side sampling profiler state (CODEX_VM_PROFILE=<file>). */
+#define HPROF_MAX 65536
+static const char *hprof_file = NULL;
+static unsigned long long hprof_rips[HPROF_MAX];
+static int hprof_count = 0;
+
+/* Force a VP exit every PIT period so a compute-bound guest still gets
+   timer interrupts. WHvRunVirtualProcessor only returns on exits; with
+   no I/O and no HLT the main loop never regains control, so the tick
+   check never runs. The cancel is benign (Canceled exits are handled)
+   and costs ~18 exits/second. */
+static DWORD WINAPI timer_kick_thread(LPVOID arg) {
+    (void)arg;
+    for (;;) {
+        Sleep(55);
+        if (shutdown_requested) return 0;
+        if (partition) WHvCancelRunVirtualProcessor(partition, 0, 0);
+    }
+}
+
 static BOOL WINAPI ctrl_handler(DWORD type) {
     (void)type;
     shutdown_requested = 1;
@@ -6193,7 +6213,8 @@ int main(int argc, char **argv) {
     CreateThread(NULL, 0, shutdown_event_thread, NULL, 0, NULL);
     atexit(cleanup_whp);
     const char *kernel = NULL, *disk = NULL, *boot_args = NULL, *trace_file = NULL;
-    int mem_mb = 2048;
+    int mem_mb = 3072;  /* matches the build harness; binaries from pre-7209
+                           seeds triple-fault below 2 GB + stack reserve */
 
     for (int i = 1; i < argc; i++) {
         if (!strcmp(argv[i], "-kernel") && i+1 < argc) { kernel = argv[++i]; g_kernel_path = kernel; }
@@ -6257,6 +6278,8 @@ int main(int argc, char **argv) {
     if (watch_size > 64) watch_size = 64;
 
     if (getenv("CODEX_VM_NO_TIMER")) { no_timer = 1; fprintf(stderr, "TIMER INTERRUPTS DISABLED\n"); }
+    hprof_file = getenv("CODEX_VM_PROFILE");
+    if (hprof_file && !hprof_file[0]) hprof_file = NULL;
 
     WSADATA wsa; WSAStartup(MAKEWORD(2,2), &wsa);
     if (portfwd_count > 0) portfwd_init();
@@ -6347,6 +6370,7 @@ int main(int argc, char **argv) {
     } else {
         fprintf(stderr, "UEFI VM starting (mem=%dMB)...\n", mem_mb);
     }
+    if (!no_timer) CreateThread(NULL, 0, timer_kick_thread, NULL, 0, NULL);
     vga_start();
 
     QueryPerformanceFrequency(&perf_freq);
@@ -6502,6 +6526,15 @@ int main(int argc, char **argv) {
         /* ── Handle exit ── */
         switch (ctx.ExitReason) {
         case WHvRunVpExitReasonCanceled:
+            /* Host-side wall-clock sampler: the timer-kick thread cancels
+               the VP every tick period, and VpContext.Rip is exactly where
+               the guest was — no injection-delivery bias (the guest-side
+               PROF sampler records the interrupt-frame RIP, which WHP
+               skews toward hot call targets). Enable with
+               CODEX_VM_PROFILE=<file>; one HPROF:<hex-rip> line per kick. */
+            if (hprof_file && hprof_count < HPROF_MAX) {
+                hprof_rips[hprof_count++] = ctx.VpContext.Rip;
+            }
             break;
         case WHvRunVpExitReasonX64IoPortAccess:
             handle_io(&ctx);
@@ -6880,6 +6913,19 @@ int main(int argc, char **argv) {
             if (kbd_irq_pending && kbd_count > 0 && pic_master.vector_base && !(pic_master.mask & (1 << 1))) {
                 kbd_irq_pending = 0;
                 pending_irq = vec + 1;  /* IRQ 1 = keyboard */
+            } else if (!halted && pic_master.vector_base) {
+                /* Busy guest: deliver the PIT tick on schedule. Exits during
+                   compute come from the timer-kick thread cancelling the VP
+                   run every tick period — without it a compute-bound guest
+                   never exits and never ticks (watchdog, preemption, and the
+                   sampling profiler were all blind during compute). */
+                LARGE_INTEGER bnow;
+                QueryPerformanceCounter(&bnow);
+                double belapsed = (double)(bnow.QuadPart - last_tick.QuadPart) / perf_freq.QuadPart;
+                if (!no_timer && belapsed >= 0.055) {
+                    QueryPerformanceCounter(&last_tick);
+                    pending_irq = vec;  /* timer tick */
+                }
             } else if (halted) {
                 /* Halted waiting for interrupt — timer only (no serial) */
                 LARGE_INTEGER now;
@@ -6955,8 +7001,16 @@ int main(int argc, char **argv) {
     }
 done:
     fprintf(stderr, "VM exited (code=%d, exits=%llu, watch_hits=%d)\n", debug_exit_code, exits, watch_hit_count);
+    if (hprof_file && hprof_count > 0) {
+        FILE *hf = fopen(hprof_file, "w");
+        if (hf) {
+            for (int hi = 0; hi < hprof_count; hi++) fprintf(hf, "HPROF:%016llx\n", hprof_rips[hi]);
+            fclose(hf);
+            fprintf(stderr, "Profile: %d samples -> %s\n", hprof_count, hprof_file);
+        }
+    }
     if (trace_file && guest_mem) {
-        unsigned long long te = 560448, tc = 560456, tb = 560464;
+        unsigned long long te = 458752, tc = 458760, tb = 458768;  /* trace cells, mirrors X86_64Boot.codex */
         if (te + 8 <= guest_mem_size) {
             unsigned long long enabled = *(unsigned long long *)((unsigned char *)guest_mem + te);
             unsigned long long cursor = *(unsigned long long *)((unsigned char *)guest_mem + tc);

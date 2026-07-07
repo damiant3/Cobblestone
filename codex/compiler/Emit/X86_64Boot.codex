@@ -77,12 +77,23 @@ Section: Memory Address Map
   try-fail-flag-addr : Integer = 36128
   prof-enabled-addr : Integer = 36136
   prof-cursor-addr : Integer = 36144
-  prof-max-samples : Integer = 65536
-  prof-buf-addr : Integer = 36160
-  trace-enabled-addr : Integer = 560448
-  trace-cursor-addr : Integer = 560456
-  trace-buf-addr : Integer = 560464
-  trace-max-entries : Integer = 30000
+
+ The profiler and allocation-trace SAMPLE BUFFERS live in the free
+ low-memory band above the AP idle stacks and below the EBDA
+ ([0x60000, 0x9FC00)). They were originally placed at 36160 and
+ 560464, where the profiler buffer sat inside the PML4 page and grew
+ across the live PDPT and PDs — enabling the profiler destroyed the
+ page tables after ~88 samples — and the trace buffer grew across the
+ EBDA and VGA text memory. Control cells (enabled/cursor) are 8-byte
+ slots and stay in the metadata band; only the buffers needed moving.
+ codex-vm's -trace-file reader mirrors the trace addresses.
+
+  prof-max-samples : Integer = 8192
+  prof-buf-addr : Integer = 393216
+  trace-enabled-addr : Integer = 458752
+  trace-cursor-addr : Integer = 458760
+  trace-buf-addr : Integer = 458768
+  trace-max-entries : Integer = 12000
   serial-ring-buf-addr : Integer = 5242880
 
   ap-trampoline-addr : Integer = 4096
@@ -90,8 +101,17 @@ Section: Memory Address Map
   ap-ready-count-addr : Integer = 4080
   ap-stack-table-addr : Integer = 3840
   smp-max-cores : Integer = 16
-  ap-stack-size : Integer = 65536
-  ap-stacks-base : Integer = 6291456
+
+ Application-processor idle stacks live in low always-present memory,
+ never in the demand-paged heap range: an AP takes its first interrupt
+ on this stack, and the CPU cannot deliver a fault frame onto a
+ not-present page. Sixteen 16 KB stacks occupy [0x20000, 0x60000),
+ below the EBDA and clear of every other low-memory structure. Real
+ work on an AP runs on scheduler-provided stacks; these only ever
+ carry the idle halt loop and the wake path.
+
+  ap-stack-size : Integer = 16384
+  ap-stacks-base : Integer = 131072
 
   lapic-base : Integer = 4276092928
   lapic-id-reg : Integer = 32
@@ -534,6 +554,153 @@ Section: Watchdog Timer Check
    in let st-final1 = patch-jmp-at st-dispatch doneA-pos (st-dispatch.code-len)
    in patch-jmp-at st-final1 doneB-pos (st-final1.code-len)
 
+Section: Page Fault Handler
+
+ Demand paging. Heap-range page-directory entries boot not-present; the
+ first touch of a 2 MB page raises #PF (vector 14). This handler maps
+ the identity 2 MB frame and resumes the faulting instruction. Only a
+ not-present fault may grow: the vector-14 stub preserves the CPU error
+ code, and a fault with the present bit set (a protection or
+ reserved-bit violation) is a real bug, so the handler normalizes the
+ frame and falls through to the exception dump. The mapped entry
+ carries NX (bit 63) because everything above the code boundary was NX
+ in the boot mapping and demand pages must match. Each mapping
+ increments the touched-page counter, the honest physical-consumption
+ metric (the R10 high-water mark reports floor reservations). Invariant:
+ a stack must never point into a not-present page, because the CPU
+ cannot deliver the #PF frame onto the faulting stack (double fault).
+ The boot stack lives above the demand range; spawned processes carve
+ their stacks from the heap, so every spawn helper pre-touches its
+ stack pages before the child runs.
+
+  demand-heap-lo-page : Integer = 6291456 / 2097152
+
+  demand-heap-hi-page : Integer = 2147483648 / 2097152
+
+  demand-fault-count-addr : Integer = 30688
+
+  emit-pagefault-handler : CodegenState -> CodegenState
+  emit-pagefault-handler (st) =
+   let st1 = st-append-code st (cmp-ri reg-rax 14)
+   in let j-notpf = st1.code-len
+   in let st2 = st-append-code st1 (jcc cc-ne 0)
+   in let ec0 = st-append-code st2 (mov-load reg-rax reg-rsp 40)
+   in let ec1 = st-append-code ec0 (and-ri reg-rax 1)
+   in let j-prot = ec1.code-len
+   in let ec2 = st-append-code ec1 (jcc cc-ne 0)
+   in let st3 = st-append-code ec2 [15, 32, 208]
+   in let st4 = st-append-code st3 (mov-rr reg-rcx reg-rax)
+   in let st5 = st-append-code st4 (shr-ri reg-rax 21)
+   in let st6 = st-append-code st5 (cmp-ri reg-rax demand-heap-lo-page)
+   in let j-lo = st6.code-len
+   in let st7 = st-append-code st6 (jcc cc-b 0)
+   in let st8 = st-append-code st7 (cmp-ri reg-rax demand-heap-hi-page)
+   in let j-hi = st8.code-len
+   in let st9 = st-append-code st8 (jcc cc-ae 0)
+   in let st10 = st-append-code st9 (shl-ri reg-rax 3)
+   in let st11 = st-append-code st10 (add-ri reg-rax (32768 + 8192))
+   in let st12 = st-append-code st11 (mov-rr reg-rdx reg-rax)
+   in let st13 = st-append-code st12 (shr-ri reg-rcx 21)
+   in let st14 = st-append-code st13 (shl-ri reg-rcx 21)
+   in let st15 = st-append-code st14 (li reg-rax 131)
+   in let st16 = st-append-code st15 (or-rr reg-rcx reg-rax)
+   in let nx0 = st-append-code st16 (li reg-rax 1)
+   in let nx1 = st-append-code nx0 (shl-ri reg-rax 63)
+   in let nx2 = st-append-code nx1 (or-rr reg-rcx reg-rax)
+   in let st20 = st-append-code nx2 (mov-store reg-rdx reg-rcx 0)
+   in let ct0 = st-append-code st20 (li reg-rdx demand-fault-count-addr)
+   in let ct1 = st-append-code ct0 (mov-load reg-rax reg-rdx 0)
+   in let ct2 = st-append-code ct1 (add-ri reg-rax 1)
+   in let ct3 = st-append-code ct2 (mov-store reg-rdx reg-rax 0)
+   in let st21 = st-append-code ct3 [15, 32, 208]
+   in let st22 = st-append-code st21 [15, 1, 56]
+   in let st23 = st-append-code st22 (pop-r reg-rdi)
+   in let st24 = st-append-code st23 (pop-r reg-rsi)
+   in let st25 = st-append-code st24 (pop-r reg-rdx)
+   in let st26 = st-append-code st25 (pop-r reg-rcx)
+   in let st27 = st-append-code st26 (pop-r reg-rax)
+   in let st27a = st-append-code st27 (add-ri reg-rsp 8)
+   in let st28 = st-append-code st27a iretq
+   in let fix-pos = st28.code-len
+   in let fx1 = st-append-code st28 (mov-load reg-rax reg-rsp 32)
+   in let fx2 = st-append-code fx1 (mov-store reg-rsp reg-rax 40)
+   in let fx3 = st-append-code fx2 (mov-load reg-rax reg-rsp 24)
+   in let fx4 = st-append-code fx3 (mov-store reg-rsp reg-rax 32)
+   in let fx5 = st-append-code fx4 (mov-load reg-rax reg-rsp 16)
+   in let fx6 = st-append-code fx5 (mov-store reg-rsp reg-rax 24)
+   in let fx7 = st-append-code fx6 (mov-load reg-rax reg-rsp 8)
+   in let fx8 = st-append-code fx7 (mov-store reg-rsp reg-rax 16)
+   in let fx9 = st-append-code fx8 (mov-load reg-rax reg-rsp 0)
+   in let fx10 = st-append-code fx9 (mov-store reg-rsp reg-rax 8)
+   in let fx11 = st-append-code fx10 (add-ri reg-rsp 8)
+   in let dump-pos = fx11.code-len
+   in let st29 = patch-jcc-at fx11 j-notpf dump-pos
+   in let st30 = patch-jcc-at st29 j-prot fix-pos
+   in let st31 = patch-jcc-at st30 j-lo fix-pos
+   in patch-jcc-at st31 j-hi fix-pos
+
+ Boot-time unmap of the demand range. Clears the runtime PD entries for
+ heap pages [demand-heap-lo-page, top) so the first touch of each 2 MB
+ page faults into the handler above. The top is computed from the
+ actual RAM size the host wrote to the ram-size cell, capped at
+ demand-heap-hi-page, minus a 32-page (64 MB) reserve that keeps the
+ top of RAM present for the boot stack — the stack must never point
+ into a not-present page. With 3 GB of RAM the computed top equals the
+ cap and behavior is unchanged; with 2 GB or less the reserve is what
+ makes the machine bootable at all. If the reserve consumes the whole
+ range (tiny RAM), nothing is cleared and the arena stays flat.
+
+  demand-stack-reserve-pages : Integer = 32
+
+  emit-demand-unmap : CodegenState -> CodegenState
+  emit-demand-unmap (st) =
+   let up0a = st-append-code st (li reg-rdi ram-size-addr)
+   in let up0b = st-append-code up0a (mov-load reg-rcx reg-rdi 0)
+   in let up0c = st-append-code up0b (shr-ri reg-rcx 21)
+   in let up0d = st-append-code up0c (sub-ri reg-rcx demand-stack-reserve-pages)
+   in let up0e = st-append-code up0d (cmp-ri reg-rcx demand-heap-hi-page)
+   in let j-nocap = up0e.code-len
+   in let up0f = st-append-code up0e (jcc cc-le 0)
+   in let up0g = st-append-code up0f (li reg-rcx demand-heap-hi-page)
+   in let nocap-pos = up0g.code-len
+   in let up0h = patch-jcc-at up0g j-nocap nocap-pos
+   in let up0i = st-append-code up0h (sub-ri reg-rcx demand-heap-lo-page)
+   in let up0j = st-append-code up0i (cmp-ri reg-rcx 0)
+   in let j-empty = up0j.code-len
+   in let up0k = st-append-code up0j (jcc cc-le 0)
+   in let up0 = st-append-code up0k (li reg-rdi (32768 + 8192 + demand-heap-lo-page * 8))
+   in let up2 = st-append-code up0 (li reg-rax 0)
+   in let up-top = up2.code-len
+   in let up3 = st-append-code up2 (mov-store reg-rdi reg-rax 0)
+   in let up4 = st-append-code up3 (add-ri reg-rdi 8)
+   in let up5 = st-append-code up4 (sub-ri reg-rcx 1)
+   in let up-cur = up5.code-len
+   in let up6 = st-append-code up5 (jcc cc-ne (up-top - (up-cur + 6)))
+   in patch-jcc-at up6 j-empty (up6.code-len)
+
+ Spawn-stack pre-touch. A spawned process carves its stack from the
+ parent's heap frontier, inside the demand range; the child's first
+ push must not fault, so the parent touches every 2 MB page the stack
+ spans before the child runs. The touch points unroll at emit time
+ from the stack size, so growing proc-spawn-stack-size past 2 MB
+ cannot silently skip the middle pages. Expects RSI = stack top;
+ clobbers RAX.
+
+  emit-spawn-stack-pretouch : CodegenState -> CodegenState
+  emit-spawn-stack-pretouch (st) =
+   emit-spawn-pretouch-at st 8
+
+  emit-spawn-pretouch-at : CodegenState, Integer -> CodegenState
+  emit-spawn-pretouch-at (st) (off) =
+   if off >= proc-spawn-stack-size - 16
+   then let s1 = st-append-code st (mov-rr reg-rax reg-rsi)
+    in let s2 = st-append-code s1 (sub-ri reg-rax (proc-spawn-stack-size - 16))
+    in st-append-code s2 (mov-store reg-rax reg-rax 0)
+   else let s1 = st-append-code st (mov-rr reg-rax reg-rsi)
+    in let s2 = st-append-code s1 (sub-ri reg-rax off)
+    in let s3 = st-append-code s2 (mov-store reg-rax reg-rax 0)
+    in emit-spawn-pretouch-at s3 (off + 2097152)
+
 Section: Common Interrupt Handler
   emit-common-interrupt-handler : CodegenState -> CodegenState
   emit-common-interrupt-handler (st) =
@@ -817,7 +984,8 @@ Section: Common Interrupt Handler
    in let st55 = st-append-code st54 (pop-r reg-rax)
    in let st56 = st-append-code st55 iretq
    in let exc-handler-pos = st56.code-len
-   in let st57 = emit-cpu-exception-dump st56
+   in let st-pf = emit-pagefault-handler st56
+   in let st57 = emit-cpu-exception-dump st-pf
    in patch-jcc-at st57 exc-jcc exc-handler-pos
 
 Section: ISR Stubs
@@ -842,7 +1010,8 @@ Section: ISR Stubs
 
   emit-isr-stub : CodegenState, Integer, Integer -> CodegenState
   emit-isr-stub (st) (vec) (common-handler-offset) =
-   let st1 = if has-error-code vec then st-append-code st (add-ri reg-rsp 8)
+   let st1 = if vec == 14 then st-append-code st [15, 31, 64, 0]
+             else if has-error-code vec then st-append-code st (add-ri reg-rsp 8)
              else st-append-code st [15, 31, 64, 0]
    in let st2 = st-append-code st1 (push-r reg-rax)
    in let st3 = st-append-code st2 [176, vec]
@@ -903,6 +1072,54 @@ Section: Interrupt Setup
    in let st7 = st-append-code st6 (mov-rr reg-rdi reg-rsp)
    in let st8 = st-append-code st7 lidt-rdi
    in st-append-code st8 (add-ri reg-rsp 16)
+
+ A double fault on a bad stack is a silent triple fault unless the CPU
+ has a known-good emergency stack to deliver it on. This installs a
+ 64-bit TSS whose IST1 points at a small always-present low-memory
+ stack, loads a runtime GDT that carries the TSS descriptor alongside
+ the same code and data descriptors the trampoline GDT established,
+ and marks IDT entry 8 with IST1. Every stack-invariant violation (a
+ push into a not-present demand page) then produces the standard
+ exception dump instead of a hang. BSP only: application processors
+ load no task register, so an AP double fault remains fatal (per-core
+ TSS is future work).
+
+  gdt64-base : Integer = 75776
+
+  tss-base : Integer = 77824
+
+  df-ist-stack-top : Integer = 83968
+
+  emit-load-tss : CodegenState -> CodegenState
+  emit-load-tss (st) =
+   let g0 = st-append-code st (li reg-rdi gdt64-base)
+   in let g1 = st-append-code g0 (li reg-rax 0)
+   in let g2 = st-append-code g1 (mov-store reg-rdi reg-rax 0)
+   in let g3 = st-append-code g2 (li reg-rax #00AF9A000000FFFF)
+   in let g4 = st-append-code g3 (mov-store reg-rdi reg-rax 8)
+   in let g5 = st-append-code g4 (li reg-rax #00CF92000000FFFF)
+   in let g6 = st-append-code g5 (mov-store reg-rdi reg-rax 16)
+   in let g7 = st-append-code g6 (li reg-rax #0000890130000067)
+   in let g8 = st-append-code g7 (mov-store reg-rdi reg-rax 24)
+   in let g9 = st-append-code g8 (li reg-rax 0)
+   in let g10 = st-append-code g9 (mov-store reg-rdi reg-rax 32)
+   in let t0 = emit-zero-region g10 tss-base 13
+   in let t1 = st-append-code t0 (li reg-rdi tss-base)
+   in let t2 = st-append-code t1 (li reg-rax df-ist-stack-top)
+   in let t3 = st-append-code t2 (mov-store reg-rdi reg-rax 36)
+   in let r0 = st-append-code t3 (sub-ri reg-rsp 16)
+   in let r1 = st-append-code r0 (li reg-rax (39 + gdt64-base * 65536))
+   in let r2 = st-append-code r1 (mov-store reg-rsp reg-rax 0)
+   in let r3 = st-append-code r2 (li reg-rax 0)
+   in let r4 = st-append-code r3 (mov-store reg-rsp reg-rax 8)
+   in let r5 = st-append-code r4 (mov-rr reg-rdi reg-rsp)
+   in let r6 = st-append-code r5 [15, 1, 23]
+   in let r7 = st-append-code r6 (add-ri reg-rsp 16)
+   in let r8 = st-append-code r7 (li reg-rax 24)
+   in let r9 = st-append-code r8 [15, 0, 216]
+   in let i0 = st-append-code r9 (li reg-rdi (idt-base + 8 * 16 + 4))
+   in let i1 = st-append-code i0 (li reg-rax 1)
+   in st-append-code i1 (mov-store-byte reg-rdi reg-rax 0)
 
   emit-vga-progress : CodegenState, Integer, Integer -> CodegenState
   emit-vga-progress (st) (pos) (ascii) =
@@ -1170,7 +1387,8 @@ Section: Process Management
    in let slt7 = st-append-code slt6 (li reg-rax proc-slice-background)
    in let slt8 = st-append-code slt7 (mov-store reg-rdi reg-rax 24)
    in let st5 = emit-build-process-page-tables slt8 32768 6291456
-   in let st6 = emit-create-process st5 0 1 32768 6291456
+   in let st5u = emit-demand-unmap st5
+   in let st6 = emit-create-process st5u 0 1 32768 6291456
    in let st7 = st-append-code st6 (li reg-rax 32768)
    in let st8 = st-append-code st7 [15, 34, 216]
    in st-append-code st8 (li reg-r10 6291456)

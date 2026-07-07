@@ -1,5 +1,12 @@
 # Dynamic Survey Sizing
 
+**Status: SUPERSEDED AND DELETED (2026-07-07).** Phase 1 shipped and
+was later removed along with the entire survey system it patched: the
+demand-paged arena (fixed generous deck floors, commit-on-touch)
+removed the problem this design mitigated. Phases 2 and 3 were never
+built and never will be. See `docs/Designs/Compiler/Done/
+DemandPagedArena.md` and `DemandPagingVictory.md`.
+
 **Problem**: The compiler's phase survey multipliers are hardcoded
 constants tuned for the self-host (~1.2MB source, ~2 type definitions
 per file). Any source with different density (plug compilers, Spark

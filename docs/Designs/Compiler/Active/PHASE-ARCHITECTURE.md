@@ -1,5 +1,14 @@
 # Phase Architecture
 
+**Demand-paging era note (2026-07-07):** deck HEIGHTS are no longer
+surveyed — every phase reserves a fixed generous floor over
+demand-paged address space (BuildSettings, Demand Decks; blu
+7190-7198). Everything else in this document survives unchanged: the
+deck/bivy split, phase-measure, phase-compact, the escape invariant,
+poison doctrine, and the reservation-copy pattern (which still earns
+its keep by rewinding addresses so compaction re-uses already-committed
+pages instead of touching fresh ones).
+
 **Status:** Partially implemented. The vocabulary, allocator
 primitives, per-phase build, phase-measure, and phase-compact are in
 place across all 8 frontend phases (CLs 500, 552, 632–645, 2135,
@@ -13,8 +22,8 @@ self-test runs on every compile, escape hits self-locate, and the
 first real measurement found and fixed two genuine dangling deck
 pointers (AChapter.rt-budgets / AChapter.conversions shallow-copied
 by copy-as-chapter).** Outstanding: precise roots for the CHECK and
-LOWER phases, TCO reset removal, survey tightening, lower-phase bivy
-reduction.
+LOWER phases, TCO reset removal, lower-phase bivy reduction. (Survey
+tightening is moot — the survey is deleted; floors replaced it.)
 
 ## Escape invariant: instrument repair and first real result (2026-07-04)
 
@@ -211,11 +220,11 @@ Remaining items:
    decay (the keep layer reports under old scratch ranges; ranges
    from different phase metrics overlap) — treat poison-compact as
    ground truth and the map as a relative-motion instrument.
-2. **Transient peak:** the CHECK reservation itself (survey mul,
-   was 400 for plug type-density) dominates the in-phase peak
-   (~1.5 GB with the keep reservation added). DynamicSurvey's
-   CDX9002 auto-retry makes lowering the default safe; halved to
-   200 in the CL that carries this doc update.
+2. **Transient peak:** RESOLVED by the demand-paged arena. The CHECK
+   reservation is a fixed 640 MB floor over demand-paged address
+   space; the in-phase peak is what CHECK actually touches (~156 MB
+   for the selfhost), not the reservation. The survey mul and the
+   DynamicSurvey retry this item tracked are deleted.
 
 **Empirical limit observed (2026-05-02 audit):** within-phase scratch
 that the discipline reclaims is small — bivy-usage measured at 16
@@ -262,27 +271,31 @@ accumulator-in-TCO-loop in Codex has the same structural
 vulnerability, and every memory mechanism that tries to fix it at
 runtime inherits the original guess-based weakness.
 
-## The proposed architecture
+## The architecture (as built)
 
-Replace implicit durability and runtime guessing with
-*survey-before-allocate*: each phase begins at a col, surveys to
-determine its deck's height, pitches a bivy for its scratch work,
-builds its deck atop the base to the surveyed height, strikes the
-bivy and seals the deck at phase end — returning to a new col from
-which the next phase begins. The base — the stack of all sealed
-decks — is the durable spine of the compile; every later phase
-surveys against it.
+Replace implicit durability with the deck/bivy discipline: each phase
+begins at a col, pitches a bivy for its scratch work, builds its deck
+atop the base, strikes the bivy and seals the deck at phase end —
+returning to a new col from which the next phase begins. The base —
+the stack of all sealed decks — is the durable spine of the compile.
+
+Deck heights were originally *surveyed* (estimated from input size by
+per-phase multipliers). The survey era ended 2026-07-07: heights are
+now fixed generous floors over demand-paged address space
+(BuildSettings, Demand Decks section). A floor costs address space,
+not memory — physical pages commit on first touch — so floors are
+sized for the arena, not for the input, and cannot be under-sized by
+a formula. `check-deck-overflow`/CDX9002 survives as the floor guard.
 
 Vocabulary per `//Theory/Phases.md`:
 
 - **pinnacle** — the phase's memory peak (base + deck + bivy while the phase is working)
 - **col** — the memory trough after a phase's strike (base + sealed deck); becomes the base for the next phase
 - **base** — the accumulated structure of all previously-sealed decks at any point during the compile
-- **deck** — phase-durable contribution, built to a surveyed height and sealed at phase end
+- **deck** — phase-durable contribution, built under its floor and sealed at phase end
 - **bivy** — phase-local scratch, pitched at phase start and struck atomically at phase end; has lifetime discipline but no pre-declared size
-- **survey** — the measurement step that produces deck heights before the phase allocates
-- **deck height** — the numeric output of a survey, the committed size the deck builds to
-- **prominence** — the phase's HWM above its starting col (deck height + observed bivy peak); partially observed, not fully pre-declarable
+- **floor** — the fixed generous address-space reservation a deck builds under (successor of the surveyed deck height)
+- **prominence** — the phase's HWM above its starting col (deck growth + observed bivy peak); observed, not pre-declared. The touched-page counter (cell 30688) is the physical-consumption metric; the R10 HWM reports reservations
 
 Allocator primitive verbs:
 
@@ -300,7 +313,7 @@ The current compiler has roughly these phases in order. Only deck
 contents are tabulated — bivy contents are not surveyed, not
 pre-declared, and not part of the phase's schema.
 
-| Phase | Purpose | Deck contents (surveyed, sealed) |
+| Phase | Purpose | Deck contents (sealed) |
 |---|---|---|
 | lex | Tokenize source text | tokens, offset table |
 | parse | Build AST | AST nodes, chapter/section index, def list, cite list |
@@ -316,17 +329,14 @@ requires — lexer state, parser stack, unification scratch, codegen
 patch lists, etc. Bivy contents are per-phase implementation detail,
 not declared in the schema.
 
-Survey sources per phase (each survey is a function of already-sealed
-decks plus source text):
-
-- lex surveys source text directly (byte count → rough token budget)
-- parse surveys the lex deck
-- scope surveys the parse deck
-- types surveys the scope deck and parse deck
-- lower surveys the types deck and parse deck
-- resolve surveys the lower deck
-- lift surveys the resolve deck
-- emit surveys the lift deck
+Floor values live in `BuildSettings.codex` (Demand Decks section),
+one constant per deck. The selfhost runs at 2-6x headroom under every
+floor; a floor breach halts with CDX9002. (The retired survey
+computed each height from the previous phase's sealed deck plus
+source text — the formula could not be sized honestly, and its
+under-reservation cliff was the corruption class the demand-paged
+arena was built to kill. See
+`docs/Designs/Compiler/Done/DemandPagingVictory.md`.)
 
 A survey never consults its own phase's in-progress state. This keeps
 the survey cheap (bounded by already-sealed material) and ensures

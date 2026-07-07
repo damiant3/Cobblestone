@@ -124,6 +124,11 @@ node count, not just definition count. Low priority — the workaround
 is simple and the pattern is rare (only affects programs that build
 large data structures as literal values).
 
+**RESOLVED 2026-07-07:** the survey formulas no longer exist. LOWER
+reserves a fixed 320 MB floor over demand-paged address space, so
+IR-dense small programs cannot under-reserve. The workaround above is
+obsolete; kept for history.
+
 ### Effect-handler clauses ARE counted (CL 2710)
 
 `lin-of`/`consume-of` walk `AHandleExpr` clause bodies (summed, with

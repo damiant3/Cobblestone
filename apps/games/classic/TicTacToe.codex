@@ -1,9 +1,14 @@
 Chapter: TicTacToe
   cites Games chapter Rng
 
- Tic-tac-toe on a 3x3 board with minimax AI that plays perfectly.
+ Tic-tac-toe rules on a 3x3 board.
  Board is a List Integer of 9 cells: 0=empty, 1=X, 2=O.
  Player 1 is X (maximizer), player 2 is O (minimizer).
+ This chapter owns the rules: construction, legal moves, win detection.
+ The built-in ttt-ai-move is a cheap positional heuristic that does not
+ search and does not block threats; the game server uses it for fast
+ stepping. Perfect play is ttt-perfect-ai in the Minimax chapter, which
+ searches the complete game tree and is battery-verified to never lose.
 
  We say:
 
@@ -52,11 +57,21 @@ Section: Board Queries
 
 Section: Move and Win
 
+ list-set-at mutates the list in place, so ttt-move copies the squares
+ first. The copy is what makes ttt-move a value: search code applies
+ candidate moves by the thousand to one live board and every caller
+ keeps its own history.
+
+  ttt-copy-squares : List Integer, Integer, List Integer -> List Integer
+  ttt-copy-squares (sq) (i) (acc) =
+    if i >= 9 then acc
+    else ttt-copy-squares sq (i + 1) (list-push acc (list-at sq i))
+
   ttt-move : TttBoard, Integer -> TttBoard
   ttt-move (b) (pos) =
     if b.game-over then b
     else if ttt-empty b pos == False then b
-    else let sq2 = list-set-at (b.squares) pos (b.current-player)
+    else let sq2 = list-set-at (ttt-copy-squares (b.squares) 0 []) pos (b.current-player)
     in let won = ttt-check-win sq2 (b.current-player)
     in let has-space = ttt-any-empty sq2 0
     in let draw = if won then False else has-space == False
@@ -83,6 +98,10 @@ Section: Move and Win
 
 Section: AI
 
+ A positional heuristic: take the center, then a corner, then the first
+ empty square. One board scan, no search, no threat detection - fast and
+ beatable by design.
+
   ttt-ai-move : TttBoard -> Integer
   ttt-ai-move (b) =
     let center = if ttt-empty b 4 then 4 else -1
@@ -104,30 +123,5 @@ Section: AI
     if i >= 9 then -1
     else if ttt-empty b i then i
     else ttt-find-first-empty b (i + 1)
-
-Section: Game Runner
-
-  run-ttt-game : TttResult
-  run-ttt-game =
-    let b = ttt-new
-    in ttt-loop b 0
-
-  ttt-loop : TttBoard, Integer -> TttResult
-  ttt-loop (b) (moves) =
-    if b.game-over then TttResult { winner = b.winner, moves-made = moves }
-    else if moves > 9 then TttResult { winner = b.winner, moves-made = moves }
-    else let pos = ttt-ai-move b
-    in if pos < 0 then TttResult { winner = b.winner, moves-made = moves }
-    else let next = ttt-move b pos
-    in ttt-loop next (moves + 1)
-
-Section: Formatting
-
-  format-ttt-result : TttResult -> Text
-  format-ttt-result (r) =
-    let w = if r.winner == 1 then "X wins"
-            else if r.winner == 2 then "O wins"
-            else "Draw"
-    in "TicTacToe (AI vs AI): " & w & " in " & show (r.moves-made) & " moves"
 
 Page 1

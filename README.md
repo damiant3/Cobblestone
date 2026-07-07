@@ -184,13 +184,14 @@ As of 2026-07-04:
   bivy references. Compile with `-EscapeCheck` to detect deck-to-bivy
   violations before phase-compact reclaims bivy scratch. PARSE and SCOPE
   compact disabled pending violation fixes (127K violations identified).
-- **Configurable surveys**: phase deck multipliers in `BuildSettings.codex`
-  (no longer hardcoded in opening.codex). Deck overflow is a warning, not
-  an error --- compilation continues. `compile.ps1` auto-retries with 4 GB
-  on VM crash.
-- **Deck overflow guard**: all 8 compiler phases (LEX, PARSE, DESUGAR,
-  SCOPE, CHECK, LOWER, RESOLVE, LIFT) detect when deck allocation
-  exceeds its survey budget and emit CDX9002 as a warning.
+- **Demand-paged heap**: the compiler pages its own arena in on first
+  touch — a not-present-PDE trick plus a compact `#PF` handler that maps
+  the faulting page (NX preserved above the code boundary) and retries.
+  The survey system it replaced — per-phase worst-case deck reservation,
+  the `CDX9002` overflow warning, and `compile.ps1`'s 4 GB auto-retry — is
+  deleted: physical cost is now *measured* by a touched-page counter, not
+  predicted by a formula that had a silent, non-monotonic sizing cliff.
+  Deck allocation and `phase-compact` remain; only the prediction is gone.
 - **Fuzz corpus**: 44 adversarial inputs (binary garbage, huge
   identifiers, deep nesting, unclosed syntax, 100KB lines, recursive
   types, keyword abuse) — 0 crashes.
@@ -266,12 +267,12 @@ As of 2026-07-04:
 
 The compiler is a hard fixed point of itself on bare metal.
 
-**`seed/Codex.cdx`** (2,106,070 bytes, ~2.01 MB) — the canonical seed:
+**`seed/Codex.cdx`** (2,112,715 bytes, ~2.01 MB) — the canonical seed:
 
 | Algorithm | Digest |
 |---|---|
-| Content hash prefix | `C975EC8D` |
-| SHA-256 | `7CE0E86755E6489C05FD8BE9A8938FF5614CBF4E942D756AC0B81D36D57B6896` |
+| Content hash prefix | `558A357B` |
+| SHA-256 | `917711F305BC4E864CA90BA7BD79AD134F3A207C3F1323A0D0EA6457A7FB7342` |
 
 The seed grew from ~1.83 MB to ~1.88 MB on 2026-07-01, absorbing the
 CCE output boundary (tier0/1/2 UTF-8 conversion), the proof infrastructure
@@ -286,7 +287,11 @@ it reached ~2.01 MB, absorbing blu's compiler memory-discipline campaign
 CHECK/LOWER reservation-copy reclaim, survey-multiplier tightening) and
 the itoa most-negative-integer fix — self-compile heap dropped sharply
 (post-CHECK ~585 → ~372 MB) while the output stayed a byte-identical
-hard fixed point.
+hard fixed point. On 2026-07-07 it reached ~2.01 MB (2,112,715 bytes) as
+the survey system was retired outright: the compiler now demand-pages its
+own heap (`DemandPagedArena`), followed by a hardening series (P-bit
+faults, TSS/IST double-fault dumps, RAM-derived demand top) and a
+sampling profiler — all byte-identical one-pass fixed points.
 
 **`seed/Codex.img`** (8,388,608 bytes) — bootable GPT disk image:
 
@@ -935,7 +940,7 @@ in 18 seconds.
 | **Total** | **~140s** |
 
 The seed is a 2.01 MB CDX binary (content hash
-`C975EC8D2055C2D96DE356F12E893C7604E6A5280F408A3AC5D8D3BF59D60D49`).
+`558A357B892C27444FEC01CF27218EDB09403693BEBC4B636A00EC355E1A3512`).
 The compiler is a hard fixed point of itself -- the output of
 self-compilation compiled by itself is byte-identical to itself.
 

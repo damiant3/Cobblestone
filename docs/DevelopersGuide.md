@@ -688,6 +688,16 @@ signatures. `let (x, y) = expr in body` destructures in let-bindings.
 
 `[]` sugar for `LinkedList` in notation.
 
+**`list-set-at` mutates in place.** It writes the slot and returns the
+SAME list; `list-push` also writes in place while under capacity.
+Arguments evaluate left to right (pinned by
+`codex/test/wavelet-sort-aliasing.codex`). Code that needs value
+semantics — search that applies candidate moves, undo history, any
+caller that re-reads the old list — must copy first (a
+`list-push`-loop over `list-at`; see `ttt-copy-squares` in
+`apps/games/classic/TicTacToe.codex` for the idiom and the aliasing
+bug it fixed).
+
 ## Text
 
 ```

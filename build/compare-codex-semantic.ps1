@@ -295,6 +295,20 @@ function Normalize-OpAliases([System.Collections.Generic.List[string]]$tokens) {
     for ($i = 0; $i -lt $tokens.Count; $i++) {
         if ($tokens[$i] -eq ',' -and $i + 1 -lt $tokens.Count -and $tokens[$i+1].Length -gt 0 -and [char]::IsUpper($tokens[$i+1][0])) { $tokens[$i] = '->' }
     }
+    # Normalize #HEX literals to decimal (the text emitter canonicalizes hex
+    # literals to their decimal value; bit-pattern semantics, two's complement)
+    for ($i = $tokens.Count - 2; $i -ge 0; $i--) {
+        if ($tokens[$i] -eq '#' -and $tokens[$i+1] -match '^[0-9A-Fa-f_]+$') {
+            $hex = $tokens[$i+1] -replace '_',''
+            $u = [System.Convert]::ToUInt64($hex, 16)
+            $v = [System.BitConverter]::ToInt64([System.BitConverter]::GetBytes($u), 0)
+            if ($v -ge 0) {
+                $tokens.RemoveAt($i+1); $tokens[$i] = "$v"
+            } else {
+                $tokens[$i] = '-'; $tokens[$i+1] = "$(-([System.Numerics.BigInteger]$v))"
+            }
+        }
+    }
     # Normalize (__linked-list-empty 0) or __linked-list-empty 0 → [] (emitter desugars list literal)
     for ($i = $tokens.Count - 2; $i -ge 0; $i--) {
         if ($tokens[$i] -eq '__linked-list-empty' -and $tokens[$i+1] -eq '0') {
