@@ -191,9 +191,26 @@ Model).
 
 ### 10. DynamicSurvey Phase 1 — auto-retry on deck overflow
 
-**Status: Phase 1 SHIPPED (fester, 2026-07-03 — see Claimed).** The
-harness now catches CDX9002 and retries with raised `-Survey`
-multipliers. What remains here is Phase 2 (sidecar measure-and-feed-back)
+**Status: CLOSED — OBSOLETE (blu, 2026-07-07).** The entire survey
+system (multipliers, SurveyConfig, the `-Survey` knob, the Phase-1
+retry) was deleted when the demand-paged arena shipped (blu 7190-7198,
+seed DDAB0BD2...). Decks are fixed generous floors; physical memory
+commits on touch; there is nothing left to retry. Phases 2 and 3 will
+never be built. See `docs/Designs/Build/Done/DynamicSurvey.md` and
+`docs/Designs/Compiler/Done/DemandPagingVictory.md`.
+
+**FLEET NOTE (merge-down, all agents):** the new seed means every
+binary you compile demand-boots. The full battery, all 52 plugs,
+ARM64/RISC-V boards, and an adversarial +86KB growth pingpong are
+green on it. If your stream carries a diverged seed, REBUILD from
+merged source per PerforceProcess (do not resolve -at a seed). New
+invariant if you write spawn/stack code: a stack must never point
+into a not-present page — pre-touch in-heap stack carves (see the
+Page Fault Handler prose in X86_64Boot).
+
+Original entry (historical):
+The harness catches CDX9002 and retries with raised `-Survey`
+multipliers. What remained was Phase 2 (sidecar measure-and-feed-back)
 and Phase 3 (compiler-internal proportional survey).
 
 **What:** Survey multipliers are static; unusually dense source
@@ -308,6 +325,41 @@ first.
 **Pointers:** old map entry #2 restoration notes
 (`docs/FabledTreasureMap.md`), `docs/Agents/blu-workplan.md`
 (EffectRows deferred odds).
+
+---
+
+### 15. GamesDemo runtime idle-hang bisect
+
+**What:** `apps/games/classic/GamesDemo.codex` compiles again as of
+blu 7188 (it was dark-ship rot: `opening : [Console] None` failed
+CDX2001, so it had NO compile coverage and had never been RUN). At
+runtime it never prints: the VM goes idle (300s wall, ~6s CPU - a
+hlt/wait, not a compute grind) somewhere in the 20 let-bound game
+runners before the act block. The TicTacToe leg is exonerated
+(run-ttt-perfect completes in under a second standalone and is
+pinned by codex/test/ttt-perfect.expected).
+
+**The win:** 20 game engines get their first real runtime coverage;
+whatever waits forever is a latent bug in a shipped games engine.
+
+**The dig:** Bisect by commenting the let list down (compile is ~2
+min per cycle with the 18-chapter chain; binary search, ~5 cycles).
+When the waiter is named, read its runner for the wait (RNG? channel?
+unbounded sim loop?), fix or file, and pin GamesDemo with an
+.expected so the rot cannot return. Watch for a second waiter behind
+the first.
+
+**Crew notes:** aliasing trap relevant to ALL game engines here:
+`list-set-at` MUTATES IN PLACE (pinned by
+codex/test/wavelet-sort-aliasing.codex). Any runner that treats it as
+a functional update and re-reads a stale list is corrupt; TicTacToe
+had exactly this (fixed 7188, ttt-move now copies squares first). If
+a game's sim loop misbehaves during the bisect, check its list
+updates before its logic.
+
+**Pointers:** blu 7188 (compile fix + the ttt precedent),
+`apps/games/classic/GamesDemo.codex`, quire map entry `Games` in
+`build/quire-map.ps1`.
 
 ---
 

@@ -1,6 +1,17 @@
 # Demand-Paged Arena — retiring the survey
 
-**Status:** Design, ready for a fresh implementation session.
+**Status:** SHIPPED, 2026-07-07 (blu CLs 7190-7198, seed DDAB0BD288C93AAB).
+As built: identity demand paging over [6MB, 2GB), a ~40-instruction #PF
+handler in the common interrupt path, phase decks as fixed generous
+floors (BuildSettings, Demand Decks section), and the survey system —
+SurveyConfig, every survey-*-mul, the -Survey knob, the DynamicSurvey
+retry — deleted. `check-deck-overflow`/CDX9002 survive as floor guards.
+One invariant discovered post-ship and recorded in the Page Fault
+Handler prose: a stack must never point into a not-present page, so
+spawn helpers pre-touch their in-heap stack carves. Stage 3 (frame
+pool, non-identity mapping, decks beyond RAM) remains future work.
+The blocking "corruption" that shelved the first attempt was never
+demand paging at all — see `DemandPagingVictory.md`.
 **Author:** blu, 2026-07-05.
 **Supersedes (on success):** the survey multipliers, `check-deck-overflow`
 / `CDX9002`, DynamicSurvey retry, the reservation-copy dance, AND the

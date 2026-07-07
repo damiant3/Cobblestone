@@ -5,7 +5,7 @@ A two-part games platform: a suite of 35 classic board and card games with AI op
 ## Classic Games (35 games)
 
 ### Abstract / Strategy
-- **TicTacToe** — 3x3 minimax AI
+- **TicTacToe** — 3x3 rules + full-depth minimax (battery-verified: never loses, self-play always draws)
 - **Connect4** — 6x7 board, iterative two-ply minimax
 - **Checkers** — Full draughts rules with AI
 - **Go** — 9x9 board, territory scoring
@@ -32,7 +32,7 @@ A two-part games platform: a suite of 35 classic board and card games with AI op
 - **Mastermind, RoyalUr** — Code-breaking and ancient Egyptian race game
 
 ### Infrastructure
-- **Minimax** — Shared iterative minimax engine, **Rng** — Deterministic LCG PRNG
+- **Minimax** — Search engines: full-depth TicTacToe minimax + iterative two-ply Connect4, **Rng** — Deterministic LCG PRNG
 
 ## CodexMagic Platform (74 Codex files)
 

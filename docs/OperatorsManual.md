@@ -121,7 +121,7 @@ codex-vm -kernel file.cdx [options]
 | Flag | Default | Description |
 |------|---------|-------------|
 | `-kernel <file>` | (required) | CDX or multiboot kernel to boot |
-| `-mem <MB>` | 2048 | Guest RAM in megabytes |
+| `-mem <MB>` | 3072 | Guest RAM in megabytes. Binaries compiled by seeds older than CL 7209 require more than 2048 (their boot stack lands in the demand-paged range below 2 GB); current seeds boot at any size from ~128 MB up |
 | `-input <file>` | — | Pre-load file into serial ring buffer (source input) |
 | `-output <file>` | — | Capture serial output to file |
 | `-disk <file>` | — | Attach IDE disk image (read/write, flushed to host) |
@@ -405,6 +405,42 @@ so a signed `Sut` and the unsigned `stage1` still register as one pass when
 their code is identical. On copy-up, the gate is `Sut === seed` rebuilt on
 the *target* workspace — see `docs/Agents/PerforceProcess.md`.)
 
+## Sampling Profiler
+
+Two independent sampling profilers, both driven by the PIT tick (~18 Hz).
+codex-vm now delivers timer interrupts to a compute-bound guest (a
+55 ms kicker thread cancels the VP each period), so a self-compile is
+sampled — before 2026-07-07 the timer only fired while the guest was
+halted, and long compute ran blind.
+
+**Host sampler (recommended — bias-free).** Set `CODEX_VM_PROFILE=<file>`
+before booting; on each timer kick codex-vm records the guest RIP at the
+point of cancellation and writes one `HPROF:<hex-rip>` line per sample on
+exit. No guest cooperation, no injection-delivery skew.
+
+```powershell
+$env:CODEX_VM_PROFILE = "prof.txt"
+build/compile.ps1 -Src build/output/Codex.codex -Out out.cdx -Log c.log
+$env:CODEX_VM_PROFILE = ""
+build/prof-report.ps1 -Log prof.txt -Map seed/Codex.map -Top 25
+```
+
+**Guest sampler.** `prof-start`/`prof-dump` builtins bracket a region; the
+timer ISR records the interrupt-frame RIP into a ring at cell 0x60000.
+`compile.ps1 -Profile` wraps the CDX pipeline in these (`CDX profile`
+mode). It emits `PROF:<count>` then one `PROF:<rip>` per sample. Skews
+toward hot call targets (WHP delivers the injected interrupt at the next
+instruction boundary), so prefer the host sampler for accurate weights.
+
+`build/prof-report.ps1 -Log <capture> -Map <symbol.map>` resolves either
+format's `*PROF:` lines into a hot-function histogram. Mint a fresh map
+by compiling the compiler source NON-repl (the `<out>.map` sidecar) —
+the seed map drifts (see the Release-to-Public Gate note).
+
+The sample buffer lives at 0x60000 (profiler) / 0x70000 (alloc trace),
+in the free low-memory band above the AP stacks; earlier it sat inside
+the page tables and enabling it destroyed them after ~88 samples.
+
 ## Status Server
 
 `tools/status-server.ps1` serves a single-page dashboard at
@@ -523,7 +559,7 @@ to get an interactive debug shell on breakpoints and single-steps.
 
 ```
 tools/codex-vm.exe -kernel build-output/bare-metal/Codex.cdx ^
-    -input input.tmp -output out.tmp -mem 2048 -headless ^
+    -input input.tmp -output out.tmp -mem 3072 -headless ^
     -debug -map build/output/reg.map
 ```
 
@@ -629,7 +665,21 @@ SIZE:2176384
 | `-DebugMode` | Phase markers (`DBG:frontend`, `DBG:emit`) |
 | `-Poison` | 0xCD fill in `__alloc` (catches uninitialized fields) |
 | `-Repl` | REPL loop (for batch compilation) |
-| `-Survey "f:n,..."` | Override per-phase survey multipliers at runtime (no seed rebuild). Fields: `lex-mul`, `parse-mul`, `desugar-mul`, `scope-mul`, `check-mul`, `lower-mul`, `resolve-mul`, `lift-mul`, `headroom`. Appends `survey=...` to the mode line; defaults are byte-identical to `BuildSettings`. Raising a multiplier reserves more deck (safe); lowering too far under-reserves and currently faults rather than bailing cleanly. |
+
+The survey-multiplier system (and its `-Survey` override) was deleted
+2026-07-07: phase decks are fixed generous floors and the heap range
+[6 MB, 2 GB) is demand-paged — physical memory commits on first touch.
+`compile.ps1` still accepts `-Survey` and ignores it for one transition
+cycle. See `docs/Designs/Compiler/Done/DemandPagedArena.md` (as-built)
+and `DemandPagingVictory.md` (why).
+
+Hardened 2026-07-06 (val CLs 7207-7211, see
+`docs/Designs/Compiler/Active/DemandPagingHardening.md`): only
+not-present faults grow the heap (protection faults dump), demand
+mappings carry NX, the demand-range top derives from actual RAM (any
+`-mem` from ~128 MB boots; the top 64 MB stays present for the stack),
+a TSS/IST1 emergency stack turns stack-overflow triple-faults into
+`!EXC` dumps, and the touched-page count lives at cell 30688.
 
 ### GDB (Legacy Fallback)
 

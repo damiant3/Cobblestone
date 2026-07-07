@@ -1,0 +1,68 @@
+Chapter: TttPerfect
+  cites Games chapter TicTacToe
+  cites Games chapter Minimax
+
+ Zero-player tic-tac-toe. Both seats play the full-depth minimax search,
+ and two exhaustive sweeps prove the perfection claim empirically: with
+ the AI fixed in one seat and the opponent playing every possible line,
+ the AI never loses a single game, in either seat. Self-play always ends
+ in a draw.
+
+ We say:
+
+Section: Exhaustive Verification
+
+  VerifyStats = record {
+    paths  : Integer,
+    wins   : Integer,
+    draws  : Integer,
+    losses : Integer
+  }
+
+ Walk the complete game tree with the AI fixed in one seat: at the AI's
+ turn it plays its chosen move, at the opponent's turn every legal reply
+ is explored. Every terminal position is tallied.
+
+  vf-walk : TttBoard, Integer, VerifyStats -> VerifyStats
+  vf-walk (b) (ai) (st) =
+    if b.game-over then vf-tally b ai st
+    else if b.current-player == ai then vf-walk (ttt-move b (ttt-perfect-ai b)) ai st
+    else vf-branch b ai st 0
+
+  vf-branch : TttBoard, Integer, VerifyStats, Integer -> VerifyStats
+  vf-branch (b) (ai) (st) (col) =
+    if col >= 9 then st
+    else if ttt-empty b col == False then vf-branch b ai st (col + 1)
+    else let st2 = vf-walk (ttt-move b col) ai st
+    in vf-branch b ai st2 (col + 1)
+
+  vf-tally : TttBoard, Integer, VerifyStats -> VerifyStats
+  vf-tally (b) (ai) (st) =
+    if b.winner == ai then VerifyStats { paths = st.paths + 1, wins = st.wins + 1, draws = st.draws, losses = st.losses }
+    else if b.winner == 0 then VerifyStats { paths = st.paths + 1, wins = st.wins, draws = st.draws + 1, losses = st.losses }
+    else VerifyStats { paths = st.paths + 1, wins = st.wins, draws = st.draws, losses = st.losses + 1 }
+
+  vf-new : VerifyStats
+  vf-new = VerifyStats { paths = 0, wins = 0, draws = 0, losses = 0 }
+
+  format-verify : Text, VerifyStats -> Text
+  format-verify (label) (st) =
+    label & ": " & show (st.paths) & " games, " & show (st.wins) & " wins, " & show (st.draws) & " draws, " & show (st.losses) & " losses"
+
+Section: Entry Point
+
+  opening : [Console] Nothing
+  opening =
+    let self-play = run-ttt-perfect
+    in let as-x = vf-walk ttt-new 1 vf-new
+    in let as-o = vf-walk ttt-new 2 vf-new
+    in let clean = self-play.winner == 0 & as-x.losses == 0 & as-o.losses == 0
+    in let verdict = if clean then "A strange game. The only winning move is not to play." else "VERIFICATION FAILED"
+    in act
+      print-line-uni (format-ttt-perfect self-play)
+      print-line-uni (format-verify "AI as X vs all lines" as-x)
+      print-line-uni (format-verify "AI as O vs all lines" as-o)
+      print-line-uni verdict
+    end
+
+Page 1

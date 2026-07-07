@@ -235,8 +235,9 @@ From `docs/Designs/Active/Compiler/PHASE-ARCHITECTURE.md`:
 - Deck-record toggle ratchet (per-sub-allocation classification).
 - Escape invariant enforcement (seal-time pointer validation).
 - Remove TCO reset (phase boundaries replace within-phase reclaim).
-- Survey tightening (per-phase multipliers — lex survey already
-  increased to 40x in CL 2306).
+- ~~Survey tightening~~ DONE by deletion: the survey system was torn
+  out 2026-07-07; decks are fixed floors over a demand-paged heap
+  (`docs/Designs/Compiler/Done/DemandPagedArena.md`).
 
 Compiler-correctness work, not user-facing, but each one moves the
 heap HWM down and improves the chance that compile-on-stick succeeds

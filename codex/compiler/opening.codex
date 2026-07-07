@@ -21,12 +21,11 @@ Section: Compile Flags
   CompileFlags = record {
    prose : Boolean,
    escape-check : Boolean,
-   poison-compact : Boolean,
-   survey : SurveyConfig
+   poison-compact : Boolean
   }
 
   compile-flags-default : CompileFlags
-  compile-flags-default = CompileFlags { prose = False, escape-check = False, poison-compact = False, survey = survey-config-default }
+  compile-flags-default = CompileFlags { prose = False, escape-check = False, poison-compact = False }
 
   poison-lex : Integer = 161
   poison-parse : Integer = 162
@@ -183,7 +182,7 @@ Section: Frontend
 
   deck-overflow-bag : Text -> DiagnosticBag
   deck-overflow-bag (phase-name) =
-   bag-from-list [make-error cdx-deck-overflow ("Deck overflow in " & phase-name & "; survey multiplier too low for this input") synthetic-span]
+   bag-from-list [make-error cdx-deck-overflow ("Deck overflow in " & phase-name & "; deck floor exceeded") synthetic-span]
 
   no-overflow-bag : DiagnosticBag = bag-from-list []
 
@@ -281,7 +280,7 @@ Section: Frontend
   compile-lex : Text, Integer, CompileFlags -> LexResult
   compile-lex (source) (h0) (flags) =
    let mountain-base = init-phase-allocator
-   in let lex-deck-height = text-length source * (flags.survey.lex-mul) + survey-lex-base
+   in let lex-deck-height = demand-lex-floor
    in let lex-base = build lex-deck-height
    in let lex-phase = phase-start
    in let tok-result = tokenize-into source 1 (flags.prose)
@@ -319,9 +318,9 @@ Section: Frontend
   compile-parse : List Token, Text, Integer, List PhaseMetrics, CompileFlags -> ParseResult
   compile-parse (tokens) (source) (h0) (prior-metrics) (flags) =
    let h1 = __heap-save
-   in let parse-keep-height = list-length tokens * survey-parse-keep-mul * (flags.survey.headroom) / 100 + survey-parse-base
+   in let parse-keep-height = demand-parse-keep-floor
    in let parse-base = build parse-keep-height
-   in let parse-scratch-height = list-length tokens * (flags.survey.parse-mul) + survey-parse-base
+   in let parse-scratch-height = demand-parse-scratch-floor
    in let scratch-base = build parse-scratch-height
    in let parse-phase = phase-start
    in let st = make-parse-state tokens source
@@ -373,7 +372,7 @@ Section: Frontend
 
   compile-desugar-and-scope : Text, ParseResult, Text, CompileFlags, Integer, Integer -> ScopeResult
   compile-desugar-and-scope (source) (pr) (chapter-name) (flags) (fk-base) (fk-height) =
-   let desugar-deck-height = text-length source * (flags.survey.desugar-mul) + survey-desugar-base
+   let desugar-deck-height = demand-desugar-floor
    in let desugar-base = build desugar-deck-height
    in let desugar-phase = phase-start
    in let ast = desugar-document source (pr.doc) chapter-name
@@ -396,7 +395,7 @@ Section: Frontend
    in let desugar-esc-bag = deck-record (escape-check-bag (flags.escape-check) desugar-metrics "DESUGAR")
    in let desugar-sealed = compact-phase flags poison-desugar
    in let h5 = __heap-save
-   in let scope-deck-height = text-length source * (flags.survey.scope-mul) + survey-scope-base
+   in let scope-deck-height = demand-scope-floor
    in let scope-base = build scope-deck-height
    in let scope-phase = phase-start
    in let scoped = scope-achapter ast2 colliding assignments
@@ -431,8 +430,8 @@ Section: Frontend
   compile-type-check : ScopeResult, Integer, CompileFlags -> CompileChecked
   compile-type-check (sr) (source-len) (flags) =
    let check-units = count-typecheck-units (sr.scoped.type-defs) 0 (list-length (sr.scoped.type-defs)) 0
-   in let check-deck-height = (source-len * (flags.survey.check-mul) + check-units * (flags.survey.check-unit-mul)) * (flags.survey.headroom) / 100 + survey-check-base
-   in let keep-height = source-len * survey-check-keep-mul * (flags.survey.headroom) / 100 + survey-check-keep-base
+   in let check-deck-height = demand-check-floor
+   in let keep-height = demand-check-keep-floor
    in let keep-base = build keep-height
    in let check-base = build check-deck-height
    in let check-phase = phase-start
@@ -522,7 +521,7 @@ Section: Frontend
 
   compile-checked : Text, Text, CompileFlags -> CompileChecked
   compile-checked (source) (chapter-name) (flags) =
-   let fk-height = text-length source * survey-frontend-keep-mul * (flags.survey.headroom) / 100 + survey-frontend-keep-base
+   let fk-height = demand-frontend-keep-floor
    in let fk-base = build fk-height
    in let h0 = __heap-save
    in let lr = compile-lex source h0 flags
@@ -540,7 +539,7 @@ Section: Frontend
   compile-frontend (source) (chapter-name) (flags) =
    let checked = compile-checked source chapter-name flags
    in if bag-has-errors (checked.bag) then halted-frontend (checked.bag) (checked.heap-marks)
-   else let lower-deck-height = list-length (checked.scoped.defs) * (flags.survey.lower-mul) * (flags.survey.headroom) / 100 + survey-lower-base
+   else let lower-deck-height = demand-lower-floor
    in let lower-base = build lower-deck-height
    in let lower-phase = phase-start
    in let ir = deck-record (lower-chapter (checked.scoped) (checked.all-bindings) (checked.ust) (checked.ctor-names) (checked.renames) (checked.colliding) (checked.assignments))
@@ -576,7 +575,7 @@ Section: Frontend
   compile-frontend-cdx (source) (chapter-name) (flags) =
    let checked = compile-checked source chapter-name flags
    in if bag-has-errors (checked.bag) then halted-frontend (checked.bag) (checked.heap-marks)
-   else let lower-deck-height = list-length (checked.scoped.defs) * (flags.survey.lower-mul) * (flags.survey.headroom) / 100 + survey-lower-base
+   else let lower-deck-height = demand-lower-floor
    in let lower-base = build lower-deck-height
    in let lower-phase = phase-start
    in let ir-raw = deck-record (lower-chapter (checked.scoped) (checked.all-bindings) (checked.ust) (checked.ctor-names) (checked.renames) (checked.colliding) (checked.assignments))
@@ -584,7 +583,7 @@ Section: Frontend
    in let lower-metrics = phase-measure lower-phase
    in let lower-ov = check-deck-overflow (lower-metrics.deck-end - lower-metrics.deck-origin) lower-deck-height
    in let lower-sealed = compact-phase flags poison-lower
-   in let resolve-deck-height = list-length (ir.defs) * (flags.survey.resolve-mul) * (flags.survey.headroom) / 100 + survey-resolve-base
+   in let resolve-deck-height = demand-resolve-floor
    in let resolve-base = build resolve-deck-height
    in let resolve-phase = phase-start
    in let type-map = deck-record (build-type-def-map (checked.scoped.type-defs) 0 (list-length (checked.scoped.type-defs)) [])
@@ -592,7 +591,7 @@ Section: Frontend
    in let resolved-defs = deck-record (rewrite-ir-defs stds (ir.defs))
    in let resolve-metrics = phase-measure resolve-phase
    in let resolve-ov = check-deck-overflow (resolve-metrics.deck-end - resolve-metrics.deck-origin) resolve-deck-height
-   in let lift-deck-height = list-length resolved-defs * (flags.survey.lift-mul) * (flags.survey.headroom) / 100 + survey-lift-base
+   in let lift-deck-height = demand-lift-floor
    in let lift-base = build lift-deck-height
    in let lift-phase = phase-start
    in let cdx-chapter = deck-record (lift-lambdas (IRChapter {
@@ -996,8 +995,11 @@ Section: Entry Point
    in let is-repl = has-mode-flag mode "repl"
    in let poison = has-mode-flag mode "poison"
    in let debug = has-mode-flag mode "debug"
+   in let prof = has-mode-flag mode "profile"
    in act
     if debug then print-line-uni ("DBG:frontend src=" & show (text-length source))
+    else print-line-uni ""
+    if prof then print-line-uni ("PROF-BEGIN: " & show (prof-start 0))
     else print-line-uni ""
     let fe = compile-frontend-cdx source "Codex_Codex" flags
     in act
@@ -1008,6 +1010,8 @@ Section: Entry Point
      else print-line-uni ""
      let result = compile-to-cdx-with-exit-mode fe exit-mode poison
      in act
+      if prof then print-line-uni ("PROF-END: " & show (prof-dump 0))
+      else print-line-uni ""
       print-codegen-error-header (bag-errors (result.bag))
       print-bag-notices (result.bag)
       if is-repl then emit-binary-tail result
@@ -1162,48 +1166,7 @@ Section: Entry Point
 
   parse-mode-flags : Text -> CompileFlags
   parse-mode-flags (mode) =
-   CompileFlags { prose = has-mode-flag mode "prose", escape-check = has-mode-flag mode "escape-check", poison-compact = has-mode-flag mode "poison-compact", survey = parse-survey-config mode }
-
-  parse-survey-config : Text -> SurveyConfig
-  parse-survey-config (mode) =
-   find-survey-token (text-split mode " ") 0
-
-  find-survey-token : List Text, Integer -> SurveyConfig
-  find-survey-token (parts) (i) =
-   if i >= list-length parts then survey-config-default
-   else let p = list-at parts i
-   in if text-starts-with p "survey=" then apply-survey-pairs (text-split (survey-token-value p) ",") 0 survey-config-default
-      else find-survey-token parts (i + 1)
-
-  survey-token-value : Text -> Text
-  survey-token-value (p) =
-   let kv = text-split p "="
-   in if list-length kv >= 2 then list-at kv 1 else ""
-
-  apply-survey-pairs : List Text, Integer, SurveyConfig -> SurveyConfig
-  apply-survey-pairs (pairs) (i) (cfg) =
-   if i >= list-length pairs then cfg
-   else apply-survey-pairs pairs (i + 1) (apply-survey-pair (list-at pairs i) cfg)
-
-  apply-survey-pair : Text, SurveyConfig -> SurveyConfig
-  apply-survey-pair (pair) (cfg) =
-   let kv = text-split pair ":"
-   in if list-length kv == 2 then set-survey-field cfg (list-at kv 0) (text-to-integer (list-at kv 1))
-      else cfg
-
-  set-survey-field : SurveyConfig, Text, Integer -> SurveyConfig
-  set-survey-field (cfg) (name) (val) =
-   if name == "lex-mul" then let __seq = cfg.lex-mul = val in cfg
-   else if name == "parse-mul" then let __seq = cfg.parse-mul = val in cfg
-   else if name == "desugar-mul" then let __seq = cfg.desugar-mul = val in cfg
-   else if name == "scope-mul" then let __seq = cfg.scope-mul = val in cfg
-   else if name == "check-mul" then let __seq = cfg.check-mul = val in cfg
-   else if name == "check-unit-mul" then let __seq = cfg.check-unit-mul = val in cfg
-   else if name == "lower-mul" then let __seq = cfg.lower-mul = val in cfg
-   else if name == "resolve-mul" then let __seq = cfg.resolve-mul = val in cfg
-   else if name == "lift-mul" then let __seq = cfg.lift-mul = val in cfg
-   else if name == "headroom" then let __seq = cfg.headroom = val in cfg
-   else cfg
+   CompileFlags { prose = has-mode-flag mode "prose", escape-check = has-mode-flag mode "escape-check", poison-compact = has-mode-flag mode "poison-compact" }
 
   disk-partition-start : Integer = 2048
 

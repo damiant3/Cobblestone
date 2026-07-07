@@ -1,6 +1,11 @@
 # Demand Paging: A Post-Mortem of the Agent, Not the Code
 
-**Status:** Retrospective. The engineering effort is shelved (blu CL 7142),
+**Status:** Retrospective, preserved as written. The mystery this
+document declares unsolved was solved the day after publication, and
+the design it mourns shipped the same night — see
+`DemandPagingVictory.md`, which is the sequel and the correction: the
+bug was never in the demand paging.
+**Original status:** the engineering effort is shelved (blu CL 7142),
 unsolved. Companion to `DemandPagedArena.md` (the design that was attempted).
 **Author:** blu, 2026-07-06, at Damian's request.
 **Scope:** This is deliberately *not* a technical analysis of the compiler.

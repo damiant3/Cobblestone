@@ -146,11 +146,16 @@ Phase 4 (text round-trip) and Phase 5 (CDX byte-identity). Both run
 under `build/build.ps1`. If either is red, shelve and
 re-evaluate.
 
-### 12. Survey Before You Allocate
+### 12. Memory Is a Contract
 
-Bare metal has no GC. Every phase should *survey* what it needs before
-it allocates. Each survey is a contract — what to retain, what is
-scratch. Every CL review states a memory and time-complexity verdict.
+Bare metal has no GC. Every phase declares what it retains and what is
+scratch, and phase-compact enforces the declaration. Reservations are
+generous fixed floors over demand-paged address space — physical memory
+is what you touch, not what you reserve — so the discipline is not
+sizing but honesty: retained data lives on the deck, scratch dies at
+the compact, and every CL review states a memory and time-complexity
+verdict. (The survey-multiplier era, where reservations scaled with
+input and under-sizing corrupted silently, ended 2026-07-07.)
 
 ### 13. Less Is More
 

@@ -1765,27 +1765,40 @@ Section: I/O Boundary Helpers
    in let st7 = st-append-code st6 (mov-store reg-rdi reg-rax 0)
    in st-append-code st7 [195]
 
+ The dump is frame-free and prints only through the data-channel
+ serial primitives the exception dump uses. Its original form printed
+ the header through the control channel (which nothing services in a
+ standalone run, so the ready-spin hung forever) and inlined
+ emit-print-text, whose alloc-local frame slots stomp the caller's
+ frame inside a frameless helper. Counts and samples print as hex
+ qwords: PROF:<count> then one PROF:<rip> line per sample. Returns
+ the sample count.
+
+  emit-prof-string : CodegenState, List Integer, Integer -> CodegenState
+  emit-prof-string (st) (chars) (i) =
+   if i >= list-length chars then st
+   else emit-prof-string (emit-serial-wait-and-send st (list-at chars i)) chars (i + 1)
+
   emit-prof-dump-helper : CodegenState -> CodegenState
   emit-prof-dump-helper (st) =
    let st1 = record-func-offset st "__prof_dump"
    in let st2 = st-append-code st1 (push-r reg-rbx)
    in let st3 = st-append-code st2 (push-r reg-r12)
-   in let st4 = st-append-code st3 (push-r reg-r13)
-   in let st5 = st-append-code st4 (li reg-rdi prof-enabled-addr)
+   in let st5 = st-append-code st3 (li reg-rdi prof-enabled-addr)
    in let st6 = st-append-code st5 (li reg-rax 0)
    in let st7 = st-append-code st6 (mov-store reg-rdi reg-rax 0)
    in let st8 = st-append-code st7 (li reg-rdi prof-cursor-addr)
    in let st9 = st-append-code st8 (mov-load reg-r12 reg-rdi 0)
-   in let st10 = emit-oom-string st9 [80, 82, 79, 70, 58] 0
+   in let st10 = emit-prof-string st9 [80, 82, 79, 70, 58] 0
    in let st11 = st-append-code st10 (mov-rr reg-rdi reg-r12)
-   in let st12 = emit-call-to st11 "__itoa"
-   in let st13 = emit-print-text st12 reg-rax
+   in let st12 = emit-print-hex-qword-rdi st11
+   in let st13 = emit-serial-wait-and-send st12 10
    in let st14 = st-append-code st13 (li reg-rbx 0)
    in let loop-top = st14.code-len
    in let st15 = st-append-code st14 (cmp-rr reg-rbx reg-r12)
    in let done-pos = st15.code-len
    in let st16 = st-append-code st15 (jcc cc-ge 0)
-   in let st17 = emit-oom-string st16 [80, 82, 79, 70, 58] 0
+   in let st17 = emit-prof-string st16 [80, 82, 79, 70, 58] 0
    in let st18 = st-append-code st17 (mov-rr reg-rax reg-rbx)
    in let st19 = st-append-code st18 (shl-ri reg-rax 3)
    in let st20 = st-append-code st19 (add-ri reg-rax prof-buf-addr)
@@ -1795,7 +1808,7 @@ Section: I/O Boundary Helpers
    in let st24 = st-append-code st23 (add-ri reg-rbx 1)
    in let st25 = st-append-code st24 (jmp (loop-top - (st24.code-len + 5)))
    in let st26 = patch-jcc-at st25 done-pos (st25.code-len)
-   in let st27 = st-append-code st26 (pop-r reg-r13)
+   in let st27 = st-append-code st26 (mov-rr reg-rax reg-r12)
    in let st28 = st-append-code st27 (pop-r reg-r12)
    in let st29 = st-append-code st28 (pop-r reg-rbx)
    in st-append-code st29 [195]

@@ -98,5 +98,3 @@ $stderrFile = [System.IO.Path]::GetTempFileName()
         try { Stop-Process -Id $proc.Id -Force -ErrorAction Stop } catch {}
     }
     Remove-Item -Force $stderrFile -ErrorAction SilentlyContinue
-}
-}
