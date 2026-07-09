@@ -1,26 +1,37 @@
 Chapter: IdentityCapGate
 
+ The child reports its inherited identity and its parent's identity
+ over a kernel channel, then the parent restricts the child's identity
+ bit. Channels and spawning are Concurrent, identity-set is Identity,
+ process-restrict-cap is Capability — the opening declares all three
+ plus Console.
+
 Section: Body
-  opening : [Console] Nothing = act
-    let ch = chan-kern-create 4
-    in let parent-id-w0 = hardware-random
-    in let s = identity-set 0 parent-id-w0
-    in let child = process-spawn (\x ->
-      let my-id = identity-whoami 0
-      in let parent-id = identity-get-proc 0 0
-      in let has-ipc = chan-kern-send ch my-id
-      in let has-ipc2 = chan-kern-send ch parent-id
-      in 0)
-    in let restrict-id = process-restrict-cap child 15
-    in let wt = process-wait child
-    in let child-id = chan-kern-recv ch
-    in let reported-parent = chan-kern-recv ch
-    in if child-id == parent-id-w0 then
-      if reported-parent == parent-id-w0 then
-        if restrict-id == 0 then act
-          print-line-uni "PASS"
-        end
-        else print-line-uni "FAIL: restrict failed"
-      else print-line-uni "FAIL: child saw wrong parent id"
-    else print-line-uni "FAIL: child identity wrong"
+  send-second : Integer, Integer, Integer -> [Concurrent] Integer
+  send-second (ch) (b) (first) = chan-kern-send ch b
+
+  child-body : Integer, Integer -> [Concurrent] Integer
+  child-body (ch) (x) =
+    send-second ch (identity-get-proc 0 0) (chan-kern-send ch (identity-whoami 0))
+
+  recv-after-wait : Integer, Integer -> [Concurrent] Integer
+  recv-after-wait (ch) (child) =
+    let wt = process-wait child
+    in chan-kern-recv ch
+
+  gate-verdict : Integer, Integer, Integer, Integer -> Text
+  gate-verdict (child-id) (reported-parent) (restrict-id) (parent-id) =
+    if child-id /= parent-id then "FAIL: child identity wrong"
+    else if reported-parent /= parent-id then "FAIL: child saw wrong parent id"
+    else if restrict-id /= 0 then "FAIL: restrict failed"
+    else "PASS"
+
+  opening : [Console, Identity, Concurrent, Capability] Nothing = act
+    ch <- chan-kern-create 4
+    s <- identity-set 0 hardware-random
+    child <- process-spawn (\x -> child-body ch x)
+    restrict-id <- process-restrict-cap child 15
+    child-id <- recv-after-wait ch child
+    reported <- chan-kern-recv ch
+    print-line-uni (gate-verdict child-id reported restrict-id (identity-whoami 0))
   end

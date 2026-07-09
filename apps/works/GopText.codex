@@ -1,0 +1,129 @@
+Chapter: GopText
+  cites Works chapter GopDraw
+  cites Kernel chapter BitmapFont
+  cites Kernel chapter Keyboard
+  cites Foreword chapter StringUtils
+
+ A single-line text field on the GOP framebuffer, driven by the raw
+ PS/2 controller (B2.1). Scancodes come from data port 0x60, polled
+ the same way the boot menu polls; the kernel keyboard chapter's pure
+ layout machinery (kb-process-scancode) turns them into CCE characters
+ with shift, caps, and dead-key handling. The field echoes as it
+ edits, draws a block cursor after the text, supports backspace, and
+ can mask its echo with asterisks for passphrase entry. Enter returns
+ the buffer.
+
+ We say:
+
+Section: Field
+
+  GtField = record {
+    gf-base : Integer,
+    gf-stride : Integer,
+    gf-font : CbfFont,
+    gf-x : Integer,
+    gf-y : Integer,
+    gf-wchars : Integer,
+    gf-scale : Integer,
+    gf-fg : Integer,
+    gf-bg : Integer,
+    gf-cursor : Integer,
+    gf-masked : Boolean
+  }
+
+Section: Drawing
+
+ The field paints its own background one cursor cell wider than its
+ capacity, draws the text (or one asterisk per character when masked),
+ and places a solid block cursor in the cell after the last character.
+
+  gt-draw : GtField, Text -> Integer
+  gt-draw (f) (buf) =
+    let cw = 8 * f.gf-scale
+    in let ch = 16 * f.gf-scale
+    in let clear = gop-fill-rect f.gf-base f.gf-stride f.gf-x f.gf-y ((f.gf-wchars + 1) * cw) ch f.gf-bg
+    in let t = if f.gf-masked then gt-draw-mask f (text-length buf) 0
+       else gop-draw-text f.gf-base f.gf-stride f.gf-font f.gf-x f.gf-y buf f.gf-fg f.gf-scale 0
+    in gop-fill-rect f.gf-base f.gf-stride (f.gf-x + text-length buf * cw) f.gf-y cw ch f.gf-cursor
+
+  gt-draw-mask : GtField, Integer, Integer -> Integer
+  gt-draw-mask (f) (n) (i) =
+    if i >= n then 0
+    else let star = char-code (char-at "*" 0)
+    in let d = gop-char-rows f.gf-base f.gf-stride f.gf-font (f.gf-x + i * 8 * f.gf-scale) f.gf-y star f.gf-fg f.gf-scale 0
+    in gt-draw-mask f n (i + 1)
+
+Section: Editing
+
+ Extended keys arrive as an 0xE0 prefix (ignored as a break code by
+ the layout) followed by a plain make code that collides with the
+ numpad: an arrow key would otherwise type a digit. A single-line
+ field has no cursor movement, so every navigation make code is
+ simply ignored.
+
+  gt-nav-key : Integer -> Boolean
+  gt-nav-key (sc) =
+    sc == 71 | sc == 72 | sc == 73 | sc == 75 | sc == 77 | sc == 79 | sc == 80 | sc == 81 | sc == 82 | sc == 83
+
+  gt-apply : GtField, Text, KbEvent -> Text
+  gt-apply (f) (buf) (ev) =
+    if ev.pressed then gt-apply-pressed f buf ev else buf
+
+  gt-apply-pressed : GtField, Text, KbEvent -> Text
+  gt-apply-pressed (f) (buf) (ev) =
+    if ev.scancode == 14 then gt-backspace f buf
+    else if gt-nav-key (ev.scancode) then buf
+    else if ev.ascii == 0 then buf
+    else if text-length buf >= f.gf-wchars then buf
+    else let nb = buf & char-to-text (code-to-char (ev.ascii))
+    in let d = gt-draw f nb
+    in nb
+
+  gt-backspace : GtField, Text -> Text
+  gt-backspace (f) (buf) =
+    if text-length buf == 0 then buf
+    else let nb = text-take buf (text-length buf - 1)
+    in let d = gt-draw f nb
+    in nb
+
+Section: Input Loop
+
+ The loop must be constant-stack and quiet-heap: it tail-calls ITSELF
+ (the compiler's TCO handles direct self-recursion in act tails), and
+ the idle path -- no byte waiting -- allocates nothing and touches no
+ MMIO. Key events allocate one KbEvent, and printable keys one Text;
+ both are bounded by keystrokes, not by polling. Enter (make code 28)
+ returns the line. Programs hosting this loop compile with the pet
+ flag, like every interactive poll loop on the boot path.
+
+ Each key event also samples the HPET main counter (0xFED00000 + 0xF0,
+ megahertz-rate) and the timer tick cell, folding them into an entropy
+ accumulator the caller receives beside the text -- keystroke timing
+ the machine cannot predict. On hardware without an HPET at the
+ standard base the read degrades to a constant and the accumulator
+ still carries the tick cell and scancode sequence.
+
+  GtLine = record {
+    gl-text : Text,
+    gl-entropy : Integer
+  }
+
+  hpet-base : Integer = 4275044352
+
+  gt-read-line : GtField, Text, KbState, Integer -> [Device.Port, Device.Mmio] GtLine
+  gt-read-line (f) (buf) (st) (ent) = act
+    status <- port-in-byte 100
+    sc <- if bit-and status 1 > 0 then port-in-byte 96 else 0
+    hp <- if sc == 0 then 0 else read-mmio hpet-base 240
+    if sc == 0 then gt-read-line f buf st ent
+    else if sc == 28 then GtLine { gl-text = buf, gl-entropy = ent }
+    else let ev = kb-process-scancode st (__narrow sc)
+    in gt-read-line f (gt-apply f buf ev) (ev.state) (ent * 1099511628211 + hp * 31 + peek-qword 28672 0 + sc)
+  end
+
+  gt-input : GtField -> [Device.Port, Device.Mmio] GtLine
+  gt-input (f) = act
+    h0 <- read-mmio hpet-base 240
+    d <- gt-draw f ""
+    gt-read-line f "" kb-state-new h0
+  end

@@ -1,0 +1,134 @@
+Chapter: GopWakeTest
+  cites Works chapter GopWake
+  cites Verify chapter WakeCeremony
+  cites Verify chapter CdxBinary
+  cites Foreword chapter Sha256
+
+ Builds a CDX-shaped buffer in memory and runs the buffer ceremony over
+ it. The content hash is computed the other way round -- with the
+ list-based `sha256` over the same bytes -- so `hash-ok` is checked
+ against an independent digest rather than against the function under
+ test. Flipping one content byte must turn `hash-ok` False; a good hash
+ with a zero signature must still refuse, because a machine that cannot
+ prove who signed it must not pretend to know.
+
+Section: Fixture
+
+  hdr-size : Integer = 224
+  content-len : Integer = 300
+  total : Integer = 524
+
+  fill-content : Integer, Integer -> Integer
+  fill-content (buf) (i) =
+    if i >= content-len then 0
+    else let w = poke-byte buf (hdr-size + i) (int-mod (i * 7 + 11) 251)
+    in fill-content buf (i + 1)
+
+  zero-hdr : Integer, Integer -> Integer
+  zero-hdr (buf) (i) =
+    if i >= hdr-size then 0
+    else let w = poke-byte buf i 0
+    in zero-hdr buf (i + 1)
+
+  put-le64 : Integer, Integer, Integer -> Integer
+  put-le64 (buf) (off) (v) =
+    let a = poke-byte buf off (bit-and v 255)
+    in let b = poke-byte buf (off + 1) (bit-and (bit-shru v 8) 255)
+    in let c = poke-byte buf (off + 2) (bit-and (bit-shru v 16) 255)
+    in poke-byte buf (off + 3) (bit-and (bit-shru v 24) 255)
+
+  put-hash : Integer, List Integer, Integer -> Integer
+  put-hash (buf) (bs) (i) =
+    if i >= 32 then 0
+    else let w = poke-byte buf (8 + i) (list-at bs i)
+    in put-hash buf bs (i + 1)
+
+ A header whose text section spans the content, magic "CDX1", the stored
+ hash written at offset 8, and everything else zero -- including the
+ author key and signature, which is exactly the "unsigned" case.
+
+  build-fixture : Integer -> Integer
+  build-fixture (buf) =
+    let z = zero-hdr buf 0
+    in let c = fill-content buf 0
+    in let m0 = poke-byte buf 0 67
+    in let m1 = poke-byte buf 1 68
+    in let m2 = poke-byte buf 2 88
+    in let m3 = poke-byte buf 3 49
+    in let t-off = put-le64 buf 168 hdr-size
+    in let t-sz = put-le64 buf 176 content-len
+    in let bytes = wk-slice buf hdr-size (hdr-size + content-len) []
+    in let digest = hash-words-to-bytes (sha256 bytes)
+    in put-hash buf digest 0
+
+Section: Main
+
+  report-line : WakeReport -> Text
+  report-line (r) =
+    "magic=" & show (if r.magic-ok then 1 else 0)
+    & " hash=" & show (if r.hash-ok then 1 else 0)
+    & " sig=" & show (if r.signature-ok then 1 else 0)
+    & " sound=" & show (if wake-sound r then 1 else 0)
+    & " size=" & show (r.size)
+
+  good-case : Text
+  good-case =
+    let buf = __heap-save
+    in let adv = __heap-advance (total + 64)
+    in let f = build-fixture buf
+    in report-line (wk-verify buf total)
+
+ One content byte flipped after the hash was stored.
+
+  tampered-case : Text
+  tampered-case =
+    let buf = __heap-save
+    in let adv = __heap-advance (total + 64)
+    in let f = build-fixture buf
+    in let t = poke-byte buf (hdr-size + 100) 0
+    in report-line (wk-verify buf total)
+
+  bad-magic-case : Text
+  bad-magic-case =
+    let buf = __heap-save
+    in let adv = __heap-advance (total + 64)
+    in let f = build-fixture buf
+    in let t = poke-byte buf 3 50
+    in report-line (wk-verify buf total)
+
+ A header claiming content past the bytes we hold must be refused, not
+ hashed.
+
+  overrun-case : Text
+  overrun-case =
+    let buf = __heap-save
+    in let adv = __heap-advance (total + 64)
+    in let f = build-fixture buf
+    in let t = put-le64 buf 176 900000
+    in report-line (wk-verify buf total)
+
+  short-case : Text
+  short-case =
+    let buf = __heap-save
+    in let adv = __heap-advance (total + 64)
+    in let f = build-fixture buf
+    in report-line (wk-verify buf 100)
+
+ The ceremony must refuse to speak its introduction when unsound.
+
+  speaks-refusal : Text
+  speaks-refusal =
+    let buf = __heap-save
+    in let adv = __heap-advance (total + 64)
+    in let f = build-fixture buf
+    in let says = wk-ceremony buf total
+    in if text-contains says "I will not act" then "refuses=yes" else "refuses=NO-BUG"
+
+  opening : [Console] Nothing = act
+    print-line-uni ("good:     " & good-case)
+    print-line-uni ("tampered: " & tampered-case)
+    print-line-uni ("badmagic: " & bad-magic-case)
+    print-line-uni ("overrun:  " & overrun-case)
+    print-line-uni ("short:    " & short-case)
+    print-line-uni speaks-refusal
+  end

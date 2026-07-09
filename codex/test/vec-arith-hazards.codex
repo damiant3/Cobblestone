@@ -1,0 +1,66 @@
+Chapter: VecArithHazards
+  cites Foreword chapter Console
+
+ Adversarial probe for the vec-add/sub/mul/div builtin emitters. Both
+ operands are calls to distinct multi-branch producers, so each
+ operand's result arrives as a bare call result and the second call
+ clobbers every caller-saved register. An emitter that holds the
+ first operand's register across the second operand's emission
+ computes g op g instead of f op g -- vec-sub of distinct operands
+ collapsing to zero is the loudest symptom. The producers carry
+ branches and enough body to stay out of the inliner, keeping the
+ operands genuine calls.
+
+Section: Vector Producers
+
+  mk-a : Real, Integer -> Vector 2 Real
+  mk-a (x) (n) =
+   if n > 100 then vec-splat (x + 1000.0)
+   else if n > 10 then vec-splat (x + 100.0)
+   else let base = x + 0.0
+   in let doubled = base + base
+   in let half = doubled - base
+   in vec-splat half
+
+  mk-b : Real, Integer -> Vector 2 Real
+  mk-b (x) (n) =
+   if n > 100 then vec-splat (x - 1000.0)
+   else if n > 10 then vec-splat (x - 100.0)
+   else let shifted = x - 0.0
+   in let tripled = shifted + shifted + shifted
+   in let back = tripled - shifted - shifted
+   in vec-splat back
+
+Section: Probes
+
+  probe-add : Integer, Integer -> Real
+  probe-add (n) (lane) =
+   let s = vec-add (mk-a 1.5 n) (mk-b 10.25 n)
+   in vec-extract s lane
+
+  probe-sub : Integer, Integer -> Real
+  probe-sub (n) (lane) =
+   let d = vec-sub (mk-a 20.5 n) (mk-b 5.25 n)
+   in vec-extract d lane
+
+  probe-mul : Integer -> Real
+  probe-mul (n) =
+   let p = vec-mul (mk-a 3.0 n) (mk-b 4.0 n)
+   in vec-extract p 0
+
+  probe-div : Integer -> Real
+  probe-div (n) =
+   let q = vec-div (mk-a 15.0 n) (mk-b 4.0 n)
+   in vec-extract q 0
+
+Section: Entry
+
+  opening : [Console] Nothing
+  opening = act
+   print-line-uni ("add0: " & show (probe-add 1 0))
+   print-line-uni ("add1: " & show (probe-add 1 1))
+   print-line-uni ("sub0: " & show (probe-sub 1 0))
+   print-line-uni ("sub1: " & show (probe-sub 1 1))
+   print-line-uni ("mul0: " & show (probe-mul 1))
+   print-line-uni ("div0: " & show (probe-div 1))
+  end

@@ -1,0 +1,86 @@
+Chapter: GopWake
+  cites Verify chapter WakeCeremony
+  cites Verify chapter CdxBinary
+  cites Foreword chapter Sha256
+  cites Foreword chapter Ed25519
+
+ The wake ceremony over a seed that lives in a raw buffer (B3.4). The
+ ceremony itself is `codex/os/verify/WakeCeremony`, and its meaning is
+ unchanged: verify the magic, recompute the content hash, check the
+ author signature, and speak only what was checked -- or refuse.
+
+ What changes is where the bytes are. `wake-verify` takes a
+ `List Integer`, which for a 2.1 MB seed would be millions of list cells;
+ the seed the payload just read off its own stick is a flat buffer. So
+ this chapter recomputes the same three checks over memory: `sha256-buf`
+ hashes the buffer in constant heap and is byte-identical to `sha256`
+ over the same bytes, and only the small fields -- the stored hash, the
+ author key, the signature -- become short lists. The result is a real
+ `WakeReport`, so `wake-sound` and the introduction's prose are shared
+ rather than reimplemented.
+
+ The signature is over the *stored* content hash, as `cdx-verify-signature`
+ does. Recomputing the hash and comparing it to the stored one is the
+ separate check; a machine that signed a hash of bytes it no longer
+ carries must fail `hash-ok`, not quietly pass on a valid signature.
+
+ We say:
+
+Section: Header Fields
+
+  wk-magic-ok : Integer -> Boolean
+  wk-magic-ok (buf) =
+    peek-byte buf 0 == 67 & peek-byte buf 1 == 68 & peek-byte buf 2 == 88 & peek-byte buf 3 == 49
+
+ The content runs from the end of the fixed header to the far edge of the
+ four sections the header describes: capabilities, effects, text, rodata.
+ Each is an (offset, size) pair of little-endian 64-bit fields.
+
+  wk-content-end : Integer -> Integer
+  wk-content-end (buf) =
+    let cap-end = peek-qword buf 136 + peek-qword buf 144
+    in let eff-end = peek-qword buf 152 + peek-qword buf 160
+    in let text-end = peek-qword buf 168 + peek-qword buf 176
+    in let ro-end = peek-qword buf 184 + peek-qword buf 192
+    in let e1 = if cap-end > eff-end then cap-end else eff-end
+    in let e2 = if text-end > ro-end then text-end else ro-end
+    in if e1 > e2 then e1 else e2
+
+  wk-slice : Integer, Integer, Integer, List Integer -> List Integer
+  wk-slice (buf) (i) (stop) (acc) =
+    if i >= stop then acc
+    else wk-slice buf (i + 1) stop (list-push acc (peek-byte buf i))
+
+Section: The Ceremony
+
+  wk-bad-report : Integer -> WakeReport
+  wk-bad-report (size) = WakeReport {
+    size = size, magic-ok = False, hash-ok = False, signature-ok = False,
+    hash-hex = "", author-hex = ""
+  }
+
+ A content end beyond the bytes actually read is a malformed header, not
+ an invitation to hash memory we do not own.
+
+  wk-verify : Integer, Integer -> WakeReport
+  wk-verify (buf) (size) =
+    if size < cdx-header-fixed-size then wk-bad-report size
+    else if wk-magic-ok buf == False then wk-bad-report size
+    else let content-end = wk-content-end buf
+    in if content-end > size then wk-bad-report size
+    else if content-end <= cdx-header-fixed-size then wk-bad-report size
+    else let stored = wk-slice buf 8 40 []
+    in let computed = hash-words-to-bytes (sha256-buf buf cdx-header-fixed-size (content-end - cdx-header-fixed-size))
+    in let pub-key = wk-slice buf 40 72 []
+    in let sig = wk-slice buf 72 136 []
+    in WakeReport {
+      size = size,
+      magic-ok = True,
+      hash-ok = bytes-equal stored computed 0 32,
+      signature-ok = ed25519-verify pub-key stored sig,
+      hash-hex = bytes-to-hex-range stored 0 32,
+      author-hex = bytes-to-hex-range pub-key 0 32
+    }
+
+  wk-ceremony : Integer, Integer -> Text
+  wk-ceremony (buf) (size) = wake-introduction (wk-verify buf size)

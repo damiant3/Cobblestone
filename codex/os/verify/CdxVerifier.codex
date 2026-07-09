@@ -89,13 +89,19 @@ Section: Phase 3 — Capabilities
   decode-caps-loop : List Integer, Integer, Integer, List CdxCapability -> List CdxCapability
   decode-caps-loop (binary) (off) (limit) (acc) =
     if off >= limit then acc
-    else let cap-id = read-le16 binary off
-    in let direction = read-le16 binary (off + 2)
+    else let cap-id = cap-field-clamp (read-le16 binary off)
+    in let direction = cap-field-clamp (read-le16 binary (off + 2))
     in let scope-len = read-le32 binary (off + 4)
     in let scope = bytes-to-text binary (off + 8) scope-len
     in let max-dur = read-le64 binary (off + 8 + scope-len)
-    in let cap = CdxCapability { cap-id = cap-id, direction = direction, scope = scope, max-duration = max-dur }
+    in let cap = CdxCapability { cap-id = __narrow cap-id, direction = __narrow direction, scope = scope, max-duration = max-dur }
     in decode-caps-loop binary (off + 16 + scope-len) limit (list-push acc cap)
+
+  cap-field-clamp : Integer -> Integer
+  cap-field-clamp (v) =
+    if v < 0 then 255
+    else if v > 255 then 255
+    else v
 
   read-le16 : List Integer, Integer -> Integer
   read-le16 (bs) (off) =
@@ -124,6 +130,8 @@ Section: Phase 3 — Capabilities
     else if id == cdx-cap-device then "Device"
     else if id == cdx-cap-gpu-compute then "Gpu.Compute"
     else if id == cdx-cap-gpu-memory then "Gpu.Memory"
+    else if id == cdx-cap-identity then "Identity"
+    else if id == cdx-cap-capability then "Capability"
     else "Unknown"
 
   check-all-caps : List CdxCapability, Policy, Integer, Text, Integer, Integer, Integer -> VerifyResult
@@ -133,7 +141,7 @@ Section: Phase 3 — Capabilities
     in let ctx = PolicyContext {
       capability = cap-name (c.cap-id),
       direction = c.direction,
-      trust-score = trust,
+      trust-score = __narrow trust,
       current-time = time,
       agent-id = agent
     }
@@ -173,10 +181,15 @@ Section: Phase 4 — Effects
   effect-base-name : Text -> Text
   effect-base-name (n) = effect-base-loop n 0 (text-length n)
 
+ effect-base-loop derives the dot's code from a literal because
+ internal text is CCE: a bare 46 is ASCII thinking, and in CCE code
+ 46 is the letter H — the dotted-coverage relation (Device.Block
+ covered by a Device entry) was dead code with the bare constant.
+
   effect-base-loop : Text, Integer, Integer -> Text
   effect-base-loop (n) (i) (len) =
     if i >= len then n
-    else if char-code (char-at n i) == 46 then substring n 0 i
+    else if char-code (char-at n i) == char-code (char-at "." 0) then substring n 0 i
     else effect-base-loop n (i + 1) len
 
 Section: Composite Verification

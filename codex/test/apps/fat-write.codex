@@ -1,0 +1,82 @@
+Chapter: FatWriteTest
+  cites Works chapter GopFat16
+  cites Works chapter GopDisk
+  cites Foreword chapter Fat16
+  cites Foreword chapter Maybe
+
+ Writes a new file into a mounted FAT16 volume, then reads it back through
+ the normal path, and confirms an existing file (HELLO.TXT) still reads.
+ The disk is the same GPT+FAT16 image the read test uses; the harness runs
+ against a writable copy, so the write mutates scratch, not the depot.
+
+ A pass proves the whole write layer: free-cluster search, both FAT
+ copies updated, cluster data written, and a root directory entry added --
+ without disturbing the clusters or FAT of the file already there.
+
+Section: Main
+
+  name-buf : Integer
+  name-buf = gid-name
+
+  gid-name : Integer
+  gid-name =
+    let b = __heap-save
+    in let adv = __heap-advance 16
+    in let n = put-name b "IDENTITYDAT" 0
+    in b
+
+  put-name : Integer, Text, Integer -> Integer
+  put-name (buf) (s) (i) =
+    if i >= text-length s then 0
+    else let w = poke-byte buf i (to-unicode (char-code (char-at s i)))
+    in put-name buf s (i + 1)
+
+  payload : Integer
+  payload =
+    let b = __heap-save
+    in let adv = __heap-advance 512
+    in let f = fill b 0 200
+    in b
+
+  fill : Integer, Integer, Integer -> Integer
+  fill (buf) (i) (n) =
+    if i >= n then 0
+    else let w = poke-byte buf i (int-mod (i * 5 + 3) 256)
+    in fill buf (i + 1) n
+
+  check : Integer, Integer, Integer -> Integer
+  check (buf) (i) (n) =
+    if i >= n then 1
+    else if peek-byte buf i /= int-mod (i * 5 + 3) 256 then 0
+    else check buf (i + 1) n
+
+  run : [Device.Port] Text
+  run = act
+    m <- gfat-mount-esp
+    if m.gm-ok == False then "mount=FAILED"
+    else act
+      let nm = name-buf
+      in let pl = payload
+      in act
+        wrote <- gfat-write-small-file (m.gm-vol) nm pl 200
+        if wrote == False then "write=FAILED"
+        else act
+          m2 <- gfat-mount-esp
+          sz <- gfat-file-size (m2.gm-vol) "IDENTITY.DAT"
+          let back = __heap-save
+          in let adv = __heap-advance 1024
+          in act
+            n <- gfat-read-file-bulk (m2.gm-vol) "IDENTITY.DAT" back
+            hello <- gfat-file-size (m2.gm-vol) "HELLO.TXT"
+            let msg = "wrote=1 size=" & show sz & " readback=" & show n & " match=" & show (check back 0 200) & " hello=" & show hello
+            in msg
+          end
+        end
+      end
+    end
+  end
+
+  opening : [Console, Device.Port] Nothing = act
+    r <- run
+    print-line-uni r
+  end

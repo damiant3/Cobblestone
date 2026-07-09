@@ -1,6 +1,318 @@
-# Blu Agent Workplan — 2026-07-07
+# Blu Agent Workplan — 2026-07-08
 
-## Status 2026-07-07: DEMAND-PAGED ARENA SHIPPED, SURVEY SYSTEM DELETED
+## LATEST: capability stage 7 — follow-ups + stage-4 regression fix
+
+Closed every remaining capability follow-up AND fixed a stage-4
+regression the follow-ups uncovered. THE REGRESSION: stage 4 made
+boot grants manifest-derived, but the gated kernel builtins
+(process-spawn, chan-kern-*, identity-set/-set-proc,
+process-restrict-cap) still had empty effect rows — so no program
+could declare the effect, earn the grant, or pass the in-kernel cap
+check. Nine -Apps identity tests silently went pass->fail across
+stages 4-6 (not in the default battery, so unnoticed). Fixed with
+honest rows: spawn family + chan-kern-* = [Concurrent]; identity-set
+= [Identity]; process-restrict-cap = new [Capability]; identity-set-proc
+= [Identity, Capability]. Spawn callback is effect-POLYMORPHIC
+(ForAllEff over the callback row — the child's effects are not the
+caller's). All nine tests act-converted and passing.
+Other follow-ups: read-key (syscall 2) -> cap-console-read; Gpu +
+Capability loader arms in VerifiedLoader; granted-capabilities renamed
+capability-vocabulary (it was never a grant — that misnomer hid the
+regression); opening-as-value manifest hole confirmed CLOSED + pinned
+(errors/opening-value-effect-undeclared).
+KNOWN BUG, deferred: two-level spawn (child spawns grandchild) hangs
+on post-stage-4 seeds — latent heap-budget bug in the spawn allocator,
+exposed because caps work is the first thing that can build a working
+nested spawn. Scheduler/emit-spawn owner. See CapabilityProbe.md.
+
+## EARLIER: capability stage 6 — identity key syscalls gated on a real Identity effect
+
+key-load / key-zero / key-status (syscalls 15/16/18) are now real
+intrinsics carrying [Identity], and the syscall handlers consult the
+capability word (bit 15, cap-identity) with the stage-5 deny
+pattern. Identity is wired through the full vocabulary: manifest cap
+id 7, boot grant, granted-capabilities, verifier cap-name, loader
+kern-bit arm. The reshaping discovery: IdentityManager had NEVER
+compiled — its wrappers called a `__syscall` intrinsic that does not
+exist (CDX3002), so the pinned-key path was completely dark; its
+dead wrappers are deleted (the chapter now uses the builtins;
+`__syscall 3 0` -> get-ticks). IdentityManager still does not
+compile — its console layer calls `print` and `read-key`, which
+exist nowhere (pre-existing; a keystroke API is firstboot-ceremony
+surface, fester's arena). Probes: cap-identity-denied (runtime
+grant/strip/deny) + errors/cap-launder-pure-key (2031+2033). Details
+and remaining follow-ups in CapabilityProbe.md Status.
+
+## EARLIER: capability stage 5 — block syscalls consult the cap word
+
+All four block syscalls (10 read, 11 write, 12 sector count, 13
+select) now run emit-check-capability against cap-block-device
+before touching the device; a process without the bit falls through
+the dispatch chain and gets -1 with the device untouched. The same
+CL fixed a latent emit-check-capability bug: the entry-address
+multiply was hardcoded `imul rcx, rbx` while the current-proc index
+lives in R11 — the console-write gate only worked because RBX
+happened to be zero at its call sites; the block-read helper parks
+the SECTOR NUMBER in RBX, so the widened surface would have read
+garbage cap words without the fix. VerifiedLoader gained the missing
+Device arm in cdx-cap-to-kern-bits (manifest Device previously
+mapped to zero kernel bits on the loader path). The probe's first
+run then caught a THIRD latent bug: manifest-base-loop
+(X86_64Chapter) and effect-base-loop (CdxVerifier) split dotted
+effect names on ASCII 46, which in CCE is the letter H (same bug
+find-dot fixed in CL 6509, two more copies) — so Device.Block never
+resolved to Device, the caps section dropped the entry, and the
+boot grant carried Console bits only. Both fixed with the
+`char-code (char-at "." 0)` idiom. Runtime probe
+codex/test/cap-block-denied (granted 0, strip own grant, denied -1)
+joined the default battery; the five -Apps disk tests that reach
+block syscalls now declare [Device.Block] on opening so their
+manifests grant the bit (their openings are VALUE bindings, which
+escape the row-subset check and carried empty manifests — recorded
+as an open checker follow-up in CapabilityProbe.md). Codegen change:
+two-pass converged, seed rebuilt. Remaining cap follow-ups in
+CapabilityProbe.md section Status (key/identity syscalls need an
+Identity effect source; read-key could gate on cap-console-read;
+granted-capabilities rename; opening-value manifest hole).
+
+## EARLIER: capability stage 4 COMPLETE (CL 7325/7326, on main 7327) — vision-check capability leg CLOSED
+
+Boot now grants proc 0 exactly its own manifest's capability mask
+(emit-grant-cap-mask from manifest-cap-names; empty manifest = zero
+grants — secure-by-default is literal). The syscall capability check
+is real for the first time: it previously tested bit argument-mod-64
+and branched on a flag `bt` does not set; now `bt r64, imm8` on the
+required cap bit, branch on CF. New ProcessCaps chapter
+(codex/os/verify) wires LoadDecision grants into the real
+process-table capability word — runtime-proven by
+codex/test/apps/process-caps-test. ClaimsCalibration: "rejected at
+load time" is EARNED for the wired path. Seed 25AC86EF29634165
+(blu == main, depot verified), battery 329/314/0/15 zero failures.
+Follow-ups (polish): widen the syscall surface that consults the cap
+word (block syscalls do not check yet); rename/narrow the type
+checker's static granted-capabilities vocabulary list.
+
+## EARLIER (same day): PTX Real-is-f64 campaign COMPLETE (CL 7319) — reek-fontexplorer UNBLOCKED
+
+The dead-learning-signal blocker had three layers, all fixed:
+1. The PTX plug's float path was f32 mislabeled as f64 (RealTy ->
+   .f32/%fs, literals down-converted, the -f64 intrinsics emitting
+   .f32 into %rd integer registers). Real is f64: the float path is
+   now single-width .f64/%fd throughout (arithmetic, comparisons,
+   literals, params, returns, locals, TCO, loads/stores, math
+   intrinsics). Real approximate widens to f64 (documented; second
+   f32 width awaits a measured need); trig cvt-sandwiches through the
+   f32 approx units until libdevice (K9).
+2. DeviceEffect: device-load-f64 returns Real, device-store-f64 takes
+   a Real value (were Integer — Real kernels could not type-check).
+3. ptx-emit-defs conflated loop index with per-def register base:
+   kernel ENTRIES were silently dropped whenever any plain function
+   preceded them (the stale checked-in mlp.ptx shows it — zero entry
+   points). Fixed (i, base-slot split); ptx-is-kernel-entry also
+   recognizes fontexplorer's kernel- prefix — all 10 MlpKernels now
+   emit .visible .entry.
+
+**FOR REEK-FONTEXPLORER:** merge down, rebuild the ptx plug
+(codex/plugs/ptx/build.ps1), then your side: MlpKernels Integer ->
+Real, host double[] transfer (BitConverter bits). Regression check:
+codex/plugs/ptx/test-f64.ps1 (PASS). Battery 329/314/0/15. No seed
+change. SPIR-V plug has the same f32 story — flag it if you need
+Vulkan parity, it is a follow-up.
+
+## EARLIER (same day) — WCET plug audit + batch output path, all on main
+
+Two campaigns completed and copied up as CL 7313 (seed-carrying, target
+proof run on the main workspace, depot digest verified). blu == main,
+seed F1F9DF8524A7A35E, battery baseline 329/314/0/15, workspace clean —
+nothing pending, nothing shelved.
+
+1. **WCET plug audit** (CL 7300): RISC-V [WCET] reports were formatted
+   before module-level rv-compact-nops and over-counted NOP'd prologue
+   saves (probe: 36 reported vs 28 actual). Fixed by deferring
+   RvWcetPending ranges past compaction; wire byte-identical. ARM64
+   audited HONEST (per-function placeholder-aware compaction runs
+   before the delta read) — no change; its run.ps1 now echoes
+   [WCET]/[WARN] lines (regex match; the first line glues to the wire
+   bytes with no newline).
+2. **Batch output path** (CLs 7301/7304/7305/7307 CDX leg, 7311 TEXT
+   leg, docs 7308/7312): codex-vm bulk blit (doorbell 0x510 cmd 3,
+   cells 36160/36168, capability probe IN 0x511 == 0xB7 cached at boot
+   in flag cell 36176) + write-binary-buf builtin + content/MAP1 blit
+   + staged print sink (__serial_put / __print_begin / __print_flush
+   over R10 heap-top scratch, cursor cell 36192). Measured: self-compile
+   25.9s -> 7.8s, gate build 188.5s -> 96.7s, text stages halved.
+   Untouched on purpose: raw prints, COM2 control (HEAP: OUT-time
+   detection), UEFI prints, !EXC dumps.
+
+**OTHER-AGENTS notes:** merge down to inherit the ~2x gate speedup; the
+new codex-vm.exe is backward-compatible with older seeds (blit is
+probe-gated). Do NOT adopt the VM's old 0x700000 output ring — that GPA
+is live heap in current guests. New-builtin bootstrap rule (relearned
+this session): compiler source may only USE a new builtin one seed
+AFTER the seed that registers it — land machinery first, use second.
+Cells 36160-36199 are now claimed (blit addr/len, flag, print base/
+cursor); next free metadata cell is 36200, PDPT starts at 36864.
+
+**Next session:** no in-flight work — pick a fresh stream with Damian.
+Candidates, roughly by value: plugs' own wire output (the last
+per-byte serial path, serial-write-byte loops in all 52 plugs' output
+stage); GPU Real f64 device intrinsics (unblocks reek-fontexplorer's
+MLP training); capability stage-4 OS wiring (ClaimsCalibration's last
+open BY-CONSTRUCTION gap); __alloc/emit-def compute profiling (new
+top of the profile at 22%, and the residual ~16s per TEXT stage).
+One host BSOD occurred this session under multi-VM load (known DDR5
+XMP trap) — crashed runs just re-run.
+
+## Earlier today: emit-mutation class-2 audit sweep (COMPLETE) + fix
+Full sweep of X86_64.codex / X86_64Builtins.codex / X86_64Compound.codex
+for the two standing emit invariants. Verdict:
+- Class-2 (mutating an operand's result register): ZERO violations
+  beyond the stage-4-fixed vec extracts. The two deliberate in-place
+  sites (both-complex pop+op shortcut, reg-left commutative fold)
+  mutate only guaranteed-non-name complex results, with fc-evict and
+  a next-temp retention bump — sound, prose-documented.
+- Class-1 (holding a bare emit-expr result across another emit-expr):
+  ONE real bug — emit-vec-arith-core (backs the vec-add/sub/mul/div
+  builtins) emitted lhs, then rhs, and spilled both only afterwards;
+  any call in rhs clobbers every caller-saved reg, so f op g computed
+  g op g. Reproduced deterministically (add: 20.5 for 11.75, sub: 0.0
+  for 15.25, mul: 16 for 12, div: 1 for 3.75) with
+  codex/test/vec-arith-hazards.codex (multi-branch producers keep the
+  operands out of the inliner). Fix: spill lhs before emitting rhs
+  (the house pattern every neighbor already follows).
+- Why the bounded holds elsewhere are safe (audit rationale, do not
+  rediscover): the three register pools are disjoint (rotation temps
+  RAX/RCX/RDX/RSI/RDI/R11; locals RBX/R12-R14; load-local scratch
+  R8/R9/R15 on a 3-toggle), rotation positions advance monotonically
+  so a held rotation temp survives <= 5 subsequent alloc-temps, and a
+  plain alloc-temp collision with a held raw-RAX call result is
+  benign when the new temp's first write is the self-copy (mov-rr
+  returns [] for rd == rs).
+- Two fragile-but-sound invariants to keep in mind: (a) IrDivInt/
+  IrRemInt's save-to-R11 would clobber l-reg if l-reg were R11 while
+  r-reg is RDX/RAX — unreachable today because every call site stages
+  or folds so l-reg is R8, a local, or a non-R11 temp; (b) vec
+  emitters hold XMM0/XMM1 across emit-bivy-alloc's __alloc call —
+  sound because __alloc is integer-only (mov/add/rep stosb), a fact
+  any future __alloc change must preserve.
+
+## Shipped earlier today: WCET true instruction accounting (Damian: "punctual spot
+## on" is the first task; then low-level — language, codegen, binary
+## plugs, GPU. UEFI boot is fester's arena, stay out).
+CDX6010 now decodes the function's finished bytes instead of counting
+append calls: new chapter `codex/compiler/Emit/X86_64InsnCount.codex`
+(closed-vocabulary x86-64 length decoder — prefixes 66/F0/F2/F3, REX,
+1-byte + 0F maps, ModRM/SIB/disp, immediates; unknown opcode returns
+-(offset+1), surfaced as new warning CDX6012 RtWcetOpaque, never a
+partial number). emit-all-defs decodes [start, code-len) after
+emit-function returns, so NOP compaction (nop-sub-rsp = 2 insns where
+1 was appended, nop-unused-pushes merges 2 pushes into 1) is included;
+deferred imm patches don't move boundaries. The insn-count field is
+DELETED from CodegenState — st-append-code sheds one __record-set per
+append (hot-path allocation win). wcet-validate.ps1: DRIFT verdict
+removed, observed > static is now FAIL (punctual code cannot loop, so
+any dynamic path is a subset of the decoded body). Gates in flight.
+
+## Status addendum 2026-07-07: WI-3 WCET-validation slice SHIPPED (same day).
+Damian ruling: empirical WCET validation approved; the rest of WI-3
+stays deferred and the VM never gains an interpreting/rewriting mode.
+Shipped: codex-vm `-wcet <fn>` (DR0-DR3 exec breakpoints + TF
+stepping, pure observation), `build/wcet-validate.ps1` (gate:
+observed <= budget per invocation), `codex/test/wcet-probe.codex`.
+Two findings on first run: (1) CDX6010 UNDER-COUNTS — st-append-code
+counts +1 per append call, not per instruction (clamp-add claimed 28,
+machine executed 34) — FOLLOW-UP work item: true instruction
+accounting, then tighten the gate to observed <= static; (2) codex-vm's
+ExceptionExitBitmap was inert (ExtendedVmExits.ExceptionExit never
+enabled) — all exceptions have always gone to the guest IDT; wcet mode
+enables #DB-only interception, all other modes byte-for-byte
+unchanged. No compiler source touched; no seed.
+
+## Status: NoAliasCodegen campaign COMPLETE (stages 0-4).
+Stages 0-3 + /handoff skill ON MAIN (copy-ups 7267 + 7271, main seed
+A791B8D9 verified). Stage 4 (WI-2 VecArray) is the final stage:
+vec-load-at/vec-store-at builtins + Math chapter VecArray + the
+vec-extract/vec4-extract latent-bug fix (call receiver clobbered by
+temp-rotation wrap onto raw RAX; in-place index mutation corrupting
+register-resident locals — probes in codex/test/
+vec-extract-hazards.codex). Measured n=100k: read-reduce flat 27 vs
+boxed 14 ticks (va-get call + per-read cell), fill parity 7 vs 6,
+bit-exact match; the stage-4 claim is structural (one 16N allocation
+replaces N cells + 8N pointers; stores allocate nothing) — wall-clock
+wins await inline/fused emitters (pickup: a measured vector hot
+loop). PhysicalCostCodegen.md status COMPLETE with per-stage as-built
+sections; WI-3 stays deferred. NEXT: batched copy-up of stage 4
+(merge down first, check main cadence, p4 edit seed, verify depot
+digest).
+
+OTHER AGENTS — the emitter now carries a field-load cache (stage 2).
+STANDING INVARIANT for any x86-64 emit change: a register write that
+does not go through alloc-temp must fc-evict-reg first (in-place
+folds, dest-driven writes, raw fixed-reg sequences). The branch-label
+flush choke points are patch-jcc-at/patch-jmp-at. Violating this
+emits compilers that miscompile only at self-compile scale — the
+battery catches it as wrong-value output tests, and the 3-pass
+pingpong (Sut -> stage1 -> stage2, stage1==stage2 AND stage1 must
+survive its own self-compile) is the gate that proves it. CDX4011 is
+the campaign's info diagnostic (no-alias instrumentation +
+narrowing). Earlier "input-alignment crash" panic in this file was a
+generation confound — retracted; seeds were always healthy.
+
+## Prior status 2026-07-07 (superseded): stages 0+1 shipped, stage 2
+shelved on what was then thought a latent input-alignment crash.
+
+Campaign (PhysicalCostCodegen.md WI-1, plan approved by Damian):
+- Stage 0 (CL 7243): IRDef.unique-params carrier + CDX4011 no-alias
+  instrumentation. Gates green, one-pass, battery 320/305/0/15.
+- Stage 1 (CL 7247 + seed 91B2927D): checker tracks minted linear
+  locals (let + act binds from linear-returning calls); effectful
+  linear returns sanctioned; LinearOwnership residual closed. Gates
+  green, one-pass, battery 323/308/0/15, self-verify, depot digest
+  verified. Zero depot fallout (surveyed).
+- Stage 2 (CL 7248, SHELVED): alias-free field-load cache in the
+  x86-64 emitter (FieldCacheEntry on CodegenState; consult/populate in
+  emit-field-access; default-flush at apply-exit/calls/patch-labels/
+  stores; evictions at alloc-temp/alloc-local/store-local/idiv).
+  Includes the memory-model ruling + WI-3 deferral in
+  PhysicalCostCodegen.md and codex/test/field-cache-shape probes.
+  The stage-2 code is PROVEN INNOCENT of the blocker below (green on
+  prev seed AND on 91B2 at a different input size).
+
+## BLOCKER RESOLVED (same day) — it was the stage-2 cache, root-caused
+The "latent input-size crash" hypothesis was WRONG — a generation
+confound (the DemandPagingVictory lesson repeating). The only crashing
+binary was build #1's stage1.cdx: the FIRST compiler ever EMITTED by
+the stage-2 field-load-cache codegen. Every input-size correlation
+dissolved once the kernel provenance was pinned by timestamp+archive
+forensics (build.ps1 archives build/output per run — the archives
+identified everything). Seeds 91B2927D and 917711F3 are HEALTHY; all
+lineage compilers produce byte-identical outputs (FC72... from three
+generations).
+
+ROOT CAUSE: the emitter's in-place binary-op folds write an operand's
+RESULT REGISTER without going through alloc-temp — emit-reg-right-
+inplace / emit-binary-reg-left commutative fold (`inplace-int-op` into
+l-reg / r.reg) and the both-complex pop+op shortcut (`pop & add/imul
+into r.reg`). When that operand was a field access, the field cache
+had just recorded that register as holding `x.f`; after `x.f + y` the
+register holds the sum but the cache still said `x.f` — a later read
+of `x.f` hit the stale register. Small tests rarely trigger the fold
+(needs a register-local operand against a complex field-access
+operand); the 28k-line self-compile triggers it constantly — hence
+"only crashes at scale". The pre-fix battery caught 4 wrong-output
+repros (av-codec/circbuf/color/final-batch), confirming the class.
+FIXES (all in the stage-2 CL): fc-evict-reg at the four fold sites;
+fc-evict at emit-to-local entry (destination-driven writes to arg
+registers bypassed alloc-temp — same class); RAX/R11 eviction in
+emit-load-from-handler-table; exit barriers (emit-fc-barrier) on
+handle/try/fork/await/timeout dispatch. INVARIANT for future emit
+work: any code path that WRITES a register outside alloc-temp must
+fc-evict it first; the cache's soundness is exactly this discipline.
+Verified: 3-pass pingpong converges (stage1C == stage2C byte-identical)
+and the field-cache-shape semantic probes pass on the cache-emitted
+compiler.
+
+## Prior status 2026-07-07: DEMAND-PAGED ARENA SHIPPED, SURVEY SYSTEM DELETED
 (blu 7190-7200, LOCAL — copy-up pending, seed-carrying, Damian's call).
 Seed DDAB0BD288C93AAB: #PF handler + [6MB,2GB) demand range + fixed
 generous deck floors; SurveyConfig/multipliers/-Survey/DynamicSurvey

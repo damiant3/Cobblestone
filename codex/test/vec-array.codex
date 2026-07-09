@@ -1,0 +1,64 @@
+Chapter: VecArrayTest
+  cites Foreword chapter Console
+  cites Math chapter VecArray
+
+ Bit-exact probes for the contiguous vector array. The boxed
+ reference computes acc + (x * y + x / y) over boxed Vector 2 Real
+ values; the VecArray path stores the same inputs in a flat buffer,
+ combines with va-map2, and reduces with va-sum. Both paths execute
+ the same SSE2 operations on the same values in the same order, so
+ the results must match to the bit, division included. The skewed
+ probe rebuilds the first array at a base 8 bytes past a raw
+ allocation, proving the movupd path carries no 16-byte alignment
+ assumption.
+
+Section: Inputs
+
+  input-x : Integer -> Vector 2 Real
+  input-x (i) = vec-splat (real-from-int i * 1.25 + 0.5)
+
+  input-y : Integer -> Vector 2 Real
+  input-y (i) = vec-splat (real-from-int i * 0.75 + 2.0)
+
+Section: Boxed Reference
+
+  boxed-loop : Integer, Integer, Vector 2 Real -> Vector 2 Real
+  boxed-loop (i) (n) (acc) =
+    if i >= n then acc
+    else let x = input-x i
+    in let y = input-y i
+    in boxed-loop (i + 1) n (acc + (x * y + x / y))
+
+Section: VecArray Path
+
+  fill-x : VecArray, Integer -> VecArray
+  fill-x (a) (i) =
+    if i >= a.va-len then a
+    else fill-x (va-set a i (input-x i)) (i + 1)
+
+  fill-y : VecArray, Integer -> VecArray
+  fill-y (a) (i) =
+    if i >= a.va-len then a
+    else fill-y (va-set a i (input-y i)) (i + 1)
+
+Section: Entry
+
+  opening : [Console] Nothing
+  opening = act
+    let n = 64
+    in let a = fill-x (va-alloc n (vec-splat 0.0)) 0
+    in let b = fill-y (va-alloc n (vec-splat 0.0)) 0
+    in let s = va-sum (va-map2 (\x y -> x * y + x / y) a b)
+    in let r = boxed-loop 0 n (vec-splat 0.0)
+    in let raw = alloc-bytes (n * 16 + 8)
+    in let skewed = fill-x (VecArray { va-base = raw + 8, va-len = n }) 0
+    in let sum-a = va-sum a
+    in let sum-skewed = va-sum skewed
+    in act
+      print-line-uni ("lane0-exact: " & (if real-to-bits (vec-extract s 0) == real-to-bits (vec-extract r 0) then "yes" else "no"))
+      print-line-uni ("lane1-exact: " & (if real-to-bits (vec-extract s 1) == real-to-bits (vec-extract r 1) then "yes" else "no"))
+      print-line-uni ("skew-exact: " & (if real-to-bits (vec-extract sum-skewed 0) == real-to-bits (vec-extract sum-a 0) then "yes" else "no"))
+      print-line-uni ("sum0: " & show (vec-extract s 0))
+      print-line-uni ("get3: " & show (vec-extract (va-get a 3) 0))
+    end
+  end

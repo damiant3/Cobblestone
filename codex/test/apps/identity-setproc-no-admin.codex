@@ -1,14 +1,25 @@
 Chapter: IdentitySetprocNoAdmin
 
+ A process that drops capability-admin cannot write a process's
+ identity through identity-set-proc, even its own and even though it
+ still holds the identity bit: identity-set-proc tests both bits.
+ The child targets its own pid, so the denial is exercised without a
+ second process (see identity-cap-gate for the cross-process path).
+
 Section: Body
-  opening : [Console] Nothing = act
-    let child = process-spawn (\x ->
-      let r = process-restrict-cap (process-get-pid) 14
-      in let target = process-spawn (\y -> 0)
-      in let set-result = identity-set-proc target 0 888
-      in poke-byte 28000 0 (if set-result == (0 - 1) then 1 else 0))
-    in let wt = process-wait child
-    in let ok = peek-byte 28000 0
-    in if ok == 1 then print-line-uni "PASS: identity-set-proc denied without cap-admin"
-    else print-line-uni "FAIL"
+  child-set : Integer -> [Identity, Capability] Integer
+  child-set (r) = poke-byte 28000 0 (if identity-set-proc (process-get-pid) 0 888 == (0 - 1) then 1 else 0)
+
+  child-body : Integer -> [Capability, Identity] Integer
+  child-body (x) = child-set (process-restrict-cap (process-get-pid) 14)
+
+  verdict : Integer -> Text
+  verdict (child) =
+    let wt = process-wait child
+    in if peek-byte 28000 0 == 1 then "PASS: identity-set-proc denied without cap-admin"
+    else "FAIL"
+
+  opening : [Console, Concurrent, Capability, Identity] Nothing = act
+    child <- process-spawn (\x -> child-body x)
+    print-line-uni (verdict child)
   end

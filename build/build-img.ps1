@@ -14,6 +14,9 @@ param(
     [Parameter(Mandatory=$true)] [string]$PeInput,
     [Parameter(Mandatory=$true)] [string]$Out,
     [string]$Source = '',
+    # The CDX seed, written to the ESP root as CODEX.CDX. The booted payload
+    # reads it back with its own drivers and verifies it (WakeCeremony).
+    [string]$Seed = '',
     [int]$TotalSectors = 16384
 )
 
@@ -28,8 +31,13 @@ $ImageSize  = $TotalSectors * $SectorSize
 
 $pe = [System.IO.File]::ReadAllBytes($PeInput)
 if ($Source -and (Test-Path $Source)) { $srcBytes = [System.IO.File]::ReadAllBytes($Source) } else { $srcBytes = [byte[]]::new(0) }
+if ($Seed -and (Test-Path $Seed)) { $seedBytes = [System.IO.File]::ReadAllBytes($Seed) } else { $seedBytes = [byte[]]::new(0) }
 
-Write-Host "[build-img] PE=$($pe.Length) bytes  Source=$($srcBytes.Length) bytes  Image=$($ImageSize / 1MB) MB"
+Write-Host "[build-img] PE=$($pe.Length) bytes  Source=$($srcBytes.Length) bytes  Seed=$($seedBytes.Length) bytes  Image=$($ImageSize / 1MB) MB"
+$payloadBytes = $pe.Length + $srcBytes.Length + $seedBytes.Length
+if ($payloadBytes -gt ($PartSectors * $SectorSize * 0.9)) {
+    throw "payload $payloadBytes bytes does not fit in $($PartSectors * $SectorSize); raise -TotalSectors"
+}
 
 $img = New-Object byte[] $ImageSize
 
@@ -105,13 +113,31 @@ W32 ($gptOff + 16) $hdrCrc
 # --- FAT16 Partition ---
 $fatBase = $PartStart * $SectorSize
 $bytesPerSector = 512
-$sectorsPerCluster = 4
 $reservedSectors = 1
 $numFats = 2
 $rootEntries = 512
 $rootDirSectors = [int][Math]::Ceiling($rootEntries * 32 / $bytesPerSector)
+
+# Choose sectors-per-cluster so the cluster count lands SOLIDLY in the FAT16
+# range (4085..65524). UEFI firmware determines FAT type by cluster count, not
+# by the "FAT16" label string -- an 8 MB image at spc=4 yields ~3560 clusters,
+# which the spec classifies as FAT12; the firmware then reads our 16-bit FAT as
+# 12-bit, misfollows every chain, and reports "no boot device." Pick the
+# smallest power-of-two spc that keeps clusters <= 60000 (margin under 65524),
+# which also maximizes clusters to stay well above the 4085 FAT12 boundary.
+$sectorsPerCluster = 1
+foreach ($try in 1,2,4,8,16,32,64) {
+    $fs = [int][Math]::Ceiling(($PartSectors / $try + 2) / 256)
+    $data = $PartSectors - ($reservedSectors + $numFats * $fs + $rootDirSectors)
+    $cl = [int][Math]::Floor($data / $try)
+    if ($cl -le 60000) { $sectorsPerCluster = $try; break }
+}
 $fatSectors = [int][Math]::Ceiling(($PartSectors / $sectorsPerCluster + 2) / 256)
 $dataSector0 = $reservedSectors + $numFats * $fatSectors + $rootDirSectors
+$dataClusters = [int][Math]::Floor(($PartSectors - $dataSector0) / $sectorsPerCluster)
+Write-Host "[build-img] FAT16: spc=$sectorsPerCluster clusters=$dataClusters (must be 4085..65524)"
+if ($dataClusters -lt 4085) { throw "FAT16 needs >= 4085 clusters; got $dataClusters (image too small). Increase TotalSectors." }
+if ($dataClusters -gt 65524) { throw "FAT16 allows <= 65524 clusters; got $dataClusters. Raise spc cap." }
 
 # BPB (BIOS Parameter Block)
 WBytes $fatBase ([byte[]]@(0xEB, 0x3C, 0x90))  # Jump + NOP
@@ -208,14 +234,22 @@ Add-DirEntry $bootDirOff 2 "BOOTX64 EFI" 0x20 $peFileCluster $pe.Length
 # Add EFI entry to root directory
 Add-DirEntry $rootOff 0 "EFI        " 0x10 $efiCluster 0
 
-# Write SOURCE.SRC if provided
+# Write SOURCE.SRC and CODEX.CDX if provided, then the volume label. Root
+# entries are indexed in order, so each optional file shifts the label.
+$rootIdx = 1
 if ($srcBytes.Length -gt 0) {
     $srcCluster = Alloc-File $srcBytes
-    Add-DirEntry $rootOff 1 "SOURCE  SRC" 0x20 $srcCluster $srcBytes.Length
+    Add-DirEntry $rootOff $rootIdx "SOURCE  SRC" 0x20 $srcCluster $srcBytes.Length
+    $rootIdx++
+}
+if ($seedBytes.Length -gt 0) {
+    $seedCluster = Alloc-File $seedBytes
+    Add-DirEntry $rootOff $rootIdx "CODEX   CDX" 0x20 $seedCluster $seedBytes.Length
+    $rootIdx++
 }
 
 # Volume label entry in root
-Add-DirEntry $rootOff ($(if ($srcBytes.Length -gt 0) { 2 } else { 1 })) "CODEX      " 0x08 0 0
+Add-DirEntry $rootOff $rootIdx "CODEX      " 0x08 0 0
 
 [System.IO.File]::WriteAllBytes($Out, $img)
-Write-Host "[build-img] OK: $Out ($($img.Length / 1MB) MB, PE=$($pe.Length) src=$($srcBytes.Length))"
+Write-Host "[build-img] OK: $Out ($($img.Length / 1MB) MB, PE=$($pe.Length) src=$($srcBytes.Length) seed=$($seedBytes.Length))"

@@ -267,12 +267,13 @@ As of 2026-07-04:
 
 The compiler is a hard fixed point of itself on bare metal.
 
-**`seed/Codex.cdx`** (2,112,715 bytes, ~2.01 MB) — the canonical seed:
+**`seed/Codex.cdx`** (2,145,398 bytes, ~2.05 MB) — the canonical seed:
 
 | Algorithm | Digest |
 |---|---|
-| Content hash prefix | `558A357B` |
-| SHA-256 | `917711F305BC4E864CA90BA7BD79AD134F3A207C3F1323A0D0EA6457A7FB7342` |
+| Content hash prefix | `1075CD32` |
+| SHA-256 | `1075CD32CF11FEEC4CB6770625F550137F65FFA1BF12879C55F7EE785F039132` |
+| MD5 | `6400C3FD3399058DC3E87844CA03C68C` |
 
 The seed grew from ~1.83 MB to ~1.88 MB on 2026-07-01, absorbing the
 CCE output boundary (tier0/1/2 UTF-8 conversion), the proof infrastructure
@@ -291,25 +292,39 @@ hard fixed point. On 2026-07-07 it reached ~2.01 MB (2,112,715 bytes) as
 the survey system was retired outright: the compiler now demand-pages its
 own heap (`DemandPagedArena`), followed by a hardening series (P-bit
 faults, TSS/IST double-fault dumps, RAM-derived demand top) and a
-sampling profiler — all byte-identical one-pass fixed points.
+sampling profiler — all byte-identical one-pass fixed points. Since then
+the seed has absorbed the boot arc (effect-loop TCO fix, WatchdogPet mode,
+foreword FAT16 fixes) and blu's capability enforcement (real syscall
+capability checks), reaching 2,145,398 bytes as a byte-identical one-pass
+fixed point.
 
-**`seed/Codex.img`** (8,388,608 bytes) — bootable GPT disk image:
+**`seed/Codex.img`** (16,777,216 bytes, 16 MB) — bootable GPT disk image,
+the first-boot ceremony:
 
 | Algorithm | Digest |
 |---|---|
-| SHA-256 | `83E76CC16C326BDEA9F792EE87FE9E3F28360A0BFB645DE57918F5F5DFA2DC2A` |
+| SHA-256 | `0242D9307730A1DFFA59EB2547C910BB83E1D14100EA30A2D5D53F18120E7B55` |
 
-The IMG contains `EFI/BOOT/BOOTX64.EFI` (interactive UEFI dev console as a
-UEFI PE32+ application) and `SOURCE.SRC` (compiler source) in an 8 MB
-FAT16 GPT image. Colored menu with keyboard navigation, live RTC clock,
-system info screen. Tested on real Asus TUF hardware and codex-vm (auto-
-extracts PE from GPT, no manual extraction needed).
+Boot it on a UEFI machine and it runs its own first-boot ceremony, drawn on
+the GOP framebuffer with no OS beneath it: choose an interface, walk the
+identity wizard (Ed25519 keypair from hardware entropy, wrapped under a
+passphrase you type), and watch the machine read its own 2 MB seed back off
+the stick and verify its own signature before it acts. Everything is
+compiled by the seed embedded on the image (`CODEX.CDX`); the loader stub
+hands off after `ExitBootServices` and the payload drives the GOP display,
+the PS/2 keyboard, and the AHCI/IDE disk itself. Confirmed booting and
+running the full wizard on real hardware and under edk2/OVMF.
+
+Real-UEFI boot needs Secure Boot off, Fast Boot off, and CSM/Legacy off
+(UEFI-only) — the image is pure GPT. Persisting the identity to the stick
+needs a USB mass-storage driver (the boot stick is USB, which the current
+AHCI/IDE drivers cannot reach); that is the next frontier.
 
 Flash to USB (requires elevated PowerShell):
 
 ```powershell
 # Find your USB disk number:  Get-Disk | Where-Object BusType -eq USB
-tools\write-usb.ps1 -Image seed\Codex.img -DiskNumber <N>
+build\flash-usb.ps1 -Image seed\Codex.img -DiskNumber <N>
 ```
 
 ---

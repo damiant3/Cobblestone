@@ -1,0 +1,28 @@
+Chapter: ActTcoLoop
+
+ An effectful act loop must be constant-stack. spin is the shape of an
+ interactive poll loop: an act block that binds a conditional device
+ read, then tail-calls itself. The bind before the tail call is the
+ regression trigger -- emit-act-stmts once threaded the cleared
+ tail-position flag from the bind into the final statement, so the self
+ call compiled as a real call and the stack grew every iteration.
+
+ The heap is advanced to about 115 MB below the 3 GB stack top before
+ the loop runs, so a non-TCO build collides stack into heap within two
+ million iterations and halts; a constant-stack build finishes four
+ million iterations in well under a second. The margin assumes the
+ default 3072 MB test VM.
+
+Section: Main
+
+  spin : Integer -> [Device.Port] Integer
+  spin (i) = act
+   status <- if i == 0 then port-in-byte 128 else 0
+   if i <= 0 then status else spin (i - 1)
+  end
+
+  opening : [Console, Device.Port] Nothing = act
+   adv <- __heap-advance 3100000000
+   r <- spin 4000000
+   print-line-uni "ACT-TCO-OK"
+  end

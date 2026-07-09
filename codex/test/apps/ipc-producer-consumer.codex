@@ -1,22 +1,27 @@
 Chapter: IpcProducerConsumer
 
 Section: Body
-  produce : Integer, Integer, Integer -> Integer
+  produce : Integer, Integer, Integer -> [Concurrent] Integer
   produce (ch) (i) (n) =
     if i >= n then 0
-    else let s = chan-kern-send-block ch (i * i)
-    in produce ch (i + 1) n
+    else act
+      s <- chan-kern-send-block ch (i * i)
+      produce ch (i + 1) n
+    end
 
-  consume : Integer, Integer, Integer -> Integer
+  consume : Integer, Integer, Integer -> [Concurrent] Integer
   consume (ch) (n) (acc) =
     if n <= 0 then acc
-    else let v = chan-kern-recv-block ch
-    in consume ch (n - 1) (acc + v)
+    else act
+      v <- chan-kern-recv-block ch
+      consume ch (n - 1) (acc + v)
+    end
 
-  opening : Integer =
-    let ch = chan-kern-create 2
-    in let prod = process-spawn (\x -> produce ch 1 6)
-    in let total = consume ch 5 0
-    in let w = process-wait prod
-    in let cl = chan-kern-close ch
+  opening : [Concurrent] Integer = act
+    ch <- chan-kern-create 2
+    prod <- process-spawn (\x -> produce ch 1 6)
+    total <- consume ch 5 0
+    cl <- chan-kern-close ch
+    let w = process-wait prod
     in total
+  end

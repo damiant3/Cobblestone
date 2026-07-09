@@ -35,18 +35,43 @@ Each test `foo.codex` may have sidecars that control its behavior:
 
 A test with no sidecar compiles but is unverified (PASS_UNVERIFIED).
 
-## Current State (2026-07-07, blu 7198, seed DDAB0BD2...)
+## Current State (2026-07-08, blu, seed 1C8E0F38...)
 
-Default battery baseline is now **319 total / 304 pass / 0 fail /
-15 skip** on the demand-paged, survey-free seed: the compiler
-demand-pages its heap ([6 MB, 2 GB) commits on touch), phase decks are
-fixed generous floors, and every compiled test binary demand-boots.
-Validated the same day: all 52 plugs build, ARM64 + RISC-V board tests
-pass, +86 KB source-growth pingpong stays byte-identical, and
+Default battery baseline is now **333 total / 318 pass / 0 fail /
+15 skip**. New this day: `cap-block-denied` and
+`cap-identity-denied` — runtime capability-denial probes (block and
+identity-key syscalls consult the per-process cap word; a stripped
+grant gets -1 with the device/key untouched) — `errors/cap-launder-pure-key`
+(a pure signature cannot mention the key intrinsics; CDX2031+2033),
+and `errors/opening-value-effect-undeclared` (a value-binding opening
+with an effectful body must declare it; CDX2031).
+
+Capability stage 7 fixed a stage-4 regression: nine `-Apps` identity
+tests (identity-basic/inherit/cap-gate/no-cap/set-proc-test/
+get-proc-test/setproc-no-admin/keygen/mutual-auth) had gone
+pass->fail because the gated kernel builtins carried empty effect
+rows and could not earn their manifest grant. They now declare their
+real effects (Concurrent/Identity/Capability) and all pass on the
+current seed. -Apps identity/disk/caps sweep (17 tests) verified
+green. KNOWN: a two-level process spawn (a spawned process that
+spawns a grandchild) hangs on post-stage-4 seeds — a latent
+spawn-allocator heap-budget bug, not capability typing; deferred to a
+scheduler-focused session (see CapabilityProbe.md). The eight `-Apps`
+disk/caps tests (block-identify, block-io-basic, disk-facts-*,
+process-caps-test) were run individually against the new seed and
+pass; `boot-stage-test` is a pre-existing CDX2033 compile failure
+(verified identical on the prior seed — the never-swept `-Apps`
+surface, which also carries 33 pre-existing CDX2051 compile
+failures from QuartermastersMap dig 1).
+
+Earlier baseline (2026-07-07, blu 7198): **319/304/0/15** on the
+demand-paged, survey-free seed: the compiler demand-pages its heap
+([6 MB, 2 GB) commits on touch), phase decks are fixed generous
+floors, and every compiled test binary demand-boots. Validated the
+same day: all 52 plugs build, ARM64 + RISC-V board tests pass,
++86 KB source-growth pingpong stays byte-identical, and
 `ttt-perfect` (first battery coverage of the games quire) joined the
-battery. The `-Apps` surface carries 33 pre-existing CDX2051 compile
-failures (the never-swept surface, QuartermastersMap dig 1) — verified
-identical on the prior seed.
+battery.
 
 ## Previous State (2026-07-04, CL 6993)
 
@@ -240,6 +265,7 @@ x86-64 seed. Rebuild with `codex/plugs/arm64/build.ps1` (~90s) or
 
 | Test | Issue |
 |------|-------|
+| ~~codex-shell, mini-shell, boot-init~~ | RESOLVED 2026-07-07 (was misdiagnosed as a "REPL-batch miscompile"): the batch driver sent `CDX repl` per test, embedding the REPL loop in every test binary. Output-only tests were unaffected (the loop exits on stdin EOF) but stdin-consuming tests hung with zero output. The compiler was deterministic and innocent — batch output was byte-identical to an individual `-Repl` compile. Fixed by sending plain `CDX` in `test-compile-batch.ps1` (the session loops because the seed is repl-built; no per-request flag needed). |
 | db-test | Compiles clean but heap-scan overflows 2GB RAM at runtime |
 | db-full-test | CDX1000 parse errors in ~9304-line concat (token mismatch in Server.codex) |
 | historian-test | Historian.codex has a parse error (CDX1000 on `is` keyword) |

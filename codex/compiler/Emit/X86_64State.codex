@@ -40,6 +40,12 @@ Section: Record Types
    slot : Integer between 0 and 65535
   }
 
+  FieldCacheEntry = record {
+   fc-slot : Integer between 0 and 65535,
+   fc-offset : Integer between 0 and 4294967295,
+   fc-reg : Integer between 0 and 65535
+  }
+
   FuncAddrFixup = record {
    patch-offset : Integer between 0 and 4294967295,
    target : Text
@@ -101,8 +107,10 @@ Section: Record Types
    stack-guard : Boolean,
    omit-frame-pointer : Boolean,
    func-local-regs : List Integer,
-   stype-sites : List Integer,
-   insn-count : Integer between 0 and 4294967295
+   noalias-slots : List Integer,
+   field-cache : List FieldCacheEntry,
+   fresh-slots : List Integer,
+   stype-sites : List Integer
   }
 
   EffectOpAddr = record {
@@ -562,9 +570,78 @@ Section: State Helpers
    deck-bound = False,
    vm-profile = vm-profile-spec,
    poison-alloc = False,
-   stype-sites = [],
-   insn-count = 0
+   noalias-slots = [],
+   field-cache = [],
+   fresh-slots = [],
+   stype-sites = []
   }
+
+  fc-flush : CodegenState -> CodegenState
+  fc-flush (st) =
+   let st1 = if list-length (st.field-cache) == 0 then st
+    else __record-set st "field-cache" []
+   in if list-length (st1.fresh-slots) == 0 then st1
+   else __record-set st1 "fresh-slots" []
+
+  keep-not-int : List Integer, Integer, Integer, List Integer -> List Integer
+  keep-not-int (xs) (v) (i) (acc) =
+   if i >= list-length xs then acc
+   else let x = list-at xs i
+   in keep-not-int xs v (i + 1) (if x == v then acc else list-push acc x)
+
+  fs-add : CodegenState, Integer -> CodegenState
+  fs-add (st) (slot) =
+   __record-set st "fresh-slots" (list-push (st.fresh-slots) slot)
+
+  fs-remove : CodegenState, Integer -> CodegenState
+  fs-remove (st) (slot) =
+   if list-length (st.fresh-slots) == 0 then st
+   else __record-set st "fresh-slots" (keep-not-int (st.fresh-slots) slot 0 [])
+
+  fs-has : CodegenState, Integer -> Boolean
+  fs-has (st) (slot) =
+   tco-list-contains (st.fresh-slots) slot 0
+
+  fc-keep-not-reg : List FieldCacheEntry, Integer, Integer, List FieldCacheEntry -> List FieldCacheEntry
+  fc-keep-not-reg (es) (reg) (i) (acc) =
+   if i >= list-length es then acc
+   else let e = list-at es i
+   in fc-keep-not-reg es reg (i + 1) (if (e.fc-reg) == reg then acc else list-push acc e)
+
+  fc-evict-reg : CodegenState, Integer -> CodegenState
+  fc-evict-reg (st) (reg) =
+   if list-length (st.field-cache) == 0 then st
+   else __record-set st "field-cache" (fc-keep-not-reg (st.field-cache) reg 0 [])
+
+  fc-keep-not-slot : List FieldCacheEntry, Integer, Integer, List FieldCacheEntry -> List FieldCacheEntry
+  fc-keep-not-slot (es) (slot) (i) (acc) =
+   if i >= list-length es then acc
+   else let e = list-at es i
+   in fc-keep-not-slot es slot (i + 1) (if (e.fc-slot) == slot then acc else list-push acc e)
+
+  fc-evict-slot : CodegenState, Integer -> CodegenState
+  fc-evict-slot (st) (slot) =
+   if list-length (st.field-cache) == 0 then st
+   else __record-set st "field-cache" (fc-keep-not-slot (st.field-cache) slot 0 [])
+
+  fc-lookup-loop : List FieldCacheEntry, Integer, Integer, Integer -> Integer
+  fc-lookup-loop (es) (slot) (off) (i) =
+   if i >= list-length es then -1
+   else let e = list-at es i
+   in if (e.fc-slot) == slot then if (e.fc-offset) == off then e.fc-reg else fc-lookup-loop es slot off (i + 1)
+   else fc-lookup-loop es slot off (i + 1)
+
+  fc-lookup : CodegenState, Integer, Integer -> Integer
+  fc-lookup (st) (slot) (off) =
+   fc-lookup-loop (st.field-cache) slot off 0
+
+  fc-add : CodegenState, Integer, Integer, Integer -> CodegenState
+  fc-add (st) (slot) (off) (reg) =
+   __record-set st "field-cache" (list-push (st.field-cache) (FieldCacheEntry {
+    fc-slot = __narrow slot,
+    fc-offset = __narrow off,
+    fc-reg = __narrow reg
+   }))
 
   st-add-error : CodegenState, Integer between 0 and 65535, Text, SourceSpan -> CodegenState
   st-add-error (st) (code) (msg) (sp) =
@@ -591,7 +668,7 @@ Section: State Helpers
   st-append-code : CodegenState, List Integer -> CodegenState
   st-append-code (st) (bytes) =
    let new-len = __buf-write-bytes (st.workspace.code-buffer) (st.code-len) bytes
-   in __record-set (__record-set st "code-len" new-len) "insn-count" (st.insn-count + 1)
+   in __record-set st "code-len" new-len
 
 
   record-func-offset : CodegenState, Text -> CodegenState
@@ -646,8 +723,10 @@ Section: State Helpers
     stack-guard = st.stack-guard,
     omit-frame-pointer = st.omit-frame-pointer,
     func-local-regs = [],
-    stype-sites = st.stype-sites,
-    insn-count = st.insn-count
+    noalias-slots = [],
+    field-cache = [],
+    fresh-slots = [],
+    stype-sites = st.stype-sites
    }
 
   reset-func-state : CodegenState, Text -> CodegenState
@@ -663,7 +742,10 @@ Section: State Helpers
    in let st5p = __record-set st5 "peak-local" 0
    in let st5q = __record-set st5p "peak-spill" 0
    in let st5a = __record-set st5q "func-local-regs" []
-   in let st6 = __record-set st5a "load-local-toggle" 0
+   in let st5b = __record-set st5a "noalias-slots" []
+   in let st5c = __record-set st5b "field-cache" []
+   in let st5d = __record-set st5c "fresh-slots" []
+   in let st6 = __record-set st5d "load-local-toggle" 0
    in __record-set st6 "tco" (TcoState {
     active = False,
     in-tail-pos = False,
@@ -707,7 +789,7 @@ Section: Register Allocation
    in let idx = int-mod (st.next-temp) (list-length pool)
    in let reg = list-at pool idx
    in EmitResult {
-   state = __record-set st "next-temp" (st.next-temp + 1),
+   state = fc-evict-reg (__record-set st "next-temp" (st.next-temp + 1)) reg,
    reg = __narrow reg
   }
 
@@ -733,7 +815,7 @@ Section: Register Allocation
    in let st-pk = __record-set st "peak-local" (if nl > st.peak-local then nl else st.peak-local)
    in if st.next-local < list-length regs then let reg = list-at regs (st.next-local)
    in EmitResult {
-   state = __record-set st-pk "next-local" nl,
+   state = fs-remove (fc-evict-slot (__record-set st-pk "next-local" nl) reg) reg,
    reg = __narrow reg
   }
    else let slot = spill-base + st.spill-count
@@ -741,18 +823,19 @@ Section: Register Allocation
    in let st1 = __record-set st-pk "next-local" nl
    in let st2 = __record-set st1 "spill-count" sc
    in EmitResult {
-   state = __record-set st2 "peak-spill" (if sc > st2.peak-spill then sc else st2.peak-spill),
+   state = fs-remove (fc-evict-slot (__record-set st2 "peak-spill" (if sc > st2.peak-spill then sc else st2.peak-spill)) slot) slot,
    reg = __narrow slot
   }
 
   store-local : CodegenState, Integer, Integer -> CodegenState
   store-local (st) (local) (value-reg) =
-   if local < spill-base then if local == value-reg then st
-   else st-append-code st (mov-rr local value-reg)
-   else if st.omit-frame-pointer then let offset = (local - spill-base) * 8
-   in st-append-code st (mov-store reg-rsp value-reg offset)
+   let st0 = fs-remove (fc-evict-slot st local) local
+   in if local < spill-base then if local == value-reg then st0
+   else st-append-code st0 (mov-rr local value-reg)
+   else if st0.omit-frame-pointer then let offset = (local - spill-base) * 8
+   in st-append-code st0 (mov-store reg-rsp value-reg offset)
    else let offset = -((local - spill-base + 1) * 8 + 32)
-   in st-append-code st (mov-store reg-rbp value-reg offset)
+   in st-append-code st0 (mov-store reg-rbp value-reg offset)
 
   load-local-scratch-for : Integer -> Integer between 0 and 15
   load-local-scratch-for (toggle) =
@@ -812,12 +895,12 @@ Section: Byte Patching
   patch-jcc-at : CodegenState, Integer, Integer -> CodegenState
   patch-jcc-at (st) (jcc-pos) (target-pos) =
    let rel32 = target-pos - (jcc-pos + 6)
-   in st-add-deferred-patch st (make-i32-patch (jcc-pos + 2) rel32)
+   in st-add-deferred-patch (fc-flush st) (make-i32-patch (jcc-pos + 2) rel32)
 
   patch-jmp-at : CodegenState, Integer, Integer -> CodegenState
   patch-jmp-at (st) (jmp-pos) (target-pos) =
    let rel32 = target-pos - (jmp-pos + 5)
-   in st-add-deferred-patch st (make-i32-patch (jmp-pos + 1) rel32)
+   in st-add-deferred-patch (fc-flush st) (make-i32-patch (jmp-pos + 1) rel32)
 
   patch-call-at : CodegenState, Integer, Integer -> CodegenState
   patch-call-at (st) (call-pos) (target-pos) =

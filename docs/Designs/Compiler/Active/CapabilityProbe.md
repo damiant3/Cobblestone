@@ -1,11 +1,146 @@
 # Capability Scoping — Stage-0 Probe Results
 
-**Status:** STAGE 1a SHIPPED (blu CL 6923, 2026-07-03) - Device.Port
-on the port-* intrinsics + quire-level exemption for the owned
-hardware stack. cap-launder-pure-io flipped to errors/.failing; the
-port-I/O leg of "no undeclared I/O" is now enforced for foreword and
-app code. Remaining: Device.Block + Fat16 annotation, poke-mmio, and
-the manifest/OS wiring (stages 1b-4 below). Stage 0 (probes) complete.
+**Status:** ALL STAGES SHIPPED. Stage 7 (blu, 2026-07-08) closes
+the remaining follow-ups AND fixes a stage-4 regression it uncovered.
+
+REGRESSION (the important part): stage 4 made boot grants
+manifest-derived, but the gated KERNEL builtins (process-spawn,
+chan-kern-*, identity-set/-set-proc, process-restrict-cap) still
+carried empty effect rows — so no program could declare the effect,
+so no manifest granted the bit, so their in-kernel cap checks
+denied every call. Nine -Apps identity tests silently went from pass
+to fail (verified: pass on pre-stage-4 seed F1F9DF85, fail on
+stage-6 EF6DF10D). -Apps is not in the default battery, so it landed
+on main unnoticed across stages 4-6. Fix: honest effect rows —
+process-spawn / -priority / -with-heap and chan-kern-* carry
+[Concurrent]; identity-set carries [Identity]; process-restrict-cap
+carries a new [Capability]; identity-set-proc carries [Identity,
+Capability] (its helper tests both bits). The spawn family is
+effect-POLYMORPHIC in its callback (ForAllEff over the callback row,
+the Koka-style row quantifier already in the type system): the
+closure runs in the child, so its effects are the child's, not the
+caller's — a Concurrent param row would be a lie and the child's own
+effects still surface at the spawn call's result. The nine tests
+were act-converted to declare their real rows and all pass.
+
+New capability `Capability` (cap id 8, kernel bit 14 =
+capability-admin) gives process-restrict-cap and the admin leg of
+identity-set-proc a declarable effect. Wired through the full
+vocabulary (manifest-cap-id, boot-cap-mask, capability-vocabulary,
+CdxBinary, CdxVerifier, VerifiedLoader).
+
+Other follow-ups, all shipped: read-key (syscall 2) gated on
+cap-console-read; VerifiedLoader gained the Gpu.Compute/Gpu.Memory
+kernel-bit arms (17/18) and the Capability arm; `granted-capabilities`
+renamed `capability-vocabulary` with prose making clear it is the
+capability VOCABULARY (which effects the manifest can carry), never a
+grant — the old name is exactly what made the stage-4 regression easy
+to miss. CDX4001 message rewritten to match.
+
+KNOWN BUG discovered, deferred (not capability typing): a two-level
+spawn — a spawned process that itself spawns a grandchild — hangs on
+any post-stage-4 seed, where it worked pre-stage-4. The machine code
+is identical (effects erase); the only runtime difference is the
+child's cap word is now restricted instead of all-ones. Root cause is
+a latent heap-budget bug in the spawn allocator (a child gets a fixed
+proc-spawn-heap-size; spawning a grandchild bumps the child's R10 past
+its region). Capability work is merely the first thing that can build
+a WORKING nested spawn on a post-stage-4 seed (you must be able to
+grant Concurrent). Minimal repro: two nested process-spawn calls with
+a process-wait. identity-setproc-no-admin was rewritten to target its
+own pid (identity-set-proc self still tests both bits) so the denial
+test needs no grandchild. Owner: scheduler/emit-spawn, focused session.
+
+The opening-as-value manifest hole is CLOSED (and pinned):
+`opening : Integer = block-read 0` is rejected with CDX2031 exactly
+like a function opening — declared-performing-row returns empty for a
+non-arrow declared type and the body's Device.Block is uncovered.
+Locked by errors/opening-value-effect-undeclared. The stage-5 note
+that value openings "escape" the check no longer holds on the
+shipping seed.
+
+Stage 6 (blu, 2026-07-08): the
+identity key syscalls (15 key-load, 16 key-zero, 18 key-status) are
+gated on the new Identity capability. Discovery that reshaped the
+stage: the only callers wrapped the syscalls in a raw `__syscall`
+intrinsic THAT DOES NOT EXIST — IdentityManager had never compiled
+(all its tests are skipped), so the entire pinned-key path was dark:
+no effect source, no grants, ungated syscalls. The fix promotes
+key-load / key-zero / key-status to real intrinsics carrying
+`[Identity]` (TypeEnv + NameResolver + X86_64Helpers stubs, the
+three-file recipe; key-load is a FunTy, the nullary pair are
+EffectfulTy values like block-sector-count), wires Identity through
+the whole vocabulary (manifest-cap-id 7, boot-cap-mask bit 15
+cap-identity, granted-capabilities list, CdxBinary cdx-cap-identity,
+CdxVerifier cap-name, VerifiedLoader kern-cap-identity arm), gates
+the three syscall handlers with the stage-5 deny pattern, and
+deletes IdentityManager's dead wrappers (its `__syscall 3 0` becomes
+`get-ticks`). HONEST LIMIT: IdentityManager STILL does not compile —
+its interactive console layer references `print` and `read-key`,
+neither of which exists anywhere (pre-existing rot; a keystroke API
+is first-boot-ceremony surface and belongs to that owner). The
+syscall layer beneath it is now real and gated regardless. Probes:
+codex/test/cap-identity-denied (load key ->
+status 1, zero -> 0, strip grant -> -1) and
+errors/cap-launder-pure-key (CDX2031+2033). key-zero is gated too:
+zeroing is the safe direction but touching the key region at all is
+identity authority (an ungated zero is a lock-forcing DoS).
+Stage 5 (blu, 2026-07-08): the
+widened syscall surface — all four block syscalls (10 read, 11
+write, 12 sector count, 13 select) consult the capability word
+before driving the device; a process without cap-block-device falls
+through the dispatch chain and gets -1 with the device untouched.
+Same CL fixed a latent bug in emit-check-capability: the
+entry-address multiply was hardcoded imul rcx, rbx while the
+current-proc index lives in R11, so the check read a cap word offset
+by caller garbage and only worked when RBX happened to be zero (it
+always was for proc-0 console writes; it never would have been for
+block-read, whose helper parks the sector number in RBX).
+VerifiedLoader gained the missing Device arm in cdx-cap-to-kern-bits
+(a manifest Device capability previously mapped to zero kernel bits
+on the loader path; the boot path already granted bits 10+16).
+The runtime probe then exposed a THIRD latent bug, found because the
+first widened check actually ran: manifest-base-loop
+(X86_64Chapter) and effect-base-loop (CdxVerifier) both split dotted
+effect names on `char-code == 46` — ASCII thinking; in CCE code 46
+is the letter H (the identical bug find-dot fixed in CL 6509, in two
+more copies). So "Device.Block" never resolved to its covering
+"Device": the emitted caps section silently dropped the Device
+entry, the boot grant carried Console bits only, and the verifier's
+dotted-coverage relation was dead code — every dotted-effect binary
+would have failed phase 4 had anything verified one. Both sites now
+derive the dot from a literal (`char-code (char-at "." 0)`). Every
+prior "Device manifest" behavior was untested theater: stage 3's
+cap-manifest-derived guard is Console-only and block syscalls never
+consulted the word until now.
+Runtime probe: codex/test/cap-block-denied (granted sector-count,
+strip own grant word, denied -1). The five -Apps disk tests that
+reach block syscalls at runtime now declare [Device.Block] on
+opening so their manifests grant the bit (block-io-basic,
+disk-facts-init/load/multi/read — their openings are value bindings,
+which today escape the row-subset check and carried empty manifests).
+Stage 4 (blu CL 7325, 2026-07-08):
+boot grants proc 0 the mask derived from the binary's own manifest
+(emit-grant-cap-mask driven by manifest-cap-names; empty manifest =
+zero grants), the syscall capability check tests the required bit as
+an immediate and branches on CF (it previously tested bit
+argument-mod-64 and branched on a flag bt does not set), and
+ProcessCaps (codex/os/verify) wires LoadDecision grants into the real
+process-table capability word — runtime-proven by
+codex/test/apps/process-caps-test. Earlier: stages 1a/1b/2/3 (CLs
+6923/6946/6964/6999) — effect-typed intrinsics, enforced foreword io
+modules, and the real signed manifest. Remaining follow-ups (polish,
+not soundness): read-key (2) could gate on cap-console-read; Gpu
+cap-ids 5/6 map to no kernel bits on the loader path (nothing
+consults those bits yet); rename/narrow the type checker's static
+granted-capabilities list; opening-as-value bindings escape the
+def-boundary row-subset check, so an undeclared effectful opening
+compiles with an empty manifest (the stage-5 disk tests were the
+live examples); and the identity-table builtins (identity-whoami /
+identity-set / identity-set-proc / identity-get-proc) are still
+effect-free — they manage per-process identity labels, not key
+material, but deserve the same treatment when the identity story
+grows.
 
 **Provenance:** BACKLOG "Fulfill the Vision Check" item 1, capabilities
 leg. blu, 2026-07-03.

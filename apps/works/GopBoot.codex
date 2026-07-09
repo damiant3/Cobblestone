@@ -1,0 +1,341 @@
+Chapter: GopBoot
+  cites Works chapter GopDraw
+  cites Works chapter GopDisk
+  cites Works chapter GopFat16
+  cites Works chapter GopWake
+  cites Works chapter GopWizard
+  cites Verify chapter WakeCeremony
+  cites Kernel chapter BitmapFont
+  cites Foreword chapter Fat16
+  cites Foreword chapter Maybe
+
+ A3/B1.1: an interactive menu on the Option A boot path. The stub hands us
+ the GOP framebuffer through cells at 0x8000 (base/width/height/stride),
+ sets up the heap, and jumps here after ExitBootServices. Firmware is gone;
+ ConOut is dead. We draw a menu with the CBF bitmap font and drive it from
+ the real PS/2 controller (status port 0x64, data port 0x60), which works
+ on metal -- there is no firmware key buffer after ExitBootServices. Up/Down
+ move the selection, Enter chooses. First interactive UI rendered entirely
+ by a Codex program post-EBS.
+
+ We say:
+
+Section: Framebuffer Handoff
+
+  gop-cell-base : Integer = 32768
+
+  col-bg : Integer = 1710638
+  col-title : Integer = 65535
+  col-item : Integer = 9474192
+  col-sel-text : Integer = 16777215
+  col-sel-bar : Integer = 3175008
+  col-green : Integer = 65280
+
+Section: Menu Model
+
+  menu-count : Integer = 4
+
+  menu-label : Integer -> Text
+  menu-label (i) =
+    if i == 0 then "Dev Console"
+    else if i == 1 then "Graphical UI"
+    else if i == 2 then "Serial REPL"
+    else "Reboot"
+
+Section: Layout
+
+ The stub reports the panel's real mode through the handoff cells;
+ every position derives from it. The menu block (title, four rows, a
+ status line) is centered on the panel, and glyphs double on panels
+ 1024 pixels wide or wider (ui-scale, in GopDraw). The block is 196
+ base units tall: title row 16, gap 32, four rows of 28, gap 20,
+ status row 16.
+
+  menu-box-w : Integer -> Integer
+  menu-box-w (scale) = 360 * scale
+
+  menu-left : Integer, Integer -> Integer
+  menu-left (w) (scale) = (w - menu-box-w scale) / 2
+
+  menu-top : Integer, Integer -> Integer
+  menu-top (h) (scale) = (h - 196 * scale) / 2
+
+  items-top : Integer, Integer -> Integer
+  items-top (h) (scale) = menu-top h scale + 48 * scale
+
+  msg-y : Integer, Integer -> Integer
+  msg-y (h) (scale) = items-top h scale + 132 * scale
+
+Section: Rendering
+
+  gop-clear : Integer, Integer, Integer, Integer -> Integer
+  gop-clear (base) (w) (h) (stride) =
+    gop-fill-rect base stride 0 0 w h col-bg
+
+  draw-item : Integer, Integer, Integer, Integer, CbfFont, Integer, Integer, Integer -> Integer
+  draw-item (base) (w) (h) (stride) (font) (scale) (sel) (i) =
+    if i >= menu-count then 0
+    else let py = items-top h scale + i * 28 * scale
+    in let left = menu-left w scale
+    in let bar = if i == sel then gop-fill-rect base stride left (py - 4 * scale) (menu-box-w scale) (24 * scale) col-sel-bar else 0
+    in let fg = if i == sel then col-sel-text else col-item
+    in let t = gop-draw-text base stride font (left + 16 * scale) py (menu-label i) fg scale 0
+    in draw-item base w h stride font scale sel (i + 1)
+
+  draw-title : Integer, Integer, Integer, Integer, CbfFont, Integer -> Integer
+  draw-title (base) (w) (h) (stride) (font) (scale) =
+    let s = "CODEX OS - Choose Interface"
+    in let tx = (w - text-length s * 8 * scale) / 2
+    in gop-draw-text base stride font tx (menu-top h scale) s col-title scale 0
+
+  draw-menu : Integer, Integer, Integer, Integer, CbfFont, Integer -> Integer
+  draw-menu (base) (w) (h) (stride) (font) (sel) =
+    let scale = ui-scale w
+    in let c = gop-clear base w h stride
+    in let title = draw-title base w h stride font scale
+    in draw-item base w h stride font scale sel 0
+
+Section: Loop
+
+ Read the PS/2 controller directly: status port 0x64 (100), data port 0x60
+ (96). Bit 0 of status = output buffer full (a byte is waiting). This works
+ on real hardware after ExitBootServices, unlike codex-vm's cell 28680. A
+ make code is < 0x80; break codes and the 0xE0 extended prefix are >= 0x80
+ and simply fall through the dispatcher's else (the extended arrow's second
+ byte, e.g. 0x48, is an ordinary make code on the next poll).
+
+  menu-up : Integer -> Integer
+  menu-up (sel) = if sel <= 0 then menu-count - 1 else sel - 1
+
+  menu-down : Integer -> Integer
+  menu-down (sel) = if sel >= menu-count - 1 then 0 else sel + 1
+
+ Poll the port and loop. The loop must be constant-stack, so menu-loop
+ tail-calls ITSELF -- the compiler's TCO turns a direct self-call in tail
+ position into a jump, but not mutual recursion, so the dispatch helpers
+ return the new selection instead of re-entering the loop. Compile this
+ program with the pet flag (compile.ps1 -Pet): a poll loop makes no heap
+ progress, and only WatchdogPet mode keeps the hang watchdog quiet by
+ petting it from every prologue and every TCO loop head.
+
+  menu-next : Integer, Integer, Integer, Integer, CbfFont, Integer, Integer -> Integer
+  menu-next (base) (w) (h) (stride) (font) (sel) (sc) =
+    if sc == 72 then redraw base w h stride font (menu-up sel)
+    else if sc == 80 then redraw base w h stride font (menu-down sel)
+    else if sc == 28 then confirm base w h stride font sel
+    else sel
+
+  redraw : Integer, Integer, Integer, Integer, CbfFont, Integer -> Integer
+  redraw (base) (w) (h) (stride) (font) (sel) =
+    let d = draw-menu base w h stride font sel
+    in sel
+
+  confirm : Integer, Integer, Integer, Integer, CbfFont, Integer -> Integer
+  confirm (base) (w) (h) (stride) (font) (sel) =
+    let scale = ui-scale w
+    in let d = draw-menu base w h stride font sel
+    in let msg = gop-draw-text base stride font (menu-left w scale + 16 * scale) (msg-y h scale) ("Selected: " & menu-label sel) col-green scale 0
+    in sel
+
+  menu-loop : Integer, Integer, Integer, Integer, CbfFont, Integer -> [Device.Port] Integer
+  menu-loop (base) (w) (h) (stride) (font) (sel) = act
+    status <- port-in-byte 100
+    sc <- if bit-and status 1 > 0 then port-in-byte 96 else 0
+    menu-loop base w h stride font (menu-next base w h stride font sel sc)
+  end
+
+Section: Disk Probe
+
+ Read LBA 1 of the boot disk with the payload's own drivers (AHCI first,
+ then legacy IDE PIO) and check for the GPT header signature "EFI PART".
+ Firmware is gone, so a hit proves the running program reached its own
+ boot medium unaided. The screen names the controller that answered.
+
+  gpt-sig-byte : Integer -> Integer
+  gpt-sig-byte (i) =
+    if i == 0 then 69 else if i == 1 then 70 else if i == 2 then 73
+    else if i == 3 then 32 else if i == 4 then 80 else if i == 5 then 65
+    else if i == 6 then 82 else 84
+
+  gpt-sig-match : Integer, Integer -> Boolean
+  gpt-sig-match (buf) (i) =
+    if i >= 8 then True
+    else if peek-byte buf i /= gpt-sig-byte i then False
+    else gpt-sig-match buf (i + 1)
+
+  probe-line : WzCtx -> [Device.Port] Text
+  probe-line (c) = act
+    r <- disk-read-sector 1
+    if r.dr-ok then
+      if gpt-sig-match (r.dr-buf) 0 then "Boot disk: GPT header read post-EBS via " & r.dr-via & "."
+      else "Boot disk: sector read via " & r.dr-via & ", but no GPT signature."
+    else "Boot disk: no AHCI or IDE controller answered."
+  end
+
+ Mount the stick's own EFI System Partition and resolve the loader that
+ the firmware booted a moment ago -- the payload finding, through its own
+ drivers and its own filesystem code, the very file it was launched from.
+
+  fs-line : WzCtx -> [Device.Port] Text
+  fs-line (c) = act
+    m <- gfat-mount-esp
+    if m.gm-ok == False then "Filesystem: no FAT16 ESP found."
+    else act
+      e <- gfat-resolve (m.gm-vol) "EFI/BOOT/BOOTX64.EFI"
+      when e
+        is None -> "Filesystem: ESP mounted, EFI/BOOT/BOOTX64.EFI not found."
+        is Just (entry) -> "Filesystem: read EFI/BOOT/BOOTX64.EFI (" & show (entry.de-size) & " bytes) - our own loader."
+      end
+    end
+  end
+
+ Read the seed itself off the stick -- 2.1 MB through the payload's own
+ driver, filesystem, and FAT chain -- and check the CDX magic in the
+ header it just fetched. This is the compiler that compiled this program,
+ recovered from the medium it booted from. Verifying its signature is
+ B3.4 (WakeCeremony).
+
+  cdx-magic-ok : Integer -> Boolean
+  cdx-magic-ok (buf) =
+    peek-byte buf 0 == 67 & peek-byte buf 1 == 68 & peek-byte buf 2 == 88 & peek-byte buf 3 == 49
+
+  seed-line : WzCtx -> [Device.Port] Text
+  seed-line (c) = act
+    m <- gfat-mount-esp
+    if m.gm-ok == False then "Seed: no filesystem."
+    else act
+      size <- gfat-file-size (m.gm-vol) "CODEX.CDX"
+      if size == 0 then "Seed: CODEX.CDX not on this stick."
+      else act
+        let dest = __heap-save
+        in let adv = __heap-advance (size + 1024)
+        in act
+          n <- gfat-read-file-bulk (m.gm-vol) "CODEX.CDX" dest
+          if n == 0 then "Seed: CODEX.CDX read failed."
+          else if cdx-magic-ok dest then "Seed: read CODEX.CDX (" & show n & " bytes), CDX magic verified."
+          else "Seed: read " & show n & " bytes but the CDX magic is wrong."
+        end
+      end
+    end
+  end
+
+Section: Wake Ceremony
+
+ The first act of a machine that cannot ask anyone what it is. It reads
+ its own seed off its own stick, recomputes the hash over those bytes,
+ checks the author signature, and speaks only what it checked -- or says
+ it does not verify and refuses to act. Ascent V, rung 3.
+
+ The report is computed before anything is drawn: the screen reports a
+ verdict, it does not narrate a hope.
+
+  WakeScreen = record {
+    ws-ok : Boolean,
+    ws-report : WakeReport
+  }
+
+  wake-read : [Device.Port] WakeScreen
+  wake-read = act
+    m <- gfat-mount-esp
+    if m.gm-ok == False then WakeScreen { ws-ok = False, ws-report = wk-bad-report 0 }
+    else act
+      size <- gfat-file-size (m.gm-vol) "CODEX.CDX"
+      if size == 0 then WakeScreen { ws-ok = False, ws-report = wk-bad-report 0 }
+      else act
+        let dest = __heap-save
+        in let adv = __heap-advance (size + 1024)
+        in act
+          n <- gfat-read-file-bulk (m.gm-vol) "CODEX.CDX" dest
+          if n == 0 then WakeScreen { ws-ok = False, ws-report = wk-bad-report 0 }
+          else WakeScreen { ws-ok = True, ws-report = wk-verify dest n }
+        end
+      end
+    end
+  end
+
+  wake-check-colour : Boolean -> Integer
+  wake-check-colour (ok) = if ok then wz-col-green else wz-col-warn
+
+  draw-verdict : WzCtx, WakeReport, Integer -> Integer
+  draw-verdict (c) (r) (row) =
+    if wake-sound r then
+      let a = wz-text c row ("I am Codex, a self-sustaining compiler seed of " & show (r.size) & " bytes.") wz-col-bright
+      in let b = wz-text c (row + 1) "My source is aboard. I can rebuild myself and prove it byte-identical." wz-col-text
+      in let d = wz-text c (row + 3) "The repository remembers everything." wz-col-text
+      in let e = wz-text c (row + 4) "The language says what you mean." wz-col-text
+      in wz-text c (row + 5) "The machine checks that you meant it." wz-col-text
+    else
+      let a = wz-text c row "I do not verify. I will not act." wz-col-warn
+      in wz-text c (row + 1) "A machine that cannot prove what it is must not pretend to be it." wz-col-text
+
+  wake-screen : WzCtx -> [Device.Port] Integer
+  wake-screen (c) = act
+    w <- wake-read
+    d0 <- wz-clear c
+    t0 <- wz-text c 0 "Wake" wz-col-title
+    t1 <- if w.ws-ok then wz-text c 2 "WAKE: verifying self before speaking" wz-col-text
+          else wz-text c 2 "WAKE: could not read my own seed" wz-col-warn
+    t2 <- wz-text c 3 (wake-check-line "magic" (w.ws-report.magic-ok)) (wake-check-colour (w.ws-report.magic-ok))
+    t3 <- wz-text c 4 (wake-check-line "content-hash" (w.ws-report.hash-ok) & (if w.ws-report.hash-ok then " sha256:" & wake-hex-short (w.ws-report.hash-hex) else "")) (wake-check-colour (w.ws-report.hash-ok))
+    t4 <- wz-text c 5 (wake-check-line "signature" (w.ws-report.signature-ok) & (if w.ws-report.signature-ok then " author:" & wake-hex-short (w.ws-report.author-hex) else "")) (wake-check-colour (w.ws-report.signature-ok))
+    t5 <- draw-verdict c (w.ws-report) 7
+    t6 <- wz-text c 13 "Press Enter to choose your interface." wz-col-green
+    wz-wait-enter c
+  end
+
+  disk-probe : WzCtx -> [Device.Port] Integer
+  disk-probe (c) = act
+    line <- probe-line c
+    fsl <- fs-line c
+    sdl <- seed-line c
+    d0 <- wz-clear c
+    t0 <- wz-text c 0 "Storage" wz-col-title
+    t1 <- wz-text c 2 line wz-col-green
+    t2 <- wz-text c 3 fsl wz-col-green
+    t3 <- wz-text c 4 sdl wz-col-green
+    t4 <- wz-text c 6 "Persisting your identity here arrives with B3.5." wz-col-text
+    t5 <- wz-text c 8 "Press Enter to verify the seed I just read." wz-col-green
+    wz-wait-enter c
+  end
+
+Section: Entry
+
+ After ExitBootServices the firmware often leaves the PS/2 keyboard disabled.
+ Re-enable it before ANY input: 0x64 <- 0xAE (enable keyboard interface at
+ the 8042 controller), then 0x60 <- 0xF4 (tell the keyboard to enable
+ scanning). The first-boot ceremony (GopWizard) runs first -- until the
+ storage stack lands there is no saved identity to detect, so every boot is
+ a first boot -- then the interface menu takes over.
+
+  run-menu : Integer, Integer, Integer, Integer, CbfFont -> [Device.Port] Integer
+  run-menu (base) (w) (h) (stride) (font) = act
+    d0 <- draw-menu base w h stride font 0
+    menu-loop base w h stride font 0
+  end
+
+  boot-flow : WzCtx, Integer, Integer, Integer, Integer, CbfFont -> [Device.Port, Device.Mmio] Integer
+  boot-flow (ctx) (base) (w) (h) (stride) (font) = act
+    ke <- port-out-byte 100 174
+    ks <- port-out-byte 96 244
+    fp <- wizard-run ctx
+    dp <- disk-probe ctx
+    wk <- wake-screen ctx
+    run-menu base w h stride font
+  end
+
+  opening : [Device.Port, Device.Mmio] Integer
+  opening =
+    let base = peek-qword gop-cell-base 0
+    in let w = peek-qword gop-cell-base 8
+    in let h = peek-qword gop-cell-base 16
+    in let stride = peek-qword gop-cell-base 24
+    in let font = cbf-init
+    in let ctx = WzCtx {
+      wz-base = base,
+      wz-w = w,
+      wz-h = h,
+      wz-stride = stride,
+      wz-font = font,
+      wz-scale = ui-scale w
+    }
+    in boot-flow ctx base w h stride font

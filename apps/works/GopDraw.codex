@@ -1,0 +1,63 @@
+Chapter: GopDraw
+  cites Kernel chapter BitmapFont
+
+ Drawing primitives for the GOP framebuffer on the Option A boot path.
+ The framebuffer is linear 32-bit XRGB; base and stride (pixels per
+ scan line) come from the boot stub's handoff cells. Text renders from
+ the CBF bitmap font: each glyph is 8x16, and every on-pixel is drawn
+ as a scale-by-scale square, so the same font renders 8x16 at scale 1
+ and 16x32 at scale 2. Panels 1024 pixels wide or wider use scale 2.
+
+ We say:
+
+Section: Pixel
+
+  gop-put : Integer, Integer, Integer, Integer, Integer -> Integer
+  gop-put (base) (stride) (x) (y) (color) =
+    poke-32 base ((y * stride + x) * 4) color
+
+Section: Rectangles
+
+  gop-rect-cols : Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  gop-rect-cols (base) (stride) (px) (py) (pw) (color) (x) =
+    if x >= pw then 0
+    else let p = gop-put base stride (px + x) py color
+    in gop-rect-cols base stride px py pw color (x + 1)
+
+  gop-fill-rect : Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  gop-fill-rect (base) (stride) (px) (py) (pw) (ph) (color) =
+    gop-rect-rows base stride px py pw ph color 0
+
+  gop-rect-rows : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  gop-rect-rows (base) (stride) (px) (py) (pw) (ph) (color) (y) =
+    if y >= ph then 0
+    else let r = gop-rect-cols base stride px (py + y) pw color 0
+    in gop-rect-rows base stride px py pw ph color (y + 1)
+
+Section: Glyph
+
+  gop-char-cols : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  gop-char-cols (base) (stride) (px) (py) (glyph) (fg) (scale) (col) =
+    if col >= 8 then 0
+    else let on = bit-and (bit-shru glyph (7 - col)) 1
+    in let p = if on == 1 then gop-fill-rect base stride (px + col * scale) py scale scale fg else 0
+    in gop-char-cols base stride px py glyph fg scale (col + 1)
+
+  gop-char-rows : Integer, Integer, CbfFont, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  gop-char-rows (base) (stride) (font) (px) (py) (cce) (fg) (scale) (row) =
+    if row >= 16 then 0
+    else let glyph = cbf-row font cce row
+    in let r = gop-char-cols base stride px (py + row * scale) glyph fg scale 0
+    in gop-char-rows base stride font px py cce fg scale (row + 1)
+
+  gop-draw-text : Integer, Integer, CbfFont, Integer, Integer, Text, Integer, Integer, Integer -> Integer
+  gop-draw-text (base) (stride) (font) (px) (py) (s) (fg) (scale) (i) =
+    if i >= text-length s then 0
+    else let cce = char-code (char-at s i)
+    in let c = gop-char-rows base stride font (px + i * 8 * scale) py cce fg scale 0
+    in gop-draw-text base stride font px py s fg scale (i + 1)
+
+Section: Scale
+
+  ui-scale : Integer -> Integer
+  ui-scale (w) = if w >= 1024 then 2 else 1

@@ -1,0 +1,41 @@
+Chapter: ProcessCaps
+  cites Verify chapter VerifiedLoader
+
+ Stage 4 of the capability wiring: the verified loader's grant
+ bitmask becomes kernel authority. The kernel keeps one capability
+ word per process at offset 56 of its 256-byte process-table entry
+ (table base 20480); the syscall layer bit-tests that word against
+ the current process. These functions let OS code that spawns a
+ verified binary write the LoadDecision's grant into the slot the
+ new process will run under, and read it back for audit. A denied
+ decision writes nothing and reports False - the caller must not
+ start the process.
+
+Section: Process Table
+
+  proc-table-base-addr : Integer = 20480
+
+  proc-entry-bytes : Integer = 256
+
+  proc-cap-word-offset : Integer = 56
+
+  proc-cap-addr : Integer -> Integer
+  proc-cap-addr (pid) = proc-table-base-addr + pid * proc-entry-bytes + proc-cap-word-offset
+
+Section: Grant Wiring
+
+  write-process-grant : Integer, Integer -> Integer
+  write-process-grant (pid) (mask) =
+   let lo = poke-32 (proc-cap-addr pid) 0 mask
+   in poke-32 (proc-cap-addr pid) 4 0
+
+  read-process-grant : Integer -> Integer
+  read-process-grant (pid) = peek-32 (proc-cap-addr pid) 0
+
+  apply-load-decision : Integer, LoadDecision -> Boolean
+  apply-load-decision (pid) (d) =
+   when d
+    is LoadApproved (g) ->
+     let written = write-process-grant pid (g.bitmask)
+     in True
+    is LoadDenied (r) -> False

@@ -6,7 +6,9 @@ Chapter: LeaseManager
  active grant or handoff carries an expiry tick. The lease manager
  holds the set of active leases, checks expiry on demand, and
  produces revocation records when leases lapse. Lease IDs are
- stored as hex text for structural equality.
+ stored as hex text for structural equality. A lease is live
+ strictly before its expiry tick and dead at the tick itself,
+ the restrictive reading, matching session expiry in SessionStore.
 
  We say:
 
@@ -85,12 +87,12 @@ Section: Expiry Sweep
   lease-sweep-loop : List Lease, Integer, Integer, Integer, List Lease, Integer, List RevocationRecord, Integer -> SweepResult
   lease-sweep-loop (leases) (i) (len) (now) (kept) (kept-count) (revoked) (rev-count) =
     if i >= len then SweepResult {
-      store = LeaseStore { leases = kept, count = kept-count, revoked-count = rev-count },
+      store = LeaseStore { leases = kept, count = __narrow kept-count, revoked-count = __narrow rev-count },
       revoked = revoked,
-      revoked-count = rev-count
+      revoked-count = __narrow rev-count
     }
     else let l = list-at leases i
-    in if now > l.expires then
+    in if now >= l.expires then
       let rr = RevocationRecord {
         lease-id = l.id,
         holder = l.holder,
@@ -109,7 +111,7 @@ Section: Manual Revocation
 
   lease-revoke-loop : List Lease, Integer, Integer, Text, Integer, List Lease, Integer, Integer -> LeaseStore
   lease-revoke-loop (leases) (i) (len) (target-id) (now) (kept) (kept-count) (removed) =
-    if i >= len then LeaseStore { leases = kept, count = kept-count, revoked-count = removed }
+    if i >= len then LeaseStore { leases = kept, count = __narrow kept-count, revoked-count = __narrow removed }
     else let l = list-at leases i
     in if l.id == target-id then lease-revoke-loop leases (i + 1) len target-id now kept kept-count (removed + 1)
     else lease-revoke-loop leases (i + 1) len target-id now (list-push kept l) (kept-count + 1) removed
@@ -120,7 +122,7 @@ Section: Manual Revocation
 
   lease-revoke-holder-loop : List Lease, Integer, Integer, Text, Text, Integer, List Lease, Integer, Integer -> LeaseStore
   lease-revoke-holder-loop (leases) (i) (len) (holder-hex) (cap-name) (now) (kept) (kept-count) (removed) =
-    if i >= len then LeaseStore { leases = kept, count = kept-count, revoked-count = removed }
+    if i >= len then LeaseStore { leases = kept, count = __narrow kept-count, revoked-count = __narrow removed }
     else let l = list-at leases i
     in if lease-bytes-to-hex ((l.holder).public-key) == holder-hex & (l.capability).name == cap-name
       then lease-revoke-holder-loop leases (i + 1) len holder-hex cap-name now kept kept-count (removed + 1)
@@ -136,7 +138,7 @@ Section: Queries
   lease-is-active-loop (leases) (i) (len) (target-id) (now) =
     if i >= len then False
     else let l = list-at leases i
-    in if l.id == target-id & now <= l.expires then True
+    in if l.id == target-id & now < l.expires then True
     else lease-is-active-loop leases (i + 1) len target-id now
 
   lease-count : LeaseStore -> Integer

@@ -174,7 +174,7 @@ Section: Function Application
               in if is-local then emit-indirect-call st flat
                          else emit-direct-call st flat
    in EmitResult {
-    state = st-set-tail-pos (r.state) saved-tail,
+    state = st-set-tail-pos (fc-flush (r.state)) saved-tail,
     reg = r.reg
    }
 
@@ -1642,22 +1642,73 @@ Section: Self-Type-Table Emission
    in let st4 = st-append-code st3 (add-ri (new-tmp.reg) size)
    in st-append-code st4 (mov-store (addr-tmp.reg) (new-tmp.reg) 0)
 
+  noalias-base-slot : CodegenState, IRExpr -> Integer
+  noalias-base-slot (st) (e) =
+   if list-length (st.noalias-slots) == 0 then -1
+   else when e
+    is IrName (n) (t) (s) ->
+     let slot = lookup-local (st.locals) n
+     in if slot < 0 then -1
+     else if tco-list-contains (st.noalias-slots) slot 0 then slot
+     else -1
+    is otherwise -> -1
+
+  noalias-note : CodegenState, IRExpr, Text -> CodegenState
+  noalias-note (st) (base) (what) =
+   if noalias-base-slot st base >= 0
+   then st-add-info st cdx-noalias-proven ("no-alias proven: " & what & " through unique linear owner") (ir-expr-span base)
+   else st
+
+  fresh-base-slot : CodegenState, IRExpr -> Integer
+  fresh-base-slot (st) (e) =
+   when e
+    is IrName (n) (t) (s) ->
+     let slot = lookup-local (st.locals) n
+     in if slot < 0 then -1
+     else if fs-has st slot then slot
+     else -1
+    is otherwise -> -1
+
+  fc-store-barrier : CodegenState, Integer, SourceSpan -> CodegenState
+  fc-store-barrier (st) (fresh-slot) (sp) =
+   if fresh-slot >= 0
+    then fc-evict-slot (st-add-info st cdx-noalias-proven "no-alias proven: store through fresh allocation preserves cache" sp) fresh-slot
+    else fc-flush st
+
+  field-access-base-slot : CodegenState, IRExpr -> Integer
+  field-access-base-slot (st) (e) =
+   when e
+    is IrName (n) (t) (s) -> lookup-local (st.locals) n
+    is otherwise -> -1
+
   emit-field-access : CodegenState, IRExpr, Text -> EmitResult
   emit-field-access (st) (rec-expr) (field-name) =
    let rec-ty = resolve-constructed-ty st (ir-expr-type rec-expr)
-   in let rec-result = emit-expr (st-set-tail-pos st False) rec-expr
    in when rec-ty
     is RecordTy (rname) (rargs) (rfields) ->
      let fot = cce-byte-offset-and-type rfields field-name
      in let width = field-byte-width (fot.type-val)
      in let signed = field-byte-signed (fot.type-val)
-     in let rd = alloc-temp (rec-result.state)
+     in let base-slot = field-access-base-slot st rec-expr
+     in let hit-reg = if base-slot >= 0 then fc-lookup st base-slot (fot.offset) else -1
+     in if hit-reg >= 0 then
+      let st-na = noalias-note st rec-expr "field read"
+      in let rd = alloc-temp st-na
+      in EmitResult {
+       state = fc-add (st-append-code (rd.state) (mov-rr (rd.reg) hit-reg)) base-slot (fot.offset) (rd.reg),
+       reg = rd.reg
+      }
+     else let rec-result = emit-expr (st-set-tail-pos st False) rec-expr
+     in let st-na = noalias-note (rec-result.state) rec-expr "field read"
+     in let rd = alloc-temp st-na
+     in let st-ld = st-append-code (rd.state) (emit-narrow-load width signed (rd.reg) (rec-result.reg) (fot.offset))
      in EmitResult {
-      state = st-append-code (rd.state) (emit-narrow-load width signed (rd.reg) (rec-result.reg) (fot.offset)),
+      state = if base-slot >= 0 then fc-add st-ld base-slot (fot.offset) (rd.reg) else st-ld,
       reg = rd.reg
      }
     is otherwise ->
-     let st-err = st-add-error (rec-result.state) cdx-ir-error ("emit-field-access: unresolved type for field '" & field-name & "' addr=" & show (address-of rec-ty) & " tag=" & show (peek-qword (address-of rec-ty) 0)) (ir-expr-span rec-expr)
+     let rec-result = emit-expr (st-set-tail-pos st False) rec-expr
+     in let st-err = st-add-error (rec-result.state) cdx-ir-error ("emit-field-access: unresolved type for field '" & field-name & "' addr=" & show (address-of rec-ty) & " tag=" & show (peek-qword (address-of rec-ty) 0)) (ir-expr-span rec-expr)
      in let rd = alloc-temp st-err
      in EmitResult {
       state = st-append-code (rd.state) [15, 11],

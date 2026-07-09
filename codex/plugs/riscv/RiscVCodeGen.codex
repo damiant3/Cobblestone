@@ -90,6 +90,7 @@ Section: Codegen State
    type-defs : List ATypeDef,
    learned-fields : List RvLearnedField,
    wcet-reports : List Text,
+   wcet-pending : List RvWcetPending,
    state-local : Integer,
    memo-next-slot : Integer
   }
@@ -120,6 +121,13 @@ Section: Codegen State
   RvStringEntry = record {
    value : Text,
    offset : Integer
+  }
+
+  RvWcetPending = record {
+   wp-name : Text,
+   wp-budget : Integer,
+   wp-start : Integer,
+   wp-end : Integer
   }
 
   RvEmitResult = record {
@@ -168,6 +176,7 @@ Section: State Constructors
    type-defs = [],
    learned-fields = [],
    wcet-reports = [],
+   wcet-pending = [],
    state-local = (-1),
    memo-next-slot = 0
   }
@@ -710,6 +719,15 @@ Section: NOP Compaction
    in let delta = rv-cnt-before nops off 0 0
    in rv-adjust-func-offsets offs nops (i + 1) (list-push acc (off - delta))
 
+  rv-adjust-wcet-pending : List RvWcetPending, List Integer, Integer, List RvWcetPending -> List RvWcetPending
+  rv-adjust-wcet-pending (ws) (nops) (i) (acc) =
+   if i >= list-length ws then acc
+   else let w = list-at ws i
+   in let s2 = w.wp-start - rv-cnt-before nops (w.wp-start) 0 0
+   in let e2 = w.wp-end - rv-cnt-before nops (w.wp-end) 0 0
+   in let w2 = RvWcetPending { wp-name = w.wp-name, wp-budget = w.wp-budget, wp-start = s2, wp-end = e2 }
+   in rv-adjust-wcet-pending ws nops (i + 1) (list-push acc w2)
+
   rv-compact-nops : RvState -> RvState
   rv-compact-nops (st) =
    let nops = rv-gather-nops st 0 (st.insn-count) []
@@ -719,7 +737,8 @@ Section: NOP Compaction
    in let st3 = __record-set st2 "call-patches" (rv-adjust-patches (st2.call-patches) nops 0 [])
    in let st4 = __record-set st3 "func-addr-fixups" (rv-adjust-func-fixups (st3.func-addr-fixups) nops 0 [])
    in let st5 = __record-set st4 "rodata-fixups" (rv-adjust-rodata-fixups (st4.rodata-fixups) nops 0 [])
-   in __record-set st5 "func-offsets" (rv-adjust-func-offsets (st5.func-offsets) nops 0 [])
+   in let st6 = __record-set st5 "func-offsets" (rv-adjust-func-offsets (st5.func-offsets) nops 0 [])
+   in __record-set st6 "wcet-pending" (rv-adjust-wcet-pending (st6.wcet-pending) nops 0 [])
 
 Section: Call Emission
 

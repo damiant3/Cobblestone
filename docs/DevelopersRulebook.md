@@ -63,10 +63,10 @@ AStar, FloodFill, Raytracer, Rasterizer, ECS, CardDeck, Klondike,
 Inventory, SaveSlot, CellularAutomata, DiamondSquare, Bresenham,
 Voronoi, StateMachine, Tween, Easing, GameCamera, Color
 
-### codex.foreword.math (12 modules) — Mathematics
+### codex.foreword.math (13 modules) — Mathematics
 
 LinearAlgebra, Geometry, Matrix3, Matrix4, Quaternion, Complex,
-Numeric, Optimize, Bezier, Cordic, Spline, Geodesic
+Numeric, Optimize, Bezier, Cordic, Spline, Geodesic, VecArray
 
 ### codex.foreword.signal (14 modules) — Signal Processing
 

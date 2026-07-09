@@ -1,0 +1,32 @@
+Chapter: F64Probe
+  cites Gpu chapter DeviceEffect
+
+ Regression probe for the PTX f64 float path. Codex Real is f64: this
+ kernel must emit ld.global.f64 and st.global.f64 for the -f64
+ intrinsics, mul.f64 / div.rn.f64 / add.f64 for Real arithmetic,
+ mov.f64 for Real literals, setp.gt.f64 for the comparison, .param
+ .f64 for the Real-typed helper parameters, and %fd registers
+ throughout. test-f64.ps1 asserts those forms are present and that no
+ stray .f32 arithmetic appears outside the documented trig sandwich.
+
+Section: Kernels
+
+  gpu-axpy : Integer, Integer, Integer, Integer -> [Device] Integer
+  gpu-axpy (xs) (ys) (out) (n) = act
+   tid <- thread-idx-x
+   if tid < n then f64-axpy-one xs ys out tid
+   else 0
+  end
+
+  f64-axpy-one : Integer, Integer, Integer, Integer -> [Device] Integer
+  f64-axpy-one (xs) (ys) (out) (tid) = act
+   x <- device-load-f64 xs tid
+   y <- device-load-f64 ys tid
+   scaled <- f64-scale x 2.5
+   let blended = scaled + y / 4.0
+   in let clamped = if blended > 100.0 then 100.0 else blended
+   in device-store-f64 out tid clamped
+  end
+
+  f64-scale : Real, Real -> [Device] Real
+  f64-scale (v) (k) = v * k

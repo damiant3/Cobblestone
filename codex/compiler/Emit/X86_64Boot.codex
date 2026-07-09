@@ -1410,6 +1410,20 @@ Section: Device Seed
    in st-append-code st2 (mov-store reg-rdi reg-rax offset)
 
 Section: Capabilities
+
+ emit-grant-cap-mask writes a whole capability mask in one or-store —
+ the boot path grants proc 0 exactly the mask derived from the
+ binary's own manifest (stage 4 of the capability wiring: authority
+ comes from the declared effect rows, not a grant-all list).
+
+  emit-grant-cap-mask : CodegenState, Integer, Integer -> CodegenState
+  emit-grant-cap-mask (st) (proc-index) (mask) =
+   let cap-addr = proc-table-base + proc-index * proc-entry-size + proc-cap-offset
+   in let st1 = st-append-code st (li reg-rdi cap-addr)
+   in let st2 = st-append-code st1 (mov-load reg-rax reg-rdi 0)
+   in let st3 = st-append-code st2 (or-ri reg-rax mask)
+   in st-append-code st3 (mov-store reg-rdi reg-rax 0)
+
   emit-grant-capability : CodegenState, Integer, Integer -> CodegenState
   emit-grant-capability (st) (proc-index) (cap-bit) =
    let cap-addr = proc-table-base + proc-index * proc-entry-size + proc-cap-offset
@@ -1556,21 +1570,31 @@ Section: MSR and Syscall
    in let st13 = st-append-code st12 (pop-r reg-rdi)
    in CheckExpiryResult { state = st13, deny-offset = expired-pos }
 
-  emit-check-capability : CodegenState -> CodegenState
-  emit-check-capability (st) =
+ emit-check-capability tests one named capability bit of the current
+ process's grant word (bt r64, imm8) and leaves the answer in CF. It
+ previously tested bit RDX — the syscall ARGUMENT (the character
+ being written), taken mod 64 — so the console-write gate passed or
+ failed by character value, not by authority. The required bit is an
+ emit-time constant now. The entry address multiplies proc-entry-size
+ by the current-proc index held in R11 — an earlier encoding
+ hardcoded imul rcx, rbx, so the check read a cap word offset by
+ whatever the interrupted program left in RBX and only worked when
+ RBX happened to be zero.
+
+  emit-check-capability : CodegenState, Integer -> CodegenState
+  emit-check-capability (st) (cap-bit) =
    let st1 = st-append-code st (push-r reg-rcx)
-   in let st2 = st-append-code st1 (li reg-rcx proc-table-base)
-   in let st3 = st-append-code st2 (push-r reg-r11)
-   in let st4 = st-append-code st3 (li reg-r11 current-proc-addr)
-   in let st5 = st-append-code st4 (mov-load reg-r11 reg-r11 0)
-   in let st6 = st-append-code st5 (li reg-rcx proc-entry-size)
-   in let st7 = st-append-code st6 [72, 15, 175, 203]
-   in let st8 = st-append-code st7 (add-ri reg-rcx proc-table-base)
-   in let st9 = st-append-code st8 (add-ri reg-rcx proc-cap-offset)
-   in let st10 = st-append-code st9 (mov-load reg-rcx reg-rcx 0)
-   in let st11 = st-append-code st10 [72, 15, 163, 209]
-   in let st12 = st-append-code st11 (pop-r reg-r11)
-   in st-append-code st12 (pop-r reg-rcx)
+   in let st2 = st-append-code st1 (push-r reg-r11)
+   in let st3 = st-append-code st2 (li reg-r11 current-proc-addr)
+   in let st4 = st-append-code st3 (mov-load reg-r11 reg-r11 0)
+   in let st5 = st-append-code st4 (li reg-rcx proc-entry-size)
+   in let st6 = st-append-code st5 (imul-rr reg-rcx reg-r11)
+   in let st7 = st-append-code st6 (add-ri reg-rcx proc-table-base)
+   in let st8 = st-append-code st7 (add-ri reg-rcx proc-cap-offset)
+   in let st9 = st-append-code st8 (mov-load reg-rcx reg-rcx 0)
+   in let st10 = st-append-code st9 [72, 15, 186, 225, cap-bit]
+   in let st11 = st-append-code st10 (pop-r reg-r11)
+   in st-append-code st11 (pop-r reg-rcx)
 
   emit-syscall-handler : CodegenState -> SyscallResult
   emit-syscall-handler (st) =
@@ -1582,9 +1606,9 @@ Section: MSR and Syscall
    in let not-write = st3.code-len
    in let st4 = st-append-code st3 (jcc cc-ne 0)
    in let st5 = st-append-code st4 (mov-rr reg-rdx reg-rdi)
-   in let st6 = emit-check-capability st5
+   in let st6 = emit-check-capability st5 cap-console-write
    in let no-write-cap = st6.code-len
-   in let st7 = st-append-code st6 (jcc cc-e 0)
+   in let st7 = st-append-code st6 (jcc cc-ae 0)
    in let expiry = emit-check-expiry st7
    in let st8 = st-append-code (expiry.state) (mov-rr reg-rax reg-rdx)
    in let st9 = st-append-code st8 (li reg-rdx 1016)
@@ -1598,11 +1622,15 @@ Section: MSR and Syscall
    in let st15 = st-append-code st14 (cmp-ri reg-rax 2)
    in let not-read-key = st15.code-len
    in let st16 = st-append-code st15 (jcc cc-ne 0)
-   in let st17 = st-append-code st16 (li reg-rdi key-buffer-addr)
+   in let st16a = emit-check-capability st16 cap-console-read
+   in let no-read-cap = st16a.code-len
+   in let st16b = st-append-code st16a (jcc cc-ae 0)
+   in let st17 = st-append-code st16b (li reg-rdi key-buffer-addr)
    in let st18 = st-append-code st17 (mov-load reg-rax reg-rdi 0)
    in let read-done = st18.code-len
    in let st19 = st-append-code st18 (jmp 0)
-   in let st20 = patch-jcc-at st19 not-read-key (st19.code-len)
+   in let st19a = patch-jcc-at st19 no-read-cap (st19.code-len)
+   in let st20 = patch-jcc-at st19a not-read-key (st19a.code-len)
    in let st21 = st-append-code st20 (cmp-ri reg-rax 3)
    in let not-get-ticks = st21.code-len
    in let st22 = st-append-code st21 (jcc cc-ne 0)
@@ -1645,12 +1673,21 @@ Section: MSR and Syscall
    done-jmp : Integer between 0 and 4294967295
   }
 
+ Every block syscall (10 read, 11 write, 12 sector count, 13 select)
+ consults the capability word before touching the device: a process
+ without the block-device bit branches to the handler's not-match
+ target, falls through the dispatch chain unmatched, and returns -1
+ from the common exit — the device is never driven.
+
   emit-block-read-syscall : CodegenState -> BlockSyscallResult
   emit-block-read-syscall (st) =
    let st1 = st-append-code st (cmp-ri reg-rax 10)
    in let not-block-read = st1.code-len
    in let st2 = st-append-code st1 (jcc cc-ne 0)
-   in let st3 = st-append-code st2 (push-r reg-rsi)
+   in let stc = emit-check-capability st2 cap-block-device
+   in let no-block-cap = stc.code-len
+   in let st2a = st-append-code stc (jcc cc-ae 0)
+   in let st3 = st-append-code st2a (push-r reg-rsi)
    in let st4 = st-append-code st3 (push-r reg-rcx)
    in let st5 = emit-ata-setup-lba st4
    in let st6 = st-append-code st5 (li reg-rax ata-read-cmd)
@@ -1667,14 +1704,18 @@ Section: MSR and Syscall
    in let done = st15.code-len
    in let st16 = st-append-code st15 (jmp 0)
    in let st17 = patch-jcc-at st16 not-block-read (st16.code-len)
-   in BlockSyscallResult { state = st17, done-jmp = done }
+   in let st18 = patch-jcc-at st17 no-block-cap (st17.code-len)
+   in BlockSyscallResult { state = st18, done-jmp = done }
 
   emit-block-write-syscall : CodegenState -> BlockSyscallResult
   emit-block-write-syscall (st) =
    let st1 = st-append-code st (cmp-ri reg-rax 11)
    in let not-block-write = st1.code-len
    in let st2 = st-append-code st1 (jcc cc-ne 0)
-   in let st3 = st-append-code st2 (push-r reg-rsi)
+   in let stc = emit-check-capability st2 cap-block-device
+   in let no-block-cap = stc.code-len
+   in let st2a = st-append-code stc (jcc cc-ae 0)
+   in let st3 = st-append-code st2a (push-r reg-rsi)
    in let st4 = st-append-code st3 (push-r reg-rcx)
    in let st5 = emit-ata-setup-lba st4
    in let st6 = st-append-code st5 (li reg-rax ata-write-cmd)
@@ -1697,19 +1738,24 @@ Section: MSR and Syscall
    in let done = st19.code-len
    in let st20 = st-append-code st19 (jmp 0)
    in let st21 = patch-jcc-at st20 not-block-write (st20.code-len)
-   in BlockSyscallResult { state = st21, done-jmp = done }
+   in let st22 = patch-jcc-at st21 no-block-cap (st21.code-len)
+   in BlockSyscallResult { state = st22, done-jmp = done }
 
   emit-block-sector-count-syscall : CodegenState -> BlockSyscallResult
   emit-block-sector-count-syscall (st) =
    let st1 = st-append-code st (cmp-ri reg-rax 12)
    in let not-block-sector-count = st1.code-len
    in let st2 = st-append-code st1 (jcc cc-ne 0)
-   in let st3 = st-append-code st2 (li reg-rdi ata-sector-count-addr)
+   in let stc = emit-check-capability st2 cap-block-device
+   in let no-block-cap = stc.code-len
+   in let st2a = st-append-code stc (jcc cc-ae 0)
+   in let st3 = st-append-code st2a (li reg-rdi ata-sector-count-addr)
    in let st4 = st-append-code st3 (mov-load reg-rax reg-rdi 0)
    in let done = st4.code-len
    in let st5 = st-append-code st4 (jmp 0)
    in let st6 = patch-jcc-at st5 not-block-sector-count (st5.code-len)
-   in BlockSyscallResult { state = st6, done-jmp = done }
+   in let st7 = patch-jcc-at st6 no-block-cap (st6.code-len)
+   in BlockSyscallResult { state = st7, done-jmp = done }
 
   emit-ata-active-init : CodegenState -> CodegenState
   emit-ata-active-init (st) =
@@ -1731,7 +1777,10 @@ Section: MSR and Syscall
    let st1 = st-append-code st (cmp-ri reg-rax 13)
    in let not-block-select = st1.code-len
    in let st2 = st-append-code st1 (jcc cc-ne 0)
-   in let st3 = st-append-code st2 (push-r reg-rdi)
+   in let stc = emit-check-capability st2 cap-block-device
+   in let no-block-cap = stc.code-len
+   in let st2a = st-append-code stc (jcc cc-ae 0)
+   in let st3 = st-append-code st2a (push-r reg-rdi)
    in let st4 = st-append-code st3 (li reg-rsi ata-active-drive-addr)
    in let st5 = st-append-code st4 (mov-store reg-rsi reg-rdi 0)
    in let st6 = st-append-code st5 (mov-rr reg-rax reg-rdi)
@@ -1762,14 +1811,24 @@ Section: MSR and Syscall
    in let done = st29.code-len
    in let st30 = st-append-code st29 (jmp 0)
    in let st31 = patch-jcc-at st30 not-block-select (st30.code-len)
-   in BlockSyscallResult { state = st31, done-jmp = done }
+   in let st32 = patch-jcc-at st31 no-block-cap (st31.code-len)
+   in BlockSyscallResult { state = st32, done-jmp = done }
+
+ The key syscalls (15 load, 16 zero, 18 status) guard the pinned
+ identity key the same way the block syscalls guard the disk: the
+ capability word is consulted before the key region is touched, and
+ a process without the identity bit falls through the dispatch chain
+ to the -1 return.
 
   emit-key-load-syscall : CodegenState -> BlockSyscallResult
   emit-key-load-syscall (st) =
    let st1 = st-append-code st (cmp-ri reg-rax 15)
    in let not-key-load = st1.code-len
    in let st2 = st-append-code st1 (jcc cc-ne 0)
-   in let st3 = st-append-code st2 (push-r reg-rcx)
+   in let stc = emit-check-capability st2 cap-identity
+   in let no-identity-cap = stc.code-len
+   in let st2a = st-append-code stc (jcc cc-ae 0)
+   in let st3 = st-append-code st2a (push-r reg-rcx)
    in let st4 = st-append-code st3 (push-r reg-rsi)
    in let st5 = st-append-code st4 (mov-rr reg-rsi reg-rdi)
    in let st6 = st-append-code st5 (li reg-rdi identity-key-addr)
@@ -1785,14 +1844,18 @@ Section: MSR and Syscall
    in let done = st15.code-len
    in let st16 = st-append-code st15 (jmp 0)
    in let st17 = patch-jcc-at st16 not-key-load (st16.code-len)
-   in BlockSyscallResult { state = st17, done-jmp = done }
+   in let st18 = patch-jcc-at st17 no-identity-cap (st17.code-len)
+   in BlockSyscallResult { state = st18, done-jmp = done }
 
   emit-key-zero-syscall : CodegenState -> BlockSyscallResult
   emit-key-zero-syscall (st) =
    let st1 = st-append-code st (cmp-ri reg-rax 16)
    in let not-key-zero = st1.code-len
    in let st2 = st-append-code st1 (jcc cc-ne 0)
-   in let st3 = st-append-code st2 (li reg-rdi identity-key-addr)
+   in let stc = emit-check-capability st2 cap-identity
+   in let no-identity-cap = stc.code-len
+   in let st2a = st-append-code stc (jcc cc-ae 0)
+   in let st3 = st-append-code st2a (li reg-rdi identity-key-addr)
    in let st4 = st-append-code st3 (li reg-rax 0)
    in let st5 = st-append-code st4 (mov-store reg-rdi reg-rax 0)
    in let st6 = st-append-code st5 (mov-store reg-rdi reg-rax 8)
@@ -1805,19 +1868,24 @@ Section: MSR and Syscall
    in let done = st12.code-len
    in let st13 = st-append-code st12 (jmp 0)
    in let st14 = patch-jcc-at st13 not-key-zero (st13.code-len)
-   in BlockSyscallResult { state = st14, done-jmp = done }
+   in let st15 = patch-jcc-at st14 no-identity-cap (st14.code-len)
+   in BlockSyscallResult { state = st15, done-jmp = done }
 
   emit-key-status-syscall : CodegenState -> BlockSyscallResult
   emit-key-status-syscall (st) =
    let st1 = st-append-code st (cmp-ri reg-rax 18)
    in let not-key-status = st1.code-len
    in let st2 = st-append-code st1 (jcc cc-ne 0)
-   in let st3 = st-append-code st2 (li reg-rdi identity-key-loaded-addr)
+   in let stc = emit-check-capability st2 cap-identity
+   in let no-identity-cap = stc.code-len
+   in let st2a = st-append-code stc (jcc cc-ae 0)
+   in let st3 = st-append-code st2a (li reg-rdi identity-key-loaded-addr)
    in let st4 = st-append-code st3 (mov-load reg-rax reg-rdi 0)
    in let done = st4.code-len
    in let st5 = st-append-code st4 (jmp 0)
    in let st6 = patch-jcc-at st5 not-key-status (st5.code-len)
-   in BlockSyscallResult { state = st6, done-jmp = done }
+   in let st7 = patch-jcc-at st6 no-identity-cap (st6.code-len)
+   in BlockSyscallResult { state = st7, done-jmp = done }
 
   ata-control-port : Integer = 1014
 

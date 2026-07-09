@@ -168,6 +168,28 @@ Section: Finalize (sort bindings for bsearch lookup)
    __record-set env "bindings" (sort-by (env.bindings) compare-type-binding-names)
 
 Section: Builtins
+
+ The spawn family is effect-polymorphic in its callback (ForAllEff
+ over the callback's row): the closure runs in the CHILD process, so
+ its effects are not the caller's. Spawning itself is Concurrent.
+ The child inherits the parent's capability word, so an effect the
+ parent never declared is ungranted in the child too and its syscall
+ is refused — the leak is fail-closed at the kernel, not silent.
+
+ identity-set-proc writes another process's identity label, so its
+ kernel helper tests two bits: identity and capability-admin. The
+ row names both effects, which is what lets the manifest grant both.
+
+  identity-admin-row : EffectRow
+  identity-admin-row = EffectRow {
+   labels = [
+    EffectLabel { name = Name { value = "Identity" }, scope = "" },
+    EffectLabel { name = Name { value = "Capability" }, scope = "" }
+   ],
+   tail-name = "",
+   tail-id = __narrow (-1)
+  }
+
   builtin-type-env : TypeEnv
   builtin-type-env =
    let e = empty-type-env
@@ -211,7 +233,8 @@ Section: Builtins
    in let e22a = env-bind e22 "read-file-uni" (FunTy TextTy empty-row TextTy)
    in let e23 = env-bind e22a "write-file" (FunTy TextTy empty-row (FunTy TextTy empty-row NothingTy))
    in let e23a = env-bind e23 "write-binary" (FunTy (ListTy int-ty-default) empty-row NothingTy)
-   in let e24 = env-bind e23a "file-exists" (FunTy TextTy empty-row BooleanTy)
+   in let e23b = env-bind e23a "write-binary-buf" (FunTy int-ty-default empty-row (FunTy int-ty-default empty-row (FunTy int-ty-default empty-row NothingTy)))
+   in let e24 = env-bind e23b "file-exists" (FunTy TextTy empty-row BooleanTy)
    in let e25 = env-bind e24 "list-files" (FunTy TextTy empty-row (FunTy TextTy empty-row (ListTy TextTy)))
    in let e25a = env-bind e25 "list-directories" (FunTy TextTy empty-row (ListTy TextTy))
    in let e25b = env-bind e25a "write-binary-file" (FunTy TextTy empty-row (FunTy (ListTy int-ty-default) empty-row NothingTy))
@@ -257,34 +280,37 @@ Section: Builtins
    in let e35k = env-bind e35j6n "alloc-bytes" (FunTy int-ty-default empty-row int-ty-default)
    in let e35k1 = env-bind e35k "block-select" (FunTy int-ty-default (concrete-row "Device.Block") int-ty-default)
    in let e35l = env-bind e35k1 "block-sector-count" (EffectfulTy [Name { value = "Device.Block" }] [] int-ty-default)
-   in let e35m = env-bind e35l "process-yield" int-ty-default
-   in let e35n = env-bind e35m "process-spawn" (FunTy (FunTy int-ty-default empty-row int-ty-default) empty-row int-ty-default)
+   in let e35l1 = env-bind e35l "key-load" (FunTy int-ty-default (concrete-row "Identity") int-ty-default)
+   in let e35l2 = env-bind e35l1 "key-zero" (EffectfulTy [Name { value = "Identity" }] [] int-ty-default)
+   in let e35l3 = env-bind e35l2 "key-status" (EffectfulTy [Name { value = "Identity" }] [] int-ty-default)
+   in let e35m = env-bind e35l3 "process-yield" int-ty-default
+   in let e35n = env-bind e35m "process-spawn" (ForAllEff 0 (FunTy (FunTy int-ty-default (row-var 0) int-ty-default) (concrete-row "Concurrent") int-ty-default))
    in let e35p = env-bind e35n "process-exit" int-ty-default
-   in let e35q = env-bind e35p "process-spawn-priority" (FunTy (FunTy int-ty-default empty-row int-ty-default) empty-row (FunTy int-ty-default empty-row (FunTy int-ty-default empty-row int-ty-default)))
+   in let e35q = env-bind e35p "process-spawn-priority" (ForAllEff 0 (FunTy (FunTy int-ty-default (row-var 0) int-ty-default) empty-row (FunTy int-ty-default empty-row (FunTy int-ty-default (concrete-row "Concurrent") int-ty-default))))
    in let e35r = env-bind e35q "process-wait" (FunTy int-ty-default empty-row int-ty-default)
    in let e35s = env-bind e35r "get-ticks" int-ty-default
    in let e35t = env-bind e35s "process-get-pid" int-ty-default
-   in let e35u = env-bind e35t "process-restrict-cap" (FunTy int-ty-default empty-row (FunTy int-ty-default empty-row int-ty-default))
-   in let e35v = env-bind e35u "chan-kern-create" (FunTy int-ty-default empty-row int-ty-default)
-   in let e35w = env-bind e35v "chan-kern-send" (FunTy int-ty-default empty-row (FunTy int-ty-default empty-row int-ty-default))
-   in let e35x = env-bind e35w "chan-kern-recv" (FunTy int-ty-default empty-row int-ty-default)
-   in let e35y = env-bind e35x "chan-kern-close" (FunTy int-ty-default empty-row int-ty-default)
+   in let e35u = env-bind e35t "process-restrict-cap" (FunTy int-ty-default empty-row (FunTy int-ty-default (concrete-row "Capability") int-ty-default))
+   in let e35v = env-bind e35u "chan-kern-create" (FunTy int-ty-default (concrete-row "Concurrent") int-ty-default)
+   in let e35w = env-bind e35v "chan-kern-send" (FunTy int-ty-default empty-row (FunTy int-ty-default (concrete-row "Concurrent") int-ty-default))
+   in let e35x = env-bind e35w "chan-kern-recv" (FunTy int-ty-default (concrete-row "Concurrent") int-ty-default)
+   in let e35y = env-bind e35x "chan-kern-close" (FunTy int-ty-default (concrete-row "Concurrent") int-ty-default)
    in let e35z = env-bind e35y "process-kill" (FunTy int-ty-default empty-row int-ty-default)
    in let e35aa = env-bind e35z "process-get-cap" (FunTy int-ty-default empty-row int-ty-default)
    in let e35ab = env-bind e35aa "process-status" (FunTy int-ty-default empty-row int-ty-default)
    in let e35ac = env-bind e35ab "process-count" int-ty-default
-   in let e35ad = env-bind e35ac "chan-kern-send-block" (FunTy int-ty-default empty-row (FunTy int-ty-default empty-row int-ty-default))
-   in let e35ae = env-bind e35ad "chan-kern-recv-block" (FunTy int-ty-default empty-row int-ty-default)
-   in let e35ae1 = env-bind e35ae "chan-text-send" (FunTy int-ty-default empty-row (FunTy TextTy empty-row int-ty-default))
-   in let e35ae2 = env-bind e35ae1 "chan-text-recv" (FunTy int-ty-default empty-row TextTy)
+   in let e35ad = env-bind e35ac "chan-kern-send-block" (FunTy int-ty-default empty-row (FunTy int-ty-default (concrete-row "Concurrent") int-ty-default))
+   in let e35ae = env-bind e35ad "chan-kern-recv-block" (FunTy int-ty-default (concrete-row "Concurrent") int-ty-default)
+   in let e35ae1 = env-bind e35ae "chan-text-send" (FunTy int-ty-default empty-row (FunTy TextTy (concrete-row "Concurrent") int-ty-default))
+   in let e35ae2 = env-bind e35ae1 "chan-text-recv" (FunTy int-ty-default (concrete-row "Concurrent") TextTy)
    in let e35af = env-bind e35ae2 "hardware-random" int-ty-default
    in let e35ag = env-bind e35af "identity-whoami" (FunTy int-ty-default empty-row int-ty-default)
-   in let e35ah = env-bind e35ag "identity-set" (FunTy int-ty-default empty-row (FunTy int-ty-default empty-row int-ty-default))
+   in let e35ah = env-bind e35ag "identity-set" (FunTy int-ty-default empty-row (FunTy int-ty-default (concrete-row "Identity") int-ty-default))
    in let e35ai = env-bind e35ah "device-seed" (FunTy int-ty-default empty-row int-ty-default)
    in let e35aj = env-bind e35ai "boot-factstore-status" int-ty-default
-   in let e35ak = env-bind e35aj "identity-set-proc" (FunTy int-ty-default empty-row (FunTy int-ty-default empty-row (FunTy int-ty-default empty-row int-ty-default)))
+   in let e35ak = env-bind e35aj "identity-set-proc" (FunTy int-ty-default empty-row (FunTy int-ty-default empty-row (FunTy int-ty-default (identity-admin-row) int-ty-default)))
    in let e35al = env-bind e35ak "identity-get-proc" (FunTy int-ty-default empty-row (FunTy int-ty-default empty-row int-ty-default))
-   in let e35am = env-bind e35al "process-spawn-with-heap" (FunTy (FunTy int-ty-default empty-row int-ty-default) empty-row (FunTy int-ty-default empty-row int-ty-default))
+   in let e35am = env-bind e35al "process-spawn-with-heap" (ForAllEff 0 (FunTy (FunTy int-ty-default (row-var 0) int-ty-default) empty-row (FunTy int-ty-default (concrete-row "Concurrent") int-ty-default)))
    in let e35an = env-bind e35am "net-status" int-ty-default
    in let e35ao = env-bind e35an "net-get-hwaddr" (FunTy int-ty-default empty-row int-ty-default)
    in let e35ap = env-bind e35ao "net-send-raw" (FunTy int-ty-default empty-row (FunTy int-ty-default empty-row int-ty-default))
@@ -360,7 +386,9 @@ Section: Builtins
    in let ev6 = env-bind ev5 "vec-div" (FunTy (VectorTy 2 RealTy) empty-row (FunTy (VectorTy 2 RealTy) empty-row (VectorTy 2 RealTy)))
    in let ev7 = env-bind ev6 "vec-reduce-add" (FunTy (VectorTy 2 RealTy) empty-row RealTy)
    in let ev8 = env-bind ev7 "vec-select" (ForAllTy 0 (FunTy (VectorMaskTy 2) empty-row (FunTy (VectorTy 2 (TypeVar 0)) empty-row (FunTy (VectorTy 2 (TypeVar 0)) empty-row (VectorTy 2 (TypeVar 0))))))
-   in let em1 = env-bind ev8 "mask-any" (FunTy (VectorMaskTy 2) empty-row BooleanTy)
+   in let ev9 = env-bind ev8 "vec-load-at" (ForAllTy 0 (FunTy int-ty-default empty-row (VectorTy 2 (TypeVar 0))))
+   in let ev10 = env-bind ev9 "vec-store-at" (ForAllTy 0 (FunTy int-ty-default empty-row (FunTy (VectorTy 2 (TypeVar 0)) empty-row int-ty-default)))
+   in let em1 = env-bind ev10 "mask-any" (FunTy (VectorMaskTy 2) empty-row BooleanTy)
    in let em2 = env-bind em1 "mask-all" (FunTy (VectorMaskTy 2) empty-row BooleanTy)
    in let em3 = env-bind em2 "mask-none" (FunTy (VectorMaskTy 2) empty-row BooleanTy)
    in let em4 = env-bind em3 "mask-count" (FunTy (VectorMaskTy 2) empty-row int-ty-default)

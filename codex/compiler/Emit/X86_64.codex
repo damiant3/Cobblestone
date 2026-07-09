@@ -71,6 +71,17 @@ Section: Function Emission
    in store-local (st-append-code (tmp.state) (mov-load (tmp.reg) reg-rbp stack-offset)) (loc.reg) (tmp.reg)
    in bind-params (add-local st1 (p.name) (loc.reg)) params (i + 1)
 
+  collect-noalias-slots : CodegenState, List Text, Integer, List Integer -> List Integer
+  collect-noalias-slots (st) (names) (i) (acc) =
+   if i == list-length names then acc
+   else let slot = lookup-local (st.locals) (list-at names i)
+   in collect-noalias-slots st names (i + 1) (if slot >= 0 then list-push acc slot else acc)
+
+  bind-noalias-slots : CodegenState, IRDef -> CodegenState
+  bind-noalias-slots (st) (def) =
+   if list-length (def.unique-params) == 0 then st
+   else __record-set st "noalias-slots" (collect-noalias-slots st (def.unique-params) 0 [])
+
   is-self-call : IRExpr, Text -> Boolean
   is-self-call (expr) (func-name) =
    when expr
@@ -650,7 +661,8 @@ Section: Function Emission
    in let st2 = if use-arg-regs then st1 else emit-minimal-pushes st1 nlocals 0
    in let st2g = if prof.lp-has-calls then emit-minimal-guard st2 else st2
    in let st2h = emit-param-guards st2g (def.params) 0
-   in let st3 = bind-params st2h (def.params) 0
+   in let st3p = bind-params st2h (def.params) 0
+   in let st3 = bind-noalias-slots st3p def
    in let st4 = if should-tco def then
        let tco-alloc = if prof.lp-temps > 0 then pre-alloc-tco-temps st3 0 prof.lp-temps []
         else TcoAllocResult { alloc-state = st3, alloc-locals = [] }
@@ -689,7 +701,8 @@ Section: Function Emission
    in let frame-patch-pos = st2.code-len
    in let st3 = st-append-code st2 (emit-sub-rsp-imm32 0)
    in let st3g = emit-param-guards st3 (def.params) 0
-   in let st4 = bind-params st3g (def.params) 0
+   in let st4p = bind-params st3g (def.params) 0
+   in let st4 = bind-noalias-slots st4p def
    in let is-tco = should-tco def
    in let pnames = for p in (def.params) -> p.name
    in let needs-temps = if is-tco & list-length (def.params) <= 4 then tails-all-direct (def.body) True (def.name) pnames == False else is-tco
@@ -698,15 +711,19 @@ Section: Function Emission
     else TcoAllocResult { alloc-state = st4, alloc-locals = [] }
    in let st-a = tco-alloc.alloc-state
    in let p-locals = collect-param-locals (st-a.locals) (def.params) 0 []
-   in __record-set st-a "tco" (TcoState {
+   in let loop-top-pos = st-a.code-len
+   in let st-b = when st-a.watchdog-mode
+    is WatchdogPet -> emit-call-to st-a "__pet_watchdog"
+    is otherwise -> st-a
+   in __record-set st-b "tco" (TcoState {
        active = True,
        in-tail-pos = True,
-       loop-top = st-a.code-len,
+       loop-top = loop-top-pos,
        param-locals = p-locals,
        temp-locals = tco-alloc.alloc-locals,
        current-func = def.name,
-       saved-next-local = st-a.next-local,
-       saved-next-temp = st-a.next-temp
+       saved-next-local = st-b.next-local,
+       saved-next-temp = st-b.next-temp
       })
     else st4
    in let st6 = emit-to-local st5 (def.body) reg-rax (st5.tco.in-tail-pos)
@@ -824,21 +841,29 @@ Section: Function Emission
     in let st1 = st-add-info st cdx-claim-recognized ("proof '" & erased.name & "' erased (compile-time only)") (erased.span)
     in emit-all-defs st1 defs (i + 1)
    else let def = list-at defs i
-   in let start-insn = st.insn-count
+   in let start-code-len = st.code-len
    in let h = __heap-save
    in let func-st = emit-function st def
    in let new-code-len = func-st.code-len
    in let new-data-len = func-st.data-len
    in let new-emit-work = func-st.emit-work
-   in let insn-delta = func-st.insn-count - start-insn
+   in let wcet-insns = if def.is-punctual then x86-count-insns (func-st.workspace.code-buffer) start-code-len new-code-len else 0
    in let restored = __heap-restore h
    in let next-st = deck-record (codegen-carry-forward st new-code-len new-data-len new-emit-work)
-   in let wcet-st = if def.is-punctual then emit-wcet-check next-st def insn-delta else next-st
+   in let wcet-st = if def.is-punctual then emit-wcet-check next-st def wcet-insns else next-st
    in emit-all-defs wcet-st defs (i + 1)
+
+ The instruction count is a decode of the function's finished bytes
+ (x86-count-insns), taken after emit-function has applied its NOP
+ compaction, so the reported CDX6010 count is the count the machine
+ executes. A negative count is the decoder's undecodable-byte report:
+ the emitter produced an encoding outside the decode vocabulary, and
+ the honest response is CDX6012 rather than a partial number.
 
   emit-wcet-check : CodegenState, IRDef, Integer -> CodegenState
   emit-wcet-check (st) (def) (insn-count) =
-   let budget = if def.wcet-budget > 0 then def.wcet-budget else 256
+   if insn-count < 0 then st-add-warning st cdx-rt-wcet-opaque ("[WCET] punctual '" & def.name & "': instruction count unavailable (undecodable byte at body offset " & show (-insn-count - 1) & "; extend X86_64InsnCount)") (def.span)
+   else let budget = if def.wcet-budget > 0 then def.wcet-budget else 256
    in let st2 = st-add-info st cdx-rt-wcet-report ("[WCET] punctual '" & def.name & "': " & show insn-count & " instructions (" & show (insn-count * 100 / budget) & "% of budget " & show budget & ")") (def.span)
    in if insn-count > budget then st-add-warning st2 cdx-rt-wcet-exceeded ("[WCET] punctual '" & def.name & "' exceeds budget: " & show insn-count & " / " & show budget & " instructions") (def.span)
    else st2
@@ -863,6 +888,13 @@ Section: Local Variable Management
     }] & (st.locals))
 
 Section: Expression Emission
+  emit-fc-barrier : EmitResult -> EmitResult
+  emit-fc-barrier (r) =
+   EmitResult {
+    state = fc-flush (r.state),
+    reg = r.reg
+   }
+
   emit-expr : CodegenState, IRExpr -> EmitResult
   emit-expr (st) (expr) =
    if emit-fuel-exhausted st then EmitResult {
@@ -891,11 +923,11 @@ Section: Expression Emission
     is IrMatch (scrut) (branches) (ty) (sp) -> emit-match st scrut branches
     is IrList (elems) (ty) (sp) -> emit-list st elems
     is IrAct (stmts) (ty) (sp) -> emit-act-stmts st stmts 0 (list-length stmts)
-    is IrWithTimeout (secs) (effs) (scopes) (body) (ty) (sp) -> emit-with-timeout st secs body
-    is IrFork (body) (ty) (sp) -> emit-fork st body sp
-    is IrAwait (task) (ty) (sp) -> emit-await st task
-    is IrHandle (eff) (body) (clauses) (ty) (sp) -> emit-handle st eff body clauses ty
-    is IrTry (max) (body) (fb) (fail) (ty) (sp) -> emit-try st max body fb fail
+    is IrWithTimeout (secs) (effs) (scopes) (body) (ty) (sp) -> emit-fc-barrier (emit-with-timeout (fc-flush st) secs body)
+    is IrFork (body) (ty) (sp) -> emit-fc-barrier (emit-fork (fc-flush st) body sp)
+    is IrAwait (task) (ty) (sp) -> emit-fc-barrier (emit-await (fc-flush st) task)
+    is IrHandle (eff) (body) (clauses) (ty) (sp) -> emit-fc-barrier (emit-handle (fc-flush st) eff body clauses ty)
+    is IrTry (max) (body) (fb) (fail) (ty) (sp) -> emit-fc-barrier (emit-try (fc-flush st) max body fb fail)
     is IrLambda (params) (body) (ty) (sp) -> EmitResult {
      state = st-add-error st cdx-ir-error "IrLambda survived lambda lifting" sp,
      reg = reg-rax
@@ -907,7 +939,8 @@ Section: Expression Emission
 
   emit-field-store : CodegenState, IRExpr, Text, IRExpr -> EmitResult
   emit-field-store (st) (rec-expr) (field-name) (val-expr) =
-   let rec-result = emit-expr (st-set-tail-pos st False) rec-expr
+   let fresh-slot = fresh-base-slot st rec-expr
+   in let rec-result = emit-expr (st-set-tail-pos st False) rec-expr
    in let rec-loc = alloc-local (rec-result.state)
    in let st1 = store-local (rec-loc.state) (rec-loc.reg) (rec-result.reg)
    in let rec-ty = resolve-constructed-ty st (ir-expr-type rec-expr)
@@ -916,8 +949,9 @@ Section: Expression Emission
    in when rec-ty
     is RecordTy (rname) (rargs) (rfields) ->
      let fot = cce-byte-offset-and-type rfields field-name
+     in let st-na = noalias-note (loaded.state) rec-expr "field store"
      in EmitResult {
-      state = emit-narrow-store-proven (loaded.state) (fot.type-val) (loaded.reg) (val-result.reg) (fot.offset) val-expr,
+      state = fc-store-barrier (emit-narrow-store-proven st-na (fot.type-val) (loaded.reg) (val-result.reg) (fot.offset) val-expr) fresh-slot (ir-expr-span rec-expr),
       reg = loaded.reg
      }
     is otherwise ->
@@ -1070,7 +1104,7 @@ Section: Expression Emission
   emit-handle (st) (eff) (body) (clauses) (ty) =
    let st-save = emit-push-handler-slots st clauses 0 (list-length clauses)
    in let st1 = emit-handle-clauses st-save clauses 0
-   in let body-result = emit-expr st1 body
+   in let body-result = emit-expr (st-set-tail-pos st1 False) body
    in let save-result = alloc-local (body-result.state)
    in let st-sr = store-local (save-result.state) (save-result.reg) (body-result.reg)
    in let st-pop = emit-pop-handler-slots st-sr clauses (list-length clauses)
@@ -1123,7 +1157,7 @@ Section: Expression Emission
    in let st5 = st-append-code (rt-ld.state) (mov-store (rt-ld.reg) (addr-ld.reg) 0)
    in let st6 = store-local st5 (resume-loc.reg) (rt-ld.reg)
    in let st7 = add-local st6 (clause.resume-name) (resume-loc.reg)
-   in let result = emit-expr st7 (clause.body)
+   in let result = emit-expr (st-set-tail-pos st7 False) (clause.body)
    in let st8 = store-local (result.state) (op-loc.reg) (result.reg)
    in let st9 = emit-store-to-handler-table st8 (clause.op-name) (result.reg)
    in add-local st9 (clause.op-name) (op-loc.reg)
@@ -1146,7 +1180,7 @@ Section: Expression Emission
    in let st3 = st-append-code st2 (add-ri reg-rdi expiry-ticks)
    in let st4 = st-append-code st3 (li reg-rsi cap-expiry-addr)
    in let st5 = st-append-code st4 (mov-store reg-rsi reg-rdi 0)
-   in let body-result = emit-expr st5 body
+   in let body-result = emit-expr (st-set-tail-pos st5 False) body
    in let st6 = st-append-code (body-result.state) (push-r (body-result.reg))
    in let st7 = st-append-code st6 (li reg-rdi cap-expiry-addr)
    in let st8 = st-append-code st7 (li reg-rsi 0)
@@ -1158,17 +1192,18 @@ Section: Expression Emission
   emit-act-stmts (st) (stmts) (i) (len) =
    if i == len then EmitResult { state = st, reg = reg-rax }
    else let s = list-at stmts i
+    in let saved-tail = st.tco.in-tail-pos
     in when s
      is IrDoBind (name) (ty) (val) (sp) ->
       let val-result = emit-expr (st-set-tail-pos st False) val
       in let loc = alloc-local (val-result.state)
        in let st1 = store-local (loc.state) (loc.reg) (val-result.reg)
         in let st2 = add-local st1 name (loc.reg)
-         in emit-act-stmts st2 stmts (i + 1) len
+         in emit-act-stmts (st-set-tail-pos st2 saved-tail) stmts (i + 1) len
      is IrDoExec (e) (sp) ->
       if i == len - 1 then emit-expr st e
       else let r = emit-expr (st-set-tail-pos st False) e
-       in emit-act-stmts (r.state) stmts (i + 1) len
+       in emit-act-stmts (st-set-tail-pos (r.state) saved-tail) stmts (i + 1) len
 
   emit-try-check-flag : CodegenState, Integer -> CodegenState
   emit-try-check-flag (st) (body-failed-pos) =
@@ -1226,7 +1261,7 @@ Section: Expression Emission
    in let st15 = patch-jmp-at st14 jmp-exhaust-pos exhaust-pos
    in let st-fb = if list-length fb > 0
      then let fb-clear = st-append-code st15 (li reg-rdi try-fail-flag-addr & li reg-rsi 0 & mov-store reg-rdi reg-rsi 0)
-       in let fb-result = emit-act-stmts fb-clear fb 0 (list-length fb)
+       in let fb-result = emit-act-stmts (st-set-tail-pos fb-clear False) fb 0 (list-length fb)
        in let fb-flag = st-append-code (fb-result.state) (li reg-rdi try-fail-flag-addr & mov-load reg-rsi reg-rdi 0 & cmp-ri reg-rsi 0)
        in let jne-fail-pos = fb-flag.code-len
        in let fb-done = st-append-code fb-flag (jcc cc-ne 0)
@@ -1238,7 +1273,7 @@ Section: Expression Emission
      then let fail-pos = st16.code-len
        in let st-pfb = if list-length fb > 0 then patch-jcc-at st16 (jmp-end-fb-pos - 6) fail-pos else st16
        in let fail-clear = st-append-code st-pfb (li reg-rdi try-fail-flag-addr & li reg-rsi 0 & mov-store reg-rdi reg-rsi 0)
-       in let fail-result = emit-act-stmts fail-clear fail 0 (list-length fail)
+       in let fail-result = emit-act-stmts (st-set-tail-pos fail-clear False) fail 0 (list-length fail)
        in EmitResult { state = fail-result.state, reg = fail-result.reg }
      else st-fb
    in let end-pos = (st-fail.state).code-len
@@ -1475,8 +1510,9 @@ Section: Expression Emission
   }
 
   emit-to-local : CodegenState, IRExpr, Integer, Boolean -> CodegenState
-  emit-to-local (st) (expr) (target) (in-tail) =
-   when expr
+  emit-to-local (st0) (expr) (target) (in-tail) =
+   let st = fs-remove (fc-evict-slot (fc-evict-reg st0 target) target) target
+   in when expr
     is IrIntLit (v) (sp) | IrNumLit (v) (sp) | IrCharLit (v) (sp) ->
      if target < spill-base then let st1 = st-append-code st (li target v)
      in __record-set st1 "next-temp" (st1.next-temp + 1)
@@ -1666,7 +1702,7 @@ Section: Expression Emission
   emit-name : CodegenState, Text, CodexType -> EmitResult
   emit-name (st) (name) (ty) =
    let slot = lookup-local (st.locals) name
-   in if slot >= 0 then load-local st slot
+   in if slot >= 0 then load-local (fs-remove st slot) slot
       else let eoa = find-effect-op-addr (st.effect-op-addrs) name 0 (list-length (st.effect-op-addrs))
       in if eoa >= 0 then emit-load-from-handler-table st eoa
          else emit-name-nonlocal st name ty
@@ -1679,8 +1715,9 @@ Section: Expression Emission
       else find-effect-op-addr addrs name (i + 1) len
 
   emit-load-from-handler-table : CodegenState, Integer -> EmitResult
-  emit-load-from-handler-table (st) (addr) =
-   let st1 = st-append-code st (li reg-r11 addr)
+  emit-load-from-handler-table (st0) (addr) =
+   let st = fc-evict-reg (fc-evict-reg st0 reg-rax) reg-r11
+   in let st1 = st-append-code st (li reg-r11 addr)
    in let st2 = st-append-code st1 (mov-load reg-rax reg-r11 0)
    in EmitResult { state = st2, reg = reg-rax }
 
@@ -1736,6 +1773,13 @@ Section: Expression Emission
    reg = tmp.reg
   }
 
+  value-is-fresh-alloc : IRExpr -> Boolean
+  value-is-fresh-alloc (e) =
+   when e
+    is IrRecord (n) (fs) (t) (s) -> True
+    is IrList (es) (t) (s) -> True
+    is otherwise -> False
+
   emit-let : CodegenState, Text, IRExpr, IRExpr -> EmitResult
   emit-let (st) (name) (value) (body) =
    let saved-tail = st.tco.in-tail-pos
@@ -1744,7 +1788,8 @@ Section: Expression Emission
    in let st1 = emit-to-local (loc.state) value (loc.reg) False
    in let st1r = __record-set st1 "next-local" keep
    in let st2 = add-local st1r name (loc.reg)
-   in emit-expr (st-set-tail-pos st2 saved-tail) body
+   in let st3 = if value-is-fresh-alloc value then fs-add st2 (loc.reg) else st2
+   in emit-expr (st-set-tail-pos st3 saved-tail) body
 
   is-append-list-op : IRBinaryOp -> Boolean
   is-append-list-op (op) =
@@ -1958,11 +2003,11 @@ Section: Expression Emission
        in when op
         is IrAddInt ->
          let pop-reg = if r.reg == reg-r8 then reg-r9 else reg-r8
-         in let st2 = st-append-code (r.state) (pop-r pop-reg & add-rr (r.reg) pop-reg)
+         in let st2 = st-append-code (fc-evict-reg (r.state) (r.reg)) (pop-r pop-reg & add-rr (r.reg) pop-reg)
          in EmitResult { state = __record-set st2 "next-temp" (st2.next-temp + 1), reg = r.reg }
         is IrMulInt ->
          let pop-reg = if r.reg == reg-r8 then reg-r9 else reg-r8
-         in let st2 = st-append-code (r.state) (pop-r pop-reg & imul-rr (r.reg) pop-reg)
+         in let st2 = st-append-code (fc-evict-reg (r.state) (r.reg)) (pop-r pop-reg & imul-rr (r.reg) pop-reg)
          in EmitResult { state = __record-set st2 "next-temp" (st2.next-temp + 1), reg = r.reg }
         is otherwise ->
          let st2 = st-append-code (r.state) (mov-rr reg-r9 (r.reg))
@@ -2034,7 +2079,7 @@ Section: Expression Emission
 
   emit-reg-right-inplace : CodegenState, IRBinaryOp, Integer, Integer -> EmitResult
   emit-reg-right-inplace (st) (op) (l-reg) (right-reg) =
-   let st2 = st-append-code st (inplace-int-op op l-reg right-reg)
+   let st2 = st-append-code (fc-evict-reg st l-reg) (inplace-int-op op l-reg right-reg)
    in EmitResult { state = __record-set st2 "next-temp" (st2.next-temp + 1), reg = __narrow l-reg }
 
   emit-binary-reg-right : CodegenState, IRBinaryOp, IRExpr, Integer, IRExpr -> EmitResult
@@ -2095,7 +2140,7 @@ Section: Expression Emission
   emit-binary-reg-left (st) (op) (left) (left-reg) (lty) (right) =
    if is-commutative-int-op op then
     let r = emit-expr (st-set-tail-pos st False) right
-    in let st2 = st-append-code (r.state) (inplace-int-op op (r.reg) left-reg)
+    in let st2 = st-append-code (fc-evict-reg (r.state) (r.reg)) (inplace-int-op op (r.reg) left-reg)
     in EmitResult { state = __record-set st2 "next-temp" (st2.next-temp + 1), reg = r.reg }
    else if is-safe-for-reg-left st op right then
     let r = emit-expr (st-set-tail-pos st False) right
@@ -2189,16 +2234,18 @@ Section: Expression Emission
       else if r-reg == reg-rax then reg-r11 else r-reg
      in let save = if r-reg == reg-rdx then mov-rr reg-r11 reg-rdx
       else if r-reg == reg-rax then mov-rr reg-r11 reg-rax else []
+     in let st-ev = fc-evict-reg (fc-evict-reg (fc-evict-reg (rd.state) reg-rax) reg-rdx) reg-r11
      in EmitResult {
-     state = st-append-code (rd.state) (save & mov-rr reg-rax l-reg & cqo & idiv-r div-reg & mov-rr (rd.reg) reg-rax),
+     state = st-append-code st-ev (save & mov-rr reg-rax l-reg & cqo & idiv-r div-reg & mov-rr (rd.reg) reg-rax),
      reg = rd.reg
     }
     is IrRemInt -> let div-reg = if r-reg == reg-rdx then reg-r11
       else if r-reg == reg-rax then reg-r11 else r-reg
      in let save = if r-reg == reg-rdx then mov-rr reg-r11 reg-rdx
       else if r-reg == reg-rax then mov-rr reg-r11 reg-rax else []
+     in let st-ev = fc-evict-reg (fc-evict-reg (fc-evict-reg (rd.state) reg-rax) reg-rdx) reg-r11
      in EmitResult {
-     state = st-append-code (rd.state) (save & mov-rr reg-rax l-reg & cqo & idiv-r div-reg),
+     state = st-append-code st-ev (save & mov-rr reg-rax l-reg & cqo & idiv-r div-reg),
      reg = reg-rdx
     }
     is IrAddNum -> emit-num-arith st l-reg r-reg 88
@@ -2521,8 +2568,9 @@ Section: Expression Emission
 
 Section: Call Emission
   emit-call-to : CodegenState, Text -> CodegenState
-  emit-call-to (st) (target) =
-   let patch-pos = st.code-len
+  emit-call-to (st0) (target) =
+   let st = fc-flush st0
+   in let patch-pos = st.code-len
    in let st1 = st-append-code st (x86-call 0)
    in let cp-o = list-push (st1.cp-offsets) patch-pos
    in let cp-t = list-push (st1.cp-targets) target
@@ -2530,8 +2578,9 @@ Section: Call Emission
    in __record-set st2 "cp-targets" cp-t
 
   emit-jmp-to : CodegenState, Text -> CodegenState
-  emit-jmp-to (st) (target) =
-   let patch-pos = st.code-len
+  emit-jmp-to (st0) (target) =
+   let st = fc-flush st0
+   in let patch-pos = st.code-len
    in let st1 = st-append-code st (jmp 0)
    in let cp-o = list-push (st1.cp-offsets) patch-pos
    in let cp-t = list-push (st1.cp-targets) target

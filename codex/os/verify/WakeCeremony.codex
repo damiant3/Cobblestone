@@ -1,0 +1,71 @@
+Chapter: WakeCeremony
+  cites Verify chapter CdxBinary
+  cites Verify chapter CdxVerifier
+  cites Foreword chapter StringUtils
+
+ The wake ceremony is the first act of a machine that cannot ask
+ anyone what it is. A capsule that wakes with no network, no peers,
+ and no living authority has exactly one source of truth left:
+ mathematics over its own bytes. The ceremony verifies the magic,
+ recomputes the content hash, and checks the author signature, and
+ only then composes the introduction the machine is permitted to
+ speak. Every claim in the introduction is checked before it is
+ spoken. A machine that fails its own verification says so and
+ refuses to act, which is the restrictive default this whole
+ architecture is built on.
+
+ We say:
+
+Section: The Report
+
+  WakeReport = record {
+    size : Integer,
+    magic-ok : Boolean,
+    hash-ok : Boolean,
+    signature-ok : Boolean,
+    hash-hex : Text,
+    author-hex : Text
+  }
+
+  wake-verify : List Integer -> WakeReport
+  wake-verify (binary) =
+    if list-length binary < cdx-header-fixed-size then
+      WakeReport { size = list-length binary, magic-ok = False, hash-ok = False, signature-ok = False, hash-hex = "", author-hex = "" }
+    else WakeReport {
+      size = list-length binary,
+      magic-ok = cdx-verify-magic binary,
+      hash-ok = cdx-verify-content-hash binary,
+      signature-ok = cdx-verify-signature binary,
+      hash-hex = bytes-to-hex-range binary 8 40,
+      author-hex = read-author-key binary
+    }
+
+  wake-sound : WakeReport -> Boolean
+  wake-sound (r) = r.magic-ok & r.hash-ok & r.signature-ok
+
+Section: The Introduction
+
+  wake-hex-short : Text -> Text
+  wake-hex-short (h) = if text-length h < 16 then h else text-take h 16
+
+  wake-check-line : Text, Boolean -> Text
+  wake-check-line (name) (ok) = "  " & name & ": " & (if ok then "True" else "False")
+
+  wake-introduction : WakeReport -> Text
+  wake-introduction (r) =
+    let checks = "WAKE: verifying self before speaking\n"
+      & wake-check-line "magic" (r.magic-ok) & "\n"
+      & wake-check-line "content-hash" (r.hash-ok) & (if r.hash-ok then " sha256:" & wake-hex-short (r.hash-hex) else "") & "\n"
+      & wake-check-line "signature" (r.signature-ok) & (if r.signature-ok then " author:" & wake-hex-short (r.author-hex) else "")
+    in if wake-sound r then checks
+      & "\nI am Codex, a self-sustaining compiler seed of " & show (r.size) & " bytes."
+      & "\nMy source is aboard. I can rebuild myself and prove the result byte-identical."
+      & "\nThe repository remembers everything."
+      & "\nThe language says what you mean."
+      & "\nThe machine checks that you meant it."
+    else checks
+      & "\nI do not verify. I will not act."
+      & "\nA machine that cannot prove what it is must not pretend to be it."
+
+  wake-ceremony : List Integer -> Text
+  wake-ceremony (binary) = wake-introduction (wake-verify binary)

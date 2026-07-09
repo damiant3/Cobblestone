@@ -1,0 +1,183 @@
+Chapter: X86-64 Code Generator
+  cites Codex chapter Numbers
+  cites Codex chapter Lists
+
+ Instruction counting for WCET reporting (CDX6010). The emitter appends
+ machine code in batches -- a single st-append-code call may carry a
+ whole prologue -- so counting append calls under-reports the true
+ instruction count. Worse, NOP compaction rewrites instruction
+ boundaries after the fact: nop-sub-rsp turns one 7-byte SUB into two
+ NOPs, and nop-unused-pushes merges two pushes into one 4-byte NOP.
+ The only honest count is a decode of the finished bytes.
+
+ x86-count-insns walks a code-buffer range after emit-function has
+ returned, when every structural patch is already applied. Deferred
+ patches (call rel32, frame-size imm32) rewrite immediate fields only
+ and never move a boundary, so the count taken here is the count the
+ machine executes.
+
+ The decoder covers exactly the encodings this compiler emits: legacy
+ prefixes 66/F0/F2/F3, one REX byte, the one-byte and 0F two-byte
+ opcode maps used by X86_64Encoder and the hand-rolled emitter
+ sequences, standard ModRM with SIB and displacement, and the
+ immediate widths those opcodes carry. It is not a general x86-64
+ decoder. An opcode outside the vocabulary is never guessed at: the
+ walk stops and reports the offset, and emit-wcet-check surfaces it
+ as CDX6012 so a grown emitter vocabulary extends this table instead
+ of silently corrupting the count. Every return below is a byte
+ length, with -1 meaning unknown or truncated.
+
+Section: Prefix Classification
+
+  x86-is-legacy-prefix : Integer -> Boolean
+  x86-is-legacy-prefix (b) =
+   b == 102 | b == 240 | b == 242 | b == 243
+
+  x86-is-rex : Integer -> Boolean
+  x86-is-rex (b) =
+   b >= 64 & b <= 79
+
+  x86-skip-prefixes : List Integer, Integer -> Integer
+  x86-skip-prefixes (bytes) (i) =
+   if i >= list-length bytes then i
+   else if x86-is-legacy-prefix (list-at bytes i) then x86-skip-prefixes bytes (i + 1)
+   else i
+
+Section: ModRM Tail
+
+ Length of the ModRM byte plus SIB and displacement, from the ModRM
+ index. mod 3 is register-direct. rm 4 outside mod 3 requires a SIB
+ byte; a SIB base of 5 under mod 0 carries disp32. rm 5 under mod 0
+ is RIP-relative disp32. mod 1 carries disp8, mod 2 disp32.
+
+  x86-modrm-tail : List Integer, Integer -> Integer
+  x86-modrm-tail (bytes) (j) =
+   if j >= list-length bytes then -1
+   else let m = list-at bytes j
+   in let md = m / 64
+   in let rm = int-mod m 8
+   in if md == 3 then 1
+   else if rm == 4 then
+    (if j + 1 >= list-length bytes then -1
+     else let base5 = int-mod (list-at bytes (j + 1)) 8 == 5
+     in if md == 1 then 3
+     else if md == 2 then 6
+     else if base5 then 6 else 2)
+   else if md == 1 then 2
+   else if md == 2 then 5
+   else if rm == 5 then 5 else 1
+
+Section: One-Byte Opcode Map
+
+ Returns the byte length after the opcode, or -1 for an opcode outside
+ the emitter vocabulary. The F7 group carries imm32 only for the TEST
+ extension (ModRM reg field 0); NOT, NEG, MUL, DIV, and IDIV carry
+ none.
+
+  x86-len-after-1b : List Integer, Integer, Integer, Boolean -> Integer
+  x86-len-after-1b (bytes) (j) (op) (rexw) =
+   if op == 1 | op == 9 | op == 33 | op == 41 | op == 49 | op == 57 then x86-modrm-tail bytes j
+   else if op >= 80 & op <= 95 then 0
+   else if op == 99 then x86-modrm-tail bytes j
+   else if op == 105 then x86-modrm-add bytes j 4
+   else if op == 109 | op == 111 then 0
+   else if op == 128 then x86-modrm-add bytes j 1
+   else if op == 129 then x86-modrm-add bytes j 4
+   else if op == 131 then x86-modrm-add bytes j 1
+   else if op == 133 | op == 135 | op == 136 | op == 137 | op == 139 | op == 141 then x86-modrm-tail bytes j
+   else if op == 144 | op == 153 | op == 170 then 0
+   else if op >= 184 & op <= 191 then (if rexw then 8 else 4)
+   else if op == 193 then x86-modrm-add bytes j 1
+   else if op == 195 then 0
+   else if op == 199 then x86-modrm-add bytes j 4
+   else if op == 204 | op == 207 then 0
+   else if op == 211 then x86-modrm-tail bytes j
+   else if op == 232 | op == 233 then 4
+   else if op == 235 then 1
+   else if op >= 236 & op <= 239 then 0
+   else if op == 244 then 0
+   else if op == 247 then x86-len-f7-group bytes j
+   else if op >= 250 & op <= 252 then 0
+   else if op == 255 then x86-modrm-tail bytes j
+   else -1
+
+  x86-modrm-add : List Integer, Integer, Integer -> Integer
+  x86-modrm-add (bytes) (j) (imm) =
+   let t = x86-modrm-tail bytes j
+   in if t < 0 then -1 else t + imm
+
+  x86-len-f7-group : List Integer, Integer -> Integer
+  x86-len-f7-group (bytes) (j) =
+   let t = x86-modrm-tail bytes j
+   in if t < 0 then -1
+   else let ext = int-mod (list-at bytes j / 8) 8
+   in if ext == 0 then t + 4 else t
+
+Section: Two-Byte Opcode Map
+
+ The 0F map: system forms (01 group, syscall, ud2), the multi-byte
+ NOP (1F), SSE and SSE2 arithmetic and moves, jcc rel32, setcc,
+ atomics (B1 cmpxchg, C1 xadd), zero and sign extension, and the
+ packed-compare and shuffle forms that carry an imm8 selector.
+
+  x86-len-after-0f : List Integer, Integer, Integer -> Integer
+  x86-len-after-0f (bytes) (j) (op2) =
+   if op2 == 1 then x86-modrm-tail bytes j
+   else if op2 == 5 | op2 == 11 then 0
+   else if op2 == 16 | op2 == 17 | op2 == 20 then x86-modrm-tail bytes j
+   else if op2 == 31 then x86-modrm-tail bytes j
+   else if op2 == 42 | op2 == 44 | op2 == 46 then x86-modrm-tail bytes j
+   else if op2 == 80 then x86-modrm-tail bytes j
+   else if op2 >= 84 & op2 <= 90 then x86-modrm-tail bytes j
+   else if op2 == 92 | op2 == 94 then x86-modrm-tail bytes j
+   else if op2 == 110 | op2 == 126 then x86-modrm-tail bytes j
+   else if op2 >= 128 & op2 <= 143 then 4
+   else if op2 >= 144 & op2 <= 159 then x86-modrm-tail bytes j
+   else if op2 == 174 | op2 == 175 | op2 == 177 then x86-modrm-tail bytes j
+   else if op2 == 182 | op2 == 183 | op2 == 190 | op2 == 191 then x86-modrm-tail bytes j
+   else if op2 == 193 then x86-modrm-tail bytes j
+   else if op2 == 194 | op2 == 198 then x86-modrm-add bytes j 1
+   else if op2 == 212 | op2 == 251 then x86-modrm-tail bytes j
+   else -1
+
+Section: Instruction Length
+
+  x86-insn-len : List Integer, Integer -> Integer
+  x86-insn-len (bytes) (i) =
+   let j0 = x86-skip-prefixes bytes i
+   in if j0 >= list-length bytes then -1
+   else let b0 = list-at bytes j0
+   in let has-rex = x86-is-rex b0
+   in let j1 = if has-rex then j0 + 1 else j0
+   in if j1 >= list-length bytes then -1
+   else let rexw = if has-rex then b0 >= 72 else False
+   in let op = list-at bytes j1
+   in if op == 15 then
+    (if j1 + 1 >= list-length bytes then -1
+     else let op2 = list-at bytes (j1 + 1)
+     in let tail = x86-len-after-0f bytes (j1 + 2) op2
+     in if tail < 0 then -1 else j1 + 2 + tail - i)
+   else let tail = x86-len-after-1b bytes (j1 + 1) op rexw
+   in if tail < 0 then -1 else j1 + 1 + tail - i
+
+Section: Counting
+
+ The walk over a finished code-buffer range. A non-negative result is
+ the instruction count. A negative result is -(offset + 1) of the
+ first byte the decoder could not classify, relative to the start of
+ the range; the caller reports the offset and treats the count as
+ unavailable rather than trusting a partial number.
+
+  x86-count-insns-loop : List Integer, Integer, Integer -> Integer
+  x86-count-insns-loop (bytes) (i) (n) =
+   if i >= list-length bytes then n
+   else let len = x86-insn-len bytes i
+   in if len <= 0 then -(i + 1)
+   else if i + len > list-length bytes then -(i + 1)
+   else x86-count-insns-loop bytes (i + len) (n + 1)
+
+  x86-count-insns : Integer, Integer, Integer -> Integer
+  x86-count-insns (buf) (start) (limit) =
+   if limit <= start then 0
+   else let bytes = __buf-read-bytes buf start (limit - start)
+   in x86-count-insns-loop bytes 0 0

@@ -1,0 +1,115 @@
+Chapter: GopFat16Test
+  cites Works chapter GopFat16
+  cites Foreword chapter Fat16
+  cites Foreword chapter Maybe
+
+ Reads a GPT + FAT16 disk through the payload's own block driver, the
+ way the boot path will read its stick. The image (built independently
+ from the FAT and GPT specs, see the .disk sidecar) puts the ESP at LBA
+ 64, a BOOTX64.EFI three directories deep, and a HELLO.TXT whose 600
+ bytes span two clusters -- so a passing run proves GPT parsing, BPB
+ parsing, a directory walk through subdirectories, and a FAT chain
+ followed across a cluster boundary.
+
+Section: Main
+
+  show-esp : [Device.Port] Text
+  show-esp = act
+    s <- gpt-esp-start
+    "esp-start=" & show s
+  end
+
+  show-mount : [Device.Port] Text
+  show-mount = act
+    m <- gfat-mount-esp
+    if m.gm-ok == False then "mount=FAILED"
+    else "mount=ok fat-start=" & show (m.gm-vol.vol-fat-start)
+       & " root-start=" & show (m.gm-vol.vol-root-start)
+       & " data-start=" & show (m.gm-vol.vol-data-start)
+  end
+
+ A file three levels deep: root -> EFI -> BOOT -> BOOTX64.EFI. Only the
+ directory entry is read; its size is what the walk must recover.
+
+  show-deep : [Device.Port] Text
+  show-deep = act
+    m <- gfat-mount-esp
+    e <- gfat-resolve (m.gm-vol) "EFI/BOOT/BOOTX64.EFI"
+    when e
+      is None -> "deep=NOT-FOUND"
+      is Just (entry) -> "deep=" & entry.de-name & " size=" & show (entry.de-size)
+    end
+  end
+
+ A file whose bytes cross a cluster boundary. The head comes from the
+ first cluster, the final byte from the second -- a reader that ignored
+ the FAT chain would return 512 bytes and a wrong tail.
+
+  show-file : [Device.Port] Text
+  show-file = act
+    m <- gfat-mount-esp
+    f <- gfat-read-file (m.gm-vol) "HELLO.TXT"
+    if f.gf-ok == False then "file=FAILED len=" & show (f.gf-len)
+    else "file-len=" & show (f.gf-len)
+       & " head=" & gfat-text (f.gf-buf) 0 25 ""
+       & " tail=" & show (peek-byte (f.gf-buf) (f.gf-len - 1))
+  end
+
+ A multi-sector command must deliver consecutive sectors. Reading LBA 0..3
+ as ONE command puts the GPT header ("EFI PART") at buffer offset 512; a
+ controller that skips every other sector -- as codex-vm's IDE emulation
+ did until a driver first asked for count > 1 -- lands the partition-entry
+ array there instead.
+
+  show-bulk : [Device.Port] Text
+  show-bulk = act
+    let dest = __heap-save
+    in let adv = __heap-advance 4096
+    in act
+      ok <- disk-read-into 0 4 dest
+      if ok == False then "bulk=FAILED"
+      else "bulk-sig=" & gfat-text dest 512 520 "" & " esp-guid-b0=" & show (peek-byte dest 1024)
+    end
+  end
+
+ The same file read in bulk: the FAT chain is followed in memory and its
+ two clusters coalesce into one command.
+
+  show-bulk-file : [Device.Port] Text
+  show-bulk-file = act
+    m <- gfat-mount-esp
+    let dest = __heap-save
+    in let adv = __heap-advance 2048
+    in act
+      n <- gfat-read-file-bulk (m.gm-vol) "HELLO.TXT" dest
+      if n == 0 then "bulk-file=FAILED"
+      else "bulk-file-len=" & show n & " head=" & gfat-text dest 0 5 "" & " tail=" & show (peek-byte dest (n - 1))
+    end
+  end
+
+  show-missing : [Device.Port] Text
+  show-missing = act
+    m <- gfat-mount-esp
+    e <- gfat-resolve (m.gm-vol) "NOPE.TXT"
+    when e
+      is None -> "missing=None"
+      is Just (entry) -> "missing=FOUND-BUG"
+    end
+  end
+
+  opening : [Console, Device.Port] Nothing = act
+    a <- show-esp
+    print-line-uni a
+    b <- show-mount
+    print-line-uni b
+    c <- show-deep
+    print-line-uni c
+    d <- show-file
+    print-line-uni d
+    f <- show-bulk
+    print-line-uni f
+    g <- show-bulk-file
+    print-line-uni g
+    e <- show-missing
+    print-line-uni e
+  end

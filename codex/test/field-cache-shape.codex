@@ -1,0 +1,70 @@
+Chapter: FieldCacheShape
+
+ Semantic probes for the stage-2 field-load cache. Each function is
+ shaped so that a missed flush or eviction produces a wrong VALUE,
+ not just a wasted instruction: repeated reads hit the cache, then a
+ store, call, branch, division, or slot reuse intervenes and the
+ next read must observe the new state. The expected output pins the
+ correct arithmetic; any staleness shifts a digit.
+
+Section: Types
+
+  Cell = record {
+   val : Integer,
+   aux : Integer
+  }
+
+  mutable Box = record {
+   n : Integer
+  }
+
+Section: Probes
+
+  double-read : Cell -> Integer
+  double-read (c) = c.val + c.val
+
+  read-store-read : Integer -> Integer
+  read-store-read (n) =
+   let b = Box { n = n }
+   in let a = b.n
+   in b.n = n + 100
+   in a + b.n
+
+  read-call-read : Cell -> Integer
+  read-call-read (c) =
+   let a = c.val
+   in let b = bump (c.val)
+   in a + b + c.val
+
+  bump : Integer -> Integer
+  bump (x) = x + 1
+
+  branch-reads : Cell, Boolean -> Integer
+  branch-reads (c) (flag) =
+   let a = c.val
+   in if flag then c.val + a else c.aux + a
+
+  div-between-reads : Cell -> Integer
+  div-between-reads (c) =
+   let a = c.val
+   in let q = c.aux / 3
+   in a + q + c.val
+
+  slot-reuse : Cell -> Integer
+  slot-reuse (c) =
+   let a = (let inner = Cell { val = 5, aux = 6 } in inner.val)
+   in let b = (let inner2 = Cell { val = 9, aux = 2 } in inner2.val)
+   in a + b + c.val
+
+Section: Entry
+
+  opening : [Console] Nothing
+  opening = act
+   print-line-uni (integer-to-text (double-read (Cell { val = 21, aux = 1 })))
+   print-line-uni (integer-to-text (read-store-read 7))
+   print-line-uni (integer-to-text (read-call-read (Cell { val = 10, aux = 0 })))
+   print-line-uni (integer-to-text (branch-reads (Cell { val = 4, aux = 30 }) True))
+   print-line-uni (integer-to-text (branch-reads (Cell { val = 4, aux = 30 }) False))
+   print-line-uni (integer-to-text (div-between-reads (Cell { val = 8, aux = 9 })))
+   print-line-uni (integer-to-text (slot-reuse (Cell { val = 100, aux = 0 })))
+  end

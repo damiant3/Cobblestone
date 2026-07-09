@@ -1,0 +1,63 @@
+Chapter: DiskWriteTest
+  cites Works chapter GopDisk
+
+ Writes a sector and reads it back. The disk starts with a known byte at
+ offset 0 of sector 5; the test overwrites sector 5 with a distinct
+ pattern, reads it back through the normal read path, and checks the
+ pattern survived -- and that an untouched sector (6) still holds its
+ original byte. A driver that wrote nothing, or wrote the wrong sector,
+ fails one of the two.
+
+Section: Main
+
+  fill-pattern : Integer, Integer -> Integer
+  fill-pattern (buf) (i) =
+    if i >= 512 then 0
+    else let w = poke-byte buf i (int-mod (i * 3 + 1) 256)
+    in fill-pattern buf (i + 1)
+
+  check-pattern : Integer, Integer -> Integer
+  check-pattern (buf) (i) =
+    if i >= 512 then 1
+    else if peek-byte buf i /= int-mod (i * 3 + 1) 256 then 0
+    else check-pattern buf (i + 1)
+
+  round-trip : [Device.Port] Text
+  round-trip = act
+    let src = __heap-save
+    in let adv = __heap-advance 512
+    in let f = fill-pattern src 0
+    in act
+      wrote <- disk-write-into 5 1 src
+      r <- disk-read-sector 5
+      guard <- disk-read-sector 6
+      if wrote == False then "write=FAILED"
+      else if r.dr-ok == False then "readback=FAILED"
+      else "wrote=1 pattern=" & show (check-pattern (r.dr-buf) 0) & " guard-b0=" & show (peek-byte (guard.dr-buf) 0)
+    end
+  end
+
+ A two-sector write, to prove the multi-sector count path stores
+ consecutive sectors rather than one sector twice.
+
+  multi : [Device.Port] Text
+  multi = act
+    let src = __heap-save
+    in let adv = __heap-advance 1024
+    in let a = poke-byte src 0 170
+    in let b = poke-byte src 512 187
+    in act
+      wrote <- disk-write-into 10 2 src
+      r0 <- disk-read-sector 10
+      r1 <- disk-read-sector 11
+      if wrote == False then "multi=FAILED"
+      else "multi s0=" & show (peek-byte (r0.dr-buf) 0) & " s1=" & show (peek-byte (r1.dr-buf) 0)
+    end
+  end
+
+  opening : [Console, Device.Port] Nothing = act
+    a <- round-trip
+    print-line-uni a
+    b <- multi
+    print-line-uni b
+  end
