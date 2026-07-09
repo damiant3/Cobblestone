@@ -34,7 +34,12 @@ try {
         $vmArgs += @('-input', $inputFile)
     }
     if ($DiskFile -and (Test-Path -PathType Leaf $DiskFile)) {
-        $vmArgs += @('-disk', $DiskFile)
+        # Copy to a writable temp image: depot sidecars are read-only after
+        # sync (write tests would fail to open the disk), and codex-vm
+        # flushes writes durably (a writable sidecar would be mutated).
+        $diskWork = [System.IO.Path]::GetTempFileName()
+        [System.IO.File]::WriteAllBytes($diskWork, [System.IO.File]::ReadAllBytes($DiskFile))
+        $vmArgs += @('-disk', $diskWork)
     }
 
     $proc = Start-Process -FilePath $script:CodexVmBin -ArgumentList $vmArgs `

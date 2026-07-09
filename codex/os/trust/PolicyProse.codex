@@ -1,0 +1,306 @@
+Chapter: PolicyProse
+  cites Trust chapter PolicyEngine
+  cites Foreword chapter StringUtils
+  cites Foreword chapter Parse
+  cites Foreword chapter CCE
+
+ The PolicyProse compiler turns policy prose into structured policy
+ facts. A parent writes English. The compiler extracts grants,
+ denials, time windows, day filters, and quotas. Unrecognized prose
+ is preserved as commentary, never silently dropped. The Clarifier
+ reflects the understood policy back for confirmation, and the
+ simulator answers what a subject can do at a given moment by
+ evaluating the lowered policy through the PolicyEngine.
+
+ Recognized templates in this version:
+ a subject may use a capability, with optional clauses for days
+ (on weekends, on weekdays, on Saturdays and Sundays), a time
+ window (between HH:MM and HH:MM), and a quota (for no more than
+ N hours or minutes, per session or per day). A subject may not
+ use, or may never use, a capability. Everything else is
+ commentary.
+
+ Days are numbered zero for Monday through six for Sunday. A week
+ minute is day times 1440 plus minute of day, which lets the
+ existing PolicyEngine TimeWindow condition express day-and-time
+ grants with no engine changes.
+
+ We say:
+
+Section: Policy Facts
+
+  ProseGrant = record {
+    subject : Text,
+    capability : Text,
+    days : List Integer,
+    start-minute : Integer,
+    stop-minute : Integer,
+    quota-minutes : Integer,
+    quota-period : Text
+  }
+
+  ProseDenial = record {
+    subject : Text,
+    capability : Text
+  }
+
+  ProsePolicy = record {
+    grants : List ProseGrant,
+    denials : List ProseDenial,
+    commentary : List Text
+  }
+
+Section: Small Builders
+
+  pol-make-grant : Text, Text, List Integer, Integer, Integer, Integer, Text -> ProseGrant
+  pol-make-grant (subject) (cap) (days) (ws) (we) (qm) (qp) = ProseGrant { subject = subject, capability = cap, days = days, start-minute = ws, stop-minute = we, quota-minutes = qm, quota-period = qp }
+
+  pol-with-grant : ProsePolicy, ProseGrant -> ProsePolicy
+  pol-with-grant (pol) (g) = ProsePolicy { grants = list-push (pol.grants) g, denials = pol.denials, commentary = pol.commentary }
+
+  pol-with-denial : ProsePolicy, ProseDenial -> ProsePolicy
+  pol-with-denial (pol) (d) = ProsePolicy { grants = pol.grants, denials = list-push (pol.denials) d, commentary = pol.commentary }
+
+  pol-with-commentary : ProsePolicy, Text -> ProsePolicy
+  pol-with-commentary (pol) (line) = ProsePolicy { grants = pol.grants, denials = pol.denials, commentary = list-push (pol.commentary) line }
+
+Section: Text Helpers
+
+  pol-space : Char -> Boolean
+  pol-space (c) = to-unicode (char-code c) == 32
+
+  pol-trim : Text -> Text
+  pol-trim (s) =
+    let len = text-length s
+    in let start = pol-trim-start s 0 len
+    in let stop = pol-trim-stop s (len - 1)
+    in if stop < start then ""
+    else text-substring s start (stop - start + 1)
+
+  pol-trim-start : Text, Integer, Integer -> Integer
+  pol-trim-start (s) (i) (len) =
+    if i >= len then i
+    else if pol-space (char-at s i) then pol-trim-start s (i + 1) len
+    else i
+
+  pol-trim-stop : Text, Integer -> Integer
+  pol-trim-stop (s) (i) =
+    if i < 0 then i
+    else if pol-space (char-at s i) then pol-trim-stop s (i - 1)
+    else i
+
+  pol-split-lines : Text -> List Text
+  pol-split-lines (s) = pol-split-loop s 0 (text-length s) []
+
+  pol-split-loop : Text, Integer, Integer, List Text -> List Text
+  pol-split-loop (s) (start) (len) (acc) =
+    if start >= len then acc
+    else let rest = text-drop s start
+    in let i = text-index-of rest "\n"
+    in if i < 0 then list-push acc (pol-trim rest)
+    else pol-split-loop s (start + i + 1) len (list-push acc (pol-trim (text-take rest i)))
+
+  pol-cut-at : Text, Text -> Text
+  pol-cut-at (s) (marker) =
+    let i = text-index-of s marker
+    in if i < 0 then s else text-take s i
+
+Section: Clause Parsing
+
+  pol-clean-capability : Text -> Text
+  pol-clean-capability (raw) =
+    let s0 = if text-starts-with raw "the " then text-drop raw 4 else raw
+    in let s1 = pol-cut-at s0 " under any circumstances"
+    in let s2 = pol-cut-at s1 " on "
+    in let s3 = pol-cut-at s2 " between "
+    in let s4 = pol-cut-at s3 " for no more than "
+    in let s5 = pol-cut-at s4 ","
+    in let s6 = pol-cut-at s5 "."
+    in pol-trim s6
+
+  pol-parse-days : Text -> List Integer
+  pol-parse-days (s) =
+    if text-contains s "on weekends" then [5, 6]
+    else if text-contains s "on Saturdays and Sundays" then [5, 6]
+    else if text-contains s "on weekdays" then [0, 1, 2, 3, 4]
+    else [0, 1, 2, 3, 4, 5, 6]
+
+  pol-parse-clock : Text -> Integer
+  pol-parse-clock (s) =
+    let h = parse-decimal s 0
+    in let k = text-index-of s ":"
+    in let m = if k < 0 then 0 else parse-decimal s (k + 1)
+    in h * 60 + m
+
+  pol-window-start : Text -> Integer
+  pol-window-start (s) =
+    let i = text-index-of s " between "
+    in if i < 0 then 0
+    else pol-parse-clock (text-drop s (i + 9))
+
+  pol-window-stop : Text -> Integer
+  pol-window-stop (s) =
+    let i = text-index-of s " between "
+    in if i < 0 then 1439
+    else let rest = text-drop s (i + 9)
+    in let j = text-index-of rest " and "
+    in if j < 0 then 1439
+    else pol-parse-clock (text-drop rest (j + 5))
+
+  pol-quota-minutes : Text -> Integer
+  pol-quota-minutes (s) =
+    let i = text-index-of s " for no more than "
+    in if i < 0 then 0 - 1
+    else let rest = text-drop s (i + 18)
+    in let n = parse-decimal rest 0
+    in if text-contains rest "hour" then n * 60 else n
+
+  pol-quota-period : Text -> Text
+  pol-quota-period (s) =
+    if text-contains s "per day" then "day" else "session"
+
+Section: The Compiler
+
+  compile-policy : Text -> ProsePolicy
+  compile-policy (src) =
+    let lines = pol-split-lines src
+    in pol-lines lines 0 (list-length lines) (ProsePolicy { grants = [], denials = [], commentary = [] })
+
+  pol-lines : List Text, Integer, Integer, ProsePolicy -> ProsePolicy
+  pol-lines (lines) (i) (n) (pol) =
+    if i >= n then pol
+    else pol-lines lines (i + 1) n (pol-line (list-at lines i) pol)
+
+  pol-line : Text, ProsePolicy -> ProsePolicy
+  pol-line (line) (pol) =
+    if text-length line == 0 then pol
+    else if text-contains line " may never use " then pol-add-denial line " may never use " pol
+    else if text-contains line " may not use " then pol-add-denial line " may not use " pol
+    else if text-contains line " may use " then pol-add-grant line pol
+    else pol-with-commentary pol line
+
+  pol-add-denial : Text, Text, ProsePolicy -> ProsePolicy
+  pol-add-denial (line) (marker) (pol) =
+    let i = text-index-of line marker
+    in let subject = pol-trim (text-take line i)
+    in let rest = text-drop line (i + text-length marker)
+    in pol-with-denial pol (ProseDenial { subject = subject, capability = pol-clean-capability rest })
+
+  pol-add-grant : Text, ProsePolicy -> ProsePolicy
+  pol-add-grant (line) (pol) =
+    let i = text-index-of line " may use "
+    in let subject = pol-trim (text-take line i)
+    in let rest = text-drop line (i + 9)
+    in let cap = pol-clean-capability rest
+    in let days = pol-parse-days rest
+    in let ws = pol-window-start rest
+    in let we = pol-window-stop rest
+    in let qm = pol-quota-minutes rest
+    in let qp = if qm < 0 then "" else pol-quota-period rest
+    in pol-with-grant pol (pol-make-grant subject cap days ws we qm qp)
+
+Section: Lowering to PolicyEngine
+
+  policy-week-minute : Integer, Integer -> Integer
+  policy-week-minute (day) (minute) = day * 1440 + minute
+
+  lower-policy : ProsePolicy, Text -> Policy
+  lower-policy (pp) (name) =
+    let p0 = policy-empty name
+    in let p1 = pol-lower-denials pp p0 0 (list-length (pp.denials))
+    in pol-lower-grants pp p1 0 (list-length (pp.grants))
+
+  pol-lower-denials : ProsePolicy, Policy, Integer, Integer -> Policy
+  pol-lower-denials (pp) (pol) (i) (n) =
+    if i >= n then pol
+    else let d = list-at (pp.denials) i
+    in pol-lower-denials pp (policy-add-rule pol (rule-deny ("deny:" & d.capability) (CapabilityMatch (d.capability) 2) "denied by policy")) (i + 1) n
+
+  pol-lower-grants : ProsePolicy, Policy, Integer, Integer -> Policy
+  pol-lower-grants (pp) (pol) (i) (n) =
+    if i >= n then pol
+    else let g = list-at (pp.grants) i
+    in pol-lower-grants pp (policy-add-rule pol (rule-allow ("grant:" & g.capability) (AllOf [CapabilityMatch (g.capability) 2, AnyOf (pol-grant-windows g)]))) (i + 1) n
+
+  pol-grant-windows : ProseGrant -> List PolicyCondition
+  pol-grant-windows (g) = pol-windows-loop g 0 (list-length (g.days)) []
+
+  pol-windows-loop : ProseGrant, Integer, Integer, List PolicyCondition -> List PolicyCondition
+  pol-windows-loop (g) (i) (n) (acc) =
+    if i >= n then acc
+    else let d = list-at (g.days) i
+    in pol-windows-loop g (i + 1) n (list-push acc (TimeWindow (policy-week-minute d (g.start-minute)) (policy-week-minute d (g.stop-minute))))
+
+Section: The Clarifier
+
+  pol-day-name : Integer -> Text
+  pol-day-name (d) =
+    when d
+      is 0 -> "Monday"
+      is 1 -> "Tuesday"
+      is 2 -> "Wednesday"
+      is 3 -> "Thursday"
+      is 4 -> "Friday"
+      is 5 -> "Saturday"
+      is otherwise -> "Sunday"
+
+  pol-clock-text : Integer -> Text
+  pol-clock-text (m) =
+    let h = m / 60
+    in let mm = m - h * 60
+    in pol-pad2 h & ":" & pol-pad2 mm
+
+  pol-pad2 : Integer -> Text
+  pol-pad2 (n) = if n < 10 then "0" & show n else show n
+
+  pol-plural : Integer, Text -> Text
+  pol-plural (n) (word) = show n & " " & word & (if n == 1 then "" else "s")
+
+  pol-days-text : List Integer -> Text
+  pol-days-text (days) =
+    if list-length days == 7 then "every day"
+    else pol-days-loop days 0 (list-length days) ""
+
+  pol-days-loop : List Integer, Integer, Integer, Text -> Text
+  pol-days-loop (days) (i) (n) (acc) =
+    if i >= n then acc
+    else let sep = if i == 0 then "" else ", "
+    in pol-days-loop days (i + 1) n (acc & sep & pol-day-name (list-at days i))
+
+  pol-window-text : ProseGrant -> Text
+  pol-window-text (g) =
+    if g.start-minute == 0 & g.stop-minute == 1439 then "all day"
+    else pol-clock-text (g.start-minute) & " to " & pol-clock-text (g.stop-minute)
+
+  pol-quota-text : ProseGrant -> Text
+  pol-quota-text (g) =
+    if g.quota-minutes < 0 then "none"
+    else show (g.quota-minutes) & " minutes per " & g.quota-period
+
+  clarifier-reflect : ProsePolicy -> Text
+  clarifier-reflect (pp) =
+    let head = "I understood " & pol-plural (list-length (pp.grants)) "grant" & " and " & pol-plural (list-length (pp.denials)) "denial" & "."
+    in let body = pol-grants-text pp 0 (list-length (pp.grants)) head
+    in let body2 = pol-denials-text pp 0 (list-length (pp.denials)) body
+    in body2 & "\ncommentary: " & pol-plural (list-length (pp.commentary)) "line"
+
+  pol-grants-text : ProsePolicy, Integer, Integer, Text -> Text
+  pol-grants-text (pp) (i) (n) (acc) =
+    if i >= n then acc
+    else let g = list-at (pp.grants) i
+    in let entry = "grant: " & g.subject & " may use \"" & g.capability & "\"\n  days: " & pol-days-text (g.days) & "\n  window: " & pol-window-text g & "\n  quota: " & pol-quota-text g
+    in pol-grants-text pp (i + 1) n (acc & "\n" & entry)
+
+  pol-denials-text : ProsePolicy, Integer, Integer, Text -> Text
+  pol-denials-text (pp) (i) (n) (acc) =
+    if i >= n then acc
+    else let d = list-at (pp.denials) i
+    in pol-denials-text pp (i + 1) n (acc & "\ndenial: " & d.subject & " may never use \"" & d.capability & "\"")
+
+Section: The Simulator
+
+  simulate-ask : Policy, Text, Text, Integer, Integer -> Text
+  simulate-ask (pol) (who) (cap) (day) (minute) =
+    let ctx = PolicyContext { capability = cap, direction = 2, trust-score = 0, current-time = policy-week-minute day minute, agent-id = who }
+    in let d = eval-policy pol ctx
+    in pol-day-name day & " " & pol-clock-text minute & " " & cap & " -> " & (if d.allowed then "ALLOW" else "DENY") & " (" & d.matched-rule & ")"

@@ -39,6 +39,20 @@ Section: Serial I/O
    in let st5 = emit-out-byte st4 1018 199
    in emit-out-byte st5 1020 11
 
+  emit-blit-probe : CodegenState -> CodegenState
+  emit-blit-probe (st) =
+   let st1 = st-append-code st (li reg-rdi 36176)
+   in let st2 = st-append-code st1 (li reg-rax 0)
+   in let st3 = st-append-code st2 (mov-store reg-rdi reg-rax 0)
+   in let st4 = st-append-code st3 (li reg-rdx 1297)
+   in let st5 = st-append-code st4 in-al-dx
+   in let st6 = st-append-code st5 (cmp-ri reg-rax 183)
+   in let skip-pos = st6.code-len
+   in let st7 = st-append-code st6 (jcc cc-ne 0)
+   in let st8 = st-append-code st7 (li reg-rax 1)
+   in let st9 = st-append-code st8 (mov-store reg-rdi reg-rax 0)
+   in patch-jcc-at st9 skip-pos (st9.code-len)
+
   emit-serial-wait-and-send : CodegenState, Integer -> CodegenState
   emit-serial-wait-and-send (st) (byte-val) =
    let wait-top = st.code-len
@@ -292,9 +306,7 @@ Section: Print Text
    in let t0-utf8-pos = st7a.code-len
    in let st7b = st-append-code st7a (jcc cc-ge 0)
    in let st7c = st-append-code st7b (add-ri reg-rsp 8)
-   in let st8 = emit-serial-wait-thr st7c
-   in let st9 = st-append-code st8 (li reg-rdx 1016)
-   in let st10 = st-append-code st9 out-dx-al
+   in let st10 = emit-call-to st7c "__serial_put"
    in let idx3 = load-local st10 saved-idx
    in let st11 = st-append-code (idx3.state) (add-ri (idx3.reg) 1)
    in let st12 = store-local st11 saved-idx (idx3.reg)
@@ -310,15 +322,11 @@ Section: Print Text
    in let st-t0u8 = st-append-code st-t0u7 (push-r reg-rax)
    in let st-t0u9 = st-append-code st-t0u8 (shr-ri reg-rax 6)
    in let st-t0u10 = st-append-code st-t0u9 (or-ri reg-rax 192)
-   in let st-t0u11 = emit-serial-wait-thr st-t0u10
-   in let st-t0u12 = st-append-code st-t0u11 (li reg-rdx 1016)
-   in let st-t0u13 = st-append-code st-t0u12 out-dx-al
+   in let st-t0u13 = emit-call-to st-t0u10 "__serial_put"
    in let st-t0u14 = st-append-code st-t0u13 (pop-r reg-rax)
    in let st-t0u15 = st-append-code st-t0u14 (and-ri reg-rax 63)
    in let st-t0u16 = st-append-code st-t0u15 (or-ri reg-rax 128)
-   in let st-t0u17 = emit-serial-wait-thr st-t0u16
-   in let st-t0u18 = st-append-code st-t0u17 (li reg-rdx 1016)
-   in let st-t0u19 = st-append-code st-t0u18 out-dx-al
+   in let st-t0u19 = emit-call-to st-t0u16 "__serial_put"
    in let idx-t0u = load-local st-t0u19 saved-idx
    in let st-t0u20 = st-append-code (idx-t0u.state) (add-ri (idx-t0u.reg) 1)
    in let st-t0u21 = store-local st-t0u20 saved-idx (idx-t0u.reg)
@@ -386,7 +394,8 @@ Section: Print Text
   emit-print-text (st) (ptr-reg) =
    let saved-ptr = alloc-local st
    in let st1 = store-local (saved-ptr.state) (saved-ptr.reg) ptr-reg
-   in let saved-table = alloc-local st1
+   in let st1b = emit-call-to st1 "__print_begin"
+   in let saved-table = alloc-local st1b
    in let st2 = emit-load-rodata-addr (saved-table.state) reg-r11 cce-to-unicode-rodata-offset
    in let st2a = store-local st2 (saved-table.reg) reg-r11
    in let ptr-ld = load-local st2a (saved-ptr.reg)
@@ -398,13 +407,16 @@ Section: Print Text
    in let st5 = st-append-code (saved-idx.state) (li reg-r11 0)
    in let st6 = store-local st5 (saved-idx.reg) reg-r11
    in let st7 = emit-print-text-loop st6 (saved-ptr.reg) (saved-table.reg) (saved-len.reg) (saved-idx.reg)
-   in emit-print-newline st7
+   in let st8 = st-append-code st7 (li reg-rax 10)
+   in let st9 = emit-call-to st8 "__serial_put"
+   in emit-call-to st9 "__print_flush"
 
   emit-print-text-no-newline : CodegenState, Integer -> CodegenState
   emit-print-text-no-newline (st) (ptr-reg) =
    let saved-ptr = alloc-local st
    in let st1 = store-local (saved-ptr.state) (saved-ptr.reg) ptr-reg
-   in let saved-table = alloc-local st1
+   in let st1b = emit-call-to st1 "__print_begin"
+   in let saved-table = alloc-local st1b
    in let st2 = emit-load-rodata-addr (saved-table.state) reg-r11 cce-to-unicode-rodata-offset
    in let st2a = store-local st2 (saved-table.reg) reg-r11
    in let ptr-ld = load-local st2a (saved-ptr.reg)
@@ -415,7 +427,8 @@ Section: Print Text
    in let saved-idx = alloc-local st4
    in let st5 = st-append-code (saved-idx.state) (li reg-r11 0)
    in let st6 = store-local st5 (saved-idx.reg) reg-r11
-   in emit-print-text-loop st6 (saved-ptr.reg) (saved-table.reg) (saved-len.reg) (saved-idx.reg)
+   in let st7 = emit-print-text-loop st6 (saved-ptr.reg) (saved-table.reg) (saved-len.reg) (saved-idx.reg)
+   in emit-call-to st7 "__print_flush"
 
   emit-print-bool : CodegenState, Integer -> CodegenState
   emit-print-bool (st) (val-reg) =

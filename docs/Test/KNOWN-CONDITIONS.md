@@ -136,3 +136,46 @@ clause-param/resume shadowing). A `linear`/`mutable` value used only inside a
 handler clause is no longer mis-reported as a leak. The sum is approximate: a
 value used in both the handle body and a *conditional* clause can over-count
 (rare). Sound-leaning.
+
+## Transpiler plugs — 20 are runtime-dead (build clean, crash/hang when fed IR)
+
+**Only the plug BUILD is gated.** `build/build.ps1` compiles the plug
+CDX binaries and confirms they build; nothing exercises them at
+runtime. So a plug can build clean and still crash or hang the moment
+it is handed IR over TCP. The runtime `test-plugs.ps1` matrix is the
+only thing that catches this, and it is not in any gate.
+
+**Full runtime classification, 2026-07-07 (seed 917711F3, one boot per
+plug on `hello`):**
+
+| Verdict | Count | Plugs |
+|---------|------:|-------|
+| ALIVE (builds + runs) | 28 | ada, babbage, cobol, csharp, elixir, fortran, haskell, html, javascript, kotlin, lua, maui, nim, objc, ocaml, php, ptx, python, ruby, rust, scala, spirv, swift, wasm, wgsl, winforms, wpf, zig |
+| DEAD (builds, hangs/empties when fed IR) | 20 | angular, clojure, compose, d, electron, flutter, go, groovy, gtk, java, julia, pascal, perl, qt, react, scheme, svelte, swiftui, typescript, vue |
+| N/A (different `run.ps1` interface) | 2 | arm64, riscv — native backends, driven by the cross-arch board battery, not this matrix |
+
+**The dead set is PRE-EXISTING rot, not caused by demand paging or the
+run.ps1 repair.** Verified: `angular` reproduces the same "empty
+response from plug" (exit 8) on the pre-demand seed (7CE0E867) and
+blu's demand seed (DDAB0BD2) as on the current one — the plug CDX
+itself faults/hangs when it walks the IR, independent of the compiler
+seed. The failure clusters by target family: nearly all the UI-framework
+plugs (angular, compose, electron, flutter, gtk, qt, react, svelte,
+swiftui, vue) plus a band of language plugs (clojure, d, go, groovy,
+java, julia, pascal, perl, scheme, typescript).
+
+**Distinct from the CL 7214 script repair.** On 2026-07-07, 37 plug
+`run.ps1` scripts were fixed for PowerShell parse errors introduced by
+the CL 4990 mass-edit (orphan braces; a deleted `try {` line; a missing
+`-mem 3072`). That made the test matrix *runnable* again for all 50
+plugs. This entry is the layer underneath: of the now-runnable set, 20
+plug CDX binaries are themselves broken at runtime. Fixing them is a
+dedicated per-plug codegen campaign (same shape as the RISC-V plug
+repair) — each dead plug needs its IR walker debugged against a real
+boot, not a script fix.
+
+**How to re-measure:** boot each `codex/plugs/<name>/build-output/*.cdx`
+via its `run.ps1 -Src hello.codex` with a short (~20s) timeout; ALIVE =
+exit 0 with non-empty output, DEAD = hang/empty. Do NOT use
+`test-plugs.ps1`'s full matrix for a quick census — its 120s-per-input
+timeout over 9 inputs makes a dead plug cost ~18 minutes.

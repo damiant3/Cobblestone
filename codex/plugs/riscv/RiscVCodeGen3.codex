@@ -1141,7 +1141,8 @@ Section: Module Emission
    in let st3 = rv-emit-all-defs st2 (chapter.defs) 0
    in let st3w = rv-check-builtin-collisions st3 (st3.func-names) 0
    in let st3c = rv-compact-nops st3w
-   in let st4 = rv-patch-calls st3c
+   in let st3r = rv-flush-wcet-pending st3c 0
+   in let st4 = rv-patch-calls st3r
    in let st5 = rv-patch-func-addrs st4
    in let st6 = rv-patch-rodata st5
    in if rv-disasm-enabled then rv-disasm-listing st6 else st6
@@ -1364,15 +1365,22 @@ Section: Effect Handler Emission
    in let st2 = rv-patch-insn st1 (fixup.insn-index + 1) (rv-addi (fixup.rd) (fixup.rd) (hl.lo))
    in rv-patch-rodata-loop st2 fixups rodata-byte-off (i + 1)
 
-  rv-wcet-report : IRDef, Integer -> Text
-  rv-wcet-report (def) (insn-count) =
-   let budget = if def.wcet-budget > 0 then def.wcet-budget else 256
+  rv-wcet-report : Text, Integer, Integer -> Text
+  rv-wcet-report (name) (budget-raw) (insn-count) =
+   let budget = if budget-raw > 0 then budget-raw else 256
    in let pct = insn-count * 100 / budget
    in let prof = rv-esp32-c6
    in let worst-cycles = insn-count * prof.cycles-div
    in let us = worst-cycles * 1000000 / prof.clock-hz
    in let exceeded = if insn-count > budget then " EXCEEDED" else ""
-   in "[WCET] punctual '" & def.name & "': " & show insn-count & " insns, ~" & show worst-cycles & " cycles (" & show us & "us @" & prof.name & "), " & show pct & "% of budget " & show budget & exceeded
+   in "[WCET] punctual '" & name & "': " & show insn-count & " insns, ~" & show worst-cycles & " cycles (" & show us & "us @" & prof.name & "), " & show pct & "% of budget " & show budget & exceeded
+
+  rv-flush-wcet-pending : RvState, Integer -> RvState
+  rv-flush-wcet-pending (st) (i) =
+   if i >= list-length (st.wcet-pending) then st
+   else let w = list-at (st.wcet-pending) i
+   in let line = rv-wcet-report (w.wp-name) (w.wp-budget) (w.wp-end - w.wp-start)
+   in rv-flush-wcet-pending (__record-set st "wcet-reports" (list-push (st.wcet-reports) line)) (i + 1)
 
   rv-emit-all-defs : RvState, List IRDef, Integer -> RvState
   rv-emit-all-defs (st) (defs) (i) =
@@ -1380,8 +1388,7 @@ Section: Effect Handler Emission
    else let def = list-at defs i
    in let start-insn = st.insn-count
    in let st1 = rv-emit-function st def
-   in let insn-delta = st1.insn-count - start-insn
-   in let st2 = if def.is-punctual then __record-set st1 "wcet-reports" (list-push (st1.wcet-reports) (rv-wcet-report def insn-delta)) else st1
+   in let st2 = if def.is-punctual then __record-set st1 "wcet-pending" (list-push (st1.wcet-pending) (RvWcetPending { wp-name = def.name, wp-budget = def.wcet-budget, wp-start = start-insn, wp-end = st1.insn-count })) else st1
    in rv-emit-all-defs st2 defs (i + 1)
 
 Section: Wire Output

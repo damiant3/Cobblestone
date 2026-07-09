@@ -1,0 +1,58 @@
+Chapter: GopTextFieldTest
+  cites Works chapter GopText
+  cites Kernel chapter Keyboard
+  cites Kernel chapter BitmapFont
+
+ Exercises the GOP text field's editing logic against a scratch
+ framebuffer carved from the heap -- the field draws real pixels, but
+ into RAM instead of a display. The scancode stream is a realistic
+ Set-1 capture: make and break codes interleaved, a held shift, a
+ navigation make code (extended-arrow collision), backspace, and one
+ keystroke past the field's four-character capacity.
+
+Section: Main
+
+  test-field : Integer, Boolean -> GtField
+  test-field (fb) (masked) = GtField {
+    gf-base = fb,
+    gf-stride = 64,
+    gf-font = cbf-init,
+    gf-x = 8,
+    gf-y = 8,
+    gf-wchars = 4,
+    gf-scale = 1,
+    gf-fg = 16777215,
+    gf-bg = 0,
+    gf-cursor = 65280,
+    gf-masked = masked
+  }
+
+  feed : GtField, Text, KbState, List Integer, Integer -> Text
+  feed (f) (buf) (st) (scs) (i) =
+    if i >= list-length scs then buf
+    else let ev = kb-process-scancode st (__narrow (list-at scs i))
+    in feed f (gt-apply f buf ev) (ev.state) scs (i + 1)
+
+  run-edit : Text
+  run-edit =
+    let fb = __heap-save
+    in let adv = __heap-advance 16384
+    in let f = test-field fb False
+    in let d0 = gt-draw f ""
+    in feed f "" kb-state-new [30, 158, 48, 176, 2, 130, 42, 30, 158, 170, 14, 142, 72, 200, 30, 158] 0
+
+  probe-cursor : Boolean -> Integer
+  probe-cursor (masked) =
+    let fb = __heap-save
+    in let adv = __heap-advance 16384
+    in let f = test-field fb masked
+    in let d = gt-draw f "ab"
+    in let cx = 8 + 2 * 8
+    in if peek-32 fb ((8 * 64 + cx) * 4) == 65280 then 1 else 0
+
+  opening : [Console] Nothing = act
+    r <- run-edit
+    print-line-uni ("final: " & r)
+    print-line-uni ("cursor: " & show (probe-cursor False))
+    print-line-uni ("mask-cursor: " & show (probe-cursor True))
+  end

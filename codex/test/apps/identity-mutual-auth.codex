@@ -1,23 +1,28 @@
 Chapter: IdentityMutualAuth
 
+ Two children are labelled by the parent through identity-set-proc,
+ then each is read back by pid. Labelling another process needs both
+ Identity and Capability; spawning needs Concurrent.
+
 Section: Body
-  opening : [Console] Nothing = act
-    let alice-key = 111
-    in let bob-key = 222
-    in let alice = process-spawn (\x ->
-      poke-byte 28000 0 (process-get-pid))
-    in let sa = identity-set-proc alice 0 alice-key
-    in let bob = process-spawn (\x ->
-      poke-byte 28008 0 (process-get-pid))
-    in let sb = identity-set-proc bob 0 bob-key
-    in let wa = process-wait alice
+  alice-body : Integer -> Integer
+  alice-body (x) = poke-byte 28000 0 (process-get-pid)
+
+  bob-body : Integer -> Integer
+  bob-body (x) = poke-byte 28008 0 (process-get-pid)
+
+  verdict : Integer, Integer -> Text
+  verdict (alice) (bob) =
+    let wa = process-wait alice
     in let wb = process-wait bob
-    in let alice-pid = peek-byte 28000 0
-    in let bob-pid = peek-byte 28008 0
-    in let alice-id = identity-get-proc alice-pid 0
-    in let bob-id = identity-get-proc bob-pid 0
-    in if alice-id == alice-key then if bob-id == bob-key then
-      print-line-uni "PASS: mutual authentication"
-    else print-line-uni "FAIL: bob identity wrong"
-    else print-line-uni "FAIL: alice identity wrong"
+    in if identity-get-proc (peek-byte 28000 0) 0 /= 111 then "FAIL: alice identity wrong"
+    else if identity-get-proc (peek-byte 28008 0) 0 /= 222 then "FAIL: bob identity wrong"
+    else "PASS: mutual authentication"
+
+  opening : [Console, Concurrent, Identity, Capability] Nothing = act
+    alice <- process-spawn (\x -> alice-body x)
+    sa <- identity-set-proc alice 0 111
+    bob <- process-spawn (\x -> bob-body x)
+    sb <- identity-set-proc bob 0 222
+    print-line-uni (verdict alice bob)
   end

@@ -1,0 +1,61 @@
+Chapter: VecExtractHazards
+  cites Foreword chapter Console
+
+ Regression probes for two emitter hazards in the extract builtins,
+ both found during the VecArray stage and fixed together. First, a
+ call in receiver position returns its cell pointer raw in RAX; the
+ index operand's temp allocation could land on RAX when the rotation
+ wrapped, zeroing the receiver before the load - the extract then
+ read address zero, which demand paging happily serves as zeros.
+ Second, the emitters shifted the index register in place; when the
+ index was a register-resident local, the variable itself was
+ corrupted for every later read. Each probe below computes a wrong
+ value if its hazard returns. The chain of bindings before the
+ call-receiver extracts varies the temp-rotation position so the
+ old collision is exercised at multiple offsets.
+
+Section: Makers
+
+  make-vec : Real -> Vector 2 Real
+  make-vec (x) = vec-splat x
+
+  make-vec4 : Integer -> Vector 4 (Real approximate)
+  make-vec4 (seed) = vec4-splat (to-real-approx (real-from-int seed))
+
+Section: Entry
+
+  opening : [Console] Nothing
+  opening = act
+    let a = 100
+    in let b = a + 1
+    in let c = b + 1
+    in let d = c + 1
+    in let e = d + 1
+    in let f = e + 1
+    in let g = f + 1
+    in let x0 = vec-extract (make-vec 7.5) 0
+    in let x1 = vec-extract (make-vec 8.5) 1
+    in let x2 = vec-extract (make-vec 9.5) 0
+    in let x3 = vec-extract (make-vec 10.5) 1
+    in let x4 = vec-extract (make-vec 11.5) 0
+    in let x5 = vec-extract (make-vec 12.5) 1
+    in let idx = 1
+    in let v = make-vec 42.0
+    in let picked = vec-extract v idx
+    in let idx-after = idx + 10
+    in let q = make-vec4 9
+    in let q1 = vec4-extract q idx
+    in let idx-final = idx + 100
+    in act
+      print-line-uni ("x0: " & show x0)
+      print-line-uni ("x1: " & show x1)
+      print-line-uni ("x2: " & show x2)
+      print-line-uni ("x3: " & show x3)
+      print-line-uni ("x4: " & show x4)
+      print-line-uni ("x5: " & show x5)
+      print-line-uni ("picked: " & show picked)
+      print-line-uni ("idx-after: " & show idx-after)
+      print-line-uni ("idx-final: " & show idx-final)
+      print-line-uni ("chain: " & show g)
+    end
+  end

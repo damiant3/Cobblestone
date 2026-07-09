@@ -1,13 +1,27 @@
 Chapter: IdentityNoCap
 
+ A child that drops its own identity bit is refused by the kernel.
+ The parent declares Identity, so the grant exists and is inherited;
+ the child restricts it away (Capability) and the following
+ identity-set returns -1.
+
 Section: Body
-  opening : [Console] Nothing = act
-    let child = process-spawn (\x ->
-      let r = process-restrict-cap (process-get-pid) 15
-      in let set-result = identity-set 0 999
-      in poke-byte 28000 0 (if set-result == (0 - 1) then 1 else 0))
-    in let wt = process-wait child
-    in let ok = peek-byte 28000 0
-    in if ok == 1 then print-line-uni "PASS: identity-set denied without cap-identity"
-    else print-line-uni "FAIL: identity-set succeeded without cap"
+  record-result : Integer -> Integer
+  record-result (set-result) = poke-byte 28000 0 (if set-result == (0 - 1) then 1 else 0)
+
+  set-after-restrict : Integer -> [Identity] Integer
+  set-after-restrict (r) = record-result (identity-set 0 999)
+
+  child-body : Integer -> [Capability, Identity] Integer
+  child-body (x) = set-after-restrict (process-restrict-cap (process-get-pid) 15)
+
+  verdict : Integer -> Text
+  verdict (child) =
+    let wt = process-wait child
+    in if peek-byte 28000 0 == 1 then "PASS: identity-set denied without cap-identity"
+    else "FAIL: identity-set succeeded without cap"
+
+  opening : [Console, Concurrent, Capability, Identity] Nothing = act
+    child <- process-spawn (\x -> child-body x)
+    print-line-uni (verdict child)
   end

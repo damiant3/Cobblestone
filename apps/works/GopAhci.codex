@@ -1,0 +1,315 @@
+Chapter: GopAhci
+  cites Kernel chapter Pci
+  cites Foreword chapter Maybe
+
+ Post-ExitBootServices AHCI sector reads (B3.1b). Modern boards -- q35,
+ and both machines in our matrix -- expose no legacy IDE at 0x1F0, so
+ the payload must speak AHCI to reach its own boot medium once firmware
+ is gone.
+
+ The controller is found by PCI class 0x01 subclass 0x06; BAR5 is the
+ HBA register block (ABAR). We enable memory space AND bus master (the
+ HBA is a DMA master: it writes the sector into our buffer itself), set
+ GHC.AE, pick the first port with a SATA drive present, stop that port,
+ point it at a command list, FIS receive area, and command table we
+ allocate and zero ourselves, restart it, then issue one READ DMA EXT
+ through a single PRDT entry and poll the command-issue bit.
+
+ The firmware left the controller running, so stopping the port before
+ repointing its registers is not optional -- an HBA reading a stale
+ command list would DMA into memory that is now ours.
+
+ All register access is 32-bit: `peek-32`/`poke-32` are plain 32-bit
+ moves, and an AHCI register must never be touched at another width.
+ Every poll is fuel-bounded, so a wedged or absent controller returns a
+ failure rather than hanging the boot.
+
+ We say:
+
+Section: HBA Registers
+
+  ahci-ghc : Integer = 4
+  ahci-pi : Integer = 12
+
+  ahci-ghc-ae : Integer = 2147483648
+
+  ahci-port-base : Integer = 256
+  ahci-port-size : Integer = 128
+
+  px-clb : Integer = 0
+  px-clbu : Integer = 4
+  px-fb : Integer = 8
+  px-fbu : Integer = 12
+  px-is : Integer = 16
+  px-cmd : Integer = 24
+  px-tfd : Integer = 32
+  px-sig : Integer = 36
+  px-ssts : Integer = 40
+  px-serr : Integer = 48
+  px-ci : Integer = 56
+
+  px-cmd-st : Integer = 1
+  px-cmd-fre : Integer = 16
+  px-cmd-fr : Integer = 16384
+  px-cmd-cr : Integer = 32768
+
+  px-tfd-drq : Integer = 8
+  px-tfd-bsy : Integer = 128
+
+  px-is-tfes : Integer = 1073741824
+
+  sata-sig-disk : Integer = 257
+  all-ones : Integer = 4294967295
+
+  ahci-cmd-read : Integer = 37
+  ahci-cmd-write : Integer = 53
+
+  ahci-fuel : Integer = 1000000
+
+Section: Bit Helpers
+
+  clear-bit : Integer, Integer -> Integer
+  clear-bit (v) (b) = if bit-and v b /= 0 then v - b else v
+
+  align-up : Integer, Integer -> Integer
+  align-up (v) (a) =
+    let m = a - 1
+    in (v + m) - bit-and (v + m) m
+
+ Bump-allocate `size` bytes aligned to `align` (a power of two) and zero
+ them. The HBA reads these structures by DMA, so a stale byte is a real
+ command; zeroing is not hygiene, it is correctness.
+
+  alloc-zeroed : Integer, Integer -> Integer
+  alloc-zeroed (size) (align) =
+    let raw = __heap-save
+    in let adv = __heap-advance (size + align)
+    in let base = align-up raw align
+    in let z = zero-dwords base 0 (size / 4)
+    in base
+
+  zero-dwords : Integer, Integer, Integer -> Integer
+  zero-dwords (addr) (i) (n) =
+    if i >= n then 0
+    else let p = poke-32 addr (i * 4) 0
+    in zero-dwords addr (i + 1) n
+
+Section: Controller Discovery
+
+  AhciHba = record {
+    hba-ok : Boolean,
+    hba-abar : Integer,
+    hba-port : Integer
+  }
+
+  ahci-no-hba : AhciHba
+  ahci-no-hba = AhciHba { hba-ok = False, hba-abar = 0, hba-port = 0 }
+
+ Enable memory space (bit 1) and bus master (bit 2). Bus master is what
+ lets the HBA write our buffer; without it the command completes and the
+ buffer stays empty.
+
+  ahci-enable : PciDevice -> [Device.Port] Integer
+  ahci-enable (d) =
+    let cmd = pci-read-config (d.pci-bus) (d.pci-dev) (d.pci-func) 4
+    in pci-write-config (d.pci-bus) (d.pci-dev) (d.pci-func) 4 (bit-or cmd 6)
+
+  ahci-find : [Device.Port] AhciHba
+  ahci-find = act
+    scan <- pci-scan-bus 0
+    when pci-find-class scan 1 6
+      is None -> ahci-no-hba
+      is Just (d) -> ahci-init-device d
+  end
+
+  ahci-init-device : PciDevice -> [Device.Port] AhciHba
+  ahci-init-device (d) = act
+    en <- ahci-enable d
+    bar <- pci-parse-bar (d.pci-bus) (d.pci-dev) (d.pci-func) 5
+    if bar.bar-base == 0 then ahci-no-hba
+    else let abar = bar.bar-base
+    in let ghc = peek-32 abar ahci-ghc
+    in let ae = poke-32 abar ahci-ghc (bit-or ghc ahci-ghc-ae)
+    in let pi = peek-32 abar ahci-pi
+    in let port = ahci-pick-port abar pi 0
+    in if port < 0 then ahci-no-hba
+    else AhciHba { hba-ok = True, hba-abar = abar, hba-port = port }
+  end
+
+  port-addr : Integer, Integer -> Integer
+  port-addr (abar) (port) = abar + ahci-port-base + port * ahci-port-size
+
+ A port counts only when it is implemented, its PHY reports a device
+ with communication established (SSTS.DET == 3), and its signature is a
+ plain SATA disk (an ATAPI drive answers a different command set).
+
+  ahci-pick-port : Integer, Integer, Integer -> Integer
+  ahci-pick-port (abar) (pi) (i) =
+    if i >= 32 then -1
+    else if bit-and (bit-shru pi i) 1 == 0 then ahci-pick-port abar pi (i + 1)
+    else let p = port-addr abar i
+    in let det = bit-and (peek-32 p px-ssts) 15
+    in if det /= 3 then ahci-pick-port abar pi (i + 1)
+    else if peek-32 p px-sig /= sata-sig-disk then ahci-pick-port abar pi (i + 1)
+    else i
+
+Section: Port Start and Stop
+
+  ahci-wait-clear : Integer, Integer, Integer, Integer -> Integer
+  ahci-wait-clear (p) (reg) (mask) (fuel) =
+    if bit-and (peek-32 p reg) mask == 0 then 1
+    else if fuel <= 0 then 0
+    else ahci-wait-clear p reg mask (fuel - 1)
+
+  ahci-stop-port : Integer -> Integer
+  ahci-stop-port (p) =
+    let c0 = peek-32 p px-cmd
+    in let w0 = poke-32 p px-cmd (clear-bit c0 px-cmd-st)
+    in let a = ahci-wait-clear p px-cmd px-cmd-cr ahci-fuel
+    in let c1 = peek-32 p px-cmd
+    in let w1 = poke-32 p px-cmd (clear-bit c1 px-cmd-fre)
+    in ahci-wait-clear p px-cmd px-cmd-fr ahci-fuel
+
+  ahci-start-port : Integer -> Integer
+  ahci-start-port (p) =
+    let a = ahci-wait-clear p px-cmd px-cmd-cr ahci-fuel
+    in let c0 = peek-32 p px-cmd
+    in let w0 = poke-32 p px-cmd (bit-or c0 px-cmd-fre)
+    in let c1 = peek-32 p px-cmd
+    in poke-32 p px-cmd (bit-or c1 px-cmd-st)
+
+Section: Command Construction
+
+ Command header slot 0: five dwords of command FIS, one PRDT entry.
+ Bit 6 of the first dword marks a write (host to device); a read leaves
+ it clear.
+
+  ahci-write-header-w : Integer, Integer, Boolean -> Integer
+  ahci-write-header-w (clb) (ctba) (is-write) =
+    let d0 = poke-32 clb 0 (5 + 65536 + (if is-write then 64 else 0))
+    in let d1 = poke-32 clb 4 0
+    in let d2 = poke-32 clb 8 ctba
+    in poke-32 clb 12 0
+
+  ahci-write-header : Integer, Integer -> Integer
+  ahci-write-header (clb) (ctba) = ahci-write-header-w clb ctba False
+
+ A register host-to-device FIS carrying an ATA DMA-EXT command (`cmd`,
+ 0x25 read / 0x35 write) for `count` sectors at `lba`, LBA48 addressing
+ (device register 0x40). Dword 0 is FIS type 0x27 | C bit 0x8000 with the
+ command in byte 2 (0x27 | 0x8000 = 32807). The count occupies bytes
+ 12-13; a count of 0 means 65536 sectors to the drive, so callers must
+ pass 1 or more.
+
+  ahci-write-fis-cmd : Integer, Integer, Integer, Integer -> Integer
+  ahci-write-fis-cmd (ctba) (lba) (count) (cmd) =
+    let d0 = poke-32 ctba 0 (bit-or 32807 (bit-shl (bit-and cmd 255) 16))
+    in let d1 = poke-32 ctba 4 (bit-or (bit-and lba 255) (bit-or (bit-shl (bit-and (bit-shru lba 8) 255) 8) (bit-or (bit-shl (bit-and (bit-shru lba 16) 255) 16) 1073741824)))
+    in let d2 = poke-32 ctba 8 (bit-or (bit-and (bit-shru lba 24) 255) (bit-or (bit-shl (bit-and (bit-shru lba 32) 255) 8) (bit-shl (bit-and (bit-shru lba 40) 255) 16)))
+    in let d3 = poke-32 ctba 12 (bit-and count 65535)
+    in poke-32 ctba 16 0
+
+  ahci-write-fis-n : Integer, Integer, Integer -> Integer
+  ahci-write-fis-n (ctba) (lba) (count) = ahci-write-fis-cmd ctba lba count ahci-cmd-read
+
+  ahci-write-fis : Integer, Integer -> Integer
+  ahci-write-fis (ctba) (lba) = ahci-write-fis-n ctba lba 1
+
+ One PRDT entry at command-table offset 128: the destination buffer and
+ a byte count held as count-minus-one, with the interrupt-on-completion
+ bit set. A single PRD covers up to 4 MB, so one entry carries the whole
+ transfer -- the entire seed arrives in one command.
+
+  ahci-write-prdt-n : Integer, Integer, Integer -> Integer
+  ahci-write-prdt-n (ctba) (buf) (bytes) =
+    let d0 = poke-32 ctba 128 buf
+    in let d1 = poke-32 ctba 132 0
+    in let d2 = poke-32 ctba 136 0
+    in poke-32 ctba 140 ((bytes - 1) + 2147483648)
+
+  ahci-write-prdt : Integer, Integer -> Integer
+  ahci-write-prdt (ctba) (buf) = ahci-write-prdt-n ctba buf 512
+
+Section: Sector Read
+
+  AhciRead = record {
+    ar-ok : Boolean,
+    ar-buf : Integer
+  }
+
+ Wait for the command-issue bit to clear. A task-file error (IS.TFES)
+ aborts the wait: the command failed and the buffer is meaningless.
+
+  ahci-wait-ci : Integer, Integer, Integer -> Integer
+  ahci-wait-ci (p) (slot-mask) (fuel) =
+    if bit-and (peek-32 p px-ci) slot-mask == 0 then 1
+    else if bit-and (peek-32 p px-is) px-is-tfes /= 0 then 0
+    else if fuel <= 0 then 0
+    else ahci-wait-ci p slot-mask (fuel - 1)
+
+ Read `count` sectors at `lba` into `dest` with one command. Returns 1 on
+ success. `dest` must hold count*512 bytes and lie below 4 GB -- the PRD
+ base is programmed as a 32-bit address with a zero upper half, which is
+ where the boot heap lives.
+
+ Issue one DMA-EXT command -- read or write -- of `count` sectors at
+ `lba` against the buffer `mem`. Read fills `mem` from disk; write sends
+ `mem` to disk. The only differences are the command byte and the
+ header's write bit, so both share this path. `mem` must lie below 4 GB
+ (the PRD upper half is zero), which is where the boot heap lives.
+
+  ahci-issue-on : AhciHba, Integer, Integer, Integer, Integer, Boolean -> Integer
+  ahci-issue-on (hba) (lba) (count) (mem) (cmd) (is-write) =
+    let p = port-addr (hba.hba-abar) (hba.hba-port)
+    in let stopped = ahci-stop-port p
+    in if stopped == 0 then 0
+    else let clb = alloc-zeroed 1024 1024
+    in let fb = alloc-zeroed 256 256
+    in let ctba = alloc-zeroed 256 128
+    in let s1 = poke-32 p px-clb clb
+    in let s2 = poke-32 p px-clbu 0
+    in let s3 = poke-32 p px-fb fb
+    in let s4 = poke-32 p px-fbu 0
+    in let s5 = poke-32 p px-serr all-ones
+    in let s6 = poke-32 p px-is all-ones
+    in let started = ahci-start-port p
+    in let h = ahci-write-header-w clb ctba is-write
+    in let f = ahci-write-fis-cmd ctba lba count cmd
+    in let r = ahci-write-prdt-n ctba mem (count * 512)
+    in let idle = ahci-wait-clear p px-tfd (bit-or px-tfd-bsy px-tfd-drq) ahci-fuel
+    in if idle == 0 then 0
+    else let issue = poke-32 p px-ci 1
+    in let done = ahci-wait-ci p 1 (ahci-fuel * 16)
+    in done
+
+  ahci-read-into-on : AhciHba, Integer, Integer, Integer -> Integer
+  ahci-read-into-on (hba) (lba) (count) (dest) =
+    ahci-issue-on hba lba count dest ahci-cmd-read False
+
+  ahci-read-into : Integer, Integer, Integer -> [Device.Port] Integer
+  ahci-read-into (lba) (count) (dest) = act
+    hba <- ahci-find
+    if hba.hba-ok then ahci-read-into-on hba lba count dest
+    else 0
+  end
+
+  ahci-write-into : Integer, Integer, Integer -> [Device.Port] Integer
+  ahci-write-into (lba) (count) (src) = act
+    hba <- ahci-find
+    if hba.hba-ok then ahci-issue-on hba lba count src ahci-cmd-write True
+    else 0
+  end
+
+  ahci-read-sector-on : AhciHba, Integer -> AhciRead
+  ahci-read-sector-on (hba) (lba) =
+    let buf = alloc-zeroed 512 512
+    in let ok = ahci-read-into-on hba lba 1 buf
+    in if ok == 0 then AhciRead { ar-ok = False, ar-buf = 0 }
+    else AhciRead { ar-ok = True, ar-buf = buf }
+
+  ahci-read-sector : Integer -> [Device.Port] AhciRead
+  ahci-read-sector (lba) = act
+    hba <- ahci-find
+    if hba.hba-ok then ahci-read-sector-on hba lba
+    else AhciRead { ar-ok = False, ar-buf = 0 }
+  end

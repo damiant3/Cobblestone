@@ -1,0 +1,46 @@
+Chapter: FreshAllocNarrow
+
+ Stage 3 of NoAliasCodegen: a store through a freshly constructed
+ record narrows cache invalidation to that base alone, because virgin
+ bump-allocator memory is provably disjoint from every earlier cached
+ base. Freshness dies the moment the pointer is read as a value, so
+ the alias probe below must take the full-flush path: if narrowing
+ wrongly survived the alias bind, the stale cached read shifts the
+ output.
+
+Section: Types
+
+  Cell = record {
+   val : Integer,
+   aux : Integer
+  }
+
+  mutable Box = record {
+   n : Integer,
+   m : Integer
+  }
+
+Section: Probes
+
+  fresh-narrow : Cell -> Integer
+  fresh-narrow (t) =
+   let a = t.val
+   in let b = Box { n = 0, m = 0 }
+   in b.n = a + 41
+   in a + t.val + b.n
+
+  alias-store : Integer -> Integer
+  alias-store (n) =
+   let b = Box { n = n, m = 0 }
+   in let y = b
+   in let a = y.n
+   in b.n = n + 7
+   in a + y.n + b.n
+
+Section: Entry
+
+  opening : [Console] Nothing
+  opening = act
+   print-line-uni (integer-to-text (fresh-narrow (Cell { val = 5, aux = 0 })))
+   print-line-uni (integer-to-text (alias-store 10))
+  end

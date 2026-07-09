@@ -1,0 +1,295 @@
+Chapter: GopDisk
+  cites Works chapter GopAhci
+
+ Post-ExitBootServices disk reads. Once the boot stub calls
+ ExitBootServices the firmware's Block I/O protocol is gone, so the
+ payload must drive a controller itself. Two paths, tried in that order
+ by `disk-read-sector`:
+
+ AHCI (GopAhci, B3.1b) -- modern boards, q35, both machines in our
+ matrix. Found by PCI class; the HBA fetches the sector by DMA.
+
+ Legacy IDE PIO (this chapter, B3.1a) -- codex-vm's `-disk`, QEMU
+ '-machine pc', old boards. Primary channel, ports 0x1F0-0x1F7.
+
+ AHCI is tried first because a board with both usually presents the boot
+ disk on the AHCI controller, and the legacy ports may answer for an
+ empty compatibility channel.
+
+ LBA28 READ SECTORS (command 0x20): select the drive with the top LBA
+ nibble, program the count and 24-bit LBA, issue the command, then for
+ each sector poll the status port until BSY clears and DRQ sets and
+ read 256 16-bit words from the data port. Every poll loop is fuel-
+ bounded so a missing or wedged disk fails to a status code instead of
+ hanging; a program hosting this compiles with the pet flag anyway,
+ like every boot-path loop.
+
+ We say:
+
+Section: Ports
+
+  ide-data : Integer = 496
+  ide-sect-count : Integer = 498
+  ide-lba-lo : Integer = 499
+  ide-lba-mid : Integer = 500
+  ide-lba-hi : Integer = 501
+  ide-drive : Integer = 502
+  ide-command : Integer = 503
+  ide-status : Integer = 503
+
+  ide-st-bsy : Integer = 128
+  ide-st-drq : Integer = 8
+  ide-st-err : Integer = 1
+
+  ide-cmd-read : Integer = 32
+  ide-cmd-write : Integer = 48
+  ide-cmd-flush : Integer = 231
+
+  ide-poll-fuel : Integer = 100000
+
+Section: Status Polling
+
+ Wait for BSY to clear. Returns the last status byte read; the caller
+ checks ERR. Fuel-bounded: exhaustion returns the busy status so the
+ caller sees BSY still set and treats it as a failure.
+
+  ide-wait-not-busy : Integer -> [Device.Port] Integer
+  ide-wait-not-busy (fuel) = act
+    s <- port-in-byte ide-status
+    if bit-and s ide-st-bsy == 0 then s
+    else if fuel <= 0 then s
+    else ide-wait-not-busy (fuel - 1)
+  end
+
+  ide-wait-drq : Integer -> [Device.Port] Integer
+  ide-wait-drq (fuel) = act
+    s <- port-in-byte ide-status
+    if bit-and s ide-st-bsy /= 0 then
+      if fuel <= 0 then s else ide-wait-drq (fuel - 1)
+    else if bit-and s ide-st-drq /= 0 then s
+    else if bit-and s ide-st-err /= 0 then s
+    else if fuel <= 0 then s
+    else ide-wait-drq (fuel - 1)
+  end
+
+Section: Word Transfer
+
+ Read 256 words (one 512-byte sector) from the data port into the
+ buffer at addr. Bytes are stored little-endian, matching how the disk
+ lays them out. Self-recursive over the word index -- constant stack.
+
+  ide-read-words : Integer, Integer -> [Device.Port] Integer
+  ide-read-words (addr) (i) = act
+    if i >= 256 then 0
+    else act
+      w <- port-in-16 ide-data
+      let lo = poke-byte addr (i * 2) (bit-and w 255)
+      in let hi = poke-byte addr (i * 2 + 1) (bit-and (bit-shru w 8) 255)
+      in ide-read-words addr (i + 1)
+    end
+  end
+
+Section: Sector Read
+
+ Read one LBA28 sector into a freshly-allocated 512-byte heap buffer.
+ Returns the buffer address on success, or 0 on error (no disk, LBA out
+ of range, or a poll timeout). The buffer is bump-allocated with
+ __heap-advance; the caller owns it until its function returns.
+
+  IdeRead = record {
+    ir-ok : Boolean,
+    ir-buf : Integer
+  }
+
+Section: Multi-Sector Read
+
+ One command per sector costs a command per sector: a 2 MB seed is ~4200
+ of them, and on IDE PIO each sector is 256 port reads. Both controllers
+ take a sector count, so a bulk read asks once. AHCI carries the whole
+ transfer in a single PRD (up to 4 MB); IDE is capped at 256 sectors per
+ command by its 8-bit count register, so it walks the request in chunks.
+
+  ide-max-chunk : Integer = 64
+
+ Program the count and LBA once, then drain `count` sectors, waiting for
+ DRQ before each. Returns 1 on success.
+
+  ide-read-chunk : Integer, Integer, Integer -> [Device.Port] Integer
+  ide-read-chunk (lba) (count) (dest) = act
+    w0 <- ide-wait-not-busy ide-poll-fuel
+    dh <- port-out-byte ide-drive (bit-or 224 (bit-and (bit-shru lba 24) 15))
+    sc <- port-out-byte ide-sect-count count
+    l0 <- port-out-byte ide-lba-lo (bit-and lba 255)
+    l1 <- port-out-byte ide-lba-mid (bit-and (bit-shru lba 8) 255)
+    l2 <- port-out-byte ide-lba-hi (bit-and (bit-shru lba 16) 255)
+    cm <- port-out-byte ide-command ide-cmd-read
+    ide-drain-sectors dest 0 count
+  end
+
+  ide-drain-sectors : Integer, Integer, Integer -> [Device.Port] Integer
+  ide-drain-sectors (dest) (i) (count) = act
+    if i >= count then 1
+    else act
+      s <- ide-wait-drq ide-poll-fuel
+      if bit-and s ide-st-drq == 0 then 0
+      else act
+        r <- ide-read-words (dest + i * 512) 0
+        ide-drain-sectors dest (i + 1) count
+      end
+    end
+  end
+
+  ide-read-into : Integer, Integer, Integer -> [Device.Port] Integer
+  ide-read-into (lba) (count) (dest) = act
+    if count <= 0 then 1
+    else act
+      let n = if count > ide-max-chunk then ide-max-chunk else count
+      in act
+        ok <- ide-read-chunk lba n dest
+        if ok == 0 then 0
+        else ide-read-into (lba + n) (count - n) (dest + n * 512)
+      end
+    end
+  end
+
+ Bulk read through whichever controller answers. AHCI is tried first and
+ does the whole thing in one DMA; the IDE fallback chunks it.
+
+  disk-read-into : Integer, Integer, Integer -> [Device.Port] Boolean
+  disk-read-into (lba) (count) (dest) = act
+    a <- ahci-read-into lba count dest
+    if a /= 0 then True
+    else act
+      i <- ide-read-into lba count dest
+      i /= 0
+    end
+  end
+
+Section: Multi-Sector Write
+
+ Writing mirrors reading: program the LBA and count once, then push each
+ sector's 256 words to the data port, waiting for DRQ before each. After
+ the last sector a FLUSH CACHE forces the drive to commit -- without it a
+ write can sit in a volatile cache and a power loss loses the identity we
+ just saved.
+
+  ide-write-words : Integer, Integer -> [Device.Port] Integer
+  ide-write-words (addr) (i) = act
+    if i >= 256 then 0
+    else act
+      let lo = peek-byte addr (i * 2)
+      in let hi = peek-byte addr (i * 2 + 1)
+      in act
+        w <- port-out-16 ide-data (bit-or lo (bit-shl hi 8))
+        ide-write-words addr (i + 1)
+      end
+    end
+  end
+
+  ide-fill-sectors : Integer, Integer, Integer -> [Device.Port] Integer
+  ide-fill-sectors (src) (i) (count) = act
+    if i >= count then 1
+    else act
+      s <- ide-wait-drq ide-poll-fuel
+      if bit-and s ide-st-drq == 0 then 0
+      else act
+        w <- ide-write-words (src + i * 512) 0
+        ide-fill-sectors src (i + 1) count
+      end
+    end
+  end
+
+  ide-write-chunk : Integer, Integer, Integer -> [Device.Port] Integer
+  ide-write-chunk (lba) (count) (src) = act
+    w0 <- ide-wait-not-busy ide-poll-fuel
+    dh <- port-out-byte ide-drive (bit-or 224 (bit-and (bit-shru lba 24) 15))
+    sc <- port-out-byte ide-sect-count count
+    l0 <- port-out-byte ide-lba-lo (bit-and lba 255)
+    l1 <- port-out-byte ide-lba-mid (bit-and (bit-shru lba 8) 255)
+    l2 <- port-out-byte ide-lba-hi (bit-and (bit-shru lba 16) 255)
+    cm <- port-out-byte ide-command ide-cmd-write
+    ide-fill-sectors src 0 count
+  end
+
+  ide-flush : [Device.Port] Integer
+  ide-flush = act
+    c <- port-out-byte ide-command ide-cmd-flush
+    ide-wait-not-busy ide-poll-fuel
+  end
+
+  ide-write-into : Integer, Integer, Integer -> [Device.Port] Integer
+  ide-write-into (lba) (count) (src) = act
+    if count <= 0 then 1
+    else act
+      let n = if count > ide-max-chunk then ide-max-chunk else count
+      in act
+        ok <- ide-write-chunk lba n src
+        if ok == 0 then 0
+        else ide-write-into (lba + n) (count - n) (src + n * 512)
+      end
+    end
+  end
+
+ Bulk write through whichever controller answers. AHCI DMAs the whole
+ run; IDE chunks it and issues one flush at the end.
+
+  disk-write-into : Integer, Integer, Integer -> [Device.Port] Boolean
+  disk-write-into (lba) (count) (src) = act
+    a <- ahci-write-into lba count src
+    if a /= 0 then True
+    else act
+      i <- ide-write-into lba count src
+      if i == 0 then False
+      else act
+        fl <- ide-flush
+        True
+      end
+    end
+  end
+
+Section: Dispatch
+
+ Try AHCI, then legacy IDE. `dr-via` names the controller that answered
+ so the caller can say which path reached the disk -- on a boot screen
+ that distinction is the difference between "we read the stick" and "we
+ read something".
+
+  DiskRead = record {
+    dr-ok : Boolean,
+    dr-buf : Integer,
+    dr-via : Text
+  }
+
+  disk-read-sector : Integer -> [Device.Port] DiskRead
+  disk-read-sector (lba) = act
+    a <- ahci-read-sector lba
+    if a.ar-ok then DiskRead { dr-ok = True, dr-buf = a.ar-buf, dr-via = "AHCI" }
+    else act
+      i <- ide-read-sector lba
+      if i.ir-ok then DiskRead { dr-ok = True, dr-buf = i.ir-buf, dr-via = "IDE PIO" }
+      else DiskRead { dr-ok = False, dr-buf = 0, dr-via = "none" }
+    end
+  end
+
+Section: IDE Sector Read
+
+  ide-read-sector : Integer -> [Device.Port] IdeRead
+  ide-read-sector (lba) = act
+    w0 <- ide-wait-not-busy ide-poll-fuel
+    dh <- port-out-byte ide-drive (bit-or 224 (bit-and (bit-shru lba 24) 15))
+    sc <- port-out-byte ide-sect-count 1
+    l0 <- port-out-byte ide-lba-lo (bit-and lba 255)
+    l1 <- port-out-byte ide-lba-mid (bit-and (bit-shru lba 8) 255)
+    l2 <- port-out-byte ide-lba-hi (bit-and (bit-shru lba 16) 255)
+    cm <- port-out-byte ide-command ide-cmd-read
+    s <- ide-wait-drq ide-poll-fuel
+    if bit-and s ide-st-drq == 0 then IdeRead { ir-ok = False, ir-buf = 0 }
+    else act
+      let buf = __heap-save
+      in let adv = __heap-advance 512
+      in act
+        r <- ide-read-words buf 0
+        IdeRead { ir-ok = True, ir-buf = buf }
+      end
+    end
+  end

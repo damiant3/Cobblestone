@@ -2415,7 +2415,8 @@ Section: Linearity Checking
   check-linearity-def : ADef, TypeEnv, UnificationState -> UnificationState
   check-linearity-def (def) (env) (st) =
    if list-length (def.declared-type) == 0 then st
-   else check-linear-params def env (def.params) (list-at (def.declared-type) 0) 0 st
+   else let st2 = check-linear-params def env (def.params) (list-at (def.declared-type) 0) 0 st
+   in check-mints def env True (def.body) st2
 
   check-linear-params : ADef, TypeEnv, List AParam, ATypeExpr, Integer, UnificationState -> UnificationState
   check-linear-params (def) (env) (params) (dt) (i) (st) =
@@ -2461,11 +2462,17 @@ Section: Linearity Checking
      is otherwise -> False
     else False
 
+  atype-strip-effect : ATypeExpr -> ATypeExpr
+  atype-strip-effect (t) =
+   when t
+    is AEffectType (effs) (scopes) (tl) (ret) (s) -> ret
+    is otherwise -> t
+
   linear-return-sanctioned : ADef -> Boolean
   linear-return-sanctioned (def) =
    if list-length (def.declared-type) == 0 then False
    else if is-freeze-door def then True
-   else is-linear-atype (afun-return-after (list-at (def.declared-type) 0) (list-length (def.params)))
+   else is-linear-atype (atype-strip-effect (afun-return-after (list-at (def.declared-type) 0) (list-length (def.params))))
 
   check-one-linear-param : ADef, TypeEnv, AParam, UnificationState -> UnificationState
   check-one-linear-param (def) (env) (p) (st) =
@@ -2486,6 +2493,126 @@ Section: Linearity Checking
     else if r.count == 0
     then add-unify-error st cdx-linear-unused ("Linear value '" & (p.name.value) & "' is never used; a linear value must be used exactly once") (p.span)
     else st
+
+Section: Minted Linear Owners
+
+ A local bound from a call whose registered return type is linear is
+ a freshly minted owner: the callee handed over the only reference,
+ so the binding inherits the exactly-once obligation. Before this
+ walk existed the checker tracked declared parameters only, and a
+ minted handle could be duplicated or dropped without diagnosis
+ (the documented LinearOwnership residual). The walk finds every
+ such bind, in let chains and act blocks alike, and runs the same
+ ownership discipline over the binding's scope that a declared
+ linear parameter receives, using the existing lin-let machinery so
+ moves, retains, shadowing, and the argument boundary all apply
+ unchanged. The callee's return is read from the registered
+ signature, where LinearTy survives in return position, unwrapping
+ EffectfulTy so an effectful constructor like open-file mints too.
+
+  return-is-linear-after : CodexType, Integer -> Boolean
+  return-is-linear-after (ty) (k) =
+   when ty
+    is ForAllTy (id) (body) -> return-is-linear-after body k
+    is ForAllEff (id) (body) -> return-is-linear-after body k
+    is FunTy (p) (row) (r) -> if k <= 0 then False else return-is-linear-after r (k - 1)
+    is EffectfulTy (effs) (sc) (ret) -> if k == 0 then return-is-linear-after ret 0 else False
+    is LinearTy (inner) -> k == 0
+    is otherwise -> False
+
+  expr-is-mint : TypeEnv, AExpr -> Boolean
+  expr-is-mint (env) (e) =
+   when e
+    is AApplyExpr (f) (a) (s) ->
+     let head = apply-head-name e
+     in if head == "" then False
+     else let resolved = rename-lookup (env.chapter-renames) head
+     in if env-has env resolved then return-is-linear-after (env-lookup env resolved) (apply-arg-count e)
+     else False
+    is otherwise -> False
+
+  report-minted-owner : ADef, Text, SourceSpan, LinResult, UnificationState -> UnificationState
+  report-minted-owner (def) (v) (sp) (r) (st) =
+   let bad-ret = if r.ret then (if linear-return-sanctioned def then False else True) else False
+   in if (r.dead) > 0
+    then add-unify-error st cdx-use-after-consume ("Linear value '" & v & "', minted by a linear-returning call, was moved to a new owner by a let binding and then mentioned again; after a move the original name is dead") sp
+    else if (r.cap) /= ""
+    then add-unify-error st cdx-linear-capture ("Linear value '" & v & "', minted by a linear-returning call, is captured by " & (r.cap) & ", which may run zero or many times; a linear value may be captured only by a let-bound closure, which is then called exactly once") sp
+    else if (r.esc) /= ""
+    then add-unify-error st cdx-linear-escape ("Linear value '" & v & "', minted by a linear-returning call, is passed to a plain (non-linear) parameter of '" & (r.esc) & "'; a linear value moves only through parameters declared linear. Use freeze to exit the discipline deliberately") sp
+    else if bad-ret
+    then add-unify-error st cdx-linear-return ("Linear value '" & v & "', minted by a linear-returning call, is returned from '" & (def.name.value) & "', whose return type is not declared linear; declare the return linear, or consume the value with freeze") sp
+    else if r.ok == False
+    then add-unify-error st cdx-use-after-consume ("Linear value '" & v & "', minted by a linear-returning call, is used a different number of times across branches; each branch must use it exactly once") sp
+    else if r.count > 1
+    then add-unify-error st cdx-use-after-consume ("Linear value '" & v & "', minted by a linear-returning call, is used " & integer-to-text (r.count) & " times; a linear value must be used exactly once") sp
+    else if r.count == 0
+    then add-unify-error st cdx-linear-unused ("Linear value '" & v & "', minted by a linear-returning call, is never used; a linear value must be used exactly once") sp
+    else st
+
+  check-mints : ADef, TypeEnv, Boolean, AExpr, UnificationState -> UnificationState
+  check-mints (def) (env) (tail) (e) (st) =
+   when e
+    is ALetExpr (binds) (body) (s) -> check-mints-binds def env tail binds body 0 (list-length binds) st
+    is AIfExpr (c) (t) (el) (s) -> check-mints def env tail el (check-mints def env tail t (check-mints def env False c st))
+    is AApplyExpr (f) (a) (s) -> check-mints def env False a (check-mints def env False f st)
+    is ABinaryExpr (l) (op) (r) (s) -> check-mints def env False r (check-mints def env False l st)
+    is AUnaryExpr (x) (s) -> check-mints def env False x st
+    is ALambdaExpr (params) (body) (s) -> check-mints def env False body st
+    is AHandleExpr (eff) (body) (clauses) (s) -> check-mints-clauses def env clauses 0 (list-length clauses) (check-mints def env False body st)
+    is AWithTimeoutExpr (t) (effs) (scopes) (body) (s) -> check-mints def env tail body st
+    is AMatchExpr (scrut) (arms) (s) -> check-mints-arms def env tail arms 0 (list-length arms) (check-mints def env False scrut st)
+    is AListExpr (elems) (s) -> check-mints-list def env elems 0 (list-length elems) st
+    is ARecordExpr (n) (fields) (s) -> check-mints-fields def env fields 0 (list-length fields) st
+    is AFieldAccess (obj) (f) (s) -> check-mints def env False obj st
+    is AActExpr (stmts) (s) -> check-mints-stmts def env stmts 0 (list-length stmts) st
+    is ATryExpr (max) (body) (fb) (fail) (s) -> check-mints-stmts def env fail 0 (list-length fail) (check-mints-stmts def env fb 0 (list-length fb) (check-mints-stmts def env body 0 (list-length body) st))
+    is AFieldAssignExpr (rec) (f) (val) (s) -> check-mints def env False val (check-mints def env False rec st)
+    is ALazyExpr (inner) (s) -> check-mints def env False inner st
+    is otherwise -> st
+
+  check-mints-binds : ADef, TypeEnv, Boolean, List ALetBind, AExpr, Integer, Integer, UnificationState -> UnificationState
+  check-mints-binds (def) (env) (tail) (binds) (body) (i) (len) (st) =
+   if i >= len then check-mints def env tail body st
+   else let b = list-at binds i
+   in let st1 = check-mints def env False (b.value) st
+   in let st2 = if expr-is-mint env (b.value)
+       then report-minted-owner def (b.name.value) (b.span) (lin-let env (b.name.value) tail binds body (i + 1) len) st1
+       else st1
+   in check-mints-binds def env tail binds body (i + 1) len st2
+
+  check-mints-stmts : ADef, TypeEnv, List AActStmt, Integer, Integer, UnificationState -> UnificationState
+  check-mints-stmts (def) (env) (stmts) (i) (len) (st) =
+   if i >= len then st
+   else when (list-at stmts i)
+    is AActExprStmt (e) (s) -> check-mints-stmts def env stmts (i + 1) len (check-mints def env False e st)
+    is AActBindStmt (n) (e) (s) ->
+     let st1 = check-mints def env False e st
+     in let st2 = if expr-is-mint env e
+         then report-minted-owner def (n.value) s (lin-stmts env (n.value) stmts (i + 1) len) st1
+         else st1
+     in check-mints-stmts def env stmts (i + 1) len st2
+
+  check-mints-arms : ADef, TypeEnv, Boolean, List AMatchArm, Integer, Integer, UnificationState -> UnificationState
+  check-mints-arms (def) (env) (tail) (arms) (i) (len) (st) =
+   if i >= len then st
+   else let arm = list-at arms i
+   in check-mints-arms def env tail arms (i + 1) len (check-mints def env tail (arm.body) (check-mints def env False (arm.guard) st))
+
+  check-mints-clauses : ADef, TypeEnv, List AHandleClause, Integer, Integer, UnificationState -> UnificationState
+  check-mints-clauses (def) (env) (clauses) (i) (len) (st) =
+   if i >= len then st
+   else check-mints-clauses def env clauses (i + 1) len (check-mints def env False (list-at clauses i).body st)
+
+  check-mints-list : ADef, TypeEnv, List AExpr, Integer, Integer, UnificationState -> UnificationState
+  check-mints-list (def) (env) (elems) (i) (len) (st) =
+   if i >= len then st
+   else check-mints-list def env elems (i + 1) len (check-mints def env False (list-at elems i) st)
+
+  check-mints-fields : ADef, TypeEnv, List AFieldExpr, Integer, Integer, UnificationState -> UnificationState
+  check-mints-fields (def) (env) (fields) (i) (len) (st) =
+   if i >= len then st
+   else check-mints-fields def env fields (i + 1) len (check-mints def env False (list-at fields i).value st)
 
 Section: Stale Read After In-Place Update
 
@@ -2977,14 +3104,26 @@ Section: Type Arity Check
 
 Section: Capability Checker
 
-  granted-capabilities : List Text
-  granted-capabilities = ["Console", "Console.Read", "Console.Write", "FileSystem", "FileSystem.Read", "FileSystem.Write", "Network", "Network.Read", "Network.Write", "Concurrent", "Device", "Gpu", "Gpu.Compute", "Gpu.Memory"]
+ This list is the capability VOCABULARY, not a grant. It names every
+ effect the manifest emitter can map to a capability id, and the
+ check below rejects an opening that declares an effect outside it —
+ an effect no policy could ever inspect and no boot grant could ever
+ satisfy. The authority itself comes from the binary's own manifest
+ at boot (emit-grant-cap-mask) and from the trust policy at load
+ (VerifiedLoader). The old name `granted-capabilities` read like a
+ grant-all list; it never granted anything.
+
+ Keep in step with manifest-cap-id (X86_64Chapter) — a name here
+ with no cap id declares an effect the manifest silently drops.
+
+  capability-vocabulary : List Text
+  capability-vocabulary = ["Console", "Console.Read", "Console.Write", "FileSystem", "FileSystem.Read", "FileSystem.Write", "Network", "Network.Read", "Network.Write", "Concurrent", "Device", "Gpu", "Gpu.Compute", "Gpu.Memory", "Identity", "Capability"]
 
   check-opening-capabilities : List TypeBinding -> List Diagnostic
   check-opening-capabilities (types) =
    let opening-ty = find-opening-type types 0 (list-length types)
    in let effs = collect-effect-names opening-ty
-   in check-cap-list effs granted-capabilities 0 (list-length effs)
+   in check-cap-list effs capability-vocabulary 0 (list-length effs)
 
   find-opening-type : List TypeBinding, Integer, Integer -> CodexType
   find-opening-type (types) (i) (len) =
@@ -2994,20 +3133,20 @@ Section: Capability Checker
       else find-opening-type types (i + 1) len
 
   check-cap-list : List Name, List Text, Integer, Integer -> List Diagnostic
-  check-cap-list (effs) (granted) (i) (len) =
+  check-cap-list (effs) (vocab) (i) (len) =
    if i == len then []
    else let e = list-at effs i
-   in let rest = check-cap-list effs granted (i + 1) len
-   in if cap-name-covered granted (e.value) 0 (list-length granted) then rest
-      else list-push rest (make-error cdx-capability-not-granted ("Effect '" & (e.value) & "' is not a granted capability") synthetic-span)
+   in let rest = check-cap-list effs vocab (i + 1) len
+   in if cap-name-covered vocab (e.value) 0 (list-length vocab) then rest
+      else list-push rest (make-error cdx-capability-not-granted ("Effect '" & (e.value) & "' has no capability the manifest can carry") synthetic-span)
 
   cap-name-covered : List Text, Text, Integer, Integer -> Boolean
-  cap-name-covered (granted) (eff) (i) (len) =
+  cap-name-covered (vocab) (eff) (i) (len) =
    if i == len then let dot-pos = find-dot eff 0 (text-length eff)
-   in if dot-pos >= 0 then cap-name-covered granted (substring eff 0 dot-pos) 0 len
+   in if dot-pos >= 0 then cap-name-covered vocab (substring eff 0 dot-pos) 0 len
       else False
-   else if list-at-text granted i == eff then True
-   else cap-name-covered granted eff (i + 1) len
+   else if list-at-text vocab i == eff then True
+   else cap-name-covered vocab eff (i + 1) len
 
   list-at-text : List Text, Integer -> Text
   list-at-text (xs) (i) = list-at xs i

@@ -1547,6 +1547,12 @@ static unsigned char *gop_fb = NULL;  /* host-side framebuffer copy for renderin
 static HWND vga_hwnd;  /* forward decl — defined in VGA section */
 
 static int uefi_mode = 0;          /* 1 when running a UEFI app */
+static int uefi_strict = 0;        /* 1 = model real firmware: honor the memory map,
+                                      fault on writes to firmware-owned low memory the
+                                      app never allocated. Turns the hardware-only
+                                      fixed-address boot bug into a VM-reproducible #PF. */
+static unsigned long long uefi_image_base = 0; /* where load_kernel placed the PE */
+static unsigned long long uefi_image_size = 0; /* loaded PE size (BootServicesCode) */
 static int cmos_index = 0;        /* CMOS register selected via port 0x70 */
 static int uefi_cursor_row = 0;
 static int uefi_cursor_col = 0;
@@ -1651,12 +1657,20 @@ static void uefi_setup_tables(void *mem) {
     W64(0x790, 36);               /* SizeOfInfo */
     W64(0x798, GOP_FB_ADDR);      /* FrameBufferBase */
     W64(0x7A0, GOP_FB_SIZE);      /* FrameBufferSize */
-    /* GOP_MODE_INFO at 0xF07C0 */
+    /* GOP_MODE_INFO at 0xF07C0. The current mode reports the CLI-selected
+       resolution (-gop-width/-gop-height, default 640x480) -- real firmware
+       boots in the panel's native mode, and a UEFI app that only reads the
+       current mode (the Option A stub) must see the size the display will
+       actually scan out. Previously hardcoded 640x480, which garbled any
+       -gop-width run: the guest drew 640-wide rows into a wider display. */
     *(int *)(base + 0x7C0) = 0;   /* Version */
-    *(int *)(base + 0x7C4) = 640; /* HorizontalResolution */
-    *(int *)(base + 0x7C8) = 480; /* VerticalResolution */
+    *(int *)(base + 0x7C4) = gop_width;  /* HorizontalResolution */
+    *(int *)(base + 0x7C8) = gop_height; /* VerticalResolution */
     *(int *)(base + 0x7CC) = 1;   /* PixelFormat (BGR) */
-    *(int *)(base + 0x7D4) = 640; /* PixelsPerScanLine */
+    /* PixelsPerScanLine at the STANDARD info offset +32 (base+0x7E0). It was
+       previously at +20 (0x7D4), which is inside the PixelInformation field --
+       a real UEFI app reads +32, so this makes the stride correct on hardware. */
+    *(int *)(base + 0x7E0) = gop_width; /* PixelsPerScanLine */
 
     /* Block I/O Protocol at 0xF0800 (only when disk is loaded) */
     if (ide.data && ide.size > 0) {
@@ -1712,6 +1726,28 @@ static void uefi_setup_tables(void *mem) {
     /* Store SystemTable pointer at 0x8000 */
     unsigned long long st_ptr = UEFI_TABLE_PAGE;
     memcpy((unsigned char *)mem + UEFI_SYSTABLE_PTR, &st_ptr, 8);
+}
+
+/* Commit + map the host pages backing a guest region so BOTH the guest CPU
+   and host-side trap handlers can touch it. guest_mem is MEM_RESERVE with lazy
+   commit, so memory handed out by AllocatePages/AllocatePool must be committed
+   here -- otherwise a host-side memcpy into it (e.g. GetMemoryMap writing the
+   descriptor array) access-violates and kills the VM process. Real firmware
+   returns usable memory; this makes codex-vm faithful. */
+static void uefi_commit_range(unsigned long long base, unsigned long long size) {
+    if (base >= guest_mem_size) return;
+    unsigned long long start = base & ~0x1FFFFFULL;
+    unsigned long long end = (base + size + 0x1FFFFFULL) & ~0x1FFFFFULL;
+    if (end > guest_mem_size) end = guest_mem_size;
+    for (unsigned long long a = start; a < end; a += 0x200000) {
+        size_t len = 0x200000;
+        if (a + len > guest_mem_size) len = (size_t)(guest_mem_size - a);
+        if (VirtualAlloc((unsigned char *)guest_mem + a, len, MEM_COMMIT, PAGE_READWRITE)) {
+            /* Errors (e.g. range already mapped) are harmless -- the mapping stays. */
+            WHvMapGpaRange(partition, (unsigned char *)guest_mem + a, a, len,
+                WHvMapGpaRangeFlagRead | WHvMapGpaRangeFlagWrite | WHvMapGpaRangeFlagExecute);
+        }
+    }
 }
 
 /* Handle a UEFI trap — guest called a protocol function that faulted
@@ -1929,7 +1965,28 @@ static int uefi_handle_trap(WHV_RUN_VP_EXIT_CONTEXT *ctx) {
         unsigned long long pages = r8;
         unsigned long long alloc_size = pages * 4096;
         if (rcx == 2) {
-            /* AllocateAddress: caller set *R9 to exact address. Just succeed. */
+            /* AllocateAddress: caller set *R9 to exact address.
+               Permissive mode just succeeds. Strict mode honors the memory
+               map like real firmware: a fixed-address request that overlaps
+               firmware-owned low memory or the running image's own load
+               region (BootServicesCode) fails with EFI_NOT_FOUND. This is
+               exactly what bricks a stub that hardcodes 0x100000 / 0x1000000
+               on a real board whose map differs. */
+            if (uefi_strict) {
+                unsigned long long want = 0;
+                if (arg_vals[3].Reg64 > 0 && arg_vals[3].Reg64 + 8 <= guest_mem_size)
+                    memcpy(&want, (unsigned char *)guest_mem + arg_vals[3].Reg64, 8);
+                int occupied = (want < 0x200000); /* first 2MB: firmware-owned */
+                if (uefi_image_size &&
+                    want < uefi_image_base + uefi_image_size &&
+                    want + alloc_size > uefi_image_base)
+                    occupied = 1;                 /* overlaps the loaded image */
+                if (occupied) {
+                    rax_result = EFI_NOT_FOUND_S;
+                    fprintf(stderr, "UEFI-strict: AllocateAddress(0x%llx, %llu pages) "
+                        "-> EFI_NOT_FOUND (firmware-owned / image region)\n", want, pages);
+                }
+            }
         } else if (rcx == 1) {
             /* AllocateMaxAddress: allocate at or below the address in *R9 */
             unsigned long long max_addr = 0;
@@ -1957,6 +2014,13 @@ static int uefi_handle_trap(WHV_RUN_VP_EXIT_CONTEXT *ctx) {
             } else {
                 rax_result = 0x8000000000000009ULL;
             }
+        }
+        if (rax_result == EFI_SUCCESS) {
+            /* Commit whatever we handed back so host-side handlers can write it. */
+            unsigned long long got = 0;
+            if (arg_vals[3].Reg64 > 0 && arg_vals[3].Reg64 + 8 <= guest_mem_size)
+                memcpy(&got, (unsigned char *)guest_mem + arg_vals[3].Reg64, 8);
+            if (got) uefi_commit_range(got, alloc_size);
         }
         break;
     }
@@ -2027,6 +2091,7 @@ static int uefi_handle_trap(WHV_RUN_VP_EXIT_CONTEXT *ctx) {
         if (r8 > 0 && r8 + 8 <= guest_mem_size) {
             memcpy((unsigned char *)guest_mem + r8, &addr, 8);
         }
+        uefi_commit_range(addr, size);
         break;
     }
     case UEFI_TRAP_BOOT_EXIT_BOOTSVC:
@@ -2167,7 +2232,7 @@ static int uefi_handle_trap(WHV_RUN_VP_EXIT_CONTEXT *ctx) {
         unsigned char *info = (unsigned char *)guest_mem + UEFI_TABLE_PAGE + 0x7C0;
         *(int *)(info + 4) = w;
         *(int *)(info + 8) = h;
-        *(int *)(info + 20) = w;
+        *(int *)(info + 32) = w;   /* PixelsPerScanLine at standard info offset +32 */
         break;
     }
     case UEFI_TRAP_GOP_SETMODE: {
@@ -2182,7 +2247,7 @@ static int uefi_handle_trap(WHV_RUN_VP_EXIT_CONTEXT *ctx) {
         *(int *)(gm + 0x784) = mode_num;
         *(int *)(gm + 0x7C4) = gop_width;
         *(int *)(gm + 0x7C8) = gop_height;
-        *(int *)(gm + 0x7D4) = gop_stride;
+        *(int *)(gm + 0x7E0) = gop_stride;  /* PixelsPerScanLine at standard info offset +32 */
         if (GOP_FB_ADDR + (unsigned long long)(gop_width * gop_height * 4) <= guest_mem_size) {
             memset((unsigned char *)guest_mem + GOP_FB_ADDR, 0, gop_width * gop_height * 4);
         }
@@ -2225,6 +2290,16 @@ static int uefi_handle_trap(WHV_RUN_VP_EXIT_CONTEXT *ctx) {
 
     return 1;
 }
+
+/* Scripted keyboard injection for automated interactive tests (-keys).
+   A comma-separated list of Set-1 scancodes fed to the guest one at a time
+   on a timer, exactly as if typed at the window -- so a GOP menu can be
+   driven and screenshotted without a human at the keyboard. */
+static unsigned char inject_keys[256];
+static int inject_key_count = 0;
+static int inject_key_idx = 0;
+static double inject_key_start_ms = 1200.0;
+static double inject_key_interval_ms = 350.0;
 
 /* ══ VGA Display Window ══ */
 #define CHAR_W       8
@@ -2487,7 +2562,22 @@ static unsigned long long input_total_written = 0;
 #define DOORBELL_PORT         0x510
 #define DOORBELL_DATA_READY   0x01
 #define DOORBELL_COMPILE_DONE 0x02
+#define DOORBELL_BLIT         0x03
 #define DOORBELL_FATAL        0xFF
+
+/* Bulk output blit: on OUT 0x510, 0x03 the VM appends guest RAM
+   [addr, addr+len) directly to the output buffer, where addr/len are
+   qwords the guest stored at the two cells below (free space in the
+   PML4 page above try-fail-flag 36128, below the PDPT at 36864).
+   One VM exit replaces two per byte (LSR poll + THR write).
+   IN 0x511 returns BLIT_PROBE_MAGIC so the guest can detect support;
+   older VMs and real hardware float 0xFF and the guest falls back to
+   the per-byte COM1 loop. Port 0x510 IN is deliberately untouched:
+   emit-lapic-disable probes it expecting the 0xFF default. */
+#define BLIT_ADDR_CELL        36160
+#define BLIT_LEN_CELL         36168
+#define BLIT_PROBE_PORT       0x511
+#define BLIT_PROBE_MAGIC      0xB7
 
 /* IDE state — typedef is above (forward-declared for UEFI emulation) */
 
@@ -3174,6 +3264,30 @@ static struct {
     unsigned long long cond_val;
 } breakpoints[MAX_BREAKPOINTS];
 static int bp_count = 0;
+
+/* WCET observation: -wcet <fn> arms a hardware execution breakpoint
+   (DR0-DR3) at the function entry, single-steps each invocation to its
+   return via TF, and counts only the instructions whose RIP lies inside
+   the function's own [start,end) range (callee instructions are
+   excluded — matching the compiler's per-body CDX6010 static count).
+   Reports WCET-OBS lines on exit. Pure observation: no guest byte is
+   ever written (INT3 cannot be used here — the guest IDT owns vector 3
+   and its handler dumps !EXC and halts; #DB is host-intercepted).
+   DR6.B0-B3 marks an entry hit, DR6.BS a step; RF resumes past the
+   entry fault. Four functions maximum per run (one debug register
+   each) — batch across runs for more. */
+#define MAX_WCET_FNS 4
+static struct {
+    unsigned long long start, end;
+    char name[128];
+    unsigned long long max_count, calls;
+} wcet_fns[MAX_WCET_FNS];
+static int wcet_fn_count = 0;
+static const char *wcet_names[MAX_WCET_FNS];
+static int wcet_name_count = 0;
+static int wcet_active = -1;
+static unsigned long long wcet_cur = 0, wcet_prev_rip = 0;
+static unsigned long long wcet_ret_addr = 0, wcet_entry_rsp = 0;
 
 static void load_map_file(const char *path) {
     FILE *f = fopen(path, "r");
@@ -4016,6 +4130,35 @@ static void dump_output_file(const char *path) {
 
 static size_t output_ring_drained = 0;
 
+/* Bulk blit: append guest RAM [addr, addr+len) to the output buffer in
+   one exit. addr/len come from the fixed guest cells; grow the buffer
+   as needed instead of silently dropping like output_buf_write. */
+static void blit_guest_output(void) {
+    if (!guest_mem || !output_buf) return;
+    if (BLIT_LEN_CELL + 8 > guest_mem_size) return;
+    unsigned long long addr = *(unsigned long long *)((unsigned char *)guest_mem + BLIT_ADDR_CELL);
+    unsigned long long len  = *(unsigned long long *)((unsigned char *)guest_mem + BLIT_LEN_CELL);
+    if (len == 0) return;
+    if (addr >= guest_mem_size || len > guest_mem_size - addr) {
+        fprintf(stderr, "BLIT: rejected addr=0x%llx len=%llu (guest_mem_size=%llu)\n",
+                addr, len, (unsigned long long)guest_mem_size);
+        return;
+    }
+    if (output_len + len > output_cap) {
+        size_t new_cap = output_cap * 2;
+        while (output_len + len > new_cap) new_cap *= 2;
+        unsigned char *grown = (unsigned char *)realloc(output_buf, new_cap);
+        if (!grown) {
+            fprintf(stderr, "BLIT: output buffer growth failed (%zu bytes)\n", new_cap);
+            return;
+        }
+        output_buf = grown;
+        output_cap = new_cap;
+    }
+    memcpy(output_buf + output_len, (unsigned char *)guest_mem + addr, (size_t)len);
+    output_len += (size_t)len;
+}
+
 static void drain_guest_output(void) {
     if (!guest_mem || !output_buf) return;
     if (OUTPUT_WRITE_POS_ADDR + 8 > guest_mem_size) return;
@@ -4071,9 +4214,12 @@ static void ide_start_read(IdeState *d) {
     d->error = 0;
 }
 
+/* Called when the guest has drained the current sector. buf_off already sits
+   at the next sector: ide_read_data advanced it two bytes per word for all
+   256 words. Adding 512 here skipped every other sector, which no caller
+   noticed until a driver issued a multi-sector READ SECTORS (count > 1). */
 static void ide_advance(IdeState *d) {
     if (d->sectors_left <= 0) { d->status = 0x50; d->buf_remaining = 0; return; }
-    d->buf_off += 512;
     d->buf_remaining = 512;
     d->sectors_left--;
     d->status = 0x58;
@@ -4121,6 +4267,11 @@ static int ide_read_data(IdeState *d) {
 
 static void ide_handle_out(IdeState *d, int port, int val) {
     int reg = port - 0x1F0;
+    /* Data register during a WRITE SECTORS transfer. The REP OUTSW fast path in
+       handle_io reaches ide_write_data directly; a driver that writes the data
+       phase with single 16-bit OUTs (port-out-16) lands here instead, and reg 0
+       was dropped -- so single-OUT writes silently did nothing. */
+    if (reg == 0) { ide_write_data(d, val & 0xFFFF); return; }
     if (reg == 2) d->sect_count = val & 0xFF;
     else if (reg == 3) d->lba_lo = val & 0xFF;
     else if (reg == 4) d->lba_mid = val & 0xFF;
@@ -4198,19 +4349,48 @@ static void setup_gdt(void) {
 
 static void setup_page_tables(void) {
     unsigned char *pt = (unsigned char*)guest_mem + PAGE_TABLE_ADDR;
-    /* PML4 + PDPT + 2 PDs = 4 pages for 2GB identity map */
-    memset(pt, 0, 4 * 4096);
+    /* PML4 + PDPT + 4 PDs = 6 pages for a 4 GB identity map. Real UEFI
+       firmware identity-maps at least the low 4 GB, so a UEFI app can write
+       to any conventional page AllocatePages hands it (which is commonly
+       near the top of RAM) and to the GOP framebuffer (often ~3 GB). A 2 GB
+       map made codex-vm unfaithful: a correct Option A stub that builds its
+       own page tables in allocated high memory faulted writing them. */
+    memset(pt, 0, 6 * 4096);
     /* PML4[0] -> PDPT */
     *(unsigned long long*)(pt) = (PAGE_TABLE_ADDR + 4096) | 3;
-    /* PDPT[0] -> PD0, PDPT[1] -> PD1 */
-    *(unsigned long long*)(pt + 4096) = (PAGE_TABLE_ADDR + 8192) | 3;
-    *(unsigned long long*)(pt + 4096 + 8) = (PAGE_TABLE_ADDR + 8192 + 4096) | 3;
-    /* PD0: 512 x 2MB huge pages = first 1GB */
-    for (int i = 0; i < 512; i++)
+    /* PDPT[0..3] -> PD0..PD3 (one per GB) */
+    for (int g = 0; g < 4; g++)
+        *(unsigned long long*)(pt + 4096 + g*8) = (PAGE_TABLE_ADDR + (2 + g) * 4096) | 3;
+    /* PD0..PD3: 4 * 512 x 2 MB huge pages = 4 GB identity */
+    for (int i = 0; i < 4 * 512; i++)
         *(unsigned long long*)(pt + 8192 + i*8) = ((unsigned long long)i * 0x200000) | 0x83;
-    /* PD1: 512 x 2MB huge pages = second 1GB */
-    for (int i = 0; i < 512; i++)
-        *(unsigned long long*)(pt + 8192 + 4096 + i*8) = ((unsigned long long)(512 + i) * 0x200000) | 0x83;
+
+    if (uefi_strict) {
+        /* Split the first 2 MB (PD0[0]) into 4 KB pages so firmware-owned low
+           memory can be marked NOT-PRESENT. Real UEFI firmware owns all of low
+           memory before ExitBootServices; a UEFI app that writes to a fixed low
+           address it never allocated (this project's stub writes the SystemTable
+           pointer to 0x8000 and copies the compiler to 0x100000) faults on real
+           hardware. Here that becomes a clean, VM-reproducible #PF instead of a
+           board-dependent coin-flip. Only the structures the CPU and our fake
+           firmware legitimately expose stay present:
+             0xA000-0xBFFF  GDT + TSS (0xA000/0xA100) and IDT (0xB000)
+             0xF0000-0xF1FFF SystemTable/BootServices tables + HLT trap page
+           Everything else in [0, 0x200000) — including 0x8000 and 0x100000 —
+           is not present. A correct kernel stub allocates its memory, calls
+           ExitBootServices, and only then owns low memory (a future strict-mode
+           refinement will flip these present on ExitBootServices). */
+        unsigned long long *pt0 = (unsigned long long*)(pt + 6*4096); /* 7th PT page, past PML4+PDPT+PD0..3 */
+        for (int i = 0; i < 512; i++) {
+            unsigned long long pa = (unsigned long long)i * 0x1000;
+            int present = 0;
+            if (pa >= 0xA000 && pa < 0xC000) present = 1;                              /* GDT+TSS+IDT */
+            else if (pa >= UEFI_TABLE_PAGE && pa < UEFI_TRAP_PAGE + 0x1000) present = 1; /* tables+trap */
+            pt0[i] = present ? (pa | 3) : 0;
+        }
+        /* PD0[0] now references the 4KB PT (PS bit clear) instead of a 2MB huge page. */
+        *(unsigned long long*)(pt + 8192 + 0) = (PAGE_TABLE_ADDR + 6*4096) | 3;
+    }
 }
 
 /* ── WHP setup ─────────────────────────────────────────────────────── */
@@ -4229,10 +4409,16 @@ static void create_vm(size_t mem_mb) {
     prop.ProcessorCount = smp_cores > 1 ? (smp_cores > SMP_MAX_CORES ? SMP_MAX_CORES : smp_cores) : 1;
     WHvSetPartitionProperty(partition, WHvPartitionPropertyCodeProcessorCount, &prop, sizeof(prop));
 
-    /* Enable I/O port and CPUID exits. MSR exits handled selectively. */
+    /* Enable I/O port and CPUID exits. MSR exits handled selectively.
+       ExceptionExit is enabled ONLY for -wcet runs: without this bit the
+       ExceptionExitBitmap below is inert and every exception is delivered
+       to the guest IDT (the !EXC dump path). Host-intercepting #PF would
+       break guest-side demand paging, so wcet mode narrows the bitmap to
+       #DB alone and normal runs keep today's behavior untouched. */
     memset(&prop, 0, sizeof(prop));
     prop.ExtendedVmExits.X64CpuidExit = 1;
     prop.ExtendedVmExits.X64MsrExit = 1;
+    if (wcet_name_count > 0) prop.ExtendedVmExits.ExceptionExit = 1;
     WHvSetPartitionProperty(partition, WHvPartitionPropertyCodeExtendedVmExits, &prop, sizeof(prop));
 
     hr = WHvSetupPartition(partition);
@@ -4240,6 +4426,9 @@ static void create_vm(size_t mem_mb) {
 
     /* Enable exception exit for debug/breakpoint vectors (must be after setup) */
     memset(&prop, 0, sizeof(prop));
+    if (wcet_name_count > 0)
+        prop.ExceptionExitBitmap = (1ULL << 1); /* #DB only: DR entry hits + TF steps */
+    else
     prop.ExceptionExitBitmap = (1ULL << 0) | (1ULL << 1) | (1ULL << 3) | (1ULL << 6) | (1ULL << 8)
                              | (1ULL << 10) | (1ULL << 11) | (1ULL << 12) | (1ULL << 13) | (1ULL << 14)
                              | (1ULL << 16) | (1ULL << 17) | (1ULL << 19);
@@ -4307,7 +4496,8 @@ static void create_vm(size_t mem_mb) {
         /* Fill trap page with HLT (0xF4) opcodes — each UEFI function is at a known offset.
            When the guest CALLs a function, it executes HLT. The VM checks RIP on halt. */
         memset((unsigned char *)guest_mem + UEFI_TRAP_PAGE, 0xF4, 4096);
-        fprintf(stderr, "UEFI mode: tables at 0x%x, traps at 0x%x\n", UEFI_TABLE_PAGE, UEFI_TRAP_PAGE);
+        fprintf(stderr, "UEFI mode: tables at 0x%x, traps at 0x%x%s\n", UEFI_TABLE_PAGE, UEFI_TRAP_PAGE,
+            uefi_strict ? " [STRICT: firmware owns low memory, AllocateAddress honored]" : "");
     }
     /* Auto-activate GOP framebuffer if requested. The guest writes pixels
        directly to GOP_FB_ADDR using poke-32; the VM renders them.
@@ -4462,6 +4652,8 @@ static void load_kernel(const char *path) {
                Absolute addresses (like the trampoline target 0x10xxxx) refer to the
                copy at 0x100000, not the original load address. */
             unsigned long long load_base = 0x1000000; /* 16MB */
+            uefi_image_base = load_base;
+            uefi_image_size = (unsigned long long)sz;
 
             /* Load PE headers */
             if (load_base + hdr_size < guest_mem_size) {
@@ -4944,7 +5136,8 @@ static void handle_io(WHV_RUN_VP_EXIT_CONTEXT *ctx) {
         }
         /* Doorbell — guest signals output ring buffer status */
         else if (port == DOORBELL_PORT) {
-            drain_guest_output();
+            if (val == DOORBELL_BLIT) blit_guest_output();
+            else drain_guest_output();
             if (val == DOORBELL_COMPILE_DONE || val == DOORBELL_FATAL)
                 debug_exit_code = (val == DOORBELL_FATAL) ? 1 : 0;
         }
@@ -5264,6 +5457,10 @@ static void handle_io(WHV_RUN_VP_EXIT_CONTEXT *ctx) {
         /* GPU capability check */
         else if (port == 0x403) {
             result = 1;  /* GPU rasterizer present */
+        }
+        /* Bulk output blit capability probe */
+        else if (port == BLIT_PROBE_PORT) {
+            result = BLIT_PROBE_MAGIC;
         }
         else if (port == 0x40E) {
             result = (unsigned int)(asset_last_size & 0xFFFFFFFF);
@@ -6176,8 +6373,12 @@ static void sync_shadow_buffers(void) {
     if (VGA_BASE + sizeof(shadow_vga) <= guest_mem_size)
         memcpy(shadow_vga, (unsigned char *)guest_mem + VGA_BASE, sizeof(shadow_vga));
 
-    /* Copy GOP framebuffer after rasterizer frame or VBE direct writes */
-    if (gop_active && gop_width > 0 && gop_height > 0 && (gpu_frame_ready || vbe_active)) {
+    /* Copy GOP framebuffer after rasterizer frame or VBE direct writes.
+       A UEFI app (Option A boot path) writes pixels straight to the in-RAM
+       framebuffer and drives neither the GPU rasterizer nor VBE, so sync
+       unconditionally when GOP is active in UEFI mode -- otherwise its output
+       is invisible to the window and to -screenshot. */
+    if (gop_active && gop_width > 0 && gop_height > 0 && (gpu_frame_ready || vbe_active || uefi_mode)) {
         size_t fb_bytes = (size_t)gop_width * gop_height * 4;
         if (!shadow_gop) shadow_gop = (unsigned char *)calloc(1, GOP_FB_SIZE);
         if (shadow_gop && GOP_FB_ADDR + fb_bytes <= guest_mem_size) {
@@ -6232,6 +6433,9 @@ int main(int argc, char **argv) {
         else if (!strcmp(argv[i], "-hwwatch-rw")) hw_watch_rw = 3;
         else if (!strcmp(argv[i], "-hwwatch-len") && i+1 < argc) hw_watch_len = atoi(argv[++i]);
         else if (!strcmp(argv[i], "-debug")) debug_mode = 1;
+        else if (!strcmp(argv[i], "-wcet") && i+1 < argc) {
+            if (wcet_name_count < MAX_WCET_FNS) wcet_names[wcet_name_count++] = argv[++i];
+        }
         else if (!strcmp(argv[i], "-break") && i+1 < argc) {
             debug_mode = 1;
             if (init_break_count < MAX_INIT_BREAKS) init_break_names[init_break_count++] = argv[++i];
@@ -6249,7 +6453,20 @@ int main(int argc, char **argv) {
         }
         else if (!strcmp(argv[i], "-screenshot") && i+1 < argc) screenshot_path = argv[++i];
         else if (!strcmp(argv[i], "-screenshot-delay") && i+1 < argc) screenshot_delay_ms = atoi(argv[++i]);
+        else if (!strcmp(argv[i], "-keys") && i+1 < argc) {
+            /* comma-separated Set-1 scancodes, e.g. -keys 80,80,28 (down,down,enter) */
+            const char *s = argv[++i];
+            while (*s && inject_key_count < 256) {
+                int v = atoi(s);
+                inject_keys[inject_key_count++] = (unsigned char)v;
+                while (*s && *s != ',') s++;
+                if (*s == ',') s++;
+            }
+        }
+        else if (!strcmp(argv[i], "-keys-start") && i+1 < argc) inject_key_start_ms = atof(argv[++i]);
+        else if (!strcmp(argv[i], "-keys-interval") && i+1 < argc) inject_key_interval_ms = atof(argv[++i]);
         else if (!strcmp(argv[i], "-uefi")) uefi_mode = 1;
+        else if (!strcmp(argv[i], "-uefi-strict")) { uefi_mode = 1; uefi_strict = 1; }
         else if (!strcmp(argv[i], "-gop")) { gop_active = 1; }
         else if (!strcmp(argv[i], "-gop-width") && i+1 < argc) { gop_width = atoi(argv[++i]); gop_stride = gop_width; gop_active = 1; }
         else if (!strcmp(argv[i], "-gop-height") && i+1 < argc) { gop_height = atoi(argv[++i]); gop_active = 1; }
@@ -6270,8 +6487,8 @@ int main(int argc, char **argv) {
     if (!kernel) {
         fprintf(stderr, "Usage: codex-vm -kernel file.cdx [-input file.codex] [-output file.cdx]\n"
                         "       [-disk file.img] [-mem MB] [-args STRING]\n"
-                        "       [-watch 0xADDR] [-watch-size N] [-headless] [-uefi]\n"
-                        "       [-gop] [-gop-width N] [-gop-height N]\n"
+                        "       [-watch 0xADDR] [-watch-size N] [-headless] [-uefi] [-uefi-strict]\n"
+                        "       [-gop] [-gop-width N] [-gop-height N] [-keys sc,sc,..]\n"
                         "       [-portfwd hostport:guestport] ...\n");
         return 1;
     }
@@ -6384,7 +6601,7 @@ int main(int argc, char **argv) {
     /* Load symbol map if provided or auto-detect from kernel path */
     if (map_file_path) {
         load_map_file(map_file_path);
-    } else if (debug_mode && kernel) {
+    } else if ((debug_mode || wcet_name_count > 0) && kernel) {
         /* Try <kernel-dir>/Codex.map, then seed/Codex.map */
         char auto_map[512];
         strncpy(auto_map, kernel, sizeof(auto_map)-1);
@@ -6405,6 +6622,48 @@ int main(int argc, char **argv) {
         } else {
             fprintf(stderr, "DBG: symbol '%s' not found\n", init_break_names[bi]);
         }
+    }
+
+    /* Instrument -wcet functions: DR0-DR3 execution breakpoints at
+       entry, range from the map. No guest memory is modified. */
+    for (int wi = 0; wi < wcet_name_count; wi++) {
+        int found = -1;
+        for (int si = 0; si < symbol_count; si++)
+            if (!strcmp(symbols[si].name, wcet_names[wi])) { found = si; break; }
+        if (found < 0) {
+            fprintf(stderr, "WCET: symbol '%s' not found (need -map)\n", wcet_names[wi]);
+            continue;
+        }
+        if (wcet_fn_count >= MAX_WCET_FNS) {
+            fprintf(stderr, "WCET: '%s' skipped (max %d functions per run, one debug register each)\n",
+                wcet_names[wi], MAX_WCET_FNS);
+            continue;
+        }
+        if (symbols[found].addr < guest_mem_size) {
+            int w = wcet_fn_count++;
+            wcet_fns[w].start = symbols[found].addr;
+            wcet_fns[w].end = symbols[found].addr + (unsigned long long)symbols[found].size;
+            strncpy(wcet_fns[w].name, symbols[found].name, 127);
+            wcet_fns[w].name[127] = 0;
+            wcet_fns[w].max_count = 0;
+            wcet_fns[w].calls = 0;
+            fprintf(stderr, "WCET: instrumenting %s [0x%llx,0x%llx) via DR%d\n",
+                wcet_fns[w].name, wcet_fns[w].start, wcet_fns[w].end, w);
+        }
+    }
+    if (wcet_fn_count > 0) {
+        WHV_REGISTER_NAME drn[5] = { WHvX64RegisterDr0, WHvX64RegisterDr1,
+            WHvX64RegisterDr2, WHvX64RegisterDr3, WHvX64RegisterDr7 };
+        WHV_REGISTER_VALUE drv[5];
+        memset(drv, 0, sizeof(drv));
+        unsigned long long dr7 = 0;
+        for (int w = 0; w < wcet_fn_count; w++) {
+            drv[w].Reg64 = wcet_fns[w].start;
+            dr7 |= (2ULL << (2 * w)); /* Gn enable; RW=00 LEN=00 = exec */
+        }
+        drv[4].Reg64 = dr7;
+        HRESULT whr = WHvSetVirtualProcessorRegisters(partition, 0, drn, 5, drv);
+        if (FAILED(whr)) fprintf(stderr, "WCET: DR setup failed: 0x%lx\n", whr);
     }
 
     if (uefi_mode) {
@@ -6620,7 +6879,8 @@ int main(int argc, char **argv) {
         case WHvRunVpExitReasonException: {
             int vec = ctx.VpException.ExceptionType;
             unsigned long long exc_rip = ctx.VpContext.Rip;
-            fprintf(stderr, "EXC: vec=%d RIP=0x%llx exits=%llu\n", vec, exc_rip, exits);
+            if (!(wcet_fn_count > 0 && (vec == 1 || vec == 3)))
+                fprintf(stderr, "EXC: vec=%d RIP=0x%llx exits=%llu\n", vec, exc_rip, exits);
             if (vec == 1 || vec == 3) {
                 /* #DB (single-step / debug-reg watchpoint) or #BP (INT3) */
                 if (vec == 1 && hw_watch_active) {
@@ -6671,6 +6931,63 @@ int main(int argc, char **argv) {
                     WHvGetVirtualProcessorRegisters(partition, 0, en, 2, ev);
                     *(unsigned long long *)(exc + 16) = ev[0].Reg64;
                     *(unsigned long long *)(exc + 24) = ev[1].Reg64;
+                }
+                /* WCET measurement (observation only, takes priority).
+                   DR6.B0-B3 = entry exec-breakpoint (fault, RIP = entry,
+                   not yet executed); DR6.BS = TF step (trap, the
+                   instruction at the previous RIP completed). */
+                if (vec == 1 && wcet_fn_count > 0) {
+                    WHV_REGISTER_NAME d6nw = WHvX64RegisterDr6;
+                    WHV_REGISTER_VALUE d6vw;
+                    WHvGetVirtualProcessorRegisters(partition, 0, &d6nw, 1, &d6vw);
+                    unsigned long long dr6w = d6vw.Reg64;
+                    if (dr6w & 0xF) {
+                        if (wcet_active < 0) {
+                            int hit = -1;
+                            for (int w = 0; w < wcet_fn_count; w++)
+                                if (wcet_fns[w].start == exc_rip) { hit = w; break; }
+                            if (hit >= 0) {
+                                WHV_REGISTER_NAME rn2 = WHvX64RegisterRsp;
+                                WHV_REGISTER_VALUE rv2;
+                                WHvGetVirtualProcessorRegisters(partition, 0, &rn2, 1, &rv2);
+                                wcet_entry_rsp = rv2.Reg64;
+                                wcet_ret_addr = 0;
+                                if (wcet_entry_rsp + 8 <= guest_mem_size)
+                                    memcpy(&wcet_ret_addr, (unsigned char *)guest_mem + wcet_entry_rsp, 8);
+                                wcet_active = hit;
+                                wcet_cur = 0;
+                                wcet_prev_rip = exc_rip;
+                            }
+                        }
+                        WHV_REGISTER_VALUE zvw; zvw.Reg64 = 0;
+                        WHvSetVirtualProcessorRegisters(partition, 0, &d6nw, 1, &zvw);
+                        WHV_REGISTER_NAME fnw = WHvX64RegisterRflags;
+                        WHV_REGISTER_VALUE fvw;
+                        WHvGetVirtualProcessorRegisters(partition, 0, &fnw, 1, &fvw);
+                        fvw.Reg64 |= (1ULL << 16); /* RF: execute the entry insn despite DRn */
+                        if (wcet_active >= 0) fvw.Reg64 |= 0x100; /* TF */
+                        WHvSetVirtualProcessorRegisters(partition, 0, &fnw, 1, &fvw);
+                        break;
+                    }
+                    if (wcet_active >= 0) {
+                        int w = wcet_active;
+                        if (wcet_prev_rip >= wcet_fns[w].start && wcet_prev_rip < wcet_fns[w].end)
+                            wcet_cur++;
+                        WHV_REGISTER_VALUE zvw; zvw.Reg64 = 0;
+                        WHvSetVirtualProcessorRegisters(partition, 0, &d6nw, 1, &zvw);
+                        WHV_REGISTER_NAME rn2 = WHvX64RegisterRsp;
+                        WHV_REGISTER_VALUE rv2;
+                        WHvGetVirtualProcessorRegisters(partition, 0, &rn2, 1, &rv2);
+                        if (exc_rip == wcet_ret_addr && rv2.Reg64 > wcet_entry_rsp) {
+                            wcet_fns[w].calls++;
+                            if (wcet_cur > wcet_fns[w].max_count) wcet_fns[w].max_count = wcet_cur;
+                            wcet_active = -1;
+                            break; /* TF already cleared above */
+                        }
+                        wcet_prev_rip = exc_rip;
+                        dbg_enable_single_step();
+                        break;
+                    }
                 }
                 if (debug_mode) {
                     int r = dbg_command_loop(vec, exc_rip);
@@ -6796,6 +7113,26 @@ int main(int argc, char **argv) {
                     WHvSetVirtualProcessorRegisters(partition, 0, fix_names, 13, fix_vals);
                     break;
                 }
+            }
+            if (uefi_strict && ctx.ExitReason == 4) {
+                /* In strict mode the first 2 MB (minus GDT/IDT and the UEFI
+                   tables) is not present, modeling firmware ownership of low
+                   memory before ExitBootServices. A UEFI app that writes to a
+                   fixed low address it never allocated triple-faults here. Read
+                   CR2 to name the illegal address and stop — do NOT fall into
+                   the demand-commit retry below, which would spin forever on a
+                   guest-PTE fault. */
+                WHV_REGISTER_NAME cr2n = WHvX64RegisterCr2;
+                WHV_REGISTER_VALUE cr2v; memset(&cr2v, 0, sizeof(cr2v));
+                WHvGetVirtualProcessorRegisters(partition, 0, &cr2n, 1, &cr2v);
+                char reason[224];
+                snprintf(reason, sizeof(reason),
+                    "UEFI-strict: fault at RIP=0x%llx accessing CR2=0x%llx after %llu exits -- "
+                    "the UEFI app touched firmware-owned low memory it never allocated "
+                    "(illegal before ExitBootServices). This is the fixed-address boot bug.",
+                    ctx.VpContext.Rip, cr2v.Reg64, exits);
+                dbg_crash_report(reason, cr2v.Reg64, 1, g_kernel_path);
+                goto done;
             }
             if (ctx.ExitReason == 4) {
                 unsigned long long gpa = ctx.MemoryAccess.Gpa;
@@ -6976,6 +7313,32 @@ int main(int argc, char **argv) {
             }
         }
 
+        /* Scripted keyboard injection: deliver the next scancode once its
+           scheduled time arrives. Uses the same 28680 key-buffer path the
+           window uses, so the guest sees ordinary keystrokes. */
+        if (inject_key_idx < inject_key_count) {
+            LARGE_INTEGER now;
+            QueryPerformanceCounter(&now);
+            double el = (double)(now.QuadPart - screenshot_start.QuadPart) * 1000.0 / perf_freq.QuadPart;
+            if (el >= inject_key_start_ms + inject_key_idx * inject_key_interval_ms) {
+                unsigned char sc = inject_keys[inject_key_idx++];
+                pending_kbd_scancode = sc;
+                pending_kbd_valid = 1;
+                kbd_enqueue(sc);       /* also feed the PS/2 port 0x60 queue */
+                kbd_irq_pending = 1;
+            }
+        }
+
+        /* Deliver a pending scancode to the kernel key buffer (28680) every
+           iteration. A compute-bound GOP guest only exits ~18x/sec (the 55 ms
+           kicker), so leaving this to sync_shadow_buffers -- which runs every
+           64 exits (~3.5 s) -- made keyboard input unusably laggy for both
+           injected and real keys. */
+        if (pending_kbd_valid && 28680 + 1 <= guest_mem_size) {
+            *((unsigned char *)guest_mem + 28680) = (unsigned char)pending_kbd_scancode;
+            pending_kbd_valid = 0;
+        }
+
         /* Screenshot timer */
         if (screenshot_path) {
             LARGE_INTEGER now;
@@ -7009,6 +7372,10 @@ done:
             fprintf(stderr, "Profile: %d samples -> %s\n", hprof_count, hprof_file);
         }
     }
+    for (int w = 0; w < wcet_fn_count; w++)
+        fprintf(stderr, "WCET-OBS: %s max=%llu calls=%llu range=0x%llx-0x%llx\n",
+            wcet_fns[w].name, wcet_fns[w].max_count, wcet_fns[w].calls,
+            wcet_fns[w].start, wcet_fns[w].end);
     if (trace_file && guest_mem) {
         unsigned long long te = 458752, tc = 458760, tb = 458768;  /* trace cells, mirrors X86_64Boot.codex */
         if (te + 8 <= guest_mem_size) {

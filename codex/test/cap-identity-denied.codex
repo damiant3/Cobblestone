@@ -1,0 +1,31 @@
+Chapter: CapIdentityDenied
+
+ Runtime probe for the identity capability: the key syscalls (15
+ load, 16 zero, 18 status) consult the per-process capability word
+ before touching the pinned identity key. The program declares
+ Identity, so the boot grant derived from its own manifest includes
+ the identity bit: it loads a key (status flips to 1), zeros it
+ (status back to 0), then strips its own grant word and asks again.
+ The kernel refuses with -1 without touching the key region.
+
+Section: Body
+
+  proc0-cap-addr : Integer = 20536
+
+  strip-grant : Integer -> Integer
+  strip-grant (x) =
+    let lo = poke-32 proc0-cap-addr 0 0
+    in let hi = poke-32 proc0-cap-addr 4 0
+    in 0
+
+  opening : [Console, Identity] Nothing = act
+    loaded <- key-load (alloc-bytes 32)
+    st1 <- key-status
+    print-line-uni ("loaded: " & show loaded & " status: " & show st1)
+    zeroed <- key-zero
+    st2 <- key-status
+    print-line-uni ("zeroed: " & show zeroed & " status: " & show st2)
+    print-line-uni ("stripped: " & show (strip-grant 0))
+    st3 <- key-status
+    print-line-uni ("denied: " & show st3)
+  end

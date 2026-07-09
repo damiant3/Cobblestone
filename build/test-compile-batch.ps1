@@ -52,7 +52,12 @@ for ($i = 0; $i -lt $sources.Count; $i++) {
     $testNames.Add($name)
     $flagsFile = Join-Path ([System.IO.Path]::GetDirectoryName($sources[$i])) "$name.flags"
     $extraFlags = if (Test-Path -PathType Leaf $flagsFile) { ' ' + (Get-Content -TotalCount 1 $flagsFile).Trim() } else { '' }
-    $mode = "CDX repl$extraFlags`n"
+    # Plain CDX: the batch session loops because the SEED is repl-built.
+    # A per-request 'repl' flag would embed a REPL loop in the TEST binary
+    # (hangs stdin-consuming tests); the 'map' flag would stream the full
+    # symbol map over serial per test (the battery-wide map tax). Test
+    # binaries get Exit mode and halt cleanly on their own.
+    $mode = "CDX$extraFlags`n"
     [void]$inputSb.Append($mode)
     [void]$inputSb.Append($resolved)
     [void]$inputSb.Append([char]4)

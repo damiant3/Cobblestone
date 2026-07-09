@@ -603,7 +603,15 @@ Scalar broadcast is explicit via `vec-splat`, not implicit.
 ```
   vec-splat : a -> Vector N a           -- fill all lanes
   vec-extract : Vector N a, Integer -> a  -- extract one lane
+  vec-load-at : Integer -> Vector 2 a     -- load 16 bytes at an address (movupd, unaligned OK)
+  vec-store-at : Integer, Vector 2 a -> Integer  -- store 16 bytes at an address
 ```
+
+`vec-load-at`/`vec-store-at` move whole vectors at computed
+addresses — the primitives under `Math chapter VecArray`, a
+contiguous vector array over one flat 16·N buffer (va-alloc /
+va-get / va-set / va-map2 / va-sum). `va-set` mutates in place and
+returns the same array, like `list-set-at`.
 
 ### Reduction
 

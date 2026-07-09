@@ -333,8 +333,8 @@ Section: Bare-Metal Start
    in let st8 = st-append-code st7 (pop-r reg-rbp)
    in st-append-code st8 [195]
 
-  emit-start : CodegenState, Integer, Integer -> CodegenState
-  emit-start (st) (first-stub-vaddr) (syscall-handler-offset) =
+  emit-start : CodegenState, Integer, Integer, List Text -> CodegenState
+  emit-start (st) (first-stub-vaddr) (syscall-handler-offset) (manifest-effs) =
    let st0 = record-func-offset st "__start"
    in let st1 = st-append-code st0 (push-r reg-rbp & mov-rr reg-rbp reg-rsp & push-r reg-rbx & push-r reg-r12 & push-r reg-r13 & push-r reg-r14 & emit-sub-rsp-imm32 0)
    in let st2 = st-append-code st1 cli
@@ -352,19 +352,9 @@ Section: Bare-Metal Start
    in let st8 = st-append-code st7a (mov-load reg-rax reg-rdi 0)
    in let st11 = st-append-code st8 (mov-store reg-r11 reg-rax 0)
    in let st12 = emit-process-setup st11
-   in let st13 = emit-grant-capability st12 0 cap-console
-   in let st13a = emit-grant-capability st13 0 cap-console-read
-   in let st13b = emit-grant-capability st13a 0 cap-console-write
-   in let st13c = emit-grant-capability st13b 0 cap-filesystem-read
-   in let st13d = emit-grant-capability st13c 0 cap-filesystem-write
-   in let st13e = emit-grant-capability st13d 0 cap-network-read
-   in let st13f = emit-grant-capability st13e 0 cap-network-write
-   in let st13g = emit-grant-capability st13f 0 cap-block-device
-   in let st13h = emit-grant-capability st13g 0 cap-process-create
-   in let st13i = emit-grant-capability st13h 0 cap-capability-admin
-   in let st13j = emit-grant-capability st13i 0 cap-ipc
-   in let st13k = emit-grant-capability st13j 0 cap-identity
-   in let st14 = emit-grant-capability st13k 0 cap-concurrent
+   in let cap-names = manifest-cap-names manifest-effs 0 (list-length manifest-effs) []
+   in let grant-mask = boot-cap-mask cap-names 0 (list-length cap-names) 0
+   in let st14 = if grant-mask == 0 then st12 else emit-grant-cap-mask st12 0 grant-mask
    in let st15 = emit-grant-capability st14 1 cap-console
    in let syscall-vaddr = bare-metal-load-addr + syscall-handler-offset
    in let st16 = emit-write-msr st15 3221225601 (8 * 4294967296)
@@ -390,7 +380,8 @@ Section: Bare-Metal Start
    in let st33 = st-append-code st32 (mov-store reg-rdi reg-rax 0)
    in let st34 = st-append-code st33 (li reg-rdi serial-read-pos-addr)
    in let st35 = st-append-code st34 (mov-store reg-rdi reg-rax 0)
-   in let st35a = emit-control-string st35 [66, 79, 79, 84, 58, 83, 48, 45, 72, 87, 10]
+   in let st35p = emit-blit-probe st35
+   in let st35a = emit-control-string st35p [66, 79, 79, 84, 58, 83, 48, 45, 72, 87, 10]
    in let st36 = emit-interrupt-setup st35a
    in let st36-d = emit-vga-progress st36 9 54
    in let st36a = emit-wait-for-tick st36-d
@@ -631,6 +622,9 @@ Section: Finalize
    vm-profile = vm-profile-spec,
    poison-alloc = False,
    trace-alloc = False,
+   noalias-slots = [],
+   field-cache = [],
+   fresh-slots = [],
    stype-sites = []
   }
 
@@ -686,6 +680,9 @@ Section: Finalize
    trace-alloc = False,
    stack-guard = True,
    omit-frame-pointer = False,
+   noalias-slots = [],
+   field-cache = [],
+   fresh-slots = [],
    stype-sites = __list-with-capacity accum-capacity
   }
 
@@ -772,13 +769,19 @@ Section: Capability Manifest
    else if list-at xs i == n then True
    else manifest-name-in xs n (i + 1) len
 
+ manifest-base-loop derives the dot's code from a literal because
+ internal text is CCE: a bare 46 is ASCII thinking, and in CCE code
+ 46 is the letter H — the comparison never matched, so a dotted
+ effect (Device.Block) never resolved to its covering capability and
+ the boot grant silently dropped it.
+
   manifest-effect-base : Text -> Text
   manifest-effect-base (n) = manifest-base-loop n 0 (text-length n)
 
   manifest-base-loop : Text, Integer, Integer -> Text
   manifest-base-loop (n) (i) (len) =
    if i >= len then n
-   else if char-code (char-at n i) == 46 then substring n 0 i
+   else if char-code (char-at n i) == char-code (char-at "." 0) then substring n 0 i
    else manifest-base-loop n (i + 1) len
 
   manifest-cap-id : Text -> Integer
@@ -790,7 +793,35 @@ Section: Capability Manifest
    else if n == "Device" then 4
    else if n == "Gpu.Compute" then 5
    else if n == "Gpu.Memory" then 6
+   else if n == "Identity" then 7
+   else if n == "Capability" then 8
    else 0 - 1
+
+ The boot grant for proc 0 derives from the same manifest names the
+ capability section records: each covered name contributes its kernel
+ capability bits, and anything the manifest does not declare stays
+ ungranted (Concurrent covers task spawn, channels, and process
+ creation — the three faces of the concurrency authority in this
+ kernel). Identity and capability-admin bits have no effect-row
+ source yet, so no program receives them at boot.
+
+  boot-cap-mask-for : Text -> Integer
+  boot-cap-mask-for (n) =
+   if n == "Console" then bit-or (bit-shl 1 cap-console) (bit-or (bit-shl 1 cap-console-read) (bit-shl 1 cap-console-write))
+   else if n == "FileSystem" then bit-or (bit-shl 1 cap-filesystem-read) (bit-shl 1 cap-filesystem-write)
+   else if n == "Network" then bit-or (bit-shl 1 cap-network-read) (bit-shl 1 cap-network-write)
+   else if n == "Concurrent" then bit-or (bit-shl 1 cap-concurrent) (bit-or (bit-shl 1 cap-ipc) (bit-shl 1 cap-process-create))
+   else if n == "Device" then bit-or (bit-shl 1 cap-block-device) (bit-shl 1 cap-device)
+   else if n == "Gpu.Compute" then bit-shl 1 cap-gpu-compute
+   else if n == "Gpu.Memory" then bit-shl 1 cap-gpu-memory
+   else if n == "Identity" then bit-shl 1 cap-identity
+   else if n == "Capability" then bit-shl 1 cap-capability-admin
+   else 0
+
+  boot-cap-mask : List Text, Integer, Integer, Integer -> Integer
+  boot-cap-mask (caps) (i) (len) (acc) =
+   if i >= len then acc
+   else boot-cap-mask caps (i + 1) len (bit-or acc (boot-cap-mask-for (list-at caps i)))
 
   manifest-cap-names : List Text, Integer, Integer, List Text -> List Text
   manifest-cap-names (effs) (i) (len) (acc) =
@@ -846,8 +877,10 @@ Section: Capability Manifest
    in let cap-names = manifest-cap-names manifest-effs 0 (list-length manifest-effs) []
    in let cap-bytes = manifest-cap-bytes cap-names 0 (list-length cap-names) []
    in let eff-bytes = if list-length manifest-effs == 0 then [] else manifest-effects-section manifest-effs
+   in let func-count = list-length (st2d.fo-names)
+   in let debug-map = build-debug-map (st2d.fo-names) (st2d.fo-offsets) code-len func-count
    in let full-len = content-len + list-length cap-bytes + list-length eff-bytes
-   in if full-len > st2d.workspace.code-capacity
+   in if full-len + list-length debug-map > st2d.workspace.code-capacity
       then let st-err = st-add-error st2d cdx-resource-exhausted ("CDX content (" & integer-to-text full-len & " bytes) exceeds code-buffer capacity; raise code-buffer-size") synthetic-span
        in EmitChapterResult {
         header-bytes = [],
@@ -861,22 +894,21 @@ Section: Capability Manifest
    in let cpy = buf-copy-chunked (st2d.workspace.code-buffer) text-aligned (st2d.workspace.data-buffer) 0 data-len
    in let wcap = __buf-write-bytes (st2d.workspace.code-buffer) content-len cap-bytes
    in let weff = __buf-write-bytes (st2d.workspace.code-buffer) (content-len + list-length cap-bytes) eff-bytes
+   in let wdbg = __buf-write-bytes (st2d.workspace.code-buffer) full-len debug-map
    in let content-hash = sha256-buf (st2d.workspace.code-buffer) 0 full-len
    in let cdx-header-size = 224
    in let text-offset = cdx-header-size
    in let rodata-offset = text-offset + text-aligned
    in let cap-off-v = cdx-header-size + content-len
    in let eff-off-v = cap-off-v + list-length cap-bytes
-   in let func-count = list-length (st2d.fo-names)
-   in let debug-map = build-debug-map (st2d.fo-names) (st2d.fo-offsets) code-len func-count
    in let debug-off = if func-count > 0 then cdx-header-size + full-len else 0
    in let header = cdx-build-header content-hash text-offset code-len rodata-offset data-len start-offset debug-off cap-off-v (list-length cap-bytes) eff-off-v (list-length eff-bytes)
    in let smap = build-symbol-map (st2d.fo-names) (st2d.fo-offsets) bare-metal-load-addr code-len 0 func-count []
    in EmitChapterResult {
     header-bytes = header,
     content-buf = st2d.workspace.code-buffer,
-    content-len = full-len,
-    tail-bytes = debug-map,
+    content-len = full-len + list-length debug-map,
+    tail-bytes = [],
     bag = st2d.bag,
     symbol-map = smap
    }
@@ -885,7 +917,7 @@ Section: Capability Manifest
   x86-64-finalize-cdx (st1) (far-jump-patch-pos) (manifest-effs) =
    let isr-result = emit-isr-stubs st1
    in let syscall-result = emit-syscall-handler (isr-result.state)
-   in let st2 = emit-start (syscall-result.state) (isr-result.first-stub-vaddr) (syscall-result.handler-offset)
+   in let st2 = emit-start (syscall-result.state) (isr-result.first-stub-vaddr) (syscall-result.handler-offset) manifest-effs
    in x86-64-apply-patches-and-build-cdx st2 far-jump-patch-pos True manifest-effs
 
   cdx-build-header : List Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> List Integer
@@ -1015,10 +1047,10 @@ Section: Binary Debug Map (MAP1)
 
 
   x86-64-emit-cdx : IRChapter, List TypeBinding -> EmitChapterResult
-  x86-64-emit-cdx (m) (tdefs) = x86-64-emit-cdx-with-exit-mode m tdefs Exit False False
+  x86-64-emit-cdx (m) (tdefs) = x86-64-emit-cdx-with-exit-mode m tdefs Exit False False WatchdogProgress
 
-  x86-64-emit-cdx-with-exit-mode : IRChapter, List TypeBinding, X86_64ExitMode, Boolean, Boolean -> EmitChapterResult
-  x86-64-emit-cdx-with-exit-mode (m) (tdefs) (exit-mode) (poison) (trace) =
+  x86-64-emit-cdx-with-exit-mode : IRChapter, List TypeBinding, X86_64ExitMode, Boolean, Boolean, X86_64WatchdogMode -> EmitChapterResult
+  x86-64-emit-cdx-with-exit-mode (m) (tdefs) (exit-mode) (poison) (trace) (wd-mode) =
    let emit-deck = emit-build (list-length (m.defs) * 65536 + 25165824)
    in let de = __deck-enter
    in let tramp = bare-metal-trampoline
@@ -1026,7 +1058,7 @@ Section: Binary Debug Map (MAP1)
    in let st-mode = __record-set st0 "exit-mode" exit-mode
    in let st-poison = __record-set st-mode "poison-alloc" poison
    in let st-trace = __record-set st-poison "trace-alloc" trace
-   in let st-wd = __record-set st-trace "watchdog-mode" WatchdogProgress
+   in let st-wd = __record-set st-trace "watchdog-mode" wd-mode
    in let st-eo2 = __record-set st-wd "effect-op-addrs" (assign-effect-op-addrs (m.effect-op-names) 0 (list-length (m.effect-op-names)) [])
    in let defs-lifted = m.defs
    in let ret-ty = opening-bare-print-type defs-lifted

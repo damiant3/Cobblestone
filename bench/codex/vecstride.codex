@@ -1,0 +1,116 @@
+Chapter: Bench VecStride
+  cites Foreword chapter Console
+  cites Math chapter VecArray
+
+ Strided boxed vectors against the contiguous VecArray, N = 100000.
+ The boxed side walks a List of heap-boxed Vector 2 Real cells; the
+ contiguous side reduces one flat 16 x N buffer. Each pass runs
+ under a heap save so the per-pass value cells are reclaimed and
+ five hundred passes fit the arena. Tick counts come from the PIT
+ at roughly eighteen per second, so the numbers are a relative
+ comparison, not a precise clock. Both sides must report identical
+ lane bits; a mismatch means a codegen defect, not a timing fluke.
+
+Section: Inputs
+
+  input-at : Integer -> Vector 2 Real
+  input-at (i) = vec-splat (real-from-int i * 1.25 + 0.5)
+
+Section: Boxed
+
+  build-boxed : Integer, Integer, List (Vector 2 Real) -> List (Vector 2 Real)
+  build-boxed (i) (n) (acc) =
+    if i >= n then acc
+    else build-boxed (i + 1) n (list-push acc (input-at i))
+
+  boxed-sum : List (Vector 2 Real), Integer, Integer, Vector 2 Real -> Vector 2 Real
+  boxed-sum (xs) (i) (n) (acc) =
+    if i >= n then acc
+    else boxed-sum xs (i + 1) n (acc + list-at xs i)
+
+  boxed-pass : List (Vector 2 Real), Integer -> Integer
+  boxed-pass (xs) (n) =
+    let h = __heap-save
+    in let s = boxed-sum xs 0 n (vec-splat 0.0)
+    in let bits = real-to-bits (vec-extract s 0)
+    in let restored = __heap-restore h
+    in bits
+
+  boxed-reps : List (Vector 2 Real), Integer, Integer, Integer, Integer -> Integer
+  boxed-reps (xs) (n) (r) (reps) (last) =
+    if r >= reps then last
+    else boxed-reps xs n (r + 1) reps (boxed-pass xs n)
+
+  boxed-fill-pass : Integer -> Integer
+  boxed-fill-pass (n) =
+    let h = __heap-save
+    in let xs = build-boxed 0 n []
+    in let len = list-length xs
+    in let restored = __heap-restore h
+    in len
+
+  boxed-fill-reps : Integer, Integer, Integer, Integer -> Integer
+  boxed-fill-reps (n) (r) (reps) (last) =
+    if r >= reps then last
+    else boxed-fill-reps n (r + 1) reps (boxed-fill-pass n)
+
+Section: Contiguous
+
+  build-flat : VecArray, Integer -> VecArray
+  build-flat (a) (i) =
+    if i >= a.va-len then a
+    else build-flat (va-set a i (input-at i)) (i + 1)
+
+  flat-fill-pass : VecArray -> Integer
+  flat-fill-pass (a) =
+    let h = __heap-save
+    in let filled = build-flat a 0
+    in let len = filled.va-len
+    in let restored = __heap-restore h
+    in len
+
+  flat-fill-reps : VecArray, Integer, Integer, Integer -> Integer
+  flat-fill-reps (a) (r) (reps) (last) =
+    if r >= reps then last
+    else flat-fill-reps a (r + 1) reps (flat-fill-pass a)
+
+  flat-pass : VecArray -> Integer
+  flat-pass (a) =
+    let h = __heap-save
+    in let s = va-sum a
+    in let bits = real-to-bits (vec-extract s 0)
+    in let restored = __heap-restore h
+    in bits
+
+  flat-reps : VecArray, Integer, Integer, Integer -> Integer
+  flat-reps (a) (r) (reps) (last) =
+    if r >= reps then last
+    else flat-reps a (r + 1) reps (flat-pass a)
+
+Section: Entry
+
+  opening : [Console] Nothing
+  opening = act
+    let n = 100000
+    in let reps = 2000
+    in let fill-reps = 500
+    in let xs = build-boxed 0 n []
+    in let arr = build-flat (va-alloc n (vec-splat 0.0)) 0
+    in let t0 = get-ticks
+    in let bb = boxed-reps xs n 0 reps 0
+    in let t1 = get-ticks
+    in let fb = flat-reps arr 0 reps 0
+    in let t2 = get-ticks
+    in let bf = boxed-fill-reps n 0 fill-reps 0
+    in let t3 = get-ticks
+    in let ff = flat-fill-reps arr 0 fill-reps 0
+    in let t4 = get-ticks
+    in act
+      print-line-uni ("boxed-sum-ticks: " & show (t1 - t0))
+      print-line-uni ("flat-sum-ticks: " & show (t2 - t1))
+      print-line-uni ("boxed-fill-ticks: " & show (t3 - t2))
+      print-line-uni ("flat-fill-ticks: " & show (t4 - t3))
+      print-line-uni ("bits-match: " & (if bb == fb then "yes" else "no"))
+      print-line-uni ("fill-lens: " & show (bf + ff))
+    end
+  end

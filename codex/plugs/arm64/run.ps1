@@ -66,6 +66,17 @@ $outputBytes = [System.IO.File]::ReadAllBytes($outFile)
 [System.IO.File]::WriteAllBytes($Out, $outputBytes)
 Write-Host "[arm64-run] OK: $Out ($($outputBytes.Length) bytes)"
 
+# Show any WARN/WCET lines from serial. The first report line follows the
+# binary wire with no newline between, so match anywhere in the line.
+$serialText = ""
+try { $serialText = [System.Text.Encoding]::UTF8.GetString($outputBytes) } catch {}
+foreach ($sl in ($serialText -split "`n")) {
+    $m = [regex]::Match($sl.TrimEnd("`r"), '\[(WARN|WCET)\].*$')
+    if ($m.Success) {
+        Write-Host "[arm64-run] $($m.Value)" -ForegroundColor Yellow
+    }
+}
+
 Remove-Item -Force $inputFile -ErrorAction SilentlyContinue
 Remove-Item -Force $outFile -ErrorAction SilentlyContinue
 Remove-Item -Force $errFile -ErrorAction SilentlyContinue

@@ -131,13 +131,25 @@ Companion: `TrustedComputingBase.md` (what we trust vs. check vs. prove).
   errors/.failing; `cap-manifest-derived` is the positive guard. The
   owned hardware stack (compiler/kernel/os/boards/plugs) is
   quire-exempt by ruling — a named TCB boundary (`CapabilityProbe.md`
-  sec 7, recorded in `TrustedComputingBase.md`). STILL OPEN (stage 4,
-  OS wiring, delegatable): boot still grants process 0 every
-  capability and `granted-capabilities` is grant-all — the manifest is
-  derived and verified but not yet ENFORCED by the loader/proc-table.
-  Until stage 4 lands, "rejected at load time" remains the one
-  unearned clause; say "carried and verified" instead. Details:
-  `docs/Designs/Compiler/Active/CapabilityProbe.md` sec 7.5.
+  sec 7, recorded in `TrustedComputingBase.md`).
+  STAGE 4 CLOSED (blu CL 7325, 2026-07-08): boot now grants process 0
+  exactly the mask derived from the binary's OWN manifest (empty
+  manifest = zero grants; identity/capability-admin bits have no
+  effect-row source, so no program receives them). The syscall
+  capability check is real for the first time — it previously tested
+  bit RDX (the syscall ARGUMENT mod 64) and branched on a flag `bt`
+  does not set; it now tests the required cap bit as an immediate and
+  branches on CF. `ProcessCaps.apply-load-decision` writes an approved
+  LoadDecision's grant bitmask into the real process-table capability
+  word and refuses denied ones (runtime-proven by
+  `codex/test/apps/process-caps-test`). "Rejected at load time" is now
+  earned end-to-end for the wired path: manifest -> verifier+policy ->
+  grant -> proc table -> syscall bit-test. Remaining honesty note: the
+  syscall surface that CONSULTS the cap word is thin (console-write;
+  block syscalls do not check yet), and `granted-capabilities` in the
+  TYPE CHECKER remains the static all-known-caps list — a compile-time
+  vocabulary gate, not a runtime grant (renaming/narrowing it is
+  follow-up polish, not a soundness hole).
 
 ## Fine as-is (aspirational / marketing — leave)
 

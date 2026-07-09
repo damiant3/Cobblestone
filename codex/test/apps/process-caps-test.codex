@@ -1,0 +1,56 @@
+Chapter: ProcessCapsTest
+  cites Verify chapter ProcessCaps
+  cites Verify chapter VerifiedLoader
+  cites Verify chapter CdxVerifier
+  cites Verify chapter CdxBinary
+  cites Trust chapter TrustLattice
+  cites Trust chapter PolicyEngine
+  cites Foreword chapter Ed25519
+  cites Foreword chapter Sha256
+  cites Foreword chapter Sha512
+  cites Foreword chapter Maybe
+  cites Foreword chapter Hamt
+  cites Foreword chapter FactStore
+
+ Stage-4 wiring probe: a signed binary declaring one Console.Write
+ capability is evaluated by the verified loader, the approved grant
+ is written into a real process-table slot, and the slot is read
+ back. A denied decision (empty lattice: author below threshold)
+ must write nothing and report False.
+
+Section: Helpers
+  show-bool : Boolean -> Text
+  show-bool (b) = if b then "True" else "False"
+
+  test-sk : List Integer = [157, 97, 177, 157, 239, 253, 90, 96, 186, 132, 74, 244, 146, 236, 44, 196, 68, 73, 197, 105, 123, 50, 105, 25, 112, 59, 172, 3, 28, 174, 127, 96]
+
+Section: Body
+  opening : [Console] Nothing =
+    let binary = cdx-encode-signed (CdxBinaryParts {
+      flags = cdx-flag-bare-metal,
+      capabilities = [
+        CdxCapability { cap-id = cdx-cap-console, direction = cdx-dir-write, scope = "/", max-duration = 0 }
+      ],
+      effects = ["Console"],
+      text-bytes = [144, 195],
+      rodata-bytes = [],
+      entry-offset = 0,
+      stack-size = 65536,
+      heap-size = 65536,
+      trust-threshold = 5000
+    }) test-sk
+    in let author-key = read-author-key binary
+    in let lat = lattice-add-direct lattice-empty author-key 8000
+    in let policy = policy-add-rule (policy-empty "test") (rule-allow "allow-all" AlwaysTrue)
+    in let approved = evaluate-load binary lat policy 0 fact-store-empty 100
+    in let wired = apply-load-decision 7 approved
+    in let slot-mask = read-process-grant 7
+    in let denied = evaluate-load binary lattice-empty policy 0 fact-store-empty 100
+    in let denied-wired = apply-load-decision 9 denied
+    in let denied-mask = read-process-grant 9
+    in act
+      print-line-uni ("approved: " & show-bool (load-approved approved) & " grant=" & show (load-bitmask approved))
+      print-line-uni ("wired: " & show-bool wired & " slot7=" & show slot-mask)
+      print-line-uni ("denied-wired: " & show-bool denied-wired & " slot9=" & show denied-mask)
+      print-line-uni ("match: " & show-bool (slot-mask == load-bitmask approved))
+    end

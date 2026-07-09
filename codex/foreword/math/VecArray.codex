@@ -1,0 +1,78 @@
+Chapter: VecArray
+
+ A contiguous array of Vector 2 Real values over one flat buffer.
+ Boxed vectors are heap-allocated 16-byte cells reached through
+ pointers, so an array of them is a pointer walk with a fresh cell
+ per element. A VecArray is a single 16 x N byte allocation; element
+ i lives at base + i * 16 and moves through the vec-load-at and
+ vec-store-at builtins as one movupd each. Contiguous access is the
+ cheapest communication pattern the hardware offers; this chapter is
+ the structure-of-arrays option for vector data in tight loops.
+
+ va-alloc takes a fill value so every slot is written before any
+ slot can be read; the underlying alloc-bytes is a raw bump
+ allocation with no zero fill.
+
+ va-set writes the slot in place and returns the SAME array, exactly
+ like list-set-at on lists. Callers that need value semantics must
+ copy first.
+
+ To va-alloc gives a filled N-element vector array.
+ To va-get gives the vector at an index.
+ To va-set writes the vector at an index in place.
+ To va-map2 gives a new array combining two arrays elementwise.
+ To va-sum gives the elementwise sum of every vector in the array.
+
+ We say:
+
+Section: Types
+
+  VecArray = record {
+    va-base : Integer,
+    va-len : Integer
+  }
+
+Section: Construction
+
+  va-alloc : Integer, Vector 2 Real -> VecArray
+  va-alloc (n) (fill) =
+    let base = alloc-bytes (n * 16)
+    in va-fill (VecArray { va-base = base, va-len = n }) fill 0
+
+  va-fill : VecArray, Vector 2 Real, Integer -> VecArray
+  va-fill (a) (fill) (i) =
+    if i >= a.va-len then a
+    else va-fill (va-set a i fill) fill (i + 1)
+
+Section: Access
+
+  va-get : VecArray, Integer -> Vector 2 Real
+  va-get (a) (i) = vec-load-at (a.va-base + i * 16)
+
+  va-set : VecArray, Integer, Vector 2 Real -> VecArray
+  va-set (a) (i) (v) =
+    let written = vec-store-at (a.va-base + i * 16) v
+    in a
+
+Section: Combination
+
+  va-map2 : (Vector 2 Real, Vector 2 Real -> Vector 2 Real), VecArray, VecArray -> VecArray
+  va-map2 (f) (a) (b) =
+    let n = min (a.va-len) (b.va-len)
+    in let base = alloc-bytes (n * 16)
+    in va-map2-loop f a b (VecArray { va-base = base, va-len = n }) 0 n
+
+  va-map2-loop : (Vector 2 Real, Vector 2 Real -> Vector 2 Real), VecArray, VecArray, VecArray, Integer, Integer -> VecArray
+  va-map2-loop (f) (a) (b) (out) (i) (n) =
+    if i >= n then out
+    else va-map2-loop f a b (va-set out i (f (va-get a i) (va-get b i))) (i + 1) n
+
+Section: Reduction
+
+  va-sum : VecArray -> Vector 2 Real
+  va-sum (a) = va-sum-loop a 0 (a.va-len) (vec-splat 0.0)
+
+  va-sum-loop : VecArray, Integer, Integer, Vector 2 Real -> Vector 2 Real
+  va-sum-loop (a) (i) (n) (acc) =
+    if i >= n then acc
+    else va-sum-loop a (i + 1) n (acc + va-get a i)

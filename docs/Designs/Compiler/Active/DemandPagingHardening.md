@@ -162,22 +162,56 @@ zero-fill (it is the poison safety net) unless a later measurement
 under a fixed output path says otherwise. The output path is the
 lever.
 
-0. **Batch the binary output path** (NEW TOP ITEM). `__write_binary`
-   dominates because it writes the ~2 MB CDX one byte at a time to a
-   serial port, each a VM exit / MMIO-ish store. Options: widen the
-   output ring writes (qword or block copy into the 0x700000 ring
-   the host already drains), or have the guest write the whole buffer
-   to a known GPA range and signal length once. Measure against the
-   host sampler. Expected to move the ~78% far more than anything in
-   the compute path.
+0. **Batch the binary output path** — **DONE 2026-07-08** (blu CLs
+   7301 vm / 7304 builtin+seed / 7305 emit-binary-tail+seed / 7307
+   debug-map+seed). Shipped as the second option, minus even the
+   copy: the guest stores addr/len into cells 36160/36168 and rings
+   doorbell 0x510 with command 3; the VM appends guest RAM to the
+   output buffer directly (blit-in-place, ONE exit for the whole
+   binary). Feature probe IN 0x511 == 0xB7; anywhere else the legacy
+   per-byte loop runs (real hardware, old VMs). The 0x700000 ring
+   option was rejected: that GPA is live heap in current guests
+   (heap base 0x600000) — the VM-side ring design predates the
+   layout and must stay inert. The MAP1 debug map now rides the
+   content buffer (same stream bytes, tail-bytes empty). Measured:
+   self-compile 25.9s -> 7.8s (3.3x), gate build 188.5s -> 117.5s,
+   `__write_binary` gone from the host-sampler profile (new top:
+   `__alloc` 22%, `emit-map-lines` 21%).
+
+   **TEXT leg also DONE 2026-07-08** (blu CL 7311, seed F1F9DF85):
+   the uni print sink is staged — every wait-and-out triple in the
+   inline CCE-to-UTF-8 loops became `call __serial_put` (stage at
+   cursor cell 36192 when the blit is present, legacy UART
+   otherwise), bracketed per print by __print_begin/__print_flush
+   (R10 heap-top scratch, one doorbell per print). Boot probe
+   emit-blit-probe writes the flag cell 36176. Conversion logic
+   untouched byte-for-byte; raw prints, COM2 control, UEFI, and
+   !EXC dumps deliberately keep OUT-time semantics. Measured:
+   text-stage1 29.7s -> 17.7s, text-stage2 28.2s -> 15.5s, gate
+   build TOTAL 97.2s (pre-campaign 188.5s). Remaining output
+   levers, smaller now: the plugs' own wire output
+   (`serial-write-byte` loops) is the last per-byte path;
+   `emit-map-lines` now rides the staged sink (its text goes
+   through print-line-uni); the residual ~16s per TEXT stage is
+   frontend compute + emit-def text generation (allocation-heavy
+   string building), not exits.
 
 1. **Stage 3: frame pool + decommit** (DemandPagedArena §4b, deferred
    at ship). The physical-reduction prize (not a compile-speed one).
    - `phase-compact` and REPL reset decommit -> physical RAM returns
      to the pool; the REPL re-arms to fresh demand-zero pages.
-   - (1b) `__alloc` zero-fill elision: measured a non-win above; only
-     revisit if the output path is fixed first and a fresh profile
-     shows compute-bound allocation.
+   - (1b) `__alloc` zero-fill elision: **CLOSED 2026-07-08 with
+     data.** The revisit condition fired (output path fixed, fresh
+     host profile showed `__alloc` at 33%), so the prescribed A/B ran:
+     an elision seed self-compiles in 6.4s vs 6.9s zero-fill — the
+     33% share was sampler attribution skew (the VP-cancel kicker
+     lands disproportionately inside tight `rep stosb` loops; n=48
+     samples also reassigned 44% to `__str_concat` on the next run).
+     0.5s does not justify removing the poison safety net, and it
+     does not justify stage 3 on compile-speed grounds either —
+     stage 3's prize remains physical-memory reduction only. Keep
+     the zero-fill permanently; compile speed has hit diminishing
+     returns (no single lever >1s remains at 6.9s).
 2. **Per-core TSS/IST** (16 x 104-byte TSS array + per-core ltr in the
    AP entry path) so AP double faults dump instead of triple-faulting.
    Prerequisite for taking SMP seriously under demand paging.

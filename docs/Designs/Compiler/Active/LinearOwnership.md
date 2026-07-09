@@ -250,13 +250,31 @@ catalog green in BOTH directions plus the standard gates):
   fixed point on the first build, battery 290/275/0/15 (287 + 3 new
   guards; all nine probes green in the failing direction),
   self-verify green. Closes closure, list, record — the catalog.
-  RESIDUAL (documented, not probe routes): locals minted from
-  linear-returning calls are untracked (serial-line bus-scenario);
-  container literals in argument or tail position are counted
-  mentions but not ownership-tracked (stash-vs-consume precision
-  needs design); `-> [E] linear T` returns not recognized; the
-  mutable flag consolidation onto CodexType still rides a future
-  slice.
+  RESIDUAL (documented, not probe routes): container literals in
+  argument or tail position are counted mentions but not
+  ownership-tracked (stash-vs-consume precision needs design;
+  pinned open by codex/test/linear-mint-container); the mutable
+  flag consolidation onto CodexType still rides a future slice.
+
+- **Minted locals CLOSED (2026-07-07, NoAliasCodegen stage 1,
+  blu).** A local bound from a call whose registered return type is
+  linear — `let g = serial-bus-acquire 7`, act-block `h <- ...`
+  binds included — now roots a tracked owner with the full
+  exactly-once discipline (`check-mints` walk in TypeChecker's
+  Minted Linear Owners section, reusing `lin-let`/`lin-stmts` so
+  moves, retains, shadowing, and the argument boundary apply
+  unchanged). The callee's return is read from the registered
+  signature (LinearTy survives in return position), unwrapping
+  EffectfulTy, so `-> [E] linear T` mints too — and
+  `linear-return-sanctioned` now unwraps AEffectType, closing the
+  effectful-linear-return residual in the same slice. Probes:
+  errors/linear-mint-dup (CDX2061), errors/linear-mint-drop
+  (CDX2063); positive guards: serial-line bus-scenario (unchanged,
+  stays legal), linear-mint-container (documents the container
+  residual). Depot fallout: zero (surveyed — the only in-scope
+  binding sites were bus-scenario's three clean lines). This closed
+  residual is what makes the WI-1 no-alias fact airtight for
+  declared linear parameters (PhysicalCostCodegen.md).
 
 Deferred by this ruling, with revisit triggers:
 - **Multiplicity-polymorphic HOFs** (`map` over a list of linears

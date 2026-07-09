@@ -26,6 +26,7 @@ param(
     [switch]$Trace,
     [switch]$EscapeCheck,
     [switch]$Uefi,
+    [switch]$Pet,
     [string]$Break,
     [string]$Survey = ''
 )
@@ -111,6 +112,9 @@ try {
     $baseMode = if ($IrUni) { "IR-UNI" } elseif ($IrCce) { "IR-CCE" } else { "CDX" }
     if ($Prose) { $baseMode = "$baseMode prose" }
     if ($Repl) { $baseMode = "$baseMode repl" }
+    # Symbol map is opt-in per request ('map' flag). One-shot CDX compiles
+    # keep their .map sidecar; repl (seed) builds never emitted one.
+    if (-not $Repl -and $baseMode.StartsWith('CDX')) { $baseMode = "$baseMode map" }
     if ($Poison) { $baseMode = "$baseMode poison" }
     if ($PoisonCompact) { $baseMode = "$baseMode poison-compact" }
     if ($DebugMode) { $baseMode = "$baseMode debug" }
@@ -118,6 +122,10 @@ try {
     if ($Trace) { $baseMode = "$baseMode trace" }
     if ($EscapeCheck) { $baseMode = "$baseMode escape-check" }
     if ($Uefi) { $baseMode = "$baseMode uefi" }
+    # WatchdogPet: prologues pet the hang watchdog instead of relying on
+    # heap-hwm progress. For interactive poll loops (boot menus), which
+    # never allocate and would otherwise trip the no-progress panic.
+    if ($Pet) { $baseMode = "$baseMode pet" }
 
     # Body: cited chapters + source + EOT. Constant across attempts.
     $bodyBuilder = [System.Text.StringBuilder]::new(524288)

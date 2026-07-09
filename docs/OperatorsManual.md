@@ -137,6 +137,7 @@ codex-vm -kernel file.cdx [options]
 | `-map <file>` | auto | Symbol map file for address resolution. Auto-probed: `<kernel>.map`, then `seed/Codex.map` |
 | `-watch <0xADDR>` | — | Hardware watchpoint via page protection |
 | `-watch-size <N>` | 8 | Watchpoint region size (max 64 bytes) |
+| `-wcet <name>` | — | Observe a function's per-invocation dynamic instruction count (repeatable, max 4 — one DR0-DR3 exec breakpoint each; needs `-map`). Prints `WCET-OBS: <fn> max=<n> calls=<k>` on exit. Observation only: no guest byte is modified. |
 | `-screenshot <file>` | — | Save GOP framebuffer as BMP on exit |
 | `-screenshot-delay <ms>` | 0 | Delay before screenshot capture |
 | `-args <string>` | — | Boot arguments string (accessible to guest) |
@@ -440,6 +441,37 @@ the seed map drifts (see the Release-to-Public Gate note).
 The sample buffer lives at 0x60000 (profiler) / 0x70000 (alloc trace),
 in the free low-memory band above the AP stacks; earlier it sat inside
 the page tables and enabling it destroyed them after ~88 samples.
+
+## WCET Validation
+
+`build/wcet-validate.ps1` empirically validates punctual WCET claims:
+it compiles a program, parses the CDX6010 static counts and budgets
+from the compile log, then runs the binary under `codex-vm -wcet`
+(hardware execution breakpoint at each function entry + TF
+single-step; callee instructions excluded, matching the static count's
+per-body semantics) and gates on **observed <= budget** per
+invocation. `CODEX_VM_NO_TIMER=1` is set for the observation runs.
+
+```powershell
+build/wcet-validate.ps1                          # default driver (codex/test/wcet-probe.codex)
+build/wcet-validate.ps1 -Src path/to/prog.codex  # any punctual program
+```
+
+Verdicts: PASS (observed within budget and static claim), WARN
+(function never entered — the inliner consumed every call site),
+FAIL (observed > budget, observed > static, or instrumentation
+failure). Exit 0 unless FAIL. The static CDX6010 count is a decode
+of the function's finished bytes (`X86_64InsnCount.codex`, taken
+after NOP compaction), so it is exact: punctual code cannot loop,
+every dynamic path is a subset of the body, and an observation above
+the static count means the accounting is broken. An encoding outside
+the decode vocabulary raises CDX6012 (count unavailable) instead of
+reporting a partial number.
+
+Note: `-wcet` is the only mode that host-intercepts exceptions
+(`ExtendedVmExits.ExceptionExit` + bitmap narrowed to #DB). In every
+other mode the bitmap is inert and all exceptions go to the guest IDT
+(the `!EXC` dump protocol) — INT3/vector 3 always belongs to the guest.
 
 ## Status Server
 

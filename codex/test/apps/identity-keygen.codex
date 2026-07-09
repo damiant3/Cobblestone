@@ -2,6 +2,12 @@ Chapter: IdentityKeygen
   cites Foreword chapter Sha512
   cites Foreword chapter Ed25519
 
+ The device identity is derived from the device seed: the seed words
+ become an Ed25519 public key, and its four packed words are written
+ into the identity table. device-seed and the crypto are pure; only
+ identity-set is effectful, so it threads through step helpers and
+ the public key is computed once and passed along.
+
 Section: Helpers
   seed-to-list : Integer, Integer, List Integer -> List Integer
   seed-to-list (word) (byte-idx) (acc) =
@@ -27,30 +33,42 @@ Section: Helpers
     + list-at bs (start + 6) * 281474976710656
     + list-at bs (start + 7) * 72057594037927936
 
+  pubkey-bytes : Integer -> List Integer
+  pubkey-bytes (x) =
+    ed25519-public-key (words-to-bytes [device-seed 0, device-seed 1, device-seed 2, device-seed 3])
+
 Section: Body
-  opening : [Console] Nothing = act
-    let seed-words = [device-seed 0, device-seed 1, device-seed 2, device-seed 3]
-    in let seed-bytes = words-to-bytes seed-words
-    in let pubkey = ed25519-public-key seed-bytes
-    in let w0 = pack-word pubkey 0
-    in let w1 = pack-word pubkey 8
-    in let w2 = pack-word pubkey 16
-    in let w3 = pack-word pubkey 24
-    in let s0 = identity-set 0 w0
-    in let s1 = identity-set 1 w1
-    in let s2 = identity-set 2 w2
-    in let s3 = identity-set 3 w3
-    in if s0 == 0 then if s1 == 0 then if s2 == 0 then if s3 == 0 then
-      if identity-whoami 0 == w0 then if identity-whoami 1 == w1 then
-        if identity-whoami 2 == w2 then if identity-whoami 3 == w3 then act
-          print-line-uni "PASS: identity derived from device seed"
-        end
-        else print-line-uni "FAIL: word 3 mismatch"
-        else print-line-uni "FAIL: word 2 mismatch"
-      else print-line-uni "FAIL: word 1 mismatch"
-      else print-line-uni "FAIL: word 0 mismatch"
-    else print-line-uni "FAIL: set3"
-    else print-line-uni "FAIL: set2"
-    else print-line-uni "FAIL: set1"
-    else print-line-uni "FAIL: set0"
+  check-all : List Integer -> Text
+  check-all (pk) =
+    if identity-whoami 0 /= pack-word pk 0 then "FAIL: word 0 mismatch"
+    else if identity-whoami 1 /= pack-word pk 8 then "FAIL: word 1 mismatch"
+    else if identity-whoami 2 /= pack-word pk 16 then "FAIL: word 2 mismatch"
+    else if identity-whoami 3 /= pack-word pk 24 then "FAIL: word 3 mismatch"
+    else "PASS: identity derived from device seed"
+
+  final-step : List Integer, Integer -> Text
+  final-step (pk) (s3) =
+    if s3 /= 0 then "FAIL: set3"
+    else check-all pk
+
+  step3 : List Integer, Integer -> [Identity] Text
+  step3 (pk) (s2) =
+    if s2 /= 0 then "FAIL: set2"
+    else final-step pk (identity-set 3 (pack-word pk 24))
+
+  step2 : List Integer, Integer -> [Identity] Text
+  step2 (pk) (s1) =
+    if s1 /= 0 then "FAIL: set1"
+    else step3 pk (identity-set 2 (pack-word pk 16))
+
+  step1 : List Integer, Integer -> [Identity] Text
+  step1 (pk) (s0) =
+    if s0 /= 0 then "FAIL: set0"
+    else step2 pk (identity-set 1 (pack-word pk 8))
+
+  run-keygen : List Integer -> [Identity] Text
+  run-keygen (pk) = step1 pk (identity-set 0 (pack-word pk 0))
+
+  opening : [Console, Identity] Nothing = act
+    print-line-uni (run-keygen (pubkey-bytes 0))
   end

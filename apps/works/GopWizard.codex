@@ -1,0 +1,372 @@
+Chapter: GopWizard
+  cites Works chapter GopDraw
+  cites Works chapter GopText
+  cites Works chapter GopFat16
+  cites Kernel chapter BitmapFont
+  cites Foreword chapter Ed25519
+  cites Foreword chapter Sha256
+  cites Foreword chapter Hkdf
+  cites Foreword chapter Aes256
+  cites Foreword chapter StringUtils
+  cites Foreword chapter CCE
+
+ The first-boot ceremony on the GOP framebuffer (B2.2 + B2.3). The
+ flow mirrors FirstBoot's phase model -- welcome, identity, upstream,
+ complete -- rendered with GopDraw and driven by GopText fields over
+ the raw PS/2 keyboard, because on the Option A boot path firmware is
+ gone: no ConOut, no ConIn.
+
+ Identity follows the IdentityManager recipe: entropy is hashed with
+ SHA-256 into an Ed25519 seed, the public key's hash is the
+ fingerprint, and the private seed is wrapped with AES-256-CBC under
+ an HKDF key derived from the passphrase. Entropy sources are the
+ device seed cell (32 bytes at 30576, zero until the stub wires
+ RDRAND), the typed random sentence, the passphrase, and the timer
+ tick count sampled after typing -- keystroke timing the machine
+ cannot predict. The wrapped key lives only in memory: persistence to
+ the stick is B3.
+
+ Every waiting loop is a self-recursive act tail (constant stack under
+ the compiler's TCO) whose idle path allocates nothing; the hosting
+ program compiles with the pet flag like every boot-path poll loop.
+
+ We say:
+
+Section: Context
+
+  WzCtx = record {
+    wz-base : Integer,
+    wz-w : Integer,
+    wz-h : Integer,
+    wz-stride : Integer,
+    wz-font : CbfFont,
+    wz-scale : Integer
+  }
+
+  wz-col-bg : Integer = 1710638
+  wz-col-title : Integer = 65535
+  wz-col-text : Integer = 9474192
+  wz-col-bright : Integer = 16777215
+  wz-col-green : Integer = 65280
+  wz-col-field : Integer = 3421236
+  wz-col-warn : Integer = 16755200
+
+  wz-left : WzCtx -> Integer
+  wz-left (c) = (c.wz-w - 480 * c.wz-scale) / 2
+
+  wz-top : WzCtx -> Integer
+  wz-top (c) = (c.wz-h - 320 * c.wz-scale) / 2
+
+  wz-row : WzCtx, Integer -> Integer
+  wz-row (c) (i) = wz-top c + i * 24 * c.wz-scale
+
+  wz-clear : WzCtx -> Integer
+  wz-clear (c) = gop-fill-rect (c.wz-base) (c.wz-stride) 0 0 (c.wz-w) (c.wz-h) wz-col-bg
+
+  wz-text : WzCtx, Integer, Text, Integer -> Integer
+  wz-text (c) (row) (s) (color) =
+    gop-draw-text (c.wz-base) (c.wz-stride) (c.wz-font) (wz-left c) (wz-row c row) s color (c.wz-scale) 0
+
+  wz-field : WzCtx, Integer, Integer, Boolean -> GtField
+  wz-field (c) (row) (wchars) (masked) = GtField {
+    gf-base = c.wz-base,
+    gf-stride = c.wz-stride,
+    gf-font = c.wz-font,
+    gf-x = wz-left c,
+    gf-y = wz-row c row,
+    gf-wchars = wchars,
+    gf-scale = c.wz-scale,
+    gf-fg = wz-col-bright,
+    gf-bg = wz-col-field,
+    gf-cursor = wz-col-green,
+    gf-masked = masked
+  }
+
+Section: Key Wait
+
+  wz-wait-enter : WzCtx -> [Device.Port] Integer
+  wz-wait-enter (c) = act
+    status <- port-in-byte 100
+    sc <- if bit-and status 1 > 0 then port-in-byte 96 else 0
+    if sc == 28 then 0 else wz-wait-enter c
+  end
+
+Section: Welcome
+
+  wz-welcome : WzCtx -> [Device.Port] Integer
+  wz-welcome (c) =
+    let d0 = wz-clear c
+    in let t0 = wz-text c 0 "Welcome to Codex" wz-col-title
+    in let t1 = wz-text c 2 "A self-sustaining operating system, compiler, and" wz-col-text
+    in let t2 = wz-text c 3 "development environment. Everything on this device" wz-col-text
+    in let t3 = wz-text c 4 "was compiled by itself." wz-col-text
+    in let t4 = wz-text c 6 "This is first boot. We will:" wz-col-text
+    in let t5 = wz-text c 7 "  1. Generate your identity (Ed25519 keypair)" wz-col-text
+    in let t6 = wz-text c 8 "  2. Configure an upstream server (optional)" wz-col-text
+    in let t7 = wz-text c 9 "  3. Choose your preferred interface" wz-col-text
+    in let t8 = wz-text c 11 "Press Enter to begin." wz-col-green
+    in wz-wait-enter c
+
+Section: Passphrase
+
+ The passphrase protects the private key. Two masked entries must
+ match and reach four characters; a failed attempt redraws the screen
+ with the reason and starts over -- the retry is a tail self-call, so
+ a stubborn typist costs no stack.
+
+  wz-passphrase : WzCtx, Text -> [Device.Port, Device.Mmio] GtLine
+  wz-passphrase (c) (note) = act
+    d0 <- wz-clear c
+    t0 <- wz-text c 0 "Your Identity" wz-col-title
+    t1 <- wz-text c 2 "Choose a passphrase (4+ characters). It encrypts the" wz-col-text
+    t2 <- wz-text c 3 "private key; without it the key cannot be used." wz-col-text
+    t3 <- if text-length note > 0 then wz-text c 10 note wz-col-warn else 0
+    t4 <- wz-text c 5 "Passphrase:" wz-col-text
+    p1 <- gt-input (wz-field c 6 32 True)
+    t5 <- wz-text c 8 "Confirm:" wz-col-text
+    p2 <- gt-input (wz-field c 9 32 True)
+    if p1.gl-text == p2.gl-text then
+      if text-length (p1.gl-text) >= 4 then GtLine { gl-text = p1.gl-text, gl-entropy = p1.gl-entropy * 31 + p2.gl-entropy }
+      else wz-passphrase c "Too short - use four or more characters."
+    else wz-passphrase c "The passphrases differ - try again."
+  end
+
+Section: Entropy
+
+  wz-entropy : WzCtx -> [Device.Port, Device.Mmio] GtLine
+  wz-entropy (c) = act
+    d0 <- wz-clear c
+    t0 <- wz-text c 0 "Entropy" wz-col-title
+    t1 <- wz-text c 2 "Type a random sentence. Its characters and your typing" wz-col-text
+    t2 <- wz-text c 3 "time are mixed into the key material." wz-col-text
+    s <- gt-input (wz-field c 5 48 False)
+    s
+  end
+
+Section: Upstream
+
+  wz-upstream : WzCtx -> [Device.Port, Device.Mmio] GtLine
+  wz-upstream (c) = act
+    d0 <- wz-clear c
+    t0 <- wz-text c 0 "Upstream Server (optional)" wz-col-title
+    t1 <- wz-text c 2 "For complex tasks a local agent can escalate to a" wz-col-text
+    t2 <- wz-text c 3 "full-size model on a remote server. Enter its address," wz-col-text
+    t3 <- wz-text c 4 "or press Enter alone to skip." wz-col-text
+    s <- gt-input (wz-field c 6 48 False)
+    s
+  end
+
+Section: Key Generation
+
+  WzIdentity = record {
+    wid-fingerprint : Text,
+    wid-public : List Integer,
+    wid-wrapped : List Integer,
+    wid-salt : List Integer,
+    wid-iv : List Integer
+  }
+
+  wz-device-seed-addr : Integer = 30576
+
+  wz-peek-bytes : Integer, Integer, Integer, List Integer -> List Integer
+  wz-peek-bytes (addr) (len) (i) (acc) =
+    if i >= len then acc
+    else wz-peek-bytes addr len (i + 1) (list-push acc (peek-byte addr i))
+
+  wz-text-bytes : Text, Integer, List Integer -> List Integer
+  wz-text-bytes (s) (i) (acc) =
+    if i >= text-length s then acc
+    else wz-text-bytes s (i + 1) (list-push acc (to-unicode (char-code (char-at s i))))
+
+  wz-words-to-bytes : List Integer, Integer, List Integer -> List Integer
+  wz-words-to-bytes (words) (i) (acc) =
+    if i >= list-length words then acc
+    else let w = list-at words i
+    in wz-words-to-bytes words (i + 1) (acc & [bit-and (bit-shru w 24) 255, bit-and (bit-shru w 16) 255, bit-and (bit-shru w 8) 255, bit-and w 255])
+
+  wz-take : List Integer, Integer, Integer, List Integer -> List Integer
+  wz-take (src) (n) (i) (acc) =
+    if i >= n then acc
+    else wz-take src n (i + 1) (list-push acc (list-at src i))
+
+  wz-tick-bytes : List Integer
+  wz-tick-bytes =
+    let t = peek-qword 28672 0
+    in [bit-and t 255, bit-and (bit-shru t 8) 255, bit-and (bit-shru t 16) 255, bit-and (bit-shru t 24) 255]
+
+  wz-hkdf-info : List Integer
+  wz-hkdf-info = wz-text-bytes "codex-identity-v1" 0 []
+
+  wz-int-bytes : Integer -> List Integer
+  wz-int-bytes (v) =
+    [bit-and v 255, bit-and (bit-shru v 8) 255, bit-and (bit-shru v 16) 255, bit-and (bit-shru v 24) 255, bit-and (bit-shru v 32) 255, bit-and (bit-shru v 40) 255, bit-and (bit-shru v 48) 255, bit-and (bit-shru v 56) 255]
+
+  wz-keygen : Text, Text, Integer -> WzIdentity
+  wz-keygen (passphrase) (sentence) (typing-ent) =
+    let dev = wz-peek-bytes wz-device-seed-addr 32 0 []
+    in let mix = dev & wz-text-bytes sentence 0 [] & wz-text-bytes passphrase 0 [] & wz-tick-bytes & wz-int-bytes typing-ent
+    in let seed = wz-words-to-bytes (sha256 mix) 0 []
+    in let pub = ed25519-public-key seed
+    in let fp = sha256-to-hex (sha256 pub)
+    in let salt = wz-take (wz-words-to-bytes (sha256 (dev & wz-tick-bytes & [1])) 0 []) 16 0 []
+    in let iv = wz-take (wz-words-to-bytes (sha256 (dev & wz-tick-bytes & [2])) 0 []) 16 0 []
+    in let dk = wz-words-to-bytes (hkdf salt (wz-text-bytes passphrase 0 []) wz-hkdf-info 32) 0 []
+    in let wrapped = aes256-cbc-encrypt (aes256-pkcs7-pad seed) dk iv
+    in WzIdentity {
+      wid-fingerprint = fp,
+      wid-public = pub,
+      wid-wrapped = wrapped,
+      wid-salt = salt,
+      wid-iv = iv
+    }
+
+Section: Persistence
+
+ Serialize the identity into a 512-byte cluster buffer and write it to
+ the stick as IDENTITY.DAT, so a later boot can unlock instead of running
+ the wizard again. The layout is fixed and self-describing: a magic, a
+ version, then the salt, iv, public key, and the passphrase-wrapped
+ private seed with its length. Only the wrapped key is secret, and it
+ never leaves memory unencrypted -- what lands on disk is exactly what
+ the wizard already computed.
+
+  wz-id-magic0 : Integer = 67
+  wz-id-magic1 : Integer = 73
+  wz-id-magic2 : Integer = 68
+  wz-id-magic3 : Integer = 78
+
+  wz-put-list : Integer, Integer, List Integer, Integer, Integer -> Integer
+  wz-put-list (buf) (off) (xs) (i) (n) =
+    if i >= n then 0
+    else let w = poke-byte buf (off + i) (list-at xs i)
+    in wz-put-list buf off xs (i + 1) n
+
+  wz-put-u32 : Integer, Integer, Integer -> Integer
+  wz-put-u32 (buf) (off) (v) =
+    let a = poke-byte buf off (bit-and v 255)
+    in let b = poke-byte buf (off + 1) (bit-and (bit-shru v 8) 255)
+    in let c = poke-byte buf (off + 2) (bit-and (bit-shru v 16) 255)
+    in poke-byte buf (off + 3) (bit-and (bit-shru v 24) 255)
+
+  wz-serialize-identity : WzIdentity, Integer -> Integer
+  wz-serialize-identity (wid) (buf) =
+    let m0 = poke-byte buf 0 wz-id-magic0
+    in let m1 = poke-byte buf 1 wz-id-magic1
+    in let m2 = poke-byte buf 2 wz-id-magic2
+    in let m3 = poke-byte buf 3 wz-id-magic3
+    in let v = wz-put-u32 buf 4 1
+    in let salt = wz-put-list buf 8 (wid.wid-salt) 0 16
+    in let iv = wz-put-list buf 24 (wid.wid-iv) 0 16
+    in let pub = wz-put-list buf 40 (wid.wid-public) 0 32
+    in let wl = wz-put-u32 buf 72 (list-length (wid.wid-wrapped))
+    in let wr = wz-put-list buf 76 (wid.wid-wrapped) 0 (list-length (wid.wid-wrapped))
+    in 76 + list-length (wid.wid-wrapped)
+
+ The 8.3 name "IDENTITYDAT" as 11 space-padded bytes.
+
+  wz-id-name : Integer
+  wz-id-name =
+    let b = __heap-save
+    in let adv = __heap-advance 16
+    in let w = wz-name-bytes b "IDENTITYDAT" 0
+    in b
+
+  wz-name-bytes : Integer, Text, Integer -> Integer
+  wz-name-bytes (buf) (s) (i) =
+    if i >= text-length s then 0
+    else let w = poke-byte buf i (to-unicode (char-code (char-at s i)))
+    in wz-name-bytes buf s (i + 1)
+
+ Only ever write to the disk we booted from. The AHCI driver picks the
+ first SATA disk it finds, which on a real machine with internal drives
+ is NOT the boot medium -- so an unguarded write could land on the wrong
+ disk. The boot medium is the one carrying our own CODEX.CDX; if the
+ mounted volume has no CODEX.CDX, decline rather than risk another disk.
+ (On real hardware the boot stick is USB mass storage, which these
+ AHCI/IDE drivers cannot reach at all -- so the mount fails first and
+ this guard is belt-and-suspenders until the USB stack lands.)
+
+  wz-save-identity : WzIdentity -> [Device.Port] Boolean
+  wz-save-identity (wid) = act
+    m <- gfat-mount-esp
+    if m.gm-ok == False then False
+    else act
+      seed-size <- gfat-file-size (m.gm-vol) "CODEX.CDX"
+      if seed-size == 0 then False
+      else act
+        let buf = __heap-save
+        in let adv = __heap-advance 512
+        in let z = wz-zero buf 0 512
+        in let len = wz-serialize-identity wid buf
+        in gfat-write-small-file (m.gm-vol) wz-id-name buf len
+      end
+    end
+  end
+
+  wz-zero : Integer, Integer, Integer -> Integer
+  wz-zero (buf) (i) (n) =
+    if i >= n then 0
+    else let w = poke-byte buf i 0
+    in wz-zero buf (i + 1) n
+
+  wz-identity-present : [Device.Port] Boolean
+  wz-identity-present = act
+    m <- gfat-mount-esp
+    if m.gm-ok == False then False
+    else act
+      sz <- gfat-file-size (m.gm-vol) "IDENTITY.DAT"
+      sz > 0
+    end
+  end
+
+Section: Complete
+
+  wz-complete : WzCtx, WzIdentity, Text, Boolean -> [Device.Port] Integer
+  wz-complete (c) (wid) (up) (saved) =
+    let d0 = wz-clear c
+    in let t0 = wz-text c 0 "Identity Created" wz-col-title
+    in let t1 = wz-text c 2 ("Fingerprint: " & text-take (wid.wid-fingerprint) 32) wz-col-green
+    in let t2 = wz-text c 3 ("             " & text-drop (wid.wid-fingerprint) 32) wz-col-green
+    in let t3 = wz-text c 5 ("Upstream: " & (if text-length up == 0 then "(none)" else up)) wz-col-text
+    in let t4 = wz-text c 7 "The private key is wrapped under your passphrase." wz-col-text
+    in let t5 = if saved then wz-text c 8 "Saved to the stick as IDENTITY.DAT." wz-col-green
+                else wz-text c 8 "Could not save to the stick." wz-col-warn
+    in let t6 = wz-text c 10 "Press Enter to choose your interface." wz-col-green
+    in wz-wait-enter c
+
+Section: Flow
+
+ A returning boot: a stick that already carries an identity greets you
+ and skips generation. Unlocking the key -- re-deriving the HKDF key from
+ the passphrase and decrypting the wrapped seed -- is the next rung
+ (B3.6); for now a saved identity is detected and acknowledged.
+
+  wz-welcome-back : WzCtx -> [Device.Port] Integer
+  wz-welcome-back (c) =
+    let d0 = wz-clear c
+    in let t0 = wz-text c 0 "Welcome Back" wz-col-title
+    in let t1 = wz-text c 2 "This stick already carries an identity (IDENTITY.DAT)." wz-col-text
+    in let t2 = wz-text c 3 "Unlocking it with your passphrase arrives with B3.6." wz-col-text
+    in let t3 = wz-text c 5 "Press Enter to choose your interface." wz-col-green
+    in wz-wait-enter c
+
+  wizard-run : WzCtx -> [Device.Port, Device.Mmio] Text
+  wizard-run (c) = act
+    present <- wz-identity-present
+    if present then act
+      wb <- wz-welcome-back c
+      let r = "returning"
+      in r
+    end
+    else act
+      w0 <- wz-welcome c
+      pp <- wz-passphrase c ""
+      sent <- wz-entropy c
+      up <- wz-upstream c
+      wid <- wz-keygen (pp.gl-text) (sent.gl-text) (pp.gl-entropy * 2654435761 + sent.gl-entropy * 40503 + up.gl-entropy)
+      saved <- wz-save-identity wid
+      done <- wz-complete c wid (up.gl-text) saved
+      let fp = wid.wid-fingerprint
+      in fp
+    end
+  end
