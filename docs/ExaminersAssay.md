@@ -35,10 +35,15 @@ Each test `foo.codex` may have sidecars that control its behavior:
 
 A test with no sidecar compiles but is unverified (PASS_UNVERIFIED).
 
-## Current State (2026-07-08, blu, seed 1C8E0F38...)
+## Current State (2026-07-08, fester, seed 9DF129A5...)
 
-Default battery baseline is now **333 total / 318 pass / 0 fail /
-15 skip**. New this day: `cap-block-denied` and
+Default battery baseline is now **336 total / 321 pass / 0 fail /
+15 skip** on the seed carrying the UEFI boot arc, blu's capability
+enforcement, and the spawn-pool carve. New this cycle: the boot-arc
+regression battery (`act-tco-loop`, `gop-text-field`, `ide-pio-read`,
+`ahci-encode`, `gop-fat16`, `gop-wake`, `disk-write`, `fat-write` --
+each a known-answer fixture built independently from the FAT/GPT/AHCI
+specs) and blu's `nested-spawn` probe. Earlier this cycle: New this day: `cap-block-denied` and
 `cap-identity-denied` — runtime capability-denial probes (block and
 identity-key syscalls consult the per-process cap word; a stripped
 grant gets -1 with the device/key untouched) — `errors/cap-launder-pure-key`
@@ -53,10 +58,13 @@ pass->fail because the gated kernel builtins carried empty effect
 rows and could not earn their manifest grant. They now declare their
 real effects (Concurrent/Identity/Capability) and all pass on the
 current seed. -Apps identity/disk/caps sweep (17 tests) verified
-green. KNOWN: a two-level process spawn (a spawned process that
-spawns a grandchild) hangs on post-stage-4 seeds — a latent
-spawn-allocator heap-budget bug, not capability typing; deferred to a
-scheduler-focused session (see CapabilityProbe.md). The eight `-Apps`
+green. RESOLVED (was KNOWN): a two-level process spawn (a spawned
+process that spawns a grandchild) used to hang -- a spawn-allocator
+heap-budget bug (child heap+stack carved from the spawner's own
+allocation frontier, overlapping a grandchild's stack), not capability
+typing. Fixed by the spawn-pool carve (main CL 7354): all three spawn
+helpers cut child regions from a global pool cursor. Probe:
+`codex/test/nested-spawn.codex`. The eight `-Apps`
 disk/caps tests (block-identify, block-io-basic, disk-facts-*,
 process-caps-test) were run individually against the new seed and
 pass; `boot-stage-test` is a pre-existing CDX2033 compile failure
