@@ -267,13 +267,13 @@ As of 2026-07-04:
 
 The compiler is a hard fixed point of itself on bare metal.
 
-**`seed/Codex.cdx`** (2,145,398 bytes, ~2.05 MB) — the canonical seed:
+**`seed/Codex.cdx`** (2,145,861 bytes, ~2.05 MB) — the canonical seed:
 
 | Algorithm | Digest |
 |---|---|
-| Content hash prefix | `1075CD32` |
-| SHA-256 | `1075CD32CF11FEEC4CB6770625F550137F65FFA1BF12879C55F7EE785F039132` |
-| MD5 | `6400C3FD3399058DC3E87844CA03C68C` |
+| Content hash prefix | `9DF129A5` |
+| SHA-256 | `9DF129A5B46FD2AB2C5E4C03E0F11CDA932614C164975A8F733EEBAED571A26A` |
+| MD5 | `810C2CC82CAA8C9B142DF75188C18C1D` |
 
 The seed grew from ~1.83 MB to ~1.88 MB on 2026-07-01, absorbing the
 CCE output boundary (tier0/1/2 UTF-8 conversion), the proof infrastructure
@@ -295,15 +295,17 @@ faults, TSS/IST double-fault dumps, RAM-derived demand top) and a
 sampling profiler — all byte-identical one-pass fixed points. Since then
 the seed has absorbed the boot arc (effect-loop TCO fix, WatchdogPet mode,
 foreword FAT16 fixes) and blu's capability enforcement (real syscall
-capability checks), reaching 2,145,398 bytes as a byte-identical one-pass
-fixed point.
+capability checks), then blu's spawn-pool carve (nested process-spawn
+regions come from a global pool, never the spawner's heap frontier) and
+the process-kill honest [Capability] row, reaching 2,145,861 bytes as a
+byte-identical one-pass fixed point.
 
 **`seed/Codex.img`** (16,777,216 bytes, 16 MB) — bootable GPT disk image,
 the first-boot ceremony:
 
 | Algorithm | Digest |
 |---|---|
-| SHA-256 | `0242D9307730A1DFFA59EB2547C910BB83E1D14100EA30A2D5D53F18120E7B55` |
+| SHA-256 | `45B4F41C16869FCE1CB001A6ABA2C557AE82098A6F20387DE8C5CAD1A1AB5DD0` |
 
 Boot it on a UEFI machine and it runs its own first-boot ceremony, drawn on
 the GOP framebuffer with no OS beneath it: choose an interface, walk the

@@ -178,6 +178,30 @@ Section: Process Scheduler Helpers
    in let st31 = patch-jcc-at st30 halt-jmp halt-pos
    in patch-jcc-at st31 not-ready scan-top
 
+ Spawn-pool carve. Child heap and stack regions come from a global
+ pool cursor, never from the spawner's R10 - a spawned child owns a
+ fixed 2 MB region, and carving a grandchild from the child's own R10
+ would overlap the child's stack. RDX carries the region size in;
+ RDI returns the heap base, RSI the stack top. Clobbers RAX and RCX.
+ The cursor cell lazily initializes to spawn-pool-base on first use.
+
+  emit-spawn-pool-carve-helper : CodegenState -> CodegenState
+  emit-spawn-pool-carve-helper (st) =
+   let st0 = record-func-offset st "__spawn_pool_carve"
+   in let st1 = st-append-code st0 (li reg-rcx spawn-pool-cursor-addr)
+   in let st2 = st-append-code st1 (mov-load reg-rax reg-rcx 0)
+   in let st3 = st-append-code st2 (test-rr reg-rax reg-rax)
+   in let have-jmp = st3.code-len
+   in let st4 = st-append-code st3 (jcc cc-ne 0)
+   in let st5 = st-append-code st4 (li reg-rax spawn-pool-base)
+   in let have-pos = st5.code-len
+   in let st6 = patch-jcc-at st5 have-jmp have-pos
+   in let st7 = st-append-code st6 (mov-rr reg-rdi reg-rax)
+   in let st8 = st-append-code st7 (add-rr reg-rax reg-rdx)
+   in let st9 = st-append-code st8 (mov-store reg-rcx reg-rax 0)
+   in let st10 = st-append-code st9 (mov-rr reg-rsi reg-rax)
+   in st-append-code st10 x86-ret
+
   emit-process-spawn-helper : CodegenState -> CodegenState
   emit-process-spawn-helper (st) =
    let fn-off = st.code-len
@@ -213,11 +237,8 @@ Section: Process Scheduler Helpers
    in let st14 = patch-jcc-at st13 found-jmp found-pos
    in let st15 = st-append-code st14 (mov-rr reg-r12 reg-rcx)
    in let st16 = st-append-code st15 (mov-rr reg-r13 reg-rdx)
-   in let st17 = st-append-code st16 (mov-rr reg-rdi reg-r10)
-   in let st18 = st-append-code st17 (add-ri reg-r10 proc-spawn-heap-size)
-   in let st19 = st-append-code st18 (mov-rr reg-rsi reg-r10)
-   in let st19a = st-append-code st19 (add-ri reg-r10 proc-spawn-stack-size)
-   in let st19b = st-append-code st19a (add-ri reg-rsi proc-spawn-stack-size)
+   in let st17 = st-append-code st16 (li reg-rdx (proc-spawn-heap-size + proc-spawn-stack-size))
+   in let st19b = emit-call-to st17 "__spawn_pool_carve"
    in let st19c = emit-spawn-stack-pretouch st19b
    in let st20 = emit-load-func-addr st19c reg-rax "__proc_entry"
    in let st21 = st-append-code st20 (mov-store reg-r13 reg-rax proc-saved-rip-offset)
@@ -308,11 +329,8 @@ Section: Process Scheduler Helpers
    in let st16 = patch-jcc-at st15 found-jmp found-pos
    in let st17 = st-append-code st16 (mov-rr reg-r12 reg-rcx)
    in let st18 = st-append-code st17 (mov-rr reg-r13 reg-rdx)
-   in let st19 = st-append-code st18 (mov-rr reg-rdi reg-r10)
-   in let st20 = st-append-code st19 (add-ri reg-r10 proc-spawn-heap-size)
-   in let st21 = st-append-code st20 (mov-rr reg-rsi reg-r10)
-   in let st22 = st-append-code st21 (add-ri reg-r10 proc-spawn-stack-size)
-   in let st23 = st-append-code st22 (add-ri reg-rsi proc-spawn-stack-size)
+   in let st19 = st-append-code st18 (li reg-rdx (proc-spawn-heap-size + proc-spawn-stack-size))
+   in let st23 = emit-call-to st19 "__spawn_pool_carve"
    in let st23c = emit-spawn-stack-pretouch st23
    in let st24 = emit-load-func-addr st23c reg-rax "__proc_entry"
    in let st25 = st-append-code st24 (mov-store reg-r13 reg-rax proc-saved-rip-offset)

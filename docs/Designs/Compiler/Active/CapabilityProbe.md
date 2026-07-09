@@ -37,19 +37,22 @@ capability VOCABULARY (which effects the manifest can carry), never a
 grant — the old name is exactly what made the stage-4 regression easy
 to miss. CDX4001 message rewritten to match.
 
-KNOWN BUG discovered, deferred (not capability typing): a two-level
-spawn — a spawned process that itself spawns a grandchild — hangs on
-any post-stage-4 seed, where it worked pre-stage-4. The machine code
-is identical (effects erase); the only runtime difference is the
-child's cap word is now restricted instead of all-ones. Root cause is
-a latent heap-budget bug in the spawn allocator (a child gets a fixed
-proc-spawn-heap-size; spawning a grandchild bumps the child's R10 past
-its region). Capability work is merely the first thing that can build
-a WORKING nested spawn on a post-stage-4 seed (you must be able to
-grant Concurrent). Minimal repro: two nested process-spawn calls with
-a process-wait. identity-setproc-no-admin was rewritten to target its
-own pid (identity-set-proc self still tests both bits) so the denial
-test needs no grandchild. Owner: scheduler/emit-spawn, focused session.
+The two-level spawn bug found during stage 7 is FIXED (spawn-pool
+carve, follow-up CL): a spawned process that itself spawned a
+grandchild used to hang or crash, because all three spawn helpers
+carved the child's heap+stack from the SPAWNER's R10 — correct only
+for proc 0, which owns the whole heap. A spawned child has a fixed
+2 MB region, so carving a grandchild from the child's own R10 handed
+the grandchild memory overlapping the child's stack. The fix carves
+every child region from a global spawn pool (`__spawn_pool_carve`,
+cursor cell 36200, base at 1 GB inside the demand-paged range) — the
+same pattern fork already used. The first fix attempt used cell 36152
+and appeared to cause a "2 MB null-blit termination regression"; that
+was NOT a scheduler bug — codex-vm reads 36152 as the legacy 0x700000
+output-ring write position (OUTPUT_WRITE_POS_ADDR) and drained the
+zero-filled ring on exit. Any guest cell choice must avoid 36152.
+Regression probe: codex/test/nested-spawn.codex (default battery).
+identity-setproc-no-admin remains self-targeting (fine either way).
 
 The opening-as-value manifest hole is CLOSED (and pinned):
 `opening : Integer = block-read 0` is rejected with CDX2031 exactly

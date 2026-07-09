@@ -1,6 +1,51 @@
 # Blu Agent Workplan — 2026-07-08
 
-## LATEST: capability stage 7 — follow-ups + stage-4 regression fix
+## LATEST: merge-down of fester 7346 + process-kill honest row + last 5 test fixes
+
+Merged down fester's UEFI/boot arc (CL 7346) and reconverged the seed
+from merged source (both sides carried seeds). On top of it: the four
+tests fester left for blu are fixed and green — process-kill-test
+(-1), supervisor-kill-restart (42), process-restrict-cap (255,
+exercises the nested-spawn fix), process-get-cap-test (1, earns its
+caps via declared [Device.Block] + [Capability] per the stage-5
+precedent, expected unchanged) — plus verifier-spawned (act-bind,
+exercises process-spawn-with-heap through the new spawn pool).
+
+DOCTRINE FIX riding along: process-kill was runtime-gated on
+cap-capability-admin but typed PURE — the exact stage-4 "gated
+builtin with an empty row" pattern; a caller that never declared
+Capability got silent -1 denials. Fester's "kill a spinning process
+hangs the scheduler" observation was exactly this: the kill was
+denied, so process-wait sat behind a ~9-minute spin loop. No
+scheduler bug exists. process-kill now carries [Capability] in
+TypeEnv (only callers were the two kill tests, updated in the same
+CL).
+
+## EARLIER: spawn-pool carve — nested process-spawn fixed (CL 7343)
+
+The two-level spawn bug (below, "KNOWN BUG, deferred") is FIXED. All
+three spawn helpers carved the child's 1 MB heap + 1 MB stack from
+the SPAWNER's R10 — correct only for proc 0; a spawned child has a
+fixed 2 MB region, so a grandchild carved from the child's R10
+overlapped the child's own stack (crash CR2=-8 on seed 1C8E0F38).
+Fix: shared runtime helper `__spawn_pool_carve` (RDX = region size;
+returns RDI = heap base, RSI = stack top) carves every child region
+from a global pool cursor — cell 36200, lazy-init base 1 GB in the
+demand-paged range — the fork-pool pattern. Spawner R10 untouched.
+
+FLEET TRAP recorded: guest metadata cell 36152 is a booby trap —
+codex-vm reads it as the legacy 0x700000 output-ring write position
+(OUTPUT_WRITE_POS_ADDR, drain_guest_output) and drains the zero ring
+on VM exit. The prior fix attempt parked the pool cursor there and
+the drain masqueraded as a "2 MB null-blit termination regression";
+it was never a scheduler bug. Next free metadata cell is now 36208.
+
+Gates: default battery 333/318/0/15 on the probe SUT; identity/disk/
+spawn -Apps sweep 18/18 (the 14 CDX2031/2033 compile failures
+verified pre-existing on the pristine seed); A/B seed-vs-fix proves
+the repro. New default-battery probe: codex/test/nested-spawn.codex.
+
+## EARLIER: capability stage 7 — follow-ups + stage-4 regression fix
 
 Closed every remaining capability follow-up AND fixed a stage-4
 regression the follow-ups uncovered. THE REGRESSION: stage 4 made
@@ -23,7 +68,7 @@ regression); opening-as-value manifest hole confirmed CLOSED + pinned
 KNOWN BUG, deferred: two-level spawn (child spawns grandchild) hangs
 on post-stage-4 seeds — latent heap-budget bug in the spawn allocator,
 exposed because caps work is the first thing that can build a working
-nested spawn. Scheduler/emit-spawn owner. See CapabilityProbe.md.
+nested spawn. FIXED in CL 7343 (see LATEST section above).
 
 ## EARLIER: capability stage 6 — identity key syscalls gated on a real Identity effect
 
