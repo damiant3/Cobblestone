@@ -1,0 +1,145 @@
+Chapter: Poly1305Test
+  cites Foreword chapter Aes
+  cites Foreword chapter Poly1305
+
+ Known-answer tests for Poly1305 (RFC 8439 section 2.5.2), plus the
+ three length cases that exercise the block loop's seams: an empty
+ message, a message of exactly one block, and a message with a partial
+ trailing block. The partial case is the one that catches a mishandled
+ high bit, and a self-consistent implementation cannot find it -- these
+ tags came from OpenSSL and agree with the RFC's published vector.
+
+ The empty-message tag is the key's own upper half, because Poly1305 of
+ nothing is just the pad. That is not a degenerate case to skip; it is
+ the cheapest proof the pad is being added at all.
+
+Section: Key
+
+  pt-key : List Integer =
+    [133, 214, 190, 120, 87, 85, 109, 51, 127, 68, 82, 254, 66, 213, 6, 168,
+     1, 3, 128, 138, 251, 13, 178, 253, 74, 191, 246, 175, 65, 73, 245, 27]
+
+Section: Messages
+
+  pt-rfc-msg : List Integer =
+    [67, 114, 121, 112, 116, 111, 103, 114, 97, 112, 104, 105, 99, 32,
+     70, 111, 114, 117, 109, 32, 82, 101, 115, 101, 97, 114, 99, 104,
+     32, 71, 114, 111, 117, 112]
+
+  pt-block16 : List Integer =
+    [48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 97, 98, 99, 100, 101, 102]
+
+  pt-block17 : List Integer =
+    [48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 97, 98, 99, 100, 101, 102, 88]
+
+Section: Hex
+
+  pt-hex : List Integer -> Text
+  pt-hex (bs) = pt-hex-loop bs 0 (list-length bs) ""
+
+  pt-hex-loop : List Integer, Integer, Integer, Text -> Text
+  pt-hex-loop (bs) (i) (n) (acc) =
+    if i >= n then acc
+    else pt-hex-loop bs (i + 1) n (acc & aes-hex-byte (list-at bs i))
+
+Section: Tags
+
+  test-rfc : Text =
+    "poly1305 rfc=" & pt-hex (poly1305-mac pt-key pt-rfc-msg)
+
+  test-empty : Text =
+    "poly1305 empty=" & pt-hex (poly1305-mac pt-key [])
+
+  test-exact16 : Text =
+    "poly1305 exact16=" & pt-hex (poly1305-mac pt-key pt-block16)
+
+  test-partial : Text =
+    "poly1305 partial=" & pt-hex (poly1305-mac pt-key pt-block17)
+
+Section: Reduction Edges
+
+ RFC 8439 section A.3. These exist because an ordinary message never
+ reaches the interesting half of the final reduction: for random input
+ the accumulator lands below 2^130 - 5 essentially always, so the
+ branch that subtracts the prime is never taken and a wrong one would
+ sail through every vector above. Each of these forces it.
+
+ exact-p is the sharpest: the polynomial lands on exactly 2^130 - 5,
+ which must reduce to zero. A tag of all zeros is the right answer, and
+ an implementation that merely "carries correctly" will not produce it.
+
+  pt-key-r2 : List Integer =
+    [2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+
+  pt-key-r1 : List Integer =
+    [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+
+  pt-key-sovf : List Integer =
+    [2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+     255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255]
+
+  pt-all-ff : List Integer =
+    [255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255]
+
+  pt-two : List Integer =
+    [2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+
+  pt-carry-msg : List Integer =
+    [255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
+     240, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
+     17, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+
+  pt-exact-p-msg : List Integer =
+    [255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
+     251, 254, 254, 254, 254, 254, 254, 254, 254, 254, 254, 254, 254, 254, 254, 254,
+     1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1]
+
+  pt-p-minus-1-msg : List Integer =
+    [253, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255]
+
+  test-notfull : Text =
+    "poly1305 notfull=" & pt-hex (poly1305-mac pt-key-r2 pt-all-ff)
+
+  test-sovf : Text =
+    "poly1305 sovf=" & pt-hex (poly1305-mac pt-key-sovf pt-two)
+
+  test-carry : Text =
+    "poly1305 carry=" & pt-hex (poly1305-mac pt-key-r1 pt-carry-msg)
+
+  test-exact-p : Text =
+    "poly1305 exact-p=" & pt-hex (poly1305-mac pt-key-r1 pt-exact-p-msg)
+
+  test-p-minus-1 : Text =
+    "poly1305 p-minus-1=" & pt-hex (poly1305-mac pt-key-r2 pt-p-minus-1-msg)
+
+Section: Verify
+
+ A one-bit change in the tag must fail. Poly1305 is an authenticator;
+ a verify that accepts a near-miss authenticates nothing.
+
+  test-verify-good : Text =
+    let tag = poly1305-mac pt-key pt-rfc-msg
+    in "poly1305 verify-good=" & show (poly1305-verify pt-key pt-rfc-msg tag)
+
+  test-verify-bad : Text =
+    let tag = poly1305-mac pt-key pt-rfc-msg
+    in let bad = list-set-at tag 0 (bit-xor (list-at tag 0) 1)
+    in "poly1305 verify-bad=" & show (poly1305-verify pt-key pt-rfc-msg bad)
+
+Section: Entry
+
+  opening : [Console] Nothing = act
+    print-line-uni test-rfc
+    print-line-uni test-empty
+    print-line-uni test-exact16
+    print-line-uni test-partial
+    print-line-uni test-notfull
+    print-line-uni test-sovf
+    print-line-uni test-carry
+    print-line-uni test-exact-p
+    print-line-uni test-p-minus-1
+    print-line-uni test-verify-good
+    print-line-uni test-verify-bad
+  end

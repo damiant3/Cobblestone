@@ -1,0 +1,354 @@
+Chapter: LensService
+  cites Foreword chapter TextSearch
+  cites Lens chapter LensModel
+  cites Lens chapter LensPlan
+  cites Lens chapter LensSql
+  cites Lens chapter LensSeam
+  cites Lens chapter LensDashboard
+  cites Lens chapter LensForm
+  cites Data chapter Row
+  cites Data chapter Executor
+
+ The Lens query service, v1: the smallest program that carries a
+ question from a wire to a warehouse and back through every governed
+ layer. Each request is parsed into a LensQuery, planned by the
+ grain-checked planner, rendered to T-SQL, executed through the
+ lens-sql-exec seam, and answered as JSON. The whole program is
+ target-independent by construction: on Target B the seam calls bind
+ to HttpListener and SqlClient preambles, while on Target N today's
+ seam stubs answer no requests and the loop shuts down after printing
+ its banner, which makes the native compile an honest smoke of
+ everything up to the wire.
+
+ The request format is deliberately trivial for v1. The body is
+ lines, each starting at the first column: dimensions: a,b then
+ measures: x,y then limit: n, keys in any order, later lines winning,
+ unknown lines ignored, and the lens name fixed to the demo model's.
+ Spaces are stripped from the values rather than trimmed, so parsing
+ depends on nothing but literal characters and behaves identically on
+ both targets; carriage returns never reach this parser because the
+ Target B binding strips them at the seam boundary, where barbarian
+ line conventions belong. Filters stay out of the wire
+ format until the service grows a real protocol; the planner
+ machinery under this loop already handles them.
+
+ On plan diagnostics the reply is the diagnostic list as a JSON array
+ of strings instead of rows, so a caller always receives JSON and a
+ refused query tells the analyst exactly what to fix.
+
+ Two paths are special. GET /dashboard answers a complete HTML page
+ instead of JSON, rendered by the LensDashboard chapter from results
+ this service computed through the same plan-render-execute pipeline
+ the query route uses. /explore is the interactive query builder:
+ GET answers the empty form over the model's vocabulary, POST parses
+ the form body through the LensForm chapter, runs the same pipeline,
+ and answers the form again with the results underneath. Every other
+ request keeps the v1 body protocol above, byte for byte.
+
+ Memory posture (Rule 8): the serve loop carries only the model, the
+ request counter, and the cap across iterations - every parse, plan,
+ statement, and reply string is allocated inside one iteration and
+ nothing accumulates. The loop is fuel-bounded at 1024 requests, so
+ even on a substrate with no reclamation the program's lifetime
+ allocation is bounded. On Target B the platform garbage collector
+ reclaims each iteration's garbage; on Target N the future real
+ handler will bracket each iteration with the heap-save discipline
+ the design's section 7 prescribes.
+
+Section: Demo Model
+
+ The star from the planner tests: orders is the fact table, users the
+ dimension table, one declared many-to-one join. Revenue aggregates
+ at the orders grain, total credit at the users grain, and the order
+ count exercises the COUNT path end to end. The order-month dimension
+ reads order-date, Unix seconds by the model chapter's convention,
+ through the month bucket, so the dashboard's time tile groups by
+ calendar month.
+
+  users-t : LensTable
+  users-t = LensTable { name = "users", primary-key = "user-id", grain = "one row per registered user" }
+
+  orders-t : LensTable
+  orders-t = LensTable { name = "orders", primary-key = "order-id", grain = "one row per order" }
+
+  orders-to-users : LensJoin
+  orders-to-users = LensJoin { from-table = "orders", to-table = "users", on-left = "user-id", on-right = "user-id", cardinality = ManyToOne }
+
+  city-dim : LensDimension
+  city-dim = LensDimension { name = "city", table = "users", column = "city", bucket = LbNone }
+
+  uname-dim : LensDimension
+  uname-dim = LensDimension { name = "user-name", table = "users", column = "uname", bucket = LbNone }
+
+  product-dim : LensDimension
+  product-dim = LensDimension { name = "product", table = "orders", column = "product-id", bucket = LbNone }
+
+  omonth-dim : LensDimension
+  omonth-dim = LensDimension { name = "order-month", table = "orders", column = "order-date", bucket = LbMonth }
+
+  revenue-measure : LensMeasure
+  revenue-measure = LensMeasure {
+    name = "revenue",
+    table = "orders",
+    column = "amount",
+    agg = LensAggSum,
+    description = "Sum of order amounts in cents."
+  }
+
+  credit-measure : LensMeasure
+  credit-measure = LensMeasure {
+    name = "total-credit",
+    table = "users",
+    column = "credit-limit",
+    agg = LensAggSum,
+    description = "Sum of user credit limits in cents. User grain."
+  }
+
+  count-measure : LensMeasure
+  count-measure = LensMeasure {
+    name = "order-count",
+    table = "orders",
+    column = "order-id",
+    agg = LensAggCount,
+    description = "Number of orders."
+  }
+
+  demo-model : LensModel
+  demo-model = LensModel {
+    name = "sales",
+    tables = [users-t, orders-t],
+    joins = [orders-to-users],
+    dimensions = [city-dim, uname-dim, product-dim, omonth-dim],
+    measures = [revenue-measure, credit-measure, count-measure]
+  }
+
+Section: Request Parsing
+
+ Values strip spaces by literal replacement, and name lists split on
+ commas with empties dropped, so a body sent with spaces after the
+ colon or around the commas parses the same as a bare one.
+
+  svc-strip : Text -> Text
+  svc-strip (t) = text-replace t " " ""
+
+  svc-after : Text, Text -> Text
+  svc-after (line) (prefix) = substring line (text-length prefix) (text-length line - text-length prefix)
+
+  svc-clean : List Text, Integer, List Text -> List Text
+  svc-clean (parts) (i) (acc) =
+    if i >= list-length parts then acc
+    else let t = svc-strip (list-at parts i)
+    in svc-clean parts (i + 1) (if text-length t == 0 then acc else list-push acc t)
+
+  svc-names : Text -> List Text
+  svc-names (t) = svc-clean (text-split t ",") 0 []
+
+  SvcQuery = record {
+    sq-dims : List Text,
+    sq-measures : List Text,
+    sq-limit : Integer
+  }
+
+  svc-parse-lines : List Text, Integer, SvcQuery -> SvcQuery
+  svc-parse-lines (lines) (i) (acc) =
+    if i >= list-length lines then acc
+    else let line = list-at lines i
+    in let acc2 = if text-starts-with line "dimensions:" then SvcQuery { sq-dims = svc-names (svc-after line "dimensions:"), sq-measures = acc.sq-measures, sq-limit = acc.sq-limit }
+      else if text-starts-with line "measures:" then SvcQuery { sq-dims = acc.sq-dims, sq-measures = svc-names (svc-after line "measures:"), sq-limit = acc.sq-limit }
+      else if text-starts-with line "limit:" then SvcQuery { sq-dims = acc.sq-dims, sq-measures = acc.sq-measures, sq-limit = text-to-integer (svc-strip (svc-after line "limit:")) }
+      else acc
+    in svc-parse-lines lines (i + 1) acc2
+
+  svc-parse-query : LensModel, Text -> LensQuery
+  svc-parse-query (model) (body) =
+    let sq = svc-parse-lines (text-split body "\n") 0 (SvcQuery { sq-dims = [], sq-measures = [], sq-limit = 0 })
+    in LensQuery { lens-name = model.name, dimensions = sq.sq-dims, measures = sq.sq-measures, filters = [], limit = sq.sq-limit }
+
+Section: Json Rendering
+
+ Result rows render as a JSON array of arrays of strings, every cell
+ escaped for backslash and quote. Diagnostics render as a JSON array
+ of strings in the same escape discipline.
+
+  svc-cell : Text -> Text
+  svc-cell (t) = "\"" & text-replace (text-replace t "\\" "\\\\") "\"" "\\\"" & "\""
+
+  svc-cells-json : List Text, Integer, Text -> Text
+  svc-cells-json (cells) (i) (acc) =
+    if i >= list-length cells then "[" & acc & "]"
+    else let c = svc-cell (list-at cells i)
+    in svc-cells-json cells (i + 1) (if i == 0 then c else acc & "," & c)
+
+  svc-rows-json : List (List Text), Integer, Text -> Text
+  svc-rows-json (rows) (i) (acc) =
+    if i >= list-length rows then "[" & acc & "]"
+    else let r = svc-cells-json (list-at rows i) 0 ""
+    in svc-rows-json rows (i + 1) (if i == 0 then r else acc & "," & r)
+
+  svc-diags-json : List LensDiag, Integer, Text -> Text
+  svc-diags-json (ds) (i) (acc) =
+    if i >= list-length ds then "[" & acc & "]"
+    else let d = list-at ds i
+    in let line = svc-cell ("diag " & show (d.code) & ": " & d.message)
+    in svc-diags-json ds (i + 1) (if i == 0 then line else acc & "," & line)
+
+Section: The Dashboard
+
+ Three tiles over the demo model: revenue by city as bars, revenue by
+ calendar month as bars over the bucketed dimension, and total credit
+ beside revenue by city as a table. Each tile's query runs through
+ the same pipeline as the query route - plan, render to T-SQL,
+ execute through the seam - and the rows come back as lists of text,
+ so the converter below rebuilds the QueryResult shape the dashboard
+ renderer reads. The schema is built from the plan's own column
+ order: dimension display columns first, in lp-display-cols order
+ with bucketed dimensions under their column__bucket alias, then one
+ column per measure under the measure's name, which is exactly the
+ projection lp-assemble emits. Dimension cells stay text - a bucketed
+ dimension's cells are integers spelled as text, but they are
+ categories, not quantities - and measure cells parse to integers,
+ because the bar charts scale by numeric column values. The converter
+ does not divide an average's __sum and __cnt column pair; no demo
+ tile names an average, and a dashboard that does must first grow the
+ division lp-finish-avgs performs for lens-run. A failed plan becomes
+ a qr-error result, which the renderer shows loud inside the tile
+ instead of dropping it.
+
+ Memory posture (Rule 8): the page is rebuilt from the tile queries
+ down on every request, so a dashboard request's allocation is
+ bounded by tiles times rows times cells plus the rendered page
+ text, and all of it is garbage once the loop iteration replies;
+ nothing about the dashboard persists across requests.
+
+  svc-dash-query : LensModel, List Text, List Text -> LensQuery
+  svc-dash-query (model) (dims) (ms) = LensQuery { lens-name = model.name, dimensions = dims, measures = ms, filters = [], limit = 0 }
+
+  svc-dash : LensModel -> LensDashboard
+  svc-dash (model) = LensDashboard {
+    dash-title = "Sales",
+    tiles = [
+      LensTile { tile-title = "Revenue by City", tile-query = svc-dash-query model ["city"] ["revenue"], tile-chart = LdBar },
+      LensTile { tile-title = "Revenue by Month", tile-query = svc-dash-query model ["order-month"] ["revenue"], tile-chart = LdBar },
+      LensTile { tile-title = "Credit and Revenue by City", tile-query = svc-dash-query model ["city"] ["total-credit", "revenue"], tile-chart = LdTable }
+    ]
+  }
+
+  svc-col-types : Integer, Integer, Integer, List ColumnType -> List ColumnType
+  svc-col-types (i) (ndims) (total) (acc) =
+    if i >= total then acc
+    else svc-col-types (i + 1) ndims total (list-push acc (if i < ndims then ColText else ColInteger))
+
+  svc-cell-val : Text, Boolean -> ColumnValue
+  svc-cell-val (t) (is-dim) = if is-dim then ValText t else ValInteger (text-to-integer t)
+
+  svc-row-vals : List Text, Integer, Integer, List ColumnValue -> List ColumnValue
+  svc-row-vals (cells) (i) (ndims) (acc) =
+    if i >= list-length cells then acc
+    else svc-row-vals cells (i + 1) ndims (list-push acc (svc-cell-val (list-at cells i) (i < ndims)))
+
+  svc-qr-rows : List (List Text), RowSchema, Integer, Integer, List RowData -> List RowData
+  svc-qr-rows (rows) (schema) (ndims) (i) (acc) =
+    if i >= list-length rows then acc
+    else svc-qr-rows rows schema ndims (i + 1) (list-push acc (row-new schema (svc-row-vals (list-at rows i) 0 ndims [])))
+
+  svc-tile-result : LensModel, LensQuery -> QueryResult
+  svc-tile-result (model) (q) =
+    let pr = lens-plan model q
+    in if pr.plan-ok == False then qr-error ("lens-plan: " & lp-render-diags (pr.plan-diags) 0 "")
+    else let rd = lp-resolve-dims model (q.dimensions) 0 [] []
+    in let dcols = lp-display-cols (rd.lpd-dims) 0 []
+    in let ndims = list-length dcols
+    in let names = dcols & q.measures
+    in let schema = schema-new names (svc-col-types 0 ndims (list-length names) [])
+    in let rows = lens-sql-exec (lens-to-tsql (pr.plan-op))
+    in qr-ok (svc-qr-rows rows schema ndims 0 []) schema
+
+  svc-dash-results : LensModel, List LensTile, Integer, List QueryResult -> List QueryResult
+  svc-dash-results (model) (ts) (i) (acc) =
+    if i >= list-length ts then acc
+    else svc-dash-results model ts (i + 1) (list-push acc (svc-tile-result model ((list-at ts i).tile-query)))
+
+  svc-dashboard-page : LensModel -> Text
+  svc-dashboard-page (model) =
+    let d = svc-dash model
+    in lens-dashboard-html-static d (svc-dash-results model (d.tiles) 0 [])
+
+Section: The Explore Route
+
+ GET /explore is the form with nothing selected and nothing run.
+ POST /explore parses the urlencoded body into a LensQuery over this
+ model with no filters, then walks the exact pipeline the dashboard
+ tiles walk: plan, render to T-SQL, execute through the seam, rebuild
+ the QueryResult from the returned text rows. A refused plan runs no
+ SQL and hands the renderer its diagnostics as a query error, so
+ naming no measures earns the planner's diagnostic 24 on the page
+ with no special case here. A good run additionally hands the
+ renderer the executed statement, so the analyst sees the
+ grain-correct derived-table ladder Lens wrote. The converter shares
+ the dashboard route's caveat on averages: the demo model names
+ none, and a model that does must first grow the division
+ lens-run performs. Everything a POST allocates - parsed form,
+ plan, statement, rows, page - dies with the request's reply.
+
+  svc-explore-query : LensModel, Text -> LensQuery
+  svc-explore-query (model) (body) =
+    let f = lens-form-parse body
+    in LensQuery { lens-name = model.name, dimensions = f.ff-dims, measures = f.ff-meas, filters = [], limit = f.ff-limit }
+
+  svc-explore-run : LensModel, LensQuery -> Text
+  svc-explore-run (model) (q) =
+    let pr = lens-plan model q
+    in if pr.plan-ok == False then lens-explore-html-run model (q.dimensions) (q.measures) (q.limit) (qr-error ("lens-plan: " & lp-render-diags (pr.plan-diags) 0 "")) ""
+    else let rd = lp-resolve-dims model (q.dimensions) 0 [] []
+    in let dcols = lp-display-cols (rd.lpd-dims) 0 []
+    in let ndims = list-length dcols
+    in let names = dcols & q.measures
+    in let schema = schema-new names (svc-col-types 0 ndims (list-length names) [])
+    in let sql = lens-to-tsql (pr.plan-op)
+    in let rows = lens-sql-exec sql
+    in lens-explore-html-run model (q.dimensions) (q.measures) (q.limit) (qr-ok (svc-qr-rows rows schema ndims 0 []) schema) sql
+
+  svc-explore : LensModel, Text, Text -> Text
+  svc-explore (model) (method) (body) =
+    if method == "GET" then lens-explore-html model [] [] 0
+    else svc-explore-run model (svc-explore-query model body)
+
+Section: The Serve Loop
+
+ One request at a time on port 8080: next, parse, plan, render,
+ execute, reply. An empty answer from lens-http-next means this
+ target has no listener behind the seam, and the loop shuts down
+ instead of spinning on a stub. Any request for /explore and GET
+ /dashboard reply with their pages through the HTML flavor of the
+ reply seam; every other request takes the JSON query route
+ unchanged.
+
+  svc-port : Integer = 8080
+
+  svc-answer : LensModel, Text -> Text
+  svc-answer (model) (body) =
+    let pr = lens-plan model (svc-parse-query model body)
+    in if pr.plan-ok == False then svc-diags-json (pr.plan-diags) 0 ""
+    else svc-rows-json (lens-sql-exec (lens-to-tsql (pr.plan-op))) 0 ""
+
+  serve-loop : LensModel, Integer, Integer -> [Console] Nothing
+  serve-loop (model) (i) (cap) =
+    if i >= cap then print-line-uni "lens-service: request budget spent; shutting down"
+    else let req = lens-http-next svc-port
+    in if list-length req == 0 then print-line-uni "lens-service: no listener on this target; shutting down"
+    else act
+      print-line-uni ("lens-service: " & list-at req 0 & " " & list-at req 1)
+      let sent = if list-at req 1 == "/explore"
+        then lens-http-reply-html svc-port (svc-explore model (list-at req 0) (list-at req 2))
+        else if (list-at req 0 == "GET") & (list-at req 1 == "/dashboard")
+        then lens-http-reply-html svc-port (svc-dashboard-page model)
+        else lens-http-reply svc-port (svc-answer model (list-at req 2))
+      in serve-loop model (i + 1) cap
+    end
+
+Section: Body
+
+  opening : [Console] Nothing = act
+    print-line-uni "lens-service: demo star schema, port 8080, 1024 request budget"
+    serve-loop demo-model 0 1024
+  end

@@ -2,12 +2,21 @@
 # captures serial output, filters HEAP/WD/STACK lines, writes to OutFile.
 #
 # Uses memory-mapped I/O: -kernel, -output, optionally -input for stdin.
+#
+# StdinFile and KeysFile are NOT interchangeable. -input pumps bytes into
+# the serial ring, which is where read-line looks. A keyboard read
+# (uefi-read-key / poll-key) reads the PS/2 key cell instead, and no
+# amount of stdin ever reaches it -- which is why every test that waits on
+# a keystroke was skipped as unrunnable. KeysFile is a scancode timeline
+# (`t:scancode` per line, t = ms since boot) and drives that second path.
 [CmdletBinding()]
 param(
     [Parameter(Mandatory=$true)] [string]$Kernel,
     [Parameter(Mandatory=$true)] [string]$OutFile,
     [string]$StdinFile = '',
+    [string]$KeysFile = '',
     [string]$DiskFile = '',
+    [int]$Smp = 0,
     [int]$PCore = 1
 )
 
@@ -33,6 +42,11 @@ try {
         [System.IO.File]::WriteAllBytes($inputFile, $stdinBytes)
         $vmArgs += @('-input', $inputFile)
     }
+    if ($KeysFile -and (Test-Path -PathType Leaf $KeysFile)) {
+        # Read directly: codex-vm only reads this file, so the read-only
+        # attribute a depot sidecar carries after sync is no obstacle.
+        $vmArgs += @('-keys-file', $KeysFile)
+    }
     if ($DiskFile -and (Test-Path -PathType Leaf $DiskFile)) {
         # Copy to a writable temp image: depot sidecars are read-only after
         # sync (write tests would fail to open the disk), and codex-vm
@@ -41,6 +55,7 @@ try {
         [System.IO.File]::WriteAllBytes($diskWork, [System.IO.File]::ReadAllBytes($DiskFile))
         $vmArgs += @('-disk', $diskWork)
     }
+    if ($Smp -gt 1) { $vmArgs += @('-smp', "$Smp") }
 
     $proc = Start-Process -FilePath $script:CodexVmBin -ArgumentList $vmArgs `
         -PassThru -WindowStyle Hidden -RedirectStandardError $stderrFile

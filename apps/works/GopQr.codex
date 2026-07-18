@@ -1,0 +1,392 @@
+Chapter: GopQr
+  cites Works chapter GopDraw
+  cites Works chapter GopAhci
+  cites Foreword chapter CCE
+
+ QR encoding for hardware telemetry -- safety recommendation R-1 of
+ docs/PM/Done/Stories/TheSilentKeyboard.md. A machine with no serial port
+ and no working disk write can still be READ: it renders its findings
+ as QR codes on the framebuffer, a human photographs the glass with
+ whatever camera is in their pocket, and the decoder turns the photo
+ back into exact bytes. No transcription, no OCR, no dependence on
+ the subsystem under test. The human-readable status lines stay on
+ screen beside the codes, so the person holding the camera also knows
+ whether the news is good.
+
+ One fixed shape, no tables: version 5, byte mode, error level L --
+ a 37x37 module matrix carrying up to 106 bytes in a single
+ Reed-Solomon block of (134, 108). Fixed version means fixed
+ alignment pattern, fixed format layout, no version-info block
+ (that starts at version 7), and a single code path that a battery
+ test can pin. Payloads beyond 106 bytes split across several codes,
+ each chunk prefixed "i/n;" so the decoder can reassemble from one
+ photograph. Mask pattern 0 is applied unconditionally: mask CHOICE
+ is a readability optimization in the spec, not a correctness
+ requirement, and a fixed mask keeps the encoder deterministic.
+
+ Everything through the matrix is pure computation over small
+ buffers, so the battery can verify it without a device; only the
+ final draw touches the framebuffer, through GopDraw.
+
+ We say:
+
+Section: Shape
+
+  qr-size : Integer = 37
+  qr-data-cw : Integer = 108
+  qr-ecc-cw : Integer = 26
+  qr-total-cw : Integer = 134
+  qr-cap : Integer = 106
+
+Section: The Field
+
+ GF(256) with the QR polynomial 285. One buffer holds both tables:
+ exp at offset 0 (exp of 0..254; index 255 wraps to 1 harmlessly),
+ log at offset 256.
+
+  qr-gf-new : Integer
+  qr-gf-new =
+    let g = alloc-zeroed 640 64
+    in qr-gf-fill g 0 1
+
+  qr-gf-fill : Integer, Integer, Integer -> Integer
+  qr-gf-fill (g) (i) (x) =
+    if i >= 256 then g
+    else let e = poke-byte g i x
+    in let l = if i < 255 then poke-byte g (256 + x) i else 0
+    in let x2 = bit-shl x 1
+    in let x3 = if x2 >= 256 then bit-and (bit-xor x2 285) 255 else x2
+    in qr-gf-fill g (i + 1) x3
+
+  qr-gf-mul : Integer, Integer, Integer -> Integer
+  qr-gf-mul (g) (a) (b) =
+    if a == 0 then 0
+    else if b == 0 then 0
+    else peek-byte g (int-mod ((peek-byte g (256 + a)) + (peek-byte g (256 + b))) 255)
+
+Section: Reed-Solomon
+
+ The generator polynomial is the product of (x - a^i) for i in
+ 0..25, built by repeated multiplication so no coefficient table is
+ trusted to memory. g[j] is the coefficient of x^j; g[26] ends up 1.
+
+  qr-rs-gen : Integer -> Integer
+  qr-rs-gen (gf) =
+    let g = alloc-zeroed 32 64
+    in let s = poke-byte g 0 1
+    in qr-rs-gen-loop gf g 0
+
+  qr-rs-gen-loop : Integer, Integer, Integer -> Integer
+  qr-rs-gen-loop (gf) (g) (i) =
+    if i >= qr-ecc-cw then g
+    else let a = peek-byte gf i
+    in let u = qr-rs-gen-mul gf g a (i + 1)
+    in qr-rs-gen-loop gf g (i + 1)
+
+  qr-rs-gen-mul : Integer, Integer, Integer, Integer -> Integer
+  qr-rs-gen-mul (gf) (g) (a) (j) =
+    if j < 0 then 0
+    else let cur = peek-byte g j
+    in let prev = if j == 0 then 0 else peek-byte g (j - 1)
+    in let w = poke-byte g j (bit-xor prev (qr-gf-mul gf cur a))
+    in qr-rs-gen-mul gf g a (j - 1)
+
+ Synthetic division of the message (as the high-order coefficients)
+ by the generator; what remains in the tail is the 26 ECC codewords.
+ The division CONSUMES the message positions as it eliminates each
+ leading coefficient (the monic generator's top term XORs work[i]
+ with itself), so the data is copied back in afterwards -- the work
+ buffer is then the final codeword sequence: data, then ECC.
+
+  qr-rs-encode : Integer, Integer, Integer -> Integer
+  qr-rs-encode (gf) (gen) (data) =
+    let work = alloc-zeroed 144 64
+    in let c = qr-copy-bytes data work 0 qr-data-cw
+    in let d = qr-rs-div gf gen work 0
+    in let r = qr-copy-bytes data work 0 qr-data-cw
+    in work
+
+  qr-copy-bytes : Integer, Integer, Integer, Integer -> Integer
+  qr-copy-bytes (src) (dst) (i) (n) =
+    if i >= n then dst
+    else let w = poke-byte dst i (peek-byte src i)
+    in qr-copy-bytes src dst (i + 1) n
+
+  qr-rs-div : Integer, Integer, Integer, Integer -> Integer
+  qr-rs-div (gf) (gen) (work) (i) =
+    if i >= qr-data-cw then work
+    else let f = peek-byte work i
+    in let s = if f == 0 then 0 else qr-rs-step gf gen work i f 0
+    in qr-rs-div gf gen work (i + 1)
+
+  qr-rs-step : Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  qr-rs-step (gf) (gen) (work) (i) (f) (k) =
+    if k > qr-ecc-cw then 0
+    else let old = peek-byte work (i + k)
+    in let w = poke-byte work (i + k) (bit-xor old (qr-gf-mul gf f (peek-byte gen (qr-ecc-cw - k))))
+    in qr-rs-step gf gen work i f (k + 1)
+
+Section: Bits
+
+  qr-put-bits : Integer, Integer, Integer, Integer -> Integer
+  qr-put-bits (buf) (pos) (v) (n) =
+    if n <= 0 then pos
+    else let bit = bit-and (bit-shru v (n - 1)) 1
+    in let byi = bit-shru pos 3
+    in let w = if bit == 1 then poke-byte buf byi (bit-or (peek-byte buf byi) (bit-shl 1 (7 - (bit-and pos 7)))) else 0
+    in qr-put-bits buf (pos + 1) v (n - 1)
+
+  qr-put-slice-bits : Integer, Integer, Text, Integer, Integer -> Integer
+  qr-put-slice-bits (buf) (pos) (s) (i) (stop) =
+    if i >= stop then pos
+    else let p2 = qr-put-bits buf pos (to-unicode (char-code (char-at s i))) 8
+    in qr-put-slice-bits buf p2 s (i + 1) stop
+
+ Byte mode: indicator 0100, an 8-bit count (versions 1-9), the
+ bytes, a 4-bit terminator, zero-pad to the byte boundary (already
+ zero in a fresh buffer), then the spec's alternating pad bytes
+ 236 and 17 out to the 108 data codewords. The slice form encodes a
+ prefix (a chunk tag like "2/4;") followed by a character range of a
+ larger text, so a long payload can spread across several codes
+ without a substring ever being built.
+
+  qr-make-data2 : Text, Text, Integer, Integer -> Integer
+  qr-make-data2 (prefix) (s) (from) (len) =
+    let buf = alloc-zeroed 144 64
+    in let n = text-length prefix + len
+    in let p1 = qr-put-bits buf 0 4 4
+    in let p2 = qr-put-bits buf p1 n 8
+    in let p3 = qr-put-slice-bits buf p2 prefix 0 (text-length prefix)
+    in let p4 = qr-put-slice-bits buf p3 s from (from + len)
+    in let p5 = qr-put-bits buf p4 0 4
+    in qr-pad-bytes buf ((p5 + 7) / 8) 0
+
+  qr-make-data : Text -> Integer
+  qr-make-data (s) = qr-make-data2 "" s 0 (text-length s)
+
+  qr-pad-bytes : Integer, Integer, Integer -> Integer
+  qr-pad-bytes (buf) (i) (alt) =
+    if i >= qr-data-cw then buf
+    else let w = poke-byte buf i (if alt == 0 then 236 else 17)
+    in qr-pad-bytes buf (i + 1) (1 - alt)
+
+Section: Format Information
+
+ Fifteen bits: two bits of error level (L = 01), three of mask id,
+ ten of BCH remainder (generator 1335), the whole thing XORed with
+ the spec constant 21522 so it is never all-zero.
+
+  qr-bch : Integer, Integer -> Integer
+  qr-bch (r) (i) =
+    if i < 10 then r
+    else if bit-and (bit-shru r i) 1 == 1 then qr-bch (bit-xor r (bit-shl 1335 (i - 10))) (i - 1)
+    else qr-bch r (i - 1)
+
+  qr-format-bits : Integer -> Integer
+  qr-format-bits (mask) =
+    let d = bit-or 8 mask
+    in let r = qr-bch (bit-shl d 10) 14
+    in bit-xor (bit-or (bit-shl d 10) r) 21522
+
+Section: Matrix
+
+ Two parallel 37x37 byte planes: m holds the modules (1 dark), fn
+ marks function modules the data placement must step around. The
+ reserved rectangles overlap the timing lines at two corners; the
+ flag is idempotent so the overlap is harmless.
+
+  qr-at : Integer, Integer -> Integer
+  qr-at (r) (c) = r * qr-size + c
+
+  qr-mark-rect : Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  qr-mark-rect (fn) (r0) (c0) (h) (w) (i) =
+    if i >= h * w then 0
+    else let m = poke-byte fn (qr-at (r0 + i / w) (c0 + int-mod i w)) 1
+    in qr-mark-rect fn r0 c0 h w (i + 1)
+
+  qr-finder : Integer, Integer, Integer, Integer -> Integer
+  qr-finder (m) (r0) (c0) (i) =
+    if i >= 49 then 0
+    else let r = i / 7
+    in let c = int-mod i 7
+    in let dark = if r == 0 then 1 else if r == 6 then 1 else if c == 0 then 1 else if c == 6 then 1
+      else if r >= 2 then (if r <= 4 then (if c >= 2 then (if c <= 4 then 1 else 0) else 0) else 0) else 0
+    in let w = poke-byte m (qr-at (r0 + r) (c0 + c)) dark
+    in qr-finder m r0 c0 (i + 1)
+
+  qr-align : Integer, Integer -> Integer
+  qr-align (m) (i) =
+    if i >= 25 then 0
+    else let r = i / 5
+    in let c = int-mod i 5
+    in let dark = if r == 0 then 1 else if r == 4 then 1 else if c == 0 then 1 else if c == 4 then 1
+      else if r == 2 then (if c == 2 then 1 else 0) else 0
+    in let w = poke-byte m (qr-at (28 + r) (28 + c)) dark
+    in qr-align m (i + 1)
+
+  qr-timing : Integer, Integer, Integer -> Integer
+  qr-timing (m) (fn) (i) =
+    if i > 28 then 0
+    else let dark = if int-mod i 2 == 0 then 1 else 0
+    in let a = poke-byte m (qr-at 6 i) dark
+    in let b = poke-byte m (qr-at i 6) dark
+    in let fa = poke-byte fn (qr-at 6 i) 1
+    in let fb = poke-byte fn (qr-at i 6) 1
+    in qr-timing m fn (i + 1)
+
+  qr-functions : Integer, Integer -> Integer
+  qr-functions (m) (fn) =
+    let a = qr-mark-rect fn 0 0 9 9 0
+    in let b = qr-mark-rect fn 0 29 9 8 0
+    in let c = qr-mark-rect fn 29 0 8 9 0
+    in let d = qr-mark-rect fn 28 28 5 5 0
+    in let t = qr-timing m fn 8
+    in let f1 = qr-finder m 0 0 0
+    in let f2 = qr-finder m 0 30 0
+    in let f3 = qr-finder m 30 0 0
+    in let al = qr-align m 0
+    in poke-byte m (qr-at 29 8) 1
+
+Section: Data Placement
+
+ The standard zigzag: two-module columns from the right edge, up
+ then down, hopping over the timing column between the pairs (8,7)
+ and (5,4). Data bits stream MSB-first out of the 134 codewords;
+ the seven remainder bits past the end are zero. Mask 0 flips a
+ module when row + column is even, applied only to data modules --
+ which is every module this walk touches.
+
+  qr-data-bit : Integer, Integer -> Integer
+  qr-data-bit (cw) (idx) =
+    if idx >= qr-total-cw * 8 then 0
+    else bit-and (bit-shru (peek-byte cw (idx / 8)) (7 - (bit-and idx 7))) 1
+
+  qr-place : Integer, Integer, Integer -> Integer
+  qr-place (m) (fn) (cw) = qr-place-cols m fn cw 36 1 0
+
+  qr-place-cols : Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  qr-place-cols (m) (fn) (cw) (col) (up) (bit) =
+    if col < 1 then bit
+    else let b2 = qr-place-col m fn cw col up 0 bit
+    in let next = if col == 8 then 5 else col - 2
+    in qr-place-cols m fn cw next (1 - up) b2
+
+  qr-place-col : Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  qr-place-col (m) (fn) (cw) (col) (up) (i) (bit) =
+    if i >= qr-size then bit
+    else let row = if up == 1 then qr-size - 1 - i else i
+    in let b2 = qr-place-one m fn cw row col bit
+    in let b3 = qr-place-one m fn cw row (col - 1) b2
+    in qr-place-col m fn cw col up (i + 1) b3
+
+  qr-place-one : Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  qr-place-one (m) (fn) (cw) (row) (col) (bit) =
+    if peek-byte fn (qr-at row col) /= 0 then bit
+    else let v = qr-data-bit cw bit
+    in let masked = if int-mod (row + col) 2 == 0 then bit-xor v 1 else v
+    in let w = poke-byte m (qr-at row col) masked
+    in bit + 1
+
+Section: Format Placement
+
+ Both copies, most significant bit first, exactly where the spec
+ puts them. The second copy runs up the left edge of the bottom-left
+ finder and across the bottom of the top-right one.
+
+  qr-fmt-bit : Integer, Integer -> Integer
+  qr-fmt-bit (fmt) (k) = bit-and (bit-shru fmt k) 1
+
+  qr-place-format : Integer, Integer -> Integer
+  qr-place-format (m) (fmt) =
+    let a0 = poke-byte m (qr-at 8 0) (qr-fmt-bit fmt 14)
+    in let a1 = poke-byte m (qr-at 8 1) (qr-fmt-bit fmt 13)
+    in let a2 = poke-byte m (qr-at 8 2) (qr-fmt-bit fmt 12)
+    in let a3 = poke-byte m (qr-at 8 3) (qr-fmt-bit fmt 11)
+    in let a4 = poke-byte m (qr-at 8 4) (qr-fmt-bit fmt 10)
+    in let a5 = poke-byte m (qr-at 8 5) (qr-fmt-bit fmt 9)
+    in let a6 = poke-byte m (qr-at 8 7) (qr-fmt-bit fmt 8)
+    in let a7 = poke-byte m (qr-at 8 8) (qr-fmt-bit fmt 7)
+    in let a8 = poke-byte m (qr-at 7 8) (qr-fmt-bit fmt 6)
+    in let a9 = poke-byte m (qr-at 5 8) (qr-fmt-bit fmt 5)
+    in let aa = poke-byte m (qr-at 4 8) (qr-fmt-bit fmt 4)
+    in let ab = poke-byte m (qr-at 3 8) (qr-fmt-bit fmt 3)
+    in let ac = poke-byte m (qr-at 2 8) (qr-fmt-bit fmt 2)
+    in let ad = poke-byte m (qr-at 1 8) (qr-fmt-bit fmt 1)
+    in let ae = poke-byte m (qr-at 0 8) (qr-fmt-bit fmt 0)
+    in let b0 = poke-byte m (qr-at 36 8) (qr-fmt-bit fmt 14)
+    in let b1 = poke-byte m (qr-at 35 8) (qr-fmt-bit fmt 13)
+    in let b2 = poke-byte m (qr-at 34 8) (qr-fmt-bit fmt 12)
+    in let b3 = poke-byte m (qr-at 33 8) (qr-fmt-bit fmt 11)
+    in let b4 = poke-byte m (qr-at 32 8) (qr-fmt-bit fmt 10)
+    in let b5 = poke-byte m (qr-at 31 8) (qr-fmt-bit fmt 9)
+    in let b6 = poke-byte m (qr-at 30 8) (qr-fmt-bit fmt 8)
+    in let b7 = poke-byte m (qr-at 8 29) (qr-fmt-bit fmt 7)
+    in let b8 = poke-byte m (qr-at 8 30) (qr-fmt-bit fmt 6)
+    in let b9 = poke-byte m (qr-at 8 31) (qr-fmt-bit fmt 5)
+    in let ba = poke-byte m (qr-at 8 32) (qr-fmt-bit fmt 4)
+    in let bb = poke-byte m (qr-at 8 33) (qr-fmt-bit fmt 3)
+    in let bc = poke-byte m (qr-at 8 34) (qr-fmt-bit fmt 2)
+    in let bd = poke-byte m (qr-at 8 35) (qr-fmt-bit fmt 1)
+    in poke-byte m (qr-at 8 36) (qr-fmt-bit fmt 0)
+
+Section: Encode
+
+ Text in, 37x37 module plane out (byte per module, 1 dark). The
+ caller may keep the buffer as long as it likes; nothing here is
+ retained.
+
+  qr5-encode-part : Text, Text, Integer, Integer -> Integer
+  qr5-encode-part (prefix) (s) (from) (len) =
+    let gf = qr-gf-new
+    in let gen = qr-rs-gen gf
+    in let data = qr-make-data2 prefix s from len
+    in let cw = qr-rs-encode gf gen data
+    in let m = alloc-zeroed 1400 64
+    in let fn = alloc-zeroed 1400 64
+    in let f = qr-functions m fn
+    in let p = qr-place m fn cw
+    in let fmt = qr-place-format m (qr-format-bits 0)
+    in m
+
+  qr5-encode : Text -> Integer
+  qr5-encode (s) = qr5-encode-part "" s 0 (text-length s)
+
+ The ECC tail of the codeword buffer, exposed for the battery test
+ to pin against an independent Reed-Solomon computation.
+
+  qr5-ecc-of : Text -> Integer
+  qr5-ecc-of (s) =
+    let gf = qr-gf-new
+    in let gen = qr-rs-gen gf
+    in qr-rs-encode gf gen (qr-make-data s)
+
+Section: Text Dump
+
+ One matrix row as a line of 0s and 1s, for serial verification and
+ the battery's frozen expectation.
+
+  qr-row-text : Integer, Integer, Integer, Text -> Text
+  qr-row-text (m) (r) (c) (acc) =
+    if c >= qr-size then acc
+    else qr-row-text m r (c + 1) (acc & (if peek-byte m (qr-at r c) == 0 then "0" else "1"))
+
+Section: Rendering
+
+ White quiet zone of four modules on every side -- the spec minimum,
+ and the thing screens are usually worst at giving a camera. Dark
+ modules are true black on true white for the full contrast the
+ sensor can get.
+
+  qr-draw : Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  qr-draw (base) (stride) (x) (y) (scale) (m) =
+    let side = (qr-size + 8) * scale
+    in let bg = gop-fill-rect base stride x y side side 16777215
+    in qr-draw-mods base stride (x + 4 * scale) (y + 4 * scale) scale m 0
+
+  qr-draw-mods : Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  qr-draw-mods (base) (stride) (x) (y) (scale) (m) (i) =
+    if i >= qr-size * qr-size then 0
+    else let r = i / qr-size
+    in let c = int-mod i qr-size
+    in let w = if peek-byte m i == 1 then gop-fill-rect base stride (x + c * scale) (y + r * scale) scale scale 0 else 0
+    in qr-draw-mods base stride x y scale m (i + 1)

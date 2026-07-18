@@ -58,13 +58,13 @@ Section: Definitions
 
   hamt-empty : HamtMap a = HamtMap { root = HamtEmpty, size = 0 }
 
-  djb2-hash : Text -> Integer
-  djb2-hash (s) = djb2-loop s 0 (text-length s) 5381
+  hamt-djb2-hash : Text -> Integer
+  hamt-djb2-hash (s) = hamt-djb2-loop s 0 (text-length s) 5381
 
-  djb2-loop : Text, Integer, Integer, Integer -> Integer
-  djb2-loop (s) (i) (len) (h) =
+  hamt-djb2-loop : Text, Integer, Integer, Integer -> Integer
+  hamt-djb2-loop (s) (i) (len) (h) =
     if i == len then abs-int h
-    else djb2-loop s (i + 1) len (h * 33 + char-code (char-at s i))
+    else hamt-djb2-loop s (i + 1) len (h * 33 + char-code (char-at s i))
 
   abs-int : Integer -> Integer
   abs-int (n) = if n < 0 then -n else n
@@ -95,10 +95,10 @@ Section: Definitions
   bitmap-index (bitmap) (bit) =
     popcount (bit-and bitmap (pow2 bit - 1))
 
-  list-insert-at : List a, Integer, a -> List a
-  list-insert-at (xs) (i) (x) =
+  hamt-insert-at : List a, Integer, a -> List a
+  hamt-insert-at (xs) (i) (x) =
     if i == 0 then [x] & xs
-    else [list-at xs 0] & list-insert-at (list-tail xs) (i - 1) x
+    else [list-at xs 0] & hamt-insert-at (list-tail xs) (i - 1) x
 
   list-replace-at : List a, Integer, a -> List a
   list-replace-at (xs) (i) (x) =
@@ -112,7 +112,7 @@ Section: Definitions
 
   hamt-get : HamtMap a, Text -> Maybe a
   hamt-get (m) (key) =
-    let hash = djb2-hash key
+    let hash = hamt-djb2-hash key
     in hamt-node-get m.root hash key 0
 
   hamt-node-get : HamtNode a, Integer, Text, Integer -> Maybe a
@@ -139,7 +139,7 @@ Section: Definitions
 
   hamt-set : HamtMap a, Text, a -> HamtMap a
   hamt-set (m) (key) (value) =
-    let hash = djb2-hash key
+    let hash = hamt-djb2-hash key
     in let result = hamt-node-set m.root hash key value 0
     in HamtMap { root = result.node, size = m.size + result.delta }
 
@@ -178,7 +178,7 @@ Section: Definitions
             in HamtSetResult { node = HamtBranch bitmap (list-replace-at children idx result.node), delta = result.delta }
           else let idx = bitmap-index bitmap chunk
             in let new-leaf = HamtLeaf hash key value
-            in HamtSetResult { node = HamtBranch (bitmap-set bitmap chunk) (list-insert-at children idx new-leaf), delta = 1 }
+            in HamtSetResult { node = HamtBranch (bitmap-set bitmap chunk) (hamt-insert-at children idx new-leaf), delta = 1 }
 
   make-single-branch : HamtNode a, Integer, Integer -> HamtNode a
   make-single-branch (node) (hash) (level) =
@@ -219,7 +219,7 @@ Section: Definitions
 
   hamt-remove : HamtMap a, Text -> HamtMap a
   hamt-remove (m) (key) =
-    let hash = djb2-hash key
+    let hash = hamt-djb2-hash key
     in let result = hamt-node-remove m.root hash key 0
     in when result
       is Just (new-root) -> HamtMap { root = new-root, size = m.size - 1 }

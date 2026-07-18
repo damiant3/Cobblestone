@@ -13,7 +13,8 @@ Chapter: Opening
   cites Vision chapter OrgPage
   cites Foreword chapter Console
   cites Foreword chapter Maybe
-  cites Foreword chapter Event
+  cites UI chapter Event
+  cites UI chapter KeyInput
   cites Foreword chapter CCE
   cites Kernel chapter DiskFacts
   cites Kernel chapter AppLog
@@ -24,7 +25,7 @@ Chapter: Opening
 
 Section: Entry Point
 
-  opening : [Console] None
+  opening : [Console] Nothing
   opening = act
     let disk = disk-load
     in let signals = vision-load-signals disk
@@ -34,12 +35,14 @@ Section: Entry Point
     in let with-config = __record-set with-org "va-config" config-default
     in let disk2 = app-log-info disk "vision" ("Vision started, " & show signals.ss-count & " signals") 0
     in let ready = __record-set with-config "va-disk" disk2
-    in print-line "Codex Vision v0.1"
-    in print-line ("  Signals: " & show signals.ss-count)
-    in print-line ("  Org: " & show (ready.va-org).og-people-count & " people")
-    in print-line "  Keys: 1=Feed 2=Portfolio 3=Timeline 4=Org 5=Open"
-    in print-line "  Ctrl+N=New Signal  Ctrl+R=Respond  Ctrl+P=Pick Up"
-    in vision-event-loop ready
+    in act
+      print-line "Codex Vision v0.1"
+      print-line ("  Signals: " & show signals.ss-count)
+      print-line ("  Org: " & show (ready.va-org).og-people-count & " people")
+      print-line "  Keys: 1=Feed 2=Portfolio 3=Timeline 4=Org 5=Open"
+      print-line "  Ctrl+N=New Signal  Ctrl+R=Respond  Ctrl+P=Pick Up"
+      vision-event-loop ready
+    end
   end
 
 Section: Sample Org
@@ -64,9 +67,9 @@ Section: Sample Org
 
 Section: Event Loop
 
-  vision-event-loop : VisionAppState -> [Console] None
+  vision-event-loop : VisionAppState -> [Console] Nothing
   vision-event-loop (state) = act
-    let scan = uefi-read-key
+    let scan = poll-key
     in let ev = if scan == 0
           then event-timer "tick" 0
           else event-key-down scan 0 0
@@ -79,8 +82,8 @@ Section: Event Dispatch
   vision-handle-event : VisionAppState, Event -> VisionAppState
   vision-handle-event (state) (ev) =
     when ev.ev-kind
-      is EvKeyDown -> vision-handle-key state ev.ev-key ev.ev-modifiers
-      is EvTimer -> vision-tick state
+      is EvKeyDown (key) (mods) -> vision-handle-key state key mods
+      is EvTimer (label) -> vision-tick state
       is otherwise -> state
 
   vision-tick : VisionAppState -> VisionAppState
@@ -125,10 +128,9 @@ Section: Demo Signal Creation
     in let store = ss-add state.va-signals sig2
     in let cs = cascade-route-signal state.va-cascade sig2 state.va-org 0
     in let disk = app-log-info state.va-disk "vision" ("Signal created: " & text-take sig2.sig-content 40) 0
-    in __record-set (__record-set (__record-set state
-      "va-signals" store)
-      "va-cascade" cs)
-      "va-disk" disk
+    in let st1 = __record-set state "va-signals" store
+    in let st2 = __record-set st1 "va-cascade" cs
+    in __record-set st2 "va-disk" disk
 
 Section: Demo Pickup
 
@@ -144,11 +146,11 @@ Section: Demo Response
   vision-demo-response : VisionAppState -> VisionAppState
   vision-demo-response (state) =
     if state.va-selected-signal == 0 then state
-    else let cs = cascade-submit-response state.va-cascade state.va-selected-signal 0
+    else let cs = (cascade-submit-response state.va-cascade state.va-selected-signal 0
           "dir-recruit" RspProposal
           "Portfolio-based assessment for technical roles, $40K 4-week pilot"
           "Team recommends replacing resumes with portfolio review for technical roles. Already piloting in Austin with positive preliminary results."
-          "$40K" "4 weeks" 85 0
+          "$40K" "4 weeks" 85 0)
     in let disk = app-log-info state.va-disk "vision" "Response submitted" 0
     in __record-set (__record-set state "va-cascade" cs) "va-disk" disk
 

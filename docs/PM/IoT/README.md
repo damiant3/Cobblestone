@@ -37,16 +37,7 @@ docs/PM/IoT/
 - `docs/VisionAndVirtues.md` — founding vision and non-negotiables
 - `docs/DevelopersGuide.md` — language features and syntax
 - `docs/ArchitectsSketchbook.md` — memory model and register conventions
-- `docs/Designs/OS/Done/CryptoPrimitives.md` — crypto implementation specs
-- `docs/Designs/OS/Active/Identity.md` — identity and trust architecture
-- `docs/Designs/OS/Active/TrustAndRuntime.md` — trust lattice design
-- `docs/Designs/OS/Done/CodexBinary.md` — CDX binary format spec
-- `docs/Designs/Hardware/Active/REAL-HARDWARE-BRINGUP.md` — x86 hardware status
-- `docs/Designs/OS/Active/DistributedAgentOS.md` — agent-centric OS vision
-- `docs/Designs/OS/Active/HardRealtime.md` — [HardRealtime] timing guarantees
-- `docs/Designs/OS/Active/GpuCompute.md` — GPU transport/proxy/firmware
-- `docs/Designs/OS/Active/GpuKernels.md` — Codex-native kernel language ([Device]/[Gpu] effects)
-- `docs/Designs/Backends/Active/DualTargetGpuCompilation.md` — PTX + SPIR-V via plugs
+- `docs/PM/Stories/Vision/DistributedAgentOS.md` — agent-centric OS vision
 
 ## Existing Backend Implementations (in old/, read-only)
 

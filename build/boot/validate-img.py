@@ -1,6 +1,11 @@
 import struct, sys
 
-img = open(r"D:\Projects\NewRepository-fester\build\boot\optiona.img","rb").read()
+# Image path comes from argv. The old hardcoded path silently validated
+# build/boot/optiona.img no matter what was passed -- which once made
+# three different depot images read as "identical".
+img_path = sys.argv[1] if len(sys.argv) > 1 else r"D:\Projects\NewRepository-fester\build\boot\optiona.img"
+img = open(img_path, "rb").read()
+print(f"validating: {img_path}")
 SS = 512
 def u16(b,o): return struct.unpack_from("<H",b,o)[0]
 def u32(b,o): return struct.unpack_from("<I",b,o)[0]

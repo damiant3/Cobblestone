@@ -1,0 +1,78 @@
+Chapter: XhciTruthProbe
+  cites Works chapter GopXhci
+  cites Works chapter GopUsb
+  cites Works chapter GopWizard
+  cites Works chapter GopDraw
+  cites Kernel chapter BitmapFont
+
+ Option A GOP probe: run the runtime spine, enumerate the USB bus
+ (which drives the full xHCI bring-up + ownership handoff + port
+ snapshot), then paint the captured xHCI diagnostic cells and halt.
+ Boot under OVMF with -UsbDisk -UsbKbd -NoPs2 and screenshot to read
+ what the bring-up saw on a real, spec-strict controller. Renders
+ the diagnostic cells directly (no GopBoot, whose opening would
+ collide with this one).
+
+ We say:
+
+  probe-halt : Integer -> Integer
+  probe-halt (n) = probe-halt (n + 1)
+
+  pnib : Integer -> Text
+  pnib (n) =
+    if n == 0 then "0" else if n == 1 then "1" else if n == 2 then "2"
+    else if n == 3 then "3" else if n == 4 then "4" else if n == 5 then "5"
+    else if n == 6 then "6" else if n == 7 then "7" else if n == 8 then "8"
+    else if n == 9 then "9" else if n == 10 then "a" else if n == 11 then "b"
+    else if n == 12 then "c" else if n == 13 then "d" else if n == 14 then "e"
+    else "f"
+
+  phx : Integer, Integer -> Text
+  phx (v) (sh) = pnib (bit-and (bit-shru v sh) 15)
+
+  ph32 : Integer -> Text
+  ph32 (v) = "#" & phx v 28 & phx v 24 & phx v 20 & phx v 16 & phx v 12 & phx v 8 & phx v 4 & phx v 0
+
+  pyn : Integer -> Text
+  pyn (v) = if v == 0 then "n" else "y"
+
+  prow : Integer, Integer, Integer, CbfFont, Integer, Integer, Text, Integer -> Integer
+  prow (base) (stride) (x) (font) (y) (scale) (s) (col) =
+    gop-draw-text base stride font x y s col scale 0
+
+  pports : Integer, Integer, CbfFont, Integer, Integer, Integer -> Integer
+  pports (base) (stride) (font) (scale) (i) (n) =
+    if i >= n then 0
+    else if i >= 8 then 0
+    else let raw = xdiag-get (20 + i)
+    in let ccs = bit-and raw 1
+    in let line = "port" & show i & " PORTSC=" & ph32 raw & " CCS=" & pyn ccs & " PED=" & pyn (bit-and (bit-shru raw 1) 1) & " PR=" & pyn (bit-and (bit-shru raw 4) 1) & " spd=" & show (bit-and (bit-shru raw 10) 15)
+    in let t = prow base stride 40 font (200 + i * 20) scale line (if ccs == 0 then 9474192 else 65280)
+    in pports base stride font scale (i + 1) n
+
+  pdraw : Integer, Integer, Integer, Integer, CbfFont -> Integer
+  pdraw (base) (w) (h) (stride) (font) =
+    let scale = if w >= 1024 then 2 else 1
+    in let bg = gop-fill-rect base stride 0 0 w h 1710638
+    in let t0 = prow base stride 40 font 40 scale "xHCI TRUTH PROBE" 65535
+    in let t1 = prow base stride 40 font 80 scale ("controller " & ph32 (xdiag-get 2) & ":" & ph32 (xdiag-get 3) & " found=" & pyn (xdiag-get 1) & " caplen=" & show (xdiag-get 4)) 65280
+    in let t2 = prow base stride 40 font 100 scale ("HCCPARAMS1=" & ph32 (xdiag-get 5) & " CSZ=" & show (xdiag-get 6) & " PPC=" & show (xdiag-get 7) & " xECP=" & show (xdiag-get 8)) 9474192
+    in let t3 = prow base stride 40 font 120 scale ("legsup=" & pyn (xdiag-get 9) & " before=" & ph32 (xdiag-get 10) & " after=" & ph32 (xdiag-get 11) & " released=" & pyn (xdiag-get 12)) 9474192
+    in let t4 = prow base stride 40 font 140 scale ("slots=" & show (xdiag-get 13) & " ports=" & show (xdiag-get 14) & " reset=" & pyn (xdiag-get 15) & " cnr=" & pyn (xdiag-get 16) & " run=" & pyn (xdiag-get 17) & " connected=" & show (xdiag-get 18)) 16777215
+    in let t5 = prow base stride 40 font 180 scale "root ports (raw PORTSC at start):" 9474192
+    in pports base stride font scale 0 (xdiag-get 14)
+
+  opening : [Device.Port, Device.Mmio] Integer
+  opening =
+    let base = peek-qword 32768 0
+    in let w = peek-qword 32768 8
+    in let h = peek-qword 32768 16
+    in let stride = peek-qword 32768 24
+    in let font = cbf-init
+    in act
+      ri <- runtime-init 0
+      att <- usb-attach
+      let d = pdraw base w h stride font
+      in let e = prow base stride 40 font 400 (if w >= 1024 then 2 else 1) ("ENUMERATED  kbd=" & pyn (if (att.ua-kbd).uk-ok then 1 else 0) & "  mouse=" & pyn (if (att.ua-mouse).um-ok then 1 else 0) & "  disk=" & pyn (if (att.ua-disk).md-ok then 1 else 0)) 16776960
+      in probe-halt 0
+    end

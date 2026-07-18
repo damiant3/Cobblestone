@@ -1,0 +1,172 @@
+Chapter: LensModelTest
+  cites Lens chapter LensModel
+
+ Known-answer test for the Lens modeling vocabulary. Builds the sample
+ model from the design document, orders joined many-to-one to users
+ with a controller-approved net revenue measure, and requires it to
+ validate clean. Then builds four deliberately broken models that
+ between them trip every diagnostic code in the table, and prints each
+ diagnostic as code plus message.
+
+Section: Sample Model
+
+  orders-table : LensTable
+  orders-table = LensTable {
+    name = "orders",
+    primary-key = "order_id",
+    grain = "one row per order"
+  }
+
+  users-table : LensTable
+  users-table = LensTable {
+    name = "users",
+    primary-key = "user_id",
+    grain = "one row per registered user"
+  }
+
+  orders-to-users : LensJoin
+  orders-to-users = LensJoin {
+    from-table = "orders",
+    to-table = "users",
+    on-left = "user_id",
+    on-right = "user_id",
+    cardinality = ManyToOne
+  }
+
+  user-city : LensDimension
+  user-city = LensDimension {
+    name = "user_city",
+    table = "users",
+    column = "city",
+    bucket = LbNone
+  }
+
+  net-revenue : LensMeasure
+  net-revenue = LensMeasure {
+    name = "net_revenue",
+    table = "orders",
+    column = "amount_cents",
+    agg = LensAggSum,
+    description = "Controller-approved. Sum of order amounts in cents."
+  }
+
+  sample-model : LensModel
+  sample-model = LensModel {
+    name = "sales",
+    tables = [orders-table, users-table],
+    joins = [orders-to-users],
+    dimensions = [user-city],
+    measures = [net-revenue]
+  }
+
+Section: Broken Models
+
+ Four mutations of the sample. The first joins through two tables the
+ model never declares. The second strips the primary key from users so
+ the many-to-one join loses its grain anchor. The third points a
+ dimension and a measure at tables that do not exist. The fourth
+ declares the orders table and the net revenue measure twice each.
+
+  ghost-join : LensJoin
+  ghost-join = LensJoin {
+    from-table = "shipments",
+    to-table = "customers",
+    on-left = "user_id",
+    on-right = "user_id",
+    cardinality = ManyToOne
+  }
+
+  broken-joins : LensModel
+  broken-joins = LensModel {
+    name = "broken-joins",
+    tables = [orders-table, users-table],
+    joins = [ghost-join],
+    dimensions = [],
+    measures = []
+  }
+
+  users-no-pk : LensTable
+  users-no-pk = LensTable {
+    name = "users",
+    primary-key = "",
+    grain = "one row per registered user"
+  }
+
+  broken-key : LensModel
+  broken-key = LensModel {
+    name = "broken-key",
+    tables = [orders-table, users-no-pk],
+    joins = [orders-to-users],
+    dimensions = [],
+    measures = []
+  }
+
+  ghost-dim : LensDimension
+  ghost-dim = LensDimension {
+    name = "user_city",
+    table = "ghost",
+    column = "city",
+    bucket = LbNone
+  }
+
+  phantom-measure : LensMeasure
+  phantom-measure = LensMeasure {
+    name = "phantom_total",
+    table = "phantom",
+    column = "amount",
+    agg = LensAggSum,
+    description = "points at a table the model never declares"
+  }
+
+  broken-refs : LensModel
+  broken-refs = LensModel {
+    name = "broken-refs",
+    tables = [orders-table],
+    joins = [],
+    dimensions = [ghost-dim],
+    measures = [phantom-measure]
+  }
+
+  broken-dups : LensModel
+  broken-dups = LensModel {
+    name = "broken-dups",
+    tables = [orders-table, orders-table],
+    joins = [],
+    dimensions = [],
+    measures = [net-revenue, net-revenue]
+  }
+
+Section: Rendering
+
+ A model's validation report renders as the single word valid when the
+ diagnostic list is empty, otherwise one line per diagnostic.
+
+  diag-line : LensDiag -> Text
+  diag-line (d) = "diag " & show (d.code) & ": " & d.message
+
+  render-from : List LensDiag, Integer, Text -> Text
+  render-from (ds) (i) (acc) =
+    if i >= list-length ds then acc
+    else let line = diag-line (list-at ds i)
+    in let acc2 = if i == 0 then line else acc & "\n" & line
+    in render-from ds (i + 1) acc2
+
+  render-report : LensModel -> Text
+  render-report (m) =
+    let ds = lens-validate m
+    in if list-length ds == 0 then "valid" else render-from ds 0 ""
+
+Section: Body
+
+  opening : [Console] Nothing = act
+    print-line-uni "-- sample model"
+    print-line-uni (render-report sample-model)
+    print-line-uni "-- broken: join names unknown tables"
+    print-line-uni (render-report broken-joins)
+    print-line-uni "-- broken: many-to-one without primary key"
+    print-line-uni (render-report broken-key)
+    print-line-uni "-- broken: dimension and measure on unknown tables"
+    print-line-uni (render-report broken-refs)
+    print-line-uni "-- broken: duplicate table and measure names"
+    print-line-uni (render-report broken-dups)
+  end

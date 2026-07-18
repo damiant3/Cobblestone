@@ -1,0 +1,322 @@
+Chapter: Lwm2mFirmware
+  cites Encode chapter Coap
+  cites Encode chapter Lwm2m
+  cites Foreword chapter OtaUpdate
+  cites Foreword chapter Board
+  cites Foreword chapter Sha256
+  cites Foreword chapter Hkdf
+  cites Foreword chapter Maybe
+
+ The LwM2M Firmware Update object (Object 5), wired to the metal.
+
+ OtaUpdate has had the state machine for a while and it is pure by
+ design: ota-step signals ActionWriteBlock and performs nothing. Board
+ grew a linear FlashBank on 2026-07-16. Coap grew a parser beside this
+ change. This chapter is the binding layer between the three -- the part
+ that was missing, and the reason the firmware-update story was a
+ diagram. A server writes the Package URI, blocks arrive as CoAP
+ responses, and each one lands in the staging bank through the Flash
+ effect. Nothing here invents a byte.
+
+ What this chapter is NOT: a socket. CoAP runs over UDP and codex-vm
+ serves exactly one UDP port (53, DNS) and drops the rest, so no guest
+ can complete a live CoAP exchange today. That is BACKLOG 5.4 and a
+ missing VM capability, not a gap in this flow. So the transport is
+ injected: fw-feed-response takes the bytes of a CoAP response from
+ wherever the caller got them. Every byte of protocol handling above the
+ socket is real and is exercised; the socket is the one unproven inch,
+ exactly as it is for cleartext fetch (1.7) and TLS (1.9).
+
+ We say:
+
+Section: Update Result Codes
+
+ The standard Object 5 Update Result values, mapped as
+ docs/Designs/Active/IoT/OTAFirmwareUpdate.md maps them. Result is the
+ only place a failure survives: OMA says the device returns to state Idle
+ after a failed update, so state alone cannot tell success from disaster
+ and a reader that ignores Result learns nothing.
+
+  fw-result-initial : Integer between 0 and 9 = 0
+  fw-result-success : Integer between 0 and 9 = 1
+  fw-result-no-flash : Integer between 0 and 9 = 2
+  fw-result-out-of-ram : Integer between 0 and 9 = 3
+  fw-result-conn-lost : Integer between 0 and 9 = 4
+  fw-result-integrity : Integer between 0 and 9 = 5
+  fw-result-bad-package : Integer between 0 and 9 = 6
+  fw-result-invalid-uri : Integer between 0 and 9 = 7
+  fw-result-update-failed : Integer between 0 and 9 = 8
+
+Section: The Client
+
+ fw-bank is the flash controller's register base; fw-stage is where the
+ image lands. They are different addresses and conflating them is how a
+ driver writes an image over its own controller.
+
+ The staged image is never held in memory. Blocks go from the parsed
+ response straight into the bank, and Gate A hashes the bank -- so what
+ is verified is what actually landed, not what the client believes it
+ sent. A write that never reached the silicon cannot pass this gate.
+
+  Lwm2mFw = record {
+   fw-ctx : OtaContext,
+   fw-bank : Integer,
+   fw-stage : Integer,
+   fw-written : Integer,
+   fw-next-block : Integer,
+   fw-faults : Integer,
+   fw-result : Integer between 0 and 9
+  }
+
+  fw-new : BootConfig, OtaVersion, Integer, Integer -> Lwm2mFw
+  fw-new (boot) (version) (bank) (stage) = Lwm2mFw {
+   fw-ctx = ota-context-new boot version,
+   fw-bank = bank,
+   fw-stage = stage,
+   fw-written = 0,
+   fw-next-block = 0,
+   fw-faults = 0,
+   fw-result = 0
+  }
+
+ Every result code enters the record through here. The bounds prover
+ reads literals, field accesses and __narrow of those -- it does not read
+ a named constant's declared range -- so a bare fw-result-integrity would
+ be CDX2051 even though the constant is declared 0..9. Narrowing a
+ parameter is the idiom that carries the assertion (ota-version-new does
+ the same with a sequence number), and it costs one runtime check on a
+ path that runs once per update.
+
+ This was seven lines of hand-expanded record until 2026-07-16, because
+ __narrow did not survive revised's hoist and the checker rejected the
+ assertion the diagnostic recommended. That is fixed in the desugarer
+ (codex/test/revised-narrow), so the update sugar reads as it should.
+
+  fw-set-result : Lwm2mFw, Integer -> Lwm2mFw
+  fw-set-result (c) (r) = c revised { fw-result = __narrow r }
+
+  fw-fail : Lwm2mFw, Integer, Text -> Lwm2mFw
+  fw-fail (c) (result) (why) =
+   let ctx2 = ota-step (c.fw-ctx) (EvDownloadFailed why)
+   in fw-set-result (c revised { fw-ctx = ctx2 }) result
+
+Section: Object 5 Resources
+
+ State is /5/0/3 and Result is /5/0/5. Both are reads a server performs
+ to learn where the device is, and both are derived rather than stored --
+ a second copy of the state is a second thing to get wrong.
+
+  fw-state-resource : Lwm2mFw -> Integer
+  fw-state-resource (c) =
+   when c.fw-ctx.state
+    is OtaIdle -> lwm2m-fw-state-value FwIdle
+    is OtaDownloading (received) (total) -> lwm2m-fw-state-value FwDownloading
+    is OtaDownloaded -> lwm2m-fw-state-value FwDownloaded
+    is OtaVerifying -> lwm2m-fw-state-value FwDownloaded
+    is OtaVerified -> lwm2m-fw-state-value FwDownloaded
+    is OtaActivating -> lwm2m-fw-state-value FwUpdating
+    is OtaRollingBack -> lwm2m-fw-state-value FwUpdating
+    is OtaFailed (reason) -> lwm2m-fw-state-value FwIdle
+
+  fw-result-resource : Lwm2mFw -> Integer
+  fw-result-resource (c) = c.fw-result
+
+  fw-package-uri : Lwm2mFw -> Text
+  fw-package-uri (c) =
+   when c.fw-ctx.manifest
+    is None -> ""
+    is Just (m) -> m.firmware-uri
+
+Section: Write /5/0/1 -- Package URI
+
+ The server writing the Package URI is what starts a download. The
+ manifest carries the hash, the size and the sequence number, which the
+ URI does not: those come from the release fact the publisher signed, and
+ a device that took the server's word for them would let a compromised
+ fleet server pick the image. The server carries bytes; the publisher
+ grants execution.
+
+  fw-write-package-uri : Lwm2mFw, OtaManifest -> Lwm2mFw
+  fw-write-package-uri (c) (m) =
+   let ctx2 = ota-step (c.fw-ctx) (EvManifestReceived m)
+   in c revised {
+    fw-ctx = ctx2,
+    fw-written = 0,
+    fw-next-block = 0,
+    fw-faults = 0,
+    fw-result = 0
+   }
+
+Section: The Download
+
+ fw-next-request builds the CoAP GET for the block the client is waiting
+ for. szx 6 is 1024-byte blocks, the largest RFC 7959 defines.
+
+  fw-szx : Integer = 6
+
+  fw-next-request : Lwm2mFw, Integer, List Integer -> List Integer
+  fw-next-request (c) (msg-id) (token) =
+   let path = fw-package-uri c
+   in let blk = coap-block-option coap-opt-block2 (c.fw-next-block) 0 fw-szx
+   in let opts = [coap-uri-path-option path, blk]
+   in coap-build-request CoapConfirmable CoapGet msg-id token opts []
+
+ A response is refused before it is staged. A packet that does not parse
+ is not a short packet, it is not CoAP; a code that is not 2.05 Content
+ is not a body; and a block that is not the one asked for is not the next
+ block. Staging an out-of-order block would write the image at the wrong
+ offset and leave a hole that Gate A would catch and nobody could
+ explain, so it is refused where it happens.
+
+  fw-feed-response : Lwm2mFw, List Integer -> [Flash, Device.Mmio] Lwm2mFw
+  fw-feed-response (c) (bytes) =
+   when coap-parse bytes
+    is None -> fw-fail c fw-result-conn-lost "malformed CoAP response"
+    is Just (m) ->
+      if m.cm-code /= coap-205-content then fw-fail c fw-result-conn-lost "response was not 2.05 Content"
+      else when coap-find-option (m.cm-options) coap-opt-block2
+       is None -> fw-stage-last c (m.cm-payload)
+       is Just (v) -> fw-stage-block c (m.cm-payload) (coap-uint-value v)
+
+  fw-stage-block : Lwm2mFw, List Integer, Integer -> [Flash, Device.Mmio] Lwm2mFw
+  fw-stage-block (c) (payload) (bv) =
+   let num = coap-block-num bv
+   in let more = coap-block-more bv
+   in if num /= c.fw-next-block then fw-fail c fw-result-conn-lost "block out of order"
+   else act
+    c2 <- fw-write c payload
+    if more == 1 then c2 revised { fw-next-block = num + 1 }
+    else fw-download-complete (c2 revised { fw-next-block = num + 1 })
+   end
+
+  fw-stage-last : Lwm2mFw, List Integer -> [Flash, Device.Mmio] Lwm2mFw
+  fw-stage-last (c) (payload) = act
+   c2 <- fw-write c payload
+   fw-download-complete c2
+  end
+
+ One block, one unlock-program-lock cycle. Holding a bank open across a
+ network wait would leave a live write path into the image while the
+ device sits idle, which is the state this whole design exists to avoid.
+ The cost is a key sequence per block; the alternative is an unlocked
+ bank owned by nobody.
+
+  fw-write : Lwm2mFw, List Integer -> [Flash, Device.Mmio] Lwm2mFw
+  fw-write (c) (payload) = act
+   b0 <- flash-open-bank (c.fw-bank)
+   b1 <- flash-write-page b0 (c.fw-stage + (c.fw-written)) payload
+   f <- flash-seal-bank b1
+   let ctx2 = ota-step (c.fw-ctx) (EvBlockReceived payload (c.fw-written))
+   in c revised {
+    fw-ctx = ctx2,
+    fw-written = (c.fw-written) + list-length payload,
+    fw-faults = (c.fw-faults) + (if f < 0 then 0 - f else 0)
+   }
+  end
+
+Section: Gate A -- on what landed
+
+ Gate A runs against the bank, not against a buffer the client kept, so a
+ write the controller dropped fails here rather than being verified in
+ absentia. sha256-buf hashes straight off the address in constant heap:
+ the image is never a List, which is the memory honesty the design asks
+ for on a 192 KB device.
+
+ sha256-buf answers eight 32-bit WORDS, not thirty-two bytes.
+ hkdf-words-to-bytes is the conversion, and skipping it is the bug that
+ shipped a CCE hostname through TLS: a word list and a byte list are both
+ List Integer and the type system cannot tell them apart, so the
+ comparison would run and quietly answer nonsense.
+
+  fw-digest : Lwm2mFw -> List Integer
+  fw-digest (c) = hkdf-words-to-bytes (sha256-buf (c.fw-stage) 0 (c.fw-written))
+
+  fw-magic-ok : Integer -> Boolean
+  fw-magic-ok (addr) =
+   if peek-byte addr 0 /= 67 then False
+   else if peek-byte addr 1 /= 68 then False
+   else if peek-byte addr 2 /= 88 then False
+   else True
+
+  fw-gate-a : Lwm2mFw -> GateAResult
+  fw-gate-a (c) =
+   when c.fw-ctx.manifest
+    is None -> GateAFailTruncated
+    is Just (m) ->
+      if (c.fw-written) /= m.firmware-size then GateAFailTruncated
+      else if fw-magic-ok (c.fw-stage) == False then GateAFailMagic
+      else if ota-hash-eq (fw-digest c) (m.firmware-hash) 0 32 then GateAPass
+      else GateAFailHash
+
+ A staging fault outranks the hash. If a page write ran out of fuel the
+ bank is short a page, and the honest answer is that flash failed
+ (Result 2), not that the image was corrupt in transit (Result 5) -- the
+ two send an operator to different places.
+
+  fw-download-complete : Lwm2mFw -> Lwm2mFw
+  fw-download-complete (c) =
+   if (c.fw-faults) > 0 then fw-fail c fw-result-no-flash "flash write fault while staging"
+   else when fw-gate-a c
+    is GateAPass ->
+      let ctx2 = ota-step (c.fw-ctx) (EvGateAResult GateAPass)
+      in let ctx3 = ota-step ctx2 EvDownloadComplete
+      in c revised { fw-ctx = ctx3 }
+    is GateAFailMagic -> fw-fail c fw-result-bad-package "staged image is not a CDX"
+    is GateAFailTruncated -> fw-fail c fw-result-conn-lost "staged image is short"
+    is otherwise -> fw-fail c fw-result-integrity "staged image hash does not match the manifest"
+
+Section: Execute /5/0/2 -- Update
+
+ The server executing Update is what asks for Gate B. Gate B is trust and
+ policy -- the author's key against the device's lattice, the manifest's
+ capabilities against the device's grants -- and this chapter does not
+ own any of that. It should not: a firmware client that carried the trust
+ lattice would be a client that could be talked into changing it. So the
+ verdict is computed by the caller, against the real verifier, and handed
+ in. This chapter decides WHEN Gate B runs, which is what the design
+ assigns it, and never what it decides.
+
+ The verdict is delivered twice, and that is the machine's shape rather
+ than a stutter. In OtaDownloaded the state machine answers ANY event by
+ moving to OtaVerifying with action ActionRunGateB -- it is asking for
+ the gate to be run, and it discards the verdict it was handed because it
+ has not run it yet. Only the step taken in OtaVerifying reads the
+ verdict. Sending it once leaves the device parked in Verifying forever,
+ which the loopback caught by staging an image and then activating
+ nothing.
+
+  fw-execute-update : Lwm2mFw, GateBResult -> Lwm2mFw
+  fw-execute-update (c) (verdict) =
+   let ctx1 = ota-step (c.fw-ctx) (EvGateBResult verdict)
+   in let ctx2 = ota-step ctx1 (EvGateBResult verdict)
+   in when verdict
+    is GateBPass -> c revised { fw-ctx = ctx2 }
+    is otherwise -> fw-set-result (c revised { fw-ctx = ctx2 }) fw-result-update-failed
+
+ Activation commits the candidate slot. The old firmware is still what
+ boots until this point, which is the whole property: every refusal above
+ leaves a device running the image it already trusted.
+
+ Activation is legal from OtaVerified and nowhere else, and the guard is
+ not decoration. The first cut of this function set Result to 1 (success)
+ unconditionally, and the loopback reported a successful update that had
+ staged zero bytes -- every block had been refused, the machine had never
+ left Idle, and the device said Success anyway. A firmware client that
+ can report success without installing anything is worse than one that
+ fails, because the fleet stops looking. A state that is not Verified
+ leaves the context and the Result exactly as the failure left them.
+
+  fw-activate : Lwm2mFw -> Lwm2mFw
+  fw-activate (c) =
+   when c.fw-ctx.state
+    is OtaVerified ->
+      let ctx2 = ota-step (c.fw-ctx) EvActivationConfirmed
+      in let ctx3 = ota-step ctx2 EvActivationConfirmed
+      in fw-set-result (c revised { fw-ctx = ctx3 }) fw-result-success
+    is otherwise -> c
+
+  fw-boot-config : Lwm2mFw -> BootConfig
+  fw-boot-config (c) = c.fw-ctx.boot-config
+
+  fw-target-slot : Lwm2mFw -> BootSlot
+  fw-target-slot (c) = ota-inactive-slot (c.fw-ctx.boot-config)

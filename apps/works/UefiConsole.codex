@@ -1,7 +1,6 @@
 Chapter: UefiConsole
-  cites Codex chapter Console
-  cites Codex chapter Bitwise
   cites Foreword chapter Maybe
+  cites UI chapter KeyInput
 
  Abstraction over UEFI Simple Text Output and Simple Text Input
  protocols. The dev console targets UefiConsole, not VGA or
@@ -84,29 +83,19 @@ Section: Text Attributes
 
 Section: Scan Codes
 
-  uefi-scan-up : Integer = 1
-  uefi-scan-down : Integer = 2
-  uefi-scan-right : Integer = 3
-  uefi-scan-left : Integer = 4
-  uefi-scan-home : Integer = 5
-  uefi-scan-end : Integer = 6
-  uefi-scan-insert : Integer = 7
-  uefi-scan-delete : Integer = 8
-  uefi-scan-page-up : Integer = 9
-  uefi-scan-page-down : Integer = 10
-  uefi-scan-f1 : Integer = 11
-  uefi-scan-f2 : Integer = 12
-  uefi-scan-f3 : Integer = 13
-  uefi-scan-f4 : Integer = 14
-  uefi-scan-f5 : Integer = 15
-  uefi-scan-f6 : Integer = 16
-  uefi-scan-f7 : Integer = 17
-  uefi-scan-f8 : Integer = 18
-  uefi-scan-f9 : Integer = 19
-  uefi-scan-f10 : Integer = 20
-  uefi-scan-f11 : Integer = 21
-  uefi-scan-f12 : Integer = 22
-  uefi-scan-escape : Integer = 23
+  uefi-scan-up : Integer = 38
+  uefi-scan-down : Integer = 40
+  uefi-scan-right : Integer = 39
+  uefi-scan-left : Integer = 37
+  uefi-scan-home : Integer = 36
+  uefi-scan-end : Integer = 35
+  uefi-scan-insert : Integer = 45
+  uefi-scan-delete : Integer = 127
+  uefi-scan-page-up : Integer = 33
+  uefi-scan-page-down : Integer = 34
+  uefi-scan-f5 : Integer = 116
+  uefi-scan-f12 : Integer = 123
+  uefi-scan-escape : Integer = 27
 
 Section: Key Input
 
@@ -118,7 +107,9 @@ Section: Key Input
 
   uefi-key-is-char : UefiKey -> Boolean
   uefi-key-is-char (k) =
-    if k.scan-code == 0 then k.char-code > 0 else False
+    if k.char-code < 32 then False
+    else if k.char-code > 126 then False
+    else True
 
   uefi-key-is-enter : UefiKey -> Boolean
   uefi-key-is-enter (k) = k.char-code == 13
@@ -328,13 +319,13 @@ Section: Console Operations
   uefi-con-show-cursor : Integer
   uefi-con-show-cursor = uefi-enable-cursor 1
 
-  uefi-con-put-text : Integer, Integer, Text, Integer, Integer -> [Console] None
+  uefi-con-put-text : Integer, Integer, Text, Integer, Integer -> [Console] Nothing
   uefi-con-put-text (row) (col) (txt) (fg) (bg) =
     let w0 = uefi-con-set-attr fg bg
     in let w1 = uefi-con-move col row
     in print-uni txt
 
-  uefi-con-fill-row : Integer, Integer, Integer -> [Console] None
+  uefi-con-fill-row : Integer, Integer, Integer -> [Console] Nothing
   uefi-con-fill-row (row) (fg) (bg) =
     let w0 = uefi-con-set-attr fg bg
     in let w1 = uefi-con-move 0 row
@@ -342,11 +333,11 @@ Section: Console Operations
 
   uefi-con-wait-key-spin : Integer -> UefiKey
   uefi-con-wait-key-spin (n) =
-    let raw = uefi-read-key
-    in if raw == 0 - 1 then uefi-con-wait-key-spin (n + 1)
+    let raw = poll-key
+    in if raw == 0 then uefi-con-wait-key-spin (n + 1)
     else UefiKey {
-      scan-code = bit-and (bit-shru raw 16) 65535,
-      char-code = bit-and raw 65535,
+      scan-code = raw,
+      char-code = raw,
       shift-state = 0
     }
 
@@ -355,12 +346,12 @@ Section: Console Operations
 
   uefi-con-wait-key-ex-spin : Integer -> UefiKey
   uefi-con-wait-key-ex-spin (n) =
-    let raw = uefi-read-key-ex
-    in if raw == 0 - 1 then uefi-con-wait-key-ex-spin (n + 1)
+    let raw = poll-key
+    in if raw == 0 then uefi-con-wait-key-ex-spin (n + 1)
     else UefiKey {
-      scan-code = bit-and (bit-shru raw 16) 65535,
-      char-code = bit-and raw 65535,
-      shift-state = bit-shru raw 32
+      scan-code = raw,
+      char-code = raw,
+      shift-state = 0
     }
 
   uefi-con-wait-key-ex : UefiKey
@@ -368,11 +359,11 @@ Section: Console Operations
 
   uefi-con-poll-key : Maybe UefiKey
   uefi-con-poll-key =
-    let raw = uefi-read-key
-    in if raw == 0 - 1 then None
+    let raw = poll-key
+    in if raw == 0 then None
     else Just (UefiKey {
-      scan-code = bit-and (bit-shru raw 16) 65535,
-      char-code = bit-and raw 65535,
+      scan-code = raw,
+      char-code = raw,
       shift-state = 0
     })
 

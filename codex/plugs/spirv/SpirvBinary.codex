@@ -1,0 +1,634 @@
+Chapter: SPIRV Binary
+  cites Foreword chapter CCE
+
+ Binary SPIR-V. Vulkan consumes a stream of 32-bit words, not the
+ assembly text the disassembler emits, and this project ships no
+ assembler -- so the word stream is built here, in Codex, from values,
+ not by re-parsing text. Re-parsing was never an option: the text prints
+ a float constant as a decimal (show over bits-to-real), which cannot be
+ turned back into the exact 64-bit pattern SPIR-V stores. A word carries
+ the bits; a decimal loses them.
+
+ All opcode and enum numbers below are transcribed from the Khronos
+ SPIR-V registry header (SPIRV-Headers, unified1/spirv.h), not from
+ memory. With no spirv-val on the box (CLAUDE.md rule 6 forbids taking an
+ outside dependency for one) the validator here shares this table, so a
+ wrong number would pass our own check and still be refused by a real
+ driver -- the round-trip trap. The numbers are the one thing that must
+ come from the spec.
+
+Section: Module Constants
+
+ A SPIR-V module opens with five words: the magic number, the version
+ word (0.major.minor.0 -- 1.5 for Vulkan 1.2 compute), a generator id
+ (zero, we are unregistered), the id bound (one past the largest id used),
+ and a schema word (zero).
+
+  spv-magic : Integer
+  spv-magic = #07230203
+
+  spv-version : Integer
+  spv-version = #00010500
+
+  spv-generator : Integer
+  spv-generator = 0
+
+Section: Opcodes
+
+  spv-op-name : Integer
+  spv-op-name = 5
+
+  spv-op-entry-point : Integer
+  spv-op-entry-point = 15
+
+  spv-op-execution-mode : Integer
+  spv-op-execution-mode = 16
+
+  spv-op-capability : Integer
+  spv-op-capability = 17
+
+  spv-op-memory-model : Integer
+  spv-op-memory-model = 14
+
+  spv-op-type-void : Integer
+  spv-op-type-void = 19
+
+  spv-op-type-bool : Integer
+  spv-op-type-bool = 20
+
+  spv-op-type-int : Integer
+  spv-op-type-int = 21
+
+  spv-op-type-float : Integer
+  spv-op-type-float = 22
+
+  spv-op-type-vector : Integer
+  spv-op-type-vector = 23
+
+  spv-op-type-runtime-array : Integer
+  spv-op-type-runtime-array = 29
+
+  spv-op-type-struct : Integer
+  spv-op-type-struct = 30
+
+  spv-op-type-pointer : Integer
+  spv-op-type-pointer = 32
+
+  spv-op-type-function : Integer
+  spv-op-type-function = 33
+
+  spv-op-constant : Integer
+  spv-op-constant = 43
+
+  spv-op-function : Integer
+  spv-op-function = 54
+
+  spv-op-function-parameter : Integer
+  spv-op-function-parameter = 55
+
+  spv-op-function-end : Integer
+  spv-op-function-end = 56
+
+  spv-op-function-call : Integer
+  spv-op-function-call = 57
+
+  spv-op-variable : Integer
+  spv-op-variable = 59
+
+  spv-op-load : Integer
+  spv-op-load = 61
+
+  spv-op-store : Integer
+  spv-op-store = 62
+
+  spv-op-access-chain : Integer
+  spv-op-access-chain = 65
+
+  spv-op-uconvert : Integer
+  spv-op-uconvert = 113
+
+  spv-op-decorate : Integer
+  spv-op-decorate = 71
+
+  spv-op-member-decorate : Integer
+  spv-op-member-decorate = 72
+
+  spv-op-snegate : Integer
+  spv-op-snegate = 126
+
+  spv-op-fnegate : Integer
+  spv-op-fnegate = 127
+
+  spv-op-iadd : Integer
+  spv-op-iadd = 128
+
+  spv-op-fadd : Integer
+  spv-op-fadd = 129
+
+  spv-op-isub : Integer
+  spv-op-isub = 130
+
+  spv-op-fsub : Integer
+  spv-op-fsub = 131
+
+  spv-op-imul : Integer
+  spv-op-imul = 132
+
+  spv-op-fmul : Integer
+  spv-op-fmul = 133
+
+  spv-op-sdiv : Integer
+  spv-op-sdiv = 135
+
+  spv-op-fdiv : Integer
+  spv-op-fdiv = 136
+
+  spv-op-srem : Integer
+  spv-op-srem = 138
+
+  spv-op-bitwise-or : Integer
+  spv-op-bitwise-or = 197
+
+  spv-op-bitwise-and : Integer
+  spv-op-bitwise-and = 199
+
+  spv-op-select : Integer
+  spv-op-select = 169
+
+  spv-op-iequal : Integer
+  spv-op-iequal = 170
+
+  spv-op-inotequal : Integer
+  spv-op-inotequal = 171
+
+  spv-op-sgreaterthan : Integer
+  spv-op-sgreaterthan = 173
+
+  spv-op-sgreaterthanequal : Integer
+  spv-op-sgreaterthanequal = 175
+
+  spv-op-slessthan : Integer
+  spv-op-slessthan = 177
+
+  spv-op-slessthanequal : Integer
+  spv-op-slessthanequal = 179
+
+  spv-op-fordequal : Integer
+  spv-op-fordequal = 180
+
+  spv-op-fordnotequal : Integer
+  spv-op-fordnotequal = 182
+
+  spv-op-fordlessthan : Integer
+  spv-op-fordlessthan = 184
+
+  spv-op-fordgreaterthan : Integer
+  spv-op-fordgreaterthan = 186
+
+  spv-op-fordlessthanequal : Integer
+  spv-op-fordlessthanequal = 188
+
+  spv-op-fordgreaterthanequal : Integer
+  spv-op-fordgreaterthanequal = 190
+
+  spv-op-phi : Integer
+  spv-op-phi = 245
+
+  spv-op-selection-merge : Integer
+  spv-op-selection-merge = 247
+
+  spv-op-label : Integer
+  spv-op-label = 248
+
+  spv-op-branch : Integer
+  spv-op-branch = 249
+
+  spv-op-branch-conditional : Integer
+  spv-op-branch-conditional = 250
+
+  spv-op-return : Integer
+  spv-op-return = 253
+
+  spv-op-return-value : Integer
+  spv-op-return-value = 254
+
+Section: Enumerants
+
+  spv-cap-shader : Integer
+  spv-cap-shader = 1
+
+  spv-cap-float64 : Integer
+  spv-cap-float64 = 10
+
+  spv-cap-int64 : Integer
+  spv-cap-int64 = 11
+
+  spv-addr-logical : Integer
+  spv-addr-logical = 0
+
+  spv-mm-glsl450 : Integer
+  spv-mm-glsl450 = 1
+
+  spv-em-glcompute : Integer
+  spv-em-glcompute = 5
+
+  spv-exm-localsize : Integer
+  spv-exm-localsize = 17
+
+  spv-sc-input : Integer
+  spv-sc-input = 1
+
+  spv-sc-uniform : Integer
+  spv-sc-uniform = 2
+
+  spv-sc-function : Integer
+  spv-sc-function = 7
+
+  spv-sc-storage-buffer : Integer
+  spv-sc-storage-buffer = 12
+
+  spv-dec-block : Integer
+  spv-dec-block = 2
+
+  spv-dec-array-stride : Integer
+  spv-dec-array-stride = 6
+
+  spv-dec-builtin : Integer
+  spv-dec-builtin = 11
+
+  spv-dec-binding : Integer
+  spv-dec-binding = 33
+
+  spv-dec-descriptor-set : Integer
+  spv-dec-descriptor-set = 34
+
+  spv-dec-offset : Integer
+  spv-dec-offset = 35
+
+  spv-bi-global-invocation-id : Integer
+  spv-bi-global-invocation-id = 28
+
+  spv-bi-workgroup-size : Integer
+  spv-bi-workgroup-size = 25
+
+Section: Word Encoding
+
+ An instruction is one header word followed by its operands. The header
+ packs the total word count (this header plus every operand) in the high
+ 16 bits and the opcode in the low 16. The two never overlap, so a
+ multiply and an add place them without a shift.
+
+  spv-instr : Integer, List Integer -> List Integer
+  spv-instr (opcode) (operands) =
+   let wc = 1 + list-length operands
+   in (wc * 65536 + opcode) :: operands
+
+  spv-header : Integer -> List Integer
+  spv-header (bound) =
+   [ spv-magic, spv-version, spv-generator, bound, 0 ]
+
+ A 64-bit literal is stored as two words, low then high. The float
+ constants arrive as their raw bit pattern already, so the same split
+ serves OpConstant %i64 and OpConstant %f64 -- the value is the bits.
+
+  spv-u64-words : Integer -> List Integer
+  spv-u64-words (bits) =
+   [ bit-and bits #FFFFFFFF, bit-and (bit-shru bits 32) #FFFFFFFF ]
+
+ A SPIR-V string is its UTF-8 bytes, a null, and zero padding up to a
+ word boundary, packed little-endian. Our identifiers are ASCII, so a CCE
+ code point converts to its byte through to-unicode.
+
+  spv-string-words : Text -> List Integer
+  spv-string-words (s) =
+   let bytes = spv-str-bytes s 0 []
+   in spv-pack-words (spv-pad4 (list-push bytes 0)) 0
+
+  spv-str-bytes : Text, Integer, List Integer -> List Integer
+  spv-str-bytes (s) (i) (acc) =
+   if i >= text-length s then acc
+   else spv-str-bytes s (i + 1) (list-push acc (to-unicode (char-code (char-at s i))))
+
+  spv-pad4 : List Integer -> List Integer
+  spv-pad4 (bytes) =
+   if int-mod (list-length bytes) 4 == 0 then bytes
+   else spv-pad4 (list-push bytes 0)
+
+  spv-pack-words : List Integer, Integer -> List Integer
+  spv-pack-words (bytes) (i) =
+   if i >= list-length bytes then []
+   else let w = (list-at bytes i) + (list-at bytes (i + 1)) * 256 + (list-at bytes (i + 2)) * 65536 + (list-at bytes (i + 3)) * 16777216
+   in w :: spv-pack-words bytes (i + 4)
+
+Section: Structural Validator
+
+ The check no spirv-val on this box can do. It does not know SPIR-V
+ semantics; it knows the shape a module must have: the five-word magic /
+ version / bound / schema header, and an instruction stream that walks to
+ the exact end, every header carrying a non-zero word count that does not
+ run past the words that are there. A truncated instruction, a miscounted
+ header, a lost operand -- the failures a hand-built or emitter-built word
+ list actually produces -- do not survive this walk. Deeper (every id
+ below the bound, types consistent) is the next rung; this is the floor.
+
+  spv-validate : List Integer -> Text
+  spv-validate (ws) =
+   if list-length ws < 5 then "FAIL: header shorter than five words"
+   else if (list-at ws 0) /= spv-magic then "FAIL: wrong magic number"
+   else if (list-at ws 4) /= 0 then "FAIL: schema word is not zero"
+   else if (list-at ws 3) <= 0 then "FAIL: id bound is not positive"
+   else let s = spv-validate-stream ws 5
+   in if s /= "VALID" then s
+   else let s2 = spv-validate-ids ws 5 (list-at ws 3) []
+   in if s2 /= "VALID" then s2
+   else spv-check-refs ws 5 (spv-all-defs ws 5 [])
+
+  spv-validate-stream : List Integer, Integer -> Text
+  spv-validate-stream (ws) (p) =
+   if p == list-length ws then "VALID"
+   else if p > list-length ws then "FAIL: instruction runs past the stream"
+   else let header = list-at ws p
+   in let wc = bit-shru header 16
+   in let opcode = bit-and header #FFFF
+   in if wc == 0 then "FAIL: zero word count at word " & integer-to-text p
+   else if p + wc > list-length ws then "FAIL: truncated instruction (opcode " & integer-to-text opcode & ") at word " & integer-to-text p
+   else spv-validate-stream ws (p + wc)
+
+ The id half: every instruction that defines a result id defines a fresh
+ one, and every id is below the module's bound. Which word carries the
+ result id depends on the opcode -- a type or a label names it right after
+ the header, an instruction with a result type names it one word later,
+ and many opcodes name none -- so the position is looked up per opcode. A
+ result id at or above the bound, or a second definition of one already
+ seen, is what makes a driver reject a module a shape check would pass.
+
+  spv-result-pos : Integer -> Integer
+  spv-result-pos (opcode) =
+   if opcode == spv-op-type-void | opcode == spv-op-type-bool | opcode == spv-op-type-int | opcode == spv-op-type-float | opcode == spv-op-type-vector | opcode == spv-op-type-pointer | opcode == spv-op-type-function | opcode == spv-op-type-struct | opcode == spv-op-type-runtime-array | opcode == spv-op-label then 1
+   else if opcode == spv-op-constant | opcode == spv-op-variable | opcode == spv-op-load | opcode == spv-op-access-chain | opcode == spv-op-function | opcode == spv-op-function-parameter | opcode == spv-op-function-call | opcode == spv-op-phi | opcode == spv-op-select | opcode == spv-op-snegate | opcode == spv-op-fnegate then 2
+   else if opcode == spv-op-iadd | opcode == spv-op-fadd | opcode == spv-op-isub | opcode == spv-op-fsub | opcode == spv-op-imul | opcode == spv-op-fmul | opcode == spv-op-sdiv | opcode == spv-op-fdiv | opcode == spv-op-srem | opcode == spv-op-bitwise-or | opcode == spv-op-bitwise-and then 2
+   else if opcode == spv-op-iequal | opcode == spv-op-inotequal | opcode == spv-op-sgreaterthan | opcode == spv-op-sgreaterthanequal | opcode == spv-op-slessthan | opcode == spv-op-slessthanequal then 2
+   else if opcode == spv-op-fordequal | opcode == spv-op-fordnotequal | opcode == spv-op-fordlessthan | opcode == spv-op-fordgreaterthan | opcode == spv-op-fordlessthanequal | opcode == spv-op-fordgreaterthanequal then 2
+   else 0
+
+  spv-member : List Integer, Integer -> Boolean
+  spv-member (xs) (v) =
+   spv-member-at xs v 0
+
+  spv-member-at : List Integer, Integer, Integer -> Boolean
+  spv-member-at (xs) (v) (i) =
+   if i >= list-length xs then False
+   else if (list-at xs i) == v then True
+   else spv-member-at xs v (i + 1)
+
+  spv-validate-ids : List Integer, Integer, Integer, List Integer -> Text
+  spv-validate-ids (ws) (p) (bound) (seen) =
+   if p >= list-length ws then "VALID"
+   else let header = list-at ws p
+   in let wc = bit-shru header 16
+   in let opcode = bit-and header #FFFF
+   in let pos = spv-result-pos opcode
+   in if pos == 0 then spv-validate-ids ws (p + wc) bound seen
+   else let id = list-at ws (p + pos)
+   in if id >= bound then "FAIL: result id " & integer-to-text id & " at or above bound " & integer-to-text bound & " (word " & integer-to-text p & ")"
+   else if id <= 0 then "FAIL: result id " & integer-to-text id & " is not positive (word " & integer-to-text p & ")"
+   else if spv-member seen id then "FAIL: result id " & integer-to-text id & " defined twice (word " & integer-to-text p & ")"
+   else spv-validate-ids ws (p + wc) bound (list-push seen id)
+
+ The reference half: an id that is used must be defined somewhere in the
+ module. Which operand words of an instruction are id references — rather
+ than literals, or the result id being defined, or a string name — depends
+ on the opcode, so each opcode carries a small operand model: a list of
+ kinds, one per operand after the header. 0 = a literal word, 1 = an id
+ reference, 2 = the result id (a definition, not a reference), 3 = the
+ result-type id (a reference), 4 = the rest are id references, 5 = the rest
+ are literals, 6 = a null-terminated string. Forward references are legal
+ (a call names a function defined later, an entry point names its main), so
+ every definition is gathered first and the references are checked against
+ the whole set.
+
+  spv-operand-kinds : Integer -> List Integer
+  spv-operand-kinds (op) =
+   if op == spv-op-iadd | op == spv-op-fadd | op == spv-op-isub | op == spv-op-fsub | op == spv-op-imul | op == spv-op-fmul | op == spv-op-sdiv | op == spv-op-fdiv | op == spv-op-srem | op == spv-op-bitwise-or | op == spv-op-bitwise-and | op == spv-op-iequal | op == spv-op-inotequal | op == spv-op-sgreaterthan | op == spv-op-sgreaterthanequal | op == spv-op-slessthan | op == spv-op-slessthanequal | op == spv-op-fordequal | op == spv-op-fordnotequal | op == spv-op-fordlessthan | op == spv-op-fordgreaterthan | op == spv-op-fordlessthanequal | op == spv-op-fordgreaterthanequal then [ 3, 2, 1, 1 ]
+   else if op == spv-op-snegate | op == spv-op-fnegate | op == spv-op-uconvert then [ 3, 2, 1 ]
+   else if op == spv-op-select then [ 3, 2, 1, 1, 1 ]
+   else if op == spv-op-phi then [ 3, 2, 4 ]
+   else if op == spv-op-access-chain | op == spv-op-function-call then [ 3, 2, 1, 4 ]
+   else if op == spv-op-load then [ 3, 2, 1, 5 ]
+   else if op == spv-op-function-parameter then [ 3, 2 ]
+   else if op == spv-op-function then [ 3, 2, 0, 1 ]
+   else if op == spv-op-variable then [ 3, 2, 0, 4 ]
+   else if op == spv-op-constant then [ 3, 2, 5 ]
+   else if op == spv-op-store then [ 1, 1, 5 ]
+   else if op == spv-op-type-void | op == spv-op-type-bool | op == spv-op-label then [ 2 ]
+   else if op == spv-op-type-float then [ 2, 0 ]
+   else if op == spv-op-type-int then [ 2, 0, 0 ]
+   else if op == spv-op-type-vector then [ 2, 1, 0 ]
+   else if op == spv-op-type-runtime-array then [ 2, 1 ]
+   else if op == spv-op-type-struct then [ 2, 4 ]
+   else if op == spv-op-type-pointer then [ 2, 0, 1 ]
+   else if op == spv-op-type-function then [ 2, 1, 4 ]
+   else if op == spv-op-capability then [ 0 ]
+   else if op == spv-op-memory-model then [ 0, 0 ]
+   else if op == spv-op-entry-point then [ 0, 1, 6, 4 ]
+   else if op == spv-op-execution-mode | op == spv-op-decorate then [ 1, 0, 5 ]
+   else if op == spv-op-member-decorate then [ 1, 0, 0, 5 ]
+   else if op == spv-op-name then [ 1, 6 ]
+   else if op == spv-op-branch | op == spv-op-return-value then [ 1 ]
+   else if op == spv-op-branch-conditional then [ 1, 1, 1, 5 ]
+   else if op == spv-op-selection-merge then [ 1, 0 ]
+   else []
+
+  spv-word-has-null : Integer -> Boolean
+  spv-word-has-null (w) =
+   (bit-and w #FF) == 0 | (bit-and (bit-shru w 8) #FF) == 0 | (bit-and (bit-shru w 16) #FF) == 0 | (bit-and (bit-shru w 24) #FF) == 0
+
+  spv-skip-string : List Integer, Integer, Integer, Integer -> Integer
+  spv-skip-string (ws) (p) (wc) (off) =
+   if off >= wc then off
+   else if spv-word-has-null (list-at ws (p + off)) then off + 1
+   else spv-skip-string ws p wc (off + 1)
+
+  spv-collect-rest-ids : List Integer, Integer, Integer, Integer, List Integer -> List Integer
+  spv-collect-rest-ids (ws) (p) (wc) (off) (acc) =
+   if off >= wc then acc
+   else spv-collect-rest-ids ws p wc (off + 1) (list-push acc (list-at ws (p + off)))
+
+  spv-op-refs : List Integer, Integer, Integer, List Integer, Integer, Integer, List Integer -> List Integer
+  spv-op-refs (ws) (p) (wc) (kinds) (ki) (off) (acc) =
+   if ki >= list-length kinds then acc
+   else if off >= wc then acc
+   else let k = list-at kinds ki
+   in if k == 3 | k == 1 then spv-op-refs ws p wc kinds (ki + 1) (off + 1) (list-push acc (list-at ws (p + off)))
+   else if k == 2 | k == 0 then spv-op-refs ws p wc kinds (ki + 1) (off + 1) acc
+   else if k == 4 then spv-collect-rest-ids ws p wc off acc
+   else if k == 5 then acc
+   else if k == 6 then spv-op-refs ws p wc kinds (ki + 1) (spv-skip-string ws p wc off) acc
+   else acc
+
+  spv-op-def : List Integer, Integer, List Integer, Integer, Integer -> Integer
+  spv-op-def (ws) (p) (kinds) (ki) (off) =
+   if ki >= list-length kinds then -1
+   else let k = list-at kinds ki
+   in if k == 2 then list-at ws (p + off)
+   else if k == 4 | k == 5 | k == 6 then -1
+   else spv-op-def ws p kinds (ki + 1) (off + 1)
+
+  spv-all-defs : List Integer, Integer, List Integer -> List Integer
+  spv-all-defs (ws) (p) (acc) =
+   if p >= list-length ws then acc
+   else let h = list-at ws p
+   in let wc = bit-shru h 16
+   in let op = bit-and h #FFFF
+   in let d = spv-op-def ws p (spv-operand-kinds op) 0 1
+   in spv-all-defs ws (p + wc) (if d >= 0 then list-push acc d else acc)
+
+  spv-first-undefined : List Integer, List Integer, Integer -> Integer
+  spv-first-undefined (refs) (defs) (i) =
+   if i >= list-length refs then -1
+   else if spv-member defs (list-at refs i) then spv-first-undefined refs defs (i + 1)
+   else list-at refs i
+
+  spv-check-refs : List Integer, Integer, List Integer -> Text
+  spv-check-refs (ws) (p) (defs) =
+   if p >= list-length ws then "VALID"
+   else let h = list-at ws p
+   in let wc = bit-shru h 16
+   in let op = bit-and h #FFFF
+   in let refs = spv-op-refs ws p wc (spv-operand-kinds op) 0 1 []
+   in let bad = spv-first-undefined refs defs 0
+   in if bad >= 0 then "FAIL: reference to undefined id " & integer-to-text bad & " (word " & integer-to-text p & ", opcode " & integer-to-text op & ")"
+   else spv-check-refs ws (p + wc) defs
+
+Section: Disassembler
+
+ The text view, rendered FROM the words rather than from a second walk of
+ the IR. This is what lets the text plug and the binary plug share one
+ emitter: the plug emits words, and where a human-readable listing is
+ wanted the words are disassembled here. Every operand is placed by the
+ same per-opcode model the validator uses, so the text cannot drift from
+ the binary -- it is the binary, spelled out. Ids are numbers (%7), which
+ is what a module actually contains; the friendly type names the old
+ emitter printed were a fiction it maintained separately.
+
+  spv-opcode-name : Integer -> Text
+  spv-opcode-name (op) =
+   if op == spv-op-capability then "OpCapability"
+   else if op == spv-op-memory-model then "OpMemoryModel"
+   else if op == spv-op-entry-point then "OpEntryPoint"
+   else if op == spv-op-execution-mode then "OpExecutionMode"
+   else if op == spv-op-name then "OpName"
+   else if op == spv-op-decorate then "OpDecorate"
+   else if op == spv-op-member-decorate then "OpMemberDecorate"
+   else if op == spv-op-type-void then "OpTypeVoid"
+   else if op == spv-op-type-bool then "OpTypeBool"
+   else if op == spv-op-type-int then "OpTypeInt"
+   else if op == spv-op-type-float then "OpTypeFloat"
+   else if op == spv-op-type-vector then "OpTypeVector"
+   else if op == spv-op-type-runtime-array then "OpTypeRuntimeArray"
+   else if op == spv-op-type-struct then "OpTypeStruct"
+   else if op == spv-op-type-pointer then "OpTypePointer"
+   else if op == spv-op-type-function then "OpTypeFunction"
+   else if op == spv-op-constant then "OpConstant"
+   else if op == spv-op-variable then "OpVariable"
+   else if op == spv-op-load then "OpLoad"
+   else if op == spv-op-store then "OpStore"
+   else if op == spv-op-access-chain then "OpAccessChain"
+   else if op == spv-op-function then "OpFunction"
+   else if op == spv-op-function-parameter then "OpFunctionParameter"
+   else if op == spv-op-function-end then "OpFunctionEnd"
+   else if op == spv-op-function-call then "OpFunctionCall"
+   else if op == spv-op-label then "OpLabel"
+   else if op == spv-op-branch then "OpBranch"
+   else if op == spv-op-branch-conditional then "OpBranchConditional"
+   else if op == spv-op-selection-merge then "OpSelectionMerge"
+   else if op == spv-op-phi then "OpPhi"
+   else if op == spv-op-return then "OpReturn"
+   else if op == spv-op-return-value then "OpReturnValue"
+   else if op == spv-op-snegate then "OpSNegate"
+   else if op == spv-op-fnegate then "OpFNegate"
+   else if op == spv-op-uconvert then "OpUConvert"
+   else if op == spv-op-iadd then "OpIAdd"
+   else if op == spv-op-fadd then "OpFAdd"
+   else if op == spv-op-isub then "OpISub"
+   else if op == spv-op-fsub then "OpFSub"
+   else if op == spv-op-imul then "OpIMul"
+   else if op == spv-op-fmul then "OpFMul"
+   else if op == spv-op-sdiv then "OpSDiv"
+   else if op == spv-op-fdiv then "OpFDiv"
+   else if op == spv-op-srem then "OpSRem"
+   else if op == spv-op-bitwise-or then "OpBitwiseOr"
+   else if op == spv-op-bitwise-and then "OpBitwiseAnd"
+   else if op == spv-op-select then "OpSelect"
+   else if op == spv-op-iequal then "OpIEqual"
+   else if op == spv-op-inotequal then "OpINotEqual"
+   else if op == spv-op-sgreaterthan then "OpSGreaterThan"
+   else if op == spv-op-sgreaterthanequal then "OpSGreaterThanEqual"
+   else if op == spv-op-slessthan then "OpSLessThan"
+   else if op == spv-op-slessthanequal then "OpSLessThanEqual"
+   else if op == spv-op-fordequal then "OpFOrdEqual"
+   else if op == spv-op-fordnotequal then "OpFOrdNotEqual"
+   else if op == spv-op-fordlessthan then "OpFOrdLessThan"
+   else if op == spv-op-fordgreaterthan then "OpFOrdGreaterThan"
+   else if op == spv-op-fordlessthanequal then "OpFOrdLessThanEqual"
+   else if op == spv-op-fordgreaterthanequal then "OpFOrdGreaterThanEqual"
+   else "Op?" & integer-to-text op
+
+  SpvStrByte = record { text : Text, done : Boolean }
+
+  spv-read-string-bytes : Integer, Integer, Text -> SpvStrByte
+  spv-read-string-bytes (w) (k) (acc) =
+   if k >= 4 then SpvStrByte { text = acc, done = False }
+   else let byte = bit-and (bit-shru w (8 * k)) #FF
+   in if byte == 0 then SpvStrByte { text = acc, done = True }
+   else spv-read-string-bytes w (k + 1) (acc & char-to-text (code-to-char (from-unicode byte)))
+
+  spv-read-string : List Integer, Integer, Integer, Integer, Text -> Text
+  spv-read-string (ws) (p) (wc) (off) (acc) =
+   if off >= wc then acc
+   else let r = spv-read-string-bytes (list-at ws (p + off)) 0 acc
+   in if r.done then r.text
+   else spv-read-string ws p wc (off + 1) (r.text)
+
+  spv-disasm-rest-ids : List Integer, Integer, Integer, Integer, Text -> Text
+  spv-disasm-rest-ids (ws) (p) (wc) (off) (acc) =
+   if off >= wc then acc
+   else spv-disasm-rest-ids ws p wc (off + 1) (acc & " %" & integer-to-text (list-at ws (p + off)))
+
+  spv-disasm-rest-lits : List Integer, Integer, Integer, Integer, Text -> Text
+  spv-disasm-rest-lits (ws) (p) (wc) (off) (acc) =
+   if off >= wc then acc
+   else spv-disasm-rest-lits ws p wc (off + 1) (acc & " " & integer-to-text (list-at ws (p + off)))
+
+  spv-disasm-ops : List Integer, Integer, Integer, List Integer, Integer, Integer, Text -> Text
+  spv-disasm-ops (ws) (p) (wc) (kinds) (ki) (off) (acc) =
+   if ki >= list-length kinds then acc
+   else if off >= wc then acc
+   else let k = list-at kinds ki
+   in if k == 3 | k == 1 then spv-disasm-ops ws p wc kinds (ki + 1) (off + 1) (acc & " %" & integer-to-text (list-at ws (p + off)))
+   else if k == 0 then spv-disasm-ops ws p wc kinds (ki + 1) (off + 1) (acc & " " & integer-to-text (list-at ws (p + off)))
+   else if k == 2 then spv-disasm-ops ws p wc kinds (ki + 1) (off + 1) acc
+   else if k == 4 then spv-disasm-rest-ids ws p wc off acc
+   else if k == 5 then spv-disasm-rest-lits ws p wc off acc
+   else if k == 6 then spv-disasm-ops ws p wc kinds (ki + 1) (spv-skip-string ws p wc off) (acc & " \"" & spv-read-string ws p wc off "" & "\"")
+   else acc
+
+  spv-disasm-instr : List Integer, Integer, Integer -> Text
+  spv-disasm-instr (ws) (p) (wc) =
+   let op = bit-and (list-at ws p) #FFFF
+   in let kinds = spv-operand-kinds op
+   in let rid = spv-op-def ws p kinds 0 1
+   in let lhs = if rid >= 0 then "%" & integer-to-text rid & " = " else ""
+   in lhs & spv-opcode-name op & spv-disasm-ops ws p wc kinds 0 1 "" & "\n"
+
+  spv-disasm-loop : List Integer, Integer, Text -> Text
+  spv-disasm-loop (ws) (p) (acc) =
+   if p >= list-length ws then acc
+   else let wc = bit-shru (list-at ws p) 16
+   in if wc == 0 then acc
+   else spv-disasm-loop ws (p + wc) (acc & spv-disasm-instr ws p wc)
+
+  spv-disasm : List Integer -> Text
+  spv-disasm (ws) =
+   if list-length ws < 5 then "; empty module\n"
+   else "; SPIR-V disassembly (bound " & integer-to-text (list-at ws 3) & ")\n" & spv-disasm-loop ws 5 ""

@@ -23,10 +23,8 @@ $BundleScript = Join-Path $Repo 'build\bundle-app.ps1'
 $HtmlRunScript = Join-Path $Repo 'codex\plugs\html\run.ps1'
 $PlugCdx = Join-Path $Repo 'codex\plugs\html\build-output\html-plug.cdx'
 
-# Known-bad apps excluded from the build (see docs/Test/KNOWN-CONDITIONS.md)
-$Skip = @{
-    'fishtank' = 'compiler GPF compiling FishTankPage to IR (pre-existing, 2026-06-10)'
-}
+# Known-bad apps excluded from the build (see docs/Test/Active/KNOWN-CONDITIONS.md)
+$Skip = @{}
 
 # -- Discover apps from web artifacts ---------------------------------
 $apps = @()

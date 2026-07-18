@@ -1,8 +1,5 @@
 Chapter: Parser
-  cites Codex chapter Text
-  cites Codex chapter Lists
-  cites Codex chapter Runtime
-  cites Codex chapter Build Settings (max-parse-fuel)
+  cites Codex chapter Build Settings (max-parse-fuel, max-parse-stall)
 
  Core parser utilities: state, results, predicates, helpers.
 
@@ -14,12 +11,19 @@ Section: Parser State
  earlier states are reused for backtracking, so it is not a uniquely owned
  `mutable` record. Its in-place writes go through the __record-set intrinsic.
 
+ stall-pos and stall are the no-progress guard. They are a heuristic and
+ are allowed to leak across a backtrack for the same reason fuel is: both
+ only ever move one way, and answering that the parser is stuck is not a
+ decision any earlier state relies on.
+
   ParseState = record {
    tokens : List Token,
    pos : Integer between 0 and 4294967295,
    bag : DiagnosticBag,
    paren-depth : Integer between 0 and 65535,
-   fuel : Integer
+   fuel : Integer,
+   stall-pos : Integer,
+   stall : Integer
   }
 
   make-parse-state : List Token, Text -> ParseState
@@ -29,7 +33,9 @@ Section: Parser State
     pos = 0,
     bag = empty-bag,
     paren-depth = 0,
-    fuel = max-parse-fuel
+    fuel = max-parse-fuel,
+    stall-pos = 0 - 1,
+    stall = 0
    }
 
   current : ParseState -> Token
@@ -47,18 +53,47 @@ Section: Parser State
     pos = st.pos + 1,
     bag = st.bag,
     paren-depth = st.paren-depth,
-    fuel = st.fuel
+    fuel = st.fuel,
+    stall-pos = st.stall-pos,
+    stall = st.stall
    }
 
+ Every arm that can spin consumes fuel, so this is the one place both
+ guards have to live: answering True here bails through the check each of
+ those arms already makes.
+
   parse-fuel-exhausted : ParseState -> Boolean
-  parse-fuel-exhausted (st) = st.fuel <= 0
+  parse-fuel-exhausted (st) = st.fuel <= 0 | st.stall >= max-parse-stall
+
+  parse-stalled : ParseState -> Boolean
+  parse-stalled (st) = st.stall >= max-parse-stall
+
+ A call at the same token as the last one is a step the parser did not
+ take. Counting those, rather than counting calls, is what makes the bound
+ immune to depth: nesting moves the position and resets the count.
 
   consume-parse-fuel : ParseState -> ParseState
-  consume-parse-fuel (st) = __record-set st "fuel" (st.fuel - 1)
+  consume-parse-fuel (st) =
+   let st1 = if st.pos == st.stall-pos
+      then __record-set st "stall" (st.stall + 1)
+      else __record-set (__record-set st "stall-pos" (st.pos)) "stall" 0
+   in __record-set st1 "fuel" (st1.fuel - 1)
+
+ The stalled arm CONSUMES THE TOKEN, and it has to. Reporting alone does
+ not end a spin: the caller has still made no progress, comes straight
+ back, and the guard fires again -- one diagnostic per call, forever, so
+ the stack stops dying and the heap dies instead. Measured, both ways.
+ Forcing the position forward turns the spin into ordinary error recovery:
+ the count resets, the parse carries on to the end of the unit, and the
+ bag gets one diagnostic per stuck token rather than millions.
 
   emit-parse-fuel-error : ParseState, Text -> ParseState
   emit-parse-fuel-error (st) (op) =
-   __record-set st "bag" (bag-add (st.bag) (make-error cdx-resource-exhausted ("compiler resource exhausted in parser." & op & " (budget " & integer-to-text max-parse-fuel & ")") (token-to-span (current st))))
+   if parse-stalled st
+    then let st1 = __record-set st "bag" (bag-add (st.bag) (make-error cdx-resource-exhausted ("parser." & op & " made no progress over " & integer-to-text max-parse-stall & " calls at this token, so the token was skipped. This is a parser defect, not a fault in this source: some arm returned without consuming a token or reporting why. Please report the token and the construct around it.") (token-to-span (current st))))
+     in let st2 = __record-set (__record-set st1 "stall" 0) "stall-pos" (0 - 1)
+     in advance st2
+    else __record-set st "bag" (bag-add (st.bag) (make-error cdx-resource-exhausted ("compiler resource exhausted in parser." & op & " (budget " & integer-to-text max-parse-fuel & ")") (token-to-span (current st))))
 
   token-to-span : Token -> SourceSpan
   token-to-span (tok) =
@@ -108,7 +143,7 @@ Section: TokenKind Predicates
   is-keyword : TokenKind -> Boolean
   is-keyword (k) =
    when k
-    is LetKeyword | InKeyword | BetweenKeyword | IfKeyword | IsKeyword | OtherwiseKeyword | ThenKeyword | ElseKeyword | WhenKeyword | WhereKeyword | SuchThatKeyword | ActKeyword | EndKeyword | RecordKeyword | CitesKeyword | ClaimKeyword | ProofKeyword | QedKeyword | InductionKeyword | ForAllKeyword | ThereExistsKeyword | LinearKeyword | MutableKeyword | PunctualKeyword | UnitKeyword | EffectKeyword | ClassKeyword | InstanceKeyword | WithKeyword | WithTimeoutKeyword | TryingKeyword | LazyKeyword | ForKeyword | RevisedKeyword | TrueKeyword | FalseKeyword -> True
+    is LetKeyword | InKeyword | BetweenKeyword | IfKeyword | IsKeyword | OtherwiseKeyword | ThenKeyword | ElseKeyword | WhenKeyword | WhereKeyword | SuchThatKeyword | ActKeyword | EndKeyword | RecordKeyword | CitesKeyword | GroundsKeyword | ClaimKeyword | ProofKeyword | QedKeyword | InductionKeyword | ForAllKeyword | ThereExistsKeyword | LinearKeyword | MutableKeyword | PunctualKeyword | UnitKeyword | EffectKeyword | ClassKeyword | InstanceKeyword | WithKeyword | WithTimeoutKeyword | TryingKeyword | LazyKeyword | ForKeyword | RevisedKeyword | TrueKeyword | FalseKeyword -> True
     is otherwise -> False
 
   is-revised-keyword : TokenKind -> Boolean
@@ -347,6 +382,30 @@ Section: TokenKind Predicates
     is CitesKeyword -> True
     is otherwise -> False
 
+  is-grounds-keyword : TokenKind -> Boolean
+  is-grounds-keyword (k) =
+   when k
+    is GroundsKeyword -> True
+    is otherwise -> False
+
+  is-quotes-keyword : TokenKind -> Boolean
+  is-quotes-keyword (k) =
+   when k
+    is QuotesKeyword -> True
+    is otherwise -> False
+
+  is-trusting-keyword : TokenKind -> Boolean
+  is-trusting-keyword (k) =
+   when k
+    is TrustingKeyword -> True
+    is otherwise -> False
+
+  is-above-keyword : TokenKind -> Boolean
+  is-above-keyword (k) =
+   when k
+    is AboveKeyword -> True
+    is otherwise -> False
+
   is-where-keyword : TokenKind -> Boolean
   is-where-keyword (k) =
    when k
@@ -374,7 +433,7 @@ Section: TokenKind Predicates
   is-reserved-keyword : TokenKind -> Boolean
   is-reserved-keyword (k) =
    when k
-    is LetKeyword | InKeyword | BetweenKeyword | IfKeyword | IsKeyword | OtherwiseKeyword | ThenKeyword | ElseKeyword | WhenKeyword | WhereKeyword | SuchThatKeyword | ActKeyword | EndKeyword | RecordKeyword | CitesKeyword | ClaimKeyword | ProofKeyword | QedKeyword | InductionKeyword | ForAllKeyword | ThereExistsKeyword | LinearKeyword | MutableKeyword | PunctualKeyword | UnitKeyword | LazyKeyword | EffectKeyword | WithKeyword | RevisedKeyword | TrueKeyword | FalseKeyword | ClassKeyword | InstanceKeyword -> True
+    is LetKeyword | InKeyword | BetweenKeyword | IfKeyword | IsKeyword | OtherwiseKeyword | ThenKeyword | ElseKeyword | WhenKeyword | WhereKeyword | SuchThatKeyword | ActKeyword | EndKeyword | RecordKeyword | CitesKeyword | GroundsKeyword | ClaimKeyword | ProofKeyword | QedKeyword | InductionKeyword | ForAllKeyword | ThereExistsKeyword | LinearKeyword | MutableKeyword | PunctualKeyword | UnitKeyword | LazyKeyword | EffectKeyword | WithKeyword | RevisedKeyword | TrueKeyword | FalseKeyword | ClassKeyword | InstanceKeyword -> True
     is otherwise -> False
 
   is-minus : TokenKind -> Boolean

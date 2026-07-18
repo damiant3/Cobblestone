@@ -7,22 +7,44 @@ Chapter: NetIO
  I/O loop binding: flushes outbox frames to the NE2000 NIC and
  polls for inbound frames.
 
+ This is the layer where the frames stop being data and start being
+ traffic, so this is the layer that declares Network.Read and
+ Network.Write. Everything below it (NetworkStack, TcpTransport,
+ MessageFraming) only builds and parses bytes and stays pure;
+ everything above it inherits these rows and must declare them, which
+ is what earns a program cap-network-read and cap-network-write at
+ boot. Until 2026-07-13 the NIC intrinsics were typed pure and gated
+ by nothing, so this whole file was effect-free and said so.
+
+ The __heap-save / __heap-restore pairs are load-bearing and are why
+ the effectful binds sit INSIDE an act while the save stays a pure let
+ OUTSIDE it. Each of these loops polls up to fifty million times, and
+ ne2k-recv-frame allocates a list on every miss. Without the restore
+ the bump allocator would walk the whole arena in a single accept.
+ Each recursive call is also still a SELF tail call for the same
+ reason: splitting one of these loops into a mutually-recursive helper
+ would leave fifty million frames on a stack that has no guard page.
+
 Section: Flush Outbox
 
-  flush-outbox-loop : NetSession, Integer, Integer -> Integer
+  flush-outbox-loop : NetSession, Integer, Integer -> [Network.Write] Integer
   flush-outbox-loop (sess) (i) (count) =
    if i >= count then 0
    else let frame = net-outbox-frame sess i
-   in let sent = ne2k-send-frame frame
-   in let rest = flush-outbox-loop sess (i + 1) count
-   in sent + rest
+   in act
+    sent <- ne2k-send-frame frame
+    rest <- flush-outbox-loop sess (i + 1) count
+    sent + rest
+   end
 
-  flush-transport-outbox : TcpTransportState -> TcpTransportState
+  flush-transport-outbox : TcpTransportState -> [Network.Write] TcpTransportState
   flush-transport-outbox (ts) =
    let count = net-outbox-count (ts.session)
-   in let flushed = flush-outbox-loop (ts.session) 0 count
-   in let cleared = set-outbox (ts.session) []
-   in TcpTransportState { session = cleared, recv-buf = [], recv-base = ts.recv-base, recv-len = ts.recv-len, recv-cap = ts.recv-cap, messages-sent = ts.messages-sent, messages-received = ts.messages-received }
+   in act
+    flushed <- flush-outbox-loop (ts.session) 0 count
+    let cleared = set-outbox (ts.session) []
+    in TcpTransportState { session = cleared, recv-buf = [], recv-base = ts.recv-base, recv-len = ts.recv-len, recv-cap = ts.recv-cap, messages-sent = ts.messages-sent, messages-received = ts.messages-received }
+   end
 
 Section: Listen and Accept
 
@@ -31,75 +53,106 @@ Section: Listen and Accept
    let r = net-listen (ts.session)
    in TcpTransportState { session = r.session, recv-buf = ts.recv-buf, recv-base = ts.recv-base, recv-len = ts.recv-len, recv-cap = ts.recv-cap, messages-sent = ts.messages-sent, messages-received = ts.messages-received }
 
-  net-io-accept : TcpTransportState, Integer -> TcpTransportState
+  net-io-accept : TcpTransportState, Integer -> [Network.Read, Network.Write] TcpTransportState
   net-io-accept (ts) (tries) =
    if tries > 50000000 then ts
    else let hp = __heap-save
-   in let frame = ne2k-recv-frame
-   in if list-length frame == 0 then let restored = __heap-restore hp
-     in net-io-accept ts (tries + 1)
-   else let r = transport-process-frame ts frame
-   in let ts1 = flush-transport-outbox (r.transport)
-   in when (ts1.session).conn.state
-    is TcpEstablished -> ts1
-    is otherwise -> net-io-accept ts1 (tries + 1)
+   in act
+    frame <- ne2k-recv-frame
+    if list-length frame == 0 then let restored = __heap-restore hp
+      in net-io-accept ts (tries + 1)
+    else let r = transport-process-frame ts frame
+    in act
+      ts1 <- flush-transport-outbox (r.transport)
+      when (ts1.session).conn.state
+       is TcpEstablished -> ts1
+       is otherwise -> net-io-accept ts1 (tries + 1)
+    end
+   end
 
 Section: Connect and Wait
 
-  net-io-connect : TcpTransportState -> TcpTransportState
+  net-io-connect : TcpTransportState -> [Network.Read, Network.Write] TcpTransportState
   net-io-connect (ts) =
    let ts1 = transport-connect ts
-   in let ts2 = flush-transport-outbox ts1
-   in net-io-wait-established ts2 0
+   in act
+    ts2 <- flush-transport-outbox ts1
+    net-io-wait-established ts2 0
+   end
 
-  net-io-wait-established : TcpTransportState, Integer -> TcpTransportState
+  net-io-wait-established : TcpTransportState, Integer -> [Network.Read, Network.Write] TcpTransportState
   net-io-wait-established (ts) (tries) =
    if tries > 10000 then ts
    else let hp = __heap-save
-   in let frame = ne2k-recv-frame
-   in if list-length frame == 0 then let restored = __heap-restore hp
-     in net-io-wait-established ts (tries + 1)
-   else let r = transport-process-frame ts frame
-   in let ts1 = flush-transport-outbox (r.transport)
-   in when (ts1.session).conn.state
-    is TcpEstablished -> ts1
-    is otherwise -> net-io-wait-established ts1 (tries + 1)
+   in act
+    frame <- ne2k-recv-frame
+    if list-length frame == 0 then let restored = __heap-restore hp
+      in net-io-wait-established ts (tries + 1)
+    else let r = transport-process-frame ts frame
+    in act
+      ts1 <- flush-transport-outbox (r.transport)
+      when (ts1.session).conn.state
+       is TcpEstablished -> ts1
+       is otherwise -> net-io-wait-established ts1 (tries + 1)
+    end
+   end
 
 Section: Send
 
+ net-io-send-chunk rebuilds the transport around the new session, and
+ until 2026-07-14 it rebuilt it without recv-base, recv-len or
+ recv-cap. A record field that is not named is not written, and __alloc
+ zero-fills, so those three came back as zero -- which meant that after
+ any send, the receive buffer's base address was 0. The next inbound
+ frame fed through transport-feed-raw, which writes with
+ __buf-write-bytes (ts.recv-base) ..., so the bytes off the wire landed
+ at physical address 0: the IDT and the kernel metadata cells. Send,
+ then receive, is the ordinary shape of a request, so the trust
+ transport and the DTLS endpoint drove it.
+
+ Every other constructor of a TcpTransportState in TcpTransport carries
+ the three fields. This one is the exception, and it was the exception
+ by omission rather than by intent.
+
   net-mss : Integer = 1400
 
-  net-io-send-chunk : TcpTransportState, List Integer, Integer, Integer -> TcpTransportState
+  net-io-send-chunk : TcpTransportState, List Integer, Integer, Integer -> [Network.Write] TcpTransportState
   net-io-send-chunk (ts) (data) (off) (total) =
    if off >= total then ts
    else let stop = if off + net-mss > total then total else off + net-mss
    in let chunk = transport-slice data off stop
    in let r = net-send (ts.session) chunk
-   in let ts1 = TcpTransportState { session = r.session, recv-buf = ts.recv-buf, messages-sent = ts.messages-sent, messages-received = ts.messages-received }
-   in let ts2 = flush-transport-outbox ts1
-   in net-io-send-chunk ts2 data (off + net-mss) total
+   in let ts1 = TcpTransportState { session = r.session, recv-buf = ts.recv-buf, recv-base = ts.recv-base, recv-len = ts.recv-len, recv-cap = ts.recv-cap, messages-sent = ts.messages-sent, messages-received = ts.messages-received }
+   in act
+    ts2 <- flush-transport-outbox ts1
+    net-io-send-chunk ts2 data (off + net-mss) total
+   end
 
-  net-io-send : TcpTransportState, Integer, List Integer -> TcpTransportState
+  net-io-send : TcpTransportState, Integer, List Integer -> [Network.Write] TcpTransportState
   net-io-send (ts) (tag) (body) =
    let framed = frame-encode tag body
    in net-io-send-chunk ts framed 0 (list-length framed)
 
-  net-io-send-raw : TcpTransportState, List Integer -> TcpTransportState
+  net-io-send-raw : TcpTransportState, List Integer -> [Network.Write] TcpTransportState
   net-io-send-raw (ts) (data) = net-io-send-chunk ts data 0 (list-length data)
 
 Section: Receive
 
-  net-io-recv-loop : TcpTransportState, Integer -> TransportRecvResult
+  net-io-recv-loop : TcpTransportState, Integer -> [Network.Read, Network.Write] TransportRecvResult
   net-io-recv-loop (ts) (tries) =
    if tries > 50000000 then TransportRecvResult { transport = ts, tag = 0, body = [], has-message = False }
    else let hp = __heap-save
-   in let frame = ne2k-recv-frame
-   in if list-length frame == 0 then let restored = __heap-restore hp
-     in net-io-recv-loop ts (tries + 1)
-   else let r = transport-process-frame ts frame
-   in let ts1 = flush-transport-outbox (r.transport)
-   in if r.has-message then TransportRecvResult { transport = ts1, tag = r.tag, body = r.body, has-message = True }
-   else net-io-recv-loop ts1 (tries + 1)
+   in act
+    frame <- ne2k-recv-frame
+    if list-length frame == 0 then let restored = __heap-restore hp
+      in net-io-recv-loop ts (tries + 1)
+    else let r = transport-process-frame ts frame
+    in act
+      ts1 <- flush-transport-outbox (r.transport)
+      if r.has-message then TransportRecvResult { transport = ts1, tag = r.tag, body = r.body, has-message = True }
+      else net-io-recv-loop ts1 (tries + 1)
+    end
+   end
 
 Section: Receive Raw (no framing)
 
@@ -109,30 +162,36 @@ Section: Receive Raw (no framing)
     has-data : Boolean
   }
 
-  net-io-recv-raw : TcpTransportState, Integer -> RawRecvResult
+  net-io-recv-raw : TcpTransportState, Integer -> [Network.Read, Network.Write] RawRecvResult
   net-io-recv-raw (ts) (tries) =
    if tries > 50000000 then RawRecvResult { transport = ts, data = [], has-data = False }
    else let hp = __heap-save
-   in let frame = ne2k-recv-frame
-   in if list-length frame == 0 then let restored = __heap-restore hp
-     in net-io-recv-raw ts (tries + 1)
-   else let r = net-process-frame (ts.session) frame
-   in let ts1 = flush-transport-outbox (TcpTransportState { session = r.session, recv-buf = ts.recv-buf, recv-base = ts.recv-base, recv-len = ts.recv-len, recv-cap = ts.recv-cap, messages-sent = ts.messages-sent, messages-received = ts.messages-received })
-   in if list-length (r.data) > 0 then RawRecvResult { transport = ts1, data = r.data, has-data = True }
-   else net-io-recv-raw ts1 (tries + 1)
+   in act
+    frame <- ne2k-recv-frame
+    if list-length frame == 0 then let restored = __heap-restore hp
+      in net-io-recv-raw ts (tries + 1)
+    else let r = net-process-frame (ts.session) frame
+    in act
+      ts1 <- flush-transport-outbox (TcpTransportState { session = r.session, recv-buf = ts.recv-buf, recv-base = ts.recv-base, recv-len = ts.recv-len, recv-cap = ts.recv-cap, messages-sent = ts.messages-sent, messages-received = ts.messages-received })
+      if list-length (r.data) > 0 then RawRecvResult { transport = ts1, data = r.data, has-data = True }
+      else net-io-recv-raw ts1 (tries + 1)
+    end
+   end
 
 Section: Poll One
 
-  net-io-poll-one : TcpTransportState, Integer -> List Integer
+  net-io-poll-one : TcpTransportState, Integer -> [Network.Read] List Integer
   net-io-poll-one (ts) (tries) =
    if tries > 5000000 then []
-   else let frame = ne2k-recv-frame
-   in if list-length frame > 0 then frame
-   else net-io-poll-one ts (tries + 1)
+   else act
+    frame <- ne2k-recv-frame
+    if list-length frame > 0 then frame
+    else net-io-poll-one ts (tries + 1)
+   end
 
 Section: Close
 
-  net-io-close : TcpTransportState -> TcpTransportState
+  net-io-close : TcpTransportState -> [Network.Write] TcpTransportState
   net-io-close (ts) =
    let ts1 = transport-close ts
    in flush-transport-outbox ts1

@@ -1,0 +1,55 @@
+Chapter: RepoTombstoneSigned
+  cites Works chapter RepoProtocolPersist
+  cites Works chapter KeyManager
+  cites Foreword chapter ImportGate
+  cites Foreword chapter FactStore
+  cites Foreword chapter Maybe
+  cites Foreword chapter Sha256
+  cites Kernel chapter DiskFacts
+  cites Kernel chapter AppPersist
+  cites Foreword chapter Console
+
+ Authenticated removal, proven. Two files are stored, both signed by the
+ owner. The owner then retires a.codex with a signed tombstone, and a forger
+ -- a key the manifest does not hold -- tries to retire b.codex the same way.
+ The AUTHENTICATED index honors the owner's removal and refuses the forger's,
+ so a.codex is gone and b.codex stays. The TRUSTING index, which reads a
+ removal by its path and asks no questions, drops both -- the behavior the
+ tree has always had, and the reason an unsigned tombstone was a hole.
+
+Section: Helpers
+
+  owner : Keypair
+  owner = generate-keypair (sha256 (text-to-bytes "tombstone-owner"))
+
+  forger : Keypair
+  forger = generate-keypair (sha256 (text-to-bytes "tombstone-forger"))
+
+  def-of : Text, Text -> SourceDefinition
+  def-of (path) (body) =
+    SourceDefinition {
+      sd-hash = "", sd-path = path, sd-quire = "Q", sd-chapter = "C",
+      sd-signer = "", sd-signature = [], sd-author = "", sd-timestamp = 0,
+      sd-content = body
+    }
+
+  save : DiskFactStore, Keypair, Text, Text, Integer -> DiskFactStore
+  save (s) (kp) (p) (b) (t) = repo-persist-save-definition s (sign-definition kp (def-of p b) t) t
+
+Section: Entry
+
+  opening : [Device.Block, Console.Write] Nothing = act
+    let manifest = manifest-add manifest-empty (owner.fingerprint) (owner.public-key) 10000
+    in let s0 = disk-init
+    in let s1 = save s0 owner "a.codex" "AAA" 1
+    in let s2 = save s1 owner "b.codex" "BBB" 2
+    in let s3 = repo-persist-save-tombstone-signed s2 owner "a.codex" 3
+    in let s4 = repo-persist-save-tombstone-signed s3 forger "b.codex" 4
+    in let verified = repo-index-verified s4 manifest 5000
+    in let plain = repo-index-from-disk s4
+    in let a-gone = when work-current verified "a.codex" is None -> "yes" is Just (d) -> "no"
+    in let b-kept = when work-current verified "b.codex" is Just (d) -> "yes" is None -> "no"
+    in print-line-uni ("verified=[" & repo-checkout verified & "] trusting=[" & repo-checkout plain & "] a-gone=" & a-gone & " b-kept=" & b-kept)
+  end
+
+Page 1

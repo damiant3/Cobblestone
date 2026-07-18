@@ -10,6 +10,16 @@ Chapter: Esp32C6Board
  Board HAL. ESP32-C6 uses IO_MUX for pin function selection,
  a command-based I2C controller, and SPI with USR-triggered transfers.
 
+ Every function here that touches a register declares [Device.Mmio].
+ The row is what makes the access visible to the effect system, to the
+ capability manifest, and to the boot grant. A driver that reads or
+ writes hardware while typed pure is a driver the machine cannot see.
+
+ What stays pure is worth as much as what does not: esp32c6-delay-loops
+ spins on the CPU and touches nothing, so it is pure, and the type says
+ so. The row separates the functions that reach the bus from the
+ functions that do not.
+
 Section: Core Addresses
 
   esp32c6-sram-base : Integer = #40800000
@@ -32,50 +42,57 @@ Section: GPIO Matrix
 
 Section: GPIO Driver
 
-  esp32c6-gpio-set-output : Integer -> Integer
+  esp32c6-gpio-set-output : Integer -> [Device.Mmio] Integer
   esp32c6-gpio-set-output (pin) =
-   let enable = mmio-read-32 esp32c6-gpio-enable-reg
-   in let w1 = mmio-write-32 esp32c6-gpio-enable-reg (bit-or enable (bit-shl 1 pin))
-   in let io-mux = esp32c6-io-mux-base + pin * 4
-   in let mux-val = mmio-read-32 io-mux
-   in mmio-write-32 io-mux (bit-or (bit-and mux-val #FFFFFFF8) 1)
+   let io-mux = esp32c6-io-mux-base + pin * 4
+   in act
+    enable <- mmio-read-32 esp32c6-gpio-enable-reg
+    w1 <- mmio-write-32 esp32c6-gpio-enable-reg (bit-or enable (bit-shl 1 pin))
+    mux-val <- (mmio-read-32 io-mux)
+    mmio-write-32 io-mux (bit-or (bit-and mux-val #FFFFFFF8) 1)
+   end
 
-  esp32c6-gpio-set-input : Integer -> Integer
+  esp32c6-gpio-set-input : Integer -> [Device.Mmio] Integer
   esp32c6-gpio-set-input (pin) =
-   let enable = mmio-read-32 esp32c6-gpio-enable-reg
-   in let w1 = mmio-write-32 esp32c6-gpio-enable-reg (bit-and enable (bit-xor (bit-shl 1 pin) (0 - 1)))
-   in let io-mux = esp32c6-io-mux-base + pin * 4
-   in let mux-val = mmio-read-32 io-mux
-   in mmio-write-32 io-mux (bit-or (bit-and mux-val #FFFFFFF8) 1)
+   let io-mux = esp32c6-io-mux-base + pin * 4
+   in act
+    enable <- mmio-read-32 esp32c6-gpio-enable-reg
+    w1 <- mmio-write-32 esp32c6-gpio-enable-reg (bit-and enable (bit-xor (bit-shl 1 pin) (0 - 1)))
+    mux-val <- (mmio-read-32 io-mux)
+    mmio-write-32 io-mux (bit-or (bit-and mux-val #FFFFFFF8) 1)
+   end
 
-  esp32c6-gpio-set : Integer -> Integer
+  esp32c6-gpio-set : Integer -> [Device.Mmio] Integer
   esp32c6-gpio-set (pin) =
    mmio-write-32 esp32c6-gpio-out-set-reg (bit-shl 1 pin)
 
-  esp32c6-gpio-clear : Integer -> Integer
+  esp32c6-gpio-clear : Integer -> [Device.Mmio] Integer
   esp32c6-gpio-clear (pin) =
    mmio-write-32 esp32c6-gpio-out-clr-reg (bit-shl 1 pin)
 
-  esp32c6-gpio-read : Integer -> Integer
-  esp32c6-gpio-read (pin) =
-   bit-and (bit-shru (mmio-read-32 esp32c6-gpio-in-reg) pin) 1
+  esp32c6-gpio-read : Integer -> [Device.Mmio] Integer
+  esp32c6-gpio-read (pin) = act
+   in-val <- (mmio-read-32 esp32c6-gpio-in-reg)
+   bit-and (bit-shru in-val pin) 1
+  end
 
-  esp32c6-gpio-toggle : Integer -> Integer
-  esp32c6-gpio-toggle (pin) =
-   let out = mmio-read-32 esp32c6-gpio-out-reg
-   in let bit = bit-and (bit-shru out pin) 1
-   in if bit == 1 then esp32c6-gpio-clear pin
+  esp32c6-gpio-toggle : Integer -> [Device.Mmio] Integer
+  esp32c6-gpio-toggle (pin) = act
+   out <- mmio-read-32 esp32c6-gpio-out-reg
+   if bit-and (bit-shru out pin) 1 == 1 then esp32c6-gpio-clear pin
       else esp32c6-gpio-set pin
+  end
 
-  esp32c6-gpio-set-pull : Integer, Integer -> Integer
+  esp32c6-gpio-set-pull : Integer, Integer -> [Device.Mmio] Integer
   esp32c6-gpio-set-pull (pin) (pull) =
    let io-mux = esp32c6-io-mux-base + pin * 4
-   in let val = mmio-read-32 io-mux
-   in let cleared = bit-and val (bit-xor #180 (0 - 1))
    in let pull-bits = if pull == 1 then #100
         else if pull == 2 then #80
         else 0
-   in mmio-write-32 io-mux (bit-or cleared pull-bits)
+   in act
+    val <- (mmio-read-32 io-mux)
+    mmio-write-32 io-mux (bit-or (bit-and val (bit-xor #180 (0 - 1))) pull-bits)
+   end
 
 Section: UART Registers
 
@@ -95,64 +112,89 @@ Section: UART Driver
  UART0 at 0x60000000. TX FIFO count in STATUS_REG bits [5:0].
  RX FIFO count in STATUS_REG bits [19:14]. APB clock = 40 MHz.
 
-  esp32c6-uart-init : Frequency -> Integer
+  esp32c6-uart-init : Frequency -> [Device.Mmio] Integer
   esp32c6-uart-init (baud) =
    let base = esp32c6-uart0-base
    in let divisor = 40000000 / baud
-   in let w-clkdiv = mmio-write-32 (base + esp32c6-uart-clkdiv-off) divisor
-   in let conf = mmio-read-32 (base + esp32c6-uart-conf0-off)
-   in mmio-write-32 (base + esp32c6-uart-conf0-off) (bit-or conf #1C)
+   in act
+    w-clkdiv <- mmio-write-32 (base + esp32c6-uart-clkdiv-off) divisor
+    conf <- (mmio-read-32 (base + esp32c6-uart-conf0-off))
+    mmio-write-32 (base + esp32c6-uart-conf0-off) (bit-or conf #1C)
+   end
 
-  esp32c6-uart-tx-ready : Integer -> Boolean
-  esp32c6-uart-tx-ready (uart-base) =
-   let status = mmio-read-32 (uart-base + esp32c6-uart-status-off)
-   in let tx-cnt = bit-and status esp32c6-uart-txfifo-cnt-mask
-   in tx-cnt < esp32c6-uart-fifo-size
+  esp32c6-uart-tx-ready : Integer -> [Device.Mmio] Boolean
+  esp32c6-uart-tx-ready (uart-base) = act
+   status <- (mmio-read-32 (uart-base + esp32c6-uart-status-off))
+   bit-and status esp32c6-uart-txfifo-cnt-mask < esp32c6-uart-fifo-size
+  end
 
-  esp32c6-uart-rx-ready : Integer -> Boolean
-  esp32c6-uart-rx-ready (uart-base) =
-   let status = mmio-read-32 (uart-base + esp32c6-uart-status-off)
-   in let rx-cnt = bit-and (bit-shru status 14) esp32c6-uart-rxfifo-cnt-mask
-   in rx-cnt > 0
+  esp32c6-uart-rx-ready : Integer -> [Device.Mmio] Boolean
+  esp32c6-uart-rx-ready (uart-base) = act
+   status <- (mmio-read-32 (uart-base + esp32c6-uart-status-off))
+   bit-and (bit-shru status 14) esp32c6-uart-rxfifo-cnt-mask > 0
+  end
 
-  esp32c6-uart-wait-tx : Integer, Integer -> Integer
+  esp32c6-uart-wait-tx : Integer, Integer -> [Device.Mmio] Integer
   esp32c6-uart-wait-tx (uart-base) (fuel) =
    if fuel <= 0 then 0
-   else if esp32c6-uart-tx-ready uart-base then 1
-   else esp32c6-uart-wait-tx uart-base (fuel - 1)
+   else act
+    ready <- esp32c6-uart-tx-ready uart-base
+    if ready then 1
+    else esp32c6-uart-wait-tx uart-base (fuel - 1)
+   end
 
-  esp32c6-uart-wait-rx : Integer, Integer -> Integer
+  esp32c6-uart-wait-rx : Integer, Integer -> [Device.Mmio] Integer
   esp32c6-uart-wait-rx (uart-base) (fuel) =
    if fuel <= 0 then 0
-   else if esp32c6-uart-rx-ready uart-base then 1
-   else esp32c6-uart-wait-rx uart-base (fuel - 1)
+   else act
+    ready <- esp32c6-uart-rx-ready uart-base
+    if ready then 1
+    else esp32c6-uart-wait-rx uart-base (fuel - 1)
+   end
 
-  esp32c6-uart-send-byte : Integer, Integer -> Integer
-  esp32c6-uart-send-byte (uart-base) (byte) =
-   let w = esp32c6-uart-wait-tx uart-base 10000
-   in mmio-write-8 (uart-base + esp32c6-uart-fifo-off) (bit-and byte #FF)
+  esp32c6-uart-send-byte : Integer, Integer -> [Device.Mmio] Integer
+  esp32c6-uart-send-byte (uart-base) (byte) = act
+   w <- (esp32c6-uart-wait-tx uart-base 10000)
+   mmio-write-8 (uart-base + esp32c6-uart-fifo-off) (bit-and byte #FF)
+  end
 
-  esp32c6-uart-recv-byte : Integer -> Integer
-  esp32c6-uart-recv-byte (uart-base) =
-   let w = esp32c6-uart-wait-rx uart-base 100000
-   in if w == 0 then 0 - 1
-   else bit-and (mmio-read-32 (uart-base + esp32c6-uart-fifo-off)) #FF
+ Reading the FIFO register is not a free observation: on real silicon it
+ pops a byte off the receive queue. A timed-out receive must not touch
+ it, so the read lives in its own function and is called only from the
+ branch that wants it -- an act-block binding the read before testing the
+ fuel result would quietly consume a byte on the timeout path.
 
-  esp32c6-uart-send-text : Integer, Text, Integer, Integer -> Integer
+  esp32c6-uart-read-fifo : Integer -> [Device.Mmio] Integer
+  esp32c6-uart-read-fifo (uart-base) = act
+   fifo <- (mmio-read-32 (uart-base + esp32c6-uart-fifo-off))
+   bit-and fifo #FF
+  end
+
+  esp32c6-uart-recv-byte : Integer -> [Device.Mmio] Integer
+  esp32c6-uart-recv-byte (uart-base) = act
+   w <- esp32c6-uart-wait-rx uart-base 100000
+   if w == 0 then 0 - 1
+   else esp32c6-uart-read-fifo uart-base
+  end
+
+  esp32c6-uart-send-text : Integer, Text, Integer, Integer -> [Device.Mmio] Integer
   esp32c6-uart-send-text (uart-base) (s) (i) (len) =
    if i >= len then 0
-   else let b = esp32c6-uart-send-byte uart-base (char-code (char-at s i))
-     in esp32c6-uart-send-text uart-base s (i + 1) len
+   else act
+    b <- (esp32c6-uart-send-byte uart-base (char-code (char-at s i)))
+    esp32c6-uart-send-text uart-base s (i + 1) len
+   end
 
-  esp32c6-uart-print : Integer, Text -> Integer
+  esp32c6-uart-print : Integer, Text -> [Device.Mmio] Integer
   esp32c6-uart-print (uart-base) (s) =
    esp32c6-uart-send-text uart-base s 0 (text-length s)
 
-  esp32c6-uart-println : Integer, Text -> Integer
-  esp32c6-uart-println (uart-base) (s) =
-   let p = esp32c6-uart-print uart-base s
-   in let cr = esp32c6-uart-send-byte uart-base 13
-   in esp32c6-uart-send-byte uart-base 10
+  esp32c6-uart-println : Integer, Text -> [Device.Mmio] Integer
+  esp32c6-uart-println (uart-base) (s) = act
+   p <- esp32c6-uart-print uart-base s
+   cr <- (esp32c6-uart-send-byte uart-base 13)
+   esp32c6-uart-send-byte uart-base 10
+  end
 
 Section: SPI Registers
 
@@ -176,30 +218,39 @@ Section: SPI Driver
  CMD_REG to start, poll USR bit until it clears. Full-duplex via
  DOUTDIN mode. Clock divider set for APB/8 (~5 MHz from 40 MHz APB).
 
-  esp32c6-spi-init : Integer
+  esp32c6-spi-init : [Device.Mmio] Integer
   esp32c6-spi-init =
    let base = esp32c6-spi2-base
-   in let w-clk = mmio-write-32 (base + esp32c6-spi-clock-off) #70103
    in let user = bit-or (bit-or esp32c6-spi-user-doutdin esp32c6-spi-user-usr-mosi) esp32c6-spi-user-usr-miso
-   in let w-user = mmio-write-32 (base + esp32c6-spi-user-off) user
-   in mmio-write-32 (base + esp32c6-spi-ms-dlen-off) 7
+   in act
+    w-clk <- mmio-write-32 (base + esp32c6-spi-clock-off) #70103
+    w-user <- (mmio-write-32 (base + esp32c6-spi-user-off) user)
+    mmio-write-32 (base + esp32c6-spi-ms-dlen-off) 7
+   end
 
-  esp32c6-spi-wait-done : Integer, Integer -> Integer
+  esp32c6-spi-wait-done : Integer, Integer -> [Device.Mmio] Integer
   esp32c6-spi-wait-done (spi-base) (fuel) =
    if fuel <= 0 then 0
-   else if bit-and (mmio-read-32 (spi-base + esp32c6-spi-cmd-off)) esp32c6-spi-cmd-usr == 0 then 1
-   else esp32c6-spi-wait-done spi-base (fuel - 1)
+   else act
+    cmd <- mmio-read-32 (spi-base + esp32c6-spi-cmd-off)
+    if bit-and cmd esp32c6-spi-cmd-usr == 0 then 1
+    else esp32c6-spi-wait-done spi-base (fuel - 1)
+   end
 
-  esp32c6-spi-transfer : Integer, Integer -> Integer
-  esp32c6-spi-transfer (spi-base) (byte) =
-   let w-data = mmio-write-32 (spi-base + esp32c6-spi-w0-off) (bit-and byte #FF)
-   in let w-cmd = mmio-write-32 (spi-base + esp32c6-spi-cmd-off) esp32c6-spi-cmd-usr
-   in let done = esp32c6-spi-wait-done spi-base 10000
-   in bit-and (mmio-read-32 (spi-base + esp32c6-spi-w0-off)) #FF
+  esp32c6-spi-transfer : Integer, Integer -> [Device.Mmio] Integer
+  esp32c6-spi-transfer (spi-base) (byte) = act
+   w-data <- mmio-write-32 (spi-base + esp32c6-spi-w0-off) (bit-and byte #FF)
+   w-cmd <- mmio-write-32 (spi-base + esp32c6-spi-cmd-off) esp32c6-spi-cmd-usr
+   done <- esp32c6-spi-wait-done spi-base 10000
+   w0 <- (mmio-read-32 (spi-base + esp32c6-spi-w0-off))
+   bit-and w0 #FF
+  end
 
-  esp32c6-spi-busy : Integer -> Boolean
-  esp32c6-spi-busy (spi-base) =
-   bit-and (mmio-read-32 (spi-base + esp32c6-spi-cmd-off)) esp32c6-spi-cmd-usr > 0
+  esp32c6-spi-busy : Integer -> [Device.Mmio] Boolean
+  esp32c6-spi-busy (spi-base) = act
+   cmd <- (mmio-read-32 (spi-base + esp32c6-spi-cmd-off))
+   bit-and cmd esp32c6-spi-cmd-usr > 0
+  end
 
 Section: I2C Registers
 
@@ -232,62 +283,78 @@ Section: I2C Driver
  conf_upgate, poll status for completion. 100 kHz standard mode
  at 40 MHz APB: SCL_LOW = 200, SCL_HIGH = 200.
 
-  esp32c6-i2c-init : Integer
+  esp32c6-i2c-init : [Device.Mmio] Integer
   esp32c6-i2c-init =
    let base = esp32c6-i2c0-base
-   in let w-ctr = mmio-write-32 (base + esp32c6-i2c-ctr-off) (bit-or esp32c6-i2c-ctr-ms-mode esp32c6-i2c-ctr-clk-en)
-   in let w-scl-low = mmio-write-32 (base + esp32c6-i2c-scl-low-off) 200
-   in let w-scl-high = mmio-write-32 (base + esp32c6-i2c-scl-high-off) 200
-   in let w-sda-hold = mmio-write-32 (base + esp32c6-i2c-sda-hold-off) 40
-   in mmio-write-32 (base + esp32c6-i2c-sda-sample-off) 40
+   in act
+    w-ctr <- mmio-write-32 (base + esp32c6-i2c-ctr-off) (bit-or esp32c6-i2c-ctr-ms-mode esp32c6-i2c-ctr-clk-en)
+    w-scl-low <- mmio-write-32 (base + esp32c6-i2c-scl-low-off) 200
+    w-scl-high <- mmio-write-32 (base + esp32c6-i2c-scl-high-off) 200
+    w-sda-hold <- (mmio-write-32 (base + esp32c6-i2c-sda-hold-off) 40)
+    mmio-write-32 (base + esp32c6-i2c-sda-sample-off) 40
+   end
 
-  esp32c6-i2c-write-cmd : Integer, Integer, Integer, Integer, Integer -> Integer
+ The command word is bit packing over its arguments -- but the word
+ lands in a COMD register, so the function reaches the bus and carries
+ the row. Only the arithmetic above the store is pure.
+
+  esp32c6-i2c-write-cmd : Integer, Integer, Integer, Integer, Integer -> [Device.Mmio] Integer
   esp32c6-i2c-write-cmd (i2c-base) (cmd-idx) (opcode) (byte-cnt) (ack-check) =
    let cmd-addr = i2c-base + esp32c6-i2c-cmd-off + cmd-idx * 4
    in let cmd-val = bit-or (bit-or (bit-shl opcode 11) byte-cnt) (bit-shl ack-check 8)
    in mmio-write-32 cmd-addr cmd-val
 
-  esp32c6-i2c-wait-done : Integer, Integer -> Integer
+  esp32c6-i2c-wait-done : Integer, Integer -> [Device.Mmio] Integer
   esp32c6-i2c-wait-done (i2c-base) (fuel) =
    if fuel <= 0 then 0
-   else let sr = mmio-read-32 (i2c-base + esp32c6-i2c-sr-off)
-   in if bit-and sr esp32c6-i2c-sr-done > 0 then 1
-   else esp32c6-i2c-wait-done i2c-base (fuel - 1)
+   else act
+    sr <- mmio-read-32 (i2c-base + esp32c6-i2c-sr-off)
+    if bit-and sr esp32c6-i2c-sr-done > 0 then 1
+    else esp32c6-i2c-wait-done i2c-base (fuel - 1)
+   end
 
-  esp32c6-i2c-trigger : Integer -> Integer
-  esp32c6-i2c-trigger (i2c-base) =
-   let ctr = mmio-read-32 (i2c-base + esp32c6-i2c-ctr-off)
-   in mmio-write-32 (i2c-base + esp32c6-i2c-ctr-off) (bit-or ctr esp32c6-i2c-ctr-conf-upgate)
+  esp32c6-i2c-trigger : Integer -> [Device.Mmio] Integer
+  esp32c6-i2c-trigger (i2c-base) = act
+   ctr <- (mmio-read-32 (i2c-base + esp32c6-i2c-ctr-off))
+   mmio-write-32 (i2c-base + esp32c6-i2c-ctr-off) (bit-or ctr esp32c6-i2c-ctr-conf-upgate)
+  end
 
-  esp32c6-i2c-write-reg : Integer, Integer, Integer -> Integer
+  esp32c6-i2c-write-reg : Integer, Integer, Integer -> [Device.Mmio] Integer
   esp32c6-i2c-write-reg (dev-addr) (reg) (value) =
    let base = esp32c6-i2c0-base
-   in let w-data0 = mmio-write-8 (base + esp32c6-i2c-data-off) (bit-shl dev-addr 1)
-   in let w-data1 = mmio-write-8 (base + esp32c6-i2c-data-off) reg
-   in let w-data2 = mmio-write-8 (base + esp32c6-i2c-data-off) value
-   in let cmd0 = esp32c6-i2c-write-cmd base 0 esp32c6-i2c-cmd-op-rstart 0 0
-   in let cmd1 = esp32c6-i2c-write-cmd base 1 esp32c6-i2c-cmd-op-write 3 1
-   in let cmd2 = esp32c6-i2c-write-cmd base 2 esp32c6-i2c-cmd-op-stop 0 0
-   in let trig = esp32c6-i2c-trigger base
-   in esp32c6-i2c-wait-done base 100000
+   in act
+    w-data0 <- mmio-write-8 (base + esp32c6-i2c-data-off) (bit-shl dev-addr 1)
+    w-data1 <- mmio-write-8 (base + esp32c6-i2c-data-off) reg
+    w-data2 <- mmio-write-8 (base + esp32c6-i2c-data-off) value
+    cmd0 <- esp32c6-i2c-write-cmd base 0 esp32c6-i2c-cmd-op-rstart 0 0
+    cmd1 <- esp32c6-i2c-write-cmd base 1 esp32c6-i2c-cmd-op-write 3 1
+    cmd2 <- esp32c6-i2c-write-cmd base 2 esp32c6-i2c-cmd-op-stop 0 0
+    trig <- (esp32c6-i2c-trigger base)
+    esp32c6-i2c-wait-done base 100000
+   end
 
-  esp32c6-i2c-read-reg : Integer, Integer -> Integer
+  esp32c6-i2c-read-reg : Integer, Integer -> [Device.Mmio] Integer
   esp32c6-i2c-read-reg (dev-addr) (reg) =
    let base = esp32c6-i2c0-base
-   in let w-addr = mmio-write-8 (base + esp32c6-i2c-data-off) (bit-shl dev-addr 1)
-   in let w-reg = mmio-write-8 (base + esp32c6-i2c-data-off) reg
-   in let cmd0 = esp32c6-i2c-write-cmd base 0 esp32c6-i2c-cmd-op-rstart 0 0
-   in let cmd1 = esp32c6-i2c-write-cmd base 1 esp32c6-i2c-cmd-op-write 2 1
-   in let cmd2 = esp32c6-i2c-write-cmd base 2 esp32c6-i2c-cmd-op-rstart 0 0
-   in let w-raddr = mmio-write-8 (base + esp32c6-i2c-data-off) (bit-or (bit-shl dev-addr 1) 1)
-   in let cmd3 = esp32c6-i2c-write-cmd base 3 esp32c6-i2c-cmd-op-write 1 1
-   in let cmd4 = esp32c6-i2c-write-cmd base 4 esp32c6-i2c-cmd-op-read 1 0
-   in let cmd5 = esp32c6-i2c-write-cmd base 5 esp32c6-i2c-cmd-op-stop 0 0
-   in let trig = esp32c6-i2c-trigger base
-   in let done = esp32c6-i2c-wait-done base 100000
-   in bit-and (mmio-read-32 (base + esp32c6-i2c-data-off)) #FF
+   in act
+    w-addr <- mmio-write-8 (base + esp32c6-i2c-data-off) (bit-shl dev-addr 1)
+    w-reg <- mmio-write-8 (base + esp32c6-i2c-data-off) reg
+    cmd0 <- esp32c6-i2c-write-cmd base 0 esp32c6-i2c-cmd-op-rstart 0 0
+    cmd1 <- esp32c6-i2c-write-cmd base 1 esp32c6-i2c-cmd-op-write 2 1
+    cmd2 <- esp32c6-i2c-write-cmd base 2 esp32c6-i2c-cmd-op-rstart 0 0
+    w-raddr <- mmio-write-8 (base + esp32c6-i2c-data-off) (bit-or (bit-shl dev-addr 1) 1)
+    cmd3 <- esp32c6-i2c-write-cmd base 3 esp32c6-i2c-cmd-op-write 1 1
+    cmd4 <- esp32c6-i2c-write-cmd base 4 esp32c6-i2c-cmd-op-read 1 0
+    cmd5 <- esp32c6-i2c-write-cmd base 5 esp32c6-i2c-cmd-op-stop 0 0
+    trig <- esp32c6-i2c-trigger base
+    done <- esp32c6-i2c-wait-done base 100000
+    d <- (mmio-read-32 (base + esp32c6-i2c-data-off))
+    bit-and d #FF
+   end
 
 Section: Delay
+
+ A busy-wait touches no register, so it is pure and says so.
 
   esp32c6-delay-loops : Integer, Integer -> Integer
   esp32c6-delay-loops (n) (i) =
@@ -301,13 +368,13 @@ Section: LED (DevKit: GPIO8 is the built-in LED)
 
   esp32c6-led-pin : Integer = 8
 
-  esp32c6-led-init : Integer
+  esp32c6-led-init : [Device.Mmio] Integer
   esp32c6-led-init = esp32c6-gpio-set-output esp32c6-led-pin
 
-  esp32c6-led-on : Integer
+  esp32c6-led-on : [Device.Mmio] Integer
   esp32c6-led-on = esp32c6-gpio-set esp32c6-led-pin
 
-  esp32c6-led-off : Integer
+  esp32c6-led-off : [Device.Mmio] Integer
   esp32c6-led-off = esp32c6-gpio-clear esp32c6-led-pin
 
 Page 1

@@ -31,12 +31,21 @@ Section: State
     ss-wheel : MutWheel,
     ss-active : Integer,
     ss-view : Integer,
-    ss-fb : GopBuf
+    ss-fb : GopBuf,
+    ss-date : Text,
+    ss-time : Text
   }
 
 Section: RTC Clock
-  rtc-read : Integer -> Integer
-  rtc-read (reg) = let w = port-out-byte 112 reg in port-in-byte 113
+
+ Port I/O is effectful, so the loop samples the clock once per frame
+ and the pure widget builders receive the text through ShellState.
+
+  rtc-read : Integer -> [Device.Port] Integer
+  rtc-read (reg) = act
+    w <- port-out-byte 112 reg
+    port-in-byte 113
+  end
 
   bcd-dec : Integer -> Integer
   bcd-dec (v) = (bit-shru v 4) * 10 + bit-and v 15
@@ -44,21 +53,34 @@ Section: RTC Clock
   rtc-pad2 : Integer -> Text
   rtc-pad2 (n) = let d = bcd-dec n in if d < 10 then "0" & show d else show d
 
-  rtc-time : Text
-  rtc-time = rtc-pad2 (rtc-read 4) & ":" & rtc-pad2 (rtc-read 2) & ":" & rtc-pad2 (rtc-read 0)
+  rtc-time : [Device.Port] Text
+  rtc-time = act
+    hh <- rtc-read 4
+    mm <- rtc-read 2
+    sec <- rtc-read 0
+    let t = rtc-pad2 hh & ":" & rtc-pad2 mm & ":" & rtc-pad2 sec
+    in t
+  end
 
-  rtc-date : Text
-  rtc-date = "20" & rtc-pad2 (rtc-read 9) & "-" & rtc-pad2 (rtc-read 8) & "-" & rtc-pad2 (rtc-read 7)
+  rtc-date : [Device.Port] Text
+  rtc-date = act
+    yy <- rtc-read 9
+    mo <- rtc-read 8
+    dd <- rtc-read 7
+    let t = "20" & rtc-pad2 yy & "-" & rtc-pad2 mo & "-" & rtc-pad2 dd
+    in t
+  end
 
 Section: Font Loading
-  gui-try-load-fonts : MutWheel -> Integer
-  gui-try-load-fonts (w) =
-    let d0 = block-select 0
-    in let d1 = fl-init-cache w
-    in let vol = fat32-try-init 0
-    in if vol.f32-bytes-per-sector == 0 then gui-load-fallback w
+  gui-try-load-fonts : MutWheel -> [Device.Block] Integer
+  gui-try-load-fonts (w) = act
+    d0 <- block-select 0
+    d1 <- fl-init-cache w
+    vol <- fat32-try-init 0
+    if vol.f32-bytes-per-sector == 0 then gui-load-fallback w
     else if vol.f32-sectors-per-cluster == 0 then gui-load-fallback w
     else fl-load-defaults vol w
+  end
 
   gui-load-fallback : MutWheel -> Integer
   gui-load-fallback (w) =
@@ -67,10 +89,10 @@ Section: Font Loading
     in let d3 = fl-load-block-font w 3
     in mw-set-fonts-loaded w 1
 
-  fat32-try-init : Integer -> Fat32Volume
-  fat32-try-init (part-start) =
-    let buf = block-read-sector part-start
-    in let bps = fat16-read-u16 buf 11
+  fat32-try-init : Integer -> [Device.Block] Fat32Volume
+  fat32-try-init (part-start) = act
+    buf <- block-read-sector part-start
+    let bps = fat16-read-u16 buf 11
     in let spc = peek-byte buf 13
     in if spc == 0 then Fat32Volume {
       f32-part-start = 0, f32-bytes-per-sector = 0,
@@ -81,6 +103,7 @@ Section: Font Loading
       f32-next-free = 0
     }
     else fat32-init part-start
+  end
 
 Section: Framebuffer Text Overlay
   gop-fb-base-addr : Integer = 3204448256
@@ -90,61 +113,77 @@ Section: Framebuffer Text Overlay
     GopBuf { gb-base = gop-fb-base-addr, gb-width = w, gb-height = h }
 
 Section: Entry Point
-  opening : [Console] Nothing = act
+  opening : [Console, Device.Port, Device.Block, Gpu.Compute, Gpu.Memory] Nothing = act
     let w0 = mw-new
     in let w1 = mw-schedule w0 18 mtw-tag-clock
     in let w2 = mw-schedule w1 90 mtw-tag-heartbeat
-    in let d-fonts = gui-try-load-fonts w2
-    in let fb = fb-overlay-new gui-w gui-h
-    in let root = shell-build-root 0 0
-    in let ba = bare-app-new root theme-terminal gui-w gui-h gui-max-tris
-    in let ss = ShellState { ss-app = ba, ss-wheel = w2, ss-active = 0, ss-view = 0, ss-fb = fb }
-    in let frames = shell-loop ss
-    in print-line ("Codex.OS | " & show frames & " frames")
+    in act
+      d-fonts <- gui-try-load-fonts w2
+      dt <- rtc-date
+      tm <- rtc-time
+      let fb = fb-overlay-new gui-w gui-h
+      in let root = shell-build-root 0 0 dt tm
+      in let ba = bare-app-new root theme-terminal gui-w gui-h gui-max-tris
+      in let ss = ShellState { ss-app = ba, ss-wheel = w2, ss-active = 0, ss-view = 0, ss-fb = fb, ss-date = dt, ss-time = tm }
+      in act
+        frames <- shell-loop ss
+        print-line ("Codex.OS | " & show frames & " frames")
+      end
+    end
   end
 
 Section: Main Loop
-  shell-loop : ShellState -> Integer
-  shell-loop (ss) =
-    let ba2 = bare-app-tick (ss.ss-app)
-    in let ss2 = shell-process-input ss ba2
-    in let rendered = shell-composite-render ss2
-    in let pace = shell-frame-pace 0
-    in if (ss2.ss-app).ba-quit then ss2.ss-view
-    else shell-loop ss2
+  shell-loop : ShellState -> [Device.Port, Gpu.Compute, Gpu.Memory] Integer
+  shell-loop (ss) = act
+    ba2 <- bare-app-tick (ss.ss-app)
+    dt <- rtc-date
+    tm <- rtc-time
+    let ss1 = shell-set-clock ss dt tm
+    in let ss2 = shell-process-input ss1 ba2
+    in act
+      rendered <- shell-composite-render ss2
+      pace <- shell-frame-pace 0
+      if (ss2.ss-app).ba-quit then ss2.ss-view
+      else shell-loop ss2
+    end
+  end
 
-  shell-frame-pace : Integer -> Integer
-  shell-frame-pace (i) =
+  shell-set-clock : ShellState, Text, Text -> ShellState
+  shell-set-clock (ss) (dt) (tm) =
+    ShellState { ss-app = ss.ss-app, ss-wheel = ss.ss-wheel, ss-active = ss.ss-active, ss-view = ss.ss-view, ss-fb = ss.ss-fb, ss-date = dt, ss-time = tm }
+
+  shell-frame-pace : Integer -> [Device.Port] Integer
+  shell-frame-pace (i) = act
     if i >= 30 then 0
-    else let y = port-out-byte 224 0
-    in shell-frame-pace (i + 1)
+    else act
+      y <- port-out-byte 224 0
+      shell-frame-pace (i + 1)
+    end
+  end
 
 Section: Composite Render
-  shell-composite-render : ShellState -> Integer
-  shell-composite-render (ss) =
+  shell-composite-render : ShellState -> [Device.Port, Gpu.Compute, Gpu.Memory] Integer
+  shell-composite-render (ss) = act
     let root = ((ss.ss-app).ba-state).app-root
     in let th = ((ss.ss-app).ba-state).app-theme
-    in let fb = ss.ss-fb
-    in let w = ss.ss-wheel
-    in let d1 = gr-clear ((th.th-palette).pal-bg)
-    in let d2 = gr-clear-depth
-    in let gf = gf-new gui-max-tris
-    in let gf2 = composite-walk-gpu gf root th 10000
-    in let d3 = gr-flush (gf2.gf-idx)
-    in composite-walk-text fb w root #E2E8F0
+    in act
+      d1 <- gr-clear ((th.th-palette).pal-bg)
+      d2 <- gr-clear-depth
+      d3 <- gr-flush ((composite-walk-gpu (gf-new gui-max-tris) root th 10000).gf-idx)
+      composite-walk-text (ss.ss-fb) (ss.ss-wheel) root #E2E8F0
+    end
+  end
 
-  composite-walk-gpu : GpuFrame, WidgetNode, Theme, Integer -> GpuFrame
+  composite-walk-gpu : GpuFrame, WidgetNode, Theme, Integer -> [Gpu.Memory] GpuFrame
   composite-walk-gpu (gf) (node) (th) (depth) =
-    let gf2 = composite-gpu-node gf node th depth
-    in composite-gpu-children gf2 (node.wn-children) th depth 0 (node.wn-child-count)
+    composite-gpu-children (composite-gpu-node gf node th depth) (node.wn-children) th depth 0 (node.wn-child-count)
 
-  composite-gpu-children : GpuFrame, List WidgetNode, Theme, Integer, Integer, Integer -> GpuFrame
+  composite-gpu-children : GpuFrame, List WidgetNode, Theme, Integer, Integer, Integer -> [Gpu.Memory] GpuFrame
   composite-gpu-children (gf) (children) (th) (depth) (i) (n) =
     if i >= n then gf
-    else let gf2 = composite-walk-gpu gf (list-at children i) th depth
-    in composite-gpu-children gf2 children th depth (i + 1) n
+    else composite-gpu-children (composite-walk-gpu gf (list-at children i) th depth) children th depth (i + 1) n
 
-  composite-gpu-node : GpuFrame, WidgetNode, Theme, Integer -> GpuFrame
+  composite-gpu-node : GpuFrame, WidgetNode, Theme, Integer -> [Gpu.Memory] GpuFrame
   composite-gpu-node (gf) (node) (th) (depth) =
     when node.wn-kind
       is WkPanel -> gr-render-panel gf node th depth
@@ -195,7 +234,7 @@ Section: Composite Render
 
   shell-handle-key : ShellState, BareApp, Integer -> ShellState
   shell-handle-key (ss) (ba) (key) =
-    if key == 1 then ShellState { ss-app = bare-app-set-quit ba, ss-wheel = ss.ss-wheel, ss-active = ss.ss-active, ss-view = ss.ss-view, ss-fb = ss.ss-fb }
+    if key == 1 then ShellState { ss-app = bare-app-set-quit ba, ss-wheel = ss.ss-wheel, ss-active = ss.ss-active, ss-view = ss.ss-view, ss-fb = ss.ss-fb, ss-date = ss.ss-date, ss-time = ss.ss-time }
     else if key == 59 then shell-set-view ss ba 0
     else if key == 60 then shell-set-view ss ba 1
     else if key == 61 then shell-set-view ss ba 2
@@ -204,7 +243,7 @@ Section: Composite Render
     else if key == 72 then shell-nav-up ss ba
     else if key == 80 then shell-nav-down ss ba
     else if key == 28 then shell-nav-activate ss ba
-    else ShellState { ss-app = ba, ss-wheel = ss.ss-wheel, ss-active = ss.ss-active, ss-view = ss.ss-view, ss-fb = ss.ss-fb }
+    else ShellState { ss-app = ba, ss-wheel = ss.ss-wheel, ss-active = ss.ss-active, ss-view = ss.ss-view, ss-fb = ss.ss-fb, ss-date = ss.ss-date, ss-time = ss.ss-time }
 
   shell-handle-click : ShellState, Integer, Integer -> ShellState
   shell-handle-click (ss) (mx) (my) =
@@ -220,8 +259,8 @@ Section: Composite Render
     in if my < top then ss
     else if slot >= 21 then ss
     else let view = slot + 5
-    in let root = shell-build-root view slot
-    in ShellState { ss-app = bare-app-set-root (ss.ss-app) root, ss-wheel = ss.ss-wheel, ss-active = slot, ss-view = view, ss-fb = ss.ss-fb }
+    in let root = shell-build-root view slot (ss.ss-date) (ss.ss-time)
+    in ShellState { ss-app = bare-app-set-root (ss.ss-app) root, ss-wheel = ss.ss-wheel, ss-active = slot, ss-view = view, ss-fb = ss.ss-fb, ss-date = ss.ss-date, ss-time = ss.ss-time }
 
   shell-hotbar-click : ShellState, Integer -> ShellState
   shell-hotbar-click (ss) (mx) =
@@ -233,29 +272,29 @@ Section: Composite Render
 
   shell-set-view : ShellState, BareApp, Integer -> ShellState
   shell-set-view (ss) (ba) (v) =
-    let root = shell-build-root v (ss.ss-active)
-    in ShellState { ss-app = bare-app-set-root ba root, ss-wheel = ss.ss-wheel, ss-active = ss.ss-active, ss-view = v, ss-fb = ss.ss-fb }
+    let root = shell-build-root v (ss.ss-active) (ss.ss-date) (ss.ss-time)
+    in ShellState { ss-app = bare-app-set-root ba root, ss-wheel = ss.ss-wheel, ss-active = ss.ss-active, ss-view = v, ss-fb = ss.ss-fb, ss-date = ss.ss-date, ss-time = ss.ss-time }
 
   shell-rebuild : ShellState -> ShellState
   shell-rebuild (ss) =
-    let root = shell-build-root (ss.ss-view) (ss.ss-active)
-    in ShellState { ss-app = bare-app-set-root (ss.ss-app) root, ss-wheel = ss.ss-wheel, ss-active = ss.ss-active, ss-view = ss.ss-view, ss-fb = ss.ss-fb }
+    let root = shell-build-root (ss.ss-view) (ss.ss-active) (ss.ss-date) (ss.ss-time)
+    in ShellState { ss-app = bare-app-set-root (ss.ss-app) root, ss-wheel = ss.ss-wheel, ss-active = ss.ss-active, ss-view = ss.ss-view, ss-fb = ss.ss-fb, ss-date = ss.ss-date, ss-time = ss.ss-time }
 
   shell-nav-up : ShellState, BareApp -> ShellState
   shell-nav-up (ss) (ba) =
     let cur = ss.ss-active
     in let next = if cur <= 0 then 20 else cur - 1
     in let view = next + 5
-    in let root = shell-build-root view next
-    in ShellState { ss-app = bare-app-set-root ba root, ss-wheel = ss.ss-wheel, ss-active = next, ss-view = view, ss-fb = ss.ss-fb }
+    in let root = shell-build-root view next (ss.ss-date) (ss.ss-time)
+    in ShellState { ss-app = bare-app-set-root ba root, ss-wheel = ss.ss-wheel, ss-active = next, ss-view = view, ss-fb = ss.ss-fb, ss-date = ss.ss-date, ss-time = ss.ss-time }
 
   shell-nav-down : ShellState, BareApp -> ShellState
   shell-nav-down (ss) (ba) =
     let cur = ss.ss-active
     in let next = if cur >= 20 then 0 else cur + 1
     in let view = next + 5
-    in let root = shell-build-root view next
-    in ShellState { ss-app = bare-app-set-root ba root, ss-wheel = ss.ss-wheel, ss-active = next, ss-view = view, ss-fb = ss.ss-fb }
+    in let root = shell-build-root view next (ss.ss-date) (ss.ss-time)
+    in ShellState { ss-app = bare-app-set-root ba root, ss-wheel = ss.ss-wheel, ss-active = next, ss-view = view, ss-fb = ss.ss-fb, ss-date = ss.ss-date, ss-time = ss.ss-time }
 
   shell-nav-activate : ShellState, BareApp -> ShellState
   shell-nav-activate (ss) (ba) =
@@ -263,11 +302,15 @@ Section: Composite Render
     in shell-set-view ss ba view
 
 Section: Widget Tree
-  shell-build-root : Integer, Integer -> WidgetNode
-  shell-build-root (view) (active) =
+
+ The builders are pure: the clock text arrives as data, sampled once
+ per frame by the loop.
+
+  shell-build-root : Integer, Integer, Text, Text -> WidgetNode
+  shell-build-root (view) (active) (dt) (tm) =
     let sidebar = shell-build-sidebar view active
-    in let content = shell-build-content view
-    in let taskbar = shell-build-taskbar view
+    in let content = shell-build-content view dt tm
+    in let taskbar = shell-build-taskbar view dt tm
     in let right = widget-panel "right" DirColumn 0 [content, taskbar]
     in widget-panel "root" DirRow 0 [sidebar, right]
 
@@ -307,8 +350,8 @@ Section: Sidebar
     else widget-label ("nav-" & show idx) ("  " & label)
 
 Section: Taskbar
-  shell-build-taskbar : Integer -> WidgetNode
-  shell-build-taskbar (view) =
+  shell-build-taskbar : Integer, Text, Text -> WidgetNode
+  shell-build-taskbar (view) (dt) (tm) =
     let codex-lbl = widget-label "tb-codex" "Codex"
     in let sys = widget-label "tb-sys" (if view == 0 then "[Sys]" else " Sys ")
     in let mon = widget-label "tb-mon" (if view == 1 then "[Mon]" else " Mon ")
@@ -316,19 +359,19 @@ Section: Taskbar
     in let info = widget-label "tb-info" (if view == 3 then "[Info]" else " Info ")
     in let apps = widget-label "tb-apps" (if view == 4 then "[Apps]" else " Apps ")
     in let spacer = widget-set-flex (widget-label "tb-space" "") 1
-    in let clock = widget-label "tb-clock" (rtc-date & " " & rtc-time)
+    in let clock = widget-label "tb-clock" (dt & " " & tm)
     in widget-set-min (widget-panel "taskbar" DirRow 4 [codex-lbl, sys, mon, hw, info, apps, spacer, clock]) 0 taskbar-h
 
 Section: Content Dispatch
-  shell-build-content : Integer -> WidgetNode
-  shell-build-content (view) =
-    let body = if view == 0 then view-dashboard
-      else if view == 1 then view-monitor
+  shell-build-content : Integer, Text, Text -> WidgetNode
+  shell-build-content (view) (dt) (tm) =
+    let body = if view == 0 then view-dashboard dt tm
+      else if view == 1 then view-monitor tm
       else if view == 2 then view-hardware
       else if view == 3 then view-about
       else if view == 4 then view-apps
       else if view == 5 then view-notepad
-      else if view == 6 then view-calendar
+      else if view == 6 then view-calendar dt
       else if view == 7 then view-calc
       else if view == 8 then view-settings
       else if view == 9 then view-tasks
@@ -352,15 +395,15 @@ Section: Content Dispatch
     in widget-set-flex body 1
 
 Section: Dashboard (F1)
-  view-dashboard : WidgetNode
-  view-dashboard =
+  view-dashboard : Text, Text -> WidgetNode
+  view-dashboard (dt) (tm) =
     let ticks = get-ticks
     in let heap = __heap-save
     in let heap-mb = heap / 1048576
     in widget-panel "dashboard" DirColumn 2 [
       widget-label "d-welcome" "Welcome to Codex OS",
       widget-separator "d-sep0",
-      widget-label "d-clock" (rtc-date & "  " & rtc-time),
+      widget-label "d-clock" (dt & "  " & tm),
       widget-label "d-uptime" ("Uptime: " & show (ticks / 18) & "s"),
       widget-label "d-heap" ("Memory: " & show heap-mb & " MB used / 3072 MB"),
       widget-gauge "d-hbar" heap-mb 3072,
@@ -376,15 +419,15 @@ Section: Dashboard (F1)
     ]
 
 Section: Monitor (F2)
-  view-monitor : WidgetNode
-  view-monitor =
+  view-monitor : Text -> WidgetNode
+  view-monitor (tm) =
     let ticks = get-ticks
     in let heap = __heap-save
     in let heap-mb = heap / 1048576
     in widget-panel "monitor" DirColumn 2 [
       widget-label "m-title" "Performance Monitor",
       widget-separator "m-sep1",
-      widget-label "m-clock" ("Clock: " & rtc-time),
+      widget-label "m-clock" ("Clock: " & tm),
       widget-label "m-timer" ("Ticks: " & show ticks),
       widget-label "m-uptime" ("Uptime: " & show (ticks / 18) & "s"),
       widget-separator "m-sep1b",
@@ -500,11 +543,11 @@ Section: Notepad
     ]
 
 Section: Calendar
-  view-calendar : WidgetNode
-  view-calendar =
+  view-calendar : Text -> WidgetNode
+  view-calendar (dt) =
     let hdr = widget-panel "cal-hdr" DirRow 4 [
       widget-label "cal-prev" "<",
-      widget-set-flex (widget-label "cal-month" (rtc-date)) 1,
+      widget-set-flex (widget-label "cal-month" dt) 1,
       widget-label "cal-next" ">"
     ]
     in let days = widget-label "cal-days" "Su Mo Tu We Th Fr Sa"

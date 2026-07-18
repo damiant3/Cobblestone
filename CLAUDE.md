@@ -1,4 +1,4 @@
-# CLAUDE.md — Codex Project Instructions
+# CLAUDE.md -- Codex Project Instructions
 
 ## What This Is
 
@@ -40,11 +40,11 @@ you are unsure whether init has been done, run `/init`.
 
 ### Docs Reference
 
-These are the docs that `/init` reads. Listed here for reference only —
+These are the docs that `/init` reads. Listed here for reference only --
 you do not need to read them manually if you ran `/init`.
 
-**Mandatory (read directly — all docs in root of `docs/`):**
-- `docs/Apps.md`
+**Mandatory (read directly -- all docs in root of `docs/`):**
+- `docs/CuratorsCatalogue.md`
 - `docs/ArchitectsSketchbook.md`
 - `docs/DevelopersGuide.md`
 - `docs/DevelopersRulebook.md`
@@ -57,12 +57,42 @@ you do not need to read them manually if you ran `/init`.
 - `docs/VisionAndVirtues.md`
 
 **Via parallel agents:**
-- `docs/PM/CurrentPlan.md` — current plan
-- `docs/PM/BACKLOG.md` — outstanding work items
-- `docs/Agents/PerforceProcess.md` — shelve/revert/sync protocol
-- `docs/Designs/*/Active/` — ALL active designs (skip `Done/` and `History/`)
-- `docs/PM/Stories/Vision/` — founding prompts
-- `docs/PM/Stories/Vision/` — founding prompts (read directly, not via agent)
+- `docs/PM/CurrentPlan.md` -- current plan
+- `docs/PM/BACKLOG.md` -- outstanding work items
+- `docs/Agents/PerforceProcess.md` -- shelve/revert/sync protocol
+- `docs/Designs/Active/` -- ALL active designs (skip `docs/Designs/Done/`, the archive)
+- `docs/PM/Stories/Vision/` -- founding prompts
+- `docs/PM/Stories/Vision/` -- founding prompts (read directly, not via agent)
+
+## Where The Open Work Is
+
+**`docs/PM/BACKLOG.md` is the register of every open capability.** If a
+gap is real and it is not in there, put it there. If you close one, take
+it out -- the changelist is the record, not the backlog.
+
+`docs/PM/CurrentPlan.md` is the shape and the priority order.
+`docs/Designs/Active/` means **live work only**. `docs/Designs/Done/` is
+the archive -- shipped and superseded designs folded together, kept but
+**not read at init**. `docs/Reference/` is surveys and position docs and
+is **not read at init either**. Lifecycle docs use one top-level
+`Active/`/`Done/` split with the domain beneath (e.g.
+`docs/Designs/Active/Compiler/`, `docs/PM/Done/GitHubUpdates/`); Reference
+has no such state. If you find a finished campaign sitting in `Active/`,
+move it to `Done/`.
+
+**The standing rule: a capability we want is never walked back.** When
+you discover a doc claims something shipped and it did not, the entry
+gets *louder* -- restated as open work -- never deleted. An empty backlog
+would mean we stopped being honest, not that we finished. Deleting a
+true gap is the one unrecoverable mistake in doc work.
+
+Corollary, learned the hard way: **verify every "this doc is wrong"
+finding against the source before acting on it.** Two true gaps were
+nearly deleted during the 2026-07-13 reconciliation because they were
+confidently reported as false claims. They were real.
+
+**Never carry a count forward. Re-measure it.** Test counts, module
+counts, line counts, and plug counts in these docs have all been wrong.
 
 ## Current State
 
@@ -71,7 +101,10 @@ compiles itself end-to-end on bare metal (codex-vm x86-64, no OS, no
 libc), and the output of that self-compile compiled by itself is
 byte-identical to itself. No C# anywhere in the chain.
 
-The canonical artifact is `seed/Codex.cdx` — a ~2.1 MB
+A green battery does not mean there is no work. It means the work is in
+`BACKLOG.md`. Read it before you decide the project is finished.
+
+The canonical artifact is `seed/Codex.cdx` -- a ~2.1 MB
 self-sustaining CDX binary, bootable via codex-vm (or QEMU multiboot).
 The CDX is the root of trust.
 
@@ -90,19 +123,19 @@ PS/2 keyboard + mouse, CMOS RTC, PC speaker. Multi-core via `-smp N`
 capture via `-screenshot`. Build with `tools/build-vm.ps1`. Full
 CLI reference and device details in `docs/OperatorsManual.md`.
 
-### Bootstrap History — 2026-04-24: The cord is cut
+### Bootstrap History -- 2026-04-24: The cord is cut
 
 All four bootstraps green for the first time, 41 days from project start:
 
 | Bootstrap | Path | Result |
 |---|---|---|
-| BS1 | .NET → C# | Legacy — locked |
-| BS1.1 | .NET → Codex | Legacy — locked |
+| BS1 | .NET → C# | Legacy -- locked |
+| BS1.1 | .NET → Codex | Legacy -- locked |
 | BS2 (pingpong) | bare-metal → CDX | CDX fixed point: stage 1 CDX = stage 2 CDX |
 | BS3 | bare-metal → CDX | CDX fixed point (standalone, from pingpong output) |
 
 BS1 and BS1.1 used the C# reference compiler to bootstrap
-the selfhost. The reference compiler is **permanently retired** — do not
+the selfhost. The reference compiler is **permanently retired** -- do not
 edit, invoke, or rebuild it. The whole `old/` tree remains in the depot
 as historical record only.
 
@@ -111,27 +144,36 @@ as historical record only.
 ### 1. The build is the test
 
 Semantic equivalence of text mode, byte-identical text (pingpong), and
-byte-identical binary (hard fixed point), plus the smoke battery. Every
-change that touches codegen must pass all gates before it is done. If
-any gate is red, shelve changes, notify Damian, and re-evaluate.
-
-**Zero failures before copy-up.** Do not copy up to main with any
-test failures — whether the CL carries a seed, source, or both.
-"Pre-existing" is not an excuse — verify it. Check the battery count
-from the last known-good CL on main. If your battery has MORE
-failures than that baseline, the regression is yours and you must
-investigate before shipping. Other agents inherit main through
-merge-down; a failure you wave through becomes their debugging
-detour. The cost of checking is two minutes; the cost of polluting
-three workstreams is hours.
+byte-identical binary (hard fixed point), plus the BVT. The gate is ONE
+command, and these are the only verification commands you run:
 
 ```powershell
-build/test.ps1                      # Sample battery (~2-5s per sample)
-build/test.ps1 -Jobs 4              # Parallel test
-build/build.ps1                     # Text round-trip + CDX fixed-point (all gates)
+build/build.ps1                     # Text round-trip + CDX fixed-point + BVT. THE gate.
 build/compile.ps1 -Src X -Out Y -Log Z   # Compile one .codex file. -Log is MANDATORY:
                                          # omitting it hangs headless on a parameter prompt
 ```
+
+Every change that touches codegen must pass the gate before it is done.
+If the gate is red, shelve changes, notify Damian, and re-evaluate. To
+check one thing, compile and run that one test -- never a sweep.
+
+**The full battery (`build/test.ps1`) is not an agent command.** It is
+Damian's tool; the script refuses to run without his approval, and that
+refusal is deliberate. There is no category of change -- not codegen,
+not forewords, not apps, not seeds -- that earns a battery run on your
+own initiative. If you believe your change warrants one, say exactly
+that in one sentence and stop; Damian runs it or hands you the command.
+Asking is always right. Launching is always wrong.
+
+**Zero failures before copy-up.** Do not copy up to main with any test
+failures -- whether the CL carries a seed, source, or both. "Verified"
+means: the standing gate is green AND you compiled and ran the specific
+tests your change touches. It does NOT mean you ran the battery -- a
+change risky enough to want a sweep is a message to Damian, not a
+reason to launch one. "Pre-existing" is not an excuse for a red test
+you noticed: report it, don't wave it through. Other agents inherit
+main through merge-down; a failure you wave through becomes their
+debugging detour.
 
 Container formats (ELF, PE, GPT/FAT disk images) are produced by
 **plug CDX binaries** in `codex/plugs/`, not by the compiler itself.
@@ -142,7 +184,7 @@ produce the final binary format.
 
 Do not modify code you have not read. Do not guess at file contents. Do
 not assume structure from names. The self-hosted compiler has subtle
-invariants — a wrong assumption will cost hours.
+invariants -- a wrong assumption will cost hours.
 
 ### 3. Read before you build
 
@@ -158,8 +200,8 @@ builds every time.
 ### 4. One thing at a time
 
 Do one thing. Test it. Commit it. Then do the next thing. Do not batch.
-Do not "while I'm here." The compiler is ~28,000 lines of Codex across
-54 files. A wrong change in one place surfaces as a silent corruption
+Do not "while I'm here." The compiler is ~36,300 lines of Codex across
+55 files. A wrong change in one place surfaces as a silent corruption
 three pipeline stages later.
 
 ### 5. CCE is the internal encoding
@@ -172,16 +214,25 @@ assumptions in internal code.
 
 **Do not use the Bash tool.** It is problematic in this environment.
 Use the PowerShell tool for all shell work, and the dedicated tools
-(Grep, Glob, Read, Edit, Write) for searching and editing files — not
+(Grep, Glob, Read, Edit, Write) for searching and editing files -- not
 `grep`/`cat`/`sed`/`find` shelled out through bash. Need to run Python
 or another interpreter? Invoke it from PowerShell.
 
 Use PowerShell (.ps1) or Codex for all normal work. The single
 exception is a live GDB debugging session under WSL (trace/probe
-workflow documented in OperatorsManual) — that, and only that, may use
+workflow documented in OperatorsManual) -- that, and only that, may use
 Unix tooling. Do not introduce dependencies on anything outside the
 Windows + codex-vm environment. If a capability is missing, build it in
 PowerShell or Codex.
+
+Agents keep slipping anyway, so name the reflexes. The harness itself
+sometimes suggests Bash for a wait-loop or a one-off command; ignore the
+suggestion. The habits that reach for it are muscle memory -- a heredoc
+(`<<EOF`), `sleep`, `/tmp`, `rm -rf`. In PowerShell those are a
+here-string (`@'...'@`), `Start-Sleep`, the session scratchpad, and
+`Remove-Item`. And when the Bash tool's own guardrails block a command --
+a `Remove-Item` with a regex-looking path, say -- that is not an obstacle
+to route around, it is the signal that you are in the wrong tool. Switch.
 
 ### 7. The entry-point identifier is `opening`
 
@@ -206,7 +257,7 @@ reasoning from the code:
 **Red flags.** `buf-read-bytes` in hot paths (8x blowup). Repeated
 buf-to-List-to-buf round-trips. Retaining AST/IR across phases when
 `heap-save`/`heap-restore` would reset it. Nested loops with unclear
-pairing. Bare-metal has no GC — every allocation is permanent until the
+pairing. Bare-metal has no GC -- every allocation is permanent until the
 producing function returns.
 
 ### 9. Signing is automatic
@@ -215,10 +266,85 @@ Signing is hardcoded and always works. Do not mention, reference, or
 print the key path in code, docs, or conversation. If the sign step
 fails, fix the build scripts.
 
+### 10. Report the result, not the journey
+
+Damian reads four agents' reports every session. Write only what he does
+not already know and would act on. Everything else is noise wearing the
+costume of diligence.
+
+**Do not report:** a mistake you made and fixed yourself with nothing
+left behind; the steps of a standard process that went as documented;
+what you read, considered, or ruled out; a gap he already knows about;
+anything marked `Deferred`. A self-corrected detour with no residue is a
+memory-file entry, not a status update. He does not need to watch you
+discover how Perforce works.
+
+**Do report, always:** what changed and where it landed; a failure that
+is still failing; a result that contradicts what a doc or the plan says;
+a decision only he can make. **A red gate, a wrong byte shipped, or a
+test you skipped is reported every time, in full** -- brevity is never a
+reason to soften or omit a real failure. Rule 1's "zero failures before
+copy-up" and the standing honesty rule outrank this one.
+
+The test: would he do something differently if he read it? If not, cut
+it. One line beats a paragraph; the CL is the record.
+
+This governs the running status too, not only the final report. A stream
+of intermediate updates about a side quest, a minor annoyance, or a
+"trap" that turns out to be your own unfamiliarity with a tool is the
+same noise delivered live. Learning how a tool behaves is you catching up
+to the tool, not a finding: it belongs in nobody's status. Do not narrate
+it, and do not write a memory file about it either, unless the behavior
+is genuinely non-obvious and will cost a future session real time. Most
+tool surprises are neither -- they are one-in-many-sessions gotchas that
+read as diligence and function as clutter. When in doubt, the durable
+operational facts belong in `docs/Agents/PerforceProcess.md` or this
+file, once, not restated across four agents' memories.
+
+### 11. The em-dash is banned
+
+Never type an em-dash. Not in docs, not in CL descriptions, not in prose
+at column 2, not in a comment, not in a report, not in a reply. The same
+goes for the en-dash outside a numeric range.
+
+It is not house style and it never was. It is a model tic: agents arrive
+mistrained to like it, and it has been spreading through the tree ever
+since one of them started writing docs. Measured 2026-07-17: `BACKLOG.md`
+held 163, `OperatorsManual.md` 62, `ExaminersAssay.md` 42, and this file
+34. Every one of them is work for whoever cleans it up, and blu has had
+to run a campaign doing exactly that.
+
+It is not free technically either. An em-dash is a non-ASCII byte, and a
+non-ASCII byte is what made source files land as `text` or `utf8` or
+binary-by-detection depending on when they were added, which is the trap
+CL 8778 exists to close. A Windows-1252 em-dash (byte `0x97`) is what
+corrupted two archived docs outright.
+
+Use a comma. Use a colon. Use parentheses. Use a full stop. If a sentence
+genuinely needs a dash, `--` is ASCII and it is what the `.codex` prose
+already uses. It is not the more expensive choice, which is the first
+thing everyone assumes: on disk `--` is `2d 2d`, two bytes, against the
+em-dash's three (`e2 80 94`), so the swap makes a file smaller.
+
+Inside the compiler it is not a cost question at all. **The em-dash has
+no CCE code point.** It is U+2014, in General Punctuation, and General
+Punctuation is not a CCE block at any tier: the eleven Tier 1 blocks are
+Latin Extended, Cyrillic, Greek, Arabic, Hebrew, Devanagari, Thai,
+Hangul, CJK, Kana, and Mathematical Operators (U+2200..U+227F), and
+U+2014 is in none of them. `from-unicode` answers negative one for it,
+the same answer it gives a carriage return, and an unmapped code point is
+dropped. So an em-dash in `.codex` prose does not cost bytes, it silently
+disappears at the I/O boundary. The character earns nothing that ASCII
+punctuation does not, and it cannot survive the encoding this project is
+built on.
+
+Do not sweep other people's em-dashes as a side quest. Blu owns the
+removal campaign. Just stop producing them.
+
 ## Agent Identity
 
 Working directory: `D:\Projects\NewRepository-XXX`. Use pwd to find the
-actual XXX value. You are **XXX** — the last 3 characters of your working
+actual XXX value. You are **XXX** -- the last 3 characters of your working
 directory name.
 
 ### Perforce `.p4config`
@@ -245,8 +371,28 @@ copy-up, merge-down, seed rebuild. Read it, copy the command, run it.
 
 The critical rule: **shelve, revert, sync -f, unshelve, then
 visually inspect the CL and opened files before running any build.**
-On-disk files are the source of truth for compilation — unshelved edits
+On-disk files are the source of truth for compilation -- unshelved edits
 contaminate gate runs.
+
+### Build Coordination (AgentGrid)
+
+You are one of several agents racing to main. **Do not run gates or
+submit without holding the AgentGrid build token.** The protocol is in
+`docs/Agents/CoordinationProtocol.md` -- read it before your first gate
+run. Summary: shelve your CL, write a `build-request` JSON into your
+coordination mailbox (path is in the `.agentgrid` file in your
+workspace root), wait for the `[AgentGrid coordinator]` GO message in
+your terminal, merge down from main first if the grant says so, then
+run gates, submit, and write `build-complete` to release the token.
+
+The token covers the gate dance and the submit, nothing else. The
+moment your CL needs more code -- a red gate, a fix, a test -- shelve,
+release the token, do the work WITHOUT it, and re-request when the CL
+is ready again (protocol rule 8). Either you submit and free the
+token, or you free the token. There is no third outcome.
+
+If `.agentgrid` does not exist in your workspace root, AgentGrid is not
+managing this workspace -- proceed without the token.
 
 ## What Not To Do
 

@@ -45,6 +45,7 @@ foreach ($tf in $allTests) {
     elseif (Test-Path "$dir\$name.slow")    { $skipReason = "slow" }
     elseif (Test-Path "$dir\$name.fatal")   { $skipReason = "fatal" }
     elseif (Test-Path "$dir\$name.failing") { $skipReason = "error test" }
+    elseif (Test-Path "$dir\$name.smp")     { $skipReason = "multi-core (build/test-cross-smp.ps1)" }
     if ($skipReason) { $skipCount++; Write-Host "SKIP $name ($skipReason)"; continue }
     $eligible.Add(@{ File = $tf; Name = $name; Dir = $dir })
 }

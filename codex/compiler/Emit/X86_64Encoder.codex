@@ -1,5 +1,4 @@
 Chapter: X86-64 Code Generator
-  cites Codex chapter Numbers
 
  Pure-functional x86-64 instruction encoder. Each function takes register
  IDs and immediates, returns a List Integer (byte sequence).
@@ -167,6 +166,14 @@ Section: MOV Instructions
   mov-store : Integer, Integer, Integer -> List Integer
   mov-store (rd) (rs) (offset) =
    [rex-w rs rd, 137] & emit-mem-operand rs rd offset
+
+ A 32-bit store: the same opcode with REX.W clear. Memory-mapped device
+ registers are dword-wide and a 64-bit write to one is undefined on real
+ silicon, so the LAPIC is written through this and not through mov-store.
+
+  mov-store-32 : Integer, Integer, Integer -> List Integer
+  mov-store-32 (rd) (rs) (offset) =
+   [rex False (rs >= 8) False (rd >= 8), 137] & emit-mem-operand rs rd offset
 
   mov-load-rip-rel : Integer, Integer -> List Integer
   mov-load-rip-rel (rd) (disp32) =
@@ -367,6 +374,27 @@ Section: LEA
   lea : Integer, Integer, Integer -> List Integer
   lea (rd) (rs) (offset) =
    [rex-w rd rs, 141] & emit-mem-operand rd rs offset
+
+ `lea rd, [base + index]` -- the sum of two registers into a third, which the
+ two-operand ALU cannot do in one instruction. It needs the SIB form, so the
+ ModRM r/m field is 4 (the escape) and the register pair moves into the SIB
+ byte at scale 1. `rex-w` is not enough here because the index needs the X
+ bit, which it does not carry.
+
+ Two encoding traps, and the allocator's register pool walks into one of them.
+ A SIB base whose low three bits are 5 (RBP, R13) means "no base, disp32" at
+ mod 0, so a base of R13 -- which is in the pool -- must be written at mod 1
+ with an explicit zero displacement. An index whose low three bits are 4 means
+ "no index" unless REX.X is set, so RSP can never be an index and R12 can (X
+ disambiguates them); RSP is not allocatable, so only the R12 case arises and
+ it encodes correctly.
+
+  lea-rr : Integer, Integer, Integer -> List Integer
+  lea-rr (rd) (base-reg) (idx) =
+   let r = rex True (rd >= 8) (idx >= 8) (base-reg >= 8)
+   in if int-mod base-reg 8 == 5
+      then [r, 141, modrm 1 rd 4, sib 0 idx base-reg] & write-i8 0
+      else [r, 141, modrm 0 rd 4, sib 0 idx base-reg]
 
 Section: Load Immediate
   li : Integer, Integer -> List Integer
@@ -604,5 +632,5 @@ Section: SSE2 Instructions
   unpcklpd-xmm (dst) (src) =
    [102, 15, 20, modrm 3 dst src]
 
-Page 6 of 10
+Page 6 of 14
 

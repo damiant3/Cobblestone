@@ -10,9 +10,56 @@ param(
     [int]$Seconds = 14,
     [string]$Keys = '',
     [int]$AfterKeys = 2,
+    # Gap between sendkey lines. The boot payload's keyboard input is a
+    # one-scancode mailbox by design: a key struck while the guest is busy
+    # (ed25519 keygen under TCG takes seconds) is dropped, not replayed into
+    # the next screen. A human presses keys when a prompt is on the glass;
+    # this script fires on a wall clock, so it must pace itself slower than
+    # the longest busy stretch to imitate one.
+    [int]$KeyDelayMs = 250,
     # 'q35' is the modern default (AHCI, no legacy IDE). Use 'pc' to give the
     # payload a real legacy IDE controller at 0x1F0 for the post-EBS PIO path.
-    [string]$Machine = 'q35'
+    [string]$Machine = 'q35',
+    # -UsbDisk attaches the image as USB mass storage on a qemu-xhci
+    # controller instead of IDE/AHCI — the real-hardware topology, where
+    # the boot medium is reachable only through the USB stack. QEMU's
+    # xHCI is a spec-strict implementation: this is the verdict bed for
+    # the post-EBS USB drivers (GopXhci/GopUsbMsc).
+    [switch]$UsbDisk,
+    # -UsbKbd attaches a USB HID keyboard to the same qemu-xhci controller —
+    # the verdict bed for the post-EBS HID transport (GopUsbKbd). -Keys
+    # sendkey lines then arrive as interrupt IN boot reports, not PS/2.
+    [switch]$UsbKbd,
+    # -NoPs2 removes the i8042 controller (q35 only): the honest model of a
+    # modern machine, where firmware keyboard emulation dies at EBS and the
+    # USB HID path is the ONLY input. Combine with -UsbKbd.
+    [switch]$NoPs2,
+    # -UsbMouse attaches a USB HID boot-protocol mouse to the same xHCI
+    # controller -- the verdict bed for GopUsbMouse. Drive it with
+    # -MouseCmds: semicolon-separated QEMU monitor lines sent AFTER the
+    # -Keys sequence, e.g. 'mouse_move 0 -60;mouse_button 1;mouse_button 0'.
+    [switch]$UsbMouse,
+    [string]$MouseCmds = '',
+    # -UsbHub interposes a hub: root port 1 holds a usb-hub and the keyboard
+    # attaches BEHIND it (port 1.1), the topology of a real laptop's internal
+    # wiring. The disk (with -UsbDisk) stays on root port 2. Verdict bed for
+    # the hub enumeration in GopUsb (route strings, port power/reset).
+    [switch]$UsbHub,
+    # -Decoy attaches a second raw image as a SATA disk: the "internal drive"
+    # of a real machine, which answers on AHCI before the boot stick answers
+    # on USB. Verdict bed for medium selection (GopMedium) -- the payload
+    # must read the medium carrying its own CODEX.CDX, not this one.
+    [string]$Decoy = '',
+    # -NvmeDisk attaches the image as an NVMe namespace instead of SATA --
+    # the modern-laptop topology, where the internal disk is reachable only
+    # through the NVMe queues. Verdict bed for GopNvme.
+    [switch]$NvmeDisk,
+    # -NecXhci uses QEMU's nec-usb-xhci controller model instead of the
+    # default qemu-xhci: a different xHCI implementation (different PCI id,
+    # capability layout, port count) that catches controller-model
+    # assumptions in GopXhci. A second opinion on the bring-up until a real
+    # Intel controller is in hand.
+    [switch]$NecXhci
 )
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
@@ -38,12 +85,52 @@ $code = $codeCopy
 Remove-Item $ppm,$ser -ErrorAction SilentlyContinue
 
 $monPort = 55700
+$machineArg = if ($NoPs2) { "$Machine,i8042=off" } else { $Machine }
 # pflash ORDER MATTERS: OVMF expects CODE at unit 0 and VARS at unit 1.
 $qargs = @(
-    '-accel','tcg','-m','2048','-machine',$Machine,
+    '-accel','tcg','-m','2048','-machine',$machineArg,
     '-drive', "if=pflash,format=raw,unit=0,readonly=on,file=$code",
-    '-drive', "if=pflash,format=raw,unit=1,file=$varsCopy",
-    '-drive', "format=raw,file=$imgCopy,if=ide,index=0",
+    '-drive', "if=pflash,format=raw,unit=1,file=$varsCopy"
+)
+if ($UsbDisk -or $UsbKbd -or $UsbMouse) {
+    $xhciModel = if ($NecXhci) { 'nec-usb-xhci' } else { 'qemu-xhci' }
+    $qargs += @('-device',"$xhciModel,id=xhci")
+}
+if ($UsbHub) {
+    $qargs += @('-device','usb-hub,bus=xhci.0,port=1')
+}
+if ($UsbDisk) {
+    $stickPort = if ($UsbHub) { 'port=2,' } else { '' }
+    $qargs += @(
+        '-drive', "if=none,id=stick,format=raw,file=$imgCopy",
+        '-device',"usb-storage,bus=xhci.0,${stickPort}drive=stick"
+    )
+} elseif ($NvmeDisk) {
+    $qargs += @(
+        '-drive', "if=none,id=nvst,format=raw,file=$imgCopy",
+        '-device','nvme,drive=nvst,serial=codex1'
+    )
+} else {
+    # With a decoy present the decoy takes SATA index 0 -- the position an
+    # internal drive holds on a real machine -- and the boot image sits
+    # behind it, so the probe must SKIP the first disk to find its medium.
+    $imgIndex = if ($Decoy) { 1 } else { 0 }
+    $qargs += @('-drive', "format=raw,file=$imgCopy,if=ide,index=$imgIndex")
+}
+if ($Decoy) {
+    $decoyAbs = if ([System.IO.Path]::IsPathRooted($Decoy)) { $Decoy } else { Join-Path $repo $Decoy }
+    $decoyCopy = Join-Path $scratch 'ovmf-decoy.img'
+    Copy-Item $decoyAbs $decoyCopy -Force
+    $qargs += @('-drive', "format=raw,file=$decoyCopy,if=ide,index=0")
+}
+if ($UsbKbd) {
+    $kbdPort = if ($UsbHub) { ',port=1.1' } else { '' }
+    $qargs += @('-device',"usb-kbd,bus=xhci.0$kbdPort")
+}
+if ($UsbMouse) {
+    $qargs += @('-device','usb-mouse,bus=xhci.0')
+}
+$qargs += @(
     '-serial', "file:$ser",
     '-monitor', "tcp:127.0.0.1:$monPort,server,nowait",
     '-display','none','-vga','std','-rtc','base=utc'
@@ -62,12 +149,12 @@ if ($proc.HasExited) {
 }
 
 # Optional keystrokes via monitor sendkey (Set-1 scancode names differ; use qcodes)
-function Send-Mon($lines) {
+function Send-Mon($lines, $gapMs = 250) {
     $c = [System.Net.Sockets.TcpClient]::new('127.0.0.1',$monPort)
     $s = $c.GetStream(); $s.ReadTimeout = 1000
     Start-Sleep -Milliseconds 200
     foreach ($ln in $lines) {
-        $b = [System.Text.Encoding]::ASCII.GetBytes($ln + "`n"); $s.Write($b,0,$b.Length); $s.Flush(); Start-Sleep -Milliseconds 250
+        $b = [System.Text.Encoding]::ASCII.GetBytes($ln + "`n"); $s.Write($b,0,$b.Length); $s.Flush(); Start-Sleep -Milliseconds $gapMs
     }
     try { $buf = New-Object byte[] 4096; $s.Read($buf,0,4096) | Out-Null } catch {}
     $c.Close()
@@ -84,7 +171,11 @@ if ($Keys) {
                '44'='z'; '45'='x'; '46'='c'; '47'='v'; '48'='b'; '49'='n'; '50'='m' }
     $seq = @()
     foreach ($k in ($Keys -split ',')) { if ($qmap.ContainsKey($k.Trim())) { $seq += "sendkey $($qmap[$k.Trim()])" } }
-    if ($seq) { Send-Mon $seq; Start-Sleep -Seconds $AfterKeys }
+    if ($seq) { Send-Mon $seq $KeyDelayMs; Start-Sleep -Seconds $AfterKeys }
+}
+if ($MouseCmds) {
+    Send-Mon ($MouseCmds -split ';') 600
+    Start-Sleep -Seconds 2
 }
 Send-Mon @("screendump $ppm")
 Start-Sleep -Milliseconds 800

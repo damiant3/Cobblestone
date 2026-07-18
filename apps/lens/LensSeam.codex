@@ -1,0 +1,76 @@
+Chapter: LensSeam
+
+ The platform seam (DESIGN.md 4.4). Lens ships to two substrates from
+ one source: Target N runs this chapter's bodies natively, Target B
+ replaces them at C# emission with runtime-preamble bindings. Every
+ function declared here is one seam point: a real Codex definition
+ that the csharp plug's Platform Seam Overrides table intercepts by
+ name (CSharpEmitterExpressions.codex), rewriting call sites to the
+ emitted preamble class and skipping the native body entirely. Code
+ that cites this chapter is target-independent by construction - the
+ same call is a Codex DB executor dispatch on Target N and a
+ SqlClient round trip on Target B.
+
+Section: Sql
+
+ lens-sql-exec executes one SQL statement and returns the result rows,
+ each row a list of column values rendered as text. On Target B the
+ binding is _LensSql.exec: connection string from the LENS_SQL_CONN
+ environment variable, rows streamed one at a time off a
+ SqlDataReader. The native body below is an honest stub returning the
+ empty row list; the real native handler arrives with the Lens
+ service wiring (DESIGN Phase 6), where the statement routes into the
+ apps/data RelAlgebra executor instead of a barbarian warehouse.
+
+ The signature is deliberately pure for this first proof. An
+ effect-typed form, lens-sql-exec : Text -> [LensSql] List (List
+ Text), is the destination: it makes database access visible in
+ every caller's row and lets capability manifests bound what a
+ dashboard may touch. That requires declaring the LensSql effect and
+ threading handlers through the native call graph, which is Phase 3
+ seam work - recorded here so the follow-up is not rediscovered.
+
+  lens-sql-exec : Text -> List (List Text)
+  lens-sql-exec (sql) = []
+
+Section: Http
+
+ The [LensHttp] seam is two calls shaped for a one-request-at-a-time
+ service loop. lens-http-next blocks until the next HTTP request
+ arrives on the given port and answers with exactly three texts: the
+ method, the request path, and the whole request body, in that order.
+ The body arrives with carriage returns already stripped: CCE has no
+ carriage return, so the Target B binding normalizes barbarian line
+ ends at the seam boundary and a caller splits on newline alone.
+ An empty list means the platform has no listener, which is what the
+ native stub below answers today: a native caller's serve loop sees
+ the empty list and shuts down cleanly instead of spinning. The real
+ native handler arrives with the codex.os.net service wiring, the
+ same Phase 6 seam work recorded for lens-sql-exec above.
+
+ lens-http-reply answers the request that lens-http-next most
+ recently produced for that port with status 200 and the given body,
+ and returns zero on success. On Target B the bindings are
+ _LensHttp.next and _LensHttp.reply over the platform's HttpListener:
+ one shared listener per port, started lazily on first use, and the
+ pending request context parked per port between the two calls -
+ which is also why the pairing is strict, one reply after each next.
+ The reply's content type is application/json, matching the service's
+ wire format.
+
+  lens-http-next : Integer -> List Text
+  lens-http-next (port) = []
+
+  lens-http-reply : Integer, Text -> Integer
+  lens-http-reply (port) (body) = 0
+
+ lens-http-reply-html is lens-http-reply with the content type
+ text/html instead: same strict pairing, same status 200, bound to
+ _LensHttp.reply_html on Target B. It exists because a browser will
+ not render a dashboard page delivered as application/json, and the
+ content type is a property of the platform reply, not of the body
+ text - so the seam grows a second reply flavor rather than a
+ content-type parameter every JSON caller would have to repeat.
+
+  lens-http-reply-html : Integer, Text -> Integer
+  lens-http-reply-html (port) (body) = 0

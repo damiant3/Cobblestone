@@ -68,6 +68,13 @@ Section: Controller State
   }
 
 Section: Discovery
+
+ The runtime register block (interrupter 0, ERSTBA/ERSTSZ/ERDP) lives at
+ RTSOFF, which is 0x1000 (4096) in codex-vm, not 0x400. Writing the event
+ ring registers at the wrong window leaves the emulator's event ring base
+ unset, and no completion event is ever delivered. The doorbell array is
+ at DBOFF = 0x800 (2048).
+
   xhci-discover : XhciController
   xhci-discover =
     let scan = pci-scan-bus 0
@@ -78,7 +85,7 @@ Section: Discovery
         let bar = pci-parse-bar (dev.pci-bus) (dev.pci-dev) (dev.pci-func) 0
         in let base = bar.bar-base
         in let cap-len = 0
-        in XhciController { xc-bar = base, xc-cap-length = cap-len, xc-op-base = base + 32, xc-rt-base = base + 1024, xc-db-base = base + 2048, xc-max-slots = 32, xc-max-ports = 4, xc-found = True, xc-initialized = False }
+        in XhciController { xc-bar = base, xc-cap-length = cap-len, xc-op-base = base + 32, xc-rt-base = base + 4096, xc-db-base = base + 2048, xc-max-slots = 32, xc-max-ports = 4, xc-found = True, xc-initialized = False }
 
   xhci-controller-empty : XhciController
   xhci-controller-empty = XhciController { xc-bar = 0, xc-cap-length = 0, xc-op-base = 0, xc-rt-base = 0, xc-db-base = 0, xc-max-slots = 0, xc-max-ports = 0, xc-found = False, xc-initialized = False }
@@ -230,6 +237,11 @@ Section: Controller Init
   xhci-slot-ctx-addr : Integer = 2109440
   xhci-data-buf-addr : Integer = 2113536
 
+ CRCR's low bit is RCS, the ring cycle state. It must match the cycle bit
+ the command TRBs carry (we write them with cycle 1 via xhci-set-cycle),
+ or the emulator's consumer cycle starts at 0, mismatches the first TRB,
+ and the command ring bails before running a single command.
+
   xhci-init-controller : XhciController -> XhciController
   xhci-init-controller (xc) =
     if xc.xc-found == False then xc
@@ -237,7 +249,7 @@ Section: Controller Init
     in let w0 = poke-32 op 0 2
     in let w1 = xhci-wait-halted op 0
     in let w2 = poke-32 op 0 0
-    in let w3 = poke-32 op 24 xhci-cmd-ring-addr
+    in let w3 = poke-32 op 24 (bit-or xhci-cmd-ring-addr 1)
     in let w4 = poke-32 op 28 0
     in let w5 = poke-32 op 48 xhci-dcbaap-addr
     in let w6 = poke-32 op 52 0

@@ -1,0 +1,289 @@
+Chapter: GopUsb
+  cites Works chapter GopXhci
+  cites Works chapter GopUsbKbd
+  cites Works chapter GopUsbMouse
+  cites Works chapter GopUsbMsc
+  cites Works chapter GopAhci
+  cites Foreword chapter Maybe
+
+ One enumeration of the USB bus for the whole boot (H2). kbd-connect
+ and msc-connect each begin with a controller reset, so they are
+ alternatives, not housemates: whichever runs second destroys the
+ first's device state -- on real hardware, where the boot medium is a
+ USB stick AND the keyboard is USB, that is a dead keyboard the
+ moment a storage screen runs. usb-attach brings the controller up
+ once, walks the root ports once, classifies each device by the
+ interfaces in its configuration descriptor, and configures the boot
+ keyboard and the mass-storage disk on the same host. The disk handle
+ is then published to the fixed cell block (GopUsbMsc), so GopDisk's
+ stateless dispatch transfers on the running host instead of
+ reconnecting.
+
+ A root port may also hold a hub: real laptops route their built-in
+ ports through internal hubs, so a keyboard that enumerates fine on
+ QEMU's root port simply is not there on the machine this arc exists
+ for. A device whose configuration carries a hub interface (class 9)
+ is brought up as one -- configured, declared to the controller,
+ ports powered -- and each connected downstream port is reset and
+ enumerated with the route string extended by one nibble. The walk
+ recurses through nested hubs until the route string's five nibbles
+ are spent.
+
+ The two devices share one event ring; the per-slot latch in GopXhci
+ (xhci-wait-xfer) is what keeps a storage wait from eating a keyboard
+ completion, and the reverse.
+
+ We say:
+
+Section: Attachment
+
+  UsbAttach = record {
+    ua-kbd : UsbKbd,
+    ua-mouse : UsbMouse,
+    ua-disk : MscDisk
+  }
+
+  UsbFound = record {
+    uf-kbd : UsbKbd,
+    uf-mouse : UsbMouse,
+    uf-disk : MscDisk
+  }
+
+  usb-attach : [Device.Port] UsbAttach
+  usb-attach = act
+    xh <- xhci-connect
+    if xh.xh-ok then usb-done (usb-walk xh 0 (UsbFound { uf-kbd = kbd-no-kbd, uf-mouse = mouse-no-mouse, uf-disk = msc-no-disk }))
+    else UsbAttach { ua-kbd = kbd-no-kbd, ua-mouse = mouse-no-mouse, ua-disk = msc-no-disk }
+  end
+
+Section: The Walk
+
+ First keyboard wins, first mouse wins, first disk wins; a port whose
+ device is none of them (a camera) is opened, inspected, and left
+ addressed -- slots are plentiful and abandoning one is harmless. The
+ walk publishes the disk handle at the end, after everything on the
+ shared host is configured.
+
+  usb-done : UsbFound -> UsbAttach
+  usb-done (found) =
+    let p = if (found.uf-disk).md-ok then msc-publish (found.uf-disk) else 0
+    in UsbAttach { ua-kbd = found.uf-kbd, ua-mouse = found.uf-mouse, ua-disk = found.uf-disk }
+
+  usb-walk : XhciHost, Integer, UsbFound -> UsbFound
+  usb-walk (xh) (from) (found) =
+    let port = xhci-find-port xh from
+    in if port < 0 then found
+    else let speed = xhci-reset-port xh port
+    in if speed == 0 then usb-walk xh (port + 1) found
+    else let dev = xhci-open-device xh port speed
+    in if dev.ud-ok == False then usb-walk xh (port + 1) found
+    else usb-walk xh (port + 1) (usb-inspect xh dev 0 0 found)
+
+ One addressed device, classified by its configuration descriptor.
+ The route and depth name where it sits: route is the slot-context
+ route string that reached it, depth the count of hubs above it --
+ the nibble index its own children would occupy, were it a hub.
+
+  usb-inspect : XhciHost, UsbDev, Integer, Integer, UsbFound -> UsbFound
+  usb-inspect (xh) (dev) (route) (depth) (found) =
+    let cfg = alloc-zeroed 256 64
+    in let g = usb-get-descriptor xh dev 2 0 cfg 255
+    in if g == False then found
+    else let total = kbd-cfg-total cfg
+    in let ki = kbd-find-interface cfg 0 total
+    in if ki >= 0 then
+      if (found.uf-kbd).uk-ok then found
+      else UsbFound { uf-kbd = usb-open-kbd xh dev cfg ki total, uf-mouse = found.uf-mouse, uf-disk = found.uf-disk }
+    else let pi = mouse-find-interface cfg 0 total
+    in if pi >= 0 then
+      if (found.uf-mouse).um-ok then found
+      else UsbFound { uf-kbd = found.uf-kbd, uf-mouse = usb-open-mouse xh dev cfg pi total, uf-disk = found.uf-disk }
+    else let mi = msc-find-interface cfg 0 total
+    in if mi >= 0 then
+      if (found.uf-disk).md-ok then found
+      else UsbFound { uf-kbd = found.uf-kbd, uf-mouse = found.uf-mouse, uf-disk = usb-open-msc xh dev cfg mi total }
+    else let hi = hub-find-interface cfg 0 total
+    in if hi >= 0 then
+      if depth >= usb-max-depth then found
+      else usb-open-hub xh dev cfg hi total route depth found
+    else found
+
+Section: Configuration
+
+ These are the tails of kbd-open-port and msc-open-port, applied to a
+ device the walk already opened and read.
+
+  usb-open-kbd : XhciHost, UsbDev, Integer, Integer, Integer -> UsbKbd
+  usb-open-kbd (xh) (dev) (cfg) (iface) (total) =
+    let ep = kbd-find-int-in cfg (iface + peek-byte cfg iface) total
+    in if ep < 0 then kbd-no-kbd
+    else kbd-open-endpoint xh dev (peek-byte cfg (iface + 2)) (peek-byte cfg 5) (bit-and (peek-byte cfg (ep + 2)) 15) (kbd-ep-maxpkt cfg ep) (peek-byte cfg (ep + 6))
+
+  usb-open-mouse : XhciHost, UsbDev, Integer, Integer, Integer -> UsbMouse
+  usb-open-mouse (xh) (dev) (cfg) (iface) (total) =
+    let ep = kbd-find-int-in cfg (iface + peek-byte cfg iface) total
+    in if ep < 0 then mouse-no-mouse
+    else mouse-open-endpoint xh dev (peek-byte cfg (iface + 2)) (peek-byte cfg 5) (bit-and (peek-byte cfg (ep + 2)) 15) (kbd-ep-maxpkt cfg ep) (peek-byte cfg (ep + 6))
+
+  usb-open-msc : XhciHost, UsbDev, Integer, Integer, Integer -> MscDisk
+  usb-open-msc (xh) (dev) (cfg) (iface) (total) =
+    let skip = peek-byte cfg iface
+    in let in-off = msc-find-bulk-off cfg (iface + skip) total True
+    in let out-off = msc-find-bulk-off cfg (iface + skip) total False
+    in if in-off < 0 then msc-no-disk
+    else if out-off < 0 then msc-no-disk
+    else msc-open-endpoints xh dev (msc-ep-num cfg in-off * 2 + 1) (msc-ep-maxpkt cfg in-off) (msc-ep-num cfg out-off * 2) (msc-ep-maxpkt cfg out-off)
+
+Section: Hub Requests
+
+ Hub control lives on endpoint zero: the hub descriptor (class type
+ 0x29) states the port count, and each downstream port answers
+ GET_STATUS with a status word and a change word. Every request here
+ is a standard-shaped class transfer -- recipient interface for the
+ descriptor, recipient other (the port) for features and status.
+
+  hub-feat-reset : Integer = 4
+  hub-feat-power : Integer = 8
+  hub-feat-c-connection : Integer = 16
+  hub-feat-c-reset : Integer = 20
+
+  hub-find-interface : Integer, Integer, Integer -> Integer
+  hub-find-interface (cfg) (off) (total) =
+    if off >= total then -1
+    else let len = peek-byte cfg off
+    in if len == 0 then -1
+    else if peek-byte cfg (off + 1) /= 4 then hub-find-interface cfg (off + len) total
+    else if peek-byte cfg (off + 5) /= 9 then hub-find-interface cfg (off + len) total
+    else off
+
+  hub-port-count : XhciHost, UsbDev, Integer -> Integer
+  hub-port-count (xh) (dev) (buf) =
+    let g = xhci-ctrl-in xh dev 160 6 10496 0 buf 9
+    in if g == False then 0 else peek-byte buf 2
+
+  hub-set-feature : XhciHost, UsbDev, Integer, Integer -> Boolean
+  hub-set-feature (xh) (dev) (port) (feat) =
+    xhci-ctrl-nodata xh dev 35 3 feat port
+
+  hub-clear-feature : XhciHost, UsbDev, Integer, Integer -> Boolean
+  hub-clear-feature (xh) (dev) (port) (feat) =
+    xhci-ctrl-nodata xh dev 35 1 feat port
+
+ Port status is returned as one little-endian dword: the status word
+ low, the change word high. A failed transfer reads as -1, which no
+ real status can be.
+
+  hub-port-status : XhciHost, UsbDev, Integer, Integer -> Integer
+  hub-port-status (xh) (dev) (port) (buf) =
+    let g = xhci-ctrl-in xh dev 163 0 0 port buf 4
+    in if g == False then -1 else peek-32 buf 0
+
+  hub-speed : Integer -> Integer
+  hub-speed (status) =
+    if bit-and status 512 /= 0 then 2
+    else if bit-and status 1024 /= 0 then 3
+    else 1
+
+Section: Hub Bring-Up
+
+ The controller must be told a slot is a hub before anything is
+ addressed through it: Configure Endpoint evaluates the Hub flag and
+ the port count from the input slot context. The command also
+ declares the hub's one interrupt IN endpoint -- the status-change
+ pipe every hub carries -- which keeps the command fully formed even
+ though this driver polls port status by control request instead.
+
+  hub-declare : XhciHost, UsbDev, Integer, Integer, Integer, Integer -> Boolean
+  hub-declare (xh) (dev) (cfg) (iface) (total) (ports) =
+    let ep = kbd-find-int-in cfg (iface + peek-byte cfg iface) total
+    in if ep < 0 then False
+    else let epn = bit-and (peek-byte cfg (ep + 2)) 15
+    in let dci = epn * 2 + 1
+    in let ring = xhci-ring-new
+    in let r0 = xhci-set-ep-ring (dev.ud-ctx) dci (xhci-ring-trbs ring) (xh.xh-ctxsz)
+    in let ictx = xhci-ictx-single dci 7 (kbd-ep-maxpkt cfg ep) (xhci-ring-trbs ring) (xhci-ep-interval (dev.ud-speed) (peek-byte cfg (ep + 6))) (xh.xh-ctxsz) (dev.ud-ctx)
+    in let sb = xh.xh-ctxsz
+    in let h0 = poke-32 ictx sb (bit-or (peek-32 ictx sb) (bit-shl 1 26))
+    in let h1 = poke-32 ictx (sb + 4) (bit-or (bit-and (peek-32 ictx (sb + 4)) #00FFFFFF) (bit-shl ports 24))
+    in let ce = xhci-configure-endpoint xh dev ictx
+    in if ce.xe-ok == False then False
+    else ce.xe-code == trb-cc-success
+
+ Every port is powered before any is examined, so the mandatory
+ power-good interval of the later ports elapses while the earlier
+ ones are walked. The waits below are budgets of whole control
+ transfers, each a real round-trip on the wire; exhausting one FAILS
+ the port -- the floating-bus rule: garbage status must never be
+ acted on as if it had been earned.
+
+  usb-max-depth : Integer = 5
+  hub-connect-fuel : Integer = 256
+  hub-reset-fuel : Integer = 256
+
+  hub-power-all : XhciHost, UsbDev, Integer, Integer -> Integer
+  hub-power-all (xh) (dev) (port) (count) =
+    if port > count then 0
+    else let s = hub-set-feature xh dev port hub-feat-power
+    in hub-power-all xh dev (port + 1) count
+
+  hub-wait-connect : XhciHost, UsbDev, Integer, Integer, Integer -> Integer
+  hub-wait-connect (xh) (dev) (port) (buf) (fuel) =
+    let st = hub-port-status xh dev port buf
+    in if st < 0 then 0
+    else if bit-and st 1 /= 0 then 1
+    else if fuel <= 0 then 0
+    else hub-wait-connect xh dev port buf (fuel - 1)
+
+  hub-wait-reset : XhciHost, UsbDev, Integer, Integer, Integer -> Integer
+  hub-wait-reset (xh) (dev) (port) (buf) (fuel) =
+    let st = hub-port-status xh dev port buf
+    in if st < 0 then -1
+    else if bit-and st 1048576 /= 0 then st
+    else if fuel <= 0 then -1
+    else hub-wait-reset xh dev port buf (fuel - 1)
+
+Section: Hub Walk
+
+  usb-open-hub : XhciHost, UsbDev, Integer, Integer, Integer, Integer, Integer, UsbFound -> UsbFound
+  usb-open-hub (xh) (dev) (cfg) (iface) (total) (route) (depth) (found) =
+    let sc = usb-set-configuration xh dev (peek-byte cfg 5)
+    in if sc == False then found
+    else let buf = alloc-zeroed 64 64
+    in let count = hub-port-count xh dev buf
+    in if count == 0 then found
+    else let hb = hub-declare xh dev cfg iface total count
+    in if hb == False then found
+    else let pw = hub-power-all xh dev 1 count
+    in hub-walk xh dev buf 1 count route depth found
+
+  hub-walk : XhciHost, UsbDev, Integer, Integer, Integer, Integer, Integer, UsbFound -> UsbFound
+  hub-walk (xh) (hub) (buf) (port) (count) (route) (depth) (found) =
+    if port > count then found
+    else if port > 15 then found
+    else let f2 = hub-attach-port xh hub buf port route depth found
+    in hub-walk xh hub buf (port + 1) count route depth f2
+
+ Reset settles a connected port and reveals the device's speed; the
+ change bits are acknowledged so the next observer sees a quiet
+ port. The downstream device is then addressed at the extended route,
+ through the hub's transaction translator when the speeds demand one,
+ and inspected like any other -- including as a further hub.
+
+  hub-attach-port : XhciHost, UsbDev, Integer, Integer, Integer, Integer, UsbFound -> UsbFound
+  hub-attach-port (xh) (hub) (buf) (port) (route) (depth) (found) =
+    let c = hub-wait-connect xh hub port buf hub-connect-fuel
+    in if c == 0 then found
+    else let r = hub-set-feature xh hub port hub-feat-reset
+    in if r == False then found
+    else let st = hub-wait-reset xh hub port buf hub-reset-fuel
+    in if st < 0 then found
+    else let a0 = hub-clear-feature xh hub port hub-feat-c-reset
+    in let a1 = hub-clear-feature xh hub port hub-feat-c-connection
+    in if bit-and st 2 == 0 then found
+    else let speed = hub-speed st
+    in let ttslot = if speed /= 3 then (if hub.ud-speed == 3 then hub.ud-slot else 0) else 0
+    in let ttport = if ttslot /= 0 then port else 0
+    in let croute = bit-or route (bit-shl port (depth * 4))
+    in let dev = xhci-open-device-at xh croute (hub.ud-port) speed ttslot ttport
+    in if dev.ud-ok == False then found
+    else usb-inspect xh dev croute (depth + 1) found

@@ -1,0 +1,60 @@
+Chapter: MicInput
+  cites Kernel chapter HdaAudio
+  grounds Device.Mmio
+
+ This is the implementation of the Microphone effect.
+
+ listen and is-quiet were declared as operations of the Microphone effect
+ in Foreword chapter Microphone with no handler, so a call died at emit
+ with CDX2040. They are real here, over the HDA input stream codex-vm now
+ captures the host microphone into (Kernel chapter HdaAudio's hda-capture
+ pulls the most recent samples from stream 1). They are not in the
+ foreword because reading the mic is MMIO and MMIO is codex.os; a chapter
+ that wants them cites this one.
+
+ Both take a reading of the microphone's loudness -- the peak absolute
+ amplitude over a short capture window. A quiet room reads under ~15; a
+ voice or a clap reads in the hundreds to thousands. is-quiet compares
+ that to a threshold; listen returns it as text. Each call opens the mic
+ (the first capture), settles a few ticks so codex-vm's capture ring
+ fills, then reads a real window -- so a reading costs ~200 ms, which is
+ the cost of not trusting a cold ring.
+
+ What "loudness" the host delivers depends on the host's default
+ recording device and its level, and on the OS granting the process
+ microphone access; codex-vm captures whatever that device provides.
+
+ We say:
+
+Section: The Microphone Effect
+
+  mic-quiet-threshold : Integer = 40
+  mic-window-bytes : Integer = 16384
+  mic-ring-bytes : Integer = 262144
+
+  mic-settle : Integer -> [Microphone] Integer
+  mic-settle (target) =
+    if get-ticks >= target then 0
+    else mic-settle target
+
+  mic-peak : Integer -> [Microphone] Integer
+  mic-peak (nbytes) = act
+    warm <- hda-capture 4096
+    s <- mic-settle (get-ticks + 4)
+    buf <- hda-capture nbytes
+    let p = hda-peak buf (nbytes / 4)
+    in p
+  end
+
+  mic-ms-bytes : Integer -> Integer
+  mic-ms-bytes (ms) =
+    let raw = hda-sample-rate * ms / 1000 * 4
+    in if raw > mic-ring-bytes then mic-ring-bytes
+    else if raw < 4096 then 4096
+    else raw
+
+  is-quiet : [Microphone] Boolean
+  is-quiet = mic-peak mic-window-bytes < mic-quiet-threshold
+
+  listen : Integer -> [Microphone] Text
+  listen (ms) = "mic-level:" & show (mic-peak (mic-ms-bytes ms))

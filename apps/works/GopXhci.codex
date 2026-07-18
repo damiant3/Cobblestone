@@ -1,0 +1,1041 @@
+Chapter: GopXhci
+  cites Works chapter GopAhci
+  cites Kernel chapter Pci
+  cites Foreword chapter Maybe
+
+ Post-ExitBootServices xHCI (USB 3.x) host controller driver. The
+ stick the machine boots from is USB mass storage: the AHCI and IDE
+ drivers reach only disks on those controllers, so persistence on the
+ boot medium itself requires the payload to drive the USB host
+ controller directly, with firmware gone.
+
+ The controller is found by PCI class 0x0C subclass 0x03; BAR0 is the
+ register block. Offsets inside it come from the capability header:
+ CAPLENGTH locates the operational registers, DBOFF the doorbell
+ array, RTSOFF the runtime registers. Bring-up follows the xHCI
+ order: reset the controller, hand it scratchpad pages if it asks for
+ them, program the device context base array and the command ring,
+ hang an event ring off interrupter 0, then set Run. Commands --
+ enable slot, address device, configure endpoint -- are TRBs on the
+ command ring; their completions arrive as events. The driver polls
+ the event ring by cycle bit, fuel-bounded: the Option A boot path
+ has no IDT, so nothing here may rely on an interrupt or hang on a
+ register that never changes.
+
+ Rings are the real discipline, not a shortcut: every producer ring
+ (command, endpoint zero, each bulk endpoint) carries its enqueue
+ index and producer cycle state in a small header before the TRB
+ array, ends in a pre-written link TRB with the toggle-cycle flag,
+ and wraps by activating that link and flipping its cycle. A real
+ controller caches ring position from the moment Address Device or
+ Configure Endpoint reads it out of the input context -- rewinding a
+ dequeue pointer behind its back is not a thing hardware permits, so
+ the driver never does it. Consumed events are acknowledged by
+ writing ERDP back, which real controllers require to know the ring
+ is not full.
+
+ We say:
+
+Section: Capability and Operational Registers
+
+  xhci-pci-class : Integer = 12
+  xhci-pci-subclass : Integer = 3
+
+  xh-cap-hcsparams1 : Integer = 4
+  xh-cap-hcsparams2 : Integer = 8
+  xh-cap-hccparams1 : Integer = 16
+  xh-cap-dboff : Integer = 20
+  xh-cap-rtsoff : Integer = 24
+
+  xh-op-usbcmd : Integer = 0
+  xh-op-usbsts : Integer = 4
+  xh-op-crcr : Integer = 24
+  xh-op-dcbaap : Integer = 48
+  xh-op-config : Integer = 56
+  xh-op-ports : Integer = 1024
+
+  xh-cmd-run : Integer = 1
+  xh-cmd-hcrst : Integer = 2
+  xh-sts-hch : Integer = 1
+  xh-sts-cnr : Integer = 2048
+
+  xh-ir0-erstsz : Integer = 40
+  xh-ir0-erstba : Integer = 48
+  xh-ir0-erstba-hi : Integer = 52
+  xh-ir0-erdp : Integer = 56
+  xh-ir0-erdp-hi : Integer = 60
+
+  xh-portsc-ccs : Integer = 1
+  xh-portsc-ped : Integer = 2
+  xh-portsc-pr : Integer = 16
+  xh-portsc-pp : Integer = 512
+  xh-portsc-csc : Integer = 131072
+  xh-portsc-prc : Integer = 2097152
+
+  xhci-fuel : Integer = 1000000
+
+ HCCPARAMS1 states two things this driver must honour on real
+ silicon: the context size (CSZ, bit 2 -- 64-byte contexts on most
+ Intel parts, 32 on QEMU) and where the extended capability list
+ begins (xECP, bits 31:16, a dword offset from the register base).
+ The extended list is where USB Legacy Support lives: on a board
+ whose firmware ran a legacy-USB SMM handler, the controller is
+ still BIOS-owned when we inherit it, and a reset issued under that
+ ownership either misfires or fights the handler. The handoff sets
+ the OS-owned bit, waits for the BIOS-owned bit to clear, then
+ silences every legacy SMI.
+
+  xh-hcc-csz-shift : Integer = 2
+  xh-hcc-ppc-shift : Integer = 3
+
+  xhci-xecp-legsup : Integer = 1
+  xhci-legsup-bios : Integer = #10000
+  xhci-legsup-os : Integer = #1000000
+  xhci-legctl-keep : Integer = #E1FEE
+  xhci-legctl-smi-clear : Integer = #E0000000
+
+ Real ports take time QEMU does not. A power-controlled controller
+ (HCCPARAMS1.PPC) boots with its ports unpowered, so a connect can
+ only appear after Port Power is set and a power-good interval
+ elapses; a freshly powered port then debounces its connect for
+ about a tenth of a second before it is trustworthy; and a completed
+ port reset owes the device a reset-recovery interval before it is
+ addressed. These are wall-clock waits, so they ride the PIT tick
+ counter (cell 28672, ~18 Hz) that runtime-init started, with a
+ fuel-bounded busy fallback for the case where the tick never
+ advances -- garbage timing must never hang the boot.
+
+  xhci-tick-cell : Integer = 28672
+  xhci-settle-ticks : Integer = 3
+  xhci-recovery-ticks : Integer = 1
+  xhci-settle-fuel : Integer = 50000000
+
+ On an Intel PCH of the era this arc targets, the USB2 root ports
+ are shared between the companion EHCI controller and the xHCI, and
+ firmware may leave them routed to EHCI -- in which case the xHCI
+ honestly sees no device on those pins. Four PCI-config registers on
+ the xHCI function switch them: the routing masks state which ports
+ CAN move, and writing a mask into its routing register moves every
+ movable port. The masks are read first and only a plausible mask
+ (some ports, not the all-ones of unimplemented reserved space) is
+ acted on, so a modern Intel part whose USB2 is natively xHCI --
+ mask zero -- is left untouched, as is every non-Intel controller.
+
+  xhci-pci-intel : Integer = #8086
+  xhci-intel-xusb2pr : Integer = #D0
+  xhci-intel-xusb2prm : Integer = #D4
+  xhci-intel-usb3pssen : Integer = #D8
+  xhci-intel-usb3prm : Integer = #DC
+
+Section: TRB Vocabulary
+
+ A TRB is four little-endian dwords: parameter low, parameter high,
+ status, control. The control dword carries the TRB type in bits
+ 15:10 and the cycle bit in bit 0; a TRB belongs to the controller
+ exactly when its cycle bit matches the ring's producer cycle state.
+
+  trb-t-normal : Integer = 1
+  trb-t-setup : Integer = 2
+  trb-t-data : Integer = 3
+  trb-t-status : Integer = 4
+  trb-t-link : Integer = 6
+  trb-t-enable-slot : Integer = 9
+  trb-t-address-dev : Integer = 11
+  trb-t-config-ep : Integer = 12
+  trb-t-xfer-event : Integer = 32
+  trb-t-cmd-complete : Integer = 33
+
+  trb-flag-ioc : Integer = 32
+  trb-flag-idt : Integer = 64
+
+  trb-cc-success : Integer = 1
+  trb-cc-short : Integer = 13
+
+Section: Producer Rings
+
+ A ring handle is one allocation: a 64-byte header (enqueue index at
+ offset 0, producer cycle state at offset 4) followed by sixty
+ 16-byte TRB slots. Slot 59 holds the link TRB, written at creation
+ with the toggle-cycle flag and an invalid cycle bit; when the
+ producer reaches it, activating it with the current cycle hands the
+ whole lap to the controller and the producer wraps with its cycle
+ flipped. Fifty-nine usable slots is far beyond any single command or
+ BOT round this driver enqueues.
+
+  xhci-ring-slots : Integer = 59
+  xhci-ring-link-ctl : Integer = 6146
+
+  xhci-ring-trbs : Integer -> Integer
+  xhci-ring-trbs (ring) = ring + 64
+
+  xhci-ring-new : Integer
+  xhci-ring-new =
+    let ring = alloc-zeroed 1024 64
+    in let c = poke-32 ring 4 1
+    in let l0 = poke-32 (ring + 64) 944 (ring + 64)
+    in let l1 = poke-32 (ring + 64) 956 xhci-ring-link-ctl
+    in ring
+
+  xhci-ring-push : Integer, Integer, Integer, Integer, Integer -> Integer
+  xhci-ring-push (ring) (plo) (phi) (sts) (ctl) =
+    let enq = peek-32 ring 0
+    in let cyc = peek-32 ring 4
+    in if enq >= xhci-ring-slots then
+      let l = poke-32 (ring + 64) 956 (bit-or xhci-ring-link-ctl cyc)
+      in let c = poke-32 ring 4 (1 - cyc)
+      in let e = poke-32 ring 0 0
+      in xhci-ring-push ring plo phi sts ctl
+    else let off = enq * 16
+    in let w0 = poke-32 (ring + 64) off plo
+    in let w1 = poke-32 (ring + 64) (off + 4) phi
+    in let w2 = poke-32 (ring + 64) (off + 8) sts
+    in let w3 = poke-32 (ring + 64) (off + 12) (bit-or ctl cyc)
+    in poke-32 ring 0 (enq + 1)
+
+Section: Host State
+
+ The host record holds register bases and ring addresses fixed at
+ init. The event-ring dequeue index, its consumer cycle state, and
+ the BOT tag counter live in a small state block in memory -- DMA
+ rings are shared mutable state, and pretending otherwise just moves
+ the mutation somewhere less visible.
+
+  xh-st-evt-deq : Integer = 0
+  xh-st-evt-cyc : Integer = 4
+  xh-st-tag : Integer = 8
+  xh-st-latch : Integer = 64
+
+  xhci-evt-count : Integer = 64
+
+  XhciHost = record {
+    xh-ok : Boolean,
+    xh-op : Integer,
+    xh-db : Integer,
+    xh-rt : Integer,
+    xh-ports : Integer,
+    xh-dcbaa : Integer,
+    xh-cmd-ring : Integer,
+    xh-evt-ring : Integer,
+    xh-state : Integer,
+    xh-ctxsz : Integer
+  }
+
+  xhci-no-host : XhciHost
+  xhci-no-host = XhciHost { xh-ok = False, xh-op = 0, xh-db = 0, xh-rt = 0, xh-ports = 0, xh-dcbaa = 0, xh-cmd-ring = 0, xh-evt-ring = 0, xh-state = 0, xh-ctxsz = 32 }
+
+  UsbDev = record {
+    ud-ok : Boolean,
+    ud-slot : Integer,
+    ud-port : Integer,
+    ud-speed : Integer,
+    ud-ctx : Integer,
+    ud-ep0-ring : Integer
+  }
+
+  xhci-no-dev : UsbDev
+  xhci-no-dev = UsbDev { ud-ok = False, ud-slot = 0, ud-port = 0, ud-speed = 0, ud-ctx = 0, ud-ep0-ring = 0 }
+
+Section: Diagnostics
+
+ On real metal there is no serial log, so the bring-up records what
+ it found -- controller identity, capability parameters, the
+ ownership handoff, and a raw snapshot of every root port the
+ instant the controller starts -- into a fixed cell block that a
+ later screen reads. The magic dword is written LAST so a partial
+ capture (a bring-up that faulted midway) is never mistaken for a
+ complete one; the field that never got written names how far the
+ bring-up got.
+
+ The block is otherwise observational, with one exception that must
+ be stated rather than discovered: the handback below READS it. Index
+ 19 holds the operational base and index 39 the firmware's own
+ pre-handoff control word, which together are everything needed to
+ give the controller back -- so a caller that holds no XhciHost (the
+ first-boot ceremony, which waits for a key long after the bring-up
+ returned) can still return the machine to firmware. Indices 28 and
+ 29 record that decision. Occupied: 0-19 identity and bring-up,
+ 20-27 the per-port snapshot, 28-29 the handback, 36-39 the Intel
+ routing and the saved control word.
+
+  xhci-diag : Integer = 36200
+  xhci-diag-magic : Integer = #58444731
+
+  xdiag-put : Integer, Integer -> Integer
+  xdiag-put (i) (v) = poke-32 xhci-diag (i * 4) v
+
+  xdiag-get : Integer -> Integer
+  xdiag-get (i) = peek-32 xhci-diag (i * 4)
+
+Section: MMIO Hole Mapping
+
+ The controller's registers live in the PCI MMIO hole above 3 GB. The
+ standard boot path maps exactly bare-metal-ram-size, so the fourth
+ gigabyte has no page-directory entry and the first register read
+ page-faults. If the PDPT's fourth entry is empty, install one: a
+ fresh page directory identity-mapping [3 GB, 4 GB) as 2 MB pages,
+ uncached (PCD) and non-executable -- device registers, not memory.
+ Under the Option A stub the live tables already map 4 GB and are not
+ at the runtime-table address anyway; there the entry reads non-empty
+ or the write lands in dead memory, harmless either way.
+
+  xhci-pdpt : Integer = 36864
+  xhci-pde-flags : Integer = #93
+
+  xhci-map-mmio-hole : Integer
+  xhci-map-mmio-hole =
+    if peek-32 xhci-pdpt 24 /= 0 then 1
+    else let pd = alloc-zeroed 4096 4096
+    in let f = xhci-fill-pd pd 0
+    in let lo = poke-32 xhci-pdpt 24 (pd + 3)
+    in poke-32 xhci-pdpt 28 0
+
+  xhci-fill-pd : Integer, Integer -> Integer
+  xhci-fill-pd (pd) (i) =
+    if i >= 512 then 0
+    else let lo = poke-32 pd (i * 8) (#C0000000 + i * #200000 + xhci-pde-flags)
+    in let hi = poke-32 pd (i * 8 + 4) #80000000
+    in xhci-fill-pd pd (i + 1)
+
+Section: Controller Bring-Up
+
+  xhci-wait-bit-clear : Integer, Integer, Integer, Integer -> Integer
+  xhci-wait-bit-clear (base) (reg) (mask) (fuel) =
+    if bit-and (peek-32 base reg) mask == 0 then 1
+    else if fuel <= 0 then 0
+    else xhci-wait-bit-clear base reg mask (fuel - 1)
+
+  xhci-wait-bit-set : Integer, Integer, Integer, Integer -> Integer
+  xhci-wait-bit-set (base) (reg) (mask) (fuel) =
+    if bit-and (peek-32 base reg) mask /= 0 then 1
+    else if fuel <= 0 then 0
+    else xhci-wait-bit-set base reg mask (fuel - 1)
+
+ A controller must be halted before it is reset: resetting a running
+ controller is undefined. Clear Run/Stop and wait for HCHalted; a
+ controller firmware already stopped answers at once.
+
+  xhci-halt : Integer -> Integer
+  xhci-halt (op) =
+    let cur = peek-32 op xh-op-usbcmd
+    in if bit-and cur xh-cmd-run == 0 then xhci-wait-bit-set op xh-op-usbsts xh-sts-hch xhci-fuel
+    else let w = poke-32 op xh-op-usbcmd (bit-and cur (-2))
+    in xhci-wait-bit-set op xh-op-usbsts xh-sts-hch xhci-fuel
+
+ The extended capability list is a linked chain of dwords: each
+ carries its capability id in bits 7:0 and the dword offset to the
+ next in bits 15:8, zero ending the chain. The offset accumulates
+ from the register base, so each hop adds the pointer to the current
+ offset. Legacy Support is capability id 1.
+
+  xhci-find-legsup : Integer, Integer, Integer -> Integer
+  xhci-find-legsup (base) (offdw) (fuel) =
+    if offdw == 0 then 0
+    else if fuel <= 0 then 0
+    else let addr = base + offdw * 4
+    in let cap = peek-32 addr 0
+    in let nxt = bit-and (bit-shru cap 8) 255
+    in if bit-and cap 255 == xhci-xecp-legsup then addr
+    else if nxt == 0 then 0
+    else xhci-find-legsup base (offdw + nxt) (fuel - 1)
+
+  xhci-wait-legsup : Integer, Integer -> Integer
+  xhci-wait-legsup (addr) (fuel) =
+    if bit-and (peek-32 addr 0) xhci-legsup-bios == 0 then 1
+    else if fuel <= 0 then 0
+    else xhci-wait-legsup addr (fuel - 1)
+
+ Take the controller from firmware before touching it. With no
+ legacy-support capability there is nothing to claim -- the
+ controller is already ours. Otherwise set the OS-owned bit, wait
+ for firmware to drop BIOS-owned, then write the legacy control/
+ status register to keep only the non-SMI bits and clear every SMI
+ event. The handoff's before/after words are recorded so a board
+ that refuses to release shows exactly that, and the pre-handoff
+ control/status word is recorded (diag index 39) so a handback
+ experiment can restore the firmware's own SMI enables verbatim.
+
+ Route the Intel USB2 ports to xHCI. Non-Intel controllers and
+ implausible masks (nothing routable, or the all-ones of reserved
+ space) are left alone. Enable SuperSpeed on the SS-routable ports,
+ then route the USB2-routable ports; the masks and the applied flag
+ are recorded for the truth screen. Pure PCI-config access, before
+ the controller is reset.
+
+  xhci-mask-implausible : Integer -> Boolean
+  xhci-mask-implausible (m) = m == 0 | m == #FFFFFFFF
+
+  xhci-intel-route : PciDevice -> Integer
+  xhci-intel-route (d) =
+    if d.pci-vendor /= xhci-pci-intel then xdiag-put 36 0
+    else let ss = pci-read-config (d.pci-bus) (d.pci-dev) (d.pci-func) xhci-intel-usb3prm
+    in let u2 = pci-read-config (d.pci-bus) (d.pci-dev) (d.pci-func) xhci-intel-xusb2prm
+    in if xhci-mask-implausible u2 then xdiag-put 36 0
+    else let w0 = if xhci-mask-implausible ss then 0 else pci-write-config (d.pci-bus) (d.pci-dev) (d.pci-func) xhci-intel-usb3pssen ss
+    in let w1 = pci-write-config (d.pci-bus) (d.pci-dev) (d.pci-func) xhci-intel-xusb2pr u2
+    in let a = xdiag-put 37 u2
+    in let b = xdiag-put 38 ss
+    in xdiag-put 36 1
+
+  xhci-take-ownership : Integer, Integer -> Integer
+  xhci-take-ownership (base) (xecp) =
+    if xecp == 0 then xdiag-put 9 0
+    else let addr = xhci-find-legsup base xecp 256
+    in if addr == 0 then xdiag-put 9 0
+    else let f = xdiag-put 9 1
+    in let before = peek-32 addr 0
+    in let b0 = xdiag-put 10 before
+    in let req = poke-32 addr 0 (bit-or before xhci-legsup-os)
+    in let waited = xhci-wait-legsup addr xhci-fuel
+    in let ctl = peek-32 addr 4
+    in let c9 = xdiag-put 39 ctl
+    in let dis = poke-32 addr 4 (bit-or (bit-and ctl xhci-legctl-keep) xhci-legctl-smi-clear)
+    in let after = peek-32 addr 0
+    in let a0 = xdiag-put 11 after
+    in xdiag-put 12 (if bit-and after xhci-legsup-bios == 0 then 1 else 0)
+
+Section: Ownership Handback
+
+ The reverse of the handoff, and the reason it exists: on a board
+ whose firmware presents its USB keyboard as a PS/2 one through an
+ SMM legacy handler, taking ownership by the book DISABLES that
+ emulation. If the pure USB path then fails to deliver a keystroke,
+ the machine has no keyboard at all -- and that is exactly what
+ happened here (docs/PM/Done/Stories/TheSilentKeyboard.md): the working
+ path was scuttled in the same change that introduced its
+ replacement, and the replacement did not hold weight.
+
+ So the cord goes back. Halt the controller, so firmware inherits a
+ quiescent device rather than a running one; restore the SMI enables
+ the firmware itself had chosen, verbatim, from the word saved at
+ the handoff; clear the OS-owned semaphore; and watch for BIOS-owned
+ to return. A firmware may take a measurable stretch of SMM work to
+ re-own a controller, so the wait is fuel-bounded and its outcome is
+ recorded rather than asserted -- a board that never re-owns says so
+ at index 29 instead of hanging.
+
+ What this costs, stated plainly: the controller is shared, so a USB
+ mass-storage boot stick dies with the keyboard's endpoint. The
+ caller must therefore only reach for this when there is no keyboard
+ at all, which is a machine that cannot be driven anyway. A keyboard
+ and no stick beats a stick and no keyboard.
+
+  xhci-legsup-os-mask : Integer = #FEFFFFFF
+  xhci-release-fuel : Integer = 200000
+
+  xhci-reclaim-wait : Integer, Integer -> Integer
+  xhci-reclaim-wait (addr) (fuel) =
+    if bit-and (peek-32 addr 0) xhci-legsup-bios /= 0 then 1
+    else if fuel <= 0 then 0
+    else xhci-reclaim-wait addr (fuel - 1)
+
+  xhci-released : Integer -> Integer
+  xhci-released (d) = xdiag-get 28
+
+  xhci-release-ownership : Integer -> Integer
+  xhci-release-ownership (d) =
+    if xdiag-get 9 == 0 then xdiag-put 28 1
+    else let op = xdiag-get 19
+    in if op == 0 then xdiag-put 28 1
+    else let h = xhci-halt op
+    in let base = op - xdiag-get 4
+    in let addr = xhci-find-legsup base (xdiag-get 8) 256
+    in if addr == 0 then xdiag-put 28 1
+    else let rc = poke-32 addr 4 (xdiag-get 39)
+    in let os = poke-32 addr 0 (bit-and (peek-32 addr 0) xhci-legsup-os-mask)
+    in let w = xdiag-put 29 (xhci-reclaim-wait addr xhci-release-fuel)
+    in xdiag-put 28 1
+
+ A raw PORTSC snapshot for every root port the moment the controller
+ runs, plus a count of ports reporting a device connected. This is
+ the single most telling line on a board that enumerates nothing:
+ all-zero connect bits point at port power or chipset routing, live
+ connect bits at the enumeration path above.
+
+  xhci-diag-ports : Integer, Integer, Integer, Integer -> Integer
+  xhci-diag-ports (op) (port) (maxports) (nconn) =
+    if port >= maxports then xdiag-put 18 nconn
+    else if port >= 16 then xdiag-put 18 nconn
+    else let raw = peek-32 op (xh-op-ports + port * 16)
+    in let w = xdiag-put (20 + port) raw
+    in let c = if bit-and raw xh-portsc-ccs /= 0 then nconn + 1 else nconn
+    in xhci-diag-ports op (port + 1) maxports c
+
+ Wait n PIT ticks, exiting the instant the counter has advanced far
+ enough. If the tick never moves -- an environment where the timer
+ interrupt is not delivered -- the fuel bounds a busy spin so timing
+ alone can never hang the boot.
+
+  xhci-delay-wait : Integer, Integer, Integer -> Integer
+  xhci-delay-wait (start) (n) (fuel) =
+    if peek-qword xhci-tick-cell 0 - start >= n then 1
+    else if fuel <= 0 then 0
+    else xhci-delay-wait start n (fuel - 1)
+
+  xhci-delay-ticks : Integer -> Integer
+  xhci-delay-ticks (n) =
+    let start = peek-qword xhci-tick-cell 0
+    in xhci-delay-wait start n xhci-settle-fuel
+
+ Set Port Power on every root port. PORTSC carries write-1-to-clear
+ change bits, so the write names only the intent -- Port Power alone
+ -- and never echoes the read value back, the same discipline the
+ reset path follows. Harmless on a controller that powers its ports
+ unconditionally.
+
+  xhci-power-ports : Integer, Integer, Integer -> Integer
+  xhci-power-ports (op) (port) (maxports) =
+    if port >= maxports then 0
+    else let w = poke-32 op (xh-op-ports + port * 16) xh-portsc-pp
+    in xhci-power-ports op (port + 1) maxports
+
+  xhci-enable-device : PciDevice -> [Device.Port] Integer
+  xhci-enable-device (d) =
+    let cmd = pci-read-config (d.pci-bus) (d.pci-dev) (d.pci-func) 4
+    in pci-write-config (d.pci-bus) (d.pci-dev) (d.pci-func) 4 (bit-or cmd 6)
+
+ Every cell this block DRIVES from must be zeroed before it is read.
+ The observational fields are safe by the magic-written-last rule --
+ a partial capture is detected. The handback fields are not: they are
+ STATE, they gate the USB pump, and a machine that boots with firmware
+ residue in cell 28 comes up believing it has already handed the
+ controller back. It then prints that it has, and stops pumping the
+ keyboard it never released -- which is exactly what happened on the
+ ASUS, where the cells hold whatever the firmware left and the guest
+ disabled its own keyboard on the first spin. QEMU zeroes its RAM and
+ could not fail this. Zero them on the way in.
+
+  xhci-reset-handback : Integer -> Integer
+  xhci-reset-handback (d) =
+    let a = xdiag-put 28 0
+    in xdiag-put 29 0
+
+  xhci-connect-none : XhciHost
+  xhci-connect-none =
+    let h = xhci-reset-handback 0
+    in let a = xdiag-put 1 0
+    in let m = xdiag-put 0 xhci-diag-magic
+    in xhci-no-host
+
+  xhci-connect : [Device.Port] XhciHost
+  xhci-connect = act
+    scan <- pci-scan-bus 0
+    when pci-find-class scan xhci-pci-class xhci-pci-subclass
+      is None -> xhci-connect-none
+      is Just (d) -> xhci-init-device d
+  end
+
+ Real firmware may place a 64-bit BAR above 4 GB (OVMF parks the xHCI
+ at 0xC000000000), beyond the boot identity map. Post-EBS the machine
+ is ours, so the driver relocates the BAR into the 32-bit MMIO hole:
+ memory decoding off, write both BAR dwords, decoding back on, then
+ trust nothing until the readback confirms the move. The address is a
+ convention -- the top of the hole, clear of MMCONFIG and of
+ firmware's ascending 32-bit assignments -- until a real allocator
+ arrives with the ACPI work.
+
+ The judgment "above 4 GB" must read BOTH dwords. A lone device gets
+ the 4 GB-aligned base of the window and its low dword reads zero;
+ add a second 64-bit device and firmware packs the window, parking
+ this controller at an address like 0xC000004000 whose low dword is
+ a perfectly plausible-looking 0x4000. Trusting a nonzero low dword
+ alone brings the controller up against low RAM and every register
+ read is garbage -- a keyboard that vanishes the moment an NVMe disk
+ is plugged in.
+
+  xhci-reloc-base : Integer = #FE800000
+
+  xhci-init-device : PciDevice -> [Device.Port] XhciHost
+  xhci-init-device (d) = act
+    en <- xhci-enable-device d
+    bar <- pci-parse-bar (d.pci-bus) (d.pci-dev) (d.pci-func) 0
+    hi <- pci-read-config (d.pci-bus) (d.pci-dev) (d.pci-func) 20
+    let d0 = xdiag-put 1 1
+    in let d1 = xdiag-put 2 (d.pci-vendor)
+    in let d2 = xdiag-put 3 (d.pci-device-id)
+    in let d3 = xdiag-put 0 xhci-diag-magic
+    in let rt = xhci-intel-route d
+    in let high = if bar.bar-is-64bit then hi else 0
+    in if bar.bar-base /= 0 then
+      if high == 0 then xhci-bring-up (bar.bar-base)
+      else xhci-init-relocated d
+    else xhci-init-relocated d
+  end
+
+  xhci-init-relocated : PciDevice -> [Device.Port] XhciHost
+  xhci-init-relocated (d) = act
+    moved <- xhci-relocate-bar d
+    if moved == 0 then xhci-no-host
+    else xhci-bring-up xhci-reloc-base
+  end
+
+  xhci-relocate-bar : PciDevice -> [Device.Port] Integer
+  xhci-relocate-bar (d) = act
+    cmd <- pci-read-config (d.pci-bus) (d.pci-dev) (d.pci-func) 4
+    w0 <- pci-write-config (d.pci-bus) (d.pci-dev) (d.pci-func) 4 (bit-and cmd (-3))
+    w1 <- pci-write-config (d.pci-bus) (d.pci-dev) (d.pci-func) 16 xhci-reloc-base
+    w2 <- pci-write-config (d.pci-bus) (d.pci-dev) (d.pci-func) 20 0
+    w3 <- pci-write-config (d.pci-bus) (d.pci-dev) (d.pci-func) 4 (bit-or cmd 6)
+    rb <- pci-read-config (d.pci-bus) (d.pci-dev) (d.pci-func) 16
+    if bit-and rb (-16) == xhci-reloc-base then 1 else 0
+  end
+
+ Some controllers demand private scratchpad pages: HCSPARAMS2 states
+ how many, and slot zero of the device context array must point at an
+ array of that many page pointers before Run. A controller that asks
+ and is not answered corrupts memory it was never given.
+
+  xhci-scratch-count : Integer -> Integer
+  xhci-scratch-count (hcs2) =
+    bit-or (bit-shl (bit-and (bit-shru hcs2 21) 31) 5) (bit-and (bit-shru hcs2 27) 31)
+
+  xhci-fill-scratch : Integer, Integer, Integer -> Integer
+  xhci-fill-scratch (arr) (i) (n) =
+    if i >= n then 0
+    else let page = alloc-zeroed 4096 4096
+    in let lo = poke-32 arr (i * 8) page
+    in let hi = poke-32 arr (i * 8 + 4) 0
+    in xhci-fill-scratch arr (i + 1) n
+
+  xhci-setup-scratch : Integer, Integer -> Integer
+  xhci-setup-scratch (dcbaa) (count) =
+    let arr = alloc-zeroed (count * 8 + 64) 64
+    in let f = xhci-fill-scratch arr 0 count
+    in let lo = poke-32 dcbaa 0 arr
+    in poke-32 dcbaa 4 0
+
+ Reset, program, run. The reset self-clears; CNR (controller not
+ ready) must clear before any operational register is touched. The
+ event ring segment table entry is written before ERSTBA, because
+ the controller latches the segment address and size when ERSTBA
+ lands.
+
+  xhci-bring-up : Integer -> XhciHost
+  xhci-bring-up (base) =
+    let hb = xhci-reset-handback 0
+    in let mm = xhci-map-mmio-hole
+    in let caplen = bit-and (peek-32 base 0) 255
+    in let op = base + caplen
+    in let db = base + bit-and (peek-32 base xh-cap-dboff) (-4)
+    in let rt = base + bit-and (peek-32 base xh-cap-rtsoff) (-32)
+    in let hcs1 = peek-32 base xh-cap-hcsparams1
+    in let hcc1 = peek-32 base xh-cap-hccparams1
+    in let maxslots = bit-and hcs1 255
+    in let maxports = bit-and (bit-shru hcs1 24) 255
+    in let csz = bit-and (bit-shru hcc1 xh-hcc-csz-shift) 1
+    in let ppc = bit-and (bit-shru hcc1 xh-hcc-ppc-shift) 1
+    in let xecp = bit-and (bit-shru hcc1 16) 65535
+    in let g4 = xdiag-put 4 caplen
+    in let g5 = xdiag-put 5 hcc1
+    in let g6 = xdiag-put 6 csz
+    in let g7 = xdiag-put 7 ppc
+    in let g8 = xdiag-put 8 xecp
+    in let g19 = xdiag-put 19 op
+    in let g13 = xdiag-put 13 maxslots
+    in let g14 = xdiag-put 14 maxports
+    in let own = xhci-take-ownership base xecp
+    in let hlt = xhci-halt op
+    in let r0 = poke-32 op xh-op-usbcmd xh-cmd-hcrst
+    in let r1 = xhci-wait-bit-clear op xh-op-usbcmd xh-cmd-hcrst xhci-fuel
+    in let r2 = xhci-wait-bit-clear op xh-op-usbsts xh-sts-cnr xhci-fuel
+    in let g15 = xdiag-put 15 r1
+    in let g16 = xdiag-put 16 r2
+    in if r1 == 0 then xhci-no-host
+    else if r2 == 0 then xhci-no-host
+    else let dcbaa = alloc-zeroed 2048 64
+    in let scount = xhci-scratch-count (peek-32 base xh-cap-hcsparams2)
+    in let sp = if scount > 0 then xhci-setup-scratch dcbaa scount else 0
+    in let cmd-ring = xhci-ring-new
+    in let evt-ring = alloc-zeroed 1024 64
+    in let erst = alloc-zeroed 64 64
+    in let state = alloc-zeroed 128 64
+    in let c0 = poke-32 op xh-op-config maxslots
+    in let c1 = poke-32 op xh-op-dcbaap dcbaa
+    in let c2 = poke-32 op (xh-op-dcbaap + 4) 0
+    in let c3 = poke-32 op xh-op-crcr (bit-or (xhci-ring-trbs cmd-ring) 1)
+    in let c4 = poke-32 op (xh-op-crcr + 4) 0
+    in let e0 = poke-32 erst 0 evt-ring
+    in let e1 = poke-32 erst 4 0
+    in let e2 = poke-32 erst 8 xhci-evt-count
+    in let e3 = poke-32 rt xh-ir0-erstsz 1
+    in let e4 = poke-32 rt xh-ir0-erstba erst
+    in let e5 = poke-32 rt xh-ir0-erstba-hi 0
+    in let e6 = poke-32 rt xh-ir0-erdp evt-ring
+    in let e7 = poke-32 rt xh-ir0-erdp-hi 0
+    in let s0 = poke-32 state xh-st-evt-cyc 1
+    in let s1 = poke-32 state xh-st-tag 1
+    in let g0 = poke-32 op xh-op-usbcmd xh-cmd-run
+    in let g1 = xhci-wait-bit-clear op xh-op-usbsts xh-sts-hch xhci-fuel
+    in let g17 = xdiag-put 17 g1
+    in let pw = xhci-power-ports op 0 maxports
+    in let dl = xhci-delay-ticks xhci-settle-ticks
+    in let ps = xhci-diag-ports op 0 maxports 0
+    in let gmg = xdiag-put 0 xhci-diag-magic
+    in if g1 == 0 then xhci-no-host
+    else XhciHost { xh-ok = True, xh-op = op, xh-db = db, xh-rt = rt, xh-ports = maxports, xh-dcbaa = dcbaa, xh-cmd-ring = cmd-ring, xh-evt-ring = evt-ring, xh-state = state, xh-ctxsz = if csz == 0 then 32 else 64 }
+
+Section: Event Ring
+
+ The controller produces events; the driver consumes them at its own
+ dequeue index, accepting a TRB only when its cycle bit matches the
+ driver's cycle state, flipping that state each time the index wraps.
+ Each consumed event is acknowledged by writing ERDP back with the
+ event-handler-busy bit, which is how a real controller learns the
+ ring has room.
+
+ The ring is shared by every device on the controller, so a transfer
+ event consumed while waiting for a DIFFERENT slot must not be
+ dropped: with a keyboard and a disk on one host, a storage wait
+ would eat the keyboard's completion and the pump would stay armed
+ forever. Transfer events latch by slot -- one byte in the state
+ block holding the completion code -- and every waiter checks its
+ latch before touching the ring. Other unasked-for event types (port
+ status changes) are consumed and skipped as before.
+
+  xhci-latch-put : XhciHost, Integer, Integer -> Integer
+  xhci-latch-put (xh) (slot) (code) =
+    poke-byte (xh.xh-state) (xh-st-latch + bit-and slot 31) code
+
+  xhci-latch-take : XhciHost, Integer -> Integer
+  xhci-latch-take (xh) (slot) =
+    let v = peek-byte (xh.xh-state) (xh-st-latch + bit-and slot 31)
+    in if v == 0 then 0
+    else let c = poke-byte (xh.xh-state) (xh-st-latch + bit-and slot 31) 0
+    in v
+
+  xhci-evt-advance : XhciHost, Integer, Integer -> Integer
+  xhci-evt-advance (xh) (deq) (cyc) =
+    let st = xh.xh-state
+    in let next = if deq + 1 >= xhci-evt-count then 0 else deq + 1
+    in let w0 = poke-32 st xh-st-evt-deq next
+    in let w1 = if next == 0 then poke-32 st xh-st-evt-cyc (1 - cyc) else 0
+    in let a0 = poke-32 (xh.xh-rt) xh-ir0-erdp (bit-or (xh.xh-evt-ring + next * 16) 8)
+    in poke-32 (xh.xh-rt) xh-ir0-erdp-hi 0
+
+ The transfer wait returns the completion code as a bare integer --
+ zero means no event -- because poll loops call it millions of times
+ a second on a machine with no garbage collector, and a record return
+ is a heap allocation per call. Its idle path is a latch peek, three
+ more peeks, and a compare: nothing allocates.
+
+  xhci-wait-xfer : XhciHost, Integer, Integer -> Integer
+  xhci-wait-xfer (xh) (slot) (fuel) =
+    let l = xhci-latch-take xh slot
+    in if l /= 0 then l
+    else let st = xh.xh-state
+    in let deq = peek-32 st xh-st-evt-deq
+    in let cyc = peek-32 st xh-st-evt-cyc
+    in let ctl = peek-32 (xh.xh-evt-ring) (deq * 16 + 12)
+    in if bit-and ctl 1 /= cyc then
+      if fuel <= 0 then 0
+      else xhci-wait-xfer xh slot (fuel - 1)
+    else let sts = peek-32 (xh.xh-evt-ring) (deq * 16 + 8)
+    in let adv = xhci-evt-advance xh deq cyc
+    in let ty = bit-and (bit-shru ctl 10) 63
+    in if ty /= trb-t-xfer-event then xhci-wait-xfer xh slot fuel
+    else let code = bit-and (bit-shru sts 24) 255
+    in let eslot = bit-and (bit-shru ctl 24) 255
+    in if eslot == slot then code
+    else let put = xhci-latch-put xh eslot code
+    in xhci-wait-xfer xh slot fuel
+
+  XhciEvent = record {
+    xe-ok : Boolean,
+    xe-code : Integer,
+    xe-slot : Integer
+  }
+
+  xhci-no-event : XhciEvent
+  xhci-no-event = XhciEvent { xe-ok = False, xe-code = 0, xe-slot = 0 }
+
+  xhci-wait-event : XhciHost, Integer, Integer -> XhciEvent
+  xhci-wait-event (xh) (want) (fuel) =
+    let st = xh.xh-state
+    in let deq = peek-32 st xh-st-evt-deq
+    in let cyc = peek-32 st xh-st-evt-cyc
+    in let ctl = peek-32 (xh.xh-evt-ring) (deq * 16 + 12)
+    in if bit-and ctl 1 /= cyc then
+      if fuel <= 0 then xhci-no-event
+      else xhci-wait-event xh want (fuel - 1)
+    else let sts = peek-32 (xh.xh-evt-ring) (deq * 16 + 8)
+    in let adv = xhci-evt-advance xh deq cyc
+    in let ty = bit-and (bit-shru ctl 10) 63
+    in if ty == trb-t-xfer-event then
+      let put = xhci-latch-put xh (bit-and (bit-shru ctl 24) 255) (bit-and (bit-shru sts 24) 255)
+      in xhci-wait-event xh want fuel
+    else if ty /= want then xhci-wait-event xh want fuel
+    else XhciEvent { xe-ok = True, xe-code = bit-and (bit-shru sts 24) 255, xe-slot = bit-and (bit-shru ctl 24) 255 }
+
+Section: Command Ring
+
+ One command TRB, doorbell zero, then wait for the command completion
+ event. Completion code 1 is success.
+
+  xhci-command : XhciHost, Integer, Integer, Integer, Integer -> XhciEvent
+  xhci-command (xh) (plo) (phi) (sts) (ctl) =
+    let w = xhci-ring-push (xh.xh-cmd-ring) plo phi sts ctl
+    in let db = poke-32 (xh.xh-db) 0 0
+    in xhci-wait-event xh trb-t-cmd-complete xhci-fuel
+
+Section: Ports
+
+ PORTSC is full of write-1-to-clear bits, so a port write must never
+ echo the read value back; it writes only the intent (port power plus
+ the operation) or the specific change bits being acknowledged. A
+ USB3 device trains itself and shows up already enabled; a USB2
+ device needs the reset, and enabled-ness appears when the reset
+ completes.
+
+  xhci-portsc : XhciHost, Integer -> Integer
+  xhci-portsc (xh) (port) = peek-32 (xh.xh-op) (xh-op-ports + port * 16)
+
+  xhci-find-port : XhciHost, Integer -> Integer
+  xhci-find-port (xh) (from) =
+    if from >= xh.xh-ports then -1
+    else if bit-and (xhci-portsc xh from) xh-portsc-ccs /= 0 then from
+    else xhci-find-port xh (from + 1)
+
+  xhci-wait-ped : XhciHost, Integer, Integer -> Integer
+  xhci-wait-ped (xh) (port) (fuel) =
+    if bit-and (xhci-portsc xh port) xh-portsc-ped /= 0 then 1
+    else if fuel <= 0 then 0
+    else xhci-wait-ped xh port (fuel - 1)
+
+  xhci-port-speed : XhciHost, Integer -> Integer
+  xhci-port-speed (xh) (port) = bit-and (bit-shru (xhci-portsc xh port) 10) 15
+
+  xhci-reset-port : XhciHost, Integer -> Integer
+  xhci-reset-port (xh) (port) =
+    let reg = xh-op-ports + port * 16
+    in if bit-and (xhci-portsc xh port) xh-portsc-ped /= 0 then xhci-port-speed xh port
+    else let r = poke-32 (xh.xh-op) reg (bit-or xh-portsc-pp xh-portsc-pr)
+    in let ok = xhci-wait-ped xh port xhci-fuel
+    in if ok == 0 then 0
+    else let ack = poke-32 (xh.xh-op) reg (bit-or xh-portsc-pp (bit-or xh-portsc-csc xh-portsc-prc))
+    in let rec = xhci-delay-ticks xhci-recovery-ticks
+    in xhci-port-speed xh port
+
+  xhci-ep0-maxpkt : Integer -> Integer
+  xhci-ep0-maxpkt (speed) =
+    if speed >= 4 then 512
+    else if speed == 3 then 64
+    else 8
+
+Section: Input Contexts
+
+ The controller learns about a device only through input contexts:
+ Address Device reads the slot and endpoint-zero contexts, Configure
+ Endpoint the slot and each added endpoint. Root-hub port numbers are
+ one-based. Endpoint types in context encoding: control 4, bulk OUT
+ 2, bulk IN 6, interrupt IN 7. The dequeue pointer carries the ring's
+ cycle state in bit zero; error-count three is the conventional
+ bulk/control retry budget.
+
+ A device behind a hub is named by the route string in slot-context
+ dword zero, bits 19:0: one nibble per tier, each the one-based
+ downstream port number of the hub at that tier, with the root port
+ kept separately in dword one. A device on a root port has route
+ zero. A low- or full-speed device below a HIGH-speed hub needs that
+ hub's transaction translator: dword two names the parent hub's slot
+ and the parent port, and the controller issues split transactions
+ through them. Below a full-speed hub the whole chain runs at one
+ speed and the fields stay zero.
+
+ Endpoint-context dword zero carries the Interval field in bits
+ 23:16, the polling period as a power-of-two count of 125-microsecond
+ microframes. Bulk endpoints ignore it; an interrupt endpoint with
+ interval zero is a parameter error on a spec-strict controller. The
+ encoding depends on device speed: full and low speed give bInterval
+ in whole frames, so the exponent is the floor log of eight times
+ that, clamped to the 3..10 window the spec demands; high and super
+ speed give bInterval already as an exponent, one-based.
+
+ Every context is ctxsz bytes -- 32 on a controller reporting CSZ=0
+ (QEMU), 64 on most real Intel silicon (CSZ=1). The input control
+ context sits at offset 0; the slot context at one context size; the
+ endpoint contexts follow, endpoint-zero (device context index 1) at
+ two context sizes. Writing the slot context at a hardcoded 32 on a
+ 64-byte controller lands it inside the input control context, and
+ Address Device then reads a garbage slot -- a device that resets and
+ connects but never addresses. A 64-byte input context with a high
+ device-context index reaches 33 contexts, so the buffer is sized for
+ that ceiling.
+
+  xhci-ictx-address : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  xhci-ictx-address (route) (port) (speed) (maxpkt) (ep0-trbs) (ttslot) (ttport) (ctxsz) =
+    let ictx = alloc-zeroed 2112 64
+    in let sb = ctxsz
+    in let eb = ctxsz * 2
+    in let a0 = poke-32 ictx 4 3
+    in let s0 = poke-32 ictx sb (bit-or route (bit-or (bit-shl 1 27) (bit-shl speed 20)))
+    in let s1 = poke-32 ictx (sb + 4) (bit-shl (port + 1) 16)
+    in let s2 = poke-32 ictx (sb + 8) (bit-or ttslot (bit-shl ttport 8))
+    in let e0 = poke-32 ictx (eb + 4) (bit-or (bit-shl 4 3) (bit-or 6 (bit-shl maxpkt 16)))
+    in let e1 = poke-32 ictx (eb + 8) (bit-or ep0-trbs 1)
+    in let e2 = poke-32 ictx (eb + 12) 0
+    in let e3 = poke-32 ictx (eb + 16) 8
+    in ictx
+
+  xhci-log2-floor : Integer -> Integer
+  xhci-log2-floor (n) =
+    if n <= 1 then 0
+    else 1 + xhci-log2-floor (bit-shru n 1)
+
+  xhci-ep-interval : Integer, Integer -> Integer
+  xhci-ep-interval (speed) (binterval) =
+    if speed >= 3 then
+      let e = binterval - 1
+      in if e < 0 then 0 else if e > 15 then 15 else e
+    else let b = if binterval < 1 then 1 else binterval
+    in let e = xhci-log2-floor (b * 8)
+    in if e < 3 then 3 else if e > 10 then 10 else e
+
+ The average-TRB-length dword doubles as the Max ESIT Payload for
+ periodic endpoints: an interrupt endpoint moves at most one packet
+ per service interval, so both halves are the packet size. Bulk keeps
+ the conventional 512.
+
+  xhci-ictx-ep : Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  xhci-ictx-ep (ictx) (dci) (ep-type) (maxpkt) (trbs) (interval) (ctxsz) =
+    let base = (dci + 1) * ctxsz
+    in let d0 = poke-32 ictx base (bit-shl interval 16)
+    in let d1 = poke-32 ictx (base + 4) (bit-or (bit-shl ep-type 3) (bit-or 6 (bit-shl maxpkt 16)))
+    in let q0 = poke-32 ictx (base + 8) (bit-or trbs 1)
+    in let q1 = poke-32 ictx (base + 12) 0
+    in let avg = if ep-type == 7 then bit-or (bit-shl maxpkt 16) maxpkt else 512
+    in poke-32 ictx (base + 16) avg
+
+  xhci-ictx-configure : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  xhci-ictx-configure (dci-in) (pkt-in) (trbs-in) (dci-out) (pkt-out) (trbs-out) (ctxsz) (outctx) =
+    let ictx = alloc-zeroed 2112 64
+    in let maxdci = if dci-in > dci-out then dci-in else dci-out
+    in let a0 = poke-32 ictx 4 (bit-or 1 (bit-or (bit-shl 1 dci-in) (bit-shl 1 dci-out)))
+    in let cp = xhci-copy-ctx ictx outctx ctxsz 0
+    in let s0 = poke-32 ictx ctxsz (bit-or (bit-and (peek-32 outctx 0) #07FFFFFF) (bit-shl maxdci 27))
+    in let ei = xhci-ictx-ep ictx dci-in 6 pkt-in trbs-in 0 ctxsz
+    in let eo = xhci-ictx-ep ictx dci-out 2 pkt-out trbs-out 0 ctxsz
+    in ictx
+
+ The single-endpoint variant, for a device whose interesting traffic
+ is one interrupt endpoint: a HID keyboard's reports.
+
+ The input slot context for a Configure Endpoint command is a copy
+ of the current output slot context with only Context Entries
+ changed (xHCI 4.6.3.2). Building a fresh one with Speed zero costs
+ nothing for the asynchronous bulk endpoints -- their schedule does
+ not depend on speed -- but a periodic (interrupt) endpoint is
+ scheduled against the slot's speed, so a zero there leaves it
+ unscheduled: one transfer at setup and then silence. Copy the whole
+ slot context out of the device context (route, speed, root port,
+ TT), then raise Context Entries to the highest device-context index
+ in use.
+
+  xhci-copy-ctx : Integer, Integer, Integer, Integer -> Integer
+  xhci-copy-ctx (ictx) (outctx) (ctxsz) (i) =
+    if i * 4 >= ctxsz then 0
+    else let w = poke-32 ictx (ctxsz + i * 4) (peek-32 outctx (i * 4))
+    in xhci-copy-ctx ictx outctx ctxsz (i + 1)
+
+  xhci-ictx-single : Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  xhci-ictx-single (dci) (ep-type) (maxpkt) (trbs) (interval) (ctxsz) (outctx) =
+    let ictx = alloc-zeroed 2112 64
+    in let a0 = poke-32 ictx 4 (bit-or 1 (bit-shl 1 dci))
+    in let cp = xhci-copy-ctx ictx outctx ctxsz 0
+    in let s0 = poke-32 ictx ctxsz (bit-or (bit-and (peek-32 outctx 0) #07FFFFFF) (bit-shl dci 27))
+    in let e = xhci-ictx-ep ictx dci ep-type maxpkt trbs interval ctxsz
+    in ictx
+
+Section: Slot and Device
+
+ Enable Slot returns the slot id in the completion event. The output
+ device context handed to the controller through DCBAA is the
+ controller's own memory from then on; the driver initializes the
+ endpoint-zero dequeue there once for device models that read it
+ directly (codex-vm) and never touches it again -- real controllers
+ take ring positions only from input contexts.
+
+ The output device context follows the same size, but with no input
+ control context ahead of it: the slot context is at offset zero and
+ endpoint context d at d context sizes.
+
+  xhci-set-ep-ring : Integer, Integer, Integer, Integer -> Integer
+  xhci-set-ep-ring (ctx) (dci) (trbs) (ctxsz) =
+    let lo = poke-32 ctx (dci * ctxsz + 8) (bit-or trbs 1)
+    in poke-32 ctx (dci * ctxsz + 12) 0
+
+  xhci-open-device-at : XhciHost, Integer, Integer, Integer, Integer, Integer -> UsbDev
+  xhci-open-device-at (xh) (route) (rootport) (speed) (ttslot) (ttport) =
+    let ev = xhci-command xh 0 0 0 (bit-shl trb-t-enable-slot 10)
+    in if ev.xe-ok == False then xhci-no-dev
+    else if ev.xe-code /= trb-cc-success then xhci-no-dev
+    else let slot = ev.xe-slot
+    in if slot == 0 then xhci-no-dev
+    else let ctx = alloc-zeroed 2048 64
+    in let ep0-ring = xhci-ring-new
+    in let d0 = poke-32 (xh.xh-dcbaa) (slot * 8) ctx
+    in let d1 = poke-32 (xh.xh-dcbaa) (slot * 8 + 4) 0
+    in let e0 = xhci-set-ep-ring ctx 1 (xhci-ring-trbs ep0-ring) (xh.xh-ctxsz)
+    in let ictx = xhci-ictx-address route rootport speed (xhci-ep0-maxpkt speed) (xhci-ring-trbs ep0-ring) ttslot ttport (xh.xh-ctxsz)
+    in let av = xhci-command xh ictx 0 0 (bit-or (bit-shl trb-t-address-dev 10) (bit-shl slot 24))
+    in if av.xe-ok == False then xhci-no-dev
+    else if av.xe-code /= trb-cc-success then xhci-no-dev
+    else UsbDev { ud-ok = True, ud-slot = slot, ud-port = rootport, ud-speed = speed, ud-ctx = ctx, ud-ep0-ring = ep0-ring }
+
+  xhci-open-device : XhciHost, Integer, Integer -> UsbDev
+  xhci-open-device (xh) (port) (speed) = xhci-open-device-at xh 0 port speed 0 0
+
+  xhci-configure-endpoint : XhciHost, UsbDev, Integer -> XhciEvent
+  xhci-configure-endpoint (xh) (dev) (ictx) =
+    xhci-command xh ictx 0 0 (bit-or (bit-shl trb-t-config-ep 10) (bit-shl (dev.ud-slot) 24))
+
+Section: Doorbells
+
+  xhci-ring-doorbell : XhciHost, Integer, Integer -> Integer
+  xhci-ring-doorbell (xh) (slot) (dci) = poke-32 (xh.xh-db) (slot * 4) dci
+
+Section: Control Transfers
+
+ A control transfer is three TRBs on the endpoint-zero ring: SETUP
+ with the eight setup bytes immediate in the parameter dwords, DATA
+ pointing at the buffer, STATUS closing the handshake in the opposite
+ direction of the data. Only the status TRB carries IOC, so exactly
+ one transfer event answers the whole transfer; a short data stage is
+ normal (a descriptor read asks for more than most descriptors hold)
+ and ends the data TD silently.
+
+  xhci-setup-lo : Integer, Integer, Integer -> Integer
+  xhci-setup-lo (rt) (req) (value) =
+    bit-or rt (bit-or (bit-shl req 8) (bit-shl (bit-and value 65535) 16))
+
+  xhci-setup-hi : Integer, Integer -> Integer
+  xhci-setup-hi (index) (length) =
+    bit-or (bit-and index 65535) (bit-shl (bit-and length 65535) 16)
+
+  xhci-ctrl-in : XhciHost, UsbDev, Integer, Integer, Integer, Integer, Integer, Integer -> Boolean
+  xhci-ctrl-in (xh) (dev) (rt) (req) (value) (index) (buf) (len) =
+    let ring = dev.ud-ep0-ring
+    in let w0 = xhci-ring-push ring (xhci-setup-lo rt req value) (xhci-setup-hi index len) 8 (bit-or (bit-shl trb-t-setup 10) (bit-or trb-flag-idt (bit-shl 3 16)))
+    in let w1 = xhci-ring-push ring buf 0 len (bit-or (bit-shl trb-t-data 10) (bit-shl 1 16))
+    in let w2 = xhci-ring-push ring 0 0 0 (bit-or (bit-shl trb-t-status 10) trb-flag-ioc)
+    in let db = xhci-ring-doorbell xh (dev.ud-slot) 1
+    in let code = xhci-wait-xfer xh (dev.ud-slot) xhci-fuel
+    in if code == trb-cc-success then True
+    else code == trb-cc-short
+
+  xhci-ctrl-nodata : XhciHost, UsbDev, Integer, Integer, Integer, Integer -> Boolean
+  xhci-ctrl-nodata (xh) (dev) (rt) (req) (value) (index) =
+    let ring = dev.ud-ep0-ring
+    in let w0 = xhci-ring-push ring (xhci-setup-lo rt req value) (xhci-setup-hi index 0) 8 (bit-or (bit-shl trb-t-setup 10) trb-flag-idt)
+    in let w1 = xhci-ring-push ring 0 0 0 (bit-or (bit-shl trb-t-status 10) (bit-or trb-flag-ioc (bit-shl 1 16)))
+    in let db = xhci-ring-doorbell xh (dev.ud-slot) 1
+    in let code = xhci-wait-xfer xh (dev.ud-slot) xhci-fuel
+    in code == trb-cc-success
+
+Section: Standard Requests
+
+  usb-get-descriptor : XhciHost, UsbDev, Integer, Integer, Integer, Integer -> Boolean
+  usb-get-descriptor (xh) (dev) (desc-type) (desc-index) (buf) (len) =
+    xhci-ctrl-in xh dev 128 6 (bit-or (bit-shl desc-type 8) desc-index) 0 buf len
+
+  usb-set-configuration : XhciHost, UsbDev, Integer -> Boolean
+  usb-set-configuration (xh) (dev) (config) =
+    xhci-ctrl-nodata xh dev 0 9 config 0

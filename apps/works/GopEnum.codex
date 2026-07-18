@@ -1,0 +1,272 @@
+Chapter: GopEnum
+  cites Works chapter GopDisk
+  cites Works chapter GopAhci
+  cites Works chapter GopNvme
+  cites Works chapter GopUsbMsc
+  cites Works chapter GopFat16
+  cites Foreword chapter Fat16
+  cites Foreword chapter Maybe
+
+ The disk inventory. GopMedium answers one question in private -- which
+ medium is mine -- and locks the answer into GopDisk's selection cells.
+ This chapter answers the wider question out loud: what disks does this
+ machine have at all? Every AHCI port, the NVMe namespace, the legacy
+ IDE drive, the USB stick -- each named by its own IDENTIFY or INQUIRY
+ data, sized in sectors, and probed for an EFI System Partition, its
+ volume label, and our own CODEX.CDX. The demo this exists for: the
+ boot stick lists every disk in the machine by name and points at
+ itself.
+
+ Enumeration rides the same seam the medium probe rides: steering the
+ selection cells at a candidate makes the whole FAT stack above read
+ from it. Unlike the probe, enumeration must leave no trace -- the
+ cells are saved before the walk and restored after it, magic written
+ last, so a locked boot medium stays locked and a cleared machine
+ stays cleared no matter what the walk touched.
+
+ We say:
+
+Section: Inventory Record
+
+  DiskInfo = record {
+    di-kind : Integer,
+    di-index : Integer,
+    di-model : Text,
+    di-sectors : Integer,
+    di-label : Text,
+    di-codex : Boolean
+  }
+
+  enum-kind-name : Integer -> Text
+  enum-kind-name (k) =
+    if k == med-kind-ahci then "AHCI"
+    else if k == med-kind-ide then "IDE"
+    else if k == med-kind-usb then "USB"
+    else if k == med-kind-nvme then "NVMe"
+    else "?"
+
+  enum-size-mb : Integer -> Integer
+  enum-size-mb (sectors) = sectors / 2048
+
+Section: ASCII Decoding
+
+ Identify pages carry ASCII, space-padded, and on a device that never
+ filled the field, zeros or garbage. The decode stops at the first
+ byte outside the printable range and then trims trailing spaces, so
+ a blank or hostile field becomes the empty text instead of a smear
+ of gibberish on the boot screen. The bytes go through gfat-text,
+ whose from-unicode step is the ASCII-to-CCE conversion every disk
+ string needs.
+
+  enum-printable-len : Integer, Integer, Integer, Integer -> Integer
+  enum-printable-len (buf) (off) (len) (i) =
+    if i >= len then i
+    else let b = peek-byte buf (off + i)
+    in if b < 32 then i
+    else if b > 126 then i
+    else enum-printable-len buf off len (i + 1)
+
+  enum-trim-len : Integer, Integer, Integer -> Integer
+  enum-trim-len (buf) (off) (n) =
+    if n <= 0 then 0
+    else if peek-byte buf (off + n - 1) == 32 then enum-trim-len buf off (n - 1)
+    else n
+
+  enum-ascii : Integer, Integer, Integer -> Text
+  enum-ascii (buf) (off) (len) =
+    let p = enum-printable-len buf off len 0
+    in let n = enum-trim-len buf off p
+    in gfat-text buf off (off + n) ""
+
+Section: ATA Identify Decoding
+
+ ATA strings are packed two characters to a 16-bit word with the first
+ character in the HIGH byte, and the words land little-endian in the
+ byte stream -- so consecutive characters arrive pairwise swapped. The
+ decoder unswaps into a scratch buffer and reads it as plain ASCII.
+ The model occupies words 27-46: forty characters at byte offset 54.
+
+  enum-ata-unswap : Integer, Integer, Integer, Integer, Integer -> Integer
+  enum-ata-unswap (src) (off) (dst) (i) (words) =
+    if i >= words then 0
+    else let c0 = peek-byte src (off + i * 2 + 1)
+    in let c1 = peek-byte src (off + i * 2)
+    in let p0 = poke-byte dst (i * 2) c0
+    in let p1 = poke-byte dst (i * 2 + 1) c1
+    in enum-ata-unswap src off dst (i + 1) words
+
+  enum-ata-model : Integer -> Text
+  enum-ata-model (buf) =
+    let scratch = alloc-zeroed 64 8
+    in let u = enum-ata-unswap buf 54 scratch 0 20
+    in enum-ascii scratch 0 40
+
+ Words 100-103 hold the LBA48 sector count and words 60-61 the LBA28
+ count. A drive without LBA48 leaves the wide field zero, so nonzero
+ wins and the narrow count is the fallback.
+
+  enum-ata-sectors : Integer -> Integer
+  enum-ata-sectors (buf) =
+    let wide = peek-qword buf 200
+    in if wide /= 0 then wide
+    else fat16-read-u32 buf 120
+
+Section: NVMe Identify Decoding
+
+  enum-nvme-model : Integer -> Text
+  enum-nvme-model (buf) = enum-ascii buf 24 40
+
+Section: USB Inquiry Decoding
+
+ INQUIRY answers a vendor of eight characters at byte 8 and a product
+ of sixteen at byte 16; the readable name is both, separated when both
+ are present.
+
+  enum-usb-model : Integer -> Text
+  enum-usb-model (inq) =
+    let v = enum-ascii inq 8 8
+    in let p = enum-ascii inq 16 16
+    in if text-length v == 0 then p
+    else if text-length p == 0 then v
+    else v & " " & p
+
+Section: FAT Volume Label
+
+ The BPB carries the volume label at byte 43 on FAT16 and byte 71 on
+ FAT32, eleven characters, space-padded.
+
+  enum-fat-label : Integer, Boolean -> Text
+  enum-fat-label (bpb) (is32) =
+    enum-ascii bpb (if is32 then 71 else 43) 11
+
+Section: ESP Probe
+
+ With the selection cells steered at a candidate, one mount answers
+ whether it carries a FAT ESP at all, one boot-sector read yields the
+ label, and one root-directory lookup answers for CODEX.CDX.
+
+  EnumEsp = record {
+    ee-label : Text,
+    ee-codex : Boolean
+  }
+
+  enum-no-esp : EnumEsp
+  enum-no-esp = EnumEsp { ee-label = "", ee-codex = False }
+
+  enum-esp : [Device.Port] EnumEsp
+  enum-esp = act
+    m <- gfat-mount-esp
+    if m.gm-ok == False then enum-no-esp
+    else let vol = m.gm-vol
+    in act
+      b <- disk-read-sector (vol.vol-part-start)
+      sz <- gfat-file-size vol "CODEX.CDX"
+      let lbl = if b.dr-ok then enum-fat-label (b.dr-buf) (gfat-is32 vol) else ""
+      in EnumEsp { ee-label = lbl, ee-codex = sz > 0 }
+    end
+  end
+
+Section: Candidates
+
+ Each candidate follows the same shape: prove the controller answers,
+ steer the cells at it, probe its ESP, decode its identify data. The
+ USB candidate exists only when usb-attach published a handle -- the
+ connect fallback would reset the shared controller and kill the
+ keyboard, the same rule GopMedium follows.
+
+  enum-ahci : Integer -> [Device.Port] Maybe DiskInfo
+  enum-ahci (n) = act
+    hba <- ahci-find-nth n
+    if hba.hba-ok == False then None
+    else act
+      let s = med-set med-kind-ahci n
+      in act
+        esp <- enum-esp
+        let idbuf = alloc-zeroed 512 64
+        in let ok = ahci-identify-on hba idbuf
+        in let model = if ok /= 0 then enum-ata-model idbuf else ""
+        in let secs = if ok /= 0 then enum-ata-sectors idbuf else 0
+        in Just (DiskInfo { di-kind = med-kind-ahci, di-index = n, di-model = model, di-sectors = secs, di-label = esp.ee-label, di-codex = esp.ee-codex })
+      end
+    end
+  end
+
+  enum-nvme : [Device.Port] Maybe DiskInfo
+  enum-nvme = act
+    c <- nvme-disk
+    if c.nc-ok == False then None
+    else act
+      let s = med-set med-kind-nvme 0
+      in act
+        esp <- enum-esp
+        let idbuf = nvme-identify-ctrl c
+        in let model = if idbuf /= 0 then enum-nvme-model idbuf else ""
+        in Just (DiskInfo { di-kind = med-kind-nvme, di-index = 0, di-model = model, di-sectors = c.nc-sectors, di-label = esp.ee-label, di-codex = esp.ee-codex })
+      end
+    end
+  end
+
+  enum-ide : [Device.Port] Maybe DiskInfo
+  enum-ide = act
+    idbuf <- ide-identify
+    if idbuf == 0 then None
+    else act
+      let s = med-set med-kind-ide 0
+      in act
+        esp <- enum-esp
+        Just (DiskInfo { di-kind = med-kind-ide, di-index = 0, di-model = enum-ata-model idbuf, di-sectors = enum-ata-sectors idbuf, di-label = esp.ee-label, di-codex = esp.ee-codex })
+      end
+    end
+  end
+
+  enum-usb : [Device.Port] Maybe DiskInfo
+  enum-usb = act
+    let p = msc-published
+    in if p.md-ok == False then None
+    else act
+      let s = med-set med-kind-usb 0
+      in act
+        esp <- enum-esp
+        let inq = alloc-zeroed 64 8
+        in let iok = msc-inquiry-into p inq
+        in let model = if iok then enum-usb-model inq else ""
+        in Just (DiskInfo { di-kind = med-kind-usb, di-index = 0, di-model = model, di-sectors = p.md-sectors, di-label = esp.ee-label, di-codex = esp.ee-codex })
+      end
+    end
+  end
+
+Section: Walk
+
+ Save the selection cells, walk every candidate, restore. The restore
+ writes the magic LAST for the same reason med-set does: a partial
+ write must never read as a selection.
+
+  enum-restore : Integer, Integer, Integer -> Integer
+  enum-restore (magic) (kind) (index) =
+    let k = poke-32 med-cells 4 kind
+    in let i = poke-32 med-cells 8 index
+    in poke-32 med-cells 0 magic
+
+  enum-collect : Maybe DiskInfo, List DiskInfo -> List DiskInfo
+  enum-collect (m) (acc) =
+    when m
+      is None -> acc
+      is Just (d) -> list-push acc d
+
+  enum-disks : [Device.Port] List DiskInfo
+  enum-disks = act
+    let m0 = peek-32 med-cells 0
+    in let k0 = peek-32 med-cells 4
+    in let i0 = peek-32 med-cells 8
+    in act
+      us <- enum-usb
+      a0 <- enum-ahci 0
+      a1 <- enum-ahci 1
+      a2 <- enum-ahci 2
+      a3 <- enum-ahci 3
+      nv <- enum-nvme
+      id <- enum-ide
+      let r = enum-restore m0 k0 i0
+      in enum-collect id (enum-collect nv (enum-collect a3 (enum-collect a2 (enum-collect a1 (enum-collect a0 (enum-collect us []))))))
+    end
+  end

@@ -44,10 +44,22 @@ try {
     $listener.Stop()
     $ns = $client.GetStream()
     $irData = [System.IO.File]::ReadAllBytes($IrFile)
-    $ns.Write($irData, 0, $irData.Length)
-    $ns.Flush()
-    $client.Client.Shutdown([System.Net.Sockets.SocketShutdown]::Send)
-    # Read response
+    # Framed wire protocol: [4-byte LE length][tag=1][payload, chunked]
+    $msgLen = $irData.Length + 1
+    $header = [BitConverter]::GetBytes([int]$msgLen)
+    $ns.Write($header, 0, 4)
+    $ns.WriteByte(1)
+    $chunkSize = 4096
+    $off = 0
+    while ($off -lt $irData.Length) {
+        $n = [Math]::Min($chunkSize, $irData.Length - $off)
+        $ns.Write($irData, $off, $n)
+        $ns.Flush()
+        $off += $n
+        if ($off -lt $irData.Length) { Start-Sleep -Milliseconds 20 }
+    }
+    # Read response until the plug closes the stream
+    $ns.ReadTimeout = 120000
     $resp = [System.Collections.Generic.List[byte]]::new()
     $buf = New-Object byte[] 65536
     while ($true) {

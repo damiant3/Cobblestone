@@ -1,0 +1,288 @@
+Chapter: OtaBoot
+  cites Foreword chapter OtaUpdate
+  cites Foreword chapter Board
+  cites Foreword chapter Sha256
+  cites Foreword chapter Hkdf
+  cites Foreword chapter Maybe
+
+ The boot selector: steps 5 through 7 of
+ docs/Designs/Active/IoT/OTAFirmwareUpdate.md, which described a machine
+ that did not exist. Everything up to activation was built -- an image is
+ staged, gated and activated -- and then the device rebooted into it and
+ nothing ever checked again. An image that passed Gate B and arrived in
+ flash broken had no second gate, and an image that booted and died had
+ no way back. That is the whole automatic-rollback story, and it was a
+ diagram.
+
+ The selector is deliberately small, because it runs in EVERY boot, not
+ only after an update: read one word, maybe hash one bank, choose a bank.
+ No policy engine, no trust lattice, no CDX parse. Gate B already decided
+ whether this image is allowed to run; the selector only decides whether
+ what is in the bank is what Gate B blessed, and whether it has had too
+ many chances.
+
+ The record lives in flash and the flag is ONE aligned word, which is the
+ design's atomicity requirement and not a detail: the device must wake
+ having either fully accepted the candidate or never heard of it. The
+ digest and length are written first and the flag last, in its own
+ unlock-program-lock cycle, so a power loss between them leaves a digest
+ nobody points at and a device that boots the firmware it already
+ trusted.
+
+ We say:
+
+Section: The Record
+
+ A device that has never been updated has no record. Erased NOR flash
+ reads as all-ones and a zeroed page reads as all-zeros, and neither is a
+ boot record, so the word carries a marker. Anything else is the factory
+ state: boot the primary, no candidate. That is also the honest answer
+ after a power loss during the very first write.
+
+  boot-marker : Integer = #B0
+
+  boot-attempt-limit : Integer = 3
+
+  BootRecord = record {
+   br-primary : BootSlot,
+   br-candidate : Maybe BootSlot,
+   br-attempts : Integer between 0 and 255
+  }
+
+  boot-factory-record : BootRecord
+  boot-factory-record = BootRecord {
+   br-primary = SlotA,
+   br-candidate = None,
+   br-attempts = 0
+  }
+
+  slot-bit : BootSlot -> Integer
+  slot-bit (s) =
+   when s
+    is SlotA -> 0
+    is SlotB -> 1
+
+  bit-slot : Integer -> BootSlot
+  bit-slot (b) = if b == 0 then SlotA else SlotB
+
+ Bit 0 primary, bit 1 candidate-present, bit 2 candidate slot, bits 8-15
+ attempts, bits 24-31 the marker. One word, one store.
+
+  boot-flag-word : BootRecord -> Integer
+  boot-flag-word (r) =
+   let p = slot-bit (r.br-primary)
+   in let c = when r.br-candidate
+       is None -> 0
+       is Just (s) -> bit-or 2 (bit-shl (slot-bit s) 2)
+   in bit-or (bit-or (bit-or p c) (bit-shl (r.br-attempts) 8)) (bit-shl boot-marker 24)
+
+  boot-record-of-word : Integer -> BootRecord
+  boot-record-of-word (w) =
+   if bit-and (bit-shru w 24) 255 /= boot-marker then boot-factory-record
+   else BootRecord {
+    br-primary = bit-slot (bit-and w 1),
+    br-candidate = if bit-and w 2 == 0 then None else Just (bit-slot (bit-and (bit-shru w 2) 1)),
+    br-attempts = __narrow (bit-and (bit-shru w 8) 255)
+   }
+
+Section: The Transitions
+
+ Pure, so they can be reasoned about without a device. Each is one step
+ of the design's steps 5 to 7.
+
+ Marking a candidate resets the attempt count: this image has not had its
+ chances yet.
+
+  ota-mark-candidate : BootRecord, BootSlot -> BootRecord
+  ota-mark-candidate (r) (c) = BootRecord {
+   br-primary = r.br-primary,
+   br-candidate = Just c,
+   br-attempts = 0
+  }
+
+ An attempt is counted BEFORE the candidate runs, never after. A boot
+ that hangs, faults, or browns out never reaches an after -- counting
+ there would give a hanging image infinite retries, which is the failure
+ the limit exists to stop.
+
+  ota-boot-attempt : BootRecord -> BootRecord
+  ota-boot-attempt (r) = BootRecord {
+   br-primary = r.br-primary,
+   br-candidate = r.br-candidate,
+   br-attempts = __narrow (if r.br-attempts >= 255 then 255 else r.br-attempts + 1)
+  }
+
+ Rollback forgets the candidate and keeps the primary. The candidate
+ never committed, so the committed sequence never advanced and this is
+ not an anti-rollback violation -- it is the device declining to adopt an
+ image it could not run.
+
+  ota-rollback : BootRecord -> BootRecord
+  ota-rollback (r) = BootRecord {
+   br-primary = r.br-primary,
+   br-candidate = None,
+   br-attempts = 0
+  }
+
+ The commit is step 7, and it is explicit by design: the new firmware
+ says it is healthy, and nothing says it on the firmware's behalf. An
+ implicit commit -- adopting an image because it reached the selector --
+ would defeat the watchdog window, because an image that boots and then
+ wedges is exactly the image the window exists to catch. No commit means
+ the next boot counts another attempt and eventually rolls back.
+
+  ota-commit : BootRecord -> BootRecord
+  ota-commit (r) =
+   when r.br-candidate
+    is None -> r
+    is Just (c) -> BootRecord {
+     br-primary = c,
+     br-candidate = None,
+     br-attempts = 0
+    }
+
+ The decision itself, given whether the candidate's bytes verified. The
+ primary is the answer to every doubt.
+
+  boot-select : BootRecord, Boolean -> BootSlot
+  boot-select (r) (candidate-ok) =
+   when r.br-candidate
+    is None -> r.br-primary
+    is Just (c) ->
+      if candidate-ok == False then r.br-primary
+      else if r.br-attempts > boot-attempt-limit then r.br-primary
+      else c
+
+ A candidate that has run out of attempts or failed its hash is not
+ merely skipped for this boot -- it is abandoned, so the next boot does
+ not pay to hash it again forever.
+
+  boot-give-up : BootRecord, Boolean -> Boolean
+  boot-give-up (r) (candidate-ok) =
+   when r.br-candidate
+    is None -> False
+    is Just (c) -> (candidate-ok == False) | (r.br-attempts > boot-attempt-limit)
+
+Section: The Flash Half
+
+ Reading the record is a memory read; writing it goes through the Flash
+ effect, so a caller without [Flash] can look at the boot record and
+ cannot move it.
+
+  boot-flag-offset : Integer = 0
+  boot-digest-offset : Integer = 8
+  boot-len-offset : Integer = 48
+
+  boot-read-word : Integer -> Integer
+  boot-read-word (addr) =
+   let b0 = peek-byte addr 0
+   in let b1 = bit-shl (peek-byte addr 1) 8
+   in let b2 = bit-shl (peek-byte addr 2) 16
+   in let b3 = bit-shl (peek-byte addr 3) 24
+   in bit-or (bit-or b0 b1) (bit-or b2 b3)
+
+  boot-load : Integer -> BootRecord
+  boot-load (rec-addr) = boot-record-of-word (boot-read-word (rec-addr + boot-flag-offset))
+
+  boot-read-bytes : Integer, Integer, Integer, List Integer -> List Integer
+  boot-read-bytes (addr) (i) (len) (acc) =
+   if i >= len then acc
+   else boot-read-bytes addr (i + 1) len (list-push acc (peek-byte addr i))
+
+  boot-expected-digest : Integer -> List Integer
+  boot-expected-digest (rec-addr) = boot-read-bytes (rec-addr + boot-digest-offset) 0 32 []
+
+  boot-candidate-length : Integer -> Integer
+  boot-candidate-length (rec-addr) = boot-read-word (rec-addr + boot-len-offset)
+
+ The flag write is the commit point and is one aligned word.
+
+  boot-store : Integer, Integer, BootRecord -> [Flash, Device.Mmio] Integer
+  boot-store (bank) (rec-addr) (r) = act
+   b0 <- flash-open-bank bank
+   b1 <- flash-write-word b0 (rec-addr + boot-flag-offset) (boot-flag-word r)
+   flash-seal-bank b1
+  end
+
+ Step 5. The digest and the length go down first and the flag last, in a
+ separate cycle. Lose power in between and the next boot finds a marker
+ that does not claim a candidate, reads no digest, and boots the
+ firmware it already had.
+
+  boot-mark : Integer, Integer, BootRecord, BootSlot, List Integer, Integer -> [Flash, Device.Mmio] Integer
+  boot-mark (bank) (rec-addr) (r) (cand) (digest) (len) = act
+   b0 <- flash-open-bank bank
+   b1 <- flash-write-page b0 (rec-addr + boot-digest-offset) digest
+   b2 <- flash-write-word b1 (rec-addr + boot-len-offset) len
+   f <- flash-seal-bank b2
+   boot-store bank rec-addr (ota-mark-candidate r cand)
+  end
+
+ Step 6's re-check: hash the bank and compare against the digest Gate A
+ recorded. Constant heap -- sha256-buf reads the address, the image is
+ never a List. This is the hash half of Gate A. It is NOT the signature
+ half: the signature was checked at Gate A and again by Gate B's verifier
+ before this bank was ever marked, and re-parsing a CDX header to recheck
+ it would put a parser in every boot path, which is the one thing the
+ design says this code must not become. What this catches is the bank
+ changing after Gate B blessed it -- a partial write, a bad cell, a
+ flipped bit -- which is what a boot-time re-check is for.
+
+  boot-verify-candidate : Integer, Integer -> Boolean
+  boot-verify-candidate (rec-addr) (slot-addr) =
+   let len = boot-candidate-length rec-addr
+   in if len <= 0 then False
+   else ota-hash-eq (hkdf-words-to-bytes (sha256-buf slot-addr 0 len)) (boot-expected-digest rec-addr) 0 32
+
+Section: The Selector
+
+ The whole of step 6, in the order that survives a power loss: count the
+ attempt and persist it BEFORE hashing anything, so an image that hangs
+ during verification has still spent a chance.
+
+  slot-address : BootSlot, Integer, Integer -> Integer
+  slot-address (s) (a-addr) (b-addr) =
+   when s
+    is SlotA -> a-addr
+    is SlotB -> b-addr
+
+ A candidate past its limit is not hashed. There is no point paying for a
+ digest over an image that has already used its chances, and the answer
+ is the same either way.
+
+  boot-check : BootRecord, Integer, Integer -> Boolean
+  boot-check (counted) (rec-addr) (slot-addr) =
+   if counted.br-attempts > boot-attempt-limit then False
+   else boot-verify-candidate rec-addr slot-addr
+
+  boot-give-up-store : Integer, Integer, BootRecord, Boolean -> [Flash, Device.Mmio] Integer
+  boot-give-up-store (bank) (rec-addr) (r) (ok) =
+   if boot-give-up r ok then boot-store bank rec-addr (ota-rollback r)
+   else 0
+
+  boot-run-candidate : Integer, Integer, Integer, BootRecord, BootSlot -> [Flash, Device.Mmio] BootSlot
+  boot-run-candidate (bank) (rec-addr) (slot-addr) (r) (c) =
+   let counted = ota-boot-attempt r
+   in act
+    w <- boot-store bank rec-addr counted
+    let ok = boot-check counted rec-addr slot-addr
+    in act
+     g <- boot-give-up-store bank rec-addr counted ok
+     boot-select counted ok
+    end
+   end
+
+  boot-run : Integer, Integer, Integer, Integer -> [Flash, Device.Mmio] BootSlot
+  boot-run (bank) (rec-addr) (slot-a-addr) (slot-b-addr) =
+   let r = boot-load rec-addr
+   in when r.br-candidate
+    is None -> r.br-primary
+    is Just (c) -> boot-run-candidate bank rec-addr (slot-address c slot-a-addr slot-b-addr) r c
+
+ Step 7. The firmware that just booted says it is healthy, and only then
+ does the candidate become the primary.
+
+  boot-commit : Integer, Integer -> [Flash, Device.Mmio] Integer
+  boot-commit (bank) (rec-addr) =
+   let r = boot-load rec-addr
+   in boot-store bank rec-addr (ota-commit r)

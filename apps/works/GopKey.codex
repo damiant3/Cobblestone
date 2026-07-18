@@ -1,0 +1,38 @@
+Chapter: GopKey
+
+ Scancode source for Option A payloads running on the H1a runtime
+ spine. runtime-init installs the IDT and unmasks the keyboard IRQ,
+ so scancodes arrive in the kernel key-buffer cell (28680) from our
+ own interrupt handler. Polling data port 0x60 directly would race
+ that handler for the byte and lose it. gk-take consumes the cell
+ read-and-clear: zero means no key is waiting. codex-vm delivers
+ window and -keys scancodes through the same IRQ path once the guest
+ has programmed the PIC, so cell consumption behaves identically
+ under the emulator, under OVMF, and on metal.
+
+ The cell is a mailbox, not a queue, and that is deliberate. A key
+ struck while the machine is busy -- generating a keypair, hashing the
+ seed -- is dropped rather than replayed into whatever screen appears
+ next. Buffering type-ahead across a screen boundary would let a stray
+ keystroke pre-fill a passphrase field, or a stray Enter confirm a
+ verdict nobody read. During a prompt the consumer polls in a
+ constant-stack loop that allocates nothing, so it never falls behind
+ a human hand.
+
+ The read and the clear are one instruction. atomic-exchange compiles
+ to XCHG against memory, which asserts LOCK on x86 whether or not the
+ prefix is written, so the keyboard ISR cannot land between the read
+ and the clear and have its scancode zeroed. A plain peek-then-poke
+ loses a key in that window. The window is two instructions wide and
+ no test would ever catch it.
+
+ The exchange is 64 bits and the ISR stores the scancode zero-extended
+ to 64, so the low byte is the whole answer; masking keeps gk-take
+ total no matter who else has written the cell.
+
+Section: Key Cell
+
+  gk-cell : Integer = 28680
+
+  gk-take : Integer -> Integer
+  gk-take (dummy) = bit-and (atomic-exchange gk-cell 0) 255

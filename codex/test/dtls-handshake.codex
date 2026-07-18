@@ -1,0 +1,189 @@
+Chapter: DtlsHandshakeTest
+  cites Encode chapter DtlsHandshake
+
+ The DTLS 1.3 handshake machine as an action trace (RFC 9147).
+
+ This is the payoff of writing the machine as a pure step function: a
+ datagram handshake, whose entire difficulty is loss and reordering, is
+ tested here with no network, no peer, and no timing. We hand it events
+ in an order a hostile network would produce and assert exactly what it
+ decides to do.
+
+Section: Formatting
+
+  fmt-act : DtlsAction -> Text
+  fmt-act (a) =
+    when a
+      is ActSend (f) -> "send" & show f
+      is ActSetTimer (d) -> "timer" & show d
+      is ActDeliverKeys -> "keys"
+      is ActAck -> "ack"
+      is ActAbort (x) -> "abort" & show x
+
+  fmt-acts : List DtlsAction -> Text
+  fmt-acts (as) = fmt-acts-loop as 0 (list-length as) ""
+
+  fmt-acts-loop : List DtlsAction, Integer, Integer, Text -> Text
+  fmt-acts-loop (as) (i) (n) (acc) =
+    if i >= n then acc
+    else if i == 0 then fmt-acts-loop as (i + 1) n (fmt-act (list-at as i))
+    else fmt-acts-loop as (i + 1) n (acc & "," & fmt-act (list-at as i))
+
+  fmt-phase : DtlsHsPhase -> Text
+  fmt-phase (p) =
+    when p
+      is PhStart -> "start"
+      is PhWaitServerHello -> "wait-sh"
+      is PhWaitAck -> "wait-ack"
+      is PhConnected -> "connected"
+      is PhFailed -> "failed"
+
+Section: Happy Path
+
+ No loss, no cookie. The shortest handshake this machine can have.
+
+  h1 : DtlsHsStep = dtls-hs-step dtls-hs-new (EvStart 0)
+  h2 : DtlsHsStep = dtls-hs-step (h1.step-state) (EvServerFlight 50)
+  h3 : DtlsHsStep = dtls-hs-step (h2.step-state) (EvAck 90)
+
+  test-happy : Text =
+    "hs happy: " & fmt-acts (h1.step-actions) & " | " & fmt-acts (h2.step-actions) & " | " & fmt-acts (h3.step-actions) & " | " & fmt-phase ((h3.step-state).hs-phase)
+
+Section: Cookie Exchange
+
+ The server refuses to allocate state until the client proves it can
+ receive at the address it claims. The client answers the
+ HelloRetryRequest with flight 3, and -- this is the part worth
+ asserting -- the retransmission timer RESETS to 1000 for the new
+ flight rather than carrying the old backoff forward.
+
+  c1 : DtlsHsStep = dtls-hs-step dtls-hs-new (EvStart 0)
+  c2 : DtlsHsStep = dtls-hs-step (c1.step-state) (EvTimeout 1000)
+  c3 : DtlsHsStep = dtls-hs-step (c2.step-state) (EvHelloRetry [9, 9, 9, 9] 1200)
+
+  test-cookie-flight : Text =
+    "hs cookie: " & fmt-acts (c2.step-actions) & " | " & fmt-acts (c3.step-actions) & " | timer=" & show ((c3.step-state).hs-timer) & " retries=" & show ((c3.step-state).hs-retries)
+
+Section: Retransmission Backoff
+
+ RFC 9147 section 5.8.2: double at each retransmission, up to no less
+ than 60 seconds. Ten timeouts from a 1000 ms start walk the timer
+ 1000 -> 2000 -> 4000 ... and then CLAMP at 60000 rather than running
+ away.
+
+  bo : List Integer = bo-loop dtls-hs-new 0 12 []
+
+  bo-loop : DtlsHsState, Integer, Integer, List Integer -> List Integer
+  bo-loop (st) (i) (n) (acc) =
+    if i >= n then acc
+    else if i == 0 then bo-loop ((dtls-hs-step st (EvStart 0)).step-state) (i + 1) n acc
+    else bo-step st i n acc
+
+  bo-step : DtlsHsState, Integer, Integer, List Integer -> List Integer
+  bo-step (st) (i) (n) (acc) =
+    let r = dtls-hs-step st (EvTimeout (i * 1000))
+    in bo-loop (r.step-state) (i + 1) n (list-push acc ((r.step-state).hs-timer))
+
+  test-backoff : Text =
+    "hs backoff: " & fmt-ints bo
+
+  fmt-ints : List Integer -> Text
+  fmt-ints (xs) = fmt-ints-loop xs 0 (list-length xs) ""
+
+  fmt-ints-loop : List Integer, Integer, Integer, Text -> Text
+  fmt-ints-loop (xs) (i) (n) (acc) =
+    if i >= n then acc
+    else if i == 0 then fmt-ints-loop xs (i + 1) n (show (list-at xs i))
+    else fmt-ints-loop xs (i + 1) n (acc & "," & show (list-at xs i))
+
+Section: Giving Up
+
+ The RFC does not bound the retry count. Bare metal must: an unbounded
+ retry against a black hole is a hang, and a hang on a device nobody can
+ reach is the failure this project exists to prevent. After the bound the
+ machine aborts and stays failed -- it does not quietly keep trying.
+
+  g0 : DtlsHsState = (dtls-hs-step dtls-hs-new (EvStart 0)).step-state
+  g1 : DtlsHsState = give-up-loop g0 0 10
+
+  give-up-loop : DtlsHsState, Integer, Integer -> DtlsHsState
+  give-up-loop (st) (i) (n) =
+    if i >= n then st
+    else give-up-loop ((dtls-hs-step st (EvTimeout (i * 1000))).step-state) (i + 1) n
+
+
+
+ After ten retries the machine is still trying (retries=10, timer clamped
+ at 60000). The eleventh timeout is the one that gives up: it emits the
+ abort and moves to failed. A twelfth changes nothing -- failed is
+ terminal, and a machine that could be nudged out of it by a late packet
+ would be a machine an attacker could restart.
+
+
+  gfinal : DtlsHsStep = dtls-hs-step g1 (EvTimeout 99999)
+  gafter : DtlsHsStep = dtls-hs-step (gfinal.step-state) (EvTimeout 111111)
+
+  test-giveup : Text =
+    "hs giveup: retries=" & show (g1.hs-retries) & " phase=" & fmt-phase (g1.hs-phase) & " then=" & fmt-acts (gfinal.step-actions) & "/" & fmt-phase ((gfinal.step-state).hs-phase) & " after=" & fmt-acts (gafter.step-actions) & "/" & fmt-phase ((gafter.step-state).hs-phase)
+
+Section: Stale Timer After Connect
+
+ A timer that fires after the handshake finished is normal on a lossy
+ link. Re-arming on it would keep a finished connection retransmitting at
+ a peer that has moved on, so a connected machine ignores it entirely.
+
+  s1 : DtlsHsStep = dtls-hs-step (h3.step-state) (EvTimeout 5000)
+
+  test-stale : Text =
+    "hs stale: " & fmt-acts (s1.step-actions) & "/" & fmt-phase ((s1.step-state).hs-phase)
+
+Section: Server Cookie Verdict
+
+ Three outcomes and no fourth. A bad cookie MUST abort with
+ illegal_parameter (47) -- it is not the same as no cookie, and quietly
+ re-issuing a HelloRetryRequest would give an attacker an oracle and a
+ free retry.
+
+  sec : List Integer = [1, 2, 3, 4]
+  addr : List Integer = [10, 0, 0, 7]
+  good : List Integer = dtls-cookie sec addr
+  bad : List Integer = list-set-at (dtls-cookie sec addr) 0 (bit-xor (list-at (dtls-cookie sec addr) 0) 1)
+
+  test-verdict-none : Text =
+    "hs verdict none=" & fmt-act (dtls-server-verdict sec addr [])
+
+  test-verdict-good : Text =
+    "hs verdict good=" & fmt-act (dtls-server-verdict sec addr good)
+
+  test-verdict-bad : Text =
+    "hs verdict bad=" & fmt-act (dtls-server-verdict sec addr bad)
+
+ A cookie is bound to the address. The same secret and a different
+ address must not verify, or the token is transferable and stops proving
+ anything about who is on the other end.
+
+  test-verdict-other-addr : Text =
+    "hs verdict wrong-addr=" & fmt-act (dtls-server-verdict sec [10, 0, 0, 8] good)
+
+Section: Anti-Amplification
+
+ A server may send at most three times what it has received, before the
+ address is verified. Without it DTLS is a reflector.
+
+  test-amp : Text =
+    "hs amp: at=" & show (dtls-amplification-ok 100 0 300) & " over=" & show (dtls-amplification-ok 100 0 301) & " partial=" & show (dtls-amplification-ok 100 250 50) & " budget=" & show (dtls-amplification-budget 100 250)
+
+Section: Entry
+
+  opening : [Console] Nothing = act
+    print-line-uni test-happy
+    print-line-uni test-cookie-flight
+    print-line-uni test-backoff
+    print-line-uni test-giveup
+    print-line-uni test-stale
+    print-line-uni test-verdict-none
+    print-line-uni test-verdict-good
+    print-line-uni test-verdict-bad
+    print-line-uni test-verdict-other-addr
+    print-line-uni test-amp
+  end

@@ -1,16 +1,27 @@
 Chapter: IdentityCapGate
 
- The child reports its inherited identity and its parent's identity
- over a kernel channel, then the parent restricts the child's identity
- bit. Channels and spawning are Concurrent, identity-set is Identity,
- process-restrict-cap is Capability — the opening declares all three
- plus Console.
+ The parent labels itself, spawns a child, and strips the child's
+ identity bit with process-restrict-cap before the child runs. The
+ child then tries to read its own label and its parent's, and reports
+ both over a kernel channel. Both reads must be refused.
+
+ This is the gate, and until the readers were gated it did not exist.
+ identity-whoami and identity-get-proc did range checks only, so
+ restricting bit 15 changed nothing about them: this test applied a
+ capability restriction and then asserted the restriction had no
+ effect. It now asserts the denial. The positive direction — an
+ unrestricted child inherits the capability and reads successfully —
+ is held by identity-inherit and identity-get-proc-test.
+
+ Channels and spawning are Concurrent, identity-set and the reads are
+ Identity, process-restrict-cap is Capability; the opening declares
+ all three plus Console.
 
 Section: Body
   send-second : Integer, Integer, Integer -> [Concurrent] Integer
   send-second (ch) (b) (first) = chan-kern-send ch b
 
-  child-body : Integer, Integer -> [Concurrent] Integer
+  child-body : Integer, Integer -> [Concurrent, Identity] Integer
   child-body (ch) (x) =
     send-second ch (identity-get-proc 0 0) (chan-kern-send ch (identity-whoami 0))
 
@@ -20,10 +31,11 @@ Section: Body
     in chan-kern-recv ch
 
   gate-verdict : Integer, Integer, Integer, Integer -> Text
-  gate-verdict (child-id) (reported-parent) (restrict-id) (parent-id) =
-    if child-id /= parent-id then "FAIL: child identity wrong"
-    else if reported-parent /= parent-id then "FAIL: child saw wrong parent id"
-    else if restrict-id /= 0 then "FAIL: restrict failed"
+  gate-verdict (child-own) (child-saw-parent) (restrict-id) (parent-id) =
+    if restrict-id /= 0 then "FAIL: restrict failed"
+    else if parent-id == 0 then "FAIL: parent identity not set"
+    else if child-own /= (0 - 1) then "FAIL: restricted child read its own identity"
+    else if child-saw-parent /= (0 - 1) then "FAIL: restricted child read the parent identity"
     else "PASS"
 
   opening : [Console, Identity, Concurrent, Capability] Nothing = act
@@ -31,7 +43,7 @@ Section: Body
     s <- identity-set 0 hardware-random
     child <- process-spawn (\x -> child-body ch x)
     restrict-id <- process-restrict-cap child 15
-    child-id <- recv-after-wait ch child
-    reported <- chan-kern-recv ch
-    print-line-uni (gate-verdict child-id reported restrict-id (identity-whoami 0))
+    child-own <- recv-after-wait ch child
+    child-saw-parent <- chan-kern-recv ch
+    print-line-uni (gate-verdict child-own child-saw-parent restrict-id (identity-whoami 0))
   end

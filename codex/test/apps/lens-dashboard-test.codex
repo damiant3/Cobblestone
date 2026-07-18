@@ -1,0 +1,236 @@
+Chapter: LensDashboardTest
+  cites Data chapter Catalog
+  cites Data chapter Schema
+  cites Data chapter Row
+  cites Data chapter RelAlgebra
+  cites Data chapter Executor
+  cites Data chapter Optimizer
+  cites Lens chapter LensModel
+  cites Lens chapter LensPlan
+  cites Lens chapter LensDashboard
+
+ The dashboard renderer driven end to end: the users and orders star
+ from the planner test, a four-tile dashboard over it, and the whole
+ HTML page printed to the console followed by targeted assertions.
+ The data is the planner test's data so the numbers stay recognizable:
+ revenue by city is Shelbyville 7300, Springfield 16100, Capital City
+ 6500, and total credit by city is 20000, 40000, 40000, rows sorted
+ in the pinned CCE collation.
+
+ The bar chart arithmetic, by hand. The revenue maximum is 16100, a
+ quarter of it rounded up is 4025, and the 1, 2, 5 ladder lifts that
+ to a step of 5000, so the axis top is 20000 and the gridlines read
+ 0, 5000, 10000, 15000, 20000. The plot is 260 tall with its
+ baseline at y 280, so Springfield's bar stands 16100 times 260 over
+ 20000, which is 209 pixels, putting its top at y 71. Three
+ categories split the 560-wide plot into slots of 186; each bar is
+ three fifths of a slot, 111 wide, with 37 on either side, so the
+ second bar starts at x 60 plus 186 plus 37, which is 283. The test
+ pins that exact rect.
+
+ The stacked chart scales to the largest row total, Springfield's
+ 40000 plus 16100 equal to 56100; a quarter of that is 14025 and the
+ ladder lifts it to 20000, so the axis top is 80000. Springfield's
+ credit segment is 40000 times 260 over 80000, 130 pixels ending at
+ y 150, and its revenue segment tops out at the running total 56100
+ scaled to 182 pixels, y 98, giving the segment 52 pixels of height.
+ The test pins that revenue segment rect in the second palette
+ color.
+
+ The remaining tiles exercise the other paths: a table of credit and
+ revenue by city and user name, all cells escaped, and a tile whose
+ query names the unknown measure profit, which must render the
+ planner's diagnostic text inside the tile body instead of a chart.
+ The stacked tile's title carries markup characters and must appear
+ escaped, never raw. The closing assertions count opening and
+ closing tags over the emitted page, so an unbalanced svg, section,
+ table, or row would fail here before any browser saw it.
+
+Section: Star Schema
+
+  users-table : TableDef
+  users-table = table-def-with-pk "users" [
+    col-def-not-null "user-id" ColInteger,
+    col-def-not-null "uname" ColText,
+    col-def-not-null "city" ColText,
+    col-def-not-null "credit-limit" ColInteger
+  ] ["user-id"]
+
+  orders-table : TableDef
+  orders-table = table-def-with-pk "orders" [
+    col-def-not-null "order-id" ColInteger,
+    col-def-not-null "user-id" ColInteger,
+    col-def-not-null "product-id" ColInteger,
+    col-def-not-null "amount" ColInteger
+  ] ["order-id"]
+
+  insert-all : Catalog, Text, List RowData, Integer, Integer -> Catalog
+  insert-all (cat) (table) (rows) (i) (len) =
+    if i >= len then cat
+    else let r = catalog-insert-row cat table (list-at rows i)
+    in insert-all (r.cir-cat) table rows (i + 1) len
+
+  seed-users : Catalog -> Catalog
+  seed-users (cat) =
+    let s = table-schema users-table
+    in let rows = [
+      row-new s [ValInteger 1, ValText "Alice", ValText "Springfield", ValInteger 10000],
+      row-new s [ValInteger 2, ValText "Bob",   ValText "Shelbyville", ValInteger 20000],
+      row-new s [ValInteger 3, ValText "Carol", ValText "Springfield", ValInteger 30000],
+      row-new s [ValInteger 4, ValText "Dave",  ValText "Capital City", ValInteger 40000]
+    ]
+    in insert-all cat "users" rows 0 (list-length rows)
+
+  seed-orders : Catalog -> Catalog
+  seed-orders (cat) =
+    let s = table-schema orders-table
+    in let rows = [
+      row-new s [ValInteger 1,  ValInteger 1, ValInteger 1, ValInteger 1500],
+      row-new s [ValInteger 2,  ValInteger 1, ValInteger 2, ValInteger 5000],
+      row-new s [ValInteger 3,  ValInteger 2, ValInteger 3, ValInteger 800],
+      row-new s [ValInteger 4,  ValInteger 3, ValInteger 1, ValInteger 1500],
+      row-new s [ValInteger 5,  ValInteger 4, ValInteger 2, ValInteger 5000],
+      row-new s [ValInteger 6,  ValInteger 1, ValInteger 3, ValInteger 800],
+      row-new s [ValInteger 7,  ValInteger 2, ValInteger 1, ValInteger 1500],
+      row-new s [ValInteger 8,  ValInteger 3, ValInteger 3, ValInteger 800],
+      row-new s [ValInteger 9,  ValInteger 3, ValInteger 2, ValInteger 5000],
+      row-new s [ValInteger 10, ValInteger 4, ValInteger 1, ValInteger 1500],
+      row-new s [ValInteger 11, ValInteger 2, ValInteger 2, ValInteger 5000],
+      row-new s [ValInteger 12, ValInteger 1, ValInteger 1, ValInteger 1500]
+    ]
+    in insert-all cat "orders" rows 0 (list-length rows)
+
+  build-star : Catalog
+  build-star =
+    let c1 = catalog-create-table catalog-new users-table
+    in let c2 = catalog-create-table (c1.cat) orders-table
+    in seed-orders (seed-users (c2.cat))
+
+Section: The Model
+
+  users-t : LensTable
+  users-t = LensTable { name = "users", primary-key = "user-id", grain = "one row per registered user" }
+
+  orders-t : LensTable
+  orders-t = LensTable { name = "orders", primary-key = "order-id", grain = "one row per order" }
+
+  orders-to-users : LensJoin
+  orders-to-users = LensJoin { from-table = "orders", to-table = "users", on-left = "user-id", on-right = "user-id", cardinality = ManyToOne }
+
+  city-dim : LensDimension
+  city-dim = LensDimension { name = "city", table = "users", column = "city", bucket = LbNone }
+
+  uname-dim : LensDimension
+  uname-dim = LensDimension { name = "user-name", table = "users", column = "uname", bucket = LbNone }
+
+  revenue-measure : LensMeasure
+  revenue-measure = LensMeasure {
+    name = "revenue",
+    table = "orders",
+    column = "amount",
+    agg = LensAggSum,
+    description = "Sum of order amounts in cents."
+  }
+
+  credit-measure : LensMeasure
+  credit-measure = LensMeasure {
+    name = "total-credit",
+    table = "users",
+    column = "credit-limit",
+    agg = LensAggSum,
+    description = "Sum of user credit limits in cents. User grain."
+  }
+
+  sales-model : LensModel
+  sales-model = LensModel {
+    name = "sales",
+    tables = [users-t, orders-t],
+    joins = [orders-to-users],
+    dimensions = [city-dim, uname-dim],
+    measures = [revenue-measure, credit-measure]
+  }
+
+Section: The Dashboard
+
+  revenue-by-city-q : LensQuery
+  revenue-by-city-q = LensQuery { lens-name = "sales", dimensions = ["city"], measures = ["revenue"], filters = [], limit = 0 }
+
+  fanout-q : LensQuery
+  fanout-q = LensQuery { lens-name = "sales", dimensions = ["city"], measures = ["total-credit", "revenue"], filters = [], limit = 0 }
+
+  two-dim-q : LensQuery
+  two-dim-q = LensQuery { lens-name = "sales", dimensions = ["city", "user-name"], measures = ["total-credit", "revenue"], filters = [], limit = 0 }
+
+  unknown-q : LensQuery
+  unknown-q = LensQuery { lens-name = "sales", dimensions = ["city"], measures = ["profit"], filters = [], limit = 0 }
+
+  demo-dash : LensDashboard
+  demo-dash = LensDashboard {
+    dash-title = "Sales Overview",
+    tiles = [
+      LensTile { tile-title = "Revenue by City", tile-query = revenue-by-city-q, tile-chart = LdBar },
+      LensTile { tile-title = "Credit <b>& Revenue by City", tile-query = fanout-q, tile-chart = LdStackedBar },
+      LensTile { tile-title = "Credit and Revenue by User", tile-query = two-dim-q, tile-chart = LdTable },
+      LensTile { tile-title = "Profit by City", tile-query = unknown-q, tile-chart = LdBar }
+    ]
+  }
+
+Section: Text Search
+
+ Naive substring counting over the emitted page, comparing character
+ codes pairwise. Both sides of every comparison come from the same
+ encoding, so equality is exact whatever CCE assigns.
+
+  t-match-at : Text, Text, Integer, Integer, Integer -> Boolean
+  t-match-at (hay) (needle) (pos) (j) (nlen) =
+    if j >= nlen then True
+    else if char-code (char-at hay (pos + j)) /= char-code (char-at needle j) then False
+    else t-match-at hay needle pos (j + 1) nlen
+
+  t-count-from : Text, Text, Integer, Integer, Integer, Integer -> Integer
+  t-count-from (hay) (needle) (i) (last) (nlen) (acc) =
+    if i > last then acc
+    else if t-match-at hay needle i 0 nlen then t-count-from hay needle (i + 1) last nlen (acc + 1)
+    else t-count-from hay needle (i + 1) last nlen acc
+
+  t-count : Text, Text -> Integer
+  t-count (hay) (needle) =
+    let nlen = text-length needle
+    in t-count-from hay needle 0 (text-length hay - nlen) nlen 0
+
+  t-contains : Text, Text -> Boolean
+  t-contains (hay) (needle) = t-count hay needle > 0
+
+  bool-text : Boolean -> Text
+  bool-text (b) = if b then "True" else "False"
+
+  balance : Text, Text, Text -> Text
+  balance (page) (open) (close) = show (t-count page open) & " of " & show (t-count page close)
+
+Section: Body
+
+  opening : [Console] Nothing = act
+    print-line-uni "=== lens dashboard test: query results to one html page ==="
+    let cat = build-star
+    in let page = lens-dashboard-html cat sales-model demo-dash
+    in act
+      print-line-uni page
+      print-line-uni "-- assertions"
+      print-line-uni ("y-axis step for max 16100: " & show (ld-round-step 16100))
+      print-line-uni ("y-axis step for max 56100: " & show (ld-round-step 56100))
+      print-line-uni ("springfield bar height 16100*260/20000: " & show (16100 * 260 / 20000))
+      print-line-uni ("springfield bar rect pinned: " & bool-text (t-contains page "<rect x=\"283\" y=\"71\" width=\"111\" height=\"209\" fill=\"#4e79a7\"/>"))
+      print-line-uni ("springfield stacked revenue segment pinned: " & bool-text (t-contains page "<rect x=\"283\" y=\"98\" width=\"111\" height=\"52\" fill=\"#f28e2b\"/>"))
+      print-line-uni ("top gridline label 20000 pinned: " & bool-text (t-contains page "<text x=\"54\" y=\"24\" text-anchor=\"end\" font-size=\"12\" fill=\"#444444\">20000</text>"))
+      print-line-uni ("escaped tile title present: " & bool-text (t-contains page "Credit &lt;b&gt;&amp; Revenue by City"))
+      print-line-uni ("raw markup from title absent: " & bool-text (t-count page "<b>" == 0))
+      print-line-uni ("failed tile renders its diag: " & bool-text (t-contains page "<p class=\"lens-error\">lens-plan: diag 22: unknown measure profit</p>"))
+      print-line-uni ("svg open of close: " & balance page "<svg" "</svg>")
+      print-line-uni ("section open of close: " & balance page "<section" "</section>")
+      print-line-uni ("table open of close: " & balance page "<table" "</table>")
+      print-line-uni ("tr open of close: " & balance page "<tr>" "</tr>")
+      print-line-uni ("rect count: " & show (t-count page "<rect"))
+      print-line-uni ("external references absent: " & bool-text (t-count page "http" == 0))
+      print-line-uni "lens-dashboard-test: done"
+    end
+  end

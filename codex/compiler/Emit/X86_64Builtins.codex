@@ -1,171 +1,40 @@
 Chapter: X86-64 Code Generator
-  cites Codex chapter General
-  cites Codex chapter Console
-  cites Codex chapter Files
-  cites Codex chapter Process
-  cites Codex chapter Text
-  cites Codex chapter Characters
-  cites Codex chapter Numbers
-  cites Codex chapter Bitwise
-  cites Codex chapter Lists
-  cites Codex chapter Runtime
   cites Foreword chapter Sort
 
 Section: Builtin Detection
 
- Builtin names are kept in a SkipListText, sorted by the same
- text-compare that skip-list-text-has uses. Source-order here is
- ASCII for human readability; skip-list-text-from-list sorts the
- literal into the skip list at binding-init time, not per
- is-builtin call.
+ Two things decide a builtin's fate. This list routes the call to
+ emit-builtin; x86-builtin-emitters says how to emit it. Until 2026-07-16
+ they were two hand-maintained literals holding the same 143 names, written
+ out twice and agreeing only by inspection. A name here with no emitter
+ raised CDX2042 at a distance from whoever asked for it. An emitter with no
+ name here was unreachable, because is-builtin would never say yes.
+
+ Neither drift is expressible now. This list is DERIVED from the emitter
+ table, so being routed IS having an emitter, which is what routing was
+ always supposed to mean. build/check-builtin-tables.ps1 checked both of
+ those directions and now checks neither, because neither has anywhere left
+ to live. The third list, NameResolver's builtin-names, is still separate
+ and still maintained by hand; that is the rest of BACKLOG 2.14.
+
+ Names are kept in a SkipListText, sorted by the same text-compare that
+ skip-list-text-has uses. They arrive already ordered, since
+ x86-builtin-emitters sorts itself for its own bsearch, and
+ skip-list-text-from-list sorts on insert regardless. The walk binds the
+ emitter table once: x86-builtin-emitters is a zero-parameter definition and
+ every mention of one is emitted as a call, so naming it twice would build
+ and sort the whole table twice. It runs where a CodegenState is built, not
+ per is-builtin call.
+
+  x86-emitter-names : List BuiltinX86Emitter, Integer, Integer, List Text -> List Text
+  x86-emitter-names (es) (i) (len) (acc) =
+   if i >= len then acc
+   else x86-emitter-names es (i + 1) len (list-push acc ((list-at es i).name))
 
   sorted-builtin-names : SkipListText
-  sorted-builtin-names = skip-list-text-from-list ([
-   "abs",
-   "address-of",
-   "bit-and",
-   "bit-not",
-   "bit-or",
-   "bit-shl",
-   "bit-shr",
-   "bit-shru",
-   "bit-xor",
-   "__buf-read-bytes",
-   "__buf-write-byte",
-   "__buf-write-bytes",
-   "chan-text-recv",
-   "chan-text-send",
-   "char-at",
-   "char-code",
-   "char-code-at",
-   "char-to-text",
-   "code-to-char",
-   "current-dir",
-   "__deck-alloc",
-   "__deck-enter",
-   "__deck-exit",
-   "__deck-pos",
-   "__deck-set",
-   "fail",
-   "file-exists",
-   "force",
-   "get-args",
-   "__heap-advance",
-   "__heap-restore",
-   "__heap-save",
-   "__memset",
-   "int-mod",
-   "integer-to-text",
-   "is-digit",
-   "is-letter",
-   "is-whitespace",
-   "__linked-list-empty",
-   "__linked-list-push"
-  ] & [
-   "__linked-list-to-list",
-   "list-append",
-   "list-at",
-   "list-cons",
-   "list-insert-at",
-   "list-length",
-   "list-set-at",
-   "list-snoc",
-   "list-push",
-   "__list-with-capacity",
-   "max",
-   "min",
-   "__narrow",
-   "negate",
-   "print-line",
-   "print-line-raw",
-   "print-line-uni",
-   "print-uni",
-   "print-error",
-   "print-error-uni",
-   "read-file",
-   "read-file-raw",
-   "read-file-uni",
-   "read-line",
-   "read-line-cce",
-   "read-serial-cce",
-   "__record-set",
-   "__self-type-defs",
-   "run-state",
-   "set-state",
-   "show",
-   "substring",
-   "text-compare",
-   "text-concat-list",
-   "text-contains",
-   "text-length",
-   "text-replace",
-   "text-split",
-   "text-starts-with",
-   "text-to-double-bits",
-   "text-to-integer",
-   "text-to-unicode-bytes",
-   "uefi-read-file",
-   "unicode-bytes-to-text",
-   "raw-bytes-to-text",
-   "write-binary",
-   "write-binary-buf",
-   "write-file",
-   "Refl",
-   "assume",
-   "sym",
-   "trans",
-   "cong",
-   "app-cong",
-   "vec-splat",
-   "vec-extract",
-   "vec-add",
-   "vec-sub",
-   "vec-mul",
-   "vec-div",
-   "vec-reduce-add",
-   "vec-select",
-   "vec-load-at",
-   "vec-store-at",
-   "mask-any",
-   "mask-all",
-   "mask-none",
-   "mask-count",
-   "to-real-approx",
-   "from-real-approx",
-   "to-real-trapping",
-   "from-real-trapping",
-   "to-real-saturating",
-   "from-real-saturating",
-   "real-from-int",
-   "real-to-int",
-   "real-approx-from-int",
-   "real-approx-to-int",
-   "real-to-bits",
-   "bits-to-real",
-   "real-approx-to-bits",
-   "bits-to-real-approx",
-   "vec4-splat",
-   "vec4-extract",
-   "suggested-vector-width",
-   "atomic-load",
-   "atomic-store",
-   "atomic-cas",
-   "atomic-add",
-   "atomic-exchange",
-   "memory-fence",
-   "vec-cons",
-   "vec-empty",
-   "vec-head",
-   "vec-length",
-   "vec-singleton",
-   "s-close",
-   "s-new",
-   "s-recv",
-   "s-recv-value",
-   "s-send",
-   "prof-start",
-   "prof-dump"
-  ])
+  sorted-builtin-names =
+   let es = x86-builtin-emitters
+   in skip-list-text-from-list (x86-emitter-names es 0 (list-length es) [])
 
   is-builtin : SkipListText, Text -> Boolean
   is-builtin (names) (name) =
@@ -559,16 +428,6 @@ Section: Builtin Emission
    reg = rd.reg
   }
 
-  emit-file-exists-builtin : CodegenState, List IRExpr -> EmitResult
-  emit-file-exists-builtin (st) (args) =
-    let r = emit-expr (st-set-tail-pos st False) (list-at args 0)
-   in let rd = alloc-temp (r.state)
-   in let st1 = st-append-code (rd.state) (li (rd.reg) 1)
-   in EmitResult {
-   state = st1,
-   reg = rd.reg
-  }
-
   emit-substring-alloc : CodegenState, Integer, Integer, Integer -> CodegenState
   emit-substring-alloc (st) (str-loc) (start-loc) (len-loc) =
     let len-loaded = load-local st len-loc
@@ -692,16 +551,99 @@ Section: Builtin Emission
    reg = rd.reg
   }
 
-  emit-write-file-builtin : CodegenState, List IRExpr -> EmitResult
-  emit-write-file-builtin (st) (args) =
-    let r0 = emit-expr (st-set-tail-pos st False) (list-at args 0)
-   in let r1 = emit-expr (r0.state) (list-at args 1)
-   in let st1 = emit-print-text-no-newline (r1.state) (r1.reg)
-   in let rd = alloc-temp st1
-   in EmitResult {
-   state = st-append-code (rd.state) (li (rd.reg) 0),
-   reg = rd.reg
-  }
+ This used to print the content to the console and return 0. A program
+ that wrote a file and checked the result was told it had succeeded, and
+ nothing had been written anywhere. Silent data loss, reported as
+ success, in an operation whose entire purpose is not to lose data.
+
+ There is no honest implementation to give it. Fat16 is the only
+ filesystem the bare-metal target has and it is read-only -- it can
+ resolve a path, list a directory and read a file, and it cannot create
+ or write one. So the emitter refuses and says so, which is the rule: a
+ target that cannot represent a feature does not get to pretend.
+
+ What to use instead, until the write path exists: block-write-sector to
+ put bytes on the disk, or write-binary to hand them back over the wire.
+ Both say what they do.
+
+ The phantoms went the other way about it and were no better. list-files,
+ list-directories, create-directory and write-binary-file were bound in
+ the type environment and named in builtin-names, and no emitter for any
+ of them was ever written. The type checker vouched for the name and the
+ build then died at the very end with CDX2040, a diagnostic about an
+ unresolved function offset -- true, and no help at all to someone who
+ had simply asked to list a directory. A name the compiler promises and
+ cannot keep is worth less than no name, and it should say so at the
+ first opportunity, in the words of the thing that was asked for.
+
+ list-files and list-directories are no longer among them. They are real
+ now, and they are not here: they live in Foreword chapter Fat16, next to
+ file-exists and for the same reason -- the machine does not know what a
+ directory is, and FAT16 does. So they are gone from builtin-names and
+ from the type environment entirely, which is what lets a chapter that
+ cites Fat16 resolve them to the definitions that work. A chapter that
+ does not cite Fat16 now gets CDX3002 on the name, which is the truth: it
+ asked for something it did not bring.
+
+ write-file and write-binary-file are no longer here either. FAT16 is not
+ read-only any more -- it allocates a cluster, chains it, writes the bytes
+ and commits a directory entry, all in Codex over block-write-sector -- so
+ both names now resolve to definitions that keep their promise, next to
+ file-exists in Foreword chapter Fat16. The emitter has nothing to say about
+ them. write-file used to live here and print its content to the console
+ while reporting success, which is the strongest argument in this file for
+ why a name the compiler cannot keep does not belong in the compiler.
+
+ For a while after that, the string "write-file" lingered in
+ sorted-builtin-names with no emitter behind it. That ghost was not
+ harmless: an application site asks is-builtin BEFORE it consults the
+ handler table, so a `with FileSystem` handler over write-file would
+ discharge the row at type level and then die at emit looking for an
+ emitter that does not exist. The name is out of the list now, which is
+ what lets the FileSystem effect's write-file op reach a handler -- the
+ layer that services it over the disk is the one place the name resolves.
+
+ The paragraph above was true of write-file and false of write-binary-file,
+ which stayed in sorted-builtin-names for months after this prose said it
+ had gone -- routed by is-builtin, with no emitter and no NameResolver
+ entry, so it answered CDX3002 to anyone who asked. list-append and
+ list-cons sat the same way, and they had emitters, so all that kept them
+ from reaching one was that the resolver had never heard of them either.
+ None of the three had a single call site in the tree; cons and append
+ reach __list_cons and __list_append through the :: and & operators
+ (IrConsList / IrAppendList in X86_64.codex), which is why nothing ever
+ noticed. All three are gone now (fester, 2026-07-16, BACKLOG 2.14).
+
+ A ghost is cheap to leave and expensive to find, so this is checked by
+ the build rather than by the next reader: build/check-builtin-tables.ps1
+ walks these two lists and NameResolver's, and fails the build on a name
+ that is routed with no emitter, or routed and unresolvable, or emitted
+ and unrouted. The compiler cannot make that check itself -- the three
+ lists live in two quires and are ordinary data, so no single compile sees
+ them all as tables -- which is the same reason check-cap-tables.ps1 sits
+ in the build and not in the compiler.
+
+ create-directory is gone too, and the sentence that used to sit here is the
+ reason: it said the name stayed "because there is still nothing honest to
+ point it at -- creating a directory means walking to a parent and writing the
+ dot and dotdot entries, and that is not written." That was a condition, not a
+ verdict, and it is met now. fat16-create-directory claims a cluster, zeroes
+ it, writes the dot entries and commits the parent's entry, so the name
+ resolves to something that keeps its promise and it lives where the promise
+ is kept. The emitter has nothing to say about it either.
+
+ That leaves this file with no name in it that the compiler cannot keep, which
+ is the state build/check-builtin-tables.ps1 now holds it in.
+
+ emit-no-target-impl stood here and is gone with them. It raised CDX2043 for
+ a builtin the target could not perform, and nothing called it — once the
+ last phantom left this file there was no name to point it at, so the code
+ refused a case that could no longer arise. A diagnostic no program can
+ provoke is the same promise-that-is-not-kept the paragraph above forbids,
+ and it is worse than the phantoms were: those at least failed loudly.
+ emit-unknown-builtin raises CDX2042 for a name routed here with no emitter,
+ which is the case that can still happen, and check-builtin-tables.ps1 fails
+ the build before it does.
 
   emit-read-line-builtin : CodegenState -> EmitResult
   emit-read-line-builtin (st) =
@@ -868,10 +810,15 @@ Section: Builtin Emission
    reg = rd.reg
   }
 
+ Evicts RAX for the same reason emit-text-lit does: the mov-ri64 below writes RAX
+ before alloc-temp runs, and alloc-temp only evicts the register it allocates, so
+ a field cached in RAX would survive in the cache after this instruction had
+ overwritten it. This is the second and last site with that shape.
+
   emit-self-type-defs-builtin : CodegenState -> EmitResult
   emit-self-type-defs-builtin (st) =
    let site = st.code-len + 2
-   in let st1 = st-append-code st (mov-ri64 reg-rax 0)
+   in let st1 = st-append-code (fc-evict-reg st reg-rax) (mov-ri64 reg-rax 0)
    in let sites = list-push (st1.stype-sites) site
    in let st2 = __record-set st1 "stype-sites" sites
    in let rd = alloc-temp st2
@@ -1614,7 +1561,6 @@ Section: Builtin Registry
    BuiltinX86Emitter { name = "read-file-raw", emit = \s a -> emit-read-file-raw-builtin s a },
    BuiltinX86Emitter { name = "read-file-uni", emit = \s a -> emit-read-file-builtin s a },
    BuiltinX86Emitter { name = "read-serial-cce", emit = \s a -> emit-read-serial-cce-builtin s a },
-   BuiltinX86Emitter { name = "write-file", emit = \s a -> emit-write-file-builtin s a },
    BuiltinX86Emitter { name = "read-line", emit = \s a -> emit-read-line-builtin s },
    BuiltinX86Emitter { name = "read-line-cce", emit = \s a -> emit-read-line-cce-builtin s },
    BuiltinX86Emitter { name = "write-binary", emit = \s a -> emit-write-binary-builtin s a },
@@ -1636,8 +1582,6 @@ Section: Builtin Registry
    BuiltinX86Emitter { name = "substring", emit = \s a -> emit-substring-builtin s a },
    BuiltinX86Emitter { name = "list-length", emit = \s a -> emit-list-length-builtin s a },
    BuiltinX86Emitter { name = "list-at", emit = \s a -> emit-list-at-builtin s a },
-   BuiltinX86Emitter { name = "list-cons", emit = \s a -> emit-helper-call-2 s a "__list_cons" },
-   BuiltinX86Emitter { name = "list-append", emit = \s a -> emit-helper-call-2 s a "__list_append" },
    BuiltinX86Emitter { name = "list-snoc", emit = \s a -> emit-helper-call-2 s a "__list_snoc" },
    BuiltinX86Emitter { name = "list-push", emit = \s a -> emit-helper-call-2 s a "__list_snoc" },
    BuiltinX86Emitter { name = "list-insert-at", emit = \s a -> emit-helper-call-3 s a "__list_insert_at" },
@@ -1653,6 +1597,10 @@ Section: Builtin Registry
    BuiltinX86Emitter { name = "negate", emit = \s a -> emit-negate-builtin s a }
   ] & [
    BuiltinX86Emitter { name = "abs", emit = \s a -> emit-abs-builtin s a },
+   BuiltinX86Emitter { name = "gpu-in", emit = \s a -> emit-helper-call-1 s a "port-in-32" },
+   BuiltinX86Emitter { name = "gpu-out", emit = \s a -> emit-helper-call-2 s a "port-out-32" },
+   BuiltinX86Emitter { name = "gpu-mem-read", emit = \s a -> emit-helper-call-2 s a "peek-32" },
+   BuiltinX86Emitter { name = "gpu-mem-write", emit = \s a -> emit-helper-call-3 s a "poke-32" },
    BuiltinX86Emitter { name = "min", emit = \s a -> emit-min-builtin s a },
    BuiltinX86Emitter { name = "max", emit = \s a -> emit-max-builtin s a },
    BuiltinX86Emitter { name = "__narrow", emit = \s a -> emit-narrow-builtin s a },
@@ -1688,7 +1636,6 @@ Section: Builtin Registry
    BuiltinX86Emitter { name = "bit-shr", emit = \s a -> emit-bit-shift s a sar-cl },
    BuiltinX86Emitter { name = "bit-shru", emit = \s a -> emit-bit-shift s a shr-cl },
    BuiltinX86Emitter { name = "bit-not", emit = \s a -> emit-bit-not s a },
-   BuiltinX86Emitter { name = "file-exists", emit = \s a -> emit-file-exists-builtin s a },
    BuiltinX86Emitter { name = "force", emit = \s a -> emit-force-builtin s a },
    BuiltinX86Emitter { name = "run-state", emit = \s a -> emit-run-state-builtin s a },
    BuiltinX86Emitter { name = "set-state", emit = \s a -> emit-set-state-builtin s a },
@@ -1750,14 +1697,48 @@ Section: Builtin Registry
    BuiltinX86Emitter { name = "s-send", emit = \s a -> emit-helper-call-2 s a "chan-kern-send-block" }
   ])
 
+ This is the miss path, and it can no longer be reached from the routing
+ list: sorted-builtin-names is derived from this very table, so a routed
+ name has an emitter by construction. It stays because it is still the
+ answer to a lookup that finds nothing, and because of what it replaced.
+ The miss used to answer by emitting the constant 1 -- it fell through to
+ the emitter for file-exists, whose whole body was `li rd, 1`. That is a
+ silent miscompile: the builtin quietly becomes True. A miss that cannot
+ happen must still be loud, because the cost of being wrong about that is
+ a program that compiles and lies.
+
+ That emitter is gone. file-exists never had an implementation worth the
+ name -- it answered True for every path, existing or not -- and it is a
+ real FAT16 lookup now, in Foreword chapter Fat16, where a filesystem
+ question belongs. A program that asks it must cite the chapter, which is
+ the loud failure this file argues for throughout: a name that resolves
+ to nothing is better than a name that resolves to a lie.
+
+  emit-unknown-builtin : CodegenState, Text -> EmitResult
+  emit-unknown-builtin (st) (name) =
+   let st0 = st-add-error st cdx-emit-not-implemented ("No x86-64 emitter for builtin '" & name & "'. Nothing routed here should be able to miss: sorted-builtin-names is derived from x86-builtin-emitters. Reaching this means emit-builtin was called for a name is-builtin did not admit.") synthetic-span
+   in let st1 = emit-call-to st0 "__unresolved_trap"
+   in let rd = alloc-temp st1
+   in EmitResult {
+    state = st-append-code (rd.state) (mov-rr (rd.reg) reg-rax),
+    reg = rd.reg
+   }
+
+ The table is bound once. x86-builtin-emitters is a zero-parameter
+ definition, and a mention of one is emitted as a call, not read from a
+ slot -- so the three mentions this function used to make built and sorted
+ all 143 entries three times over, on every builtin emission in the
+ program. The binding is the whole fix; the search below is unchanged.
+
   emit-builtin : CodegenState, Text, List IRExpr -> EmitResult
   emit-builtin (st) (name) (args) =
-   let len = list-length x86-builtin-emitters
-   in let pos = bsearch-x86-emitter-pos x86-builtin-emitters name 0 len
-   in if pos >= len then emit-file-exists-builtin st args
-      else let e = list-at x86-builtin-emitters pos
+   let es = x86-builtin-emitters
+   in let len = list-length es
+   in let pos = bsearch-x86-emitter-pos es name 0 len
+   in if pos >= len then emit-unknown-builtin st name
+      else let e = list-at es pos
       in if e.name == name then (e.emit) st args
-         else emit-file-exists-builtin st args
+         else emit-unknown-builtin st name
 
 
-Page 4 of 10
+Page 4 of 14

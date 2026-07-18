@@ -1,0 +1,36 @@
+Chapter: SpawnReuse
+
+ Twenty sequential spawn-and-wait rounds must hand every child the
+ same slot region: the process table is the allocator, a slot freed
+ by exit frees its region, and the next spawn into that slot reuses
+ the same addresses - spawn loops plateau at their working set
+ instead of consuming fresh address space. Each round reads the
+ child's region base from the process table (saved R10 at offset 80)
+ right after the spawn. A with-heap request that cannot fit inside
+ one slot region must be refused with -1, never silently overlapped.
+
+Section: Body
+  child-val : Integer -> Integer
+  child-val (x) = poke-byte 28000 0 9
+
+  rounds : Integer, Integer -> [Concurrent] Integer
+  rounds (n) (base0) =
+    if n == 0 then 1
+    else act
+      pid <- process-spawn (\x -> child-val x)
+      let b = peek-qword 20480 (pid * 256 + 80)
+      in let w = process-wait pid
+      in if b == base0 then rounds (n - 1) base0 else 0
+    end
+
+  opening : [Concurrent] Integer = act
+    p0 <- process-spawn (\x -> child-val x)
+    let base0 = peek-qword 20480 (p0 * 256 + 80)
+    in let w0 = process-wait p0
+    in act
+      stable <- rounds 20 base0
+      big <- process-spawn-with-heap (\x -> child-val x) 33554432
+      let denied = if big == (0 - 1) then 1 else 0
+      in stable * 10 + denied
+    end
+  end

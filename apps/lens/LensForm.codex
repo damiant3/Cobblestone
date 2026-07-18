@@ -1,0 +1,140 @@
+Chapter: LensForm
+  cites Foreword chapter CCE
+
+ The explore page posts its form back as an urlencoded body, and this
+ chapter is the whole reading of that wire format: split on ampersand,
+ split each pair on its first equals sign, decode plus signs and
+ percent escapes, and gather the decoded pairs into the three fields
+ the explore route consumes. The decoder is deliberately small
+ because the values are governed model names, kebab-case ASCII by
+ house rule, but it is correct for what it claims: a plus decodes to
+ a space, a percent followed by two hex digits decodes to the ASCII
+ character it names through the CCE conversion table, a percent whose
+ escape does not parse stays a literal percent, and a decoded byte
+ outside CCE's tier-zero table is dropped rather than invented.
+ Unicode never enters: the two hex digits name a byte, from-unicode
+ maps that byte's code point into CCE at the I/O boundary where such
+ conversions belong, and everything after this chapter is CCE text.
+
+ Memory posture (Rule 8): every loop below walks its input by index
+ with an explicit stop, the accumulators are bounded by the body
+ length, and a parsed form dies with the request that carried it.
+ Nothing here retains, caches, or grows across calls.
+
+Section: Hex Digits
+
+ A hex digit reads by literal comparison, both cases accepted, and a
+ character that is no hex digit answers minus one so the decoder can
+ tell a real escape from a stray percent.
+
+  form-hex-val : Text -> Integer
+  form-hex-val (c) =
+    if c == "0" then 0
+    else if c == "1" then 1
+    else if c == "2" then 2
+    else if c == "3" then 3
+    else if c == "4" then 4
+    else if c == "5" then 5
+    else if c == "6" then 6
+    else if c == "7" then 7
+    else if c == "8" then 8
+    else if c == "9" then 9
+    else if (c == "a") | (c == "A") then 10
+    else if (c == "b") | (c == "B") then 11
+    else if (c == "c") | (c == "C") then 12
+    else if (c == "d") | (c == "D") then 13
+    else if (c == "e") | (c == "E") then 14
+    else if (c == "f") | (c == "F") then 15
+    else -1
+
+Section: Decoding
+
+ One pass over the encoded text. A plus becomes a space. A percent
+ with two hex digits in range becomes the character whose ASCII code
+ they spell, mapped into CCE by from-unicode; a code the table does
+ not carry is dropped. A percent that is not followed by two hex
+ digits passes through as itself, so a malformed escape is visible in
+ the decoded value instead of swallowing the characters after it.
+
+  form-decode : Text -> Text
+  form-decode (t) = form-decode-loop t 0 (text-length t) ""
+
+  form-decode-loop : Text, Integer, Integer, Text -> Text
+  form-decode-loop (t) (i) (len) (acc) =
+    if i >= len then acc
+    else let ch = char-to-text (char-at t i)
+    in if ch == "+" then form-decode-loop t (i + 1) len (acc & " ")
+    else if ch /= "%" then form-decode-loop t (i + 1) len (acc & ch)
+    else if i + 2 >= len then form-decode-loop t (i + 1) len (acc & ch)
+    else let hi = form-hex-val (char-to-text (char-at t (i + 1)))
+    in let lo = form-hex-val (char-to-text (char-at t (i + 2)))
+    in if (hi < 0) | (lo < 0) then form-decode-loop t (i + 1) len (acc & ch)
+    else let cce = from-unicode (hi * 16 + lo)
+    in if cce < 0 then form-decode-loop t (i + 3) len acc
+    else form-decode-loop t (i + 3) len (acc & char-to-text (code-to-char cce))
+
+Section: The Fields
+
+ The explore form carries exactly three keys: dim, repeated once per
+ checked dimension, meas, repeated once per checked measure, and
+ limit. Repeated dim and meas values gather in arrival order, an
+ empty value is dropped rather than passed to the planner as a ghost
+ name, a later limit wins over an earlier one, and every other key is
+ ignored. The limit accepts nothing but digits: an absent, empty, or
+ garbage limit is zero, which the planner reads as no limit.
+
+  LensFormFields = record {
+    ff-dims : List Text,
+    ff-meas : List Text,
+    ff-limit : Integer
+  }
+
+  form-all-digits : Text, Integer, Integer -> Boolean
+  form-all-digits (t) (i) (len) =
+    if i >= len then True
+    else if is-digit (char-at t i) then form-all-digits t (i + 1) len
+    else False
+
+  form-int : Text -> Integer
+  form-int (t) =
+    if text-length t == 0 then 0
+    else if form-all-digits t 0 (text-length t) then text-to-integer t
+    else 0
+
+  form-take : LensFormFields, Text, Text -> LensFormFields
+  form-take (f) (key) (val) =
+    if key == "dim" then
+      (if text-length val == 0 then f
+       else LensFormFields { ff-dims = list-push (f.ff-dims) val, ff-meas = f.ff-meas, ff-limit = f.ff-limit })
+    else if key == "meas" then
+      (if text-length val == 0 then f
+       else LensFormFields { ff-dims = f.ff-dims, ff-meas = list-push (f.ff-meas) val, ff-limit = f.ff-limit })
+    else if key == "limit" then LensFormFields { ff-dims = f.ff-dims, ff-meas = f.ff-meas, ff-limit = form-int val }
+    else f
+
+Section: Parsing
+
+ Pairs split on the first equals sign only, so a value carrying an
+ encoded equals sign survives whole. A pair with no equals sign is a
+ bare key with the empty value, which the field reader then ignores.
+
+  form-eq-index : Text, Integer, Integer -> Integer
+  form-eq-index (t) (i) (len) =
+    if i >= len then -1
+    else if char-to-text (char-at t i) == "=" then i
+    else form-eq-index t (i + 1) len
+
+  form-pair : LensFormFields, Text -> LensFormFields
+  form-pair (f) (part) =
+    let eq = form-eq-index part 0 (text-length part)
+    in if eq < 0 then form-take f (form-decode part) ""
+    else form-take f (form-decode (substring part 0 eq)) (form-decode (substring part (eq + 1) (text-length part - eq - 1)))
+
+  form-parse-loop : List Text, Integer, LensFormFields -> LensFormFields
+  form-parse-loop (parts) (i) (acc) =
+    if i >= list-length parts then acc
+    else form-parse-loop parts (i + 1) (form-pair acc (list-at parts i))
+
+  lens-form-parse : Text -> LensFormFields
+  lens-form-parse (body) =
+    form-parse-loop (text-split body "&") 0 (LensFormFields { ff-dims = [], ff-meas = [], ff-limit = 0 })

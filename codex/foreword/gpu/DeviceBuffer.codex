@@ -5,6 +5,15 @@ Chapter: DeviceBuffer
  ids, or scalar values. KernelDescriptor identifies a compiled
  kernel by name and target architecture.
 
+ The Allocator section below turns the handle into a usable buffer.
+ It is a bump allocator over the GPU command-buffer window
+ [0xBE000000, 0xBF000000) -- the same window the rasterizer commands
+ travel through, and the authority the Gpu.Memory capability guards.
+ Every operation goes through gpu-mem-write / gpu-mem-read, so every
+ caller must declare Gpu.Memory and earn bit 18; the type is what
+ makes that requirement visible. This exists so a caller stops
+ hand-poking the window to work around the absence of an allocator.
+
  We say:
 
 Section: Types
@@ -24,5 +33,92 @@ Section: Types
     kd-sm-target : Integer,
     kd-ptx-size : Integer
   }
+
+Section: Allocator
+
+ The window constants. The cursor -- the next free absolute address --
+ lives in the first word of the window itself, so the allocator needs
+ no kernel metadata cell and no borrowed state. A fresh window reads
+ zero there, which db-norm-cursor lifts to the first address past the
+ reserved header.
+
+  db-window-base : Integer = #BE000000
+  db-window-top : Integer = #BF000000
+  db-header : Integer = 64
+
+  db-round8 : Integer -> Integer
+  db-round8 (n) = (n + 7) / 8 * 8
+
+  db-norm-cursor : Integer -> Integer
+  db-norm-cursor (c) = if c < db-window-base + db-header then db-window-base + db-header else c
+
+  db-read-cursor : Integer -> [Gpu.Memory] Integer
+  db-read-cursor (d) = db-norm-cursor (gpu-mem-read db-window-base 0)
+
+ Allocate n bytes. The returned db-id is the absolute address of the
+ buffer, directly usable as a pointer; db-size is the requested size.
+ An allocation that would overflow the window returns the null buffer
+ (db-id 0) rather than a handle onto memory it does not own. The
+ effectful cursor write is fed to db-mk as an argument it ignores, the
+ way GpuRender keeps effectful writes out of let-binding position.
+
+  db-null : DeviceBuffer
+  db-null = DeviceBuffer { db-id = 0, db-size = 0 }
+
+  db-mk : Integer, Integer, Integer -> DeviceBuffer
+  db-mk (cur) (n) (w) = DeviceBuffer { db-id = cur, db-size = n }
+
+  db-alloc-at : Integer, Integer -> [Gpu.Memory] DeviceBuffer
+  db-alloc-at (cur) (n) =
+    if cur + db-round8 n > db-window-top then db-null
+    else db-mk cur n (gpu-mem-write db-window-base 0 (cur + db-round8 n))
+
+  device-buffer-alloc : Integer -> [Gpu.Memory] DeviceBuffer
+  device-buffer-alloc (n) = db-alloc-at (db-read-cursor 0) n
+
+ Allocate a buffer sized to the host words and copy them in, one
+ 32-bit word per slot. A null buffer (the window is full) is returned
+ without writing, so the copy never lands on an address the allocator
+ does not hold.
+
+  db-write-words : Integer, List Integer, Integer, Integer -> [Gpu.Memory] Integer
+  db-write-words (base) (words) (i) (n) =
+    if i >= n then 0
+    else gpu-mem-write base (i * 4) (list-at words i) + db-write-words base words (i + 1) n
+
+  db-ret : DeviceBuffer, Integer -> DeviceBuffer
+  db-ret (buf) (w) = buf
+
+  db-after-write : DeviceBuffer, List Integer -> [Gpu.Memory] DeviceBuffer
+  db-after-write (buf) (words) =
+    if buf.db-id == 0 then buf
+    else db-ret buf (db-write-words (buf.db-id) words 0 (list-length words))
+
+  device-buffer-from-host : List Integer -> [Gpu.Memory] DeviceBuffer
+  device-buffer-from-host (words) = db-after-write (device-buffer-alloc (list-length words * 4)) words
+
+ Read a buffer back to a host word list. A null or empty buffer reads
+ nothing.
+
+  db-read-words : Integer, Integer, Integer, List Integer -> [Gpu.Memory] List Integer
+  db-read-words (base) (i) (n) (acc) =
+    if i >= n then acc
+    else db-read-words base (i + 1) n (list-push acc (gpu-mem-read base (i * 4)))
+
+  device-buffer-to-host : DeviceBuffer -> [Gpu.Memory] List Integer
+  device-buffer-to-host (buf) = db-read-words (buf.db-id) 0 (buf.db-size / 4) []
+
+ Free is LIFO: a buffer that is the top of the bump stack rewinds the
+ cursor and its space is reused by the next allocation; any other
+ buffer is a no-op, which is the honest behaviour of a bump allocator
+ rather than a pretence of general free.
+
+  db-free-at : DeviceBuffer, Integer -> [Gpu.Memory] Integer
+  db-free-at (buf) (cur) =
+    if buf.db-id + db-round8 (buf.db-size) == cur then gpu-mem-write db-window-base 0 (buf.db-id)
+    else 0
+
+  device-buffer-free : DeviceBuffer -> [Gpu.Memory] Integer
+  device-buffer-free (buf) = db-free-at buf (db-read-cursor 0)
 
 Page 1

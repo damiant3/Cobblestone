@@ -1765,10 +1765,21 @@ Section: Emit All Runtime Helpers
    if i >= 64 then st
    else rv-emit-zero-memo (rv-emit st (rv-sd base-reg rv-zero (i * 8))) base-reg (i + 1)
 
+ On a multi-hart boot (QEMU virt -smp N, -bios none) every hart enters
+ __start at reset. __start reads mhartid first: hart 0 takes the normal
+ boot (stack, FP, heap, CCE tables, trap vector, call opening); a hart
+ whose id is non-zero is a secondary and branches to the AP path, which
+ stores a marker to a fixed DRAM cell (0x80090000) and parks in wfi. The
+ marker is written only by a core that executed guest code, so a guest
+ that reads it back non-zero has proof a secondary hart ran (BACKLOG 4.2).
+
   rv-emit-runtime : RvState -> RvState
   rv-emit-runtime (st) =
    let st1 = rv-record-func st "__start"
-   in let st2 = rv-emit-li st1 rv-sp #BFFF0000
+   in let st1h = rv-emit st1 (rv-csrrs rv-t0 #F14 rv-zero)
+   in let bne-idx = st1h.insn-count
+   in let st1p = rv-emit st1h rv-nop
+   in let st2 = rv-emit-li st1p rv-sp #BFFF0000
    in let st2a = rv-emit-li st2 rv-t0 #6000
    in let st2b = rv-emit st2a (rv-csrrs rv-zero #300 rv-t0)
    in let st3 = rv-emit-li st2b rv-s1 #80100200
@@ -1788,7 +1799,14 @@ Section: Emit All Runtime Helpers
    in let st5 = rv-emit st4 rv-nop
    in let st5 = rv-emit st5 rv-wfi
    in let st6 = rv-emit st5 (rv-j (0 - 4))
-   in let st7 = rv-record-func st6 "print-line-uni"
+   in let ap-idx = st6.insn-count
+   in let st6a = rv-emit-li st6 rv-t1 #80090000
+   in let st6b = rv-emit-li st6a rv-t2 1
+   in let st6c = rv-emit st6b (rv-sd rv-t1 rv-t2 0)
+   in let st6d = rv-emit st6c rv-wfi
+   in let st6e = rv-emit st6d (rv-j (0 - 4))
+   in let st6f = rv-patch-insn st6e bne-idx (rv-bne rv-t0 rv-zero ((ap-idx - bne-idx) * 4))
+   in let st7 = rv-record-func st6f "print-line-uni"
    in let st7a = rv-record-func st7 "print-line"
    in let st8 = rv-emit-block st7a rv-rt-print-line-uni
    in let st9 = rv-record-func st8 "__str_eq"

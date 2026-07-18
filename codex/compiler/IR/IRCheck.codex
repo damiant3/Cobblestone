@@ -1,0 +1,405 @@
+Chapter: IRCheck
+  cites Codex chapter Build Settings (max-recursion-depth)
+
+ The IR validator: the one idea worth taking from nanopass. Every
+ rewriting pass is a chance to produce IR that is still well-typed
+ enough to walk and still wrong — a name left dangling by a
+ substitution, a type dropped on a rebuilt node, a match rewritten
+ down to no branches. None of those crash the pass that made them.
+ They crash, or worse do not crash, three stages later in the
+ emitter, and the search starts in the wrong place. `ir-check` walks
+ a chapter and answers with the list of things wrong with it, so that
+ a malformed chapter is attributed to the pass that produced it.
+
+ It is a checker in a rewriter's clothing. The pipeline's interface is
+ `IRChapter -> IRChapter` and the registry dispatches on a name, so the
+ cheapest way to make the validator placeable anywhere in the pipeline
+ — `passes=fold-constants,ir-check,inline-leaf-calls,ir-check` — is to
+ register it as a pass that returns its input unchanged and reports out
+ of band. The violations ride back to the caller in the pass result and
+ become CDX9004 errors in the frontend's bag.
+
+ It halts rather than warns. A warning that the IR is malformed is a
+ warning that the binary about to be written is not the program that
+ was written down; there is nothing to do with that but stop. The bag
+ already carries this meaning — `compile-to-cdx-with-exit-mode` emits
+ no binary when the frontend bag has errors — so a violation lands in
+ the bag and the existing halt does the rest. No new halt machinery.
+
+ It is opt-in, and it is off in `default-ir-pipeline`. The shipping
+ compiler pays nothing for it: no walk, no skip list, no allocation.
+ Turn it on when a pass is under suspicion, and it is on for every
+ definition in the chapter, which for a self-compile is every function
+ in the compiler.
+
+ Three things are checked, and only three.
+
+ **Scope discipline under shadowing.** Every `IrName` must be bound by
+ something. The scope walk seeds from the definition's parameters and
+ admits binders from `IrLet`, `IrLambda`, match branch patterns
+ (including constructor sub-patterns), `IrDoBind`, and handle clause
+ parameters and resume names. But this IR legitimately names things
+ that no binder introduced — chapter-level definitions, builtins,
+ effect operations, nullary constructors — and the emitter resolves
+ exactly those four when a name misses the locals (`emit-name`:
+ locals, then `is-builtin`, then the user-arity table, then the
+ handler table, then a nullary constructor tag). So the checker admits
+ the same four, and a name is a violation only when it is in none of
+ them. **A false positive here is worse than a miss.** Constructors are
+ admitted by the name-resolver's own `is-type-name`, because the ctor
+ list is not carried on the IRChapter; that is the one place this check
+ is coarser than the emitter, and it is coarse in the safe direction.
+
+ **Type presence.** Every expression node, parameter, and definition
+ that carries a `CodexType` carries a resolved one. `ErrorTy` there
+ means an earlier phase failed silently.
+
+ This paragraph used to add "codegen already refuses it, but by then the
+ pass that dropped the type is long gone." Codegen does not refuse it and
+ never did. There was a code for that refusal — CDX2041, ErrorTypeInIR,
+ registered in the codegen phase — and nothing ever raised it; codegen
+ instead PRODUCES `ErrorTy` (`prefer-type-binding` answers it for a name
+ it cannot bind) and renders it as "Unknown". The code is deleted rather
+ than left standing as a refusal nobody performs. It could not honestly
+ be wired anyway while the three holes below exist, because codegen would
+ refuse the valid programs that carry them. This check, here, is the only
+ thing that reports an `ErrorTy` in the IR at all.
+
+ The contract is not universal, and finding out where it fails was the
+ first thing this checker did. **Three places in the IR carry `ErrorTy`
+ on perfectly valid programs today**, and all three are excluded from
+ the check rather than papered over:
+
+ 1. **Constructor sub-patterns** — `lookup-ctor-field-type` answers
+    `ErrorTy` for any scrutinee not already a resolved `SumTy`, which
+    is every polymorphic sum. `when b is Wrap (x)` types `x` as
+    `ErrorTy`.
+ 2. **The element type of an empty `IrList`** — `[]` has no element to
+    take a type from.
+ 3. **Un-annotated lambdas** — `let f = \a -> a + a in ...` lowers the
+    `IrLambda`, its parameters, and the `IrLet` that binds it with
+    `ErrorTy`; nothing carries the checker's inferred type down into
+    lowering for that node.
+
+ None of the three is a miscompile — codegen never reads those slots.
+ All three are a warning to the middle-end campaign: **a pass may not
+ yet reason from a type it reads out of the IR** without knowing which
+ of these it is standing on. They are the honest reason the ErrorTy
+ check is narrower than "every node".
+
+ **Structural sanity.** A match with no branches, an apply whose
+ function position is a literal, a let that binds the empty name.
+
+ Limitations, stated so they are not assumed away: the three type holes
+ above are not checked; the ErrorTy check is otherwise shallow (an
+ `ErrorTy` nested inside a `ListTy` is not reported); no effect-row
+ agreement is checked; no arity checking; a constructor name is
+ admitted on its spelling, not against a constructor table; and the
+ walk is depth- and scope-bounded, so a pathological tree is reported
+ as unchecked rather than walked forever.
+
+Section: Diagnostic Code
+
+ 9xxx is the compiler-internal band (CdxCodes: 9001 resource exhausted,
+ 9002 deck overflow, 9003 escape violation). A malformed IR is the
+ compiler's fault, never the program's, so it belongs here and nowhere
+ else. The constant lives beside its only producer until CdxCodes can
+ be edited to carry the registry entry.
+
+  cdx-ir-check-violation : Integer = 9004
+
+Section: Bounds
+
+ The walk is bounded twice. Depth is the recursion budget every other
+ tree walker in the compiler uses, so a cyclic or pathological IR
+ cannot hang the checker. Scope is a fixed stack of names: binders are
+ written into it by index and the count in hand is the only authority
+ on what is in scope, which is what makes shadowing correct — a sibling
+ branch overwrites its predecessor's slots rather than inheriting them.
+ The stack is allocated once for the whole chapter and never grows, so
+ the scope walk allocates nothing per definition.
+
+ Exhausting either bound is itself reported. The checker never answers
+ "clean" about a subtree it did not read.
+
+  ir-check-scope-cap : Integer = 1024
+
+Section: Entry Point
+
+  ir-check : IRChapter -> List Text
+  ir-check (ch) =
+   let globals = ir-check-globals ch
+   in let stack = ir-check-make-stack 0 []
+   in ir-check-defs globals stack (ch.defs) 0 (list-length (ch.defs)) []
+
+ The names a bare IrName may legitimately carry without a binder: every
+ definition in the chapter, every builtin the name resolver knows, and
+ every effect operation the chapter declares.
+
+  ir-check-globals : IRChapter -> SkipListText
+  ir-check-globals (ch) =
+   let s0 = skip-list-text-from-list builtin-names
+   in let s1 = ir-check-add-def-names s0 (ch.defs) 0 (list-length (ch.defs))
+   in ir-check-add-names s1 (ch.effect-op-names) 0 (list-length (ch.effect-op-names))
+
+  ir-check-add-def-names : SkipListText, List IRDef, Integer, Integer -> SkipListText
+  ir-check-add-def-names (s) (defs) (i) (len) =
+   if i >= len then s
+   else ir-check-add-def-names (skip-list-text-insert s ((list-at defs i).name)) defs (i + 1) len
+
+  ir-check-add-names : SkipListText, List Text, Integer, Integer -> SkipListText
+  ir-check-add-names (s) (xs) (i) (len) =
+   if i >= len then s
+   else ir-check-add-names (skip-list-text-insert s (list-at xs i)) xs (i + 1) len
+
+  ir-check-make-stack : Integer, List Text -> List Text
+  ir-check-make-stack (i) (acc) =
+   if i >= ir-check-scope-cap then acc
+   else ir-check-make-stack (i + 1) (list-push acc "")
+
+Section: Environment
+
+  IRCheckEnv = record {
+   globals : SkipListText,
+   scope : List Text,
+   def-name : Text
+  }
+
+  ir-check-msg : IRCheckEnv, Text -> Text
+  ir-check-msg (env) (m) = (env.def-name) & ": " & m
+
+  ir-check-push : IRCheckEnv, Text, Integer -> Integer
+  ir-check-push (env) (n) (nb) =
+   if nb >= ir-check-scope-cap then nb
+   else let written = list-set-at (env.scope) nb n
+   in nb + 1
+
+  ir-check-push-names : IRCheckEnv, List Text, Integer, Integer, Integer -> Integer
+  ir-check-push-names (env) (xs) (i) (len) (nb) =
+   if i >= len then nb
+   else ir-check-push-names env xs (i + 1) len (ir-check-push env (list-at xs i) nb)
+
+  ir-check-in-scope : IRCheckEnv, Text, Integer -> Boolean
+  ir-check-in-scope (env) (n) (nb) = ir-check-scan (env.scope) n (nb - 1)
+
+  ir-check-scan : List Text, Text, Integer -> Boolean
+  ir-check-scan (stack) (n) (i) =
+   if i < 0 then False
+   else if list-at stack i == n then True
+   else ir-check-scan stack n (i - 1)
+
+Section: Predicates
+
+  ir-check-is-error-ty : CodexType -> Boolean
+  ir-check-is-error-ty (t) =
+   when t
+    is ErrorTy -> True
+    is otherwise -> False
+
+  ir-check-is-literal : IRExpr -> Boolean
+  ir-check-is-literal (e) =
+   when e
+    is IrIntLit (v) (s) | IrNumLit (v) (s) | IrTextLit (v) (s) | IrBoolLit (v) (s) | IrCharLit (v) (s) -> True
+    is otherwise -> False
+
+  ir-check-is-lambda : IRExpr -> Boolean
+  ir-check-is-lambda (e) =
+   when e
+    is IrLambda (ps) (b) (t) (s) -> True
+    is otherwise -> False
+
+  ir-check-ty : IRCheckEnv, CodexType, Text, List Text -> List Text
+  ir-check-ty (env) (t) (kind) (acc) =
+   if ir-check-is-error-ty t then list-push acc (ir-check-msg env (kind & " carries ErrorTy"))
+   else acc
+
+Section: Definitions
+
+  ir-check-defs : SkipListText, List Text, List IRDef, Integer, Integer, List Text -> List Text
+  ir-check-defs (globals) (stack) (defs) (i) (len) (acc) =
+   if i >= len then acc
+   else ir-check-defs globals stack defs (i + 1) len (ir-check-def globals stack (list-at defs i) acc)
+
+  ir-check-def : SkipListText, List Text, IRDef, List Text -> List Text
+  ir-check-def (globals) (stack) (d) (acc) =
+   let env = IRCheckEnv { globals = globals, scope = stack, def-name = d.name }
+   in let params = d.params
+   in let nb = ir-check-bind-params env params 0 (list-length params) 0
+   in let acc1 = ir-check-param-types env params 0 (list-length params) acc
+   in let acc2 = ir-check-ty env (d.type-val) "definition" acc1
+   in ir-check-expr env (d.body) nb 0 acc2
+
+  ir-check-bind-params : IRCheckEnv, List IRParam, Integer, Integer, Integer -> Integer
+  ir-check-bind-params (env) (ps) (i) (len) (nb) =
+   if i >= len then nb
+   else ir-check-bind-params env ps (i + 1) len (ir-check-push env ((list-at ps i).name) nb)
+
+  ir-check-param-types : IRCheckEnv, List IRParam, Integer, Integer, List Text -> List Text
+  ir-check-param-types (env) (ps) (i) (len) (acc) =
+   if i >= len then acc
+   else let p = list-at ps i
+   in ir-check-param-types env ps (i + 1) len (ir-check-ty env (p.type-val) ("parameter '" & (p.name) & "'") acc)
+
+Section: Expressions
+
+  ir-check-expr : IRCheckEnv, IRExpr, Integer, Integer, List Text -> List Text
+  ir-check-expr (env) (e) (nb) (depth) (acc) =
+   if depth >= max-recursion-depth then list-push acc (ir-check-msg env "IR depth budget exhausted; subtree not checked")
+   else if nb >= ir-check-scope-cap then list-push acc (ir-check-msg env "scope budget exhausted; subtree not checked")
+   else when e
+    is IrIntLit (v) (s) | IrNumLit (v) (s) | IrTextLit (v) (s) | IrBoolLit (v) (s) | IrCharLit (v) (s) -> acc
+    is IrName (n) (t) (s) ->
+     let acc1 = ir-check-ty env t ("IrName '" & n & "'") acc
+     in if ir-check-in-scope env n nb then acc1
+        else if skip-list-text-has (env.globals) n then acc1
+        else if is-type-name n then acc1
+        else list-push acc1 (ir-check-msg env ("unbound name '" & n & "'"))
+    is IrNegate (x) (s) -> ir-check-expr env x nb (depth + 1) acc
+    is IrBinary (op) (l) (r) (t) (s) ->
+     let acc1 = ir-check-ty env t "IrBinary" acc
+     in let acc2 = ir-check-expr env l nb (depth + 1) acc1
+     in ir-check-expr env r nb (depth + 1) acc2
+    is IrIf (c) (th) (el) (t) (s) ->
+     let acc1 = ir-check-ty env t "IrIf" acc
+     in let acc2 = ir-check-expr env c nb (depth + 1) acc1
+     in let acc3 = ir-check-expr env th nb (depth + 1) acc2
+     in ir-check-expr env el nb (depth + 1) acc3
+    is IrLet (n) (t) (v) (b) (s) ->
+     let acc1 = if ir-check-is-lambda v then acc else ir-check-ty env t ("IrLet '" & n & "'") acc
+     in let acc2 = if n == "" then list-push acc1 (ir-check-msg env "IrLet binds the empty name") else acc1
+     in let acc3 = ir-check-expr env v nb (depth + 1) acc2
+     in ir-check-expr env b (ir-check-push env n nb) (depth + 1) acc3
+    is IrApply (f) (a) (t) (s) ->
+     let acc1 = ir-check-ty env t "IrApply" acc
+     in let acc2 = if ir-check-is-literal f then list-push acc1 (ir-check-msg env "IrApply applies a literal in function position") else acc1
+     in let acc3 = ir-check-expr env f nb (depth + 1) acc2
+     in ir-check-expr env a nb (depth + 1) acc3
+    is IrLambda (ps) (b) (t) (s) ->
+     ir-check-expr env b (ir-check-bind-params env ps 0 (list-length ps) nb) (depth + 1) acc
+    is IrList (es) (t) (s) ->
+     let acc1 = if list-length es == 0 then acc else ir-check-ty env t "IrList" acc
+     in ir-check-exprs env es nb (depth + 1) 0 (list-length es) acc1
+    is IrMatch (sc) (bs) (t) (s) ->
+     let acc1 = ir-check-ty env t "IrMatch" acc
+     in let acc2 = if list-length bs == 0 then list-push acc1 (ir-check-msg env "IrMatch has no branches") else acc1
+     in let acc3 = ir-check-expr env sc nb (depth + 1) acc2
+     in ir-check-branches env bs nb (depth + 1) 0 (list-length bs) acc3
+    is IrAct (ss) (t) (s) ->
+     let acc1 = ir-check-ty env t "IrAct" acc
+     in ir-check-stmts env ss nb (depth + 1) 0 (list-length ss) acc1
+    is IrHandle (eff) (h) (cs) (t) (s) ->
+     let acc1 = ir-check-ty env t "IrHandle" acc
+     in let acc2 = ir-check-expr env h nb (depth + 1) acc1
+     in ir-check-clauses env cs nb (depth + 1) 0 (list-length cs) acc2
+    is IrWithTimeout (secs) (effs) (scopes) (body) (t) (s) ->
+     let acc1 = ir-check-ty env t "IrWithTimeout" acc
+     in ir-check-expr env body nb (depth + 1) acc1
+    is IrRecord (n) (fs) (t) (s) ->
+     let acc1 = ir-check-ty env t ("IrRecord '" & n & "'") acc
+     in ir-check-fields env fs nb (depth + 1) 0 (list-length fs) acc1
+    is IrFieldAccess (r) (f) (t) (s) ->
+     let acc1 = ir-check-ty env t ("IrFieldAccess '" & f & "'") acc
+     in ir-check-expr env r nb (depth + 1) acc1
+    is IrFork (b) (t) (s) ->
+     let acc1 = ir-check-ty env t "IrFork" acc
+     in ir-check-expr env b nb (depth + 1) acc1
+    is IrAwait (tk) (t) (s) ->
+     let acc1 = ir-check-ty env t "IrAwait" acc
+     in ir-check-expr env tk nb (depth + 1) acc1
+    is IrTry (mx) (body) (fb) (fail) (t) (s) ->
+     let acc1 = ir-check-ty env t "IrTry" acc
+     in let acc2 = ir-check-stmts env body nb (depth + 1) 0 (list-length body) acc1
+     in let acc3 = ir-check-stmts env fb nb (depth + 1) 0 (list-length fb) acc2
+     in ir-check-stmts env fail nb (depth + 1) 0 (list-length fail) acc3
+    is IrFieldStore (r) (f) (v) (t) (s) ->
+     let acc1 = ir-check-ty env t ("IrFieldStore '" & f & "'") acc
+     in let acc2 = ir-check-expr env r nb (depth + 1) acc1
+     in ir-check-expr env v nb (depth + 1) acc2
+    is IrError (m) (t) (s) -> ir-check-ty env t "IrError" acc
+
+  ir-check-exprs : IRCheckEnv, List IRExpr, Integer, Integer, Integer, Integer, List Text -> List Text
+  ir-check-exprs (env) (es) (nb) (depth) (i) (len) (acc) =
+   if i >= len then acc
+   else ir-check-exprs env es nb depth (i + 1) len (ir-check-expr env (list-at es i) nb depth acc)
+
+  ir-check-fields : IRCheckEnv, List IRFieldVal, Integer, Integer, Integer, Integer, List Text -> List Text
+  ir-check-fields (env) (fs) (nb) (depth) (i) (len) (acc) =
+   if i >= len then acc
+   else let f = list-at fs i
+   in ir-check-fields env fs nb depth (i + 1) len (ir-check-expr env (f.value) nb depth acc)
+
+ An act statement's binder is in scope for the statements after it, and
+ for nothing else. The count threads forward through the list; the
+ caller's count is what the next construct sees.
+
+  ir-check-stmts : IRCheckEnv, List IRActStmt, Integer, Integer, Integer, Integer, List Text -> List Text
+  ir-check-stmts (env) (ss) (nb) (depth) (i) (len) (acc) =
+   if i >= len then acc
+   else let s = list-at ss i
+   in when s
+    is IrDoBind (n) (t) (v) (sp) ->
+     let acc1 = ir-check-ty env t ("IrDoBind '" & n & "'") acc
+     in let acc2 = ir-check-expr env v nb depth acc1
+     in ir-check-stmts env ss (ir-check-push env n nb) depth (i + 1) len acc2
+    is IrDoExec (v) (sp) ->
+     ir-check-stmts env ss nb depth (i + 1) len (ir-check-expr env v nb depth acc)
+
+ A branch's pattern binds for that branch's guard and body only. The
+ pattern is walked for its binders and for nothing else — see the
+ Patterns section for why its types are not checked.
+
+  ir-check-branches : IRCheckEnv, List IRBranch, Integer, Integer, Integer, Integer, List Text -> List Text
+  ir-check-branches (env) (bs) (nb) (depth) (i) (len) (acc) =
+   if i >= len then acc
+   else let b = list-at bs i
+   in let nb2 = ir-check-bind-pat env (b.pattern) nb depth
+   in let acc1 = ir-check-expr env (b.guard) nb2 depth acc
+   in let acc2 = ir-check-expr env (b.body) nb2 depth acc1
+   in ir-check-branches env bs nb depth (i + 1) len acc2
+
+  ir-check-clauses : IRCheckEnv, List IRHandleClause, Integer, Integer, Integer, Integer, List Text -> List Text
+  ir-check-clauses (env) (cs) (nb) (depth) (i) (len) (acc) =
+   if i >= len then acc
+   else let c = list-at cs i
+   in let nb2 = ir-check-push-names env (c.params) 0 (list-length (c.params)) nb
+   in let nb3 = ir-check-push env (c.resume-name) nb2
+   in ir-check-clauses env cs nb depth (i + 1) len (ir-check-expr env (c.body) nb3 depth acc)
+
+Section: Patterns
+
+ Patterns are walked for their binders only — see hole 1 in the chapter
+ prose for why their types are not checked. Codegen never reads them
+ (it matches on tags and field offsets), so the IR is not wrong, but it
+ is not typed either. The check belongs here the day lowering fills
+ them in.
+
+  ir-check-bind-pat : IRCheckEnv, IRPat, Integer, Integer -> Integer
+  ir-check-bind-pat (env) (p) (nb) (depth) =
+   if depth >= max-recursion-depth then nb
+   else when p
+    is IrVarPat (n) (t) (s) -> ir-check-push env n nb
+    is IrCtorPat (n) (subs) (t) (s) -> ir-check-bind-pats env subs nb (depth + 1) 0 (list-length subs)
+    is IrVecPat (subs) (t) (s) -> ir-check-bind-pats env subs nb (depth + 1) 0 (list-length subs)
+    is otherwise -> nb
+
+  ir-check-bind-pats : IRCheckEnv, List IRPat, Integer, Integer, Integer, Integer -> Integer
+  ir-check-bind-pats (env) (ps) (nb) (depth) (i) (len) =
+   if i >= len then nb
+   else ir-check-bind-pats env ps (ir-check-bind-pat env (list-at ps i) nb depth) depth (i + 1) len
+
+Section: Reporting
+
+ Violations reach the frontend as errors in the diagnostic bag, which
+ is the compiler's existing halt: a frontend bag with errors emits no
+ binary. Every violation is one message naming the definition and the
+ problem; the pipeline slot is prefixed by the pass loop, so two
+ `ir-check` entries in one pipeline are told apart.
+
+  ir-check-violation-bag : List Text -> DiagnosticBag
+  ir-check-violation-bag (vs) =
+   ir-check-violation-bag-loop empty-bag vs 0 (list-length vs)
+
+  ir-check-violation-bag-loop : DiagnosticBag, List Text, Integer, Integer -> DiagnosticBag
+  ir-check-violation-bag-loop (bag) (vs) (i) (len) =
+   if i >= len then bag
+   else ir-check-violation-bag-loop (bag-add bag (make-error cdx-ir-check-violation (list-at vs i) synthetic-span)) vs (i + 1) len

@@ -1,5 +1,29 @@
 Chapter: TypeClassPoly
 
+ A class with a superclass carries the superclass's dictionary.
+
+ synth-class-type-defs gives SortableDict a field __super-Equatable of type
+ EquatableDict. Nothing used to put a value in it: the instance dictionary was
+ built from the instance's own methods alone, so the field was left to __alloc,
+ which zero-fills. Every superclass dictionary of every instance of every class
+ that had one was a null pointer.
+
+ It stayed invisible because the two halves of the bug cancelled. The PARSE
+ keep-deck copy dropped ClassDef.superclass on the floor, so the desugarer saw
+ no superclass, never added the field to the record, and never missed it.
+ Repairing the copy left the field present and empty.
+
+ This chapter used to name Equatable as a superclass without declaring it
+ anywhere, and the dangling reference resolved to nothing and bothered no one
+ -- which is what an erased constraint buys you. Equatable is declared here
+ now, with an instance for Integer, so the constraint is real.
+
+class Equatable where
+  equals : a, a -> Boolean
+
+instance Equatable Integer where
+  equals (x) (y) = x == y
+
 class Converter where
   convert : a, b -> b
 
@@ -20,9 +44,20 @@ Section: Helpers
   test-sort-key : Text
   test-sort-key = show (sort-key 5)
 
+ Reach through the Sortable dictionary into the superclass dictionary it now
+ carries, and call the superclass method out of it. A zeroed __super-Equatable
+ is a null pointer, and this is the line that finds out.
+
+  test-super : Text
+  test-super =
+   let d = Sortable-dict-Integer
+   in let eq = d.__super-Equatable
+   in show ((eq.equals-impl) 7 7)
+
 Section: Body
 
   opening : [Console] Nothing = act
     print-line-uni test-convert
     print-line-uni test-sort-key
+    print-line-uni test-super
   end

@@ -1,0 +1,522 @@
+Chapter: KbdDiagProbe
+  cites Works chapter GopXhci
+  cites Works chapter GopUsb
+  cites Works chapter GopUsbKbd
+  cites Works chapter GopUsbMsc
+  cites Works chapter GopDisk
+  cites Works chapter GopFat16
+  cites Works chapter GopKey
+  cites Works chapter GopDraw
+  cites Works chapter GopQr
+  cites Kernel chapter BitmapFont
+
+ Real-hardware keyboard diagnostic, v8: three phases, one boot.
+
+ PHASE 1 is the endpoint-attributed USB pump. Every transfer event is
+ attributed to its ENDPOINT (the event TRB's control dword carries the
+ endpoint id in bits 20:16); earlier probes counted any transfer event
+ as a keyboard completion, so a single leftover EP0 control completion
+ read as "the interrupt endpoint fired once, then went silent." EPINT
+ counts only completions whose endpoint id equals the keyboard's dci;
+ EP0 and OTH count the impostors; LATCH counts codes taken from the
+ per-slot latch, where attribution is already lost. Findings are
+ rewritten to KBDDIAG.TXT on the boot stick's own ESP whenever the
+ counters change -- each write is durable the moment it lands, so a
+ later phase hanging costs nothing already recorded.
+
+ PHASE 2 is the ownership handback experiment -- the feasibility test
+ for a permanent "no USB keyboard, fall back to PS/2" boot feature. On
+ a board whose only keyboard is USB, the PS/2 route IS the firmware's
+ SMM legacy emulation, and that emulation serves keys only while the
+ firmware owns the controller our disk driver claimed. The phase halts
+ the controller, restores the firmware's own SMI enables (recorded by
+ the handoff at diag index 39), clears the OS-owned semaphore, and
+ then counts PS/2 arrivals on BOTH routes -- the IRQ1 mailbox and a
+ floating-bus-guarded port 0x60 poll, because SMM emulation on some
+ boards only answers the polled port. PS2 climbing here means the
+ fallback is real.
+
+ PHASE 3 re-acquires: the full bring-up runs again (handoff, reset,
+ enumerate, mount) and the phase-2 verdict is written to the file. A
+ working phase 3 proves ownership can be juggled per phase -- the
+ strongest form of the fallback feature.
+
+ The counters are ZEROED at start. Phases advance on the PIT tick
+ (~18 Hz, the spine runtime-init started) with a paint-count fallback
+ for firmware whose tick never moves. The pump path per iteration
+ allocates nothing.
+
+ We say:
+
+Section: Counters
+
+ The block sits at 37000, ABOVE every claimed cell region: the xHCI
+ diag block (36200), the GopUsbMsc publish block (36480-36571 -- the
+ v8.0 probe overlapped it at 36480, wiping the publish magic, so the
+ first file write fell into msc-connect's controller reset and
+ silently killed the keyboard endpoint it was instrumenting), and the
+ pointer mailbox (36736).
+
+  kd-cell : Integer = 37000
+
+  kd-inc : Integer -> Integer
+  kd-inc (off) = poke-32 kd-cell off ((peek-32 kd-cell off) + 1)
+
+  kd-zero : Integer
+  kd-zero =
+    let a0 = poke-32 kd-cell 0 0
+    in let a1 = poke-32 kd-cell 4 0
+    in let a2 = poke-32 kd-cell 8 0
+    in let a3 = poke-32 kd-cell 12 0
+    in let a4 = poke-32 kd-cell 16 0
+    in let a5 = poke-32 kd-cell 20 0
+    in let a6 = poke-32 kd-cell 24 0
+    in let a7 = poke-32 kd-cell 28 0
+    in let a8 = poke-32 kd-cell 32 0
+    in let a9 = poke-32 kd-cell 36 0
+    in let aa = poke-32 kd-cell 40 0
+    in let ab = poke-32 kd-cell 44 #FFFFFFFF
+    in let ac = poke-32 kd-cell 48 0
+    in let ad = poke-32 kd-cell 52 0
+    in let ae = poke-32 kd-cell 56 1
+    in let af = poke-32 kd-cell 60 0
+    in let ag = poke-32 kd-cell 64 0
+    in let ah = poke-32 kd-cell 68 0
+    in let ai = poke-32 kd-cell 72 0
+    in let aj = poke-32 kd-cell 76 0
+    in let ak = poke-32 kd-cell 80 0
+    in let al = poke-32 kd-cell 84 0
+    in let am = poke-32 kd-cell 88 0
+    in let an = poke-32 kd-cell 92 0
+    in poke-32 kd-cell 96 #FFFFFFFF
+
+  kd-mark-tick : Integer -> Integer
+  kd-mark-tick (d) = poke-32 kd-cell 76 (bit-and (peek-qword xhci-tick-cell 0) #FFFFFFFF)
+
+  kd-tick-delta : Integer -> Integer
+  kd-tick-delta (d) = bit-and (peek-qword xhci-tick-cell 0) #FFFFFFFF - peek-32 kd-cell 76
+
+Section: Hex
+
+  knib : Integer -> Text
+  knib (n) =
+    if n == 0 then "0" else if n == 1 then "1" else if n == 2 then "2"
+    else if n == 3 then "3" else if n == 4 then "4" else if n == 5 then "5"
+    else if n == 6 then "6" else if n == 7 then "7" else if n == 8 then "8"
+    else if n == 9 then "9" else if n == 10 then "a" else if n == 11 then "b"
+    else if n == 12 then "c" else if n == 13 then "d" else if n == 14 then "e"
+    else "f"
+
+  khx : Integer, Integer -> Text
+  khx (v) (sh) = knib (bit-and (bit-shru v sh) 15)
+
+  kh8 : Integer -> Text
+  kh8 (v) = khx v 4 & khx v 0
+
+  kh32 : Integer -> Text
+  kh32 (v) = kh8 (bit-and (bit-shru v 24) 255) & kh8 (bit-and (bit-shru v 16) 255) & kh8 (bit-and (bit-shru v 8) 255) & kh8 (bit-and v 255)
+
+  kyn : Integer -> Text
+  kyn (v) = if v == 0 then "n" else "y"
+
+  kbyte : Integer, Integer -> Text
+  kbyte (buf) (i) = kh8 (peek-byte buf i)
+
+  krpt : Integer -> Text
+  krpt (buf) = kbyte buf 0 & " " & kbyte buf 1 & " " & kbyte buf 2 & " " & kbyte buf 3 & " " & kbyte buf 4 & " " & kbyte buf 5 & " " & kbyte buf 6 & " " & kbyte buf 7
+
+Section: Raw Event Walk
+
+ A probe-local copy of the driver's transfer wait that keeps what the
+ driver throws away: the endpoint id, the completed TRB's pointer,
+ and the residual. It preserves the driver's contract exactly -- a
+ completion for a DIFFERENT slot is latched (the mass-storage waits
+ during the file rewrite depend on that), other event types are
+ consumed and skipped, and the idle path allocates nothing. A code
+ taken from our own slot's latch is counted as LATCH and treated as a
+ completion (the report was DMA'd), because the latch stores only the
+ code -- whoever latched it consumed the endpoint id.
+
+  kd-wait-raw : XhciHost, Integer, Integer -> Integer
+  kd-wait-raw (xh) (slot) (dci) =
+    let l = xhci-latch-take xh slot
+    in if l /= 0 then
+      let a = kd-inc 24
+      in let c = poke-32 kd-cell 8 l
+      in l
+    else let st = xh.xh-state
+    in let deq = peek-32 st xh-st-evt-deq
+    in let cyc = peek-32 st xh-st-evt-cyc
+    in let ctl = peek-32 (xh.xh-evt-ring) (deq * 16 + 12)
+    in if bit-and ctl 1 /= cyc then 0
+    else let ptr = peek-32 (xh.xh-evt-ring) (deq * 16)
+    in let sts = peek-32 (xh.xh-evt-ring) (deq * 16 + 8)
+    in let adv = xhci-evt-advance xh deq cyc
+    in let ty = bit-and (bit-shru ctl 10) 63
+    in if ty /= trb-t-xfer-event then kd-wait-raw xh slot dci
+    else let code = bit-and (bit-shru sts 24) 255
+    in let eslot = bit-and (bit-shru ctl 24) 255
+    in if eslot /= slot then
+      let put = xhci-latch-put xh eslot code
+      in kd-wait-raw xh slot dci
+    else let epid = bit-and (bit-shru ctl 16) 31
+    in let rc = poke-32 kd-cell 28 ctl
+    in let rp = poke-32 kd-cell 32 ptr
+    in let rr = poke-32 kd-cell 36 (bit-and sts 16777215)
+    in let cc = poke-32 kd-cell 8 code
+    in if epid == dci then
+      let e = kd-inc 0
+      in code
+    else if epid == 1 then
+      let e = kd-inc 16
+      in kd-wait-raw xh slot dci
+    else let e = kd-inc 20
+    in kd-wait-raw xh slot dci
+
+Section: Instrumented Pump
+
+  kd-step : UsbKbd -> Integer
+  kd-step (k) =
+    if k.uk-ok == False then 0
+    else let ph = peek-32 (k.uk-state) 0
+    in if ph == uk-ph-idle then kbd-arm k
+    else if ph == uk-ph-armed then
+      let code = kd-wait-raw (k.uk-host) ((k.uk-dev).ud-slot) (k.uk-dci)
+      in if code == 0 then 0
+      else kbd-set-phase k uk-ph-drain
+    else let sc = kbd-drain k
+    in if sc == 0 then 0
+    else let s = kd-inc 4
+    in poke-32 kd-cell 12 sc
+
+  kd-spin : UsbKbd, Integer -> Integer
+  kd-spin (k) (i) =
+    let s = kd-step k
+    in if i <= 0 then 0
+    else kd-spin k (i - 1)
+
+Section: Ownership Handback
+
+ The reverse of the driver's take-ownership, for the phase-2
+ experiment: halt the controller so the firmware inherits a quiescent
+ device, restore the SMI enables the firmware had chosen (recorded at
+ diag index 39 during the handoff), clear the OS-owned semaphore, and
+ watch for the BIOS-owned bit to return. The reclaim is re-checked
+ every paint during phase 2 because a firmware may take seconds of
+ SMM work to re-own a controller -- the inline waits here are
+ deliberately short (these loops poll MMIO, where the driver's settle
+ fuel would stall the glass for a minute).
+
+  xr-fuel : Integer = 200000
+
+  xr-halt-wait : Integer, Integer -> Integer
+  xr-halt-wait (op) (fuel) =
+    if bit-and (peek-32 op 4) 1 /= 0 then 1
+    else if fuel <= 0 then 0
+    else xr-halt-wait op (fuel - 1)
+
+  xr-reclaim-wait : Integer, Integer -> Integer
+  xr-reclaim-wait (addr) (fuel) =
+    if bit-and (peek-32 addr 0) xhci-legsup-bios /= 0 then 1
+    else if fuel <= 0 then 0
+    else xr-reclaim-wait addr (fuel - 1)
+
+  xr-release : XhciHost -> Integer
+  xr-release (xh) =
+    if xh.xh-ok == False then
+      let r = poke-32 kd-cell 68 0
+      in poke-32 kd-cell 72 0
+    else let op = xh.xh-op
+    in let cmd = peek-32 op 0
+    in let hw = poke-32 op 0 (bit-and cmd #FFFFFFFE)
+    in let halted = xr-halt-wait op xr-fuel
+    in if xdiag-get 9 == 0 then
+      let r = poke-32 kd-cell 68 0
+      in poke-32 kd-cell 72 0
+    else let base = op - xdiag-get 4
+    in let addr = xhci-find-legsup base (xdiag-get 8) 256
+    in if addr == 0 then
+      let r = poke-32 kd-cell 68 0
+      in poke-32 kd-cell 72 0
+    else let sa = poke-32 kd-cell 92 (bit-and addr #FFFFFFFF)
+    in let rc = poke-32 addr 4 (xdiag-get 39)
+    in let os = poke-32 addr 0 (bit-and (peek-32 addr 0) #FEFFFFFF)
+    in let r = poke-32 kd-cell 68 1
+    in poke-32 kd-cell 72 (xr-reclaim-wait addr xr-fuel)
+
+  kd-reclaim-recheck : Integer -> Integer
+  kd-reclaim-recheck (d) =
+    if peek-32 kd-cell 68 == 0 then 0
+    else if peek-32 kd-cell 72 /= 0 then 0
+    else let a = peek-32 kd-cell 92
+    in if a == 0 then 0
+    else if bit-and (peek-32 a 0) xhci-legsup-bios /= 0 then poke-32 kd-cell 72 1
+    else 0
+
+Section: PS2 Watch
+
+ Phase 2 counts keys on both PS/2 routes. The IRQ1 mailbox is what a
+ real i8042 keyboard (or an SMM emulation that injects through the
+ i8042) fills; the polled port is what a pure port-trap SMM emulation
+ answers. The status read is floating-bus-guarded: a machine with no
+ i8042 floats #FF, which must read as absent, not as data-ready.
+
+  kd-note-ps2 : Integer -> Integer
+  kd-note-ps2 (sc) =
+    let a = kd-inc 60
+    in poke-32 kd-cell 64 sc
+
+  kd-poll-port : Integer -> [Device.Port] Integer
+  kd-poll-port (d) = act
+    st <- port-in-byte 100
+    if st == 255 then 0
+    else if bit-and st 1 == 0 then 0
+    else act
+      b <- port-in-byte 96
+      if b == 255 then 0 else b
+    end
+  end
+
+  kd-spin2 : Integer -> [Device.Port] Integer
+  kd-spin2 (i) = act
+    p <- kd-poll-port 0
+    let a = if p /= 0 then kd-note-ps2 p else 0
+    in let sc = gk-take 0
+    in let b = if sc /= 0 then kd-note-ps2 sc else 0
+    in if i <= 0 then 0
+    else kd-spin2 (i - 1)
+  end
+
+Section: Findings File
+
+ The file body mirrors the screen. It is rewritten only when the
+ counter signature changes, and at most 250 times, so a stuck-key
+ flood cannot chew the FAT's free clusters. Phase 2 never writes (the
+ controller is the firmware's during the experiment); phase 3 forces
+ one write by resetting the stored signature.
+
+  kd-sig : Integer -> Integer
+  kd-sig (d) = (peek-32 kd-cell 0) + (peek-32 kd-cell 16) * 7 + (peek-32 kd-cell 20) * 11 + (peek-32 kd-cell 24) * 13 + (peek-32 kd-cell 4) * 17 + (peek-32 kd-cell 60) * 19 + (peek-32 kd-cell 56) * 23
+
+  kd-put-text : Integer, Text, Integer -> Integer
+  kd-put-text (buf) (s) (i) =
+    if i >= text-length s then 0
+    else let w = poke-byte buf i (to-unicode (char-code (char-at s i)))
+    in kd-put-text buf s (i + 1)
+
+  kd-file-body : UsbKbd -> Text
+  kd-file-body (k) =
+    let l1 = "KBDDIAG v8\n"
+    in let l2 = "uk-ok=" & kyn (if k.uk-ok then 1 else 0) & " slot=" & show ((k.uk-dev).ud-slot) & " dci=" & show (k.uk-dci) & " speed=" & show ((k.uk-dev).ud-speed) & "\n"
+    in let l3 = "EPINT=" & show (peek-32 kd-cell 0) & " EP0=" & show (peek-32 kd-cell 16) & " OTH=" & show (peek-32 kd-cell 20) & " LATCH=" & show (peek-32 kd-cell 24) & "\n"
+    in let l4 = "code=" & kh8 (peek-32 kd-cell 8) & " resid=" & show (peek-32 kd-cell 36) & " ctl=" & kh32 (peek-32 kd-cell 28) & "\n"
+    in let l5 = "trb=" & kh32 (peek-32 kd-cell 32) & " ring=" & kh32 (peek-32 kd-cell 48) & "\n"
+    in let l6 = "REPORT " & krpt (k.uk-report) & "\n"
+    in let l7 = "SCANS=" & show (peek-32 kd-cell 4) & " last=" & kh8 (peek-32 kd-cell 12) & " st=" & show (if k.uk-ok then peek-32 (k.uk-state) 0 else 9) & "\n"
+    in let l8 = "PHASE=" & show (peek-32 kd-cell 56) & " released=" & show (peek-32 kd-cell 68) & " reclaim=" & show (peek-32 kd-cell 72) & " ps2=" & show (peek-32 kd-cell 60) & " ps2last=" & kh8 (peek-32 kd-cell 64) & "\n"
+    in let l9 = "reacq kbd=" & show (peek-32 kd-cell 80) & " disk=" & show (peek-32 kd-cell 84) & " mount=" & show (peek-32 kd-cell 88) & "\n"
+    in l1 & l2 & l3 & l4 & l5 & l6 & l7 & l8 & l9
+
+  kd-file-write : GfatMount, UsbKbd, Integer -> [Device.Port] Integer
+  kd-file-write (m) (k) (nbuf) = act
+    if m.gm-ok == False then 0
+    else if peek-32 kd-cell 40 >= 250 then 0
+    else let sig = kd-sig 0
+    in if sig == peek-32 kd-cell 44 then 0
+    else act
+      let buf = alloc-zeroed 4096 64
+      in let body = kd-file-body k
+      in let pw = kd-put-text buf body 0
+      in act
+        ok <- gfat-write-small-file (m.gm-vol) nbuf buf (text-length body)
+        if ok then
+          let a = kd-inc 40
+          in poke-32 kd-cell 44 sig
+        else 0
+      end
+    end
+  end
+
+ The same body renders as QR codes below the text (R-1 of
+ TheSilentKeyboard.md): a photograph of the glass brings home exact
+ bytes even when the machine cannot write one sector -- which on the
+ ASUS it demonstrably cannot. The codes re-render whenever the
+ counters change, independent of the disk; the human lines above
+ them say whether the news is good, the codes say precisely what
+ happened. Chunks carry "i/n;" prefixes for reassembly. Geometry
+ reads the GOP handoff cells directly so the render needs no plumbing
+ through the loop arguments.
+
+  kd-qr-refresh : UsbKbd -> Integer
+  kd-qr-refresh (k) =
+    let sig = kd-sig 0
+    in if sig == peek-32 kd-cell 96 then 0
+    else let s96 = poke-32 kd-cell 96 sig
+    in let base = peek-qword 32768 0
+    in let h = peek-qword 32768 16
+    in let stride = peek-qword 32768 24
+    in let body = kd-file-body k
+    in let total = text-length body
+    in let n = (total + 99) / 100
+    in let qs = if h >= 700 then 6 else 2
+    in let qy = if h >= 700 then 380 else 348
+    in kd-qr-chunks base stride qy qs body total n 0
+
+  kd-qr-chunks : Integer, Integer, Integer, Integer, Text, Integer, Integer, Integer -> Integer
+  kd-qr-chunks (base) (stride) (qy) (qs) (body) (total) (n) (i) =
+    if i >= n then 0
+    else let from = i * 100
+    in let len = if total - from > 100 then 100 else total - from
+    in let m = qr5-encode-part (show (i + 1) & "/" & show n & ";") body from len
+    in let d = qr-draw base stride (40 + i * (45 * qs + 24)) qy qs m
+    in kd-qr-chunks base stride qy qs body total n (i + 1)
+
+ Only the disk usb-attach itself published is ever written: the
+ selection cells are pinned to the USB medium before the mount, so
+ the GPT walk, the ESP mount, and the file write all land on the boot
+ stick. No published USB disk means no mount and no writes -- the
+ probe still reads out on the glass.
+
+  kd-mount : UsbAttach -> [Device.Port] GfatMount
+  kd-mount (att) = act
+    if (att.ua-disk).md-ok == False then GfatMount { gm-ok = False, gm-vol = gfat-null-vol }
+    else let s = med-set med-kind-usb 0
+    in act
+      m <- gfat-mount-esp
+      m
+    end
+  end
+
+ The controller host for the handback: the keyboard's when one
+ enumerated, else the disk's -- on a machine with no USB keyboard the
+ experiment still runs.
+
+  kd-host : UsbAttach -> XhciHost
+  kd-host (att) =
+    if ((att.ua-kbd).uk-host).xh-ok then (att.ua-kbd).uk-host
+    else (att.ua-disk).md-host
+
+Section: Rendering
+
+  krow : Integer, Integer, CbfFont, Integer, Integer, Text, Integer -> Integer
+  krow (base) (stride) (font) (y) (scale) (s) (col) =
+    gop-draw-text base stride font 40 y s col scale 0
+
+  kd-phase-line : Integer -> Text
+  kd-phase-line (d) =
+    let ph = peek-32 kd-cell 56
+    in if ph == 1 then "PHASE 1/3 USB pump - handback test in " & show ((1620 - kd-tick-delta 0) / 18) & "s (hold keys NOW)"
+    else if ph == 2 then "PHASE 2/3 HANDBACK rel=" & kyn (peek-32 kd-cell 68) & " reclaim=" & kyn (peek-32 kd-cell 72) & " PS2=" & show (peek-32 kd-cell 60) & " last=" & kh8 (peek-32 kd-cell 64) & " - press keys (PS/2 test), " & show ((810 - kd-tick-delta 0) / 18) & "s"
+    else "PHASE 3/3 reacquired kbd=" & kyn (peek-32 kd-cell 80) & " disk=" & kyn (peek-32 kd-cell 84) & " mount=" & kyn (peek-32 kd-cell 88) & " - USB pump resumed (hold keys)"
+
+  kd-static : Integer, Integer, Integer, Integer, CbfFont, UsbAttach, GfatMount -> Integer
+  kd-static (base) (w) (h) (stride) (font) (att) (m) =
+    let k = att.ua-kbd
+    in let scale = if w >= 1024 then 2 else 1
+    in let bg = gop-fill-rect base stride 0 0 w h 1710638
+    in let rb = if k.uk-ok then poke-32 kd-cell 48 (bit-and (xhci-ring-trbs (k.uk-ring)) #FFFFFFFF) else 0
+    in let t0 = krow base stride font 40 scale "KEYBOARD DIAGNOSTIC v8 (endpoint attribution + PS/2 handback test)" 65535
+    in let t1 = krow base stride font 80 scale ("xHCI found=" & kyn (xdiag-get 1) & " CSZ=" & show (xdiag-get 6) & " PPC=" & show (xdiag-get 7) & " connected=" & show (xdiag-get 18) & " intel-route=" & kyn (xdiag-get 36)) 9474192
+    in let t2 = krow base stride font 100 scale ("kbd uk-ok=" & kyn (if k.uk-ok then 1 else 0) & " slot=" & show ((k.uk-dev).ud-slot) & " dci=" & show (k.uk-dci) & " speed=" & show ((k.uk-dev).ud-speed)) (if k.uk-ok then 65280 else 16755200)
+    in let t3 = krow base stride font 120 scale ("disk=" & kyn (if (att.ua-disk).md-ok then 1 else 0) & " mount=" & kyn (if m.gm-ok then 1 else 0) & "  findings -> KBDDIAG.TXT on the boot stick") (if m.gm-ok then 65280 else 16755200)
+    in krow base stride font 150 scale "Hold a key in EACH phase. When done: PHOTOGRAPH THE QR CODES (exact bytes, no transcribing)." 9474192
+
+  kd-paint : Integer, Integer, CbfFont, Integer, UsbKbd -> Integer
+  kd-paint (base) (stride) (font) (scale) (k) =
+    let clr = gop-fill-rect base stride 40 180 1180 200 1710638
+    in let l1 = krow base stride font 180 scale ("p=" & show (peek-32 kd-cell 52) & " EPINT=" & show (peek-32 kd-cell 0) & "  EP0=" & show (peek-32 kd-cell 16) & "  OTH=" & show (peek-32 kd-cell 20) & "  LATCH=" & show (peek-32 kd-cell 24)) (if (peek-32 kd-cell 0) == 0 then 16755200 else 65280)
+    in let l2 = krow base stride font 210 scale ("st=" & show (if k.uk-ok then peek-32 (k.uk-state) 0 else 9) & " code=" & kh8 (peek-32 kd-cell 8) & " resid=" & show (peek-32 kd-cell 36) & " ctl=" & kh32 (peek-32 kd-cell 28)) 9474192
+    in let l3 = krow base stride font 240 scale ("trb=" & kh32 (peek-32 kd-cell 32) & " ring=" & kh32 (peek-32 kd-cell 48)) 9474192
+    in let l4 = krow base stride font 270 scale ("REPORT: " & krpt (k.uk-report)) 16776960
+    in let l5 = krow base stride font 300 scale ("SCANS=" & show (peek-32 kd-cell 4) & " last=" & kh8 (peek-32 kd-cell 12) & "  FILE-WRITES=" & show (peek-32 kd-cell 40)) 65535
+    in krow base stride font 330 scale ("p=" & show (peek-32 kd-cell 52) & " " & kd-phase-line 0) 16776960
+
+Section: Phases
+
+ The tick thresholds are the real clock (~90s and ~45s). The paint
+ caps are escape hatches for tick-dead firmware only, sized ABOVE the
+ tick path everywhere ticks work: with no USB keyboard the pump step
+ is a single flag test and paints fly, so a low cap collapses a phase
+ to seconds and a human never gets to press a key in it.
+
+  kd-phase1-done : Integer -> Boolean
+  kd-phase1-done (d) =
+    if peek-32 kd-cell 56 /= 1 then False
+    else if kd-tick-delta 0 >= 1620 then True
+    else peek-32 kd-cell 52 >= 20000
+
+  kd-phase2-done : Integer -> Boolean
+  kd-phase2-done (d) =
+    if kd-tick-delta 0 >= 810 then True
+    else peek-32 kd-cell 52 >= 10000
+
+  kd-loop1 : UsbAttach, GfatMount, Integer, Integer, Integer, CbfFont, Integer -> [Device.Port] Integer
+  kd-loop1 (att) (m) (nbuf) (base) (stride) (font) (scale) = act
+    let z = kd-spin (att.ua-kbd) 300000
+    in act
+      fw <- kd-file-write m (att.ua-kbd) nbuf
+      let d = kd-paint base stride font scale (att.ua-kbd)
+      in let q = kd-qr-refresh (att.ua-kbd)
+      in let pc = kd-inc 52
+      in if kd-phase1-done 0 then kd-phase2 att m nbuf base stride font scale
+      else kd-loop1 att m nbuf base stride font scale
+    end
+  end
+
+  kd-phase2 : UsbAttach, GfatMount, Integer, Integer, Integer, CbfFont, Integer -> [Device.Port] Integer
+  kd-phase2 (att) (m) (nbuf) (base) (stride) (font) (scale) = act
+    let r = xr-release (kd-host att)
+    in let p = poke-32 kd-cell 56 2
+    in let t = kd-mark-tick 0
+    in let pc = poke-32 kd-cell 52 0
+    in let drain = gk-take 0
+    in let d = kd-paint base stride font scale (att.ua-kbd)
+    in kd-loop2 att m nbuf base stride font scale
+  end
+
+  kd-loop2 : UsbAttach, GfatMount, Integer, Integer, Integer, CbfFont, Integer -> [Device.Port] Integer
+  kd-loop2 (att) (m) (nbuf) (base) (stride) (font) (scale) = act
+    s2 <- kd-spin2 300000
+    let rl = kd-reclaim-recheck 0
+    in let d = kd-paint base stride font scale (att.ua-kbd)
+    in let q = kd-qr-refresh (att.ua-kbd)
+    in let pc = kd-inc 52
+    in if kd-phase2-done 0 then kd-phase3 nbuf base stride font scale
+    else kd-loop2 att m nbuf base stride font scale
+  end
+
+  kd-phase3 : Integer, Integer, Integer, CbfFont, Integer -> [Device.Port] Integer
+  kd-phase3 (nbuf) (base) (stride) (font) (scale) = act
+    att <- usb-attach
+    m <- kd-mount att
+    let k = att.ua-kbd
+    in let p = poke-32 kd-cell 56 3
+    in let t = kd-mark-tick 0
+    in let pc = poke-32 kd-cell 52 0
+    in let rk = poke-32 kd-cell 80 (if k.uk-ok then 1 else 0)
+    in let rd = poke-32 kd-cell 84 (if (att.ua-disk).md-ok then 1 else 0)
+    in let rm = poke-32 kd-cell 88 (if m.gm-ok then 1 else 0)
+    in let rb = if k.uk-ok then poke-32 kd-cell 48 (bit-and (xhci-ring-trbs (k.uk-ring)) #FFFFFFFF) else 0
+    in let fs = poke-32 kd-cell 44 #FFFFFFFF
+    in kd-loop1 att m nbuf base stride font scale
+  end
+
+  opening : [Device.Port, Device.Mmio] Integer
+  opening =
+    let base = peek-qword 32768 0
+    in let w = peek-qword 32768 8
+    in let h = peek-qword 32768 16
+    in let stride = peek-qword 32768 24
+    in let font = cbf-init
+    in let scale = if w >= 1024 then 2 else 1
+    in act
+      ri <- runtime-init 0
+      att <- usb-attach
+      m <- kd-mount att
+      let nbuf = alloc-zeroed 16 16
+      in let nw = kd-put-text nbuf "KBDDIAG TXT" 0
+      in let zz = kd-zero
+      in let t0 = kd-mark-tick 0
+      in let d0 = kd-static base w h stride font att m
+      in kd-loop1 att m nbuf base stride font scale
+    end

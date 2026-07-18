@@ -29,17 +29,26 @@ Section: Constants
 
 Section: Entry
 
-  opening : [Console] Nothing = act
-    print-line-uni (globe-main gpu-cmd)
+ Port I/O carries the Device.Port capability effect, so every port call is
+ an act-bind and each function that reaches one declares the row. The
+ texture upload, the light registers and the rasterizer fire are all ports.
+
+  opening : [Console, Device.Port, Gpu.Compute, Gpu.Memory] Nothing = act
+    result <- globe-main gpu-cmd
+    print-line-uni result
   end
 
-  globe-main : Integer -> Text
-  globe-main (cmd) =
+  globe-main : Integer -> [Device.Port, Gpu.Compute, Gpu.Memory] Text
+  globe-main (cmd) = act
+    loaded <- tg-load-earth-image
+    tex <- globe-ensure-tex loaded
     let sphere = globe-icosphere ico-subdivisions earth-r
-    in let loaded = tg-load-earth-image
-    in let tex = if loaded == 0 then tg-generate PkEarth 42 else 1
-    in let w = globe-frame cmd sphere 0 200 9000
     in globe-loop cmd sphere 0 200 9000 0
+  end
+
+  globe-ensure-tex : Integer -> [Device.Port, Gpu.Compute] Integer
+  globe-ensure-tex (loaded) =
+    if loaded == 0 then tg-generate PkEarth 42 else 1
 
 Section: Icosphere
 
@@ -257,9 +266,13 @@ Section: Icosahedron Base
       ico-tri-from v9 v8 v1
     ]
 
+ An IcoTri holds integer world coordinates, like every other stage of the
+ subdivision, and Vec3 is Real. Vec3 is only a carrier for the twelve base
+ vertices, so this is the one place the two meet.
+
   ico-tri-from : Vec3, Vec3, Vec3 -> IcoTri
   ico-tri-from (a) (b) (c) =
-    IcoTri { t-ax = a.vx, t-ay = a.vy, t-az = a.vz, t-bx = b.vx, t-by = b.vy, t-bz = b.vz, t-cx = c.vx, t-cy = c.vy, t-cz = c.vz }
+    IcoTri { t-ax = real-to-int (a.vx), t-ay = real-to-int (a.vy), t-az = real-to-int (a.vz), t-bx = real-to-int (b.vx), t-by = real-to-int (b.vy), t-bz = real-to-int (b.vz), t-cx = real-to-int (c.vx), t-cy = real-to-int (c.vy), t-cz = real-to-int (c.vz) }
 
 Section: Continental Color
 
@@ -427,22 +440,38 @@ Section: Continental Color
 
 Section: Render Frame
 
-  globe-frame : Integer, Mesh, Integer, Integer, Integer -> Integer
+ The rasterizer's light registers take thousandths, and light is now a Real
+ unit vector, so it is scaled on the way out. Writing the raw Real would
+ send the host a direction of zero.
+
+  globe-milli : Real -> Integer
+  globe-milli (x) = real-to-int (x * 1000.0)
+
+  globe-frame : Integer, Mesh, Integer, Integer, Integer -> [Device.Port, Gpu.Compute, Gpu.Memory] Integer
   globe-frame (cmd) (sphere) (yaw) (pitch) (dist) =
     let cam = gorbit yaw pitch dist
     in let vp = camera3d-vp cam
     in let eye = cam.c3-eye
     in let light = gnorm eye
-    in let wlx = port-out-32 1028 (light.vx)
-    in let wly = port-out-32 1029 (light.vy)
-    in let wlz = port-out-32 1030 (light.vz)
-    in let wex = port-out-32 1031 (light.vx)
-    in let tri-count = gtris sphere vp light eye cmd 0 (mesh-triangle-count sphere * 3) 0
-    in let w1 = port-out-32 1025 #020412
-    in let w2 = port-out-32 1026 0
-    in port-out-32 1024 tri-count
+    in globe-draw cmd sphere vp light eye
 
-  gtris : Mesh, Mat4, Vec3, Vec3, Integer, Integer, Integer, Integer -> Integer
+  globe-draw : Integer, Mesh, Mat4, Vec3, Vec3 -> [Device.Port, Gpu.Compute, Gpu.Memory] Integer
+  globe-draw (cmd) (sphere) (vp) (light) (eye) = act
+    wlx <- gpu-out 1028 (globe-milli (light.vx))
+    wly <- gpu-out 1029 (globe-milli (light.vy))
+    wlz <- gpu-out 1030 (globe-milli (light.vz))
+    wex <- gpu-out 1031 (globe-milli (light.vx))
+    globe-fire (gtris sphere vp light eye cmd 0 (mesh-triangle-count sphere * 3) 0)
+  end
+
+  globe-fire : Integer -> [Device.Port, Gpu.Compute] Integer
+  globe-fire (tri-count) = act
+    w1 <- gpu-out 1025 #020412
+    w2 <- gpu-out 1026 0
+    gpu-out 1024 tri-count
+  end
+
+  gtris : Mesh, Mat4, Vec3, Vec3, Integer, Integer, Integer, Integer -> [Gpu.Memory] Integer
   gtris (mesh) (vp) (light) (eye) (cmd) (i) (n) (tri-idx) =
     if i >= n then tri-idx
     else if tri-idx >= 16384 then tri-idx
@@ -458,25 +487,11 @@ Section: Render Frame
     in let c0 = glit-color v0 light
     in let c1 = glit-color v1 light
     in let c2 = glit-color v2 light
-    in let wa = poke-32 cmd off (p0.gp-sx)
-    in let wb = poke-32 cmd (off + 4) (p0.gp-sy)
-    in let wc = poke-32 cmd (off + 8) (p1.gp-sx)
-    in let wd = poke-32 cmd (off + 12) (p1.gp-sy)
-    in let we = poke-32 cmd (off + 16) (p2.gp-sx)
-    in let wf = poke-32 cmd (off + 20) (p2.gp-sy)
-    in let wg = poke-32 cmd (off + 24) c0
-    in let wh = poke-32 cmd (off + 28) c1
-    in let wi = poke-32 cmd (off + 32) c2
-    in let wj = poke-32 cmd (off + 36) (p0.gp-depth)
-    in let wk = poke-32 cmd (off + 40) (p1.gp-depth)
-    in let wl = poke-32 cmd (off + 44) (p2.gp-depth)
-    in let wm = poke-32 cmd (off + 48) (v0.vu)
-    in let wn = poke-32 cmd (off + 52) (v0.vv)
-    in let wo = poke-32 cmd (off + 56) (v1.vu)
-    in let wp = poke-32 cmd (off + 60) (v1.vv)
-    in let wq = poke-32 cmd (off + 64) (v2.vu)
-    in let wr = poke-32 cmd (off + 68) (v2.vv)
-    in gtris mesh vp light eye cmd (i + 3) n (tri-idx + 1)
+    in gtris-next (gpu-mem-write cmd off (p0.gp-sx) + gpu-mem-write cmd (off + 4) (p0.gp-sy) + gpu-mem-write cmd (off + 8) (p1.gp-sx) + gpu-mem-write cmd (off + 12) (p1.gp-sy) + gpu-mem-write cmd (off + 16) (p2.gp-sx) + gpu-mem-write cmd (off + 20) (p2.gp-sy) + gpu-mem-write cmd (off + 24) c0 + gpu-mem-write cmd (off + 28) c1 + gpu-mem-write cmd (off + 32) c2 + gpu-mem-write cmd (off + 36) (p0.gp-depth) + gpu-mem-write cmd (off + 40) (p1.gp-depth) + gpu-mem-write cmd (off + 44) (p2.gp-depth) + gpu-mem-write cmd (off + 48) (v0.vu) + gpu-mem-write cmd (off + 52) (v0.vv) + gpu-mem-write cmd (off + 56) (v1.vu) + gpu-mem-write cmd (off + 60) (v1.vv) + gpu-mem-write cmd (off + 64) (v2.vu) + gpu-mem-write cmd (off + 68) (v2.vv)) mesh vp light eye cmd i n tri-idx
+
+  gtris-next : Integer, Mesh, Mat4, Vec3, Vec3, Integer, Integer, Integer, Integer -> [Gpu.Memory] Integer
+  gtris-next (w) (mesh) (vp) (light) (eye) (cmd) (i) (n) (tri-idx) =
+    gtris mesh vp light eye cmd (i + 3) n (tri-idx + 1)
 
   glit-color : Vertex, Vec3 -> Integer
   glit-color (v) (light) = #FFFFFF
@@ -485,53 +500,73 @@ Section: Projection
 
   GProj = record { gp-sx : Integer, gp-sy : Integer, gp-depth : Integer }
 
+ A Vertex holds integer world coordinates and Mat4 is Real, so the
+ projection converts in on the way to clip space and back out to the
+ integer pixel grid the command buffer wants. At v4w = 1.0 the w is a true
+ homogeneous coordinate, where the old fixed-point code carried thousandths.
+
   gproj : Vertex, Mat4 -> GProj
   gproj (v) (mvp) =
-    let clip = mat4-transform-vec4 mvp (Vec4 { v4x = v.vp-x, v4y = v.vp-y, v4z = v.vp-z, v4w = 1000 })
-    in if clip.v4w <= 0 then GProj { gp-sx = -9999, gp-sy = -9999, gp-depth = 999999 }
-    else GProj { gp-sx = sw / 2 + clip.v4x * sw / 2 / clip.v4w, gp-sy = sh / 2 - clip.v4y * sh / 2 / clip.v4w, gp-depth = (clip.v4z + clip.v4w) * 500000 / clip.v4w }
+    let clip = mat4-transform-vec4 mvp (Vec4 { v4x = real-from-int (v.vp-x), v4y = real-from-int (v.vp-y), v4z = real-from-int (v.vp-z), v4w = 1.0 })
+    in if clip.v4w <= 0.0 then GProj { gp-sx = -9999, gp-sy = -9999, gp-depth = 999999 }
+    else let ndc-x = clip.v4x / clip.v4w
+    in let ndc-y = clip.v4y / clip.v4w
+    in let ndc-z = clip.v4z / clip.v4w
+    in let half-w = real-from-int (sw / 2)
+    in let half-h = real-from-int (sh / 2)
+    in GProj { gp-sx = real-to-int (half-w + ndc-x * half-w), gp-sy = real-to-int (half-h - ndc-y * half-h), gp-depth = real-to-int ((ndc-z + 1.0) * 500000.0) }
 
 Section: Animation
 
-  globe-loop : Integer, Mesh, Integer, Integer, Integer, Integer -> Text
-  globe-loop (cmd) (sphere) (yaw) (pitch) (dist) (frame) =
-    let dummy = port-in-byte 96
-    in let sc = peek-byte kb-addr 0
+ The keyboard poll is a port read, so it is an act-bind. The frame's scratch
+ heap is saved before the render and reclaimed after it, which is why the
+ frame is two functions: __heap-restore has to run on the far side of an
+ effectful call, and a let cannot bind one.
+
+  globe-loop : Integer, Mesh, Integer, Integer, Integer, Integer -> [Device.Port, Gpu.Compute, Gpu.Memory] Text
+  globe-loop (cmd) (sphere) (yaw) (pitch) (dist) (frame) = act
+    dummy <- port-in-byte 96
+    let sc = peek-byte kb-addr 0
     in let mflags = peek-byte mouse-addr 0
     in let mdx = peek-byte mouse-addr 1
     in let mdy = peek-byte mouse-addr 2
     in let mc0 = poke-byte mouse-addr 0 0
     in let mc1 = poke-byte mouse-addr 1 0
     in let mc2 = poke-byte mouse-addr 2 0
+    in let ack = poke-byte kb-addr 0 0
     in let mouse-dx = if mdx > 127 then mdx - 256 else mdx
     in let mouse-dy = if mdy > 127 then mdy - 256 else mdy
     in let dragging = mflags / 1 - mflags / 2 * 2
     in let yaw2 = if dragging == 1 then yaw - mouse-dx * 8 else yaw + 3
     in let pitch2 = if dragging == 1 then gc-clamp (pitch + mouse-dy * 8) (-1400) 1400 else pitch
-    in if sc /= 0 then
-      let w = poke-byte kb-addr 0 0
-      in if sc == 16 then "quit"
-      else if sc == 1 then "quit"
-      else if sc == 18 then
-        let gen = tg-generate PkEarth 42
-        in globe-loop cmd sphere yaw2 pitch2 dist (frame + 1)
-      else if sc == 50 then
-        let gen = tg-generate PkMars 77
-        in globe-loop cmd sphere yaw2 pitch2 dist (frame + 1)
-      else if sc == 19 then
-        let gen = tg-generate PkRandom (frame * 7 + 1337)
-        in globe-loop cmd sphere yaw2 pitch2 dist (frame + 1)
-      else let y3 = if sc == 75 then yaw2 - 120 else if sc == 77 then yaw2 + 120 else yaw2
-      in let p2 = if sc == 72 then gc-clamp (pitch2 + 60) (-1400) 1400 else if sc == 80 then gc-clamp (pitch2 - 60) (-1400) 1400 else pitch2
-      in let d2 = if sc == 78 then gc-clamp (dist - 300) 4000 25000 else if sc == 74 then gc-clamp (dist + 300) 4000 25000 else dist
-      in let hp = __heap-save
-      in let w2 = globe-frame cmd sphere y3 p2 d2
-      in let restored = __heap-restore hp
-      in globe-loop cmd sphere y3 p2 d2 (frame + 1)
-    else let hp = __heap-save
-    in let w2 = globe-frame cmd sphere yaw2 pitch2 dist
-    in let restored = __heap-restore hp
-    in globe-loop cmd sphere yaw2 pitch2 dist (frame + 1)
+    in if sc == 16 then "quit"
+    else if sc == 1 then "quit"
+    else if sc == 18 then globe-regen cmd sphere PkEarth 42 yaw2 pitch2 dist frame
+    else if sc == 50 then globe-regen cmd sphere PkMars 77 yaw2 pitch2 dist frame
+    else if sc == 19 then globe-regen cmd sphere PkRandom (frame * 7 + 1337) yaw2 pitch2 dist frame
+    else let y3 = if sc == 75 then yaw2 - 120 else if sc == 77 then yaw2 + 120 else yaw2
+    in let p2 = if sc == 72 then gc-clamp (pitch2 + 60) (-1400) 1400 else if sc == 80 then gc-clamp (pitch2 - 60) (-1400) 1400 else pitch2
+    in let d2 = if sc == 78 then gc-clamp (dist - 300) 4000 25000 else if sc == 74 then gc-clamp (dist + 300) 4000 25000 else dist
+    in globe-step cmd sphere y3 p2 d2 frame
+  end
+
+  globe-regen : Integer, Mesh, PlanetKind, Integer, Integer, Integer, Integer, Integer -> [Device.Port, Gpu.Compute, Gpu.Memory] Text
+  globe-regen (cmd) (sphere) (kind) (seed) (yaw) (pitch) (dist) (frame) = act
+    gen <- tg-generate kind seed
+    globe-loop cmd sphere yaw pitch dist (frame + 1)
+  end
+
+  globe-step : Integer, Mesh, Integer, Integer, Integer, Integer -> [Device.Port, Gpu.Compute, Gpu.Memory] Text
+  globe-step (cmd) (sphere) (yaw) (pitch) (dist) (frame) =
+    let hp = __heap-save
+    in globe-step-done cmd sphere yaw pitch dist frame hp
+
+  globe-step-done : Integer, Mesh, Integer, Integer, Integer, Integer, Integer -> [Device.Port, Gpu.Compute, Gpu.Memory] Text
+  globe-step-done (cmd) (sphere) (yaw) (pitch) (dist) (frame) (hp) = act
+    w <- globe-frame cmd sphere yaw pitch dist
+    let restored = __heap-restore hp
+    in globe-loop cmd sphere yaw pitch dist (frame + 1)
+  end
 
 Section: Camera
 
@@ -541,14 +576,12 @@ Section: Camera
     in let cy = gc-cos (gc-wrap yaw)
     in let sp = gc-sin (gc-wrap pitch)
     in let cp = gc-cos (gc-wrap pitch)
-    in camera3d-new (vec3-new (real-from-int (sy * cp * dist / 1000000)) (real-from-int (sp * dist / 1000)) (real-from-int (cy * cp * dist / 1000000))) vec3-zero 785
+    in camera3d-new (vec3-new (real-from-int (sy * cp * dist / 1000000)) (real-from-int (sp * dist / 1000)) (real-from-int (cy * cp * dist / 1000000))) vec3-zero 0.785
 
 Section: Helpers
 
   gnorm : Vec3 -> Vec3
-  gnorm (v) =
-    let len = geo-sqrt (v.vx * v.vx + v.vy * v.vy + v.vz * v.vz)
-    in if len ~0 0.0 then vec3-zero else vec3-new (v.vx / len) (v.vy / len) (v.vz / len)
+  gnorm (v) = mat4-v3-normalize v
 
   gc-isqrt : Integer -> Integer
   gc-isqrt (n) = if n <= 0 then 0 else gc-isq n (n / 2 + 1)

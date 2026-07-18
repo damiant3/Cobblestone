@@ -1,0 +1,79 @@
+Chapter: GopComposite
+  cites Works chapter GopDraw
+  cites UI chapter Widget
+  cites UI chapter Theme
+  cites UI chapter BoxModel
+  cites UI chapter Layout
+  cites Kernel chapter BitmapFont
+
+ The software compositor -- H4b. The guios shell renders its widget
+ tree through codex-vm's host rasterizer (a command buffer at MMIO
+ 0xBE000000 flushed by ports 0x400-0x402), a device no real machine
+ has. But the GPU walk only ever emitted axis-aligned filled
+ rectangles, and text was always a separate direct-to-framebuffer
+ pass -- so the whole pipeline ports to a plain walk of the laid-out
+ tree: resolve each node's style from the theme, fill its bounds,
+ draw its text, recurse into its children so they paint over their
+ parent. Same foreword widget system, same flex layout, same theme
+ records; only the final metres of the pipeline change.
+
+ Layout runs here too: comp-render lays the root out against the
+ real panel rectangle from the handoff cells and returns the bounded
+ tree, so a caller can hit-test against the same wn-bounds the
+ pixels came from.
+
+ We say:
+
+Section: Node Drawing
+
+  comp-text : Integer, Integer, CbfFont, LayoutRect, Integer, Integer, Text, Integer -> Integer
+  comp-text (base) (stride) (font) (b) (dx) (dy) (t) (fg) =
+    gop-draw-text base stride font (b.lr-x + dx) (b.lr-y + dy) t fg 1 0
+
+  comp-gauge-fill : Integer, Integer, LayoutRect, Integer, Integer, Integer -> Integer
+  comp-gauge-fill (base) (stride) (b) (v) (mx) (fg) =
+    if mx <= 0 then 0
+    else let fw = (b.lr-w) * (if v > mx then mx else v) / mx
+    in if fw <= 0 then 0
+    else gop-fill-rect base stride (b.lr-x) (b.lr-y) fw (b.lr-h) fg
+
+  comp-draw-node : Integer, Integer, CbfFont, WidgetNode, Theme -> Integer
+  comp-draw-node (base) (stride) (font) (node) (th) =
+    let st = widget-resolve-style node th
+    in let b = node.wn-bounds
+    in when node.wn-kind
+      is WkPanel -> gop-fill-rect base stride (b.lr-x) (b.lr-y) (b.lr-w) (b.lr-h) (st.ws-bg)
+      is WkSeparator -> gop-fill-rect base stride (b.lr-x) (b.lr-y) (b.lr-w) (b.lr-h) (st.ws-fg)
+      is WkLabel (t) -> comp-text base stride font b 4 3 t (st.ws-fg)
+      is WkButton (t) ->
+        let bg = gop-fill-rect base stride (b.lr-x) (b.lr-y) (b.lr-w) (b.lr-h) (st.ws-bg)
+        in comp-text base stride font b 8 4 t (st.ws-fg)
+      is WkGauge (v) (mx) ->
+        let bg = gop-fill-rect base stride (b.lr-x) (b.lr-y) (b.lr-w) (b.lr-h) (st.ws-bg)
+        in comp-gauge-fill base stride b v mx (st.ws-fg)
+      is otherwise -> 0
+
+Section: Tree Walk
+
+ Parent first, children after, so children paint over their parent's
+ fill. Recursion depth is the tree's depth -- chrome trees are a
+ handful of levels.
+
+  comp-walk : Integer, Integer, CbfFont, WidgetNode, Theme -> Integer
+  comp-walk (base) (stride) (font) (node) (th) =
+    let d = comp-draw-node base stride font node th
+    in comp-walk-kids base stride font (node.wn-children) th 0
+
+  comp-walk-kids : Integer, Integer, CbfFont, List WidgetNode, Theme, Integer -> Integer
+  comp-walk-kids (base) (stride) (font) (kids) (th) (i) =
+    if i >= list-length kids then 0
+    else let w = comp-walk base stride font (list-at kids i) th
+    in comp-walk-kids base stride font kids th (i + 1)
+
+Section: Render
+
+  comp-render : Integer, Integer, CbfFont, WidgetNode, Theme, Integer, Integer -> WidgetNode
+  comp-render (base) (stride) (font) (root) (th) (w) (h) =
+    let laid = widget-layout root th (layout-rect 0 0 w h)
+    in let d = comp-walk base stride font laid th
+    in laid

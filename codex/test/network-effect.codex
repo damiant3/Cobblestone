@@ -1,0 +1,73 @@
+Chapter: NetworkEffect
+  cites Foreword chapter Console
+  cites Net chapter HttpFetch
+  cites Net chapter HttpClient
+  cites Foreword chapter Result
+
+ The Network effect has an implementation, and this is the test that
+ says so without a network.
+
+ fetch, post and resolve-dns are definitions in Net chapter HttpFetch.
+ They were effect operations that nothing
+ implemented: a call type-checked clean and died at the end of emit
+ with CDX2040. That failure was invisible to the battery, because no
+ test called one. This one does -- resolve-dns on a dotted quad takes
+ the fast path and never touches the wire, so it runs headless, and it
+ still has to link. If the implementation is ever removed the call
+ stops resolving and this test stops compiling, which is the point.
+
+ The rest is known-answer: the URL parse, the header framing, and the
+ declared content length. The length is what tells a complete body
+ from a truncated one, so it is worth pinning to a fixture.
+
+ The live half -- a real GET and POST against a real server, and a
+ name resolved on the wire -- cannot run here, because the battery
+ starts no server. It is exercised by hand; see docs/PM/BACKLOG.md 1.7.
+
+ We say:
+
+Section: A Recorded Response
+
+ A response as it arrives off the wire: ASCII, CRLF-delimited, with a
+ declared length. CR and LF are written as their wire codes because
+ a Codex string literal has no escape for them.
+
+  fixture : List Integer
+  fixture =
+   http-to-ascii "HTTP/1.0 200 OK" & [13, 10] & http-to-ascii "Content-Type: text/plain" & [13, 10] & http-to-ascii "Content-Length: 14" & [13, 10] & [13, 10] & http-to-ascii "codex-fetch-ok"
+
+  url : Text = "http://api.example.com:8443/v1/status"
+
+Section: Body
+
+  opening : [Console, Network.Read, Network.Write] Nothing
+  opening = act
+    print-line-uni ("host: " & url-host url)
+    print-line-uni ("port: " & show (url-port url))
+    print-line-uni ("path: " & url-path url)
+    print-line-uni ("default-port: " & show (url-port "http://example.com/a"))
+    print-line-uni ("default-path: " & url-path "http://example.com")
+    print-line-uni ("headers-end: " & show (http-headers-end fixture 0 (list-length fixture)))
+    print-line-uni ("content-length: " & show (http-content-length fixture (http-headers-end fixture 0 (list-length fixture))))
+    print-line-uni ("complete: " & (if http-body-complete fixture then "yes" else "no"))
+    let resp = http-parse-response fixture
+    in act
+      print-line-uni ("status: " & show (resp.status-code))
+      print-line-uni ("body: " & resp.body)
+      print-line-uni ("resolve-dns: " & show-result (resolve-dns "127.0.0.1"))
+      print-line-uni ("https: " & show-result (fetch "https://example.com/x"))
+    end
+  end
+
+Section: Reporting a Result
+
+ fetch, post and resolve-dns answer with a Result, so a failure is a
+ value the caller can see rather than an empty string it cannot tell
+ from an empty body. Both directions are printed here.
+
+  show-result : Result Text Text -> Text
+  show-result (r) = when r
+   is Ok (v) -> "Ok " & v
+   is Err (e) -> "Err " & e
+
+Page 1

@@ -1,0 +1,82 @@
+Chapter: RtcGuarded
+  cites Works chapter GopRtc
+
+ The CMOS clock updates once a second, and while it does its time
+ registers read as garbage. This test is the local stand-in for a real
+ board: codex-vm now models the update cycle honestly, so the hazard is
+ reproducible here instead of only at the far end of a flash, a walk,
+ and a photograph.
+
+ Two readers race the same clock. The unguarded one -- read the seconds
+ register and believe it -- is expected to return values that are not
+ seconds. The guarded one waits out Update-In-Progress, reads twice, and
+ rejects anything outside 0..59; it must NEVER return a bad value, and it
+ must still be able to tell the time.
+
+ The pass condition is the guarded reader's: zero bad reads, and a real
+ second recovered. The unguarded count is printed rather than asserted --
+ whether a given run lands inside the ~2ms update window is a matter of
+ timing, and a test that demands a race be lost is a flaky test. What is
+ NOT negotiable is that the guarded reader never once hands back a number
+ that a clock cannot produce.
+
+ We say:
+
+Section: Probes
+
+ The unguarded probe runs until the clock TICKS -- until a guarded read
+ reports a different second than the one it started on. That spans a whole
+ second boundary, and the update window lives inside every one of them, so
+ the hazard cannot be missed by getting lucky with timing. A test that
+ demands a race be lost is flaky; this one waits for the race to be run.
+
+ The unguarded reads must run in BURSTS. A guarded read waits the update
+ out, so a guarded call between every unguarded one serialises the hazard
+ away: the very next unguarded read lands just after the window and can
+ never be caught by it. That is a trap worth stating, because a test that
+ quietly prevents the failure it is looking for reports a clean bill of
+ health for a broken system -- which is how this whole class of bug got as
+ far as a hundred flashes.
+
+  unguarded-burst : Integer, Integer -> [Device.Port] Integer
+  unguarded-burst (n) (acc) = act
+    s <- rtc-seconds-unguarded 0
+    let hit = if s > 59 then 1 else 0
+    in if n <= 0 then acc + hit
+    else unguarded-burst (n - 1) (acc + hit)
+  end
+
+  bad-unguarded : Integer, Integer, Integer -> [Device.Port] Integer
+  bad-unguarded (start) (fuel) (acc) = act
+    burst <- unguarded-burst 20000 0
+    g <- rtc-seconds 0
+    if fuel <= 0 then acc + burst
+    else if g >= 0 & g /= start then acc + burst
+    else bad-unguarded start (fuel - 1) (acc + burst)
+  end
+
+ A guarded read that lands mid-update returns -1: "I could not read the
+ clock", which is the honest answer and the one the caller is built to
+ handle. It is not a bad value. A bad value is a number a clock cannot
+ produce, and that is what this counts.
+
+  bad-guarded : Integer, Integer, Integer -> [Device.Port] Integer
+  bad-guarded (n) (i) (acc) = act
+    s <- rtc-seconds 0
+    let hit = if s > 59 then 1 else 0
+    in if i >= n then acc + hit
+    else bad-guarded n (i + 1) (acc + hit)
+  end
+
+Section: Opening
+
+  opening : [Console, Device.Port] Nothing
+  opening = act
+    start <- rtc-seconds 0
+    ug <- bad-unguarded start 20000000 0
+    g <- bad-guarded 20000 0 0
+    now <- rtc-seconds 0
+    print-line-uni ("unguarded-bad-seen=" & (if ug > 0 then "y" else "n"))
+    print-line-uni ("guarded-bad=" & show g)
+    print-line-uni ("guarded-reads-a-second=" & (if now >= 0 then "y" else "n"))
+  end

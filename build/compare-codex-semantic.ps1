@@ -31,6 +31,22 @@ class SemDef {
     }
 }
 
+# A type parameter may be written bare or parenthesized -- `HamtEntry a` and
+# `HamtEntry (a)` are the same type. The text emitter canonicalizes to the
+# parenthesized form, so a chapter written in the bare style (Hamt, Channel,
+# Queue, SessionTypes, FunnelHash, ElasticHash, Concurrent, ElasticBloom)
+# would key differently in source and stage1 and be reported as a dropped
+# definition -- an emitter information-loss claim where nothing was lost.
+# Canonicalize both sides. Parens are already normalized away inside bodies;
+# this is the header doing the same.
+function Canonicalize-TypeName([string]$n) {
+    $parts = @(($n -replace '[()]', ' ') -split '\s+' | Where-Object { $_ -ne '' })
+    if ($parts.Count -le 1) { return $n }
+    $head = $parts[0]
+    $params = @($parts[1..($parts.Count - 1)] | ForEach-Object { "($_)" })
+    return "$head $($params -join ' ')"
+}
+
 function Parse-OneDef([string[]]$lines, [int]$start, [string]$chapter) {
     $firstLine = $lines[$start]
     $isType = [char]::IsUpper($firstLine[0])
@@ -38,7 +54,7 @@ function Parse-OneDef([string[]]$lines, [int]$start, [string]$chapter) {
     if ($isType) {
         $eqPos = $firstLine.IndexOf(' =')
         if ($eqPos -lt 0) { return @($null, ($start + 1)) }
-        $name = $firstLine.Substring(0, $eqPos).Trim()
+        $name = Canonicalize-TypeName $firstLine.Substring(0, $eqPos).Trim()
     } else {
         $colonPos = $firstLine.IndexOf(' : ')
         if ($colonPos -lt 0) { return @($null, ($start + 1)) }

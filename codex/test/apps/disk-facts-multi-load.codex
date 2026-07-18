@@ -1,26 +1,82 @@
 Chapter: DiskFactsMultiLoad
-  cites Foreword chapter Console
+  cites Kernel chapter DiskFacts
+  cites Kernel chapter AppPersist
   cites Foreword chapter FactStore
+  cites Foreword chapter Hamt
   cites Foreword chapter Maybe
+  cites Foreword chapter Sha256
+  cites Foreword chapter Console
+
+ The boot-time replay walks the fact log and rebuilds the in-memory store.
+ It has to survive two things this test puts in front of it.
+
+ A fact is not one sector. pack-fact-entry has always sized itself with
+ sectors-for-fact, and app-write-fact -- the writer the repository protocol
+ uses -- writes as many sectors as the content needs. A source definition is
+ thousands of bytes. The replay used to read a single sector, refuse anything
+ longer, and return the store it had built so far, which ended the walk. One
+ multi-sector fact truncated the whole store at that entry: every fact behind
+ it sat on the disk, intact and verifiable, and was invisible. The superblock
+ kept reporting the full count, so nothing looked wrong.
+
+ A corrupt fact ended the walk for the same reason. The honest response to one
+ bad entry is to skip that entry, not to discard every entry behind it.
+
+ So: write a 960-byte fact, then two small ones behind it, then flip a byte of
+ the big one's content so its stored hash no longer matches what it holds. The
+ big fact must be rejected -- content addressing is worth nothing if it is not
+ -- and both small facts must survive, which they can only do if the walk
+ strode over the whole multi-sector entry and carried on.
 
 Section: Entry
 
-  opening : [Console] Nothing =
-    let fs0 = fact-store-empty
-    in let f1 = fact-create DefinitionFact "alpha" "sys" 1
-    in let f2 = fact-create DefinitionFact "beta" "sys" 2
-    in let f3 = fact-create DefinitionFact "gamma" "sys" 3
-    in let fs1 = fact-store fs0 f1
-    in let fs2 = fact-store fs1 f2
-    in let fs3 = fact-store fs2 f3
-    in let r1 = fact-load fs3 (f1.hash)
-    in let r2 = fact-load fs3 (f2.hash)
-    in let r3 = fact-load fs3 (f3.hash)
-    in let c1 = when r1 is Just (f) -> f.content is None -> "?"
-    in let c2 = when r2 is Just (f) -> f.content is None -> "?"
-    in let c3 = when r3 is Just (f) -> f.content is None -> "?"
+  rep : Integer, Text, Text -> Text
+  rep (n) (chunk) (acc) =
+   if n <= 0 then acc else rep (n - 1) chunk (acc & chunk)
+
+  big : Text = rep 60 "0123456789abcdef" ""
+
+  shown : Maybe Fact, Text -> Text
+  shown (m) (want) =
+   when m
+    is Just (f) -> if f.content == want then "ok" else "CORRUPTED"
+    is None -> "LOST"
+
+  rejected : Maybe Fact -> Text
+  rejected (m) =
+   when m
+    is Just (f) -> "NO -- ACCEPTED"
+    is None -> "yes"
+
+  corrupt-content-byte : Integer -> [Device.Block] Integer
+  corrupt-content-byte (sector) = act
+    buf <- block-read-sector sector
+    let old = peek-byte buf fact-entry-header-size
+    in let w = poke-byte buf fact-entry-header-size (if old == 88 then 89 else 88)
+    in block-write-sector sector buf
+  end
+
+  opening : [Device.Block, Console.Write] Nothing = act
+    let store = disk-init
+    in let s1 = app-write-fact store 30 big 1
+    in let s2 = disk-write-fact s1 DefinitionFact "hello" 2
+    in let s3 = disk-write-fact s2 PolicyFact "world" 3
+    in let flushed = disk-checkpoint s3
     in act
-      print-line-uni (show (fact-count fs3) & " " & c1 & " " & c2 & " " & c3)
+      print-line-uni ("facts written: " & show (disk-fact-count flushed))
+      let clean = disk-load
+      in let big-clean = disk-read-fact clean (fact-content-hash big)
+      in print-line-uni ("multi-sector fact of " & show (text-length big) & " bytes: " & shown big-clean big)
+      damaged <- corrupt-content-byte fact-log-start
+      let after = disk-load
+      in let big-bad = disk-read-fact after (fact-content-hash big)
+      in let h = disk-read-fact after (fact-content-hash "hello")
+      in let w = disk-read-fact after (fact-content-hash "world")
+      in act
+        print-line-uni ("corrupted multi-sector fact rejected: " & rejected big-bad)
+        print-line-uni ("facts behind it survive the skip: " & shown h "hello" & " " & shown w "world")
+      end
     end
+  end
 
 Page 1

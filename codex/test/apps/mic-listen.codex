@@ -1,0 +1,38 @@
+Chapter: MicListen
+  cites Kernel chapter MicInput
+  cites Kernel chapter HdaAudio
+
+ Ties the machine's ears to its voice: it BEEPS to ask for a sound, then
+ listens for several seconds and reports whether it heard anything. The
+ beep is the cue -- you do not have to be watching the console. Skipped in
+ the battery (needs a real microphone and speaker, and a person to answer).
+ Run it by hand:
+
+   build/compile.ps1 -Src codex/test/apps/mic-listen.codex -Out m.cdx -Log m.log
+   tools/codex-vm.exe -kernel m.cdx -mem 3072
+
+ The beep plays once and the output stream is stopped so it does not loop
+ under the listen window. is-quiet takes ~200 ms per reading, so the
+ monitor spans several seconds -- time to hear the beep and answer.
+
+ The row says [Microphone, Audio] because this program does both: it
+ speaks and it listens. It used to say [Device.Mmio] for the beep, which
+ granted the whole Device family -- the bus and the block device -- to a
+ program whose entire ambition was one note. Two narrow authorities that
+ name what it actually does is the point of BACKLOG 5.16.
+
+Section: Body
+
+  monitor : Integer, Boolean -> [Microphone] Boolean
+  monitor (rounds) (heard) =
+    if rounds <= 0 then heard
+    else if is-quiet then monitor (rounds - 1) heard
+    else monitor (rounds - 1) True
+
+  opening : [Console, Microphone, Audio] Nothing = act
+    print-line-uni "MIC: listen for the beep, then make a sound..."
+    b <- hda-play-tone 880 20
+    s <- hda-stop
+    heard <- monitor 25 False
+    print-line-uni (if heard then "MIC: I heard you!" else "MIC: stayed quiet")
+  end

@@ -36,14 +36,21 @@ Section: Projected HUD
 
 Section: Projection
 
+ A HudAnchor holds integer world coordinates and Mat4 is Real, so the anchor
+ crosses into clip space and the screen position crosses back. At v4w = 1.0
+ the w is a true homogeneous coordinate, where the old fixed-point code
+ carried thousandths. The depth stays on the 0..1000 scale it always was.
+
   hud-project : HudElement, Camera3D, Integer, Integer -> HudProjected
   hud-project (elem) (cam) (half-w) (half-h) =
     let anchor = hud-get-anchor elem
-    in let clip = mat4-transform-vec4 (camera3d-vp cam) (Vec4 { v4x = anchor.ha-world-x, v4y = anchor.ha-world-y + anchor.ha-offset-y, v4z = anchor.ha-world-z, v4w = 1000 })
-    in if clip.v4w <= 0 then HudProjected { hp-sx = 0, hp-sy = 0, hp-depth = 999999, hp-visible = False, hp-element = elem }
-    else let sx = half-w + clip.v4x * half-w / clip.v4w
-    in let sy = half-h - clip.v4y * half-h / clip.v4w
-    in let depth = clip.v4z * 1000 / clip.v4w
+    in let clip = mat4-transform-vec4 (camera3d-vp cam) (Vec4 { v4x = real-from-int (anchor.ha-world-x), v4y = real-from-int (anchor.ha-world-y + anchor.ha-offset-y), v4z = real-from-int (anchor.ha-world-z), v4w = 1.0 })
+    in if clip.v4w <= 0.0 then HudProjected { hp-sx = 0, hp-sy = 0, hp-depth = 999999, hp-visible = False, hp-element = elem }
+    else let fhw = real-from-int half-w
+    in let fhh = real-from-int half-h
+    in let sx = real-to-int (fhw + clip.v4x * fhw / clip.v4w)
+    in let sy = real-to-int (fhh - clip.v4y * fhh / clip.v4w)
+    in let depth = real-to-int (clip.v4z * 1000.0 / clip.v4w)
     in let on-screen = sx >= 0 & sx < half-w * 2 & sy >= 0 & sy < half-h * 2
     in HudProjected { hp-sx = sx, hp-sy = sy, hp-depth = depth, hp-visible = on-screen, hp-element = elem }
 

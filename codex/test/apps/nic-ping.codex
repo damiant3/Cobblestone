@@ -17,84 +17,128 @@ Section: NE2000 Ports
   ne2k-tx-page : Integer = 64
 
 Section: Helpers
-  setup-dma-write : Integer, Integer -> Integer
-  setup-dma-write (page) (count) =
-    let a = port-out-byte ne2k-rsar0 0
-    in let b = port-out-byte ne2k-rsar1 page
-    in let c = port-out-byte ne2k-rbcr0 (bit-and count 255)
-    in let d = port-out-byte ne2k-rbcr1 (bit-shr count 8)
-    in port-out-byte ne2k-cr 18
 
-  setup-dma-read : Integer, Integer, Integer -> Integer
-  setup-dma-read (lo) (hi) (count) =
-    let a = port-out-byte ne2k-rsar0 lo
-    in let b = port-out-byte ne2k-rsar1 hi
-    in let c = port-out-byte ne2k-rbcr0 (bit-and count 255)
-    in let d = port-out-byte ne2k-rbcr1 (bit-shr count 8)
-    in port-out-byte ne2k-cr 10
+ Every one of these drives the NE2000 through raw port I/O, so every
+ one of them says so. They used to be typed pure while doing exactly
+ this, which is what made the chapter's [Console] signature a lie the
+ compiler could not see.
 
-  w : Integer -> Integer
+  setup-dma-write : Integer, Integer -> [Device.Port] Integer
+  setup-dma-write (page) (count) = act
+    a <- port-out-byte ne2k-rsar0 0
+    b <- port-out-byte ne2k-rsar1 page
+    c <- port-out-byte ne2k-rbcr0 (bit-and count 255)
+    d <- port-out-byte ne2k-rbcr1 (bit-shr count 8)
+    port-out-byte ne2k-cr 18
+  end
+
+  setup-dma-read : Integer, Integer, Integer -> [Device.Port] Integer
+  setup-dma-read (lo) (hi) (count) = act
+    a <- port-out-byte ne2k-rsar0 lo
+    b <- port-out-byte ne2k-rsar1 hi
+    c <- port-out-byte ne2k-rbcr0 (bit-and count 255)
+    d <- port-out-byte ne2k-rbcr1 (bit-shr count 8)
+    port-out-byte ne2k-cr 10
+  end
+
+  w : Integer -> [Device.Port] Integer
   w (byte) = port-out-byte ne2k-data byte
 
-  r : Integer
+  r : [Device.Port] Integer
   r = port-in-byte ne2k-data
 
-  transmit : Integer -> Integer
-  transmit (count) =
-    let a = port-out-byte ne2k-tpsr ne2k-tx-page
-    in let b = port-out-byte ne2k-tbcr0 (bit-and count 255)
-    in let c = port-out-byte ne2k-tbcr1 (bit-shr count 8)
-    in port-out-byte ne2k-cr 38
+  transmit : Integer -> [Device.Port] Integer
+  transmit (count) = act
+    a <- port-out-byte ne2k-tpsr ne2k-tx-page
+    b <- port-out-byte ne2k-tbcr0 (bit-and count 255)
+    c <- port-out-byte ne2k-tbcr1 (bit-shr count 8)
+    port-out-byte ne2k-cr 38
+  end
 
-  check-rx : Integer
-  check-rx =
-    let a = port-out-byte ne2k-cr 98
-    in let curr = port-in-byte (768 + 7)
-    in let b = port-out-byte ne2k-cr 34
-    in let bnry = port-in-byte ne2k-bnry
-    in if curr == bnry then 0 else 1
+  check-rx : [Device.Port] Integer
+  check-rx = act
+    a <- port-out-byte ne2k-cr 98
+    curr <- port-in-byte (768 + 7)
+    b <- port-out-byte ne2k-cr 34
+    bnry <- port-in-byte ne2k-bnry
+    if curr == bnry then 0 else 1
+  end
 
 Section: Body
-  opening : [Console] Nothing = act
-    let status = net-status
-    in if status == 0 then print-line-uni "FAIL:no-nic"
+
+ net-status and net-get-hwaddr read the NIC, so this chapter declares
+ Network.Read and earns cap-network-read. Nothing here sends through
+ net-send-raw -- the frame goes out by hand over the data port -- so
+ there is no Network.Write to declare.
+
+  opening : [Console, Network.Read, Device.Port] Nothing = act
+    status <- net-status
+    if status == 0 then print-line-uni "FAIL:no-nic"
     else act
-      let dma = setup-dma-write ne2k-tx-page 42
-      in let d0 = w 255 in let d1 = w 255 in let d2 = w 255
-      in let d3 = w 255 in let d4 = w 255 in let d5 = w 255
-      in let s0 = w (net-get-hwaddr 0) in let s1 = w (net-get-hwaddr 1)
-      in let s2 = w (net-get-hwaddr 2) in let s3 = w (net-get-hwaddr 3)
-      in let s4 = w (net-get-hwaddr 4) in let s5 = w (net-get-hwaddr 5)
-      in let et0 = w 8 in let et1 = w 6
-      in let hw0 = w 0 in let hw1 = w 1
-      in let pt0 = w 8 in let pt1 = w 0
-      in let hl = w 6 in let pl = w 4
-      in let op0 = w 0 in let op1 = w 1
-      in let sm0 = w (net-get-hwaddr 0) in let sm1 = w (net-get-hwaddr 1)
-      in let sm2 = w (net-get-hwaddr 2) in let sm3 = w (net-get-hwaddr 3)
-      in let sm4 = w (net-get-hwaddr 4) in let sm5 = w (net-get-hwaddr 5)
-      in let si0 = w 10 in let si1 = w 0 in let si2 = w 2 in let si3 = w 15
-      in let tm0 = w 0 in let tm1 = w 0 in let tm2 = w 0
-      in let tm3 = w 0 in let tm4 = w 0 in let tm5 = w 0
-      in let ti0 = w 10 in let ti1 = w 0 in let ti2 = w 2 in let ti3 = w 2
-      in let tx = transmit 42
-      in let isr = port-in-byte ne2k-isr
-      in act
-        print-line-uni ("tx isr=" & show isr)
-        let has-rx = check-rx
-        in act
-          print-line-uni ("rx=" & show has-rx)
-          if has-rx == 1 then act
-            let rd = setup-dma-read 0 70 42
-            in let rxb0 = r in let rxb1 = r in let rxb2 = r in let rxb3 = r
-            in act
-              print-line-uni ("hdr: " & show rxb0 & " " & show rxb1 & " " & show rxb2 & " " & show rxb3)
-              print-line-uni "PASS"
-            end
-          end
-          else print-line-uni "FAIL:no-reply"
-        end
+      m0 <- net-get-hwaddr 0
+      m1 <- net-get-hwaddr 1
+      m2 <- net-get-hwaddr 2
+      m3 <- net-get-hwaddr 3
+      m4 <- net-get-hwaddr 4
+      m5 <- net-get-hwaddr 5
+      dma <- setup-dma-write ne2k-tx-page 42
+      d0 <- w 255
+      d1 <- w 255
+      d2 <- w 255
+      d3 <- w 255
+      d4 <- w 255
+      d5 <- w 255
+      s0 <- w m0
+      s1 <- w m1
+      s2 <- w m2
+      s3 <- w m3
+      s4 <- w m4
+      s5 <- w m5
+      et0 <- w 8
+      et1 <- w 6
+      hw0 <- w 0
+      hw1 <- w 1
+      pt0 <- w 8
+      pt1 <- w 0
+      hl <- w 6
+      pl <- w 4
+      op0 <- w 0
+      op1 <- w 1
+      sm0 <- w m0
+      sm1 <- w m1
+      sm2 <- w m2
+      sm3 <- w m3
+      sm4 <- w m4
+      sm5 <- w m5
+      si0 <- w 10
+      si1 <- w 0
+      si2 <- w 2
+      si3 <- w 15
+      tm0 <- w 0
+      tm1 <- w 0
+      tm2 <- w 0
+      tm3 <- w 0
+      tm4 <- w 0
+      tm5 <- w 0
+      ti0 <- w 10
+      ti1 <- w 0
+      ti2 <- w 2
+      ti3 <- w 2
+      tx <- transmit 42
+      isr <- port-in-byte ne2k-isr
+      print-line-uni ("tx isr=" & show isr)
+      has-rx <- check-rx
+      print-line-uni ("rx=" & show has-rx)
+      if has-rx == 1 then act
+        rd <- setup-dma-read 0 70 42
+        rxb0 <- r
+        rxb1 <- r
+        rxb2 <- r
+        rxb3 <- r
+        print-line-uni ("hdr: " & show rxb0 & " " & show rxb1 & " " & show rxb2 & " " & show rxb3)
+        print-line-uni "PASS"
       end
+      else print-line-uni "FAIL:no-reply"
     end
   end
 

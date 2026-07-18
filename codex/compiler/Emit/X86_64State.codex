@@ -1,8 +1,4 @@
 Chapter: X86-64 Code Generator
-  cites Codex chapter Text
-  cites Codex chapter Numbers
-  cites Codex chapter Lists
-  cites Codex chapter Runtime
   cites Codex chapter VM Profile
   cites Codex chapter Build Settings (max-emit-work)
 
@@ -101,6 +97,8 @@ Section: Record Types
    bag : DiagnosticBag,
    deck-bound : Boolean,
    effect-op-addrs : List EffectOpAddr,
+   eo-reads : List Text,
+   eo-handled : List Text,
    vm-profile : VmProfile,
    poison-alloc : Boolean,
    trace-alloc : Boolean,
@@ -194,6 +192,29 @@ Section: Constants
   bare-metal-page-count : Integer = (bare-metal-ram-size + 2097151) / 2097152
 
   bare-metal-nx-boundary : Integer = 3
+
+ The gigabyte above RAM is where the machine keeps its devices: the
+ LAPIC at 0xFEE00000, the IOAPIC at 0xFEC00000, the HPET at 0xFED00000,
+ and every PCI BAR codex-vm advertises. The runtime page tables used to
+ stop at bare-metal-ram-size, so none of it was reachable and a load
+ there raised a page fault the demand handler would not serve -- which
+ is why the xHCI driver could never touch its BAR, why the board drivers
+ whose register windows sit above 3 GB were skipped, and why the machine
+ talks to its devices almost entirely through port I/O.
+
+ So we map it: one more page directory, identity, present, read-write,
+ and non-executable. It costs 4 KB of page table and nothing at runtime.
+ The consequence to know about is that a stray pointer above 3 GB now
+ reaches the bus instead of faulting -- which is what it would do on real
+ hardware, where these addresses are decoded by devices and not by RAM.
+
+  bare-metal-device-pd-index : Integer = bare-metal-pd-count
+
+  bare-metal-device-page-start : Integer = bare-metal-pd-count * 512
+
+  bare-metal-device-page-end : Integer = (bare-metal-pd-count + 1) * 512
+
+  bare-metal-total-pd-count : Integer = bare-metal-pd-count + 1
 
 Section: CCE Table (inlined from Foreword CCE to avoid duplicate-definition conflict during self-compilation)
   cce-to-unicode-table : List Integer
@@ -568,8 +589,17 @@ Section: State Helpers
    user-arities = [],
    bag = empty-bag,
    deck-bound = False,
+   effect-op-addrs = [],
+   eo-reads = [],
+   eo-handled = [],
    vm-profile = vm-profile-spec,
    poison-alloc = False,
+   trace-alloc = False,
+   stack-guard = False,
+   omit-frame-pointer = False,
+   peak-local = 0,
+   peak-spill = 0,
+   func-local-regs = [],
    noalias-slots = [],
    field-cache = [],
    fresh-slots = [],
@@ -717,6 +747,8 @@ Section: State Helpers
     bag = st.bag,
     deck-bound = st.deck-bound,
     effect-op-addrs = st.effect-op-addrs,
+    eo-reads = st.eo-reads,
+    eo-handled = st.eo-handled,
     vm-profile = st.vm-profile,
     poison-alloc = st.poison-alloc,
     trace-alloc = st.trace-alloc,
@@ -729,13 +761,16 @@ Section: State Helpers
     stype-sites = st.stype-sites
    }
 
-  reset-func-state : CodegenState, Text -> CodegenState
-  reset-func-state (st) (name) =
-   let n1 = list-push (st.fo-names) name
-   in let o1 = list-push (st.fo-offsets) (st.code-len)
-   in let st0a = __record-set st "fo-names" n1
-   in let st1 = __record-set st0a "fo-offsets" o1
-   in let st2 = __record-set st1 "locals" (fresh-empty-locals 0)
+ A function's scratch is everything the emitter rebuilds per definition:
+ the register bindings, the temp and local counters, the peak watermarks,
+ and the TCO loop record. The offset table is deliberately not scratch --
+ its entry is pushed once per definition and survives a discarded
+ emission, which is what lets emit-function retry a mispredicted minimal
+ leaf through the standard path without naming the function twice.
+
+  reset-func-scratch : CodegenState -> CodegenState
+  reset-func-scratch (st1) =
+   let st2 = __record-set st1 "locals" (fresh-empty-locals 0)
    in let st3 = __record-set st2 "next-temp" 0
    in let st4 = __record-set st3 "next-local" 0
    in let st5 = __record-set st4 "spill-count" 0
@@ -756,6 +791,28 @@ Section: State Helpers
     saved-next-local = 0,
     saved-next-temp = 0
    })
+
+  reset-func-state : CodegenState, Text -> CodegenState
+  reset-func-state (st) (name) =
+   let n1 = list-push (st.fo-names) name
+   in let o1 = list-push (st.fo-offsets) (st.code-len)
+   in let st0a = __record-set st "fo-names" n1
+   in let st1 = __record-set st0a "fo-offsets" o1
+   in reset-func-scratch st1
+
+ A discarded emission leaves its bytes behind as unreachable padding
+ rather than rewinding the code buffer. Rewinding would strand the patch
+ entries the attempt recorded -- call sites, rodata fixups, stack-guard
+ checks all name a code position -- and those lists are the pre-allocated
+ accumulators, so they cannot be truncated without losing the capacity
+ list-push depends on. Re-pointing the offset entry at the live emission
+ costs one in-place store and leaves every stale patch aimed at bytes no
+ caller can reach.
+
+  repoint-func-offset : CodegenState -> CodegenState
+  repoint-func-offset (st) =
+   let n = list-length (st.fo-offsets)
+   in __record-set st "fo-offsets" (list-set-at (st.fo-offsets) (n - 1) (st.code-len))
 
 Section: Register Allocation
  The active register pools are per-function. By default locals use the
@@ -963,15 +1020,40 @@ Section: Byte Patching
     then check-call-patch-targets (st-add-error st cdx-unresolved-func-offset ("Unresolved call to '" & target & "' (redirected to __unresolved_trap)") synthetic-span) fm (i + 1)
     else check-call-patch-targets st fm (i + 1)
 
+ A func-addr reference that resolves to nothing is patched to
+ __unresolved_trap by apply-func-addr-patches-direct, exactly as an
+ unresolved call is — the difference is that a call is CALLED and traps,
+ while a func-addr becomes a VALUE and traps only if something later
+ calls it. Both are broken programs and both must be refused here.
+
+ This check used to require `trap == -1` as well, which made it dead:
+ __unresolved_trap is always emitted, so the condition never held and the
+ reference was silently redirected to it. The program then compiled clean
+ and died at runtime with !EXC=06 (the trap's ud2) and no diagnostic
+ anywhere. The call-patch check next to it has no such clause; this one
+ was written in its shape and lost its teeth to one extra conjunct.
+
+ The common way to reach it: a BUILTIN in value position. A builtin is
+ emitted at its call site (emit-builtin), so no function offset exists to
+ take the address of, and `apply-it print-line-uni` compiled and crashed.
+ The message says that rather than making the reader deduce it from a
+ patch-table word — the name resolved, it type-checked, and the only
+ honest thing left to say is that there is no value to pass.
+
   check-func-addr-targets : CodegenState, OffsetTable, Integer -> CodegenState
   check-func-addr-targets (st) (fm) (i) =
    if i == list-length (st.fa-targets) then st
    else let target = list-at (st.fa-targets) i
    in let off = offset-table-lookup fm target
-   in let trap = offset-table-lookup fm "__unresolved_trap"
-   in if off == -1 & trap == -1
-    then check-func-addr-targets (st-add-error st cdx-unresolved-func-offset ("Unresolved func-addr reference to '" & target & "'") synthetic-span) fm (i + 1)
+   in if off == -1
+    then check-func-addr-targets (st-add-error st cdx-unresolved-func-offset (func-addr-error-msg st target) synthetic-span) fm (i + 1)
     else check-func-addr-targets st fm (i + 1)
+
+  func-addr-error-msg : CodegenState, Text -> Text
+  func-addr-error-msg (st) (target) =
+   if is-builtin (st.builtin-names) target
+    then "'" & target & "' is a builtin and has no function value. A builtin is emitted where it is called, so there is nothing to take the address of: it cannot be passed as an argument, stored, or partially applied. Wrap it in a definition and pass that."
+    else "Unresolved func-addr reference to '" & target & "' (redirected to __unresolved_trap)"
 
   check-runtime-symbol : CodegenState, OffsetTable, Text -> CodegenState
   check-runtime-symbol (st) (fm) (name) =
@@ -980,6 +1062,46 @@ Section: Byte Patching
     then st-add-error st cdx-unresolved-func-offset ("Missing runtime symbol '" & name & "'") synthetic-span
     else st
 
+ A handler-table slot is only ever written by a handler clause. A read of a
+ slot no clause writes lands on zeroed memory and yields zero -- and zero is
+ a plausible Integer, an empty Text and an empty List all at once, so nothing
+ downstream can tell it apart from an answer. An operation that takes
+ arguments is emitted as a call and CDX2040 catches it at the fixup. A nullary
+ one is emitted as a load, and no fixup ever sees it. These two lists close
+ that gap: every table read is recorded, every clause that writes a slot is
+ recorded, and the reads with no writer are reported once the whole chapter
+ has been emitted -- deferred, because a handler may be emitted after a
+ function that reads through it.
+
+ Both pushes must be deck-record'd. emit-all-defs brackets every function in
+ __heap-save / __heap-restore, so a list grown on the function's heap is freed
+ the moment that function is done and the next read walks a dangling spine.
+ bag-add carries the diagnostic bag across the same boundary the same way.
+
+  eo-name-seen : List Text, Text, Integer, Integer -> Boolean
+  eo-name-seen (xs) (target) (i) (len) =
+   if i >= len then False
+   else if list-at xs i == target then True
+   else eo-name-seen xs target (i + 1) len
+
+  eo-note-read : CodegenState, Text -> CodegenState
+  eo-note-read (st) (name) =
+   if eo-name-seen (st.eo-reads) name 0 (list-length (st.eo-reads)) then st
+   else __record-set st "eo-reads" (deck-record (list-push (st.eo-reads) name))
+
+  eo-note-handled : CodegenState, Text -> CodegenState
+  eo-note-handled (st) (name) =
+   if eo-name-seen (st.eo-handled) name 0 (list-length (st.eo-handled)) then st
+   else __record-set st "eo-handled" (deck-record (list-push (st.eo-handled) name))
+
+  check-effect-op-reads : CodegenState, Integer -> CodegenState
+  check-effect-op-reads (st) (i) =
+   if i == list-length (st.eo-reads) then st
+   else let name = list-at (st.eo-reads) i
+   in if eo-name-seen (st.eo-handled) name 0 (list-length (st.eo-handled))
+    then check-effect-op-reads st (i + 1)
+    else check-effect-op-reads (st-add-error st cdx-unhandled-effect-op ("Effect operation '" & name & "' is read, but no handler in this chapter ever gives it a value; the read would yield zero") synthetic-span) (i + 1)
+
 
   align-16 : Integer -> Integer
   align-16 (n) =
@@ -987,4 +1109,4 @@ Section: Byte Patching
    in if r == 0 then n else n + 16 - r
 
 
-Page 2 of 10
+Page 2 of 14

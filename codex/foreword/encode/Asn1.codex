@@ -1,0 +1,288 @@
+Chapter: Asn1
+  cites Foreword chapter Maybe
+
+ Distinguished Encoding Rules -- the subset of ASN.1 that X.509 is written
+ in. This chapter is a DECODER and nothing else. It does not build
+ certificates; it takes bytes an attacker chose and decides, carefully,
+ what they are allowed to mean.
+
+ DER is BER with the ambiguity removed: for any value there is exactly one
+ legal encoding. That property is the whole reason a signature over a
+ certificate means anything, and it is the property this chapter enforces
+ rather than assumes. Every rule below is a rule that, left out, has put a
+ CVE in somebody's X.509 stack:
+
+ A length may not be indefinite. BER allows a value to run until an
+ end-of-contents marker; DER does not, and a decoder that accepts it can
+ be walked past the end of the structure it thinks it is reading.
+
+ A length must be MINIMALLY encoded. 0x81 0x05 and 0x05 both say "five",
+ and only the second is DER. Accepting both means two different byte
+ strings decode to the same certificate -- so one of them can be signed
+ and the other served.
+
+ A length may not exceed what is actually in the buffer. This is the one
+ that reads other people's memory.
+
+ The high-tag-number form is rejected outright. X.509 does not need it,
+ and a decoder that supports what it does not need is a decoder with
+ attack surface it does not need.
+
+ Everything is offset-based. Nothing is copied until a caller asks for it,
+ and when a caller asks for the bytes UNDER a structure it gets the
+ original bytes -- never a re-encoding. A re-encoded TBSCertificate is a
+ different byte string than the one that was signed, and verifying a
+ signature against it is the classic way to verify nothing at all.
+
+ To asn1-read gives Maybe Asn1Tlv, decoding one tag-length-value at an offset.
+ To asn1-read-tag gives Maybe Asn1Tlv, decoding one TLV and requiring it to carry the expected tag.
+ To asn1-raw gives List Integer, the original bytes of a TLV including its header -- what a signature covers.
+
+ We say:
+
+Section: Tags
+
+ The identifier octets X.509 actually uses. A constructed type has bit 6
+ set, which is why SEQUENCE is #30 and not #10.
+
+  asn1-boolean : Integer = #01
+  asn1-integer : Integer = #02
+  asn1-bit-string-tag : Integer = #03
+  asn1-octet-string : Integer = #04
+  asn1-null : Integer = #05
+  asn1-oid : Integer = #06
+  asn1-utf8-string : Integer = #0C
+  asn1-printable-string : Integer = #13
+  asn1-ia5-string : Integer = #16
+  asn1-utc-time : Integer = #17
+  asn1-general-time : Integer = #18
+  asn1-sequence : Integer = #30
+  asn1-set : Integer = #31
+
+ Context-specific, constructed: [0] is the version in a TBSCertificate and
+ [3] is its extensions.
+
+  asn1-ctx0 : Integer = #A0
+  asn1-ctx1 : Integer = #A1
+  asn1-ctx3 : Integer = #A3
+
+Section: The Decoded Header
+
+ A TLV is described, not copied. tlv-off is where the CONTENT starts;
+ tlv-hdr is where the tag byte was, so the bytes a signature covers run
+ from tlv-hdr to tlv-off + tlv-len.
+
+  Asn1Tlv = record {
+    tlv-tag : Integer,
+    tlv-hdr : Integer,
+    tlv-off : Integer,
+    tlv-len : Integer
+  }
+
+Section: Reading
+
+ One TLV at an offset. Every failure path returns None. There is no
+ partial success and no "probably fine".
+
+  asn1-read : List Integer, Integer -> Maybe Asn1Tlv
+  asn1-read (buf) (off) =
+    if off < 0 then None
+    else if off + 1 >= list-length buf then None
+    else asn1-read-len buf off (list-at buf off)
+
+ The high-tag-number form (low five bits all set) is refused here, before
+ anything else looks at it.
+
+  asn1-read-len : List Integer, Integer, Integer -> Maybe Asn1Tlv
+  asn1-read-len (buf) (off) (tag) =
+    if bit-and tag #1F == #1F then None
+    else asn1-len-form buf off tag (list-at buf (off + 1))
+
+  asn1-len-form : List Integer, Integer, Integer, Integer -> Maybe Asn1Tlv
+  asn1-len-form (buf) (off) (tag) (l0) =
+    if l0 < #80 then asn1-mk buf tag off (off + 2) l0
+    else if l0 == #80 then None
+    else if l0 == #FF then None
+    else asn1-long-len buf off tag (l0 - #80)
+
+ The long form. DER bounds this at four length octets for anything we will
+ ever parse, and a leading zero is non-minimal -- both are refused rather
+ than tolerated.
+
+  asn1-long-len : List Integer, Integer, Integer, Integer -> Maybe Asn1Tlv
+  asn1-long-len (buf) (off) (tag) (n) =
+    if n > 4 then None
+    else if off + 2 + n > list-length buf then None
+    else if list-at buf (off + 2) == 0 then None
+    else asn1-long-check buf off tag n (asn1-be buf (off + 2) n 0)
+
+ A long form that encodes a value the short form could have carried is not
+ DER. This is the rule that stops one certificate having two encodings.
+
+  asn1-long-check : List Integer, Integer, Integer, Integer, Integer -> Maybe Asn1Tlv
+  asn1-long-check (buf) (off) (tag) (n) (len) =
+    if n == 1 then (if len < #80 then None else asn1-mk buf tag off (off + 2 + n) len)
+    else asn1-mk buf tag off (off + 2 + n) len
+
+  asn1-be : List Integer, Integer, Integer, Integer -> Integer
+  asn1-be (buf) (off) (n) (acc) =
+    if n <= 0 then acc
+    else asn1-be buf (off + 1) (n - 1) (acc * 256 + list-at buf off)
+
+ The final gate, and the important one: the content must actually be in
+ the buffer. A length that runs past the end is refused, not clamped --
+ clamping would hand the caller a short value it believes is complete.
+
+  asn1-mk : List Integer, Integer, Integer, Integer, Integer -> Maybe Asn1Tlv
+  asn1-mk (buf) (tag) (hdr) (off) (len) =
+    if len < 0 then None
+    else if off + len > list-length buf then None
+    else Just (Asn1Tlv { tlv-tag = tag, tlv-hdr = hdr, tlv-off = off, tlv-len = len })
+
+  asn1-read-tag : List Integer, Integer, Integer -> Maybe Asn1Tlv
+  asn1-read-tag (buf) (off) (want) =
+    when asn1-read buf off
+      is None -> None
+      is Just (t) -> if t.tlv-tag == want then Just t else None
+
+Section: Getting At The Bytes
+
+ asn1-end is where the next sibling begins.
+
+  asn1-end : Asn1Tlv -> Integer
+  asn1-end (t) = t.tlv-off + t.tlv-len
+
+ The content of a TLV.
+
+  asn1-content : List Integer, Asn1Tlv -> List Integer
+  asn1-content (buf) (t) = asn1-slice buf (t.tlv-off) (t.tlv-len)
+
+ The ORIGINAL bytes of a TLV, header included. This is what a signature is
+ computed over, and it is a slice of the input -- never a re-encoding.
+
+  asn1-raw : List Integer, Asn1Tlv -> List Integer
+  asn1-raw (buf) (t) = asn1-slice buf (t.tlv-hdr) (asn1-end t - t.tlv-hdr)
+
+  asn1-slice : List Integer, Integer, Integer -> List Integer
+  asn1-slice (buf) (off) (n) = asn1-slice-loop buf off n 0 []
+
+  asn1-slice-loop : List Integer, Integer, Integer, Integer, List Integer -> List Integer
+  asn1-slice-loop (buf) (off) (n) (i) (acc) =
+    if i >= n then acc
+    else if off + i >= list-length buf then acc
+    else asn1-slice-loop buf off n (i + 1) (list-push acc (list-at buf (off + i)))
+
+Section: Typed Readers
+
+ A BIT STRING carries a count of unused trailing bits. For every key and
+ signature X.509 puts in one, that count is zero, and anything else is a
+ value we do not understand -- so it is refused rather than shifted.
+
+  asn1-bit-string : List Integer, Integer -> Maybe (List Integer)
+  asn1-bit-string (buf) (off) =
+    when asn1-read-tag buf off asn1-bit-string-tag
+      is None -> None
+      is Just (t) -> asn1-bit-body buf t
+
+  asn1-bit-body : List Integer, Asn1Tlv -> Maybe (List Integer)
+  asn1-bit-body (buf) (t) =
+    if t.tlv-len < 1 then None
+    else if list-at buf (t.tlv-off) /= 0 then None
+    else Just (asn1-slice buf (t.tlv-off + 1) (t.tlv-len - 1))
+
+ An OBJECT IDENTIFIER is compared as bytes. Decoding an OID into numbers
+ and then comparing the numbers is a way to be wrong for free; the encoded
+ form is canonical under DER, so the bytes are the identity.
+
+  asn1-oid-is : List Integer, Asn1Tlv, List Integer -> Boolean
+  asn1-oid-is (buf) (t) (want) =
+    if t.tlv-tag /= asn1-oid then False
+    else if t.tlv-len /= list-length want then False
+    else asn1-bytes-eq buf (t.tlv-off) want 0 (list-length want)
+
+  asn1-bytes-eq : List Integer, Integer, List Integer, Integer, Integer -> Boolean
+  asn1-bytes-eq (buf) (off) (want) (i) (n) =
+    if i >= n then True
+    else if list-at buf (off + i) /= list-at want i then False
+    else asn1-bytes-eq buf off want (i + 1) n
+
+ An INTEGER, as its content bytes. DER forbids a leading zero unless it is
+ there to keep the value positive, and forbids a leading 0xFF padding on a
+ negative -- a serial number that decodes two ways is a serial number that
+ can be spoofed past a revocation list.
+
+  asn1-int-bytes : List Integer, Integer -> Maybe (List Integer)
+  asn1-int-bytes (buf) (off) =
+    when asn1-read-tag buf off asn1-integer
+      is None -> None
+      is Just (t) -> asn1-int-body buf t
+
+  asn1-int-body : List Integer, Asn1Tlv -> Maybe (List Integer)
+  asn1-int-body (buf) (t) =
+    if t.tlv-len < 1 then None
+    else if t.tlv-len == 1 then Just (asn1-content buf t)
+    else asn1-int-minimal buf t (list-at buf (t.tlv-off)) (list-at buf (t.tlv-off + 1))
+
+  asn1-int-minimal : List Integer, Asn1Tlv, Integer, Integer -> Maybe (List Integer)
+  asn1-int-minimal (buf) (t) (b0) (b1) =
+    if b0 == #00 then (if bit-and b1 #80 == #80 then Just (asn1-content buf t) else None)
+    else if b0 == #FF then (if bit-and b1 #80 == 0 then Just (asn1-content buf t) else None)
+    else Just (asn1-content buf t)
+
+ A small unsigned INTEGER, for the things that really are small: the
+ version, a path length. Anything wider than four bytes is refused rather
+ than silently truncated.
+
+  asn1-small-int : List Integer, Integer -> Maybe Integer
+  asn1-small-int (buf) (off) =
+    when asn1-int-bytes buf off
+      is None -> None
+      is Just (bs) -> asn1-small-of bs
+
+  asn1-small-of : List Integer -> Maybe Integer
+  asn1-small-of (bs) =
+    if list-length bs < 1 then None
+    else if list-length bs > 4 then None
+    else if bit-and (list-at bs 0) #80 == #80 then None
+    else Just (asn1-small-loop bs 0 (list-length bs) 0)
+
+  asn1-small-loop : List Integer, Integer, Integer, Integer -> Integer
+  asn1-small-loop (bs) (i) (n) (acc) =
+    if i >= n then acc
+    else asn1-small-loop bs (i + 1) n (acc * 256 + list-at bs i)
+
+Section: Walking A SEQUENCE
+
+ The children of a constructed value, as a list of TLVs. The walk is
+ bounded by the parent's own length, so a malformed child cannot run the
+ loop past its parent, and it stops on the first byte it cannot decode
+ rather than skipping ahead to look for something that parses.
+
+  asn1-children : List Integer, Asn1Tlv -> List Asn1Tlv
+  asn1-children (buf) (parent) =
+    asn1-child-loop buf (parent.tlv-off) (asn1-end parent) []
+
+  asn1-child-loop : List Integer, Integer, Integer, List Asn1Tlv -> List Asn1Tlv
+  asn1-child-loop (buf) (off) (stop) (acc) =
+    if off >= stop then acc
+    else asn1-child-step buf off stop acc (asn1-read buf off)
+
+  asn1-child-step : List Integer, Integer, Integer, List Asn1Tlv, Maybe Asn1Tlv -> List Asn1Tlv
+  asn1-child-step (buf) (off) (stop) (acc) (m) =
+    when m
+      is None -> acc
+      is Just (t) -> asn1-child-next buf stop acc t
+
+ A child that claims to end past its parent is malformed, and the walk
+ stops. It does not get added.
+
+  asn1-child-next : List Integer, Integer, List Asn1Tlv, Asn1Tlv -> List Asn1Tlv
+  asn1-child-next (buf) (stop) (acc) (t) =
+    if asn1-end t > stop then acc
+    else asn1-child-loop buf (asn1-end t) stop (list-push acc t)
+
+  asn1-nth : List Asn1Tlv, Integer -> Maybe Asn1Tlv
+  asn1-nth (ts) (i) =
+    if i < 0 then None
+    else if i >= list-length ts then None
+    else Just (list-at ts i)

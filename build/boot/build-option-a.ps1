@@ -15,7 +15,13 @@ param(
     # Embed the CDX seed on the ESP as CODEX.CDX so the booted payload can read
     # it back with its own drivers. '' skips it (a menu-only proof image).
     [string]$Seed = 'seed/Codex.cdx',
-    [int]$TotalSectors = 32768   # 16 MB: PE + a 2.1 MB seed with room to spare
+    # A TrueType font shipped on the ESP as CMUNSS.TTF for the desktop's
+    # text (H4c). '' skips it; the desktop falls back to the CBF font.
+    [string]$Font = 'fonts/cc0/cmunss.ttf',
+    [int]$TotalSectors = 32768,  # 16 MB: PE + a 2.1 MB seed with room to spare
+    # Format the ESP as FAT32 (vendor-stick layout). Needs -TotalSectors >=
+    # ~70000: a real FAT32 volume carries at least 65525 clusters.
+    [switch]$Fat32
 )
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
@@ -180,10 +186,16 @@ Write-Host "[opt-a] PE: $((Get-Item $peOutFile).Length) bytes -> $peOutFile"
 # ---- 5. Wrap into GPT/FAT16 image ----
 $outAbs = if ([System.IO.Path]::IsPathRooted($Out)) { $Out } else { Join-Path $repo $Out }
 $imgArgs = @('-PeInput', $peOutFile, '-Out', $outAbs, '-TotalSectors', $TotalSectors)
+if ($Fat32) { $imgArgs += '-Fat32' }
 if ($Seed) {
     $seedAbs = if ([System.IO.Path]::IsPathRooted($Seed)) { $Seed } else { Join-Path $repo $Seed }
     if (Test-Path $seedAbs) { $imgArgs += @('-Seed', $seedAbs) }
     else { Write-Host "[opt-a] WARN: seed not found at $seedAbs; image will carry no CODEX.CDX" }
+}
+if ($Font) {
+    $fontAbs = if ([System.IO.Path]::IsPathRooted($Font)) { $Font } else { Join-Path $repo $Font }
+    if (Test-Path $fontAbs) { $imgArgs += @('-Font', $fontAbs) }
+    else { Write-Host "[opt-a] WARN: font not found at $fontAbs; image will carry no CMUNSS.TTF" }
 }
 & pwsh -NoProfile -File (Join-Path $repo 'build/build-img.ps1') @imgArgs
 if ($LASTEXITCODE -ne 0 -or -not (Test-Path $outAbs)) { throw "build-img failed" }

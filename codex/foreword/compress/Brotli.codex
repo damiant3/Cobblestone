@@ -1,10 +1,22 @@
 Chapter: Brotli
+  cites Compress chapter Deflate
 
  Byte-stream framing inspired by Brotli's stored meta-blocks.
  NOT interoperable with RFC 7932 decoders — real Brotli is a
  bit-stream format and has no byte-aligned stored meta-block
  mode. This chapter provides a self-consistent compress/decompress
  pair using Brotli-like block structure for internal use.
+
+ Three meta-block types. A run of identical bytes becomes an RLE
+ meta-block; a literal region that a real LZ-plus-entropy coder can
+ shrink becomes a compressed meta-block, whose payload is a Deflate
+ block (LZ77 back-references plus Huffman codes, the encoder proved
+ in the Deflate chapter); everything else is a stored meta-block. So
+ general data compresses now, not only runs -- but the entropy coder
+ is Deflate's, wrapped in Brotli-like framing, so this is still NOT
+ RFC 7932. A literal region takes the compressed meta-block only when
+ the Deflate payload is actually smaller than the raw bytes, so the
+ framing never inflates and the two-byte size field always fits.
 
  To brotli-compress gives a Brotli-framed byte stream.
  To brotli-decompress gives original bytes from a Brotli stream.
@@ -15,50 +27,128 @@ Chapter: Brotli
 Section: Constants
 
   brotli-max-meta-block : Integer = 65536
+  brotli-rle-min : Integer = 4
 
-Section: Compression (Uncompressed Meta-Blocks)
+Section: Compression (RLE + Compressed + Stored Meta-Blocks)
+
+ A run of brotli-rle-min or more identical bytes becomes an RLE meta-block
+ (flag bit 1 set): a three-byte header carrying the repeat count plus one data
+ byte, whatever the run length. A literal region (no long run) is handed to
+ deflate-compress-best; if the Deflate block is smaller than the raw bytes it
+ becomes a compressed meta-block (flag bit 2 set) carrying that block, otherwise
+ the raw bytes become a stored meta-block. The compressed meta-block is what
+ makes general data shrink; RLE is where runs pay; stored is the floor that
+ never inflates. This is still NOT RFC 7932 -- the entropy coder is Deflate's
+ and the framing is byte-aligned -- so the pair stays self-consistent for
+ internal use.
 
   brotli-compress : List Integer -> List Integer
   brotli-compress (input) =
     let len = list-length input
     in if len == 0 then [6]
-    else brotli-header & brotli-emit-meta-blocks input len 0
+    else brotli-header & brotli-emit-blocks input len 0
 
   brotli-header : List Integer
   brotli-header = [27]
 
-  brotli-emit-meta-blocks : List Integer, Integer, Integer -> List Integer
-  brotli-emit-meta-blocks (input) (total) (pos) =
-    if pos >= total then [3]
-    else let remaining = total - pos
-    in let chunk = if remaining > brotli-max-meta-block then brotli-max-meta-block else remaining
-    in let is-last = pos + chunk >= total
-    in let header = brotli-meta-header is-last chunk
-    in let data = brotli-slice input pos chunk 0 []
-    in header & data & brotli-emit-meta-blocks input total (pos + chunk)
+  brotli-emit-blocks : List Integer, Integer, Integer -> List Integer
+  brotli-emit-blocks (input) (total) (pos) =
+    if pos >= total then []
+    else let b = list-at input pos
+    in let run = brotli-run-length input total pos b 0
+    in if run >= brotli-rle-min then brotli-emit-rle input total pos b run
+    else brotli-emit-stored input total pos
 
-  brotli-meta-header : Boolean, Integer -> List Integer
-  brotli-meta-header (is-last) (size) =
+  brotli-emit-rle : List Integer, Integer, Integer, Integer, Integer -> List Integer
+  brotli-emit-rle (input) (total) (pos) (b) (run) =
+    let chunk = if run > brotli-max-meta-block then brotli-max-meta-block else run
+    in let is-last = pos + chunk >= total
+    in brotli-rle-header is-last chunk & [b] & brotli-emit-blocks input total (pos + chunk)
+
+  brotli-emit-stored : List Integer, Integer, Integer -> List Integer
+  brotli-emit-stored (input) (total) (pos) =
+    let lend = brotli-literal-end input total pos
+    in let capped = if lend - pos > brotli-max-meta-block then pos + brotli-max-meta-block else lend
+    in let size = capped - pos
+    in let is-last = capped >= total
+    in let raw = brotli-slice input pos size 0 []
+    in let comp = deflate-compress-best raw
+    in if list-length comp < size
+      then brotli-compressed-header is-last (list-length comp) & comp & brotli-emit-blocks input total capped
+      else brotli-stored-header is-last size & raw & brotli-emit-blocks input total capped
+
+  brotli-run-length : List Integer, Integer, Integer, Integer, Integer -> Integer
+  brotli-run-length (input) (total) (pos) (b) (n) =
+    if pos + n >= total then n
+    else if list-at input (pos + n) == b then brotli-run-length input total pos b (n + 1)
+    else n
+
+  brotli-literal-end : List Integer, Integer, Integer -> Integer
+  brotli-literal-end (input) (total) (i) =
+    if i >= total then i
+    else let r = brotli-run-length input total i (list-at input i) 0
+    in if r >= brotli-rle-min then i
+    else brotli-literal-end input total (i + r)
+
+  brotli-stored-header : Boolean, Integer -> List Integer
+  brotli-stored-header (is-last) (size) =
     let last-bit = if is-last then 1 else 0
-    in [bit-or last-bit (bit-shl 1 1), bit-and size 255, bit-and (bit-shru size 8) 255]
+    in [last-bit, bit-and size 255, bit-and (bit-shru size 8) 255]
+
+  brotli-rle-header : Boolean, Integer -> List Integer
+  brotli-rle-header (is-last) (count) =
+    let last-bit = if is-last then 1 else 0
+    in [bit-or last-bit 2, bit-and count 255, bit-and (bit-shru count 8) 255]
+
+  brotli-compressed-header : Boolean, Integer -> List Integer
+  brotli-compressed-header (is-last) (csize) =
+    let last-bit = if is-last then 1 else 0
+    in [bit-or last-bit 4, bit-and csize 255, bit-and (bit-shru csize 8) 255]
 
 Section: Decompression
 
   brotli-decompress : List Integer -> List Integer
   brotli-decompress (input) =
     if brotli-valid input == False then []
-    else brotli-decode-meta input 1 (list-length input) []
+    else brotli-decode-blocks input 1 (list-length input) []
 
-  brotli-decode-meta : List Integer, Integer, Integer, List Integer -> List Integer
-  brotli-decode-meta (input) (pos) (len) (acc) =
+  brotli-decode-blocks : List Integer, Integer, Integer, List Integer -> List Integer
+  brotli-decode-blocks (input) (pos) (len) (acc) =
     if pos + 2 >= len then acc
-    else let hdr = list-at input pos
-    in let is-last = bit-and hdr 1
+    else let flags = list-at input pos
+    in let is-last = bit-and flags 1
+    in let is-rle = bit-and (bit-shru flags 1) 1
+    in let is-comp = bit-and (bit-shru flags 2) 1
     in let size = bit-or (list-at input (pos + 1)) (bit-shl (list-at input (pos + 2)) 8)
-    in let data = brotli-slice input (pos + 3) size 0 []
+    in if is-rle == 1 then brotli-decode-rle input pos len size is-last acc
+    else if is-comp == 1 then brotli-decode-compressed input pos len size is-last acc
+    else brotli-decode-stored input pos len size is-last acc
+
+  brotli-decode-compressed : List Integer, Integer, Integer, Integer, Integer, List Integer -> List Integer
+  brotli-decode-compressed (input) (pos) (len) (csize) (is-last) (acc) =
+    let payload = brotli-slice input (pos + 3) csize 0 []
+    in let acc2 = acc & deflate-decompress payload
+    in if is-last == 1 then acc2
+    else brotli-decode-blocks input (pos + 3 + csize) len acc2
+
+  brotli-decode-stored : List Integer, Integer, Integer, Integer, Integer, List Integer -> List Integer
+  brotli-decode-stored (input) (pos) (len) (size) (is-last) (acc) =
+    let data = brotli-slice input (pos + 3) size 0 []
     in let acc2 = acc & data
     in if is-last == 1 then acc2
-    else brotli-decode-meta input (pos + 3 + size) len acc2
+    else brotli-decode-blocks input (pos + 3 + size) len acc2
+
+  brotli-decode-rle : List Integer, Integer, Integer, Integer, Integer, List Integer -> List Integer
+  brotli-decode-rle (input) (pos) (len) (count) (is-last) (acc) =
+    let data = brotli-repeat (list-at input (pos + 3)) count 0 []
+    in let acc2 = acc & data
+    in if is-last == 1 then acc2
+    else brotli-decode-blocks input (pos + 3 + 1) len acc2
+
+  brotli-repeat : Integer, Integer, Integer, List Integer -> List Integer
+  brotli-repeat (b) (count) (i) (acc) =
+    if i >= count then acc
+    else brotli-repeat b count (i + 1) (list-push acc b)
 
 Section: Validation
 

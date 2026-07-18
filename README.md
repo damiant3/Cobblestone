@@ -235,9 +235,10 @@ As of 2026-07-04:
 - **Native-class codegen**: three parallel optimization campaigns across
   x86-64, ARM64, and RISC-V. 8 micro-benchmarks (fib, fact, gcd, sum,
   ack, tak, collatz, locals). ARM64: 176 insns total, beats GCC -Os by
-  24%. RISC-V: 141 insns total, gcd matches GCC -Os exactly. x86-64:
-  205 insns total, sum-to-N at 14 instructions (below C /O2 at 23),
-  fact at 13 (below C /O2 at 15).
+  24%. RISC-V: 141 insns total, gcd matches GCC -Os exactly. x86-64
+  (seed C0B74DBE, LIR selector live): 143 insns total, sum-to-N at 7
+  instructions (below C /O2 at 23, a 70% reduction), gcd at 10 (below
+  /O2 at 14), fact at 13 (below /O2 at 15); fib is +2 over /O2.
   Key techniques: destination-driven emission, TCO with dependency
   analysis, pow2 strength reduction, peephole MOV/NOP compaction,
   dead-branch elimination, frame elision, IrRemInt.
@@ -267,13 +268,13 @@ As of 2026-07-04:
 
 The compiler is a hard fixed point of itself on bare metal.
 
-**`seed/Codex.cdx`** (2,145,861 bytes, ~2.05 MB) — the canonical seed:
+**`seed/Codex.cdx`** (2,551,486 bytes, ~2.43 MB) — the canonical seed:
 
 | Algorithm | Digest |
 |---|---|
-| Content hash prefix | `9DF129A5` |
-| SHA-256 | `9DF129A5B46FD2AB2C5E4C03E0F11CDA932614C164975A8F733EEBAED571A26A` |
-| MD5 | `810C2CC82CAA8C9B142DF75188C18C1D` |
+| Content hash prefix | `6C687349` |
+| SHA-256 | `C0B74DBE413B3B25BB5CF47E30F32EC1471092F3A72F36F55D890453CD9A4FB6` |
+| MD5 | `D5FBC70086858266190149F154B9029C` |
 
 The seed grew from ~1.83 MB to ~1.88 MB on 2026-07-01, absorbing the
 CCE output boundary (tier0/1/2 UTF-8 conversion), the proof infrastructure
@@ -295,23 +296,35 @@ faults, TSS/IST double-fault dumps, RAM-derived demand top) and a
 sampling profiler — all byte-identical one-pass fixed points. Since then
 the seed has absorbed the boot arc (effect-loop TCO fix, WatchdogPet mode,
 foreword FAT16 fixes) and blu's capability enforcement (real syscall
-capability checks), then blu's spawn-pool carve (nested process-spawn
-regions come from a global pool, never the spawner's heap frontier) and
-the process-kill honest [Capability] row, reaching 2,145,861 bytes as a
-byte-identical one-pass fixed point.
+capability checks), then blu's spawn-region work — nested process-spawn
+fixed via slot-indexed regions (process slot N owns a fixed 32 MB region;
+the process table is the allocator, so spawn loops reclaim by reuse) and
+the process-kill honest [Capability] row — reaching ~2.05 MB as a
+byte-identical one-pass fixed point. The mutable-aliasing checker then
+closed its documented List-return laundering gap (a callee returning
+List-of-mutable now counts as taking ownership, while record-field
+chains crossing list/sum boundaries stay borrows), bringing the seed
+to 2,146,577 bytes. On 2026-07-17 it reached 2,551,486 bytes (~2.43 MB),
+absorbing the flat LIR with linear-scan register allocation and the
+proof-totality positive-grammar check (CDX4024, which rejects a proof
+term built from a non-proof expression form), a byte-identical one-pass
+fixed point.
 
-**`seed/Codex.img`** (16,777,216 bytes, 16 MB) — bootable GPT disk image,
+**`seed/Codex.img`** (5,242,880 bytes, 5 MB) — bootable GPT disk image,
 the first-boot ceremony:
 
 | Algorithm | Digest |
 |---|---|
-| SHA-256 | `45B4F41C16869FCE1CB001A6ABA2C557AE82098A6F20387DE8C5CAD1A1AB5DD0` |
+| SHA-256 | `5262EEC94C1B8FD225F29544B9FC7659E5C1379A37E0AA97A1B1B6C171E412B4` |
 
 Boot it on a UEFI machine and it runs its own first-boot ceremony, drawn on
 the GOP framebuffer with no OS beneath it: choose an interface, walk the
 identity wizard (Ed25519 keypair from hardware entropy, wrapped under a
-passphrase you type), and watch the machine read its own 2 MB seed back off
-the stick and verify its own signature before it acts. Everything is
+passphrase you type), and watch the machine read its own 2.4 MB seed back off
+the stick and verify its own signature before it acts. (The image is
+right-sized to its payload -- the boot stub, the embedded `CODEX.CDX`
+seed, and the desktop font -- so it is 5 MB, not a mostly-empty disk.)
+Everything is
 compiled by the seed embedded on the image (`CODEX.CDX`); the loader stub
 hands off after `ExitBootServices` and the payload drives the GOP display,
 the PS/2 keyboard, and the AHCI/IDE disk itself. Confirmed booting and
@@ -956,8 +969,8 @@ in 18 seconds.
 | BVT (16 tests) | 18s |
 | **Total** | **~140s** |
 
-The seed is a 2.01 MB CDX binary (content hash
-`558A357B892C27444FEC01CF27218EDB09403693BEBC4B636A00EC355E1A3512`).
+The seed is a 2.43 MB CDX binary (content hash
+`6C6873493429A78CE9CE3E39F96080B9E9A7B3C49918AB1BB2B1E3D2B6F7157C`).
 The compiler is a hard fixed point of itself -- the output of
 self-compilation compiled by itself is byte-identical to itself.
 
@@ -1150,7 +1163,7 @@ apps/                     57 applications, 767 modules (see Applications)
 annotations/              On-disk annotation sidecars (JSON facts)
 build/                    Build/test harness (PowerShell)
 tools/                    codex-vm, status server, USB writer, VS extensions
-seed/                     Bootstrap seed CDX (2.30 MB) + UEFI disk image (8 MB)
+seed/                     Bootstrap seed CDX (2.43 MB) + UEFI disk image (5 MB)
 docs/                     Design documents, plans, stories
 old/                      Retired C# reference compiler — historical only
 ```

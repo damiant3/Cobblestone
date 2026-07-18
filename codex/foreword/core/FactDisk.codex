@@ -1,0 +1,169 @@
+Chapter: FactDisk
+
+  cites Foreword chapter Maybe
+  cites Foreword chapter FactStore
+  cites Foreword chapter ImportGate
+  cites Foreword chapter SourceDefWire
+  cites Foreword chapter FactLog
+
+ A reader that turns the on-disk fact log into a FactBundle the import gate
+ can read. DiskFacts writes the log and RepoProtocolPersist writes the
+ source-definition records inside it; both live above the compiler, in
+ codex.os and in apps/works, and the compiler cannot cite them. So the
+ quotation gate could never reach the store: a quoted work had to travel
+ beside the source in a text blob, because the one place that resolves
+ quotations could not read the disk that holds the works.
+
+ The on-disk layout it reads -- the sector size, the entry-header offsets,
+ the superblock fields -- is Foreword chapter FactLog, the one definition
+ DiskFacts shares; the kind-30 record inside an entry is decoded by
+ Foreword chapter SourceDefWire, likewise shared with the writer. What is
+ left here is the part that is genuinely this reader's: the effectful walk
+ over the sectors, and the assembly of the results into a bundle.
+
+ Reading a sector is a Device.Block effect. DiskFacts calls
+ block-read-sector under a bare let because kernel quires are exempt from
+ effect checking; foreword is not, so every function here that touches the
+ disk declares the effect and binds the read with an act-bind. The effect
+ stops at store-read-bundle, whose caller in the compiler already reads its
+ input under an effect.
+
+ What this does NOT re-verify is the log entry's own content hash;
+ DiskFacts checks that on write. What it reads out is offered to the gate,
+ and the gate re-hashes the work against the digest the quotation asked for
+ before admitting a byte of it. A corrupt record therefore fails the gate's
+ own integrity guard, not this reader's trust.
+
+ We say:
+
+Section: The Superblock
+
+ Two candidate superblocks, and the reader trusts the one with the higher
+ generation whose magic is intact. A sector with the wrong magic reports a
+ generation below any real one, so it never wins; if neither is a
+ superblock the log is empty and the walk covers nothing. Both generations
+ and both log heads are read up front so the choice itself is pure.
+
+  fd-gen : Integer -> [Device.Block] Integer
+  fd-gen (sector) = act
+   buf <- block-read-sector sector
+   if fl-magic-ok buf then fl-sb-index-gen buf else 0 - 1
+  end
+
+  fd-log-head-of : Integer -> [Device.Block] Integer
+  fd-log-head-of (sector) = act
+   buf <- block-read-sector sector
+   fl-sb-log-head buf
+  end
+
+  fd-log-head : [Device.Block] Integer
+  fd-log-head = act
+   g0 <- fd-gen 0
+   g1 <- fd-gen 1
+   lh0 <- fd-log-head-of 0
+   lh1 <- fd-log-head-of 1
+   if g0 < 0
+    then (if g1 < 0 then fl-fact-log-start else lh1)
+    else if g1 > g0 then lh1 else lh0
+  end
+
+Section: Reading An Entry's Content
+
+  fd-copy-sector : Integer, Integer, Integer, Integer -> Integer
+  fd-copy-sector (src) (dst) (dst-off) (i) =
+   if i >= fl-sector-size then 0
+   else let w = poke-byte dst (dst-off + i) (peek-byte src i)
+   in fd-copy-sector src dst dst-off (i + 1)
+
+  fd-load-sectors : Integer, Integer, Integer, Integer -> [Device.Block] Integer
+  fd-load-sectors (start) (count) (dst) (i) =
+   if i >= count then act 0 end
+   else act
+    src <- block-read-sector (start + i)
+    let c = fd-copy-sector src dst (i * fl-sector-size) 0
+    in fd-load-sectors start count dst (i + 1)
+   end
+
+  fd-entry-content : Integer, Integer -> [Device.Block] Text
+  fd-entry-content (sector) (content-len) =
+   let nsec = fl-sectors-for content-len
+   in let buf = alloc-bytes (nsec * fl-sector-size)
+   in act
+    loaded <- fd-load-sectors sector nsec buf 0
+    fl-text buf fl-header-size content-len
+   end
+
+Section: Decoding A Source Definition
+
+ The kind-30 record's wire format -- the ninth-pipe rule, the
+ length-prefixed content, the signature's hex -- is decoded by Foreword
+ chapter SourceDefWire, the one place that also encodes it on the way in.
+ A line that is not in that format (an old pointer-shaped record with no
+ ninth pipe) decodes to None and is skipped; there is nothing to offer.
+
+ The work becomes the Fact its own hash addresses -- sdw-hash over
+ sdw-content, the digest a quotation names -- wearing the timestamp and
+ author the signature covers, not the entry header's timestamp. An
+ unsigned record is offered; a signed one is published, so the gate
+ answers ImportUnsigned and ImportForged where each is the truth.
+
+  fd-admit : FactBundle, Text -> FactBundle
+  fd-admit (acc) (line) =
+   when sdw-decode line
+    is None -> acc
+    is Just (w) -> fd-admit-work acc w
+
+  fd-admit-work : FactBundle, SourceDefWire -> FactBundle
+  fd-admit-work (acc) (w) =
+   let fact = Fact {
+     hash = w.sdw-hash,
+     kind = DefinitionFact,
+     content = w.sdw-content,
+     author = w.sdw-author,
+     timestamp = w.sdw-timestamp
+   }
+   in if list-length (w.sdw-signature) == 0
+      then bundle-offer acc fact
+      else bundle-publish acc (SignedFact { fact = fact, signature = w.sdw-signature, signer-fingerprint = w.sdw-signer })
+
+Section: Walking The Log
+
+ The walk yields a sector stride whether or not it yields a work, so one
+ unreadable or over-long entry resynchronises on the next sector instead
+ of ending the walk -- the truncation bug DiskFacts learned the hard way.
+ Only kind-30 entries are decoded; every other kind strides past.
+
+  fd-fold : Integer, Integer, FactBundle -> [Device.Block] FactBundle
+  fd-fold (sector) (end-sec) (acc) =
+   if sector >= end-sec then act acc end
+   else act
+    buf <- block-read-sector sector
+    let clen = fl-entry-content-len buf
+    in fd-fold-entry sector end-sec acc buf clen
+   end
+
+  fd-fold-entry : Integer, Integer, FactBundle, Integer, Integer -> [Device.Block] FactBundle
+  fd-fold-entry (sector) (end-sec) (acc) (buf) (clen) =
+   if clen == 0 then fd-fold (sector + 1) end-sec acc
+   else let nsec = fl-sectors-for clen
+   in if sector + nsec > end-sec then fd-fold (sector + 1) end-sec acc
+   else let kind = fl-entry-kind buf
+   in if kind == fl-kind-definition
+      then act
+       content <- fd-entry-content sector clen
+       let acc2 = fd-admit acc content
+       in fd-fold (sector + nsec) end-sec acc2
+      end
+      else fd-fold (sector + nsec) end-sec acc
+
+ Everything the disk holds, added to the bundle already in hand. The
+ compiler passes the bundle it built from the offered-works blob, so the
+ store supplements the blob rather than replacing it: a quotation the
+ blob satisfies still resolves, and one it does not is looked for on the
+ disk.
+
+  store-read-bundle : FactBundle -> [Device.Block] FactBundle
+  store-read-bundle (base) = act
+   lh <- fd-log-head
+   fd-fold fl-fact-log-start lh base
+  end

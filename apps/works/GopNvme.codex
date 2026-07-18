@@ -1,0 +1,476 @@
+Chapter: GopNvme
+  cites Works chapter GopXhci
+  cites Works chapter GopAhci
+  cites Kernel chapter Pci
+  cites Foreword chapter Maybe
+
+ Post-ExitBootServices NVMe (PCI class 0x01 subclass 0x08). Modern
+ laptops ship their only internal disk on NVMe: no AHCI port, no
+ legacy IDE, so before this chapter the machine's own storage was
+ simply invisible to the boot payload. The controller is a pair of
+ DMA rings per queue -- submission entries of sixty-four bytes going
+ down, completion entries of sixteen coming back -- and one admin
+ queue pair bootstraps everything else: identify the namespace,
+ create one I/O queue pair, then read and write are two opcodes on
+ the I/O queue.
+
+ Everything is polled and fuel-bounded, like every driver on this
+ boot path: completions are recognized by their phase tag, a bit the
+ controller flips on each pass around the completion ring, so a
+ stale entry from the previous lap can never be mistaken for an
+ answer. Data travels by PRP: the first pointer may sit anywhere in
+ a page, the second names the next page when a transfer crosses one,
+ and by keeping each command to eight sectors no transfer ever needs
+ the third form, the PRP list. A two-megabyte seed is a few hundred
+ commands, each answered in microseconds.
+
+ The registers live behind a 64-bit BAR that real firmware may park
+ above four gigabytes, beyond the boot identity map -- the same
+ lesson the xHCI driver learned -- so the BAR is relocated into the
+ 32-bit MMIO hole post-EBS and the hole's page mapping is installed
+ by the same helper.
+
+ We say:
+
+Section: Registers
+
+  nvme-pci-class : Integer = 1
+  nvme-pci-subclass : Integer = 8
+
+  nv-reg-cap-hi : Integer = 4
+  nv-reg-cc : Integer = 20
+  nv-reg-csts : Integer = 28
+  nv-reg-aqa : Integer = 36
+  nv-reg-asq : Integer = 40
+  nv-reg-acq : Integer = 48
+  nv-reg-doorbells : Integer = 4096
+
+ CC enables the controller with the NVM command set, four-kilobyte
+ pages, and the entry sizes the spec fixes: submission entries are
+ two-to-the-sixth bytes, completions two-to-the-fourth.
+
+  nvme-cc-enable : Integer = #460001
+
+  nvme-fuel : Integer = 1000000
+
+Section: Opcodes
+
+  nv-op-flush : Integer = 0
+  nv-op-write : Integer = 1
+  nv-op-read : Integer = 2
+  nv-adm-create-sq : Integer = 1
+  nv-adm-create-cq : Integer = 5
+  nv-adm-identify : Integer = 6
+
+Section: Controller State
+
+ Queue positions live in a state block in memory: submission tail,
+ completion head, and the expected phase tag for each of the two
+ queue pairs. The phase expectation starts at one -- a freshly
+ started controller writes its first lap of completions with the
+ tag set -- and flips whenever the head wraps.
+
+  nv-st-adm-tail : Integer = 0
+  nv-st-adm-head : Integer = 4
+  nv-st-adm-phase : Integer = 8
+  nv-st-io-tail : Integer = 12
+  nv-st-io-head : Integer = 16
+  nv-st-io-phase : Integer = 20
+
+  nvme-adm-entries : Integer = 16
+  nvme-io-entries : Integer = 16
+
+  NvmeCtl = record {
+    nc-ok : Boolean,
+    nc-regs : Integer,
+    nc-stride : Integer,
+    nc-asq : Integer,
+    nc-acq : Integer,
+    nc-iosq : Integer,
+    nc-iocq : Integer,
+    nc-state : Integer,
+    nc-sectors : Integer
+  }
+
+  nvme-no-ctl : NvmeCtl
+  nvme-no-ctl = NvmeCtl { nc-ok = False, nc-regs = 0, nc-stride = 0, nc-asq = 0, nc-acq = 0, nc-iosq = 0, nc-iocq = 0, nc-state = 0, nc-sectors = 0 }
+
+Section: Command Encoding
+
+ A submission entry is sixteen little-endian dwords. Dword zero
+ carries the opcode and the command identifier; the tail index the
+ entry occupies serves as the identifier, unique among the one
+ command this driver ever has in flight. Dwords six through nine are
+ the two PRP pointers; heap addresses fit in the low dword and the
+ high dwords stay zero.
+
+  nvme-zero-sqe : Integer -> Integer
+  nvme-zero-sqe (sqe) = nvme-zero-loop sqe 0
+
+  nvme-zero-loop : Integer, Integer -> Integer
+  nvme-zero-loop (sqe) (i) =
+    if i >= 16 then 0
+    else let p = poke-32 sqe (i * 4) 0
+    in nvme-zero-loop sqe (i + 1)
+
+  nvme-enc-common : Integer, Integer, Integer, Integer -> Integer
+  nvme-enc-common (sqe) (op) (cid) (nsid) =
+    let d0 = poke-32 sqe 0 (bit-or op (bit-shl cid 16))
+    in poke-32 sqe 4 nsid
+
+  nvme-enc-prp : Integer, Integer, Integer -> Integer
+  nvme-enc-prp (sqe) (prp1) (prp2) =
+    let p1 = poke-32 sqe 24 prp1
+    in let p1h = poke-32 sqe 28 0
+    in let p2 = poke-32 sqe 32 prp2
+    in poke-32 sqe 36 0
+
+  nvme-enc-identify : Integer, Integer, Integer, Integer, Integer -> Integer
+  nvme-enc-identify (sqe) (cid) (cns) (nsid) (buf) =
+    let c = nvme-enc-common sqe nv-adm-identify cid nsid
+    in let p = nvme-enc-prp sqe buf 0
+    in poke-32 sqe 40 cns
+
+  nvme-enc-create-cq : Integer, Integer, Integer, Integer, Integer -> Integer
+  nvme-enc-create-cq (sqe) (cid) (qid) (entries) (base) =
+    let c = nvme-enc-common sqe nv-adm-create-cq cid 0
+    in let p = nvme-enc-prp sqe base 0
+    in let d10 = poke-32 sqe 40 (bit-or qid (bit-shl (entries - 1) 16))
+    in poke-32 sqe 44 1
+
+  nvme-enc-create-sq : Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  nvme-enc-create-sq (sqe) (cid) (qid) (entries) (base) (cqid) =
+    let c = nvme-enc-common sqe nv-adm-create-sq cid 0
+    in let p = nvme-enc-prp sqe base 0
+    in let d10 = poke-32 sqe 40 (bit-or qid (bit-shl (entries - 1) 16))
+    in poke-32 sqe 44 (bit-or 1 (bit-shl cqid 16))
+
+ A transfer's second PRP is the next page boundary when the run
+ crosses one, and zero when it does not; at eight sectors per
+ command no run can touch a third page.
+
+  nvme-prp2 : Integer, Integer -> Integer
+  nvme-prp2 (buf) (len) =
+    let edge = bit-and buf (-4096) + 4096
+    in if buf + len <= edge then 0 else edge
+
+  nvme-enc-rw : Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  nvme-enc-rw (sqe) (op) (cid) (lba) (count) (buf) =
+    let c = nvme-enc-common sqe op cid 1
+    in let p = nvme-enc-prp sqe buf (nvme-prp2 buf (count * 512))
+    in let d10 = poke-32 sqe 40 (int-mod lba 4294967296)
+    in let d11 = poke-32 sqe 44 (lba / 4294967296)
+    in poke-32 sqe 48 (count - 1)
+
+Section: Queue Execution
+
+ Ring the submission doorbell with the new tail, then poll the
+ completion queue until the entry at the head carries the expected
+ phase tag. The status field of dword three answers the command;
+ zero is success. Consuming the entry advances the head, flips the
+ phase on wrap, and acknowledges through the completion doorbell.
+
+  nvme-doorbell : NvmeCtl, Integer, Integer -> Integer
+  nvme-doorbell (c) (idx) (val) =
+    poke-32 (c.nc-regs) (nv-reg-doorbells + idx * (c.nc-stride)) val
+
+  nvme-poll-cqe : Integer, Integer, Integer, Integer -> Integer
+  nvme-poll-cqe (cq) (head) (phase) (fuel) =
+    let dw3 = peek-32 cq (head * 16 + 12)
+    in if bit-and (bit-shru dw3 16) 1 == phase then bit-and (bit-shru dw3 17) 32767
+    else if fuel <= 0 then -1
+    else nvme-poll-cqe cq head phase (fuel - 1)
+
+  nvme-exec : NvmeCtl, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  nvme-exec (c) (qid) (cq) (entries) (toff) (hoff) (poff) (fuel) =
+    let st = c.nc-state
+    in let tail = peek-32 st toff
+    in let ntail = if tail + 1 >= entries then 0 else tail + 1
+    in let wt = poke-32 st toff ntail
+    in let db = nvme-doorbell c (qid * 2) ntail
+    in let head = peek-32 st hoff
+    in let phase = peek-32 st poff
+    in let status = nvme-poll-cqe cq head phase fuel
+    in if status < 0 then -1
+    else let nhead = if head + 1 >= entries then 0 else head + 1
+    in let wh = poke-32 st hoff nhead
+    in let wp = if nhead == 0 then poke-32 st poff (1 - phase) else 0
+    in let ack = nvme-doorbell c (qid * 2 + 1) nhead
+    in status
+
+  nvme-adm-slot : NvmeCtl -> Integer
+  nvme-adm-slot (c) =
+    let sqe = c.nc-asq + peek-32 (c.nc-state) nv-st-adm-tail * 64
+    in let z = nvme-zero-sqe sqe
+    in sqe
+
+  nvme-adm-cid : NvmeCtl -> Integer
+  nvme-adm-cid (c) = peek-32 (c.nc-state) nv-st-adm-tail
+
+  nvme-exec-adm : NvmeCtl -> Integer
+  nvme-exec-adm (c) =
+    nvme-exec c 0 (c.nc-acq) nvme-adm-entries nv-st-adm-tail nv-st-adm-head nv-st-adm-phase nvme-fuel
+
+  nvme-io-slot : NvmeCtl -> Integer
+  nvme-io-slot (c) =
+    let sqe = c.nc-iosq + peek-32 (c.nc-state) nv-st-io-tail * 64
+    in let z = nvme-zero-sqe sqe
+    in sqe
+
+  nvme-io-cid : NvmeCtl -> Integer
+  nvme-io-cid (c) = peek-32 (c.nc-state) nv-st-io-tail
+
+  nvme-exec-io : NvmeCtl -> Integer
+  nvme-exec-io (c) =
+    nvme-exec c 1 (c.nc-iocq) nvme-io-entries nv-st-io-tail nv-st-io-head nv-st-io-phase nvme-fuel
+
+Section: Bring-Up
+
+  nvme-enable-device : PciDevice -> [Device.Port] Integer
+  nvme-enable-device (d) =
+    let cmd = pci-read-config (d.pci-bus) (d.pci-dev) (d.pci-func) 4
+    in pci-write-config (d.pci-bus) (d.pci-dev) (d.pci-func) 4 (bit-or cmd 6)
+
+  nvme-reloc-base : Integer = #FE600000
+
+  nvme-relocate-bar : PciDevice -> [Device.Port] Integer
+  nvme-relocate-bar (d) = act
+    cmd <- pci-read-config (d.pci-bus) (d.pci-dev) (d.pci-func) 4
+    w0 <- pci-write-config (d.pci-bus) (d.pci-dev) (d.pci-func) 4 (bit-and cmd (-3))
+    w1 <- pci-write-config (d.pci-bus) (d.pci-dev) (d.pci-func) 16 nvme-reloc-base
+    w2 <- pci-write-config (d.pci-bus) (d.pci-dev) (d.pci-func) 20 0
+    w3 <- pci-write-config (d.pci-bus) (d.pci-dev) (d.pci-func) 4 (bit-or cmd 6)
+    rb <- pci-read-config (d.pci-bus) (d.pci-dev) (d.pci-func) 16
+    if bit-and rb (-16) == nvme-reloc-base then 1 else 0
+  end
+
+  nvme-wait-rdy : Integer, Integer, Integer -> Integer
+  nvme-wait-rdy (regs) (want) (fuel) =
+    if bit-and (peek-32 regs nv-reg-csts) 1 == want then 1
+    else if fuel <= 0 then 0
+    else nvme-wait-rdy regs want (fuel - 1)
+
+ The namespace's block size hides two indirections deep: FLBAS in
+ the identify data names which LBA format is active, and that
+ format's descriptor carries the size as a power of two. Anything
+ but 512 refuses the disk honestly -- the FAT stack above assumes
+ 512-byte sectors and reading at the wrong granularity is silent
+ corruption, not a smaller disk.
+
+  nvme-ns-sectors : Integer -> Integer
+  nvme-ns-sectors (data) =
+    let flbas = bit-and (peek-byte data 26) 15
+    in let lbaf = peek-32 data (128 + flbas * 4)
+    in let lbads = bit-and (bit-shru lbaf 16) 255
+    in if lbads /= 9 then 0
+    else peek-32 data 0
+
+  nvme-identify-ns : NvmeCtl -> Integer
+  nvme-identify-ns (c) =
+    let data = alloc-zeroed 4096 4096
+    in let sqe = nvme-adm-slot c
+    in let e = nvme-enc-identify sqe (nvme-adm-cid c) 0 1 data
+    in let s = nvme-exec-adm c
+    in if s /= 0 then 0
+    else nvme-ns-sectors data
+
+ CNS 1 identifies the CONTROLLER rather than a namespace; the model
+ number is plain ASCII at bytes 24 through 63 of the returned page.
+ Returns the page address, or zero when the command fails.
+
+  nvme-identify-ctrl : NvmeCtl -> Integer
+  nvme-identify-ctrl (c) =
+    let data = alloc-zeroed 4096 4096
+    in let sqe = nvme-adm-slot c
+    in let e = nvme-enc-identify sqe (nvme-adm-cid c) 1 0 data
+    in let s = nvme-exec-adm c
+    in if s /= 0 then 0
+    else data
+
+  nvme-create-io-queues : NvmeCtl -> Integer
+  nvme-create-io-queues (c) =
+    let sqe0 = nvme-adm-slot c
+    in let e0 = nvme-enc-create-cq sqe0 (nvme-adm-cid c) 1 nvme-io-entries (c.nc-iocq)
+    in let s0 = nvme-exec-adm c
+    in if s0 /= 0 then 0
+    else let sqe1 = nvme-adm-slot c
+    in let e1 = nvme-enc-create-sq sqe1 (nvme-adm-cid c) 1 nvme-io-entries (c.nc-iosq) 1
+    in let s1 = nvme-exec-adm c
+    in if s1 == 0 then 1 else 0
+
+ Disable, program the admin queues, enable, then let the admin pair
+ bootstrap the rest. The admin queue addresses must land while the
+ controller is disabled; the spec is explicit that they are latched
+ at enable.
+
+  nvme-bring-up : Integer -> NvmeCtl
+  nvme-bring-up (regs) =
+    let mm = xhci-map-mmio-hole
+    in let stride = bit-shl 4 (bit-and (peek-32 regs nv-reg-cap-hi) 15)
+    in let d0 = poke-32 regs nv-reg-cc 0
+    in let r0 = nvme-wait-rdy regs 0 nvme-fuel
+    in if r0 == 0 then nvme-no-ctl
+    else let asq = alloc-zeroed 4096 4096
+    in let acq = alloc-zeroed 4096 4096
+    in let iosq = alloc-zeroed 4096 4096
+    in let iocq = alloc-zeroed 4096 4096
+    in let state = alloc-zeroed 64 64
+    in let p0 = poke-32 state nv-st-adm-phase 1
+    in let p1 = poke-32 state nv-st-io-phase 1
+    in let a0 = poke-32 regs nv-reg-aqa (bit-or (nvme-adm-entries - 1) (bit-shl (nvme-adm-entries - 1) 16))
+    in let a1 = poke-32 regs nv-reg-asq asq
+    in let a2 = poke-32 regs (nv-reg-asq + 4) 0
+    in let a3 = poke-32 regs nv-reg-acq acq
+    in let a4 = poke-32 regs (nv-reg-acq + 4) 0
+    in let en = poke-32 regs nv-reg-cc nvme-cc-enable
+    in let r1 = nvme-wait-rdy regs 1 nvme-fuel
+    in if r1 == 0 then nvme-no-ctl
+    else let c = NvmeCtl { nc-ok = True, nc-regs = regs, nc-stride = stride, nc-asq = asq, nc-acq = acq, nc-iosq = iosq, nc-iocq = iocq, nc-state = state, nc-sectors = 0 }
+    in let sectors = nvme-identify-ns c
+    in if sectors == 0 then nvme-no-ctl
+    else let q = nvme-create-io-queues c
+    in if q == 0 then nvme-no-ctl
+    else __record-set c "nc-sectors" sectors
+
+ The reachability judgment reads BOTH BAR dwords -- the xHCI driver
+ learned that a packed 64-bit window parks a second device at an
+ address whose low dword looks plausible on its own.
+
+  nvme-init-device : PciDevice -> [Device.Port] NvmeCtl
+  nvme-init-device (d) = act
+    en <- nvme-enable-device d
+    bar <- pci-parse-bar (d.pci-bus) (d.pci-dev) (d.pci-func) 0
+    hi <- pci-read-config (d.pci-bus) (d.pci-dev) (d.pci-func) 20
+    let high = if bar.bar-is-64bit then hi else 0
+    in if bar.bar-base /= 0 then
+      if high == 0 then nvme-bring-up (bar.bar-base)
+      else nvme-init-relocated d
+    else nvme-init-relocated d
+  end
+
+  nvme-init-relocated : PciDevice -> [Device.Port] NvmeCtl
+  nvme-init-relocated (d) = act
+    moved <- nvme-relocate-bar d
+    if moved == 0 then nvme-no-ctl
+    else nvme-bring-up nvme-reloc-base
+  end
+
+  nvme-connect : [Device.Port] NvmeCtl
+  nvme-connect = act
+    scan <- pci-scan-bus 0
+    when pci-find-class scan nvme-pci-class nvme-pci-subclass
+      is None -> nvme-no-ctl
+      is Just (d) -> nvme-init-device d
+  end
+
+Section: Published Handle
+
+ The bring-up resets the controller and creates queues, far too
+ heavy to repeat per read the way the stateless AHCI dispatch does,
+ so the first successful connect publishes its handle to fixed
+ cells and every later call rebuilds the record from them -- the
+ same pattern as the USB disk, magic written LAST so firmware
+ residue cannot impersonate a handle.
+
+  nvme-cells : Integer = 36672
+  nvme-cells-magic : Integer = #314D564E
+
+  nvme-put : Integer, Integer -> Integer
+  nvme-put (slot) (v) = poke-32 nvme-cells (slot * 4) v
+
+  nvme-get : Integer -> Integer
+  nvme-get (slot) = peek-32 nvme-cells (slot * 4)
+
+  nvme-publish : NvmeCtl -> Integer
+  nvme-publish (c) =
+    let c1 = nvme-put 1 (c.nc-regs)
+    in let c2 = nvme-put 2 (c.nc-stride)
+    in let c3 = nvme-put 3 (c.nc-asq)
+    in let c4 = nvme-put 4 (c.nc-acq)
+    in let c5 = nvme-put 5 (c.nc-iosq)
+    in let c6 = nvme-put 6 (c.nc-iocq)
+    in let c7 = nvme-put 7 (c.nc-state)
+    in let c8 = nvme-put 8 (c.nc-sectors)
+    in nvme-put 0 nvme-cells-magic
+
+  nvme-published : NvmeCtl
+  nvme-published =
+    if nvme-get 0 /= nvme-cells-magic then nvme-no-ctl
+    else NvmeCtl {
+      nc-ok = True,
+      nc-regs = nvme-get 1,
+      nc-stride = nvme-get 2,
+      nc-asq = nvme-get 3,
+      nc-acq = nvme-get 4,
+      nc-iosq = nvme-get 5,
+      nc-iocq = nvme-get 6,
+      nc-state = nvme-get 7,
+      nc-sectors = nvme-get 8
+    }
+
+  nvme-disk : [Device.Port] NvmeCtl
+  nvme-disk = act
+    let p = nvme-published
+    in if p.nc-ok then p
+    else act
+      c <- nvme-connect
+      let pub = if c.nc-ok then nvme-publish c else 0
+      in c
+    end
+  end
+
+Section: Read and Write
+
+  nvme-max-chunk : Integer = 8
+
+  nvme-io : NvmeCtl, Integer, Integer, Integer, Integer -> Boolean
+  nvme-io (c) (op) (lba) (count) (buf) =
+    let sqe = nvme-io-slot c
+    in let e = nvme-enc-rw sqe op (nvme-io-cid c) lba count buf
+    in nvme-exec-io c == 0
+
+  nvme-rw-run : NvmeCtl, Integer, Integer, Integer, Integer -> Boolean
+  nvme-rw-run (c) (op) (lba) (count) (dest) =
+    if count <= 0 then True
+    else let n = if count > nvme-max-chunk then nvme-max-chunk else count
+    in let ok = nvme-io c op lba n dest
+    in if ok == False then False
+    else nvme-rw-run c op (lba + n) (count - n) (dest + n * 512)
+
+ A write ends with an NVM flush: the controller may hold a volatile
+ write cache, and the identity a ceremony just saved must survive
+ the power button -- the same discipline as the IDE path's FLUSH
+ CACHE.
+
+  nvme-flush : NvmeCtl -> Boolean
+  nvme-flush (c) =
+    let sqe = nvme-io-slot c
+    in let e = nvme-enc-common sqe nv-op-flush (nvme-io-cid c) 1
+    in nvme-exec-io c == 0
+
+  nvme-read-into : Integer, Integer, Integer -> [Device.Port] Integer
+  nvme-read-into (lba) (count) (dest) = act
+    c <- nvme-disk
+    if c.nc-ok == False then 0
+    else if nvme-rw-run c nv-op-read lba count dest then 1 else 0
+  end
+
+  nvme-write-into : Integer, Integer, Integer -> [Device.Port] Integer
+  nvme-write-into (lba) (count) (src) = act
+    c <- nvme-disk
+    if c.nc-ok == False then 0
+    else if nvme-rw-run c nv-op-write lba count src == False then 0
+    else if nvme-flush c then 1 else 0
+  end
+
+ The single-sector read hands back a fresh buffer, or zero: the
+ shape disk-read-sector's dispatch wants.
+
+  nvme-read-sector : Integer -> [Device.Port] Integer
+  nvme-read-sector (lba) = act
+    let buf = alloc-zeroed 512 64
+    in act
+      r <- nvme-read-into lba 1 buf
+      if r /= 0 then buf else 0
+    end
+  end

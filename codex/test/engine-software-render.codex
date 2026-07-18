@@ -1,0 +1,101 @@
+Chapter: EngineSoftwareRender
+  cites Foreword chapter Console
+  cites Engine chapter Renderer3D
+  cites Engine chapter Scene3D
+  cites Engine chapter Mesh
+  cites Engine chapter Material
+  cites Engine chapter Culling
+  cites Engine chapter LOD
+  cites Math chapter Matrix4
+  cites Math chapter Quaternion
+  cites Game chapter Color
+  cites Game chapter Rasterizer
+
+ The first runtime coverage the engine foreword has ever had. Until CL 7517
+ eighteen of its forty-two chapters could not type-check: the math foreword
+ moved Vec3, Vec4, Quat and Mat4 to Real and everything built on them stayed
+ fixed-point. They compile now, and compiling is not the same as working. A
+ frustum plane with the wrong sign culls the whole scene in silence; a
+ projection that has lost its perspective divide draws a flat card. Nothing
+ about either shows up in a type.
+
+ So this renders. Renderer3D walks the scene, projects, shades and fills every
+ triangle in Codex, with no host GPU and no rasterizer port, and the pixels it
+ produces are counted. The counts are what pin the arithmetic down.
+
+ We say:
+
+Section: Scene
+
+  rw : Integer = 320
+  rh : Integer = 240
+
+ r3d-render-scene clears to rgb 20 20 30, which rgb-to-packed folds into
+ #14141E. A wrong constant here would count every pixel as drawn and the tally
+ would prove nothing.
+
+  sky : Integer = #14141E
+
+  test-scene : Scene3DState
+  test-scene =
+    let cam = camera3d-new (vec3-new 0.0 2200.0 5200.0) (vec3-new 0.0 300.0 0.0) 0.785
+    in let scene = scene3d-new cam
+    in let ground = sn3-with-mesh "ground" (mesh-plane 3000 3000) (emat-flat (rgb 90 80 62))
+    in let cube = sn3-set-pos (sn3-with-mesh "cube" (mesh-cube 900) (emat-shiny (rgb 90 130 210) 32)) (-900.0) 450.0 0.0
+    in let pyr = sn3-set-pos (sn3-with-mesh "pyr" (mesh-pyramid 600 1100) emat-red) 1100.0 0.0 (-300.0)
+    in let s2 = scene3d-add (scene3d-add (scene3d-add scene ground) cube) pyr
+    in let key = dir-light (vec3-new (-400.0) 800.0 400.0) (rgb 255 250 235) 850
+    in scene3d-set-ambient (scene3d-add-light s2 key) 260
+
+Section: Culling
+
+ A box at the origin is inside the frustum and a box parked far behind the
+ camera is outside. These planes are extracted from a Real Mat4; they were four
+ Integers until the migration, and had the extraction kept its old fixed-point
+ scaling both answers would agree and the renderer would draw nothing at all.
+
+  cull-word : FrustumResult -> Text
+  cull-word (r) = when r
+    is FrInside -> "inside"
+    is FrIntersect -> "intersect"
+    is FrOutside -> "outside"
+
+  box-at : Integer, Integer, Integer, Integer -> MeshBounds
+  box-at (cx) (cy) (cz) (r) =
+    MeshBounds { mb-min-x = cx - r, mb-min-y = cy - r, mb-min-z = cz - r, mb-max-x = cx + r, mb-max-y = cy + r, mb-max-z = cz + r }
+
+Section: Pixel Tally
+
+ Counting what the rasterizer actually wrote. A drawn pixel is any pixel that
+ is not the background, so the tally goes to zero if the geometry is culled
+ away, and changes if the projection moves.
+
+  drawn : List Integer, Integer, Integer, Integer -> Integer
+  drawn (px) (i) (n) (acc) =
+    if i >= n then acc
+    else if list-at px i == sky then drawn px (i + 1) n acc
+    else drawn px (i + 1) n (acc + 1)
+
+Section: Entry
+
+  opening : [Console] Nothing = act
+    let scene = test-scene
+    in let vp = camera3d-vp (scene.s3-camera)
+    in let fr = frustum-extract vp
+    in let near-box = frustum-test-aabb fr (box-at 0 300 0 800)
+    in let behind-box = frustum-test-aabb fr (box-at 0 300 40000 800)
+    in let near-px = lod-screen-size (box-at 0 300 0 800) vp rw rh
+    in let far-px = lod-screen-size (box-at 0 300 (-20000) 800) vp rw rh
+    in let fb = r3d-render-scene scene rw rh
+    in let lit = drawn (fb.fb-pixels) 0 (rw * rh) 0
+    in act
+      print-line-uni ("cull near   : " & cull-word near-box)
+      print-line-uni ("cull behind : " & cull-word behind-box)
+      print-line-uni ("lod near    : " & show near-px)
+      print-line-uni ("lod far     : " & show far-px)
+      print-line-uni ("pixels      : " & show (rw * rh))
+      print-line-uni ("drawn       : " & show lit)
+    end
+  end
+
+Page 1

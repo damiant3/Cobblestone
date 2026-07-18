@@ -12,9 +12,7 @@ Section: IPC and Network Helpers
 
   emit-ipc-cap-check (st) (deny-placeholder) =
 
-   let st1 = st-append-code st (li reg-rax current-proc-addr)
-
-   in let st2 = st-append-code st1 (mov-load reg-rax reg-rax 0)
+   let st2 = emit-load-current-proc st reg-rax
 
    in let st3 = st-append-code st2 (shl-ri reg-rax 8)
 
@@ -122,9 +120,7 @@ Section: IPC and Network Helpers
 
    in let st23 = st-append-code st22 (mov-store reg-rdx reg-rax chan-read-pos-offset)
 
-   in let st24 = st-append-code st23 (li reg-rax current-proc-addr)
-
-   in let st25 = st-append-code st24 (mov-load reg-rax reg-rax 0)
+   in let st25 = emit-load-current-proc st23 reg-rax
 
    in let st26 = st-append-code st25 (mov-store reg-rdx reg-rax chan-owner-offset)
 
@@ -434,9 +430,7 @@ Section: IPC and Network Helpers
 
    in let st2 = st-append-code st1 (mov-rr reg-rbx reg-rdi)
 
-   in let st3 = st-append-code st2 (li reg-rax current-proc-addr)
-
-   in let st4 = st-append-code st3 (mov-load reg-rax reg-rax 0)
+   in let st4 = emit-load-current-proc st2 reg-rax
 
    in let st5 = st-append-code st4 (shl-ri reg-rax 8)
 
@@ -458,9 +452,7 @@ Section: IPC and Network Helpers
 
    in let st12 = st-append-code st11 (jcc cc-ge 0)
 
-   in let st13 = st-append-code st12 (li reg-rax current-proc-addr)
-
-   in let st14 = st-append-code st13 (mov-load reg-rax reg-rax 0)
+   in let st14 = emit-load-current-proc st12 reg-rax
 
    in let st15 = st-append-code st14 (cmp-rr reg-rbx reg-rax)
 
@@ -547,6 +539,237 @@ Section: IPC and Network Helpers
    in patch-jcc-at st48 self-deny fail-pos
 
 
+
+ process-set-scope is the write counterpart, and it is PRIVILEGED. A
+ process that could set another process's scope could set its own, and a
+ scope it chose itself is not a limit — it is a capability amplification
+ with an extra step. So the helper tests cap-capability-admin against the
+ CALLER, the same bit process-kill and identity-set-proc test, and answers
+ -1 to anyone else. The verified loader holds that bit; an application
+ does not.
+
+ It is deliberately NOT a way to widen your own grant: the loader calls it
+ to write a scope INTO a slot before the process it belongs to is started,
+ which is the only moment a scope is anyone's to choose.
+
+ RDI is the process index, RSI the scope Text (a pointer, like every Text).
+
+  emit-process-set-scope-helper : CodegenState -> CodegenState
+
+  emit-process-set-scope-helper (st) =
+
+   let fn-off = st.code-len
+
+   in let n = list-push (st.fo-names) "process-set-scope"
+
+   in let o = list-push (st.fo-offsets) fn-off
+
+   in let st0 = __record-set (__record-set st "fo-names" n) "fo-offsets" o
+
+   in let c1 = emit-load-current-proc st0 reg-rcx
+
+   in let c2 = st-append-code c1 (shl-ri reg-rcx 8)
+
+   in let c3 = st-append-code c2 (add-ri reg-rcx proc-table-base)
+
+   in let c4 = st-append-code c3 (mov-load reg-rcx reg-rcx proc-cap-offset)
+
+   in let c5 = st-append-code c4 (and-ri reg-rcx (shl-1 cap-capability-admin))
+
+   in let c6 = st-append-code c5 (test-rr reg-rcx reg-rcx)
+
+   in let cap-deny = c6.code-len
+
+   in let c7 = st-append-code c6 (jcc cc-e 0)
+
+   in let st1 = st-append-code c7 (cmp-ri reg-rdi 16)
+
+   in let range-deny = st1.code-len
+
+   in let st2 = st-append-code st1 (jcc cc-ge 0)
+
+   in let st3 = st-append-code st2 (shl-ri reg-rdi 8)
+
+   in let st4 = st-append-code st3 (add-ri reg-rdi proc-table-base)
+
+   in let st5 = st-append-code st4 (mov-store reg-rdi reg-rsi proc-scope-offset)
+
+   in let st6 = st-append-code st5 (xor-rr reg-rax reg-rax)
+
+   in let st7 = st-append-code st6 x86-ret
+
+   in let fail-pos = st7.code-len
+
+   in let st8 = st-append-code st7 (li reg-rax (0 - 1))
+
+   in let st9 = st-append-code st8 x86-ret
+
+   in let st10 = patch-jcc-at st9 cap-deny fail-pos
+
+   in patch-jcc-at st10 range-deny fail-pos
+
+ process-get-scope answers what a process is permitted to name, the way
+ process-get-cap answers what it is permitted to do. It hands back the
+ Text stored at proc-scope-offset — the scope the boot grant wrote for
+ proc 0, or the one a parent copied into a child at spawn.
+
+ It NEVER hands back a null. A process index out of range, and a cell
+ that was never written (any process that declared no filesystem scope),
+ both fall through to a static empty Text. That matters because the
+ caller is Fat16, which will do text-starts-with on the answer: a zero
+ here would be a null pointer dereference inside the filesystem, and an
+ empty scope is also the honest answer — the empty prefix admits every
+ path, which is exactly what an unscoped grant means.
+
+  emit-process-get-scope-helper : CodegenState -> CodegenState
+
+  emit-process-get-scope-helper (st) =
+
+   let fn-off = st.code-len
+
+   in let n = list-push (st.fo-names) "process-get-scope"
+
+   in let o = list-push (st.fo-offsets) fn-off
+
+   in let st0 = __record-set (__record-set st "fo-names" n) "fo-offsets" o
+
+   in let st1 = st-append-code st0 (cmp-ri reg-rdi 16)
+
+   in let range-deny = st1.code-len
+
+   in let st2 = st-append-code st1 (jcc cc-ge 0)
+
+   in let st3 = st-append-code st2 (shl-ri reg-rdi 8)
+
+   in let st4 = st-append-code st3 (add-ri reg-rdi proc-table-base)
+
+   in let st5 = st-append-code st4 (mov-load reg-rax reg-rdi proc-scope-offset)
+
+   in let st6 = st-append-code st5 (test-rr reg-rax reg-rax)
+
+   in let null-deny = st6.code-len
+
+   in let st7 = st-append-code st6 (jcc cc-e 0)
+
+   in let st8 = st-append-code st7 x86-ret
+
+   in let fail-pos = st8.code-len
+
+   in let empty = emit-text-lit st8 ""
+
+   in let st9 = st-append-code (empty.state) (mov-rr reg-rax (empty.reg))
+
+   in let st10 = st-append-code st9 x86-ret
+
+   in let st11 = patch-jcc-at st10 range-deny fail-pos
+
+   in patch-jcc-at st11 null-deny fail-pos
+
+ The network twins of the two scope helpers above, reading and writing
+ proc-net-scope-offset instead of proc-scope-offset. process-set is the
+ loader's privileged writer (cap-capability-admin, denies -1 otherwise);
+ process-get never hands back a null (out-of-range or an unwritten cell
+ both fall to a static empty Text, and an empty authority admits every
+ host, which is what an unscoped network grant means). The caller is the
+ fetch chokepoint, which does authority-admits on the answer.
+
+  emit-process-set-network-scope-helper : CodegenState -> CodegenState
+
+  emit-process-set-network-scope-helper (st) =
+
+   let fn-off = st.code-len
+
+   in let n = list-push (st.fo-names) "process-set-network-scope"
+
+   in let o = list-push (st.fo-offsets) fn-off
+
+   in let st0 = __record-set (__record-set st "fo-names" n) "fo-offsets" o
+
+   in let c1 = emit-load-current-proc st0 reg-rcx
+
+   in let c2 = st-append-code c1 (shl-ri reg-rcx 8)
+
+   in let c3 = st-append-code c2 (add-ri reg-rcx proc-table-base)
+
+   in let c4 = st-append-code c3 (mov-load reg-rcx reg-rcx proc-cap-offset)
+
+   in let c5 = st-append-code c4 (and-ri reg-rcx (shl-1 cap-capability-admin))
+
+   in let c6 = st-append-code c5 (test-rr reg-rcx reg-rcx)
+
+   in let cap-deny = c6.code-len
+
+   in let c7 = st-append-code c6 (jcc cc-e 0)
+
+   in let st1 = st-append-code c7 (cmp-ri reg-rdi 16)
+
+   in let range-deny = st1.code-len
+
+   in let st2 = st-append-code st1 (jcc cc-ge 0)
+
+   in let st3 = st-append-code st2 (shl-ri reg-rdi 8)
+
+   in let st4 = st-append-code st3 (add-ri reg-rdi proc-table-base)
+
+   in let st5 = st-append-code st4 (mov-store reg-rdi reg-rsi proc-net-scope-offset)
+
+   in let st6 = st-append-code st5 (xor-rr reg-rax reg-rax)
+
+   in let st7 = st-append-code st6 x86-ret
+
+   in let fail-pos = st7.code-len
+
+   in let st8 = st-append-code st7 (li reg-rax (0 - 1))
+
+   in let st9 = st-append-code st8 x86-ret
+
+   in let st10 = patch-jcc-at st9 cap-deny fail-pos
+
+   in patch-jcc-at st10 range-deny fail-pos
+
+  emit-process-get-network-scope-helper : CodegenState -> CodegenState
+
+  emit-process-get-network-scope-helper (st) =
+
+   let fn-off = st.code-len
+
+   in let n = list-push (st.fo-names) "process-get-network-scope"
+
+   in let o = list-push (st.fo-offsets) fn-off
+
+   in let st0 = __record-set (__record-set st "fo-names" n) "fo-offsets" o
+
+   in let st1 = st-append-code st0 (cmp-ri reg-rdi 16)
+
+   in let range-deny = st1.code-len
+
+   in let st2 = st-append-code st1 (jcc cc-ge 0)
+
+   in let st3 = st-append-code st2 (shl-ri reg-rdi 8)
+
+   in let st4 = st-append-code st3 (add-ri reg-rdi proc-table-base)
+
+   in let st5 = st-append-code st4 (mov-load reg-rax reg-rdi proc-net-scope-offset)
+
+   in let st6 = st-append-code st5 (test-rr reg-rax reg-rax)
+
+   in let null-deny = st6.code-len
+
+   in let st7 = st-append-code st6 (jcc cc-e 0)
+
+   in let st8 = st-append-code st7 x86-ret
+
+   in let fail-pos = st8.code-len
+
+   in let empty = emit-text-lit st8 ""
+
+   in let st9 = st-append-code (empty.state) (mov-rr reg-rax (empty.reg))
+
+   in let st10 = st-append-code st9 x86-ret
+
+   in let st11 = patch-jcc-at st10 range-deny fail-pos
+
+   in patch-jcc-at st11 null-deny fail-pos
 
   emit-process-get-cap-helper : CodegenState -> CodegenState
 
@@ -970,69 +1193,36 @@ Section: IPC and Network Helpers
 
   emit-find-next-ready (st) =
 
-   let st1 = st-append-code st (li reg-rcx current-proc-addr)
+   let st2 = emit-load-current-proc st reg-rdx
 
-   in let st2 = st-append-code st1 (mov-load reg-rdx reg-rcx 0)
+   in let st3 = st-append-code st2 (mov-rr reg-rcx reg-rdx)
 
-   in let st3 = st-append-code st2 (mov-rr reg-rax reg-rdx)
+   in let st4 = st-append-code st3 (shl-ri reg-rcx 8)
 
-   in let scan-top = st3.code-len
+   in let st5 = st-append-code st4 (add-ri reg-rcx proc-table-base)
 
-   in let st4 = st-append-code st3 (add-ri reg-rax 1)
+   in let st6 = st-append-code st5 (mov-load reg-r15 reg-rcx proc-core-offset)
 
-   in let st5 = st-append-code st4 (and-ri reg-rax 15)
-
-   in let st6 = st-append-code st5 (cmp-rr reg-rax reg-rdx)
-
-   in let halt-jmp = st6.code-len
-
-   in let st7 = st-append-code st6 (jcc cc-e 0)
-
-   in let st8 = st-append-code st7 (mov-rr reg-rsi reg-rax)
-
-   in let st9 = st-append-code st8 (shl-ri reg-rsi 8)
-
-   in let st10 = st-append-code st9 (add-ri reg-rsi proc-table-base)
-
-   in let st11 = st-append-code st10 (mov-load reg-rdi reg-rsi 0)
-
-   in let st12 = st-append-code st11 (cmp-ri reg-rdi proc-state-ready)
-
-   in let not-ready = st12.code-len
-
-   in let st13 = st-append-code st12 (jcc cc-ne 0)
-
-   in let st14 = st-append-code st13 (li reg-rdi current-proc-addr)
-
-   in let st15 = st-append-code st14 (mov-store reg-rdi reg-rax 0)
-
-   in let st16 = st-append-code st15 (li reg-rdi proc-state-running)
-
-   in let st17 = st-append-code st16 (mov-store reg-rsi reg-rdi 0)
-
-   in let st18 = st-append-code st17 (mov-load reg-rdi reg-rsi proc-priority-offset)
-
-   in let st19 = st-append-code st18 (shl-ri reg-rdi 3)
-
-   in let st20 = st-append-code st19 (add-ri reg-rdi slice-table-addr)
-
-   in let st21 = st-append-code st20 (mov-load reg-rdi reg-rdi 0)
-
-   in let st22 = st-append-code st21 (mov-store reg-rsi reg-rdi proc-slice-offset)
-
-   in let st23 = emit-jmp-to st22 "__process_resume"
-
-   in let halt-pos = st23.code-len
-
-   in let st24 = st-append-code st23 [244]
-
-   in let st25 = st-append-code st24 (jmp (halt-pos - (st24.code-len + 5)))
-
-   in let st26 = patch-jcc-at st25 halt-jmp halt-pos
-
-   in patch-jcc-at st26 not-ready scan-top
+   in emit-jmp-to st6 "__idle_dispatch"
 
 
+
+ Blocking on a channel is block-then-recheck, exactly as process-wait is,
+ and for the same reason. A sender that finds the channel full commits its
+ slot to BLOCKED and switches away; but a receiver can drain the channel and
+ run its wake (emit-chan-wake-blocked-sender) in the window between the
+ fullness check and the BLOCKED commit, find no blocked sender, and move on --
+ and the sender then blocks on a wake that has already come and gone. So
+ after committing BLOCKED the sender re-reads the channel: if room now exists
+ it claims BLOCKED -> RUNNING with a cmpxchg and, on winning, jumps to the
+ write path to complete the send itself; on losing the cmpxchg a receiver has
+ already rendezvous'd it, so it relinquishes to __idle_dispatch and is resumed
+ normally; if still full it blocks as before. The receiver's recv-block path
+ is the mirror image (re-read count, retry the read). The retry jump is a
+ patched forward jump, not a hand-computed backward offset -- st-append-code
+ buffers into a flush cache, so code-len on an un-flushed state is not an
+ instruction's final position; patch-jmp-at flushes first. Proven by the
+ yield-injection mutant in docs/Test/Active/YieldInjectionMutant.md (BACKLOG 4.11g).
 
   emit-chan-send-block-helper : CodegenState -> CodegenState
 
@@ -1086,9 +1276,7 @@ Section: IPC and Network Helpers
 
    in let st16 = st-append-code st15 (jcc cc-l 0)
 
-   in let blk1 = st-append-code st16 (li reg-rcx current-proc-addr)
-
-   in let blk2 = st-append-code blk1 (mov-load reg-rax reg-rcx 0)
+   in let blk2 = emit-load-current-proc st16 reg-rax
 
    in let blk3 = st-append-code blk2 (mov-rr reg-rcx reg-rax)
 
@@ -1144,7 +1332,57 @@ Section: IPC and Network Helpers
 
    in let blk29 = st-append-code blk28 (mov-store reg-rcx reg-rsi proc-blocked-on-offset)
 
-   in let block-end = emit-find-next-ready blk29
+   in let rk1 = st-append-code blk29 (mov-rr reg-rdi reg-rbx)
+
+   in let rk2 = emit-chan-addr-from-rdi rk1
+
+   in let rk3 = st-append-code rk2 (mov-load reg-rax reg-rdx chan-count-offset)
+
+   in let rk4 = st-append-code rk3 (mov-load reg-rcx reg-rdx chan-capacity-offset)
+
+   in let rk5 = st-append-code rk4 (cmp-rr reg-rax reg-rcx)
+
+   in let rk-full = rk5.code-len
+
+   in let rk6 = st-append-code rk5 (jcc cc-ge 0)
+
+   in let rk7 = emit-load-current-proc rk6 reg-rax
+
+   in let rk8 = st-append-code rk7 (mov-rr reg-rcx reg-rax)
+
+   in let rk9 = st-append-code rk8 (shl-ri reg-rcx 8)
+
+   in let rk10 = st-append-code rk9 (add-ri reg-rcx proc-table-base)
+
+   in let rk11 = st-append-code rk10 (li reg-rax proc-state-blocked)
+
+   in let rk12 = st-append-code rk11 (li reg-rsi proc-state-running)
+
+   in let rk13 = st-append-code rk12 (lock-cmpxchg-mem reg-rsi reg-rcx 0)
+
+   in let rk-lost = rk13.code-len
+
+   in let rk14 = st-append-code rk13 (jcc cc-ne 0)
+
+   in let rk-retry = rk14.code-len
+
+   in let rk15 = st-append-code rk14 (jmp 0)
+
+   in let rk-lost-pos = rk15.code-len
+
+   in let rk16 = st-append-code rk15 (mov-load reg-r15 reg-rcx proc-core-offset)
+
+   in let rk17 = emit-jmp-to rk16 "__idle_dispatch"
+
+   in let rk-block-pos = rk17.code-len
+
+   in let block-end1 = emit-find-next-ready rk17
+
+   in let block-end2 = patch-jcc-at block-end1 rk-full rk-block-pos
+
+   in let block-end3 = patch-jcc-at block-end2 rk-lost rk-lost-pos
+
+   in let block-end = patch-jmp-at block-end3 rk-retry (block-end3.code-len)
 
    in let send-ok = patch-jcc-at block-end not-full (block-end.code-len)
 
@@ -1210,6 +1448,24 @@ Section: IPC and Network Helpers
 
 
 
+ Every st-append-code in this chain must be passed the state the PREVIOUS
+ one returned, and blk18 took blk17 rather than blk17a for a long time.
+ That read as a dropped r12 store and was carried in the backlog as one;
+ it never was. st-append-code writes into the shared code buffer and then
+ __record-set stores code-len into the SAME record, so blk16, blk17 and
+ blk17a are one box: blk18 read the length AFTER the r12 store whichever
+ alias it was handed, and the store landed. Proven, not argued -- the two
+ compilers emit a byte-identical program, and the r12 store sits four
+ bytes before the r13 store in both.
+
+ It is threaded correctly now because the accident is a poor thing to
+ stand on. A binding whose value is never read is exactly what a dead-code
+ pass removes, and st-append-code carries its effect in a buffer write
+ rather than in its type, so nothing would stop one: the r12 store would
+ vanish and the only symptom would be a receiver waking with a stale r12.
+ Naming the alias you actually built costs nothing and does not depend on
+ how the allocator feels about unused lets.
+
   emit-chan-recv-block-helper : CodegenState -> CodegenState
 
   emit-chan-recv-block-helper (st) =
@@ -1266,9 +1522,7 @@ Section: IPC and Network Helpers
 
    in let st16 = st-append-code st15 (jcc cc-e 0)
 
-   in let blk1 = st-append-code st16 (li reg-rcx current-proc-addr)
-
-   in let blk2 = st-append-code blk1 (mov-load reg-rax reg-rcx 0)
+   in let blk2 = emit-load-current-proc st16 reg-rax
 
    in let blk3 = st-append-code blk2 (mov-rr reg-rcx reg-rax)
 
@@ -1302,7 +1556,7 @@ Section: IPC and Network Helpers
 
    in let blk17a = st-append-code blk17 (mov-store reg-rcx reg-rsi proc-saved-r12-offset)
 
-   in let blk18 = st-append-code blk17 (mov-store reg-rcx reg-r13 proc-saved-r13-offset)
+   in let blk18 = st-append-code blk17a (mov-store reg-rcx reg-r13 proc-saved-r13-offset)
 
    in let blk19 = st-append-code blk18 (mov-store reg-rcx reg-r14 proc-saved-r14-offset)
 
@@ -1322,7 +1576,55 @@ Section: IPC and Network Helpers
 
    in let blk27 = st-append-code blk26 (mov-store reg-rcx reg-rsi proc-blocked-on-offset)
 
-   in let block-end = emit-find-next-ready blk27
+   in let rr1 = st-append-code blk27 (mov-rr reg-rdi reg-rbx)
+
+   in let rr2 = emit-chan-addr-from-rdi rr1
+
+   in let rr3 = st-append-code rr2 (mov-load reg-rax reg-rdx chan-count-offset)
+
+   in let rr4 = st-append-code rr3 (test-rr reg-rax reg-rax)
+
+   in let rr-empty = rr4.code-len
+
+   in let rr5 = st-append-code rr4 (jcc cc-e 0)
+
+   in let rr6 = emit-load-current-proc rr5 reg-rax
+
+   in let rr7 = st-append-code rr6 (mov-rr reg-rcx reg-rax)
+
+   in let rr8 = st-append-code rr7 (shl-ri reg-rcx 8)
+
+   in let rr9 = st-append-code rr8 (add-ri reg-rcx proc-table-base)
+
+   in let rr10 = st-append-code rr9 (li reg-rax proc-state-blocked)
+
+   in let rr11 = st-append-code rr10 (li reg-rsi proc-state-running)
+
+   in let rr12 = st-append-code rr11 (lock-cmpxchg-mem reg-rsi reg-rcx 0)
+
+   in let rr-lost = rr12.code-len
+
+   in let rr13 = st-append-code rr12 (jcc cc-ne 0)
+
+   in let rr-retry = rr13.code-len
+
+   in let rr14 = st-append-code rr13 (jmp 0)
+
+   in let rr-lost-pos = rr14.code-len
+
+   in let rr15 = st-append-code rr14 (mov-load reg-r15 reg-rcx proc-core-offset)
+
+   in let rr16 = emit-jmp-to rr15 "__idle_dispatch"
+
+   in let rr-block-pos = rr16.code-len
+
+   in let block-end1 = emit-find-next-ready rr16
+
+   in let block-end2 = patch-jcc-at block-end1 rr-empty rr-block-pos
+
+   in let block-end3 = patch-jcc-at block-end2 rr-lost rr-lost-pos
+
+   in let block-end = patch-jmp-at block-end3 rr-retry (block-end3.code-len)
 
    in let recv-ok = patch-jcc-at block-end not-empty (block-end.code-len)
 
@@ -1394,9 +1696,7 @@ Section: IPC and Network Helpers
 
   emit-identity-cap-check (st) =
 
-   let st1 = st-append-code st (li reg-rax current-proc-addr)
-
-   in let st2 = st-append-code st1 (mov-load reg-rax reg-rax 0)
+   let st2 = emit-load-current-proc st reg-rax
 
    in let st3 = st-append-code st2 (shl-ri reg-rax 8)
 
@@ -1450,7 +1750,9 @@ Section: IPC and Network Helpers
 
    in let st0 = __record-set (__record-set st "fo-names" n) "fo-offsets" o
 
-   in let st1 = st-append-code st0 (cmp-ri reg-rdi 4)
+   in let chk = emit-identity-cap-check st0
+
+   in let st1 = st-append-code (chk.state) (cmp-ri reg-rdi 4)
 
    in let range-deny = st1.code-len
 
@@ -1460,9 +1762,7 @@ Section: IPC and Network Helpers
 
    in let st4 = st-append-code st3 (push-r reg-rdi)
 
-   in let st5 = st-append-code st4 (li reg-rax current-proc-addr)
-
-   in let st6 = st-append-code st5 (mov-load reg-rax reg-rax 0)
+   in let st6 = emit-load-current-proc st4 reg-rax
 
    in let st7 = st-append-code st6 (shl-ri reg-rax 5)
 
@@ -1482,7 +1782,9 @@ Section: IPC and Network Helpers
 
    in let st14 = st-append-code st13 x86-ret
 
-   in patch-jcc-at st14 range-deny fail-pos
+   in let st15 = patch-jcc-at st14 (chk.deny-offset) fail-pos
+
+   in patch-jcc-at st15 range-deny fail-pos
 
 
 
@@ -1514,9 +1816,7 @@ Section: IPC and Network Helpers
 
    in let st6 = st-append-code st5 (shl-ri reg-rdi 3)
 
-   in let st7 = st-append-code st6 (li reg-rax current-proc-addr)
-
-   in let st8 = st-append-code st7 (mov-load reg-rax reg-rax 0)
+   in let st8 = emit-load-current-proc st6 reg-rax
 
    in let st9 = st-append-code st8 (shl-ri reg-rax 5)
 
@@ -1612,9 +1912,7 @@ Section: IPC and Network Helpers
 
    in let st5 = (chk.state)
 
-   in let st5a = st-append-code st5 (li reg-rax current-proc-addr)
-
-   in let st5b = st-append-code st5a (mov-load reg-rax reg-rax 0)
+   in let st5b = emit-load-current-proc st5 reg-rax
 
    in let st5c = st-append-code st5b (shl-ri reg-rax 8)
 
@@ -1708,7 +2006,9 @@ Section: IPC and Network Helpers
 
    in let st0 = __record-set (__record-set st "fo-names" n) "fo-offsets" o
 
-   in let st1 = st-append-code st0 (cmp-ri reg-rdi 16)
+   in let chk = emit-identity-cap-check st0
+
+   in let st1 = st-append-code (chk.state) (cmp-ri reg-rdi 16)
 
    in let pid-deny = st1.code-len
 
@@ -1738,9 +2038,11 @@ Section: IPC and Network Helpers
 
    in let st12 = st-append-code st11 x86-ret
 
-   in let st13 = patch-jcc-at st12 pid-deny fail-pos
+   in let st13 = patch-jcc-at st12 (chk.deny-offset) fail-pos
 
-   in patch-jcc-at st13 word-deny fail-pos
+   in let st14 = patch-jcc-at st13 pid-deny fail-pos
+
+   in patch-jcc-at st14 word-deny fail-pos
 
 
 
@@ -1762,9 +2064,7 @@ Section: IPC and Network Helpers
 
    in let st3 = st-append-code st2 (mov-rr reg-r14 reg-rsi)
 
-   in let cap0 = st-append-code st3 (li reg-rcx current-proc-addr)
-
-   in let cap1 = st-append-code cap0 (mov-load reg-rcx reg-rcx 0)
+   in let cap1 = emit-load-current-proc st3 reg-rcx
 
    in let cap2 = st-append-code cap1 (shl-ri reg-rcx 8)
 
@@ -1820,7 +2120,13 @@ Section: IPC and Network Helpers
 
    in let s18 = st-append-code s17 (add-ri reg-rdx proc-spawn-stack-size)
 
-   in let s19b = emit-call-to s18 "__spawn_pool_carve"
+   in let s18a = st-append-code s18 (cmp-ri reg-rdx spawn-slot-region-size)
+
+   in let size-deny = s18a.code-len
+
+   in let s18b = st-append-code s18a (jcc cc-a 0)
+
+   in let s19b = emit-call-to s18b "__spawn_pool_carve"
 
    in let s19c = emit-spawn-stack-pretouch s19b
 
@@ -1838,9 +2144,7 @@ Section: IPC and Network Helpers
 
    in let s26 = st-append-code s25 (mov-store reg-r13 reg-rbx proc-closure-offset)
 
-   in let s26a = st-append-code s26 (li reg-rsi current-proc-addr)
-
-   in let s26b = st-append-code s26a (mov-load reg-rsi reg-rsi 0)
+   in let s26b = emit-load-current-proc s26 reg-rsi
 
    in let s26c = st-append-code s26b (shl-ri reg-rsi 8)
 
@@ -1850,9 +2154,27 @@ Section: IPC and Network Helpers
 
    in let s26f = st-append-code s26e (mov-store reg-r13 reg-rsi proc-cap-offset)
 
-   in let i0 = st-append-code s26f (li reg-rsi current-proc-addr)
+   in let s26g = emit-load-current-proc s26f reg-rsi
 
-   in let i1 = st-append-code i0 (mov-load reg-rsi reg-rsi 0)
+   in let s26h = st-append-code s26g (shl-ri reg-rsi 8)
+
+   in let s26i = st-append-code s26h (add-ri reg-rsi proc-table-base)
+
+   in let s26j = st-append-code s26i (mov-load reg-rsi reg-rsi proc-scope-offset)
+
+   in let s26k = st-append-code s26j (mov-store reg-r13 reg-rsi proc-scope-offset)
+
+   in let s26l = emit-load-current-proc s26k reg-rsi
+
+   in let s26m = st-append-code s26l (shl-ri reg-rsi 8)
+
+   in let s26n = st-append-code s26m (add-ri reg-rsi proc-table-base)
+
+   in let s26o = st-append-code s26n (mov-load reg-rsi reg-rsi proc-net-scope-offset)
+
+   in let s26p = st-append-code s26o (mov-store reg-r13 reg-rsi proc-net-scope-offset)
+
+   in let i1 = emit-load-current-proc s26p reg-rsi
 
    in let i2 = st-append-code i1 (shl-ri reg-rsi 5)
 
@@ -1924,9 +2246,30 @@ Section: IPC and Network Helpers
 
    in let s47 = patch-jcc-at s46 fail-jmp fail-pos
 
-   in patch-jcc-at s47 cap-deny fail-pos
+   in let s48 = patch-jcc-at s47 cap-deny fail-pos
+
+   in patch-jcc-at s48 size-deny fail-pos
 
 
+
+ The four network helpers test cap-network-read or cap-network-write
+ before they touch the NE2000. Until now none of them tested anything:
+ the bits were defined, granted from a Network manifest row, and read
+ by anybody. A program put raw Ethernet frames on the wire declaring
+ nothing and earning nothing.
+
+ The gate and the effect row in TypeEnv are one change and must stay
+ one change. A builtin that is gated here but typed pure there is
+ worse than an ungated one: the caller never declares Network, so the
+ manifest never grants the bit, so the call is denied and hands back
+ -1 with nothing to say why. That has cost this project three
+ debugging sessions (process-kill, device-seed, the identity readers).
+ The row is what earns the bit; the gate is what spends it.
+
+ A denial returns -1, the same answer these helpers already give for
+ an absent NIC. That conflation is deliberate: from the caller's seat
+ "you may not" and "there is nothing there" are both "you got
+ nothing", and neither is a lie.
 
   emit-net-status-helper : CodegenState -> CodegenState
 
@@ -1940,11 +2283,25 @@ Section: IPC and Network Helpers
 
    in let st0 = __record-set (__record-set st "fo-names" n) "fo-offsets" o
 
-   in let st1 = st-append-code st0 (li reg-rdi nic-present-addr)
+   in let stc = emit-check-capability st0 cap-network-read
+
+   in let cap-deny = stc.code-len
+
+   in let stc2 = st-append-code stc (jcc cc-ae 0)
+
+   in let st1 = st-append-code stc2 (li reg-rdi nic-present-addr)
 
    in let st2 = st-append-code st1 (mov-load reg-rax reg-rdi 0)
 
-   in st-append-code st2 x86-ret
+   in let st3 = st-append-code st2 x86-ret
+
+   in let deny-pos = st3.code-len
+
+   in let st4 = st-append-code st3 (li reg-rax (0 - 1))
+
+   in let st5 = st-append-code st4 x86-ret
+
+   in patch-jcc-at st5 cap-deny deny-pos
 
 
 
@@ -1960,7 +2317,13 @@ Section: IPC and Network Helpers
 
    in let st0 = __record-set (__record-set st "fo-names" n) "fo-offsets" o
 
-   in let st1 = st-append-code st0 (cmp-ri reg-rdi 6)
+   in let stc = emit-check-capability st0 cap-network-read
+
+   in let cap-deny = stc.code-len
+
+   in let stc2 = st-append-code stc (jcc cc-ae 0)
+
+   in let st1 = st-append-code stc2 (cmp-ri reg-rdi 6)
 
    in let range-deny = st1.code-len
 
@@ -1978,7 +2341,9 @@ Section: IPC and Network Helpers
 
    in let st7 = st-append-code st6 x86-ret
 
-   in patch-jcc-at st7 range-deny fail-pos
+   in let st8 = patch-jcc-at st7 range-deny fail-pos
+
+   in patch-jcc-at st8 cap-deny fail-pos
 
 
 
@@ -1998,7 +2363,13 @@ Section: IPC and Network Helpers
 
    in let st2 = st-append-code st1 (push-r reg-r12)
 
-   in let st3 = st-append-code st2 (mov-rr reg-rbx reg-rdi)
+   in let stc = emit-check-capability st2 cap-network-write
+
+   in let cap-deny = stc.code-len
+
+   in let stc2 = st-append-code stc (jcc cc-ae 0)
+
+   in let st3 = st-append-code stc2 (mov-rr reg-rbx reg-rdi)
 
    in let st4 = st-append-code st3 (mov-rr reg-r12 reg-rsi)
 
@@ -2106,7 +2477,9 @@ Section: IPC and Network Helpers
 
    in let st53 = st-append-code st52 x86-ret
 
-   in patch-jcc-at st53 no-nic-jmp fail-pos
+   in let st54 = patch-jcc-at st53 no-nic-jmp fail-pos
+
+   in patch-jcc-at st54 cap-deny fail-pos
 
 
 
@@ -2124,7 +2497,13 @@ Section: IPC and Network Helpers
 
    in let st1 = st-append-code st0 (push-r reg-rbx)
 
-   in let st2 = st-append-code st1 (mov-rr reg-rbx reg-rdi)
+   in let stc = emit-check-capability st1 cap-network-read
+
+   in let cap-deny = stc.code-len
+
+   in let stc2 = st-append-code stc (jcc cc-ae 0)
+
+   in let st2 = st-append-code stc2 (mov-rr reg-rbx reg-rdi)
 
    in let st3 = st-append-code st2 (li reg-rdi nic-present-addr)
 
@@ -2315,7 +2694,9 @@ Section: IPC and Network Helpers
 
    in let st89 = patch-jcc-at st88 no-nic-jmp no-nic-pos
 
-   in patch-jcc-at st89 bad-len-jmp bad-len-pos
+   in let st90 = patch-jcc-at st89 bad-len-jmp bad-len-pos
+
+   in patch-jcc-at st90 cap-deny no-nic-pos
 
   emit-chan-text-send-helper : CodegenState -> CodegenState
   emit-chan-text-send-helper (st) =
@@ -2358,5 +2739,5 @@ Section: IPC and Network Helpers
 
 
 
-Page 7 of 10
+Page 7 of 14
 

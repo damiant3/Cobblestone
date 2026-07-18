@@ -1,0 +1,31 @@
+Chapter: EffectWidenScopePort
+  cites Net chapter HttpFetch
+
+Section: Body
+
+ The one clause that separates scope-subsumes from scope-admits, pinned
+ as the laundering it would otherwise be.
+
+ `any-port` is scoped to the HOST and names no port, so it may reach
+ api.example.com on any port at all. `apply-443` believes what it holds
+ reaches only port 443, and tells its own caller so.
+
+ scope-admits would accept this. Its portless rule -- "a resource that
+ names no port is a resolve-dns hostname, which never reaches a port for
+ us to check" -- is true of a RESOURCE and false of a SCOPE: a scope that
+ names no port covers every port, which is WIDER than one that names 443,
+ not narrower. Reusing scope-admits for subsumption would therefore hand a
+ whole host to a parameter granted a single port, which is the kind of
+ quiet widening the family split existed to stop in the first place.
+
+ authority-subsumes drops exactly that clause: the outer must name no port
+ (covering all) or name the very port the inner names. Here the outer
+ names 443 and the inner names none, so it is refused.
+
+  any-port : Text -> [Network.Read "api.example.com", Network.Write "api.example.com"] Result Text Text
+  any-port (x) = fetch "https://api.example.com/v1/status"
+
+  apply-443 : (Text -> [Network.Read "api.example.com:443", Network.Write "api.example.com:443"] Result Text Text), Text -> [Network.Read "api.example.com:443", Network.Write "api.example.com:443"] Result Text Text
+  apply-443 (f) (x) = f x
+
+  opening : [Network.Read "api.example.com:443", Network.Write "api.example.com:443"] Result Text Text = apply-443 any-port "go"

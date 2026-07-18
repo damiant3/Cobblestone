@@ -1,0 +1,108 @@
+Chapter: RepoImportTest
+
+  cites Foreword chapter Console
+  cites Foreword chapter FactStore
+  cites Works chapter RepoProtocol
+  cites Works chapter KeyManager
+
+ Import-by-hash and the trust gate. Alice is fully trusted. Bob is
+ trusted only by Alice's vouch for him, so his score is the decayed
+ one. Mallory holds a key we never registered.
+
+ The pair that carries the claim is bob@5000 and bob@9000: the same
+ fact, signed by the same key, imported at two thresholds. One links
+ and one is refused.
+
+Section: Identities
+
+  alice-kp : Keypair
+  alice-kp = generate-keypair [1, 2, 3, 4, 5, 6, 7, 8]
+
+  bob-kp : Keypair
+  bob-kp = generate-keypair [9, 10, 11, 12, 13, 14, 15, 16]
+
+  mallory-kp : Keypair
+  mallory-kp = generate-keypair [17, 18, 19, 20, 21, 22, 23, 24]
+
+Section: Facts
+
+  good-fact : Fact
+  good-fact = fact-create DefinitionFact "sort-ascending" "alice" 1000
+
+  bob-fact : Fact
+  bob-fact = fact-create DefinitionFact "json-parse" "bob" 1001
+
+  evil-fact : Fact
+  evil-fact = fact-create DefinitionFact "exfiltrate-keys" "mallory" 1002
+
+  unsigned-fact : Fact
+  unsigned-fact = fact-create DefinitionFact "orphan" "alice" 1004
+
+ A fact whose stored hash does not describe its content. This is the
+ one the integrity guard is for, and it is checked before the
+ signature is ever consulted.
+
+  corrupt-hash : Text
+  corrupt-hash = "0000000000000000000000000000000000000000000000000000000000000000"
+
+  corrupt-fact : Fact
+  corrupt-fact = Fact {
+    hash = corrupt-hash,
+    kind = DefinitionFact,
+    content = "tampered-body",
+    author = "alice",
+    timestamp = 1005
+  }
+
+ The supply-chain attack in its plainest form: Alice's real signature,
+ lifted off a definition she did stand behind, and pasted onto one she
+ did not.
+
+  victim-fact : Fact
+  victim-fact = fact-create DefinitionFact "backdoor" "alice" 1003
+
+  forged-fact : SignedFact
+  forged-fact = SignedFact {
+    fact = victim-fact,
+    signature = (sign-fact alice-kp good-fact).signature,
+    signer-fingerprint = alice-kp.fingerprint
+  }
+
+Section: The Repository
+
+  base-repo : RepoState
+  base-repo =
+    let r1 = repo-register-key repo-empty "alice" (alice-kp.public-key) 10000
+    in let r2 = repo-register-key r1 "bob" (bob-kp.public-key) 0
+    in repo-vouch r2 "alice" "bob" 10000
+
+  loaded-repo : RepoState
+  loaded-repo =
+    let r1 = repo-publish-fact base-repo (sign-fact alice-kp good-fact)
+    in let r2 = repo-publish-fact r1 (sign-fact bob-kp bob-fact)
+    in let r3 = repo-publish-fact r2 (sign-fact mallory-kp evil-fact)
+    in let r4 = repo-publish-fact r3 (sign-fact alice-kp corrupt-fact)
+    in let r5 = repo-publish-fact r4 forged-fact
+    in __record-set r5 "facts" (fact-store (r5.facts) unsigned-fact)
+
+Section: Body
+
+  probe : RepoState, Text, Integer -> Text
+  probe (repo) (hash) (threshold) =
+    import-outcome-name ((repo-import repo hash "dep" threshold).outcome)
+
+  opening : [Console] Nothing
+  opening =
+    let repo = loaded-repo
+    in act
+      print-line-uni ("alice-score=" & show (repo-trust-score repo "alice"))
+      print-line-uni ("bob-score=" & show (repo-trust-score repo "bob"))
+      print-line-uni ("good@5000=" & probe repo (good-fact.hash) 5000)
+      print-line-uni ("bob@5000=" & probe repo (bob-fact.hash) 5000)
+      print-line-uni ("bob@9000=" & probe repo (bob-fact.hash) 9000)
+      print-line-uni ("evil@5000=" & probe repo (evil-fact.hash) 5000)
+      print-line-uni ("forged@5000=" & probe repo (victim-fact.hash) 5000)
+      print-line-uni ("corrupt@5000=" & probe repo corrupt-hash 5000)
+      print-line-uni ("unsigned@5000=" & probe repo (unsigned-fact.hash) 5000)
+      print-line-uni ("absent@5000=" & probe repo "cafebabe" 5000)
+    end

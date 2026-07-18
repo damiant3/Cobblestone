@@ -24,4 +24,15 @@ is a hyperlink waiting to break.
 
 | Year | Citation | Cited from |
 |------|----------|------------|
-| 2026 | Cesario, Zakhour, Weisenburger, Salvaneschi — *Versioned E-Graphs* (PLDI) | `docs/Designs/Codex.OS/Verifier.md` |
+| 2026 | Cesario, Zakhour, Weisenburger, Salvaneschi — *Versioned E-Graphs* (PLDI) | Verifier design |
+
+## Archived codebases
+
+Same rationale as the papers — an unlicensed, single-author repo can go dark
+without notice, and a citation without a local copy is a hyperlink waiting to
+break. Each archive carries a `PROVENANCE.md` stating where it came from and
+**what we are and are not permitted to do with it. Read that first.**
+
+| Archive | What it is | Our reading of it |
+|---|---|---|
+| `AiComp/` | fiigii/ai-comp — an optimizing compiler (HIR→LIR→MIR→VLIW, 16 passes, 5 analyses) written for Anthropic's published performance take-home. **Unlicensed: reimplement clean-room, do not copy.** | `AiComp/OPPORTUNITIES.md` — the middle end Codex does not have, and what it would actually cost to get one. See BACKLOG 3.8. |

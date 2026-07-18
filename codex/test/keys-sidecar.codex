@@ -1,0 +1,56 @@
+Chapter: KeysSidecar
+  cites UI chapter KeyInput
+
+ Proof that a test can type.
+
+ Every test that waits on a keystroke is skipped, and the skip reasons say
+ so plainly -- "blocks waiting for keyboard input", "requires display +
+ keyboard". The reason was never that the VM cannot deliver a key: codex-vm
+ has taken a scancode timeline through `-keys-file` for as long as
+ build/test-gui.ps1 has driven GUI apps with one. It was that the default
+ battery had no sidecar for it, so the only input a test could ask for was
+ `.stdin`, and `.stdin` cannot reach a keyboard read at all: it is pumped
+ into the serial ring, and `poll-key` reads the PS/2 key cell. Two paths,
+ and the battery only had the wrong one.
+
+ This test drives the second path. Its `.keys` sidecar types A, B and
+ Enter as Set-1 make codes (30, 48, 28); the loop below is the shape
+ `idm-rlb-loop` uses, and it must report 65, 66 and stop.
+
+ That it stops is the assertion, not a detail. A loop that reads
+ `uefi-read-key` and compares against ASCII 13 for Enter never terminates,
+ because Enter's make code is 28 -- which is exactly what the first-boot
+ ceremony did until BACKLOG 7.14. `poll-key` is the translation, and this
+ file is what fails if it is bypassed again.
+
+ There is no fuel cap. A loop that never sees a key hangs until the
+ harness's wall budget kills it, which is the honest failure: this test
+ exists to prove keys arrive, so not arriving must be a failure and not a
+ quietly truncated answer.
+
+Section: Definitions
+
+ Collect keycodes until Enter, exactly as the passphrase reader does.
+
+  ks-collect : List Integer -> List Integer
+  ks-collect (acc) =
+    let ch = poll-key
+    in if ch == 0 then ks-collect acc
+    else if ch == 13 then acc
+    else ks-collect (list-push acc ch)
+
+  ks-show : List Integer, Integer, Integer -> [Console] Integer
+  ks-show (xs) (i) (len) =
+    if i >= len then 0
+    else act
+      print-line-uni (integer-to-text (list-at xs i))
+      ks-show xs (i + 1) len
+    end
+
+  opening : [Console] Nothing = act
+    let ks = ks-collect []
+    in act
+      ks-show ks 0 (list-length ks)
+      print-line-uni "terminated"
+    end
+  end

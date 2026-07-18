@@ -152,22 +152,27 @@ Section: Rasterize to alloc-bytes
 
 Section: Fast Font Read (sector-by-sector into alloc-bytes, then to List)
 
-  fl-read-font-sectors : Fat32Volume, Integer, Integer, Integer, Integer -> Integer
-  fl-read-font-sectors (vol) (cluster) (remaining) (buf) (pos) =
+  fl-read-font-sectors : Fat32Volume, Integer, Integer, Integer, Integer -> [Device.Block] Integer
+  fl-read-font-sectors (vol) (cluster) (remaining) (buf) (pos) = act
     if remaining <= 0 then pos
     else if cluster < 2 then pos
     else fl-read-cluster-sectors vol cluster remaining buf pos 0
+  end
 
-  fl-read-cluster-sectors : Fat32Volume, Integer, Integer, Integer, Integer, Integer -> Integer
-  fl-read-cluster-sectors (vol) (cluster) (remaining) (buf) (pos) (sec-off) =
+  fl-read-cluster-sectors : Fat32Volume, Integer, Integer, Integer, Integer, Integer -> [Device.Block] Integer
+  fl-read-cluster-sectors (vol) (cluster) (remaining) (buf) (pos) (sec-off) = act
     if remaining <= 0 then pos
-    else if sec-off >= (vol.f32-sectors-per-cluster) then
-      fl-read-font-sectors vol (fat32-next-cluster vol cluster) remaining buf pos
-    else let sector = fat32-cluster-sector vol cluster + sec-off
-    in let sbuf = block-read-sector sector
-    in let bytes-this = if remaining < 512 then remaining else 512
-    in let d = fl-copy-sector sbuf buf pos bytes-this 0
-    in fl-read-cluster-sectors vol cluster (remaining - bytes-this) buf (pos + bytes-this) (sec-off + 1)
+    else if sec-off >= (vol.f32-sectors-per-cluster) then act
+      nc <- fat32-next-cluster vol cluster
+      fl-read-font-sectors vol nc remaining buf pos
+    end
+    else act
+      sbuf <- block-read-sector (fat32-cluster-sector vol cluster + sec-off)
+      let bytes-this = if remaining < 512 then remaining else 512
+      in let d = fl-copy-sector sbuf buf pos bytes-this 0
+      in fl-read-cluster-sectors vol cluster (remaining - bytes-this) buf (pos + bytes-this) (sec-off + 1)
+    end
+  end
 
   fl-copy-sector : Integer, Integer, Integer, Integer, Integer -> Integer
   fl-copy-sector (src) (dst) (dst-off) (count) (i) =
@@ -500,29 +505,37 @@ Section: Load One Font from Disk
     in let h = rg.rg-height
     in fl-max-height rasters (i + 1) (if h > mx then h else mx)
 
-  fl-load-into-role : Fat32Volume, MutWheel, Integer, Integer -> Integer
-  fl-load-into-role (vol) (w) (idx) (role) =
+  fl-load-into-role : Fat32Volume, MutWheel, Integer, Integer -> [Device.Block] Integer
+  fl-load-into-role (vol) (w) (idx) (role) = act
     let cached-base = fl-cache-get-base w idx
     in if cached-base > 0 then fl-store-role w role cached-base (fl-cache-get-gw w idx) idx
     else fl-load-fresh vol w idx role
+  end
 
-  fl-load-fresh : Fat32Volume, MutWheel, Integer, Integer -> Integer
-  fl-load-fresh (vol) (w) (idx) (role) =
-    let fname = cce-to-fat-text (font-cat-file idx)
-    in when fat32-resolve-path vol fname
-      is Just (entry) ->
-        let file-size = entry.de-size
-        in let buf = alloc-bytes file-size
-        in let read = fl-read-font-sectors vol (entry.de-cluster) file-size buf 0
-        in let font = fb-parse-ttf buf file-size
-        in let rasters = fb-render-ascii buf font font-ppem
-        in let max-w = fl-max-width rasters 0 0
-        in let gbase = fl-raster-to-gobf rasters max-w font-ppem
-        in let d = fl-write-yoffsets buf font gbase max-w font-ppem
-        in let d2 = fl-cache-set w idx gbase max-w
-        in let d3 = mw-set-font-glyph-h w font-ppem
-        in fl-store-role w role gbase max-w idx
+  fl-load-fresh : Fat32Volume, MutWheel, Integer, Integer -> [Device.Block] Integer
+  fl-load-fresh (vol) (w) (idx) (role) = act
+    r <- fat32-resolve-path vol (cce-to-fat-text (font-cat-file idx))
+    when r
+      is Just (entry) -> fl-load-entry vol w idx role entry
       is None -> 0
+  end
+
+  fl-load-entry : Fat32Volume, MutWheel, Integer, Integer, Fat16DirEntry -> [Device.Block] Integer
+  fl-load-entry (vol) (w) (idx) (role) (entry) = act
+    let file-size = entry.de-size
+    in let buf = alloc-bytes file-size
+    in act
+      read <- fl-read-font-sectors vol (entry.de-cluster) file-size buf 0
+      let font = fb-parse-ttf buf file-size
+      in let rasters = fb-render-ascii buf font font-ppem
+      in let max-w = fl-max-width rasters 0 0
+      in let gbase = fl-raster-to-gobf rasters max-w font-ppem
+      in let d = fl-write-yoffsets buf font gbase max-w font-ppem
+      in let d2 = fl-cache-set w idx gbase max-w
+      in let d3 = mw-set-font-glyph-h w font-ppem
+      in fl-store-role w role gbase max-w idx
+    end
+  end
 
   fl-store-role : MutWheel, Integer, Integer, Integer, Integer -> Integer
   fl-store-role (w) (role) (base) (gw) (idx) =
@@ -550,16 +563,17 @@ Section: Load One Font from Disk
 
 Section: Load Default Fonts
 
-  fl-load-defaults : Fat32Volume, MutWheel -> Integer
-  fl-load-defaults (vol) (w) =
-    let d1 = fl-load-into-role vol w 0 1
-    in let d2 = fl-load-into-role vol w 5 2
-    in let d3 = fl-load-into-role vol w 10 3
-    in let d4 = mw-set-font-glyph-h w font-ppem
+  fl-load-defaults : Fat32Volume, MutWheel -> [Device.Block] Integer
+  fl-load-defaults (vol) (w) = act
+    d1 <- fl-load-into-role vol w 0 1
+    d2 <- fl-load-into-role vol w 5 2
+    d3 <- fl-load-into-role vol w 10 3
+    let d4 = mw-set-font-glyph-h w font-ppem
     in if mw-get-font-serif-base w == 0 then 0
     else if mw-get-font-sans-base w == 0 then 0
     else if mw-get-font-mono-base w == 0 then 0
     else mw-set-fonts-loaded w 1
+  end
 
 Section: Generated Font Loading
 

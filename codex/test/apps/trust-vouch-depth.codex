@@ -1,0 +1,69 @@
+Chapter: TrustVouchDepth
+  cites Trust chapter TrustLattice
+  cites Foreword chapter Hamt
+  cites Foreword chapter Maybe
+
+ BACKLOG 6.4. The vouch walk is memoised, and this pins the one thing the
+ memo must get right: it is keyed on the agent AND THE DEPTH.
+
+ An agent's score is not a property of the agent. The walk is capped at
+ depth 5, so the score depends on how much depth budget is left when the
+ agent is reached: at depth 5 `best-vouch-score` asks at depth 6, the cap
+ refuses, and the score collapses to `direct-score`. The same agent at
+ depth 1 gets the rest of the walk.
+
+ `y` below is exactly that agent, and it is reachable two ways:
+
+   x <- y <- z            y at depth 1, z at depth 2: y scores 8000
+   x <- c1 <- c2 <- c3 <- c4 <- y    y at depth 5: y scores 0
+
+ y has no direct score, so at depth 5 -- where it cannot reach z -- it is
+ worth nothing, and at depth 1 it is worth 8000. Both are correct answers
+ to different questions.
+
+ The long path is deliberately vouch index 0, so it is walked FIRST. A
+ memo keyed on the bare agent name would therefore cache `y = 0` from the
+ depth-5 arrival, and the depth-1 arrival would read that 0 back and score
+ x at 0 instead of 6400. The first answer would poison the real one, and
+ the failure is silent: a trust score is just a number, and a wrong one
+ admits or refuses a quotation with no diagnostic anywhere.
+
+ That is the shape "cache scores on the lattice" would take if the key
+ were the agent alone. This test is what stands between that and a
+ quotation gate that trusts the wrong work.
+
+ Measured, not assumed: with `memo-key` cut down to the bare agent, x
+ reads 0 here instead of 6400 -- and every other trust test in the tree
+ still passes, `trust-lattice-test` included. This file is the only thing
+ that fails, which is the whole reason it exists.
+
+ The arithmetic, so the number is not a mystery. decay is
+ voucher * strength * 8000 / 100000000, every strength here is 10000:
+   z direct                       = 10000
+   y at depth 1 = decay(z, 10000) = 8000
+   x           = decay(y, 10000)  = 6400
+ and down the long path decay(0, 10000) = 0 at every rung, so it
+ contributes nothing and `max` keeps 6400.
+
+Section: Build
+
+ Vouch order is insertion order, so c1 is index 0 and is walked first.
+
+  graph : TrustLattice
+  graph =
+    let l0 = lattice-add-direct lattice-empty "z" 10000
+    in let l1 = lattice-add-vouch l0 "z" "y" 10000
+    in let l2 = lattice-add-vouch l1 "c1" "x" 10000
+    in let l3 = lattice-add-vouch l2 "y" "x" 10000
+    in let l4 = lattice-add-vouch l3 "c2" "c1" 10000
+    in let l5 = lattice-add-vouch l4 "c3" "c2" 10000
+    in let l6 = lattice-add-vouch l5 "c4" "c3" 10000
+    in lattice-add-vouch l6 "y" "c4" 10000
+
+Section: Entry
+
+  opening : [Console] Nothing = act
+    print-line-uni ("z: " & show (lattice-trust-score graph "z"))
+    print-line-uni ("y: " & show (lattice-trust-score graph "y"))
+    print-line-uni ("x: " & show (lattice-trust-score graph "x"))
+  end

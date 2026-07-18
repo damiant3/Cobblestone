@@ -20,42 +20,36 @@ Section: Constants
 
 Section: Send
 
-  ne2k-setup-dma-write : Integer, Integer -> Integer
-  ne2k-setup-dma-write (page) (count) =
-   let a = port-out-byte ne2k-rsar0-port 0
-   in let b = port-out-byte ne2k-rsar1-port page
-   in let c = port-out-byte ne2k-rbcr0-port (bit-and count 255)
-   in let d = port-out-byte ne2k-rbcr1-port (bit-shr count 8)
-   in port-out-byte ne2k-cr-port 18
+ The frame is staged byte-by-byte into the kernel TX buffer (plain
+ memory writes), then net-send-raw moves it to the NIC with a single
+ REP OUTSW - one VM exit instead of one exit per byte. net-send-raw
+ sends length divided by two words, therefore an odd-length frame is
+ padded with one zero byte; the trailing pad is outside the IP total
+ length and every receiver ignores it.
 
-  ne2k-write-frame-bytes : List Integer, Integer, Integer -> Integer
-  ne2k-write-frame-bytes (bs) (i) (len) =
+  ne2k-tx-buf : Integer = 34592
+
+  ne2k-stage-frame : List Integer, Integer, Integer -> Integer
+  ne2k-stage-frame (bs) (i) (len) =
    if i >= len then i
-   else let w = port-out-byte ne2k-data-port (list-at bs i)
-   in ne2k-write-frame-bytes bs (i + 1) len
+   else let w = poke-byte ne2k-tx-buf i (list-at bs i)
+   in ne2k-stage-frame bs (i + 1) len
 
-  ne2k-transmit : Integer -> Integer
-  ne2k-transmit (count) =
-   let a = port-out-byte ne2k-tpsr-port ne2k-tx-page
-   in let b = port-out-byte ne2k-tbcr0-port (bit-and count 255)
-   in let c = port-out-byte ne2k-tbcr1-port (bit-shr count 8)
-   in port-out-byte ne2k-cr-port 38
-
-  ne2k-send-frame : List Integer -> Integer
+  ne2k-send-frame : List Integer -> [Network.Write] Integer
   ne2k-send-frame (frame) =
    let len = list-length frame
    in if len > ne2k-max-frame then 0
-   else let dma = ne2k-setup-dma-write ne2k-tx-page len
-   in let written = ne2k-write-frame-bytes frame 0 len
-   in ne2k-transmit (len + written - written)
+   else let staged = ne2k-stage-frame frame 0 len
+   in let pad = if int-mod len 2 == 1 then poke-byte ne2k-tx-buf len 0 else 0
+   in net-send-raw ne2k-tx-buf (len + (int-mod len 2))
 
 Section: Receive
 
-  ne2k-recv-frame : List Integer
-  ne2k-recv-frame =
-   let len = net-recv-raw 33056
-   in if len <= 0 then []
-   else ne2k-read-from-buf 33056 0 len []
+  ne2k-recv-frame : [Network.Read] List Integer
+  ne2k-recv-frame = act
+   len <- net-recv-raw 33056
+   if len <= 0 then [] else ne2k-read-from-buf 33056 0 len []
+  end
 
   ne2k-read-from-buf : Integer, Integer, Integer, List Integer -> List Integer
   ne2k-read-from-buf (base) (i) (len) (acc) =
@@ -64,7 +58,7 @@ Section: Receive
 
 Section: Status
 
-  ne2k-available : Boolean
+  ne2k-available : [Network.Read] Boolean
   ne2k-available = net-status > 0
 
 Page 1

@@ -1,0 +1,143 @@
+Chapter: WorkServe
+  cites Foreword chapter Maybe
+  cites Foreword chapter FactStore
+  cites Foreword chapter ImportGate
+  cites Foreword chapter Console
+  cites Trust chapter AgentProtocol
+  cites Trust chapter TrustTransport
+  cites Kernel chapter DiskFacts
+  cites Kernel chapter AppPersist
+  cites Works chapter KeyManager
+  cites Works chapter RepoProtocolPersist
+  cites Works chapter WorkServer
+
+ A peer asks for one work by hash and gets that work or nothing.
+
+ The verb is the point. FactSync could already reconcile two stores, but a sync
+ offer publishes your whole store to ask a question and the reply serves the
+ answerer's whole store back. This asks for one hash.
+
+ What is pinned here, in order of how badly it would hurt to lose:
+
+ A LYING PEER IS CAUGHT BY ARITHMETIC, NOT BY TRUST. accept-reply hashes the work
+ that came back and refuses it unless it addresses the hash that was asked for.
+ Three ways to lie are tried: send a different work, forge content under the
+ asked-for hash, and answer a question nobody asked. All three are refused, and
+ none of the refusals needs to know anything about the peer. This is what lets
+ the transport be untrusted.
+
+ The fourth case is a correction, and it is worth keeping. Appending bytes to the
+ reply is NOT corruption and is NOT refused: the work's content is
+ length-prefixed on the wire, so a decoder takes exactly the bytes the length
+ names and trailing garbage never reaches the work. A first cut of this test
+ called that a corrupted work and expected a refusal; the code was right and the
+ test was wrong. Corrupting a work means changing the content the hash addresses,
+ which is what the forgery case does.
+
+ A miss is empty, not an error. A peer that does not hold a work is ordinary.
+
+ And the wire round-trips: the request and the reply survive encode/decode
+ through the same framing every other agent message uses, because a verb that
+ only works in-process is not a verb.
+
+Section: Entry
+
+  seed-bytes : List Integer = [3, 3, 3, 3, 3, 3, 3, 3]
+
+  filler : Integer, Text -> Text
+  filler (n) (acc) = if n <= 0 then acc else filler (n - 1) (acc & "source line ")
+
+  body : Text -> Text
+  body (name) = name & ": " & filler 8 ""
+
+  mk-def : Text, Text -> SourceDefinition
+  mk-def (path) (content) =
+    SourceDefinition {
+      sd-hash = "", sd-path = path, sd-quire = "Test", sd-chapter = "C",
+      sd-signer = "", sd-signature = [], sd-author = "", sd-timestamp = 0,
+      sd-content = content
+    }
+
+  put : DiskFactStore, Keypair, Text, Text, Integer -> DiskFactStore
+  put (st) (kp) (path) (content) (ts) =
+    repo-persist-save-definition st (sign-definition kp (mk-def path content) ts) ts
+
+ The wire, both ways: encode the message to a tag and a body, then decode it
+ back. Anything that survives this is a real message and not a record that
+ happens to be in scope.
+
+  wire : AgentMessage -> AgentMessage
+  wire (m) = decode-agent-msg (encode-agent-msg m) (encode-agent-msg-body m)
+
+  wired-reply : AgentMessage -> WorkReplyMsg
+  wired-reply (m) =
+    when m
+      is MsgWorkReply (r) -> r
+      is otherwise -> WorkReplyMsg { from = AgentIdentity { public-key = [] }, hash = "WRONG TYPE", payload = "" }
+
+  wired-request : AgentMessage -> WorkRequestMsg
+  wired-request (m) =
+    when m
+      is MsgWorkRequest (r) -> r
+      is otherwise -> WorkRequestMsg { from = AgentIdentity { public-key = [] }, hash = "WRONG TYPE" }
+
+  got : Maybe SourceDefinition, Text -> Text
+  got (m) (want) =
+    when m
+      is None -> "refused"
+      is Just (d) -> if d.sd-content == want then "the work" else "WRONG WORK"
+
+ The work is split across functions rather than one long chain of lets. A first
+ cut put all of it in `opening` -- twenty-one bindings deep -- and the COMPILER
+ crashed on it (`!EXC=54`, a wild read). The Developer's Guide warns that twenty
+ or more chained lets nest the scope too deep; that is not a style note.
+
+  server-id : AgentIdentity = AgentIdentity { public-key = [9] }
+  client-id : AgentIdentity = AgentIdentity { public-key = [8] }
+
+  seeded : Keypair -> DiskFactStore
+  seeded (kp) =
+    let s0 = disk-init
+    in let s1 = put s0 kp "a.codex" (body "alpha") 10
+    in put s1 kp "b.codex" (body "beta") 20
+
+  served : WorkIndex, Text -> WorkReplyMsg
+  served (ix) (h) = wired-reply (wire (MsgWorkReply (serve-work ix server-id (wired-request (wire (MsgWorkRequest (ask-work client-id h)))))))
+
+  claiming : Text, Text -> WorkReplyMsg
+  claiming (h) (payload) = WorkReplyMsg { from = server-id, hash = h, payload = payload }
+
+  forged-payload : Keypair, Text -> Text
+  forged-payload (kp) (h) =
+    source-def-to-text (SourceDefinition {
+      sd-hash = h, sd-path = "a.codex", sd-quire = "Test", sd-chapter = "C",
+      sd-signer = kp.fingerprint, sd-signature = [], sd-author = kp.fingerprint,
+      sd-timestamp = 10, sd-content = body "alpha" & " tampered"
+    })
+
+  report : WorkIndex, Keypair -> [Console.Write] Nothing
+  report (ix) (kp) =
+    let want = fact-content-hash (body "alpha")
+    in let other = fact-content-hash (body "beta")
+    in let reply = served ix want
+    in let miss = served ix (fact-content-hash "never stored")
+    in let swapped = served ix other
+    in act
+      print-line-uni ("request survives the wire: " & show ((wired-request (wire (MsgWorkRequest (ask-work client-id want)))).hash == want))
+      print-line-uni ("type name: " & msg-type-name (MsgWorkRequest (ask-work client-id want)))
+      print-line-uni ("served: " & got (accept-reply reply want) (body "alpha"))
+      print-line-uni ("miss is empty, not an error: " & show (reply-is-empty miss))
+      print-line-uni ("miss refused: " & got (accept-reply miss (fact-content-hash "never stored")) (body "alpha"))
+      print-line-uni ("peer sends a DIFFERENT work: " & got (accept-reply (claiming want (swapped.payload)) want) (body "alpha"))
+      print-line-uni ("peer FORGES content under the asked-for hash: " & got (accept-reply (claiming want (forged-payload kp want)) want) (body "alpha"))
+      print-line-uni ("peer answers a question nobody asked: " & got (accept-reply (claiming other (reply.payload)) want) (body "alpha"))
+      print-line-uni ("trailing bytes are ignored, not corruption: " & got (accept-reply (claiming want (reply.payload & "x")) want) (body "alpha"))
+      print-line-uni ("the store serves what is named: " & got (accept-reply swapped other) (body "beta"))
+    end
+
+  opening : [Device.Block, Console.Write] Nothing = act
+    let kp = generate-keypair seed-bytes
+    in let m = manifest-add manifest-empty (kp.fingerprint) (kp.public-key) 10000
+    in let ix = repo-index-verified (seeded kp) m 5000
+    in report ix kp
+  end

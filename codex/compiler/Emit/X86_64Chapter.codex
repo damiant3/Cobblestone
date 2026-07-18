@@ -1,6 +1,4 @@
 Chapter: X86-64 Code Generator
-  cites Codex chapter Lists
-  cites Codex chapter Runtime
   cites Foreword chapter Sha256
   cites Emit chapter Emit Allocator (init-emit-workspace)
   cites Codex chapter Build Settings (code-buffer-size, data-buffer-size, accum-capacity)
@@ -320,21 +318,54 @@ Section: Bare-Metal Start
    in let st6 = emit-print-text-no-newline (false-lit.state) (false-lit.reg)
    in patch-jmp-at st6 jmp-end-pos (st6.code-len)
 
-  emit-uefi-start : CodegenState -> CodegenState
-  emit-uefi-start (st) =
-   let st0 = record-func-offset st "__start"
-   in let st1 = st-append-code st0 (push-r reg-rbp & mov-rr reg-rbp reg-rsp & push-r reg-rbx & push-r reg-r12 & push-r reg-r13 & push-r reg-r14 & emit-sub-rsp-imm32 256)
-   in let st2 = st-append-code st1 ([76, 139, 20, 37] & write-i32 uefi-heap-base-addr)
-   in let st3 = st-append-code st2 (li reg-rdi 28672)
-   in let st4 = st-append-code st3 (mov-store reg-rdi reg-r10 0)
-   in let st5 = emit-call-to st4 "opening"
-   in let st6 = st-append-code st5 (add-ri reg-rsp 256)
-   in let st7 = st-append-code st6 (pop-r reg-r14 & pop-r reg-r13 & pop-r reg-r12 & pop-r reg-rbx)
-   in let st8 = st-append-code st7 (pop-r reg-rbp)
-   in st-append-code st8 [195]
+ The scope store is the twin of emit-grant-cap-mask: proc 0's authority
+ to touch the disk is its capability bits, and the extent of that
+ authority is its scope. Both are known at emit time and both are
+ written into the process table before opening runs.
 
-  emit-start : CodegenState, Integer, Integer, List Text -> CodegenState
-  emit-start (st) (first-stub-vaddr) (syscall-handler-offset) (manifest-effs) =
+ emit-text-lit puts the string in the data buffer and leaves its
+ address in a register through the ordinary rodata fixup, so the cell
+ holds an honest Text — the same representation every other Text in the
+ program has, and the one process-get-scope hands back.
+
+ The value is copied to RAX before RDI is loaded because emit-text-lit
+ allocates its result through the rotating temp pool and may hand back
+ RDI itself; loading the address first would clobber the string pointer
+ with the address it was about to be stored at.
+
+  emit-set-boot-scope : CodegenState, Integer, Integer, Text -> CodegenState
+  emit-set-boot-scope (st) (proc-index) (offset) (scope) =
+   let lit = emit-text-lit st scope
+   in let scope-addr = proc-table-base + proc-index * proc-entry-size + offset
+   in let st1 = st-append-code (lit.state) (mov-rr reg-rax (lit.reg))
+   in let st2 = st-append-code st1 (li reg-rdi scope-addr)
+   in st-append-code st2 (mov-store reg-rdi reg-rax 0)
+
+ The default FileSystem handler install (BACKLOG 1.14). For an op that
+ resolved to a handler-table slot -- which is exactly when the program
+ cites FileSystem -- allocate an 8-byte closure at the heap frontier whose
+ only word is the servicer stub's address, and store the closure pointer
+ into the slot. A performed read-text/write-file then reaches the stub the
+ way emit-effect-op-call reaches any handler: slot -> closure -> code. A
+ user `with FileSystem` still pushes over the slot and pops back to this
+ default. R10 is a valid heap pointer here (set in __start, not yet handed
+ to the arena) so the closure lives below arena-base and survives the REPL
+ loop's R10 reset. find-effect-op-addr returns the slot ADDRESS, not an
+ index, so it loads straight into r11.
+
+  emit-seed-fs-handler : CodegenState, Text, Text -> CodegenState
+  emit-seed-fs-handler (st) (op-name) (stub-name) =
+   let eoa = find-effect-op-addr (st.effect-op-addrs) op-name 0 (list-length (st.effect-op-addrs))
+   in if eoa < 0 then st
+   else let st1 = emit-load-func-addr st reg-rcx stub-name
+   in let st2 = st-append-code st1 (mov-rr reg-rax reg-r10)
+   in let st3 = st-append-code st2 (add-ri reg-r10 16)
+   in let st4 = st-append-code st3 (mov-store reg-rax reg-rcx 0)
+   in let st5 = st-append-code st4 (li reg-r11 eoa)
+   in st-append-code st5 (mov-store reg-r11 reg-rax 0)
+
+  emit-start : CodegenState, Integer, Integer, List Text, Text, Text -> CodegenState
+  emit-start (st) (first-stub-vaddr) (syscall-handler-offset) (manifest-effs) (fs-scope) (net-scope) =
    let st0 = record-func-offset st "__start"
    in let st1 = st-append-code st0 (push-r reg-rbp & mov-rr reg-rbp reg-rsp & push-r reg-rbx & push-r reg-r12 & push-r reg-r13 & push-r reg-r14 & emit-sub-rsp-imm32 0)
    in let st2 = st-append-code st1 cli
@@ -351,11 +382,16 @@ Section: Bare-Metal Start
    in let st7a = st-append-code st7 (li reg-rdi ram-size-addr)
    in let st8 = st-append-code st7a (mov-load reg-rax reg-rdi 0)
    in let st11 = st-append-code st8 (mov-store reg-r11 reg-rax 0)
-   in let st12 = emit-process-setup st11
+   in let stU0 = st-append-code st11 ([72, 139, 4, 37] & write-i32 32768)
+   in let stU1 = st-append-code stU0 (li reg-rdi uefi-systab-addr)
+   in let stU2 = st-append-code stU1 (mov-store reg-rdi reg-rax 0)
+   in let st12 = emit-process-setup stU2
    in let cap-names = manifest-cap-names manifest-effs 0 (list-length manifest-effs) []
-   in let grant-mask = boot-cap-mask cap-names 0 (list-length cap-names) 0
+   in let grant-mask = boot-cap-mask cap-names manifest-effs 0 (list-length cap-names) 0
    in let st14 = if grant-mask == 0 then st12 else emit-grant-cap-mask st12 0 grant-mask
-   in let st15 = emit-grant-capability st14 1 cap-console
+   in let st14s = emit-set-boot-scope st14 0 proc-scope-offset fs-scope
+   in let st14n = emit-set-boot-scope st14s 0 proc-net-scope-offset net-scope
+   in let st15 = emit-grant-capability st14n 1 cap-console
    in let syscall-vaddr = bare-metal-load-addr + syscall-handler-offset
    in let st16 = emit-write-msr st15 3221225601 (8 * 4294967296)
    in let st17 = emit-write-msr st16 3221225602 syscall-vaddr
@@ -395,7 +431,9 @@ Section: Bare-Metal Start
    in let st36c2 = emit-smp-init st36c1
    in let st36d = emit-nic-init st36c2
    in let st37 = emit-control-string st36d [82, 69, 65, 68, 89, 10]
-   in let st38 = st-append-code st37 (li reg-rdi arena-base-addr)
+   in let st37s1 = emit-seed-fs-handler st37 "read-text" "__fs-read-servicer"
+   in let st37s2 = emit-seed-fs-handler st37s1 "write-file" "__fs-write-servicer"
+   in let st38 = st-append-code st37s2 (li reg-rdi arena-base-addr)
    in let st41 = st-append-code st38 (mov-store reg-rdi reg-r10 0)
    in let repl-loop = st41.code-len
    in let st42 = st-append-code st41 (li reg-rdi heap-hwm-addr)
@@ -570,64 +608,6 @@ Section: Chapter Entry Point
 
 Section: Finalize
 
-  x86-64-init-codegen : TypeEnv -> CodegenState
-  x86-64-init-codegen (env) =
-   let tdefs = env.bindings
-   in
-   let tramp = bare-metal-trampoline
-   in let ws = init-emit-workspace code-buffer-size data-buffer-size
-   in let bw1 = __buf-write-bytes (ws.code-buffer) 0 (tramp.bytes)
-   in let bw2 = __buf-write-bytes (ws.data-buffer) 0 init-rodata
-   in CodegenState {
-   workspace = ws,
-   code-len = list-length (tramp.bytes),
-   data-len = list-length init-rodata,
-   fo-names = [],
-   fo-offsets = [],
-   cp-offsets = [],
-   cp-targets = [],
-   fa-offsets = [],
-   fa-targets = [],
-   rf-poffsets = [],
-   rf-roffsets = [],
-   da-poffsets = [],
-   da-offsets = [],
-   stack-overflow-checks = [],
-   locals = [],
-   next-temp = 0,
-   next-local = 0,
-   spill-count = 0,
-   load-local-toggle = 0,
-   tco = TcoState {
-    active = False,
-    in-tail-pos = False,
-    loop-top = 0,
-    param-locals = [],
-    temp-locals = [],
-    current-func = "",
-    saved-next-local = 0,
-    saved-next-temp = 0
-   },
-   type-defs = tdefs,
-   builtin-names = sorted-builtin-names,
-   emit-work = 0,
-   exit-mode = ExitRepl,
-   watchdog-mode = WatchdogProgress,
-   opening-ret-type = NothingTy,
-   state-local = 0 - 1,
-   user-arities = [],
-   bag = empty-bag,
-   deck-bound = False,
-   effect-op-addrs = [],
-   vm-profile = vm-profile-spec,
-   poison-alloc = False,
-   trace-alloc = False,
-   noalias-slots = [],
-   field-cache = [],
-   fresh-slots = [],
-   stype-sites = []
-  }
-
   x86-64-init-codegen-sorted : List TypeBinding -> CodegenState
   x86-64-init-codegen-sorted (tdefs) =
    let tramp = bare-metal-trampoline
@@ -675,11 +655,16 @@ Section: Finalize
    bag = empty-bag,
    deck-bound = False,
    effect-op-addrs = [],
+   eo-reads = [],
+   eo-handled = [],
    vm-profile = vm-profile-spec,
    poison-alloc = False,
    trace-alloc = False,
    stack-guard = True,
    omit-frame-pointer = False,
+   peak-local = 0,
+   peak-spill = 0,
+   func-local-regs = [],
    noalias-slots = [],
    field-cache = [],
    fresh-slots = [],
@@ -759,6 +744,79 @@ Section: Capability Manifest
    if i >= len then acc
    else manifest-name-values ns (i + 1) len (manifest-add-name acc ((list-at ns i).value))
 
+ The opening's scope for a given effect family, which the boot grant
+ hands to proc 0 the same way emit-grant-cap-mask hands it its bits.
+ The manifest pipeline is a List Text of NAMES and drops the scope on
+ the floor (BACKLOG 1.5, the loader ring) — but the boot ring does not
+ need the manifest at all: the scope literal is right here in the row
+ at emit time, so it is read straight off the label.
+
+ Two families now have a runtime chokepoint and are carried: the
+ filesystem (a path PREFIX, checked at the three Fat16 gates) and the
+ network (an AUTHORITY, checked at the fetch chokepoint against a
+ runtime URL's host). A console channel is the third relation
+ scope-admits knows about and is NOT carried — a channel is fixed at
+ compile time by the builtin name and never becomes a runtime value,
+ so there is nothing at runtime to check a stored channel against, and
+ carrying it would be a promise the machine cannot keep (BACKLOG 1.5).
+
+ The EMPTY STRING is a real answer, not a missing one: an opening that
+ names no scope for the family gets "", the cell holds a valid Text,
+ and the family's relation admits everything by itself (the empty
+ prefix admits every path; an empty authority admits every host). That
+ is what keeps a program which never declared the effect from handing
+ the chokepoint a null pointer.
+
+  manifest-opening-fs-scope : List TypeBinding -> Text
+  manifest-opening-fs-scope (types) = manifest-find-opening-scope types "FileSystem" 0 (list-length types)
+
+  manifest-opening-net-scope : List TypeBinding -> Text
+  manifest-opening-net-scope (types) = manifest-find-opening-scope types "Network" 0 (list-length types)
+
+  manifest-find-opening-scope : List TypeBinding, Text, Integer, Integer -> Text
+  manifest-find-opening-scope (types) (family) (i) (len) =
+   if i >= len then ""
+   else let t = list-at types i
+   in if t.name == "opening" then manifest-type-scope (t.bound-type) family ""
+      else manifest-find-opening-scope types family (i + 1) len
+
+ Both shapes carry the row, and an opening is usually the second one:
+ `opening : [Console, FileSystem.Read "/config/"] Nothing` is a VALUE
+ with an effect row, not a function, so its type is an EffectfulTy and
+ not a FunTy. EffectfulTy's second field is the scope list, parallel to
+ its name list — reading the names and ignoring that list is exactly
+ how the scope got dropped everywhere else in this pipeline.
+
+  manifest-type-scope : CodexType, Text, Text -> Text
+  manifest-type-scope (ty) (family) (acc) =
+   when ty
+    is FunTy (p) (row) (r) -> manifest-type-scope r family (manifest-label-scope (row.labels) family 0 (list-length (row.labels)) acc)
+    is ForAllTy (id) (b) -> manifest-type-scope b family acc
+    is ForAllEff (id) (b) -> manifest-type-scope b family acc
+    is EffectfulTy (effs) (scs) (inner) -> manifest-type-scope inner family (manifest-name-scope effs scs family 0 (list-length effs) acc)
+    is otherwise -> acc
+
+  manifest-name-scope : List Name, List Text, Text, Integer, Integer, Text -> Text
+  manifest-name-scope (ns) (scs) (family) (i) (len) (acc) =
+   if i >= len then acc
+   else if text-length acc > 0 then acc
+   else if i >= list-length scs then acc
+   else let n = ((list-at ns i).value)
+   in let s = list-at scs i
+   in if manifest-effect-base n == family & text-length s > 0
+      then manifest-name-scope ns scs family (i + 1) len s
+      else manifest-name-scope ns scs family (i + 1) len acc
+
+  manifest-label-scope : List EffectLabel, Text, Integer, Integer, Text -> Text
+  manifest-label-scope (ls) (family) (i) (len) (acc) =
+   if i >= len then acc
+   else if text-length acc > 0 then acc
+   else let l = list-at ls i
+   in let base = manifest-effect-base ((l.name).value)
+   in if base == family & text-length (l.scope) > 0
+      then manifest-label-scope ls family (i + 1) len (l.scope)
+      else manifest-label-scope ls family (i + 1) len acc
+
   manifest-add-name : List Text, Text -> List Text
   manifest-add-name (acc) (n) =
    if manifest-name-in acc n 0 (list-length acc) then acc else list-push acc n
@@ -784,6 +842,54 @@ Section: Capability Manifest
    else if char-code (char-at n i) == char-code (char-at "." 0) then substring n 0 i
    else manifest-base-loop n (i + 1) len
 
+ Direction, derived from the row instead of asserted.
+
+ manifest-cap-bytes used to write a literal `cdx-le16 2` -- readwrite --
+ for every capability it emitted, so a program declaring
+ [FileSystem.Read] put a READWRITE filesystem capability into its own
+ manifest. The loader's dir-bits was never wrong: it honours read-only
+ grants exactly as the format intends, and it was simply being TOLD
+ readwrite by a compiler that never asked the effect row. Direction was
+ broken at the source, and every consumer downstream inherited it.
+
+ The dotted member is the direction: FileSystem.Read is read, .Write is
+ write, and a bare FileSystem asks for both. A family with no read/write
+ split (Device.Block, Gpu.Compute) has no direction to name, so it takes
+ readwrite -- the honest answer, because withholding a bit the family
+ does not model would deny an authority the program correctly declared.
+
+ A program naming BOTH .Read and .Write gets readwrite, which is the
+ union it asked for and not an escalation.
+
+  manifest-dir-read : Integer = 0
+  manifest-dir-write : Integer = 1
+  manifest-dir-readwrite : Integer = 2
+
+  manifest-cap-direction : List Text, Text -> Integer
+  manifest-cap-direction (effs) (cap) =
+   let f = manifest-dir-flags effs cap 0 (list-length effs) 0
+   in if bit-and f 4 /= 0 then manifest-dir-readwrite
+      else if bit-and f 3 == 3 then manifest-dir-readwrite
+      else if bit-and f 1 /= 0 then manifest-dir-read
+      else if bit-and f 2 /= 0 then manifest-dir-write
+      else manifest-dir-readwrite
+
+  manifest-dir-flags : List Text, Text, Integer, Integer, Integer -> Integer
+  manifest-dir-flags (effs) (cap) (i) (len) (acc) =
+   if i >= len then acc
+   else let e = list-at effs i
+   in if manifest-effect-base e /= cap then manifest-dir-flags effs cap (i + 1) len acc
+      else if e == cap then manifest-dir-flags effs cap (i + 1) len (bit-or acc 4)
+      else if manifest-effect-member e == "Read" then manifest-dir-flags effs cap (i + 1) len (bit-or acc 1)
+      else if manifest-effect-member e == "Write" then manifest-dir-flags effs cap (i + 1) len (bit-or acc 2)
+      else manifest-dir-flags effs cap (i + 1) len (bit-or acc 4)
+
+  manifest-effect-member : Text -> Text
+  manifest-effect-member (n) =
+   let base = manifest-effect-base n
+   in if text-length base >= text-length n then ""
+      else substring n (text-length base + 1) (text-length n - text-length base - 1)
+
   manifest-cap-id : Text -> Integer
   manifest-cap-id (n) =
    if n == "Console" then 0
@@ -795,33 +901,100 @@ Section: Capability Manifest
    else if n == "Gpu.Memory" then 6
    else if n == "Identity" then 7
    else if n == "Capability" then 8
+   else if n == "Gpu" then 9
+   else if n == "Camera" then 10
+   else if n == "Microphone" then 11
+   else if n == "Location" then 12
+   else if n == "Sensors" then 13
+   else if n == "Display" then 14
+   else if n == "Flash" then 15
+   else if n == "Audio" then 16
    else 0 - 1
+
+ BACKLOG 1.13 -- the anti-drift guard. capability-vocabulary
+ (TypeChecker) admits an effect at the type level; manifest-cap-id
+ (here) gives it a slot in the CDX capability section. A name in the
+ first with no id in the second admitted through the type checker and
+ was then SILENTLY dropped by manifest-cap-names, so [Gpu] once
+ compiled clean -- exit 0, no diagnostic at any severity -- and was
+ denied at runtime the moment 1.6 armed the gpu-memory guard. This
+ makes that drift a build error instead: every vocabulary name must
+ resolve to a cap id, itself or its base for a dotted refinement
+ (Console.Read answers to Console, exactly as manifest-cap-names
+ covers it). It walks the vocabulary once per compile, so a drift
+ halts the FIRST compile after it is introduced -- the self-compile
+ and the BVT among them -- rather than shipping an effect the manifest
+ cannot carry. The two hand-kept tables now agree by construction on
+ every build, not by inspection.
+
+  cap-vocab-drift-diags : List Text, Integer, Integer, List Diagnostic -> List Diagnostic
+  cap-vocab-drift-diags (vocab) (i) (len) (acc) =
+   if i >= len then acc
+   else let n = list-at-text vocab i
+   in let cover = if manifest-cap-id n >= 0 then n else manifest-effect-base n
+   in if manifest-cap-id cover >= 0 then cap-vocab-drift-diags vocab (i + 1) len acc
+      else cap-vocab-drift-diags vocab (i + 1) len (list-push acc (make-error cdx-capability-not-granted ("capability vocabulary name '" & n & "' has no manifest cap id -- capability-vocabulary (TypeChecker) and manifest-cap-id (X86_64Chapter) have drifted; every vocabulary name must map to a cap id (BACKLOG 1.13)") synthetic-span))
+
+  check-cap-vocab-coherent : List Diagnostic
+  check-cap-vocab-coherent = cap-vocab-drift-diags capability-vocabulary 0 (list-length capability-vocabulary) []
 
  The boot grant for proc 0 derives from the same manifest names the
  capability section records: each covered name contributes its kernel
  capability bits, and anything the manifest does not declare stays
  ungranted (Concurrent covers task spawn, channels, and process
  creation — the three faces of the concurrency authority in this
- kernel). Identity and capability-admin bits have no effect-row
- source yet, so no program receives them at boot.
+ kernel). Identity and Capability are effect-row sources like the
+ rest: a program that declares Identity earns cap-identity at boot,
+ which is what every identity builtin's kernel helper now tests.
 
-  boot-cap-mask-for : Text -> Integer
-  boot-cap-mask-for (n) =
-   if n == "Console" then bit-or (bit-shl 1 cap-console) (bit-or (bit-shl 1 cap-console-read) (bit-shl 1 cap-console-write))
-   else if n == "FileSystem" then bit-or (bit-shl 1 cap-filesystem-read) (bit-shl 1 cap-filesystem-write)
-   else if n == "Network" then bit-or (bit-shl 1 cap-network-read) (bit-shl 1 cap-network-write)
+ boot-cap-mask-for is the boot path's expansion of the same table
+ cdx-cap-to-kern-bits expands for the verified-load path, and the two
+ must not disagree -- a binary gets its authority from one of them and
+ must not get a different answer depending on which door it came in
+ through (BACKLOG 1.12). It used to ignore DIRECTION entirely, granting
+ FileSystem read AND write to a program that declared only
+ [FileSystem.Read], while the loader honoured the read-only grant. It
+ takes the direction now, from the same derivation the manifest writes,
+ so the two paths read one table the same way.
+
+ boot-dir-bits is dir-bits (VerifiedLoader) written here rather than
+ shared, because the compiler cannot cite the OS quire. That duplication
+ is the bug this entry is about, and it is now duplicated CORRECTLY --
+ which is not a fix, only a truce. The real fix is one function; see
+ 1.12's note about deriving one expansion from the other.
+
+  boot-dir-bits : Integer, Integer, Integer -> Integer
+  boot-dir-bits (dir) (read-bit) (write-bit) =
+   if dir == manifest-dir-read then bit-shl 1 read-bit
+   else if dir == manifest-dir-write then bit-shl 1 write-bit
+   else bit-or (bit-shl 1 read-bit) (bit-shl 1 write-bit)
+
+  boot-cap-mask-for : Text, Integer -> Integer
+  boot-cap-mask-for (n) (dir) =
+   if n == "Console" then bit-or (bit-shl 1 cap-console) (boot-dir-bits dir cap-console-read cap-console-write)
+   else if n == "FileSystem" then boot-dir-bits dir cap-filesystem-read cap-filesystem-write
+   else if n == "Network" then boot-dir-bits dir cap-network-read cap-network-write
    else if n == "Concurrent" then bit-or (bit-shl 1 cap-concurrent) (bit-or (bit-shl 1 cap-ipc) (bit-shl 1 cap-process-create))
    else if n == "Device" then bit-or (bit-shl 1 cap-block-device) (bit-shl 1 cap-device)
    else if n == "Gpu.Compute" then bit-shl 1 cap-gpu-compute
    else if n == "Gpu.Memory" then bit-shl 1 cap-gpu-memory
+   else if n == "Gpu" then bit-or (bit-shl 1 cap-gpu-compute) (bit-shl 1 cap-gpu-memory)
    else if n == "Identity" then bit-shl 1 cap-identity
    else if n == "Capability" then bit-shl 1 cap-capability-admin
+   else if n == "Camera" then bit-shl 1 cap-camera
+   else if n == "Microphone" then bit-shl 1 cap-microphone
+   else if n == "Location" then bit-shl 1 cap-location
+   else if n == "Sensors" then bit-shl 1 cap-sensors
+   else if n == "Display" then bit-shl 1 cap-display
+   else if n == "Flash" then bit-shl 1 cap-flash
+   else if n == "Audio" then bit-shl 1 cap-audio
    else 0
 
-  boot-cap-mask : List Text, Integer, Integer, Integer -> Integer
-  boot-cap-mask (caps) (i) (len) (acc) =
+  boot-cap-mask : List Text, List Text, Integer, Integer, Integer -> Integer
+  boot-cap-mask (caps) (effs) (i) (len) (acc) =
    if i >= len then acc
-   else boot-cap-mask caps (i + 1) len (bit-or acc (boot-cap-mask-for (list-at caps i)))
+   else let name = list-at caps i
+   in boot-cap-mask caps effs (i + 1) len (bit-or acc (boot-cap-mask-for name (manifest-cap-direction effs name)))
 
   manifest-cap-names : List Text, Integer, Integer, List Text -> List Text
   manifest-cap-names (effs) (i) (len) (acc) =
@@ -831,10 +1004,32 @@ Section: Capability Manifest
    in if manifest-cap-id cover >= 0 then manifest-cap-names effs (i + 1) len (manifest-add-name acc cover)
       else manifest-cap-names effs (i + 1) len acc
 
-  manifest-cap-bytes : List Text, Integer, Integer, List Integer -> List Integer
-  manifest-cap-bytes (caps) (i) (len) (acc) =
+ The capability section carries the scope, and until now it lied about
+ having none: the length field was a hardcoded `cdx-le32 0`, so every
+ binary this compiler emitted told the verifier its grants were
+ unscoped. The verifier has always been able to read a scope —
+ `CdxVerifier` decodes the bytes and strides `16 + scope-len`, and
+ `CdxBinary` writes them the same way — so the format was never the
+ gap. One hardcoded zero was.
+
+ Only the filesystem grant carries one, for the same reason
+ manifest-opening-fs-scope carries only that scope: a path is the one
+ resource string the machine can check. Writing a scope for a family
+ with no runtime chokepoint would be a promise the loader cannot keep.
+
+ The bytes are CCE (`char-code`), which is what `CdxBinary`'s
+ `text-to-cap-bytes` writes and `CdxVerifier`'s `bytes-to-text` reads.
+ Do not "fix" this into ASCII: both ends of this format agree on CCE,
+ and only the two of them ever read it.
+
+  manifest-cap-bytes : List Text, List Text, Text, Text, Integer, Integer, List Integer -> List Integer
+  manifest-cap-bytes (caps) (effs) (fs-scope) (net-scope) (i) (len) (acc) =
    if i >= len then acc
-   else manifest-cap-bytes caps (i + 1) len (acc & cdx-le16 (manifest-cap-id (list-at caps i)) & cdx-le16 2 & cdx-le32 0 & cdx-le64 0)
+   else let name = list-at caps i
+   in let scope = if name == "FileSystem" then fs-scope else if name == "Network" then net-scope else ""
+   in let scope-bytes = manifest-text-bytes scope 0 (text-length scope) []
+   in let dir = manifest-cap-direction effs name
+   in manifest-cap-bytes caps effs fs-scope net-scope (i + 1) len (acc & cdx-le16 (manifest-cap-id name) & cdx-le16 dir & cdx-le32 (list-length scope-bytes) & scope-bytes & cdx-le64 0)
 
   manifest-text-bytes : Text, Integer, Integer, List Integer -> List Integer
   manifest-text-bytes (s) (i) (len) (acc) =
@@ -851,12 +1046,13 @@ Section: Capability Manifest
   manifest-effects-section (effs) =
    cdx-le16 (list-length effs) & manifest-eff-bytes effs 0 (list-length effs) []
 
-  x86-64-apply-patches-and-build-cdx : CodegenState, Integer, Boolean, List Text -> EmitChapterResult
-  x86-64-apply-patches-and-build-cdx (st) (far-jump-patch-pos) (has-oom) (manifest-effs) =
+  x86-64-apply-patches-and-build-cdx : CodegenState, Integer, Boolean, List Text, Text, Text -> EmitChapterResult
+  x86-64-apply-patches-and-build-cdx (st) (far-jump-patch-pos) (has-oom) (manifest-effs) (fs-scope) (net-scope) =
    let func-map = build-offset-table-parallel (st.fo-names) (st.fo-offsets)
    in let st2a = check-call-patch-targets st func-map 0
    in let st2b = check-func-addr-targets st2a func-map 0
-   in let st2c = check-runtime-symbol st2b func-map "__start"
+   in let st2e = check-effect-op-reads st2b 0
+   in let st2c = check-runtime-symbol st2e func-map "__start"
    in let st2d = if has-oom then check-runtime-symbol st2c func-map "__out_of_memory" else st2c
    in let start-offset = offset-table-lookup func-map "__start"
    in let start-addr = bare-metal-load-addr + start-offset
@@ -875,7 +1071,7 @@ Section: Capability Manifest
    in let text-aligned = align-up code-len 8
    in let content-len = text-aligned + data-len
    in let cap-names = manifest-cap-names manifest-effs 0 (list-length manifest-effs) []
-   in let cap-bytes = manifest-cap-bytes cap-names 0 (list-length cap-names) []
+   in let cap-bytes = manifest-cap-bytes cap-names manifest-effs fs-scope net-scope 0 (list-length cap-names) []
    in let eff-bytes = if list-length manifest-effs == 0 then [] else manifest-effects-section manifest-effs
    in let func-count = list-length (st2d.fo-names)
    in let debug-map = build-debug-map (st2d.fo-names) (st2d.fo-offsets) code-len func-count
@@ -913,12 +1109,13 @@ Section: Capability Manifest
     symbol-map = smap
    }
 
-  x86-64-finalize-cdx : CodegenState, Integer, List Text -> EmitChapterResult
-  x86-64-finalize-cdx (st1) (far-jump-patch-pos) (manifest-effs) =
+  x86-64-finalize-cdx : CodegenState, Integer, List Text, Text, Text -> EmitChapterResult
+  x86-64-finalize-cdx (st1) (far-jump-patch-pos) (manifest-effs) (fs-scope) (net-scope) =
    let isr-result = emit-isr-stubs st1
    in let syscall-result = emit-syscall-handler (isr-result.state)
-   in let st2 = emit-start (syscall-result.state) (isr-result.first-stub-vaddr) (syscall-result.handler-offset) manifest-effs
-   in x86-64-apply-patches-and-build-cdx st2 far-jump-patch-pos True manifest-effs
+   in let st1b = emit-runtime-init-fn (syscall-result.state) (isr-result.first-stub-vaddr) (syscall-result.handler-offset)
+   in let st2 = emit-start st1b (isr-result.first-stub-vaddr) (syscall-result.handler-offset) manifest-effs fs-scope net-scope
+   in x86-64-apply-patches-and-build-cdx st2 far-jump-patch-pos True manifest-effs fs-scope net-scope
 
   cdx-build-header : List Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> List Integer
   cdx-build-header (hash) (text-off) (text-sz) (ro-off) (ro-sz) (entry-off) (debug-off) (cap-off-v) (cap-sz-v) (eff-off-v) (eff-sz-v) =
@@ -1068,11 +1265,11 @@ Section: Binary Debug Map (MAP1)
    in let st0a = emit-runtime-helpers st-ar
    in let dx = __deck-exit
    in let st1 = emit-all-defs st0a defs-lifted 0
-   in x86-64-finalize-cdx st1 (tramp.far-jump-patch-pos) (manifest-opening-effects tdefs)
+   in x86-64-finalize-cdx st1 (tramp.far-jump-patch-pos) (manifest-opening-effects tdefs) (manifest-opening-fs-scope tdefs) (manifest-opening-net-scope tdefs)
 
   assign-effect-op-addrs : List Text, Integer between 0 and 65535, Integer, List EffectOpAddr -> List EffectOpAddr
   assign-effect-op-addrs (names) (i) (len) (acc) =
    if i >= len then acc
    else assign-effect-op-addrs names (i + 1) len (list-push acc (EffectOpAddr { name = list-at names i, addr = handler-table-base-addr + i * 8 }))
 
-Page 3 of 10
+Page 3 of 14

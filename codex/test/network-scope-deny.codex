@@ -1,0 +1,38 @@
+Chapter: NetworkScopeDeny
+  cites Net chapter HttpFetch
+
+ The network authority scope is enforced at RUNTIME, and this is the
+ test that says so -- the twin of scope-runtime-deny for the filesystem
+ path.
+
+ Until now a Network scope literal was a compile-time lint and nothing
+ more: the checker refused an out-of-scope URL it could SEE (keyed on
+ the operation), and any URL the program built from input walked past
+ the promise. Here the scope reaches the wire: the boot grant writes the
+ authority into proc 0's process-table entry, and the fetch chokepoint
+ asks for it before it opens a socket.
+
+ This program grants itself Network.Write "ok.host" and asks the gate
+ about two URLs. The comparison is the whole test -- same code as
+ network-scope-open, one scope literal apart:
+
+   ok.host   is the granted authority, so a fetch of http://ok.host/ is
+             admitted. A gate that also denied the permitted host would
+             be a broken network, not a scoped one.
+
+   evil.host is a different authority. A URL naming it is refused before
+             any DNS or connect, because a host matches WHOLE and never
+             by prefix -- evil.host is not ok.host.
+
+ The answer is one number: ten if the in-scope URL is admitted, plus one
+ if the out-of-scope URL is admitted. 10 is the only pass. 11 means the
+ gate is open. 0 or 1 means it denied the host it was told to allow.
+
+Section: Entry
+
+  opening : [Console, Network.Write "ok.host"] Nothing
+  opening = act
+    let inx = if net-scope-admits "http://ok.host/path" then 10 else 0
+    in let outx = if net-scope-admits "http://evil.host/path" then 1 else 0
+    in print-line-uni (show (inx + outx))
+  end

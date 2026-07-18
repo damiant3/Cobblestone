@@ -82,12 +82,7 @@ write):
 - `codex/os/verify/` — CDX binary verifier
 
 ### Design Context
-- `docs/Designs/OS/Done/CryptoPrimitives.md` — crypto design decisions
-- `docs/Designs/OS/Active/Identity.md` — identity model
-- `docs/Designs/OS/Active/TrustAndRuntime.md` — trust lattice design
-- `docs/Designs/OS/Done/CodexBinary.md` — CDX binary format
-- `docs/Designs/Hardware/Active/REAL-HARDWARE-BRINGUP.md` — x86 hardware
-- `docs/Designs/OS/Active/DistributedAgentOS.md` — agent-centric OS
+- `docs/PM/Stories/Vision/DistributedAgentOS.md` — agent-centric OS
 
 ## Constraints
 
@@ -123,7 +118,6 @@ per deliverable:
 - `ProtocolStack.md`
 - `ComplianceEvidence.md`
 - `OTAFirmwareUpdate.md`
-- `CrossArchitectureTestStrategy.md`
 
 Each document should follow the project's existing design doc pattern:
 state the problem, state the constraints, state the design, state the

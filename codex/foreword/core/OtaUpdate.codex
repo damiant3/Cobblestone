@@ -1,6 +1,7 @@
 Chapter: OtaUpdate
   cites Foreword chapter Maybe
   cites Foreword chapter Sha256
+  cites Foreword chapter Hkdf
   cites Foreword chapter Units (DataSize)
   cites Foreword chapter DateTime (Timestamp)
 
@@ -237,16 +238,41 @@ Section: Gate A -- Streaming Verification
     else GateAFailMagic
    else GateAFailMagic
 
+ sha256 answers the compressor's eight 32-bit WORDS, not thirty-two
+ bytes. This function used to hand those words straight to ota-hash-eq
+ with a length of 32 -- so it compared a word against a byte at each of
+ the first eight positions and then walked twenty-four elements off the
+ end of an eight-element list. It could not have passed for a real byte
+ digest and nothing called it, which is the only reason it never
+ halted. Both lists are List Integer, so the type system could not see
+ it: exactly the trap that shipped a CCE hostname through TLS SNI until
+ 2026-07-13. hkdf-words-to-bytes is the conversion, and it belongs at
+ the boundary where the digest is produced.
+
+  ota-digest-bytes : List Integer -> List Integer
+  ota-digest-bytes (block) = hkdf-words-to-bytes (sha256 block)
+
   gate-a-verify-block : List Integer, List Integer -> GateAResult
   gate-a-verify-block (block) (expected-hash) =
-   let actual = sha256 block
-   in if ota-hash-eq actual expected-hash 0 32 then GateAPass
+   if ota-hash-eq (ota-digest-bytes block) expected-hash 0 sha256-digest-bytes then GateAPass
    else GateAFailHash
+
+  sha256-digest-bytes : Integer = 32
+
+ A comparison whose length is a promise rather than a measurement is how
+ the above walked off the end. Both lists must actually hold len bytes,
+ and a hash of the wrong length is a mismatch, not a crash.
 
   ota-hash-eq : List Integer, List Integer, Integer, Integer -> Boolean
   ota-hash-eq (a) (b) (i) (len) =
+   if list-length a < len then False
+   else if list-length b < len then False
+   else ota-hash-eq-loop a b i len
+
+  ota-hash-eq-loop : List Integer, List Integer, Integer, Integer -> Boolean
+  ota-hash-eq-loop (a) (b) (i) (len) =
    if i >= len then True
-   else if list-at a i == list-at b i then ota-hash-eq a b (i + 1) len
+   else if list-at a i == list-at b i then ota-hash-eq-loop a b (i + 1) len
    else False
 
 Section: Gate B -- Full Verification

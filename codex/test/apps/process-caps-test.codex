@@ -18,6 +18,13 @@ Chapter: ProcessCapsTest
  back. A denied decision (empty lattice: author below threshold)
  must write nothing and report False.
 
+ apply-load-decision installs a scope as well as a capability word now
+ (BACKLOG 1.5, the loader ring), and installing a scope is privileged —
+ so it carries [Capability], the opening declares it, and the two writes
+ are act-binds rather than lets. A let bound to a value with a concrete
+ effect row is CDX2033, which is exactly the diagnostic that pointed
+ here when the row changed.
+
 Section: Helpers
   show-bool : Boolean -> Text
   show-bool (b) = if b then "True" else "False"
@@ -25,7 +32,7 @@ Section: Helpers
   test-sk : List Integer = [157, 97, 177, 157, 239, 253, 90, 96, 186, 132, 74, 244, 146, 236, 44, 196, 68, 73, 197, 105, 123, 50, 105, 25, 112, 59, 172, 3, 28, 174, 127, 96]
 
 Section: Body
-  opening : [Console] Nothing =
+  opening : [Console, Capability] Nothing =
     let binary = cdx-encode-signed (CdxBinaryParts {
       flags = cdx-flag-bare-metal,
       capabilities = [
@@ -43,14 +50,12 @@ Section: Body
     in let lat = lattice-add-direct lattice-empty author-key 8000
     in let policy = policy-add-rule (policy-empty "test") (rule-allow "allow-all" AlwaysTrue)
     in let approved = evaluate-load binary lat policy 0 fact-store-empty 100
-    in let wired = apply-load-decision 7 approved
-    in let slot-mask = read-process-grant 7
     in let denied = evaluate-load binary lattice-empty policy 0 fact-store-empty 100
-    in let denied-wired = apply-load-decision 9 denied
-    in let denied-mask = read-process-grant 9
     in act
+      wired <- apply-load-decision 7 approved
+      denied-wired <- apply-load-decision 9 denied
       print-line-uni ("approved: " & show-bool (load-approved approved) & " grant=" & show (load-bitmask approved))
-      print-line-uni ("wired: " & show-bool wired & " slot7=" & show slot-mask)
-      print-line-uni ("denied-wired: " & show-bool denied-wired & " slot9=" & show denied-mask)
-      print-line-uni ("match: " & show-bool (slot-mask == load-bitmask approved))
+      print-line-uni ("wired: " & show-bool wired & " slot7=" & show (read-process-grant 7))
+      print-line-uni ("denied-wired: " & show-bool denied-wired & " slot9=" & show (read-process-grant 9))
+      print-line-uni ("match: " & show-bool (read-process-grant 7 == load-bitmask approved))
     end

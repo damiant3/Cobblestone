@@ -1,0 +1,34 @@
+Chapter: HdaAudioTest
+  cites Kernel chapter HdaAudio
+
+ The HDA audio driver's tone generator, checked by reading the PCM
+ buffer back -- deterministic and silent, so it runs in the battery
+ without a sound card and without codex-vm's synchronous stream drain
+ (which blocks until the host has played the buffer). The actual
+ playback path, hda-play-tone, drives the stream registers over MMIO
+ and is heard on the speakers; it is exercised by hand, not here.
+
+ hda-square-tone 480 200 builds a 48 kHz square wave at 480 Hz: the
+ period is 48000/480 = 100 samples, high for the first 50 and low for
+ the rest. Each 16-bit signed sample is written little-endian into both
+ stereo channels: the high level +8000 is 0x1F40 (lo 64, hi 31), the low
+ level -8000 is 0xE0C0 (lo 192, hi 224). So sample 0 (high) is the four
+ bytes 64,31,64,31 and sample 60 (past the half-period, low) begins
+ 192,224 at byte offset 240.
+
+Section: Body
+
+  check : Integer -> Text
+  check (x) =
+    let buf = hda-square-tone 480 200
+    in if peek-byte buf 0 /= 64 then "FAIL: sample 0 left low byte"
+    else if peek-byte buf 1 /= 31 then "FAIL: sample 0 left high byte"
+    else if peek-byte buf 2 /= 64 then "FAIL: sample 0 right channel not mirrored"
+    else if peek-byte buf 3 /= 31 then "FAIL: sample 0 right high byte"
+    else if peek-byte buf 240 /= 192 then "FAIL: sample 60 not low level"
+    else if peek-byte buf 241 /= 224 then "FAIL: sample 60 low high byte"
+    else "PASS"
+
+  opening : [Console] Nothing = act
+    print-line-uni (check 0)
+  end

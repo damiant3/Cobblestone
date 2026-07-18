@@ -1,0 +1,99 @@
+Chapter: AesGcm256
+  cites Foreword chapter Aes
+  cites Foreword chapter AesGcm
+  cites Foreword chapter Maybe
+
+ Known-answer tests for AES-GCM at both key lengths (NIST SP 800-38D).
+ The expected ciphertexts and tags were produced by OpenSSL, not by
+ this implementation -- a wrong AEAD still round-trips against itself,
+ so agreement with our own decrypt proves nothing about correctness.
+
+ The AES-128 case is the regression guard: the key-size dispatch added
+ for AES-256 must leave the existing 128-bit path byte-identical.
+
+Section: Vectors
+
+  gcm-nonce : List Integer =
+    [48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59]
+
+  gcm-aad : List Integer =
+    [254, 237, 250, 206, 222, 173, 190, 239, 254, 237, 250, 206, 222, 173, 190, 239]
+
+  gcm-plain : List Integer =
+    [67, 111, 100, 101, 120, 32, 65, 69, 83, 45, 50, 53, 54, 45, 71, 67, 77, 32,
+     107, 110, 111, 119, 110, 45, 97, 110, 115, 119, 101, 114, 32, 118, 101, 99, 116, 111, 114, 46]
+
+  gcm-key-256 : List Integer =
+    [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15,
+     16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31]
+
+  gcm-key-128 : List Integer =
+    [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
+
+Section: Hex
+
+  gcm-hex : List Integer -> Text
+  gcm-hex (bs) = gcm-hex-loop bs 0 (list-length bs) ""
+
+  gcm-hex-loop : List Integer, Integer, Integer, Text -> Text
+  gcm-hex-loop (bs) (i) (n) (acc) =
+    if i >= n then acc
+    else gcm-hex-loop bs (i + 1) n (acc & aes-hex-byte (list-at bs i))
+
+Section: Encrypt
+
+  test-256-encrypt : Text =
+    let r = aesgcm-encrypt gcm-key-256 gcm-nonce gcm-plain gcm-aad
+    in "aes256gcm ct=" & gcm-hex (r.ciphertext)
+
+  test-256-tag : Text =
+    let r = aesgcm-encrypt gcm-key-256 gcm-nonce gcm-plain gcm-aad
+    in "aes256gcm tag=" & gcm-hex (r.tag)
+
+  test-128-encrypt : Text =
+    let r = aesgcm-encrypt gcm-key-128 gcm-nonce gcm-plain gcm-aad
+    in "aes128gcm ct=" & gcm-hex (r.ciphertext)
+
+  test-128-tag : Text =
+    let r = aesgcm-encrypt gcm-key-128 gcm-nonce gcm-plain gcm-aad
+    in "aes128gcm tag=" & gcm-hex (r.tag)
+
+Section: Decrypt
+
+ A decrypt that returns the plaintext proves the tag verified, because
+ aesgcm-decrypt checks the tag before it will hand anything back.
+
+  test-256-roundtrip : Text =
+    let r = aesgcm-encrypt gcm-key-256 gcm-nonce gcm-plain gcm-aad
+    in let d = aesgcm-decrypt gcm-key-256 gcm-nonce (r.ciphertext) gcm-aad (r.tag)
+    in when d
+      is Just (p) -> "aes256gcm decrypt=" & gcm-hex p
+      is None -> "aes256gcm decrypt=REJECTED"
+
+Section: Tamper
+
+ One flipped ciphertext bit must destroy the tag. If this line ever
+ reads anything but REJECTED, the authentication half of the AEAD is
+ not doing its job and the confidentiality half does not matter.
+
+  gcm-corrupt : List Integer =
+    let r = aesgcm-encrypt gcm-key-256 gcm-nonce gcm-plain gcm-aad
+    in list-set-at (r.ciphertext) 0 (bit-xor (list-at (r.ciphertext) 0) 1)
+
+  test-256-tamper : Text =
+    let r = aesgcm-encrypt gcm-key-256 gcm-nonce gcm-plain gcm-aad
+    in let d = aesgcm-decrypt gcm-key-256 gcm-nonce gcm-corrupt gcm-aad (r.tag)
+    in when d
+      is Just (p) -> "aes256gcm tamper=ACCEPTED-" & show (list-length p)
+      is None -> "aes256gcm tamper=REJECTED"
+
+Section: Entry
+
+  opening : [Console] Nothing = act
+    print-line-uni test-256-encrypt
+    print-line-uni test-256-tag
+    print-line-uni test-256-roundtrip
+    print-line-uni test-256-tamper
+    print-line-uni test-128-encrypt
+    print-line-uni test-128-tag
+  end

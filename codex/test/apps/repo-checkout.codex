@@ -1,0 +1,81 @@
+Chapter: RepoCheckout
+  cites Works chapter RepoProtocolPersist
+  cites Works chapter KeyManager
+  cites Foreword chapter FactStore
+  cites Foreword chapter Hamt
+  cites Foreword chapter Maybe
+  cites Foreword chapter Sha256
+  cites Kernel chapter DiskFacts
+  cites Kernel chapter AppPersist
+  cites Foreword chapter Console
+
+ A checkout is the whole of what a repository is for. Everything else -- the
+ hashes, the signatures, the gate, the log -- exists so that this one operation
+ can hand the source back and you can believe it.
+
+ Two works go in. One of them is then revised, which means the store holds three
+ facts and two works, and the difference between those two numbers is the entire
+ subject of this test.
+
+ The checkout must:
+   take the REVISED edition of a.codex, because the last write for a path is the
+     current value of that path;
+   NOT smuggle in the superseded one, because a checkout is a tree, not a log;
+   come back byte-identical, because the works were content-addressed and a
+     content-addressed store that returns different bytes has failed at the only
+     thing it claims to do.
+
+ The superseded edition is not lost -- it is still in the store, still verifies,
+ still addressable by its hash forever. It is simply not what the path points at,
+ and a checkout follows the path.
+
+Section: The Works
+
+  body-a1 : Text = "Chapter: A\n\n  X =\n   | P\n   | Q\n\nPage 1\n"
+  body-a2 : Text = "Chapter: A\n\n  X =\n   | P\n   | Q\n   | R\n\nPage 1\n"
+  body-b : Text = "Chapter: B\n\n One line.\n\nPage 1\n"
+
+Section: Helpers
+
+  press : Keypair
+  press = generate-keypair (sha256 (text-to-bytes "repo-checkout-test"))
+
+  def-of : Text, Text -> SourceDefinition
+  def-of (path) (body) =
+    SourceDefinition {
+      sd-hash = "", sd-path = path, sd-quire = "Probe", sd-chapter = "X",
+      sd-signer = "", sd-signature = [], sd-author = "", sd-timestamp = 0,
+      sd-content = body
+    }
+
+Section: Entry
+
+  opening : [Device.Block, Console.Write] Nothing = act
+    let s0 = disk-init
+    in let s1 = repo-persist-save-definition s0 (sign-definition press (def-of "a.codex" body-a1) 1) 1
+    in let s2 = repo-persist-save-definition s1 (sign-definition press (def-of "b.codex" body-b) 2) 2
+    in let s3 = repo-persist-save-definition s2 (sign-definition press (def-of "a.codex" body-a2) 3) 3
+    in let ix = repo-index-from-disk disk-load
+    in let got = repo-checkout ix
+    in let want = body-a2 & body-b
+    in act
+      print-line-uni ("3 facts stored, and the tree holds " & show (list-length (work-tree ix)) & " works")
+      print-line-uni ("checkout: " & show (text-length got) & " bytes, expected " & show (text-length want))
+      print-line-uni ("byte-identical to the current tree: " & (if got == want then "yes" else "NO"))
+      print-line-uni ("it took the revised a.codex: " & (if text-contains got "| R" then "yes" else "NO"))
+      print-line-uni ("and left the superseded one behind: " & (if text-contains got "| Q\n\nPage" then "NO -- both editions leaked" else "yes"))
+      print-line-uni ("one work on its own, by path: " & show (text-length (work-content ix "b.codex")) & " bytes")
+      print-line-uni ("the superseded edition is still in the store: " & (if text-length (checked-out-hash ix body-a1) > 0 then "yes" else "NO -- IT WAS LOST"))
+    end
+  end
+
+ Fetch a work by its content hash, whatever the tree says today. A hash is a
+ name that cannot go stale, which is the whole reason to address by them.
+
+  checked-out-hash : WorkIndex, Text -> Text
+  checked-out-hash (ix) (body) =
+    when work-by-hash ix (fact-content-hash body)
+      is Just (d) -> d.sd-content
+      is None -> ""
+
+Page 1

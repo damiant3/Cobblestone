@@ -1,6 +1,4 @@
 Chapter: X86-64 Boot Infrastructure
-  cites Codex chapter Numbers
-  cites Codex chapter Lists
 
  Bare-metal boot sequence, interrupt handling, process management,
  syscall dispatch, and capability model.
@@ -28,7 +26,6 @@ Section: Memory Address Map
   idt-base : Integer = 24576
   tick-count-addr : Integer = 28672
   key-buffer-addr : Integer = 28680
-  current-proc-addr : Integer = 28688
   arena-base-addr : Integer = 28696
   serial-write-pos-addr : Integer = 28704
   serial-read-pos-addr : Integer = 28712
@@ -58,7 +55,6 @@ Section: Memory Address Map
   starve-counter-addr : Integer = 30048
   boot-factstore-addr : Integer = 30056
   identity-table-base : Integer = 30064
-  uefi-heap-base-addr : Integer = 30080
   device-seed-addr : Integer = 30576
   identity-key-addr : Integer = 30608
   identity-key-loaded-addr : Integer = 30640
@@ -77,7 +73,6 @@ Section: Memory Address Map
   try-fail-flag-addr : Integer = 36128
   prof-enabled-addr : Integer = 36136
   prof-cursor-addr : Integer = 36144
-  spawn-pool-cursor-addr : Integer = 36200
 
  The profiler and allocation-trace SAMPLE BUFFERS live in the free
  low-memory band above the AP idle stacks and below the EBDA
@@ -103,6 +98,92 @@ Section: Memory Address Map
   ap-stack-table-addr : Integer = 3840
   smp-max-cores : Integer = 16
 
+ How many processes an application processor has claimed and run. Only a
+ core whose id is non-zero adds to this cell, and the boot processor's id
+ is always zero, so no path the BSP can take reaches it and no host code
+ writes it. That is the whole reason it exists: a count above zero is
+ evidence that a core other than the boot processor took a process out of
+ the table and executed it, and that is the one thing a test of this
+ cannot take on trust. Read by codex/test/smp-dispatch.codex.
+
+ Cell 36200, and not a tidier address: 36152 is a permanent booby trap (a
+ legacy codex-vm output-ring position) and 36160 / 36168 / 36176 are
+ codex-vm's blit cells. Grep tools/codex-vm.c before claiming any cell in
+ this band.
+
+  ap-dispatch-count-addr : Integer = 36200
+
+ The UEFI system table pointer, snapshotted before we destroy it.
+
+ A UEFI stub hands the kernel its system table by leaving the pointer at
+ GPA 0x8000, and every uefi-* helper used to read that address directly.
+ 0x8000 is also where emit-build-process-page-tables puts the PML4, and
+ emit-start loads CR3 with it. So by the time any helper ran, the pointer
+ it read was page-table entry zero -- it dereferenced that as a system
+ table and called through it, which is an invalid opcode fault at a low
+ address, on every boot, in every mode. It cannot ever have worked.
+
+ emit-start now copies [0x8000] here BEFORE emit-process-setup overwrites
+ it, and the helpers read this cell instead. On a boot with no UEFI stub
+ the snapshot is zero and every helper returns -1 rather than calling into
+ the page tables. A helper that cannot reach firmware must say so, not
+ jump into it.
+
+ Cell 36208, the next free slot above ap-dispatch-count. Grep
+ tools/codex-vm.c before claiming any cell in this band.
+
+  uefi-systab-addr : Integer = 36208
+
+ Timer interrupts taken by a core whose id is not zero. Only the interrupt
+ handler writes it, and only when the core it is running on is not the boot
+ processor, so a value above zero is evidence that an application processor
+ was preempted -- that a core other than the BSP took a scheduling clock
+ tick and could be forced off whatever it was running. Read by
+ codex/test/smp-preempt.codex.
+
+ A count of finished work would prove nothing here, exactly as it proved
+ nothing for AP dispatch: one core can finish the work, and a core that is
+ never preempted still completes a process that yields. The claim is about
+ who was interrupted, so the evidence has to be about who was interrupted.
+
+ Cell 36216, the next free slot above uefi-systab. Grep tools/codex-vm.c
+ before claiming any cell in this band.
+
+  ap-preempt-count-addr : Integer = 36216
+
+ The core a spawn pins its child to, handed from process-spawn-on-core to
+ process-spawn through one cell. process-spawn reads it into the child's
+ affinity field and resets the cell to -1 (any core) for the next spawn, so
+ process-spawn-on-core needs no copy of the ninety-line spawn body. The cell
+ holds -1 at rest, so an ordinary process-spawn pins to no core. This carries
+ the same single-writer assumption the slot finder above it already makes --
+ the finder reads and claims a slot without a lock -- so two cores spawning at
+ the same instant is out of scope here as it is there.
+
+ Cell 36224, the next free slot above ap-preempt-count. Grep tools/codex-vm.c
+ before claiming any cell in this band.
+
+  spawn-affinity-addr : Integer = 36224
+
+ Cell 36232, the next free slot above spawn-affinity. Grepped
+ tools/codex-vm.c before claiming: 36152 is the reserved output-ring
+ trap, 36160/36168 are the host blit cells, 36200/36208/36216 are
+ guest-only counters, and 36224 is spawn-affinity; nothing host-side
+ touches 36232.
+
+ fs-elevated is the kernel filesystem servicer's block-authority token
+ (BACKLOG 1.14). It is non-zero for exactly the span in which the
+ compiler-installed FileSystem default handler is discharging a
+ verified read-text/write-file over fat16, and zero everywhere else.
+ The block syscalls (10-13) proceed when the current process holds
+ cap-block-device OR this cell is non-zero, which is what lets the
+ servicer drive the disk on behalf of a process that carries only
+ FileSystem.Read and never Device.Block. It is set and cleared ONLY by
+ inline code inside that servicer and is deliberately not reachable as a
+ builtin -- a callable elevation primitive would be a universal
+ capability bypass (elevate, then block-write-sector).
+
+  fs-elevated-addr : Integer = 36232
  Application-processor idle stacks live in low always-present memory,
  never in the demand-paged heap range: an AP takes its first interrupt
  on this stack, and the CPU cannot deliver a fault frame onto a
@@ -120,7 +201,63 @@ Section: Memory Address Map
   lapic-sivr-reg : Integer = 240
   lapic-icr-lo-reg : Integer = 768
   lapic-icr-hi-reg : Integer = 784
-  lapic-timer-reg : Integer = 832
+
+ The local timer. This is the clock that preempts a process on an
+ application processor: the boot processor is driven by the PIT, whose IRQ
+ is delivered to it alone, so before this an AP took no interrupt at all
+ and a process that never yielded owned its core until it exited.
+
+ lapic-lvt-timer-reg is the entry in the local vector table (0x320): the
+ low eight bits are the vector to raise, bit 16 masks the timer, and bit 17
+ selects periodic rather than one-shot. lapic-timer-init-reg (0x380) is the
+ count it reloads, and writing zero there disarms it. lapic-timer-div-reg
+ (0x3E0) divides the bus clock; 3 is divide-by-16.
+
+ The old constant here read 832, which is 0x340 -- the performance-counter
+ entry, not the timer. It was never used by anything, so it never misfired;
+ it is replaced rather than kept.
+
+  lapic-lvt-timer-reg : Integer = 800
+  lapic-timer-init-reg : Integer = 896
+  lapic-timer-div-reg : Integer = 992
+
+ The vector an application processor's timer raises. It is deliberately NOT
+ 32, the PIT's vector: the two clocks are acknowledged differently -- the
+ PIT through the 8259 and this through the local APIC -- and a handler that
+ could not tell them apart would send the wrong end-of-interrupt to the
+ wrong chip.
+
+  lapic-timer-vector : Integer = 48
+  lapic-timer-periodic : Integer = 131072
+  lapic-timer-divide-16 : Integer = 3
+  lapic-timer-count : Integer = 1000000
+
+ The interrupt command register values that start the application
+ processors, per the Intel MP protocol: an INIT IPI, then two
+ start-up IPIs. Delivery mode sits in bits 8-10 (5 = INIT, 6 = STARTUP),
+ the level-assert bit is 14, and destination shorthand 3 in bits 18-19
+ means "all excluding self", which is what lets one write reach every AP
+ without addressing them one at a time.
+
+ The startup vector field (bits 0-7) is zero. On real silicon that field
+ names the 4 KB page an AP begins executing in, which caps the entry at
+ 1 MB and demands a real-mode trampoline. codex-vm instead reads the
+ full 64-bit entry address from ap-trampoline-addr, so the vector carries
+ no information here. A physical machine will need the trampoline; that
+ is a separate piece of work and it is written down as BACKLOG 4.2.
+
+  lapic-sivr-enable : Integer = 511
+  icr-init-all-but-self : Integer = 804096
+  icr-sipi-all-but-self : Integer = 804352
+  icr-wake-all-but-self : Integer = 802864
+
+ How long the BSP waits for the APs to check in. The wait is bounded: a
+ core that never answers must not cost us the boot, so the BSP gives up
+ and carries on single-core rather than spinning forever.
+
+  smp-init-delay-cycles : Integer = 100000
+  smp-sipi-delay-cycles : Integer = 10000
+  smp-wait-fuel : Integer = 50000000
 
 Section: Size and Threshold Constants
   proc-entry-size : Integer = 256
@@ -143,6 +280,9 @@ Section: Size and Threshold Constants
   proc-spawn-stack-size : Integer = 1048576
   proc-spawn-heap-size : Integer = 1048576
   spawn-pool-base : Integer = 1073741824
+  spawn-slot-region-size : Integer = 33554432
+  spawn-slot-region-shift : Integer = 25
+  spawn-pool-span : Integer = 536870912
   proc-starvation-threshold : Integer = 100
 
 Section: I/O Port Constants
@@ -187,6 +327,30 @@ Section: I/O Port Constants
   ne2k-tx-page : Integer = 64
 
 Section: Process Table Layout
+
+ Which core is running this process. Whoever claims the slot stamps its
+ own core id here, so a core can always recover its own identity by
+ asking the process it is standing in -- which is the only per-core
+ identity the kernel has, and the only one it needs. Offset 8 was free.
+
+ It exists because of the idle path. A core with no work has to get off
+ the stack of the process it was last running before it parks, and to do
+ that it needs to know which idle stack is its own.
+
+  proc-core-offset : Integer = 8
+  proc-affinity-offset : Integer = 16
+
+ The network scope: the authority a process is permitted to reach, the
+ twin of proc-scope-offset's filesystem path prefix. It lives in the
+ reserved gap [24, 56) below the capability word, written by the boot
+ grant for proc 0, copied into a child at spawn, and read back by
+ process-get-network-scope for the fetch chokepoint to check a runtime
+ URL's authority against. Console has no such cell on purpose -- a
+ console channel is fixed at compile time by the builtin name and is
+ never a runtime value, so there is nothing at runtime to check it
+ against (BACKLOG 1.5).
+
+  proc-net-scope-offset : Integer = 24
   proc-cap-offset : Integer = 56
   proc-scope-offset : Integer = 64
   proc-saved-rsp-offset : Integer = 72
@@ -264,6 +428,13 @@ Section: Channel Table Layout
   cap-device : Integer = 16
   cap-gpu-compute : Integer = 17
   cap-gpu-memory : Integer = 18
+  cap-camera : Integer = 19
+  cap-microphone : Integer = 20
+  cap-location : Integer = 21
+  cap-sensors : Integer = 22
+  cap-display : Integer = 23
+  cap-flash : Integer = 24
+  cap-audio : Integer = 25
 
 Section: PIT and PIC Initialization
   emit-pit-init : CodegenState -> CodegenState
@@ -703,7 +874,123 @@ Section: Page Fault Handler
     in let s3 = st-append-code s2 (mov-store reg-rax reg-rax 0)
     in emit-spawn-pretouch-at s3 (off + 2097152)
 
+Section: Which Process Is Running
+
+ The running process is a function of the stack pointer. It is not
+ stored anywhere.
+
+ Every spawned process runs on a stack inside its own slot-indexed
+ region -- spawn-pool-base + slot * spawn-slot-region-size -- so the
+ slot index is recoverable from a stack address by arithmetic alone:
+ subtract the pool base, and the region shift is the slot. An address
+ outside the pool belongs to proc 0, the program the machine booted,
+ whose stack is the boot stack at the top of RAM.
+
+ This used to be a single cell (28688) holding the running slot, which
+ is correct for exactly one core and for no more than one. Two cores
+ each running a process would each overwrite that cell, and each would
+ then resume the other's saved context. The cell is gone, and nothing
+ per-core replaces it, because nothing needs to be stored: a core
+ running a process is already standing on the answer.
+
+ emit-load-current-proc reads it from the live RSP. emit-slot-from-addr
+ takes an address already in the destination register -- the interrupt
+ handler needs the INTERRUPTED stack pointer, off the interrupt frame,
+ not the one it is running the handler on.
+
+ Clobbers the destination register and nothing else.
+
+  emit-load-current-proc : CodegenState, Integer -> CodegenState
+  emit-load-current-proc (st) (dest) =
+   let st1 = st-append-code st (mov-rr dest reg-rsp)
+   in emit-slot-from-addr st1 dest
+
+  emit-slot-from-addr : CodegenState, Integer -> CodegenState
+  emit-slot-from-addr (st) (dest) =
+   let st1 = st-append-code st (sub-ri dest spawn-pool-base)
+   in let st2 = st-append-code st1 (cmp-ri dest spawn-pool-span)
+   in let outside-pos = st2.code-len
+   in let st3 = st-append-code st2 (jcc cc-ae 0)
+   in let st4 = st-append-code st3 (shr-ri dest spawn-slot-region-shift)
+   in let done-pos = st4.code-len
+   in let st5 = st-append-code st4 (jmp 0)
+   in let zero-pos = st5.code-len
+   in let st6 = st-append-code st5 (xor-rr dest dest)
+   in let st7 = patch-jcc-at st6 outside-pos zero-pos
+   in patch-jmp-at st7 done-pos (st7.code-len)
+
 Section: Common Interrupt Handler
+
+ Preemption claims first and publishes second, for the reason set out over
+ process-yield in X86_64ProcessHelpers: a process a core is standing in
+ must never be advertised as READY, or an application processor will claim
+ it and both cores will run it. So the interrupted process is left RUNNING
+ across the scan, and is marked READY only once a replacement has actually
+ been won with a CMPXCHG. Losing that race is not an error -- it means
+ another core took the candidate -- and the handler simply keeps running
+ what it interrupted for another tick.
+
+ The publish is itself a CMPXCHG, RUNNING -> READY, and not a plain store.
+ The scan sits below the max-ticks check, which may have already marked
+ this process a ZOMBIE; a plain store would resurrect it.
+
+ A trap worth naming, because it cost a hang: RCX holds &proc[current] for
+ the context save, and then the STARVE CHECK CLOBBERS IT (sv1 loads the
+ starve counter into RCX). Anything below that point which wants
+ &proc[current] must rebuild it from RDI, which does survive -- the
+ original code reloaded it for exactly this reason, and reusing the stale
+ RCX writes the state word to whatever the starve counter happened to be.
+
+ Two clocks arrive here, not one. Vector 32 is the PIT, which is delivered
+ to the boot processor alone; vector 48 is an application processor's own
+ local APIC timer. They run the same scheduling path -- the path was always
+ per-core-safe, deriving the running process from the interrupted stack
+ pointer and claiming its replacement with a CMPXCHG -- and they differ only
+ in which chip is told the interrupt is over. See emit-timer-eoi.
+
+ The tick count is incremented with a LOCKED add, because it is no longer
+ the boot processor alone that increments it. A plain load-add-store from
+ several cores loses ticks: two cores read the same value and both write
+ back one more than it, and the clock silently runs slow.
+
+ A core with no work parks on its own idle stack in __idle_dispatch with
+ its timer armed, so a tick can arrive while it is standing on no process.
+ emit-slot-from-addr answers slot 0 for any address outside the spawn pool,
+ and an idle stack is one such address -- so the handler would take the
+ idle core for proc 0 and preempt the booted program out from under the
+ boot processor. The guard is a band check on the interrupted stack pointer
+ before any process is touched: an RSP inside [ap-stacks-base, ap-stacks-base
+ + smp-max-cores * ap-stack-size) belongs to an idle stack, so the handler
+ acknowledges the clock and returns without scheduling. Proc 0's own boot
+ stack is far above this band, so a genuine tick on proc 0 is unaffected.
+
+ A second guard, and it closes a real deadlock. A process exiting runs
+ process-exit ON ITS OWN STACK: it marks its slot FREE and then walks a wake
+ loop marking every waiter that blocked on it READY. It is still executing,
+ with interrupts on, so a timer tick can land between the FREE store and the
+ end of the wake loop. Without a guard the handler derives the running slot
+ from the interrupted stack pointer -- the exiting process -- saves its
+ context, fails to publish it (the RUNNING->READY cmpxchg does not match a
+ FREE slot) and switches to a replacement, ABANDONING the wake loop. Any
+ waiter it had not yet reached is never woken and blocks forever. This is a
+ lost-wakeup deadlock that showed as a rare hang of a parent waiting on many
+ children (BACKLOG 4.11(f)), and it is timing-sensitive enough that adding a
+ single host thread hid it. So: if the running slot is already FREE, the
+ process is mid-exit and there is nothing to preempt -- acknowledge the clock
+ and return, and let it finish its wake loop.
+
+ A third guard, in the candidate scans themselves: slot 0 is the booted
+ program, it owns the boot stack and the main heap, and only the boot
+ processor may run it. __idle_dispatch already refuses it to an application
+ processor by starting each core's scan at its own id, but the preempt scan
+ walks every slot from 0 for every core -- so an AP whose current process is
+ preemptible could preempt-CLAIM slot 0 the moment proc 0 goes READY (a
+ parent woken by a child's exit) and strand it RUNNING-but-frozen on a core
+ that is not its own. Both scans (priority-preference and starvation-relief)
+ therefore skip slot 0 when the claiming core's id is not zero, so a
+ non-zero core never selects proc 0 as a preemption target and proc 0 stays
+ the boot processor's to schedule (BACKLOG 4.11(e)).
+
   emit-common-interrupt-handler : CodegenState -> CodegenState
   emit-common-interrupt-handler (st) =
    let st-rec = record-func-offset st "__interrupt_common"
@@ -715,12 +1002,15 @@ Section: Common Interrupt Handler
    in let st6 = st-append-code st5 (cmp-ri reg-rax 32)
    in let exc-jcc = st6.code-len
    in let st6a = st-append-code st6 (jcc cc-b 0)
-   in let not-timer = st6a.code-len
-   in let st7 = st-append-code st6a (jcc cc-ne 0)
-   in let st8 = st-append-code st7 (li reg-rdi tick-count-addr)
-   in let st9 = st-append-code st8 (mov-load reg-rsi reg-rdi 0)
-   in let st10 = st-append-code st9 (add-ri reg-rsi 1)
-   in let st11 = st-append-code st10 (mov-store reg-rdi reg-rsi 0)
+   in let is-timer = st6a.code-len
+   in let st6b = st-append-code st6a (jcc cc-e 0)
+   in let st6c = st-append-code st6b (cmp-ri reg-rax lapic-timer-vector)
+   in let not-timer = st6c.code-len
+   in let st7 = st-append-code st6c (jcc cc-ne 0)
+   in let st7t = patch-jcc-at st7 is-timer (st7.code-len)
+   in let st8 = st-append-code st7t (li reg-rdi tick-count-addr)
+   in let st9 = st-append-code st8 (li reg-rsi 1)
+   in let st11 = st-append-code st9 (lock-xadd-mem reg-rsi reg-rdi 0)
    in let pr0 = st-append-code st11 (li reg-rdi prof-enabled-addr)
    in let pr1 = st-append-code pr0 (mov-load reg-rdi reg-rdi 0)
    in let pr2 = st-append-code pr1 (test-rr reg-rdi reg-rdi)
@@ -751,12 +1041,22 @@ Section: Common Interrupt Handler
    in let st11-y5 = st-append-code st11-y4 (li reg-rsi 1)
    in let st11-y6 = st-append-code st11-y5 (mov-store reg-rdi reg-rsi 0)
    in let st11-y7 = patch-jcc-at st11-y6 yf-skip (st11-y6.code-len)
-   in let sp0 = st-append-code st11-y7 (li reg-rdi current-proc-addr)
-   in let sp1 = st-append-code sp0 (mov-load reg-rdi reg-rdi 0)
+   in let sp0 = st-append-code st11-y7 (mov-load reg-rdi reg-rsp 64)
+   in let ig0 = st-append-code sp0 (mov-rr reg-rax reg-rdi)
+   in let ig1 = st-append-code ig0 (sub-ri reg-rax ap-stacks-base)
+   in let ig2 = st-append-code ig1 (cmp-ri reg-rax (smp-max-cores * ap-stack-size))
+   in let idle-skip-pos = ig2.code-len
+   in let ig3 = st-append-code ig2 (jcc cc-b 0)
+   in let sp1 = emit-slot-from-addr ig3 reg-rdi
    in let sp2 = st-append-code sp1 (mov-rr reg-rcx reg-rdi)
    in let sp3 = st-append-code sp2 (shl-ri reg-rcx 8)
    in let sp4 = st-append-code sp3 (add-ri reg-rcx proc-table-base)
-   in let sp5 = st-append-code sp4 (mov-load reg-rsi reg-rcx proc-slice-offset)
+   in let sp4p = emit-ap-preempt-count sp4
+   in let fg0 = st-append-code sp4p (mov-load reg-rsi reg-rcx 0)
+   in let fg1 = st-append-code fg0 (cmp-ri reg-rsi proc-state-free)
+   in let free-skip = fg1.code-len
+   in let fg2 = st-append-code fg1 (jcc cc-e 0)
+   in let sp5 = st-append-code fg2 (mov-load reg-rsi reg-rcx proc-slice-offset)
    in let sp6 = st-append-code sp5 (test-rr reg-rsi reg-rsi)
    in let no-pre1 = sp6.code-len
    in let sp7 = st-append-code sp6 (jcc cc-e 0)
@@ -802,17 +1102,13 @@ Section: Common Interrupt Handler
    in let sq6 = st-append-code sq5 (jcc cc-ne 0)
    in let sq7 = st-append-code sq6 (li reg-rsi proc-state-zombie)
    in let sq8 = st-append-code sq7 (mov-store reg-rcx reg-rsi 0)
-   in let sq-done = sq8.code-len
-   in let sq9 = st-append-code sq8 (jmp 0)
-   in let sq-ready = sq9.code-len
-   in let sq10 = st-append-code sq9 (li reg-rsi proc-state-ready)
-   in let sq11 = st-append-code sq10 (mov-store reg-rcx reg-rsi 0)
-   in let sq12 = patch-jcc-at sq11 sq-unlim sq-ready
-   in let sq13 = patch-jcc-at sq12 sq-alive sq-ready
-   in let sp39 = patch-jmp-at sq13 sq-done (sq13.code-len)
+   in let sq-after = sq8.code-len
+   in let sq12 = patch-jcc-at sq8 sq-unlim sq-after
+   in let sp39 = patch-jcc-at sq12 sq-alive sq-after
    in let sp40 = st-append-code sp39 (li reg-r8 (-1))
    in let sp41 = st-append-code sp40 (li reg-r9 4)
-   in let sp42 = st-append-code sp41 (xor-rr reg-rax reg-rax)
+   in let sp41c = st-append-code sp41 (mov-load reg-r11 reg-rcx proc-core-offset)
+   in let sp42 = st-append-code sp41c (xor-rr reg-rax reg-rax)
    in let pscan-top = sp42.code-len
    in let sp43 = st-append-code sp42 (cmp-ri reg-rax 16)
    in let pscan-done = sp43.code-len
@@ -820,14 +1116,29 @@ Section: Common Interrupt Handler
    in let sp45 = st-append-code sp44 (cmp-rr reg-rax reg-rdi)
    in let pscan-skip = sp45.code-len
    in let sp46 = st-append-code sp45 (jcc cc-e 0)
-   in let sp47 = st-append-code sp46 (mov-rr reg-rsi reg-rax)
+   in let sp46g0 = st-append-code sp46 (test-rr reg-rax reg-rax)
+   in let pscan-nz = sp46g0.code-len
+   in let sp46g1 = st-append-code sp46g0 (jcc cc-ne 0)
+   in let sp46g2 = st-append-code sp46g1 (test-rr reg-r11 reg-r11)
+   in let pscan-s0 = sp46g2.code-len
+   in let sp46g3 = st-append-code sp46g2 (jcc cc-ne 0)
+   in let sp46g4 = patch-jcc-at sp46g3 pscan-nz (sp46g3.code-len)
+   in let sp47 = st-append-code sp46g4 (mov-rr reg-rsi reg-rax)
    in let sp48 = st-append-code sp47 (shl-ri reg-rsi 8)
    in let sp49 = st-append-code sp48 (add-ri reg-rsi proc-table-base)
    in let sp50 = st-append-code sp49 (mov-load reg-rdx reg-rsi 0)
    in let sp51 = st-append-code sp50 (cmp-ri reg-rdx proc-state-ready)
    in let pscan-nr = sp51.code-len
    in let sp52 = st-append-code sp51 (jcc cc-ne 0)
-   in let sp53 = st-append-code sp52 (mov-load reg-rdx reg-rsi proc-priority-offset)
+   in let sp52a = st-append-code sp52 (mov-load reg-rdx reg-rsi proc-affinity-offset)
+   in let sp52b = st-append-code sp52a (cmp-ri reg-rdx (-1))
+   in let pscan-affok = sp52b.code-len
+   in let sp52c = st-append-code sp52b (jcc cc-e 0)
+   in let sp52d = st-append-code sp52c (cmp-rr reg-rdx reg-r11)
+   in let pscan-affskip = sp52d.code-len
+   in let sp52e = st-append-code sp52d (jcc cc-ne 0)
+   in let sp52f = patch-jcc-at sp52e pscan-affok (sp52e.code-len)
+   in let sp53 = st-append-code sp52f (mov-load reg-rdx reg-rsi proc-priority-offset)
    in let sp54 = st-append-code sp53 (cmp-rr reg-rdx reg-r9)
    in let pscan-worse = sp54.code-len
    in let sp55 = st-append-code sp54 (jcc cc-ge 0)
@@ -839,7 +1150,9 @@ Section: Common Interrupt Handler
    in let sp60 = patch-jcc-at sp59 pscan-skip pscan-next
    in let sp61 = patch-jcc-at sp60 pscan-nr pscan-next
    in let sp62 = patch-jcc-at sp61 pscan-worse pscan-next
-   in let sp63 = patch-jcc-at sp62 pscan-done (sp62.code-len)
+   in let sp62a = patch-jcc-at sp62 pscan-affskip pscan-next
+   in let sp62b = patch-jcc-at sp62a pscan-s0 pscan-next
+   in let sp63 = patch-jcc-at sp62b pscan-done (sp62b.code-len)
    in let sv0 = st-append-code sp63 (li reg-rsi starve-counter-addr)
    in let sv1 = st-append-code sv0 (mov-load reg-rcx reg-rsi 0)
    in let sv2 = st-append-code sv1 (add-ri reg-rcx 1)
@@ -863,14 +1176,29 @@ Section: Common Interrupt Handler
    in let sv15 = st-append-code sv14 (cmp-rr reg-rax reg-rdi)
    in let rscan-skip = sv15.code-len
    in let sv16 = st-append-code sv15 (jcc cc-e 0)
-   in let sv17 = st-append-code sv16 (mov-rr reg-rsi reg-rax)
+   in let sv16g0 = st-append-code sv16 (test-rr reg-rax reg-rax)
+   in let rscan-nz = sv16g0.code-len
+   in let sv16g1 = st-append-code sv16g0 (jcc cc-ne 0)
+   in let sv16g2 = st-append-code sv16g1 (test-rr reg-r11 reg-r11)
+   in let rscan-s0 = sv16g2.code-len
+   in let sv16g3 = st-append-code sv16g2 (jcc cc-ne 0)
+   in let sv16g4 = patch-jcc-at sv16g3 rscan-nz (sv16g3.code-len)
+   in let sv17 = st-append-code sv16g4 (mov-rr reg-rsi reg-rax)
    in let sv18 = st-append-code sv17 (shl-ri reg-rsi 8)
    in let sv19 = st-append-code sv18 (add-ri reg-rsi proc-table-base)
    in let sv20 = st-append-code sv19 (mov-load reg-rdx reg-rsi 0)
    in let sv21 = st-append-code sv20 (cmp-ri reg-rdx proc-state-ready)
    in let rscan-nr = sv21.code-len
    in let sv22 = st-append-code sv21 (jcc cc-ne 0)
-   in let sv23 = st-append-code sv22 (mov-load reg-rdx reg-rsi proc-priority-offset)
+   in let sv22a = st-append-code sv22 (mov-load reg-rdx reg-rsi proc-affinity-offset)
+   in let sv22b = st-append-code sv22a (cmp-ri reg-rdx (-1))
+   in let rscan-affok = sv22b.code-len
+   in let sv22c = st-append-code sv22b (jcc cc-e 0)
+   in let sv22d = st-append-code sv22c (cmp-rr reg-rdx reg-r11)
+   in let rscan-affskip = sv22d.code-len
+   in let sv22e = st-append-code sv22d (jcc cc-ne 0)
+   in let sv22f = patch-jcc-at sv22e rscan-affok (sv22e.code-len)
+   in let sv23 = st-append-code sv22f (mov-load reg-rdx reg-rsi proc-priority-offset)
    in let sv24 = st-append-code sv23 (cmp-ri reg-rdx 2)
    in let rscan-hipri = sv24.code-len
    in let sv25 = st-append-code sv24 (jcc cc-l 0)
@@ -884,7 +1212,9 @@ Section: Common Interrupt Handler
    in let sv31 = patch-jcc-at sv30 rscan-skip rscan-next
    in let sv32 = patch-jcc-at sv31 rscan-nr rscan-next
    in let sv33 = patch-jcc-at sv32 rscan-hipri rscan-next
-   in let sv34 = patch-jcc-at sv33 rscan-done (sv33.code-len)
+   in let sv33a = patch-jcc-at sv33 rscan-affskip rscan-next
+   in let sv33b = patch-jcc-at sv33a rscan-s0 rscan-next
+   in let sv34 = patch-jcc-at sv33b rscan-done (sv33b.code-len)
    in let sv35 = patch-jcc-at sv34 sv-nolo (sv34.code-len)
    in let sv36 = patch-jcc-at sv35 sv-none (sv35.code-len)
    in let sv37 = patch-jmp-at sv36 rscan-found (sv36.code-len)
@@ -892,26 +1222,33 @@ Section: Common Interrupt Handler
    in let sp64 = st-append-code sp63a (cmp-ri reg-r8 (-1))
    in let pno-other = sp64.code-len
    in let sp65 = st-append-code sp64 (jcc cc-e 0)
-   in let sp66 = st-append-code sp65 (mov-rr reg-rdi reg-r8)
-   in let sp67 = st-append-code sp66 (mov-rr reg-rsi reg-rdi)
+   in let sp67 = st-append-code sp65 (mov-rr reg-rsi reg-r8)
    in let sp68 = st-append-code sp67 (shl-ri reg-rsi 8)
    in let sp69 = st-append-code sp68 (add-ri reg-rsi proc-table-base)
-   in let sp70 = st-append-code sp69 (li reg-rax current-proc-addr)
-   in let sp71 = st-append-code sp70 (mov-store reg-rax reg-rdi 0)
-   in let sp72 = st-append-code sp71 (li reg-rax proc-state-running)
-   in let sp73 = st-append-code sp72 (mov-store reg-rsi reg-rax 0)
-   in let sp74 = st-append-code sp73 (mov-load reg-rax reg-rsi proc-priority-offset)
+   in let c0 = st-append-code sp69 (li reg-rax proc-state-ready)
+   in let c1 = st-append-code c0 (li reg-r9 proc-state-running)
+   in let c2 = st-append-code c1 (lock-cmpxchg-mem reg-r9 reg-rsi 0)
+   in let claim-lost = c2.code-len
+   in let c3 = st-append-code c2 (jcc cc-ne 0)
+   in let c4 = st-append-code c3 (mov-rr reg-rcx reg-rdi)
+   in let c5 = st-append-code c4 (shl-ri reg-rcx 8)
+   in let c6 = st-append-code c5 (add-ri reg-rcx proc-table-base)
+   in let cc1 = st-append-code c6 (mov-load reg-rdx reg-rcx proc-core-offset)
+   in let cc2 = st-append-code cc1 (mov-store reg-rsi reg-rdx proc-core-offset)
+   in let c7 = st-append-code cc2 (li reg-rax proc-state-running)
+   in let c8 = st-append-code c7 (li reg-r9 proc-state-ready)
+   in let c9 = st-append-code c8 (lock-cmpxchg-mem reg-r9 reg-rcx 0)
+   in let sp74 = st-append-code c9 (mov-load reg-rax reg-rsi proc-priority-offset)
    in let sp75 = st-append-code sp74 (shl-ri reg-rax 3)
    in let sp76 = st-append-code sp75 (add-ri reg-rax slice-table-addr)
    in let sp77 = st-append-code sp76 (mov-load reg-rax reg-rax 0)
    in let sp78 = st-append-code sp77 (mov-store reg-rsi reg-rax proc-slice-offset)
-   in let sp79 = emit-out-byte sp78 32 32
+   in let sp79 = emit-timer-eoi sp78
    in let sp80 = emit-jmp-to sp79 "__process_resume"
    in let pno-other-pos = sp80.code-len
-   in let rr0 = st-append-code sp80 (li reg-rcx current-proc-addr)
-   in let rr1 = st-append-code rr0 (mov-load reg-rcx reg-rcx 0)
-   in let rr2 = st-append-code rr1 (shl-ri reg-rcx 8)
-   in let rr3 = st-append-code rr2 (add-ri reg-rcx proc-table-base)
+   in let rr2 = st-append-code sp80 (mov-rr reg-rcx reg-rdi)
+   in let rr2a = st-append-code rr2 (shl-ri reg-rcx 8)
+   in let rr3 = st-append-code rr2a (add-ri reg-rcx proc-table-base)
    in let sp81 = st-append-code rr3 (li reg-rsi proc-state-running)
    in let sp82 = st-append-code sp81 (mov-store reg-rcx reg-rsi 0)
    in let sp83 = st-append-code sp82 (mov-load reg-rsi reg-rcx proc-priority-offset)
@@ -932,8 +1269,11 @@ Section: Common Interrupt Handler
    in let pno-pre-pos = rx9.code-len
    in let sp88 = patch-jcc-at sp87 no-pre1 pno-pre-pos
    in let sp89 = patch-jcc-at sp88 no-pre2 pno-pre-pos
-   in let sp90 = patch-jcc-at sp89 pno-other pno-other-pos
-   in let st12 = emit-out-byte sp90 32 32
+   in let sp89i = patch-jcc-at sp89 idle-skip-pos pno-pre-pos
+   in let sp89f = patch-jcc-at sp89i free-skip pno-pre-pos
+   in let sp90 = patch-jcc-at sp89f pno-other pno-other-pos
+   in let sp90b = patch-jcc-at sp90 claim-lost pno-other-pos
+   in let st12 = emit-timer-eoi sp90b
    in let st13 = st-append-code st12 (pop-r reg-rdi)
    in let st14 = st-append-code st13 (pop-r reg-rsi)
    in let st15 = st-append-code st14 (pop-r reg-rdx)
@@ -1082,15 +1422,88 @@ Section: Interrupt Setup
  the same code and data descriptors the trampoline GDT established,
  and marks IDT entry 8 with IST1. Every stack-invariant violation (a
  push into a not-present demand page) then produces the standard
- exception dump instead of a hang. BSP only: application processors
- load no task register, so an AP double fault remains fatal (per-core
- TSS is future work).
+ exception dump instead of a hang.
+
+ The task register is per-core, and so a TSS cannot be shared: two cores
+ loading one TSS would fight over its busy bit and hand each other the
+ same emergency stack. The GDT therefore carries one TSS descriptor per
+ core, the TSS array holds one aligned entry per core, and each core's
+ IST1 points at a stack of its own. A core's descriptor sits at selector
+ gdt-tss-sel-base + core * 16, which is the number the boot processor and
+ each application processor load into their own task register.
+
+ This used to be the boot processor alone -- an application processor
+ loaded no task register at all, so a fault on one had no stack to be
+ delivered on and vanished as a triple fault. That cost nothing while no
+ application processor had ever executed a guest instruction, which was
+ the state of the world until the SMP bring-up was fixed. It costs a great
+ deal now, because an AP running real code is a place bugs can hide.
 
   gdt64-base : Integer = 75776
 
   tss-base : Integer = 77824
 
+  tss-stride : Integer = 128
+
+  gdt-tss-sel-base : Integer = 24
+
+  gdt64-limit : Integer = 279
+
+ Sixteen 2 KB emergency stacks in always-present low memory, spanning
+ [0x15000, 0x1D000) -- clear of the GDT and TSS array below and of the AP
+ idle stacks at 0x20000 above. A core's IST1 is the TOP of its stack, so
+ core i takes the region ending at ist-stacks-base + (i + 1) * ist-stack-size.
+
+  ist-stacks-base : Integer = 86016
+
+  ist-stack-size : Integer = 2048
+
+ Each core reads its task register back with str, after loading it, and
+ stores what the CPU actually accepted here -- eight bytes per core, just
+ above the TSS array. A descriptor the processor rejects and one it takes
+ are indistinguishable from the outside, and a core whose TR is zero has
+ no emergency stack and will still vanish on a double fault. This is what
+ lets a test assert the thing that matters rather than the thing that was
+ written down. Read by codex/test/smp-tss.codex.
+
+  ap-tr-report-addr : Integer = 79872
+
+ The single emergency stack the UEFI runtime-init path installs. That path
+ builds its own one-TSS GDT at the same base and is single-core, so it
+ keeps the old arrangement; the two never coexist.
+
   df-ist-stack-top : Integer = 83968
+
+ The TSS descriptor for a core, as a 64-bit GDT entry: limit 103, the
+ base split across bits 16-39 and 56-63, and access byte 0x89 (present,
+ available 64-bit TSS). The high half of the descriptor is zero for every
+ address we place a TSS at.
+
+  tss-desc-low : Integer -> Integer
+  tss-desc-low (i) =
+   let base = tss-base + i * tss-stride
+   in 103
+    + bit-and base 65535 * 65536
+    + bit-and (bit-shru base 16) 255 * 4294967296
+    + 137 * 1099511627776
+    + bit-and (bit-shru base 24) 255 * 72057594037927936
+
+  emit-tss-descriptors : CodegenState, Integer -> CodegenState
+  emit-tss-descriptors (st) (i) =
+   if i >= smp-max-cores then st
+   else let st1 = st-append-code st (li reg-rax (tss-desc-low i))
+   in let st2 = st-append-code st1 (mov-store reg-rdi reg-rax (gdt-tss-sel-base + i * 16))
+   in let st3 = st-append-code st2 (li reg-rax 0)
+   in let st4 = st-append-code st3 (mov-store reg-rdi reg-rax (gdt-tss-sel-base + i * 16 + 8))
+   in emit-tss-descriptors st4 (i + 1)
+
+  emit-tss-ists : CodegenState, Integer -> CodegenState
+  emit-tss-ists (st) (i) =
+   if i >= smp-max-cores then st
+   else let st1 = st-append-code st (li reg-rdi (tss-base + i * tss-stride))
+   in let st2 = st-append-code st1 (li reg-rax (ist-stacks-base + (i + 1) * ist-stack-size))
+   in let st3 = st-append-code st2 (mov-store reg-rdi reg-rax 36)
+   in emit-tss-ists st3 (i + 1)
 
   emit-load-tss : CodegenState -> CodegenState
   emit-load-tss (st) =
@@ -1101,25 +1514,25 @@ Section: Interrupt Setup
    in let g4 = st-append-code g3 (mov-store reg-rdi reg-rax 8)
    in let g5 = st-append-code g4 (li reg-rax #00CF92000000FFFF)
    in let g6 = st-append-code g5 (mov-store reg-rdi reg-rax 16)
-   in let g7 = st-append-code g6 (li reg-rax #0000890130000067)
-   in let g8 = st-append-code g7 (mov-store reg-rdi reg-rax 24)
-   in let g9 = st-append-code g8 (li reg-rax 0)
-   in let g10 = st-append-code g9 (mov-store reg-rdi reg-rax 32)
-   in let t0 = emit-zero-region g10 tss-base 13
-   in let t1 = st-append-code t0 (li reg-rdi tss-base)
-   in let t2 = st-append-code t1 (li reg-rax df-ist-stack-top)
-   in let t3 = st-append-code t2 (mov-store reg-rdi reg-rax 36)
+   in let gd = emit-tss-descriptors g6 0
+   in let t0 = emit-zero-region gd tss-base (smp-max-cores * tss-stride / 8)
+   in let tz = emit-zero-region t0 ap-tr-report-addr smp-max-cores
+   in let t3 = emit-tss-ists tz 0
    in let r0 = st-append-code t3 (sub-ri reg-rsp 16)
-   in let r1 = st-append-code r0 (li reg-rax (39 + gdt64-base * 65536))
+   in let r1 = st-append-code r0 (li reg-rax (gdt64-limit + gdt64-base * 65536))
    in let r2 = st-append-code r1 (mov-store reg-rsp reg-rax 0)
    in let r3 = st-append-code r2 (li reg-rax 0)
    in let r4 = st-append-code r3 (mov-store reg-rsp reg-rax 8)
    in let r5 = st-append-code r4 (mov-rr reg-rdi reg-rsp)
    in let r6 = st-append-code r5 [15, 1, 23]
    in let r7 = st-append-code r6 (add-ri reg-rsp 16)
-   in let r8 = st-append-code r7 (li reg-rax 24)
+   in let r8 = st-append-code r7 (li reg-rax gdt-tss-sel-base)
    in let r9 = st-append-code r8 [15, 0, 216]
-   in let i0 = st-append-code r9 (li reg-rdi (idt-base + 8 * 16 + 4))
+   in let b0 = st-append-code r9 (li reg-rax 0)
+   in let b1 = st-append-code b0 [15, 0, 200]
+   in let b2 = st-append-code b1 (li reg-rdi ap-tr-report-addr)
+   in let b3 = st-append-code b2 (mov-store reg-rdi reg-rax 0)
+   in let i0 = st-append-code b3 (li reg-rdi (idt-base + 8 * 16 + 4))
    in let i1 = st-append-code i0 (li reg-rax 1)
    in st-append-code i1 (mov-store-byte reg-rdi reg-rax 0)
 
@@ -1143,28 +1556,48 @@ Section: Interrupt Setup
    in let st8 = st-append-code st7 [15, 48]
    in patch-jcc-at st8 skip-pos (st8.code-len)
 
+ Every i8042 wait is fuel-bounded and the whole init is skipped when
+ the status port reads 0xFF -- the floating-bus signature of a machine
+ with no PS/2 controller at all, which is most machines made in the
+ last decade. An unbounded status-bit wait on such a machine spins
+ forever: with nothing driving the bus, port 0x64 reads all-ones and
+ both OBF and IBF look permanently set. The keyboard on those machines
+ is USB (GopUsbKbd); this init must cost them a single port read.
+
+  kbd-wait-fuel : Integer = 65536
+
   emit-kbd-wait-ibf : CodegenState -> CodegenState
   emit-kbd-wait-ibf (st) =
-   let wait-top = st.code-len
-   in let st1 = st-append-code st (li reg-rdx 100)
+   let f0 = st-append-code st (li reg-rcx kbd-wait-fuel)
+   in let wait-top = f0.code-len
+   in let st1 = st-append-code f0 (li reg-rdx 100)
    in let st2 = st-append-code st1 in-al-dx
    in let st3 = st-append-code st2 [168, 2]
    in let done-pos = st3.code-len
    in let st4 = st-append-code st3 (jcc cc-e 0)
-   in let st5 = st-append-code st4 (jmp (wait-top - (st4.code-len + 5)))
-   in patch-jcc-at st5 done-pos (st5.code-len)
+   in let st5 = st-append-code st4 [72, 255, 201]
+   in let st6 = st-append-code st5 (jcc cc-ne (wait-top - (st5.code-len + 6)))
+   in patch-jcc-at st6 done-pos (st6.code-len)
 
   emit-kbd-init : CodegenState -> CodegenState
   emit-kbd-init (st) =
-   let flush-top = st.code-len
-   in let f1 = st-append-code st (li reg-rdx 100)
+   let p0 = st-append-code st (xor-rr reg-rax reg-rax)
+   in let p1 = st-append-code p0 (li reg-rdx 100)
+   in let p2 = st-append-code p1 in-al-dx
+   in let p3 = st-append-code p2 (cmp-ri reg-rax 255)
+   in let skip-pos = p3.code-len
+   in let p4 = st-append-code p3 (jcc cc-e 0)
+   in let f0 = st-append-code p4 (li reg-rcx kbd-wait-fuel)
+   in let flush-top = f0.code-len
+   in let f1 = st-append-code f0 (li reg-rdx 100)
    in let f2 = st-append-code f1 in-al-dx
    in let f3 = st-append-code f2 [168, 1]
    in let flush-done = f3.code-len
    in let f4 = st-append-code f3 (jcc cc-e 0)
    in let f5 = st-append-code f4 (li reg-rdx 96)
    in let f6 = st-append-code f5 in-al-dx
-   in let f7 = st-append-code f6 (jmp (flush-top - (f6.code-len + 5)))
+   in let f6a = st-append-code f6 [72, 255, 201]
+   in let f7 = st-append-code f6a (jcc cc-ne (flush-top - (f6a.code-len + 6)))
    in let f8 = patch-jcc-at f7 flush-done (f7.code-len)
    in let k1 = emit-kbd-wait-ibf f8
    in let k2 = emit-out-byte k1 100 174
@@ -1173,7 +1606,8 @@ Section: Interrupt Setup
    in let k5 = emit-kbd-wait-ibf k4
    in let k6 = emit-out-byte k5 96 101
    in let k7 = emit-kbd-wait-ibf k6
-   in emit-out-byte k7 96 244
+   in let k8 = emit-out-byte k7 96 244
+   in patch-jcc-at k8 skip-pos (k8.code-len)
 
   emit-interrupt-setup : CodegenState -> CodegenState
   emit-interrupt-setup (st) =
@@ -1205,6 +1639,103 @@ Section: Interrupt Setup
    in let st28 = st-append-code st27 (mov-store reg-rdi reg-rax 0)
    in st-append-code st28 sti
 
+Section: Runtime Init Builtin
+
+ The Option A boot stub keeps the firmware GDT, never installs an IDT,
+ and jumps straight to opening. On that path there are no ticks, no
+ keyboard interrupts, no exception dumps, and no syscalls. The
+ runtime-init builtin lets the payload install the same runtime spine
+ the normal boot path gets inside emit-start: a GDT with code at
+ selector 8 (the selector every IDT entry references), a CS reload
+ through a far return, the TSS with the double-fault emergency stack,
+ the IDT, the syscall MSRs, and the PIC/PIT/keyboard setup ending in
+ sti. The compiler source never calls runtime-init, so the helper's
+ presence cannot perturb the self-host fixed point. The scheduler and
+ profiler cells the timer ISR reads every tick are zeroed before sti:
+ firmware leaves arbitrary bytes in low memory, and a garbage process
+ table would send the preemption path through a wild context restore.
+ The far-return sequence is hand-emitted as fixed-width bytes (a
+ 10-byte mov rax imm64, push, retfq) so the return vaddr is a fixed
+ 13 bytes past the measurement point regardless of immediate width.
+
+  emit-runtime-init-fn : CodegenState, Integer, Integer -> CodegenState
+  emit-runtime-init-fn (st) (first-stub-vaddr) (syscall-handler-offset) =
+   let st0 = record-func-offset st "runtime-init"
+   in let c0 = st-append-code st0 cli
+   in let g0 = st-append-code c0 (li reg-rdi gdt64-base)
+   in let g1 = st-append-code g0 (li reg-rax 0)
+   in let g2 = st-append-code g1 (mov-store reg-rdi reg-rax 0)
+   in let g3 = st-append-code g2 (li reg-rax #00AF9A000000FFFF)
+   in let g4 = st-append-code g3 (mov-store reg-rdi reg-rax 8)
+   in let g5 = st-append-code g4 (li reg-rax #00CF92000000FFFF)
+   in let g6 = st-append-code g5 (mov-store reg-rdi reg-rax 16)
+   in let g7 = st-append-code g6 (li reg-rax #0000890130000067)
+   in let g8 = st-append-code g7 (mov-store reg-rdi reg-rax 24)
+   in let g9 = st-append-code g8 (li reg-rax 0)
+   in let g10 = st-append-code g9 (mov-store reg-rdi reg-rax 32)
+   in let r0 = st-append-code g10 (sub-ri reg-rsp 16)
+   in let r1 = st-append-code r0 (li reg-rax (39 + gdt64-base * 65536))
+   in let r2 = st-append-code r1 (mov-store reg-rsp reg-rax 0)
+   in let r3 = st-append-code r2 (li reg-rax 0)
+   in let r4 = st-append-code r3 (mov-store reg-rsp reg-rax 8)
+   in let r5 = st-append-code r4 (mov-rr reg-rdi reg-rsp)
+   in let r6 = st-append-code r5 [15, 1, 23]
+   in let r7 = st-append-code r6 (add-ri reg-rsp 16)
+   in let f0 = st-append-code r7 (li reg-rax 8)
+   in let f1 = st-append-code f0 (push-r reg-rax)
+   in let after = bare-metal-load-addr + f1.code-len + 13
+   in let b0 = bit-and after 255
+   in let b1 = bit-and (bit-shru after 8) 255
+   in let b2 = bit-and (bit-shru after 16) 255
+   in let b3 = bit-and (bit-shru after 24) 255
+   in let f2 = st-append-code f1 [72, 184, b0, b1, b2, b3, 0, 0, 0, 0]
+   in let f3 = st-append-code f2 (push-r reg-rax)
+   in let f4 = st-append-code f3 [72, 203]
+   in let d0 = st-append-code f4 [102, 184, 16, 0]
+   in let d1 = st-append-code d0 [142, 216]
+   in let d2 = st-append-code d1 [142, 192]
+   in let d3 = st-append-code d2 [142, 208]
+   in let d4 = st-append-code d3 [142, 224]
+   in let d5 = st-append-code d4 [142, 232]
+   in let t0 = emit-zero-region d5 tss-base 13
+   in let t1 = st-append-code t0 (li reg-rdi tss-base)
+   in let t2 = st-append-code t1 (li reg-rax df-ist-stack-top)
+   in let t3 = st-append-code t2 (mov-store reg-rdi reg-rax 36)
+   in let t4 = st-append-code t3 (li reg-rax 24)
+   in let t5 = st-append-code t4 [15, 0, 216]
+   in let i0 = emit-idt-entries t5 first-stub-vaddr
+   in let i1 = emit-load-idt i0
+   in let i2 = st-append-code i1 (li reg-rdi (idt-base + 8 * 16 + 4))
+   in let i3 = st-append-code i2 (li reg-rax 1)
+   in let i4 = st-append-code i3 (mov-store-byte reg-rdi reg-rax 0)
+   in let m0 = emit-write-msr i4 3221225601 (8 * 4294967296)
+   in let m1 = emit-write-msr m0 3221225602 (bare-metal-load-addr + syscall-handler-offset)
+   in let m2 = emit-write-msr m1 3221225604 512
+   in let m3 = st-append-code m2 (li reg-rcx 3221225600)
+   in let m4 = st-append-code m3 [15, 50]
+   in let m5 = st-append-code m4 [72, 131, 200, 1]
+   in let m6 = st-append-code m5 [15, 48]
+   in let z0 = emit-zero-region m6 proc-table-base 512
+   in let p0a = st-append-code z0 (li reg-rdi proc-table-base)
+   in let p0b = st-append-code p0a (li reg-rax proc-state-running)
+   in let p0c = st-append-code p0b (mov-store reg-rdi reg-rax 0)
+   in let z1 = st-append-code p0c (li reg-rax 0)
+   in let z4 = st-append-code z1 (li reg-rdi sched-ready-head-addr)
+   in let z5 = st-append-code z4 (mov-store reg-rdi reg-rax 0)
+   in let z6 = st-append-code z5 (li reg-rdi sched-current-task-addr)
+   in let z7 = st-append-code z6 (mov-store reg-rdi reg-rax 0)
+   in let z8 = st-append-code z7 (li reg-rdi sched-yield-flag-addr)
+   in let z9 = st-append-code z8 (mov-store reg-rdi reg-rax 0)
+   in let z10 = st-append-code z9 (li reg-rdi starve-counter-addr)
+   in let z11 = st-append-code z10 (mov-store reg-rdi reg-rax 0)
+   in let z12 = st-append-code z11 (li reg-rdi prof-enabled-addr)
+   in let z13 = st-append-code z12 (mov-store reg-rdi reg-rax 0)
+   in let z14 = st-append-code z13 (li reg-rdi prof-cursor-addr)
+   in let z15 = st-append-code z14 (mov-store reg-rdi reg-rax 0)
+   in let s0 = emit-interrupt-setup z15
+   in let e0 = st-append-code s0 (li reg-rax 0)
+   in st-append-code e0 [195]
+
 Section: SMP Initialization
 
   emit-lapic-enable : CodegenState -> CodegenState
@@ -1218,12 +1749,98 @@ Section: SMP Initialization
   emit-lapic-write (st) (reg-offset) (value) =
    let st1 = st-append-code st (li reg-rdi (lapic-base + reg-offset))
    in let st2 = st-append-code st1 (li reg-rax value)
-   in st-append-code st2 (mov-store reg-rdi reg-rax 0)
+   in st-append-code st2 (mov-store-32 reg-rdi reg-rax 0)
 
   emit-lapic-read : CodegenState, Integer -> CodegenState
   emit-lapic-read (st) (reg-offset) =
    let st1 = st-append-code st (li reg-rdi (lapic-base + reg-offset))
    in st-append-code st1 (mov-load reg-rax reg-rdi 0)
+
+ A wake to every other core, so a processor parked on `hlt` in
+ __idle_dispatch rises to rescan the moment work is published rather than
+ waiting out its next timer tick. It is a fixed-delivery inter-processor
+ interrupt on the timer vector with the "all excluding self" shorthand, so
+ a woken core takes it exactly as it takes its own timer -- and the
+ idle-stack guard in the common handler drops it without touching a
+ process, which is all a parked core needs before it falls through to its
+ scan. A core that is not parked takes one harmless spurious tick. Sent
+ after a process is published READY (spawn) and after a waiter is unblocked
+ (exit). Clobbers RDI and RAX, like emit-lapic-write; call it where both
+ are dead.
+
+  emit-wake-ipi : CodegenState -> CodegenState
+  emit-wake-ipi (st) =
+   let st1 = emit-lapic-write st lapic-icr-hi-reg 0
+   in emit-lapic-write st1 lapic-icr-lo-reg icr-wake-all-but-self
+
+ The end of a scheduling interrupt, acknowledged to whichever chip raised
+ it. The boot processor's clock is the PIT, which arrives through the 8259
+ and is acknowledged there; an application processor's clock is its own
+ local APIC timer, and is acknowledged to the local APIC. Sending the wrong
+ one leaves the raising chip believing the interrupt is still in service,
+ and it never delivers another -- a core preempted exactly once and never
+ again, which looks like a scheduler that simply stopped.
+
+ The vector is still on the stack where the per-vector stub pushed it: the
+ handler has pushed four registers over it and nothing else, so it sits at
+ [rsp+32] on both the switching and the non-switching path. RDI and RAX are
+ dead at both call sites; RSI is not, and is not touched here, because the
+ switching path is on its way to __process_resume with the process in it.
+
+  emit-timer-eoi : CodegenState -> CodegenState
+  emit-timer-eoi (st) =
+   let st1 = st-append-code st (mov-load reg-rax reg-rsp 32)
+   in let st2 = st-append-code st1 (cmp-ri reg-rax lapic-timer-vector)
+   in let pic-pos = st2.code-len
+   in let st3 = st-append-code st2 (jcc cc-ne 0)
+   in let st4 = emit-lapic-write st3 lapic-eoi-reg 0
+   in let done-pos = st4.code-len
+   in let st5 = st-append-code st4 (jmp 0)
+   in let st6 = patch-jcc-at st5 pic-pos (st5.code-len)
+   in let st7 = emit-out-byte st6 32 32
+   in patch-jmp-at st7 done-pos (st7.code-len)
+
+ Evidence that an application processor was preempted. The core that is
+ running the interrupted process is recorded in the process itself
+ (proc-core-offset), stamped by whichever core won the claim, so the
+ handler can ask what core it is on without an MSR or a LAPIC read. The
+ boot processor's id is always zero and no host code writes this cell, so
+ any value above zero was put there by a timer interrupt taken on a core
+ that is not the BSP.
+
+ RCX already holds the address of the running process here. RAX and RDX are
+ dead; RDI holds the slot index and the scan below still needs it.
+
+  emit-ap-preempt-count : CodegenState -> CodegenState
+  emit-ap-preempt-count (st) =
+   let st1 = st-append-code st (mov-load reg-rdx reg-rcx proc-core-offset)
+   in let st2 = st-append-code st1 (test-rr reg-rdx reg-rdx)
+   in let skip-pos = st2.code-len
+   in let st3 = st-append-code st2 (jcc cc-e 0)
+   in let st4 = st-append-code st3 (li reg-rdx ap-preempt-count-addr)
+   in let st5 = st-append-code st4 (li reg-rax 1)
+   in let st6 = st-append-code st5 (lock-xadd-mem reg-rax reg-rdx 0)
+   in patch-jcc-at st6 skip-pos (st6.code-len)
+
+ An application processor arms its own scheduling clock. Until it does, it
+ is running with interrupts disabled and no timer, so a process that never
+ yields owns the core until it exits -- which is what BACKLOG 4.11 called
+ "an AP is never preempted".
+
+ The order matters. The local APIC is enabled first (the MSR bit, which is
+ per-core), then its spurious vector, then the timer is programmed, and
+ only then are interrupts unmasked. Raising IF before there is a handler
+ path for the vector would take the interrupt into whatever the IDT
+ happened to hold.
+
+  emit-ap-timer-init : CodegenState -> CodegenState
+  emit-ap-timer-init (st) =
+   let st1 = emit-lapic-enable st
+   in let st2 = emit-lapic-write st1 lapic-sivr-reg lapic-sivr-enable
+   in let st3 = emit-lapic-write st2 lapic-timer-div-reg lapic-timer-divide-16
+   in let st4 = emit-lapic-write st3 lapic-lvt-timer-reg (lapic-timer-vector + lapic-timer-periodic)
+   in let st5 = emit-lapic-write st4 lapic-timer-init-reg lapic-timer-count
+   in st-append-code st5 sti
 
   emit-busy-wait-cycles : CodegenState, Integer -> CodegenState
   emit-busy-wait-cycles (st) (count) =
@@ -1241,6 +1858,33 @@ Section: SMP Initialization
    in let st2 = st-append-code st1 (li reg-rdi (ap-stack-table-addr + i * 8))
    in let st3 = st-append-code st2 (mov-store reg-rdi reg-rax 0)
    in emit-smp-write-stacks st3 (i + 1)
+
+ The boot processor publishes the AP entry point and the per-core stack
+ table, sends INIT and two start-up IPIs, and then waits for every
+ application processor to count itself in. Each AP claims its stack from
+ the table by core index, loads the runtime GDT and its own task register
+ -- the hypervisor starts it on the boot GDT, which carries no TSS, and a
+ core with no task register cannot be handed a fault -- adds itself to the
+ ready count with a locked add, and goes to look for work.
+
+ It goes to __idle_dispatch -- the same place the boot processor goes when
+ it runs out of work -- with its core id already in R15, which is where
+ that routine expects it. From there an application processor is not a
+ special case: it claims a READY process out of the table and runs it,
+ exactly as core 0 does. The only asymmetry is that it may not claim slot
+ 0, because slot 0 is the program the machine booted.
+
+ It is already standing on its own idle stack here, so it has nothing to
+ get off before it starts scanning. That is not true of a core arriving
+ from process-exit or process-wait, and that is the whole reason
+ __idle_dispatch switches stacks before it does anything else.
+
+ The wait spins on pause rather than halting. A halted processor is woken
+ by an interrupt, and nothing here sends one -- the APs report in by
+ writing memory, which wakes nobody. The loop used to halt, and only ever
+ came back because codex-vm reached in from the host and rewrote the
+ BSP's instruction pointer to shove it past the loop. It no longer does,
+ so the loop has to be able to make progress on its own.
 
   emit-smp-init : CodegenState -> CodegenState
   emit-smp-init (st) =
@@ -1265,28 +1909,60 @@ Section: SMP Initialization
    in let ap6 = st-append-code ap5 (add-ri reg-rax ap-stack-size)
    in let ap7 = st-append-code ap6 (mov-rr reg-rsp reg-rax)
    in let ap8 = st-append-code ap7 (mov-rr reg-rbp reg-rsp)
-   in let ap9 = st-append-code ap8 (li reg-rdi ap-ready-count-addr)
+   in let tr0 = st-append-code ap8 (sub-ri reg-rsp 16)
+   in let tr1 = st-append-code tr0 (li reg-rax (gdt64-limit + gdt64-base * 65536))
+   in let tr2 = st-append-code tr1 (mov-store reg-rsp reg-rax 0)
+   in let tr3 = st-append-code tr2 (li reg-rax 0)
+   in let tr4 = st-append-code tr3 (mov-store reg-rsp reg-rax 8)
+   in let tr5 = st-append-code tr4 (mov-rr reg-rdi reg-rsp)
+   in let tr6 = st-append-code tr5 [15, 1, 23]
+   in let tr7 = st-append-code tr6 (add-ri reg-rsp 16)
+   in let tr8 = st-append-code tr7 (mov-rr reg-rax reg-r15)
+   in let tr9 = st-append-code tr8 (shl-ri reg-rax 4)
+   in let tr10 = st-append-code tr9 (add-ri reg-rax gdt-tss-sel-base)
+   in let tr11 = st-append-code tr10 [15, 0, 216]
+   in let rp0 = st-append-code tr11 (li reg-rax 0)
+   in let rp1 = st-append-code rp0 [15, 0, 200]
+   in let rp2 = st-append-code rp1 (mov-rr reg-rdx reg-r15)
+   in let rp3 = st-append-code rp2 (shl-ri reg-rdx 3)
+   in let rp4 = st-append-code rp3 (li reg-rdi ap-tr-report-addr)
+   in let rp5 = st-append-code rp4 (add-rr reg-rdi reg-rdx)
+   in let rp6 = st-append-code rp5 (mov-store reg-rdi reg-rax 0)
+   in let ap9 = st-append-code rp6 (li reg-rdi ap-ready-count-addr)
    in let ap10 = st-append-code ap9 (li reg-rax 1)
    in let ap11 = st-append-code ap10 (lock-xadd-mem reg-rax reg-rdi 0)
-   in let hlt-top = ap11.code-len
-   in let ap12 = st-append-code ap11 hlt
-   in let ap13 = st-append-code ap12 (jmp (hlt-top - (ap12.code-len + 5)))
+   in let ap12 = emit-ap-timer-init ap11
+   in let ap13 = emit-jmp-to ap12 "__idle_dispatch"
    in let st5b = patch-jmp-at ap13 bsp-skip-pos (ap13.code-len)
    in let st6 = st-append-code st5b (li reg-rax (bare-metal-load-addr + ap-entry-pos))
    in let st7 = st-append-code st6 (li reg-rdi ap-trampoline-addr)
    in let st8 = st-append-code st7 (mov-store reg-rdi reg-rax 0)
-   in let st20 = st-append-code st8 (li reg-rdi ap-core-count-addr)
-   in let st21 = st-append-code st20 (mov-load reg-rbx reg-rdi 0)
-   in let st22 = st-append-code st21 (sub-ri reg-rbx 1)
-   in let wait-top = st22.code-len
-   in let st23 = st-append-code st22 (li reg-rdi ap-ready-count-addr)
-   in let st24 = st-append-code st23 (mov-load reg-rax reg-rdi 0)
-   in let st25 = st-append-code st24 (cmp-rr reg-rax reg-rbx)
-   in let st26 = st-append-code st25 (jcc cc-ae 0)
-   in let st27 = st-append-code st26 hlt
-   in let st28 = st-append-code st27 (jmp (wait-top - (st27.code-len + 5)))
-   in let st29 = patch-jcc-at st28 (st25.code-len) (st28.code-len)
-   in patch-jcc-at st29 skip-pos (st29.code-len)
+   in let ipi0 = emit-lapic-enable st8
+   in let ipi1 = emit-lapic-write ipi0 lapic-sivr-reg lapic-sivr-enable
+   in let ipi2 = emit-lapic-write ipi1 lapic-icr-hi-reg 0
+   in let ipi3 = emit-lapic-write ipi2 lapic-icr-lo-reg icr-init-all-but-self
+   in let ipi4 = emit-busy-wait-cycles ipi3 smp-init-delay-cycles
+   in let ipi5 = emit-lapic-write ipi4 lapic-icr-lo-reg icr-sipi-all-but-self
+   in let ipi6 = emit-busy-wait-cycles ipi5 smp-sipi-delay-cycles
+   in let ipi7 = emit-lapic-write ipi6 lapic-icr-lo-reg icr-sipi-all-but-self
+   in let w0 = st-append-code ipi7 (li reg-rdi ap-core-count-addr)
+   in let w1 = st-append-code w0 (mov-load reg-rbx reg-rdi 0)
+   in let w2 = st-append-code w1 (sub-ri reg-rbx 1)
+   in let w3 = st-append-code w2 (li reg-rcx smp-wait-fuel)
+   in let wait-top = w3.code-len
+   in let w4 = st-append-code w3 (li reg-rdi ap-ready-count-addr)
+   in let w5 = st-append-code w4 (mov-load reg-rax reg-rdi 0)
+   in let w6 = st-append-code w5 (cmp-rr reg-rax reg-rbx)
+   in let all-in-pos = w6.code-len
+   in let w7 = st-append-code w6 (jcc cc-ae 0)
+   in let w8 = st-append-code w7 (sub-ri reg-rcx 1)
+   in let gave-up-pos = w8.code-len
+   in let w9 = st-append-code w8 (jcc cc-e 0)
+   in let w10 = st-append-code w9 x86-pause
+   in let w11 = st-append-code w10 (jmp (wait-top - (w10.code-len + 5)))
+   in let w12 = patch-jcc-at w11 all-in-pos (w11.code-len)
+   in let w13 = patch-jcc-at w12 gave-up-pos (w11.code-len)
+   in patch-jcc-at w13 skip-pos (w13.code-len)
 
 Section: Process Management
   emit-zero-region : CodegenState, Integer, Integer -> CodegenState
@@ -1318,11 +1994,22 @@ Section: Process Management
 
   emit-pdpt-entries : CodegenState, Integer, Integer, Integer -> CodegenState
   emit-pdpt-entries (st) (pdpt-addr) (pml4-addr) (i) =
-   if i >= bare-metal-pd-count then st
+   if i >= bare-metal-total-pd-count then st
    else let st1 = st-append-code st (li reg-rdi (pdpt-addr + i * 8))
     in let st2 = st-append-code st1 (li reg-rax (pml4-addr + 8192 + i * 4096 + 3))
     in let st3 = st-append-code st2 (mov-store reg-rdi reg-rax 0)
     in emit-pdpt-entries st3 pdpt-addr pml4-addr (i + 1)
+
+ The device directory maps the gigabyte above RAM identity, present and
+ read-write, with NX set on every entry -- nothing up there is code. It
+ is filled by the same routine as the RAM directories; only the page
+ range differs.
+
+  emit-fill-device-pd : CodegenState, Integer -> CodegenState
+  emit-fill-device-pd (st) (pml4-addr) =
+   let pd-addr = pml4-addr + 8192 + bare-metal-device-pd-index * 4096
+   in let st1 = st-append-code st (li reg-rdi pd-addr)
+   in emit-pd-entries st1 bare-metal-device-page-start bare-metal-device-page-end True
 
   emit-fill-pds : CodegenState, Integer, Integer -> CodegenState
   emit-fill-pds (st) (pml4-addr) (i) =
@@ -1344,14 +2031,15 @@ Section: Process Management
 
   emit-build-process-page-tables : CodegenState, Integer, Integer -> CodegenState
   emit-build-process-page-tables (st) (pml4-addr) (heap-phys) =
-   let zero-qwords = (2 + bare-metal-pd-count) * 512
+   let zero-qwords = (2 + bare-metal-total-pd-count) * 512
    in let st1 = emit-zero-region st pml4-addr zero-qwords
    in let st2 = st-append-code st1 (li reg-rdi pml4-addr)
    in let st3 = st-append-code st2 (li reg-rax (pml4-addr + 4096 + 3))
    in let st4 = st-append-code st3 (mov-store reg-rdi reg-rax 0)
    in let pdpt-addr = pml4-addr + 4096
    in let st5 = emit-pdpt-entries st4 pdpt-addr pml4-addr 0
-   in emit-fill-pds st5 pml4-addr 0
+   in let st6 = emit-fill-pds st5 pml4-addr 0
+   in emit-fill-device-pd st6 pml4-addr
 
   emit-create-process : CodegenState, Integer, Integer, Integer, Integer -> CodegenState
   emit-create-process (st) (proc-index) (state-val) (cr3-val) (heap-base) =
@@ -1368,6 +2056,24 @@ Section: Process Management
    in let st10 = st-append-code st9 (li reg-rdi (entry-addr + 48))
    in st-append-code st10 (mov-store reg-rdi reg-rax 0)
 
+ Proc 0 starts RUNNING, because it is running.
+
+ It used to be created READY, and that was wrong in a way that only one
+ core could get away with. The claim that hands a process from one core
+ to another is a CMPXCHG from READY to RUNNING, so READY means "nobody is
+ executing this, come and take it" -- and proc 0 wore that label for the
+ entire life of the program it was running. On one core nothing ever
+ looked, so nothing ever came. The moment an application processor scans
+ the table, it finds the boot processor's own program advertised as
+ free work and takes it.
+
+ Nothing depended on the old value. Proc 0 is published READY properly
+ when it actually yields, waits, or is preempted -- each of those saves
+ its context first. The boot value was only ever read before the first
+ switch, when proc 0 is unambiguously the thing on the CPU.
+
+ Pinned by codex/test/proc-state-running.codex.
+
   emit-process-setup : CodegenState -> CodegenState
   emit-process-setup (st) =
    let st1 = emit-zero-region st proc-table-base (16 * proc-entry-size / 8)
@@ -1376,10 +2082,16 @@ Section: Process Management
    in let st1c = emit-device-seed-init st1b
    in let st1d = emit-zero-region st1c identity-key-addr 6
    in let st1e = emit-ata-active-init st1d
-   in let st2 = st-append-code st1e (li reg-rdi current-proc-addr)
-   in let st3 = st-append-code st2 (li reg-rax 0)
-   in let st4 = st-append-code st3 (mov-store reg-rdi reg-rax 0)
-   in let slt0 = st-append-code st4 (li reg-rdi slice-table-addr)
+   in let apd0 = st-append-code st1e (li reg-rdi ap-dispatch-count-addr)
+   in let apd1 = st-append-code apd0 (li reg-rax 0)
+   in let apd2 = st-append-code apd1 (mov-store reg-rdi reg-rax 0)
+   in let app0 = st-append-code apd2 (li reg-rdi ap-preempt-count-addr)
+   in let app1 = st-append-code app0 (li reg-rax 0)
+   in let app2 = st-append-code app1 (mov-store reg-rdi reg-rax 0)
+   in let saff0 = st-append-code app2 (li reg-rdi spawn-affinity-addr)
+   in let saff1 = st-append-code saff0 (li reg-rax (-1))
+   in let saff2 = st-append-code saff1 (mov-store reg-rdi reg-rax 0)
+   in let slt0 = st-append-code saff2 (li reg-rdi slice-table-addr)
    in let slt1 = st-append-code slt0 (li reg-rax 0)
    in let slt2 = st-append-code slt1 (mov-store reg-rdi reg-rax 0)
    in let slt3 = st-append-code slt2 (li reg-rax proc-slice-system)
@@ -1390,8 +2102,11 @@ Section: Process Management
    in let slt8 = st-append-code slt7 (mov-store reg-rdi reg-rax 24)
    in let st5 = emit-build-process-page-tables slt8 32768 6291456
    in let st5u = emit-demand-unmap st5
-   in let st6 = emit-create-process st5u 0 1 32768 6291456
-   in let st7 = st-append-code st6 (li reg-rax 32768)
+   in let st6 = emit-create-process st5u 0 proc-state-running 32768 6291456
+   in let p0aff0 = st-append-code st6 (li reg-rdi (proc-table-base + proc-affinity-offset))
+   in let p0aff1 = st-append-code p0aff0 (li reg-rax (-1))
+   in let p0aff2 = st-append-code p0aff1 (mov-store reg-rdi reg-rax 0)
+   in let st7 = st-append-code p0aff2 (li reg-rax 32768)
    in let st8 = st-append-code st7 [15, 34, 216]
    in st-append-code st8 (li reg-r10 6291456)
 
@@ -1553,6 +2268,99 @@ Section: MSR and Syscall
    deny-offset : Integer between 0 and 4294967295
   }
 
+ The GPU rasterizer is reached through I/O ports 0x400-0x417 and
+ through nothing else: gr-flush, gr-clear and the texture and asset
+ chain in the apps are all port-out-32 / port-in-32 to that window.
+ It is therefore the window, not the builtin, that carries the GPU
+ authority. emit-gpu-port-guard tests cap-gpu-compute when and only
+ when the port in RDI falls inside it; every other port -- the PCI
+ config pair at 0xCF8/0xCFC, and every byte-width driver port -- runs
+ the check-free path, so the drivers are untouched.
+
+ Gating the builtin wholesale was the obvious move and it is wrong:
+ the drivers live in effect-exempt quires (Kernel, Dev, Os, Net,
+ Boards), so they touch ports without declaring Device.Port and their
+ programs never earn cap-device. xhci-discover-test, nic-ping and
+ vga-terminal-demo declare only [Console] and drive real hardware.
+ A blanket port gate denies all three. Ranging the check on the GPU
+ window is what lets the gate exist at all.
+
+ RDI (port) and RSI (value) are preserved: the guard reads the cap
+ word through RAX, which both port helpers overwrite afterwards.
+
+  gpu-port-lo : Integer = 1024
+  gpu-port-hi : Integer = 1047
+
+  emit-gpu-port-guard : CodegenState -> CheckExpiryResult
+  emit-gpu-port-guard (st) =
+   let st1 = st-append-code st (cmp-ri reg-rdi gpu-port-lo)
+   in let below = st1.code-len
+   in let st2 = st-append-code st1 (jcc cc-l 0)
+   in let st3 = st-append-code st2 (cmp-ri reg-rdi gpu-port-hi)
+   in let beyond = st3.code-len
+   in let st4 = st-append-code st3 (jcc cc-g 0)
+   in let st6 = emit-load-current-proc st4 reg-rax
+   in let st7 = st-append-code st6 (shl-ri reg-rax 8)
+   in let st8 = st-append-code st7 (add-ri reg-rax proc-table-base)
+   in let st9 = st-append-code st8 (mov-load reg-rax reg-rax proc-cap-offset)
+   in let st10 = st-append-code st9 (and-ri reg-rax (shl-1 cap-gpu-compute))
+   in let st11 = st-append-code st10 (test-rr reg-rax reg-rax)
+   in let deny = st11.code-len
+   in let st12 = st-append-code st11 (jcc cc-e 0)
+   in let pass = st12.code-len
+   in let st13 = patch-jcc-at st12 below pass
+   in let st14 = patch-jcc-at st13 beyond pass
+   in CheckExpiryResult { state = st14, deny-offset = deny }
+
+ GPU memory is the same argument as the GPU ports, one level down. The
+ rasterizer's command buffer is at 0xBE000000 and its depth buffer at
+ 0xBE800000, and every writer of them -- GpuRender, and the apps that
+ compose their own command buffers -- reaches them with poke-32 and
+ peek-32. So the window carries the authority, and emit-gpu-mem-guard
+ tests cap-gpu-memory when and only when the effective address falls
+ inside it. gpu-mem-write and gpu-mem-read are the typed surface over
+ the same two helpers, exactly as gpu-out and gpu-in are over the port
+ pair: the row is what makes the requirement visible at compile time
+ rather than at the refusal.
+
+ The GOP framebuffer at 0xBF000000 is deliberately OUTSIDE the window.
+ It is the display, not the GPU, and every widget and text-mode app
+ writes it directly; gating it would deny the whole desk to earn
+ nothing.
+
+ This guard is shaped for a hot path and the port guard is not, which
+ is the only reason the two do not read alike. port-out-32 runs when a
+ program talks to a device, which is rare. peek-32 and poke-32 are the
+ compiler's own memo-table primitives -- some two dozen sites in
+ Unifier.codex -- so they run on every unification of a self-compile,
+ and a bounds pair built from two movabs immediates would tax all of
+ that to police a window the compiler never touches. The window is one
+ aligned 16 MB page, so the test is its top byte: shift right by 24 and
+ compare with 0xBE. Three cheap ALU ops on a perfectly-predicted
+ branch, no memory read, and the capability word is only fetched by a
+ caller that is actually inside the window.
+
+  gpu-mem-page : Integer = 190
+
+  emit-gpu-mem-guard : CodegenState -> CheckExpiryResult
+  emit-gpu-mem-guard (st) =
+   let st1 = st-append-code st (mov-rr reg-rax reg-rdi)
+   in let st2 = st-append-code st1 (shr-ri reg-rax 24)
+   in let st3 = st-append-code st2 (cmp-ri reg-rax gpu-mem-page)
+   in let outside = st3.code-len
+   in let st4 = st-append-code st3 (jcc cc-ne 0)
+   in let st5 = emit-load-current-proc st4 reg-rax
+   in let st6 = st-append-code st5 (shl-ri reg-rax 8)
+   in let st7 = st-append-code st6 (add-ri reg-rax proc-table-base)
+   in let st8 = st-append-code st7 (mov-load reg-rax reg-rax proc-cap-offset)
+   in let st9 = st-append-code st8 (and-ri reg-rax (shl-1 cap-gpu-memory))
+   in let st10 = st-append-code st9 (test-rr reg-rax reg-rax)
+   in let deny = st10.code-len
+   in let st11 = st-append-code st10 (jcc cc-e 0)
+   in let pass = st11.code-len
+   in let st12 = patch-jcc-at st11 outside pass
+   in CheckExpiryResult { state = st12, deny-offset = deny }
+
   emit-check-expiry : CodegenState -> CheckExpiryResult
   emit-check-expiry (st) =
    let st1 = st-append-code st (push-r reg-rdi)
@@ -1587,8 +2395,7 @@ Section: MSR and Syscall
   emit-check-capability (st) (cap-bit) =
    let st1 = st-append-code st (push-r reg-rcx)
    in let st2 = st-append-code st1 (push-r reg-r11)
-   in let st3 = st-append-code st2 (li reg-r11 current-proc-addr)
-   in let st4 = st-append-code st3 (mov-load reg-r11 reg-r11 0)
+   in let st4 = emit-load-current-proc st2 reg-r11
    in let st5 = st-append-code st4 (li reg-rcx proc-entry-size)
    in let st6 = st-append-code st5 (imul-rr reg-rcx reg-r11)
    in let st7 = st-append-code st6 (add-ri reg-rcx proc-table-base)
@@ -1681,14 +2488,42 @@ Section: MSR and Syscall
  target, falls through the dispatch chain unmatched, and returns -1
  from the common exit — the device is never driven.
 
+ The block-authority gate widens the plain cap-block-device test so that a
+ syscall also proceeds when the fs-elevated cell is non-zero -- the
+ filesystem servicer driving the disk for a process that carries only
+ FileSystem.Read (BACKLOG 1.14). The returned deny-offset is the jcc the
+ caller patches to its shared no-cap exit; it fires only when BOTH the bit
+ is clear AND fs-elevated is zero. rax is free here (it held the syscall
+ number, overwritten by the disk code below), and emit-check-capability
+ preserves rcx/r11 and never touches rdi/rsi, so the live LBA and buffer
+ arguments survive the gate.
+
+  emit-block-elev-gate : CodegenState -> CheckExpiryResult
+  emit-block-elev-gate (st) =
+   let stc = emit-check-capability st cap-block-device
+   in let to-elev = stc.code-len
+   in let st1 = st-append-code stc (jcc cc-ae 0)
+   in let to-proceed = st1.code-len
+   in let st2 = st-append-code st1 (jmp 0)
+   in let elev = st2.code-len
+   in let st3 = st-append-code st2 (li reg-rax fs-elevated-addr)
+   in let st4 = st-append-code st3 (mov-load reg-rax reg-rax 0)
+   in let st5 = st-append-code st4 (test-rr reg-rax reg-rax)
+   in let deny = st5.code-len
+   in let st6 = st-append-code st5 (jcc cc-e 0)
+   in let proceed = st6.code-len
+   in let st7 = patch-jcc-at st6 to-elev elev
+   in let st8 = patch-jmp-at st7 to-proceed proceed
+   in CheckExpiryResult { state = st8, deny-offset = deny }
+
   emit-block-read-syscall : CodegenState -> BlockSyscallResult
   emit-block-read-syscall (st) =
    let st1 = st-append-code st (cmp-ri reg-rax 10)
    in let not-block-read = st1.code-len
    in let st2 = st-append-code st1 (jcc cc-ne 0)
-   in let stc = emit-check-capability st2 cap-block-device
-   in let no-block-cap = stc.code-len
-   in let st2a = st-append-code stc (jcc cc-ae 0)
+   in let stc = emit-block-elev-gate st2
+   in let no-block-cap = stc.deny-offset
+   in let st2a = stc.state
    in let st3 = st-append-code st2a (push-r reg-rsi)
    in let st4 = st-append-code st3 (push-r reg-rcx)
    in let st5 = emit-ata-setup-lba st4
@@ -1714,9 +2549,9 @@ Section: MSR and Syscall
    let st1 = st-append-code st (cmp-ri reg-rax 11)
    in let not-block-write = st1.code-len
    in let st2 = st-append-code st1 (jcc cc-ne 0)
-   in let stc = emit-check-capability st2 cap-block-device
-   in let no-block-cap = stc.code-len
-   in let st2a = st-append-code stc (jcc cc-ae 0)
+   in let stc = emit-block-elev-gate st2
+   in let no-block-cap = stc.deny-offset
+   in let st2a = stc.state
    in let st3 = st-append-code st2a (push-r reg-rsi)
    in let st4 = st-append-code st3 (push-r reg-rcx)
    in let st5 = emit-ata-setup-lba st4
@@ -1748,9 +2583,9 @@ Section: MSR and Syscall
    let st1 = st-append-code st (cmp-ri reg-rax 12)
    in let not-block-sector-count = st1.code-len
    in let st2 = st-append-code st1 (jcc cc-ne 0)
-   in let stc = emit-check-capability st2 cap-block-device
-   in let no-block-cap = stc.code-len
-   in let st2a = st-append-code stc (jcc cc-ae 0)
+   in let stc = emit-block-elev-gate st2
+   in let no-block-cap = stc.deny-offset
+   in let st2a = stc.state
    in let st3 = st-append-code st2a (li reg-rdi ata-sector-count-addr)
    in let st4 = st-append-code st3 (mov-load reg-rax reg-rdi 0)
    in let done = st4.code-len
@@ -1779,9 +2614,9 @@ Section: MSR and Syscall
    let st1 = st-append-code st (cmp-ri reg-rax 13)
    in let not-block-select = st1.code-len
    in let st2 = st-append-code st1 (jcc cc-ne 0)
-   in let stc = emit-check-capability st2 cap-block-device
-   in let no-block-cap = stc.code-len
-   in let st2a = st-append-code stc (jcc cc-ae 0)
+   in let stc = emit-block-elev-gate st2
+   in let no-block-cap = stc.deny-offset
+   in let st2a = stc.state
    in let st3 = st-append-code st2a (push-r reg-rdi)
    in let st4 = st-append-code st3 (li reg-rsi ata-active-drive-addr)
    in let st5 = st-append-code st4 (mov-store reg-rsi reg-rdi 0)

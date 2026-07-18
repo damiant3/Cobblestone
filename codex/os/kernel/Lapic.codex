@@ -1,0 +1,131 @@
+Chapter: Lapic
+  cites Foreword chapter Board
+  grounds Device.Mmio
+
+ The local APIC, as a driver a guest can call.
+
+ The registers have been driven all along -- but from inside the
+ COMPILER, by X86_64Boot, which writes them as machine code during SMP
+ bring-up and arms each core's timer. That is emit-time code: it builds
+ instructions, it does not execute them, and nothing a guest program
+ could call reached the LAPIC at all. `vga-terminal-demo` cited this
+ chapter and called lapic-drain against a chapter that had never been
+ written; the cite is now an error rather than a silence, which is how
+ the gap was finally legible.
+
+ The base is 0xFEE00000. It is above the 3 GB RAM ceiling, in the device
+ gigabyte the runtime page tables map present/RW/NX, so a load or store
+ there is decoded by a device rather than by memory -- exactly as on real
+ silicon. Under codex-vm the access leaves the guest as an MMIO exit and
+ is served by the emulated LAPIC.
+
+Section: Registers
+
+ Offsets from the Intel SDM volume 3, table 10-1. These are the same
+ numbers X86_64Boot carries for its own emission; the duplication is
+ real but the two are not reachable from one another -- the compiler
+ cannot cite the OS quire. If they drift, a guest and its own boot code
+ disagree about the same chip.
+
+  lapic-base : Integer = #FEE00000
+  lapic-reg-id : Integer = #20
+  lapic-reg-version : Integer = #30
+  lapic-reg-eoi : Integer = #B0
+  lapic-reg-sivr : Integer = #F0
+  lapic-reg-isr : Integer = #100
+
+ The in-service register is eight 32-bit words on a 16-byte stride,
+ one bit per vector, 256 vectors in all.
+
+  lapic-isr-stride : Integer = 16
+  lapic-isr-words : Integer = 8
+  lapic-bits-per-word : Integer = 32
+
+Section: Reads
+
+ The id sits in the top byte. codex-vm answers this per core, so an
+ application processor and the boot processor give different answers --
+ which is the only reason it is worth reading.
+
+  lapic-id : [Device.Mmio] Integer
+  lapic-id = act
+    v <- mmio-read-32 (lapic-base + lapic-reg-id)
+    bit-shru v 24
+  end
+
+ The version register is the honest liveness probe for this chapter. It
+ is a fixed non-zero constant the hardware reports about itself, so a
+ read that returns it proves the MMIO round trip reached a real decoder;
+ a read that returns 0 is what a missing mapping, an unmapped BAR and a
+ stub all return. Every other register here can read 0 legitimately.
+
+  lapic-version : [Device.Mmio] Integer
+  lapic-version = mmio-read-32 (lapic-base + lapic-reg-version)
+
+ The spurious-interrupt vector register carries the vector the chip
+ delivers when it has nothing better to say, and bit 8 is the software
+ enable for the whole local APIC.
+
+  lapic-sivr : [Device.Mmio] Integer
+  lapic-sivr = mmio-read-32 (lapic-base + lapic-reg-sivr)
+
+Section: Writes
+
+ Writing the EOI register tells the local APIC the highest-priority
+ interrupt in service is finished. The value is architecturally ignored;
+ zero is what the SDM requires be written.
+
+  lapic-eoi : [Device.Mmio] Integer
+  lapic-eoi = mmio-write-32 (lapic-base + lapic-reg-eoi) 0
+
+  lapic-set-sivr : Integer -> [Device.Mmio] Integer
+  lapic-set-sivr (v) = mmio-write-32 (lapic-base + lapic-reg-sivr) v
+
+Section: Drain
+
+ Acknowledge every interrupt the local APIC still holds in service, and
+ answer how many. A program that takes over a machine someone else
+ booted -- firmware, a bootloader -- inherits whatever that owner left
+ in service, and an un-acknowledged vector blocks every equal or lower
+ priority interrupt forever after.
+
+ The walk is over the ISR bitmap: eight words, thirty-two bits each, one
+ EOI per set bit. It is bounded by construction at 256 acknowledgements
+ and has no fuel parameter because it cannot spin -- each word is read
+ once and each bit is examined once.
+
+ What codex-vm proves about this is nothing. Its LAPIC models the id,
+ the version, the SIVR, the ICR and the per-core timer, and returns 0
+ for every other offset, the ISR included -- so under codex-vm the walk
+ reads eight zero words, sends no EOI, and returns 0. That is a correct
+ result on a machine with nothing in service, and it is indistinguishable
+ from a driver that does not work. `codex/test/lapic-regs` therefore
+ tests what the emulator can actually contradict and does not pretend
+ the drain is covered.
+
+  lapic-drain : [Device.Mmio] Integer
+  lapic-drain = lapic-drain-word 0 0
+
+  lapic-drain-word : Integer, Integer -> [Device.Mmio] Integer
+  lapic-drain-word (i) (acc) =
+    if i >= lapic-isr-words then acc
+    else lapic-drain-word-at i acc
+
+  lapic-drain-word-at : Integer, Integer -> [Device.Mmio] Integer
+  lapic-drain-word-at (i) (acc) = act
+    w <- mmio-read-32 (lapic-base + lapic-reg-isr + i * lapic-isr-stride)
+    n <- lapic-drain-bit w 0 0
+    lapic-drain-word (i + 1) (acc + n)
+  end
+
+  lapic-drain-bit : Integer, Integer, Integer -> [Device.Mmio] Integer
+  lapic-drain-bit (w) (b) (acc) =
+    if b >= lapic-bits-per-word then acc
+    else if bit-and (bit-shru w b) 1 == 0 then lapic-drain-bit w (b + 1) acc
+    else lapic-drain-bit-ack w b acc
+
+  lapic-drain-bit-ack : Integer, Integer, Integer -> [Device.Mmio] Integer
+  lapic-drain-bit-ack (w) (b) (acc) = act
+    e <- lapic-eoi
+    lapic-drain-bit w (b + 1) (acc + 1)
+  end

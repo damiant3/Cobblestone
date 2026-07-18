@@ -1,0 +1,497 @@
+Chapter: LensDashboard
+  cites Lens chapter LensModel
+  cites Lens chapter LensPlan
+  cites Data chapter Row
+  cites Data chapter Executor
+  cites Data chapter Catalog
+
+ A dashboard turns query results into one self-contained HTML page.
+ Every chart is inline SVG built from integer arithmetic, every style
+ lives in one style block, and nothing on the page references an
+ external script, sheet, font, or image, so the same text renders
+ identically wherever it lands: served by the native service, served
+ by the emitted barbarian service, or saved to a file and opened by
+ hand. This chapter knows nothing about how a query executes. It
+ treats a LensQuery as an opaque request and a QueryResult as the
+ answer, and the one function that runs queries delegates to lens-run
+ and hands the results straight to the static renderer, so a service
+ that executes queries its own way can call the static entry with
+ results it computed itself.
+
+Section: Chart Kinds
+
+ Three chart kinds cover v1. A bar chart draws one measure as
+ vertical bars, one per row, with the first result column as the
+ category. A stacked bar keeps the first column on the x axis and
+ stacks the remaining measure columns as colored segments. A table
+ prints the result verbatim, header row and all. The constructors
+ carry an Ld prefix because constructor names are program-wide.
+
+  LensChartKind =
+    | LdBar
+    | LdStackedBar
+    | LdTable
+
+Section: Tiles and Dashboards
+
+ A tile is one titled chart over one query. A dashboard is a titled
+ list of tiles, rendered in declaration order into a grid.
+
+  LensTile = record {
+    tile-title : Text,
+    tile-query : LensQuery,
+    tile-chart : LensChartKind
+  }
+
+  LensDashboard = record {
+    dash-title : Text,
+    tiles : List LensTile
+  }
+
+Section: Escaping
+
+ Every piece of text that lands in markup goes through ld-escape:
+ titles, axis labels, table cells, error messages, legend names. The
+ walk compares each character as text rather than by code, because
+ character codes are CCE inside the compiler and the three characters
+ HTML cares about must be recognized by identity, not by a barbarian
+ code point.
+
+  ld-escape : Text -> Text
+  ld-escape (t) = ld-escape-loop t 0 (text-length t) ""
+
+  ld-escape-loop : Text, Integer, Integer, Text -> Text
+  ld-escape-loop (t) (i) (len) (acc) =
+    if i >= len then acc
+    else let ch = char-to-text (char-at t i)
+    in if ch == "&" then ld-escape-loop t (i + 1) len (acc & "&amp;")
+    else if ch == "<" then ld-escape-loop t (i + 1) len (acc & "&lt;")
+    else if ch == ">" then ld-escape-loop t (i + 1) len (acc & "&gt;")
+    else ld-escape-loop t (i + 1) len (acc & ch)
+
+Section: The Frame
+
+ Every chart draws inside one fixed viewbox, 640 wide by 320 tall,
+ with a 60 pixel left margin for the y axis labels, 20 on top, 20 on
+ the right, and 40 on the bottom for category labels. The plot area
+ is therefore 560 by 260, running from x 60 to 620 and from y 20 to
+ 280. All scaling is integer arithmetic: a value maps to a height of
+ value times 260 divided by the axis top, and the axis top is always
+ four times a round step, so the gridlines land on round numbers.
+ The step comes from the 1, 2, 5 ladder: the smallest number of the
+ form 1, 2, or 5 times a power of ten that is at least a quarter of
+ the maximum value. The climb multiplies by ten each round, so it
+ finishes within the digit count of the maximum.
+
+  ld-round-step : Integer -> Integer
+  ld-round-step (mx) =
+    if mx <= 0 then 1
+    else ld-step-climb ((mx + 3) / 4) 1
+
+  ld-step-climb : Integer, Integer -> Integer
+  ld-step-climb (raw) (k) =
+    if raw <= k then k
+    else if raw <= k * 2 then k * 2
+    else if raw <= k * 5 then k * 5
+    else ld-step-climb raw (k * 10)
+
+  ld-y-for : Integer, Integer -> Integer
+  ld-y-for (v) (top) = 280 - v * 260 / top
+
+Section: SVG Fragments
+
+ Small builders for the SVG vocabulary the charts use, each returning
+ one element followed by a newline so the page stays readable and
+ diffable. Text content arrives pre-escaped; attribute values here
+ are integers and palette colors, which never need escaping.
+
+  ld-svg-open : Text = "<svg viewBox=\"0 0 640 320\" width=\"640\" height=\"320\">\n"
+
+  ld-attr : Text, Integer -> Text
+  ld-attr (nm) (v) = " " & nm & "=\"" & show v & "\""
+
+  ld-rect : Integer, Integer, Integer, Integer, Text -> Text
+  ld-rect (x) (y) (w) (h) (fill) =
+    "<rect" & ld-attr "x" x & ld-attr "y" y & ld-attr "width" w & ld-attr "height" h & " fill=\"" & fill & "\"/>\n"
+
+  ld-line : Integer, Integer, Integer, Integer, Text -> Text
+  ld-line (x1) (y1) (x2) (y2) (stroke) =
+    "<line" & ld-attr "x1" x1 & ld-attr "y1" y1 & ld-attr "x2" x2 & ld-attr "y2" y2 & " stroke=\"" & stroke & "\"/>\n"
+
+  ld-svg-text : Integer, Integer, Text, Text -> Text
+  ld-svg-text (x) (y) (anchor) (content) =
+    "<text" & ld-attr "x" x & ld-attr "y" y & " text-anchor=\"" & anchor & "\" font-size=\"12\" fill=\"#444444\">" & content & "</text>\n"
+
+Section: Axis and Gridlines
+
+ Five gridlines, at zero and at each multiple of the step up to the
+ axis top, each with its round-number label right-aligned into the
+ left margin. The two solid axis lines draw after the grid so they
+ sit on top of it.
+
+  ld-gridlines : Integer, Integer, Integer, Text -> Text
+  ld-gridlines (step) (top) (g) (acc) =
+    if g > 4 then acc
+    else let y = ld-y-for (g * step) top
+    in let line = ld-line 60 y 620 y "#dddddd"
+    in let lbl = ld-svg-text 54 (y + 4) "end" (show (g * step))
+    in ld-gridlines step top (g + 1) (acc & line & lbl)
+
+  ld-axes : Text = ld-line 60 20 60 280 "#333333" & ld-line 60 280 620 280 "#333333"
+
+Section: Palette
+
+ A fixed palette of six colors, cycled when a stacked chart carries
+ more series than the palette has entries. Single bars take the
+ first color.
+
+  ld-color : Integer -> Text
+  ld-color (i) =
+    let m = i - (i / 6) * 6
+    in if m == 0 then "#4e79a7"
+    else if m == 1 then "#f28e2b"
+    else if m == 2 then "#59a14c"
+    else if m == 3 then "#e15759"
+    else if m == 4 then "#76b7b2"
+    else "#edc948"
+
+Section: Reading Results
+
+ The charts read a QueryResult positionally: column zero is the
+ category, the columns after it are the numeric series. Numbers come
+ out through val-to-integer and display text through val-to-text, the
+ engine's own renderings, and display text is escaped on the way out.
+ The maximum scans find the axis top: the single-column maximum for
+ plain bars, the maximum row total for stacked bars.
+
+  ld-cell-int : RowData, Integer -> Integer
+  ld-cell-int (row) (c) = val-to-integer (row-get row c)
+
+  ld-cell-text : RowData, Integer -> Text
+  ld-cell-text (row) (c) = ld-escape (val-to-text (row-get row c))
+
+  ld-max-val : List RowData, Integer, Integer -> Integer
+  ld-max-val (rows) (i) (best) =
+    if i >= list-length rows then best
+    else let v = ld-cell-int (list-at rows i) 1
+    in ld-max-val rows (i + 1) (if v > best then v else best)
+
+  ld-row-total : RowData, Integer, Integer, Integer -> Integer
+  ld-row-total (row) (c) (ncols) (acc) =
+    if c >= ncols then acc
+    else ld-row-total row (c + 1) ncols (acc + ld-cell-int row c)
+
+  ld-max-total : List RowData, Integer, Integer, Integer -> Integer
+  ld-max-total (rows) (i) (ncols) (best) =
+    if i >= list-length rows then best
+    else let v = ld-row-total (list-at rows i) 1 ncols 0
+    in ld-max-total rows (i + 1) ncols (if v > best then v else best)
+
+Section: Bar Geometry
+
+ The plot width divides evenly into one slot per category, each bar
+ takes three fifths of its slot, and the remainder splits into equal
+ gaps on either side. Every position is integer division, so the
+ emitted coordinates are exact and pinnable by a test.
+
+  ld-slot : Integer -> Integer
+  ld-slot (n) = if n <= 0 then 560 else 560 / n
+
+  ld-bar-w : Integer -> Integer
+  ld-bar-w (slot) = slot * 3 / 5
+
+  ld-bar-x : Integer, Integer -> Integer
+  ld-bar-x (slot) (i) = 60 + i * slot + (slot - ld-bar-w slot) / 2
+
+Section: Bar Charts
+
+ One bar per row: the value scales into the plot, the bar rises from
+ the baseline, the value prints just above the bar, and the category
+ prints under the baseline. An empty result renders a visible notice
+ instead of an empty frame.
+
+  ld-empty : Text = "<p class=\"lens-empty\">no rows</p>\n"
+
+  ld-bar-rects : List RowData, Integer, Integer, Integer, Text -> Text
+  ld-bar-rects (rows) (top) (slot) (i) (acc) =
+    if i >= list-length rows then acc
+    else let row = list-at rows i
+    in let v = ld-cell-int row 1
+    in let h = v * 260 / top
+    in let y = 280 - h
+    in let bw = ld-bar-w slot
+    in let x = ld-bar-x slot i
+    in let bar = ld-rect x y bw h (ld-color 0)
+    in let vlbl = ld-svg-text (x + bw / 2) (y - 6) "middle" (show v)
+    in let clbl = ld-svg-text (x + bw / 2) 296 "middle" (ld-cell-text row 0)
+    in ld-bar-rects rows top slot (i + 1) (acc & bar & vlbl & clbl)
+
+  ld-render-bar : QueryResult -> Text
+  ld-render-bar (qr) =
+    if qr.qr-count == 0 then ld-empty
+    else let step = ld-round-step (ld-max-val (qr.qr-rows) 0 0)
+    in let top = step * 4
+    in let slot = ld-slot (qr.qr-count)
+    in let grid = ld-gridlines step top 0 ""
+    in let bars = ld-bar-rects (qr.qr-rows) top slot 0 ""
+    in ld-svg-open & grid & ld-axes & bars & "</svg>\n"
+
+Section: Stacked Bars
+
+ A stacked bar accumulates the series values bottom up. Each segment
+ takes its top and bottom edges from the running total scaled into
+ the plot, so the segments tile the bar exactly and rounding never
+ opens a gap between them; a segment whose rounded height is zero is
+ simply skipped. The axis scales to the largest row total. A legend
+ under the chart names each series in its color, taking the names
+ from the result schema.
+
+  ld-stack-segs : RowData, Integer, Integer, Integer, Integer, Integer, Integer, Text -> Text
+  ld-stack-segs (row) (top) (x) (bw) (c) (ncols) (cum) (acc) =
+    if c >= ncols then acc
+    else let v = ld-cell-int row c
+    in let cum2 = cum + v
+    in let ybot = ld-y-for cum top
+    in let ytop = ld-y-for cum2 top
+    in let h = ybot - ytop
+    in let seg = if h <= 0 then "" else ld-rect x ytop bw h (ld-color (c - 1))
+    in ld-stack-segs row top x bw (c + 1) ncols cum2 (acc & seg)
+
+  ld-stack-bars : List RowData, Integer, Integer, Integer, Integer, Text -> Text
+  ld-stack-bars (rows) (top) (slot) (ncols) (i) (acc) =
+    if i >= list-length rows then acc
+    else let row = list-at rows i
+    in let bw = ld-bar-w slot
+    in let x = ld-bar-x slot i
+    in let segs = ld-stack-segs row top x bw 1 ncols 0 ""
+    in let clbl = ld-svg-text (x + bw / 2) 296 "middle" (ld-cell-text row 0)
+    in ld-stack-bars rows top slot ncols (i + 1) (acc & segs & clbl)
+
+  ld-legend-items : List Text, Integer, Text -> Text
+  ld-legend-items (names) (c) (acc) =
+    if c >= list-length names then acc
+    else let item = "<span class=\"lens-key\"><span class=\"lens-chip\" style=\"background:" & ld-color (c - 1) & "\"></span>" & ld-escape (list-at names c) & "</span>"
+    in ld-legend-items names (c + 1) (acc & item)
+
+  ld-legend : RowSchema -> Text
+  ld-legend (s) = "<div class=\"lens-legend\">" & ld-legend-items (s.col-names) 1 "" & "</div>\n"
+
+  ld-render-stacked : QueryResult -> Text
+  ld-render-stacked (qr) =
+    if qr.qr-count == 0 then ld-empty
+    else let ncols = qr.qr-schema.col-count
+    in let step = ld-round-step (ld-max-total (qr.qr-rows) 0 ncols 0)
+    in let top = step * 4
+    in let slot = ld-slot (qr.qr-count)
+    in let grid = ld-gridlines step top 0 ""
+    in let bars = ld-stack-bars (qr.qr-rows) top slot ncols 0 ""
+    in ld-svg-open & grid & ld-axes & bars & "</svg>\n" & ld-legend (qr.qr-schema)
+
+Section: Tables
+
+ A table prints the result as it stands: a header row from the
+ schema's column names, then one row per data row, every cell
+ escaped.
+
+  ld-table-head : List Text, Integer, Text -> Text
+  ld-table-head (names) (i) (acc) =
+    if i >= list-length names then acc
+    else ld-table-head names (i + 1) (acc & "<th>" & ld-escape (list-at names i) & "</th>")
+
+  ld-table-cells : RowData, Integer, Text -> Text
+  ld-table-cells (row) (c) (acc) =
+    if c >= row.schema.col-count then acc
+    else ld-table-cells row (c + 1) (acc & "<td>" & ld-cell-text row c & "</td>")
+
+  ld-table-rows : List RowData, Integer, Text -> Text
+  ld-table-rows (rows) (i) (acc) =
+    if i >= list-length rows then acc
+    else let row = list-at rows i
+    in ld-table-rows rows (i + 1) (acc & "<tr>" & ld-table-cells row 0 "" & "</tr>\n")
+
+  ld-render-table : QueryResult -> Text
+  ld-render-table (qr) =
+    if qr.qr-count == 0 then ld-empty
+    else let head = "<tr>" & ld-table-head (qr.qr-schema.col-names) 0 "" & "</tr>\n"
+    in let body = ld-table-rows (qr.qr-rows) 0 ""
+    in "<table class=\"lens-table\">\n" & head & body & "</table>\n"
+
+Section: Tiles
+
+ A tile is a section carrying its escaped title and its body. A
+ failed result never disappears: the tile renders the error message
+ where the chart would have been, in the loud style the design
+ demands of every failure a dashboard could otherwise hide.
+
+  ld-render-body : LensChartKind, QueryResult -> Text
+  ld-render-body (kind) (qr) =
+    if qr.qr-ok == False then "<p class=\"lens-error\">" & ld-escape (qr.qr-msg) & "</p>\n"
+    else when kind
+      is LdBar -> ld-render-bar qr
+      is LdStackedBar -> ld-render-stacked qr
+      is LdTable -> ld-render-table qr
+
+  ld-render-tile : LensChartKind, Text, QueryResult -> Text
+  ld-render-tile (kind) (title) (qr) =
+    let head = "<section class=\"lens-tile\">\n<h2>" & ld-escape title & "</h2>\n"
+    in head & ld-render-body kind qr & "</section>\n"
+
+Section: The Page
+
+ The page is complete and self-contained: doctype, title, one style
+ block, a heading, and the tile grid. The style is a light theme on
+ a system font stack, and every rule is spelled here rather than
+ fetched, because a dashboard that needs a network to look right is
+ not self-contained. The static entry renders pre-computed results
+ in tile order, one result per tile, and a tile whose result is
+ missing renders as a failed tile rather than vanishing. The catalog
+ entry runs each tile's query through lens-run and hands the results
+ to the static entry, so both targets share every line of rendering.
+
+  ld-css : Text =
+    let c1 = "body{font-family:-apple-system,'Segoe UI',Roboto,Arial,sans-serif;margin:24px;background:#f7f7f5;color:#222222}\n"
+    in let c2 = "h1{font-size:22px}\n"
+    in let c3 = ".lens-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(660px,1fr));gap:16px}\n"
+    in let c4 = ".lens-tile{background:#ffffff;border:1px solid #dddddd;border-radius:8px;padding:12px 16px}\n"
+    in let c5 = ".lens-tile h2{font-size:16px;margin:0 0 8px 0}\n"
+    in let c6 = ".lens-tile svg{max-width:100%;height:auto}\n"
+    in let c7 = ".lens-error{color:#b00020;background:#fdecea;padding:8px;border-radius:4px}\n"
+    in let c8 = ".lens-empty{color:#777777}\n"
+    in let c9 = ".lens-legend{display:flex;gap:16px;font-size:13px}\n"
+    in let c10 = ".lens-key{display:inline-flex;align-items:center;gap:6px}\n"
+    in let c11 = ".lens-chip{display:inline-block;width:12px;height:12px;border-radius:2px}\n"
+    in let c12 = ".lens-table{border-collapse:collapse;font-size:14px}\n"
+    in let c13 = ".lens-table th,.lens-table td{border:1px solid #dddddd;padding:4px 10px;text-align:left}\n"
+    in let c14 = ".lens-table th{background:#f0f0ee}\n"
+    in c1 & c2 & c3 & c4 & c5 & c6 & c7 & c8 & c9 & c10 & c11 & c12 & c13 & c14
+
+  ld-tiles-html : List LensTile, List QueryResult, Integer, Text -> Text
+  ld-tiles-html (ts) (rs) (i) (acc) =
+    if i >= list-length ts then acc
+    else let t = list-at ts i
+    in let qr = if i >= list-length rs then qr-error "no result supplied for this tile" else list-at rs i
+    in ld-tiles-html ts rs (i + 1) (acc & ld-render-tile (t.tile-chart) (t.tile-title) qr)
+
+  lens-dashboard-html-static : LensDashboard, List QueryResult -> Text
+  lens-dashboard-html-static (d) (results) =
+    let title = ld-escape (d.dash-title)
+    in let head = "<!DOCTYPE html>\n<html>\n<head>\n<title>" & title & "</title>\n<style>\n" & ld-css & "</style>\n</head>\n<body>\n<h1>" & title & "</h1>\n<main class=\"lens-grid\">\n"
+    in let body = ld-tiles-html (d.tiles) results 0 ""
+    in head & body & "</main>\n</body>\n</html>"
+
+  ld-run-tiles : Catalog, LensModel, List LensTile, Integer, List QueryResult -> List QueryResult
+  ld-run-tiles (cat) (model) (ts) (i) (acc) =
+    if i >= list-length ts then acc
+    else let t = list-at ts i
+    in ld-run-tiles cat model ts (i + 1) (list-push acc (lens-run cat model (t.tile-query)))
+
+  lens-dashboard-html : Catalog, LensModel, LensDashboard -> Text
+  lens-dashboard-html (cat) (model) (d) =
+    lens-dashboard-html-static d (ld-run-tiles cat model (d.tiles) 0 [])
+
+Section: The Explore Form
+
+ The explore page turns the model's governed vocabulary into a form a
+ browser can post back: one checkbox per dimension, one checkbox per
+ measure with the measure's signed-off description beside it, because
+ seeing what a measure means before picking it is the point of Lens,
+ a numeric limit defaulting to zero for no limit, and a submit
+ button. The form posts to /explore rather than encoding a query
+ string, because the service's path seam never sees a query string.
+ The incoming selection threads back in so the boxes an analyst
+ checked stay checked on the result page. Every name and description
+ lands in markup through ld-escape; the names are governed kebab-case
+ identifiers, so the escaped text is also safe inside a quoted
+ attribute.
+
+  le-checked : List Text, Text -> Text
+  le-checked (sel) (nm) = if lp-texts-contain sel 0 nm then " checked" else ""
+
+  le-dim-boxes : List LensDimension, List Text, Integer, Text -> Text
+  le-dim-boxes (ds) (sel) (i) (acc) =
+    if i >= list-length ds then acc
+    else let d = list-at ds i
+    in let nm = ld-escape (d.name)
+    in let item = "<label class=\"lens-choice\"><input type=\"checkbox\" name=\"dim\" value=\"" & nm & "\"" & le-checked sel (d.name) & "> " & nm & "</label>\n"
+    in le-dim-boxes ds sel (i + 1) (acc & item)
+
+  le-meas-boxes : List LensMeasure, List Text, Integer, Text -> Text
+  le-meas-boxes (ms) (sel) (i) (acc) =
+    if i >= list-length ms then acc
+    else let m = list-at ms i
+    in let nm = ld-escape (m.name)
+    in let item = "<label class=\"lens-choice\"><input type=\"checkbox\" name=\"meas\" value=\"" & nm & "\"" & le-checked sel (m.name) & "> " & nm & " <span class=\"lens-desc\">" & ld-escape (m.description) & "</span></label>\n"
+    in le-meas-boxes ms sel (i + 1) (acc & item)
+
+  le-form : LensModel, List Text, List Text, Integer -> Text
+  le-form (model) (dims) (meas) (limit) =
+    let f1 = "<form class=\"lens-form\" method=\"post\" action=\"/explore\">\n"
+    in let f2 = "<fieldset>\n<legend>Dimensions</legend>\n" & le-dim-boxes (model.dimensions) dims 0 "" & "</fieldset>\n"
+    in let f3 = "<fieldset>\n<legend>Measures</legend>\n" & le-meas-boxes (model.measures) meas 0 "" & "</fieldset>\n"
+    in let f4 = "<p><label>Limit <input type=\"number\" name=\"limit\" value=\"" & show limit & "\"></label> <button type=\"submit\">Run query</button></p>\n"
+    in f1 & f2 & f3 & f4 & "</form>\n"
+
+Section: Explore Results
+
+ A run's answer renders inside one tile-styled section under the
+ form: the result as a table always, through the same body renderer
+ the dashboard tiles use, so a failed plan shows its diagnostics in
+ the same loud error style, and a bar chart besides when the shape
+ charts well, which is exactly one selected dimension, at least one
+ measure, and at least one row. The executed SQL prints under its
+ own small heading whenever a statement ran, escaped like every
+ other piece of data-derived text; a refused plan runs no SQL and
+ the empty text suppresses the heading.
+
+  le-chartable : List Text, List Text, QueryResult -> Boolean
+  le-chartable (dims) (meas) (qr) =
+    if qr.qr-ok == False then False
+    else if list-length dims /= 1 then False
+    else if list-length meas == 0 then False
+    else qr.qr-count >= 1
+
+  le-sql-block : Text -> Text
+  le-sql-block (sql) =
+    if text-length sql == 0 then ""
+    else "<h3>Executed SQL</h3>\n<pre class=\"lens-sql\">" & ld-escape sql & "</pre>\n"
+
+  le-results : List Text, List Text, QueryResult, Text -> Text
+  le-results (dims) (meas) (qr) (sql) =
+    let table = ld-render-body LdTable qr
+    in let chart = if le-chartable dims meas qr then ld-render-bar qr else ""
+    in "<section class=\"lens-tile lens-results\">\n<h2>Results</h2>\n" & table & chart & le-sql-block sql & "</section>\n"
+
+Section: The Explore Page
+
+ The explore page is self-contained in the same discipline as the
+ dashboard: one style block, inline SVG, no external reference. Its
+ style is the dashboard's sheet with the form rules appended, kept as
+ an extension rather than an edit so the dashboard page's bytes never
+ move. Two entries share every line: the bare entry renders the form
+ with no results section, which is the GET answer, and the run entry
+ renders the form with the results of the query the analyst posted.
+ The page is rebuilt from the model on every request and none of it
+ outlives the reply.
+
+  le-css : Text =
+    let e1 = ".lens-form fieldset{background:#ffffff;border:1px solid #dddddd;border-radius:8px;margin:0 0 12px 0;padding:8px 16px}\n"
+    in let e2 = ".lens-form legend{font-size:14px;font-weight:bold;padding:0 6px}\n"
+    in let e3 = ".lens-choice{display:block;font-size:14px;margin:4px 0}\n"
+    in let e4 = ".lens-desc{color:#777777;font-size:13px}\n"
+    in let e5 = ".lens-results{margin-top:16px}\n"
+    in let e6 = ".lens-results h3{font-size:14px;margin:12px 0 4px 0}\n"
+    in let e7 = ".lens-sql{background:#f0f0ee;padding:8px;border-radius:4px;font-size:13px;white-space:pre-wrap}\n"
+    in ld-css & e1 & e2 & e3 & e4 & e5 & e6 & e7
+
+  le-page : LensModel, List Text, List Text, Integer, Text -> Text
+  le-page (model) (dims) (meas) (limit) (results) =
+    let title = "Explore " & ld-escape (model.name)
+    in let head = "<!DOCTYPE html>\n<html>\n<head>\n<title>" & title & "</title>\n<style>\n" & le-css & "</style>\n</head>\n<body>\n<h1>" & title & "</h1>\n"
+    in head & le-form model dims meas limit & results & "</body>\n</html>"
+
+  lens-explore-html : LensModel, List Text, List Text, Integer -> Text
+  lens-explore-html (model) (dims) (meas) (limit) = le-page model dims meas limit ""
+
+  lens-explore-html-run : LensModel, List Text, List Text, Integer, QueryResult, Text -> Text
+  lens-explore-html-run (model) (dims) (meas) (limit) (qr) (sql) =
+    le-page model dims meas limit (le-results dims meas qr sql)

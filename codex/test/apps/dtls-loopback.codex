@@ -1,0 +1,142 @@
+Chapter: DtlsLoopbackTest
+  cites Net chapter DtlsEndpoint
+  cites Encode chapter DtlsHandshake
+  cites Foreword chapter Maybe
+
+ A DTLS 1.3 handshake between two real endpoints, in one process, over
+ datagrams, with no network.
+
+ This is what the pure step-function discipline was for. The client and
+ the server are the same code a device would run; the only thing missing
+ is the socket, and the socket is the part that cannot be tested. We hand
+ each datagram to the other side by hand, which also means we choose what
+ arrives -- so loss and forgery are one line each.
+
+ THE HANDSHAKE THIS COMPLETES IS NOT SECURE. There is no peer
+ authentication in it: no Certificate, no CertificateVerify. What the two
+ sides agree is an ANONYMOUS X25519 key, which resists a passive
+ eavesdropper and does NOT resist an active man in the middle. This test
+ going green means the transport works. It does not mean DTLS works, and
+ it must not be quoted as if it did.
+
+Section: Setup
+
+  c-priv : List Integer =
+    [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16,
+     17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32]
+
+  s-priv : List Integer =
+    [32, 31, 30, 29, 28, 27, 26, 25, 24, 23, 22, 21, 20, 19, 18, 17,
+     16, 15, 14, 13, 12, 11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1]
+
+  cookie-secret : List Integer = [7, 7, 7, 7, 7, 7, 7, 7]
+  client-addr : List Integer = [10, 0, 0, 7]
+
+ The handshake Randoms. A device supplies real entropy here; a test
+ supplies a fixed value so the exchange is reproducible. They are the
+ caller's business, not the endpoint's -- and distinct from the private
+ keys, which is the whole point of the field.
+
+  c-random : List Integer =
+    [101, 102, 103, 104, 105, 106, 107, 108, 109, 110, 111, 112, 113, 114, 115, 116,
+     117, 118, 119, 120, 121, 122, 123, 124, 125, 126, 127, 128, 129, 130, 131, 132]
+
+  s-random : List Integer =
+    [201, 202, 203, 204, 205, 206, 207, 208, 209, 210, 211, 212, 213, 214, 215, 216,
+     217, 218, 219, 220, 221, 222, 223, 224, 225, 226, 227, 228, 229, 230, 231, 232]
+
+  c0 : DtlsEp = dtls-ep-new False c-priv c-random [] []
+  s0 : DtlsEp = dtls-ep-new True s-priv s-random cookie-secret client-addr
+
+Section: The Exchange
+
+ Flight 1: ClientHello, no cookie.
+
+  st1 : DtlsEpStep = dtls-ep-client c0 0
+  d1 : List Integer = list-at (st1.es-out) 0
+
+ Flight 2: the server will not allocate a thing. It answers with a
+ HelloRetryRequest carrying a cookie derived from the client's address,
+ and forgets the exchange ever happened.
+
+  st2 : DtlsEpStep = dtls-ep-recv s0 d1 10
+  d2 : List Integer = list-at (st2.es-out) 0
+
+ Flight 3: the client echoes the cookie.
+
+  st3 : DtlsEpStep = dtls-ep-recv (st1.es-ep) d2 20
+  d3 : List Integer = list-at (st3.es-out) 0
+
+ Flight 4: the cookie verifies, so NOW the server allocates: ServerHello
+ plus its Finished.
+
+  st4 : DtlsEpStep = dtls-ep-recv (st2.es-ep) d3 30
+  d4 : List Integer = list-at (st4.es-out) 0
+  d5 : List Integer = list-at (st4.es-out) 1
+
+ The client takes the ServerHello (completing the key exchange), then the
+ server's Finished, and answers with its own.
+
+  st5 : DtlsEpStep = dtls-ep-recv (st3.es-ep) d4 40
+  st6 : DtlsEpStep = dtls-ep-recv (st5.es-ep) d5 50
+  d6 : List Integer = list-at (st6.es-out) 0
+
+ The server checks the client's Finished. Both sides are done.
+
+  st7 : DtlsEpStep = dtls-ep-recv (st4.es-ep) d6 60
+
+Section: Results
+
+  test-flights : Text =
+    "lb flights: ch1=" & show (list-length (st1.es-out)) & " hrr=" & show (list-length (st2.es-out)) & " ch2=" & show (list-length (st3.es-out)) & " sh+fin=" & show (list-length (st4.es-out)) & " cfin=" & show (list-length (st6.es-out))
+
+ The handshake completed on both sides. If either of these is False, the
+ two ends did not agree on the transcript -- which, on the cookie path,
+ is almost always the message_hash rule of RFC 8446 4.4.1.
+
+  test-client-done : Text =
+    "lb client-done=" & show (dtls-ep-done (st6.es-ep))
+
+  test-server-done : Text =
+    "lb server-done=" & show (dtls-ep-done (st7.es-ep))
+
+ And they agreed on the same handshake secrets. This is the anonymous
+ X25519 agreement, and it is the whole of what was proved.
+
+  test-agree : Text =
+    "lb agree=" & show (dtls-ct-equal ((st6.es-ep).ep-s-hs) ((st7.es-ep).ep-s-hs))
+
+Section: A Forged Cookie
+
+ The cookie is bound to the client's address. A server that answers a
+ ClientHello bearing someone else's cookie has learned nothing about who
+ is really there -- so it must not proceed. Here the server is configured
+ for a different address, so the cookie it recomputes will not match, and
+ it must emit nothing.
+
+  s-other : DtlsEp = dtls-ep-new True s-priv s-random cookie-secret [10, 0, 0, 8]
+  st-forged : DtlsEpStep = dtls-ep-recv s-other d3 30
+
+  test-forged : Text =
+    "lb forged-cookie-out=" & show (list-length (st-forged.es-out)) & " done=" & show (dtls-ep-done (st-forged.es-ep))
+
+Section: Garbage
+
+ A datagram is whatever an attacker chose to send. Rubbish must produce
+ nothing, not a crash and not a reply.
+
+  st-junk : DtlsEpStep = dtls-ep-recv s0 [1, 2, 3] 10
+
+  test-junk : Text =
+    "lb junk-out=" & show (list-length (st-junk.es-out))
+
+Section: Entry
+
+  opening : [Console] Nothing = act
+    print-line-uni test-flights
+    print-line-uni test-client-done
+    print-line-uni test-server-done
+    print-line-uni test-agree
+    print-line-uni test-forged
+    print-line-uni test-junk
+  end

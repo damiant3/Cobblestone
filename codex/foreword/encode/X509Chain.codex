@@ -1,0 +1,259 @@
+Chapter: X509Chain
+  cites Encode chapter X509
+  cites Encode chapter Asn1
+  cites Foreword chapter Ed25519
+  cites Foreword chapter Maybe
+
+ The chain walk. X509 said what a certificate IS; this chapter says whether
+ to believe it. The two are kept apart on purpose: a parser that also
+ decides trust tends to decide it by accident, in a branch nobody meant as
+ a policy.
+
+ A verdict is a variant and never a Boolean. "False" tells a caller that
+ something is wrong and nothing about what, which means the caller cannot
+ log it, cannot alert on it, and cannot tell an expired certificate (a
+ clock problem, probably benign) from a bad signature (an attack, never
+ benign). Every rejection below names itself.
+
+ This chapter has NO CLOCK. The current time is a parameter, because a
+ library that reaches for a clock cannot be tested at an interesting
+ instant and cannot run where there is no clock -- and on bare metal there
+ often is not one. The caller supplies the time; the caller is where the
+ clock lives.
+
+ What a chain walk must get right, and what each rule is here to stop:
+
+ The issuer link is compared as RAW DER BYTES, never as decoded text. Two
+ names that print the same can be different encodings, and a decoder that
+ normalises them is a decoder that can be talked into believing one
+ authority is another.
+
+ An issuer must be a CA. A leaf certificate that is allowed to sign
+ another certificate is an authority, and every certificate it signs is
+ trusted. This is the single most valuable bit in the whole structure, and
+ it is one bit.
+
+ An issuer's key must be able to VERIFY. An X25519 key agrees keys; it
+ signs nothing. X509 makes that a type, and this chapter honours it.
+
+ To x509-chain-verify gives X509Verdict, deciding whether a certificate chain is trustworthy at a given time.
+ To x509-time-norm gives Maybe (List Integer), normalising a certificate time to 14 comparable digits.
+
+ We say:
+
+Section: Verdict
+
+  X509Verdict =
+    | ChainOk
+    | ChainEmpty
+    | ChainNotYetValid
+    | ChainExpired
+    | ChainBadTime
+    | ChainBadSignature
+    | ChainBrokenIssuer
+    | ChainIssuerNotCa
+    | ChainIssuerCannotSign
+    | ChainNoAnchor
+    | ChainTooLong
+
+ A trust anchor is a name and a key. It is not a certificate: an anchor is
+ trusted because the operator put it there, not because something signed
+ it, and modelling it as a certificate invites somebody to go looking for
+ its issuer.
+
+  X509Anchor = record {
+    xa-subject : List Integer,
+    xa-key : X509Key
+  }
+
+ A chain longer than this is refused rather than walked. The bound is not
+ a performance concern -- it is that an unbounded walk over attacker-
+ supplied certificates is an attacker-supplied loop.
+
+  x509-max-chain : Integer = 8
+
+Section: Time
+
+ A certificate time is either a UTCTime (YYMMDDHHMMSSZ, 13 bytes) or a
+ GeneralizedTime (YYYYMMDDHHMMSSZ, 15 bytes). Both normalise to fourteen
+ ASCII digits, which compare correctly as bytes because every field is
+ fixed width and zero padded.
+
+ RFC 5280 section 4.1.2.5.1: in a UTCTime, a two-digit year of 50 or more
+ means 19xx and anything less means 20xx. Getting this backwards makes a
+ certificate from 1996 look like one that expires in 2096.
+
+  x509-time-norm : List Integer -> Maybe (List Integer)
+  x509-time-norm (t) =
+    if list-length t == 13 then x509-utc-time t
+    else if list-length t == 15 then x509-gen-time t
+    else None
+
+  x509-ascii-z : Integer = 90
+  x509-ascii-0 : Integer = 48
+  x509-ascii-9 : Integer = 57
+
+  x509-utc-time : List Integer -> Maybe (List Integer)
+  x509-utc-time (t) =
+    if list-at t 12 /= x509-ascii-z then None
+    else if x509-all-digits t 0 12 == False then None
+    else Just (x509-century (list-at t 0) & x509-take t 0 12)
+
+ The century bytes, as ASCII: "19" or "20".
+
+  x509-century : Integer -> List Integer
+  x509-century (y0) =
+    if y0 >= x509-ascii-0 + 5 then [49, 57] else [50, 48]
+
+  x509-gen-time : List Integer -> Maybe (List Integer)
+  x509-gen-time (t) =
+    if list-at t 14 /= x509-ascii-z then None
+    else if x509-all-digits t 0 14 == False then None
+    else Just (x509-take t 0 14)
+
+ A time field that is not digits is not a time. A parser that shrugs at
+ this is a parser that will compare garbage and get an answer.
+
+  x509-all-digits : List Integer, Integer, Integer -> Boolean
+  x509-all-digits (t) (i) (n) =
+    if i >= n then True
+    else if list-at t i < x509-ascii-0 then False
+    else if list-at t i > x509-ascii-9 then False
+    else x509-all-digits t (i + 1) n
+
+  x509-take : List Integer, Integer, Integer -> List Integer
+  x509-take (t) (off) (n) = x509-take-loop t off n 0 []
+
+  x509-take-loop : List Integer, Integer, Integer, Integer, List Integer -> List Integer
+  x509-take-loop (t) (off) (n) (i) (acc) =
+    if i >= n then acc
+    else if off + i >= list-length t then acc
+    else x509-take-loop t off n (i + 1) (list-push acc (list-at t (off + i)))
+
+ Lexicographic, over equal fixed widths, which is numeric order.
+
+  x509-time-le : List Integer, List Integer -> Boolean
+  x509-time-le (a) (b) = x509-le-loop a b 0
+
+  x509-le-loop : List Integer, List Integer, Integer -> Boolean
+  x509-le-loop (a) (b) (i) =
+    if i >= list-length a then True
+    else if i >= list-length b then False
+    else if list-at a i < list-at b i then True
+    else if list-at a i > list-at b i then False
+    else x509-le-loop a b (i + 1)
+
+ notBefore <= now <= notAfter. Both ends, and the failures are told apart:
+ a certificate that is not valid yet is usually a clock that is wrong, and
+ one that has expired is usually a certificate that has expired.
+
+  x509-valid-at : X509Cert, List Integer -> X509Verdict
+  x509-valid-at (c) (now) =
+    when x509-time-norm (c.xc-not-before)
+      is None -> ChainBadTime
+      is Just (nb) -> x509-valid-after c now nb
+
+  x509-valid-after : X509Cert, List Integer, List Integer -> X509Verdict
+  x509-valid-after (c) (now) (nb) =
+    when x509-time-norm (c.xc-not-after)
+      is None -> ChainBadTime
+      is Just (na) -> x509-window nb na now
+
+  x509-window : List Integer, List Integer, List Integer -> X509Verdict
+  x509-window (nb) (na) (now) =
+    if x509-time-le nb now == False then ChainNotYetValid
+    else if x509-time-le now na == False then ChainExpired
+    else ChainOk
+
+Section: Signature
+
+ A certificate is signed over its tbsCertificate -- the bytes the parser
+ kept, not a re-encoding of them. The key must be one that can sign at all.
+
+  x509-signed-by : X509Cert, X509Key -> Boolean
+  x509-signed-by (c) (k) =
+    if x509-can-verify k == False then False
+    else ed25519-verify (k.xk-bytes) (c.xc-tbs) (c.xc-sig)
+
+ An issuer must be a CA and must hold a signing key. Both, and the two
+ failures are named separately because they are different mistakes.
+
+  x509-issuer-ok : X509Cert -> X509Verdict
+  x509-issuer-ok (issuer) =
+    if issuer.xc-is-ca == False then ChainIssuerNotCa
+    else if x509-can-verify (issuer.xc-key) == False then ChainIssuerCannotSign
+    else ChainOk
+
+Section: Names
+
+  x509-name-eq : List Integer, List Integer -> Boolean
+  x509-name-eq (a) (b) =
+    if list-length a /= list-length b then False
+    else x509-name-loop a b 0 (list-length a)
+
+  x509-name-loop : List Integer, List Integer, Integer, Integer -> Boolean
+  x509-name-loop (a) (b) (i) (n) =
+    if i >= n then True
+    else if list-at a i /= list-at b i then False
+    else x509-name-loop a b (i + 1) n
+
+Section: The Walk
+
+ The chain is leaf first. Each certificate is checked against the next one
+ up; the last one is checked against a trust anchor. A chain that reaches
+ no anchor is refused -- there is no "well, it looked fine" ending.
+
+  x509-chain-verify : List X509Cert, List X509Anchor, List Integer -> X509Verdict
+  x509-chain-verify (chain) (anchors) (now) =
+    if list-length chain < 1 then ChainEmpty
+    else if list-length chain > x509-max-chain then ChainTooLong
+    else x509-walk chain anchors now 0
+
+  x509-walk : List X509Cert, List X509Anchor, List Integer, Integer -> X509Verdict
+  x509-walk (chain) (anchors) (now) (i) =
+    when x509-valid-at (list-at chain i) now
+      is ChainOk -> x509-walk-link chain anchors now i
+      is otherwise -> x509-valid-at (list-at chain i) now
+
+ The last certificate in the chain must be vouched for by an anchor.
+ Everything before it must be vouched for by the certificate above it.
+
+  x509-walk-link : List X509Cert, List X509Anchor, List Integer, Integer -> X509Verdict
+  x509-walk-link (chain) (anchors) (now) (i) =
+    if i == list-length chain - 1 then x509-to-anchor (list-at chain i) anchors 0
+    else x509-to-issuer chain anchors now i
+
+  x509-to-issuer : List X509Cert, List X509Anchor, List Integer, Integer -> X509Verdict
+  x509-to-issuer (chain) (anchors) (now) (i) =
+    when x509-issuer-ok (list-at chain (i + 1))
+      is ChainOk -> x509-issuer-link chain anchors now i
+      is otherwise -> x509-issuer-ok (list-at chain (i + 1))
+
+  x509-issuer-link : List X509Cert, List X509Anchor, List Integer, Integer -> X509Verdict
+  x509-issuer-link (chain) (anchors) (now) (i) =
+    if x509-name-eq ((list-at chain i).xc-issuer) ((list-at chain (i + 1)).xc-subject) == False
+    then ChainBrokenIssuer
+    else if x509-signed-by (list-at chain i) ((list-at chain (i + 1)).xc-key) == False
+    then ChainBadSignature
+    else x509-walk chain anchors now (i + 1)
+
+ An anchor matches on its name, and then it must actually have signed the
+ thing. A name match alone proves nothing at all -- anyone can put any name
+ in an issuer field.
+
+  x509-to-anchor : X509Cert, List X509Anchor, Integer -> X509Verdict
+  x509-to-anchor (c) (anchors) (i) =
+    if i >= list-length anchors then ChainNoAnchor
+    else if x509-name-eq (c.xc-issuer) ((list-at anchors i).xa-subject) == False
+    then x509-to-anchor c anchors (i + 1)
+    else x509-anchor-sig c anchors i
+
+ The name matched. If the signature does not, we do NOT go looking for
+ another anchor with the same name -- that is an oracle, and it lets an
+ attacker who can register a colliding name grind against every key we
+ hold. One anchor, one answer.
+
+  x509-anchor-sig : X509Cert, List X509Anchor, Integer -> X509Verdict
+  x509-anchor-sig (c) (anchors) (i) =
+    if x509-signed-by c ((list-at anchors i).xa-key) then ChainOk
+    else ChainBadSignature

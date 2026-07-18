@@ -1,0 +1,255 @@
+Chapter: Interval Exhaustive
+  cites Math chapter Interval
+
+ An exhaustive containment test for the Interval kernel, in the
+ ConstantRange discipline: enumerate every interval over a small
+ universe, apply every transfer function, and check that the concrete
+ result of the runtime's own operator on every member pair is
+ contained in the kernel's answer. The universe is the sixteen
+ integers -8..7, giving 136 intervals with lo <= hi and 136 x 136
+ interval pairs per binary operator. The concrete operators are the
+ runtime's own: +, -, *, / and int-mod are evaluated by the compiled
+ test itself, so whatever the runtime does IS the spec the kernel is
+ checked against. Division and modulo skip member pairs whose divisor
+ is zero, where the concrete operator is undefined; the kernel must
+ still answer soundly for divisor RANGES containing zero, and it does
+ so by returning iv-unknown, which contains every result the scan
+ checks. Union must contain every member of both inputs; intersection
+ must contain every value lying in both.
+
+ Tightness is checked separately where the transfer function is
+ exact: for add, sub, and neg - no endpoint can overflow in this tiny
+ universe - both endpoints of every kernel answer must be witnessed
+ by a concrete evaluation at the extremal corner pair.
+
+ Memory discipline: the inner loops are pure Integer tail recursion -
+ no lists, no text, no records inside any scan. Each interval pair
+ allocates exactly the two argument records and the kernel's one
+ result record, built once per pair before the member scan. Counts
+ ride packed in a single Integer: failures times 2^32 plus checks.
+
+Section: Universe
+
+  ivx-lo : Integer = 0 - 8
+
+  ivx-hi : Integer = 7
+
+  ivx-pack : Integer = 4294967296
+
+Section: Operators
+
+ Operator codes: 1 add, 2 sub, 3 mul, 4 div, 5 mod, 6 min, 7 max are
+ the member-scanned binary operators; 8 union and 9 intersect check
+ membership rather than an arithmetic result; 11 and 12 are the
+ tightness passes for add and sub.
+
+  ivx-concrete : Integer, Integer, Integer -> Integer
+  ivx-concrete (op) (x) (y) =
+   if op == 1 then x + y
+   else if op == 2 then x - y
+   else if op == 3 then x * y
+   else if op == 4 then x / y
+   else if op == 5 then int-mod x y
+   else if op == 6 then (if x <= y then x else y)
+   else (if x >= y then x else y)
+
+  ivx-kernel : Integer, Interval, Interval -> Interval
+  ivx-kernel (op) (a) (b) =
+   if op == 1 then iv-add a b
+   else if op == 2 then iv-sub a b
+   else if op == 3 then iv-mul a b
+   else if op == 4 then iv-div a b
+   else if op == 5 then iv-mod a b
+   else if op == 6 then iv-min a b
+   else iv-max a b
+
+Section: Member Scans
+
+ The innermost loops. Each iteration adds 1 to the check count and
+ 2^32 to the packed accumulator on a containment failure; nothing is
+ allocated. ivx-scan-id checks the value itself for membership, for
+ the union and intersection passes.
+
+  ivx-scan-y : Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  ivx-scan-y (op) (x) (y) (y-max) (k-lo) (k-hi) (acc) =
+   if y > y-max then acc
+   else if (op == 4 | op == 5) & y == 0 then ivx-scan-y op x (y + 1) y-max k-lo k-hi acc
+   else let c = ivx-concrete op x y
+   in let bad = if c < k-lo | c > k-hi then 1 else 0
+   in ivx-scan-y op x (y + 1) y-max k-lo k-hi (acc + 1 + bad * ivx-pack)
+
+  ivx-scan-x : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  ivx-scan-x (op) (x) (x-max) (y-min) (y-max) (k-lo) (k-hi) (acc) =
+   if x > x-max then acc
+   else let acc2 = ivx-scan-y op x y-min y-max k-lo k-hi acc
+   in ivx-scan-x op (x + 1) x-max y-min y-max k-lo k-hi acc2
+
+  ivx-scan-id : Integer, Integer, Integer, Integer, Integer -> Integer
+  ivx-scan-id (x) (x-max) (k-lo) (k-hi) (acc) =
+   if x > x-max then acc
+   else let bad = if x < k-lo | x > k-hi then 1 else 0
+   in ivx-scan-id (x + 1) x-max k-lo k-hi (acc + 1 + bad * ivx-pack)
+
+Section: Tightness
+
+ Two checks per pair: each endpoint of the kernel answer must equal
+ the concrete result at its extremal corner.
+
+  ivx-tight2 : Integer, Integer, Integer, Integer, Integer -> Integer
+  ivx-tight2 (w-lo) (w-hi) (k-lo) (k-hi) (acc) =
+   let bad-lo = if w-lo == k-lo then 0 else 1
+   in let bad-hi = if w-hi == k-hi then 0 else 1
+   in acc + 2 + (bad-lo + bad-hi) * ivx-pack
+
+Section: Pair Handlers
+
+ One handler per interval pair, chosen by operator code. Codes 1..7
+ build the kernel answer once and scan every member pair for
+ containment. Code 8 checks that the union contains every member of
+ both inputs. Code 9 checks that the intersection contains every
+ value lying in both inputs; disjoint inputs give an empty scan
+ range, which contributes nothing - exactly the contract. Codes 11
+ and 12 check add and sub tightness at the extremal corners.
+
+  ivx-pair-members : Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  ivx-pair-members (op) (l1) (h1) (l2) (h2) (acc) =
+   let k = ivx-kernel op (Interval { lo = l1, hi = h1 }) (Interval { lo = l2, hi = h2 })
+   in ivx-scan-x op l1 h1 l2 h2 (k.lo) (k.hi) acc
+
+  ivx-pair-union : Integer, Integer, Integer, Integer, Integer -> Integer
+  ivx-pair-union (l1) (h1) (l2) (h2) (acc) =
+   let u = iv-union (Interval { lo = l1, hi = h1 }) (Interval { lo = l2, hi = h2 })
+   in ivx-scan-id l2 h2 (u.lo) (u.hi) (ivx-scan-id l1 h1 (u.lo) (u.hi) acc)
+
+  ivx-pair-isect : Integer, Integer, Integer, Integer, Integer -> Integer
+  ivx-pair-isect (l1) (h1) (l2) (h2) (acc) =
+   let n = iv-intersect (Interval { lo = l1, hi = h1 }) (Interval { lo = l2, hi = h2 })
+   in ivx-scan-id (iv-int-max l1 l2) (iv-int-min h1 h2) (n.lo) (n.hi) acc
+
+  ivx-pair-tight : Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  ivx-pair-tight (op) (l1) (h1) (l2) (h2) (acc) =
+   let k = ivx-kernel op (Interval { lo = l1, hi = h1 }) (Interval { lo = l2, hi = h2 })
+   in if op == 1 then ivx-tight2 (l1 + l2) (h1 + h2) (k.lo) (k.hi) acc
+   else ivx-tight2 (l1 - h2) (h1 - l2) (k.lo) (k.hi) acc
+
+  ivx-pair : Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  ivx-pair (op) (l1) (h1) (l2) (h2) (acc) =
+   if op == 8 then ivx-pair-union l1 h1 l2 h2 acc
+   else if op == 9 then ivx-pair-isect l1 h1 l2 h2 acc
+   else if op == 11 then ivx-pair-tight 1 l1 h1 l2 h2 acc
+   else if op == 12 then ivx-pair-tight 2 l1 h1 l2 h2 acc
+   else ivx-pair-members op l1 h1 l2 h2 acc
+
+Section: Pair Enumeration
+
+ Four nested tail-recursive loops enumerate every ordered pair of
+ intervals: l1 <= h1 and l2 <= h2, all in -8..7. Every loop recurses
+ on itself in tail position; the calls DOWN the nest return before
+ the tail step, so stack depth is the constant four.
+
+  ivx-loop-h2 : Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  ivx-loop-h2 (op) (l1) (h1) (l2) (h2) (acc) =
+   if h2 > ivx-hi then acc
+   else let acc2 = ivx-pair op l1 h1 l2 h2 acc
+   in ivx-loop-h2 op l1 h1 l2 (h2 + 1) acc2
+
+  ivx-loop-l2 : Integer, Integer, Integer, Integer, Integer -> Integer
+  ivx-loop-l2 (op) (l1) (h1) (l2) (acc) =
+   if l2 > ivx-hi then acc
+   else let acc2 = ivx-loop-h2 op l1 h1 l2 l2 acc
+   in ivx-loop-l2 op l1 h1 (l2 + 1) acc2
+
+  ivx-loop-h1 : Integer, Integer, Integer, Integer -> Integer
+  ivx-loop-h1 (op) (l1) (h1) (acc) =
+   if h1 > ivx-hi then acc
+   else let acc2 = ivx-loop-l2 op l1 h1 ivx-lo acc
+   in ivx-loop-h1 op l1 (h1 + 1) acc2
+
+  ivx-loop-l1 : Integer, Integer, Integer -> Integer
+  ivx-loop-l1 (op) (l1) (acc) =
+   if l1 > ivx-hi then acc
+   else let acc2 = ivx-loop-h1 op l1 l1 acc
+   in ivx-loop-l1 op (l1 + 1) acc2
+
+  ivx-run : Integer -> Integer
+  ivx-run (op) = ivx-loop-l1 op ivx-lo 0
+
+Section: Negation
+
+ The one unary operator gets its own two-level enumeration over the
+ 136 intervals. Mode 1 scans every member for containment of its
+ negation; mode 2 checks tightness, the endpoints witnessed by
+ negating the opposite corners.
+
+  ivx-neg-scan : Integer, Integer, Integer, Integer, Integer -> Integer
+  ivx-neg-scan (x) (x-max) (k-lo) (k-hi) (acc) =
+   if x > x-max then acc
+   else let c = 0 - x
+   in let bad = if c < k-lo | c > k-hi then 1 else 0
+   in ivx-neg-scan (x + 1) x-max k-lo k-hi (acc + 1 + bad * ivx-pack)
+
+  ivx-neg-pair : Integer, Integer, Integer, Integer -> Integer
+  ivx-neg-pair (mode) (l) (h) (acc) =
+   let k = iv-neg (Interval { lo = l, hi = h })
+   in if mode == 1 then ivx-neg-scan l h (k.lo) (k.hi) acc
+   else ivx-tight2 (0 - h) (0 - l) (k.lo) (k.hi) acc
+
+  ivx-neg-h : Integer, Integer, Integer, Integer -> Integer
+  ivx-neg-h (mode) (l) (h) (acc) =
+   if h > ivx-hi then acc
+   else let acc2 = ivx-neg-pair mode l h acc
+   in ivx-neg-h mode l (h + 1) acc2
+
+  ivx-neg-l : Integer, Integer, Integer -> Integer
+  ivx-neg-l (mode) (l) (acc) =
+   if l > ivx-hi then acc
+   else let acc2 = ivx-neg-h mode l l acc
+   in ivx-neg-l mode (l + 1) acc2
+
+  ivx-run-neg : Integer -> Integer
+  ivx-run-neg (mode) = ivx-neg-l mode ivx-lo 0
+
+Section: Report
+
+ One line per operator with the exact check and failure counts, then
+ the total. The expected file pins every number: a change in any
+ count is a change in what was tested, and a nonzero failure count is
+ an unsound transfer function.
+
+  ivx-line : Text, Integer -> Text
+  ivx-line (name) (packed) =
+   name & ": " & integer-to-text (int-mod packed ivx-pack) & " checks, " & integer-to-text (packed / ivx-pack) & " failures"
+
+  opening : [Console] Nothing =
+   let r-add = ivx-run 1
+   in let r-sub = ivx-run 2
+   in let r-mul = ivx-run 3
+   in let r-div = ivx-run 4
+   in let r-mod = ivx-run 5
+   in let r-min = ivx-run 6
+   in let r-max = ivx-run 7
+   in let r-neg = ivx-run-neg 1
+   in let r-union = ivx-run 8
+   in let r-isect = ivx-run 9
+   in let t-add = ivx-run 11
+   in let t-sub = ivx-run 12
+   in let t-neg = ivx-run-neg 2
+   in let total = r-add + r-sub + r-mul + r-div + r-mod + r-min + r-max + r-neg + r-union + r-isect + t-add + t-sub + t-neg
+   in act
+    print-line-uni (ivx-line "add" r-add)
+    print-line-uni (ivx-line "sub" r-sub)
+    print-line-uni (ivx-line "mul" r-mul)
+    print-line-uni (ivx-line "div" r-div)
+    print-line-uni (ivx-line "mod" r-mod)
+    print-line-uni (ivx-line "min" r-min)
+    print-line-uni (ivx-line "max" r-max)
+    print-line-uni (ivx-line "neg" r-neg)
+    print-line-uni (ivx-line "union" r-union)
+    print-line-uni (ivx-line "intersect" r-isect)
+    print-line-uni (ivx-line "tight-add" t-add)
+    print-line-uni (ivx-line "tight-sub" t-sub)
+    print-line-uni (ivx-line "tight-neg" t-neg)
+    print-line-uni (ivx-line "TOTAL" total)
+   end
+
+Page 1

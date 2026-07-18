@@ -1,7 +1,4 @@
 Chapter: Type Checker
-  cites Codex chapter Text
-  cites Codex chapter Characters
-  cites Codex chapter Lists
   cites Codex chapter Build Settings (substitution-capacity, expr-type-capacity)
   cites Foreword chapter Tuple
 
@@ -689,25 +686,29 @@ Section: Check Definition
 
   check-def-normal : UnificationState, TypeEnv, ADef, List RenameEntry -> CheckResult
   check-def-normal (st) (env) (def) (renames) =
-   let st0 = __record-set st "effect-exempt" (def-effect-exempt def)
+   let grounded = def-grounded-names st def
+   in let st0 = __record-set st "effect-exempt" (def-effect-exempt def | (list-length grounded > 0))
    in let rn = resolve-def-name renames (def.name.value) (def.chapter-slug)
    in let declared = resolve-declared-type st0 env def renames
    in let linked-state = if list-length (def.declared-type) == 0
         then let (_, link-st) = unify (declared.state) (env-lookup (declared.env) rn) (declared.expected-type) (def.span) in link-st
         else declared.state
-   in let env2 = bind-def-params linked-state (declared.env) (def.params) (declared.expected-type) 0 (list-length (def.params))
+   in let grant-row = declared-performing-row (declared.expected-type) (list-length (def.params))
+   in let granted-st = __record-set linked-state "scope-grants" (grant-row.labels)
+   in let env2 = bind-def-params granted-st (declared.env) (def.params) (declared.expected-type) 0 (list-length (def.params))
    in let body-r = infer-expr (env2.state) (env2.env) (def.body)
    in let remaining-inner = when deep-resolve (body-r.state) (env2.remaining-type)
         is EffectfulTy (res) (rsc) (rinner) -> rinner
         is otherwise -> env2.remaining-type
    in let (_, u-st) = unify (body-r.state) remaining-inner (body-r.inferred-type) (aexpr-span (def.body))
    in let ret-checked = lint-return-narrowing u-st (env2.env) (def.body) (body-r.inferred-type) remaining-inner (aexpr-span (def.body))
-   in let effect-checked = if def-effect-exempt def then ret-checked else check-effect-row-subset ret-checked (declared-performing-row (declared.expected-type) (list-length (def.params))) (body-r.effect-row) (aexpr-span (def.body))
+   in let effect-checked = if def-effect-exempt def then ret-checked else check-effect-row-subset ret-checked (declared-performing-row (declared.expected-type) (list-length (def.params))) (body-r.effect-row) grounded (aexpr-span (def.body))
+   in let rigid-checked = check-declared-rigidity effect-checked (declared.declared-vars) 0 (list-length (declared.declared-vars)) (def.name.value) (def.span)
    in let env-type = env-lookup env rn
    in let tied-state = when env-type
-        is ForAllTy (id) (body) -> let (_, tied-u) = unify effect-checked (declared.expected-type) (strip-forall-ty env-type) (def.span) in tied-u
-        is ForAllEff (id) (body) -> let (_, tied-u) = unify effect-checked (declared.expected-type) (strip-forall-ty env-type) (def.span) in tied-u
-        is otherwise -> effect-checked
+        is ForAllTy (id) (body) -> let (_, tied-u) = unify rigid-checked (declared.expected-type) (strip-forall-ty env-type) (def.span) in tied-u
+        is ForAllEff (id) (body) -> let (_, tied-u) = unify rigid-checked (declared.expected-type) (strip-forall-ty env-type) (def.span) in tied-u
+        is otherwise -> rigid-checked
    in let row-tied = if list-length (def.declared-type) == 0
         then let (_, row-u) = unify-row tied-state (last-arrow-row (declared.expected-type)) (body-r.effect-row) (def.span) in row-u
         else tied-state
@@ -716,6 +717,40 @@ Section: Check Definition
     effect-row = body-r.effect-row,
     state = row-tied
    }
+
+ A type variable in a signature is universally quantified: it is the
+ CALLER's to choose, so the body must work for every choice. The body
+ is checked against an instantiation of the declared type, which hands
+ each of those variables a fresh unification variable — the right
+ treatment at a call site and the wrong one here, because a fresh
+ variable is solvable and the body will happily solve it. That is how
+ `h : a -> b` with the body `[x]` type-checked: the body decided
+ `b := List a`, the caller went on choosing `b` for itself, and
+ `h 5 + 1` answered a heap pointer wearing the type Integer.
+
+ So the body is held to the declaration afterwards: every variable the
+ signature quantified must still be unbound. resolve-declared-type
+ mints them before the body is inferred, so they carry lower ids than
+ anything the body allocates, and unify-resolved binds the higher id to
+ the lower — a declared variable therefore survives unification with
+ another variable, and can only become bound by meeting a structural
+ type. Bound means the body chose, and the body does not get to choose.
+
+ This runs BEFORE the tie-back below, which unifies the instantiation
+ against the env's binders and would bind these very ids itself.
+
+  check-declared-rigidity : UnificationState, List Integer, Integer, Integer, Text, SourceSpan -> UnificationState
+  check-declared-rigidity (st) (ids) (i) (len) (name) (span) =
+   if i == len then st
+   else let id = list-at ids i
+   in let var = deck-record (TypeVar (__narrow id))
+   in let settled = resolve-silent st var
+   in let decided = when settled
+        is TypeVar (rid) -> rid /= id
+        is otherwise -> True
+   in let st2 = if decided == False then st
+        else add-unify-error st cdx-body-fixes-declared-var ("the body of '" & name & "' decides a type its own signature leaves to the caller: a declared type variable is fixed by the body to " & type-desc settled & ". A signature variable is the caller's to choose, so the body must answer every choice; if the body only ever answers " & type-desc settled & ", declare that.") span
+   in check-declared-rigidity st2 ids (i + 1) len name span
 
  A bounded return is a refined position (the postcondition of
  BoundedSignatures.md section 3): the body's result must inhabit the
@@ -758,13 +793,13 @@ Section: Check Definition
  literals ride the labels but are not checked at this boundary; scope
  enforcement stays with the capability machinery.
 
-  check-effect-row-subset : UnificationState, EffectRow, EffectRow, SourceSpan -> UnificationState
-  check-effect-row-subset (st) (declared-row) (body-row) (span) =
+  check-effect-row-subset : UnificationState, EffectRow, EffectRow, List Name, SourceSpan -> UnificationState
+  check-effect-row-subset (st) (declared-row) (body-row) (grounded) (span) =
    let d = resolve-row st declared-row
    in let b = resolve-row st body-row
    in let declared-names = push-label-names (d.labels) 0 (list-length (d.labels)) []
    in let body-names = push-label-names (b.labels) 0 (list-length (b.labels)) []
-   in find-uncovered-effect st body-names declared-names span 0 (list-length body-names)
+   in find-uncovered-effect st body-names (declared-names & grounded) span 0 (list-length body-names)
 
   declared-performing-row : CodexType, Integer -> EffectRow
   declared-performing-row (ty) (pcount) =
@@ -835,20 +870,348 @@ Section: Check Definition
    else if (list-at names i).value == target then True
    else name-list-has-loop names target (i + 1) len
 
+Section: Capability Scope
+
+ A capability effect may carry a scope literal naming the resources the
+ grant covers: [FileSystem.Read "/config/"] promises this function
+ reads only under /config/. The literal has always parsed, ridden the
+ label, and round-tripped through the text emitter -- and until now
+ nothing read it, so that grant opened /etc just as well. A field that
+ is populated and never read looks like a shipped feature from every
+ angle except the one that matters.
+
+ The rule is that a scope may narrow, never widen. A declared label
+ with an EMPTY scope is unrestricted and covers everything, which is
+ why a program that names no scope is unaffected by any of this: the
+ whole check is gated on some label actually carrying a scope.
+
+  row-any-scoped : List EffectLabel, Integer, Integer -> Boolean
+  row-any-scoped (ls) (i) (len) =
+   if i == len then False
+   else if text-length ((list-at ls i).scope) > 0 then True
+   else row-any-scoped ls (i + 1) len
+
+ The scoped operations are the effect primitives whose first argument
+ names the resource they touch. The effect each one performs is the
+ dotted sub-effect a grant is written against, so read-file answers to
+ a FileSystem.Read grant and to a bare FileSystem grant alike, through
+ effect-covered-by.
+
+  scoped-op-effect : Text -> Text
+  scoped-op-effect (n) =
+   if n == "read-file" then "FileSystem.Read"
+   else if n == "read-file-raw" then "FileSystem.Read"
+   else if n == "read-file-uni" then "FileSystem.Read"
+   else if n == "read-text" then "FileSystem.Read"
+   else if n == "file-exists" then "FileSystem.Read"
+   else if n == "write-file" then "FileSystem.Write"
+   else if n == "fetch" then "Network.Read"
+   else if n == "resolve-dns" then "Network.Read"
+   else if n == "post" then "Network.Write"
+   else if text-length (console-channel-op n) > 0 then console-op-effect n
+   else ""
+
+ Console is the family that does not fit the shape of the other two,
+ and pretending it did would have made the check a lie. print-line
+ does not take its channel as an argument -- it IS the channel. So a
+ console operation's resource comes from the operation's own name and
+ never from anything the caller wrote, which is why op-resource and
+ lint-fixed-resource exist beside the argument path.
+
+  console-channel-op : Text -> Text
+  console-channel-op (n) =
+   if n == "print-line" then "stdout"
+   else if n == "print-line-raw" then "stdout"
+   else if n == "print-line-uni" then "stdout"
+   else if n == "print-uni" then "stdout"
+   else if n == "print-error" then "stderr"
+   else if n == "print-error-uni" then "stderr"
+   else if n == "read-line" then "stdin"
+   else if n == "read-line-cce" then "stdin"
+   else if n == "read-key" then "stdin"
+   else ""
+
+  console-op-effect : Text -> Text
+  console-op-effect (n) =
+   if console-channel-op n == "stdin" then "Console.Read" else "Console.Write"
+
+ Scope is not one relation, and reading it as one is not a
+ simplification -- it is a hole. A filesystem grant is a path PREFIX.
+ A network grant is an AUTHORITY. A console grant is a CHANNEL. Run
+ all three through the single text-starts-with this check used to use
+ and a grant over "api.example.com:443" silently admits
+ "api.example.com:4433", while a grant over "api.example.com" admits
+ "api.example.com.evil.net". A prefix is the right relation for a path
+ and the wrong one for a name, so the relation is chosen by the effect
+ family and only the filesystem gets prefixes.
+
+  scope-kind-path : Integer = 0
+  scope-kind-authority : Integer = 1
+  scope-kind-channel : Integer = 2
+
+  scope-kind : Text -> Integer
+  scope-kind (eff) =
+   if text-starts-with eff "Network" then scope-kind-authority
+   else if text-starts-with eff "Console" then scope-kind-channel
+   else scope-kind-path
+
+  scope-admits : Text, Text, Text -> Boolean
+  scope-admits (eff) (grant) (res) =
+   let k = scope-kind eff
+   in if k == scope-kind-authority then authority-admits grant res
+      else if k == scope-kind-channel then res == grant
+      else text-starts-with res grant
+
+ A host must match whole, never by prefix. A port is compared only
+ when both sides name one: a grant that names no port covers every
+ port on that host, and a resource that names no port is a resolve-dns
+ hostname, which never reaches a port for us to check.
+
+  authority-admits : Text, Text -> Boolean
+  authority-admits (grant) (res) =
+   if auth-host grant /= auth-host res then False
+   else let gp = auth-port grant
+   in let rp = auth-port res
+   in if text-length gp == 0 then True
+      else if text-length rp == 0 then True
+      else gp == rp
+
+ scope-admits answers "does this grant reach that RESOURCE". This answers
+ "does this scope contain that SCOPE", and they are not the same question
+ even though the families are. The relation is chosen the same way, by
+ the effect family, and for a path and a channel the test is the same
+ text: a path contains what extends it, a channel contains only itself.
+
+ Authority is where they part, and reusing scope-admits here would
+ launder. Its portless-RESOURCE rule -- "a resource that names no port is
+ a resolve-dns hostname, which never reaches a port for us to check" -- is
+ right about a resource and wrong about a scope: a SCOPE that names no
+ port covers every port, so it is WIDER than one that names 443, not
+ narrower. Run the inner scope through authority-admits as if it were a
+ resource and Network.Connect "api.example.com" passes for a parameter
+ that granted only "api.example.com:443". Hence authority-subsumes, which
+ differs by exactly the clause that says so.
+
+  scope-subsumes : Text, Text, Text -> Boolean
+  scope-subsumes (eff) (outer) (inner) =
+   let k = scope-kind eff
+   in if k == scope-kind-authority then authority-subsumes outer inner
+      else if k == scope-kind-channel then inner == outer
+      else text-starts-with inner outer
+
+ An outer authority contains an inner one when the hosts are the same and
+ the outer either names no port (it covers every port, so it covers
+ whatever the inner names) or names the very port the inner does. An
+ inner that names no port covers every port and is therefore NOT inside an
+ outer that named one -- that is the clause authority-admits spends on
+ resolve-dns and this one must not.
+
+  authority-subsumes : Text, Text -> Boolean
+  authority-subsumes (outer) (inner) =
+   if auth-host outer /= auth-host inner then False
+   else let op = auth-port outer
+   in if text-length op == 0 then True
+      else auth-port inner == op
+
+  auth-host : Text -> Text
+  auth-host (a) =
+   let p = find-char-at a ":" 0 (text-length a)
+   in if p < 0 then a else substring a 0 p
+
+  auth-port : Text -> Text
+  auth-port (a) =
+   let p = find-char-at a ":" 0 (text-length a)
+   in if p < 0 then "" else substring a (p + 1) (text-length a - p - 1)
+
+ find-char-at derives every character code from a literal because
+ internal text is CCE: a written-down 58 is ASCII thinking, and in CCE
+ that code is a letter. The same mistake made the dotted sub-effect
+ relation dead code once already (find-dot, above).
+
+  find-char-at : Text, Text, Integer, Integer -> Integer
+  find-char-at (s) (c) (i) (len) =
+   if i == len then 0 - 1
+   else if char-code (char-at s i) == char-code (char-at c 0) then i
+   else find-char-at s c (i + 1) len
+
+ A network operation names its resource as a URL; a grant names it as
+ an authority. url-authority is the bridge, and the scheme is what
+ supplies the port the URL leaves implicit -- so a grant written
+ "api.example.com:443" is what a fetch of "https://api.example.com/x"
+ must sit inside.
+
+  url-authority : Text -> Text
+  url-authority (u) =
+   let len = text-length u
+   in let s = find-scheme-end u 0 len
+   in let rest = substring u s (len - s)
+   in let sl = find-char-at rest "/" 0 (text-length rest)
+   in let auth = if sl < 0 then rest else substring rest 0 sl
+   in if find-char-at auth ":" 0 (text-length auth) >= 0 then auth
+      else auth & ":" & (if text-starts-with u "https" then "443" else "80")
+
+  find-scheme-end : Text, Integer, Integer -> Integer
+  find-scheme-end (u) (i) (len) =
+   if i + 2 >= len then 0
+   else if is-scheme-sep u i then i + 3
+   else find-scheme-end u (i + 1) len
+
+  is-scheme-sep : Text, Integer -> Boolean
+  is-scheme-sep (u) (i) =
+   let a = char-code (char-at u i)
+   in let b = char-code (char-at u (i + 1))
+   in let c = char-code (char-at u (i + 2))
+   in a == char-code (char-at ":" 0) & b == char-code (char-at "/" 0) & c == char-code (char-at "/" 0)
+
+  op-resource : Text, Text -> Text
+  op-resource (eff) (v) =
+   if scope-kind eff == scope-kind-authority then url-authority v else v
+
+ A grant permits a resource when SOME declared label covers the effect
+ and either grants it unrestricted (empty scope) or names a scope the
+ resource sits inside. Any one covering grant is enough -- a signature
+ that declares both [FileSystem] and [FileSystem.Read "/config/"] has
+ granted the wider of the two, and we hold it to what it actually said.
+
+  scope-permits : List EffectLabel, Text, Text, Integer, Integer -> Boolean
+  scope-permits (ls) (eff) (res) (i) (len) =
+   if i == len then False
+   else let l = list-at ls i
+   in if effect-covered-by [l.name] eff == False then scope-permits ls eff res (i + 1) len
+      else if text-length (l.scope) == 0 then True
+      else if scope-admits eff (l.scope) res then True
+      else scope-permits ls eff res (i + 1) len
+
+ An effect this signature never granted at all is not a scope problem --
+ it is an undeclared effect, and the def-boundary row-subset check owns
+ that diagnosis (CDX2031). Scope only speaks where a grant exists, or it
+ would answer a question it was not asked.
+
+  effect-has-grant : List EffectLabel, Text, Integer, Integer -> Boolean
+  effect-has-grant (ls) (eff) (i) (len) =
+   if i == len then False
+   else if effect-covered-by [(list-at ls i).name] eff then True
+   else effect-has-grant ls eff (i + 1) len
+
+ collect-effect-labels is collect-effect-names keeping the scope. A
+ callee that declares its own scope must sit inside ours: the caller
+ cannot delegate authority it was never granted.
+
+  collect-effect-labels : CodexType -> List EffectLabel
+  collect-effect-labels (ty) =
+   when ty
+    is FunTy (p) (row) (r) -> (row.labels) & collect-effect-labels r
+    is ForAllTy (id) (b) -> collect-effect-labels b
+    is ForAllEff (id) (b) -> collect-effect-labels b
+    is EffectfulTy (effs) (sc) (inner) -> (make-row-from-names effs sc "").labels & collect-effect-labels inner
+    is otherwise -> []
+
+ A callee with NO scope of its own may touch anything. Under a grant
+ that names a scope, that is a widening: the caller cannot hand on
+ authority it was never given. So an unscoped callee is not skipped --
+ it is measured, and its empty scope fails to sit inside a narrowed
+ grant exactly as "/etc/" would. This is what makes a scope survive an
+ indirect call, and it only became reachable once the filesystem
+ builtins carried honest effect rows.
+
+  check-callee-scopes : UnificationState, List EffectLabel, List EffectLabel, Text, SourceSpan, Integer, Integer -> UnificationState
+  check-callee-scopes (st) (grants) (callee-labels) (fname) (span) (i) (len) =
+   if i == len then st
+   else let l = list-at callee-labels i
+   in let eff = (l.name).value
+   in if effect-has-grant grants eff 0 (list-length grants) == False then check-callee-scopes st grants callee-labels fname span (i + 1) len
+      else if scope-permits grants eff (l.scope) 0 (list-length grants) then check-callee-scopes st grants callee-labels fname span (i + 1) len
+      else if text-length (l.scope) == 0 then add-unify-error st cdx-scope-violation ("'" & fname & "' performs " & eff & " with no scope of its own, so it may touch anything, and this signature grants " & eff & " only over a narrower scope. Declare the scope on '" & fname & "', or widen the grant.") span
+      else add-unify-error st cdx-scope-violation ("'" & fname & "' is declared over the scope \"" & (l.scope) & "\" for " & eff & ", which is not inside the scope this signature grants. A scope may narrow, never widen.") span
+
+ The check runs at every application, but costs nothing until a
+ signature actually names a scope: row-any-scoped is the first thing it
+ asks, and today nothing in the tree answers yes.
+
+ A computed path is a refusal, not a pass. The compiler cannot prove
+ where a path it did not read will point, and a scope that admits the
+ unprovable is not a scope. Pass a literal, or widen the declaration.
+
+  lint-effect-scope : UnificationState, TypeEnv, AExpr, AExpr, SourceSpan -> UnificationState
+  lint-effect-scope (st) (env) (func) (arg) (span) =
+   let grants = st.scope-grants
+   in if row-any-scoped grants 0 (list-length grants) == False then st
+   else when func
+    is ANameExpr (n) (s) -> lint-scoped-call st env grants (n.value) arg span
+    is otherwise -> st
+
+  lint-scoped-call : UnificationState, TypeEnv, List EffectLabel, Text, AExpr, SourceSpan -> UnificationState
+  lint-scoped-call (st) (env) (grants) (fname) (arg) (span) =
+   let eff = scoped-op-effect fname
+   in if text-length eff == 0 then lint-callee-scopes st env grants fname span
+   else let ch = console-channel-op fname
+   in if text-length ch > 0 then lint-fixed-resource st grants eff fname ch span
+   else lint-scoped-op st grants eff fname arg span
+
+  lint-callee-scopes : UnificationState, TypeEnv, List EffectLabel, Text, SourceSpan -> UnificationState
+  lint-callee-scopes (st) (env) (grants) (fname) (span) =
+   if env-has env fname then
+    let cls = collect-effect-labels (env-lookup env fname)
+    in check-callee-scopes st grants cls fname span 0 (list-length cls)
+   else st
+
+ A console operation carries its own resource, so there is no argument
+ to read and nothing the caller can compute: the channel is decided by
+ which function was called. That makes this the one scoped check that
+ can never be defeated by an unprovable argument.
+
+  lint-fixed-resource : UnificationState, List EffectLabel, Text, Text, Text, SourceSpan -> UnificationState
+  lint-fixed-resource (st) (grants) (eff) (fname) (res) (span) =
+   if effect-has-grant grants eff 0 (list-length grants) == False then st
+   else if scope-permits grants eff res 0 (list-length grants) then st
+   else add-unify-error st cdx-scope-violation ("'" & fname & "' uses the \"" & res & "\" channel, which is outside the scope this signature grants for " & eff & ".") span
+
+  lint-scoped-op : UnificationState, List EffectLabel, Text, Text, AExpr, SourceSpan -> UnificationState
+  lint-scoped-op (st) (grants) (eff) (fname) (arg) (span) =
+   if effect-has-grant grants eff 0 (list-length grants) == False then st
+   else when arg
+    is ALitExpr (v) (k) (s) ->
+     when k
+      is TextLit ->
+       if scope-permits grants eff (op-resource eff v) 0 (list-length grants) then st
+       else add-unify-error st cdx-scope-violation ("'" & fname & "' names \"" & v & "\", which is outside the scope this signature grants for " & eff & ".") span
+      is otherwise -> st
+    is otherwise -> add-unify-error st cdx-scope-violation ("'" & fname & "' is given a computed resource, so the compiler cannot prove it stays inside the scope this signature grants for " & eff & ". Pass a literal, or widen the declared scope.") span
+
  Capability effect exemption (CapabilityProbe.md section 7). The
  hardware intrinsics carry Device.* effect rows so that application
  and library code doing raw I/O must declare it. But at a hardware
  boundary the declaration is theater -- a driver is expected to do
  I/O. So the OWNED HARDWARE STACK is exempt at QUIRE granularity: a
- def whose quire is the compiler, kernel, OS, boards, or plugs may
- use the intrinsics without declaring the effect. The quire is the
- prefix before "--" in the concat-mangled chapter slug (an unprefixed
- slug is its own quire, e.g. the compiler root "Opening"). Foreword
- and app code are NOT exempt -- foreword is the surface external code
+ def whose quire is the compiler, kernel, OS, or plugs may use the
+ intrinsics without declaring the effect. The quire is the prefix
+ before "--" in the concat-mangled chapter slug (an unprefixed slug is
+ its own quire, e.g. the compiler root "Opening"). Foreword and app
+ code are NOT exempt -- foreword is the surface external code
  consumes, so its declarations are the value; apps are the threat
  surface the discipline exists for. This slice skips the effect-row
  check for exempt defs; full infer-and-propagate through exempt
  wrappers (the app-calls-kernel-directly path) is later work.
+
+ Boards came off this list on 2026-07-13, and the reason is worth
+ keeping. "The declaration is theater" is a good argument for the
+ kernel, which is the machine talking to itself. It is a bad argument
+ for the board quire, because a board driver is not machine internals
+ -- it is a LIBRARY, and the code that consumes it is ordinary
+ application code. The tell was already in the tree: the HAL those
+ drivers are built on, `Foreword chapter Board`, is not exempt and has
+ declared [Device.Mmio] on every primitive since it became real. So
+ the intrinsics were honest, the HAL was honest, and the nine chapters
+ in between -- the only things in the tree that actually touch a
+ register -- were the one link that nobody checked. 429 call sites sat
+ behind pure signatures, and `Board.codex`'s own prose said that could
+ not happen.
+
+ The cost of taking the exemption away is that a driver must say what
+ it does. The gain is that it cannot say otherwise: the row is what
+ makes a register access visible to the effect system, to the
+ capability manifest, and to the boot grant, and a guarantee that stops
+ at the last function before the hardware is not a guarantee.
 
   slug-find-dashes : Text, Integer, Integer -> Integer
   slug-find-dashes (s) (i) (len) =
@@ -864,17 +1227,47 @@ Section: Check Definition
   quire-effect-exempt : Text -> Boolean
   quire-effect-exempt (q) =
    q == "Opening" | q == "Ast" | q == "Core" | q == "Emit" | q == "IR" | q == "Semantics" | q == "Syntax" | q == "Types"
-   | q == "Kernel" | q == "Net" | q == "Sched" | q == "Dev" | q == "Trust" | q == "Observe" | q == "Replay" | q == "Verify" | q == "Os" | q == "Boards"
    | q == "Riscv" | q == "Arm64" | q == "Pe" | q == "Elf" | q == "Img"
 
   def-effect-exempt : ADef -> Boolean
   def-effect-exempt (def) = quire-effect-exempt (slug-quire (def.chapter-slug))
 
+ The grounds table is a List Text of "slug\neffect" entries (built by the
+ parser, carried on the chapter and the state). A def's grounded effects
+ are the effect halves of every entry whose slug half equals the def's
+ chapter-slug. Because a slug can hold no newline, text-starts-with on
+ "slug\n" is an exact slug match, never a prefix collision between a slug
+ and a longer one. The result is a List Name so it drops straight into
+ check-effect-row-subset's allowed set beside the declared labels, where
+ the dotted sub-effect lattice covers it. This is BACKLOG 1.8: a chapter
+ grounds the hardware effects it is the source of, and its bodies may
+ perform exactly those without declaring them.
+
+  slug-grounded-names : List Text, Text, Integer, Integer, List Name -> List Name
+  slug-grounded-names (gs) (slug) (i) (len) (acc) =
+   if i >= len then acc
+   else let e = list-at gs i
+   in let pfx = slug & "\n"
+   in if text-starts-with e pfx
+      then slug-grounded-names gs slug (i + 1) len (list-push acc (make-name (deck-record (substring e (text-length pfx) (text-length e - text-length pfx)))))
+      else slug-grounded-names gs slug (i + 1) len acc
+
+  def-grounded-names : UnificationState, ADef -> List Name
+  def-grounded-names (st) (def) =
+   slug-grounded-names (st.chapter-grounds) (def.chapter-slug) 0 (list-length (st.chapter-grounds)) []
+
+ declared-vars carries the type variables the SIGNATURE quantified,
+ as instantiate-collect minted them. They are the caller's to choose,
+ and check-declared-rigidity holds the body to that. An undeclared def
+ has none: the variables in its synthesized arrow are exactly what the
+ body is supposed to solve.
+
   DefSetup = record {
    expected-type : CodexType,
    remaining-type : CodexType,
    state : UnificationState,
-   env : TypeEnv
+   env : TypeEnv,
+   declared-vars : List Integer
   }
 
   resolve-declared-type : UnificationState, TypeEnv, ADef, List RenameEntry -> DefSetup
@@ -887,15 +1280,17 @@ Section: Check Definition
       expected-type = fun-ty,
       remaining-type = fun-ty,
       state = fun-st,
-      env = env
+      env = env,
+      declared-vars = []
      }
     else let env-type = env-lookup env (resolve-def-name renames (def.name.value) (def.chapter-slug))
-    in let (inst-ty, inst-st) = instantiate-type st env-type
+    in let (inst-ty, inst-st, minted) = instantiate-collect st env-type []
     in DefSetup {
       expected-type = inst-ty,
       remaining-type = inst-ty,
       state = inst-st,
-      env = env
+      env = env,
+      declared-vars = minted
      }
 
   build-undeclared-fun-type : UnificationState, Integer -> (CodexType, UnificationState)
@@ -1452,6 +1847,78 @@ Section: Proof Acyclicity
        in check-proof-cycles-loop g defs names (i + 1) len st2
       else check-proof-cycles-loop g defs names (i + 1) len st
 
+ A proof term may only be built from the proof calculus: a proof builtin
+ (Refl / sym / trans / cong / app-cong / assume), an inductive-hypothesis
+ binding, a cited claim, an 'induction' expression, or a let of proof
+ terms. Any other expression form -- an if, a when, an act block, a
+ lambda, arithmetic -- that produces a proposition is rejected, because
+ such a form can launder a proof of a false proposition past the
+ acyclicity check above (ProofTotalityProbe.md, Stage 2). The check is
+ type-directed: a subexpression is constrained only when its checked type
+ is a proposition, so the value arguments that instantiate a for-all
+ (append-assoc (reverse ys) ...) are left alone while the proof arguments
+ to the builtins are walked. expr-types is keyed by span but is not sorted
+ until the check-lower boundary, so this sorts a copy first; the whole
+ pass is guarded by there being a proof-relevant definition at all, so a
+ program with no proofs (the selfhost) pays nothing.
+
+  pg-is-prop : UnificationState, AExpr -> Boolean
+  pg-is-prop (sorted-st) (e) = type-mentions-proof (lookup-expr-type sorted-st (aexpr-span e)) 64
+
+  pg-form-name : AExpr -> Text
+  pg-form-name (e) = when e
+   is AIfExpr (c) (t) (el) (s) -> "an if-expression"
+   is AMatchExpr (sc) (arms) (s) -> "a when-expression (a proof recurses only through 'induction')"
+   is ALambdaExpr (ps) (b) (s) -> "a lambda"
+   is AActExpr (stmts) (s) -> "an act block"
+   is ABinaryExpr (l) (op) (r) (s) -> "a binary-operator expression"
+   is AUnaryExpr (x) (s) -> "a unary-operator expression"
+   is AListExpr (elems) (s) -> "a list literal"
+   is ARecordExpr (n) (fields) (s) -> "a record literal"
+   is AFieldAccess (obj) (f) (s) -> "a field access"
+   is ATryExpr (mx) (b) (fb) (fl) (s) -> "a try expression"
+   is AHandleExpr (eff) (b) (cls) (s) -> "a handle expression"
+   is AWithTimeoutExpr (t) (effs) (scopes) (b) (s) -> "a with-timeout expression"
+   is AFieldAssignExpr (rec) (f) (val) (s) -> "a field assignment"
+   is ALazyExpr (inner) (s) -> "a lazy expression"
+   is otherwise -> "a non-proof expression"
+
+  check-proof-term : UnificationState, AExpr, List Diagnostic -> List Diagnostic
+  check-proof-term (sorted-st) (e) (acc) = when e
+   is ANameExpr (n) (s) -> acc
+   is AApplyExpr (f) (a) (s) -> let acc1 = check-proof-term sorted-st f acc
+    in if pg-is-prop sorted-st a then check-proof-term sorted-st a acc1 else acc1
+   is AInductionExpr (sc) (arms) (s) -> check-proof-arms sorted-st arms acc 0 (list-length arms)
+   is ALetExpr (bs) (b) (s) -> check-proof-binds sorted-st bs (check-proof-term sorted-st b acc) 0 (list-length bs)
+   is otherwise -> list-push acc (make-error cdx-non-grammatical-proof ("proof term uses a disallowed form: " & pg-form-name e & ". A proof body may only be a proof builtin (Refl, sym, trans, cong, app-cong, assume), an inductive hypothesis, a cited claim, an 'induction' expression, or a let of proof terms. To assert this equality without proof, use 'assume'.") (aexpr-span e))
+
+  check-proof-arms : UnificationState, List AMatchArm, List Diagnostic, Integer, Integer -> List Diagnostic
+  check-proof-arms (sorted-st) (arms) (acc) (i) (len) =
+   if i >= len then acc
+   else check-proof-arms sorted-st arms (check-proof-term sorted-st ((list-at arms i).body) acc) (i + 1) len
+
+  check-proof-binds : UnificationState, List ALetBind, List Diagnostic, Integer, Integer -> List Diagnostic
+  check-proof-binds (sorted-st) (bs) (acc) (i) (len) =
+   if i >= len then acc
+   else let v = (list-at bs i).value
+   in check-proof-binds sorted-st bs (if pg-is-prop sorted-st v then check-proof-term sorted-st v acc else acc) (i + 1) len
+
+  check-proof-grammar : List ADef, List TypeBinding, UnificationState -> UnificationState
+  check-proof-grammar (defs) (types) (st) =
+   let names = build-proof-names defs types 0 (list-length defs) []
+   in if list-length names == 0 then st
+   else let sorted-st = __record-set st "expr-types" (sort-expr-types (st.expr-types))
+   in check-proof-grammar-loop sorted-st defs names 0 (list-length defs) st
+
+  check-proof-grammar-loop : UnificationState, List ADef, List Text, Integer, Integer, UnificationState -> UnificationState
+  check-proof-grammar-loop (sorted-st) (defs) (names) (i) (len) (st) =
+   if i >= len then st
+   else let d = list-at defs i
+   in if is-rt-name names (d.name.value) 0 (list-length names)
+      then let errs = check-proof-term sorted-st (d.body) []
+       in check-proof-grammar-loop sorted-st defs names (i + 1) len (add-diagnostics-to-state st errs 0 (list-length errs))
+      else check-proof-grammar-loop sorted-st defs names (i + 1) len st
+
   check-chapter : AChapter, List RenameEntry, SkipListText, List ChapterAssignment -> ChapterResult
   check-chapter (mod) (renames) (colliding) (assignments) =
    let tdm = build-type-def-map (mod.type-defs) 0 (list-length (mod.type-defs)) []
@@ -1471,7 +1938,9 @@ Section: Proof Acyclicity
     next-row-id = env3.state.next-row-id,
     bag = env3.state.bag,
     expr-types = copy-list-with-headroom (env3.state.expr-types) (def-count * 56),
-    effect-exempt = False
+    effect-exempt = False,
+    scope-grants = [],
+    chapter-grounds = mod.ground-effects
    })
    in let acc0 = deck-record (__list-with-capacity def-count)
    in let slug-cache = for a in assignments -> slugify (a.chapter-slug)
@@ -1480,7 +1949,8 @@ Section: Proof Acyclicity
    in let enter = __deck-enter
    in let cycle-st = check-rt-cycles (mod.defs) (mod.rt-names) (result.state)
    in let proof-st = check-proof-cycles (mod.defs) (result.types) cycle-st
-   in __record-set result "state" (check-stale-reads (mod.defs) proof-st)
+   in let grammar-st = check-proof-grammar (mod.defs) (result.types) proof-st
+   in __record-set result "state" (check-stale-reads (mod.defs) grammar-st)
 
   add-diagnostics-to-state : UnificationState, List Diagnostic, Integer, Integer -> UnificationState
   add-diagnostics-to-state (st) (diags) (i) (len) =
@@ -1617,7 +2087,9 @@ Section: Proof Acyclicity
     next-row-id = st.next-row-id,
     bag = st.bag,
     expr-types = copy-list-with-headroom (st.expr-types) 0,
-    effect-exempt = False
+    effect-exempt = False,
+    scope-grants = [],
+    chapter-grounds = st.chapter-grounds
    })
    in deck-record (ChapterResult {
     types = acc,
@@ -2261,7 +2733,10 @@ Section: Linearity Checking
 
   peel-returns-n : CodexType, Integer -> CodexType
   peel-returns-n (ty) (n) =
-   if n <= 0 then ty else peel-returns-n (peel-fun-return ty) (n - 1)
+   if n <= 0 then ty
+   else when ty
+    is EffectfulTy (effs) (labels) (inner) -> peel-returns-n inner n
+    is otherwise -> peel-returns-n (peel-fun-return ty) (n - 1)
 
   type-mentions-mut : TypeEnv, CodexType, Text, Integer -> Boolean
   type-mentions-mut (env) (ty) (target) (fuel) =
@@ -2302,13 +2777,40 @@ Section: Linearity Checking
    else if type-mentions-mut env ((list-at fields i).type-val) target fuel then True
    else fields-mention-mut-at env fields target fuel (i + 1) len
 
+ The return-position walk. apply-threads asks whether a callee's
+ return type hands the mutable record onward. At return position the
+ walk recurses through PARAMETRIC structure - List and LinkedList
+ elements, and a sum's instantiated type ARGUMENTS - because a target
+ wrapped there is the threading pattern: state in, wrapped state out.
+ It must NOT recurse into a sum's constructor payloads, and the
+ record-FIELD walk must stay sum/list blind: a named return type
+ whose field chain reaches the target only through a list or sum
+ field merely reads the state (the make-token shape), and completing
+ that chain rejects legitimate borrow-twice callers (tried CL 2710,
+ reverted). Named types therefore delegate to type-mentions-mut,
+ whose field walk keeps its deliberate sum/list blindness.
+
+  return-mentions-mut : TypeEnv, CodexType, Text, Integer -> Boolean
+  return-mentions-mut (env) (ty) (target) (fuel) =
+   if fuel <= 0 then False
+   else when ty
+    is ListTy (elem) -> return-mentions-mut env elem target (fuel - 1)
+    is LinkedListTy (elem) -> return-mentions-mut env elem target (fuel - 1)
+    is SumTy (n) (args) (ctors) -> type-list-mentions-mut env args target (fuel - 1)
+    is FunTy (p) (row) (r) -> return-mentions-mut env r target (fuel - 1)
+    is ForAllTy (id) (body) -> return-mentions-mut env body target (fuel - 1)
+    is ForAllEff (id) (body) -> return-mentions-mut env body target (fuel - 1)
+    is EffectfulTy (effs) (labels) (inner) -> return-mentions-mut env inner target (fuel - 1)
+    is LinearTy (linner) -> return-mentions-mut env linner target (fuel - 1)
+    is otherwise -> type-mentions-mut env ty target fuel
+
   apply-threads : TypeEnv, Text, AExpr -> Boolean
   apply-threads (env) (target) (e) =
    let h = apply-head-name e
    in if h == "" then False
    else let resolved = rename-lookup (env.chapter-renames) h
    in if env-has env resolved
-    then type-mentions-mut env (peel-returns-n (env-lookup env resolved) (apply-arg-count e)) target 8
+    then return-mentions-mut env (peel-returns-n (env-lookup env resolved) (apply-arg-count e)) target 8
     else False
 
   consume-read : TypeEnv, Text, Text, AExpr -> LinResult
@@ -2429,7 +2931,7 @@ Section: Linearity Checking
 
   check-one-param : ADef, TypeEnv, ATypeExpr, AParam, UnificationState -> UnificationState
   check-one-param (def) (env) (pty) (p) (st) =
-   let tn = atype-core-name pty
+   let tn = rename-lookup (env.chapter-renames) (atype-core-name pty)
    in if env-has env ("__mutable-" & tn) then check-one-mutable-param def env tn p st
    else if is-linear-atype pty then check-one-linear-param def env p st
    else st
@@ -3117,7 +3619,7 @@ Section: Capability Checker
  with no cap id declares an effect the manifest silently drops.
 
   capability-vocabulary : List Text
-  capability-vocabulary = ["Console", "Console.Read", "Console.Write", "FileSystem", "FileSystem.Read", "FileSystem.Write", "Network", "Network.Read", "Network.Write", "Concurrent", "Device", "Gpu", "Gpu.Compute", "Gpu.Memory", "Identity", "Capability"]
+  capability-vocabulary = ["Console", "Console.Read", "Console.Write", "FileSystem", "FileSystem.Read", "FileSystem.Write", "Network", "Network.Read", "Network.Write", "Concurrent", "Device", "Gpu", "Gpu.Compute", "Gpu.Memory", "Identity", "Capability", "Camera", "Microphone", "Location", "Sensors", "Display", "Audio", "Flash"]
 
   check-opening-capabilities : List TypeBinding -> List Diagnostic
   check-opening-capabilities (types) =

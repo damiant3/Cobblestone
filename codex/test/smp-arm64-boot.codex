@@ -1,0 +1,29 @@
+Chapter: SmpArm64Boot
+
+ A secondary ARM64 core executes guest code, checked from inside the
+ guest. Under QEMU virt the secondaries do NOT auto-enter -- they are held
+ in the PSCI implementation -- so core 0's boot stub issues PSCI CPU_ON
+ (conduit HVC, function id 0xC4000003) to start core 1 at an AP stub. The
+ AP stub stores 1 to the marker cell at 0x60000000 and parks. That cell is
+ written only by a core that ran our guest code; for these backends, until
+ now, none ever had. A test showing that some computation finished proves
+ nothing -- core 0 alone can do that. This reads the cell a secondary
+ alone can write.
+
+Section: Probe
+
+  ap-marker-addr : Integer = #60000000
+
+  poll-ap : Integer -> Integer
+  poll-ap (fuel) =
+   if fuel <= 0 then 0
+   else let v = peek-qword ap-marker-addr 0
+   in if v /= 0 then 1
+   else poll-ap (fuel - 1)
+
+  opening : [Console] Nothing
+  opening = act
+    let ran = poll-ap 100000000
+    in if ran /= 0 then print-line "an ap executed guest code"
+    else print-line "AP DID NOT RUN"
+  end

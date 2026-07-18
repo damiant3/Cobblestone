@@ -1,42 +1,31 @@
 Chapter: CSharp Emitter
 
-  cites Codex chapter General
-  cites Codex chapter Console
-  cites Codex chapter Files
-  cites Codex chapter Process
-  cites Codex chapter Text
-  cites Codex chapter Characters
-  cites Codex chapter Numbers
-  cites Codex chapter Bitwise
-  cites Codex chapter Lists
-  cites Codex chapter Concurrency
-  cites Codex chapter Runtime
   cites Foreword chapter Sort
-  cites Foreword chapter SkipListText
+  cites Foreword chapter RankedTextSet
 
  Expression emission: identifiers, arity, apply chains, dispatch.
 
 Section: Identifier Helpers
 
-  cs-keywords-1 : SkipListText
+  cs-keywords-1 : RankedTextSet
   cs-keywords-1 =
-   skip-list-text-from-list ["abstract", "as", "base", "bool", "break",
+   ranked-text-from-list ["abstract", "as", "base", "bool", "break",
     "case", "catch", "class", "continue", "decimal",
     "default", "delegate", "do", "double", "else",
     "event", "false", "finally", "for", "if",
     "in", "int", "internal", "is", "long"]
 
-  cs-keywords-2 : SkipListText
+  cs-keywords-2 : RankedTextSet
   cs-keywords-2 =
-   skip-list-text-from-list ["namespace", "new", "null", "object", "out",
+   ranked-text-from-list ["namespace", "new", "null", "object", "out",
     "override", "params", "private", "protected", "public",
     "ref", "return", "sealed", "static", "string",
     "switch", "this", "throw", "true", "try",
     "typeof", "using", "virtual", "void", "while"]
 
-  cs-keywords-3 : SkipListText
+  cs-keywords-3 : RankedTextSet
   cs-keywords-3 =
-   skip-list-text-from-list ["byte", "char", "checked", "const", "enum",
+   ranked-text-from-list ["byte", "char", "checked", "const", "enum",
     "explicit", "extern", "fixed", "float", "foreach",
     "goto", "implicit", "interface", "lock", "operator",
     "readonly", "sbyte", "short", "sizeof", "stackalloc",
@@ -45,9 +34,9 @@ Section: Identifier Helpers
 
   is-cs-keyword : Text -> Boolean
   is-cs-keyword (n) =
-   if skip-list-text-has cs-keywords-1 n then True
-   else if skip-list-text-has cs-keywords-2 n then True
-   else skip-list-text-has cs-keywords-3 n
+   if ranked-text-has cs-keywords-1 n then True
+   else if ranked-text-has cs-keywords-2 n then True
+   else ranked-text-has cs-keywords-3 n
 
   sanitize : Text -> Text
   sanitize (name) =
@@ -56,10 +45,10 @@ Section: Identifier Helpers
       else if is-cs-member-name s then s & "_"
               else s
 
-  cs-member-names : SkipListText = skip-list-text-from-list ["Equals", "GetHashCode", "GetType", "MemberwiseClone", "ToString"]
+  cs-member-names : RankedTextSet = ranked-text-from-list ["Equals", "GetHashCode", "GetType", "MemberwiseClone", "ToString"]
 
   is-cs-member-name : Text -> Boolean
-  is-cs-member-name (n) = skip-list-text-has cs-member-names n
+  is-cs-member-name (n) = ranked-text-has cs-member-names n
 
   cs-type : CodexType -> Text
   cs-type (ty) =
@@ -249,7 +238,11 @@ Section: Raw Reference Builtins
    RawBuiltin { name = "__buf-read-bytes", emission = "new Func<object, Func<object, Func<object, List<long>>>>(_b => _o => _n => _Buf.buf_read_bytes(_b, _o, _n))" },
    RawBuiltin { name = "get-state", emission = "_State.get_state" },
    RawBuiltin { name = "__self-type-defs", emission = "new List<TypeBinding>()" },
-   RawBuiltin { name = "ir-text", emission = "\"\"" }
+   RawBuiltin { name = "ir-text", emission = "\"\"" },
+   RawBuiltin { name = "lens-sql-exec", emission = "new Func<string, List<List<string>>>(_q => _LensSql.exec(_q))" },
+   RawBuiltin { name = "lens-http-next", emission = "new Func<long, List<string>>(_p => _LensHttp.next(_p))" },
+   RawBuiltin { name = "lens-http-reply", emission = "new Func<long, Func<string, long>>(_p => _b => _LensHttp.reply(_p, _b))" },
+   RawBuiltin { name = "lens-http-reply-html", emission = "new Func<long, Func<string, long>>(_p => _b => _LensHttp.reply_html(_p, _b))" }
 
   ]
 
@@ -260,6 +253,43 @@ Section: Raw Reference Builtins
    in if pos >= len then ""
       else let e = list-at raw-builtins pos
       in if e.name == name then e.emission else ""
+
+Section: Platform Seam Overrides
+
+ The Lens platform seam (apps/lens/DESIGN.md 4.4): a Codex-declared
+ function with a real body for the native target is REPLACED at C#
+ emission by a call into a runtime preamble class. The interception
+ rides the two lookups that already fire before any user-definition
+ dispatch. In apply position, emit-apply consults builtin-emitters
+ (is-builtin-name) before the arity map, so a builtin-emitters entry
+ for the seam name rewrites every fully-applied call site. In bare
+ name position, emit-expr-at's IrName case consults lookup-raw-builtin
+ first, so a raw-builtins entry covers the function passed as a value.
+ Both tables match by name alone and therefore shadow user definitions
+ of the same name by construction - that shadowing IS the seam. The
+ native definition's body is skipped at emission (emit-def returns
+ empty for seam names), and the backing preamble class is emitted only
+ when the module actually carries the seam definition (emit-seam-
+ runtimes checks the arity map), so modules that never cite the seam
+ chapter get byte-identical output and no barbarian package
+ dependencies. Current bindings: lens-sql-exec -> _LensSql.exec
+ (Microsoft.Data.SqlClient, connection string from LENS_SQL_CONN);
+ lens-http-next -> _LensHttp.next, lens-http-reply ->
+ _LensHttp.reply, and lens-http-reply-html -> _LensHttp.reply_html
+ (System.Net.HttpListener, one lazily started shared listener per
+ port; the reply flavors differ only in content type). The
+ [LensStore] bindings extend these same tables.
+
+  seam-override-names : List Text = ["lens-sql-exec", "lens-http-next", "lens-http-reply", "lens-http-reply-html"]
+
+  seam-override-loop : Text, Integer, Integer -> Boolean
+  seam-override-loop (n) (i) (len) =
+   if i >= len then False
+   else if list-at seam-override-names i == n then True
+   else seam-override-loop n (i + 1) len
+
+  is-seam-override : Text -> Boolean
+  is-seam-override (n) = seam-override-loop n 0 (list-length seam-override-names)
 
 Section: Apply Chain
 
@@ -411,7 +441,11 @@ Section: Apply Chain
    BuiltinEmitter { name = "ir-text", emit = \args -> \arities -> \ty -> "\"\"" },
    BuiltinEmitter { name = "read-file-uni", emit = \args -> \arities -> \ty -> "File.ReadAllText(" & emit-expr (list-at args 0) arities & ")" },
    BuiltinEmitter { name = "to-unicode", emit = \args -> \arities -> \ty -> emit-expr (list-at args 0) arities },
-   BuiltinEmitter { name = "from-unicode", emit = \args -> \arities -> \ty -> emit-expr (list-at args 0) arities }
+   BuiltinEmitter { name = "from-unicode", emit = \args -> \arities -> \ty -> emit-expr (list-at args 0) arities },
+   BuiltinEmitter { name = "lens-sql-exec", emit = \args -> \arities -> \ty -> "_LensSql.exec(" & emit-expr (list-at args 0) arities & ")" },
+   BuiltinEmitter { name = "lens-http-next", emit = \args -> \arities -> \ty -> "_LensHttp.next(" & emit-expr (list-at args 0) arities & ")" },
+   BuiltinEmitter { name = "lens-http-reply", emit = \args -> \arities -> \ty -> "_LensHttp.reply(" & emit-expr (list-at args 0) arities & ", " & emit-expr (list-at args 1) arities & ")" },
+   BuiltinEmitter { name = "lens-http-reply-html", emit = \args -> \arities -> \ty -> "_LensHttp.reply_html(" & emit-expr (list-at args 0) arities & ", " & emit-expr (list-at args 1) arities & ")" }
 
   ])
 
@@ -476,7 +510,27 @@ Section: Apply Chain
    let field-name = when (list-at args 1)
     is IrTextLit (s) (sp) -> s
     is otherwise -> ""
-   in "(" & emit-expr (list-at args 0) arities & " with { " & sanitize field-name & " = " & emit-expr (list-at args 2) arities & " })"
+   in "(" & emit-expr (list-at args 0) arities & " with { " & cs-field field-name & " = " & emit-expr (list-at args 2) arities & " })"
+
+ The IR spells a record field as name/slot - the physical slot index
+ rides behind a slash, exactly as the HTML plug found in CL 6602.
+ cs-field keeps the name, drops the slot, and sanitizes, so emitted
+ member access matches the emitted record declarations. Without the
+ strip every field access renders as a division and the generated
+ C# does not compile; the transpiled-compiler path never noticed
+ because its output is not built by the plug matrix.
+
+  cs-slash-pos : Text, Integer, Integer -> Integer
+  cs-slash-pos (f) (i) (len) =
+   if i >= len then (-1)
+   else if char-to-text (char-at f i) == "/" then i
+   else cs-slash-pos f (i + 1) len
+
+  cs-field : Text -> Text
+  cs-field (f) =
+   let slash = cs-slash-pos f 0 (text-length f)
+   in if slash >= 0 then sanitize (substring f 0 slash)
+   else sanitize f
 
   emit-builtin-show : List IRExpr, List ArityEntry -> Text
   emit-builtin-show (args) (arities) =
@@ -762,8 +816,8 @@ Section: Expression Emission
     is IrHandle (eff) (body) (clauses) (ty) (sp) -> emit-handle eff body clauses ty arities
     is IrWithTimeout (secs) (effs) (scopes) (body) (ty) (sp) -> emit-expr-at body arities (depth + 1)
     is IrRecord (name) (fields) (ty) (sp) -> emit-record name fields ty arities
-    is IrFieldAccess (rec) (field) (ty) (sp) -> emit-expr-at rec arities (depth + 1) & "." & sanitize field
-    is IrFieldStore (rec) (field) (val) (ty) (sp) -> "(" & emit-expr-at rec arities (depth + 1) & " with { " & sanitize field & " = " & emit-expr-at val arities (depth + 1) & " })"
+    is IrFieldAccess (rec) (field) (ty) (sp) -> emit-expr-at rec arities (depth + 1) & "." & cs-field field
+    is IrFieldStore (rec) (field) (val) (ty) (sp) -> "(" & emit-expr-at rec arities (depth + 1) & " with { " & cs-field field & " = " & emit-expr-at val arities (depth + 1) & " })"
     is IrFork (body) (ty) (sp) -> "Task.Run(() => (" & emit-expr-at body arities (depth + 1) & ")(null))"
     is IrAwait (task) (ty) (sp) -> "(" & emit-expr-at task arities (depth + 1) & ").Result"
     is IrTry (max) (body) (fb) (fail-stmts) (ty) (sp) -> emit-cs-try max body fb fail-stmts ty arities

@@ -1,0 +1,68 @@
+Chapter: InputMetalTest
+  cites UI chapter InputSource
+  cites UI chapter Event
+
+ Known-answer test for the InputSource metal backend. The pointer
+ mailbox cells stand in for the pointer driver and the kernel key
+ cell for the IRQ1 handler: publish a magic-guarded absolute pointer,
+ poke a scancode, and raw-input-poll must read both without touching
+ a port. Edge detection is asserted across four polls -- a move, a
+ press with a key make, a release with the key break, and a clamp of
+ an off-panel position -- and the key cell must read zero after a
+ poll because the take is an atomic consume. The floating-bus guard
+ is pure and asserted directly: 0x00 and 0xFF both mean no port
+ mouse.
+
+Section: Cells
+
+  imt-cells : Integer = 36736
+  imt-magic : Integer = #31525450
+  imt-kb : Integer = 28680
+
+  imt-publish : Integer, Integer, Integer -> Integer
+  imt-publish (x) (y) (b) =
+    let px = poke-32 imt-cells 4 x
+    in let py = poke-32 imt-cells 8 y
+    in let pb = poke-32 imt-cells 12 b
+    in poke-32 imt-cells 0 imt-magic
+
+Section: Formatting
+
+  ev-line : Event -> Text
+  ev-line (e) = when e.ev-kind
+    is EvMouseMove (x) (y) -> "move " & show x & "," & show y
+    is EvMouseDown (x) (y) (b) -> "down " & show x & "," & show y & " b" & show b
+    is EvMouseUp (x) (y) (b) -> "up " & show x & "," & show y & " b" & show b
+    is EvKeyDown (k) (m) -> "key+" & show k
+    is EvKeyUp (k) (m) -> "key-" & show k
+    is otherwise -> "other"
+
+  ev-lines : List Event, Integer, Text -> Text
+  ev-lines (evs) (i) (acc) =
+    if i >= list-length evs then acc
+    else ev-lines evs (i + 1) (acc & " [" & ev-line (list-at evs i) & "]")
+
+  ri-line : RawInput -> Text
+  ri-line (ri) = show (ri.ri-mx) & " " & show (ri.ri-my) & " " & show (ri.ri-left) & " " & show (ri.ri-key)
+
+Section: Main
+
+  opening : [Console, Device.Port] Nothing = act
+    p1 <- imt-publish 100 80 0
+    riA <- raw-input-poll (raw-input-new 640 480)
+    print-line-uni ("A " & ri-line riA & ev-lines (ri-collect-events riA 1) 0 "")
+    p2 <- imt-publish 100 80 1
+    k2 <- poke-byte imt-kb 0 35
+    riB <- raw-input-poll riA
+    print-line-uni ("B " & ri-line riB & ev-lines (ri-collect-events riB 2) 0 "")
+    print-line-uni ("kb " & show (peek-byte imt-kb 0))
+    p3 <- imt-publish 100 80 0
+    k3 <- poke-byte imt-kb 0 163
+    riC <- raw-input-poll riB
+    print-line-uni ("C " & ri-line riC & ev-lines (ri-collect-events riC 3) 0 "")
+    p4 <- imt-publish 9999 9000 0
+    riD <- raw-input-poll riC
+    print-line-uni ("D " & ri-line riD & ev-lines (ri-collect-events riD 4) 0 "")
+    print-line-uni ("flags " & show (ri-mouse-flag 0) & " " & show (ri-mouse-flag 255) & " " & show (ri-mouse-flag 1))
+    print-line-uni "input-metal ok"
+  end

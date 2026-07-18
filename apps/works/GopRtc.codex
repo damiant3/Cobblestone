@@ -1,0 +1,120 @@
+Chapter: GopRtc
+
+ The CMOS real-time clock, read correctly.
+
+ The MC146818 updates its time registers once a second, and for the
+ window in which it does so it raises Update-In-Progress (Status A,
+ bit 7) and the time registers are UNDEFINED -- the spec says so, and
+ real silicon duly returns junk. A reader that polls the seconds
+ without checking UIP therefore sees the value change many times a
+ second, and any code counting those changes as elapsed time runs
+ wild: the first-boot ceremony's keyboard gate counted thirty
+ "seconds" in microseconds on a real board, handed the USB controller
+ back before the countdown could be seen, and in doing so switched off
+ the very keyboard pump whose silence it was measuring.
+
+ It survived two emulators to get there. Neither QEMU nor codex-vm
+ modelled the update cycle: both answered every read with a clean
+ value and swore no update was ever in progress. codex-vm does now.
+
+ So this reader does three things, and a caller that skips any of
+ them is not reading a clock, it is reading noise:
+
+   1. Wait for UIP to clear, fuel-bounded, before touching a time
+      register at all.
+   2. Read the register TWICE and require the same answer. The update
+      can begin between the check and the read; two equal reads
+      either straddle no update, or both straddle the same junk --
+      and the range check below catches the second case.
+   3. Reject anything a second cannot be. Seconds are 0..59. A value
+      outside that is not a late clock, it is a bad read, and the
+      caller must be told so rather than handed a number.
+
+ The mode bit is honoured: Status B bit 2 set means the registers are
+ binary, clear means they are BCD. Most parts ship BCD and every one
+ we have met does, but a reader that assumes it will silently mangle
+ a machine that does not, and this one is cheap to get right.
+
+ An unreadable clock returns -1. It is never an excuse to invent a
+ time: the caller decides what to do without one, and that decision
+ belongs to the caller.
+
+  cites Foreword chapter Maybe
+
+ We say:
+
+Section: Registers
+
+  rtc-port-index : Integer = 112
+  rtc-port-data : Integer = 113
+
+  rtc-reg-seconds : Integer = 0
+  rtc-reg-status-a : Integer = 10
+  rtc-reg-status-b : Integer = 11
+
+  rtc-uip-bit : Integer = 128
+  rtc-binary-bit : Integer = 4
+
+  rtc-uip-fuel : Integer = 1000000
+
+  rtc-unreadable : Integer = -1
+
+Section: Reading
+
+  rtc-read : Integer -> [Device.Port] Integer
+  rtc-read (reg) = act
+    w <- port-out-byte rtc-port-index reg
+    v <- port-in-byte rtc-port-data
+    v
+  end
+
+ Wait out the update. The fuel is generous because the window is
+ short and a stall here is a stall in a poll loop, not in a driver;
+ exhausting it means the clock is not answering, which is a reading
+ in itself and is reported as one.
+
+  rtc-wait-idle : Integer -> [Device.Port] Integer
+  rtc-wait-idle (fuel) = act
+    a <- rtc-read rtc-reg-status-a
+    if bit-and a rtc-uip-bit == 0 then 1
+    else if fuel <= 0 then 0
+    else rtc-wait-idle (fuel - 1)
+  end
+
+  rtc-bcd-to-int : Integer -> Integer
+  rtc-bcd-to-int (v) =
+    let hi = bit-shru v 4
+    in hi * 10 + bit-and v 15
+
+  rtc-decode : Integer, Integer -> Integer
+  rtc-decode (v) (binary) =
+    if binary /= 0 then v else rtc-bcd-to-int v
+
+  rtc-plausible : Integer -> Integer
+  rtc-plausible (s) =
+    if s < 0 then rtc-unreadable
+    else if s > 59 then rtc-unreadable
+    else s
+
+ The seconds, or -1. Three gates: the update must be over, two reads
+ must agree, and the answer must be a second.
+
+  rtc-seconds : Integer -> [Device.Port] Integer
+  rtc-seconds (d) = act
+    idle <- rtc-wait-idle rtc-uip-fuel
+    b <- rtc-read rtc-reg-status-b
+    first <- rtc-read rtc-reg-seconds
+    second <- rtc-read rtc-reg-seconds
+    if idle == 0 then rtc-unreadable
+    else if first /= second then rtc-unreadable
+    else rtc-plausible (rtc-decode first (bit-and b rtc-binary-bit))
+  end
+
+ The unguarded read, kept ONLY so a test can demonstrate the hazard
+ this chapter exists to close. Nothing in the boot path may call it.
+
+  rtc-seconds-unguarded : Integer -> [Device.Port] Integer
+  rtc-seconds-unguarded (d) = act
+    v <- rtc-read rtc-reg-seconds
+    rtc-bcd-to-int v
+  end

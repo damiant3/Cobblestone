@@ -1,0 +1,84 @@
+=== lens query test: grain-correct planning ===
+-- revenue by city (city | revenue)
+  Shelbyville | 7300
+  Springfield | 16100
+  Capital City | 6500
+-- fan-out plan
+Sort
+  Project
+    EquiJoin(city=city)
+      GroupBy
+        SeqScan(users)
+      GroupBy
+        EquiJoin(user-id=user-id)
+          GroupBy
+            SeqScan(orders)
+          SeqScan(users)
+-- fan-out: credit and revenue by city (city | total-credit | revenue)
+  Shelbyville | 20000 | 7300
+  Springfield | 40000 | 16100
+  Capital City | 40000 | 6500
+-- unknown measure is a diagnostic, not a plan
+diag 22: unknown measure profit
+-- two dims, two measures (city | user-name | total-credit | revenue)
+  Shelbyville | Bob | 20000 | 7300
+  Springfield | Alice | 10000 | 8800
+  Springfield | Carol | 30000 | 7300
+  Capital City | Dave | 40000 | 6500
+-- filtered fan-out plan (filter under the revenue group)
+Sort
+  Project
+    EquiJoin(city=city)
+      GroupBy
+        SeqScan(users)
+      GroupBy
+        EquiJoin(user-id=user-id)
+          GroupBy
+            Filter
+              SeqScan(orders)
+          SeqScan(users)
+-- product 1 only: credit and revenue by city (city | total-credit | revenue)
+  Shelbyville | 20000 | 1500
+  Springfield | 40000 | 4500
+  Capital City | 40000 | 1500
+-- unknown filter column is a diagnostic, not a plan
+diag 27: filter column discount is not in the model vocabulary for table orders
+-- grain-correct average across the join (city | total-credit | avg-order)
+  Shelbyville | 20000 | 2433
+  Springfield | 40000 | 2300
+  Capital City | 40000 | 3250
+-- multi-hop plan (orders -> users -> regions)
+Sort
+  Project
+    GroupBy
+      EquiJoin(region-id=region-id)
+        EquiJoin(user-id=user-id)
+          GroupBy
+            SeqScan(orders)
+          SeqScan(users)
+        SeqScan(regions)
+-- revenue by region, two hops away (region | revenue)
+  East | 13800
+  West | 16100
+-- two paths to one table is a diagnostic, not a plan
+diag 28: measure fsum on table f reaches dimension tname on table t by more than one many-to-one path: f -> a -> t and f -> b -> t
+-- revenue by month bucket (order-date__month | revenue)
+  202606 | 14600
+  202607 | 15300
+-- bucketed plan across a join (derive under the home-grain group)
+Sort
+  Project
+    GroupBy
+      EquiJoin(user-id=user-id)
+        GroupBy
+          Derive(order-date__month)
+            SeqScan(orders)
+        SeqScan(users)
+-- revenue by city and month (city | order-date__month | revenue)
+  Shelbyville | 202606 | 800
+  Shelbyville | 202607 | 6500
+  Springfield | 202606 | 8800
+  Springfield | 202607 | 7300
+  Capital City | 202606 | 5000
+  Capital City | 202607 | 1500
+lens-query-test: done

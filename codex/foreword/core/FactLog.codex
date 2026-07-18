@@ -1,0 +1,108 @@
+Chapter: FactLog
+
+ The on-disk layout of the fact log, in one place: the sizes, the field
+ offsets, and the pure functions that read a field out of a sector buffer.
+ DiskFacts (codex.os) writes and reads this layout; the compiler reads it
+ through foreword FactDisk; before this chapter each carried its own copy
+ of the offsets -- 32 for the kind, 66 for the timestamp, 74 for the
+ content length -- and a change to one that the other did not follow was a
+ divergence nothing caught until a work read back as garbage. The layout
+ now has a single definition, and every reader and the writer ask it where
+ a field is. The writer asking is the newer half: pack-fact-entry used to
+ chain each field off the previous one's return value and step over the
+ gap with a bare + 32, so the offsets these constants name were reachable
+ only by adding the widths up. A writer that computes what a reader looks
+ up is the same divergence with one side hidden.
+
+ Only the PURE half lives here: constants and buffer decoders. Reading a
+ sector off the disk is a Device.Block effect, and foreword is effect
+ checked where DiskFacts (kernel) is exempt, so the sector walk that feeds
+ these decoders stays with each reader. What is shared is the thing that
+ drifts -- the shape -- not the loop that reads it.
+
+ We say:
+
+Section: Sizes And Offsets
+
+ A 512-byte sector; the fact log starts at sector 2; the entry header is
+ 78 bytes -- a 32-byte content hash, then a 2-byte kind, a 32-byte gap, an
+ 8-byte timestamp, and a 4-byte content length -- and the content follows.
+ The superblock holds an 8-byte magic, then the log head at offset 8 and
+ the generation counter at offset 24. Kind 30 is a source definition.
+
+  fl-sector-size : Integer = 512
+  fl-fact-log-start : Integer = 2
+  fl-header-size : Integer = 78
+  fl-magic : Text = "CODEXFS1"
+  fl-kind-definition : Integer = 30
+
+  fl-off-kind : Integer = 32
+  fl-off-timestamp : Integer = 66
+  fl-off-content-len : Integer = 74
+  fl-off-sb-log-head : Integer = 8
+  fl-off-sb-index-gen : Integer = 24
+
+Section: Little-Endian Reads
+
+  fl-u16 : Integer, Integer -> Integer
+  fl-u16 (buf) (off) =
+   bit-or (peek-byte buf off) (bit-shl (peek-byte buf (off + 1)) 8)
+
+  fl-u32 : Integer, Integer -> Integer
+  fl-u32 (buf) (off) =
+   let b0 = peek-byte buf off
+   in let b1 = bit-shl (peek-byte buf (off + 1)) 8
+   in let b2 = bit-shl (peek-byte buf (off + 2)) 16
+   in let b3 = bit-shl (peek-byte buf (off + 3)) 24
+   in bit-or b0 (bit-or b1 (bit-or b2 b3))
+
+  fl-u64 : Integer, Integer -> Integer
+  fl-u64 (buf) (off) =
+   let b0 = peek-byte buf off
+   in let b1 = bit-shl (peek-byte buf (off + 1)) 8
+   in let b2 = bit-shl (peek-byte buf (off + 2)) 16
+   in let b3 = bit-shl (peek-byte buf (off + 3)) 24
+   in let b4 = bit-shl (peek-byte buf (off + 4)) 32
+   in let b5 = bit-shl (peek-byte buf (off + 5)) 40
+   in let b6 = bit-shl (peek-byte buf (off + 6)) 48
+   in let b7 = bit-shl (peek-byte buf (off + 7)) 56
+   in bit-or b0 (bit-or b1 (bit-or b2 (bit-or b3 (bit-or b4 (bit-or b5 (bit-or b6 b7))))))
+
+ A run of bytes read back as CCE text, one code point per byte, exactly as
+ it was packed. The accumulation is quadratic in the run length; a work is
+ a few kilobytes, and this is not a hot path.
+
+  fl-text : Integer, Integer, Integer -> Text
+  fl-text (buf) (off) (len) = fl-text-loop buf off len 0 ""
+
+  fl-text-loop : Integer, Integer, Integer, Integer, Text -> Text
+  fl-text-loop (buf) (off) (len) (i) (acc) =
+   if i >= len then acc
+   else let ch = char-to-text (code-to-char (peek-byte buf (off + i)))
+   in fl-text-loop buf off len (i + 1) (acc & ch)
+
+Section: Derived
+
+  fl-sectors-for : Integer -> Integer
+  fl-sectors-for (content-len) =
+   (fl-header-size + content-len + fl-sector-size - 1) / fl-sector-size
+
+Section: Reading A Field From A Sector Buffer
+
+  fl-magic-ok : Integer -> Boolean
+  fl-magic-ok (buf) = fl-text buf 0 8 == fl-magic
+
+  fl-entry-kind : Integer -> Integer
+  fl-entry-kind (buf) = fl-u16 buf fl-off-kind
+
+  fl-entry-timestamp : Integer -> Integer
+  fl-entry-timestamp (buf) = fl-u64 buf fl-off-timestamp
+
+  fl-entry-content-len : Integer -> Integer
+  fl-entry-content-len (buf) = fl-u32 buf fl-off-content-len
+
+  fl-sb-log-head : Integer -> Integer
+  fl-sb-log-head (buf) = fl-u64 buf fl-off-sb-log-head
+
+  fl-sb-index-gen : Integer -> Integer
+  fl-sb-index-gen (buf) = fl-u64 buf fl-off-sb-index-gen

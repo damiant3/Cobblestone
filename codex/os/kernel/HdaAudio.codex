@@ -1,0 +1,166 @@
+Chapter: HdaAudio
+  cites Foreword chapter Board
+  grounds Device.Mmio
+
+ An Intel HDA audio OUTPUT driver -- the first sound this machine makes.
+
+ The HDA controller sits at MMIO 0xFE000000 (PCI slot 2). Output is
+ stream descriptor 0: a Buffer Descriptor List (BDL) names PCM buffers,
+ and setting the stream's RUN bit hands them to the codec's DAC. codex-vm
+ drains the BDL to the host's waveOut when RUN is written, so a program
+ that fills a buffer with samples and runs the stream is heard on the
+ speakers or headphones.
+
+ This is output only. codex-vm models one output stream and no capture
+ stream -- there is no ADC path that delivers host microphone samples --
+ so Microphone.listen has no seam on this machine and is not implemented
+ here. The format is 48 kHz 16-bit stereo, little-endian signed PCM,
+ which is what the host waveOut is fixed at.
+
+ The driver writes MMIO through Foreword chapter Board's mmio-write-32,
+ so every register access carries Device.Mmio and a program that plays a
+ sound declares it.
+
+ We say:
+
+Section: Registers
+
+  hda-bar : Integer = #FE000000
+  hda-reg-gctl : Integer = 8
+  hda-reg-sd0ctl : Integer = 128
+  hda-reg-sd0cbl : Integer = 136
+  hda-reg-sd0lvi : Integer = 140
+  hda-reg-sd0fmt : Integer = 146
+  hda-reg-sd0bdpl : Integer = 152
+  hda-reg-sd0bdpu : Integer = 156
+
+  hda-sample-rate : Integer = 48000
+  hda-fmt-48k-16-stereo : Integer = 17
+  hda-run-bit : Integer = 2
+  hda-amplitude : Integer = 8000
+  hda-amplitude-neg : Integer = 57536
+
+Section: Tone Buffer
+
+  hda-square-tone : Integer, Integer -> Integer
+  hda-square-tone (freq) (nsamples) =
+    let buf = alloc-bytes (nsamples * 4)
+    in let period = if freq <= 0 then 109 else hda-sample-rate / freq
+    in let w = hda-tone-fill buf period nsamples 0
+    in buf
+
+  hda-tone-fill : Integer, Integer, Integer, Integer -> Integer
+  hda-tone-fill (buf) (period) (n) (i) =
+    if i >= n then 0
+    else let phase = int-mod i period
+    in let s = if phase * 2 < period then hda-amplitude else hda-amplitude-neg
+    in let lo = bit-and s 255
+    in let hi = bit-and (bit-shru s 8) 255
+    in let w0 = poke-byte buf (i * 4) lo
+    in let w1 = poke-byte buf (i * 4 + 1) hi
+    in let w2 = poke-byte buf (i * 4 + 2) lo
+    in let w3 = poke-byte buf (i * 4 + 3) hi
+    in hda-tone-fill buf period n (i + 1)
+
+Section: Play
+
+ The play surface publishes [Audio], not [Device.Mmio]. This chapter
+ grounds Device.Mmio, so the register writes below need no declaration of
+ their own -- the effect stops here, at the layer that meets the metal,
+ and what leaves is the narrow authority a caller actually wants.
+
+ It used to publish [Device.Mmio], and that word grants the whole Device
+ family: every BAR on the bus and the block device with it. A program that
+ wanted to beep asked for the authority to drive the disk controller,
+ because that was the only word available for reaching a register. The
+ authority to play a note is now its own bit and its own manifest entry --
+ a verifier reading a CDX can tell a program that makes a sound from a
+ program that can rewrite the disk, which it could not do before.
+
+ Capture keeps [Device.Mmio] deliberately, and it is not an oversight:
+ reading the microphone is Microphone's authority, MicInput publishes it
+ under that name, and MicInput grounds Device.Mmio itself. Giving capture
+ the Audio bit would let the right to SPEAK buy the right to LISTEN.
+
+  hda-play-pcm : Integer, Integer -> [Audio] Integer
+  hda-play-pcm (buf) (len) =
+    let bdl = alloc-bytes 16
+    in let w0 = poke-32 bdl 0 buf
+    in let w1 = poke-32 bdl 4 0
+    in let w2 = poke-32 bdl 8 len
+    in let w3 = poke-32 bdl 12 1
+    in act
+      a <- mmio-write-32 (hda-bar + hda-reg-gctl) 1
+      b <- mmio-write-32 (hda-bar + hda-reg-sd0bdpl) bdl
+      c <- mmio-write-32 (hda-bar + hda-reg-sd0bdpu) 0
+      d <- mmio-write-32 (hda-bar + hda-reg-sd0lvi) 0
+      e <- mmio-write-32 (hda-bar + hda-reg-sd0cbl) len
+      f <- mmio-write-32 (hda-bar + hda-reg-sd0fmt) hda-fmt-48k-16-stereo
+      g <- mmio-write-32 (hda-bar + hda-reg-sd0ctl) hda-run-bit
+      g
+    end
+
+  hda-play-tone : Integer, Integer -> [Audio] Integer
+  hda-play-tone (freq) (ms) =
+    let nsamples = hda-sample-rate * ms / 1000
+    in hda-play-pcm (hda-square-tone freq nsamples) (nsamples * 4)
+
+  hda-stop : [Audio] Integer
+  hda-stop = mmio-write-32 (hda-bar + hda-reg-sd0ctl) 0
+
+Section: Capture (input stream 1, the microphone)
+
+ Input is the mirror of output: a BDL names a buffer, and setting input
+ stream 1's RUN bit hands the buffer to codex-vm, which copies the most
+ recent microphone samples into it (from its waveIn ring) and clears RUN.
+ The guest polls RUN back to zero and reads the captured PCM. The first
+ capture opens the mic and returns near-silence -- the ring has not filled
+ yet -- so a real reading takes a warm-up capture first.
+
+  hda-reg-sd1ctl : Integer = 160
+  hda-reg-sd1cbl : Integer = 168
+  hda-reg-sd1lvi : Integer = 172
+  hda-reg-sd1fmt : Integer = 178
+  hda-reg-sd1bdpl : Integer = 184
+  hda-reg-sd1bdpu : Integer = 188
+
+  hda-capture : Integer -> [Device.Mmio] Integer
+  hda-capture (len) =
+    let buf = alloc-bytes len
+    in let bdl = alloc-bytes 16
+    in let w0 = poke-32 bdl 0 buf
+    in let w1 = poke-32 bdl 4 0
+    in let w2 = poke-32 bdl 8 len
+    in let w3 = poke-32 bdl 12 1
+    in act
+      a <- mmio-write-32 (hda-bar + hda-reg-gctl) 1
+      b <- mmio-write-32 (hda-bar + hda-reg-sd1bdpl) bdl
+      c <- mmio-write-32 (hda-bar + hda-reg-sd1bdpu) 0
+      d <- mmio-write-32 (hda-bar + hda-reg-sd1lvi) 0
+      e <- mmio-write-32 (hda-bar + hda-reg-sd1cbl) len
+      f <- mmio-write-32 (hda-bar + hda-reg-sd1fmt) hda-fmt-48k-16-stereo
+      g <- mmio-write-32 (hda-bar + hda-reg-sd1ctl) hda-run-bit
+      done <- hda-wait-capture 200000
+      buf
+    end
+
+  hda-wait-capture : Integer -> [Device.Mmio] Integer
+  hda-wait-capture (fuel) = act
+    c <- mmio-read-32 (hda-bar + hda-reg-sd1ctl)
+    if fuel <= 0 then 0
+    else if bit-and c 2 == 0 then 0
+    else hda-wait-capture (fuel - 1)
+  end
+
+  hda-peak : Integer, Integer -> Integer
+  hda-peak (buf) (nsamples) = hda-peak-loop buf nsamples 0 0
+
+  hda-peak-loop : Integer, Integer, Integer, Integer -> Integer
+  hda-peak-loop (buf) (n) (i) (mx) =
+    if i >= n then mx
+    else let lo = peek-byte buf (i * 4)
+    in let hi = peek-byte buf (i * 4 + 1)
+    in let raw = lo + hi * 256
+    in let val = if raw >= 32768 then raw - 65536 else raw
+    in let a = if val < 0 then 0 - val else val
+    in hda-peak-loop buf n (i + 1) (if a > mx then a else mx)

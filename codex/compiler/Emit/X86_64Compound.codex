@@ -1,7 +1,4 @@
 Chapter: X86-64 Code Generator
-  cites Codex chapter Text
-  cites Codex chapter Lists
-  cites Codex chapter Runtime
   cites Foreword chapter Sort
 
 Section: Function Application
@@ -161,7 +158,7 @@ Section: Function Application
               in if tag >= 0 then emit-sum-ctor st (flat.args) ((list-at ctors tag).fields) tag
                          else let is-local-sum = lookup-local (st.locals) (flat.func-name) >= 0
                          in if is-local-sum then emit-indirect-call st flat
-                         else emit-direct-call st flat
+                         else emit-call-or-effect-op st flat user-arity
                      is UnitTy (uname) (inner) ->
                       if flat.func-name == uname.value & list-length (flat.args) == 1 then emit-expr st (list-at (flat.args) 0)
                       else emit-direct-call st flat
@@ -172,7 +169,7 @@ Section: Function Application
                      is otherwise ->
                       let is-local = lookup-local (st.locals) (flat.func-name) >= 0
               in if is-local then emit-indirect-call st flat
-                         else emit-direct-call st flat
+                         else emit-call-or-effect-op st flat user-arity
    in EmitResult {
     state = st-set-tail-pos (fc-flush (r.state)) saved-tail,
     reg = r.reg
@@ -219,6 +216,41 @@ Section: Function Application
    state = __record-set st5 "next-temp" (st5.next-temp + 1),
    reg = reg-rax
   }
+
+ An applied effect op performed OUTSIDE the function that installed its
+ handler. Inside that function the clause emission parks the op name in a
+ local and emit-indirect-call takes it; every other function reaches the
+ SAME clause through the handler table, which is global state at runtime --
+ that dynamic reach is the whole point of the table. Until the FileSystem
+ layer (BACKLOG 1.5 rung 2) no program performed an op outside the
+ handler's own body, so this path emitted a direct call by name and died
+ at finalize with CDX2040. The op-table walk is gated on user-arity < 0,
+ so an ordinary call never pays it; a constructor application skips it by
+ matching its tag first.
+
+  emit-call-or-effect-op : CodegenState, FlatApply, Integer -> EmitResult
+  emit-call-or-effect-op (st) (flat) (user-arity) =
+   if user-arity >= 0 then emit-direct-call st flat
+   else let eoa = find-effect-op-addr (st.effect-op-addrs) (flat.func-name) 0 (list-length (st.effect-op-addrs))
+   in if eoa >= 0 then emit-effect-op-call st eoa (flat.args)
+      else emit-direct-call st flat
+
+  emit-effect-op-call : CodegenState, Integer, List IRExpr -> EmitResult
+  emit-effect-op-call (st) (addr) (args) =
+   let saved = save-args-loop (st-set-tail-pos st False) args 0 []
+   in let arg-count = list-length args
+   in let reg-count = if arg-count < 6 then arg-count else 6
+   in let st1 = push-reg-args (saved.state) (saved.locals) 0 reg-count
+   in let st2 = pop-to-arg-regs st1 (reg-count - 1)
+   in let st3 = st-append-code st2 (li reg-r11 addr)
+   in let st4 = st-append-code st3 (mov-load reg-r11 reg-r11 0)
+   in let st5 = st-append-code st4 (mov-load reg-rax reg-r11 0)
+   in let st6 = st-append-code st5 [255, 208]
+   in let tmp = alloc-temp st6
+   in EmitResult {
+    state = st-append-code (tmp.state) (mov-rr (tmp.reg) reg-rax),
+    reg = tmp.reg
+   }
 
   emit-over-apply : CodegenState, Text, List IRExpr, Integer -> EmitResult
   emit-over-apply (st) (func-name) (args) (arity) =
@@ -1744,11 +1776,12 @@ Section: Pattern Matching
   emit-one-match-branch (mbs) (scrut-loc) (result-loc) (branch) (needs-jmp-end) (scrut-ty) =
    let sv-local = mbs.cg-state.next-local
    in let sv-spill = mbs.cg-state.spill-count
+   in let sv-locals = mbs.cg-state.locals
    in let pat-result = emit-pattern (mbs.cg-state) scrut-loc (branch.pattern) scrut-ty
    in let guard-result = emit-match-guard (pat-result.state) (branch.guard)
    in let body-result = emit-expr (guard-result.state) (branch.body)
    in let st1s = store-local (body-result.state) result-loc (body-result.reg)
-   in let st1 = __record-set (__record-set st1s "next-local" sv-local) "spill-count" sv-spill
+   in let st1 = restore-locals (__record-set (__record-set st1s "next-local" sv-local) "spill-count" sv-spill) sv-locals
    in let st2 = if needs-jmp-end then let jmp-pos = st1.code-len
    in MatchBranchState {
       cg-state = st-append-code st1 (jmp 0),
@@ -1794,6 +1827,22 @@ Section: Pattern Matching
    next-branch-patch : Integer
   }
 
+ The emitter never guesses a constructor tag. If the scrutinee does not
+ resolve to a sum type, or the pattern names a constructor the sum does
+ not have, there is no honest tag to compare against: emitting one
+ anyway silently sends the arm to the wrong branch (tag 0 matches the
+ first constructor) or to no branch at all. That guess is what turned a
+ lowering defect into a miscompile once already. Refuse instead.
+
+  check-pattern-tag : CodegenState, CodexType, Text, Integer, SourceSpan -> CodegenState
+  check-pattern-tag (st) (resolve-ty) (name) (tag) (sp) =
+   when resolve-ty
+    is SumTy (sname) (args) (ctors) ->
+     if tag >= 0 then st
+     else st-add-error st cdx-unknown-pattern-ctor ("Pattern constructor '" & name & "' is not a constructor of '" & sname.value & "'; the emitter has no tag for it and this arm could never match.") sp
+    is otherwise ->
+     st-add-error st cdx-ir-error ("The emitter cannot resolve the scrutinee of pattern '" & name & "' to a sum type, so it has no tag to compare against. Emitting one would silently match the first constructor. The pattern's type did not resolve; this is typically a generic field whose type variable was never refined.") sp
+
   emit-pattern : CodegenState, Integer, IRPat, CodexType -> EmitPatternResult
   emit-pattern (st) (scrut-loc) (pat) (scrut-ty) =
    when pat
@@ -1818,8 +1867,9 @@ Section: Pattern Matching
       is otherwise -> resolve-constructed-ty st ty
      in let expected-tag = when resolve-ty
       is SumTy (sname) (args) (ctors) -> find-ctor-tag ctors name 0
-      is otherwise -> 0
-     in let st2 = st-append-code st1 (cmp-ri (tag-reg.reg) expected-tag)
+      is otherwise -> 0 - 1
+     in let st1a = check-pattern-tag st1 resolve-ty name expected-tag sp
+     in let st2 = st-append-code st1a (cmp-ri (tag-reg.reg) expected-tag)
      in let jcc-pos = st2.code-len
      in let st3 = st-append-code st2 (jcc cc-ne 0)
      in let field-tys = ctor-field-types resolve-ty name
@@ -1968,4 +2018,4 @@ Section: List Emission
    in load-local st11 (ptr-loc.reg)
 
 
-Page 5 of 10
+Page 5 of 14

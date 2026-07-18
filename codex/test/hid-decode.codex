@@ -1,0 +1,84 @@
+Chapter: HidDecodeTest
+  cites Works chapter GopHid
+
+ Drives the HID boot-keyboard decoder with a report sequence taken from
+ the HID specification and checks the Set-1 scancode stream against
+ ground truth generated independently in Python. The two transcriptions
+ of the usage tables -- one here in Codex, one in the fixture -- must
+ agree, which is what makes this more than a round trip through the
+ decoder's own opinions.
+
+ The sequence types a capital H, then i, then presses Down and Enter,
+ then delivers an ErrorRollOver report, then lifts everything.
+
+ Two properties are load-bearing and both are exercised. A shifted
+ letter must emit the Shift make BEFORE the letter, and lift the letter
+ BEFORE the Shift, or a consumer tracking shift state produces the
+ wrong character. And an ErrorRollOver report must be discarded whole,
+ leaving the held keys held: the report after it still carries Enter's
+ break code, which could only survive if prev was left untouched.
+
+Section: Reports
+
+ Seven eight-byte reports, flat. Byte 0 is the modifier bitmap, byte 1
+ reserved, bytes 2 through 7 the held usages.
+
+  report-count : Integer = 7
+
+  reports : List Integer
+  reports = [
+    2, 0, 11, 0, 0, 0, 0, 0,
+    0, 0, 12, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 81, 0, 0, 0, 0, 0,
+    0, 0, 40, 0, 0, 0, 0, 0,
+    0, 0, 1, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0
+  ]
+
+Section: Harness
+
+  zero8 : Integer, Integer -> Integer
+  zero8 (b) (i) =
+    if i >= 8 then 0 else let p = poke-byte b i 0 in zero8 b (i + 1)
+
+  load-report : Integer, Integer, Integer -> Integer
+  load-report (cur) (r) (i) =
+    if i >= 8 then 0
+    else let p = poke-byte cur i (list-at reports (r * 8 + i))
+    in load-report cur r (i + 1)
+
+ Drain every event this report implies, appending each to the line.
+ Bounded by the decoder's own convergence: prev moves one change closer
+ to cur each call, so the loop cannot run longer than the report has
+ differences.
+
+  drain : Integer, Integer, Text, Integer -> Text
+  drain (prev) (cur) (acc) (fuel) =
+    if fuel <= 0 then acc & " OVERRUN"
+    else let e = hid-step prev cur
+    in if e == 0 then acc
+    else drain prev cur (acc & " " & show e) (fuel - 1)
+
+  run-reports : Integer, Integer, Text, Integer -> Text
+  run-reports (prev) (cur) (acc) (r) =
+    if r >= report-count then acc
+    else let l = load-report cur r 0
+    in run-reports prev cur (drain prev cur acc 32) (r + 1)
+
+Section: Main
+
+  opening : [Console] Nothing = act
+    let b = __heap-save
+    in let adv = __heap-advance 64
+    in let prev = b
+    in let cur = b + 8
+    in let z0 = zero8 prev 0
+    in let z1 = zero8 cur 0
+    in act
+      let flat = run-reports prev cur "" 0
+      in print-line-uni ("events:" & flat)
+      let held = peek-byte prev 0 + peek-byte prev 2 + peek-byte prev 3
+      in print-line-uni ("prev-drained: " & show held)
+    end
+  end

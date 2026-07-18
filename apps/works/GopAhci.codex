@@ -63,6 +63,7 @@ Section: HBA Registers
 
   ahci-cmd-read : Integer = 37
   ahci-cmd-write : Integer = 53
+  ahci-cmd-identify : Integer = 236
 
   ahci-fuel : Integer = 1000000
 
@@ -114,16 +115,24 @@ Section: Controller Discovery
     let cmd = pci-read-config (d.pci-bus) (d.pci-dev) (d.pci-func) 4
     in pci-write-config (d.pci-bus) (d.pci-dev) (d.pci-func) 4 (bit-or cmd 6)
 
+ A board can carry several SATA disks on one HBA; `ahci-find-nth`
+ opens the n-th of them, counted in port order, so a caller choosing
+ a MEDIUM (GopDisk's selection cells) can address each disk rather
+ than whichever answers first.
+
   ahci-find : [Device.Port] AhciHba
-  ahci-find = act
+  ahci-find = ahci-find-nth 0
+
+  ahci-find-nth : Integer -> [Device.Port] AhciHba
+  ahci-find-nth (n) = act
     scan <- pci-scan-bus 0
     when pci-find-class scan 1 6
       is None -> ahci-no-hba
-      is Just (d) -> ahci-init-device d
+      is Just (d) -> ahci-init-device d n
   end
 
-  ahci-init-device : PciDevice -> [Device.Port] AhciHba
-  ahci-init-device (d) = act
+  ahci-init-device : PciDevice, Integer -> [Device.Port] AhciHba
+  ahci-init-device (d) (n) = act
     en <- ahci-enable d
     bar <- pci-parse-bar (d.pci-bus) (d.pci-dev) (d.pci-func) 5
     if bar.bar-base == 0 then ahci-no-hba
@@ -131,7 +140,7 @@ Section: Controller Discovery
     in let ghc = peek-32 abar ahci-ghc
     in let ae = poke-32 abar ahci-ghc (bit-or ghc ahci-ghc-ae)
     in let pi = peek-32 abar ahci-pi
-    in let port = ahci-pick-port abar pi 0
+    in let port = ahci-pick-nth abar pi 0 n
     in if port < 0 then ahci-no-hba
     else AhciHba { hba-ok = True, hba-abar = abar, hba-port = port }
   end
@@ -143,14 +152,15 @@ Section: Controller Discovery
  with communication established (SSTS.DET == 3), and its signature is a
  plain SATA disk (an ATAPI drive answers a different command set).
 
-  ahci-pick-port : Integer, Integer, Integer -> Integer
-  ahci-pick-port (abar) (pi) (i) =
+  ahci-pick-nth : Integer, Integer, Integer, Integer -> Integer
+  ahci-pick-nth (abar) (pi) (i) (n) =
     if i >= 32 then -1
-    else if bit-and (bit-shru pi i) 1 == 0 then ahci-pick-port abar pi (i + 1)
+    else if bit-and (bit-shru pi i) 1 == 0 then ahci-pick-nth abar pi (i + 1) n
     else let p = port-addr abar i
     in let det = bit-and (peek-32 p px-ssts) 15
-    in if det /= 3 then ahci-pick-port abar pi (i + 1)
-    else if peek-32 p px-sig /= sata-sig-disk then ahci-pick-port abar pi (i + 1)
+    in if det /= 3 then ahci-pick-nth abar pi (i + 1) n
+    else if peek-32 p px-sig /= sata-sig-disk then ahci-pick-nth abar pi (i + 1) n
+    else if n > 0 then ahci-pick-nth abar pi (i + 1) (n - 1)
     else i
 
 Section: Port Start and Stop
@@ -258,6 +268,20 @@ Section: Sector Read
  header's write bit, so both share this path. `mem` must lie below 4 GB
  (the PRD upper half is zero), which is where the boot heap lives.
 
+ The port is quiesced again before EVERY return. The CLB, FB, and
+ command table are per-call heap scratch: a port left running with FRE
+ set retains DMA rights over them after the heap reclaims the
+ addresses, and a late or asynchronous FIS -- or a fueled-out command a
+ real drive completes seconds later -- then lands in whatever lives
+ there next. Observed on real hardware (ASUS, live SATA drive) as a
+ death mid welcome-fill at a depth that varied build to build; the Dell
+ (internal drive disabled) and emulated AHCI never reproduce it.
+
+  ahci-quiesce : Integer, Integer -> Integer
+  ahci-quiesce (p) (result) =
+    let q = ahci-stop-port p
+    in result
+
   ahci-issue-on : AhciHba, Integer, Integer, Integer, Integer, Boolean -> Integer
   ahci-issue-on (hba) (lba) (count) (mem) (cmd) (is-write) =
     let p = port-addr (hba.hba-abar) (hba.hba-port)
@@ -277,14 +301,24 @@ Section: Sector Read
     in let f = ahci-write-fis-cmd ctba lba count cmd
     in let r = ahci-write-prdt-n ctba mem (count * 512)
     in let idle = ahci-wait-clear p px-tfd (bit-or px-tfd-bsy px-tfd-drq) ahci-fuel
-    in if idle == 0 then 0
+    in if idle == 0 then ahci-quiesce p 0
     else let issue = poke-32 p px-ci 1
     in let done = ahci-wait-ci p 1 (ahci-fuel * 16)
-    in done
+    in ahci-quiesce p done
 
   ahci-read-into-on : AhciHba, Integer, Integer, Integer -> Integer
   ahci-read-into-on (hba) (lba) (count) (dest) =
     ahci-issue-on hba lba count dest ahci-cmd-read False
+
+ IDENTIFY DEVICE (0xEC) is PIO data-in, but to the HBA it is one more
+ command with a 512-byte data phase: the same FIS slot and the same
+ single-PRD table carry it. The LBA and count fields of the FIS are
+ not-applicable to the command and the device ignores them; count 1
+ sizes the PRD at the 512 bytes the device will send.
+
+  ahci-identify-on : AhciHba, Integer -> Integer
+  ahci-identify-on (hba) (buf) =
+    ahci-issue-on hba 0 1 buf ahci-cmd-identify False
 
   ahci-read-into : Integer, Integer, Integer -> [Device.Port] Integer
   ahci-read-into (lba) (count) (dest) = act

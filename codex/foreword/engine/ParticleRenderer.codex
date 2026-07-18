@@ -25,14 +25,22 @@ Section: Billboard
 
 Section: Particle to Billboard
 
+ A Particle holds integer world coordinates and Mat4 is Real, so the position
+ crosses into clip space and the billboard crosses back. At v4w = 1.0 the w
+ is a true homogeneous coordinate, where the old fixed-point code carried
+ thousandths -- which is also why the screen size divides by w directly now
+ rather than scaling by a thousand first.
+
   part-to-billboard : Particle, Camera3D, Integer, Integer -> Billboard
   part-to-billboard (p) (cam) (half-w) (half-h) =
-    let clip = mat4-transform-vec4 (camera3d-vp cam) (Vec4 { v4x = p.part-x, v4y = p.part-y, v4z = p.part-z, v4w = 1000 })
-    in if clip.v4w <= 0 then Billboard { bb-x = -9999, bb-y = -9999, bb-hw = 0, bb-hh = 0, bb-depth = 999999, bb-color = 0, bb-alpha = 0 }
-    else let sx = half-w + clip.v4x * half-w / clip.v4w
-    in let sy = half-h - clip.v4y * half-h / clip.v4w
-    in let depth = clip.v4z * 1000 / clip.v4w
-    in let screen-size = 500 * 1000 / clip.v4w
+    let clip = mat4-transform-vec4 (camera3d-vp cam) (Vec4 { v4x = real-from-int (p.part-x), v4y = real-from-int (p.part-y), v4z = real-from-int (p.part-z), v4w = 1.0 })
+    in if clip.v4w <= 0.0 then Billboard { bb-x = -9999, bb-y = -9999, bb-hw = 0, bb-hh = 0, bb-depth = 999999, bb-color = 0, bb-alpha = 0 }
+    else let fhw = real-from-int half-w
+    in let fhh = real-from-int half-h
+    in let sx = real-to-int (fhw + clip.v4x * fhw / clip.v4w)
+    in let sy = real-to-int (fhh - clip.v4y * fhh / clip.v4w)
+    in let depth = real-to-int (clip.v4z * 1000.0 / clip.v4w)
+    in let screen-size = real-to-int (500.0 / clip.v4w)
     in let life-frac = p.part-life * 1000 / p.part-max-life
     in let alpha = life-frac
     in Billboard { bb-x = sx, bb-y = sy, bb-hw = screen-size, bb-hh = screen-size, bb-depth = depth, bb-color = p.part-color, bb-alpha = alpha }

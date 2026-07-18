@@ -1,0 +1,193 @@
+Chapter: OtaLwm2mLoopback
+  cites Net chapter Lwm2mFirmware
+  cites Encode chapter Coap
+  cites Foreword chapter OtaUpdate
+  cites Foreword chapter Sha256
+  cites Foreword chapter Hkdf
+  cites Foreword chapter Maybe
+  cites Foreword chapter Console
+  cites Verify chapter CdxBinary
+  cites Verify chapter VerifiedLoader
+  cites Verify chapter CdxVerifier
+  cites Trust chapter TrustLattice
+  cites Trust chapter PolicyEngine
+  cites Foreword chapter Ed25519
+  cites Foreword chapter Sha512
+  cites Foreword chapter Hamt
+  cites Foreword chapter FactStore
+
+ The LwM2M Object 5 firmware update, end to end, with nothing faked
+ except the socket.
+
+ The image is a REAL signed CDX built by cdx-encode-signed, not a byte
+ pattern -- so the magic, the header, the capability manifest and the
+ Ed25519 signature are all the genuine article. It is chunked into REAL
+ CoAP Block2 responses built by coap-build-request. The client parses
+ them, stages every block into the flash bank through the Flash effect,
+ and Gate A hashes the BANK. Gate B is the real five-phase verifier via
+ evaluate-load, against a real trust lattice and policy.
+
+ What is not real is the UDP socket: codex-vm serves only DNS on UDP and
+ drops everything else, so no guest can complete a live CoAP exchange
+ (BACKLOG 5.4). The responses are handed to the client directly. Every
+ inch above the socket is exercised.
+
+ The second half is the design's first adversarial scenario. One byte is
+ flipped in transit. The signature is still the publisher's, the blocks
+ still arrive in order, the CoAP is still well-formed -- and the staged
+ image must be refused, because Gate A hashes what landed in the bank
+ rather than what the client thinks it sent. The device must end on
+ Result 5 (integrity) with the old firmware still the one that boots.
+
+ We say:
+
+Section: Fixtures
+
+  test-sk : List Integer = [157, 97, 177, 157, 239, 253, 90, 96, 186, 132, 74, 244, 146, 236, 44, 196, 68, 73, 197, 105, 123, 50, 105, 25, 112, 59, 172, 3, 28, 174, 127, 96]
+
+  bank-base : Integer = 536875008
+
+  stage-addr : Integer = 536879104
+
+ A small but genuine signed firmware CDX. It declares Console so the
+ manifest carries a real capability the verifier can weigh.
+
+  firmware-image : List Integer
+  firmware-image =
+   let caps = [CdxCapability { cap-id = cdx-cap-console, direction = cdx-dir-write, scope = "/", max-duration = 0 }]
+   in let parts = CdxBinaryParts {
+    flags = cdx-flag-bare-metal,
+    capabilities = caps,
+    effects = ["Console"],
+    text-bytes = [144, 195],
+    rodata-bytes = [],
+    entry-offset = 0,
+    stack-size = 65536,
+    heap-size = 65536,
+    trust-threshold = 5000
+   }
+   in cdx-encode-signed parts test-sk
+
+  firmware-hash : List Integer
+  firmware-hash = hkdf-words-to-bytes (sha256 firmware-image)
+
+  manifest : OtaManifest
+  manifest = OtaManifest {
+   firmware-uri = "/fw/image.cdx",
+   firmware-size = list-length firmware-image,
+   firmware-hash = firmware-hash,
+   version = ota-version-new 7 1000,
+   min-battery = 0,
+   requires-reboot = True
+  }
+
+  boot0 : BootConfig
+  boot0 = boot-config-new (ota-version-new 1 500)
+
+Section: The Server Side
+
+ A CoAP server, in the shape the client will meet one: 2.05 Content with
+ a Block2 option, more set on every block but the last.
+
+  block-size : Integer = 64
+
+  slice-of : List Integer, Integer, Integer -> List Integer
+  slice-of (xs) (off) (len) = slice-loop xs off len 0 []
+
+  slice-loop : List Integer, Integer, Integer, Integer, List Integer -> List Integer
+  slice-loop (xs) (off) (len) (i) (acc) =
+   if i >= len then acc
+   else slice-loop xs off len (i + 1) (list-push acc (list-at xs (off + i)))
+
+  block-count : Integer
+  block-count =
+   let n = list-length firmware-image
+   in if int-mod n block-size == 0 then n / block-size else n / block-size + 1
+
+ szx 2 is 64-byte blocks: block size is two raised to szx plus four.
+
+  serve-block : List Integer, Integer -> List Integer
+  serve-block (image) (num) =
+   let off = num * block-size
+   in let remaining = list-length image - off
+   in let len = if remaining > block-size then block-size else remaining
+   in let more = if num + 1 < block-count then 1 else 0
+   in let body = slice-of image off len
+   in let opts = [coap-block-option coap-opt-block2 num more 2]
+   in coap-build-response CoapAcknowledgement coap-205-content (100 + num) [] opts body
+
+Section: The Download Loop
+
+  run-download : Lwm2mFw, List Integer, Integer -> [Flash, Device.Mmio] Lwm2mFw
+  run-download (c) (image) (num) =
+   if num >= block-count then c
+   else act
+    c2 <- fw-feed-response c (serve-block image num)
+    run-download c2 image (num + 1)
+   end
+
+Section: Gate B -- the real verifier
+
+  read-staged : Integer, Integer -> List Integer
+  read-staged (addr) (len) = read-staged-loop addr len 0 []
+
+  read-staged-loop : Integer, Integer, Integer, List Integer -> List Integer
+  read-staged-loop (addr) (len) (i) (acc) =
+   if i >= len then acc
+   else read-staged-loop addr len (i + 1) (list-push acc (peek-byte addr i))
+
+ The staged image is read back out of the bank for Gate B, because
+ evaluate-load takes a List Integer. That is the memory gap the OTA
+ design names: a 192 KB-SRAM device cannot hold a multi-hundred-KB image
+ as a List, and a buffer-taking verifier is the fix. Gate A above does
+ not pay it -- sha256-buf hashes the address directly.
+
+  gate-b-verdict : Lwm2mFw -> GateBResult
+  gate-b-verdict (c) =
+   let staged = read-staged stage-addr (list-length firmware-image)
+   in let author = read-author-key staged
+   in let lat = lattice-add-direct lattice-empty author 8000
+   in let policy = policy-add-rule (policy-empty "ota") (rule-allow "allow-all" AlwaysTrue)
+   in let decision = evaluate-load staged lat policy 0 fact-store-empty 100
+   in if load-approved decision then GateBPass
+      else GateBFailAuthor (load-reason decision)
+
+Section: The Runs
+
+  clean-run : Integer -> [Flash, Device.Mmio] Lwm2mFw
+  clean-run (x) = act
+   c1 <- run-download (fw-write-package-uri (fw-new boot0 (ota-version-new 1 500) bank-base stage-addr) manifest) firmware-image 0
+   let c2 = fw-execute-update c1 (gate-b-verdict c1)
+   in fw-activate c2
+  end
+
+ One byte flipped in transit, in the middle of the image. The publisher's
+ signature is untouched and every block is well-formed CoAP in the right
+ order.
+
+  tampered-image : List Integer
+  tampered-image =
+   let i = list-length firmware-image / 2
+   in list-set-at (slice-of firmware-image 0 (list-length firmware-image)) i (bit-xor (list-at firmware-image i) 255)
+
+  tampered-run : Integer -> [Flash, Device.Mmio] Lwm2mFw
+  tampered-run (x) =
+   run-download (fw-write-package-uri (fw-new boot0 (ota-version-new 1 500) bank-base stage-addr) manifest) tampered-image 0
+
+Section: Body
+
+  show-slot : BootSlot -> Text
+  show-slot (s) = boot-slot-name s
+
+  opening : [Console, Flash, Device.Mmio] Nothing = act
+   ok <- clean-run 0
+   print-line-uni ("blocks: " & show block-count)
+   print-line-uni ("clean staged: " & show (ok.fw-written) & " of " & show (list-length firmware-image))
+   print-line-uni ("clean state: " & show (fw-state-resource ok))
+   print-line-uni ("clean result: " & show (fw-result-resource ok))
+   print-line-uni ("clean target slot: " & show-slot (fw-target-slot ok))
+   bad <- tampered-run 0
+   print-line-uni ("tampered state: " & show (fw-state-resource bad))
+   print-line-uni ("tampered result: " & show (fw-result-resource bad))
+   print-line-uni ("tampered boots: " & show-slot ((fw-boot-config bad).active-slot))
+  end

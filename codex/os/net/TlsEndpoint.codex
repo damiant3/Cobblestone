@@ -1,0 +1,470 @@
+Chapter: TlsEndpoint
+  cites Encode chapter DtlsHello
+  cites Encode chapter DtlsMessage
+  cites Encode chapter X509
+  cites Encode chapter X509Chain
+  cites Encode chapter TlsCert
+  cites Foreword chapter Ed25519
+  cites Foreword chapter DiffieHellman
+  cites Foreword chapter Tls
+  cites Foreword chapter Maybe
+
+ The TLS 1.3 endpoint over a reliable byte stream (RFC 8446): the thing
+ that turns the record layer, the key schedule, the handshake messages and
+ the X.509 authentication into a connection that can actually carry
+ application data. It is the TCP sibling of DtlsEndpoint, and it reuses the
+ pure RFC 8446 primitives that live -- for historical reasons -- in the
+ Dtls* chapters: the transcript hash, the Finished, the ServerHello key
+ share parser, the hello bodies. DTLS 1.3 inherits those from TLS 1.3
+ unchanged, so this cites them rather than copying them.
+
+ It is PURE: records in, records out, no socket and no clock. A whole
+ authenticated handshake between a client and a server runs as an ordinary
+ battery sample by shuttling the emitted records between two endpoints,
+ exactly the way the DTLS loopback shuttles datagrams.
+
+ What TLS-over-TCP adds over the DTLS endpoint, and why this is a separate
+ chapter rather than a reuse of that one: the server flight after the
+ ServerHello is ENCRYPTED under the handshake traffic keys (the DTLS
+ endpoint sends it in the clear and says so), there is an
+ EncryptedExtensions message, and the handshake derives the MASTER secret
+ and the two APPLICATION traffic secrets, so this endpoint can carry
+ application bytes. There is no cookie, no HelloRetryRequest-for-DoS and no
+ retransmission: a reliable stream has none of the datagram problems those
+ solve.
+
+ AUTHENTICATION is Ed25519 X.509 only (RFC 8410), opt-in for the client via
+ trust anchors. A client given anchors REFUSES to finish a handshake whose
+ server did not present a chain that walks to one of them and sign the
+ transcript -- which is what stops an active man in the middle. This
+ authenticates a fleet whose CA you run; a commercial CA chain (RSA/ECDSA)
+ cannot be validated, because the tree owns no such signature primitive.
+
+ To tls-ep-hello gives TlsEpStep, starting a client and emitting its ClientHello.
+ To tls-ep-recv gives TlsEpStep, feeding one record in and getting records out.
+ To tls-ep-send-app gives TlsEpStep, encrypting one application record.
+
+ We say:
+
+Section: Types
+
+  TlsEp = record {
+    tep-server : Boolean,
+    tep-priv : List Integer,
+    tep-pub : List Integer,
+    tep-random : List Integer,
+    tep-transcript : List Integer,
+    tep-hs-secret : List Integer,
+    tep-c-hs : List Integer,
+    tep-s-hs : List Integer,
+    tep-c-ap : List Integer,
+    tep-s-ap : List Integer,
+    tep-read-seq : Integer,
+    tep-write-seq : Integer,
+    tep-app-read-seq : Integer,
+    tep-app-write-seq : Integer,
+    tep-phase : Integer,
+    tep-cert-chain : List (List Integer),
+    tep-sign-priv : List Integer,
+    tep-sign-pub : List Integer,
+    tep-anchors : List X509Anchor,
+    tep-cal-now : List Integer,
+    tep-peer-key : X509Key,
+    tep-auth-done : Boolean,
+    tep-expected-peer : List Integer,
+    tep-done : Boolean,
+    tep-app-in : List Integer
+  }
+
+  TlsEpStep = record {
+    tes-ep : TlsEp,
+    tes-out : List (List Integer)
+  }
+
+Section: Construction
+
+ A client carries its X25519 private key, a 32-byte handshake random, the
+ trust anchors it will accept, and the calendar time (14 ASCII digits) it
+ checks certificate validity against. Entropy and clock enter from the
+ caller and are never invented here.
+
+  tls-ep-client-new : List Integer, List Integer, List X509Anchor, List Integer -> TlsEp
+  tls-ep-client-new (priv) (random) (anchors) (cal-now) =
+    TlsEp { tep-server = False, tep-priv = priv, tep-pub = x25519-public-key priv,
+            tep-random = random, tep-transcript = [], tep-hs-secret = [], tep-c-hs = [], tep-s-hs = [],
+            tep-c-ap = [], tep-s-ap = [], tep-read-seq = 0, tep-write-seq = 0, tep-app-read-seq = 0,
+            tep-app-write-seq = 0, tep-phase = 0, tep-cert-chain = [], tep-sign-priv = [], tep-sign-pub = [],
+            tep-anchors = anchors, tep-cal-now = cal-now,
+            tep-peer-key = X509Key { xk-alg = KeyUnknown, xk-bytes = [] }, tep-auth-done = False,
+            tep-expected-peer = [], tep-done = False, tep-app-in = [] }
+
+ A server presents a certificate chain (leaf first) and the Ed25519 private
+ key that matches the leaf, and signs the transcript with it.
+
+  tls-ep-server-new : List Integer, List Integer, List (List Integer), List Integer, List Integer -> TlsEp
+  tls-ep-server-new (priv) (random) (chain) (sign-priv) (sign-pub) =
+    TlsEp { tep-server = True, tep-priv = priv, tep-pub = x25519-public-key priv,
+            tep-random = random, tep-transcript = [], tep-hs-secret = [], tep-c-hs = [], tep-s-hs = [],
+            tep-c-ap = [], tep-s-ap = [], tep-read-seq = 0, tep-write-seq = 0, tep-app-read-seq = 0,
+            tep-app-write-seq = 0, tep-phase = 0, tep-cert-chain = chain, tep-sign-priv = sign-priv,
+            tep-sign-pub = sign-pub, tep-anchors = [], tep-cal-now = [],
+            tep-peer-key = X509Key { xk-alg = KeyUnknown, xk-bytes = [] }, tep-auth-done = False,
+            tep-expected-peer = [], tep-done = False, tep-app-in = [] }
+
+  tls-ep-expect-peer : TlsEp, List Integer -> TlsEp
+  tls-ep-expect-peer (ep) (subject) = __record-set ep "tep-expected-peer" subject
+
+Section: Record And Message Helpers
+
+ The 32-byte hello random, taken from the caller's bytes.
+
+  tep-rand32 : TlsEp -> List Integer
+  tep-rand32 (ep) = dtls-take-at (ep.tep-random) 0 32
+
+ Encrypt a payload as a TLS record under a traffic secret, deriving the
+ AES-128-GCM key and IV from the secret each time.
+
+  tep-enc : List Integer, Integer, Integer, List Integer -> List Integer
+  tep-enc (secret) (seq) (ctype) (payload) =
+    tls13-record-encrypt (tls13-traffic-key secret) (tls13-traffic-iv secret) seq ctype payload
+
+  tep-dec : List Integer, Integer, List Integer -> Maybe TlsInner
+  tep-dec (secret) (seq) (rec) =
+    tls13-record-decrypt (tls13-traffic-key secret) (tls13-traffic-iv secret) seq rec
+
+ The payload of a plaintext record (bytes past the 5-byte header, for the
+ declared length).
+
+  tep-rec-payload : List Integer -> List Integer
+  tep-rec-payload (rec) = dtls-take-at rec 5 (list-at rec 3 * 256 + list-at rec 4)
+
+ The body of a handshake message [type, u24(length), body].
+
+  tep-msg-len : List Integer -> Integer
+  tep-msg-len (m) = list-at m 1 * 65536 + list-at m 2 * 256 + list-at m 3
+
+  tep-msg-body : List Integer -> List Integer
+  tep-msg-body (m) = dtls-take-at m 4 (tep-msg-len m)
+
+  tep-idle : TlsEp -> TlsEpStep
+  tep-idle (ep) = TlsEpStep { tes-ep = ep, tes-out = [] }
+
+Section: Client Hello
+
+  tls-ep-hello : TlsEp -> TlsEpStep
+  tls-ep-hello (ep) =
+    let body = dtls-client-hello-body (tep-rand32 ep) [] (ep.tep-pub) []
+    in let msg = dtls-msg-transcript dtls-hs-client-hello body
+    in let ep2 = __record-set (__record-set ep "tep-transcript" ((ep.tep-transcript) & msg)) "tep-phase" 1
+    in TlsEpStep { tes-ep = ep2, tes-out = [tls-encode-record tls-content-handshake msg] }
+
+Section: Receive Dispatch
+
+  tls-ep-recv : TlsEp, List Integer -> TlsEpStep
+  tls-ep-recv (ep) (rec) =
+    if list-length rec < 5 then tep-idle ep
+    else let ct = list-at rec 0
+    in if ct == tls-content-change-cipher then tep-idle ep
+    else if ep.tep-server then tep-server-recv ep rec ct
+    else tep-client-recv ep rec ct
+
+Section: Client Receive
+
+  tep-client-recv : TlsEp, List Integer, Integer -> TlsEpStep
+  tep-client-recv (ep) (rec) (ct) =
+    if ct == tls-content-handshake then tep-client-sh ep (tep-rec-payload rec)
+    else if ct == tls-content-application then
+      (if ep.tep-phase >= 3 then tep-client-app ep rec else tep-client-enc-hs ep rec)
+    else tep-idle ep
+
+ The ServerHello arrives in the clear. Parse the server's key share, do the
+ X25519 agreement, and derive the handshake traffic secrets over the
+ transcript through the ServerHello.
+
+  tep-client-sh : TlsEp, List Integer -> TlsEpStep
+  tep-client-sh (ep) (msg) =
+    when dtls-sh-key-share (tep-msg-body msg)
+      is None -> tep-idle ep
+      is Just (peer) -> tep-client-derive ep (tep-msg-body msg) peer
+
+  tep-client-derive : TlsEp, List Integer, List Integer -> TlsEpStep
+  tep-client-derive (ep) (sh-body) (peer) =
+    let tr = (ep.tep-transcript) & dtls-msg-transcript dtls-hs-server-hello sh-body
+    in let hs = tls13-handshake-secret (x25519-shared-secret (ep.tep-priv) peer)
+    in let th = dtls-transcript-hash tr
+    in let ep2 = tep-store-hs ep tr hs (tls13-client-hs-traffic hs th) (tls13-server-hs-traffic hs th)
+    in TlsEpStep { tes-ep = __record-set (__record-set ep2 "tep-phase" 2) "tep-read-seq" 0, tes-out = [] }
+
+  tep-store-hs : TlsEp, List Integer, List Integer, List Integer, List Integer -> TlsEp
+  tep-store-hs (ep) (tr) (hs) (c) (s) =
+    __record-set (__record-set (__record-set (__record-set ep "tep-transcript" tr) "tep-hs-secret" hs) "tep-c-hs" c) "tep-s-hs" s
+
+ An encrypted handshake record. Decrypt under the server handshake key at
+ the current read sequence, bump the sequence for every record in the
+ epoch, and fold every handshake message the record carried into the
+ machine -- servers are allowed to coalesce EncryptedExtensions,
+ Certificate, CertificateVerify and Finished into one record.
+
+  tep-client-enc-hs : TlsEp, List Integer -> TlsEpStep
+  tep-client-enc-hs (ep) (rec) =
+    when tep-dec (ep.tep-s-hs) (ep.tep-read-seq) rec
+      is None -> tep-idle ep
+      is Just (inner) ->
+        (if inner.ti-type /= tls-content-handshake then __step-bump-read ep
+         else tep-client-hs-msgs (__record-set ep "tep-read-seq" (ep.tep-read-seq + 1)) (inner.ti-data) 0 [])
+
+  __step-bump-read : TlsEp -> TlsEpStep
+  __step-bump-read (ep) = TlsEpStep { tes-ep = __record-set ep "tep-read-seq" (ep.tep-read-seq + 1), tes-out = [] }
+
+  tep-client-hs-msgs : TlsEp, List Integer, Integer, List (List Integer) -> TlsEpStep
+  tep-client-hs-msgs (ep) (buf) (off) (outs) =
+    if off + 4 > list-length buf then TlsEpStep { tes-ep = ep, tes-out = outs }
+    else let len = list-at buf (off + 1) * 65536 + list-at buf (off + 2) * 256 + list-at buf (off + 3)
+    in if off + 4 + len > list-length buf then TlsEpStep { tes-ep = ep, tes-out = outs }
+    else let step = tep-client-hs-one ep (list-at buf off) (dtls-take-at buf (off + 4) len)
+    in tep-client-hs-msgs (step.tes-ep) buf (off + 4 + len) (outs & step.tes-out)
+
+  tep-client-hs-one : TlsEp, Integer, List Integer -> TlsEpStep
+  tep-client-hs-one (ep) (t) (body) =
+    if t == dtls-hs-encrypted-ext then tep-fold ep t body
+    else if t == dtls-hs-certificate then tep-client-cert ep body
+    else if t == dtls-hs-cert-verify then tep-client-cv ep body
+    else if t == dtls-hs-finished then tep-client-fin ep body
+    else tep-idle ep
+
+  tep-fold : TlsEp, Integer, List Integer -> TlsEpStep
+  tep-fold (ep) (t) (body) =
+    TlsEpStep { tes-ep = __record-set ep "tep-transcript" ((ep.tep-transcript) & dtls-msg-transcript t body), tes-out = [] }
+
+ The Certificate message: parse the chain, walk it to an anchor at the
+ client's calendar time, and check the leaf's subject against the pinned
+ peer if one is set. On success keep the leaf's key and fold the message
+ into the transcript; on any failure the handshake stalls and the later
+ Finished is refused.
+
+  tep-client-cert : TlsEp, List Integer -> TlsEpStep
+  tep-client-cert (ep) (body) =
+    when tls-cert-parse body
+      is None -> tep-idle ep
+      is Just (ders) -> tep-client-cert-chain ep body ders
+
+  tep-client-cert-chain : TlsEp, List Integer, List (List Integer) -> TlsEpStep
+  tep-client-cert-chain (ep) (body) (ders) =
+    when tep-parse-chain ders 0 []
+      is None -> tep-idle ep
+      is Just (certs) -> tep-client-cert-walk ep body certs
+
+  tep-client-cert-walk : TlsEp, List Integer, List X509Cert -> TlsEpStep
+  tep-client-cert-walk (ep) (body) (certs) =
+    when x509-chain-verify certs (ep.tep-anchors) (ep.tep-cal-now)
+      is ChainOk ->
+        (if tep-peer-matches ep (list-at certs 0)
+         then tep-client-cert-ok ep body (list-at certs 0)
+         else tep-idle ep)
+      is otherwise -> tep-idle ep
+
+  tep-peer-matches : TlsEp, X509Cert -> Boolean
+  tep-peer-matches (ep) (leaf) =
+    if list-length (ep.tep-expected-peer) == 0 then True
+    else x509-name-eq (ep.tep-expected-peer) (leaf.xc-subject)
+
+  tep-client-cert-ok : TlsEp, List Integer, X509Cert -> TlsEpStep
+  tep-client-cert-ok (ep) (body) (leaf) =
+    let tr = (ep.tep-transcript) & dtls-msg-transcript dtls-hs-certificate body
+    in TlsEpStep { tes-ep = __record-set (__record-set ep "tep-peer-key" (leaf.xc-key)) "tep-transcript" tr, tes-out = [] }
+
+ CertificateVerify: the signature is checked over the transcript hash
+ THROUGH the Certificate -- the transcript as it stands before this message
+ is folded in. Only on success is authentication marked done.
+
+  tep-client-cv : TlsEp, List Integer -> TlsEpStep
+  tep-client-cv (ep) (body) =
+    if tls-cv-verify True (ep.tep-peer-key) body (dtls-transcript-hash (ep.tep-transcript)) == False
+    then tep-idle ep
+    else TlsEpStep { tes-ep = tep-cv-ok ep body, tes-out = [] }
+
+  tep-cv-ok : TlsEp, List Integer -> TlsEp
+  tep-cv-ok (ep) (body) =
+    __record-set (__record-set ep "tep-transcript" ((ep.tep-transcript) & dtls-msg-transcript dtls-hs-cert-verify body)) "tep-auth-done" True
+
+ The server's Finished. A client that required authentication and did not
+ get it stops here. Otherwise verify the Finished over the transcript
+ through CertificateVerify, then fold it, derive the application secrets
+ over the transcript through the server Finished, and send our own Finished
+ -- encrypted under the client handshake key -- over that same hash.
+
+  tep-client-fin : TlsEp, List Integer -> TlsEpStep
+  tep-client-fin (ep) (body) =
+    if tep-auth-missing ep then tep-idle ep
+    else if dtls-finished-ok (ep.tep-s-hs) (dtls-transcript-hash (ep.tep-transcript)) body == False then tep-idle ep
+    else tep-client-finish ep body
+
+  tep-auth-missing : TlsEp -> Boolean
+  tep-auth-missing (ep) =
+    if list-length (ep.tep-anchors) == 0 then False else ep.tep-auth-done == False
+
+  tep-client-finish : TlsEp, List Integer -> TlsEpStep
+  tep-client-finish (ep) (sfin) =
+    let tr = (ep.tep-transcript) & dtls-msg-transcript dtls-hs-finished sfin
+    in let th = dtls-transcript-hash tr
+    in let master = tls13-master-secret (ep.tep-hs-secret)
+    in let cfin = dtls-msg-transcript dtls-hs-finished (dtls-verify-data (ep.tep-c-hs) th)
+    in let rec = tep-enc (ep.tep-c-hs) (ep.tep-write-seq) tls-content-handshake cfin
+    in let ep2 = tep-store-app ep tr (tls13-client-ap-traffic master th) (tls13-server-ap-traffic master th)
+    in TlsEpStep { tes-ep = ep2, tes-out = [rec] }
+
+  tep-store-app : TlsEp, List Integer, List Integer, List Integer -> TlsEp
+  tep-store-app (ep) (tr) (c-ap) (s-ap) =
+    let e1 = __record-set (__record-set (__record-set ep "tep-transcript" tr) "tep-c-ap" c-ap) "tep-s-ap" s-ap
+    in let e2 = __record-set (__record-set (__record-set e1 "tep-phase" 3) "tep-app-read-seq" 0) "tep-app-write-seq" 0
+    in __record-set (__record-set e2 "tep-done" True) "tep-app-in" (__list-with-capacity tep-app-cap)
+
+  tep-client-app : TlsEp, List Integer -> TlsEpStep
+  tep-client-app (ep) (rec) =
+    when tep-dec (ep.tep-s-ap) (ep.tep-app-read-seq) rec
+      is None -> tep-idle ep
+      is Just (inner) -> TlsEpStep { tes-ep = tep-app-accept ep inner, tes-out = [] }
+
+ A record in the application epoch is only application DATA if its inner
+ content type says so. A server's post-handshake NewSessionTicket or a
+ KeyUpdate arrives here as an inner handshake record; it advances the
+ sequence like any other record but must never be appended to the response
+ body, or the body is corrupted by bytes the caller never asked for.
+
+  tep-app-cap : Integer = 262144
+
+  tep-app-accept : TlsEp, TlsInner -> TlsEp
+  tep-app-accept (ep) (inner) =
+    let e1 = __record-set ep "tep-app-read-seq" (ep.tep-app-read-seq + 1)
+    in if inner.ti-type == tls-content-application
+    then __record-set e1 "tep-app-in" (tep-append-bytes (ep.tep-app-in) (inner.ti-data) 0 (list-length (inner.ti-data)))
+    else e1
+
+ Application data accumulates into ONE list, reserved to capacity at the
+ handshake's end and pushed into in place -- the same discipline http-recv
+ uses on the cleartext path. The obvious `app-in & chunk` per record copies
+ the whole buffer every record, which is quadratic in the number of records
+ and, on a heap with no collector, leaves every intermediate copy live until
+ the fetch returns. list-push writes in place while the list is under
+ capacity, so the accumulation is linear; a body past the cap stops growing
+ rather than reallocating.
+
+  tep-append-bytes : List Integer, List Integer, Integer, Integer -> List Integer
+  tep-append-bytes (dst) (src) (i) (n) =
+    if i >= n then dst
+    else if list-length dst >= tep-app-cap then dst
+    else tep-append-bytes (list-push dst (list-at src i)) src (i + 1) n
+
+Section: Chain Parse
+
+  tep-parse-chain : List (List Integer), Integer, List X509Cert -> Maybe (List X509Cert)
+  tep-parse-chain (ders) (i) (acc) =
+    if i >= list-length ders then Just acc
+    else tep-parse-one ders i acc
+
+  tep-parse-one : List (List Integer), Integer, List X509Cert -> Maybe (List X509Cert)
+  tep-parse-one (ders) (i) (acc) =
+    when x509-parse (list-at ders i)
+      is None -> None
+      is Just (c) -> tep-parse-chain ders (i + 1) (list-push acc c)
+
+Section: Server Receive
+
+  tep-server-recv : TlsEp, List Integer, Integer -> TlsEpStep
+  tep-server-recv (ep) (rec) (ct) =
+    if ct == tls-content-handshake then tep-server-ch ep (tep-rec-payload rec)
+    else if ct == tls-content-application then
+      (if ep.tep-phase >= 3 then tep-server-app ep rec else tep-server-enc-hs ep rec)
+    else tep-idle ep
+
+  tep-server-ch : TlsEp, List Integer -> TlsEpStep
+  tep-server-ch (ep) (msg) =
+    when dtls-ch-key-share (tep-msg-body msg)
+      is None -> tep-idle ep
+      is Just (peer) -> tep-server-flight ep (tep-msg-body msg) peer
+
+ The whole server flight in one place: ServerHello in the clear, then
+ EncryptedExtensions, Certificate, CertificateVerify and Finished each in
+ its own record under the server handshake key. The application secrets are
+ derived over the transcript through the server Finished -- the same hash
+ the client's Finished will be checked against.
+
+  tep-server-flight : TlsEp, List Integer, List Integer -> TlsEpStep
+  tep-server-flight (ep) (ch-body) (peer) =
+    let tr0 = (ep.tep-transcript) & dtls-msg-transcript dtls-hs-client-hello ch-body
+    in let sh-body = dtls-server-hello-body (tep-rand32 ep) [] (ep.tep-pub)
+    in let tr1 = tr0 & dtls-msg-transcript dtls-hs-server-hello sh-body
+    in let hs = tls13-handshake-secret (x25519-shared-secret (ep.tep-priv) peer)
+    in let th1 = dtls-transcript-hash tr1
+    in let c-hs = tls13-client-hs-traffic hs th1
+    in let s-hs = tls13-server-hs-traffic hs th1
+    in let ee-body = [0, 0]
+    in let tr2 = tr1 & dtls-msg-transcript dtls-hs-encrypted-ext ee-body
+    in let cert-body = tls-cert-encode (ep.tep-cert-chain)
+    in let tr3 = tr2 & dtls-msg-transcript dtls-hs-certificate cert-body
+    in let cv-body = tls-cv-encode True (ep.tep-sign-priv) (ep.tep-sign-pub) (dtls-transcript-hash tr3)
+    in let tr4 = tr3 & dtls-msg-transcript dtls-hs-cert-verify cv-body
+    in let sfin = dtls-verify-data s-hs (dtls-transcript-hash tr4)
+    in let tr5 = tr4 & dtls-msg-transcript dtls-hs-finished sfin
+    in let th5 = dtls-transcript-hash tr5
+    in let master = tls13-master-secret hs
+    in tep-server-emit ep tr5 hs c-hs s-hs (tls13-client-ap-traffic master th5) (tls13-server-ap-traffic master th5) sh-body ee-body cert-body cv-body sfin
+
+  tep-server-emit : TlsEp, List Integer, List Integer, List Integer, List Integer, List Integer, List Integer, List Integer, List Integer, List Integer, List Integer, List Integer -> TlsEpStep
+  tep-server-emit (ep) (tr5) (hs) (c-hs) (s-hs) (c-ap) (s-ap) (sh-body) (ee-body) (cert-body) (cv-body) (sfin) =
+    let sh-rec = tls-encode-record tls-content-handshake (dtls-msg-transcript dtls-hs-server-hello sh-body)
+    in let ee-rec = tep-enc s-hs 0 tls-content-handshake (dtls-msg-transcript dtls-hs-encrypted-ext ee-body)
+    in let cert-rec = tep-enc s-hs 1 tls-content-handshake (dtls-msg-transcript dtls-hs-certificate cert-body)
+    in let cv-rec = tep-enc s-hs 2 tls-content-handshake (dtls-msg-transcript dtls-hs-cert-verify cv-body)
+    in let fin-rec = tep-enc s-hs 3 tls-content-handshake (dtls-msg-transcript dtls-hs-finished sfin)
+    in let ep2 = tep-server-state ep tr5 hs c-hs s-hs c-ap s-ap
+    in TlsEpStep { tes-ep = ep2, tes-out = [sh-rec, ee-rec, cert-rec, cv-rec, fin-rec] }
+
+  tep-server-state : TlsEp, List Integer, List Integer, List Integer, List Integer, List Integer, List Integer -> TlsEp
+  tep-server-state (ep) (tr) (hs) (c-hs) (s-hs) (c-ap) (s-ap) =
+    let e1 = tep-store-hs ep tr hs c-hs s-hs
+    in let e2 = __record-set (__record-set e1 "tep-c-ap" c-ap) "tep-s-ap" s-ap
+    in let e3 = __record-set (__record-set (__record-set e2 "tep-phase" 2) "tep-read-seq" 0) "tep-app-read-seq" 0
+    in __record-set e3 "tep-app-in" (__list-with-capacity tep-app-cap)
+
+ The client's Finished, encrypted under the client handshake key. Verify it
+ over the transcript through the server Finished; if it holds, both sides
+ share the handshake secret and the connection is open.
+
+  tep-server-enc-hs : TlsEp, List Integer -> TlsEpStep
+  tep-server-enc-hs (ep) (rec) =
+    when tep-dec (ep.tep-c-hs) (ep.tep-read-seq) rec
+      is None -> tep-idle ep
+      is Just (inner) ->
+        (if inner.ti-type /= tls-content-handshake then tep-idle ep else tep-server-fin ep (inner.ti-data))
+
+  tep-server-fin : TlsEp, List Integer -> TlsEpStep
+  tep-server-fin (ep) (buf) =
+    let vd = dtls-take-at buf 4 (list-at buf 1 * 65536 + list-at buf 2 * 256 + list-at buf 3)
+    in if dtls-finished-ok (ep.tep-c-hs) (dtls-transcript-hash (ep.tep-transcript)) vd == False then tep-idle ep
+    else TlsEpStep { tes-ep = __record-set (__record-set (__record-set ep "tep-phase" 3) "tep-app-write-seq" 0) "tep-done" True, tes-out = [] }
+
+  tep-server-app : TlsEp, List Integer -> TlsEpStep
+  tep-server-app (ep) (rec) =
+    when tep-dec (ep.tep-c-ap) (ep.tep-app-read-seq) rec
+      is None -> tep-idle ep
+      is Just (inner) -> TlsEpStep { tes-ep = tep-app-accept ep inner, tes-out = [] }
+
+Section: Application Data
+
+  tls-ep-send-app : TlsEp, List Integer -> TlsEpStep
+  tls-ep-send-app (ep) (data) =
+    let sec = if ep.tep-server then ep.tep-s-ap else ep.tep-c-ap
+    in let rec = tep-enc sec (ep.tep-app-write-seq) tls-content-application data
+    in TlsEpStep { tes-ep = __record-set ep "tep-app-write-seq" (ep.tep-app-write-seq + 1), tes-out = [rec] }
+
+Section: Accessors
+
+  tls-ep-done : TlsEp -> Boolean
+  tls-ep-done (ep) = ep.tep-done
+
+  tls-ep-authenticated : TlsEp -> Boolean
+  tls-ep-authenticated (ep) = ep.tep-auth-done
+
+  tls-ep-app-in : TlsEp -> List Integer
+  tls-ep-app-in (ep) = ep.tep-app-in

@@ -1,0 +1,153 @@
+Chapter: LensSqlTest
+  cites Data chapter Row
+  cites Data chapter RelAlgebra
+  cites Lens chapter LensModel
+  cites Lens chapter LensPlan
+  cites Lens chapter LensSql
+
+ Known-answer test for the T-SQL emitter. The model is the star from
+ the planner test: orders is the fact, users the dimension table, one
+ many-to-one join between them, and the column names carry hyphens on
+ purpose so every emitted reference exercises bracket quoting. Each
+ query below runs through lens-plan, so the emitter is fed exactly
+ the trees the planner builds, and the emitted statement is pinned as
+ text.
+
+ The pins cover the planner's whole emission surface. Revenue by city
+ is the three-step grain ladder: a GROUP BY at the orders grain
+ inside a derived table, an INNER JOIN to users on the join key, and
+ a re-aggregation by city, crowned by projection and an ascending
+ sort. The fan-out query adds a second measure aggregated at the
+ users grain and joined on the full dimension column set. The
+ filtered query pushes its predicate inside the derived table under
+ the revenue group, where raw-row grain lives. The limited query
+ renders TOP inside the projection head. The dimensionless query
+ glues two single-row aggregates with CROSS JOIN. The quoted filter
+ carries a single quote in its literal and must double it.
+
+ The bucketed queries pin the derive emission. A month-bucketed
+ dimension over the order-date column, Unix seconds in a BIGINT,
+ emits a derived table that projects the scan's columns and appends
+ YEAR times one hundred plus MONTH of DATEADD(second, order-date,
+ '19700101') under the alias order-date__month, so the warehouse
+ computes exactly the integers the native executor's month encoding
+ computes, 202606 for June 2026. The join form groups the home grain
+ by user-id and the bucket alias inside the derived table, joins
+ users, and re-aggregates by city and the alias, mirroring the
+ native plan shape node for node. Both statements below were
+ executed against a live LocalDB warehouse seeded with the planner
+ test's star and answered the same bucket integers and revenue sums
+ the native lens-query-test pins.
+
+Section: The Model
+
+  users-t : LensTable
+  users-t = LensTable { name = "users", primary-key = "user-id", grain = "one row per registered user" }
+
+  orders-t : LensTable
+  orders-t = LensTable { name = "orders", primary-key = "order-id", grain = "one row per order" }
+
+  orders-to-users : LensJoin
+  orders-to-users = LensJoin { from-table = "orders", to-table = "users", on-left = "user-id", on-right = "user-id", cardinality = ManyToOne }
+
+  city-dim : LensDimension
+  city-dim = LensDimension { name = "city", table = "users", column = "city", bucket = LbNone }
+
+  product-dim : LensDimension
+  product-dim = LensDimension { name = "product", table = "orders", column = "product-id", bucket = LbNone }
+
+  month-dim : LensDimension
+  month-dim = LensDimension { name = "order-month", table = "orders", column = "order-date", bucket = LbMonth }
+
+  revenue-measure : LensMeasure
+  revenue-measure = LensMeasure {
+    name = "revenue",
+    table = "orders",
+    column = "amount",
+    agg = LensAggSum,
+    description = "Sum of order amounts in cents."
+  }
+
+  credit-measure : LensMeasure
+  credit-measure = LensMeasure {
+    name = "total-credit",
+    table = "users",
+    column = "credit-limit",
+    agg = LensAggSum,
+    description = "Sum of user credit limits in cents. User grain."
+  }
+
+  sales-model : LensModel
+  sales-model = LensModel {
+    name = "sales",
+    tables = [users-t, orders-t],
+    joins = [orders-to-users],
+    dimensions = [city-dim, product-dim, month-dim],
+    measures = [revenue-measure, credit-measure]
+  }
+
+Section: Queries
+
+  revenue-by-city-q : LensQuery
+  revenue-by-city-q = LensQuery { lens-name = "sales", dimensions = ["city"], measures = ["revenue"], filters = [], limit = 0 }
+
+  fanout-q : LensQuery
+  fanout-q = LensQuery { lens-name = "sales", dimensions = ["city"], measures = ["total-credit", "revenue"], filters = [], limit = 0 }
+
+  product-filter : LensFilter
+  product-filter = LensFilter { table = "orders", column = "product-id", value = LfInt 1 }
+
+  filtered-q : LensQuery
+  filtered-q = LensQuery { lens-name = "sales", dimensions = ["city"], measures = ["total-credit", "revenue"], filters = [product-filter], limit = 0 }
+
+  limited-q : LensQuery
+  limited-q = LensQuery { lens-name = "sales", dimensions = ["city"], measures = ["revenue"], filters = [], limit = 2 }
+
+  no-dim-q : LensQuery
+  no-dim-q = LensQuery { lens-name = "sales", dimensions = [], measures = ["total-credit", "revenue"], filters = [], limit = 0 }
+
+  quoted-filter : LensFilter
+  quoted-filter = LensFilter { table = "users", column = "city", value = LfText "Coeur d'Alene" }
+
+  quoted-q : LensQuery
+  quoted-q = LensQuery { lens-name = "sales", dimensions = ["city"], measures = ["revenue"], filters = [quoted-filter], limit = 0 }
+
+  bucket-q : LensQuery
+  bucket-q = LensQuery { lens-name = "sales", dimensions = ["order-month"], measures = ["revenue"], filters = [], limit = 0 }
+
+  bucket-join-q : LensQuery
+  bucket-join-q = LensQuery { lens-name = "sales", dimensions = ["city", "order-month"], measures = ["revenue"], filters = [], limit = 0 }
+
+Section: Rendering
+
+ A planned query renders as its emitted statement; a refused query
+ renders its diagnostics so a planner regression is visible here too.
+
+  render-sql : LensQuery -> Text
+  render-sql (q) =
+    let pr = lens-plan sales-model q
+    in if pr.plan-ok == False then "DIAGS: " & lp-render-diags (pr.plan-diags) 0 ""
+    else lens-to-tsql (pr.plan-op)
+
+Section: Body
+
+  opening : [Console] Nothing = act
+    print-line-uni "=== lens sql test: T-SQL emission from planned trees ==="
+    print-line-uni "-- revenue by city"
+    print-line-uni (render-sql revenue-by-city-q)
+    print-line-uni "-- fan-out: credit and revenue by city"
+    print-line-uni (render-sql fanout-q)
+    print-line-uni "-- filter under the revenue group"
+    print-line-uni (render-sql filtered-q)
+    print-line-uni "-- limit renders as TOP"
+    print-line-uni (render-sql limited-q)
+    print-line-uni "-- no dimensions: CROSS JOIN glue"
+    print-line-uni (render-sql no-dim-q)
+    print-line-uni "-- text literal doubles its quote"
+    print-line-uni (render-sql quoted-q)
+    print-line-uni "-- month bucket derive"
+    print-line-uni (render-sql bucket-q)
+    print-line-uni "-- month bucket across the join"
+    print-line-uni (render-sql bucket-join-q)
+    print-line-uni "lens-sql-test: done"
+  end

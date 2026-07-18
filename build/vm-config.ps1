@@ -1,17 +1,21 @@
-# vm-config.ps1 — shared VM config + helpers for the harness.
-# Memory-mapped I/O: no serial ports, no TCP sockets.
-# The VM loads input from a file into guest memory at 0x400000.
-# Output is written by the guest to 0x500000 and dumped to a file on exit.
+# vm-config.ps1 -- Shared VM config + helpers for the harness
+# Generated from Codex Shell DSL. Do not edit by hand.
+[CmdletBinding()]
+param(
+)
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
+# Locate codex-vm binary
 $script:CodexVmBin = Join-Path (Split-Path $PSScriptRoot) 'tools\codex-vm.exe'
-if (-not (Test-Path -PathType Leaf $script:CodexVmBin)) {
+if ((-not (Test-Path -PathType Leaf $script:CodexVmBin))) {
+    [Console]::Error.WriteLine("codex-vm not found at $($script:CodexVmBin). Build with tools/build-vm.ps1.")
     throw "codex-vm not found at $($script:CodexVmBin). Build with tools/build-vm.ps1."
 }
 
-# CCE encode/decode tables — shared by plug run scripts.
+
+# CCE encode/decode tables -- shared by plug run scripts.
 $script:CceToUnicode = @(
     0, 10, 32,
     48, 49, 50, 51, 52, 53, 54, 55, 56, 57,
@@ -30,50 +34,155 @@ $script:CceToUnicode = @(
     243, 244, 246, 250, 252, 241, 231, 237
 )
 $script:UnicodeToCce = [byte[]]::new(256)
-for ($i = 0; $i -lt 256; $i++) { $script:UnicodeToCce[$i] = 68 }
+for ($i = 0; $i -lt 256; $i++) {
+    $script:UnicodeToCce[$i] = 68
+}
 for ($i = 0; $i -lt $script:CceToUnicode.Length; $i++) {
     $u = $script:CceToUnicode[$i] % 256
     $script:UnicodeToCce[$u] = [byte]$i
 }
 
-# Resolve a code address to "function+offset" using a .map file.
+
+# Symbol resolution.
+#
+# A CDX carries its own symbol map -- a MAP1 block the emitter writes into the
+# data segment -- and that is the map these functions read. The text sidecar
+# (seed/Codex.map) is a fallback and an explicit override, never the default.
+#
+# The reason is drift, and it is not hypothetical. The seed is built -Repl, and
+# -Repl does not emit the text MAP: block that compile.ps1 captures into
+# <out>.map, so NEITHER a seed rebuild NOR a copy-up ever refreshes
+# seed/Codex.map. It is refreshed by one release-gate step that routine work does
+# not run. So the sidecar silently describes an older binary than the seed beside
+# it, and the resolver answered from it with total confidence: on 2026-07-16 it
+# placed a crash in `sorted-builtin-names` when the faulting function was
+# `find-effect-op-addr`, a different function entirely, and cost an hour. The
+# sidecar's mtime was seven hours behind the seed's.
+#
+# An embedded map cannot drift from the binary it describes, because it ships
+# inside it. That is the whole fix: not "remember to refresh the map", but a map
+# with no opportunity to be stale.
+#
+# MAP1 layout (little-endian), as written by the emitter and read by
+# apps/works/DevDebugger.codex:
+#   +0  magic "MAP1" (le32 826361677)
+#   +4  count
+#   +8  string-table offset, always 12 + count*12 -- this is the validity check
+#   +12 count x 12-byte entries: code-offset, code-size, name-offset
+#   strings at (block + string-offset), NUL-terminated, ONE CCE BYTE PER CHAR.
+# Names are CCE, not ASCII -- decode them through $script:CceToUnicode or every
+# symbol comes back as plausible garbage ("III", "UU") rather than as an error.
+# Entry code-offsets are relative to the 1 MB load address.
+
 $script:MapCache = @{}
-function Resolve-Rip {
-    param([long]$Rip, [string]$MapFile = '')
-    if (-not $MapFile) { $MapFile = Join-Path (Split-Path $PSScriptRoot) 'seed\Codex.map' }
+$script:Map1Cache = @{}
+
+function Get-DefaultKernel { Join-Path (Split-Path $PSScriptRoot) 'seed\Codex.cdx' }
+
+# Parse the MAP1 block out of a CDX. Returns $null when the file has none.
+function Get-Map1Symbols {
+    param([string]$CdxFile)
+    if (-not $CdxFile -or -not (Test-Path -PathType Leaf $CdxFile)) { return $null }
+    $key = (Resolve-Path $CdxFile).Path
+    if ($script:Map1Cache.ContainsKey($key)) { return $script:Map1Cache[$key] }
+
+    $b = [System.IO.File]::ReadAllBytes($key)
+    $at = -1
+    for ($i = 0; $i -lt $b.Length - 12; $i++) {
+        # "MAP1"
+        if ($b[$i] -eq 0x4D -and $b[$i+1] -eq 0x41 -and $b[$i+2] -eq 0x50 -and $b[$i+3] -eq 0x31) {
+            $c = [BitConverter]::ToUInt32($b, $i + 4)
+            $s = [BitConverter]::ToUInt32($b, $i + 8)
+            if ($c -gt 0 -and $c -lt 100000 -and $s -eq (12 + $c * 12)) { $at = $i; break }
+        }
+    }
+    if ($at -lt 0) { $script:Map1Cache[$key] = $null; return $null }
+
+    $count   = [BitConverter]::ToUInt32($b, $at + 4)
+    $strBase = $at + [BitConverter]::ToUInt32($b, $at + 8)
+    $entries = [System.Collections.Generic.List[object]]::new()
+    for ($e = 0; $e -lt $count; $e++) {
+        $a  = $at + 12 + $e * 12
+        $no = [BitConverter]::ToUInt32($b, $a + 8)
+        $p  = $strBase + $no
+        $sb = [System.Text.StringBuilder]::new()
+        while ($p -lt $b.Length -and $b[$p] -ne 0) {
+            $cce = [int]$b[$p]
+            $u = if ($cce -lt $script:CceToUnicode.Length) { $script:CceToUnicode[$cce] } else { 63 }
+            [void]$sb.Append([char]$u)
+            $p++
+        }
+        $entries.Add(@{
+            Addr = [long]0x100000 + [BitConverter]::ToUInt32($b, $a)
+            Size = [int][BitConverter]::ToUInt32($b, $a + 4)
+            Name = $sb.ToString()
+        })
+    }
+    $script:Map1Cache[$key] = $entries
+    return $entries
+}
+
+function Get-TextMapSymbols {
+    param([string]$MapFile)
     if (-not (Test-Path $MapFile)) { return $null }
-    if (-not $script:MapCache[$MapFile]) {
-        $entries = @()
+    if (-not $script:MapCache.ContainsKey($MapFile)) {
+        $entries = [System.Collections.Generic.List[object]]::new()
         foreach ($line in [System.IO.File]::ReadAllLines($MapFile)) {
             if ($line -match '^(0x[0-9a-fA-F]+)\s+(\d+)\s+(.+)$') {
-                $entries += @{ Addr = [Convert]::ToInt64($matches[1], 16); Size = [int]$matches[2]; Name = $matches[3] }
+                $entries.Add(@{ Addr = [Convert]::ToInt64($matches[1], 16); Size = [int]$matches[2]; Name = $matches[3] })
             }
         }
         $script:MapCache[$MapFile] = $entries
     }
-    foreach ($e in $script:MapCache[$MapFile]) {
+    return $script:MapCache[$MapFile]
+}
+
+# -MapFile forces the text sidecar. Otherwise the symbols come from -Kernel's
+# embedded MAP1 (default: the seed), and the sidecar is used only if that CDX
+# has no MAP1 -- in which case say so, because a stale answer is worse than none.
+function Get-Symbols {
+    param([string]$MapFile = '', [string]$Kernel = '')
+    if ($MapFile) { return Get-TextMapSymbols $MapFile }
+    if (-not $Kernel) { $Kernel = Get-DefaultKernel }
+    $syms = Get-Map1Symbols $Kernel
+    if ($syms) { return $syms }
+    $fallback = Join-Path (Split-Path $PSScriptRoot) 'seed\Codex.map'
+    if (Test-Path $fallback) {
+        Write-Warning "no MAP1 in '$Kernel'; falling back to $fallback, which may describe a different binary."
+        return Get-TextMapSymbols $fallback
+    }
+    return $null
+}
+
+function Resolve-Rip {
+    param([long]$Rip, [string]$MapFile = '', [string]$Kernel = '')
+    $syms = Get-Symbols -MapFile $MapFile -Kernel $Kernel
+    if (-not $syms) { return $null }
+    foreach ($e in $syms) {
         if ($Rip -ge $e.Addr -and $Rip -lt ($e.Addr + $e.Size)) {
-            $off = $Rip - $e.Addr
-            return "$($e.Name)+0x$($off.ToString('X'))"
+            return "$($e.Name)+0x$((($Rip - $e.Addr)).ToString('X'))"
         }
     }
     return $null
 }
 
+
 function Resolve-Name {
-    param([string]$Name, [string]$MapFile = '')
-    if (-not $MapFile) { $MapFile = Join-Path (Split-Path $PSScriptRoot) 'seed\Codex.map' }
-    if (-not (Test-Path $MapFile)) { return 0 }
-    foreach ($line in [System.IO.File]::ReadAllLines($MapFile)) {
-        if ($line -match '^(0x[0-9a-fA-F]+)\s+\d+\s+(.+)$') {
-            if ($matches[2].Trim() -eq $Name) { return [Convert]::ToInt64($matches[1], 16) }
-        }
+    param([string]$Name, [string]$MapFile = '', [string]$Kernel = '')
+    $syms = Get-Symbols -MapFile $MapFile -Kernel $Kernel
+    if (-not $syms) { return 0 }
+    foreach ($e in $syms) {
+        if ($e.Name -eq $Name) { return [long]$e.Addr }
     }
     return 0
 }
 
+
+# -Kernel names the CDX that crashed, so its own embedded MAP1 resolves the
+# addresses. Without it the symbols come from the seed, which is the right answer
+# only when the seed is what was running.
 function Format-CrashReport {
-    param([string[]]$ExcLines)
+    param([string[]]$ExcLines, [string]$Kernel = '')
     $report = [System.Collections.Generic.List[string]]::new()
     if ($ExcLines.Count -eq 0) { return $report }
     $excLine = $ExcLines[0]
@@ -83,20 +192,28 @@ function Format-CrashReport {
     $vecName = switch ($vecInt) { 0 { 'divide error' } 6 { 'invalid opcode' } 13 { 'general protection' } 14 { 'page fault' } default { "vector $vecInt" } }
     $rip = 0
     if ($excLine -match 'RIP=([0-9a-fA-F]+)') { $rip = [Convert]::ToInt64($matches[1], 16) }
-    $ripSym = Resolve-Rip -Rip $rip
+    $ripSym = Resolve-Rip -Rip $rip -Kernel $Kernel
     if (-not $ripSym) { $ripSym = "0x$($rip.ToString('X8'))" }
+    # CR2 is the faulting address of a PAGE FAULT and of nothing else. The guest
+    # dumps the register on every vector, so on a #GP or a #UD it holds whatever
+    # the last page fault left there -- a plausible heap address, pointing at
+    # nothing to do with this crash. Printing it unconditionally is presenting
+    # stale garbage as evidence, and it sent a 2026-07-16 investigation chasing an
+    # address the faulting instruction never touched. Show it only for vector 14.
     $cr2 = ''
-    if ($excLine -match 'CR2=([0-9a-fA-F]+)') {
+    if ($vecInt -eq 14 -and $excLine -match 'CR2=([0-9a-fA-F]+)') {
         $cr2val = [Convert]::ToInt64($matches[1], 16)
         if ($cr2val -ne 0) { $cr2 = ", CR2=0x$($cr2val.ToString('X12'))" }
     }
+    if ($vecInt -eq 13) { $cr2 = ', non-canonical or segment-limit; CR2 is not the faulting address here' }
     $header = "CRASH in $ripSym ($vecName$cr2)"
     $report.Add($header)
     $report.Add("  RIP   0x$($rip.ToString('X8').PadLeft(8,'0'))  $ripSym")
+
     foreach ($regName in @('callR','RBX','R12','R13','R14','R10','RDI','RSI','R15')) {
         if ($excLine -match "$regName=([0-9a-fA-F]+)") {
             $val = [Convert]::ToInt64($matches[1], 16)
-            $sym = Resolve-Rip -Rip $val
+            $sym = Resolve-Rip -Rip $val -Kernel $Kernel
             $hex = "0x$($val.ToString('X8').PadLeft(8,'0'))"
             $extra = ''
             if ($regName -eq 'R10') {
@@ -111,7 +228,7 @@ function Format-CrashReport {
         $sl = $ExcLines[$i]
         if ($sl -match 'S\[([0-9a-fA-F]+)\]=([0-9a-fA-F]+)') {
             $soff = $matches[1]; $sval = [Convert]::ToInt64($matches[2], 16)
-            $ssym = Resolve-Rip -Rip $sval
+            $ssym = Resolve-Rip -Rip $sval -Kernel $Kernel
             if ($ssym) {
                 if ($i -eq 1) { $report.Add("  Stack trace (heuristic):") }
                 $report.Add("    S[$soff] 0x$($sval.ToString('X8').PadLeft(8,'0'))  $ssym")
@@ -121,6 +238,7 @@ function Format-CrashReport {
     return $report
 }
 
+
 function Write-SweepLog {
     param([string]$Message)
     $logPath = $env:CODEX_SWEEP_LOG
@@ -129,6 +247,7 @@ function Write-SweepLog {
         Add-Content -Path $logPath -Value "$ts $Message" -Encoding UTF8
     }
 }
+
 
 function Normalize-TripleNewlines {
     param([byte[]]$Bytes)
@@ -146,13 +265,15 @@ function Normalize-TripleNewlines {
     return $out.ToArray()
 }
 
-# ── TCP socket helpers (for explorer server and legacy TCP plugs) ──
 
+# TCP socket helpers (for explorer server and legacy TCP plugs)
 $script:UseCodexVm = Test-Path -PathType Leaf $script:CodexVmBin
 $script:FallbackVmBin = $env:QEMU_BIN_WHPX
-if (-not $script:FallbackVmBin) {
-    foreach ($p in 'D:\Program Files\qemu\qemu-system-x86_64.exe','C:\Program Files\qemu\qemu-system-x86_64.exe') {
-        if (Test-Path -PathType Leaf $p) { $script:FallbackVmBin = $p; break }
+if ((-not $script:FallbackVmBin)) {
+    foreach ($p in @("D:\Program Files\qemu\qemu-system-x86_64.exe", "C:\Program Files\qemu\qemu-system-x86_64.exe")) {
+        if (Test-Path -PathType Leaf $p) {
+            $script:FallbackVmBin = $p; break
+        }
     }
 }
 $script:FallbackAccelFlags = @('-accel', 'whpx')
@@ -166,6 +287,7 @@ function Get-VmPort {
 }
 function Get-VmChardevData { param([int]$Port) "socket,id=ch0,host=127.0.0.1,port=$Port,server=on,wait=on,nodelay=on" }
 function Get-VmChardevCtrl { param([int]$Port) "socket,id=ch1,host=127.0.0.1,port=$Port,server=on,wait=on,nodelay=on" }
+
 
 function Connect-Vm {
     param([int]$DataPort, [int]$CtrlPort, [int]$TimeoutSec = 30)
@@ -186,6 +308,7 @@ function Connect-Vm {
     }
     return $null
 }
+
 
 function Read-StreamLine {
     param([System.IO.Stream]$Stream, [int]$TimeoutSec = 60)
@@ -220,6 +343,7 @@ function Read-StreamBytes {
     return $buf
 }
 
+
 function Read-VmReady {
     param($Conn, [int]$TimeoutSec = 60)
     if (-not $Conn -or -not $Conn.Ctrl) { return $false }
@@ -234,6 +358,7 @@ function Read-VmReady {
     }
     return $false
 }
+
 
 function Stop-VmGraceful {
     param([int]$ProcessId, [int]$TimeoutMs = 5000)
@@ -254,6 +379,7 @@ function Stop-VmGraceful {
     }
 }
 
+
 function Close-Vm {
     param($Conn, $Process)
     if ($Conn) {
@@ -267,6 +393,7 @@ function Close-Vm {
         }
     }
 }
+
 
 function Start-VmRun {
     param(
@@ -301,6 +428,7 @@ function Start-VmRun {
     return $null
 }
 
+
 function Start-CodexVmRun {
     param(
         [string]$Kernel, [int]$ConnectTimeoutSec = 30,
@@ -327,3 +455,6 @@ function Start-CodexVmRun {
     Remove-Item -Force $stdoutFile, $stderrFile -ErrorAction SilentlyContinue
     return $null
 }
+
+
+

@@ -1,6 +1,4 @@
 Chapter: Desugarer
-  cites Codex chapter Text
-  cites Codex chapter Lists
   cites Codex chapter Build Settings (max-recursion-depth)
 
  Transforms the concrete syntax tree into the abstract syntax tree.
@@ -162,18 +160,58 @@ Section: Expression Desugaring
     span = token-span (f.name)
    })
 
+ A revised field's value is hoisted into a let so that every value is
+ computed BEFORE the first __record-set mutates the record in place --
+ without that, a later field's expression would read the already-mutated
+ record. The hoist is not optional.
+
+ But it used to hoist a `__narrow` call whole, and that broke the one
+ escape hatch the bounds checker offers. lint-narrowing-check suppresses
+ CDX2051 when it can SEE `__narrow` at the store; after hoisting it saw
+ `__rv0`, a bare name with no proven range, so `c revised { f = __narrow
+ n }` was rejected while the identical `Rec { f = __narrow n }` passed.
+ The diagnostic then recommended __narrow -- the very thing the author
+ had written -- and the only way out was to expand the whole record by
+ hand.
+
+ So the ARGUMENT is hoisted and the __narrow stays at the store:
+ `let __rv0 = n in __record-set __rev "f" (__narrow __rv0)`. The value is
+ still computed before any mutation, so the ordering the hoist exists for
+ is untouched; __narrow is a pure range assertion on an already-computed
+ value, so moving it one step later asserts the same thing about the same
+ value. The marker survives to the check that looks for it.
+
+  is-narrow-app : Expr -> Boolean
+  is-narrow-app (e) =
+   when e
+    is AppExpr (f) (a) ->
+     when f
+      is NameExpr (t) -> token-text t == "__narrow"
+      is otherwise -> False
+    is otherwise -> False
+
+  narrow-app-arg : Expr -> Expr
+  narrow-app-arg (e) =
+   when e
+    is AppExpr (f) (a) -> a
+    is otherwise -> e
+
   desugar-revised-vals : List RecordFieldExpr, Integer, Integer -> List AExpr
   desugar-revised-vals (fields) (i) (depth) =
    if i >= list-length fields then []
    else let f = list-at fields i
-     in [desugar-expr-at (f.value) depth] & desugar-revised-vals fields (i + 1) depth
+     in let hoisted = if is-narrow-app (f.value) then narrow-app-arg (f.value) else f.value
+     in [desugar-expr-at hoisted depth] & desugar-revised-vals fields (i + 1) depth
 
   desugar-revised-chain : AExpr, List RecordFieldExpr, Integer, Integer -> AExpr
   desugar-revised-chain (acc) (fields) (i) (len) =
    if i >= len then acc
    else let f = list-at fields i
      in let val-name = make-name ("__rv" & integer-to-text i)
-     in let val-ref = deck-record (ANameExpr val-name synthetic-span)
+     in let raw-ref = deck-record (ANameExpr val-name synthetic-span)
+     in let val-ref = if is-narrow-app (f.value)
+        then deck-record (AApplyExpr (deck-record (ANameExpr (make-name "__narrow") synthetic-span)) raw-ref synthetic-span)
+        else raw-ref
      in let field-text = token-text (f.name)
      in let rs = deck-record (ANameExpr (make-name "__record-set") synthetic-span)
      in let a1 = deck-record (AApplyExpr rs acc synthetic-span)
@@ -550,6 +588,7 @@ Section: Document Desugaring
     class-defs = deck-record (desugar-class-defs (doc.class-defs) 0 (list-length (doc.class-defs)) []),
     instance-defs = deck-record (desugar-instance-defs (doc.instance-defs) 0 (list-length (doc.instance-defs)) []),
     citations = deck-record (__linked-list-to-list raw-cites),
+    ground-effects = doc.ground-effects,
     chapter-title = doc.chapter-title,
     prose = doc.prose,
     section-titles = doc.section-titles,
@@ -1285,7 +1324,16 @@ Section: Document Desugaring
    in let type-name = token-text (id.type-name)
    in let dict-name = class-name & "Dict"
    in let def-name = make-name (class-name & "-dict-" & type-name)
-   in let fields = synth-instance-fields (id.methods) 0 (list-length (id.methods)) []
+   in let method-fields = synth-instance-fields (id.methods) 0 (list-length (id.methods)) []
+   in let super-name = class-superclass-of cds class-name 0 (list-length cds)
+   in let fields = if text-length super-name > 0
+     then let super-field = deck-record (AFieldExpr {
+       name = make-name ("__super-" & super-name),
+       value = deck-record (ANameExpr (make-name (super-name & "-dict-" & type-name)) synthetic-span),
+       span = synthetic-span
+      })
+     in list-insert-at method-fields 0 super-field
+     else method-fields
    in let body = deck-record (ARecordExpr (make-name dict-name) fields synthetic-span)
    in let instance-count = count-class-instances ids class-name 0 (list-length ids) 0
    in let def = deck-record (ADef {
@@ -1345,6 +1393,29 @@ Section: Document Desugaring
    })
    in synth-specialized-methods ms type-name (i + 1) len (__linked-list-push acc def)
 
+
+ synth-class-type-defs gives a class with a superclass an extra dictionary
+ field, __super-<Super> of type <Super>Dict. Nothing ever put a value in it.
+ The instance dictionary was built from the instance's methods alone, so the
+ field was left to __alloc, which zero-fills -- a superclass dictionary that
+ was a null pointer in every instance of every class that had one.
+
+ It went unseen because the superclass never reached here: the PARSE keep-deck
+ copy dropped ClassDef.superclass, so text-length (cd.superclass) was 0, the
+ field was never added to the record either, and the two halves of the bug
+ cancelled. Repairing the copy exposed this one.
+
+ An instance of a class with a superclass now names the superclass's dictionary
+ for the same type. If that instance does not exist, <Super>-dict-<Type> is an
+ undefined name and the compiler says so, which is the honest answer to an
+ unsatisfied superclass constraint.
+
+  class-superclass-of : List ClassDef, Text, Integer, Integer -> Text
+  class-superclass-of (cds) (class-name) (i) (len) =
+   if i >= len then ""
+   else let cd = list-at cds i
+   in if token-text (cd.name) == class-name then cd.superclass
+      else class-superclass-of cds class-name (i + 1) len
 
   synth-instance-fields : List InstanceMethodDef, Integer, Integer, List AFieldExpr -> List AFieldExpr
   synth-instance-fields (ms) (i) (len) (acc) =

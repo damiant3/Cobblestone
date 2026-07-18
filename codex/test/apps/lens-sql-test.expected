@@ -1,0 +1,18 @@
+=== lens sql test: T-SQL emission from planned trees ===
+-- revenue by city
+SELECT [q3].[city], [q3].[revenue] FROM (SELECT [city], SUM([q1].[revenue]) AS [revenue] FROM (SELECT [user-id], SUM([amount]) AS [revenue] FROM [orders] AS [q0] GROUP BY [user-id]) AS [q1] INNER JOIN [users] AS [q2] ON [q1].[user-id] = [q2].[user-id] GROUP BY [city]) AS [q3] ORDER BY [city] ASC
+-- fan-out: credit and revenue by city
+SELECT [q1].[city], [q1].[total-credit], [revenue] FROM (SELECT [city], SUM([credit-limit]) AS [total-credit] FROM [users] AS [q0] GROUP BY [city]) AS [q1] INNER JOIN (SELECT [city], SUM([q3].[revenue]) AS [revenue] FROM (SELECT [user-id], SUM([amount]) AS [revenue] FROM [orders] AS [q2] GROUP BY [user-id]) AS [q3] INNER JOIN [users] AS [q4] ON [q3].[user-id] = [q4].[user-id] GROUP BY [city]) AS [q5] ON [q1].[city] = [q5].[city] ORDER BY [city] ASC
+-- filter under the revenue group
+SELECT [q1].[city], [q1].[total-credit], [revenue] FROM (SELECT [city], SUM([credit-limit]) AS [total-credit] FROM [users] AS [q0] GROUP BY [city]) AS [q1] INNER JOIN (SELECT [city], SUM([q3].[revenue]) AS [revenue] FROM (SELECT [user-id], SUM([amount]) AS [revenue] FROM (SELECT * FROM [orders] WHERE [product-id] = 1) AS [q2] GROUP BY [user-id]) AS [q3] INNER JOIN [users] AS [q4] ON [q3].[user-id] = [q4].[user-id] GROUP BY [city]) AS [q5] ON [q1].[city] = [q5].[city] ORDER BY [city] ASC
+-- limit renders as TOP
+SELECT TOP 2 [q3].[city], [q3].[revenue] FROM (SELECT [city], SUM([q1].[revenue]) AS [revenue] FROM (SELECT [user-id], SUM([amount]) AS [revenue] FROM [orders] AS [q0] GROUP BY [user-id]) AS [q1] INNER JOIN [users] AS [q2] ON [q1].[user-id] = [q2].[user-id] GROUP BY [city]) AS [q3] ORDER BY [city] ASC
+-- no dimensions: CROSS JOIN glue
+SELECT [q1].[total-credit], [revenue] FROM (SELECT SUM([credit-limit]) AS [total-credit] FROM [users] AS [q0]) AS [q1] CROSS JOIN (SELECT SUM([amount]) AS [revenue] FROM [orders] AS [q2]) AS [q3]
+-- text literal doubles its quote
+SELECT [q3].[city], [q3].[revenue] FROM (SELECT [city], SUM([q1].[revenue]) AS [revenue] FROM (SELECT [user-id], SUM([amount]) AS [revenue] FROM [orders] AS [q0] GROUP BY [user-id]) AS [q1] INNER JOIN (SELECT * FROM [users] WHERE [city] = 'Coeur d''Alene') AS [q2] ON [q1].[user-id] = [q2].[user-id] GROUP BY [city]) AS [q3] ORDER BY [city] ASC
+-- month bucket derive
+SELECT [q2].[order-date__month], [q2].[revenue] FROM (SELECT [order-date__month], SUM([amount]) AS [revenue] FROM (SELECT [q0].*, YEAR(DATEADD(second, [q0].[order-date], '19700101')) * 100 + MONTH(DATEADD(second, [q0].[order-date], '19700101')) AS [order-date__month] FROM [orders] AS [q0]) AS [q1] GROUP BY [order-date__month]) AS [q2] ORDER BY [order-date__month] ASC
+-- month bucket across the join
+SELECT [q4].[city], [q4].[order-date__month], [q4].[revenue] FROM (SELECT [city], [q2].[order-date__month], SUM([q2].[revenue]) AS [revenue] FROM (SELECT [user-id], [order-date__month], SUM([amount]) AS [revenue] FROM (SELECT [q0].*, YEAR(DATEADD(second, [q0].[order-date], '19700101')) * 100 + MONTH(DATEADD(second, [q0].[order-date], '19700101')) AS [order-date__month] FROM [orders] AS [q0]) AS [q1] GROUP BY [user-id], [order-date__month]) AS [q2] INNER JOIN [users] AS [q3] ON [q2].[user-id] = [q3].[user-id] GROUP BY [city], [q2].[order-date__month]) AS [q4] ORDER BY [city] ASC, [order-date__month] ASC
+lens-sql-test: done

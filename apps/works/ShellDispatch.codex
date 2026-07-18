@@ -45,7 +45,7 @@ Section: Dispatch Result
 
 Section: Dispatch
 
-  dispatch : ShellInput, ShellState, BinaryStore -> DispatchResult
+  dispatch : ShellInput, ShellState, BinaryStore -> [Identity] DispatchResult
   dispatch (input) (state) (bs) = when input
     is InputInstall (name) -> dispatch-install name state bs
     is InputRun (name) -> dispatch-simple (CmdRun name) state
@@ -114,10 +114,12 @@ Section: Dispatch
       running = True
     }
 
-  dispatch-info : ShellState -> DispatchResult
-  dispatch-info (state) =
-    let report = gather-report state
-    in DispatchResult {
+  dispatch-info : ShellState -> [Identity] DispatchResult
+  dispatch-info (state) = info-result state (gather-report state)
+
+  info-result : ShellState, SystemReport -> DispatchResult
+  info-result (state) (report) =
+    DispatchResult {
       output = format-report report,
       new-state = state,
       running = True
@@ -128,7 +130,7 @@ Section: Dispatch
 
 Section: REPL
 
-  shell-repl : ShellState, BinaryStore -> [Console] Nothing
+  shell-repl : ShellState, BinaryStore -> [Console, Identity] Nothing
   shell-repl (state) (bs) = act
     print-line-uni ">"
     input <- read-line
@@ -140,17 +142,25 @@ Section: REPL
           print-line-uni ("? " & msg)
           shell-repl state bs
         end
-        is ParseOk (cmd) ->
-          let dr = dispatch cmd state bs
-          in if dr.running then act
-            print-line-uni (dr.output)
-            shell-repl (dr.new-state) bs
-          end
-          else print-line-uni (dr.output)
+        is ParseOk (cmd) -> act
+          dr <- dispatch cmd state bs
+          repl-continue dr bs
+        end
      is None -> print-line-uni "eof"
   end
 
-  shell-start : Text, ShellState, BinaryStore -> [Console] Nothing
+ dispatch reads the system identity on the info command, so it is
+ act-bound and the loop continues in a helper.
+
+  repl-continue : DispatchResult, BinaryStore -> [Console, Identity] Nothing
+  repl-continue (dr) (bs) =
+    if dr.running then act
+      print-line-uni (dr.output)
+      shell-repl (dr.new-state) bs
+    end
+    else print-line-uni (dr.output)
+
+  shell-start : Text, ShellState, BinaryStore -> [Console, Identity] Nothing
   shell-start (banner) (state) (bs) = act
     print-line-uni banner
     shell-repl state bs

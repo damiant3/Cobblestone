@@ -1,0 +1,578 @@
+Chapter: FactArchive
+  cites Foreword chapter Maybe
+  cites Foreword chapter Parse
+  cites Foreword chapter Sha256
+  cites Foreword chapter FactStore
+  cites Foreword chapter ImportGate
+  cites Foreword chapter FactLog
+  cites Compress chapter Lz4
+  cites Kernel chapter DiskFacts
+  cites Kernel chapter AppPersist
+  cites Works chapter KeyManager
+  cites Works chapter RepoProtocolPersist
+
+ Ancient history is tiered, not forgotten.
+
+ The live log grows forever, and everything in it is equally present: the
+ edition of a file written this morning and the edition it superseded a decade
+ ago cost the same sector. There has never been a way to move the old one
+ anywhere. Compaction cannot: it collapses two entries only when they are the
+ same kind and the same bytes, because a compactor that cannot prove two facts
+ are the same must keep both.
+
+ So the base. The active repository records the signature of one compressed
+ artifact and calls it the base, and from that moment the live log is not the
+ history -- it is the delta on top of a base. A git packfile is this. An LSM
+ tree's lower levels are this.
+
+ The distinction this chapter exists to hold is that archiving is NOT deleting.
+ An archived fact is still addressable by its hash, still verifies against it,
+ and is still retrievable; the live log simply stops carrying the bytes and
+ starts carrying a signed record of where they went. A store that has archived
+ can still NAME everything it ever held. Only a store that forgets answers "not
+ found". That is what keeps the founding promise -- a published definition
+ exists forever -- while still reclaiming the sectors.
+
+ What is archived is a RANGE OF THE LOG'S OWN SECTORS, copied out verbatim. So
+ the artifact decompresses to a fact log: not a format resembling one, a copy of
+ one, byte for byte, which the existing reader walks unchanged. A reader in 2626
+ needs one log format and one decompressor, and both are in this tree.
+
+ Where the artifact lives afterwards is a deployment concern and none of this
+ chapter's business. It names it, signs it, and verifies it when handed it back.
+ Whether the bytes sit on a second disk, an object store, a tape, or a peer
+ answering a by-hash fetch is somebody else's decision, and encoding one here
+ would be this chapter exceeding its authority.
+
+ We say:
+
+Section: Kind And Codec
+
+ Kind 41, beside 39 (a path retired) and 40 (an index snapshot). The codec is
+ named in the record rather than assumed by the reader, which is what makes
+ changing it later a new base instead of a migration.
+
+ Lz4 is the codec because when this shipped it was one of the few chapters in the
+ compression quire that actually compressed: Deflate emitted stored blocks and
+ Gzip wrapped that Deflate, so both GREW the artifact. Deflate compresses now
+ (BACKLOG 5.13), so gzip is available and is probably the better base -- not
+ because of interop, which gzip always had even when it compressed nothing, but
+ because it is the format every decoder on earth already reads AND it now has a
+ ratio. Moving is a new base, not a migration, which is the point of naming the
+ codec in the record.
+
+  persist-kind-base : Integer = 41
+
+  fa-codec-lz4 : Text = "lz4"
+
+ A base with no predecessor names one anyway. An empty field in a pipe-delimited
+ line is a decoder's problem, and this line has enough fields already.
+
+  fa-no-prev : Text = "-"
+
+Section: The Base Record
+
+ Both hashes are signed, and that is not belt-and-braces. The artifact hash is
+ what you check on the bytes you were handed BEFORE you decompress them, which
+ is the only order that can refuse a decompression bomb -- verify first, expand
+ second. The plain hash is what you check on what came out, which catches a
+ decoder that is subtly wrong rather than absent. A codec bug that silently
+ produced different bytes would otherwise be indistinguishable from history.
+
+  BaseRecord = record {
+    br-artifact-hash : Text,
+    br-plain-hash : Text,
+    br-codec : Text,
+    br-count : Integer,
+    br-covers-to : Integer,
+    br-prev-base : Text,
+    br-signer : Text,
+    br-signature : List Integer,
+    br-author : Text,
+    br-timestamp : Integer
+  }
+
+  ArchiveArtifact = record {
+    aa-bytes : List Integer,
+    aa-base : BaseRecord
+  }
+
+ The base of a store that has never archived. It is not a base and it does not
+ verify -- no signer, no signature -- which is what an archival that found
+ nothing to move should hand back.
+
+  base-empty : BaseRecord
+  base-empty = BaseRecord {
+    br-artifact-hash = "", br-plain-hash = "", br-codec = fa-codec-lz4,
+    br-count = 0, br-covers-to = 0, br-prev-base = fa-no-prev,
+    br-signer = "", br-signature = [], br-author = "", br-timestamp = 0
+  }
+
+ The signature binds everything the record asserts except itself: both hashes,
+ the codec, the count, what it covers, what it supersedes, and the attribution.
+ An assertion is signed the way a tombstone is signed, and for the same reason
+ -- an unauthenticated assertion is exactly the hole the store exists to close.
+
+  base-signing-head : BaseRecord -> Text
+  base-signing-head (b) =
+    b.br-artifact-hash & "|" & b.br-plain-hash & "|" & b.br-codec
+
+  base-signing-tail : BaseRecord -> Text
+  base-signing-tail (b) =
+    show (b.br-count) & "|" & show (b.br-covers-to) & "|" & b.br-prev-base
+    & "|" & b.br-author & "|" & show (b.br-timestamp)
+
+  base-signing-content : BaseRecord -> Text
+  base-signing-content (b) = base-signing-head b & "|" & base-signing-tail b
+
+Section: Wire Form
+
+ Ten pipe-delimited fields. No field can contain a pipe: the hashes and the
+ signature are hex, the codec is a bare word, the counts are decimal, and the
+ fingerprints are colon-separated hex.
+
+  base-to-text : BaseRecord -> Text
+  base-to-text (b) =
+    base-signing-head b & "|" & show (b.br-count) & "|" & show (b.br-covers-to)
+    & "|" & b.br-prev-base & "|" & b.br-signer & "|" & bytes-to-hex (b.br-signature)
+    & "|" & b.br-author & "|" & show (b.br-timestamp)
+
+  base-from-text : Text -> Maybe BaseRecord
+  base-from-text (line) =
+    let parts = text-split line "|"
+    in if list-length parts >= 10
+      then Just (BaseRecord {
+        br-artifact-hash = list-at parts 0,
+        br-plain-hash = list-at parts 1,
+        br-codec = list-at parts 2,
+        br-count = parse-decimal-full (list-at parts 3),
+        br-covers-to = parse-decimal-full (list-at parts 4),
+        br-prev-base = list-at parts 5,
+        br-signer = list-at parts 6,
+        br-signature = hex-decode (list-at parts 7),
+        br-author = list-at parts 8,
+        br-timestamp = parse-decimal-full (list-at parts 9)
+      })
+      else None
+
+Section: Reading The Log's Own Bytes
+
+ A range of the live log, copied out as it sits. This is the whole reason the
+ artifact is a fact log rather than something shaped like one.
+
+ The byte-at-a-time accumulation is honest about its cost: it is linear in the
+ range and allocates a cons per byte. An archival is a tool a human runs, not a
+ path anything walks, so this is the cheap kind of expensive.
+
+  fa-bytes-of : Integer, Integer, Integer, List Integer -> List Integer
+  fa-bytes-of (buf) (i) (len) (acc) =
+    if i >= len then acc
+    else fa-bytes-of buf (i + 1) len (list-push acc (peek-byte buf i))
+
+  fa-read-range : Integer, Integer -> List Integer
+  fa-read-range (from-sector) (to-sector) =
+    let count = to-sector - from-sector
+    in if count <= 0 then []
+    else let nbytes = count * fl-sector-size
+    in let buf = alloc-bytes nbytes
+    in let loaded = app-load-sectors from-sector count buf 0
+    in fa-bytes-of buf 0 nbytes []
+
+  fa-hash-bytes : List Integer -> Text
+  fa-hash-bytes (bs) = sha256-to-hex (sha256 bs)
+
+Section: Building A Base
+
+ Compress the range, hash both forms, sign the assertion. The caller chooses the
+ cut and says what the base supersedes; nothing here decides that, because
+ choosing a cut requires knowing what is still current and that is the index's
+ question, not this chapter's.
+
+  archive-build : Integer, Integer, Integer, Text, Keypair, Integer -> ArchiveArtifact
+  archive-build (from-sector) (to-sector) (count) (prev-base) (kp) (timestamp) =
+    let plain = fa-read-range from-sector to-sector
+    in let comp = lz4-compress plain
+    in let unsigned = BaseRecord {
+      br-artifact-hash = fa-hash-bytes comp,
+      br-plain-hash = fa-hash-bytes plain,
+      br-codec = fa-codec-lz4,
+      br-count = count,
+      br-covers-to = to-sector,
+      br-prev-base = prev-base,
+      br-signer = kp.fingerprint,
+      br-signature = [],
+      br-author = kp.fingerprint,
+      br-timestamp = timestamp
+    }
+    in ArchiveArtifact {
+      aa-bytes = comp,
+      aa-base = base-signed unsigned kp
+    }
+
+  base-signed : BaseRecord, Keypair -> BaseRecord
+  base-signed (b) (kp) =
+    BaseRecord {
+      br-artifact-hash = b.br-artifact-hash,
+      br-plain-hash = b.br-plain-hash,
+      br-codec = b.br-codec,
+      br-count = b.br-count,
+      br-covers-to = b.br-covers-to,
+      br-prev-base = b.br-prev-base,
+      br-signer = kp.fingerprint,
+      br-signature = sign-content kp (base-signing-content b),
+      br-author = b.br-author,
+      br-timestamp = b.br-timestamp
+    }
+
+Section: Verifying A Base
+
+ The same shape a tombstone verifies by: the signer must be a key the manifest
+ holds at or above the threshold, and the signature must cover what the record
+ claims.
+
+  base-verify : BaseRecord, TrustManifest, Integer -> Boolean
+  base-verify (b) (manifest) (threshold) =
+    when manifest-lookup manifest (b.br-signer)
+      is None -> False
+      is Just (tk) -> if tk.score >= threshold
+        then verify-content-signature (tk.public-key) (base-signing-content b) (b.br-signature)
+        else False
+
+Section: Opening An Archive
+
+ The order of the three checks is the design. Verify the record first, so an
+ untrusted base is refused before its bytes are touched at all. Verify the
+ compressed bytes second, BEFORE expanding them, so a bomb is refused while it
+ is still small. Only then decompress, and check what came out against the plain
+ hash the same signature covered.
+
+ A refusal is None. There is deliberately no variant saying which check failed:
+ a caller holding an archive it cannot open has one recourse either way, and a
+ differentiated refusal tells whoever handed it over which lie to fix.
+
+  archive-open : List Integer, BaseRecord, TrustManifest, Integer -> Maybe (List Integer)
+  archive-open (bytes) (base) (manifest) (threshold) =
+    if base-verify base manifest threshold
+      then archive-open-verified bytes base
+      else None
+
+  archive-open-verified : List Integer, BaseRecord -> Maybe (List Integer)
+  archive-open-verified (bytes) (base) =
+    if fa-hash-bytes bytes == base.br-artifact-hash
+      then archive-expand bytes base
+      else None
+
+  archive-expand : List Integer, BaseRecord -> Maybe (List Integer)
+  archive-expand (bytes) (base) =
+    let plain = lz4-decompress bytes
+    in if fa-hash-bytes plain == base.br-plain-hash then Just plain else None
+
+Section: Which Facts May Leave
+
+ Age is not the question, and assuming it was would destroy a repository. A file
+ written once in 2026 and never touched since is ancient AND current; the tree
+ still points at it. The question is whether a fact is the one currently
+ DECIDING something, and only the index can answer that.
+
+ So the rule, per fact:
+
+   A definition may leave when it is not the current edition of its path. If
+   wi-current points at its hash, it is the tree and it stays. If the path is
+   not in the tree at all -- retired by a tombstone -- then no edition of it is
+   current and every edition may leave.
+
+   A tombstone may leave when its path IS in the tree, which means a later
+   definition re-added the path and this tombstone lost. If the path is absent,
+   this tombstone may be the one deciding that absence, so it stays. Several
+   tombstones for one absent path are all kept: telling which one decides costs
+   more than keeping them, and keeping is the safe direction.
+
+   Everything else stays. A base record and an index snapshot are the lineage
+   and the checkpoint. And every OTHER kind in the log -- 20 is browser history,
+   24 is secret entries, 25 is FileShare manifests -- has no notion of currency
+   that this chapter is entitled to invent. A compactor that cannot prove a fact
+   is redundant must keep it, and so must an archiver.
+
+ What this buys is the invariant: archive, rebuild, and the TREE is unchanged.
+ Not the history -- wi-works loses the archived editions, which is the whole
+ point, and they are in the base, still addressable and still verifying.
+
+  def-archivable : WorkIndex, Text -> Boolean
+  def-archivable (ix) (txt) =
+    when source-def-from-text txt
+      is None -> False
+      is Just (d) -> when hamt-get (ix.wi-current) (d.sd-path)
+        is None -> True
+        is Just (h) -> h /= d.sd-hash
+
+  tomb-archivable : WorkIndex, Text -> Boolean
+  tomb-archivable (ix) (txt) =
+    when hamt-get (ix.wi-current) (tombstone-path txt)
+      is None -> False
+      is Just (h) -> True
+
+  entry-archivable : WorkIndex, LogEntry -> Boolean
+  entry-archivable (ix) (e) =
+    if e.le-kind == persist-kind-definition then def-archivable ix (e.le-text)
+    else if e.le-kind == persist-kind-tombstone then tomb-archivable ix (e.le-text)
+    else False
+
+Section: Walking The Log
+
+ Sector, size, kind and content per entry. The layout is FactLog's, asked for
+ rather than known.
+
+  LogEntry = record {
+    le-sector : Integer,
+    le-nsec : Integer,
+    le-kind : Integer,
+    le-text : Text
+  }
+
+ The sector buffer is allocated once and threaded through, not allocated per
+ sector. There is no GC here: a fresh buffer per iteration would leave one
+ 512-byte block per sector of the log alive until the walk returned.
+
+ The reads go through AppPersist's helpers rather than the block builtins.
+ AppPersist grounds Device.Block and does not publish it, so this chapter stays
+ effect-free like the rest of the repository readers. Reaching for
+ block-read-sector directly is what CDX2031 stops, and correctly: this chapter
+ has no business declaring itself a source of hardware effects.
+
+  fa-scan-log : Integer, Integer, Integer, List LogEntry -> List LogEntry
+  fa-scan-log (buf) (sector) (end-sec) (acc) =
+    if sector >= end-sec then acc
+    else let loaded = app-load-sectors sector 1 buf 0
+    in let clen = fl-entry-content-len buf
+    in if clen == 0 then fa-scan-log buf (sector + 1) end-sec acc
+    else let nsec = fl-sectors-for clen
+    in let k = fl-entry-kind buf
+    in let txt = app-read-content sector clen
+    in let entry = LogEntry { le-sector = sector, le-nsec = nsec, le-kind = k, le-text = txt }
+    in fa-scan-log buf (sector + nsec) end-sec (list-push acc entry)
+
+  fa-scan-from : Integer, Integer -> List LogEntry
+  fa-scan-from (start) (end-sec) = fa-scan-log (alloc-bytes fl-sector-size) start end-sec []
+
+Section: Choosing The Cut
+
+ The cut is a PREFIX boundary, not a filter. A base is a contiguous range of the
+ log copied out verbatim, so the archivable facts have to be at the bottom: the
+ cut is the sector of the first fact that must stay, and everything below it
+ goes. One fact that must stay near the start of the log stops the whole
+ archival, and that is correct rather than unfortunate -- it is the difference
+ between moving a range and rewriting history.
+
+  archive-cut : List LogEntry, WorkIndex, Integer, Integer, Integer -> Integer
+  archive-cut (entries) (ix) (i) (len) (head) =
+    if i >= len then head
+    else let e = list-at entries i
+    in if entry-archivable ix e then archive-cut entries ix (i + 1) len head
+    else e.le-sector
+
+  count-below : List LogEntry, Integer, Integer, Integer, Integer -> Integer
+  count-below (entries) (cut) (i) (len) (acc) =
+    if i >= len then acc
+    else if (list-at entries i).le-sector < cut then count-below entries cut (i + 1) len (acc + 1)
+    else count-below entries cut (i + 1) len acc
+
+Section: Running An Archival
+
+ Copy the prefix out, shift what is left down over it, and record the base. The
+ order matters: the artifact is built from the sectors BEFORE they are
+ overwritten, and the base record is appended after the shift so it sits at the
+ new head rather than in the range it describes.
+
+  ArchiveRun = record {
+    run-store : DiskFactStore,
+    run-artifact : List Integer,
+    run-base : BaseRecord,
+    run-archived : Integer,
+    run-cut : Integer
+  }
+
+ One sector at a time, low to high, through one reused buffer. Low-to-high is
+ the safe direction here because the destination is always BELOW the source: an
+ earlier write can never clobber a sector this loop has yet to read.
+
+  fa-shift : Integer, Integer, Integer, Integer, Integer -> Integer
+  fa-shift (buf) (src) (end-sec) (dst) (i) =
+    if src + i >= end-sec then 0
+    else let loaded = app-load-sectors (src + i) 1 buf 0
+    in let w = write-fact-sectors buf (dst + i) 1 0
+    in fa-shift buf src end-sec dst (i + 1)
+
+ A store with nothing archivable is returned untouched, and says so with a cut
+ equal to the log start and an empty artifact. That is the common case: a young
+ log is all current.
+
+  archive-run : DiskFactStore, TrustManifest, Integer, Keypair, Text, Integer -> ArchiveRun
+  archive-run (store) (manifest) (threshold) (kp) (prev-base) (timestamp) =
+    let sb = store.superblock
+    in let head = sb.log-head
+    in let ix = repo-index-verified store manifest threshold
+    in let entries = fa-scan-from fact-log-start head
+    in let cut = archive-cut entries ix 0 (list-length entries) head
+    in if cut <= fact-log-start
+      then ArchiveRun {
+        run-store = store, run-artifact = [],
+        run-base = base-empty, run-archived = 0, run-cut = fact-log-start
+      }
+      else archive-commit store entries cut head kp prev-base timestamp
+
+  archive-commit : DiskFactStore, List LogEntry, Integer, Integer, Keypair, Text, Integer -> ArchiveRun
+  archive-commit (store) (entries) (cut) (head) (kp) (prev-base) (timestamp) =
+    let archived = count-below entries cut 0 (list-length entries) 0
+    in let art = archive-build fact-log-start cut archived prev-base kp timestamp
+    in let moved = fa-shift (alloc-bytes fl-sector-size) cut head fact-log-start 0
+    in let sb = store.superblock
+    in let shifted-head = fact-log-start + (head - cut)
+    in let mid = DiskFactStore {
+      superblock = Superblock {
+        log-head = shifted-head,
+        fact-count = (sb.fact-count) - archived,
+        index-gen = (sb.index-gen) + 1
+      },
+      mem = store.mem
+    }
+    in ArchiveRun {
+      run-store = base-save mid (art.aa-base),
+      run-artifact = art.aa-bytes,
+      run-base = art.aa-base,
+      run-archived = archived,
+      run-cut = cut
+    }
+
+Section: Reading A Work That May Have Left
+
+ The difference between a tier and an amnesia, in one function. A hash the live
+ log does not hold is not therefore unknown: if a base exists, the work may be in
+ it, and the store can still NAME the artifact that would answer. What it must
+ never do is claim the work is gone.
+
+ WorkInBase carries the artifact hash and not the work, because resolving it
+ needs bytes this box may not be holding. That is deployment's problem, and
+ fetching them by hash is 6.2's.
+
+ The live half is asked of the INDEX, not of DiskFacts. disk-read-fact answers
+ from the store's in-memory map, which app-write-fact never populates -- and
+ disk-load keys that map by the hash of the stored LINE, not by the hash of the
+ content the line describes. It is an index of records; wi-works is an index of
+ works, and a work's hash is what a quotation names. Asking the wrong one
+ answers None for everything and reports every work as archived, which is how
+ this was caught.
+
+ The middle answer is WorkAskBase and not WorkInBase, and the difference is the
+ whole honesty of this function. A store holding a base CANNOT tell an archived
+ work from one it never had: deciding that needs the artifact, which it may not
+ be holding. So the answer it can give is "not in the live log; here is the base
+ to ask" -- a direction, not a claim. Naming that variant WorkInBase would have
+ it assert membership it cannot check, and a hash nobody ever stored would come
+ back as archived.
+
+ The consequence, stated rather than hidden: once a base exists, WorkUnknown is
+ only reachable when there is no base at all. A store cannot say "never stored"
+ without reading its own history. Fixing that means putting membership evidence
+ in the base record -- a Bloom filter over the archived hashes would do it in a
+ few hundred bytes, and `codex/foreword/core/BloomFilter.codex` already exists --
+ and it is a real option, not done here because nobody has needed it.
+
+  WorkLookup =
+    | WorkHere (SourceDefinition)
+    | WorkAskBase (Text)
+    | WorkUnknown
+
+  work-lookup : WorkIndex, DiskFactStore, TrustManifest, Integer, Text -> WorkLookup
+  work-lookup (ix) (store) (manifest) (threshold) (hash) =
+    when hamt-get (ix.wi-works) hash
+      is Just (d) -> WorkHere d
+      is None -> when base-current store manifest threshold
+        is Just (b) -> WorkAskBase (b.br-artifact-hash)
+        is None -> WorkUnknown
+
+Section: Reading A Work Out Of The Base
+
+ This is what makes the tier answer instead of only pointing. work-lookup can say
+ "ask the base"; this is the asking. Without it, "an archived work is still
+ retrievable" is a claim about bytes rather than a thing anybody can do.
+
+ The plain bytes are a fact log, so they are walked with FactLog's own readers
+ rather than a second set written for a byte list -- that would be a fresh copy
+ of the layout, which is exactly what FactLog exists to prevent and what
+ AppPersist had to be cured of. The readers want an address, so the bytes go into
+ a buffer once and each entry is read at `buf + offset`.
+
+ The cost is one buffer the size of the base. An archival is a tool a human runs
+ and a base is read when a quotation misses, so neither is a hot path; a store
+ that wanted this often would keep an index of the base instead of scanning it.
+
+  fa-to-buf : List Integer -> Integer
+  fa-to-buf (bs) = fa-poke (alloc-bytes (list-length bs)) bs 0 (list-length bs)
+
+  fa-poke : Integer, List Integer, Integer, Integer -> Integer
+  fa-poke (buf) (bs) (i) (len) =
+    if i >= len then buf
+    else let w = poke-byte buf i (list-at bs i)
+    in fa-poke buf bs (i + 1) len
+
+  base-work : List Integer, Text -> Maybe SourceDefinition
+  base-work (plain) (hash) =
+    base-work-scan (fa-to-buf plain) 0 (list-length plain) hash
+
+  base-work-scan : Integer, Integer, Integer, Text -> Maybe SourceDefinition
+  base-work-scan (buf) (off) (total) (hash) =
+    if off >= total then None
+    else let clen = fl-entry-content-len (buf + off)
+    in if clen == 0 then base-work-scan buf (off + fl-sector-size) total hash
+    else let step = (fl-sectors-for clen) * fl-sector-size
+    in if fl-entry-kind (buf + off) /= persist-kind-definition
+      then base-work-scan buf (off + step) total hash
+      else base-work-match buf off total step clen hash
+
+  base-work-match : Integer, Integer, Integer, Integer, Integer, Text -> Maybe SourceDefinition
+  base-work-match (buf) (off) (total) (step) (clen) (hash) =
+    when source-def-from-text (fl-text (buf + off) fl-header-size clen)
+      is None -> base-work-scan buf (off + step) total hash
+      is Just (d) -> if d.sd-hash == hash then Just d
+                     else base-work-scan buf (off + step) total hash
+
+ The whole path, in one call: verify the base, refuse the bytes if they are not
+ what it signed, expand them, and find the work. A caller holding an artifact and
+ a hash needs nothing else.
+
+  base-resolve : List Integer, BaseRecord, TrustManifest, Integer, Text -> Maybe SourceDefinition
+  base-resolve (bytes) (base) (manifest) (threshold) (hash) =
+    when archive-open bytes base manifest threshold
+      is None -> None
+      is Just (plain) -> base-work plain hash
+
+Section: The Base In The Active Repository
+
+ The record lives in the live log as a fact, which is what "record the signature
+ in the active repository as the base" means. The base records are never
+ archived themselves -- they are small, one per archival rather than one per
+ fact, and they are the lineage. Keeping them is what lets a store that holds
+ only the newest artifact still account for every base that ever existed.
+
+  base-save : DiskFactStore, BaseRecord -> DiskFactStore
+  base-save (store) (b) =
+    app-write-and-checkpoint store persist-kind-base (base-to-text b) (b.br-timestamp)
+
+ The current base is the newest verified kind-41 in log order. An unsigned or
+ untrusted base record is not the base, however recently it was appended.
+
+  base-current : DiskFactStore, TrustManifest, Integer -> Maybe BaseRecord
+  base-current (store) (manifest) (threshold) =
+    let lines = app-scan-all store persist-kind-base
+    in base-newest lines 0 (list-length lines) manifest threshold None
+
+  base-newest : List Text, Integer, Integer, TrustManifest, Integer, Maybe BaseRecord -> Maybe BaseRecord
+  base-newest (lines) (i) (len) (manifest) (threshold) (best) =
+    if i >= len then best
+    else base-newest lines (i + 1) len manifest threshold (base-pick (list-at lines i) manifest threshold best)
+
+  base-pick : Text, TrustManifest, Integer, Maybe BaseRecord -> Maybe BaseRecord
+  base-pick (line) (manifest) (threshold) (best) =
+    when base-from-text line
+      is None -> best
+      is Just (b) -> if base-verify b manifest threshold then Just b else best

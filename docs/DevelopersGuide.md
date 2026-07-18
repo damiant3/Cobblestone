@@ -31,7 +31,7 @@ segment** of the directory name, capitalized:
 | `codex.os.dev` | `Dev` |
 | `codex.os.sched` | `Sched` |
 | `codex.os.kernel` | `Kernel` |
-| `codex.magic` | `Magic` |
+| `apps/games/magic` | `Magic` |
 
 For intra-quire references (chapter A citing chapter B in the same
 quire), use the quire's own name:
@@ -106,10 +106,28 @@ parameters use parens: `map : (a -> b), List a -> List b`.
 
   p = Person { name = "Alice", age = 30 }
   p.name                           -- field access
-  __record-set p "name" "Bob"      -- functional update
+  __record-set p "name" "Bob"      -- in-place field store; returns p
 ```
 
-No `{ record | field = val }` sugar. Use `__record-set` for functional updates.
+No `{ record | field = val }` sugar. Use `__record-set` to update a field.
+
+**`__record-set` is not a functional update.** It stores into the field
+and returns *the same record* (`emit-record-set-builtin`), so every
+holder of that record sees the change. This doc called it "functional"
+until 2026-07-16, and the type checker's environment was written against
+that reading: `env-bind-local` did `__record-set env "locals" ...`
+believing it produced a new env, and instead wrote each binding into its
+*caller's* environment. Locals then outlived their scope, and the
+checker rejected valid programs (BACKLOG 2.22).
+
+It is a controlled concession, and the condition on it is real: it is
+sound only while a single owner is threaded linearly through the value
+(`VisionAndVirtues.md`, virtue 5). **A callee does not own a record its
+caller still holds.** When the caller keeps using the value afterwards,
+build a new record with the constructor and copy the fields — and copy
+any list you carry over, because `list-push` / `list-set-at` /
+`list-insert-at` are in-place under capacity and would be shared by both
+records (see Lists, below).
 
 ### Mutable Records
 
@@ -143,16 +161,29 @@ spent, no copy is needed — `freeze` is the identity at runtime.
 
 ## Variants (Sum Types)
 
+A constructor's fields are **positional types, not named bindings**. The
+parentheses hold a type; the name comes from the pattern that takes it
+apart.
+
 ```
   Shape =
-   | Circle (radius : Integer)
-   | Rect (width : Integer) (height : Integer)
+   | Circle (Integer)
+   | Rect (Integer) (Integer)
 
   area : Shape -> Integer
   area (s) = when s
    is Circle (r) -> r * r * 3
    is Rect (w) (h) -> w * h
 ```
+
+**`Circle (radius : Integer)` does not compile** — it is CDX1000 at the
+colon, because the parser is reading a type there and a colon is not one.
+This page carried exactly that example until 2026-07-16 and nothing caught
+it: the compiler is the only reader that would have, and no chapter in the
+tree writes a variant that way, so there was nothing to contradict. If you
+want the fields named, that is what a record is for — give the constructor
+one as its payload (`| Circle (CircleDims)`), or name the variables at each
+`when`. Records are where names live.
 
 ## Pattern Matching
 
@@ -419,8 +450,7 @@ Default budget is 256 instructions. Budget is architecture-independent
 to know wall-clock time — that depends on clock speed and pipeline,
 which is the system integrator's responsibility.
 
-See `docs/Designs/OS/Active/HardRealtime.md` for the full design and
-prior art survey. See `codex/test/examples/missile-warning.codex` for
+See `codex/test/examples/missile-warning.codex` for
 a real-world example with Ada/Ravenscar side-by-side comparison.
 
 ## Proofs and Dependent Types
@@ -569,8 +599,7 @@ re-reads are double-uses or plain-boundary errors). A handler
 clause or an argument-escaping closure may not capture a linear at
 all (CDX2067 — clauses may run zero or many times). All nine
 adversarial laundering probes are enforced (`codex/test/errors/
-linear-launder-*`, `linear-capture-*`). Known un-tracked edges,
-documented in `docs/Designs/Compiler/Active/LinearOwnership.md`:
+linear-launder-*`, `linear-capture-*`). Known un-tracked edges:
 locals minted from linear-returning calls (the checker tracks
 declared parameters, not call-produced locals), and container
 literals in argument or tail position.
@@ -734,15 +763,80 @@ metadata, use `@annotations` (prose flag).
 ## Reserved Keywords
 
 These words cannot be used as identifiers. The compiler rejects them
-with CDX3014.
+with CDX1060.
 
 ```
 let  in  if  then  else  when  is  otherwise  act  end
-record  mutable  punctual  unit  cites  claim  proof  qed  forall  exists  induction
+record  mutable  punctual  unit  cites  quotes  trusting  above  grounds
+claim  proof  qed  forall  exists  induction
 linear  effect  where  with  between  and  such  that
 class  instance  lazy
 True  False
 ```
+
+`as` is deliberately **not** reserved. It is the idiomatic name for a
+list (`as`, `bs`, `cs`) and is used as an ordinary identifier in the
+compiler, in the foreword, and in the `reverse-reverse` proof. In
+`quotes "sha256:..." as Name` it is an ordinary word in a position that
+`quotes` has already made unambiguous.
+
+## Citing and Quoting
+
+`cites` names a work. `quotes` reproduces one.
+
+```
+Chapter: PaymentGateway
+  cites Foreword chapter Json
+  quotes "sha256:a1b2c3d4..." as JsonParser
+  trusting above 5000
+```
+
+A citation resolves through its quire to whatever file is currently on
+disk under that name. A quotation resolves through its digest to exactly
+one text — the text that hashes to it, or nothing at all. That is the
+whole difference, and it is why a quotation can be trusted and a
+citation cannot.
+
+`trusting above N` declares the chapter's trust floor. Trust scores are
+fixed-point, `0`–`10000` (0.0–1.0), so `trusting above 5000` admits no
+definition the author trusts less than half. The floor applies to every
+quotation in the chapter and may be written before or after them. **A
+chapter that quotes a work must declare a floor** — an absent `trusting
+above` is a compile error (CDX3026), because a floor defaulted by
+omission is not a choice. A declared `trusting above 0` remains legal.
+
+## Grounding Hardware Effects
+
+`grounds` declares that a chapter is the SOURCE of specific hardware
+effects — the layer where the abstraction meets the metal. It is a
+chapter-level declaration, a sibling of `cites`/`quotes`/`trusting`:
+
+```
+Chapter: Ne2k
+  cites Kernel chapter Pci
+  grounds Device.Port, Device.Mmio
+```
+
+The functions in a grounding chapter may perform the named effects
+without declaring them in their signatures — the internal exemption, so
+a driver talking to the metal pays no per-function bookkeeping. A
+function that *does* declare the effect (`f : ... -> [Device.Mmio] ...`)
+publishes it to callers outside the chapter, who must then declare it in
+turn: that function is a **root** of the capability graph, the boundary
+where the effect becomes visible to ordinary code.
+
+The exemption is **scoped to the named effects**. A chapter that
+`grounds Device.Port` but performs `Device.Mmio` is rejected with
+CDX2031 — a chapter cannot launder some other hardware effect through an
+exemption it took for a different one.
+
+`grounds` replaces a hardcoded quire-exemption list that lived inside the
+compiler: the module now declares its own status, in the file, three
+lines above the code that touches the hardware, rather than the compiler
+asserting it from afar. Effects erase at codegen, so `grounds` changes
+only what type-checks, never the emitted binary. See
+`docs/Designs/Active/Language/GroundsBoundary.md` for the full rationale
+and the migration that moves `codex/os/` onto it.
 
 ## Compile Modes
 
@@ -908,8 +1002,38 @@ alias and `ConsList` raw type cause CDX2001 mismatches if you write
 is a type error (Integer * Real). `__narrow` does not convert Real
 to Integer. Use the explicit conversion builtins.
 
+**`sha256` returns WORDS, not bytes.** `sha256 : List Integer -> List
+Integer` gives the compressor's internal state — eight 32-bit words, not
+thirty-two bytes. `sha256-to-hex` renders it with `words-to-hex`, and
+`Hkdf` wraps every hash it touches in `hkdf-words-to-bytes` for exactly
+this reason. Feed the word list somewhere a byte string is wanted and you
+get plausible output that is silently wrong. Convert with
+`hkdf-words-to-bytes` at the boundary. (This is what made the TLS 1.3 key
+schedule wrong below its first rung; see `Tls.codex`.)
+
+**`char-code` gives CCE, not ASCII.** Codex Text is CCE internally, so
+`char-code (char-at s i)` returns the CCE code point. For `"derived"`
+that is `16 0d 15 11 21 0d 16`, not the `64 65 72 69 76 65 64` that any
+wire protocol means. To emit Text as bytes on a wire, convert at the I/O
+boundary: `to-unicode (char-code (char-at s i))` (cite `Foreword chapter
+CCE`). This bug is invisible in a round-trip test — both sides agree —
+and it shipped a TLS SNI hostname and every key-schedule label in CCE
+until 2026-07-13.
+
 **`end` is a reserved keyword.** Cannot be used as a parameter name
 or identifier.
+
+**A new foreword chapter silently SHADOWS an existing foreword name, and
+the error lands nowhere near the cause.** Foreword names are globally in
+scope, so a helper whose name already exists in another foreword chapter
+is a shadow, not a duplicate-definition error. Inside the new chapter the
+local definition wins and it compiles clean; in a test that cites it, the
+name resolves to the OTHER chapter's version, and if the two differ in
+arity the call becomes a partial application, surfacing as `CDX2001: Type
+mismatch: List vs Fun` at the CALL SITE with no mention of the collision.
+Before adding a chapter, grep the foreword for every helper name it
+defines, and prefix private helpers with the chapter's own short tag
+(`tlsc-`, `asn1-`, `x509-`) rather than a generic quire prefix.
 
 ## Seed Rebuild Procedure
 

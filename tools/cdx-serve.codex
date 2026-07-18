@@ -1,0 +1,152 @@
+Chapter: CdxServe
+  cites Foreword chapter Maybe
+  cites Foreword chapter Console
+  cites Foreword chapter Sha256
+  cites Trust chapter AgentProtocol
+  cites Trust chapter TrustTransport
+  cites Kernel chapter DiskFacts
+  cites Works chapter KeyManager
+  cites Works chapter RepoProtocolPersist
+  cites Works chapter WorkServer
+  cites Net chapter NetIO
+  cites Net chapter TcpTransport
+  cites Net chapter NetworkStack
+  cites Net chapter MessageFraming
+
+ The other end. `Works chapter WorkServer` answers "give me the work with hash X"
+ and nothing has ever asked it, because nothing listens. This listens.
+
+ It is the smaller half of BACKLOG 6.2 and deliberately so. The asking half is
+ the host's -- the compiler cannot fetch a peer itself (Library Rule 2 fixes
+ `codex.foreword -> codex -> codex.os -> apps`, so citing the net stack from the
+ compiler inverts the order), and the decision taken 2026-07-16 is that it never
+ will: the host fetches and hands the work over in the `%%QUOTED-WORKS%%` blob
+ the compiler already reads. That leaves this binary as the whole of the server
+ side, and it needs to be nothing more than a socket around `serve-work`.
+
+ The index is UNVERIFIED, and that is the honest choice rather than an omission.
+ `repo-index-verified` filters a store down to the works whose author a manifest
+ admits; this serves whatever is on its disk. A server has no business deciding
+ what an asker may believe. The asker hashes what comes back and refuses it
+ unless it addresses the hash asked for (`accept-reply`), and its import gate
+ checks the signature, the pinned key and the trust floor. Serving an unadmitted
+ work cannot hurt the asker, and refusing one here would only mean a peer's trust
+ policy silently truncating somebody else's. Content addressing and trust are two
+ checks; this binary owns neither.
+
+ The index is built ONCE, before the loop. Rebuilding it per request would
+ re-read the whole fact log for every quotation.
+
+ We say:
+
+Section: Identity
+
+ The reply carries a `from`, and nobody checks it -- `accept-reply` ignores it,
+ because the reply is answerable by its own content. It is filled in honestly
+ anyway: a fixed tool key, the same shape `cdx-store` signs with. A deployment
+ serves under the box's own identity.
+
+  press : Keypair
+  press = generate-keypair (sha256 (text-to-bytes "codex-serve-tool"))
+
+  serve-id : AgentIdentity
+  serve-id = AgentIdentity { public-key = press.public-key }
+
+Section: The Socket
+
+ One connection at a time, the pattern codex-vm port forwarding expects: boot
+ with `-portfwd <host>:9300` and the VM injects a SYN toward the guest listener
+ for every host client that connects. The gateway MAC is seeded into the ARP
+ cache so the SYN-ACK never waits on resolution.
+
+  serve-port : Integer = 9300
+
+ These four addresses are codex-vm's NAT constants. Three of them
+ (`local-mac` / `local-ip` / `gateway-ip`) already exist in `Net chapter
+ WebServer`, which is where `apps/ideas` reads them from, and citing that chapter
+ is how this one first tried to get them. It cannot: **WebServer does not
+ compile.** `web-loop-http`, `web-loop-framed`, `web-connect-json` and
+ `web-connect-framed` all let-bind effectful `net-io-*` calls in signatures
+ declaring `[Console]` and nothing else -- six CDX2031/CDX2033 errors, the
+ undeclared-effect-row breakage of BACKLOG 7.16 class C, sitting in `codex/os/net`
+ rather than in an app. Declaring the rows there is not a local fix: every caller
+ inherits them, including the plugs. Filed rather than smuggled into this CL.
+
+ So they are spelled again here, and that is a real cost -- a fourth copy of an
+ address that should have one home, and the home is not an HTTP chapter anyway.
+ When WebServer's rows are fixed, or when these move to `NetworkStack` where the
+ NIC's own addresses belong, delete these and cite them.
+
+  local-mac : List Integer = [82, 84, 0, 18, 52, 86]
+  local-ip : List Integer = [10, 0, 2, 15]
+  gateway-ip : List Integer = [10, 0, 2, 2]
+
+  nat-gw-mac : List Integer = [82, 85, 10, 0, 2, 2]
+
+  fresh-transport : Integer -> TcpTransportState
+  fresh-transport (x) =
+    let sess = net-session-new local-mac local-ip gateway-ip serve-port 0 gateway-ip 1000
+    in let sess2 = set-arp sess (arp-cache-add (sess.arp) gateway-ip nat-gw-mac)
+    in transport-new sess2
+
+Section: Answering
+
+ `net-io-accept`, `net-io-recv-loop`, `net-io-send` and `net-io-close` all carry
+ Network rows, so every one of them is bound with `<-` inside an act and every
+ function that reaches them declares the rows it inherits. The neighbouring
+ server in `apps/ideas` let-binds these in pure signatures; that is the
+ undeclared-effect-row breakage in BACKLOG 7.16 class C, not a pattern to copy.
+
+  reply-with : WorkIndex, TcpTransportState, WorkRequestMsg -> [Network.Write] Text
+  reply-with (ix) (ts) (req) =
+    let reply = serve-work ix serve-id req
+    in act
+      ts1 <- net-io-send ts tag-work-reply (encode-work-reply-body reply)
+      ts2 <- net-io-close ts1
+      let verdict = if reply-is-empty reply then "miss " else "served "
+      in verdict & req.hash
+    end
+
+  answer : WorkIndex, TcpTransportState, AgentMessage -> [Network.Write] Text
+  answer (ix) (ts) (m) =
+    when m
+      is MsgWorkRequest (req) -> reply-with ix ts req
+      is otherwise -> "not-a-request"
+
+ A tag that is not a work request is dropped rather than answered. `serve-work`
+ is the only verb this binary offers, so a peer that framed something else at it
+ gets nothing back and the connection closes.
+
+  handle-conn : WorkIndex, TcpTransportState -> [Network.Read, Network.Write] Text
+  handle-conn (ix) (ts) = act
+    r <- net-io-recv-loop ts 0
+    if r.has-message == False then "no-message"
+    else if r.tag /= tag-work-request then "not-a-request"
+    else answer ix (r.transport) (decode-agent-msg (r.tag) (r.body))
+  end
+
+  serve-one : WorkIndex -> [Network.Read, Network.Write] Text
+  serve-one (ix) = act
+    ts <- net-io-accept (net-io-listen (fresh-transport 0)) 0
+    when (ts.session).conn.state
+      is TcpEstablished -> handle-conn ix ts
+      is otherwise -> "no-conn"
+  end
+
+Section: Entry
+
+  serve-loop : WorkIndex, Integer -> [Network.Read, Network.Write, Console.Write] Integer
+  serve-loop (ix) (count) = act
+    diag <- serve-one ix
+    print-line-uni ("serve " & show count & " " & diag)
+    serve-loop ix (count + 1)
+  end
+
+  opening : [Device.Block, Network.Read, Network.Write, Console.Write] Nothing = act
+    let ix = repo-index-from-disk disk-load
+    in act
+      print-line-uni ("cdx-serve: " & show (list-length (ix.wi-paths)) & " paths indexed, listening on guest port " & show serve-port)
+      served <- serve-loop ix 0
+      print-line-uni ("cdx-serve closed after " & show served)
+    end
+  end

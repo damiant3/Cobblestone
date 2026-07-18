@@ -1,59 +1,59 @@
-# fester — workplan
+# fester -- workplan
 
-## Status 2026-07-07: trust domain revived, probe rungs 1-2 shipped, RESTING
+*Status, not journal. Per-CL history is in Perforce. Durable process truths are in
+`docs/Agents/PerforceProcess.md` and `CLAUDE.md`, not here. This file is the current
+picture and the next moves only. Keep it under ~80 lines.*
 
-Lane: TheLongFlight (docs/TheLongFlight.md — the north-star plan,
-read it) — currently Ascent II (Permission) + Ascent V (Seed) rungs,
-plus general bring-up of the dormant trust/verify test surface.
+## Status (clean; nothing open/shelved)
 
-Shipped to main today (all gated, streams identical at session end):
-- docs/TheLongFlight.md — five-ascent north star (7237).
-- PolicyProse v0: policy prose -> PolicyFact, Clarifier reflection,
-  simulation through PolicyEngine (7239). Ascent II rung 1.
-- Trust-domain revival (7246): CDX2051 bounded-store sweep across 20
-  os modules, 41 apps tests verified green, 31 stale ".skip stub"
-  sidecars deleted, 3 frozen-bug expecteds refreshed. Real fixes:
-  Clarifier sort stability (<= -> <), SessionStore dead-at-expiry-tick,
-  CdxVerifier clamps untrusted le16 cap fields to invalid-sentinel
-  (graceful deny, not trap).
-- Lease expiry boundary unified with sessions: dead AT the tick (7250).
-- Harness: .disk sidecars run from a writable temp copy (7253); batch
-  driver no longer stamps 'CDX repl' on test binaries (7257).
-- SEED (7262, digest 6CFF0CC766310F4B02BF28F5A6E4ACC4): 'map' mode
-  flag — symbol-map emission split out of the repl flag. ANY script
-  hand-crafting a mode header must send 'CDX map' to get a MAP block;
-  compile.ps1 adds it automatically for non-repl CDX. Batch test
-  binaries are Exit-mode and halt on their own.
-- WakeCeremony (7265): codex/os/verify/WakeCeremony.codex — capsule
-  self-verification + introduction-or-refusal. Ascent V rung 2.
-- Merge-down 7272: blu's NoAliasCodegen 0-2 + handoff skill absorbed;
-  full gates green one-pass on blu's seed D2D10A3275A2A0D1EB432823A7F225BD.
+Working the BACKLOG section-4 bundle (4.14-4.18) at Damian's request. Shipped this
+session, both GUEST-side (no seed, no .exe), each gated + copied up:
+- **4.14** -> main: `vga-terminal-demo` compiles.
+- **4.15 command-ring** -> main: xHCI delivers Command Completion events; new
+  default-battery test `xhci-event-delivery` pins it.
 
-Battery baseline (-Apps): 447 pass / 28 fail / 92 skip in ~410 s.
-The 28 fails are pre-existing (9 erp-* + 19 others, list in
-ExaminersAssay-adjacent memory); hold copy-ups to this baseline.
+**The finding that stopped the bundle:** 4.16 and 4.18 are INSTRUMENT-blocked, not
+implementation-blocked. Existing tests pass BOTH before and after the fix
+(`cdx-serve-test` on clean loopback for 4.16; no isolatable HPET path for 4.18), so a
+shared-codex-vm.exe change cannot be proven non-vacuously. Build the proving harness
+(loss/reordering NAT; timer-ISR) FIRST -- do not flip seq/ack or the run-loop blind.
+Full analysis + exact line numbers in memory `backlog-4-codex-vm.md`. 4.10 is
+INDEPENDENT of 4.15 (a pure-formatting codegen crash). 4.17 = Damian chose to
+IMPLEMENT the COM3 bridge (large), not started.
 
-## OTHER AGENTS
+## Next move -- pick one
 
-- The 'map' mode flag (above) is the one behavior change that can
-  touch you: bare "CDX" requests no longer emit the MAP block.
-- blu: your battery phase-1 "VM died in batch" retry count varied
-  6 -> 2 -> 0 across three same-day runs, different tests each time —
-  consistent with your input-size/alignment crash firing at unlucky
-  cumulative offsets in batch slots. The died-batch input files may be
-  a free repro corpus.
-- Expected files refreshed today (event-bus-test, capability-audit,
-  access-control, trust-lattice, os-full-boot-demo, os-integration-demo)
-  had frozen OLD-BUG outputs; if a merge resurrects them, actual is
-  right, expected was the bug.
+- 4.16/4.18: build the proving instrument, then fix. Each is a real project.
+- 4.17: implement the COM3 compute bridge in codex-vm (Damian's call).
+- 7.16 (app breakage classes) is the older standing target if section 4 is parked:
+  Class F (multi-line application CDX1070, ~176 sites, `let`-chain the nested
+  `__record-set`; guard with the `apps/vision` 15-assertion aliasing probe), with
+  Class C (CDX2031/2033) and D (CDX2051) behind it. Merge reek's LIR + blu's filetype
+  down first.
 
-## Next
+## My lane (own it; others stay out)
 
-1. Ascent V rung 3: wire wake-ceremony into apps/works UefiBoot/
-   FirstBoot over the real seed from the FAT partition; then Time
-   Capsule v0 (build-boot-img embeds source + ceremony-on-boot).
-2. Classify the ~58 remaining "stub"-skipped apps tests (networking,
-   annotations, replay, gguf/neural/inference — the Ascent I leads).
-3. Ascent II rung 2: [Negotiate]/[Supervise] builtin effects;
-   LeaseManager quota counters; Clarifier feedback loop into
-   ManagedAccounts enforcement.
+apps/, codex/os/kernel + tools/codex-vm.c (the host VM), capability/boot/UEFI, the
+bounded/narrowing corner of the type checker. Not reek's Emit/IR/LIR, not blu's
+Types/Syntax/TLS, not val's repo/compress.
+
+## Open in my lane (BACKLOG)
+
+- 4.16/4.17/4.18 + 4.15-transfer-residue -- the codex-vm deep rot. Each a real
+  project; 4.16/4.18 are instrument-blocked (see Status + memory).
+- 4.15 residue: the DATA path (ADDRESS_DEVICE input context / EP0) stays dead; only
+  the command ring delivers so far.
+- 2.21 media ops: Camera blocked behind 4.10 (independent codegen crash);
+  Location/Sensors need a stub-vs-defer decision from Damian.
+- 7.17 shift latch -- a MIGRATION (folds passphrases uppercase); Damian's call.
+- 4.13 ASUS xHCI keyboard -- never ask for a stick flash.
+
+## For other agents
+
+- codex-vm.exe was rebuilt. Backward-compatible. Add a device with `mmio_decode`,
+  not a fourth heuristic. The standing gate does NOT cover MMIO -- for a device/VM
+  change run boards-test.ps1 + hda-audio/mic-peak/display-ops + smp-* at -Smp 4.
+- A test can type: `.keys` reaches the PS/2 cell (poll-key/uefi-read-key), `.stdin`
+  reaches the serial ring (read-line). Pick by what the code reads.
+
+Push blockers on Damian: stale `seed/Codex.img` rebuild; poison build before publish.

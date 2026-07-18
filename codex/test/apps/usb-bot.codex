@@ -1,0 +1,123 @@
+Chapter: UsbBotTest
+  cites Works chapter GopUsbMsc
+  cites Works chapter GopXhci
+  cites Works chapter GopAhci
+  cites Foreword chapter CCE
+  cites Foreword chapter Maybe
+
+ Drives the USB mass-storage stack end to end: xHCI bring-up, device
+ enumeration, and Bulk-Only Transport carrying SCSI commands. The
+ .disk sidecar is built independently from a formula -- byte i of
+ sector s is (s*3 + i*5 + 11) mod 256 -- so every read is checked
+ against arithmetic, never against the driver under test. The CBW
+ encode check compares against bytes derived by hand from the BOT
+ spec. The write check writes a distinct pattern through WRITE(10)
+ and reads it back through READ(10).
+
+Section: Hex
+
+  hex-digit : Integer -> Text
+  hex-digit (v) =
+    if v == 0 then "0" else if v == 1 then "1" else if v == 2 then "2"
+    else if v == 3 then "3" else if v == 4 then "4" else if v == 5 then "5"
+    else if v == 6 then "6" else if v == 7 then "7" else if v == 8 then "8"
+    else if v == 9 then "9" else if v == 10 then "a" else if v == 11 then "b"
+    else if v == 12 then "c" else if v == 13 then "d" else if v == 14 then "e"
+    else "f"
+
+  hex-byte : Integer -> Text
+  hex-byte (b) = hex-digit (bit-and (bit-shru b 4) 15) & hex-digit (bit-and b 15)
+
+  dump : Integer, Integer, Integer, Text -> Text
+  dump (buf) (i) (n) (acc) =
+    if i >= n then acc
+    else dump buf (i + 1) n (acc & hex-byte (peek-byte buf i))
+
+  ascii : Integer, Integer, Integer, Text -> Text
+  ascii (buf) (i) (n) (acc) =
+    if i >= n then acc
+    else ascii buf (i + 1) n (acc & char-to-text (code-to-char (from-unicode (peek-byte buf i))))
+
+Section: CBW Encode
+
+ The wrapper for READ(10), tag 7, LBA 0x01020304, two sectors, checked
+ byte-for-byte against the BOT spec layout. No device is involved:
+ only the encoder runs.
+
+  check-cbw : Text
+  check-cbw =
+    let buf = alloc-zeroed 64 64
+    in let fake = __record-set msc-no-disk "md-cbw" buf
+    in let h = msc-stamp-cbw fake 7 1024 msc-flag-in 10
+    in let c = msc-cb-rw10 fake scsi-op-read10 16909060 2
+    in "cbw=" & dump buf 0 31 ""
+
+Section: Device Checks
+
+  check-inquiry : MscDisk -> Text
+  check-inquiry (d) =
+    let buf = alloc-zeroed 64 64
+    in let ok = msc-inquiry-into d buf
+    in if ok == False then "inq=FAILED"
+    else "inq=[" & ascii buf 8 32 "" & "]"
+
+  check-sector : MscDisk, Integer -> Text
+  check-sector (d) (lba) =
+    let buf = alloc-zeroed 512 64
+    in let ok = msc-read10 d lba 1 buf
+    in if ok == False then "sector" & show lba & "=FAILED"
+    else "sector" & show lba & "=" & dump buf 0 8 ""
+
+ A 130-sector bulk read crosses the 64-sector chunk boundary twice.
+ The first byte of sectors 63, 64, 127, 128, and 129 -- straddling
+ both seams -- proves the chunks landed contiguously and in order.
+
+  check-bulk : MscDisk -> Text
+  check-bulk (d) =
+    let buf = alloc-zeroed 66560 64
+    in let ok = msc-read-into d 0 130 buf
+    in if ok == 0 then "bulk=FAILED"
+    else "bulk-seams=" & hex-byte (peek-byte buf 32256) & hex-byte (peek-byte buf 32768) & hex-byte (peek-byte buf 65024) & hex-byte (peek-byte buf 65536) & hex-byte (peek-byte buf 66048)
+
+ Write two sectors of pattern at LBA 200, read them back, compare all
+ 1024 bytes. The pattern differs from the fixture formula, so a read
+ that returned stale fixture bytes cannot pass.
+
+  fill-pattern : Integer, Integer -> Integer
+  fill-pattern (buf) (i) =
+    if i >= 1024 then 0
+    else let w = poke-byte buf i (int-mod (i * 13 + 7) 256)
+    in fill-pattern buf (i + 1)
+
+  compare-bytes : Integer, Integer, Integer -> Boolean
+  compare-bytes (a) (b) (i) =
+    if i >= 1024 then True
+    else if peek-byte a i /= peek-byte b i then False
+    else compare-bytes a b (i + 1)
+
+  check-write : MscDisk -> Text
+  check-write (d) =
+    let src = alloc-zeroed 1024 64
+    in let back = alloc-zeroed 1024 64
+    in let f = fill-pattern src 0
+    in let w = msc-write-into d 200 2 src
+    in if w == 0 then "write=FAILED"
+    else let r = msc-read-into d 200 2 back
+    in if r == 0 then "write=READBACK-FAILED"
+    else "write-verify=" & (if compare-bytes src back 0 then "True" else "False") & " head=" & dump back 0 8 ""
+
+Section: Main
+
+  opening : [Console, Device.Port] Nothing = act
+    print-line-uni check-cbw
+    d <- msc-connect
+    if d.md-ok then act
+      print-line-uni ("connect=ok sectors=" & show (d.md-sectors))
+      print-line-uni (check-inquiry d)
+      print-line-uni (check-sector d 0)
+      print-line-uni (check-sector d 5)
+      print-line-uni (check-bulk d)
+      print-line-uni (check-write d)
+    end
+    else print-line-uni "connect=FAILED"
+  end

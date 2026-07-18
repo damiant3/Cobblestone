@@ -2,17 +2,26 @@ Chapter: RepoProtocolPersist
   cites Foreword chapter Maybe
   cites Foreword chapter Parse
   cites Foreword chapter TextSearch
+  cites Foreword chapter FactStore
+  cites Foreword chapter ImportGate
+  cites Foreword chapter SourceDefWire
   cites Encode chapter Hex
   cites Kernel chapter DiskFacts
   cites Kernel chapter AppPersist
   cites Works chapter RepoProtocol
+  cites Works chapter KeyManager
   cites Works chapter Annotation
   cites Works chapter Discussion
 
  Persistent storage for the Codex repository protocol. Nine
- fact kinds (30-38) are serialized as pipe-delimited text and
- stored via DiskFacts, following the ServicesPersist pattern.
- Pipe characters in field values are not supported.
+ fact kinds (30-38) are serialized as text and stored via DiskFacts,
+ following the ServicesPersist pattern.
+
+ The header fields of every kind are pipe-delimited, and a pipe cannot appear
+ in one of them. Kind 30 is the exception, and it has to be: a source
+ definition now carries the source, and a pipe is how this language writes a
+ sum type. Its content is the last field, length-prefixed, and it is never
+ split. See Definition Persistence below.
 
 Section: Kind Constants
 
@@ -25,6 +34,8 @@ Section: Kind Constants
   persist-kind-proposal : Integer = 36
   persist-kind-verdict : Integer = 37
   persist-kind-discussion : Integer = 38
+  persist-kind-tombstone : Integer = 39
+  persist-kind-index-snapshot : Integer = 40
 
 Section: Record Types
 
@@ -32,13 +43,26 @@ Section: Record Types
  types. Kinds 35-38 serialize existing types from Annotation,
  RepoProtocol, and Discussion.
 
+ A SourceDefinition used to be a POINTER: a hash, and a Perforce path where
+ the bytes could be found. That is an index over somebody else's store, not a
+ store, and it is the whole of BACKLOG 6.1 -- the founding document proposes
+ deleting GitHub, and we had not deleted Perforce.
+
+ So it carries the bytes now. sd-content is the source itself; sd-author and
+ sd-timestamp are the two things fact-signing-content covers that the hash
+ does not reach, and without them a definition read back off the disk cannot
+ be turned into the SignedFact the import gate verifies.
+
   SourceDefinition = record {
     sd-hash : Text,
     sd-path : Text,
     sd-quire : Text,
     sd-chapter : Text,
     sd-signer : Text,
-    sd-signature : List Integer
+    sd-signature : List Integer,
+    sd-author : Text,
+    sd-timestamp : Integer,
+    sd-content : Text
   }
 
   RepoProof = record {
@@ -118,34 +142,704 @@ Section: Helpers
 
 Section: Definition Persistence (Kind 30)
 
- Format: hash|path|quire|chapter|signer-fp|sig-hex
- Unsigned entries omit the last two fields (backward compatible).
+ Format: hash|path|quire|chapter|signer-fp|sig-hex|author|timestamp|len|<content>
+
+ The nine header fields are pipe-delimited and none of them can contain a
+ pipe. The content can, and does: a pipe is how this language writes a sum
+ type, so nearly every chapter in the tree has one. Content is therefore the
+ LAST field, it is length-prefixed, and it is never split -- the reader finds
+ the ninth pipe and takes the next `len` characters verbatim, whatever they
+ are. Splitting the whole line on "|" and hoping, which is what this chapter
+ used to do to every field it had, would cut a source file to pieces at its
+ own type declarations.
+
+ A line with no ninth pipe is one of the old pointer-shaped records: it parses,
+ and it yields empty content. Reading an old store must not fail; it must
+ tell you honestly that the bytes were never there.
+
+ The wire format itself -- the nine fields, the ninth-pipe rule, the
+ length-prefixed content, the signature's hex -- lives in Foreword chapter
+ SourceDefWire, so that the compiler's reader (FactDisk) and this writer
+ decode one format and not two. This chapter maps its own SourceDefinition
+ to and from that wire record; the legacy pointer-shaped records, which are
+ this store's history and not the wire format, stay here.
+
+  def-to-wire : SourceDefinition -> SourceDefWire
+  def-to-wire (d) =
+    SourceDefWire {
+      sdw-hash = d.sd-hash, sdw-path = d.sd-path, sdw-quire = d.sd-quire,
+      sdw-chapter = d.sd-chapter, sdw-signer = d.sd-signer,
+      sdw-signature = d.sd-signature, sdw-author = d.sd-author,
+      sdw-timestamp = d.sd-timestamp, sdw-content = d.sd-content
+    }
+
+  def-from-wire : SourceDefWire -> SourceDefinition
+  def-from-wire (w) =
+    SourceDefinition {
+      sd-hash = w.sdw-hash, sd-path = w.sdw-path, sd-quire = w.sdw-quire,
+      sd-chapter = w.sdw-chapter, sd-signer = w.sdw-signer,
+      sd-signature = w.sdw-signature, sd-author = w.sdw-author,
+      sd-timestamp = w.sdw-timestamp, sd-content = w.sdw-content
+    }
 
   source-def-to-text : SourceDefinition -> Text
-  source-def-to-text (d) =
-    let sig-hex = bytes-to-hex d.sd-signature
-    in d.sd-hash & "|" & d.sd-path & "|" & d.sd-quire & "|" & d.sd-chapter
-    & "|" & d.sd-signer & "|" & sig-hex
+  source-def-to-text (d) = sdw-encode (def-to-wire d)
 
   source-def-from-text : Text -> Maybe SourceDefinition
   source-def-from-text (line) =
+    when sdw-decode line
+      is Just (w) -> Just (def-from-wire w)
+      is None -> source-def-from-legacy line
+
+  source-def-from-legacy : Text -> Maybe SourceDefinition
+  source-def-from-legacy (line) =
     let parts = text-split line "|"
     in if list-length parts < 4 then None
     else let signer = if list-length parts >= 6 then list-at parts 4 else ""
     in let sig = if list-length parts >= 6 then hex-decode (list-at parts 5) else []
-    in let def = SourceDefinition {
+    in Just (SourceDefinition {
       sd-hash = list-at parts 0,
       sd-path = list-at parts 1,
       sd-quire = list-at parts 2,
       sd-chapter = list-at parts 3,
       sd-signer = signer,
-      sd-signature = sig
+      sd-signature = sig,
+      sd-author = "",
+      sd-timestamp = 0,
+      sd-content = ""
+    })
+
+Section: A Definition Is A Signed Fact
+
+ The gate in Foreword chapter ImportGate takes a FactBundle and a
+ TrustManifest and answers with one of seven outcomes. It has always been able
+ to; nothing could ever reach it from the disk, because a persisted definition
+ was not a Fact and its signature did not cover one. sign-definition signed the
+ string "hash|path|quire|chapter" -- a sentence the gate has never heard of --
+ so a stored definition could not have passed gate-import even in principle.
+
+ These three functions are the join. A SourceDefinition becomes the Fact its
+ hash addresses, wearing the signature the gate checks, filed in a bundle the
+ gate can read.
+
+  source-def-fact : SourceDefinition -> Fact
+  source-def-fact (d) =
+    Fact {
+      hash = d.sd-hash,
+      kind = DefinitionFact,
+      content = d.sd-content,
+      author = d.sd-author,
+      timestamp = d.sd-timestamp
     }
-    in Just def
+
+  source-def-signed : SourceDefinition -> SignedFact
+  source-def-signed (d) =
+    SignedFact {
+      fact = source-def-fact d,
+      signature = d.sd-signature,
+      signer-fingerprint = d.sd-signer
+    }
+
+  bundle-from-definitions : List SourceDefinition -> FactBundle
+  bundle-from-definitions (defs) =
+    bundle-from-defs-loop defs 0 (list-length defs) bundle-empty
+
+  bundle-from-defs-loop : List SourceDefinition, Integer, Integer, FactBundle -> FactBundle
+  bundle-from-defs-loop (defs) (i) (len) (acc) =
+    if i >= len then acc
+    else let d = list-at defs i
+    in let next = if list-length (d.sd-signature) == 0
+      then bundle-offer acc (source-def-fact d)
+      else bundle-publish acc (source-def-signed d)
+    in bundle-from-defs-loop defs (i + 1) len next
+
+ The whole point, in one function: everything the disk holds, offered to the
+ gate.
+
+  repo-bundle-from-disk : DiskFactStore -> FactBundle
+  repo-bundle-from-disk (store) =
+    bundle-from-definitions (repo-persist-load-all-definitions store)
+
+Section: An Index Of Works
+
+ The store could not answer the two questions anybody actually asks it.
+
+ GIVE ME Colophon.codex. It had no way to take a name. app-scan-last takes a
+ KIND, so it returned the last fact of kind 30 -- the last source file written,
+ whichever chapter that happened to be -- and asked for one chapter it would
+ hand you another. It did not fail; it answered the wrong question, which is
+ worse.
+
+ WHICH VERSION IS THE CURRENT ONE. Two editions of a file are two facts, both
+ signed, both admitted, and nothing on the disk preferred either.
+
+ Neither of those needs a supersession record to fix, and I spent a while
+ believing they did. What they need is a KEY. A source definition already has
+ one -- its path -- and once a fact has a key the log means what every
+ log-structured store has always meant by it: the last write for a key is the
+ current value of that key. Last-write-wins is not a compromise here, it is the
+ semantics; git does it with refs and an LSM tree does it with levels.
+
+ So the index is built by walking the definitions in LOG ORDER and letting
+ later writes overwrite earlier ones. Two things fall out, and they are the two
+ halves of what a repository is:
+
+   wi-current maps a path to the hash of its current content. That is the tree.
+   wi-works maps a hash to the work. That is the history, and it is complete,
+   because a content-addressed store cannot lose an edition it was given.
+
+ Superseding is not deleting. The first edition of Colophon.codex is still in
+ wi-works and still verifies, forever; it is simply no longer what the path
+ points at. Removal is a separate act, and it wants a tombstone: see
+ Authenticated Removal below, where it is built.
+
+ This is also the reason DiskFacts' own in-memory index cannot serve: disk-load
+ keys each fact by the hash of the stored LINE, not by the hash of the content
+ that line describes. It is an index of records. This is an index of works.
+
+  WorkIndex = record {
+    wi-current : HamtMap Text,
+    wi-works : HamtMap SourceDefinition,
+    wi-paths : List Text
+  }
+
+  work-index-empty : WorkIndex
+  work-index-empty = WorkIndex {
+    wi-current = hamt-empty,
+    wi-works = hamt-empty,
+    wi-paths = []
+  }
+
+ Superseding was never deleting, and neither is removal: a tombstone does
+ not erase a fact, it records that a PATH is gone as of a point in the log.
+ So the index reads definitions and tombstones together, in log order, and
+ the last word for a path wins -- a definition puts the path in the tree, a
+ later tombstone takes it out, a later definition puts it back. What none of
+ this touches is wi-works: every edition ever stored is still addressable by
+ its hash and still verifies, forever, tombstone or no. The tree forgets a
+ path; the history does not forget a work.
+
+  repo-index-from-disk : DiskFactStore -> WorkIndex
+  repo-index-from-disk (store) =
+    let entries = app-scan-two-kinds store persist-kind-definition persist-kind-tombstone
+    in index-entries entries 0 (list-length entries) work-index-empty
+
+  index-entries : List KindText, Integer, Integer, WorkIndex -> WorkIndex
+  index-entries (entries) (i) (len) (ix) =
+    if i >= len then ix
+    else let e = list-at entries i
+    in let ix2 = if e.kt-kind == persist-kind-tombstone
+       then index-remove ix (tombstone-path (e.kt-text))
+       else index-add ix (e.kt-text)
+    in index-entries entries (i + 1) len ix2
+
+  index-add : WorkIndex, Text -> WorkIndex
+  index-add (ix) (text) =
+    when source-def-from-text text
+      is None -> ix
+      is Just (d) -> index-one ix d
+
+ A tombstone's content is the path it retires. The path leaves wi-current
+ (so no version is current) and leaves wi-paths (so a checkout does not
+ walk it); wi-works is untouched.
+
+  index-remove : WorkIndex, Text -> WorkIndex
+  index-remove (ix) (path) =
+    WorkIndex {
+      wi-current = hamt-remove (ix.wi-current) path,
+      wi-works = ix.wi-works,
+      wi-paths = paths-without (ix.wi-paths) path
+    }
+
+  paths-without : List Text, Text -> List Text
+  paths-without (paths) (path) = paths-without-loop paths path 0 (list-length paths) []
+
+  paths-without-loop : List Text, Text, Integer, Integer, List Text -> List Text
+  paths-without-loop (paths) (path) (i) (len) (acc) =
+    if i >= len then acc
+    else let p = list-at paths i
+    in if p == path then paths-without-loop paths path (i + 1) len acc
+       else paths-without-loop paths path (i + 1) len (list-push acc p)
+
+  index-one : WorkIndex, SourceDefinition -> WorkIndex
+  index-one (ix) (d) =
+    WorkIndex {
+      wi-current = hamt-set (ix.wi-current) (d.sd-path) (d.sd-hash),
+      wi-works = hamt-set (ix.wi-works) (d.sd-hash) d,
+      wi-paths = if path-known ix (d.sd-path) then ix.wi-paths
+                 else list-push (ix.wi-paths) (d.sd-path)
+    }
+
+ index-one in two halves, for a reader that must record an edition in the
+ history without letting it decide the tree. index-works-add files the work by
+ its hash and touches nothing else; index-tree-set points a path at a work and
+ leaves the history alone.
+
+  index-works-add : WorkIndex, SourceDefinition -> WorkIndex
+  index-works-add (ix) (d) =
+    WorkIndex {
+      wi-current = ix.wi-current,
+      wi-works = hamt-set (ix.wi-works) (d.sd-hash) d,
+      wi-paths = ix.wi-paths
+    }
+
+  index-tree-set : WorkIndex, SourceDefinition -> WorkIndex
+  index-tree-set (ix) (d) =
+    WorkIndex {
+      wi-current = hamt-set (ix.wi-current) (d.sd-path) (d.sd-hash),
+      wi-works = ix.wi-works,
+      wi-paths = if path-known ix (d.sd-path) then ix.wi-paths
+                 else list-push (ix.wi-paths) (d.sd-path)
+    }
+
+  path-known : WorkIndex, Text -> Boolean
+  path-known (ix) (path) =
+    when hamt-get (ix.wi-current) path
+      is Just (h) -> True
+      is None -> False
+
+Section: Asking The Index
+
+ Give me the current version of this path.
+
+  work-current : WorkIndex, Text -> Maybe SourceDefinition
+  work-current (ix) (path) =
+    when hamt-get (ix.wi-current) path
+      is None -> None
+      is Just (h) -> hamt-get (ix.wi-works) h
+
+ Give me this exact work, whatever the tree says today. A hash is a name that
+ cannot go stale, which is the whole of why we address by them.
+
+  work-by-hash : WorkIndex, Text -> Maybe SourceDefinition
+  work-by-hash (ix) (h) = hamt-get (ix.wi-works) h
+
+ Every path the store knows about, in the order it first heard of them. This is
+ the tree, and it is the thing a checkout walks.
+
+  work-tree : WorkIndex -> List Text
+  work-tree (ix) = ix.wi-paths
+
+Section: Checkout
+
+ A checkout is the whole of what a repository is for. Everything else -- the
+ hashes, the signatures, the gate, the log -- exists so that this one function
+ can hand you the source back and you can believe it.
+
+ And it is a walk of the tree fetching each current work, which is exactly as
+ dull as it should be. The interesting properties are not in this code, they
+ are underneath it: the bytes came back byte-identical because they were
+ content-addressed, the revised edition was taken and the superseded one left
+ because the last write for a path is the current value of that path, and the
+ whole thing verified because every work carries a signature the gate checks.
+ A checkout that had to be clever would mean something below it was wrong.
+
+ The result is the concatenation the compiler eats. That is not an accident of
+ convenience: the point of it is that a program checked out of the store can be
+ compiled and run, and the first one was.
+
+  repo-checkout : WorkIndex -> Text
+  repo-checkout (ix) =
+    let paths = work-tree ix
+    in checkout-loop ix paths 0 (list-length paths) ""
+
+  checkout-loop : WorkIndex, List Text, Integer, Integer, Text -> Text
+  checkout-loop (ix) (paths) (i) (len) (acc) =
+    if i >= len then acc
+    else let p = list-at paths i
+    in when work-current ix p
+      is None -> checkout-loop ix paths (i + 1) len acc
+      is Just (d) -> checkout-loop ix paths (i + 1) len (acc & (d.sd-content))
+
+ One work, checked out on its own. A checkout of the whole tree is this in a
+ loop, and a checkout of nothing is honestly empty rather than absent.
+
+  work-content : WorkIndex, Text -> Text
+  work-content (ix) (path) =
+    when work-current ix path
+      is None -> ""
+      is Just (d) -> d.sd-content
+
+Section: Persisting The Index
+
+ repo-index-from-disk reads every definition and tombstone the log holds and
+ folds them, in order, into the tree and the history. It is correct and it is
+ O(log): a store that has recorded a thousand editions replays a thousand
+ editions on every boot, whether or not any of them is still current.
+
+ A snapshot is the way out. It is one fact -- kind 40 -- carrying the whole
+ materialized WorkIndex as of a point in the log: the tree (each live path and
+ its current hash) and the history (every edition ever stored, so that a hash
+ that is no longer current is still addressable, forever, which is the one
+ property this store cannot lose). Rebuilding then means loading the snapshot
+ and replaying only the entries written after it -- the tail -- instead of the
+ whole log.
+
+ Two things key a snapshot, and both are in the superblock. The COVERED HEAD is
+ the log-head the snapshot was taken at; the tail is everything from there to
+ the current head. The INDEX-GEN is bumped by compaction, which rewrites the
+ log and moves every sector -- so a snapshot whose gen no longer matches the
+ store describes sector positions that no longer mean what they did, and the
+ rebuild falls back to a full replay rather than trust it. A snapshot is a
+ cache that a full replay can always reconstruct; it is never the only copy of
+ anything, because every fact it summarizes is still on the disk.
+
+ The format is a header of four integers -- gen, covered-head, path-count,
+ work-count -- then the body. The body is length-prefixed segments so that a
+ path, a hash, or a source file full of pipes and newlines is taken verbatim by
+ its length and never parsed for delimiters: first each (path, current-hash)
+ pair, then each work as its SourceDefWire text. A segment is its character
+ length, a pipe, then exactly that many characters.
+
+  IntRead = record { ir-value : Integer, ir-next : Integer }
+  SegRead = record { sr-value : Text, sr-next : Integer }
+  ReadProg = record { rp-next : Integer, rp-index : WorkIndex }
+  SnapIndex = record { si-gen : Integer, si-head : Integer, si-index : WorkIndex }
+
+  snap-pipe-code : Integer = char-code (char-at "|" 0)
+
+  snap-index-of-pipe : Text, Integer -> Integer
+  snap-index-of-pipe (s) (i) =
+    if i >= text-length s then i
+    else if char-code (char-at s i) == snap-pipe-code then i
+    else snap-index-of-pipe s (i + 1)
+
+  snap-read-int : Text, Integer -> IntRead
+  snap-read-int (s) (off) =
+    let p = snap-index-of-pipe s off
+    in IntRead { ir-value = text-to-integer (substring s off (p - off)), ir-next = p + 1 }
+
+  seg-put : Text -> Text
+  seg-put (s) = show (text-length s) & "|" & s
+
+  snap-read-seg : Text, Integer -> SegRead
+  snap-read-seg (s) (off) =
+    let ir = snap-read-int s off
+    in SegRead { sr-value = substring s (ir.ir-next) (ir.ir-value), sr-next = ir.ir-next + ir.ir-value }
+
+ The whole materialized index as one text. The works come out of wi-works in no
+ particular order, which is fine -- they are keyed by hash and the tree carries
+ the order that matters.
+
+  work-list : WorkIndex -> List SourceDefinition
+  work-list (ix) = hamt-fold (\acc -> \k -> \d -> list-push acc d) [] (ix.wi-works)
+
+  snap-encode : WorkIndex, Integer, Integer -> Text
+  snap-encode (ix) (gen) (head) =
+    let paths = ix.wi-paths
+    in let works = work-list ix
+    in show gen & "|" & show head & "|" & show (list-length paths) & "|" & show (list-length works) & "|"
+       & snap-paths-enc ix paths 0 (list-length paths) ""
+       & snap-works-enc works 0 (list-length works) ""
+
+  snap-paths-enc : WorkIndex, List Text, Integer, Integer, Text -> Text
+  snap-paths-enc (ix) (paths) (i) (len) (acc) =
+    if i >= len then acc
+    else let p = list-at paths i
+    in let h = when hamt-get (ix.wi-current) p is Just (hh) -> hh is None -> ""
+    in snap-paths-enc ix paths (i + 1) len (acc & seg-put p & seg-put h)
+
+  snap-works-enc : List SourceDefinition, Integer, Integer, Text -> Text
+  snap-works-enc (works) (i) (len) (acc) =
+    if i >= len then acc
+    else snap-works-enc works (i + 1) len (acc & seg-put (source-def-to-text (list-at works i)))
+
+ The generation, read on its own and cheaply, so a rebuild can decide whether a
+ snapshot is worth parsing before it parses the whole thing.
+
+  snap-gen : Text -> Integer
+  snap-gen (s) = (snap-read-int s 0).ir-value
+
+  snap-to-index : Text -> SnapIndex
+  snap-to-index (s) =
+    let ig = snap-read-int s 0
+    in let ih = snap-read-int s (ig.ir-next)
+    in let inp = snap-read-int s (ih.ir-next)
+    in let inw = snap-read-int s (inp.ir-next)
+    in let after-paths = snap-read-paths s (inw.ir-next) (inp.ir-value) work-index-empty
+    in let after-works = snap-read-works s (after-paths.rp-next) (inw.ir-value) (after-paths.rp-index)
+    in SnapIndex { si-gen = ig.ir-value, si-head = ih.ir-value, si-index = after-works.rp-index }
+
+  snap-read-paths : Text, Integer, Integer, WorkIndex -> ReadProg
+  snap-read-paths (s) (off) (remaining) (ix) =
+    if remaining <= 0 then ReadProg { rp-next = off, rp-index = ix }
+    else let ps = snap-read-seg s off
+    in let hs = snap-read-seg s (ps.sr-next)
+    in snap-read-paths s (hs.sr-next) (remaining - 1) (snap-put-current ix (ps.sr-value) (hs.sr-value))
+
+  snap-put-current : WorkIndex, Text, Text -> WorkIndex
+  snap-put-current (ix) (path) (hash) =
+    WorkIndex {
+      wi-current = hamt-set (ix.wi-current) path hash,
+      wi-works = ix.wi-works,
+      wi-paths = list-push (ix.wi-paths) path
+    }
+
+  snap-read-works : Text, Integer, Integer, WorkIndex -> ReadProg
+  snap-read-works (s) (off) (remaining) (ix) =
+    if remaining <= 0 then ReadProg { rp-next = off, rp-index = ix }
+    else let ws = snap-read-seg s off
+    in snap-read-works s (ws.sr-next) (remaining - 1) (snap-put-work ix (ws.sr-value))
+
+  snap-put-work : WorkIndex, Text -> WorkIndex
+  snap-put-work (ix) (text) =
+    when source-def-from-text text
+      is None -> ix
+      is Just (d) -> WorkIndex {
+        wi-current = ix.wi-current,
+        wi-works = hamt-set (ix.wi-works) (d.sd-hash) d,
+        wi-paths = ix.wi-paths
+      }
+
+ Take a snapshot of the index as it stands. The covered head is the current
+ log-head -- everything on the disk right now -- captured before the snapshot
+ fact is written, so the snapshot describes the log up to but not including
+ itself. The kind-40 fact is not a definition or a tombstone, so a later
+ rebuild's tail walk steps over it and folds only the real entries after it.
+
+  repo-snapshot-save : DiskFactStore, WorkIndex, Integer -> DiskFactStore
+  repo-snapshot-save (store) (ix) (timestamp) =
+    let sb = store.superblock
+    in app-write-and-checkpoint store persist-kind-index-snapshot (snap-encode ix (sb.index-gen) (sb.log-head)) timestamp
+
+ The fast rebuild. With a snapshot whose generation still matches the store,
+ load it and replay the tail; with none, or one stranded by a compaction, fall
+ back to the full replay, which is always correct. The result is the same
+ WorkIndex either way -- a snapshot is an optimization, never a source of
+ truth.
+
+  repo-index-build : DiskFactStore -> WorkIndex
+  repo-index-build (store) =
+    when app-scan-last store persist-kind-index-snapshot
+      is None -> repo-index-from-disk store
+      is Just (snaptext) ->
+        if snap-gen snaptext == store.superblock.index-gen
+        then let snap = snap-to-index snaptext
+        in repo-index-replay-tail store (snap.si-head) (snap.si-index)
+        else repo-index-from-disk store
+
+  repo-index-replay-tail : DiskFactStore, Integer, WorkIndex -> WorkIndex
+  repo-index-replay-tail (store) (from-sector) (ix) =
+    let entries = app-scan-two-kinds-from store from-sector persist-kind-definition persist-kind-tombstone
+    in index-entries entries 0 (list-length entries) ix
+
+Section: Authenticated Removal
+
+ A definition is signed, and the gate can refuse one it does not trust. A
+ tombstone was not: its content was the bare path it retired, so anyone who
+ could write a sector could retire any path, and the tree honored it. Removal
+ is an assertion like any other, and an unauthenticated assertion is exactly
+ the hole the store exists to close.
+
+ So a tombstone carries a signature now. It signs the path together with the
+ author and the timestamp -- the same three things a definition's signature
+ binds beyond its content hash -- so neither the path being retired nor its
+ attribution can be altered without breaking the signature. The wire form is
+ five pipe-delimited fields, path first; a line with fewer fields is a bare
+ legacy tombstone, read as an unsigned removal of that path.
+
+ Two indexes read the same log. repo-index-from-disk is TRUSTING: it honors
+ every tombstone by its path, signed or not, resolving each path by log order,
+ which is what the existing tree has always done and what the fast rebuild
+ inherits. repo-index-verified is AUTHENTICATED, and it does two things the
+ trusting index does not.
+
+ First, it VERIFIES every assertion. A definition must hash to its own hash and
+ carry a signature that verifies against a key the manifest holds at or above
+ the threshold -- the same check the gate applies; a tombstone must verify the
+ same way. An unsigned, forged, or untrusted definition or tombstone is dropped
+ on the floor. Every verified edition still enters the history (addressable by
+ hash forever); only verified assertions touch the tree.
+
+ Second, it resolves each path by the SIGNED TIMESTAMP, not by log position.
+ This is what closes REPLAY. A tombstone or a definition is signed together
+ with its timestamp, so an attacker who can append to the log can copy an old
+ assertion forward but cannot forge a newer one. The tree records, per path,
+ the timestamp of the assertion currently deciding it, and an assertion changes
+ a path only when its timestamp strictly exceeds that -- so a replayed old
+ tombstone cannot retire a path a newer definition has re-added, and a replayed
+ old definition cannot resurrect a path a newer tombstone has retired. Log
+ order decides nothing an attacker could exploit; only the signatures do.
+
+  Tombstone = record {
+    tomb-path : Text,
+    tomb-signer : Text,
+    tomb-signature : List Integer,
+    tomb-author : Text,
+    tomb-timestamp : Integer
+  }
+
+  tombstone-signing-content : Text, Text, Integer -> Text
+  tombstone-signing-content (path) (author) (timestamp) =
+    path & "|" & author & "|" & show timestamp
+
+  sign-tombstone : Keypair, Text, Integer -> Tombstone
+  sign-tombstone (kp) (path) (timestamp) =
+    Tombstone {
+      tomb-path = path,
+      tomb-signer = kp.fingerprint,
+      tomb-signature = sign-content kp (tombstone-signing-content path (kp.fingerprint) timestamp),
+      tomb-author = kp.fingerprint,
+      tomb-timestamp = timestamp
+    }
+
+  tombstone-to-text : Tombstone -> Text
+  tombstone-to-text (t) =
+    t.tomb-path & "|" & t.tomb-signer & "|" & bytes-to-hex (t.tomb-signature)
+    & "|" & t.tomb-author & "|" & show (t.tomb-timestamp)
+
+  tombstone-from-text : Text -> Tombstone
+  tombstone-from-text (line) =
+    let parts = text-split line "|"
+    in if list-length parts >= 5
+      then Tombstone {
+        tomb-path = list-at parts 0,
+        tomb-signer = list-at parts 1,
+        tomb-signature = hex-decode (list-at parts 2),
+        tomb-author = list-at parts 3,
+        tomb-timestamp = parse-decimal-full (list-at parts 4)
+      }
+      else Tombstone {
+        tomb-path = line, tomb-signer = "", tomb-signature = [],
+        tomb-author = "", tomb-timestamp = 0
+      }
+
+  tombstone-path : Text -> Text
+  tombstone-path (line) = (tombstone-from-text line).tomb-path
+
+  tombstone-verify : Tombstone, TrustManifest, Integer -> Boolean
+  tombstone-verify (t) (manifest) (threshold) =
+    when manifest-lookup manifest (t.tomb-signer)
+      is None -> False
+      is Just (tk) -> if tk.score >= threshold
+        then verify-content-signature (tk.public-key) (tombstone-signing-content (t.tomb-path) (t.tomb-author) (t.tomb-timestamp)) (t.tomb-signature)
+        else False
+
+  repo-persist-save-tombstone-signed : DiskFactStore, Keypair, Text, Integer -> DiskFactStore
+  repo-persist-save-tombstone-signed (store) (kp) (path) (timestamp) =
+    app-write-and-checkpoint store persist-kind-tombstone (tombstone-to-text (sign-tombstone kp path timestamp)) timestamp
+
+ A definition verifies exactly as the gate verifies it: its content must hash
+ to the hash it claims, and that hash, kind, author and timestamp must carry a
+ signature from a key the manifest trusts at or above the threshold.
+
+  def-verify : SourceDefinition, TrustManifest, Integer -> Boolean
+  def-verify (d) (manifest) (threshold) =
+    if fact-content-hash (d.sd-content) == d.sd-hash
+    then when manifest-lookup manifest (d.sd-signer)
+      is None -> False
+      is Just (tk) -> if tk.score >= threshold
+        then verify-fact-signature (tk.public-key) (source-def-signed d)
+        else False
+    else False
+
+ The authenticated build carries, beside the index, a stamp per path: the
+ timestamp of the assertion currently deciding that path. An assertion -- a
+ definition or a tombstone -- moves a path only when its own timestamp strictly
+ exceeds the stamp, so nothing an attacker replays out of the log can override
+ a newer signature. A path with no stamp yet is decided by the first verified
+ assertion to name it.
+
+  VerifiedAcc = record {
+    va-index : WorkIndex,
+    va-stamp : HamtMap Integer
+  }
+
+  verified-acc-empty : VerifiedAcc = VerifiedAcc { va-index = work-index-empty, va-stamp = hamt-empty }
+
+  stamp-wins : HamtMap Integer, Text, Integer -> Boolean
+  stamp-wins (stamp) (path) (ts) =
+    when hamt-get stamp path
+      is None -> True
+      is Just (cur) -> ts > cur
+
+  repo-index-verified : DiskFactStore, TrustManifest, Integer -> WorkIndex
+  repo-index-verified (store) (manifest) (threshold) =
+    let entries = app-scan-two-kinds store persist-kind-definition persist-kind-tombstone
+    in (vindex-entries entries 0 (list-length entries) verified-acc-empty manifest threshold).va-index
+
+  vindex-entries : List KindText, Integer, Integer, VerifiedAcc, TrustManifest, Integer -> VerifiedAcc
+  vindex-entries (entries) (i) (len) (acc) (manifest) (threshold) =
+    if i >= len then acc
+    else let e = list-at entries i
+    in let acc2 = if e.kt-kind == persist-kind-tombstone
+       then vindex-tomb acc (e.kt-text) manifest threshold
+       else vindex-def acc (e.kt-text) manifest threshold
+    in vindex-entries entries (i + 1) len acc2 manifest threshold
+
+ A verified definition always enters the history; it takes the tree only if it
+ is the newest thing said about its path.
+
+  vindex-def : VerifiedAcc, Text, TrustManifest, Integer -> VerifiedAcc
+  vindex-def (acc) (text) (manifest) (threshold) =
+    when source-def-from-text text
+      is None -> acc
+      is Just (d) ->
+        if def-verify d manifest threshold
+        then let ix1 = index-works-add (acc.va-index) d
+          in if stamp-wins (acc.va-stamp) (d.sd-path) (d.sd-timestamp)
+             then VerifiedAcc { va-index = index-tree-set ix1 d, va-stamp = hamt-set (acc.va-stamp) (d.sd-path) (d.sd-timestamp) }
+             else VerifiedAcc { va-index = ix1, va-stamp = acc.va-stamp }
+        else acc
+
+  vindex-tomb : VerifiedAcc, Text, TrustManifest, Integer -> VerifiedAcc
+  vindex-tomb (acc) (text) (manifest) (threshold) =
+    let t = tombstone-from-text text
+    in if (tombstone-verify t manifest threshold) & (stamp-wins (acc.va-stamp) (t.tomb-path) (t.tomb-timestamp))
+       then VerifiedAcc { va-index = index-remove (acc.va-index) (t.tomb-path), va-stamp = hamt-set (acc.va-stamp) (t.tomb-path) (t.tomb-timestamp) }
+       else acc
+
+Section: Signing A Definition
+
+ This used to live in SourceFactsBridge and sign "hash|path|quire|chapter" --
+ a sentence of its own invention, which no verifier in the tree knows how to
+ check. The import gate verifies fact-signing-content: the content hash, the
+ kind, the author and the timestamp. So that is what gets signed, and a
+ definition signed here is one the gate can admit.
+
+ The signature covers sd-hash, and sd-hash must address sd-content, or the
+ gate's integrity guard refuses the fact before it ever looks at the
+ signature. So the hash is recomputed here from the bytes we are about to
+ store. A hash handed to us from outside is a claim about a file we did not
+ read.
+
+  sign-definition : Keypair, SourceDefinition, Integer -> SourceDefinition
+  sign-definition (kp) (def) (timestamp) =
+    let stamped = SourceDefinition {
+      sd-hash = fact-content-hash (def.sd-content),
+      sd-path = def.sd-path,
+      sd-quire = def.sd-quire,
+      sd-chapter = def.sd-chapter,
+      sd-signer = kp.fingerprint,
+      sd-signature = [],
+      sd-author = kp.fingerprint,
+      sd-timestamp = timestamp,
+      sd-content = def.sd-content
+    }
+    in let sig = sign-content kp (fact-signing-content (source-def-fact stamped))
+    in SourceDefinition {
+      sd-hash = stamped.sd-hash,
+      sd-path = stamped.sd-path,
+      sd-quire = stamped.sd-quire,
+      sd-chapter = stamped.sd-chapter,
+      sd-signer = stamped.sd-signer,
+      sd-signature = sig,
+      sd-author = stamped.sd-author,
+      sd-timestamp = stamped.sd-timestamp,
+      sd-content = stamped.sd-content
+    }
 
   repo-persist-save-definition : DiskFactStore, SourceDefinition, Integer -> DiskFactStore
   repo-persist-save-definition (store) (def) (timestamp) =
     app-write-and-checkpoint store persist-kind-definition (source-def-to-text def) timestamp
+
+ Retire a path. The tombstone is a fact like any other -- appended, never
+ overwriting -- whose content is the path it removes; the index reads it in
+ log order and drops the path from the current tree.
+
+  repo-persist-save-tombstone : DiskFactStore, Text, Integer -> DiskFactStore
+  repo-persist-save-tombstone (store) (path) (timestamp) =
+    app-write-and-checkpoint store persist-kind-tombstone path timestamp
 
   repo-persist-load-last-definition : DiskFactStore -> Maybe SourceDefinition
   repo-persist-load-last-definition (store) =
@@ -181,18 +875,18 @@ Section: Proof Persistence (Kind 31)
   repo-proof-from-text (line) =
     let parts = text-split line "|"
     in if list-length parts < 5 then None
-    else let proof = RepoProof {
+    else let pf = RepoProof {
       rp-hash = list-at parts 0,
       rp-claim = list-at parts 1,
       rp-evidence = list-at parts 4,
       rp-author = list-at parts 2,
       rp-timestamp = parse-decimal-full (list-at parts 3)
     }
-    in Just proof
+    in Just pf
 
   repo-persist-save-proof : DiskFactStore, RepoProof, Integer -> DiskFactStore
-  repo-persist-save-proof (store) (proof) (timestamp) =
-    app-write-and-checkpoint store persist-kind-proof (repo-proof-to-text proof) timestamp
+  repo-persist-save-proof (store) (pf) (timestamp) =
+    app-write-and-checkpoint store persist-kind-proof (repo-proof-to-text pf) timestamp
 
   repo-persist-load-last-proof : DiskFactStore -> Maybe RepoProof
   repo-persist-load-last-proof (store) =

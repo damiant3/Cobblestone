@@ -40,9 +40,21 @@ $hash = [System.Security.Cryptography.SHA256]::Create().ComputeHash($bytes)
 $hexHash = ($hash | ForEach-Object { $_.ToString("x2") }) -join ''
 
 if ($Update) {
+    # Only write when the value actually changed. build.ps1 calls this at the
+    # end of every build, and the old code rewrote the file unconditionally --
+    # clearing the read-only bit Perforce sets on an unopened file. The content
+    # was identical, so nothing needed submitting, but the file was left
+    # writable and the next `p4 sync` in that workspace died with "Can't clobber
+    # writable file seed/constants.hash". A no-op update should leave no trace.
+    $current = if (Test-Path $HashFile) { (Get-Content $HashFile -First 1).Trim() } else { '' }
+    if ($current -eq $hexHash) {
+        Write-Host "constants.hash unchanged: $hexHash ($($constants.Count) constants)"
+        exit 0
+    }
     if (Test-Path $HashFile) { Set-ItemProperty $HashFile -Name IsReadOnly -Value $false -ErrorAction SilentlyContinue }
     [System.IO.File]::WriteAllText($HashFile, "$hexHash`n", [System.Text.UTF8Encoding]::new($false))
-    Write-Host "constants.hash updated: $hexHash ($($constants.Count) constants)"
+    Write-Host "constants.hash CHANGED: $hexHash ($($constants.Count) constants)"
+    Write-Host "  the constants moved, so this file is part of the change -- p4 edit and submit it with the seed"
     exit 0
 }
 

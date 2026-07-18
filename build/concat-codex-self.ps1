@@ -33,33 +33,42 @@ function Add-WithQuire {
     $lines.Add('')
 }
 
-# 1. Cited forewords — scan compiler source for "cites Foreword chapter X",
-#    then transitively resolve each foreword's own cites.
-$citePat = '^\s*cites\s+Foreword\s+chapter\s+([A-Za-z_][A-Za-z0-9_-]*)'
-$queue = [System.Collections.Generic.Queue[string]]::new()
+# 1. Cited library chapters — scan compiler source for
+#    "cites <LibraryQuire> chapter X", then transitively resolve each
+#    pulled chapter's own library cites. The quire table must agree
+#    with compile.ps1's Resolve-CiteOrder (same quires, same
+#    "Quire--Chapter" prefix) or the gate's raw concat and the
+#    per-compile resolution disagree about what a unit is.
+$libQuireDirs = [ordered]@{
+    'Foreword' = $ForewordDir
+    'Math'     = Join-Path $Repo 'codex\foreword\math'
+}
+$quireAlt = ($libQuireDirs.Keys -join '|')
+$citePat = "^\s*cites\s+($quireAlt)\s+chapter\s+([A-Za-z_][A-Za-z0-9_-]*)"
+$queue = [System.Collections.Generic.Queue[object]]::new()
 Get-ChildItem $CodexDir -Recurse -Depth 2 -Filter '*.codex' -File | ForEach-Object {
     foreach ($l in [System.IO.File]::ReadAllLines($_.FullName)) {
-        if ($l -match $citePat) { $queue.Enqueue($matches[1]) }
+        if ($l -match $citePat) { $queue.Enqueue(@{ Quire = $matches[1]; Name = $matches[2] }) }
     }
 }
 $seen = [System.Collections.Generic.HashSet[string]]::new()
 $ordered = @()
 while ($queue.Count -gt 0) {
     $fw = $queue.Dequeue()
-    if (-not $seen.Add($fw)) { continue }
-    $fwPath = Join-Path $ForewordDir "$fw.codex"
+    if (-not $seen.Add("$($fw.Quire)|$($fw.Name)")) { continue }
+    $fwPath = Join-Path $libQuireDirs[$fw.Quire] "$($fw.Name).codex"
     if (-not (Test-Path -PathType Leaf $fwPath)) { continue }
     $fwLines = [System.IO.File]::ReadAllLines($fwPath)
     foreach ($l in $fwLines) {
-        if ($l -match $citePat) { $queue.Enqueue($matches[1]) }
+        if ($l -match $citePat) { $queue.Enqueue(@{ Quire = $matches[1]; Name = $matches[2] }) }
     }
-    $ordered += @{ Name = $fw; Path = $fwPath }
+    $ordered += @{ Quire = $fw.Quire; Name = $fw.Name; Path = $fwPath }
 }
 [array]::Reverse($ordered)
 $emitted = [System.Collections.Generic.HashSet[string]]::new()
 foreach ($entry in $ordered) {
-    if (-not $emitted.Add($entry.Name)) { continue }
-    Add-WithQuire -Path $entry.Path -Quire 'Foreword'
+    if (-not $emitted.Add("$($entry.Quire)|$($entry.Name)")) { continue }
+    Add-WithQuire -Path $entry.Path -Quire $entry.Quire
 }
 
 # Ordinal name comparer for FileInfo / DirectoryInfo arrays.

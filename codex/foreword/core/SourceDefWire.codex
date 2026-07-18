@@ -1,0 +1,146 @@
+Chapter: SourceDefWire
+
+  cites Foreword chapter Maybe
+
+ The wire format of a source-definition record in the fact store, in one
+ place. A definition is written by RepoProtocolPersist (apps) and read by
+ the compiler through FactDisk (foreword); before this chapter each of
+ them carried its own copy of the pipe layout, and a change to the format
+ in one and not the other was a silent divergence a crossing test could
+ catch only at runtime. The format now has a single definition, and both
+ sides encode and decode through it.
+
+ The record is nine pipe-delimited header fields followed by the content:
+
+   hash|path|quire|chapter|signer-fp|sig-hex|author|timestamp|len|<content>
+
+ None of the nine header fields can hold a pipe. The content can, and
+ nearly always does -- a pipe is how the language writes a sum type -- so
+ the content is the last field, it is length-prefixed, and it is taken
+ verbatim after the ninth pipe, whatever bytes follow. A line with no
+ ninth pipe is not in this format (it is one of the old pointer-shaped
+ records that carried no content); decode returns None and leaves the
+ caller to decide what an absent record means.
+
+ The hex codec is spelled out here rather than cited from Encode/Hex or
+ Parse. Those carry a `hex-digit-value` that collides, in the compiler's
+ own compilation unit, with the compiler's function of the same name over
+ a different argument type -- a collision that compiles fine anywhere else
+ and breaks only the self-compile. A self-contained codec with private
+ names cannot do that.
+
+ We say:
+
+Section: The Record
+
+  SourceDefWire = record {
+   sdw-hash : Text,
+   sdw-path : Text,
+   sdw-quire : Text,
+   sdw-chapter : Text,
+   sdw-signer : Text,
+   sdw-signature : List Integer,
+   sdw-author : Text,
+   sdw-timestamp : Integer,
+   sdw-content : Text
+  }
+
+Section: Hex
+
+  sdw-hex-chars : Text = "0123456789abcdef"
+
+  sdw-nibble : Integer -> Text
+  sdw-nibble (n) = char-to-text (char-at sdw-hex-chars n)
+
+  sdw-byte-hex : Integer -> Text
+  sdw-byte-hex (b) = sdw-nibble (bit-shru b 4) & sdw-nibble (bit-and b 15)
+
+  sdw-bytes-to-hex : List Integer -> Text
+  sdw-bytes-to-hex (bs) = sdw-bth-loop bs 0 (list-length bs) ""
+
+  sdw-bth-loop : List Integer, Integer, Integer, Text -> Text
+  sdw-bth-loop (bs) (i) (len) (acc) =
+   if i >= len then acc
+   else sdw-bth-loop bs (i + 1) len (acc & sdw-byte-hex (list-at bs i))
+
+ CCE orders letters by frequency, not alphabetically, so a..f is not a
+ range and the six letters are named one at a time; the codes are asked of
+ the encoding rather than written down.
+
+  sdw-hex-digit : Char -> Integer
+  sdw-hex-digit (c) =
+   let n = char-code c
+   in if n == char-code (char-at "0" 0) then 0
+   else if n == char-code (char-at "1" 0) then 1
+   else if n == char-code (char-at "2" 0) then 2
+   else if n == char-code (char-at "3" 0) then 3
+   else if n == char-code (char-at "4" 0) then 4
+   else if n == char-code (char-at "5" 0) then 5
+   else if n == char-code (char-at "6" 0) then 6
+   else if n == char-code (char-at "7" 0) then 7
+   else if n == char-code (char-at "8" 0) then 8
+   else if n == char-code (char-at "9" 0) then 9
+   else if n == char-code (char-at "a" 0) then 10
+   else if n == char-code (char-at "b" 0) then 11
+   else if n == char-code (char-at "c" 0) then 12
+   else if n == char-code (char-at "d" 0) then 13
+   else if n == char-code (char-at "e" 0) then 14
+   else if n == char-code (char-at "f" 0) then 15
+   else 0
+
+  sdw-hex-decode : Text -> List Integer
+  sdw-hex-decode (s) = sdw-hex-loop s 0 (text-length s) []
+
+  sdw-hex-loop : Text, Integer, Integer, List Integer -> List Integer
+  sdw-hex-loop (s) (i) (len) (acc) =
+   if i + 1 >= len then acc
+   else let hi = sdw-hex-digit (char-at s i)
+   in let lo = sdw-hex-digit (char-at s (i + 1))
+   in sdw-hex-loop s (i + 2) len (list-push acc (bit-or (bit-shl hi 4) lo))
+
+Section: Finding The Ninth Pipe
+
+  sdw-pipe-code : Integer = char-code (char-at "|" 0)
+
+  sdw-nth-pipe : Text, Integer, Integer, Integer -> Integer
+  sdw-nth-pipe (s) (n) (i) (seen) =
+   if i >= text-length s then 0 - 1
+   else if char-code (char-at s i) == sdw-pipe-code then
+    (if seen + 1 == n then i else sdw-nth-pipe s n (i + 1) (seen + 1))
+   else sdw-nth-pipe s n (i + 1) seen
+
+Section: Encode
+
+  sdw-encode : SourceDefWire -> Text
+  sdw-encode (d) =
+   let sig-hex = sdw-bytes-to-hex (d.sdw-signature)
+   in d.sdw-hash & "|" & d.sdw-path & "|" & d.sdw-quire & "|" & d.sdw-chapter
+   & "|" & d.sdw-signer & "|" & sig-hex
+   & "|" & d.sdw-author & "|" & show (d.sdw-timestamp)
+   & "|" & show (text-length (d.sdw-content)) & "|" & d.sdw-content
+
+Section: Decode
+
+ The ninth pipe ends the header; the content is the next `len` characters,
+ taken whole. A header with fewer than nine fields, or a line with no
+ ninth pipe, is not this format and decodes to None.
+
+  sdw-decode : Text -> Maybe SourceDefWire
+  sdw-decode (line) =
+   let p9 = sdw-nth-pipe line 9 0 0
+   in if p9 < 0 then None
+   else let header = substring line 0 p9
+   in let parts = text-split header "|"
+   in if list-length parts < 9 then None
+   else let clen = text-to-integer (list-at parts 8)
+   in Just (SourceDefWire {
+     sdw-hash = list-at parts 0,
+     sdw-path = list-at parts 1,
+     sdw-quire = list-at parts 2,
+     sdw-chapter = list-at parts 3,
+     sdw-signer = list-at parts 4,
+     sdw-signature = sdw-hex-decode (list-at parts 5),
+     sdw-author = list-at parts 6,
+     sdw-timestamp = text-to-integer (list-at parts 7),
+     sdw-content = substring line (p9 + 1) clen
+   })

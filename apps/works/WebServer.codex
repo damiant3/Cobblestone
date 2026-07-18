@@ -34,7 +34,7 @@ Section: Server Operations
   web-server-new : Router, TcpTransportState -> WebServer
   web-server-new (r) (ts) = WebServer { router = r, transport = ts, requests-served = 0 }
 
-  web-server-handle : WebServer, List Integer, ShellState -> WebResponse
+  web-server-handle : WebServer, List Integer, ShellState -> [Identity] WebResponse
   web-server-handle (srv) (req-bytes) (state) =
     let req = http-parse-request req-bytes
     in if req.valid == False then WebResponse {
@@ -46,13 +46,18 @@ Section: Server Operations
       response = http-not-found,
       server = WebServer { router = srv.router, transport = srv.transport, requests-served = srv.requests-served + 1 }
     }
-    else let resp = dispatch-handler (m.handler) req state
-    in WebResponse {
-      response = resp,
-      server = WebServer { router = srv.router, transport = srv.transport, requests-served = srv.requests-served + 1 }
-    }
+    else handled-response srv (dispatch-handler (m.handler) req state)
 
-  dispatch-handler : RouteHandler, HttpRequest, ShellState -> HttpResponse
+ dispatch-handler reads the system identity, so it is effectful and is
+ called in argument position rather than let-bound.
+
+  handled-response : WebServer, HttpResponse -> WebResponse
+  handled-response (srv) (resp) = WebResponse {
+    response = resp,
+    server = WebServer { router = srv.router, transport = srv.transport, requests-served = srv.requests-served + 1 }
+  }
+
+  dispatch-handler : RouteHandler, HttpRequest, ShellState -> [Identity] HttpResponse
   dispatch-handler (handler) (req) (state) =
     if handler.service == "status" then serve-status state
     else if handler.service == "health" then serve-health state
@@ -73,10 +78,8 @@ Section: Built-in Handlers
     )
     in http-html body
 
-  serve-health : ShellState -> HttpResponse
-  serve-health (state) =
-    let report = gather-report state
-    in http-plain (format-report report)
+  serve-health : ShellState -> [Identity] HttpResponse
+  serve-health (state) = http-plain (format-report (gather-report state))
 
 Section: Wire Protocol
 

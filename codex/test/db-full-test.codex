@@ -169,8 +169,8 @@ Section: Test 6 — Sort Desc + Limit
 
   test-sort-limit : Catalog -> Text
   test-sort-limit (cat) =
-    let qr = query cat
-      (RelLimit (RelSort (RelScan "emp") [SortSpec { sort-col = "salary", sort-dir = SortDesc }]) 3)
+    let plan = RelLimit (RelSort (RelScan "emp") [SortSpec { sort-col = "salary", sort-dir = SortDesc }]) 3
+    in let qr = query cat plan
     in "sort-limit: " & qr-summary qr & " top=" & sv (row-get-by-name (list-at (qr.qr-rows) 0) "name")
 
 Section: Test 7 — Distinct
@@ -237,16 +237,13 @@ Section: Test 14 — Compound Query (filter + group + sort + limit)
 
   test-compound : Catalog -> Text
   test-compound (cat) =
-    let qr = query cat
-      (RelLimit
-        (RelSort
-          (RelGroup
-            (RelFilter (RelScan "orders") (PredColCmp "qty" CmpGt (ValInteger 30)))
-            ["cust"]
-            [AggSpec { agg-func = AggSum "qty", agg-alias = "total-qty" },
-             AggSpec { agg-func = AggCount, agg-alias = "order-cnt" }])
-          [SortSpec { sort-col = "total-qty", sort-dir = SortDesc }])
-        2)
+    let filtered = RelFilter (RelScan "orders") (PredColCmp "qty" CmpGt (ValInteger 30))
+    in let grouped = RelGroup filtered ["cust"] [
+      AggSpec { agg-func = AggSum "qty", agg-alias = "total-qty" },
+      AggSpec { agg-func = AggCount, agg-alias = "order-cnt" }
+    ]
+    in let sorted = RelSort grouped [SortSpec { sort-col = "total-qty", sort-dir = SortDesc }]
+    in let qr = query cat (RelLimit sorted 2)
     in "compound: " & qr-summary qr & " top=" & qr-first qr
 
 Section: Test 15 — Hash Join
@@ -451,11 +448,11 @@ Section: Test 33 — B+ Tree Rebalance
 
   test-rebalance : Text =
     let t0 = btree-new
-    in let t1 = (btree-insert t0 (index-key-single (ValInteger 5)) (RowId { rid-page = 0, rid-slot = 0 })).bt-tree
-    in let t2 = (btree-insert t1 (index-key-single (ValInteger 3)) (RowId { rid-page = 0, rid-slot = 1 })).bt-tree
-    in let t3 = (btree-insert t2 (index-key-single (ValInteger 8)) (RowId { rid-page = 0, rid-slot = 2 })).bt-tree
-    in let t4 = (btree-insert t3 (index-key-single (ValInteger 1)) (RowId { rid-page = 0, rid-slot = 3 })).bt-tree
-    in let t5 = (btree-insert t4 (index-key-single (ValInteger 9)) (RowId { rid-page = 0, rid-slot = 4 })).bt-tree
+    in let (t1, _) = btree-insert t0 (index-key-single (ValInteger 5)) (RowId { rid-page = 0, rid-slot = 0 })
+    in let (t2, _) = btree-insert t1 (index-key-single (ValInteger 3)) (RowId { rid-page = 0, rid-slot = 1 })
+    in let (t3, _) = btree-insert t2 (index-key-single (ValInteger 8)) (RowId { rid-page = 0, rid-slot = 2 })
+    in let (t4, _) = btree-insert t3 (index-key-single (ValInteger 1)) (RowId { rid-page = 0, rid-slot = 3 })
+    in let (t5, _) = btree-insert t4 (index-key-single (ValInteger 9)) (RowId { rid-page = 0, rid-slot = 4 })
     in let before = btree-stats t5
     in let t6 = btree-rebalance t5
     in let after = btree-stats t6
@@ -465,26 +462,26 @@ Section: Test 34 — B+ Tree Range Scan
 
   test-range-scan : Text =
     let t0 = btree-new
-    in let t1 = (btree-insert t0 (index-key-single (ValInteger 1)) (RowId { rid-page = 0, rid-slot = 0 })).bt-tree
-    in let t2 = (btree-insert t1 (index-key-single (ValInteger 3)) (RowId { rid-page = 0, rid-slot = 1 })).bt-tree
-    in let t3 = (btree-insert t2 (index-key-single (ValInteger 5)) (RowId { rid-page = 0, rid-slot = 2 })).bt-tree
-    in let t4 = (btree-insert t3 (index-key-single (ValInteger 7)) (RowId { rid-page = 0, rid-slot = 3 })).bt-tree
-    in let t5 = (btree-insert t4 (index-key-single (ValInteger 9)) (RowId { rid-page = 0, rid-slot = 4 })).bt-tree
-    in let result = btree-range-scan t5 (index-key-single (ValInteger 3)) (index-key-single (ValInteger 7))
-    in "range-scan: " & show (result.rs-count)
+    in let (t1, _) = btree-insert t0 (index-key-single (ValInteger 1)) (RowId { rid-page = 0, rid-slot = 0 })
+    in let (t2, _) = btree-insert t1 (index-key-single (ValInteger 3)) (RowId { rid-page = 0, rid-slot = 1 })
+    in let (t3, _) = btree-insert t2 (index-key-single (ValInteger 5)) (RowId { rid-page = 0, rid-slot = 2 })
+    in let (t4, _) = btree-insert t3 (index-key-single (ValInteger 7)) (RowId { rid-page = 0, rid-slot = 3 })
+    in let (t5, _) = btree-insert t4 (index-key-single (ValInteger 9)) (RowId { rid-page = 0, rid-slot = 4 })
+    in let (rids, cnt) = btree-range-scan t5 (index-key-single (ValInteger 3)) (index-key-single (ValInteger 7))
+    in "range-scan: " & show cnt
 
 Section: Test 35 — Page Insert + Read + Delete
 
   test-page-ops : Text =
     let pg = page-new 0 page-type-data
-    in let r1 = page-insert pg [10, 20, 30]
-    in let r2 = page-insert (r1.page) [40, 50]
-    in let read1 = page-read-slot (r2.page) 0
-    in let pg2 = page-delete-slot (r2.page) 0
+    in let (p1, s1, ok1) = page-insert pg [10, 20, 30]
+    in let (p2, s2, ok2) = page-insert p1 [40, 50]
+    in let read1 = page-read-slot p2 0
+    in let pg2 = page-delete-slot p2 0
     in let read2 = page-read-slot pg2 0
     in let v1 = when read1 is Just (bs) -> show (list-length bs) is None -> "N"
     in let v2 = when read2 is Just (bs) -> show (list-length bs) is None -> "N"
-    in "page: slots=" & show (page-slot-count (r2.page)) & " read=" & v1 & " after-del=" & v2
+    in "page: slots=" & show (page-slot-count p2) & " read=" & v1 & " after-del=" & v2
 
 Section: Test 36 — Row Encode + Decode Round-Trip
 
@@ -557,7 +554,7 @@ Section: Test 42 — Protocol Frame Round-Trip
 
   test-protocol : Text =
     let f = proto-query-frame "scan emp"
-    in let encoded = frame-encode f
+    in let encoded = frame-encode-record f
     in let decoded = frame-decode encoded
     in let ok = when (decoded.fdr-frame) is Just (fr) -> fr.frame-type == msg-query is None -> False
     in "protocol: ok=" & show ok
@@ -631,54 +628,54 @@ Section: Body
   opening : [Console] Nothing = act
     let cat = build-db
     in act
-      print-line (test-scan cat)
-      print-line (test-filter-eq cat)
-      print-line (test-filter-range cat)
-      print-line (test-project cat)
-      print-line (test-sort-asc cat)
-      print-line (test-sort-limit cat)
-      print-line (test-distinct cat)
-      print-line (test-group cat)
-      print-line (test-nl-join cat)
-      print-line (test-left-join cat)
-      print-line (test-union cat)
-      print-line (test-intersect cat)
-      print-line (test-except cat)
-      print-line (test-compound cat)
-      print-line (test-hash-join cat)
-      print-line (test-semi-join cat)
-      print-line (test-anti-join cat)
-      print-line (test-sm-join cat)
-      print-line (test-colstore cat)
-      print-line (test-col-filter cat)
-      print-line (test-mr-sum cat)
-      print-line (test-mr-count cat)
-      print-line test-rle
-      print-line test-txn
-      print-line test-wal
-      print-line test-locks
-      print-line test-lock-release
-      print-line test-deadlock
-      print-line test-no-deadlock
-      print-line test-mvcc
-      print-line test-mvcc-gc
-      print-line test-occ
-      print-line test-rebalance
-      print-line test-range-scan
-      print-line test-page-ops
-      print-line test-row-roundtrip
-      print-line test-buffer-pool
-      print-line (test-bulk-load cat)
-      print-line (test-import cat)
-      print-line test-pushdown
-      print-line test-plan-cache
-      print-line test-protocol
-      print-line (test-backup-restore cat)
-      print-line test-security
-      print-line test-row-security
-      print-line test-time-window
-      print-line test-join-choice
-      print-line (test-heap-update cat)
+      print-line-uni (test-scan cat)
+      print-line-uni (test-filter-eq cat)
+      print-line-uni (test-filter-range cat)
+      print-line-uni (test-project cat)
+      print-line-uni (test-sort-asc cat)
+      print-line-uni (test-sort-limit cat)
+      print-line-uni (test-distinct cat)
+      print-line-uni (test-group cat)
+      print-line-uni (test-nl-join cat)
+      print-line-uni (test-left-join cat)
+      print-line-uni (test-union cat)
+      print-line-uni (test-intersect cat)
+      print-line-uni (test-except cat)
+      print-line-uni (test-compound cat)
+      print-line-uni (test-hash-join cat)
+      print-line-uni (test-semi-join cat)
+      print-line-uni (test-anti-join cat)
+      print-line-uni (test-sm-join cat)
+      print-line-uni (test-colstore cat)
+      print-line-uni (test-col-filter cat)
+      print-line-uni (test-mr-sum cat)
+      print-line-uni (test-mr-count cat)
+      print-line-uni test-rle
+      print-line-uni test-txn
+      print-line-uni test-wal
+      print-line-uni test-locks
+      print-line-uni test-lock-release
+      print-line-uni test-deadlock
+      print-line-uni test-no-deadlock
+      print-line-uni test-mvcc
+      print-line-uni test-mvcc-gc
+      print-line-uni test-occ
+      print-line-uni test-rebalance
+      print-line-uni test-range-scan
+      print-line-uni test-page-ops
+      print-line-uni test-row-roundtrip
+      print-line-uni test-buffer-pool
+      print-line-uni (test-bulk-load cat)
+      print-line-uni (test-import cat)
+      print-line-uni test-pushdown
+      print-line-uni test-plan-cache
+      print-line-uni test-protocol
+      print-line-uni (test-backup-restore cat)
+      print-line-uni test-security
+      print-line-uni test-row-security
+      print-line-uni test-time-window
+      print-line-uni test-join-choice
+      print-line-uni (test-heap-update cat)
     end
   end
 

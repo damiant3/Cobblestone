@@ -1,0 +1,260 @@
+Chapter: ColophonDogfood
+  cites Colophon chapter Colophon
+  cites Colophon chapter Impression
+  cites Works chapter RepoProtocolPersist
+  cites Works chapter KeyManager
+  cites Foreword chapter FactStore
+  cites Foreword chapter ImportGate
+  cites Foreword chapter Hamt
+  cites Foreword chapter Maybe
+  cites Foreword chapter Sha256
+  cites Kernel chapter DiskFacts
+  cites Kernel chapter AppPersist
+  cites Foreword chapter Console
+
+ The first thing this repository ever stored, and an honest account of what
+ happened.
+
+ A quire goes in -- two chapters of it, signed, content-addressed, through the
+ same import gate the compiler's quotation gate uses. Then one chapter is
+ edited and stored again, which is the ordinary thing anybody does to a
+ repository within five minutes of being handed one.
+
+ What works, works completely: the bytes survive, the hashes address them, the
+ gate admits them, a forged body is refused, and BOTH editions remain
+ retrievable forever because a content-addressed store cannot lose a version it
+ has been given -- it does not overwrite, it accumulates.
+
+ What does not work is stated here rather than hidden, because a dogfood test
+ that only prints its successes is a colophon: a claim the artefact makes about
+ itself with no witness but itself.
+
+   ASK FOR A CHAPTER BY NAME and the store cannot answer. There is no
+   path-to-content index. app-scan-last returns the last fact OF KIND 30 --
+   the last source file written, whichever chapter that happened to be -- so
+   asking for Impression hands you Colophon. That is BACKLOG 6.1(a).
+
+   ASK WHICH EDITION IS CURRENT and the store cannot answer. Both editions are
+   present, both verify, and nothing on the disk says one supersedes the other.
+   A store that cannot name the current version of a file is not yet source
+   control, whatever else it is. That is 6.1(b), and it waits on 6.5.
+
+ The colophon in the quire we are storing can be checked, which is the joke and
+ also the point: the book can tell you truthfully what it is. The library still
+ cannot tell you where it is, or which one is the current one.
+
+Section: The Quire We Are Going To Store
+
+ Two chapters, standing in for the real files. The bodies contain a PIPE, which
+ the old encoding would have cut them in half at, and newlines, which no
+ single-sector fact could hold.
+
+  colophon-body-v1 : Text
+  colophon-body-v1 =
+    "Chapter: Colophon\n"
+    & "\n"
+    & " The book describing its own making.\n"
+    & "\n"
+    & "Section: Definitions\n"
+    & "\n"
+    & "  Leaf =\n"
+    & "   | Recto\n"
+    & "   | Verso\n"
+    & "\n"
+    & "Page 1\n"
+
+  colophon-body-v2 : Text
+  colophon-body-v2 =
+    "Chapter: Colophon\n"
+    & "\n"
+    & " The book describing its own making, corrected.\n"
+    & "\n"
+    & "Section: Definitions\n"
+    & "\n"
+    & "  Leaf =\n"
+    & "   | Recto\n"
+    & "   | Verso\n"
+    & "\n"
+    & "Page 1\n"
+
+  impression-body : Text
+  impression-body =
+    "Chapter: Impression\n"
+    & "\n"
+    & " One printing of a work.\n"
+    & "\n"
+    & "Page 1\n"
+
+Section: Helpers
+
+  press-keypair : Keypair
+  press-keypair = generate-keypair (sha256 (text-to-bytes "the-colophon-press"))
+
+  outcome-name : ImportOutcome -> Text
+  outcome-name (o) =
+    when o
+      is ImportOk (f) -> "ImportOk"
+      is ImportMissing -> "ImportMissing"
+      is ImportCorrupt -> "ImportCorrupt"
+      is ImportUnsigned -> "ImportUnsigned"
+      is ImportUnknownSigner -> "ImportUnknownSigner"
+      is ImportForged -> "ImportForged"
+      is ImportUntrusted (s) -> "ImportUntrusted"
+
+  chapter-of : Maybe Fact -> Text
+  chapter-of (m) =
+    when m
+      is Just (f) -> first-line (f.content) 0 (text-length (f.content)) ""
+      is None -> "not found"
+
+  admitted-line : ImportResult -> Text
+  admitted-line (r) =
+    when r.outcome
+      is ImportOk (f) -> first-line (f.content) 0 (text-length (f.content)) ""
+      is otherwise -> "REFUSED"
+
+  first-work : Work
+  first-work = Work { w-title = "Colophon", w-body = colophon-body-v1 }
+
+  def-line : Maybe SourceDefinition -> Text
+  def-line (m) =
+    when m
+      is Just (d) -> (d.sd-chapter) & ", " & show (text-length (d.sd-content)) & " bytes"
+      is None -> "not found"
+
+  current-line : WorkIndex, Text -> Text
+  current-line (ix) (path) = def-line (work-current ix path)
+
+  hash-line : WorkIndex, Text -> Text
+  hash-line (ix) (h) = def-line (work-by-hash ix h)
+
+  current-hash : WorkIndex, Text -> Text
+  current-hash (ix) (path) =
+    when work-current ix path
+      is Just (d) -> d.sd-hash
+      is None -> ""
+
+  tree-line : WorkIndex, Integer, Integer, Text -> Text
+  tree-line (ix) (i) (len) (acc) =
+    if i >= len then acc
+    else let p = list-at (work-tree ix) i
+    in tree-line ix (i + 1) len (if i == 0 then p else acc & "  |  " & p)
+
+ What the store hands back when you ask by name. It has no way to take a name,
+ so it takes the kind, and the answer is whichever chapter was written last.
+
+  scanned-chapter : DiskFactStore -> Text
+  scanned-chapter (store) =
+    when app-scan-last store persist-kind-definition
+      is None -> "nothing"
+      is Just (line) ->
+        when source-def-from-text line
+          is None -> "an unparseable record"
+          is Just (d) -> d.sd-chapter & " (the last one written)"
+
+  first-line : Text, Integer, Integer, Text -> Text
+  first-line (s) (i) (len) (acc) =
+    if i >= len then acc
+    else if char-code (char-at s i) == newline-code then acc
+    else first-line s (i + 1) len (acc & char-to-text (char-at s i))
+
+  newline-code : Integer = char-code (char-at "\n" 0)
+
+  unsigned-def : Text, Text, Text -> SourceDefinition
+  unsigned-def (path) (chapter) (body) =
+    SourceDefinition {
+      sd-hash = "",
+      sd-path = path,
+      sd-quire = "Colophon",
+      sd-chapter = chapter,
+      sd-signer = "",
+      sd-signature = [],
+      sd-author = "",
+      sd-timestamp = 0,
+      sd-content = body
+    }
+
+Section: Entry
+
+  opening : [Device.Block, Console.Write] Nothing = act
+    let kp = press-keypair
+    in let manifest = manifest-add manifest-empty (kp.fingerprint) (kp.public-key) 100
+    in let c1 = sign-definition kp (unsigned-def "apps/colophon/Colophon.codex" "Colophon" colophon-body-v1) 1700000001
+    in let im = sign-definition kp (unsigned-def "apps/colophon/Impression.codex" "Impression" impression-body) 1700000002
+    in let c2 = sign-definition kp (unsigned-def "apps/colophon/Colophon.codex" "Colophon" colophon-body-v2) 1700000003
+    in let s0 = disk-init
+    in let s1 = repo-persist-save-definition s0 c1 1700000001
+    in let s2 = repo-persist-save-definition s1 im 1700000002
+    in let s3 = repo-persist-save-definition s2 c2 1700000003
+    in act
+      print-line-uni "-- the quire goes in --"
+      let store = disk-load
+      in let bundle = repo-bundle-from-disk store
+      in act
+        print-line-uni ("chapters stored: " & show (list-length (repo-persist-load-all-definitions store)))
+        print-line-uni ("Colophon, first edition:  " & outcome-name ((gate-import bundle manifest 50 (c1.sd-hash) "Colophon").outcome))
+        print-line-uni ("Impression:               " & outcome-name ((gate-import bundle manifest 50 (im.sd-hash) "Impression").outcome))
+        print-line-uni ("Colophon, second edition: " & outcome-name ((gate-import bundle manifest 50 (c2.sd-hash) "Colophon").outcome))
+
+        print-line-uni ""
+        print-line-uni "-- the colophon can be checked, which is new --"
+        let w = Work { w-title = "Colophon", w-body = colophon-body-v1 }
+        in let imp = Impression { imp-number = 1, imp-when = 1700000001, imp-printer = kp.fingerprint }
+        in let note = colophon-of w imp
+        in act
+          print-line-uni ("the note names the hash the store filed it under: " & (if colophon-holds w note then "yes" else "NO"))
+          print-line-uni ("and the store agrees:                             " & (if colophon-hash w == c1.sd-hash then "yes" else "NO"))
+          print-line-uni ("that same note about the SECOND edition:          " & (if colophon-holds (Work { w-title = "Colophon", w-body = colophon-body-v2 }) note then "ACCEPTED -- WRONG" else "refused"))
+        end
+
+        print-line-uni ""
+        print-line-uni "-- both editions are still here, and both verify --"
+        print-line-uni ("  first:  " & admitted-line (gate-import bundle manifest 50 (c1.sd-hash) "Colophon"))
+        print-line-uni ("  second: " & admitted-line (gate-import bundle manifest 50 (c2.sd-hash) "Colophon"))
+        print-line-uni "A content-addressed store cannot lose an edition. It does not overwrite; it"
+        print-line-uni "accumulates, and every edition it was ever given is still exactly itself."
+        print-line-uni ""
+        print-line-uni "-- ask the KERNEL for a chapter by name, and it answers the wrong question --"
+        print-line-uni "app-scan-last takes a KIND, not a name, so it hands back the last fact of kind"
+        print-line-uni "30 -- the last source file written, whichever chapter that happened to be."
+        print-line-uni ("  asked for Impression, the kernel offers: " & scanned-chapter store)
+        print-line-uni "It does not fail. It answers a question nobody asked, which is worse. And"
+        print-line-uni "DiskFacts' own index cannot help: disk-load keys each fact by the hash of the"
+        print-line-uni "stored LINE, not of the content that line describes, so a source body cannot"
+        print-line-uni "be found by its own content hash at all."
+        print-line-uni ("  disk-read-fact, by the body's true hash: " & chapter-of (disk-read-fact store (c1.sd-hash)))
+        print-line-uni "That is an index of records. A repository needs an index of works."
+
+        print-line-uni ""
+        print-line-uni "-- so here is one --"
+        let ix = repo-index-from-disk store
+        in act
+          print-line-uni ("the tree: " & show (list-length (work-tree ix)) & " works")
+          print-line-uni ("  " & tree-line ix 0 (list-length (work-tree ix)) "")
+          print-line-uni ""
+          print-line-uni "ask it BY NAME and it answers the question you asked:"
+          print-line-uni ("  apps/colophon/Impression.codex -> " & current-line ix "apps/colophon/Impression.codex")
+          print-line-uni ("  apps/colophon/Colophon.codex   -> " & current-line ix "apps/colophon/Colophon.codex")
+          print-line-uni ""
+          print-line-uni "and the current Colophon is the SECOND edition, because the last write for a"
+          print-line-uni "path is the current value of that path. That is what a log has always meant,"
+          print-line-uni "and it needs no supersession record to say it:"
+          print-line-uni ("  current == the second edition: " & (if current-hash ix "apps/colophon/Colophon.codex" == c2.sd-hash then "yes" else "NO"))
+          print-line-uni ""
+          print-line-uni "SUPERSEDING IS NOT DELETING. The first edition is still here, still verifies,"
+          print-line-uni "and always will. It is simply no longer what the path points at:"
+          print-line-uni ("  the first edition, fetched by its hash: " & hash-line ix (c1.sd-hash))
+          print-line-uni ("  and it still hashes to itself:          " & (if colophon-hash first-work == c1.sd-hash then "yes" else "NO"))
+        end
+
+        print-line-uni ""
+        print-line-uni "-- what is still missing --"
+        print-line-uni "There is no way to say a path is GONE. A tombstone, and the removal it would"
+        print-line-uni "let you express, is 6.5. Until then this store can add and it can revise, and"
+        print-line-uni "it cannot forget -- which, for a repository, is the right way round to be"
+        print-line-uni "incomplete."
+      end
+    end
+  end
+
+Page 1

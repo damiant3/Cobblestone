@@ -48,8 +48,14 @@ Section: Pose
     bp-scale : Vec3
   }
 
+ The identity pose scales by one. It scaled by a thousand, because Vec3 was
+ fixed-point when this was written and a thousand meant unity there; bp-to-mat4
+ hands the scale straight to mat4-scale, where 1.0 is identity. So the identity
+ BonePose was a thousandfold magnification, and it type-checked perfectly. The
+ same bug lived in Scene3D's t3-identity.
+
   bp-identity : BonePose
-  bp-identity = BonePose { bp-pos = vec3-zero, bp-rot = quat-identity, bp-scale = vec3-new 1000.0 1000.0 1000.0 }
+  bp-identity = BonePose { bp-pos = vec3-zero, bp-rot = quat-identity, bp-scale = vec3-new 1.0 1.0 1.0 }
 
   bp-to-mat4 : BonePose -> Mat4
   bp-to-mat4 (p) =
@@ -58,12 +64,18 @@ Section: Pose
     in let trans = mat4-translate (p.bp-pos.vx) (p.bp-pos.vy) (p.bp-pos.vz)
     in mat4-mul trans (mat4-mul rot scale)
 
+ The blend parameter stays an integer in thousandths at the API, because that
+ is what every caller counts in, and crosses to Real once. Vec3 and Quat are
+ Real: quat-slerp already declares a Real t, and weighting a Real component
+ by an integer thousandth was the shape of the rot here.
+
   bp-lerp : BonePose, BonePose, Integer -> BonePose
   bp-lerp (a) (b) (t) =
-    let inv-t = 1000 - t
-    in let lerp-pos = vec3-new (a.bp-pos.vx * inv-t / 1000 + b.bp-pos.vx * t / 1000) (a.bp-pos.vy * inv-t / 1000 + b.bp-pos.vy * t / 1000) (a.bp-pos.vz * inv-t / 1000 + b.bp-pos.vz * t / 1000)
-    in let lerp-rot = quat-slerp (a.bp-rot) (b.bp-rot) t
-    in let lerp-scl = vec3-new (a.bp-scale.vx * inv-t / 1000 + b.bp-scale.vx * t / 1000) (a.bp-scale.vy * inv-t / 1000 + b.bp-scale.vy * t / 1000) (a.bp-scale.vz * inv-t / 1000 + b.bp-scale.vz * t / 1000)
+    let ft = real-from-int t / 1000.0
+    in let inv-t = 1.0 - ft
+    in let lerp-pos = vec3-new (a.bp-pos.vx * inv-t + b.bp-pos.vx * ft) (a.bp-pos.vy * inv-t + b.bp-pos.vy * ft) (a.bp-pos.vz * inv-t + b.bp-pos.vz * ft)
+    in let lerp-rot = quat-slerp (a.bp-rot) (b.bp-rot) ft
+    in let lerp-scl = vec3-new (a.bp-scale.vx * inv-t + b.bp-scale.vx * ft) (a.bp-scale.vy * inv-t + b.bp-scale.vy * ft) (a.bp-scale.vz * inv-t + b.bp-scale.vz * ft)
     in BonePose { bp-pos = lerp-pos, bp-rot = lerp-rot, bp-scale = lerp-scl }
 
 Section: Keyframe Animation
@@ -186,21 +198,25 @@ Section: Vertex Skinning (4 influences)
   sw-dual : Integer, Integer, Integer -> SkinWeight
   sw-dual (b0) (b1) (w0) = SkinWeight { sw-bone0 = b0, sw-weight0 = w0, sw-bone1 = b1, sw-weight1 = 1000 - w0, sw-bone2 = 0, sw-weight2 = 0, sw-bone3 = 0, sw-weight3 = 0 }
 
+ A Vertex holds integer world coordinates and Vec3 is Real, so a vertex
+ crosses into the skinning maths and back out again. The bone weights stay
+ integer thousandths, which is what a SkinWeight stores.
+
   skin-vertex : Vertex, SkinWeight, List Mat4 -> Vertex
   skin-vertex (v) (sw) (palette) =
-    let pos = vec3-new (v.vp-x) (v.vp-y) (v.vp-z)
+    let pos = vec3-new (real-from-int (v.vp-x)) (real-from-int (v.vp-y)) (real-from-int (v.vp-z))
     in let p0 = skin-weighted-transform pos (list-at palette (sw.sw-bone0)) (sw.sw-weight0)
     in let p1 = skin-weighted-transform pos (list-at palette (sw.sw-bone1)) (sw.sw-weight1)
     in let p2 = skin-weighted-transform pos (list-at palette (sw.sw-bone2)) (sw.sw-weight2)
     in let p3 = skin-weighted-transform pos (list-at palette (sw.sw-bone3)) (sw.sw-weight3)
     in let result = vec3-new (p0.vx + p1.vx + p2.vx + p3.vx) (p0.vy + p1.vy + p2.vy + p3.vy) (p0.vz + p1.vz + p2.vz + p3.vz)
-    in Vertex { vp-x = result.vx, vp-y = result.vy, vp-z = result.vz, vn-x = v.vn-x, vn-y = v.vn-y, vn-z = v.vn-z, vu = v.vu, vv = v.vv, v-color = v.v-color }
+    in Vertex { vp-x = real-to-int (result.vx), vp-y = real-to-int (result.vy), vp-z = real-to-int (result.vz), vn-x = v.vn-x, vn-y = v.vn-y, vn-z = v.vn-z, vu = v.vu, vv = v.vv, v-color = v.v-color }
 
   skin-weighted-transform : Vec3, Mat4, Integer -> Vec3
   skin-weighted-transform (pos) (mat) (weight) =
     if weight == 0 then vec3-zero
     else let transformed = mat4-transform-point mat pos
-    in vec3-new (transformed.vx * weight / 1000) (transformed.vy * weight / 1000) (transformed.vz * weight / 1000)
+    in vec3-scale transformed (real-from-int weight / 1000.0)
 
 Section: Helpers
 

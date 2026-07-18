@@ -4,8 +4,7 @@
 **Status**: North star. This is a plan for the project, not a feature.
 **Companions**: `VisionAndVirtues.md` (how we work),
 `docs/PM/Stories/Vision/NewRepository.txt` (the founding prompt),
-`docs/Designs/OS/Active/DistributedAgentOS.md` (the pattern in the stone),
-`docs/Designs/OS/Done/TrustAndRuntime.md` (the trust architecture)
+`docs/PM/Stories/Vision/DistributedAgentOS.md` (the pattern in the stone)
 
 Per Virtue 8: vision documents are north stars, not specifications. This
 document describes the destination and the great arcs of the route. It does
@@ -127,12 +126,12 @@ verified against the code on 2026-07-07:
   with it. The hard-realtime primitive the flight controller needs.
 - Constant-time crypto on bare metal: Ed25519, SHA-256/512, AES-GCM,
   ChaCha20, X25519, HKDF. Tested against published vectors.
-- 52 transpiler plugs; ARM64 and RISC-V native backends at GCC-Os-class
+- 54 transpiler plugs; ARM64 and RISC-V native backends at GCC-Os-class
   codegen; boards from STM32 to nRF9160; MQTT/CoAP/LwM2M/OTA; compliance
   evidence as a build artifact.
 
 **Framed — real code, tested, incomplete.**
-- The trust stack (`codex/os/trust/`, 14 modules): lattice, handshake,
+- The trust stack (`codex/os/trust/`, 16 modules): lattice, handshake,
   transport, lease manager, peer discovery, the seven-message agent
   protocol, forensics chain. Core operations tested end-to-end in-process
   and over TCP.
@@ -150,10 +149,10 @@ verified against the code on 2026-07-07:
   profiles, ParentalUI state machine. No enforcement loop, no tests yet.
 - The policy-prose compiler (grant/deny/quota/delegation templates → 
   `PolicyFact`): designed in full, CDX5001-5007 reserved, unimplemented.
-- The Clarifier (`docs/Designs/Language/Active/Clarifier.md`): the feedback
-  loop that closes the semantic gap — "I understood 3 grants and 2 denials;
-  is this complete?" More load-bearing than its folder implies.
-- Circuits (`apps/circuits/`, 67 chapters): schematic capture, SPICE, PCB
+- The Clarifier: the feedback loop that closes the semantic gap —
+  "I understood 3 grants and 2 denials; is this complete?" More
+  load-bearing than its folder implies.
+- Circuits (`apps/circuits/`, 66 chapters): schematic capture, SPICE, PCB
   layout, manufacturing output. Today it is an architecture and a wish.
   In this plan it is the first organ of self-replication.
 
@@ -296,7 +295,7 @@ from machines we borrowed to machines we made.
 What exists: nine boards with register-level drivers from official
 reference manuals, ARM64 and RISC-V backends at parity, power-management
 sketches, the UEFI/BIOS boot path, a real ASUS motherboard that has booted
-the seed — and circuits, 67 chapters of EDA architecture waiting to be
+the seed — and circuits, 66 chapters of EDA architecture waiting to be
 real.
 
 The climb:

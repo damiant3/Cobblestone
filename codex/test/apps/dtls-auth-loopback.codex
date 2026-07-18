@@ -1,0 +1,266 @@
+Chapter: DtlsAuthLoopbackTest
+  cites Net chapter DtlsEndpoint
+  cites Encode chapter X509
+  cites Encode chapter X509Chain
+  cites Foreword chapter Maybe
+
+ An AUTHENTICATED DTLS 1.3 handshake, end to end, over datagrams, with no
+ network -- and the negative that proves it is authentication and not
+ decoration.
+
+ The server presents a real Ed25519 leaf certificate and signs the
+ transcript with its private key. The certificate chain was minted outside
+ Codex: the DER was built by .NET's ASN.1 writer and the signatures by our
+ own RFC-8032-gated Ed25519 (the forge in scratchpad/forge). The client
+ carries the CA as its trust anchor.
+
+ UNLIKE THE ANONYMOUS LOOPBACK, THIS ONE AUTHENTICATES. If test-mitm below
+ is not "not-done", the man-in-the-middle defence is broken and nothing
+ here is secure.
+
+Section: Fixtures
+
+  ca-cert : List Integer =
+    [48, 129, 241, 48, 129, 164, 160, 3, 2, 1, 2, 2, 1, 1, 48, 5, 
+     6, 3, 43, 101, 112, 48, 24, 49, 22, 48, 20, 6, 3, 85, 4, 3, 
+     12, 13, 67, 111, 100, 101, 120, 32, 84, 101, 115, 116, 32, 67, 65, 48, 
+     30, 23, 13, 50, 48, 48, 49, 48, 49, 48, 48, 48, 48, 48, 48, 90, 
+     23, 13, 52, 48, 48, 49, 48, 49, 48, 48, 48, 48, 48, 48, 90, 48, 
+     24, 49, 22, 48, 20, 6, 3, 85, 4, 3, 12, 13, 67, 111, 100, 101, 
+     120, 32, 84, 101, 115, 116, 32, 67, 65, 48, 42, 48, 5, 6, 3, 43, 
+     101, 112, 3, 33, 0, 121, 181, 86, 46, 143, 230, 84, 249, 64, 120, 177, 
+     18, 232, 169, 139, 167, 144, 31, 133, 58, 230, 149, 190, 215, 224, 227, 145, 
+     11, 173, 4, 150, 100, 163, 19, 48, 17, 48, 15, 6, 3, 85, 29, 19, 
+     1, 1, 255, 4, 5, 48, 3, 1, 1, 255, 48, 5, 6, 3, 43, 101, 
+     112, 3, 65, 0, 14, 21, 153, 51, 195, 232, 47, 199, 202, 50, 58, 152, 
+     181, 85, 0, 215, 88, 32, 189, 25, 247, 196, 190, 179, 216, 71, 243, 101, 
+     109, 245, 106, 4, 125, 180, 86, 248, 210, 19, 135, 145, 131, 100, 110, 77, 
+     47, 118, 22, 180, 149, 20, 46, 148, 36, 211, 210, 198, 29, 160, 148, 194, 
+     158, 48, 27, 1]
+
+  leaf-cert : List Integer =
+    [48, 129, 224, 48, 129, 147, 160, 3, 2, 1, 2, 2, 1, 2, 48, 5, 
+     6, 3, 43, 101, 112, 48, 24, 49, 22, 48, 20, 6, 3, 85, 4, 3, 
+     12, 13, 67, 111, 100, 101, 120, 32, 84, 101, 115, 116, 32, 67, 65, 48, 
+     30, 23, 13, 50, 48, 48, 49, 48, 49, 48, 48, 48, 48, 48, 48, 90, 
+     23, 13, 52, 48, 48, 49, 48, 49, 48, 48, 48, 48, 48, 48, 90, 48, 
+     28, 49, 26, 48, 24, 6, 3, 85, 4, 3, 12, 17, 100, 101, 118, 105, 
+     99, 101, 46, 99, 111, 100, 101, 120, 46, 116, 101, 115, 116, 48, 42, 48, 
+     5, 6, 3, 43, 101, 112, 3, 33, 0, 61, 64, 23, 195, 232, 67, 137, 
+     90, 146, 183, 10, 167, 77, 27, 126, 188, 156, 152, 44, 207, 46, 196, 150, 
+     140, 192, 205, 85, 241, 42, 244, 102, 12, 48, 5, 6, 3, 43, 101, 112, 
+     3, 65, 0, 192, 119, 224, 223, 156, 128, 13, 8, 81, 105, 237, 95, 95, 
+     124, 10, 211, 52, 14, 16, 82, 152, 156, 143, 23, 34, 40, 109, 77, 125, 
+     244, 86, 22, 157, 63, 50, 157, 35, 123, 57, 128, 115, 210, 119, 80, 7, 
+     185, 132, 226, 65, 143, 64, 91, 62, 189, 193, 143, 118, 167, 123, 250, 204, 
+     95, 252, 2]
+
+  leaf-priv : List Integer =
+    [76, 205, 8, 155, 40, 255, 150, 218, 157, 182, 195, 70, 236, 17, 78, 15, 
+     91, 138, 49, 159, 53, 171, 166, 36, 218, 140, 246, 237, 79, 184, 166, 251]
+
+  leaf-pub : List Integer =
+    [61, 64, 23, 195, 232, 67, 137, 90, 146, 183, 10, 167, 77, 27, 126, 188, 
+     156, 152, 44, 207, 46, 196, 150, 140, 192, 205, 85, 241, 42, 244, 102, 12]
+
+Section: Setup
+
+  c-priv : List Integer =
+    [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16,
+     17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32]
+
+  s-priv : List Integer =
+    [32, 31, 30, 29, 28, 27, 26, 25, 24, 23, 22, 21, 20, 19, 18, 17,
+     16, 15, 14, 13, 12, 11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1]
+
+  cookie-secret : List Integer = [7, 7, 7, 7, 7, 7, 7, 7]
+  client-addr : List Integer = [10, 0, 0, 7]
+
+ The handshake Randoms: caller-supplied entropy, fixed here for a
+ reproducible exchange, distinct from the private keys.
+
+  c-random : List Integer =
+    [101, 102, 103, 104, 105, 106, 107, 108, 109, 110, 111, 112, 113, 114, 115, 116,
+     117, 118, 119, 120, 121, 122, 123, 124, 125, 126, 127, 128, 129, 130, 131, 132]
+
+  s-random : List Integer =
+    [201, 202, 203, 204, 205, 206, 207, 208, 209, 210, 211, 212, 213, 214, 215, 216,
+     217, 218, 219, 220, 221, 222, 223, 224, 225, 226, 227, 228, 229, 230, 231, 232]
+
+ The client's calendar time, inside the certificate's 2020..2040 validity.
+
+  cal-now : List Integer = [50, 48, 50, 53, 48, 49, 48, 49, 48, 48, 48, 48, 48, 48]
+
+ The trust anchor is the CA: parse its certificate, take its subject name
+ and key. A name match alone means nothing here -- the anchor carries the
+ KEY, and the leaf must be signed by it.
+
+  ca-parsed : Maybe X509Cert = x509-parse ca-cert
+
+  anchors : List X509Anchor =
+    when ca-parsed is None -> [] is Just (c) -> [X509Anchor { xa-subject = c.xc-subject, xa-key = c.xc-key }]
+
+ The server presents the leaf and signs with the leaf's private key. The
+ client requires authentication because it holds anchors.
+
+  s0 : DtlsEp = dtls-ep-with-cert (dtls-ep-new True s-priv s-random cookie-secret client-addr) [leaf-cert] leaf-priv leaf-pub
+  c0 : DtlsEp = dtls-ep-with-anchors (dtls-ep-new False c-priv c-random [] []) anchors cal-now
+
+Section: The Authenticated Exchange
+
+  st1 : DtlsEpStep = dtls-ep-client c0 0
+  d1 : List Integer = list-at (st1.es-out) 0
+
+  st2 : DtlsEpStep = dtls-ep-recv s0 d1 10
+  d2 : List Integer = list-at (st2.es-out) 0
+
+  st3 : DtlsEpStep = dtls-ep-recv (st1.es-ep) d2 20
+  d3 : List Integer = list-at (st3.es-out) 0
+
+ The cookie verifies: the server emits ServerHello, Certificate,
+ CertificateVerify, Finished -- four datagrams.
+
+  st4 : DtlsEpStep = dtls-ep-recv (st2.es-ep) d3 30
+  d-sh : List Integer = list-at (st4.es-out) 0
+  d-cert : List Integer = list-at (st4.es-out) 1
+  d-cv : List Integer = list-at (st4.es-out) 2
+  d-fin : List Integer = list-at (st4.es-out) 3
+
+ The client consumes them in order: ServerHello (keys), Certificate (chain
+ walk), CertificateVerify (signature over its own transcript), Finished.
+
+  st5 : DtlsEpStep = dtls-ep-recv (st3.es-ep) d-sh 40
+  st6 : DtlsEpStep = dtls-ep-recv (st5.es-ep) d-cert 41
+  st7 : DtlsEpStep = dtls-ep-recv (st6.es-ep) d-cv 42
+  st8 : DtlsEpStep = dtls-ep-recv (st7.es-ep) d-fin 43
+  d-cfin : List Integer = list-at (st8.es-out) 0
+
+  st9 : DtlsEpStep = dtls-ep-recv (st4.es-ep) d-cfin 50
+
+Section: Results
+
+  test-flights : Text =
+    "auth flights sh+cert+cv+fin=" & show (list-length (st4.es-out))
+
+  test-client-done : Text = "auth client-done=" & show (dtls-ep-done (st8.es-ep))
+  test-server-done : Text = "auth server-done=" & show (dtls-ep-done (st9.es-ep))
+
+ The line that separates this from the anonymous loopback: the client
+ authenticated the server.
+
+  test-authenticated : Text = "auth client-authenticated=" & show (dtls-ep-authenticated (st8.es-ep))
+
+  test-agree : Text =
+    "auth agree=" & show (dtls-ct-equal ((st8.es-ep).ep-s-hs) ((st9.es-ep).ep-s-hs))
+
+Section: The Man In The Middle
+
+ An active attacker cannot forge the server's signature, so he substitutes
+ his own key_share in the ServerHello to read the traffic. Here we model
+ that by flipping one byte of the ServerHello key_share value before it
+ reaches the client. The ServerHello still parses; the client derives a
+ different shared secret and, decisively, a different transcript -- so the
+ server's CertificateVerify, which signed the REAL transcript, no longer
+ verifies. The client must NOT complete and must NOT authenticate.
+
+  d-sh-tampered : List Integer = flip-late d-sh
+
+ Flip a byte 6 from the end -- inside the key_share value, past its length
+ framing, so the ServerHello still parses and the failure lands at
+ CertificateVerify rather than at ServerHello parsing.
+
+  flip-late : List Integer -> List Integer
+  flip-late (bs) = list-set-at (copy-bytes bs) (list-length bs - 6) (bit-xor (list-at bs (list-length bs - 6)) 1)
+
+  copy-bytes : List Integer -> List Integer
+  copy-bytes (bs) = cb-loop bs 0 (list-length bs) []
+  cb-loop : List Integer, Integer, Integer, List Integer -> List Integer
+  cb-loop (bs) (i) (n) (acc) =
+    if i >= n then acc else cb-loop bs (i + 1) n (list-push acc (list-at bs i))
+
+  m5 : DtlsEpStep = dtls-ep-recv (st3.es-ep) d-sh-tampered 40
+  m6 : DtlsEpStep = dtls-ep-recv (m5.es-ep) d-cert 41
+  m7 : DtlsEpStep = dtls-ep-recv (m6.es-ep) d-cv 42
+  m8 : DtlsEpStep = dtls-ep-recv (m7.es-ep) d-fin 43
+
+  test-mitm : Text =
+    "auth mitm client-done=" & show (dtls-ep-done (m8.es-ep)) & " authenticated=" & show (dtls-ep-authenticated (m8.es-ep)) & " out=" & show (list-length (m8.es-out))
+
+Section: The Downgrade
+
+ An ANONYMOUS server -- no certificate -- talking to a client that requires
+ authentication. The server sends only ServerHello and Finished. The client
+ has anchors, so it must refuse to complete rather than silently accept an
+ unauthenticated peer.
+
+  anon-s0 : DtlsEp = dtls-ep-new True s-priv s-random cookie-secret client-addr
+  ds2 : DtlsEpStep = dtls-ep-recv anon-s0 d1 10
+  dd2 : List Integer = list-at (ds2.es-out) 0
+  ds3 : DtlsEpStep = dtls-ep-recv (st1.es-ep) dd2 20
+  dd3 : List Integer = list-at (ds3.es-out) 0
+  ds4 : DtlsEpStep = dtls-ep-recv (ds2.es-ep) dd3 30
+  dd-sh : List Integer = list-at (ds4.es-out) 0
+  dd-fin : List Integer = list-at (ds4.es-out) 1
+  ds5 : DtlsEpStep = dtls-ep-recv (ds3.es-ep) dd-sh 40
+  ds6 : DtlsEpStep = dtls-ep-recv (ds5.es-ep) dd-fin 41
+
+  test-downgrade : Text =
+    "auth downgrade client-done=" & show (dtls-ep-done (ds6.es-ep))
+
+Section: The Expected Peer
+
+ The chain proves the leaf is trusted; it does not prove it is the peer the
+ client meant to reach. A client that pins the expected peer completes only
+ when the leaf's subject is that peer, and refuses an otherwise-valid chain
+ that authenticates a DIFFERENT holder under the same CA -- a
+ man-in-the-middle holding a real certificate of his own.
+
+  leaf-parsed : Maybe X509Cert = x509-parse leaf-cert
+
+  leaf-subject : List Integer =
+    when leaf-parsed is None -> [] is Just (c) -> c.xc-subject
+
+  ca-subject : List Integer =
+    when ca-parsed is None -> [] is Just (c) -> c.xc-subject
+
+ Right peer: the client pins the leaf's own subject (device.codex.test).
+ The server datagrams are the ones it already emitted at st4; only the
+ client's pinned identity differs from the anchors-only run above. It
+ completes and authenticates exactly as the unpinned client did.
+
+  good-c : DtlsEp = dtls-ep-expect-peer (st3.es-ep) leaf-subject
+  good5 : DtlsEpStep = dtls-ep-recv good-c d-sh 40
+  good6 : DtlsEpStep = dtls-ep-recv (good5.es-ep) d-cert 41
+  good7 : DtlsEpStep = dtls-ep-recv (good6.es-ep) d-cv 42
+  good8 : DtlsEpStep = dtls-ep-recv (good7.es-ep) d-fin 43
+
+  test-expect-ok : Text =
+    "auth expect-right client-done=" & show (dtls-ep-done (good8.es-ep)) & " authenticated=" & show (dtls-ep-authenticated (good8.es-ep))
+
+ Wrong peer: the client pins the CA's subject, not the leaf's. The chain
+ still walks to the anchor and every signature verifies -- but the leaf is
+ device.codex.test, not the CA, so an identity-pinning client refuses at
+ the Certificate. A valid credential for the wrong peer does not complete.
+
+  bad-c : DtlsEp = dtls-ep-expect-peer (st3.es-ep) ca-subject
+  bad5 : DtlsEpStep = dtls-ep-recv bad-c d-sh 40
+  bad6 : DtlsEpStep = dtls-ep-recv (bad5.es-ep) d-cert 41
+  bad7 : DtlsEpStep = dtls-ep-recv (bad6.es-ep) d-cv 42
+  bad8 : DtlsEpStep = dtls-ep-recv (bad7.es-ep) d-fin 43
+
+  test-expect-wrong : Text =
+    "auth expect-wrong client-done=" & show (dtls-ep-done (bad8.es-ep))
+
+Section: Entry
+
+  opening : [Console] Nothing = act
+    print-line-uni test-flights
+    print-line-uni test-client-done
+    print-line-uni test-server-done
+    print-line-uni test-authenticated
+    print-line-uni test-agree
+    print-line-uni test-mitm
+    print-line-uni test-downgrade
+    print-line-uni test-expect-ok
+    print-line-uni test-expect-wrong
+  end

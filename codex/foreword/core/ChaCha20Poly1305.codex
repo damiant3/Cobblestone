@@ -1,0 +1,103 @@
+Chapter: ChaCha20Poly1305
+  cites Foreword chapter ChaCha20
+  cites Foreword chapter Poly1305
+  cites Foreword chapter Maybe
+
+ ChaCha20-Poly1305 AEAD (RFC 8439 section 2.8). The construction that
+ TLS 1.3, DTLS 1.3, and WireGuard use where AES hardware is absent --
+ which on the MCU class of device is most of the time.
+
+ ChaCha20 alone is a stream cipher: it gives confidentiality and no
+ integrity whatsoever, and a stream cipher without a MAC is malleable,
+ so an attacker who cannot read the plaintext can still flip chosen
+ bits of it. This chapter is what makes ChaCha20 safe to send over a
+ wire. Do not reach for chacha20-encrypt directly.
+
+ The one-time Poly1305 key is the first 32 bytes of ChaCha20 block
+ zero. The payload is then encrypted from block one, so the key stream
+ and the authenticator key never overlap -- and the Poly1305 key is
+ fresh per (key, nonce) pair, which is the whole basis of Poly1305's
+ security. A repeated nonce under the same key destroys it.
+
+ To chacha20poly1305-encrypt gives ciphertext and a 16-byte tag.
+ To chacha20poly1305-decrypt gives plaintext if the tag verifies, None otherwise.
+
+ We say:
+
+Section: Types
+
+  ChaChaPolyResult = record {
+    cp-ciphertext : List Integer,
+    cp-tag : List Integer
+  }
+
+Section: One-Time Key
+
+ Block zero of the key stream, first 32 bytes. RFC 8439 section 2.6.
+
+  chacha-poly-keygen : List Integer, List Integer -> List Integer
+  chacha-poly-keygen (key) (nonce) =
+    cp-take (chacha-words-to-bytes (chacha-block key 0 nonce)) 32
+
+Section: MAC Input
+
+ The authenticated data and the ciphertext are each zero-padded to a
+ 16-byte boundary, then followed by their two lengths as 64-bit
+ little-endian counts. The lengths are what stop an attacker from
+ shifting bytes between the AAD and the ciphertext while keeping the
+ concatenation -- and therefore the tag -- unchanged.
+
+  chacha-poly-mac-data : List Integer, List Integer -> List Integer
+  chacha-poly-mac-data (aad) (ct) =
+    let a = aad & cp-pad16 (list-length aad)
+    in let c = ct & cp-pad16 (list-length ct)
+    in a & c & cp-le64 (list-length aad) & cp-le64 (list-length ct)
+
+  chacha-poly-tag : List Integer, List Integer, List Integer, List Integer -> List Integer
+  chacha-poly-tag (key) (nonce) (aad) (ct) =
+    poly1305-mac (chacha-poly-keygen key nonce) (chacha-poly-mac-data aad ct)
+
+Section: Encrypt
+
+  chacha20poly1305-encrypt : List Integer, List Integer, List Integer, List Integer -> ChaChaPolyResult
+  chacha20poly1305-encrypt (key) (nonce) (plaintext) (aad) =
+    let ct = chacha20-encrypt key nonce plaintext 1
+    in ChaChaPolyResult { cp-ciphertext = ct, cp-tag = chacha-poly-tag key nonce aad ct }
+
+Section: Decrypt
+
+ The tag is verified before a single byte of plaintext is produced.
+ Decrypt-then-verify would hand an attacker a decryption oracle; this
+ is verify-then-decrypt, and the None branch is not an error path to be
+ tidied away -- it is the security property.
+
+  chacha20poly1305-decrypt : List Integer, List Integer, List Integer, List Integer, List Integer -> Maybe (List Integer)
+  chacha20poly1305-decrypt (key) (nonce) (ciphertext) (aad) (tag) =
+    let expected = chacha-poly-tag key nonce aad ciphertext
+    in if poly-tags-equal expected tag then Just (chacha20-encrypt key nonce ciphertext 1)
+    else None
+
+Section: Helpers
+
+  cp-pad16 : Integer -> List Integer
+  cp-pad16 (len) =
+    let r = len - (len / 16) * 16
+    in if r == 0 then [] else cp-zeros (16 - r) 0 []
+
+  cp-zeros : Integer, Integer, List Integer -> List Integer
+  cp-zeros (n) (i) (acc) =
+    if i >= n then acc
+    else cp-zeros n (i + 1) (list-push acc 0)
+
+  cp-le64 : Integer -> List Integer
+  cp-le64 (n) =
+    [bit-and n 255, bit-and (bit-shru n 8) 255, bit-and (bit-shru n 16) 255, bit-and (bit-shru n 24) 255,
+     bit-and (bit-shru n 32) 255, bit-and (bit-shru n 40) 255, bit-and (bit-shru n 48) 255, bit-and (bit-shru n 56) 255]
+
+  cp-take : List Integer, Integer -> List Integer
+  cp-take (xs) (n) = cp-take-loop xs n 0 []
+
+  cp-take-loop : List Integer, Integer, Integer, List Integer -> List Integer
+  cp-take-loop (xs) (n) (i) (acc) =
+    if i >= n then acc
+    else cp-take-loop xs n (i + 1) (list-push acc (list-at xs i))

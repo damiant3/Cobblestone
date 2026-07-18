@@ -1,0 +1,98 @@
+Chapter: ChaCha20Poly1305Test
+  cites Foreword chapter Aes
+  cites Foreword chapter ChaCha20Poly1305
+  cites Foreword chapter Maybe
+
+ The RFC 8439 section 2.8.2 AEAD vector, byte for byte. Expected values
+ come from OpenSSL and agree with the RFC's published ciphertext and
+ tag; nothing here is checked against our own encoder.
+
+ The two tamper cases matter more than the happy path. A stream cipher
+ with a broken MAC still round-trips perfectly, so a passing encrypt
+ and decrypt would prove nothing about integrity. Flipping a ciphertext
+ byte and, separately, an AAD byte must both be rejected -- the second
+ is the one that proves the additional data is actually authenticated
+ rather than merely carried alongside.
+
+Section: Vector
+
+  cpt-key : List Integer =
+    [128, 129, 130, 131, 132, 133, 134, 135, 136, 137, 138, 139, 140, 141, 142, 143,
+     144, 145, 146, 147, 148, 149, 150, 151, 152, 153, 154, 155, 156, 157, 158, 159]
+
+  cpt-nonce : List Integer =
+    [7, 0, 0, 0, 64, 65, 66, 67, 68, 69, 70, 71]
+
+  cpt-aad : List Integer =
+    [80, 81, 82, 83, 192, 193, 194, 195, 196, 197, 198, 199]
+
+  cpt-plain : List Integer =
+    [76, 97, 100, 105, 101, 115, 32, 97, 110, 100, 32, 71, 101, 110, 116, 108, 101, 109,
+     101, 110, 32, 111, 102, 32, 116, 104, 101, 32, 99, 108, 97, 115, 115, 32, 111, 102,
+     32, 39, 57, 57, 58, 32, 73, 102, 32, 73, 32, 99, 111, 117, 108, 100, 32, 111, 102,
+     102, 101, 114, 32, 121, 111, 117, 32, 111, 110, 108, 121, 32, 111, 110, 101, 32, 116,
+     105, 112, 32, 102, 111, 114, 32, 116, 104, 101, 32, 102, 117, 116, 117, 114, 101, 44,
+     32, 115, 117, 110, 115, 99, 114, 101, 101, 110, 32, 119, 111, 117, 108, 100, 32, 98,
+     101, 32, 105, 116, 46]
+
+Section: Hex
+
+  cpt-hex : List Integer -> Text
+  cpt-hex (bs) = cpt-hex-loop bs 0 (list-length bs) ""
+
+  cpt-hex-loop : List Integer, Integer, Integer, Text -> Text
+  cpt-hex-loop (bs) (i) (n) (acc) =
+    if i >= n then acc
+    else cpt-hex-loop bs (i + 1) n (acc & aes-hex-byte (list-at bs i))
+
+Section: Encrypt
+
+  test-ct : Text =
+    let r = chacha20poly1305-encrypt cpt-key cpt-nonce cpt-plain cpt-aad
+    in "chachapoly ct=" & cpt-hex (r.cp-ciphertext)
+
+  test-tag : Text =
+    let r = chacha20poly1305-encrypt cpt-key cpt-nonce cpt-plain cpt-aad
+    in "chachapoly tag=" & cpt-hex (r.cp-tag)
+
+Section: Decrypt
+
+  test-roundtrip : Text =
+    let r = chacha20poly1305-encrypt cpt-key cpt-nonce cpt-plain cpt-aad
+    in let d = chacha20poly1305-decrypt cpt-key cpt-nonce (r.cp-ciphertext) cpt-aad (r.cp-tag)
+    in when d
+      is Just (p) -> "chachapoly decrypt=" & cpt-hex p
+      is None -> "chachapoly decrypt=REJECTED"
+
+Section: Tamper
+
+  cpt-bad-ct : List Integer =
+    let r = chacha20poly1305-encrypt cpt-key cpt-nonce cpt-plain cpt-aad
+    in list-set-at (r.cp-ciphertext) 0 (bit-xor (list-at (r.cp-ciphertext) 0) 1)
+
+  test-tamper-ct : Text =
+    let r = chacha20poly1305-encrypt cpt-key cpt-nonce cpt-plain cpt-aad
+    in let d = chacha20poly1305-decrypt cpt-key cpt-nonce cpt-bad-ct cpt-aad (r.cp-tag)
+    in when d
+      is Just (p) -> "chachapoly tamper-ct=ACCEPTED-" & show (list-length p)
+      is None -> "chachapoly tamper-ct=REJECTED"
+
+  cpt-bad-aad : List Integer =
+    list-set-at cpt-aad 0 (bit-xor (list-at cpt-aad 0) 1)
+
+  test-tamper-aad : Text =
+    let r = chacha20poly1305-encrypt cpt-key cpt-nonce cpt-plain cpt-aad
+    in let d = chacha20poly1305-decrypt cpt-key cpt-nonce (r.cp-ciphertext) cpt-bad-aad (r.cp-tag)
+    in when d
+      is Just (p) -> "chachapoly tamper-aad=ACCEPTED-" & show (list-length p)
+      is None -> "chachapoly tamper-aad=REJECTED"
+
+Section: Entry
+
+  opening : [Console] Nothing = act
+    print-line-uni test-ct
+    print-line-uni test-tag
+    print-line-uni test-roundtrip
+    print-line-uni test-tamper-ct
+    print-line-uni test-tamper-aad
+  end

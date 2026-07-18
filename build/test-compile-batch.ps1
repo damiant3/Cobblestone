@@ -95,7 +95,9 @@ function NextLine {
 
 function SkipBytes { param([int]$n); $script:pos = [Math]::Min($script:pos + $n, $raw.Length) }
 
-while ($testIdx -lt $testNames.Count -and $pos -lt $raw.Length) {
+$vmDead = $false
+
+while ($testIdx -lt $testNames.Count -and $pos -lt $raw.Length -and -not $vmDead) {
     $name = $testNames[$testIdx]
     $testOut = Join-Path $OutRoot $name
     $logLines = [System.Collections.Generic.List[string]]::new()
@@ -128,7 +130,15 @@ while ($testIdx -lt $testNames.Count -and $pos -lt $raw.Length) {
             break testloop
         }
         elseif ($line.StartsWith('!EXC')) {
-            $logLines.Add($line); $exitCode = '4'; break
+            # The VM is gone. Keep the whole dump on the test that crashed --
+            # the register/stack lines that follow are its diagnostic, not the
+            # next test's output -- and stop attributing anything after this.
+            $logLines.Add($line)
+            while ($pos -lt $raw.Length) {
+                $el = NextLine; if ($null -eq $el) { break }
+                if ($el -ne '') { $logLines.Add($el) }
+            }
+            $exitCode = '4'; $vmDead = $true; break testloop
         }
         elseif ($line.StartsWith('WD:') -or $line.StartsWith('HEAP:') -or $line.StartsWith('STACK:')) {
             if ($line.StartsWith('STACK:')) { break testloop }

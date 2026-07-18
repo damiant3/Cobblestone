@@ -1,5 +1,4 @@
 Chapter: CdxCodes
-  cites Codex chapter Lists
 
  Central registry of diagnostic codes. Codes are plain integers; call
  sites use the named constants below.
@@ -25,6 +24,14 @@ Section: Infrastructure
   cdx-deck-overflow : Integer = 9002
 
   cdx-escape-violation : Integer = 9003
+
+  cdx-accum-overflow : Integer = 9005
+
+  cdx-lir-prologue-violation : Integer = 9006
+
+  cdx-lir-structural-violation : Integer = 9007
+
+  cdx-lir-allocation-violation : Integer = 9008
 
 Section: Lexer
   cdx-invalid-tab-escape : Integer = 5
@@ -80,6 +87,8 @@ Section: Type checker and Codegen
 
   cdx-unknown-record-field : Integer = 2005
 
+  cdx-missing-record-field : Integer = 2006
+
   cdx-infinite-type : Integer = 2010
 
   cdx-effect-undeclared : Integer = 2031
@@ -88,11 +97,25 @@ Section: Type checker and Codegen
 
   cdx-let-binds-effectful-value : Integer = 2033
 
+  cdx-unhandled-effect-op : Integer = 2034
+
   cdx-unresolved-func-offset : Integer = 2040
 
-  cdx-error-type-in-ir : Integer = 2041
-
   cdx-emit-not-implemented : Integer = 2042
+
+ A builtin the target cannot honestly perform is CDX2042, raised by
+ emit-unknown-builtin: it is routed to emit-builtin and absent from
+ x86-builtin-emitters, so the emitter refuses rather than quietly doing
+ something else and reporting success. write-file used to print its
+ content to the console and return 0, so a program that believed it had
+ saved a file had saved nothing and was told it had — worse than not
+ having the builtin at all, because there is no error to notice.
+
+ CDX2043 was a second code for that same refusal, raised by
+ emit-no-target-impl. Both are gone: emit-no-target-impl had no call
+ site, so 2043 could not be raised by any program, and a code that
+ cannot fire is a promise the compiler does not keep — the same thing
+ this paragraph exists to forbid. CDX2042 covers the case and is live.
 
   cdx-narrowing-record-set-literal : Integer = 2050
 
@@ -122,6 +145,8 @@ Section: Type checker and Codegen
 
   cdx-nothing-as-value : Integer = 2086
 
+  cdx-body-fixes-declared-var : Integer = 2087
+
   cdx-row-mismatch : Integer = 2090
 
   cdx-row-infinite : Integer = 2091
@@ -143,7 +168,31 @@ Section: Name resolver
 
   cdx-duplicate-cite : Integer = 3003
 
+  cdx-chapter-pagination : Integer = 3004
+
   cdx-missing-cite : Integer = 3010
+
+Section: The quotation gate
+
+ A citation can only be missing. A quotation can be missing, or a lie,
+ or unsigned, or signed by a stranger, or forged, or simply not trusted
+ enough -- and each of those is a different thing to tell someone, so
+ each gets its own code. A compiler that answered all six with "could
+ not resolve" would be telling the truth and saying nothing.
+
+  cdx-quotation-missing : Integer = 3020
+
+  cdx-quotation-corrupt : Integer = 3021
+
+  cdx-quotation-unsigned : Integer = 3022
+
+  cdx-quotation-unknown-signer : Integer = 3023
+
+  cdx-quotation-forged : Integer = 3024
+
+  cdx-quotation-untrusted : Integer = 3025
+
+  cdx-quotation-no-floor : Integer = 3026
 
 Section: Capability checker
   cdx-capability-not-granted : Integer = 4001
@@ -162,6 +211,8 @@ Section: Proof
   cdx-induction-unverified : Integer = 4022
 
   cdx-circular-proof : Integer = 4023
+
+  cdx-non-grammatical-proof : Integer = 4024
 
 Section: Hard Realtime
   cdx-rt-calls-unsafe : Integer = 6001
@@ -206,13 +257,25 @@ Section: Registry
     mk-cdx cdx-infinite-type "InfiniteType" sev-error phase-type-checker "Occurs check failed - unification would produce an infinite type.",
     mk-cdx cdx-effect-undeclared "EffectUndeclared" sev-error phase-type-checker "A function body performs effects not declared in its signature; add the missing effect label or handle the effect.",
     mk-cdx cdx-let-binds-effectful-value "LetBindsEffectfulValue" sev-error phase-type-checker "let-binding the result of an effectful call silently corrupts on bare metal; use act-bind (X <- expr) inside an act block.",
+    mk-cdx cdx-unhandled-effect-op "UnhandledEffectOp" sev-error phase-codegen "A nullary effect operation is read but no handler in the program ever gives it a value; the read would silently yield zero.",
     mk-cdx cdx-unresolved-func-offset "UnresolvedFuncOffset" sev-error phase-codegen "A call or func-addr fixup refers to a function not present in the offset table; emission would produce wrong code.",
-    mk-cdx cdx-error-type-in-ir "ErrorTypeInIR" sev-error phase-codegen "An IR node reached codegen with ErrorTy in its type; an earlier phase silently failed to resolve the type.",
+    mk-cdx cdx-accum-overflow "AccumOverflow" sev-error phase-codegen "An emitter accumulator reached its pre-allocated capacity. The accumulators are sized once on the emit deck and pushed in place; past capacity a push reallocates into the per-function bivy, which the emit loop's heap-restore then reclaims under the emitter, so the table is silently corrupted. Raise accum-capacity in BuildSettings and rebuild the seed.",
+    mk-cdx cdx-lir-prologue-violation "LirPrologueViolation" sev-error phase-codegen "The entry moves a function's prologue emits do not deliver every parameter to the register the allocator assigned it. The moves are emitted before block emission and are not LIR instructions, so the allocation verifier never sees them; this check simulates the planned moves against the state the parameters actually arrive in and fails the build when a parameter would be read from the wrong place. A sequential move order clobbering a later parameter's arrival register is the shape that reaches here.",
+    mk-cdx cdx-lir-structural-violation "LirStructuralViolation" sev-error phase-codegen "The lowered LIR the selector was about to emit failed the structural verifier: a use reads a vreg no path defines, a block is malformed, or the result operand is undefined. The lowering or a rewrite pass (coalescing) produced LIR that does not compute the program; the build halts rather than emit it. The verifier runs on the emission path for every selector-handled function, not only under lir-dump.",
+    mk-cdx cdx-lir-allocation-violation "LirAllocationViolation" sev-error phase-codegen "The register allocation the emitter was about to use failed the allocation verifier: at some use, the vreg's assigned location holds a different value -- clobbered by a call or division the allocator failed to account for, or never established. The checked assignment is the one being emitted, not a re-derived one; the build halts rather than write bytes that read the wrong register.",
     mk-cdx cdx-emit-not-implemented "EmitNotImplemented" sev-error phase-codegen "The requested emit option is not implemented yet; compile aborted before machine-code emission.",
     mk-cdx cdx-duplicate-definition "DuplicateDefinition" sev-error phase-name-resolver "The same name is introduced twice at chapter scope.",
     mk-cdx cdx-undefined-name "UndefinedName" sev-error phase-name-resolver "A name was referenced but is not in any visible scope.",
     mk-cdx cdx-duplicate-cite "DuplicateCite" sev-error phase-name-resolver "Two cite declarations in the same chapter select the same name; the later cite would silently shadow the earlier.",
+    mk-cdx cdx-chapter-pagination "ChapterPagination" sev-error phase-parser "A chapter spans several files but its 'Page N of M' markers do not agree: a page is missing its marker, M does not equal the number of files, or two pages claim the same N. A chapter may legitimately span files, so a repeated chapter name is not itself an error -- but without coherent pagination an ACCIDENTAL duplicate name is indistinguishable from a deliberate page, and the two chapters merge silently under one slug.",
     mk-cdx cdx-missing-cite "MissingCite" sev-error phase-name-resolver "A cited foreword chapter could not be found on disk; the chapter file is missing or the name is misspelled.",
+    mk-cdx cdx-quotation-missing "QuotationMissing" sev-error phase-name-resolver "A quoted work was not supplied. No definition with that content hash was offered to the compiler.",
+    mk-cdx cdx-quotation-corrupt "QuotationCorrupt" sev-error phase-name-resolver "A quoted work does not hash to the digest it was quoted by. The content is not the content that was asked for.",
+    mk-cdx cdx-quotation-unsigned "QuotationUnsigned" sev-error phase-name-resolver "A quoted work carries no signature. A hash says what a definition is; only a signature says who stands behind it.",
+    mk-cdx cdx-quotation-unknown-signer "QuotationUnknownSigner" sev-error phase-name-resolver "A quoted work is signed by a key that is not in the trust manifest. We cannot check a signature from a stranger.",
+    mk-cdx cdx-quotation-forged "QuotationForged" sev-error phase-name-resolver "A quoted work's signature does not verify against its signer's key. The content and the signature disagree.",
+    mk-cdx cdx-quotation-untrusted "QuotationUntrusted" sev-error phase-name-resolver "A quoted work is signed by a key the chapter does not trust enough. Its score is below the floor set by 'trusting above'.",
+    mk-cdx cdx-quotation-no-floor "QuotationNoFloor" sev-error phase-name-resolver "A chapter that quotes a work declares no trust floor. Write 'trusting above N' so the chapter says how much trust a signer must clear; an absent floor would admit any pinned key at any score.",
     mk-cdx cdx-type-arity "TypeArity" sev-error phase-type-checker "A type constructor was applied with the wrong number of type arguments.",
     mk-cdx cdx-unterminated-text "UnterminatedText" sev-error phase-lexer "A text literal was not terminated before end of line.",
     mk-cdx cdx-resource-exhausted "ResourceExhausted" sev-error phase-infrastructure "Compiler recursion budget exhausted; the input was pathologically deep or a walker cycled. Bail rather than stack-overflow.",
@@ -242,6 +305,7 @@ Section: Registry
     mk-cdx cdx-axiom-assumed "AxiomAssumed" sev-warning phase-type-checker "A proof discharges its obligation with 'assume', which asserts an equality as an unproven axiom. The proof is trusted, not checked; the axiom is part of the trust trail.",
     mk-cdx cdx-induction-unverified "InductionUnverified" sev-warning phase-parser "An 'induction' proof is parsed and its obligation accepted as an unproven axiom. Structural subgoal checking is not yet implemented (proof-system Stage 5), so the proof is trusted, not verified.",
     mk-cdx cdx-circular-proof "CircularProof" sev-error phase-type-checker "A proof definition depends on itself, directly or through other proof definitions or cited lemmas. A proof term cannot assume its own conclusion; recursion in a proof is only sound through structural induction, and lemma chains must be acyclic. To assert an equality without proof, use 'assume' (CDX4021).",
+    mk-cdx cdx-non-grammatical-proof "NonGrammaticalProof" sev-error phase-type-checker "A proof term used a disallowed expression form. A proof body may only be a proof builtin (Refl, sym, trans, cong, app-cong, assume), an inductive hypothesis, a cited claim, an 'induction' expression, or a let of proof terms. A proposition produced by an if, when, act, lambda, or other general expression is rejected, because such a form can launder a proof of a false proposition. To assert an equality without proof, use 'assume' (CDX4021).",
     mk-cdx cdx-prose-function-name-mismatch "ProseFunctionNameMismatch" sev-warning phase-parser "Prose function name does not match the notation definition below.",
     mk-cdx cdx-prose-parameter-mismatch "ProseParameterMismatch" sev-warning phase-parser "Prose parameter does not match the notation parameter.",
     mk-cdx cdx-prose-record-field-mismatch "ProseRecordFieldMismatch" sev-warning phase-parser "Prose record field does not match the notation record field.",
@@ -251,6 +315,7 @@ Section: Registry
     mk-cdx cdx-chained-arrow-type "ChainedArrowType" sev-error phase-parser "A type uses chained '->' (A -> B -> C); write multi-parameter types with commas: A, B -> C.",
     mk-cdx cdx-row-two-tails "RowTwoTails" sev-error phase-parser "An effect row may name at most one row variable (lowercase identifier); a row like [e, f] is ill-formed.",
     mk-cdx cdx-row-tail-decorated "RowTailDecorated" sev-error phase-parser "A row variable is a bare lowercase identifier; scopes and dotted sub-effects attach to concrete PascalCase effects only.",
+    mk-cdx cdx-body-fixes-declared-var "BodyFixesDeclaredVar" sev-error phase-type-checker "A definition's body decided a type variable its own signature leaves to the caller. A signature variable is universally quantified: the caller chooses it, so the body must work for every choice. A body that answers one concrete type must declare that type.",
     mk-cdx cdx-row-mismatch "RowMismatch" sev-error phase-type-checker "Two effect rows could not be unified: an effect performed on one side is not allowed by the other, and no row variable is free to absorb the difference.",
     mk-cdx cdx-row-infinite "RowInfinite" sev-error phase-type-checker "Row occurs check failed - a row variable would absorb a row that already contains it, producing an infinite effect row.",
     mk-cdx cdx-handler-unused "HandlerUnused" sev-warning phase-type-checker "A handler encloses a body whose effect row cannot perform the handled effect; the handler is legal but discharges nothing.",

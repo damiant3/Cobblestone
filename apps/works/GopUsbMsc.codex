@@ -1,0 +1,445 @@
+Chapter: GopUsbMsc
+  cites Works chapter GopXhci
+  cites Works chapter GopAhci
+  cites Foreword chapter Maybe
+
+ USB mass storage over GopXhci: Bulk-Only Transport carrying the SCSI
+ transparent command set. This is the protocol a boot stick actually
+ speaks -- the machine that booted from USB can reach its own medium
+ only through here, because AHCI and IDE see internal disks, not the
+ stick.
+
+ Every command is one round of the BOT dance: a 31-byte Command Block
+ Wrapper goes out on the bulk OUT endpoint, data moves in whichever
+ direction the command declares, and a 13-byte Command Status Wrapper
+ comes back on the bulk IN endpoint. Completion is detected by
+ polling the CSW buffer for its signature and the command's tag --
+ the CSW is defined to arrive after the data, so its arrival proves
+ the whole transfer, with no dependence on transfer events. The CSW
+ buffer's signature dword is zeroed before each command so a stale
+ status can never satisfy the poll.
+
+ All data lives in flat buffers allocated once at connect: no
+ per-command allocation, no lists on the data path. A 2 MB seed read
+ is a few dozen chunked commands against the same cycle-managed
+ rings. Every poll is fuel-bounded.
+
+ We say:
+
+Section: Protocol Constants
+
+  msc-sig-cbw : Integer = #43425355
+  msc-sig-csw : Integer = #53425355
+
+  msc-flag-in : Integer = 128
+  msc-flag-out : Integer = 0
+
+  scsi-op-test-ready : Integer = 0
+  scsi-op-inquiry : Integer = 18
+  scsi-op-capacity : Integer = 37
+  scsi-op-read10 : Integer = 40
+  scsi-op-write10 : Integer = 42
+
+  msc-chunk : Integer = 64
+
+Section: Disk State
+
+  MscDisk = record {
+    md-ok : Boolean,
+    md-host : XhciHost,
+    md-dev : UsbDev,
+    md-dci-in : Integer,
+    md-dci-out : Integer,
+    md-ring-in : Integer,
+    md-ring-out : Integer,
+    md-cbw : Integer,
+    md-csw : Integer,
+    md-buf : Integer,
+    md-sectors : Integer
+  }
+
+  msc-no-disk : MscDisk
+  msc-no-disk = MscDisk { md-ok = False, md-host = xhci-no-host, md-dev = xhci-no-dev, md-dci-in = 0, md-dci-out = 0, md-ring-in = 0, md-ring-out = 0, md-cbw = 0, md-csw = 0, md-buf = 0, md-sectors = 0 }
+
+Section: Configuration Descriptor Walk
+
+ The configuration descriptor is a flat byte run: each descriptor
+ opens with its length and type. The mass-storage interface is class
+ 8, subclass 6 (SCSI), protocol 80 (bulk-only); its bulk endpoints
+ follow it. A zero length byte would loop forever, so it terminates
+ the walk instead.
+
+  msc-cfg-total : Integer -> Integer
+  msc-cfg-total (cfg) = bit-or (peek-byte cfg 2) (bit-shl (peek-byte cfg 3) 8)
+
+  msc-find-interface : Integer, Integer, Integer -> Integer
+  msc-find-interface (cfg) (off) (total) =
+    if off >= total then -1
+    else let len = peek-byte cfg off
+    in if len == 0 then -1
+    else if peek-byte cfg (off + 1) /= 4 then msc-find-interface cfg (off + len) total
+    else if peek-byte cfg (off + 5) /= 8 then msc-find-interface cfg (off + len) total
+    else if peek-byte cfg (off + 6) /= 6 then msc-find-interface cfg (off + len) total
+    else if peek-byte cfg (off + 7) /= 80 then msc-find-interface cfg (off + len) total
+    else off
+
+ Endpoint search from just past the interface descriptor, stopping at
+ the next interface. `want-in` selects direction: bit 7 of the
+ endpoint address. Only bulk endpoints (attributes low bits 2) count.
+ One walk finds the endpoint's offset; the number and max packet size
+ are read out of it.
+
+  msc-find-bulk-off : Integer, Integer, Integer, Boolean -> Integer
+  msc-find-bulk-off (cfg) (off) (total) (want-in) =
+    if off >= total then -1
+    else let len = peek-byte cfg off
+    in if len == 0 then -1
+    else if peek-byte cfg (off + 1) == 4 then -1
+    else if peek-byte cfg (off + 1) /= 5 then msc-find-bulk-off cfg (off + len) total want-in
+    else if bit-and (peek-byte cfg (off + 3)) 3 /= 2 then msc-find-bulk-off cfg (off + len) total want-in
+    else let addr = peek-byte cfg (off + 2)
+    in let is-in = bit-and addr 128 /= 0
+    in if is-in == want-in then off
+    else msc-find-bulk-off cfg (off + len) total want-in
+
+  msc-ep-num : Integer, Integer -> Integer
+  msc-ep-num (cfg) (off) = bit-and (peek-byte cfg (off + 2)) 15
+
+  msc-ep-maxpkt : Integer, Integer -> Integer
+  msc-ep-maxpkt (cfg) (off) = bit-or (peek-byte cfg (off + 4)) (bit-shl (peek-byte cfg (off + 5)) 8)
+
+Section: Connect
+
+  msc-connect : [Device.Port] MscDisk
+  msc-connect = act
+    xh <- xhci-connect
+    if xh.xh-ok then msc-try-ports xh 0
+    else msc-no-disk
+  end
+
+ Walk the root ports: reset each connected one, address the device,
+ read its configuration descriptor, and keep the first that carries a
+ mass-storage interface -- a keyboard on port two is somebody else's
+ device. Endpoint N maps to device context index 2N for OUT and 2N+1
+ for IN.
+
+  msc-try-ports : XhciHost, Integer -> MscDisk
+  msc-try-ports (xh) (from) =
+    let port = xhci-find-port xh from
+    in if port < 0 then msc-no-disk
+    else let speed = xhci-reset-port xh port
+    in if speed == 0 then msc-try-ports xh (port + 1)
+    else let d = msc-open-port xh port speed
+    in if d.md-ok then d
+    else msc-try-ports xh (port + 1)
+
+  msc-open-port : XhciHost, Integer, Integer -> MscDisk
+  msc-open-port (xh) (port) (speed) =
+    let dev = xhci-open-device xh port speed
+    in if dev.ud-ok == False then msc-no-disk
+    else let cfg = alloc-zeroed 256 64
+    in let g = usb-get-descriptor xh dev 2 0 cfg 255
+    in if g == False then msc-no-disk
+    else let total = msc-cfg-total cfg
+    in let iface = msc-find-interface cfg 0 total
+    in if iface < 0 then msc-no-disk
+    else let skip = peek-byte cfg iface
+    in let in-off = msc-find-bulk-off cfg (iface + skip) total True
+    in let out-off = msc-find-bulk-off cfg (iface + skip) total False
+    in if in-off < 0 then msc-no-disk
+    else if out-off < 0 then msc-no-disk
+    else msc-open-endpoints xh dev (msc-ep-num cfg in-off * 2 + 1) (msc-ep-maxpkt cfg in-off) (msc-ep-num cfg out-off * 2) (msc-ep-maxpkt cfg out-off)
+
+  msc-open-endpoints : XhciHost, UsbDev, Integer, Integer, Integer, Integer -> MscDisk
+  msc-open-endpoints (xh) (dev) (dci-in) (pkt-in) (dci-out) (pkt-out) =
+    let sc = usb-set-configuration xh dev 1
+    in if sc == False then msc-no-disk
+    else let ring-in = xhci-ring-new
+    in let ring-out = xhci-ring-new
+    in let r0 = xhci-set-ep-ring (dev.ud-ctx) dci-in (xhci-ring-trbs ring-in) (xh.xh-ctxsz)
+    in let r1 = xhci-set-ep-ring (dev.ud-ctx) dci-out (xhci-ring-trbs ring-out) (xh.xh-ctxsz)
+    in let ictx = xhci-ictx-configure dci-in pkt-in (xhci-ring-trbs ring-in) dci-out pkt-out (xhci-ring-trbs ring-out) (xh.xh-ctxsz) (dev.ud-ctx)
+    in let ce = xhci-configure-endpoint xh dev ictx
+    in if ce.xe-ok == False then msc-no-disk
+    else if ce.xe-code /= trb-cc-success then msc-no-disk
+    else let disk = MscDisk { md-ok = True, md-host = xh, md-dev = dev, md-dci-in = dci-in, md-dci-out = dci-out, md-ring-in = ring-in, md-ring-out = ring-out, md-cbw = alloc-zeroed 64 64, md-csw = alloc-zeroed 64 64, md-buf = alloc-zeroed 64 64, md-sectors = 0 }
+    in let cap = msc-read-capacity disk
+    in if cap == 0 then __record-set disk "md-ok" False
+    else __record-set disk "md-sectors" cap
+
+Section: CBW Construction
+
+ The wrapper is written fresh for every command: signature, tag,
+ transfer length, direction flag, LUN zero, then the command block.
+ The command block region is zeroed first so a longer previous
+ command can never leak bytes into a shorter one.
+
+  msc-stamp-cbw : MscDisk, Integer, Integer, Integer, Integer -> Integer
+  msc-stamp-cbw (d) (tag) (xfer) (flags) (cb-len) =
+    let cbw = d.md-cbw
+    in let w0 = poke-32 cbw 0 msc-sig-cbw
+    in let w1 = poke-32 cbw 4 tag
+    in let w2 = poke-32 cbw 8 xfer
+    in let w3 = poke-byte cbw 12 flags
+    in let w4 = poke-byte cbw 13 0
+    in let w5 = poke-byte cbw 14 cb-len
+    in msc-zero-cb cbw 15
+
+  msc-zero-cb : Integer, Integer -> Integer
+  msc-zero-cb (cbw) (i) =
+    if i > 30 then 0
+    else let w = poke-byte cbw i 0
+    in msc-zero-cb cbw (i + 1)
+
+ READ(10) and WRITE(10) share a command block: opcode, then the LBA
+ and sector count big-endian -- SCSI is a big-endian protocol riding
+ inside the little-endian wrapper.
+
+  msc-cb-rw10 : MscDisk, Integer, Integer, Integer -> Integer
+  msc-cb-rw10 (d) (op) (lba) (count) =
+    let cbw = d.md-cbw
+    in let b0 = poke-byte cbw 15 op
+    in let b2 = poke-byte cbw 17 (bit-and (bit-shru lba 24) 255)
+    in let b3 = poke-byte cbw 18 (bit-and (bit-shru lba 16) 255)
+    in let b4 = poke-byte cbw 19 (bit-and (bit-shru lba 8) 255)
+    in let b5 = poke-byte cbw 20 (bit-and lba 255)
+    in let b7 = poke-byte cbw 22 (bit-and (bit-shru count 8) 255)
+    in poke-byte cbw 23 (bit-and count 255)
+
+Section: BOT Transfer
+
+  msc-next-tag : MscDisk -> Integer
+  msc-next-tag (d) =
+    let st = (d.md-host).xh-state
+    in let t = peek-32 st xh-st-tag
+    in let w = poke-32 st xh-st-tag (t + 1)
+    in t
+
+ One bulk transfer: push a normal TRB with interrupt-on-completion,
+ ring the endpoint's doorbell, and wait for its transfer event. A
+ short completion -- the device sent fewer bytes than asked, as a
+ capacity read invites -- still counts as success.
+
+  msc-xfer : MscDisk, Integer, Integer, Integer, Integer -> Boolean
+  msc-xfer (d) (ring) (dci) (buf) (len) =
+    let w = xhci-ring-push ring buf 0 len (bit-or (bit-shl trb-t-normal 10) trb-flag-ioc)
+    in let db = xhci-ring-doorbell (d.md-host) ((d.md-dev).ud-slot) dci
+    in let code = xhci-wait-xfer (d.md-host) ((d.md-dev).ud-slot) xhci-fuel
+    in if code == trb-cc-success then True
+    else code == trb-cc-short
+
+ A BOT command is three bulk transfers, each awaited on its own
+ transfer event: the CBW out, an optional data phase in the command's
+ direction, then the CSW in. Driving them one at a time -- not queuing
+ the data and status together on the ring -- is what a real
+ controller's asynchronous storage backend requires: the status token
+ must arrive after the device has finished the data, never pipelined
+ behind it, or the controller can leave the status transfer pending
+ indefinitely. The CSW's signature and tag are checked before its
+ status byte is trusted.
+
+  msc-issue : MscDisk, Integer, Boolean, Integer, Integer -> Boolean
+  msc-issue (d) (tag) (dir-in) (data-buf) (data-len) =
+    let z = poke-32 (d.md-csw) 0 0
+    in let c = msc-xfer d (d.md-ring-out) (d.md-dci-out) (d.md-cbw) 31
+    in if c == False then False
+    else let dd = if data-len == 0 then True
+      else if dir-in then msc-xfer d (d.md-ring-in) (d.md-dci-in) data-buf data-len
+      else msc-xfer d (d.md-ring-out) (d.md-dci-out) data-buf data-len
+    in if dd == False then False
+    else let s = msc-xfer d (d.md-ring-in) (d.md-dci-in) (d.md-csw) 13
+    in if s == False then False
+    else if peek-32 (d.md-csw) 0 /= msc-sig-csw then False
+    else if peek-32 (d.md-csw) 4 /= tag then False
+    else peek-byte (d.md-csw) 12 == 0
+
+Section: SCSI Operations
+
+  msc-test-ready : MscDisk -> Boolean
+  msc-test-ready (d) =
+    let tag = msc-next-tag d
+    in let h = msc-stamp-cbw d tag 0 msc-flag-out 6
+    in let c = poke-byte (d.md-cbw) 15 scsi-op-test-ready
+    in msc-issue d tag False 0 0
+
+ INQUIRY answers 36 bytes: device type, removability, and the vendor,
+ product, and revision strings. The caller reads them from `dest`.
+
+  msc-inquiry-into : MscDisk, Integer -> Boolean
+  msc-inquiry-into (d) (dest) =
+    let tag = msc-next-tag d
+    in let h = msc-stamp-cbw d tag 36 msc-flag-in 6
+    in let c0 = poke-byte (d.md-cbw) 15 scsi-op-inquiry
+    in let c1 = poke-byte (d.md-cbw) 19 36
+    in msc-issue d tag True dest 36
+
+ READ CAPACITY(10) answers eight big-endian bytes: the last LBA and
+ the block size. The total sector count is the last LBA plus one.
+ Zero means the command failed or the medium is not 512-byte.
+
+  msc-be32 : Integer, Integer -> Integer
+  msc-be32 (buf) (off) =
+    bit-or (bit-shl (peek-byte buf off) 24) (bit-or (bit-shl (peek-byte buf (off + 1)) 16) (bit-or (bit-shl (peek-byte buf (off + 2)) 8) (peek-byte buf (off + 3))))
+
+  msc-read-capacity : MscDisk -> Integer
+  msc-read-capacity (d) =
+    let tag = msc-next-tag d
+    in let h = msc-stamp-cbw d tag 8 msc-flag-in 10
+    in let c = poke-byte (d.md-cbw) 15 scsi-op-capacity
+    in let ok = msc-issue d tag True (d.md-buf) 8
+    in if ok == False then 0
+    else if msc-be32 (d.md-buf) 4 /= 512 then 0
+    else msc-be32 (d.md-buf) 0 + 1
+
+Section: Sector Read and Write
+
+  msc-read10 : MscDisk, Integer, Integer, Integer -> Boolean
+  msc-read10 (d) (lba) (count) (dest) =
+    let tag = msc-next-tag d
+    in let h = msc-stamp-cbw d tag (count * 512) msc-flag-in 10
+    in let c = msc-cb-rw10 d scsi-op-read10 lba count
+    in msc-issue d tag True dest (count * 512)
+
+  msc-write10 : MscDisk, Integer, Integer, Integer -> Boolean
+  msc-write10 (d) (lba) (count) (src) =
+    let tag = msc-next-tag d
+    in let h = msc-stamp-cbw d tag (count * 512) msc-flag-out 10
+    in let c = msc-cb-rw10 d scsi-op-write10 lba count
+    in msc-issue d tag False src (count * 512)
+
+ Bulk transfers walk the request in chunks of sixty-four sectors --
+ the same stride the IDE path uses -- so no single command carries
+ more than 32 KB and the READ(10) count never nears its 16-bit
+ ceiling. Self-recursive, constant stack.
+
+  msc-read-into : MscDisk, Integer, Integer, Integer -> Integer
+  msc-read-into (d) (lba) (count) (dest) =
+    if count <= 0 then 1
+    else let n = if count > msc-chunk then msc-chunk else count
+    in let ok = msc-read10 d lba n dest
+    in if ok == False then 0
+    else msc-read-into d (lba + n) (count - n) (dest + n * 512)
+
+  msc-write-into : MscDisk, Integer, Integer, Integer -> Integer
+  msc-write-into (d) (lba) (count) (src) =
+    if count <= 0 then 1
+    else let n = if count > msc-chunk then msc-chunk else count
+    in let ok = msc-write10 d lba n src
+    in if ok == False then 0
+    else msc-write-into d (lba + n) (count - n) (src + n * 512)
+
+Section: Published Handle
+
+ A full bring-up RESETS the controller, which destroys every other
+ device on it -- reconnecting for a disk read kills the USB keyboard.
+ So the boot path enumerates the bus once (GopUsb) and publishes the
+ disk handle's fields to a fixed cell block; any later caller
+ rebuilds the records from the cells and transfers on the already
+ -running host. The block opens with a magic dword, written LAST, so
+ firmware residue in low memory can never impersonate a handle; the
+ rebuild allocates three records per call, bounded by disk
+ operations, never by polling. All published values are guest
+ physical addresses and counts below 4 GB, so 32-bit cells hold them.
+
+  msc-cells : Integer = 36480
+  msc-cells-magic : Integer = #31425355
+
+  msc-put : Integer, Integer -> Integer
+  msc-put (i) (v) = poke-32 msc-cells (i * 4) v
+
+  msc-get : Integer -> Integer
+  msc-get (i) = peek-32 msc-cells (i * 4)
+
+  msc-publish : MscDisk -> Integer
+  msc-publish (d) =
+    let xh = d.md-host
+    in let dv = d.md-dev
+    in let z = msc-put 0 0
+    in let a1 = msc-put 1 (xh.xh-op)
+    in let a2 = msc-put 2 (xh.xh-db)
+    in let a3 = msc-put 3 (xh.xh-rt)
+    in let a4 = msc-put 4 (xh.xh-ports)
+    in let a5 = msc-put 5 (xh.xh-dcbaa)
+    in let a6 = msc-put 6 (xh.xh-cmd-ring)
+    in let a7 = msc-put 7 (xh.xh-evt-ring)
+    in let a8 = msc-put 8 (xh.xh-state)
+    in let b1 = msc-put 9 (dv.ud-slot)
+    in let b2 = msc-put 10 (dv.ud-port)
+    in let b3 = msc-put 11 (dv.ud-speed)
+    in let b4 = msc-put 12 (dv.ud-ctx)
+    in let b5 = msc-put 13 (dv.ud-ep0-ring)
+    in let c1 = msc-put 14 (d.md-dci-in)
+    in let c2 = msc-put 15 (d.md-dci-out)
+    in let c3 = msc-put 16 (d.md-ring-in)
+    in let c4 = msc-put 17 (d.md-ring-out)
+    in let c5 = msc-put 18 (d.md-cbw)
+    in let c6 = msc-put 19 (d.md-csw)
+    in let c7 = msc-put 20 (d.md-buf)
+    in let c8 = msc-put 21 (d.md-sectors)
+    in let c9 = msc-put 22 (xh.xh-ctxsz)
+    in msc-put 0 msc-cells-magic
+
+  msc-published : MscDisk
+  msc-published =
+    if msc-get 0 /= msc-cells-magic then msc-no-disk
+    else MscDisk {
+      md-ok = True,
+      md-host = XhciHost {
+        xh-ok = True,
+        xh-op = msc-get 1,
+        xh-db = msc-get 2,
+        xh-rt = msc-get 3,
+        xh-ports = msc-get 4,
+        xh-dcbaa = msc-get 5,
+        xh-cmd-ring = msc-get 6,
+        xh-evt-ring = msc-get 7,
+        xh-state = msc-get 8,
+        xh-ctxsz = msc-get 22
+      },
+      md-dev = UsbDev {
+        ud-ok = True,
+        ud-slot = msc-get 9,
+        ud-port = msc-get 10,
+        ud-speed = msc-get 11,
+        ud-ctx = msc-get 12,
+        ud-ep0-ring = msc-get 13
+      },
+      md-dci-in = msc-get 14,
+      md-dci-out = msc-get 15,
+      md-ring-in = msc-get 16,
+      md-ring-out = msc-get 17,
+      md-cbw = msc-get 18,
+      md-csw = msc-get 19,
+      md-buf = msc-get 20,
+      md-sectors = msc-get 21
+    }
+
+Section: Stateless Facade
+
+ One-shot entry points shaped like ahci-read-into, for the GopDisk
+ dispatch. A published handle -- the boot path's single enumeration
+ -- is used when present; only a machine that never ran usb-attach
+ pays a full connect per call, and such a machine has no USB keyboard
+ to kill.
+
+  usb-read-into : Integer, Integer, Integer -> [Device.Port] Integer
+  usb-read-into (lba) (count) (dest) = act
+    let p = msc-published
+    in if p.md-ok then msc-read-into p lba count dest
+    else act
+      d <- msc-connect
+      if d.md-ok then msc-read-into d lba count dest
+      else 0
+    end
+  end
+
+  usb-write-into : Integer, Integer, Integer -> [Device.Port] Integer
+  usb-write-into (lba) (count) (src) = act
+    let p = msc-published
+    in if p.md-ok then msc-write-into p lba count src
+    else act
+      d <- msc-connect
+      if d.md-ok then msc-write-into d lba count src
+      else 0
+    end
+  end

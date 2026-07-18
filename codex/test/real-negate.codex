@@ -1,0 +1,65 @@
+Chapter: RealNegate
+
+ Unary minus on a Real.
+
+ The self-compile cannot catch a regression here: the compiler does no
+ floating-point arithmetic of its own, so no amount of fixed-point green
+ exercises the negation rule on a Real. It went unnoticed that `-(f x)`,
+ where f returns a Real, was typed as an Integer: the inference rule saw
+ that the operand's type was not YET known to be Real -- an application's
+ result is still an unresolved variable at that moment -- and unified it
+ with Integer, which then collided with the declared Real. Negating a
+ Real-returning CALL was rejected while negating a Real variable was fine.
+
+ The casualty was codex/foreword/math/Matrix4.codex, whose mat4-inverse and
+ mat4-look-at negate calls (`-(mat4-at a 0 1)`, `-(vec3-dot right eye)`),
+ which took the whole 3D stack with it -- the engine quire, globe, spark.
+
+Section: Fixtures
+
+  Vec = record { vx : Real, vy : Real }
+
+  scale-by-two : Real -> Real
+  scale-by-two (x) = x * 2.0
+
+  dot : Vec, Vec -> Real
+  dot (a) (b) = a.vx * b.vx + a.vy * b.vy
+
+Section: The Forms
+
+ Each of these is a Real. The compiler must not decide any of them is an
+ Integer.
+
+  neg-param : Real -> Real
+  neg-param (x) = -x
+
+  neg-call : Real -> Real
+  neg-call (x) = -(scale-by-two x)
+
+  neg-call-multi : Vec, Vec -> Real
+  neg-call-multi (a) (b) = -(dot a b)
+
+  neg-field : Vec -> Real
+  neg-field (v) = -v.vx
+
+  neg-nested : Real -> Real
+  neg-nested (x) = -(scale-by-two (scale-by-two x))
+
+ Negation inside a larger Real expression: the shape Matrix4 actually uses.
+
+  mixed : Vec, Vec -> Real
+  mixed (a) (b) = (-(dot a b) * 2.0 + a.vx) * 10.0
+
+Section: Report
+
+ Reals are reported as scaled integers so the expected output does not
+ depend on float formatting.
+
+  opening : [Console] Nothing = act
+    print-line-uni ("neg-param   " & show (real-to-int (neg-param 2.5 * 10.0)))
+    print-line-uni ("neg-call    " & show (real-to-int (neg-call 2.5 * 10.0)))
+    print-line-uni ("neg-field   " & show (real-to-int (neg-field (Vec { vx = 1.5, vy = 0.0 }) * 10.0)))
+    print-line-uni ("neg-nested  " & show (real-to-int (neg-nested 2.0 * 10.0)))
+    print-line-uni ("neg-multi   " & show (real-to-int (neg-call-multi (Vec { vx = 3.0, vy = 4.0 }) (Vec { vx = 1.0, vy = 2.0 }) * 10.0)))
+    print-line-uni ("mixed       " & show (real-to-int (mixed (Vec { vx = 3.0, vy = 4.0 }) (Vec { vx = 1.0, vy = 2.0 }))))
+  end

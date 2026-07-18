@@ -1,0 +1,50 @@
+Chapter: SmpTss
+
+ Every core has its own task register, checked from inside the guest.
+
+ A double fault is delivered on the stack named by IST1 in the task
+ state segment the task register points at. The task register is per-core
+ and a task state segment cannot be shared, so each core carries its own:
+ the descriptor for core i sits at selector 24 + i * 16, and each core
+ loads that selector and points its IST1 at a 2 KB emergency stack of its
+ own.
+
+ Application processors used to load no task register at all. A fault on
+ one had no stack to arrive on and disappeared as a triple fault -- no
+ dump, no output, nothing. That cost nothing while no application
+ processor had ever executed a guest instruction, which was true until the
+ multi-core bring-up was fixed. It costs a great deal now.
+
+ Each core reads its task register back with str after loading it and
+ stores what the processor actually accepted at cell 79872 + core * 8. A
+ descriptor the processor takes and one it rejects look the same from the
+ outside, and a core whose task register reads zero has no emergency stack
+ and would still vanish. So this reads back what the hardware did, not
+ what the boot code intended.
+
+Section: Probe
+
+  tr-of-core : Integer -> Integer
+  tr-of-core (i) = atomic-load (79872 + i * 8)
+
+  expected-tr : Integer -> Integer
+  expected-tr (i) = 24 + i * 16
+
+  all-cores-loaded : Integer, Integer -> Boolean
+  all-cores-loaded (i) (n) =
+    if i >= n then True
+    else if tr-of-core i == expected-tr i then all-cores-loaded (i + 1) n
+    else False
+
+  opening : [Console] Nothing = act
+    let cores = atomic-load 4088
+    in let n = if cores < 1 then 1 else cores
+    in act
+      print-line-uni ("cores: " & show n)
+      print-line-uni ("bsp tr: " & show (tr-of-core 0))
+      print-line-uni ("ap1 tr: " & show (tr-of-core 1))
+      print-line-uni (if all-cores-loaded 0 n
+                      then "every core loaded its own task register"
+                      else "A CORE HAS NO TASK REGISTER")
+    end
+  end

@@ -1,10 +1,16 @@
 Chapter: Audio3D
   cites Math chapter Quaternion
+  cites Math chapter Matrix4
 
  3D positional audio. Distance attenuation (inverse-square),
  stereo panning from listener-relative angle, and Doppler shift.
- Fixed-point (scale 1000). Integrates with the signal chapter
- synth and effects chain for output.
+ Integrates with the signal chapter synth and effects chain for output.
+
+ Gains and pans are integers on a 0..1000 scale and positions are Real, so
+ the two meet at a boundary rather than throughout. Vec3 was fixed-point
+ once and this chapter's arithmetic still assumed so: it squared Real
+ components into an integer square root and subtracted a Real velocity from
+ an integer speed of sound.
 
  We say:
 
@@ -98,9 +104,9 @@ Section: Stereo Panning
   a3d-pan : AudioListener, Vec3, Integer -> Integer
   a3d-pan (listener) (delta) (dist) =
     if dist == 0 then 500
-    else let right = vec3-cross (listener.al-forward) (listener.al-up)
+    else let right = mat4-v3-normalize (vec3-cross (listener.al-forward) (listener.al-up))
     in let dot-right = vec3-dot delta right
-    in let pan = 500 + dot-right * 500 / dist
+    in let pan = 500 + real-to-int (dot-right * 500.0 / real-from-int dist)
     in a3d-clamp pan 0 1000
 
 Section: Doppler
@@ -110,30 +116,19 @@ Section: Doppler
     let delta = vec3-subtract (source.as3-pos) (listener.al-pos)
     in let dist = a3d-vec-len delta
     in if dist == 0 then 1000
-    else let dir-x = delta.vx * 1000 / dist
-    in let dir-y = delta.vy * 1000 / dist
-    in let dir-z = delta.vz * 1000 / dist
-    in let dir = vec3-new dir-x dir-y dir-z
+    else let dir = mat4-v3-normalize delta
     in let vs = vec3-dot (source.as3-velocity) dir
     in let vl = vec3-dot (listener.al-velocity) dir
-    in let speed = 343000
+    in let speed = 343000.0
     in let num = speed - vl
     in let den = speed - vs
-    in if den == 0 then 1000
-    else num * 1000 / den
+    in if den ~ 0.0 then 1000
+    else real-to-int (num * 1000.0 / den)
 
 Section: Helpers
 
   a3d-vec-len : Vec3 -> Integer
-  a3d-vec-len (v) = a3d-isqrt (v.vx * v.vx + v.vy * v.vy + v.vz * v.vz)
-
-  a3d-isqrt : Integer -> Integer
-  a3d-isqrt (n) = if n <= 0 then 0 else a3d-isqrt-loop n (n / 2 + 1)
-
-  a3d-isqrt-loop : Integer, Integer -> Integer
-  a3d-isqrt-loop (n) (guess) =
-    let next = (guess + n / guess) / 2
-    in if next >= guess then guess else a3d-isqrt-loop n next
+  a3d-vec-len (v) = real-to-int (mat4-v3-length v)
 
   a3d-clamp : Integer, Integer, Integer -> Integer
   a3d-clamp (v) (lo) (hi) = if v < lo then lo else if v > hi then hi else v

@@ -77,25 +77,33 @@ Section: Projected Vertex
     pv-nz : Integer,
     pv-wu : Integer,
     pv-wv : Integer,
-    pv-wx : Integer,
-    pv-wy : Integer,
-    pv-wz : Integer
+    pv-wx : Real,
+    pv-wy : Real,
+    pv-wz : Real
   }
 
 Section: Vertex Transform Pipeline
 
+ A Vertex holds integer world coordinates and Mat4 is Real, so the vertex
+ crosses into clip space and the screen position crosses back to the integer
+ pixel grid. The world position stays Real: it is only ever fed back into
+ Vec3 arithmetic for shading. At v4w = 1.0 the w is a true homogeneous
+ coordinate, where the old fixed-point code carried thousandths.
+
   r3d-transform-vertex : Vertex, Mat4, Mat4, Integer, Integer -> ProjVert
   r3d-transform-vertex (v) (mvp) (model) (half-w) (half-h) =
-    let clip = mat4-transform-vec4 mvp (Vec4 { v4x = v.vp-x, v4y = v.vp-y, v4z = v.vp-z, v4w = 1000 })
-    in let world = mat4-transform-point model (vec3-new (v.vp-x) (v.vp-y) (v.vp-z))
+    let clip = mat4-transform-vec4 mvp (Vec4 { v4x = real-from-int (v.vp-x), v4y = real-from-int (v.vp-y), v4z = real-from-int (v.vp-z), v4w = 1.0 })
+    in let world = mat4-transform-point model (vec3-new (real-from-int (v.vp-x)) (real-from-int (v.vp-y)) (real-from-int (v.vp-z)))
     in let w = clip.v4w
-    in if w <= 0 then ProjVert { pv-sx = -9999, pv-sy = -9999, pv-depth = 999999999, pv-nx = v.vn-x, pv-ny = v.vn-y, pv-nz = v.vn-z, pv-wu = v.vu, pv-wv = v.vv, pv-wx = world.vx, pv-wy = world.vy, pv-wz = world.vz }
-    else let ndc-x = clip.v4x * 1000 / w
-    in let ndc-y = clip.v4y * 1000 / w
-    in let ndc-z = clip.v4z * 1000 / w
-    in let sx = half-w + ndc-x * half-w / 1000
-    in let sy = half-h - ndc-y * half-h / 1000
-    in let depth = (ndc-z + 1000) * 500000
+    in if w <= 0.0 then ProjVert { pv-sx = -9999, pv-sy = -9999, pv-depth = 999999999, pv-nx = v.vn-x, pv-ny = v.vn-y, pv-nz = v.vn-z, pv-wu = v.vu, pv-wv = v.vv, pv-wx = world.vx, pv-wy = world.vy, pv-wz = world.vz }
+    else let ndc-x = clip.v4x / w
+    in let ndc-y = clip.v4y / w
+    in let ndc-z = clip.v4z / w
+    in let fhw = real-from-int half-w
+    in let fhh = real-from-int half-h
+    in let sx = real-to-int (fhw + ndc-x * fhw)
+    in let sy = real-to-int (fhh - ndc-y * fhh)
+    in let depth = real-to-int ((ndc-z + 1.0) * 500000.0)
     in ProjVert { pv-sx = sx, pv-sy = sy, pv-depth = depth, pv-nx = v.vn-x, pv-ny = v.vn-y, pv-nz = v.vn-z, pv-wu = v.vu, pv-wv = v.vv, pv-wx = world.vx, pv-wy = world.vy, pv-wz = world.vz }
 
 Section: Triangle Rasterization with Depth
@@ -184,30 +192,40 @@ Section: Phong Shading
     in let contrib = r3d-light-contrib world-pos normal eye-pos mat light
     in r3d-accum-lights world-pos normal eye-pos mat lights (i + 1) n (rgb-add acc contrib)
 
+ Lighting stays on the integer 0..1000 scale that Rgb and EngineMaterial
+ speak, and the geometry is Real, so a dot product crosses back at exactly
+ one place: r3d-unit-to-milli.
+
+ A lit surface keeps its own colour: the diffuse term is the albedo times the
+ light, not the light alone. Scaling the bare light colour by the Lambert
+ term, as this did, makes every lit face the colour of the lamp and leaves
+ the material visible only in what ambient contributes, so a blue cube under
+ a white key light comes out white.
+
   r3d-light-contrib : Vec3, Vec3, Vec3, EngineMaterial, Light3D -> Rgb
   r3d-light-contrib (world-pos) (normal) (eye-pos) (mat) (light) =
     when light
       is DirLight (dir) (col) (intensity) ->
-        let to-light = r3d-normalize dir
-        in let n-dot-l = vec3-dot normal to-light
+        let to-light = mat4-v3-normalize dir
+        in let n-dot-l = r3d-unit-to-milli (vec3-dot normal to-light)
         in let diffuse = if n-dot-l > 0 then n-dot-l * mat.emat-diffuse / 1000 else 0
         in let reflect = r3d-reflect (r3d-negate-vec to-light) normal
-        in let to-eye = r3d-normalize (vec3-subtract eye-pos world-pos)
-        in let r-dot-v = vec3-dot reflect to-eye
+        in let to-eye = mat4-v3-normalize (vec3-subtract eye-pos world-pos)
+        in let r-dot-v = r3d-unit-to-milli (vec3-dot reflect to-eye)
         in let spec-raw = if r-dot-v > 0 then r-dot-v else 0
         in let specular = r3d-pow-int spec-raw (mat.emat-shininess) * mat.emat-specular / 1000
         in let total = (diffuse + specular) * intensity / 1000
-        in rgb-scale col (r3d-clamp total 0 1000)
+        in rgb-scale (rgb-multiply (mat.emat-albedo) col) (r3d-clamp total 0 1000)
       is PtLight (pos) (col) (intensity) (radius) ->
         let delta = vec3-subtract pos world-pos
         in let dist = r3d-vec-len delta
         in if dist > radius then rgb 0 0 0
-        else let to-light = r3d-normalize delta
+        else let to-light = mat4-v3-normalize delta
         in let atten = 1000 - dist * 1000 / radius
-        in let n-dot-l = vec3-dot normal to-light
+        in let n-dot-l = r3d-unit-to-milli (vec3-dot normal to-light)
         in let diffuse = if n-dot-l > 0 then n-dot-l * mat.emat-diffuse * atten / 1000000 else 0
         in let total = diffuse * intensity / 1000
-        in rgb-scale col (r3d-clamp total 0 1000)
+        in rgb-scale (rgb-multiply (mat.emat-albedo) col) (r3d-clamp total 0 1000)
       is SpotLight3D (pos) (dir) (col) (intensity) (angle) (falloff) ->
         rgb 0 0 0
 
@@ -280,43 +298,37 @@ Section: Flat/Phong Triangle Rendering
     in let p0 = r3d-transform-vertex v0 mvp model half-w half-h
     in let p1 = r3d-transform-vertex v1 mvp model half-w half-h
     in let p2 = r3d-transform-vertex v2 mvp model half-w half-h
-    in let face-nx = (p0.pv-nx + p1.pv-nx + p2.pv-nx) / 3
-    in let face-ny = (p0.pv-ny + p1.pv-ny + p2.pv-ny) / 3
-    in let face-nz = (p0.pv-nz + p1.pv-nz + p2.pv-nz) / 3
-    in let face-normal = r3d-normalize (vec3-new face-nx face-ny face-nz)
-    in let center = vec3-new ((p0.pv-wx + p1.pv-wx + p2.pv-wx) / 3) ((p0.pv-wy + p1.pv-wy + p2.pv-wy) / 3) ((p0.pv-wz + p1.pv-wz + p2.pv-wz) / 3)
+    in let face-nx = real-from-int (p0.pv-nx + p1.pv-nx + p2.pv-nx) / 3.0
+    in let face-ny = real-from-int (p0.pv-ny + p1.pv-ny + p2.pv-ny) / 3.0
+    in let face-nz = real-from-int (p0.pv-nz + p1.pv-nz + p2.pv-nz) / 3.0
+    in let face-normal = mat4-v3-normalize (vec3-new face-nx face-ny face-nz)
+    in let center = vec3-new ((p0.pv-wx + p1.pv-wx + p2.pv-wx) / 3.0) ((p0.pv-wy + p1.pv-wy + p2.pv-wy) / 3.0) ((p0.pv-wz + p1.pv-wz + p2.pv-wz) / 3.0)
     in let color = r3d-shade-phong center face-normal eye mat lights 0 (list-length lights) ambient
     in let st2 = r3d-rasterize-tri st p0 p1 p2 (rgb-to-packed color)
     in r3d-render-tris-flat st2 mesh model mvp mat lights eye ambient half-w half-h (i + 3) n
 
 Section: Vector Helpers
 
-  r3d-normalize : Vec3 -> Vec3
-  r3d-normalize (v) =
-    let len = r3d-vec-len v
-    in if len == 0 then vec3-zero
-    else vec3-new (v.vx * 1000 / len) (v.vy * 1000 / len) (v.vz * 1000 / len)
+ Vec3 is Real, so normalization and reflection are the Matrix4 primitives
+ rather than the fixed-point integer routines this chapter used to carry.
+ r3d-vec-len still answers in world units as an integer, because the point
+ light compares it against an integer radius.
+
+  r3d-unit-to-milli : Real -> Integer
+  r3d-unit-to-milli (x) = real-to-int (x * 1000.0)
 
   r3d-vec-len : Vec3 -> Integer
-  r3d-vec-len (v) = r3d-isqrt (v.vx * v.vx + v.vy * v.vy + v.vz * v.vz)
+  r3d-vec-len (v) = real-to-int (mat4-v3-length v)
 
   r3d-reflect : Vec3, Vec3 -> Vec3
   r3d-reflect (incoming) (normal) =
     let d = vec3-dot incoming normal
-    in vec3-subtract incoming (vec3-scale normal (2 * d / 1000))
+    in vec3-subtract incoming (vec3-scale normal (2.0 * d))
 
   r3d-negate-vec : Vec3 -> Vec3
-  r3d-negate-vec (v) = vec3-new (-v.vx) (-v.vy) (-v.vz)
+  r3d-negate-vec (v) = vec3-scale v (-1.0)
 
 Section: Math Helpers
-
-  r3d-isqrt : Integer -> Integer
-  r3d-isqrt (n) = if n <= 0 then 0 else r3d-isqrt-loop n (n / 2 + 1)
-
-  r3d-isqrt-loop : Integer, Integer -> Integer
-  r3d-isqrt-loop (n) (guess) =
-    let next = (guess + n / guess) / 2
-    in if next >= guess then guess else r3d-isqrt-loop n next
 
   r3d-pow-int : Integer, Integer -> Integer
   r3d-pow-int (base) (exp) = r3d-pow-loop base exp 1000

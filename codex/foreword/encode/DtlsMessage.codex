@@ -1,0 +1,273 @@
+Chapter: DtlsMessage
+  cites Foreword chapter Tls
+  cites Foreword chapter Hmac
+  cites Foreword chapter Hkdf
+  cites Foreword chapter Sha256
+
+ The DTLS 1.3 handshake message layer (RFC 9147 sections 5.2 and 7).
+ Phase D2b: the framing the D2a machine sequences but does not encode.
+
+ Three things live here, and the first one is the reason the chapter
+ exists at all.
+
+ THE TRANSCRIPT RULE. RFC 9147 section 5.2, and it is worth quoting
+ because getting it wrong produces a Finished that verifies against
+ itself and against no peer on earth: the message transcript is computed
+ over the original TLS 1.3-style Handshake messages WITHOUT the
+ message_seq, fragment_offset, and fragment_length values. So a DTLS
+ handshake message goes on the wire with a 12-byte header and into the
+ transcript with a 4-byte one. Two shapes of the same message, and an
+ implementation that hashes what it sent is wrong. dtls-msg-transcript
+ is the only correct way to feed a message to the hash; the wire form
+ must never reach it.
+
+ THE FINISHED. RFC 8446 section 4.4.4, inherited whole. The finished key
+ is HKDF-Expand-Label(base-secret, "finished", "", 32) -- an EMPTY
+ context, not the transcript -- and the verify data is an HMAC of that
+ key over the transcript hash. The two are easy to transpose and the
+ result looks like a key either way.
+
+ THE ACK. RFC 9147 section 7. A list of record numbers, each an epoch
+ and a sequence number, saying what actually arrived. It is what lets a
+ flight stop being retransmitted.
+
+ What is NOT here, stated rather than implied: fragmentation REASSEMBLY.
+ The header carries fragment_offset and fragment_length and the parser
+ reads them, but this chapter emits only unfragmented messages and does
+ not reassemble a fragmented peer flight. A handshake message larger
+ than the path MTU will therefore fail against a peer that fragments.
+ That is a real gap, it is in BACKLOG 5.3, and it must not be described
+ as working.
+
+ Nor is there any peer authentication. A Finished that verifies proves
+ the peer holds the same handshake secret; it says nothing about who the
+ peer is. The credential question is still open.
+
+ To dtls-msg-encode gives List Integer,
+   framing one handshake message with the 12-byte DTLS header, unfragmented.
+
+ To dtls-msg-transcript gives List Integer,
+   rendering a message in the TLS 1.3 form the transcript hash must see.
+
+ To dtls-verify-data gives List Integer,
+   computing the Finished verify_data from a base secret and a transcript hash.
+
+ To dtls-ack-encode gives List Integer,
+   encoding an ACK over the record numbers that arrived.
+
+ We say:
+
+Section: Handshake Types
+
+ RFC 9147 section 5.2. HelloRetryRequest is not in this list: DTLS 1.3
+ reuses TLS 1.3's, which is a ServerHello carrying a special random and
+ the cookie extension -- not the separate HelloVerifyRequest that DTLS
+ 1.2 had. A parser that looks for a distinct HRR type will never find one.
+
+  dtls-hs-client-hello : Integer = 1
+  dtls-hs-server-hello : Integer = 2
+  dtls-hs-encrypted-ext : Integer = 8
+  dtls-hs-certificate : Integer = 11
+  dtls-hs-cert-verify : Integer = 15
+  dtls-hs-finished : Integer = 20
+
+ RFC 9147 section 7: the ACK is its own record content type, 26.
+
+  dtls-content-ack : Integer = 26
+
+Section: Types
+
+  DtlsMsg = record {
+    dm-type : Integer,
+    dm-length : Integer,
+    dm-seq : Integer,
+    dm-frag-offset : Integer,
+    dm-frag-length : Integer,
+    dm-body : List Integer
+  }
+
+  DtlsRecordNum = record {
+    rn-epoch : Integer,
+    rn-seq : Integer
+  }
+
+Section: Framing
+
+ The wire form: msg_type, uint24 length, uint16 message_seq, uint24
+ fragment_offset, uint24 fragment_length, body. Twelve bytes of header.
+ This chapter emits whole messages, so fragment_offset is 0 and
+ fragment_length equals length -- see the reassembly gap above.
+
+  dtls-msg-encode : Integer, Integer, List Integer -> List Integer
+  dtls-msg-encode (msg-type) (message-seq) (body) =
+    let n = list-length body
+    in [msg-type] & dtls-be24 n & dtls-be16 message-seq & dtls-be24 0 & dtls-be24 n & body
+
+ The transcript form. RFC 9147 section 5.2: no message_seq, no
+ fragment_offset, no fragment_length. This is the ONLY thing that may be
+ fed to the handshake hash.
+
+  dtls-msg-transcript : Integer, List Integer -> List Integer
+  dtls-msg-transcript (msg-type) (body) =
+    [msg-type] & dtls-be24 (list-length body) & body
+
+ And the same rule applied to a message that arrived: strip the DTLS
+ fields back off before hashing what the peer sent.
+
+  dtls-msg-to-transcript : DtlsMsg -> List Integer
+  dtls-msg-to-transcript (m) = dtls-msg-transcript (m.dm-type) (m.dm-body)
+
+  dtls-msg-parse : List Integer -> Maybe DtlsMsg
+  dtls-msg-parse (bs) =
+    if list-length bs < 12 then None
+    else dtls-msg-parse-body bs
+
+  dtls-msg-parse-body : List Integer -> Maybe DtlsMsg
+  dtls-msg-parse-body (bs) =
+    let len = dtls-rd24 bs 1
+    in let seq = dtls-rd16 bs 4
+    in let foff = dtls-rd24 bs 6
+    in let flen = dtls-rd24 bs 9
+    in if 12 + flen > list-length bs then None
+    else Just (DtlsMsg { dm-type = list-at bs 0, dm-length = len, dm-seq = seq, dm-frag-offset = foff, dm-frag-length = flen, dm-body = dtls-slice-at bs 12 flen })
+
+Section: Finished
+
+ RFC 8446 section 4.4.4, which DTLS 1.3 inherits unchanged.
+
+   finished_key = HKDF-Expand-Label(BaseKey, "finished", "", Hash.length)
+   verify_data  = HMAC(finished_key, Transcript-Hash(...))
+
+ The context on the finished key is EMPTY. The transcript hash is the
+ HMAC message, not the key's context. Transposing them yields 32 bytes
+ that look exactly as much like a key, and a peer that rejects them
+ tells you nothing about which of the two you got wrong. The gate on
+ this is RFC 8448's published finished_key.
+
+  dtls-finished-key : List Integer -> List Integer
+  dtls-finished-key (base-secret) = tls13-expand-label base-secret "finished" [] 32
+
+  dtls-verify-data : List Integer, List Integer -> List Integer
+  dtls-verify-data (base-secret) (transcript-hash) =
+    hkdf-words-to-bytes (hmac-sha256 (dtls-finished-key base-secret) transcript-hash)
+
+ The Finished as a framed handshake message, ready for the record layer.
+
+  dtls-finished-msg : List Integer, List Integer, Integer -> List Integer
+  dtls-finished-msg (base-secret) (transcript-hash) (message-seq) =
+    dtls-msg-encode dtls-hs-finished message-seq (dtls-verify-data base-secret transcript-hash)
+
+ Verification is constant-time. A Finished check that returns on the
+ first differing byte leaks how much of a forgery was right.
+
+  dtls-finished-ok : List Integer, List Integer, List Integer -> Boolean
+  dtls-finished-ok (base-secret) (transcript-hash) (offered) =
+    dtls-ct-equal (dtls-verify-data base-secret transcript-hash) offered
+
+  dtls-ct-equal : List Integer, List Integer -> Boolean
+  dtls-ct-equal (a) (b) =
+    if list-length a /= list-length b then False
+    else dtls-ct-loop a b 0 (list-length a) 0
+
+  dtls-ct-loop : List Integer, List Integer, Integer, Integer, Integer -> Boolean
+  dtls-ct-loop (a) (b) (i) (n) (diff) =
+    if i >= n then diff == 0
+    else dtls-ct-loop a b (i + 1) n (bit-or diff (bit-xor (list-at a i) (list-at b i)))
+
+Section: The Transcript Hash
+
+ Messages accumulate into the hash in transcript form. The accumulator is
+ the running concatenation, hashed on demand -- SHA-256 here has no
+ incremental interface, so the handshake transcript is held whole. It is
+ a few kilobytes for a real handshake, and it is the one multi-KB
+ transient in the whole DTLS stack.
+
+  dtls-transcript-add : List Integer, Integer, List Integer -> List Integer
+  dtls-transcript-add (acc) (msg-type) (body) = acc & dtls-msg-transcript msg-type body
+
+  dtls-transcript-hash : List Integer -> List Integer
+  dtls-transcript-hash (acc) = hkdf-words-to-bytes (sha256 acc)
+
+ THE HELLORETRYREQUEST TRANSCRIPT. RFC 8446 section 4.4.1, and it is the
+ third of this stack's silent-interop traps. When a HelloRetryRequest
+ happens, ClientHello1 does NOT stay in the transcript. It is REPLACED by
+ a synthetic message: handshake type 254 (message_hash), a uint24 length
+ of 32, and the hash of ClientHello1. The transcript then continues with
+ the HelloRetryRequest and the second ClientHello.
+
+ Miss this and the Finished computes correctly on the no-cookie path and
+ wrongly on the cookie path -- so a test that never exercises a
+ HelloRetryRequest passes, ships, and then fails against every server
+ that does a cookie exchange, which per RFC 9147 is every server that
+ cares about denial of service. The bug hides exactly where the security
+ feature lives.
+
+  dtls-msg-message-hash : Integer = 254
+
+  dtls-transcript-after-hrr : List Integer -> List Integer
+  dtls-transcript-after-hrr (ch1-transcript) =
+    dtls-transcript-after-hrr-hash (dtls-transcript-hash ch1-transcript)
+
+ A stateless server does not HAVE ClientHello1 by the time it needs this
+ -- keeping it is precisely the state the cookie exists to avoid. RFC 8446
+ section 4.2.2 gives the answer: the server puts the ClientHello1 hash
+ INSIDE the cookie and gets it back with the second ClientHello. So the
+ hash, not the message, is the thing this takes.
+
+  dtls-transcript-after-hrr-hash : List Integer -> List Integer
+  dtls-transcript-after-hrr-hash (ch1-hash) =
+    [dtls-msg-message-hash] & dtls-be24 32 & ch1-hash
+
+Section: ACK
+
+ RFC 9147 section 7. A vector of record numbers, each a uint64 epoch and
+ a uint64 sequence number, preceded by its length in BYTES. The ACK says
+ what arrived, which is what lets the peer stop retransmitting a flight
+ it has already delivered.
+
+  dtls-ack-encode : List DtlsRecordNum -> List Integer
+  dtls-ack-encode (rns) =
+    let body = dtls-ack-body rns 0 (list-length rns) []
+    in dtls-be16 (list-length body) & body
+
+  dtls-ack-body : List DtlsRecordNum, Integer, Integer, List Integer -> List Integer
+  dtls-ack-body (rns) (i) (n) (acc) =
+    if i >= n then acc
+    else let r = list-at rns i
+    in dtls-ack-body rns (i + 1) n (acc & dtls-be64 (r.rn-epoch) & dtls-be64 (r.rn-seq))
+
+  dtls-ack-count : List Integer -> Integer
+  dtls-ack-count (bs) =
+    if list-length bs < 2 then 0
+    else dtls-rd16 bs 0 / 16
+
+Section: Helpers
+
+  dtls-be16 : Integer -> List Integer
+  dtls-be16 (v) = [bit-and (bit-shru v 8) 255, bit-and v 255]
+
+  dtls-be24 : Integer -> List Integer
+  dtls-be24 (v) = [bit-and (bit-shru v 16) 255, bit-and (bit-shru v 8) 255, bit-and v 255]
+
+  dtls-be64 : Integer -> List Integer
+  dtls-be64 (v) =
+    [bit-and (bit-shru v 56) 255, bit-and (bit-shru v 48) 255, bit-and (bit-shru v 40) 255, bit-and (bit-shru v 32) 255,
+     bit-and (bit-shru v 24) 255, bit-and (bit-shru v 16) 255, bit-and (bit-shru v 8) 255, bit-and v 255]
+
+  dtls-rd16 : List Integer, Integer -> Integer
+  dtls-rd16 (bs) (off) = bit-or (bit-shl (list-at bs off) 8) (list-at bs (off + 1))
+
+  dtls-rd24 : List Integer, Integer -> Integer
+  dtls-rd24 (bs) (off) =
+    let a = bit-shl (list-at bs off) 16
+    in let b = bit-shl (list-at bs (off + 1)) 8
+    in bit-or a (bit-or b (list-at bs (off + 2)))
+
+  dtls-slice-at : List Integer, Integer, Integer -> List Integer
+  dtls-slice-at (bs) (off) (n) = dtls-slice-loop bs off n 0 []
+
+  dtls-slice-loop : List Integer, Integer, Integer, Integer, List Integer -> List Integer
+  dtls-slice-loop (bs) (off) (n) (i) (acc) =
+    if i >= n then acc
+    else if off + i >= list-length bs then acc
+    else dtls-slice-loop bs off n (i + 1) (list-push acc (list-at bs (off + i)))

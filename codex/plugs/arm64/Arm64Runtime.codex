@@ -656,6 +656,23 @@ Section: __start (QEMU virt boot stub)
 
   a64-rt-wfi : List Integer = [31, 32, 3, 213]
 
+ SMP AP boot. Unlike RISC-V (where every hart auto-enters at reset), QEMU
+ virt holds the secondaries in its PSCI implementation; core 0 must issue
+ PSCI CPU_ON to start each one. The conduit is HVC on QEMU virt (proven by
+ spike); the 64-bit CPU_ON function id is 0xC4000003. hvc #0 is 0xD4000002,
+ little-endian [2, 0, 0, 212]. The AP marker cell is mid-RAM (0x60000000),
+ far from the heap (grows up from 0x40202000) and the stack (down from
+ 0x80000000). Written only by a core that ran our guest code (BACKLOG 4.2).
+
+  a64-rt-hvc : List Integer = [2, 0, 0, 212]
+  a64-rt-cpu-on-id : Integer = #C4000003
+  a64-rt-ap-marker-addr : Integer = #60000000
+
+  a64-adr-bytes : Integer, Integer -> List Integer
+  a64-adr-bytes (imm) (rd) =
+   let w = bit-or (bit-or (bit-or #10000000 (bit-shl (bit-and imm 3) 29)) (bit-shl (bit-and (bit-shru imm 2) #7FFFF) 5)) rd
+   in [bit-and w 255, bit-and (bit-shru w 8) 255, bit-and (bit-shru w 16) 255, bit-and (bit-shru w 24) 255]
+
 Section: ASCII to CCE Reverse Table
 
   a64-build-ascii-to-cce : List Integer, Integer -> List Integer
@@ -1766,10 +1783,23 @@ Section: Emit All Runtime Helpers
    in let c2u-table = a64-build-cce-to-unicode [] 0
    in let st3d = a64-write-table-loop st3c 10 c2u-table 0
    in let st3e = a64-patch-insn st3d cbnz-idx (arm64-cbnz 28 ((uefi-label - cbnz-idx) * 4))
-   in let st5 = a64-emit-call-to st3e "opening"
+   in let adr-idx = st3e.insn-count
+   in let st4a = a64-emit st3e arm64-nop
+   in let st4b = a64-emit-li st4a 0 a64-rt-cpu-on-id
+   in let st4c = a64-emit-li st4b 1 1
+   in let st4d = a64-emit-li st4c 3 0
+   in let st4e = a64-emit st4d a64-rt-hvc
+   in let st5 = a64-emit-call-to st4e "opening"
    in let st6 = a64-emit st5 a64-rt-wfi
    in let st7 = a64-emit st6 (arm64-b (-4))
-   in let st8 = a64-record-func st7 "print-line-uni"
+   in let ap-idx = st7.insn-count
+   in let st7a = a64-emit-li st7 1 a64-rt-ap-marker-addr
+   in let st7b = a64-emit-li st7a 2 1
+   in let st7c = a64-emit st7b (arm64-str-w 2 1 0)
+   in let st7d = a64-emit st7c a64-rt-wfi
+   in let st7e = a64-emit st7d (arm64-b (-4))
+   in let st7f = a64-patch-insn st7e adr-idx (a64-adr-bytes ((ap-idx - adr-idx) * 4) 2)
+   in let st8 = a64-record-func st7f "print-line-uni"
    in let st8a = a64-record-func st8 "print-line"
    in let plu = a64-rt-print-line-uni
    in let st9 = a64-emit-block st8a plu 0 (list-length plu)

@@ -1,0 +1,125 @@
+Chapter: Tls13ScheduleTest
+  cites Foreword chapter Aes
+  cites Foreword chapter Tls
+
+ The TLS 1.3 key schedule against RFC 8448, "Example Handshake Traces
+ for TLS 1.3", section 3. Every value below is one the IETF printed. The
+ chapter is not being checked against itself: it is being checked against
+ a trace the working group published precisely so implementations could
+ not quietly diverge.
+
+ This is the gate on BACKLOG 5.8. The chapter used to carry two key
+ schedules, both wrong. One defined its own tls-hkdf-expand as a single
+ HMAC block and silently returned short above 32 bytes. The other
+ computed the early secret from a ONE-byte zero IKM where RFC 8446 means
+ Hash.length zero bytes. Either bug produces bytes that look like keys
+ and decrypt nothing, and neither is visible to a test that only asks
+ whether the code agrees with itself.
+
+Section: RFC 8448 Vectors
+
+  x-ecdhe : List Integer =
+    [139, 212, 5, 79, 181, 91, 157, 99, 253, 251, 172, 249, 240, 75, 159, 13,
+     53, 230, 214, 63, 83, 117, 99, 239, 212, 98, 114, 144, 15, 137, 73, 45]
+
+  x-transcript : List Integer =
+    [134, 12, 6, 237, 192, 120, 88, 238, 142, 120, 240, 231, 66, 140, 88, 237,
+     214, 180, 63, 44, 163, 230, 233, 95, 2, 237, 6, 60, 240, 225, 202, 216]
+
+Section: Hex
+
+  x-hex : List Integer -> Text
+  x-hex (bs) = x-hex-loop bs 0 (list-length bs) ""
+
+  x-hex-loop : List Integer, Integer, Integer, Text -> Text
+  x-hex-loop (bs) (i) (n) (acc) =
+    if i >= n then acc
+    else x-hex-loop bs (i + 1) n (acc & aes-hex-byte (list-at bs i))
+
+Section: The Ladder
+
+ Each line is one rung of RFC 8446 section 7.1, and each is checked
+ independently. A schedule that is wrong at the first rung is wrong at
+ every rung after it, so testing only the final key would tell us that
+ something broke without telling us where.
+
+  test-hash : Text =
+    "tls13 hash-empty=" & x-hex (tls13-hash [])
+
+ The trap, pinned. Codex Text is CCE, so a bare char-code gives the CCE
+ code point and not the byte the wire wants. For "derived" that is
+ 160d1511210d16 where the RFC means 6465726976656420 minus the trailing
+ space -- 64657269766564. Every key-schedule label goes through this, so
+ one mis-encoded label poisons every secret below the first rung while
+ still producing 32 confident-looking bytes. This line exists so that if
+ anyone ever "simplifies" tls13-ascii back to char-code, the diff is loud.
+
+  test-label-cce : Text =
+    "tls13 label-cce=" & x-hex (tls-t2b "derived" 0 7 [])
+
+  test-label-ascii : Text =
+    "tls13 label-ascii=" & x-hex (tls13-ascii "derived")
+
+ And the same fix on the wire path: the SNI hostname must be ASCII, or no
+ server can match it.
+
+  test-sni : Text =
+    "tls13 sni=" & x-hex (tls-text-to-bytes "example.com")
+
+  test-early : Text =
+    "tls13 early=" & x-hex tls13-early-secret
+
+  test-derived : Text =
+    "tls13 derived=" & x-hex tls13-derived
+
+  test-handshake : Text =
+    "tls13 handshake=" & x-hex (tls13-handshake-secret x-ecdhe)
+
+  test-c-hs : Text =
+    "tls13 c-hs=" & x-hex (tls13-client-hs-traffic (tls13-handshake-secret x-ecdhe) x-transcript)
+
+  test-s-hs : Text =
+    "tls13 s-hs=" & x-hex (tls13-server-hs-traffic (tls13-handshake-secret x-ecdhe) x-transcript)
+
+Section: Traffic Keys
+
+ The server write key and IV, expanded from the server handshake traffic
+ secret with an empty context.
+
+  x-s-hs : List Integer =
+    tls13-server-hs-traffic (tls13-handshake-secret x-ecdhe) x-transcript
+
+  test-key : Text =
+    "tls13 s-key=" & x-hex (tls13-traffic-key x-s-hs)
+
+  test-iv : Text =
+    "tls13 s-iv=" & x-hex (tls13-traffic-iv x-s-hs)
+
+Section: Long Expansion
+
+ The bug that made the deleted tls-hkdf-expand dangerous: it computed a
+ single HMAC block, so anything above 32 bytes came back short instead of
+ failing. A 64-byte request must return 64 bytes, and the second block
+ must not be a copy of the first.
+
+  x-long : List Integer = tls13-expand-label tls13-early-secret "derived" (tls13-hash []) 64
+
+  test-long : Text =
+    "tls13 long len=" & show (list-length x-long) & " tailne=" & show (list-at x-long 0 /= list-at x-long 32)
+
+Section: Entry
+
+  opening : [Console] Nothing = act
+    print-line-uni test-hash
+    print-line-uni test-label-cce
+    print-line-uni test-label-ascii
+    print-line-uni test-sni
+    print-line-uni test-early
+    print-line-uni test-derived
+    print-line-uni test-handshake
+    print-line-uni test-c-hs
+    print-line-uni test-s-hs
+    print-line-uni test-key
+    print-line-uni test-iv
+    print-line-uni test-long
+  end

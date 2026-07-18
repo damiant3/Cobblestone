@@ -1,0 +1,88 @@
+Chapter: ManifestPin
+
+ The manifest-scope pin (BACKLOG 1.5). The compiler emits each program's
+ capability manifest into the CDX header, and until now that emission was
+ verified only by inspection: nothing inside a guest can read its own
+ manifest, so a regression in manifest-cap-bytes was caught by no test.
+
+ This closes that. The subject (codex/test/manifest-subject.codex),
+ compiled by the CURRENT compiler and attached as this program's disk,
+ carries a known manifest. This reads it back off the disk exactly the way
+ an external verifier would: the CDX header at offset 136 holds the
+ manifest section offset (le64) and at 144 its size, and each capability
+ entry is le16 cap-id, le16 direction, le32 scope-length, the scope bytes
+ (CCE), and le64 zero. We parse both entries and report the id, direction,
+ length and the scope bytes, so a change to any of them fails the pin
+ rather than passing unseen. Run by build/manifest-pin-test.ps1.
+
+ The manifest OFFSET is not reported, only its size and contents: the
+ offset is 224 + the code size and moves whenever codegen does, while the
+ manifest content is what the pin is actually about.
+
+Section: Reading The Disk
+
+  abs-byte : Integer -> [Device.Block] Integer
+  abs-byte (off) = act
+    buf <- block-read-sector (off / 512)
+    peek-byte buf (off - (off / 512) * 512)
+  end
+
+  rd-le16 : Integer -> [Device.Block] Integer
+  rd-le16 (off) = act
+    a <- abs-byte off
+    b <- abs-byte (off + 1)
+    a + b * 256
+  end
+
+  rd-le32 : Integer -> [Device.Block] Integer
+  rd-le32 (off) = act
+    a <- abs-byte off
+    b <- abs-byte (off + 1)
+    c <- abs-byte (off + 2)
+    d <- abs-byte (off + 3)
+    a + b * 256 + c * 65536 + d * 16777216
+  end
+
+Section: Hex
+
+  hex-digit : Integer -> Text
+  hex-digit (v) =
+    if v == 0 then "0" else if v == 1 then "1" else if v == 2 then "2"
+    else if v == 3 then "3" else if v == 4 then "4" else if v == 5 then "5"
+    else if v == 6 then "6" else if v == 7 then "7" else if v == 8 then "8"
+    else if v == 9 then "9" else if v == 10 then "a" else if v == 11 then "b"
+    else if v == 12 then "c" else if v == 13 then "d" else if v == 14 then "e"
+    else "f"
+
+  hex-byte : Integer -> Text
+  hex-byte (b) = hex-digit (bit-and (bit-shru b 4) 15) & hex-digit (bit-and b 15)
+
+  scope-hex : Integer, Integer, Integer, Text -> [Device.Block] Text
+  scope-hex (off) (i) (n) (acc) =
+    if i >= n then acc
+    else act
+      b <- abs-byte (off + i)
+      scope-hex off (i + 1) n (acc & hex-byte b)
+    end
+
+Section: Reporting One Entry
+
+  report-entry : Text, Integer -> [Console, Device.Block] Nothing
+  report-entry (tag) (off) = act
+    id <- rd-le16 off
+    dir <- rd-le16 (off + 2)
+    slen <- rd-le32 (off + 4)
+    sh <- scope-hex (off + 8) 0 slen ""
+    print-line-uni (tag & " id=" & show id & " dir=" & show dir & " slen=" & show slen & " scope=" & sh)
+  end
+
+Section: Entry
+
+  opening : [Console, Device.Block] Nothing = act
+    cap-off <- rd-le32 136
+    cap-sz <- rd-le32 144
+    print-line-uni ("manifest cap-sz=" & show cap-sz)
+    report-entry "cap0" cap-off
+    slen0 <- rd-le32 (cap-off + 4)
+    report-entry "cap1" (cap-off + 16 + slen0)
+  end

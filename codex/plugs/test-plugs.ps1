@@ -30,8 +30,19 @@ $TestOutputDir = Join-Path $PlugsDir 'test-output'
 
 New-Item -ItemType Directory -Force -Path $TestOutputDir | Out-Null
 
-# Transpiler plugs (skip binary-format plugs: elf, pe, img)
-$binaryPlugs = @('elf', 'pe', 'img', 'common')
+# Transpiler plugs only. The native backends are skipped because this
+# harness drives every plug as `run.ps1 -Src <codex> -Out <text>` and then
+# asserts the output is non-empty text with source markers in it. A native
+# backend answers a different question entirely: arm64 and riscv take
+# `-IrInput` and emit the BINARY wire protocol, so they fail parameter
+# binding and exit 1 in under a second having done no work at all.
+#
+# arm64 and riscv were missing from this list, so a clean sweep reported 18
+# failures that were nothing of the kind. They are not untested: build.ps1's
+# plug-binary leg rebuilds all five native backends every gate run, and the
+# cross-architecture battery boots their ELF output on Renode. Do not "fix"
+# those 18 by touching the plugs.
+$binaryPlugs = @('elf', 'pe', 'img', 'arm64', 'riscv', 'common')
 $allPlugs = Get-ChildItem $PlugsDir -Directory |
     Where-Object { $_.Name -notin $binaryPlugs -and $_.Name -ne 'test-input' -and $_.Name -ne 'test-output' } |
     Where-Object { Test-Path (Join-Path $_.FullName 'run.ps1') } |
@@ -97,6 +108,7 @@ Write-Host ""
 
 foreach ($p in $builtPlugs) {
     foreach ($t in $testInputs) {
+      try {
         $testSrc = Join-Path $TestInputDir "$t.codex"
         $outDir = Join-Path $TestOutputDir "$p"
         New-Item -ItemType Directory -Force -Path $outDir | Out-Null
@@ -121,15 +133,39 @@ foreach ($p in $builtPlugs) {
             continue
         }
 
-        if (-not (Test-Path $outFile) -or (Get-Item $outFile).Length -eq 0) {
+        if (-not (Test-Path $outFile)) {
+            Write-Host "  FAIL  $p/$t (no output, ${elapsed}s)"
+            $failCount++
+            $results += "$p/$t`tFAIL`tno output"
+            continue
+        }
+
+        # Some plugs emit a PROJECT, not a file. wpf writes a directory --
+        # App.xaml, MainWindow.xaml.cs, a .csproj -- and that is correct: a
+        # WPF app is not one file. Get-Item on a directory has no .Length,
+        # so under StrictMode this threw, the exception escaped the loop, and
+        # it killed the ENTIRE SWEEP at wpf -- taking zig with it (the two
+        # plugs that sort after winforms) and skipping the exit-code line at
+        # the bottom, so a run with real failures still reported exit 0.
+        # A harness that cannot fail is worse than no harness. Fold a
+        # directory into its concatenated contents and judge that.
+        $item = Get-Item $outFile
+        if ($item.PSIsContainer) {
+            $parts = @(Get-ChildItem -File -Recurse $outFile)
+            $size = ($parts | Measure-Object -Property Length -Sum).Sum
+            if ($null -eq $size) { $size = 0 }
+            $content = ($parts | ForEach-Object { [System.IO.File]::ReadAllText($_.FullName) }) -join "`n"
+        } else {
+            $size = $item.Length
+            $content = [System.IO.File]::ReadAllText($outFile)
+        }
+
+        if ($size -eq 0) {
             Write-Host "  FAIL  $p/$t (empty output, ${elapsed}s)"
             $failCount++
             $results += "$p/$t`tFAIL`tempty output"
             continue
         }
-
-        $size = (Get-Item $outFile).Length
-        $content = [System.IO.File]::ReadAllText($outFile)
 
         # Check markers
         $expectedMarkers = if ($markers[$t]) { $markers[$t] } else { @() }
@@ -149,6 +185,14 @@ foreach ($p in $builtPlugs) {
             $passCount++
             $results += "$p/$t`tPASS`t${size}B"
         }
+      } catch {
+        # One plug must never be able to take the sweep down with it. wpf did
+        # exactly that, and the cost was invisible: the run simply stopped
+        # after winforms, so wpf and zig were never tested and nobody noticed.
+        Write-Host "  FAIL  $p/$t (harness error: $($_.Exception.Message))"
+        $failCount++
+        $results += "$p/$t`tFAIL`tharness error: $($_.Exception.Message)"
+      }
     }
 }
 

@@ -1,0 +1,165 @@
+Chapter: RepoReclaim
+  cites Foreword chapter Maybe
+  cites Foreword chapter Hamt
+  cites Foreword chapter FactStore
+  cites Foreword chapter ImportGate
+  cites Foreword chapter Console
+  cites Encode chapter Hex
+  cites Kernel chapter DiskFacts
+  cites Kernel chapter AppPersist
+  cites Works chapter KeyManager
+  cites Works chapter FactArchive
+  cites Works chapter RepoProtocolPersist
+
+ Archiving reclaims the live log, and does not touch the tree.
+
+ A base that copies a range and leaves it in place reclaims nothing. This is the
+ half with teeth: it shrinks the log, and it is the half that can destroy a
+ repository if the cut is chosen wrong.
+
+ Three editions of a.codex, then one of b.codex. Only the third edition of
+ a.codex is current, so the first two may leave -- and they sit at the bottom of
+ the log, so a prefix cut can reach them. The third edition is current and stops
+ the cut there, which is the prefix rule doing its job: everything below the cut
+ goes, and the first fact that must stay ends it.
+
+ THE INVARIANT, and the reason this test exists: archive, rebuild, and the TREE
+ is unchanged. Not the history -- wi-works loses the archived editions, which is
+ the entire point of moving them, and they are in the base, still addressable and
+ still verifying.
+
+ The .disk sidecar is load-bearing. Without a disk attached codex-vm drops every
+ write and reads return zeros, and a store with no facts in it archives nothing
+ while agreeing with itself about everything.
+
+Section: Entry
+
+  seed-bytes : List Integer = [9, 9, 9, 9, 9, 9, 9, 9]
+
+  filler : Integer, Text -> Text
+  filler (n) (acc) = if n <= 0 then acc else filler (n - 1) (acc & "some repeated source text ")
+
+  body : Text -> Text
+  body (name) = name & ": " & filler 20 ""
+
+  mk-def : Text, Text -> SourceDefinition
+  mk-def (path) (content) =
+    SourceDefinition {
+      sd-hash = "", sd-path = path, sd-quire = "Test", sd-chapter = "C",
+      sd-signer = "", sd-signature = [], sd-author = "", sd-timestamp = 0,
+      sd-content = content
+    }
+
+  put : DiskFactStore, Keypair, Text, Text, Integer -> DiskFactStore
+  put (st) (kp) (path) (content) (ts) =
+    repo-persist-save-definition st (sign-definition kp (mk-def path content) ts) ts
+
+  tree-of : WorkIndex, Text -> Text
+  tree-of (ix) (path) =
+    when hamt-get (ix.wi-current) path
+      is Just (h) -> h
+      is None -> "ABSENT"
+
+  tree-text : WorkIndex -> Text
+  tree-text (ix) = tree-of ix "a.codex" & "/" & tree-of ix "b.codex"
+
+  looked-up : WorkLookup -> Text
+  looked-up (l) =
+    when l
+      is WorkHere (d) -> "here"
+      is WorkAskBase (h) -> "ask the base"
+      is WorkUnknown -> "unknown"
+
+  opened-len : Maybe (List Integer) -> Text
+  opened-len (m) =
+    when m
+      is Just (bs) -> show (list-length bs)
+      is None -> "REFUSED"
+
+ The artifact decompresses to a fact log, byte for byte, so the first archived
+ entry starts at offset zero and its first 32 bytes are that entry's header hash.
+ Reading them back out proves archiving MOVED the work rather than dropping it.
+
+ That header hash is the hash of the stored LINE -- the whole
+ hash|path|...|len|content record -- and NOT the hash of the source the line
+ carries. The two are different and it is the same distinction that makes
+ DiskFacts' own map useless for finding a work: it is an index of records. A
+ first cut of this check compared the header against the WORK's hash and failed
+ for exactly that reason. So the expected value is built the way the writer built
+ it: sign the same definition again and hash its wire line. Signing is
+ deterministic, so the line is byte-identical to the archived one.
+
+  first-32 : List Integer, Integer, List Integer -> List Integer
+  first-32 (bs) (i) (acc) =
+    if i >= 32 then acc
+    else first-32 bs (i + 1) (list-push acc (list-at bs i))
+
+  base-first-hash : Maybe (List Integer) -> Text
+  base-first-hash (m) =
+    when m
+      is Just (bs) -> if list-length bs < 32 then "SHORT" else hex-encode (first-32 bs 0 [])
+      is None -> "REFUSED"
+
+ The claim "an archived work is still retrievable" is only worth as much as a
+ function that retrieves one. This asks the base for the superseded edition by
+ the hash the tree used to point at, and checks the SOURCE comes back -- not
+ that some bytes came back.
+
+  recovered : Maybe SourceDefinition, Text -> Text
+  recovered (m) (want) =
+    when m
+      is None -> "NOT FOUND"
+      is Just (d) -> if d.sd-content == want then "yes, exact source" else "WRONG CONTENT"
+
+ And it is still a signed fact after the round trip through compression: the
+ same verification the import gate applies, applied to a work that has been
+ archived, compressed, expanded and parsed back.
+
+  verified-work : Maybe SourceDefinition, TrustManifest -> Boolean
+  verified-work (m) (mf) =
+    when m
+      is None -> False
+      is Just (d) -> def-verify d mf 5000
+
+  opening : [Device.Block, Console.Write] Nothing = act
+    let s0 = disk-init
+    in let kp = generate-keypair seed-bytes
+    in let m = manifest-add manifest-empty (kp.fingerprint) (kp.public-key) 10000
+    in let empty-run = archive-run s0 m 5000 kp fa-no-prev 5
+    in let s1 = put s0 kp "a.codex" (body "one") 10
+    in let s2 = put s1 kp "a.codex" (body "two") 20
+    in let s3 = put s2 kp "a.codex" (body "three") 30
+    in let s4 = put s3 kp "b.codex" (body "bee") 40
+    in let before = repo-index-verified s4 m 5000
+    in let sb-before = s4.superblock
+    in let old-hash = fact-content-hash (body "one")
+    in let line-one = source-def-to-text (sign-definition kp (mk-def "a.codex" (body "one")) 10)
+    in let record-hash = fact-content-hash line-one
+    in let run = archive-run s4 m 5000 kp fa-no-prev 50
+    in let after-store = run.run-store
+    in let after = repo-index-verified after-store m 5000
+    in let sb-after = after-store.superblock
+    in let again = archive-run after-store m 5000 kp (run.run-base).br-artifact-hash 60
+    in act
+      print-line-uni ("empty store archives nothing: " & show (empty-run.run-archived))
+      print-line-uni ("archived: " & show (run.run-archived))
+      print-line-uni ("head before: " & show (sb-before.log-head))
+      print-line-uni ("head after: " & show (sb-after.log-head))
+      print-line-uni ("log shrank: " & show (sb-after.log-head < sb-before.log-head))
+      print-line-uni ("tree unchanged: " & show (tree-text before == tree-text after))
+      print-line-uni ("a.codex still current: " & show (tree-of after "a.codex" == fact-content-hash (body "three")))
+      print-line-uni ("b.codex still current: " & show (tree-of after "b.codex" == fact-content-hash (body "bee")))
+      print-line-uni ("superseded edition: " & looked-up (work-lookup after after-store m 5000 old-hash))
+      print-line-uni ("current edition: " & looked-up (work-lookup after after-store m 5000 (fact-content-hash (body "three"))))
+      print-line-uni ("never-stored hash: " & looked-up (work-lookup after after-store m 5000 (fact-content-hash "never")))
+      print-line-uni ("  (a store with a base cannot say never-stored: it has no membership evidence)")
+      print-line-uni ("base opens: " & opened-len (archive-open (run.run-artifact) (run.run-base) m 5000))
+      print-line-uni ("base covers to: " & show ((run.run-base).br-covers-to))
+      print-line-uni ("ARCHIVED RECORD IS IN THE BASE: " & show (base-first-hash (archive-open (run.run-artifact) (run.run-base) m 5000) == record-hash))
+      print-line-uni ("second archival finds nothing: " & show (again.run-archived))
+      print-line-uni ("  (a.codex is current and now sits at the bottom, so the prefix rule refuses it)")
+      print-line-uni ("RECOVERED FROM BASE BY HASH: " & recovered (base-resolve (run.run-artifact) (run.run-base) m 5000 old-hash) (body "one"))
+      print-line-uni ("recovered work verifies: " & show (verified-work (base-resolve (run.run-artifact) (run.run-base) m 5000 old-hash) m))
+      print-line-uni ("untrusted base yields nothing: " & recovered (base-resolve (run.run-artifact) (run.run-base) manifest-empty 5000 old-hash) (body "one"))
+    end
+  end

@@ -1,0 +1,150 @@
+Chapter: OtaBootRollback
+  cites Foreword chapter OtaBoot
+  cites Foreword chapter OtaUpdate
+  cites Foreword chapter Board
+  cites Foreword chapter Sha256
+  cites Foreword chapter Hkdf
+  cites Foreword chapter Maybe
+  cites Foreword chapter Console
+
+ The boot selector across reboots. The design's Failure Matrix is the
+ spec, and every row of it that the selector owns is a line of output
+ here.
+
+ A reboot is simulated by calling boot-run again against the SAME flash,
+ which is the honest model: the record survives because it is in flash,
+ not because a variable was kept. Nothing is threaded between boots --
+ each call re-reads the record it finds. If persistence were fake, the
+ attempt count could not climb.
+
+ The image is real bytes in a real bank, the digest is a real SHA-256 of
+ what landed there, and the flag word is a real single-word flash
+ program.
+
+ We say:
+
+Section: Fixtures
+
+  bank-base : Integer = 536875008
+  rec-addr : Integer = 536883200
+  slot-a-addr : Integer = 536887296
+  slot-b-addr : Integer = 536891392
+
+  image-a : List Integer = [67, 68, 88, 49, 1, 1, 1, 1]
+  image-b : List Integer = [67, 68, 88, 49, 2, 2, 2, 2]
+
+  digest-of : List Integer -> List Integer
+  digest-of (xs) = hkdf-words-to-bytes (sha256 xs)
+
+  show-slot : BootSlot -> Text
+  show-slot (s) =
+   when s
+    is SlotA -> "A"
+    is SlotB -> "B"
+
+  show-cand : Maybe BootSlot -> Text
+  show-cand (m) =
+   when m
+    is None -> "none"
+    is Just (s) -> show-slot s
+
+Section: Staging
+
+ Put an image in a slot through the Flash effect, exactly as the LwM2M
+ client would.
+
+  stage-image : Integer, List Integer -> [Flash, Device.Mmio] Integer
+  stage-image (addr) (img) = act
+   b0 <- flash-open-bank bank-base
+   b1 <- flash-write-page b0 addr img
+   flash-seal-bank b1
+  end
+
+ A wiped record: the factory state, and also what a power loss during the
+ first write leaves behind.
+
+  wipe-record : Integer -> [Flash, Device.Mmio] Integer
+  wipe-record (x) = act
+   b0 <- flash-open-bank bank-base
+   b1 <- flash-write-word b0 rec-addr 0
+   flash-seal-bank b1
+  end
+
+Section: The Runs
+
+ Row: after commit (7). B is marked, boots, commits, and is primary from
+ then on.
+
+  run-commit : Integer -> [Flash, Device.Mmio] Text
+  run-commit (x) = act
+   w <- wipe-record 0
+   s1 <- stage-image slot-a-addr image-a
+   s2 <- stage-image slot-b-addr image-b
+   m <- boot-mark bank-base rec-addr boot-factory-record SlotB (digest-of image-b) (list-length image-b)
+   first <- boot-run bank-base rec-addr slot-a-addr slot-b-addr
+   c <- boot-commit bank-base rec-addr
+   second <- boot-run bank-base rec-addr slot-a-addr slot-b-addr
+   let r = boot-load rec-addr
+   in "boot1=" & show-slot first & " commit -> boot2=" & show-slot second & " primary=" & show-slot (r.br-primary) & " cand=" & show-cand (r.br-candidate)
+  end
+
+ Row: during first boot of new image (6-7). B is marked and never
+ commits -- the image boots and wedges. Each reboot spends an attempt;
+ past the limit the device abandons it and returns to A.
+
+  run-no-commit : Integer -> [Flash, Device.Mmio] Text
+  run-no-commit (x) = act
+   w <- wipe-record 0
+   s1 <- stage-image slot-a-addr image-a
+   s2 <- stage-image slot-b-addr image-b
+   m <- boot-mark bank-base rec-addr boot-factory-record SlotB (digest-of image-b) (list-length image-b)
+   b1 <- boot-run bank-base rec-addr slot-a-addr slot-b-addr
+   b2 <- boot-run bank-base rec-addr slot-a-addr slot-b-addr
+   b3 <- boot-run bank-base rec-addr slot-a-addr slot-b-addr
+   b4 <- boot-run bank-base rec-addr slot-a-addr slot-b-addr
+   b5 <- boot-run bank-base rec-addr slot-a-addr slot-b-addr
+   let r = boot-load rec-addr
+   in show-slot b1 & show-slot b2 & show-slot b3 & show-slot b4 & show-slot b5 & " primary=" & show-slot (r.br-primary) & " cand=" & show-cand (r.br-candidate)
+  end
+
+ Row: after flag, before/during reboot (5) -- on fail boots old. The
+ candidate is marked with a correct digest and THEN the bank is corrupted
+ (a bad cell, a partial write). The selector hashes what is actually in
+ the bank, so it catches it and never runs it.
+
+  run-corrupt : Integer -> [Flash, Device.Mmio] Text
+  run-corrupt (x) = act
+   w <- wipe-record 0
+   s1 <- stage-image slot-a-addr image-a
+   s2 <- stage-image slot-b-addr image-b
+   m <- boot-mark bank-base rec-addr boot-factory-record SlotB (digest-of image-b) (list-length image-b)
+   bad <- stage-image slot-b-addr [67, 68, 88, 49, 2, 2, 2, 9]
+   first <- boot-run bank-base rec-addr slot-a-addr slot-b-addr
+   let r = boot-load rec-addr
+   in "boot=" & show-slot first & " primary=" & show-slot (r.br-primary) & " cand=" & show-cand (r.br-candidate)
+  end
+
+ Row: during Gate B (4) -- candidate flag never set. Also the power-loss
+ case: a wiped record has no marker, so there is no candidate to run.
+
+  run-no-flag : Integer -> [Flash, Device.Mmio] Text
+  run-no-flag (x) = act
+   w <- wipe-record 0
+   s1 <- stage-image slot-a-addr image-a
+   first <- boot-run bank-base rec-addr slot-a-addr slot-b-addr
+   let r = boot-load rec-addr
+   in "boot=" & show-slot first & " cand=" & show-cand (r.br-candidate)
+  end
+
+Section: Body
+
+  opening : [Console, Flash, Device.Mmio] Nothing = act
+   a <- run-commit 0
+   print-line-uni ("commit: " & a)
+   b <- run-no-commit 0
+   print-line-uni ("no-commit: " & b)
+   c <- run-corrupt 0
+   print-line-uni ("corrupt: " & c)
+   d <- run-no-flag 0
+   print-line-uni ("no-flag: " & d)
+  end

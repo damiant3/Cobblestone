@@ -7,6 +7,10 @@ Chapter: DiskFacts
 
   cites Foreword chapter Sha256
 
+  cites Foreword chapter FactLog
+
+  grounds Device.Block
+
 
 
  DiskFacts persists FactStore entries to disk sectors using a
@@ -25,11 +29,11 @@ Section: Constants
 
 
 
-  superblock-magic : Text = "CODEXFS1"
+  superblock-magic : Text = fl-magic
 
-  fact-log-start : Integer = 2
+  fact-log-start : Integer = fl-fact-log-start
 
-  sector-size : Integer = 512
+  sector-size : Integer = fl-sector-size
 
 
 
@@ -323,11 +327,11 @@ Section: Superblock
 
       Just (Superblock {
 
-        log-head = unpack-u64-le buf 8,
+        log-head = fl-sb-log-head buf,
 
         fact-count = unpack-u64-le buf 16,
 
-        index-gen = unpack-u64-le buf 24
+        index-gen = fl-sb-index-gen buf
 
       })
 
@@ -425,17 +429,13 @@ Section: Fact Log Entries
 
 
 
-  fact-entry-header-size : Integer = 78
+  fact-entry-header-size : Integer = fl-header-size
 
 
 
   sectors-for-fact : Integer -> Integer
 
-  sectors-for-fact (content-len) =
-
-    let entry-size = fact-entry-header-size + content-len
-
-    in (entry-size + sector-size - 1) / sector-size
+  sectors-for-fact (content-len) = fl-sectors-for content-len
 
 
 
@@ -453,17 +453,15 @@ Section: Fact Log Entries
 
     in let hash-words = sha256 (text-to-bytes content)
 
-    in let off0 = pack-sha256-bytes buf 0 hash-words
+    in let h = pack-sha256-bytes buf 0 hash-words
 
-    in let off1 = pack-u16-le buf off0 (fact-kind-to-int kind)
+    in let k = pack-u16-le buf fl-off-kind (fact-kind-to-int kind)
 
-    in let off2 = off1 + 32
+    in let t = pack-u64-le buf fl-off-timestamp timestamp
 
-    in let off3 = pack-u64-le buf off2 timestamp
+    in let c = pack-u32-le buf fl-off-content-len content-len
 
-    in let off4 = pack-u32-le buf off3 content-len
-
-    in pack-text buf off4 content
+    in pack-text buf fl-header-size content
 
 
 
@@ -513,17 +511,17 @@ Section: Disk Operations
 
     in let content-len = text-length content
 
-    in if content-len > max-single-sector-content then store
+    in let nsec = sectors-for-fact content-len
 
-    else let buf = alloc-bytes sector-size
+    in let buf = alloc-bytes (nsec * sector-size)
 
     in let packed = pack-fact-entry buf kind content timestamp
 
-    in let written = write-fact-sectors buf (sb.log-head) 1 0
+    in let written = write-fact-sectors buf (sb.log-head) nsec 0
 
     in let new-sb = Superblock {
 
-      log-head = sb.log-head + 1,
+      log-head = sb.log-head + nsec,
 
       fact-count = sb.fact-count + 1,
 
@@ -589,37 +587,97 @@ Section: Disk Load (Boot-Time Recovery)
 
 
 
-  max-single-sector-content : Integer = 434
+ A fact is not one sector. pack-fact-entry has always sized itself with
+ sectors-for-fact, and app-write-fact writes as many sectors as the content
+ needs -- a source definition is thousands of bytes, not hundreds. The replay
+ read a single sector and gave up on anything longer, and giving up meant
+ returning the store it had built SO FAR, which ended the walk. One
+ multi-sector fact therefore truncated the whole in-memory store at that
+ entry: every fact after it was on the disk, verifiable, and invisible. The
+ superblock went on reporting the full count, so nothing looked wrong.
 
+ A corrupt fact did the same thing for the same reason. The honest response to
+ one bad entry is to skip that entry, not to discard every entry behind it.
 
+ So the walk always yields a sector stride, whether or not it yields a fact.
+ A blank or unreadable sector strides one and resynchronises; a fact whose
+ length would run past the end of the log is not trusted to say how long it
+ is, and strides one as well.
 
-  read-fact-from-sector : Integer -> Maybe Fact
+  FactScan = record {
+    fs-fact : Maybe Fact,
+    fs-nsec : Integer
+  }
 
-  read-fact-from-sector (sector) =
+  disk-copy-sector : Integer, Integer, Integer, Integer -> Integer
+
+  disk-copy-sector (src) (dst) (dst-off) (i) =
+
+    if i >= sector-size then 0
+
+    else let w = poke-byte dst (dst-off + i) (peek-byte src i)
+
+         in disk-copy-sector src dst dst-off (i + 1)
+
+  disk-load-sectors : Integer, Integer, Integer, Integer -> Integer
+
+  disk-load-sectors (start) (count) (dst) (i) =
+
+    if i >= count then 0
+
+    else let src = block-read-sector (start + i)
+
+         in let c = disk-copy-sector src dst (i * sector-size) 0
+
+         in disk-load-sectors start count dst (i + 1)
+
+  disk-read-entry-content : Integer, Integer -> Text
+
+  disk-read-entry-content (sector) (clen) =
+
+    let nsec = sectors-for-fact clen
+
+    in let buf = alloc-bytes (nsec * sector-size)
+
+    in let loaded = disk-load-sectors sector nsec buf 0
+
+    in unpack-text buf fact-entry-header-size clen
+
+  scan-fact-at : Integer, Integer -> FactScan
+
+  scan-fact-at (sector) (end-sector) =
 
     let buf = block-read-sector sector
 
-    in let kind-int = unpack-u16-le buf 32
+    in let content-len = fl-entry-content-len buf
 
-    in let timestamp = unpack-u64-le buf 66
+    in if content-len == 0 then FactScan { fs-fact = None, fs-nsec = 1 }
 
-    in let content-len = unpack-u32-le buf 74
+    else let nsec = sectors-for-fact content-len
 
-    in if content-len > max-single-sector-content then None
+    in if sector + nsec > end-sector then FactScan { fs-fact = None, fs-nsec = 1 }
 
-    else if content-len == 0 then None
+    else let kind-int = fl-entry-kind buf
 
-    else let content = unpack-text buf 78 content-len
+    in let timestamp = fl-entry-timestamp buf
 
-         in let stored-hash = unpack-sha256-hex buf 0
+    in let content = disk-read-entry-content sector content-len
 
-         in let computed-hash = fact-content-hash content
+    in let stored-hash = unpack-sha256-hex buf 0
 
-         in if stored-hash == computed-hash then
+    in let computed-hash = fact-content-hash content
 
-           Just (Fact { hash = computed-hash, kind = int-to-fact-kind kind-int, content = content, author = "", timestamp = timestamp })
+    in if stored-hash == computed-hash then
 
-         else None
+         FactScan {
+
+           fs-fact = Just (Fact { hash = computed-hash, kind = int-to-fact-kind kind-int, content = content, author = "", timestamp = timestamp }),
+
+           fs-nsec = nsec
+
+         }
+
+       else FactScan { fs-fact = None, fs-nsec = nsec }
 
 
 
@@ -629,19 +687,13 @@ Section: Disk Load (Boot-Time Recovery)
 
     if sector >= end-sector then mem
 
-    else let fact-maybe = read-fact-from-sector sector
+    else let s = scan-fact-at sector end-sector
 
-         in when fact-maybe
+         in when (s.fs-fact)
 
-           is Just (f) ->
+           is Just (f) -> disk-load-facts (sector + (s.fs-nsec)) end-sector (fact-store mem f)
 
-             let content-len = text-length (f.content)
-
-             in let nsec = sectors-for-fact content-len
-
-             in disk-load-facts (sector + nsec) end-sector (fact-store mem f)
-
-           is None -> mem
+           is None -> disk-load-facts (sector + (s.fs-nsec)) end-sector mem
 
 
 

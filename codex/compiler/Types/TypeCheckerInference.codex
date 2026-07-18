@@ -1,7 +1,7 @@
 Chapter: Type Checker
-  cites Codex chapter Lists
   cites Codex chapter Build Settings (max-recursion-depth)
   cites Foreword chapter Tuple
+  cites Math chapter Interval
 
  Expression type inference dispatch.
 
@@ -162,6 +162,27 @@ Section: Infer Name
         else (deck-record (FunTy p row r2), st2)
     is otherwise -> (ty, st)
 
+ Instantiation strips a type's ForAll binders and hands each one a
+ fresh unification variable. That is what a CALL SITE wants: the
+ caller is free to choose, so the choice must be solvable.
+
+ instantiate-type runs on the hottest path in the type checker — every
+ variable reference instantiates its type — so it allocates nothing it
+ does not have to. It returns a pair, and a pair is a heap record.
+
+ A def's own body wants the opposite of instantiation, and needs to
+ know which variables the caller owns in order to say so, so
+ instantiate-collect below reports the type-variable ids it mints.
+ That report is a third component, which is a second heap record per
+ call, and it is why the two walks are SEPARATE rather than one walk
+ wrapped by the other: wrapping put that record on every variable
+ reference in the program and blew the CHECK deck (a #GP with no
+ diagnostic, at ~228 MB — the 2.16 signature). instantiate-collect is
+ called once per definition and can afford it; instantiate-type cannot.
+
+ The duplication is deliberate and must stay in step: the two walks
+ differ only in the report. Change one, change the other.
+
   instantiate-type : UnificationState, CodexType -> (CodexType, UnificationState)
   instantiate-type (st) (ty) =
    when ty
@@ -174,6 +195,23 @@ Section: Infer Name
      in let substituted = subst-row-var body var-id new-id
      in instantiate-type fr-st substituted
     is otherwise -> (ty, st)
+
+ Row ids are not collected: a row variable is an effect-axis binder,
+ checked by row-le at stage 3b, not by the rigidity check.
+
+  instantiate-collect : UnificationState, CodexType, List Integer -> (CodexType, UnificationState, List Integer)
+  instantiate-collect (st) (ty) (acc) =
+   when ty
+    is ForAllTy (var-id) (body) ->
+     let (fr-ty, fr-st) = fresh-and-advance st
+     in let acc2 = when fr-ty
+          is TypeVar (new-id) -> list-push acc new-id
+          is otherwise -> acc
+     in instantiate-collect fr-st (subst-type-var body var-id fr-ty) acc2
+    is ForAllEff (var-id) (body) ->
+     let (new-id, fr-st) = fresh-row-id st
+     in instantiate-collect fr-st (subst-row-var body var-id new-id) acc
+    is otherwise -> (ty, st, acc)
 
   subst-type-var : CodexType, Integer, CodexType -> CodexType
   subst-type-var (ty) (var-id) (replacement) =
@@ -209,10 +247,10 @@ Section: Infer Binary
  empty ambient; infer-binary is the one entry point and stamps the
  union of the operands' ambients onto whatever they return.
 
-  infer-binary : UnificationState, TypeEnv, AExpr, BinaryOp, AExpr, SourceSpan -> CheckResult
-  infer-binary (st) (env) (left) (op) (right) (span) =
-   let lr = infer-expr st env left
-   in let rr = infer-expr (lr.state) env right
+  infer-binary : UnificationState, TypeEnv, AExpr, BinaryOp, AExpr, SourceSpan, Integer -> CheckResult
+  infer-binary (st) (env) (left) (op) (right) (span) (depth) =
+   let lr = infer-expr-at st env left (depth + 1)
+   in let rr = infer-expr-at (lr.state) env right (depth + 1)
    in let base = infer-binary-op (rr.state) (lr.inferred-type) (rr.inferred-type) op span
    in let (amb, amb-st) = row-union (base.state) (lr.effect-row) (rr.effect-row)
    in CheckResult {
@@ -225,6 +263,18 @@ Section: Infer Binary
   is-real-type (ty) =
    when ty
     is RealTy | RealApproxTy | RealTrappingTy | RealSaturatingTy -> True
+    is otherwise -> False
+
+ A type the checker has not decided yet: an application's result is a fresh
+ variable until unification binds it. Unary minus must not force such a type
+ to Integer -- `-(f x)` where f returns a Real would be typed Integer and then
+ collide with the declared Real. It stays undecided and the surrounding
+ context binds it, exactly as `-x` on a Real parameter already does.
+
+  is-undecided-type : CodexType -> Boolean
+  is-undecided-type (ty) =
+   when ty
+    is TypeVar (i) -> True
     is otherwise -> False
 
   infer-binary-op : UnificationState, CodexType, CodexType, BinaryOp, SourceSpan -> CheckResult
@@ -246,6 +296,39 @@ Section: Infer Binary
     is OpAppend -> infer-append st lt rt span
     is OpCons -> infer-cons st lt rt span
     is OpDefEq -> infer-comparison st lt rt span
+
+ An arithmetic result used to be the LEFT operand's type verbatim, which
+ made the judgment depend on the order the author wrote the operands in.
+ `b.val + 1` over a 0..255 byte kept 0..255 and compiled; `1 + b.val` --
+ the same sum -- took the literal's type and was rejected, because an
+ integer literal is typed int-ty-default, the FULL i64 range. A literal
+ is not "some integer" to the reader, and reporting that a byte plus one
+ might be nine quintillion is not a judgment anyone can act on.
+
+ Keeping the bound is the right answer and always was. It is not a claim
+ that the sum cannot exceed it: it is the CONTRACT. The emit prover keeps
+ a bounds check at the store precisely because it cannot prove the sum
+ fits, and that check traps -- Eiffel-style, as the guide describes. So
+ the type carries the author's declared intent and the runtime enforces
+ it. What was broken is only that the intent survived on one side and not
+ the other.
+
+ So take the narrower operand rather than the left one. When one side is
+ an unbounded literal it is the bounded side that wins, whichever way it
+ was written, and the two spellings agree. Where both are plain Integer
+ nothing changes -- the result is plain, and a store into a bounded field
+ is still rejected (codex/test/errors/narrowing-unproven), because there
+ the author declared no intent to carry.
+
+  arith-result-ty : CodexType, CodexType -> CodexType
+  arith-result-ty (lt) (rt) =
+   when lt
+    is IntegerTy (l-lo) (l-hi) (l-mode) ->
+     when rt
+      is IntegerTy (r-lo) (r-hi) (r-mode) ->
+       if r-lo >= l-lo & r-hi <= l-hi then rt else lt
+      is otherwise -> lt
+    is otherwise -> lt
 
   infer-arithmetic : UnificationState, CodexType, CodexType, SourceSpan -> CheckResult
   infer-arithmetic (st) (lt) (rt) (span) =
@@ -269,7 +352,7 @@ Section: Infer Binary
        let (_, u-st) = unify st lt rt span
        in let st2 = if is-arithmetic-type lt & is-arithmetic-type rt then u-st
                     else add-unify-error u-st cdx-arithmetic-requires-numeric "Arithmetic operator requires Integer or Real" span
-       in CheckResult { inferred-type = lt, effect-row = empty-row, state = st2 }
+       in CheckResult { inferred-type = arith-result-ty lt rt, effect-row = empty-row, state = st2 }
 
   is-arithmetic-type : CodexType -> Boolean
   is-arithmetic-type (ty) =
@@ -340,12 +423,24 @@ Section: Infer Binary
    }
 
 Section: Infer If
-  infer-if : UnificationState, TypeEnv, AExpr, AExpr, AExpr, SourceSpan -> CheckResult
-  infer-if (st) (env) (cond) (then-e) (else-e) (span) =
-   let cr = infer-expr st env cond
+
+ Each arm is inferred under the branch-refined environment
+ (cond-refine, Lint value-expression range analysis): a comparison
+ between a bare local and an expression with a provable range narrows
+ the local's recorded range inside the arm the comparison guards, and
+ only there — the refined entry rides the env copy handed to that
+ arm's walk and never escapes it. Only the narrowing lint reads the
+ refined table, so this shapes diagnostics, never types or codegen.
+ Both arms are always inferred: static feasibility only shapes the
+ prover's union (if-proven-range), never type checking.
+
+  infer-if : UnificationState, TypeEnv, AExpr, AExpr, AExpr, SourceSpan, Integer -> CheckResult
+  infer-if (st) (env) (cond) (then-e) (else-e) (span) (depth) =
+   let cr = infer-expr-at st env cond (depth + 1)
    in let (_, u-st1) = unify (cr.state) (cr.inferred-type) BooleanTy (aexpr-span cond)
-   in let tr = infer-expr u-st1 env then-e
-   in let er = infer-expr (tr.state) env else-e
+   in let rf = cond-refine env cond
+   in let tr = infer-expr-at u-st1 (arm-refined-env env rf (rf.then-iv) then-e) then-e (depth + 1)
+   in let er = infer-expr-at (tr.state) (arm-refined-env env rf (rf.else-iv) else-e) else-e (depth + 1)
    in let (_, u-st2) = unify (er.state) (tr.inferred-type) (er.inferred-type) span
    in let (amb1, amb1-st) = row-union u-st2 (cr.effect-row) (tr.effect-row)
    in let (amb, amb-st) = row-union amb1-st amb1 (er.effect-row)
@@ -361,10 +456,10 @@ Section: Infer Let
  the body's — a binding value is evaluated even if the body never
  reads the name. The binding loop accumulates the union as it walks.
 
-  infer-let : UnificationState, TypeEnv, List ALetBind, AExpr -> CheckResult
-  infer-let (st) (env) (bindings) (body) =
-   let env2 = infer-let-bindings st env bindings 0 (list-length bindings) empty-row
-   in let br = infer-expr (env2.state) (env2.env) body
+  infer-let : UnificationState, TypeEnv, List ALetBind, AExpr, Integer -> CheckResult
+  infer-let (st) (env) (bindings) (body) (depth) =
+   let env2 = infer-let-bindings st env bindings 0 (list-length bindings) empty-row depth
+   in let br = infer-expr-at (env2.state) (env2.env) body (depth + 1)
    in let (amb, amb-st) = row-union (br.state) (env2.binds-row) (br.effect-row)
    in CheckResult {
     inferred-type = br.inferred-type,
@@ -387,21 +482,21 @@ Section: Infer Let
    binds-row : EffectRow
   }
 
-  infer-let-bindings : UnificationState, TypeEnv, List ALetBind, Integer, Integer, EffectRow -> LetInferResult
-  infer-let-bindings (st) (env) (bindings) (i) (len) (acc-row) =
+  infer-let-bindings : UnificationState, TypeEnv, List ALetBind, Integer, Integer, EffectRow, Integer -> LetInferResult
+  infer-let-bindings (st) (env) (bindings) (i) (len) (acc-row) (depth) =
    if i == len then LetInferResult {
     state = st,
     env = env,
     binds-row = acc-row
    }
    else let b = list-at bindings i
-   in let vr = infer-expr st env (b.value)
+   in let vr = infer-expr-at st env (b.value) (depth + 1)
    in let (acc2, acc-st) = row-union (vr.state) acc-row (vr.effect-row)
    in let checked-st = check-let-bind-row acc-st (vr.effect-row) (b.name.value) (aexpr-span (b.value))
    in let resolved-ty = deep-resolve checked-st (vr.inferred-type)
    in let env2 = env-bind-local env (b.name.value) resolved-ty
    in let env3 = record-local-range env2 (b.name.value) (b.value) resolved-ty
-   in infer-let-bindings checked-st env3 bindings (i + 1) len acc2
+   in infer-let-bindings checked-st env3 bindings (i + 1) len acc2 depth
 
  A let-local whose value proves narrower than the full i64 range
  carries that range forward for the narrowing lint. The value is
@@ -455,10 +550,10 @@ Section: Infer Lambda
    else let (t, st2) = fresh-row-id st
    in (make-row (r.labels) "" t, st2)
 
-  infer-lambda : UnificationState, TypeEnv, List Name, AExpr -> CheckResult
-  infer-lambda (st) (env) (params) (body) =
+  infer-lambda : UnificationState, TypeEnv, List Name, AExpr, Integer -> CheckResult
+  infer-lambda (st) (env) (params) (body) (depth) =
    let pr = bind-lambda-params st env params 0 (list-length params) []
-   in let br = infer-expr (pr.state) (pr.env) body
+   in let br = infer-expr-at (pr.state) (pr.env) body (depth + 1)
    in let (lam-row, lam-st) = open-row-if-closed (br.state) (br.effect-row)
    in let fun-ty = wrap-fun-type (pr.param-types) lam-row (br.inferred-type)
    in CheckResult {
@@ -558,18 +653,20 @@ Section: Infer Application
  here would instead FORCE every callee arrow closed-pure, which is
  wrong the moment stage 3b puts concrete effects on arrows.
 
-  infer-application : UnificationState, TypeEnv, AExpr, AExpr, SourceSpan -> CheckResult
-  infer-application (st) (env) (func) (arg) (span) =
-   let fr = infer-expr st env func
+  infer-application : UnificationState, TypeEnv, AExpr, AExpr, SourceSpan, Integer -> CheckResult
+  infer-application (st) (env) (func) (arg) (span) (depth) =
+   let fr = infer-expr-at st env func (depth + 1)
    in let ar = when arg
        is ALitExpr (val) (kind) (s) -> infer-int-lit-arg (check-int-lit-range (fr.state) val kind s) (fr.inferred-type) val kind
-       is otherwise -> infer-expr (fr.state) env arg
+       is otherwise -> infer-expr-at (fr.state) env arg (depth + 1)
    in let (ret-ty, ret-st) = fresh-and-advance (ar.state)
    in let (call-row-id, row-st) = fresh-row-id ret-st
-   in let (ok, r-st) = unify row-st (fr.inferred-type) (deck-record (FunTy (ar.inferred-type) (deck-record (row-var call-row-id)) ret-ty)) span
+   in let passed-ty = widen-arg-to-param row-st (fr.inferred-type) (ar.inferred-type)
+   in let (ok, r-st) = unify row-st (fr.inferred-type) (deck-record (FunTy passed-ty (deck-record (row-var call-row-id)) ret-ty)) span
    in let st-cls = check-class-op-app r-st env func (ar.inferred-type) span
    in let st-arg = lint-arg-narrowing st-cls env func (fr.inferred-type) arg (ar.inferred-type) span
-   in let st-final = lint-record-set st-arg env func arg (ar.inferred-type) ret-ty span
+   in let st-rs = lint-record-set st-arg env func arg (ar.inferred-type) ret-ty span
+   in let st-final = lint-effect-scope st-rs env func arg span
    in let refined-ty = refine-vec-result st-final func (ar.inferred-type) ret-ty
    in let (amb1, amb1-st) = row-union st-final (fr.effect-row) (ar.effect-row)
    in let (amb, amb-st) = row-union amb1-st amb1 (deck-record (row-var call-row-id))
@@ -578,6 +675,172 @@ Section: Infer Application
     effect-row = amb,
     state = amb-st
    }
+
+ A function that performs less than it was asked for is safe to hand
+ over. print-line-uni performs Console.Write; a parameter declared
+ Text -> [Console] Nothing promises its caller only that it may do
+ something Console-ish, and Console.Write is something Console-ish. The
+ def boundary has always understood this — a [Console] def may perform
+ Console.Write — but the argument boundary compared rows for EQUALITY
+ and turned the same program away (CDX2090). That was BACKLOG 1.3.
+
+ The lattice does NOT move into unify-row, and this is the point:
+ unification is symmetric, and a symmetric relation that accepted
+ Console.Write against Console would accept it in both directions —
+ which is laundering — and would stop being most general. So the
+ directed reasoning stays outside, here, where the direction is known:
+ the argument is being handed TO the parameter. Each of the argument
+ row's labels is rewritten to the parameter's label that covers it,
+ and then the rows are equal and ordinary unification finishes the
+ job, principality intact.
+
+ Two relations are applied, and both only ever widen TOWARD a label the
+ parameter actually names. An argument label the parameter does not cover
+ at all is left alone, so unify still refuses it — this only ever accepts
+ more, never less, and never in the unsound direction (a Console argument
+ into a Console.Write parameter still fails: Console has no dot, so
+ nothing covers it; and an UNSCOPED Console argument into a
+ Console "stdout" parameter fails because an argument that states no
+ restriction is wider than the parameter, not narrower).
+
+ The first relation is parent-of, over the dot: Console.Write widens to
+ Console.
+
+ The second contains a scope. Console "stdout" widens to Console, because
+ a label with no scope states no restriction and everything falls under no
+ restriction — that case needs to know nothing about what a scope MEANS.
+ FileSystem.Read "/config/app/" widens to FileSystem.Read "/config/", and
+ that case does: a filesystem scope is a path prefix where a network scope
+ is an authority and a console scope a channel. `scope-subsumes`
+ (TypeChecker) chooses per family off the effect's own name, which is
+ where `scope-admits` has always got it from — the family was never
+ missing, it was only ever read off the name.
+
+ Dropping the scope is the SAFE direction for the same reason parent-of
+ is: the argument does LESS than the parameter promises. A
+ Text -> [Console "stdout"] Nothing writes only to stdout; a parameter
+ declared Text -> [Console] Nothing promises its caller only that it may
+ do something Console-ish. Nothing is laundered, because the callee's own
+ declared row is what its caller pays for, and that row is unchanged by
+ what is handed to it. The scope the argument really honours has already
+ been enforced against the argument's own signature at its def boundary
+ (CDX4002); this widening is used to unify with the parameter and nowhere
+ else.
+
+ Cost: this runs on EVERY application, so it allocates nothing unless a
+ widening actually applies. The guards are length checks and two label
+ walks over rows that carry at most a couple of labels; the row is
+ rebuilt only when some label really is a proper child of one the
+ parameter names, which is rare.
+
+  widen-arg-to-param : UnificationState, CodexType, CodexType -> CodexType
+  widen-arg-to-param (st) (func-ty) (arg-ty) =
+   when arg-ty
+    is FunTy (ap) (arow) (aret) ->
+     when strip-forall-ty (resolve-silent st func-ty)
+      is FunTy (p) (frow) (fret) -> widen-arg-row st (resolve-silent st p) arg-ty ap arow aret
+      is otherwise -> arg-ty
+    is otherwise -> arg-ty
+
+  widen-arg-row : UnificationState, CodexType, CodexType, CodexType, EffectRow, CodexType -> CodexType
+  widen-arg-row (st) (param-ty) (arg-ty) (ap) (arow) (aret) =
+   when param-ty
+    is FunTy (pp) (prow) (pret) ->
+     let pr = resolve-row st prow
+     in let arr = resolve-row st arow
+     in if list-length (pr.labels) == 0 then arg-ty
+        else if list-length (arr.labels) == 0 then arg-ty
+        else if labels-need-widening (pr.labels) (arr.labels) 0 (list-length (arr.labels)) == False then arg-ty
+        else deck-record (FunTy ap (make-row (widen-labels (pr.labels) (arr.labels) 0 (list-length (arr.labels)) []) (arr.tail-name) (arr.tail-id)) aret)
+    is otherwise -> arg-ty
+
+ True when at least one argument label is a proper child of a label the
+ parameter names. A label the parameter already carries needs nothing;
+ one it cannot cover is unify's business, not ours.
+
+  labels-need-widening : List EffectLabel, List EffectLabel, Integer, Integer -> Boolean
+  labels-need-widening (plabels) (alabels) (i) (len) =
+   if i == len then False
+   else if label-parent-index plabels (list-at alabels i) >= 0 then True
+   else labels-need-widening plabels alabels (i + 1) len
+
+  widen-labels : List EffectLabel, List EffectLabel, Integer, Integer, List EffectLabel -> List EffectLabel
+  widen-labels (plabels) (alabels) (i) (len) (acc) =
+   if i == len then acc
+   else let al = list-at alabels i
+   in let pi = label-parent-index plabels al
+   in widen-labels plabels alabels (i + 1) len (list-push acc (if pi >= 0 then list-at plabels pi else al))
+
+ The index of the parameter label that covers this argument label, or -1.
+ A strict widening only: an exact match is not a widening and must not
+ report one, or widen-labels would rebuild a row that was already equal
+ and labels-need-widening would never settle on a fixed point.
+
+ Scope-drop is tried before parent-of because it is the more specific
+ answer. Console.Write "stdout" handed to a parameter naming both
+ Console.Write and Console widens to Console.Write, keeping the dot the
+ argument earned rather than spending it.
+
+  label-parent-index : List EffectLabel, EffectLabel -> Integer
+  label-parent-index (plabels) (al) =
+   let same = label-scope-drop-index plabels al
+   in if same >= 0 then same else label-dot-parent-index plabels al
+
+ The parameter label with this argument's exact name whose scope contains
+ the argument's. Only a SCOPED argument can be widened this way:
+ unscoped-to-unscoped with the same name is an exact match, not a
+ widening, and reporting it would spin labels-need-widening forever.
+
+ An unscoped parameter label contains everything, which is why the
+ unscoped case needs no family knowledge and shipped first. A scoped one
+ has to be asked, and scope-subsumes asks the right question per family:
+ a path contains what extends it, an authority contains the same host at
+ the port it named (or every port, if it named none), a channel contains
+ only itself. Note which direction is being asked: the PARAMETER's scope
+ is the outer, the ARGUMENT's the inner, because the safe direction is the
+ argument doing less than the parameter promised.
+
+ An exact match anywhere in the row means no widening is wanted at all --
+ the label the argument already carries is one the parameter names, so the
+ rows can meet without help. Checking that first also keeps a row holding
+ both FileSystem.Read "/a/" and FileSystem.Read "/a/b/" from rewriting an
+ argument's "/a/b/" to the wider "/a/", which would be sound and would
+ still be a loss.
+
+  label-scope-drop-index : List EffectLabel, EffectLabel -> Integer
+  label-scope-drop-index (plabels) (al) =
+   if text-length (al.scope) == 0 then 0 - 1
+   else if label-has-exact plabels al 0 (list-length plabels) then 0 - 1
+   else label-index-covering plabels al 0 (list-length plabels)
+
+  label-has-exact : List EffectLabel, EffectLabel, Integer, Integer -> Boolean
+  label-has-exact (plabels) (al) (i) (len) =
+   if i == len then False
+   else let pl = list-at plabels i
+   in if (pl.name.value) == (al.name.value) & (pl.scope) == (al.scope) then True
+      else label-has-exact plabels al (i + 1) len
+
+  label-index-covering : List EffectLabel, EffectLabel, Integer, Integer -> Integer
+  label-index-covering (plabels) (al) (i) (len) =
+   if i == len then 0 - 1
+   else let pl = list-at plabels i
+   in if (pl.name.value) /= (al.name.value) then label-index-covering plabels al (i + 1) len
+      else if text-length (pl.scope) == 0 then i
+      else if scope-subsumes (al.name.value) (pl.scope) (al.scope) then i
+      else label-index-covering plabels al (i + 1) len
+
+  label-dot-parent-index : List EffectLabel, EffectLabel -> Integer
+  label-dot-parent-index (plabels) (al) =
+   let dot = find-dot (al.name.value) 0 (text-length (al.name.value))
+   in if dot < 0 then 0 - 1
+      else label-index-named plabels (substring (al.name.value) 0 dot) 0 (list-length plabels)
+
+  label-index-named : List EffectLabel, Text, Integer, Integer -> Integer
+  label-index-named (plabels) (nm) (i) (len) =
+   if i == len then 0 - 1
+   else let pl = list-at plabels i
+   in if text-length (pl.scope) == 0 & (pl.name.value) == nm then i
+      else label-index-named plabels nm (i + 1) len
 
  The CL 6494-era effect-le argument check is retired (stage 3b): its
  job — an effectful function may not flow into a pure parameter — is
@@ -738,9 +1001,37 @@ Section: Lint value-expression range analysis
      else name-proven-range env (rename-lookup (env.chapter-renames) (n.value))
     is AApplyExpr (func) (arg) (s) -> apply-proven-range env func arg
     is ABinaryExpr (l) (op) (r) (s) -> binary-proven-range env op l r
-    is AIfExpr (c) (t) (el) (s) -> proven-range-union (aexpr-proven-range env t) (aexpr-proven-range env el)
-    is ALetExpr (binds) (body) (s) -> aexpr-proven-range env body
+    is AIfExpr (c) (t) (el) (s) -> if-proven-range env c t el
+    is ALetExpr (binds) (body) (s) -> aexpr-proven-range (bind-let-ranges env binds 0 (list-length binds)) body
+    is AFieldAccess (obj) (field) (s) -> field-proven-range env obj (field.value)
     is otherwise -> (i64-min, i64-max)
+
+ A `let` body is proven in an env carrying the let's OWN bindings. The
+ arm used to recurse into the body with the env it was handed, and the
+ binder's range still arrived — `record-local-range` had written it into
+ this very env when inference walked the same def, because
+ `env-add-local-range` reached the caller's record. That made every
+ bounded return over a let read a range the prover had not derived.
+ BACKLOG 2.22 cut the delivery, so the arm now derives it: same proofs,
+ obtained rather than inherited. `codex/compiler/Core/PhaseAllocator.
+ pitch` is the site that proved the difference.
+
+ A binder is bound as a local even when its range is unknown. Every
+ `env-is-local` guard downstream (`apply-proven-range`,
+ `local-proven-range`) exists to stop a local from borrowing a
+ same-named global's fact, and a binder the prover skipped would borrow
+ exactly that. The bound type is a placeholder: no prover path reads a
+ local's type — the guards answer before any lookup — only whether the
+ name is one.
+
+  bind-let-ranges : TypeEnv, List ALetBind, Integer, Integer -> TypeEnv
+  bind-let-ranges (env) (binds) (i) (len) =
+   if i == len then env
+   else let b = list-at binds i
+   in let (lo, hi) = aexpr-proven-range env (b.value)
+   in let env2 = env-bind-local env (b.name.value) int-ty-default
+   in let env3 = if lo > i64-min | hi < i64-max then env-add-local-range env2 (b.name.value) lo hi else env2
+   in bind-let-ranges env3 binds (i + 1) len
 
  A bare name proves as a literal-defined constant first, then as a
  zero-argument builtin fact (__deck-pos).
@@ -763,52 +1054,85 @@ Section: Lint value-expression range analysis
    else let c = list-at (env.local-ranges) idx
    in (c.lo, c.hi)
 
- A binary arithmetic expression proves by interval arithmetic over
- its operands' proven ranges — the checker-side twin of the emit
- prover's proven-add/sub/mul/div-range, with the same guards: both
- operands non-negative, and the additive and multiplicative arms
- refuse when the resulting hi would exceed the i64 ceiling. An
- unknown operand carries the full i64 range, which fails the
- non-negative guard, so unknowns poison the result — the analysis
- stays silence-only.
+ A bounded record field proves by its declared bound, on the same
+ argument that lets bind-param-range trust a bounded parameter: the
+ store that put the value there was itself guarded, so the declared
+ range is a fact about whatever is read back out. The emit prover has
+ carried this arm all along (ir-expr-proven-range's IrFieldAccess);
+ its absence here is why `Nibble { n = b.val / 16 }` was rejected --
+ provably 0..15, and provable by the emitter -- while a far weaker
+ store went through untouched.
+
+ The receiver must be a plain name. An arbitrary receiver needs
+ inference and a UnificationState, which a structural walk does not
+ carry, whereas a name's declared type is already in the env. Deeper
+ shapes stay unknown, which is the safe answer: this analysis only
+ ever silences a true positive, it cannot invent one.
+
+ Only OvError bounds are read, mirroring bind-param-range. A wrapping
+ or clamping field is total at its store, but claiming a range that no
+ guard enforces would let the lint silence a real overflow, so that
+ door stays shut until something needs it open.
+
+  field-declared-range : TypeEnv, Text, Text -> (Integer, Integer)
+  field-declared-range (env) (recv) (fname) =
+   let obj-ty = if env-has env recv then env-lookup env recv else ErrorTy
+   in when lookup-field-ty-for-lint env obj-ty fname
+    is IntegerTy (lo) (hi) (mode) ->
+     when mode
+      is OvError -> (lo, hi)
+      is otherwise -> (i64-min, i64-max)
+    is otherwise -> (i64-min, i64-max)
+
+ A guard's refinement outranks the declaration, and can only narrow it:
+ make-field-cond-refine intersects what the comparison implies with the
+ declared range before recording it, so a recorded entry is always inside
+ the bound the field was declared with.
+
+  field-proven-range : TypeEnv, AExpr, Text -> (Integer, Integer)
+  field-proven-range (env) (obj) (fname) =
+   when obj
+    is ANameExpr (n) (s) ->
+     let key = field-refine-key (n.value) fname
+     in let idx = env-local-find (env.local-ranges) key 0 (list-length (env.local-ranges))
+     in if idx >= 0 then let c = list-at (env.local-ranges) idx in (c.lo, c.hi)
+     else field-declared-range env (n.value) fname
+    is otherwise -> (i64-min, i64-max)
+
+ A binary arithmetic expression proves by the shared interval kernel
+ (Math chapter Interval): operand ranges convert to Interval at the
+ boundary, the iv-* transfer function computes full signed i64
+ interval arithmetic, and the result converts back. The kernel
+ refuses to iv-unknown whenever an endpoint computation would
+ overflow, and iv-unknown converts back to the full i64 range, which
+ never fits a real bound — the analysis stays silence-only. Full
+ signed support replaces the hand-written non-negative-only guards
+ the checker carried before the kernel existed; it strictly widens
+ what can be proven, never what can be stored. An empty interval can
+ only reach the boundary through a dead-branch intersection and
+ converts to the full range: claiming nothing is sound where nothing
+ can flow, and it keeps every downstream tuple a real lo <= hi pair.
+
+  range-interval : (Integer, Integer) -> Interval
+  range-interval (p) =
+   let (lo, hi) = p
+   in Interval { lo = lo, hi = hi }
+
+  interval-range : Interval -> (Integer, Integer)
+  interval-range (a) =
+   if iv-is-empty a then (i64-min, i64-max)
+   else (a.lo, a.hi)
 
   binary-proven-range : TypeEnv, BinaryOp, AExpr, AExpr -> (Integer, Integer)
   binary-proven-range (env) (op) (l) (r) =
-   let (l-lo, l-hi) = aexpr-proven-range env l
-   in let (r-lo, r-hi) = aexpr-proven-range env r
+   let l-iv = range-interval (aexpr-proven-range env l)
+   in let r-iv = range-interval (aexpr-proven-range env r)
    in when op
-    is OpAdd -> range-arith-add l-lo l-hi r-lo r-hi
-    is OpSub -> range-arith-sub l-lo l-hi r-lo r-hi
-    is OpMul -> range-arith-mul l-lo l-hi r-lo r-hi
-    is OpDiv -> range-arith-div l-lo l-hi r-lo r-hi
+    is OpAdd -> interval-range (iv-add l-iv r-iv)
+    is OpSub -> interval-range (iv-sub l-iv r-iv)
+    is OpMul -> interval-range (iv-mul l-iv r-iv)
+    is OpDiv -> interval-range (iv-div l-iv r-iv)
     is otherwise -> (i64-min, i64-max)
-
-  range-arith-add : Integer, Integer, Integer, Integer -> (Integer, Integer)
-  range-arith-add (l-lo) (l-hi) (r-lo) (r-hi) =
-   if l-lo >= 0 & r-lo >= 0
-   then if l-hi <= i64-max - r-hi then (l-lo + r-lo, l-hi + r-hi)
-        else (i64-min, i64-max)
-   else (i64-min, i64-max)
-
-  range-arith-sub : Integer, Integer, Integer, Integer -> (Integer, Integer)
-  range-arith-sub (l-lo) (l-hi) (r-lo) (r-hi) =
-   if l-lo >= 0 & r-lo >= 0
-   then (l-lo - r-hi, l-hi - r-lo)
-   else (i64-min, i64-max)
-
-  range-arith-mul : Integer, Integer, Integer, Integer -> (Integer, Integer)
-  range-arith-mul (l-lo) (l-hi) (r-lo) (r-hi) =
-   if l-lo >= 0 & r-lo >= 0
-   then if l-hi == 0 then (0, 0)
-   else if r-hi <= i64-max / l-hi then (l-lo * r-lo, l-hi * r-hi)
-        else (i64-min, i64-max)
-   else (i64-min, i64-max)
-
-  range-arith-div : Integer, Integer, Integer, Integer -> (Integer, Integer)
-  range-arith-div (l-lo) (l-hi) (r-lo) (r-hi) =
-   if l-lo >= 0 & r-lo > 0
-   then (l-lo / r-hi, l-hi / r-lo)
-   else (i64-min, i64-max)
 
  An application proves through three doors. `__narrow x` passes its
  argument's range through, mirroring the emit prover. Otherwise the
@@ -865,10 +1189,211 @@ Section: Lint value-expression range analysis
    else (i64-min, i64-max)
 
   proven-range-union : (Integer, Integer), (Integer, Integer) -> (Integer, Integer)
-  proven-range-union (a) (b) =
-   let (a-lo, a-hi) = a
-   in let (b-lo, b-hi) = b
-   in ((if a-lo <= b-lo then a-lo else b-lo), (if a-hi >= b-hi then a-hi else b-hi))
+  proven-range-union (a) (b) = interval-range (iv-union (range-interval a) (range-interval b))
+
+ Branch refinement (MiddleEnd.md workstream A1): when an if's
+ condition compares a bare local against an expression with a
+ provable range, each arm is analyzed with the local's recorded range
+ intersected with what the comparison being true (then) or false
+ (else) implies — ABCD's pi-nodes collapsed onto lexical scope. The
+ refined entry is pushed onto the env copy that walks one arm and
+ never escapes it; a refinement that says nothing (iv-unknown) or
+ that proves the arm unreachable (iv-empty) pushes nothing. Both
+ orientations are handled: name-on-left directly, name-on-right
+ through the swapped operator. An arm whose refined range is empty
+ cannot execute, so the if proves as the surviving arm alone (SCCP
+ feasibility); an infeasible arm is otherwise walked with the
+ unrefined env, which can only widen, never invent.
+
+  CondRefine = record {
+   target : Text,
+   recv : Text,
+   then-iv : Interval,
+   else-iv : Interval
+  }
+
+  no-cond-refine : CondRefine = CondRefine { target = "", recv = "", then-iv = iv-unknown, else-iv = iv-unknown }
+
+  compare-op-refines : BinaryOp -> Boolean
+  compare-op-refines (op) =
+   when op
+    is OpLt -> True
+    is OpGt -> True
+    is OpLtEq -> True
+    is OpGtEq -> True
+    is OpEq -> True
+    is otherwise -> False
+
+  swap-compare-op : BinaryOp -> BinaryOp
+  swap-compare-op (op) =
+   when op
+    is OpLt -> OpGt
+    is OpGt -> OpLt
+    is OpLtEq -> OpGtEq
+    is OpGtEq -> OpLtEq
+    is otherwise -> op
+
+ The interval a comparison against [o-lo, o-hi] implies for the
+ refined side. The bounds quantify over every concrete value the
+ other side can take: v < e with e <= o-hi means v <= o-hi - 1, and
+ v < e being false means v >= e >= o-lo. A strict bound one past an
+ i64 endpoint has no satisfying value and answers iv-empty. The
+ false side of == is not an interval, so it answers iv-unknown.
+
+  interval-lt-bound : Integer -> Interval
+  interval-lt-bound (bound) =
+   if bound == i64-min then iv-empty
+   else Interval { lo = i64-min, hi = bound - 1 }
+
+  interval-gt-bound : Integer -> Interval
+  interval-gt-bound (bound) =
+   if bound == i64-max then iv-empty
+   else Interval { lo = bound + 1, hi = i64-max }
+
+  compare-implied-interval : BinaryOp, Integer, Integer, Boolean -> Interval
+  compare-implied-interval (op) (o-lo) (o-hi) (taken) =
+   when op
+    is OpLt -> if taken then interval-lt-bound o-hi else Interval { lo = o-lo, hi = i64-max }
+    is OpLtEq -> if taken then Interval { lo = i64-min, hi = o-hi } else interval-gt-bound o-lo
+    is OpGt -> if taken then interval-gt-bound o-lo else Interval { lo = i64-min, hi = o-hi }
+    is OpGtEq -> if taken then Interval { lo = o-lo, hi = i64-max } else interval-lt-bound o-hi
+    is OpEq -> if taken then Interval { lo = o-lo, hi = o-hi } else iv-unknown
+    is otherwise -> iv-unknown
+
+  make-cond-refine : TypeEnv, Text, BinaryOp, (Integer, Integer) -> CondRefine
+  make-cond-refine (env) (name) (op) (other) =
+   let (o-lo, o-hi) = other
+   in let (c-lo, c-hi) = local-proven-range env name
+   in let cur = Interval { lo = c-lo, hi = c-hi }
+   in CondRefine {
+    target = name,
+    recv = "",
+    then-iv = iv-intersect cur (compare-implied-interval op o-lo o-hi True),
+    else-iv = iv-intersect cur (compare-implied-interval op o-lo o-hi False)
+   }
+
+ A guard on a FIELD refines it too, and until now it did not: only a
+ bare local was a target, so `if b.val <= 15 then Nibble { n = b.val }`
+ read b.val as its declared 0..255 and was rejected, while the identical
+ `let v = b.val in if v <= 15 then Nibble { n = v }` was proven. The
+ guard was the same; the thing guarded was not a name.
+
+ A field key is `recv.field`. It cannot collide with a local: a dot ends
+ an identifier, so no local is ever spelled this way, and the entry
+ rides local-ranges like any other refinement.
+
+  field-refine-key : Text, Text -> Text
+  field-refine-key (recv) (fname) = recv & "." & fname
+
+  make-field-cond-refine : TypeEnv, Text, Text, BinaryOp, (Integer, Integer) -> CondRefine
+  make-field-cond-refine (env) (recv) (fname) (op) (other) =
+   let (o-lo, o-hi) = other
+   in let (c-lo, c-hi) = field-declared-range env recv fname
+   in let cur = Interval { lo = c-lo, hi = c-hi }
+   in CondRefine {
+    target = field-refine-key recv fname,
+    recv = recv,
+    then-iv = iv-intersect cur (compare-implied-interval op o-lo o-hi True),
+    else-iv = iv-intersect cur (compare-implied-interval op o-lo o-hi False)
+   }
+
+  cond-refine-target : TypeEnv, AExpr, BinaryOp, (Integer, Integer) -> CondRefine
+  cond-refine-target (env) (side) (op) (other) =
+   when side
+    is ANameExpr (n) (s) ->
+     if env-is-local env (n.value) then make-cond-refine env (n.value) op other
+     else no-cond-refine
+    is AFieldAccess (obj) (f) (s) ->
+     when obj
+      is ANameExpr (rn) (s2) -> make-field-cond-refine env (rn.value) (f.value) op other
+      is otherwise -> no-cond-refine
+    is otherwise -> no-cond-refine
+
+  cond-refine : TypeEnv, AExpr -> CondRefine
+  cond-refine (env) (c) =
+   when c
+    is ABinaryExpr (l) (op) (r) (s) ->
+     if compare-op-refines op == False then no-cond-refine
+     else let from-left = cond-refine-target env l op (aexpr-proven-range env r)
+     in if text-length (from-left.target) > 0 then from-left
+     else cond-refine-target env r (swap-compare-op op) (aexpr-proven-range env l)
+    is otherwise -> no-cond-refine
+
+ The condition a field refinement carries that a local does not need.
+
+ A local is a VALUE: once bound it cannot change, so a range proven at
+ the guard still holds at the store. A field is a LOCATION -- `b.val` is
+ re-read at the store, and __record-set mutates in place -- so the
+ refinement holds only while the arm cannot reach the record. It can only
+ reach it by NAMING it: you cannot mutate a record you do not mention. So
+ the refinement stands exactly when the receiver appears in the arm
+ solely as the object of a field access. `b.val` reads and cannot write;
+ `f b` or `__record-set b "val" 200` mentions it bare, and the refinement
+ is dropped rather than trusted.
+
+ Unknown shapes answer False and drop it. That is the safe direction:
+ dropping a refinement costs a diagnostic the author can satisfy with
+ __narrow, while keeping a stale one would silence a real overflow.
+
+ What this does not see: a closure created BEFORE the if that captured
+ the record and is called inside the arm. The arm names the closure, not
+ the record. Nothing in the tree does this, and the store's own runtime
+ bounds check is the backstop either way -- the emit prover does not
+ refine on conditions, so it keeps that check regardless of what the
+ lint concludes here.
+
+  arm-reads-only : AExpr, Text -> Boolean
+  arm-reads-only (e) (name) =
+   when e
+    is ALitExpr (v) (k) (s) -> True
+    is ANameExpr (n) (s) -> n.value /= name
+    is AFieldAccess (obj) (f) (s) ->
+     when obj
+      is ANameExpr (rn) (s2) -> True
+      is otherwise -> arm-reads-only obj name
+    is AApplyExpr (fn) (a) (s) -> arm-reads-only fn name & arm-reads-only a name
+    is ABinaryExpr (l) (op) (r) (s) -> arm-reads-only l name & arm-reads-only r name
+    is AUnaryExpr (x) (s) -> arm-reads-only x name
+    is AIfExpr (c) (t) (el) (s) -> arm-reads-only c name & arm-reads-only t name & arm-reads-only el name
+    is ALazyExpr (x) (s) -> arm-reads-only x name
+    is AListExpr (xs) (s) -> arm-reads-only-list xs name 0 (list-length xs)
+    is ARecordExpr (rn) (fields) (s) -> arm-reads-only-fields fields name 0 (list-length fields)
+    is ALetExpr (binds) (body) (s) -> arm-reads-only body name & arm-reads-only-binds binds name 0 (list-length binds)
+    is otherwise -> False
+
+  arm-reads-only-list : List AExpr, Text, Integer, Integer -> Boolean
+  arm-reads-only-list (xs) (name) (i) (len) =
+   if i >= len then True
+   else if arm-reads-only (list-at xs i) name == False then False
+   else arm-reads-only-list xs name (i + 1) len
+
+  arm-reads-only-fields : List AFieldExpr, Text, Integer, Integer -> Boolean
+  arm-reads-only-fields (fields) (name) (i) (len) =
+   if i >= len then True
+   else if arm-reads-only ((list-at fields i).value) name == False then False
+   else arm-reads-only-fields fields name (i + 1) len
+
+  arm-reads-only-binds : List ALetBind, Text, Integer, Integer -> Boolean
+  arm-reads-only-binds (binds) (name) (i) (len) =
+   if i >= len then True
+   else if arm-reads-only ((list-at binds i).value) name == False then False
+   else arm-reads-only-binds binds name (i + 1) len
+
+  arm-refined-env : TypeEnv, CondRefine, Interval, AExpr -> TypeEnv
+  arm-refined-env (env) (rf) (iv) (arm) =
+   if text-length (rf.target) == 0 then env
+   else if iv-is-empty iv | iv-is-unknown iv then env
+   else if text-length (rf.recv) > 0 & (arm-reads-only arm (rf.recv) == False) then env
+   else env-add-local-range env (rf.target) (iv.lo) (iv.hi)
+
+  if-proven-range : TypeEnv, AExpr, AExpr, AExpr -> (Integer, Integer)
+  if-proven-range (env) (c) (t) (el) =
+   let rf = cond-refine env c
+   in if text-length (rf.target) > 0 & iv-is-empty (rf.then-iv)
+   then aexpr-proven-range (arm-refined-env env rf (rf.else-iv) el) el
+   else if text-length (rf.target) > 0 & iv-is-empty (rf.else-iv)
+   then aexpr-proven-range (arm-refined-env env rf (rf.then-iv) t) t
+   else proven-range-union (aexpr-proven-range (arm-refined-env env rf (rf.then-iv) t) t) (aexpr-proven-range (arm-refined-env env rf (rf.else-iv) el) el)
 
  A refined position — record field, constructor payload, function
  parameter, or function return — draws the same hybrid check. The
@@ -918,13 +1443,30 @@ Section: Lint value-expression range analysis
  or constant the prover can see) or takes responsibility with
  __narrow, which traps at runtime if violated.
 
+ The verdict is reached on the PROVEN range and the error used to quote
+ the inferred TYPE's, so it named a quantity the decision had not used:
+ `b.val / 8` over a 0..255 byte is provably 0..31, and the message read
+ "value type is 0..255" — neither the bound nor the proof, and an
+ understatement of what had already been worked out. An author cannot act
+ on a number the compiler did not use.
+
+ It reports the proof, and only the proof. The two are not
+ interchangeable and must not be combined: since arithmetic keeps the
+ narrower operand's bound, an inferred type is a CONTRACT the store's
+ runtime check enforces, not a fact about the value — `b.val - 10` types
+ as 0..255 and evaluates to -10. Intersecting the two would "prove" a
+ range the value can leave, which is the one thing this analysis must
+ never do. The proof is sound on its own, and it already reaches every
+ sound thing the type knows: a field's declared bound (enforced at every
+ store), a bounded return, a bounded parameter, a literal.
+
   lint-narrowing-prove : UnificationState, TypeEnv, AExpr, Integer, Integer, Integer, Integer, SourceSpan, Text -> UnificationState
   lint-narrowing-prove (st) (env) (value-arg) (f-lo) (f-hi) (v-lo) (v-hi) (span) (descriptor) =
    let (p-lo, p-hi) = aexpr-proven-range env value-arg
    in if p-lo >= f-lo & p-hi <= f-hi
    then if p-lo == p-hi then st
     else __record-set st "bag" (bag-add (st.bag) (make-info cdx-narrowing-proven (descriptor & " has bound " & integer-to-text f-lo & ".." & integer-to-text f-hi & " and the value expression is proven within " & integer-to-text p-lo & ".." & integer-to-text p-hi & "; bounds check elided") span))
-   else __record-set st "bag" (bag-add (st.bag) (make-error cdx-narrowing-record-set (descriptor & " has bound " & integer-to-text f-lo & ".." & integer-to-text f-hi & " but value type is " & integer-to-text v-lo & ".." & integer-to-text v-hi & "; prove the value's range or assert it with __narrow, which traps at runtime if violated") span))
+   else __record-set st "bag" (bag-add (st.bag) (make-error cdx-narrowing-record-set (descriptor & " has bound " & integer-to-text f-lo & ".." & integer-to-text f-hi & " but the value's proven range is " & integer-to-text p-lo & ".." & integer-to-text p-hi & "; prove the value's range or assert it with __narrow, which traps at runtime if violated") span))
   infer-int-lit-arg : UnificationState, CodexType, Text, LiteralKind -> CheckResult
   infer-int-lit-arg (st) (func-ty) (val) (kind) =
    when kind
@@ -946,8 +1488,8 @@ Section: Lint value-expression range analysis
     is otherwise -> infer-literal st kind
 
 Section: Infer List
-  infer-list : UnificationState, TypeEnv, List AExpr, SourceSpan -> CheckResult
-  infer-list (st) (env) (elems) (span) =
+  infer-list : UnificationState, TypeEnv, List AExpr, SourceSpan, Integer -> CheckResult
+  infer-list (st) (env) (elems) (span) (depth) =
    if list-length elems == 0
     then
      let (fr-ty, fr-st) = fresh-and-advance st
@@ -956,22 +1498,22 @@ Section: Infer List
       effect-row = empty-row,
       state = fr-st
      }
-    else let first = infer-expr st env (list-at elems 0)
-    in let (elems-row, st2) = unify-list-elems (first.state) env elems (first.inferred-type) 1 (list-length elems) (first.effect-row)
+    else let first = infer-expr-at st env (list-at elems 0) (depth + 1)
+    in let (elems-row, st2) = unify-list-elems (first.state) env elems (first.inferred-type) 1 (list-length elems) (first.effect-row) depth
     in CheckResult {
       inferred-type = deck-record (ListTy (first.inferred-type)),
       effect-row = elems-row,
       state = st2
      }
 
-  unify-list-elems : UnificationState, TypeEnv, List AExpr, CodexType, Integer, Integer, EffectRow -> (EffectRow, UnificationState)
-  unify-list-elems (st) (env) (elems) (elem-ty) (i) (len) (acc-row) =
+  unify-list-elems : UnificationState, TypeEnv, List AExpr, CodexType, Integer, Integer, EffectRow, Integer -> (EffectRow, UnificationState)
+  unify-list-elems (st) (env) (elems) (elem-ty) (i) (len) (acc-row) (depth) =
    if i == len then (acc-row, st)
    else let e = list-at elems i
-   in let er = infer-expr st env e
+   in let er = infer-expr-at st env e (depth + 1)
    in let (_, u-st) = unify (er.state) (er.inferred-type) elem-ty (aexpr-span e)
    in let (acc2, acc-st) = row-union u-st acc-row (er.effect-row)
-   in unify-list-elems acc-st env elems elem-ty (i + 1) len acc2
+   in unify-list-elems acc-st env elems elem-ty (i + 1) len acc2 depth
 
 Section: Infer Match
   is-gadt-type : UnificationState, CodexType -> Boolean
@@ -995,12 +1537,12 @@ Section: Infer Match
  effects are part of the match's ambient even though its speculative
  type bindings are rolled back.
 
-  infer-match : UnificationState, TypeEnv, AExpr, List AMatchArm -> CheckResult
-  infer-match (st) (env) (scrutinee) (arms) =
-   let sr = infer-expr st env scrutinee
+  infer-match : UnificationState, TypeEnv, AExpr, List AMatchArm, Integer -> CheckResult
+  infer-match (st) (env) (scrutinee) (arms) (depth) =
+   let sr = infer-expr-at st env scrutinee (depth + 1)
    in let (fr-ty, fr-st) = fresh-and-advance (sr.state)
    in let gadt = is-gadt-type fr-st (sr.inferred-type)
-   in let (arms-row, st2) = infer-match-arms fr-st env (sr.inferred-type) fr-ty arms 0 (list-length arms) gadt (sr.effect-row)
+   in let (arms-row, st2) = infer-match-arms fr-st env (sr.inferred-type) fr-ty arms 0 (list-length arms) gadt (sr.effect-row) depth
    in let st3 = check-match-exhaustiveness st2 (sr.inferred-type) arms (aexpr-span scrutinee)
    in CheckResult {
     inferred-type = fr-ty,
@@ -1008,35 +1550,35 @@ Section: Infer Match
     state = st3
    }
 
-  infer-match-arms : UnificationState, TypeEnv, CodexType, CodexType, List AMatchArm, Integer, Integer, Boolean, EffectRow -> (EffectRow, UnificationState)
-  infer-match-arms (st) (env) (scrut-ty) (result-ty) (arms) (i) (len) (is-gadt) (acc-row) =
+  infer-match-arms : UnificationState, TypeEnv, CodexType, CodexType, List AMatchArm, Integer, Integer, Boolean, EffectRow, Integer -> (EffectRow, UnificationState)
+  infer-match-arms (st) (env) (scrut-ty) (result-ty) (arms) (i) (len) (is-gadt) (acc-row) (depth) =
    if i == len then (acc-row, st)
    else let arm = list-at arms i
-   in if is-gadt then infer-gadt-arm st env scrut-ty result-ty arm arms (i + 1) len acc-row else infer-plain-arm st env scrut-ty result-ty arm arms (i + 1) len is-gadt acc-row
+   in if is-gadt then infer-gadt-arm st env scrut-ty result-ty arm arms (i + 1) len acc-row depth else infer-plain-arm st env scrut-ty result-ty arm arms (i + 1) len is-gadt acc-row depth
 
-  infer-plain-arm : UnificationState, TypeEnv, CodexType, CodexType, AMatchArm, List AMatchArm, Integer, Integer, Boolean, EffectRow -> (EffectRow, UnificationState)
-  infer-plain-arm (st) (env) (scrut-ty) (result-ty) (arm) (arms) (next) (len) (is-gadt) (acc-row) =
+  infer-plain-arm : UnificationState, TypeEnv, CodexType, CodexType, AMatchArm, List AMatchArm, Integer, Integer, Boolean, EffectRow, Integer -> (EffectRow, UnificationState)
+  infer-plain-arm (st) (env) (scrut-ty) (result-ty) (arm) (arms) (next) (len) (is-gadt) (acc-row) (depth) =
    let pr = bind-pattern st env (arm.pattern) scrut-ty
-   in let gr = infer-expr (pr.state) (pr.env) (arm.guard)
+   in let gr = infer-expr-at (pr.state) (pr.env) (arm.guard) (depth + 1)
    in let (_, gu-st) = unify (gr.state) (gr.inferred-type) BooleanTy (aexpr-span (arm.guard))
-   in let br = infer-expr gu-st (pr.env) (arm.body)
+   in let br = infer-expr-at gu-st (pr.env) (arm.body) (depth + 1)
    in let (_, u-st) = unify (br.state) (br.inferred-type) result-ty (aexpr-span (arm.body))
    in let (acc2, acc-st) = row-union u-st acc-row (gr.effect-row)
    in let (acc3, acc-st2) = row-union acc-st acc2 (br.effect-row)
-   in infer-match-arms acc-st2 env scrut-ty result-ty arms next len is-gadt acc3
+   in infer-match-arms acc-st2 env scrut-ty result-ty arms next len is-gadt acc3 depth
 
-  infer-gadt-arm : UnificationState, TypeEnv, CodexType, CodexType, AMatchArm, List AMatchArm, Integer, Integer, EffectRow -> (EffectRow, UnificationState)
-  infer-gadt-arm (st) (env) (scrut-ty) (result-ty) (arm) (arms) (next) (len) (acc-row) =
+  infer-gadt-arm : UnificationState, TypeEnv, CodexType, CodexType, AMatchArm, List AMatchArm, Integer, Integer, EffectRow, Integer -> (EffectRow, UnificationState)
+  infer-gadt-arm (st) (env) (scrut-ty) (result-ty) (arm) (arms) (next) (len) (acc-row) (depth) =
    let saved = snapshot-substitutions st
    in let pr = bind-pattern st env (arm.pattern) scrut-ty
-   in let gr = infer-expr (pr.state) (pr.env) (arm.guard)
+   in let gr = infer-expr-at (pr.state) (pr.env) (arm.guard) (depth + 1)
    in let (_, gu-st) = unify (gr.state) (gr.inferred-type) BooleanTy (aexpr-span (arm.guard))
-   in let br = infer-expr gu-st (pr.env) (arm.body)
+   in let br = infer-expr-at gu-st (pr.env) (arm.body) (depth + 1)
    in let (_, u-st) = unify (br.state) (br.inferred-type) result-ty (aexpr-span (arm.body))
    in let restored = restore-substitutions u-st saved
    in let (acc2, acc-st) = row-union restored acc-row (gr.effect-row)
    in let (acc3, acc-st2) = row-union acc-st acc2 (br.effect-row)
-   in infer-match-arms acc-st2 env scrut-ty result-ty arms next len True acc3
+   in infer-match-arms acc-st2 env scrut-ty result-ty arms next len True acc3 depth
 
   check-match-exhaustiveness : UnificationState, CodexType, List AMatchArm, SourceSpan -> UnificationState
   check-match-exhaustiveness (st) (scrut-ty) (arms) (span) =
@@ -1151,12 +1693,12 @@ Section: Infer Act
  unwrapped by infer-name and infer-application, their effects in the
  ambient.
 
-  infer-act : UnificationState, TypeEnv, List AActStmt -> CheckResult
-  infer-act (st) (env) (stmts) =
-   infer-act-loop st env stmts 0 (list-length stmts) NothingTy empty-row
+  infer-act : UnificationState, TypeEnv, List AActStmt, Integer -> CheckResult
+  infer-act (st) (env) (stmts) (depth) =
+   infer-act-loop st env stmts 0 (list-length stmts) NothingTy empty-row depth
 
-  infer-act-loop : UnificationState, TypeEnv, List AActStmt, Integer, Integer, CodexType, EffectRow -> CheckResult
-  infer-act-loop (st) (env) (stmts) (i) (len) (last-ty) (acc-row) =
+  infer-act-loop : UnificationState, TypeEnv, List AActStmt, Integer, Integer, CodexType, EffectRow, Integer -> CheckResult
+  infer-act-loop (st) (env) (stmts) (i) (len) (last-ty) (acc-row) (depth) =
    if i == len then CheckResult {
     inferred-type = deep-resolve st last-ty,
     effect-row = acc-row,
@@ -1165,16 +1707,66 @@ Section: Infer Act
    else let stmt = list-at stmts i
    in when stmt
      is AActExprStmt (e) (s) ->
-      let er = infer-expr st env e
-   in let (acc2, acc-st) = row-union (er.state) acc-row (er.effect-row)
-   in infer-act-loop acc-st env stmts (i + 1) len (er.inferred-type) acc2
+      when e
+       is ALetExpr (binds) (lbody) (ls) -> infer-act-let st env binds lbody stmts i len acc-row depth
+       is otherwise ->
+        let er = infer-expr-at st env e (depth + 1)
+        in let (acc2, acc-st) = row-union (er.state) acc-row (er.effect-row)
+        in infer-act-loop acc-st env stmts (i + 1) len (er.inferred-type) acc2 depth
      is AActBindStmt (name) (e) (s) ->
-      let er = infer-expr st env e
+      let er = infer-expr-at st env e (depth + 1)
    in let (acc2, acc-st) = row-union (er.state) acc-row (er.effect-row)
    in let env2 = env-bind-local env (name.value) (deep-resolve acc-st (er.inferred-type))
-   in infer-act-loop acc-st env2 stmts (i + 1) len (er.inferred-type) acc2
+   in infer-act-loop acc-st env2 stmts (i + 1) len (er.inferred-type) acc2 depth
+
+ A `let` statement in an act block is do-notation: it scopes over the
+ REST of the block, not merely over its own `in` body. Lowering says
+ this by nesting the remaining statements inside the let's body
+ (`lower-act-let`); the checker has to say the same thing, and it says
+ it by threading the extended env into both the let's body AND the
+ statements that follow.
+
+ Until BACKLOG 2.22 the checker did not thread it at all — the binding
+ reached the following statements only because `env-bind-local` aliased
+ the caller's locals list, so the sibling statements read a binding
+ that had merely never been removed. That made the act-block case work
+ by the same accident that let an if-arm's local escape its arm. The
+ threading here is what lets the bind stop aliasing.
+
+ A let CHAIN is peeled to its innermost body, so every binding in the
+ chain scopes over the rest of the block — the shape `codex/test/
+ mask-ops` pins, and the same peel `lower-act-let` performs.
+
+  infer-act-let : UnificationState, TypeEnv, List ALetBind, AExpr, List AActStmt, Integer, Integer, EffectRow, Integer -> CheckResult
+  infer-act-let (st) (env) (binds) (body) (stmts) (i) (len) (acc-row) (depth) =
+   let lr = infer-let-bindings st env binds 0 (list-length binds) empty-row depth
+   in let (acc2, acc-st) = row-union (lr.state) acc-row (lr.binds-row)
+   in when body
+    is ALetExpr (binds2) (body2) (ls2) -> infer-act-let acc-st (lr.env) binds2 body2 stmts i len acc2 (depth + 1)
+    is otherwise ->
+     let br = infer-expr-at acc-st (lr.env) body (depth + 1)
+     in let (acc3, acc-st2) = row-union (br.state) acc2 (br.effect-row)
+     in infer-act-loop acc-st2 (lr.env) stmts (i + 1) len (br.inferred-type) acc3 depth
 
 Section: Infer Expression (dispatch)
+
+ infer-expr is how a DEFINITION is entered, and it is the only place the
+ budget returns to zero: each definition legitimately starts fresh. Every
+ walker inside the inference cycle calls infer-expr-at and passes
+ depth + 1, so the budget measures real AST nesting. A helper that calls
+ infer-expr rather than infer-expr-at silently restores the hole below.
+
+ That rule is load-bearing, and it was broken from the day the budget was
+ added until 2026-07-16. The dispatch arms handed their work to helpers
+ that called infer-expr, which reset the count at every match, let, act
+ and application. Depth accumulated only across chained unary operators
+ and field accesses, which no real program writes, and CDX9001 could
+ therefore never fire for the constructs that actually recurse. A runaway
+ inference walked the stack a gigabyte down into the demand-paged range
+ and double-faulted, where the CPU cannot deliver a page fault onto the
+ faulting stack: the compiler died silently instead of reporting
+ exhaustion (BACKLOG 2.26).
+
   infer-expr : UnificationState, TypeEnv, AExpr -> CheckResult
   infer-expr (st) (env) (expr) = infer-expr-at st env expr 0
 
@@ -1188,11 +1780,16 @@ Section: Infer Expression (dispatch)
    else when expr
     is ALitExpr (val) (kind) (s) -> infer-literal (check-int-lit-range st val kind s) kind
     is ANameExpr (name) (s) -> infer-name st env (name.value) s
-    is ABinaryExpr (left) (op) (right) (s) -> infer-binary st env left op right s
+    is ABinaryExpr (left) (op) (right) (s) -> infer-binary st env left op right s depth
     is AUnaryExpr (operand) (s) ->
      let r = infer-expr-at st env operand (depth + 1)
      in let op-ty = deep-resolve (r.state) (r.inferred-type)
      in if is-real-type op-ty then CheckResult {
+      inferred-type = op-ty,
+      effect-row = r.effect-row,
+      state = r.state
+     }
+     else if is-undecided-type op-ty then CheckResult {
       inferred-type = op-ty,
       effect-row = r.effect-row,
       state = r.state
@@ -1203,13 +1800,13 @@ Section: Infer Expression (dispatch)
       effect-row = r.effect-row,
       state = u-st
      }
-    is AApplyExpr (func) (arg) (s) -> infer-application st env func arg s
-    is AIfExpr (cond) (then-e) (else-e) (s) -> infer-if st env cond then-e else-e s
-    is ALetExpr (bindings) (body) (s) -> infer-let st env bindings body
-    is ALambdaExpr (params) (body) (s) -> infer-lambda st env params body
-    is AMatchExpr (scrutinee) (arms) (s) -> infer-match st env scrutinee arms
-    is AListExpr (elems) (s) -> infer-list st env elems s
-    is AActExpr (stmts) (s) -> infer-act st env stmts
+    is AApplyExpr (func) (arg) (s) -> infer-application st env func arg s depth
+    is AIfExpr (cond) (then-e) (else-e) (s) -> infer-if st env cond then-e else-e s depth
+    is ALetExpr (bindings) (body) (s) -> infer-let st env bindings body depth
+    is ALambdaExpr (params) (body) (s) -> infer-lambda st env params body depth
+    is AMatchExpr (scrutinee) (arms) (s) -> infer-match st env scrutinee arms depth
+    is AListExpr (elems) (s) -> infer-list st env elems s depth
+    is AActExpr (stmts) (s) -> infer-act st env stmts depth
     is AFieldAccess (obj) (field) (s) ->
      let r = infer-expr-at st env obj (depth + 1)
      in let resolved = deep-resolve (r.state) (r.inferred-type)
@@ -1257,24 +1854,26 @@ Section: Infer Expression (dispatch)
      let ctor-raw = if env-has env (name.value) then env-lookup env (name.value) else ErrorTy
      in let (inst-ty, inst-st) = instantiate-type st ctor-raw
      in let result-type = strip-fun-args inst-ty
-     in let (fields-row, st2) = infer-and-unify-record-fields inst-st env fields result-type 0 (list-length fields) empty-row
+     in let (fields-row, st2) = infer-and-unify-record-fields inst-st env fields result-type 0 (list-length fields) empty-row depth
      in let st3 = check-mutation-in-ctor-fields (record-expr-type st2 s result-type) fields 0 (list-length fields)
+     in let st4 = check-record-complete st3 fields result-type s
      in CheckResult {
       inferred-type = result-type,
       effect-row = fields-row,
-      state = st3
+      state = st4
      }
     is AHandleExpr (eff) (body) (clauses) (s) ->
      let body-r = infer-expr-at st env body (depth + 1)
      in let resolved-b = resolve-row (body-r.state) (body-r.effect-row)
-     in let has-e = row-labels-have resolved-b (eff.value)
-     in let (after-row, after-st) = if has-e | resolved-b.tail-id >= 0
+     in let (after-row, after-st) = if row-labels-covered resolved-b (eff.value)
+        then (row-drop-covered resolved-b (eff.value), body-r.state)
+        else if resolved-b.tail-id >= 0
         then let (tp, tp-st) = fresh-row-id (body-r.state)
              in let ext = make-row [deck-record (EffectLabel { name = Name { value = eff.value }, scope = "" })] "" tp
              in let (_, u-st) = unify-row tp-st (body-r.effect-row) ext s
              in (deck-record (row-var tp), u-st)
         else (body-r.effect-row, __record-set (body-r.state) "bag" (bag-add ((body-r.state).bag) (make-warning cdx-handler-unused ("handler for '" & eff.value & "' encloses a body whose type performs no " & eff.value) s)))
-     in let (handle-row, cl-st) = infer-handle-clauses after-st env clauses 0 (list-length clauses) after-row
+     in let (handle-row, cl-st) = infer-handle-clauses after-st env clauses 0 (list-length clauses) after-row depth
      in CheckResult {
       inferred-type = body-r.inferred-type,
       effect-row = handle-row,
@@ -1283,9 +1882,9 @@ Section: Infer Expression (dispatch)
     is AWithTimeoutExpr (timeout) (effs) (scopes) (body) (s) ->
      infer-expr-at st env body (depth + 1)
     is ATryExpr (max) (body) (fb) (fail) (s) ->
-     let body-r = infer-act st env body
-     in let fb-r = if list-length fb > 0 then infer-act (body-r.state) env fb else body-r
-     in let fail-r = if list-length fail > 0 then infer-act (fb-r.state) env fail else fb-r
+     let body-r = infer-act st env body (depth + 1)
+     in let fb-r = if list-length fb > 0 then infer-act (body-r.state) env fb (depth + 1) else body-r
+     in let fail-r = if list-length fail > 0 then infer-act (fb-r.state) env fail (depth + 1) else fb-r
      in let (amb1, amb1-st) = row-union (fail-r.state) (body-r.effect-row) (fb-r.effect-row)
      in let (amb, amb-st) = row-union amb1-st amb1 (fail-r.effect-row)
      in CheckResult { inferred-type = body-r.inferred-type, effect-row = amb, state = amb-st }
@@ -1366,36 +1965,68 @@ Section: Infer Expression (dispatch)
      in if aexpr-mentions-record-set (b.value) then True
      else aexpr-list-mentions-record-set-binds binds (i + 1) len
 
- The handler rule (EffectRows.md §7): if the body's row can perform
- the handled effect (has the label, or is open), unifying it against
- the extension {E | t'} forces E into the concrete part and t' is
- exactly everything else the body does — precise discharge, one unify
- call. A closed body row without E discharges nothing: legal,
- suspicious, CDX2092. Clause bodies are inferred for their own
+ The handler rule (EffectRows.md §7). Discharge is by the dotted
+ sub-effect lattice, not by exact name: `with FileSystem` handles a
+ body that performs FileSystem.Read and FileSystem.Write, because
+ effect-covered-by is the same relation the def boundary already uses
+ to accept those labels against a declared [FileSystem].
+
+ So the FIRST question is what the body's CONCRETE labels say, not
+ whether its row is open. An inferred row is almost always open — it
+ carries a fresh tail — and the old rule asked about the tail first,
+ unified against the extension {E | t'}, and thereby forced the bare
+ label E into the row while every dotted member fell into t' and
+ survived. `with Store` over a body performing Store.Read left
+ Store.Read in the row and manufactured a Store nobody performed.
+ That is why the tail is now the fallback and never the first question.
+
+ If any concrete label is covered, drop every covered label and keep
+ the tail as it was: the tail was never what carried them. For the
+ exact case this is what the old unify already computed — a row
+ [Console] under `with Console` bound t' to the rest — so handler-smoke
+ is unchanged, and the dotted case stops being a no-op with a CDX2092.
+
+ Only a body whose row is a BARE tail (no concrete label covered, tail
+ open) still unifies: E can only have entered through the tail, and
+ only unification can bind it. Family discharge through a tail is not
+ attempted — it would have to invent the member names.
+
+ Clause bodies are inferred for their own
  ambient rows (a Console handler whose clause writes files yields
  FileSystem) and unioned into the result; clause VALUE typing stays
  with lowering, as before this stage.
 
-  row-labels-have : EffectRow, Text -> Boolean
-  row-labels-have (row) (name) =
-   row-labels-have-loop (row.labels) name 0 (list-length (row.labels))
+  row-labels-covered : EffectRow, Text -> Boolean
+  row-labels-covered (row) (name) =
+   row-labels-covered-loop (row.labels) name 0 (list-length (row.labels))
 
-  row-labels-have-loop : List EffectLabel, Text, Integer, Integer -> Boolean
-  row-labels-have-loop (ls) (name) (i) (len) =
+  row-labels-covered-loop : List EffectLabel, Text, Integer, Integer -> Boolean
+  row-labels-covered-loop (ls) (name) (i) (len) =
    if i == len then False
-   else if ((list-at ls i).name.value) == name then True
-   else row-labels-have-loop ls name (i + 1) len
+   else if effect-covered-by [Name { value = name }] (((list-at ls i).name).value) then True
+   else row-labels-covered-loop ls name (i + 1) len
 
-  infer-handle-clauses : UnificationState, TypeEnv, List AHandleClause, Integer, Integer, EffectRow -> (EffectRow, UnificationState)
-  infer-handle-clauses (st) (env) (clauses) (i) (len) (acc-row) =
+  row-drop-covered : EffectRow, Text -> EffectRow
+  row-drop-covered (row) (name) =
+   make-row (row-keep-uncovered (row.labels) name 0 (list-length (row.labels)) []) (row.tail-name) (row.tail-id)
+
+  row-keep-uncovered : List EffectLabel, Text, Integer, Integer, List EffectLabel -> List EffectLabel
+  row-keep-uncovered (ls) (name) (i) (len) (acc) =
+   if i == len then acc
+   else let l = list-at ls i
+   in if effect-covered-by [Name { value = name }] ((l.name).value) then row-keep-uncovered ls name (i + 1) len acc
+      else row-keep-uncovered ls name (i + 1) len (list-push acc l)
+
+  infer-handle-clauses : UnificationState, TypeEnv, List AHandleClause, Integer, Integer, EffectRow, Integer -> (EffectRow, UnificationState)
+  infer-handle-clauses (st) (env) (clauses) (i) (len) (acc-row) (depth) =
    if i == len then (acc-row, st)
    else let c = list-at clauses i
    in let pr = bind-lambda-params st env (c.params) 0 (list-length (c.params)) []
    in let (rs-ty, rs-st) = fresh-and-advance (pr.state)
    in let env3 = env-bind-local (pr.env) ((c.resume-name).value) rs-ty
-   in let br = infer-expr rs-st env3 (c.body)
+   in let br = infer-expr-at rs-st env3 (c.body) (depth + 1)
    in let (acc2, acc-st) = row-union (br.state) acc-row (br.effect-row)
-   in infer-handle-clauses acc-st env clauses (i + 1) len acc2
+   in infer-handle-clauses acc-st env clauses (i + 1) len acc2 depth
 
  The flat-effect handler machinery (strip-effect-from-env's
  whole-environment rewrite, strip-handled-effect, filter-effect) is
@@ -1416,27 +2047,73 @@ Section: Infer Expression (dispatch)
     is TypeVar (id) -> apply-type-args-subst generic concrete-args (subst-type-var ty id (list-at concrete-args i)) (i + 1) len
     is otherwise -> apply-type-args-subst generic concrete-args ty (i + 1) len
 
-  infer-record-fields : UnificationState, TypeEnv, List AFieldExpr, Integer, Integer -> UnificationState
-  infer-record-fields (st) (env) (fields) (i) (len) =
+  infer-record-fields : UnificationState, TypeEnv, List AFieldExpr, Integer, Integer, Integer -> UnificationState
+  infer-record-fields (st) (env) (fields) (i) (len) (depth) =
    if i == len then st
    else let f = list-at fields i
-   in let r = infer-expr st env (f.value)
-   in infer-record-fields (r.state) env fields (i + 1) len
+   in let r = infer-expr-at st env (f.value) (depth + 1)
+   in infer-record-fields (r.state) env fields (i + 1) len depth
 
-  infer-and-unify-record-fields : UnificationState, TypeEnv, List AFieldExpr, CodexType, Integer, Integer, EffectRow -> (EffectRow, UnificationState)
-  infer-and-unify-record-fields (st) (env) (fields) (record-ty) (i) (len) (acc-row) =
+ A record literal names every field of its type, and no other. Neither
+ was checked until 2026-07-14, and both silences were dangerous in the
+ same way: the emitter writes the fields it was given and leaves the
+ rest of the record as __alloc left it, which is zero.
+
+ A field left OUT came back as zero. That is a plausible value for an
+ integer, an empty list and a null pointer alike, so it does not look
+ like a mistake anywhere downstream. It cost a real memory-corruption
+ bug: net-io-send-chunk (NetIO.codex) rebuilt a TcpTransportState
+ naming four of its seven fields, so every send zeroed recv-base -- a
+ raw heap address -- and the next inbound frame wrote the bytes off the
+ wire to physical address 0, over the IDT and the kernel metadata
+ cells. Nothing complained, at any severity, for months.
+
+ A field MISSPELLED was dropped on the floor: it matched no field of
+ the type, so nothing was written, and the field the author meant to
+ set kept its zero. CDX2005 already existed for exactly this mistake on
+ a field ACCESS and a field ASSIGNMENT. The literal was the one place
+ it was not raised.
+
+  record-field-unknown : UnificationState, CodexType, Text, SourceSpan -> UnificationState
+  record-field-unknown (st) (record-ty) (fname) (s) =
+   when record-ty
+    is RecordTy (rname) (rargs) (rfields) -> add-unify-error st cdx-unknown-record-field ("Record '" & rname.value & "' has no field '" & fname & "'") s
+    is otherwise -> st
+
+  check-record-complete : UnificationState, List AFieldExpr, CodexType, SourceSpan -> UnificationState
+  check-record-complete (st) (given) (record-ty) (s) =
+   when record-ty
+    is RecordTy (rname) (rargs) (rfields) -> check-record-missing st (rname.value) rfields given 0 (list-length rfields) s
+    is otherwise -> st
+
+  check-record-missing : UnificationState, Text, List RecordField, List AFieldExpr, Integer, Integer, SourceSpan -> UnificationState
+  check-record-missing (st) (tname) (rfields) (given) (i) (len) (s) =
+   if i == len then st
+   else let rf = list-at rfields i
+   in let st2 = if given-names-field given (rf.name.value) 0 (list-length given) then st
+      else add-unify-error st cdx-missing-record-field ("Record '" & tname & "' is built without a value for field '" & (rf.name.value) & "'. A field left out of a literal is not left alone -- it is zero.") s
+   in check-record-missing st2 tname rfields given (i + 1) len s
+
+  given-names-field : List AFieldExpr, Text, Integer, Integer -> Boolean
+  given-names-field (given) (n) (i) (len) =
+   if i == len then False
+   else if ((list-at given i).name).value == n then True
+   else given-names-field given n (i + 1) len
+
+  infer-and-unify-record-fields : UnificationState, TypeEnv, List AFieldExpr, CodexType, Integer, Integer, EffectRow, Integer -> (EffectRow, UnificationState)
+  infer-and-unify-record-fields (st) (env) (fields) (record-ty) (i) (len) (acc-row) (depth) =
    if i == len then (acc-row, st)
    else let f = list-at fields i
-   in let r = infer-expr st env (f.value)
+   in let r = infer-expr-at st env (f.value) (depth + 1)
    in let expected = when record-ty
        is RecordTy (rname) (rargs) (rfields) -> lookup-record-field rfields (f.name.value)
        is otherwise -> ErrorTy
    in let st2 = when expected
-       is ErrorTy -> r.state
+       is ErrorTy -> record-field-unknown (r.state) record-ty (f.name.value) (aexpr-span (f.value))
        is otherwise -> let (_, u-st) = unify (r.state) (r.inferred-type) expected (aexpr-span (f.value)) in u-st
    in let st3 = lint-narrowing-check st2 env (f.value) (r.inferred-type) expected (aexpr-span (f.value)) ("field '" & (f.name.value) & "'")
    in let (acc2, acc-st) = row-union st3 acc-row (r.effect-row)
-   in infer-and-unify-record-fields acc-st env fields record-ty (i + 1) len acc2
+   in infer-and-unify-record-fields acc-st env fields record-ty (i + 1) len acc2 depth
 
 Page 2 of 2
 

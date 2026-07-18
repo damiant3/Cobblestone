@@ -1,0 +1,201 @@
+Chapter: GopUsbMouse
+  cites Works chapter GopXhci
+  cites Works chapter GopAhci
+  cites Works chapter GopUsbKbd
+  cites Foreword chapter Maybe
+
+ USB HID boot mouse over GopXhci: the pointer half of H2. A modern
+ machine has no PS/2 mouse any more than it has a PS/2 keyboard; the
+ pointer arrives as 3-byte boot reports on an interrupt endpoint --
+ byte zero the buttons (bit 0 left, bit 1 right, bit 2 middle), bytes
+ one and two signed 8-bit deltas. This chapter fetches those reports
+ with the same three-phase pump the keyboard uses and folds them into
+ an absolute position clamped to the panel, because every consumer of
+ a pointer wants "where is it now", not "how did it just twitch".
+
+ The boot-protocol interface is class 3, subclass 1, protocol 2 --
+ the request path (SET_PROTOCOL 0) and the endpoint bring-up are the
+ keyboard's, reused. A device that only speaks its report-descriptor
+ protocol (an absolute tablet, say) is not matched: this driver
+ decodes exactly the boot report and nothing else.
+
+ The pump's idle path allocates nothing -- the same law the keyboard
+ pump earned the hard way: it runs from a poll loop on a machine with
+ no garbage collector, and a record per call is a halt in seconds.
+ One report is consumed whole in one call (a delta has no
+ convergence walk), and the click is edge-detected at consume time so
+ a press-and-release between two polls still registers once.
+
+ We say:
+
+Section: Mouse State
+
+ The state block carries the phase and the folded pointer: [0] phase,
+ [4] x, [8] y, [12] buttons, [16] click edge (left button went down in
+ the last consumed report), [20] event count (probe visibility).
+
+  um-ph-idle : Integer = 0
+  um-ph-armed : Integer = 1
+
+  UsbMouse = record {
+    um-ok : Boolean,
+    um-host : XhciHost,
+    um-dev : UsbDev,
+    um-dci : Integer,
+    um-ring : Integer,
+    um-report : Integer,
+    um-state : Integer
+  }
+
+  mouse-no-mouse : UsbMouse
+  mouse-no-mouse = UsbMouse { um-ok = False, um-host = xhci-no-host, um-dev = xhci-no-dev, um-dci = 0, um-ring = 0, um-report = 0, um-state = 0 }
+
+  mouse-x : UsbMouse -> Integer
+  mouse-x (m) = peek-32 (m.um-state) 4
+
+  mouse-y : UsbMouse -> Integer
+  mouse-y (m) = peek-32 (m.um-state) 8
+
+  mouse-buttons : UsbMouse -> Integer
+  mouse-buttons (m) = peek-32 (m.um-state) 12
+
+  mouse-clicked : UsbMouse -> Boolean
+  mouse-clicked (m) = peek-32 (m.um-state) 16 /= 0
+
+  mouse-warp : UsbMouse, Integer, Integer -> Integer
+  mouse-warp (m) (x) (y) =
+    if m.um-ok == False then 0
+    else let sx = poke-32 (m.um-state) 4 x
+    in let sy = poke-32 (m.um-state) 8 y
+    in um-publish x y (peek-32 (m.um-state) 12)
+
+Section: Pointer Mailbox
+
+ The foreword's InputSource cannot cite a Works driver, so the folded
+ pointer is published to fixed cells and the foreword reads the
+ cells: 36736 carries [0] magic "PTR1", [4] x, [8] y, [12] buttons.
+ The magic is written LAST, at open, after the fields are zeroed --
+ the same guard the disk handles use, so firmware residue cannot
+ impersonate a pointer. Consume and warp keep the cells current;
+ the idle pump path never touches them.
+
+  um-cells : Integer = 36736
+  um-cells-magic : Integer = #31525450
+
+  um-publish : Integer, Integer, Integer -> Integer
+  um-publish (x) (y) (buttons) =
+    let px = poke-32 um-cells 4 x
+    in let py = poke-32 um-cells 8 y
+    in poke-32 um-cells 12 buttons
+
+  um-publish-magic : Integer -> Integer
+  um-publish-magic (dummy) =
+    let z = um-publish 0 0 0
+    in poke-32 um-cells 0 um-cells-magic
+
+Section: Interface
+
+ The keyboard's descriptor walk, retargeted at protocol 2.
+
+  mouse-find-interface : Integer, Integer, Integer -> Integer
+  mouse-find-interface (cfg) (off) (total) =
+    if off >= total then -1
+    else let len = peek-byte cfg off
+    in if len == 0 then -1
+    else if peek-byte cfg (off + 1) /= 4 then mouse-find-interface cfg (off + len) total
+    else if peek-byte cfg (off + 5) /= 3 then mouse-find-interface cfg (off + len) total
+    else if peek-byte cfg (off + 6) /= 1 then mouse-find-interface cfg (off + len) total
+    else if peek-byte cfg (off + 7) /= 2 then mouse-find-interface cfg (off + len) total
+    else off
+
+Section: Pure Decode
+
+ The deltas are signed 8-bit two's complement, and the folded
+ position is clamped to the panel so the pointer parks at an edge
+ instead of leaving the screen.
+
+  mouse-sext : Integer -> Integer
+  mouse-sext (b) = if b > 127 then b - 256 else b
+
+  mouse-clamp : Integer, Integer -> Integer
+  mouse-clamp (v) (limit) =
+    if v < 0 then 0
+    else if v >= limit then limit - 1
+    else v
+
+  mouse-fold : Integer, Integer, Integer -> Integer
+  mouse-fold (pos) (delta-byte) (limit) =
+    mouse-clamp (pos + mouse-sext delta-byte) limit
+
+  mouse-click-edge : Integer, Integer -> Integer
+  mouse-click-edge (prev-buttons) (buttons) =
+    if bit-and prev-buttons 1 == 0 then bit-and buttons 1 else 0
+
+Section: Open
+
+ The tail of the keyboard's endpoint bring-up, minted as a mouse. The
+ pointer starts at the origin; the screen that adopts it warps it to
+ wherever it wants the cursor born.
+
+  mouse-open-endpoint : XhciHost, UsbDev, Integer, Integer, Integer, Integer, Integer -> UsbMouse
+  mouse-open-endpoint (xh) (dev) (iface) (cfgv) (epnum) (maxpkt) (binterval) =
+    let sc = usb-set-configuration xh dev cfgv
+    in if sc == False then mouse-no-mouse
+    else let bp = usb-set-protocol xh dev iface 0
+    in if bp == False then mouse-no-mouse
+    else let dci = epnum * 2 + 1
+    in let ring = xhci-ring-new
+    in let r0 = xhci-set-ep-ring (dev.ud-ctx) dci (xhci-ring-trbs ring) (xh.xh-ctxsz)
+    in let ictx = xhci-ictx-single dci 7 maxpkt (xhci-ring-trbs ring) (xhci-ep-interval (dev.ud-speed) binterval) (xh.xh-ctxsz) (dev.ud-ctx)
+    in let ce = xhci-configure-endpoint xh dev ictx
+    in if ce.xe-ok == False then mouse-no-mouse
+    else if ce.xe-code /= trb-cc-success then mouse-no-mouse
+    else let pub = um-publish-magic 0
+    in UsbMouse { um-ok = True, um-host = xh, um-dev = dev, um-dci = dci, um-ring = ring, um-report = alloc-zeroed 64 64, um-state = alloc-zeroed 64 64 }
+
+Section: The Pump
+
+ Arm one interrupt IN transfer; check the event ring without
+ blocking through the per-slot latch (a storage or keyboard wait on
+ the shared host may already have consumed this slot's completion);
+ consume the report whole. Returns 1 exactly when a report was
+ folded, so the caller knows to move the cursor.
+
+  mouse-set-phase : UsbMouse, Integer -> Integer
+  mouse-set-phase (m) (ph) =
+    let w = poke-32 (m.um-state) 0 ph
+    in 0
+
+  mouse-arm : UsbMouse -> Integer
+  mouse-arm (m) =
+    let w = xhci-ring-push (m.um-ring) (m.um-report) 0 8 (bit-or (bit-shl trb-t-normal 10) trb-flag-ioc)
+    in let db = xhci-ring-doorbell (m.um-host) ((m.um-dev).ud-slot) (m.um-dci)
+    in mouse-set-phase m um-ph-armed
+
+  mouse-consume : UsbMouse, Integer, Integer -> Integer
+  mouse-consume (m) (w) (h) =
+    let buttons = peek-byte (m.um-report) 0
+    in let prev = peek-32 (m.um-state) 12
+    in let nx = mouse-fold (peek-32 (m.um-state) 4) (peek-byte (m.um-report) 1) w
+    in let ny = mouse-fold (peek-32 (m.um-state) 8) (peek-byte (m.um-report) 2) h
+    in let s0 = poke-32 (m.um-state) 4 nx
+    in let s1 = poke-32 (m.um-state) 8 ny
+    in let s2 = poke-32 (m.um-state) 12 buttons
+    in let s3 = poke-32 (m.um-state) 16 (mouse-click-edge prev buttons)
+    in let s4 = poke-32 (m.um-state) 20 (peek-32 (m.um-state) 20 + 1)
+    in let s5 = poke-32 (m.um-state) 0 um-ph-idle
+    in let s6 = um-publish nx ny buttons
+    in 1
+
+  mouse-check : UsbMouse, Integer, Integer -> Integer
+  mouse-check (m) (w) (h) =
+    let code = xhci-wait-xfer (m.um-host) ((m.um-dev).ud-slot) 0
+    in if code == 0 then 0
+    else mouse-consume m w h
+
+  mouse-pump : UsbMouse, Integer, Integer -> Integer
+  mouse-pump (m) (w) (h) =
+    if m.um-ok == False then 0
+    else let ph = peek-32 (m.um-state) 0
+    in if ph == um-ph-armed then mouse-check m w h
+    else mouse-arm m

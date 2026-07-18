@@ -1,5 +1,6 @@
 Chapter: VmSweep
   cites Foreword chapter Maybe
+  cites Foreword chapter ListUtils
   cites Works chapter VmCompile
   cites Works chapter VmRunner
   cites Works chapter CompilerDriver
@@ -32,47 +33,55 @@ Section: Types
 
 Section: Single Sample
 
-  vm-compile-and-run-sample : List Integer, Text, Integer -> VmSampleResult
-  vm-compile-and-run-sample (seed-cdx) (source-path) (revision-id) =
+  vm-compile-and-run-sample : List Integer, Text, Integer -> [FileSystem.Read, Device.Block] VmSampleResult
+  vm-compile-and-run-sample (seed-cdx) (source-path) (revision-id) = act
     let name = path-stem source-path
-    in let entry = classify-sample source-path name
-    in when entry.kind
+    in act
+    entry <- classify-sample source-path name
+    when entry.kind
       is Skipped -> VmSampleResult { vsm-name = name, vsm-verdict = SkippedResult, vsm-output = "" }
-      is ExpectedFailure ->
-        let source = read-file source-path
-        in let result = vm-compile-cdx seed-cdx source revision-id
+      is ExpectedFailure -> act
+        source <- read-file source-path
+        let result = vm-compile-cdx seed-cdx source revision-id
         in let eval = evaluate-failing (result.vcr-success) (entry.sidecar) (result.vcr-log)
         in VmSampleResult { vsm-name = name, vsm-verdict = eval, vsm-output = "" }
-      is ExpectedOutput ->
-        let source = read-file source-path
-        in let result = vm-compile-cdx seed-cdx source revision-id
+      end
+      is ExpectedOutput -> act
+        source <- read-file source-path
+        let result = vm-compile-cdx seed-cdx source revision-id
         in if result.vcr-success == False then VmSampleResult { vsm-name = name, vsm-verdict = FailCompile, vsm-output = "" }
         else let run = vm-run-cdx (result.vcr-binary) revision-id
         in let eval = evaluate-expected (entry.sidecar) (run.vro-text)
         in VmSampleResult { vsm-name = name, vsm-verdict = eval, vsm-output = run.vro-text }
-      is CompileOnly ->
-        let source = read-file source-path
-        in let result = vm-compile-cdx seed-cdx source revision-id
+      end
+      is CompileOnly -> act
+        source <- read-file source-path
+        let result = vm-compile-cdx seed-cdx source revision-id
         in if result.vcr-success then VmSampleResult { vsm-name = name, vsm-verdict = PassUnverified, vsm-output = "" }
         else VmSampleResult { vsm-name = name, vsm-verdict = FailCompile, vsm-output = "" }
+      end
+    end
+  end
 
 Section: Full Sweep
 
-  vm-sweep : List Integer, Text, Integer -> VmSweepResult
-  vm-sweep (seed-cdx) (test-dir) (revision-id) =
-    let plan = plan-sweep test-dir
-    in vm-sweep-loop seed-cdx (plan.samples) 0 (plan.sample-count) revision-id [] 0 0 0
+  vm-sweep : List Integer, Text, Integer -> [FileSystem.Read, Device.Block] VmSweepResult
+  vm-sweep (seed-cdx) (test-dir) (revision-id) = act
+    plan <- plan-sweep test-dir
+    vm-sweep-loop seed-cdx (plan.samples) 0 (plan.sample-count) revision-id [] 0 0 0
+  end
 
-  vm-sweep-loop : List Integer, List SampleEntry, Integer, Integer, Integer, List VmSampleResult, Integer, Integer, Integer -> VmSweepResult
+  vm-sweep-loop : List Integer, List SampleEntry, Integer, Integer, Integer, List VmSampleResult, Integer, Integer, Integer -> [FileSystem.Read, Device.Block] VmSweepResult
   vm-sweep-loop (seed) (samples) (i) (len) (rev) (results) (pass) (fail) (skip) =
     if i >= len then VmSweepResult { vsr-pass = pass, vsr-fail = fail, vsr-skip = skip, vsr-total = len, vsr-results = results }
     else let entry = list-at samples i
-    in let r = vm-compile-and-run-sample seed (entry.source-path) rev
-    in let new-results = list-push results r
+    in act
+    r <- vm-compile-and-run-sample seed (entry.source-path) rev
+    let new-results = list-push results r
     in let is-pass = when r.vsm-verdict
       is PassVerified -> True
       is PassUnverified -> True
-      is PassFailedCorrectly -> True
+      is PassFailing -> True
       is otherwise -> False
     in let is-skip = when r.vsm-verdict
       is SkippedResult -> True
@@ -81,6 +90,7 @@ Section: Full Sweep
     in let nf = if is-pass == False & is-skip == False then fail + 1 else fail
     in let ns = if is-skip then skip + 1 else skip
     in vm-sweep-loop seed samples (i + 1) len rev new-results np nf ns
+    end
 
 Section: Result Formatting
 

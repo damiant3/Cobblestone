@@ -170,6 +170,67 @@ if (Test-Path $chkConst) {
     & pwsh -NoProfile -File $chkConst 2>&1 | ForEach-Object { Write-Host "  $_" }
 }
 
+# The boot cap-bit table (compiler) and the verified-load cap-bit table (OS
+# loader) are two hand-written expansions of one name->bit map; a drift grants
+# a binary different authority by which door it entered. Hard-fail on drift --
+# the in-compiler guard (check-cap-vocab-coherent) cannot reach across the
+# quire boundary. BACKLOG 1.12.
+$chkCaps = Join-Path $PSScriptRoot 'check-cap-tables.ps1'
+if (Test-Path $chkCaps) {
+    & pwsh -NoProfile -File $chkCaps 2>&1 | ForEach-Object { Write-Host "  $_" }
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host 'FAIL: capability bit-tables disagree (boot grant vs verified load) -- BACKLOG 1.12'
+        exit 1
+    }
+}
+
+# The third capability list -- the foreword `effect <Name> where` declarations
+# -- is hand-kept and nothing in a compile cross-checks it against
+# capability-vocabulary (an arbitrary user compile does not include all the
+# foreword effect modules, so the in-compiler guard cannot see them all). A new
+# foreword effect with no capability, or a capability with no effect, drifts in
+# silence. This is that guard; the intended asymmetry is listed in the script.
+# BACKLOG 1.13.
+$chkEffVocab = Join-Path $PSScriptRoot 'check-effect-vocab.ps1'
+if (Test-Path $chkEffVocab) {
+    & pwsh -NoProfile -File $chkEffVocab 2>&1 | ForEach-Object { Write-Host "  $_" }
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host 'FAIL: foreword effects and capability vocabulary have drifted -- BACKLOG 1.13'
+        exit 1
+    }
+}
+
+# A builtin name lives in three hand-maintained lists across two quires:
+# NameResolver makes it resolve, sorted-builtin-names routes it to the
+# emitter, x86-builtin-emitters says how to emit it. A name in one and not
+# the others fails at a distance from whatever asked for it -- write-file
+# resolved nowhere and took the entire repository-protocol surface dark with
+# it. No single compile sees all three as tables, so the build checks them.
+# BACKLOG 2.14.
+$chkBuiltins = Join-Path $PSScriptRoot 'check-builtin-tables.ps1'
+if (Test-Path $chkBuiltins) {
+    & pwsh -NoProfile -File $chkBuiltins 2>&1 | ForEach-Object { Write-Host "  $_" }
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host 'FAIL: builtin tables disagree (resolve / route / emit) -- BACKLOG 2.14'
+        exit 1
+    }
+}
+
+# A sidecar is resolved next to its .codex, so one in the wrong directory
+# configures nothing while reading like a decision -- diagnostic-boot's
+# "blocks waiting for keyboard input" skip lived a directory above the test,
+# applied to nothing, and was quoted as a real skip in ExaminersAssay for
+# months. Nothing else can see this: a sidecar that names no test is exactly
+# the file no compile and no battery ever opens.
+$chkSidecars = Join-Path $PSScriptRoot 'check-sidecars.ps1'
+if (Test-Path $chkSidecars) {
+    & pwsh -NoProfile -File $chkSidecars 2>&1 | ForEach-Object { Write-Host "  $_" }
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host 'FAIL: a test sidecar names no test'
+        exit 1
+    }
+}
+
 Write-Host 'The latest in a series of personal crises seems insurmountable.'
 Write-Host 'You are being pulled apart in all directions.'
 Write-Host ''
@@ -376,7 +437,7 @@ Write-Host 'imploding vacuum, it sinks into the ground.'
 Measure-Phase 'test-bvt' {
     $bvtScript = Join-Path $PSScriptRoot 'bvt.ps1'
     $testOut = Join-Path $OutDir 'test-results.txt'
-    & pwsh -NoProfile -File $bvtScript -CodexCdx $testKernel -Jobs 4 > $testOut 2>&1
+    & pwsh -NoProfile -File $bvtScript -CodexCdx $testKernel -Jobs 8 > $testOut 2>&1
     if ($LASTEXITCODE -ne 0) {
         Write-Host ''
         Write-Host 'FAIL: BVT'
@@ -410,6 +471,44 @@ Measure-Phase 'plug-binary' {
         foreach ($bp in $plugFail) {
             $blog = Join-Path $Repo "codex\plugs\$bp\build-output\build.log"
             if (Test-Path $blog) { Get-Content $blog | Select-String 'error CDX|CODEGEN-ERRORS' | Select-Object -First 3 | ForEach-Object { Write-Host "  ${bp}: $($_.Line.Trim())" } }
+        }
+        exit 1
+    }
+}
+
+# -- transpiler plug smoke: a representative subset must RUN end-to-end
+# (SUT IR -> framed TCP wire -> plug VM -> non-empty target text). The binary
+# leg above proves plugs BUILD; this proves the wire protocol and plug runtime
+# stay alive — the class that dark-shipped when 20 run.ps1 senders went
+# unframed (CL 7372). Missing plug CDX builds once and caches; a failing run
+# gets one rebuild-and-retry (stale binary after IR drift), then fails loudly.
+Measure-Phase 'plug-smoke' {
+    $smokePlugs = @('typescript', 'python', 'rust', 'ptx')
+    $smokeSrc = Join-Path $Repo 'codex\plugs\test-input\hello.codex'
+    $smokeDir = Join-Path $OutDir 'plug-smoke'
+    New-Item -ItemType Directory -Force -Path $smokeDir | Out-Null
+    $smokeFail = @()
+    foreach ($sp in $smokePlugs) {
+        $spBuild = Join-Path $Repo "codex\plugs\$sp\build.ps1"
+        $spCdx   = Join-Path $Repo "codex\plugs\$sp\build-output\$sp-plug.cdx"
+        $spOut   = Join-Path $smokeDir "$sp-hello.out"
+        $spLog   = Join-Path $smokeDir "$sp-smoke.log"
+        if (-not (Test-Path $spCdx)) { & pwsh -NoProfile -File $spBuild *> $spLog }
+        $ok = $false
+        foreach ($attempt in 1..2) {
+            Remove-Item -Force $spOut -ErrorAction SilentlyContinue
+            & pwsh -NoProfile -File (Join-Path $Repo "codex\plugs\$sp\run.ps1") -Src $smokeSrc -Out $spOut *> $spLog
+            if ($LASTEXITCODE -eq 0 -and (Test-Path $spOut) -and (Get-Item $spOut).Length -gt 0) { $ok = $true; break }
+            if ($attempt -eq 1) { & pwsh -NoProfile -File $spBuild *>> $spLog }
+        }
+        if (-not $ok) { $smokeFail += $sp }
+    }
+    if ($smokeFail.Count -gt 0) {
+        Write-Host ''
+        Write-Host "FAIL: plug smoke -- $($smokeFail -join ', ') (run.ps1 nonzero or empty output)"
+        foreach ($sp in $smokeFail) {
+            $spLog = Join-Path $smokeDir "$sp-smoke.log"
+            if (Test-Path $spLog) { Get-Content $spLog | Select-Object -Last 5 | ForEach-Object { Write-Host "  ${sp}: $_" } }
         }
         exit 1
     }

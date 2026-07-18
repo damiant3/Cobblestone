@@ -22,7 +22,7 @@
 [CmdletBinding()]
 param(
     [string]$CodexCdx,
-    [int]$Jobs = 4
+    [int]$Jobs = 8
 )
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
@@ -32,7 +32,10 @@ Set-Location (Join-Path $PSScriptRoot '..')
 $BvtTests = @(
     # --- Language features the compiler does NOT use ---
     'codex\test\typeclass-smoke.codex'         # type classes (Show, Eq, Ord)
+    'codex\test\typeclass-poly.codex'          # a class with a SUPERCLASS: the instance dict must carry __super-<Super>, which was a null pointer in every instance until the desugarer populated it
     'codex\test\handler-smoke.codex'           # effect handlers
+    'codex\test\handler-dotted-discharge.codex' # a family handler (with Store) discharges its dotted members (Store.Read, Store.Write) via the sub-effect lattice; probe declares NO row, so a discharge failure surfaces as CDX2031/CDX2033, not a wrong answer
+    'codex\test\cap-gpu-family.codex'          # a bare [Gpu] row is a FAMILY grant and must survive the manifest: it compiled clean and was then DENIED at the window guard (write: -1) because manifest-cap-id did not know the name "Gpu" (BACKLOG 1.13). Pins the row -> manifest -> process-cap-word path end to end
     'codex\test\linear-smoke.codex'            # linear types (consume, freeze)
     'codex\test\mutable-smoke.codex'           # mutable records, field mutation
     'codex\test\try-smoke.codex'               # try/retry/fallback
@@ -46,8 +49,10 @@ $BvtTests = @(
     'codex\test\crypto-test.codex'             # AES, ChaCha20
 
     # --- Codegen stress (caught regressions the fixed point misses) ---
+    'codex\test\lir-selector-smoke.codex'      # the LIR selector's correctness shapes, one boot: a shadowed-global call that must go indirect not direct (answered -1 for 7), a join-into-join coalesce that must refuse or the structural verifier halts a valid program (CDX9007), a compound-accumulator tail call the tree emitter miscompiles and the selector gets right (9 for 8), the 5-param col-hue parallel-move clash (red as yellow), and the result-is-a-use coalesce (RAX garbage for the result). Every one is a wrong ANSWER the fixed point cannot see; pinned by .expected
     'codex\test\noise-test.codex'              # arithmetic-heavy pure leaves (Noise/Perlin gradient math); caught the Tier 2 non-TCO leaf temp-pool miscompile (CL 6387 widening)
     'codex\test\tco-nested-if.codex'           # TCO if-chain with a nested-if arm body; guards the jmp-end elision miscompile that silently skipped the arm (CL 6430)
+    'codex\test\real-negate.codex'             # unary minus on a Real: the compiler does no float math, so the fixed point cannot see this. -(f x) where f returns Real was typed Integer, which broke foreword math Matrix4 and with it the whole 3D stack (engine quire, globe, spark)
 
     # --- Proof system (normalizer soundness) ---
     'codex\test\normalize-eq.codex'            # Stage 3 defeq normalizer: delta/iota reduce flip On -> Off, id-bit On -> On (proofs check by Refl)
@@ -67,6 +72,33 @@ $BvtTests = @(
     'codex\test\errors\non-exhaustive-match.codex'  # exhaustiveness checker
     'codex\test\errors\keyword-as-pattern-var.codex' # keyword rejection
     'codex\test\errors\linear-errors.codex'    # linear type violations
+    'codex\test\errors\record-field-silence.codex'  # a record literal names every field, and no other: CDX2006 / CDX2005
+    'codex\test\errors\effect-op-unhandled.codex'   # a nullary effect op with no handler read zero and said nothing: CDX2034
+    'codex\test\errors\scope-let-arm-escape.codex'  # the adversarial half of 2.22: a read of a name bound only inside an if-arm's let must be rejected AT THE READ, by the RESOLVER (CDX3002). It answered CDX2040 from the emitter ("unresolved call" to a name nobody wrote) while both the resolver and the type env aliased their caller's scope, then CDX2002 from the checker once the type env was fixed. The program is rejected either way, so only the CODE says whether the scope discipline is intact
+
+    # --- Regressions ---
+    'codex\test\console-readline-cite.codex'   # citing Console must not disable read-line (the handler slot outranked the builtin)
+    'codex\test\scope-let-arm-global.codex'    # the type environment has lexical scope (BACKLOG 2.22): an if-arm's `let inner : Integer` must not still be bound after the arm, where it shadowed the global `inner : Text` and made the CHECKER reject a valid program with CDX2001 -- one the emitter compiled correctly. The fixed point cannot see this: the compiler self-compiles either way, because the leak only ever ADDED bindings and the compiler's own source never reads one out of scope
+    'codex\test\match-arms-per-line.codex'     # a `when` keeps every `is` arm however they are packed across lines (BACKLOG 2.25). The parser pinned `ln` to the line the match STARTED on, so the second arm of the second line matched neither the line nor the column test and SILENTLY ENDED THE MATCH -- dropping every later line including the `is otherwise`, with no diagnostic. Deliberately an Integer match: exhaustiveness was the only thing that ever caught this and it cannot fire on an open type, which is why the one site anybody found was a closed variant and the rest went unnoticed
+    'codex\test\scope-handler-clause.codex'    # a handler clause's `resume` binder does not escape the clause body (BACKLOG 2.23, closed). The quietest of the scope leaks: it crashed nothing and printed a plausible wrong answer -- the read found the clause's recycled slot, which happened to hold the previously-built Text, so `after: GLOBAL` printed as `after: counter: 42`. `tick` must STILL be bound after its clause (the handled expression reads the handler slot through the op-name, added after the body on purpose), so this also pins the restore ORDERING: get it wrong and handler-smoke's multi-op and nested cases go with it
+    'codex\test\scope-try-region.codex'        # a `trying` body's bindings do not escape into `falling back to`, `on failure`, or past the `end` (BACKLOG 2.23). This one MISCOMPILED rather than rejecting, because the checker was already right and the resolver and emitter were not: the fallback's `label` typed as the global Text and loaded the body's Integer slot, so a wild pointer reached text concatenation. The fixed point cannot see this either -- `trying` appears in no compiler source, so the self-compile never emits a try at all and this test is the only thing between the try regions and silence
+    'codex\test\field-cache-text-lit.codex'    # a field read twice in one call gives the same answer both times, even with a text literal between the reads (BACKLOG 2.28). `emit-text-lit` writes RAX with a hardcoded mov-ri64 before alloc-temp runs, and alloc-temp only evicts the register it hands out -- so the field cache went on claiming `b.items` was live in RAX after the literal had overwritten it, and `list-length [7, 8, 9]` returned 9: the character count of "read-text". A wrong number, no crash, no diagnostic. THE FIXED POINT CANNOT SEE THIS, and green self-compiles are exactly what it produced for months: the compiler's own instance of the shape (`find-effect-op-addr (st.effect-op-addrs) "read-text" 0 (list-length (st.effect-op-addrs))`) walked off the end of a two-element list and found no match, which is the answer it wanted anyway. It only ever surfaced as a crash when a program's heap layout put a non-canonical pointer after the list. The literal must stay LONGER than the list or the walk stays in bounds and this passes while broken
+
+    'codex\test\apps\trust-vouch-depth.codex'  # the vouch-walk memo is keyed on the agent AND THE DEPTH (BACKLOG 6.4). An agent's score is not a property of the agent: the walk is capped at depth 5, so the same agent scores 8000 arriving at depth 1 and 0 arriving at depth 5, and both are right. The deep arrival is walked FIRST here, so a memo keyed on the bare agent name caches 0 and the shallow arrival reads it back -- x scores 0 instead of 6400. Measured: with the key cut to the bare agent, EVERY other trust test still passes, trust-lattice-test included, and only this one fails. A wrong trust score admits or refuses a quotation with no diagnostic anywhere
+
+    # --- The repository protocol (BACKLOG 6.1) --- these carry a .disk sidecar
+    'codex\test\apps\repo-source-fact.codex'   # Codex stores its own SOURCE: a real chapter, pipes and all, written to a block device as a content-addressed Ed25519-signed fact, booted back, and admitted by the same import gate the quotation gate uses. A forged body is ImportCorrupt
+    'codex\test\apps\disk-facts-multi-load.codex'  # a fact bigger than one sector must not truncate the store, and one corrupt fact must not take every fact behind it
+    'codex\test\apps\repo-checkout.codex'       # A CHECKOUT: 3 facts, 2 works. The checkout takes the REVISED edition of a path and leaves the superseded one behind (a checkout is a tree, not a log), comes back byte-identical, and the superseded edition is still in the store forever, addressable by its hash
+    'codex\test\apps\repo-tombstone.codex'      # REMOVAL: a path is stored, retired with a tombstone, and stored again; the checked-out tree follows the last word for the path each time (store->tomb->restore), while every edition stays in wi-works addressable by its hash
+    'codex\test\apps\repo-index-snapshot.codex' # PERSIST THE INDEX: the whole materialized WorkIndex is snapshotted as a kind-40 fact, then a def is added after it; a fast rebuild (load snapshot + replay only the tail) checks out identically to a full log replay, the snapshot alone checks out the tree as of its moment, and a superseded edition is still addressable by hash -- the history survives the snapshot, not just the tree
+    'codex\test\apps\repo-tombstone-signed.codex' # AUTHENTICATED REMOVAL: a signed kind-39 tombstone the verified index checks before honoring. The owner's signed tombstone retires a.codex; a forger the manifest does not hold cannot retire b.codex (the verified index refuses it, b stays); the trusting index still drops both by path. An unsigned removal was a hole any sector-writer could use
+    'codex\test\apps\repo-tombstone-replay.codex' # REPLAY DEFEATED: every assertion is validly signed by the owner -- the attack is copying an OLD signature forward to override a newer one. The verified index resolves each path by the signed timestamp, so a replayed t2 tombstone cannot retire a file re-added at t3, a replayed t1 definition cannot resurrect a file retired at t2, and a genuinely newer t9 tombstone still retires
+    'codex\test\apps\fact-sync-test.codex'      # REPLICATION: two content-addressed stores that overlap but differ reconcile to the union with no conflict resolution -- the shared fact is not duplicated, each side asks for exactly the fact it lacks, and merging in either direction lands on the same store
+    'codex\test\apps\fact-sync-wire-test.codex' # THE WIRE VERB: the reconciliation carried as AgentMessages over TrustTransport. A offers its hashes, the offer is encoded to a tagged frame body and decoded back exactly as it would cross TCP, B answers with the one fact A lacked, that reply crosses the same wire, and A absorbs it to the union
+    'codex\test\apps\checkout-emit.codex'       # stage one of build/test-compile-from-store.ps1: stores a REAL PROGRAM, revises it, checks the tree back out and prints it. Its .expected IS the checked-out source, so it pins the checkout BYTE FOR BYTE. The first edition is wrong on purpose
+    'codex\test\apps\colophon-dogfood.codex'    # THE DOGFOOD: a two-chapter quire goes into the store, one chapter is edited and stored again, and the test prints an honest account -- what works (bytes, hashes, signatures, the gate, both editions retained forever) and what does not (ask for a chapter by name and the store hands back the last file written, whichever it was). A dogfood test that only prints its successes is a colophon
+    'codex\test\apps\disk-facts-compact.codex'  # compaction kept ONE FACT PER KIND -- it would have destroyed every source definition but one, and every secret entry, FileShare manifest and revocation record but one. A compactor that cannot prove two facts are the same must keep both
 )
 
 $OutRoot    = 'test-output'
@@ -187,7 +219,15 @@ $runnableTests | ForEach-Object -ThrottleLimit $Jobs -Parallel {
         return
     }
 
-    & pwsh -NoProfile -File (Join-Path $using:PWD 'build\test-run.ps1') -Kernel $cdxOut -OutFile $runOut 2>$null
+    # A test with a .disk sidecar needs the block device handed to it. Without
+    # this the BVT could not run one at all, so every disk test lived in the
+    # battery only -- which is to say it never ran at the gate. test-run.ps1
+    # copies the sidecar to a writable temp image, so the depot copy is safe.
+    $runArgs = @('-Kernel', $cdxOut, '-OutFile', $runOut)
+    $diskFile = $t -replace '\.codex$', '.disk'
+    if (Test-Path -PathType Leaf $diskFile) { $runArgs += @('-DiskFile', $diskFile) }
+
+    & pwsh -NoProfile -File (Join-Path $using:PWD 'build\test-run.ps1') @runArgs 2>$null
     if (-not (Test-Path $runOut)) {
         ($using:runFails).Add("$base (no output)")
         Write-Host "  FAIL  $base (no output)" -ForegroundColor Red

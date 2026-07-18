@@ -1,0 +1,320 @@
+Chapter: LensModel
+
+ A Lens model maps raw warehouse tables to governed business concepts.
+ Where Looker describes this mapping in LookML that only Looker can
+ check, a Lens model is ordinary Codex data: records and lists that the
+ type system checks like any other value. This chapter is the modeling
+ vocabulary. It declares the shapes a model is made of and the
+ validator that every model must pass before the planner will touch it.
+ The planner itself lives in a later chapter; the query request shape
+ it consumes is declared here so both sides agree on the contract.
+
+Section: Cardinality
+
+ A join declares its cardinality, and the declaration is load-bearing.
+ The grain checker uses cardinality to decide whether a join can fan
+ rows out and therefore whether a naive aggregate would double-count.
+ ManyToOne is the workhorse: many fact rows point at one dimension row,
+ and an aggregate computed at the fact table's own grain stays correct
+ across the join. The other two directions are declared now and
+ exploited by the planner later.
+
+  Cardinality =
+    | OneToOne
+    | ManyToOne
+    | OneToMany
+
+Section: Aggregation
+
+ Every measure names the aggregate that summarizes it. The five kinds
+ below cover the LookML core. The constructors carry a Lens prefix
+ rather than the bare names AggSum through AggMax because the Data
+ quire's RelAlgebra chapter already owns those constructor names, and
+ constructor names are program-wide: the planner will cite both
+ chapters in one program, so the bare names would collide.
+
+  AggKind =
+    | LensAggSum
+    | LensAggCount
+    | LensAggAvg
+    | LensAggMin
+    | LensAggMax
+
+Section: Tables
+
+ A LensTable points the model at one physical table. The primary key
+ is what makes grain reasoning possible: a many-to-one join is only
+ trustworthy when the one side can be identified row by row. The grain
+ field is prose for the analyst, one honest sentence about what a
+ single row means.
+
+  LensTable = record {
+    name : Text,
+    primary-key : Text,
+    grain : Text
+  }
+
+Section: Joins
+
+ A LensJoin relates two declared tables by one column on each side.
+ The cardinality field is not documentation. The validator checks that
+ a many-to-one join's destination declares a primary key, and the
+ grain checker will refuse plans that fan out through it.
+
+  LensJoin = record {
+    from-table : Text,
+    to-table : Text,
+    on-left : Text,
+    on-right : Text,
+    cardinality : Cardinality
+  }
+
+Section: Time Buckets
+
+ A dimension may bucket a date column by calendar period: year,
+ quarter, month, or day. Dates are Unix seconds stored in integer
+ columns by convention, and declaring a bucket is the modeler's
+ assertion that the column holds Unix seconds; the validator does
+ not police that assertion, in the same manner it does not police
+ that an amount column holds cents. The constructors carry an Lb
+ prefix because constructor names are program-wide and the bare
+ calendar words are too valuable to claim. LbNone means the
+ dimension reads its column as-is, which is every dimension that
+ existed before buckets did.
+
+  LensBucket =
+    | LbNone
+    | LbYear
+    | LbQuarter
+    | LbMonth
+    | LbDay
+
+Section: Dimensions
+
+ A dimension is an attribute column that segments the data. It names
+ its home table, the column it reads, and the bucket that column is
+ read through.
+
+  LensDimension = record {
+    name : Text,
+    table : Text,
+    column : Text,
+    bucket : LensBucket
+  }
+
+Section: Measures
+
+ A measure is a governed aggregate: a column on a home table, an
+ aggregation kind, and a description that a controller can sign off
+ on. Measure filters are deferred. A filter needs a predicate type,
+ and inventing one here would prejudge the planner's expression
+ language. When the predicate type exists, filters become one more
+ field on this record.
+
+  LensMeasure = record {
+    name : Text,
+    table : Text,
+    column : Text,
+    agg : AggKind,
+    description : Text
+  }
+
+Section: The Model
+
+ A LensModel gathers the whole vocabulary under one name. This value
+ is the unit of validation, the unit of versioning, and the ground the
+ planner stands on.
+
+  LensModel = record {
+    name : Text,
+    tables : List LensTable,
+    joins : List LensJoin,
+    dimensions : List LensDimension,
+    measures : List LensMeasure
+  }
+
+Section: Filters
+
+ A query filter is an equality test: one column on one table must
+ equal one literal value. The value is its own small sum so the
+ filter mirrors the relational predicate's column-versus-literal
+ shape without citing the engine: an integer or a text, nothing
+ else in v1. The planner places each filter at raw-row grain, under
+ the aggregations, therefore a filter can never see a summed row.
+
+  LensFilterValue =
+    | LfInt (Integer)
+    | LfText (Text)
+
+  LensFilter = record {
+    table : Text,
+    column : Text,
+    value : LensFilterValue
+  }
+
+Section: Queries
+
+ A LensQuery is the request shape the planner consumes: which lens to
+ ask, which dimensions to group by, which measures to compute, the
+ filters to apply before any aggregation, and a row limit. Dimension
+ and measure names refer to the model's declared dimensions and
+ measures, never to raw columns; filters name physical tables and
+ columns and the planner checks them against the model's vocabulary.
+
+  LensQuery = record {
+    lens-name : Text,
+    dimensions : List Text,
+    measures : List Text,
+    filters : List LensFilter,
+    limit : Integer
+  }
+
+Section: Diagnostic Codes
+
+ Validation reports diagnostics as code plus message. Codes are
+ app-level, drawn from the 1 to 99 range, and are not compiler CDX
+ codes. The table:
+
+ code 1 means a table name is declared more than once.
+ code 2 means a join's from-table is not a declared table.
+ code 3 means a join's to-table is not a declared table.
+ code 4 means a many-to-one join's to-table declares no primary key.
+ code 5 means a dimension's table is not a declared table.
+ code 6 means a measure's table is not a declared table.
+ code 7 means a measure name is declared more than once.
+
+  LensDiag = record {
+    code : Integer,
+    message : Text
+  }
+
+  lens-diag : Integer, Text -> LensDiag
+  lens-diag (code) (msg) = LensDiag { code = code, message = msg }
+
+Section: Table Lookup
+
+ Two small scans over the declared tables. Both walk by index with an
+ explicit stop, so the duplicate check can reuse the same walk to ask
+ whether a name appears before a given position.
+
+  table-name-within : List LensTable, Integer, Integer, Text -> Boolean
+  table-name-within (ts) (i) (stop) (nm) =
+    if i >= stop then False
+    else let t = list-at ts i
+    in if t.name == nm then True
+    else table-name-within ts (i + 1) stop nm
+
+  table-declared : List LensTable, Text -> Boolean
+  table-declared (ts) (nm) = table-name-within ts 0 (list-length ts) nm
+
+  table-pk-within : List LensTable, Integer, Text -> Text
+  table-pk-within (ts) (i) (nm) =
+    if i >= list-length ts then ""
+    else let t = list-at ts i
+    in if t.name == nm then t.primary-key
+    else table-pk-within ts (i + 1) nm
+
+  table-pk : List LensTable, Text -> Text
+  table-pk (ts) (nm) = table-pk-within ts 0 nm
+
+Section: Validation
+
+ lens-validate is the gate between a model as written and a model the
+ planner may plan against. It threads one diagnostic accumulator
+ through four passes: duplicate tables, joins, dimensions, measures.
+ A clean model yields the empty list.
+
+  lens-validate : LensModel -> List LensDiag
+  lens-validate (model) =
+    let d1 = check-table-dups (model.tables) 0 []
+    in let d2 = check-joins (model.tables) (model.joins) 0 d1
+    in let d3 = check-dimensions (model.tables) (model.dimensions) 0 d2
+    in check-measures (model.tables) (model.measures) 0 d3
+
+  check-table-dups : List LensTable, Integer, List LensDiag -> List LensDiag
+  check-table-dups (ts) (i) (acc) =
+    if i >= list-length ts then acc
+    else let t = list-at ts i
+    in if table-name-within ts 0 i (t.name)
+       then check-table-dups ts (i + 1) (list-push acc (table-dup-diag t))
+       else check-table-dups ts (i + 1) acc
+
+  table-dup-diag : LensTable -> LensDiag
+  table-dup-diag (t) = lens-diag 1 ("duplicate table name " & t.name)
+
+Section: Join Validation
+
+ Each join is checked three ways: its from-table must be declared, its
+ to-table must be declared, and when the join is many-to-one its
+ to-table must carry a nonempty primary key, because grain checking
+ identifies the one side by that key. The key check is skipped when
+ the to-table is itself undeclared; code 3 already tells that story.
+
+  check-joins : List LensTable, List LensJoin, Integer, List LensDiag -> List LensDiag
+  check-joins (ts) (js) (i) (acc) =
+    if i >= list-length js then acc
+    else let j = list-at js i
+    in let a1 = check-join-from ts j acc
+    in let a2 = check-join-to ts j a1
+    in let a3 = check-join-key ts j a2
+    in check-joins ts js (i + 1) a3
+
+  check-join-from : List LensTable, LensJoin, List LensDiag -> List LensDiag
+  check-join-from (ts) (j) (acc) =
+    if table-declared ts (j.from-table) then acc
+    else list-push acc (lens-diag 2 ("join from-table " & j.from-table & " is not a declared table"))
+
+  check-join-to : List LensTable, LensJoin, List LensDiag -> List LensDiag
+  check-join-to (ts) (j) (acc) =
+    if table-declared ts (j.to-table) then acc
+    else list-push acc (lens-diag 3 ("join to-table " & j.to-table & " is not a declared table"))
+
+  check-join-key : List LensTable, LensJoin, List LensDiag -> List LensDiag
+  check-join-key (ts) (j) (acc) =
+    when j.cardinality
+      is ManyToOne -> check-join-pk ts j acc
+      is otherwise -> acc
+
+  check-join-pk : List LensTable, LensJoin, List LensDiag -> List LensDiag
+  check-join-pk (ts) (j) (acc) =
+    if table-declared ts (j.to-table)
+    then if table-pk ts (j.to-table) /= "" then acc
+         else list-push acc (lens-diag 4 ("many-to-one join to " & j.to-table & " has no primary key"))
+    else acc
+
+Section: Dimension and Measure Validation
+
+ Dimensions and measures must live on declared tables, and measure
+ names must be unique because the query surface addresses measures by
+ name alone.
+
+  check-dimensions : List LensTable, List LensDimension, Integer, List LensDiag -> List LensDiag
+  check-dimensions (ts) (ds) (i) (acc) =
+    if i >= list-length ds then acc
+    else let d = list-at ds i
+    in let a1 = if table-declared ts (d.table) then acc else list-push acc (dim-table-diag d)
+    in check-dimensions ts ds (i + 1) a1
+
+  dim-table-diag : LensDimension -> LensDiag
+  dim-table-diag (d) = lens-diag 5 ("dimension " & d.name & " names undeclared table " & d.table)
+
+  measure-name-within : List LensMeasure, Integer, Integer, Text -> Boolean
+  measure-name-within (ms) (i) (stop) (nm) =
+    if i >= stop then False
+    else let m = list-at ms i
+    in if m.name == nm then True
+    else measure-name-within ms (i + 1) stop nm
+
+  check-measures : List LensTable, List LensMeasure, Integer, List LensDiag -> List LensDiag
+  check-measures (ts) (ms) (i) (acc) =
+    if i >= list-length ms then acc
+    else let m = list-at ms i
+    in let a1 = if table-declared ts (m.table) then acc else list-push acc (measure-table-diag m)
+    in let a2 = if measure-name-within ms 0 i (m.name) then list-push a1 (measure-dup-diag m) else a1
+    in check-measures ts ms (i + 1) a2
+
+  measure-table-diag : LensMeasure -> LensDiag
+  measure-table-diag (m) = lens-diag 6 ("measure " & m.name & " names undeclared table " & m.table)
+
+  measure-dup-diag : LensMeasure -> LensDiag
+  measure-dup-diag (m) = lens-diag 7 ("duplicate measure name " & m.name)

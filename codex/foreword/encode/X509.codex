@@ -1,0 +1,346 @@
+Chapter: X509
+  cites Encode chapter Asn1
+  cites Foreword chapter Maybe
+
+ An X.509 certificate, as RFC 5280 defines it and RFC 8410 extends it to
+ the Edwards curves. This chapter PARSES. It does not decide whether a
+ certificate is trustworthy -- that is a chain walk, and it is the next
+ chapter. Parsing and trusting are separate jobs, and a chapter that does
+ both tends to do the second one by accident.
+
+ The one invariant that matters more than any other here: the
+ tbsCertificate is kept as the ORIGINAL BYTES, sliced out of the input by
+ asn1-raw. It is never decoded and re-encoded. A signature is over a byte
+ string, and a re-encoded tbsCertificate is a DIFFERENT byte string -- so a
+ parser that rebuilds it is a parser that verifies a signature over
+ something nobody ever signed. Every field below is a view onto the input;
+ xc-tbs is the input.
+
+ Names are kept as raw DER for the same family of reason. Two names that
+ decode to the same string can be different byte strings, and comparing the
+ decoded forms is how an implementation ends up believing that one issuer
+ is another. The chain walk compares issuer bytes to subject bytes.
+
+ To x509-parse gives Maybe X509Cert, decoding a DER certificate.
+ To x509-spki gives Maybe X509Key, decoding a SubjectPublicKeyInfo.
+
+ We say:
+
+Section: Object Identifiers
+
+ Compared as encoded bytes, never as decoded numbers -- see the Asn1
+ chapter note. These are the CONTENT octets, without the tag and length.
+
+ Ed25519, 1.3.101.112 (RFC 8410).
+
+  x509-oid-ed25519 : List Integer = [43, 101, 112]
+
+ X25519, 1.3.101.110. A key agreement key -- it can appear as a subject
+ public key, and it can NEVER verify a signature. The distinction is kept
+ in the type so that nothing downstream can confuse the two.
+
+  x509-oid-x25519 : List Integer = [43, 101, 110]
+
+ basicConstraints, 2.5.29.19.
+
+  x509-oid-basic-constraints : List Integer = [85, 29, 19]
+
+Section: Key
+
+ A subject public key, with its algorithm. The algorithm is an enumeration
+ and not a byte string, because the whole point is that a caller cannot
+ hand an X25519 key to a signature check.
+
+  X509KeyAlg =
+    | KeyEd25519
+    | KeyX25519
+    | KeyUnknown
+
+  X509Key = record {
+    xk-alg : X509KeyAlg,
+    xk-bytes : List Integer
+  }
+
+ SubjectPublicKeyInfo ::= SEQUENCE { algorithm AlgorithmIdentifier,
+ subjectPublicKey BIT STRING }. For both Edwards OIDs, RFC 8410 says the
+ algorithm parameters MUST be absent -- so a SEQUENCE with a second
+ element is not a thing we accept.
+
+  x509-spki : List Integer, Integer -> Maybe X509Key
+  x509-spki (buf) (off) =
+    when asn1-read-tag buf off asn1-sequence
+      is None -> None
+      is Just (t) -> x509-spki-parts buf (asn1-children buf t)
+
+  x509-spki-parts : List Integer, List Asn1Tlv -> Maybe X509Key
+  x509-spki-parts (buf) (kids) =
+    if list-length kids /= 2 then None
+    else x509-spki-alg buf (list-at kids 0) (list-at kids 1)
+
+  x509-spki-alg : List Integer, Asn1Tlv, Asn1Tlv -> Maybe X509Key
+  x509-spki-alg (buf) (alg) (key) =
+    if alg.tlv-tag /= asn1-sequence then None
+    else x509-spki-oid buf (asn1-children buf alg) key
+
+ Parameters absent means the AlgorithmIdentifier has exactly one child.
+
+  x509-spki-oid : List Integer, List Asn1Tlv, Asn1Tlv -> Maybe X509Key
+  x509-spki-oid (buf) (algkids) (key) =
+    if list-length algkids /= 1 then None
+    else x509-spki-bits buf (x509-alg-of buf (list-at algkids 0)) key
+
+  x509-alg-of : List Integer, Asn1Tlv -> X509KeyAlg
+  x509-alg-of (buf) (o) =
+    if asn1-oid-is buf o x509-oid-ed25519 then KeyEd25519
+    else if asn1-oid-is buf o x509-oid-x25519 then KeyX25519
+    else KeyUnknown
+
+ Both Edwards keys are 32 bytes. A key of any other length is not one of
+ these keys, whatever the OID claims.
+
+  x509-spki-bits : List Integer, X509KeyAlg, Asn1Tlv -> Maybe X509Key
+  x509-spki-bits (buf) (alg) (key) =
+    when asn1-bit-string buf (key.tlv-hdr)
+      is None -> None
+      is Just (bs) -> x509-mk-key alg bs
+
+  x509-mk-key : X509KeyAlg, List Integer -> Maybe X509Key
+  x509-mk-key (alg) (bs) =
+    when alg
+      is KeyUnknown -> None
+      is otherwise -> if list-length bs /= 32 then None else Just (X509Key { xk-alg = alg, xk-bytes = bs })
+
+ The question the chain walk asks, and the reason the algorithm is typed:
+ an X25519 key must never be handed to a signature verification.
+
+  x509-can-verify : X509Key -> Boolean
+  x509-can-verify (k) = when k.xk-alg is KeyEd25519 -> True is otherwise -> False
+
+Section: The Certificate
+
+ Certificate ::= SEQUENCE { tbsCertificate, signatureAlgorithm,
+ signatureValue }. xc-tbs is the raw signed bytes; everything else is a
+ view onto them.
+
+  X509Cert = record {
+    xc-tbs : List Integer,
+    xc-sig : List Integer,
+    xc-sig-ed25519 : Boolean,
+    xc-version : Integer,
+    xc-serial : List Integer,
+    xc-issuer : List Integer,
+    xc-subject : List Integer,
+    xc-not-before : List Integer,
+    xc-not-after : List Integer,
+    xc-key : X509Key,
+    xc-is-ca : Boolean
+  }
+
+  x509-parse : List Integer -> Maybe X509Cert
+  x509-parse (buf) =
+    when asn1-read-tag buf 0 asn1-sequence
+      is None -> None
+      is Just (t) -> x509-outer buf (asn1-children buf t)
+
+ The outer SEQUENCE has exactly three elements. A certificate with a
+ fourth is not a certificate we understand, and we do not guess.
+
+  x509-outer : List Integer, List Asn1Tlv -> Maybe X509Cert
+  x509-outer (buf) (kids) =
+    if list-length kids /= 3 then None
+    else x509-outer-sig buf (list-at kids 0) (list-at kids 1) (list-at kids 2)
+
+  x509-outer-sig : List Integer, Asn1Tlv, Asn1Tlv, Asn1Tlv -> Maybe X509Cert
+  x509-outer-sig (buf) (tbs) (alg) (sig) =
+    when asn1-bit-string buf (sig.tlv-hdr)
+      is None -> None
+      is Just (sb) -> x509-tbs buf tbs (x509-alg-is-ed25519 buf alg) sb
+
+ An Ed25519 signature is 64 bytes, always. Anything else is refused here
+ rather than handed to the verifier to puzzle over.
+
+  x509-tbs : List Integer, Asn1Tlv, Boolean, List Integer -> Maybe X509Cert
+  x509-tbs (buf) (tbs) (is-ed) (sig) =
+    if is-ed == False then None
+    else if list-length sig /= 64 then None
+    else if tbs.tlv-tag /= asn1-sequence then None
+    else x509-fields buf tbs sig (asn1-children buf tbs)
+
+  x509-alg-is-ed25519 : List Integer, Asn1Tlv -> Boolean
+  x509-alg-is-ed25519 (buf) (alg) =
+    if alg.tlv-tag /= asn1-sequence then False
+    else x509-alg-oid-ed buf (asn1-children buf alg)
+
+  x509-alg-oid-ed : List Integer, List Asn1Tlv -> Boolean
+  x509-alg-oid-ed (buf) (kids) =
+    if list-length kids /= 1 then False
+    else asn1-oid-is buf (list-at kids 0) x509-oid-ed25519
+
+Section: The TBSCertificate
+
+ TBSCertificate ::= SEQUENCE { version [0] EXPLICIT DEFAULT v1,
+ serialNumber, signature, issuer, validity, subject,
+ subjectPublicKeyInfo, ... , extensions [3] EXPLICIT OPTIONAL }.
+
+ The version is optional and defaults to v1. We require v3, because v1 has
+ no extensions -- so it has no basicConstraints, so nothing in it can say
+ whether it is a CA, and a chain walk over v1 certificates is a chain walk
+ that cannot tell a leaf from an authority.
+
+  x509-fields : List Integer, Asn1Tlv, List Integer, List Asn1Tlv -> Maybe X509Cert
+  x509-fields (buf) (tbs) (sig) (kids) =
+    if list-length kids < 7 then None
+    else if (list-at kids 0).tlv-tag /= asn1-ctx0 then None
+    else x509-version buf tbs sig kids
+
+  x509-version : List Integer, Asn1Tlv, List Integer, List Asn1Tlv -> Maybe X509Cert
+  x509-version (buf) (tbs) (sig) (kids) =
+    when asn1-small-int buf ((list-at kids 0).tlv-off)
+      is None -> None
+      is Just (v) -> if v /= 2 then None else x509-body buf tbs sig kids v
+
+ With the version present the field order is fixed: serial, signature,
+ issuer, validity, subject, spki. The inner signature AlgorithmIdentifier
+ must match the outer one -- RFC 5280 says so, and a certificate whose two
+ algorithm fields disagree is one where the signed statement and the thing
+ being checked are not the same statement.
+
+  x509-body : List Integer, Asn1Tlv, List Integer, List Asn1Tlv, Integer -> Maybe X509Cert
+  x509-body (buf) (tbs) (sig) (kids) (v) =
+    if x509-alg-is-ed25519 buf (list-at kids 2) == False then None
+    else x509-serial buf tbs sig kids v
+
+  x509-serial : List Integer, Asn1Tlv, List Integer, List Asn1Tlv, Integer -> Maybe X509Cert
+  x509-serial (buf) (tbs) (sig) (kids) (v) =
+    when asn1-int-bytes buf ((list-at kids 1).tlv-hdr)
+      is None -> None
+      is Just (sn) -> x509-validity buf tbs sig kids v sn
+
+ Validity ::= SEQUENCE { notBefore Time, notAfter Time }. The times are
+ kept as their raw bytes. This chapter has no clock and does not want one:
+ comparing certificate times is the chain walk's job, and it takes the
+ current time from its caller.
+
+  x509-validity : List Integer, Asn1Tlv, List Integer, List Asn1Tlv, Integer, List Integer -> Maybe X509Cert
+  x509-validity (buf) (tbs) (sig) (kids) (v) (sn) =
+    when x509-times buf (list-at kids 4)
+      is None -> None
+      is Just (tt) -> x509-key-of buf tbs sig kids v sn tt
+
+  X509Times = record {
+    xt-not-before : List Integer,
+    xt-not-after : List Integer
+  }
+
+  x509-times : List Integer, Asn1Tlv -> Maybe X509Times
+  x509-times (buf) (val) =
+    if val.tlv-tag /= asn1-sequence then None
+    else x509-times-of buf (asn1-children buf val)
+
+  x509-times-of : List Integer, List Asn1Tlv -> Maybe X509Times
+  x509-times-of (buf) (kids) =
+    if list-length kids /= 2 then None
+    else Just (X509Times { xt-not-before = asn1-content buf (list-at kids 0),
+                           xt-not-after = asn1-content buf (list-at kids 1) })
+
+  x509-key-of : List Integer, Asn1Tlv, List Integer, List Asn1Tlv, Integer, List Integer, X509Times -> Maybe X509Cert
+  x509-key-of (buf) (tbs) (sig) (kids) (v) (sn) (tt) =
+    when x509-spki buf ((list-at kids 6).tlv-hdr)
+      is None -> None
+      is Just (k) -> Just (x509-mk buf tbs sig kids v sn tt k)
+
+  x509-mk : List Integer, Asn1Tlv, List Integer, List Asn1Tlv, Integer, List Integer, X509Times, X509Key -> X509Cert
+  x509-mk (buf) (tbs) (sig) (kids) (v) (sn) (tt) (k) =
+    X509Cert { xc-tbs = asn1-raw buf tbs,
+               xc-sig = sig,
+               xc-sig-ed25519 = True,
+               xc-version = v,
+               xc-serial = sn,
+               xc-issuer = asn1-raw buf (list-at kids 3),
+               xc-subject = asn1-raw buf (list-at kids 5),
+               xc-not-before = tt.xt-not-before,
+               xc-not-after = tt.xt-not-after,
+               xc-key = k,
+               xc-is-ca = x509-ca-flag buf kids }
+
+Section: basicConstraints
+
+ Extensions ::= [3] EXPLICIT SEQUENCE OF Extension, and Extension ::=
+ SEQUENCE { extnID OID, critical BOOLEAN DEFAULT FALSE, extnValue OCTET
+ STRING }. We are after one bit: cA.
+
+ cA DEFAULTS TO FALSE, and the default is not written down -- so a
+ basicConstraints extension with an empty SEQUENCE means "not a CA", and
+ an absent extension means the same. Defaulting the other way, or treating
+ "I could not parse it" as True, is how a leaf certificate becomes an
+ authority that can sign anything. The absence of evidence is evidence of
+ absence here, deliberately.
+
+  x509-ca-flag : List Integer, List Asn1Tlv -> Boolean
+  x509-ca-flag (buf) (kids) = x509-find-exts buf kids 7
+
+  x509-find-exts : List Integer, List Asn1Tlv, Integer -> Boolean
+  x509-find-exts (buf) (kids) (i) =
+    if i >= list-length kids then False
+    else if (list-at kids i).tlv-tag == asn1-ctx3 then x509-exts-seq buf (list-at kids i)
+    else x509-find-exts buf kids (i + 1)
+
+  x509-exts-seq : List Integer, Asn1Tlv -> Boolean
+  x509-exts-seq (buf) (ctx) =
+    when asn1-nth (asn1-children buf ctx) 0
+      is None -> False
+      is Just (seq) -> x509-scan-exts buf (asn1-children buf seq) 0
+
+  x509-scan-exts : List Integer, List Asn1Tlv, Integer -> Boolean
+  x509-scan-exts (buf) (exts) (i) =
+    if i >= list-length exts then False
+    else if x509-ext-is-bc buf (list-at exts i) then x509-bc-value buf (list-at exts i)
+    else x509-scan-exts buf exts (i + 1)
+
+  x509-ext-is-bc : List Integer, Asn1Tlv -> Boolean
+  x509-ext-is-bc (buf) (e) =
+    when asn1-nth (asn1-children buf e) 0
+      is None -> False
+      is Just (o) -> asn1-oid-is buf o x509-oid-basic-constraints
+
+ The extnValue is an OCTET STRING wrapping the real DER. The cA boolean is
+ the first element of the SEQUENCE inside it, if there is one.
+
+  x509-bc-value : List Integer, Asn1Tlv -> Boolean
+  x509-bc-value (buf) (e) =
+    when asn1-last (asn1-children buf e)
+      is None -> False
+      is Just (v) -> x509-bc-inner buf v
+
+  x509-bc-inner : List Integer, Asn1Tlv -> Boolean
+  x509-bc-inner (buf) (v) =
+    if v.tlv-tag /= asn1-octet-string then False
+    else x509-bc-seq buf (asn1-read-tag buf (v.tlv-off) asn1-sequence)
+
+  x509-bc-seq : List Integer, Maybe Asn1Tlv -> Boolean
+  x509-bc-seq (buf) (m) =
+    when m
+      is None -> False
+      is Just (s) -> x509-bc-bool buf (asn1-children buf s)
+
+ DER says a BOOLEAN is TRUE when its byte is anything other than zero, but
+ it also says TRUE must be encoded as 0xFF. We accept only 0xFF: a
+ certificate carrying 0x01 here is not DER, and the one thing we will not
+ do is be lenient about the bit that decides who may sign.
+
+  x509-bc-bool : List Integer, List Asn1Tlv -> Boolean
+  x509-bc-bool (buf) (kids) =
+    when asn1-nth kids 0
+      is None -> False
+      is Just (b) -> x509-bool-true buf b
+
+  x509-bool-true : List Integer, Asn1Tlv -> Boolean
+  x509-bool-true (buf) (b) =
+    if b.tlv-tag /= asn1-boolean then False
+    else if b.tlv-len /= 1 then False
+    else list-at buf (b.tlv-off) == #FF
+
+  asn1-last : List Asn1Tlv -> Maybe Asn1Tlv
+  asn1-last (ts) =
+    if list-length ts < 1 then None
+    else Just (list-at ts (list-length ts - 1))
