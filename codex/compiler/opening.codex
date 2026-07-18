@@ -1,12 +1,9 @@
 Chapter: Opening
-  cites Codex chapter Console
-  cites Codex chapter Files
-  cites Codex chapter Text
-  cites Codex chapter Lists
-  cites Codex chapter Runtime
   cites Codex chapter Phase Allocator (phase-start, phase-measure, phase-compact, phase-compact-poison, PhaseStart, PhaseMetrics)
   cites Foreword chapter Maybe
   cites Foreword chapter Fat16
+  cites Foreword chapter ImportGate
+  cites Foreword chapter FactDisk
 
  Entry point for the Codex compiler.
 
@@ -21,11 +18,51 @@ Section: Compile Flags
   CompileFlags = record {
    prose : Boolean,
    escape-check : Boolean,
-   poison-compact : Boolean
+   poison-compact : Boolean,
+   deck-scale : Integer,
+   pipeline : List Text
   }
 
   compile-flags-default : CompileFlags
-  compile-flags-default = CompileFlags { prose = False, escape-check = False, poison-compact = False }
+  compile-flags-default = CompileFlags { prose = False, escape-check = False, poison-compact = False, deck-scale = 100, pipeline = default-ir-pipeline }
+
+ Every phase deck floor is scaled by deck-scale, a percentage carried on
+ the mode line as `decks=N`. A hundred means the floors as written in
+ BuildSettings; two hundred means twice them.
+
+ It is a knob because it has to be one. A floor is compiled into the
+ compiler, so a source that outgrows the floor cannot be compiled by the
+ compiler that would carry the bigger floor: you would need the new seed
+ in order to build the new seed. Raising the constant and rebuilding does
+ not escape that, and the only way out without a knob is a two-stage
+ bootstrap through an intermediate seed. That is a trap, and it is the
+ kind of trap that is only discovered by falling into it.
+
+ With the knob there is no trap. Turn the floors up for the one compile
+ that needs it, build the seed that carries the higher default, and turn
+ the knob back off.
+
+  scaled-floor : Integer, Integer -> Integer
+  scaled-floor (pct) (floor) = floor / 100 * pct
+
+  deck-scale-of : Text -> Integer
+  deck-scale-of (mode) =
+   let v = mode-flag-value mode "decks=" 100
+   in if v < 1 then 100 else v
+
+ The IR pass pipeline is data — a list of pass names — and `passes=`
+ on the mode line is the knob that sets it: `passes=name,name` runs
+ exactly those passes in that order, `passes=none` runs the empty
+ pipeline, and an absent flag means the default. The knob is the
+ ablation surface the middle-end campaign is built on — a pass that
+ cannot be switched off cannot be measured.
+
+  pipeline-of : Text -> List Text
+  pipeline-of (mode) =
+   let v = mode-flag-text mode "passes="
+   in if v == "" then default-ir-pipeline
+      else if v == "none" then []
+      else parse-pipeline-names v
 
   poison-lex : Integer = 161
   poison-parse : Integer = 162
@@ -157,6 +194,7 @@ Section: Frontend
       class-defs = [],
       instance-defs = [],
       citations = [],
+      ground-effects = [],
       chapter-title = "",
       prose = "",
       section-titles = [],
@@ -280,7 +318,7 @@ Section: Frontend
   compile-lex : Text, Integer, CompileFlags -> LexResult
   compile-lex (source) (h0) (flags) =
    let mountain-base = init-phase-allocator
-   in let lex-deck-height = demand-lex-floor
+   in let lex-deck-height = scaled-floor (flags.deck-scale) demand-lex-floor
    in let lex-base = build lex-deck-height
    in let lex-phase = phase-start
    in let tok-result = tokenize-into source 1 (flags.prose)
@@ -318,9 +356,9 @@ Section: Frontend
   compile-parse : List Token, Text, Integer, List PhaseMetrics, CompileFlags -> ParseResult
   compile-parse (tokens) (source) (h0) (prior-metrics) (flags) =
    let h1 = __heap-save
-   in let parse-keep-height = demand-parse-keep-floor
+   in let parse-keep-height = scaled-floor (flags.deck-scale) demand-parse-keep-floor
    in let parse-base = build parse-keep-height
-   in let parse-scratch-height = demand-parse-scratch-floor
+   in let parse-scratch-height = scaled-floor (flags.deck-scale) demand-parse-scratch-floor
    in let scratch-base = build parse-scratch-height
    in let parse-phase = phase-start
    in let st = make-parse-state tokens source
@@ -372,7 +410,7 @@ Section: Frontend
 
   compile-desugar-and-scope : Text, ParseResult, Text, CompileFlags, Integer, Integer -> ScopeResult
   compile-desugar-and-scope (source) (pr) (chapter-name) (flags) (fk-base) (fk-height) =
-   let desugar-deck-height = demand-desugar-floor
+   let desugar-deck-height = scaled-floor (flags.deck-scale) demand-desugar-floor
    in let desugar-base = build desugar-deck-height
    in let desugar-phase = phase-start
    in let ast = desugar-document source (pr.doc) chapter-name
@@ -395,7 +433,7 @@ Section: Frontend
    in let desugar-esc-bag = deck-record (escape-check-bag (flags.escape-check) desugar-metrics "DESUGAR")
    in let desugar-sealed = compact-phase flags poison-desugar
    in let h5 = __heap-save
-   in let scope-deck-height = demand-scope-floor
+   in let scope-deck-height = scaled-floor (flags.deck-scale) demand-scope-floor
    in let scope-base = build scope-deck-height
    in let scope-phase = phase-start
    in let scoped = scope-achapter ast2 colliding assignments
@@ -430,15 +468,16 @@ Section: Frontend
   compile-type-check : ScopeResult, Integer, CompileFlags -> CompileChecked
   compile-type-check (sr) (source-len) (flags) =
    let check-units = count-typecheck-units (sr.scoped.type-defs) 0 (list-length (sr.scoped.type-defs)) 0
-   in let check-deck-height = demand-check-floor
-   in let keep-height = demand-check-keep-floor
+   in let check-deck-height = scaled-floor (flags.deck-scale) demand-check-floor
+   in let keep-height = scaled-floor (flags.deck-scale) demand-check-keep-floor
    in let keep-base = build keep-height
    in let check-base = build check-deck-height
    in let check-phase = phase-start
    in let check-result = deck-record (check-chapter (sr.scoped) (sr.renames) (sr.colliding) (sr.assignments))
    in let h8 = __heap-save
    in let cap-diags = deck-record (check-opening-capabilities (check-result.types))
-   in let check-bag0 = deck-record (bag-merge-all [sr.resolve-bag, check-result.state.bag, bag-from-list cap-diags])
+   in let cap-coherence-diags = deck-record check-cap-vocab-coherent
+   in let check-bag0 = deck-record (bag-merge-all [sr.resolve-bag, check-result.state.bag, bag-from-list cap-diags, bag-from-list cap-coherence-diags])
    in let check-metrics = phase-measure check-phase
    in let check-ov = check-deck-overflow (check-metrics.deck-end - check-metrics.deck-origin) check-deck-height
    in let check-ov-bag = if check-ov == 1 then deck-overflow-bag "CHECK" else no-overflow-bag
@@ -502,7 +541,9 @@ Section: Frontend
        next-row-id = check-result.state.next-row-id,
        bag = kept-ust-bag,
        expr-types = sorted-et,
-       effect-exempt = False
+       effect-exempt = False,
+       scope-grants = [],
+       chapter-grounds = []
       })
       in let result = deck-record (CompileChecked {
        scoped = sr.scoped,
@@ -521,7 +562,7 @@ Section: Frontend
 
   compile-checked : Text, Text, CompileFlags -> CompileChecked
   compile-checked (source) (chapter-name) (flags) =
-   let fk-height = demand-frontend-keep-floor
+   let fk-height = scaled-floor (flags.deck-scale) demand-frontend-keep-floor
    in let fk-base = build fk-height
    in let h0 = __heap-save
    in let lr = compile-lex source h0 flags
@@ -539,7 +580,7 @@ Section: Frontend
   compile-frontend (source) (chapter-name) (flags) =
    let checked = compile-checked source chapter-name flags
    in if bag-has-errors (checked.bag) then halted-frontend (checked.bag) (checked.heap-marks)
-   else let lower-deck-height = demand-lower-floor
+   else let lower-deck-height = scaled-floor (flags.deck-scale) demand-lower-floor
    in let lower-base = build lower-deck-height
    in let lower-phase = phase-start
    in let ir = deck-record (lower-chapter (checked.scoped) (checked.all-bindings) (checked.ust) (checked.ctor-names) (checked.renames) (checked.colliding) (checked.assignments))
@@ -575,15 +616,18 @@ Section: Frontend
   compile-frontend-cdx (source) (chapter-name) (flags) =
    let checked = compile-checked source chapter-name flags
    in if bag-has-errors (checked.bag) then halted-frontend (checked.bag) (checked.heap-marks)
-   else let lower-deck-height = demand-lower-floor
+   else let lower-deck-height = scaled-floor (flags.deck-scale) demand-lower-floor
    in let lower-base = build lower-deck-height
    in let lower-phase = phase-start
    in let ir-raw = deck-record (lower-chapter (checked.scoped) (checked.all-bindings) (checked.ust) (checked.ctor-names) (checked.renames) (checked.colliding) (checked.assignments))
-   in let ir = deck-record (inline-leaf-calls-in-chapter (fold-constants-in-chapter ir-raw))
+   in let passed = deck-record (run-ir-pipeline (flags.pipeline) ir-raw)
+   in let ir = passed.chapter
+   in let ir-check-bag = deck-record (ir-check-violation-bag (passed.violations))
+   in let occ-report-bag = deck-record (occ-info-bag (passed.infos))
    in let lower-metrics = phase-measure lower-phase
    in let lower-ov = check-deck-overflow (lower-metrics.deck-end - lower-metrics.deck-origin) lower-deck-height
    in let lower-sealed = compact-phase flags poison-lower
-   in let resolve-deck-height = demand-resolve-floor
+   in let resolve-deck-height = scaled-floor (flags.deck-scale) demand-resolve-floor
    in let resolve-base = build resolve-deck-height
    in let resolve-phase = phase-start
    in let type-map = deck-record (build-type-def-map (checked.scoped.type-defs) 0 (list-length (checked.scoped.type-defs)) [])
@@ -591,7 +635,7 @@ Section: Frontend
    in let resolved-defs = deck-record (rewrite-ir-defs stds (ir.defs))
    in let resolve-metrics = phase-measure resolve-phase
    in let resolve-ov = check-deck-overflow (resolve-metrics.deck-end - resolve-metrics.deck-origin) resolve-deck-height
-   in let lift-deck-height = demand-lift-floor
+   in let lift-deck-height = scaled-floor (flags.deck-scale) demand-lift-floor
    in let lift-base = build lift-deck-height
    in let lift-phase = phase-start
    in let cdx-chapter = deck-record (lift-lambdas (IRChapter {
@@ -642,7 +686,8 @@ Section: Frontend
          deck-live-warn "stds" "lower-scratch" (pmap-escape-list-quiet stds-root "TypeBinding" (lower-metrics.deck-end) (lower-metrics.bivy-hwm))])
        else bag-from-list []
       else bag-from-list []
-   in let fe-bag = deck-record (bag-merge-all [checked.bag, lower-ov-bag, resolve-ov-bag, lift-ov-bag, lower-esc-bag, resolve-esc-bag, lift-esc-bag, dl-bag])
+   in let lir-report-bag = deck-record (occ-info-bag (lir-report-if (flags.pipeline) cdx-chapter))
+   in let fe-bag = deck-record (bag-merge-all [checked.bag, ir-check-bag, occ-report-bag, lir-report-bag, lower-ov-bag, resolve-ov-bag, lift-ov-bag, lower-esc-bag, resolve-esc-bag, lift-esc-bag, dl-bag])
    in let result = deck-record (CompileFrontend {
     type-defs = checked.scoped.type-defs,
     text-meta = tm,
@@ -803,6 +848,351 @@ Section: Disk Foreword Loading
    let cite-list = disk-extract-cites source
    in let st = disk-load-cites-list vol (DiskLoadState { dls-seen = [], dls-chunks = [] }) cite-list 0 (list-length cite-list)
    in text-concat-list (st.dls-chunks)
+
+Section: Quoted Works
+
+ A citation is resolved by the host, which finds the named file and
+ splices its text into the unit before the compiler ever sees it. A
+ quotation cannot work that way. If quoted code arrived already spliced
+ into the source, it would be compiled whatever the gate said, and the
+ gate would be theatre.
+
+ So a quoted work travels beside the source, not inside it, in a section
+ the compiler cuts off before it compiles anything. Each work is offered
+ with its author, its signature, and the key that signed it; the
+ compiler hashes the content itself, checks the signature itself, and
+ looks up the score itself. Only a work that survives all four guards is
+ spliced in.
+
+ That is what lets the transport be untrusted. Whoever hands us these
+ bytes may hand us anything at all: a work whose content does not match
+ its digest is refused, a work signed by a stranger is refused, a forged
+ signature is refused, and a signer we do not trust enough is refused.
+ The messenger cannot smuggle a definition past the gate, because the
+ gate does not take the messenger's word for anything.
+
+ The offered works look like this, after the marker line: a KEY line per
+ trusted key, giving its fingerprint, its public key in hex, and the
+ score we have already decided it deserves; and a WORK line per offered
+ definition, giving its digest, its author, its timestamp, the
+ fingerprint that signed it, the signature in hex, and the number of
+ lines of content that follow.
+
+  quoted-works-marker : Text = "%%QUOTED-WORKS%%"
+
+  SourceSplit = record {
+   sp-body : Text,
+   sp-works : Text
+  }
+
+ Found by scanning, not by text-split: the marker is many characters
+ long, and a splitter that is only ever asked for single characters
+ elsewhere in this compiler is not a thing to take on trust here.
+
+  match-at : Text, Text, Integer, Integer, Integer -> Boolean
+  match-at (t) (m) (i) (j) (mlen) =
+   if j >= mlen then True
+   else if char-code-at t (i + j) /= char-code-at m j then False
+   else match-at t m i (j + 1) mlen
+
+  index-of-from : Text, Text, Integer, Integer, Integer -> Integer
+  index-of-from (t) (m) (i) (tlen) (mlen) =
+   if i + mlen > tlen then -1
+   else if match-at t m i 0 mlen then i
+   else index-of-from t m (i + 1) tlen mlen
+
+ The marker is a line, and only a line. It is not enough to find those
+ characters somewhere in the source, because the first source that ever
+ contains them is this one: the marker is defined here, as a text
+ literal, a few lines above. A compiler that split on any occurrence
+ would cut its own source in half at the definition of the thing it was
+ looking for, and every chapter after this one would cease to exist.
+
+ So an occurrence counts only when it stands alone on its line. The
+ literal above sits in the middle of a definition and is not one.
+
+ The source is CCE by the time it reaches here, and CCE is not ASCII. A
+ newline is 1 and a space is 2; 10 is the digit seven. A guard written
+ against the ASCII numbers asks whether the character before the marker
+ is a seven, decides it is not, refuses to see a marker standing in plain
+ sight, and hands the offered works to the parser as if they were code --
+ which is the one thing this section exists to prevent. Ask the encoding
+ for its own numbers. Never write them down.
+
+  at-line-start : Text, Integer -> Boolean
+  at-line-start (t) (i) =
+   if i == 0 then True else char-code-at t (i - 1) == char-code '\n'
+
+  at-line-end : Text, Integer, Integer -> Boolean
+  at-line-end (t) (i) (tlen) =
+   if i >= tlen then True else char-code-at t i == char-code '\n'
+
+  marker-line-at : Text, Integer, Integer, Integer -> Integer
+  marker-line-at (src) (from) (tlen) (mlen) =
+   let at = index-of-from src quoted-works-marker from tlen mlen
+   in if at < 0 then -1
+      else if at-line-start src at & at-line-end src (at + mlen) tlen then at
+      else marker-line-at src (at + 1) tlen mlen
+
+  split-quoted-works : Text -> SourceSplit
+  split-quoted-works (src) =
+   let tlen = text-length src
+   in let mlen = text-length quoted-works-marker
+   in let at = marker-line-at src 0 tlen mlen
+   in if at < 0
+      then SourceSplit { sp-body = src, sp-works = "" }
+      else SourceSplit {
+        sp-body = substring src 0 at,
+        sp-works = substring src (at + mlen) (tlen - at - mlen)
+      }
+
+ Resolving quotations costs a second parse of the source, so a source
+ with no quotations must not pay for one. A false positive would cost
+ only that wasted parse; a false negative would let a quotation through
+ ungated, so the guard must be the loosest thing that cannot miss one.
+
+ It looks for a line whose first word is the keyword. Searching the
+ whole text for the keyword would find it in this very chapter, in the
+ literal the guard itself is written with, and every self-compile would
+ then pay for a parse it does not need -- the same self-reference the
+ marker has, arriving by a different road.
+
+  next-line-at : Text, Integer, Integer -> Integer
+  next-line-at (t) (i) (tlen) =
+   if i >= tlen then tlen
+   else if char-code-at t i == char-code '\n' then i + 1
+   else next-line-at t (i + 1) tlen
+
+  line-opens-quotes : Text, Integer, Integer -> Boolean
+  line-opens-quotes (t) (i) (tlen) =
+   if i >= tlen then False
+   else if char-code-at t i == char-code ' ' then line-opens-quotes t (i + 1) tlen
+   else if i + 7 > tlen then False
+   else if match-at t "quotes" i 0 6 then char-code-at t (i + 6) == char-code ' '
+   else False
+
+  scan-for-quotes : Text, Integer, Integer -> Boolean
+  scan-for-quotes (t) (i) (tlen) =
+   if i >= tlen then False
+   else if line-opens-quotes t i tlen then True
+   else scan-for-quotes t (next-line-at t i tlen) tlen
+
+  has-quotations : Text -> Boolean
+  has-quotations (body) = scan-for-quotes body 0 (text-length body)
+
+Section: Hex
+
+ The digits are contiguous in CCE and the letters are not: CCE orders
+ them by frequency, so a is 15 and f is 28, and everything from o to w
+ sits between them. A hex decoder written as two range checks over ASCII
+ therefore accepts a dozen letters that are not hex digits and mis-values
+ every one of them. Tokens already has the decoder that gets this right,
+ and it spells the six letters out one at a time for exactly this reason.
+ Cite it. A second copy is a second thing to get wrong.
+
+  hex-to-bytes : Text, Integer, Integer, List Integer -> List Integer
+  hex-to-bytes (t) (i) (len) (acc) =
+   if i + 1 >= len then acc
+   else let hi = hex-digit-value (char-code-at t i)
+   in let lo = hex-digit-value (char-code-at t (i + 1))
+   in hex-to-bytes t (i + 2) len (list-push acc (hi * 16 + lo))
+
+  decode-hex : Text -> List Integer
+  decode-hex (t) = hex-to-bytes t 0 (text-length t) []
+
+Section: Reading The Offered Works
+
+  WorksState = record {
+   ws-bundle : FactBundle,
+   ws-manifest : TrustManifest
+  }
+
+  works-empty : WorksState = WorksState { ws-bundle = bundle-empty, ws-manifest = manifest-empty }
+
+  join-work-lines : List Text, Integer, Integer, Text -> Text
+  join-work-lines (lines) (i) (stop) (acc) =
+   if i >= stop then acc
+   else join-work-lines lines (i + 1) stop (acc & list-at lines i & "\n")
+
+ The trust manifest is built from the SOURCE, never from the offered works.
+ Each trusted-key declaration in the chapter header pins a fingerprint, the
+ public key its signatures verify against, and the score the source gives
+ it. A KEY line in the works blob is ignored on purpose: it arrives over
+ the transport, and the transport is exactly what the gate must not
+ believe. A signer the source did not pin is an unknown signer, whatever
+ the works claim about it.
+
+  build-source-manifest : List CitesDecl, Integer, Integer, TrustManifest -> TrustManifest
+  build-source-manifest (ks) (i) (len) (m) =
+   if i >= len then m
+   else let k = list-at ks i
+   in let pub = decode-hex (k.content-hash)
+   in let m2 = manifest-add m (k.chapter-name) pub (k.trust-floor)
+   in build-source-manifest ks (i + 1) len m2
+
+ A WORK line offers a signed work; an OFFER line offers one with no
+ signature at all. The two are different things and the gate answers them
+ differently, so the transport has to be able to say which it means. An
+ unsigned work smuggled in as a WORK line with an empty signature would
+ be filed as signed, fail to verify, and be refused as forged -- a true
+ statement about the bytes and an answer to a question nobody asked.
+
+  parse-works : List Text, Integer, Integer, WorksState -> WorksState
+  parse-works (lines) (i) (len) (st) =
+   if i >= len then st
+   else let ln = list-at lines i
+   in if text-starts-with ln "KEY " then parse-works lines (i + 1) len st
+      else if text-starts-with ln "WORK " then apply-work-line lines i len st
+      else if text-starts-with ln "OFFER " then apply-offer-line lines i len st
+      else parse-works lines (i + 1) len st
+
+  apply-offer-line : List Text, Integer, Integer, WorksState -> WorksState
+  apply-offer-line (lines) (i) (len) (st) =
+   let f = text-split (list-at lines i) " "
+   in if list-length f < 5 then parse-works lines (i + 1) len st
+   else let nlines = text-to-integer (list-at f 4)
+   in let content = join-work-lines lines (i + 1) (i + 1 + nlines) ""
+   in let ts = text-to-integer (list-at f 3)
+   in let fact = Fact { hash = list-at f 1, kind = DefinitionFact, content = content, author = list-at f 2, timestamp = ts }
+   in let st2 = __record-set st "ws-bundle" (bundle-offer (st.ws-bundle) fact)
+   in parse-works lines (i + 1 + nlines) len st2
+
+ The declared digest on a WORK line is only a claim. It is what the work
+ is filed under, so that a quotation can find it at all; whether the
+ content actually hashes to it is the gate's second guard, not ours.
+
+  apply-work-line : List Text, Integer, Integer, WorksState -> WorksState
+  apply-work-line (lines) (i) (len) (st) =
+   let f = text-split (list-at lines i) " "
+   in if list-length f < 7 then parse-works lines (i + 1) len st
+   else let nlines = text-to-integer (list-at f 6)
+   in let content = join-work-lines lines (i + 1) (i + 1 + nlines) ""
+   in let ts = text-to-integer (list-at f 3)
+   in let fact = Fact { hash = list-at f 1, kind = DefinitionFact, content = content, author = list-at f 2, timestamp = ts }
+   in let sf = SignedFact { fact = fact, signature = decode-hex (list-at f 5), signer-fingerprint = list-at f 4 }
+   in let st2 = __record-set st "ws-bundle" (bundle-publish (st.ws-bundle) sf)
+   in parse-works lines (i + 1 + nlines) len st2
+
+ No carriage return survives to be stripped here. CCE has no code point
+ for one -- the table maps 0, 10 and 32, and 13 is simply not in it -- so
+ the conversion at the I/O boundary drops it, and a CRLF file and an LF
+ file are the same text by the time the gate sees them. That is the
+ encoding doing its job, and it is why this reads the lines and nothing
+ else.
+
+  build-works : Text -> WorksState
+  build-works (works) =
+   let lines = text-split works "\n"
+   in parse-works lines 0 (list-length lines) works-empty
+
+Section: Refusing A Quotation
+
+  quotation-code : ImportOutcome -> Integer
+  quotation-code (o) = when o
+   is ImportOk (f) -> 0
+   is ImportMissing -> cdx-quotation-missing
+   is ImportCorrupt -> cdx-quotation-corrupt
+   is ImportUnsigned -> cdx-quotation-unsigned
+   is ImportUnknownSigner -> cdx-quotation-unknown-signer
+   is ImportForged -> cdx-quotation-forged
+   is ImportUntrusted (score) -> cdx-quotation-untrusted
+
+  quotation-message : CitesDecl, ImportOutcome -> Text
+  quotation-message (q) (o) = when o
+   is ImportOk (f) -> ""
+   is ImportMissing -> "Quoted work '" & q.chapter-name & "' was not supplied; nothing offered has hash " & q.content-hash
+   is ImportCorrupt -> "Quoted work '" & q.chapter-name & "' does not hash to " & q.content-hash
+   is ImportUnsigned -> "Quoted work '" & q.chapter-name & "' carries no signature; a hash says what a definition is, only a signature says who stands behind it"
+   is ImportUnknownSigner -> "Quoted work '" & q.chapter-name & "' is signed by a key that is not in the trust manifest"
+   is ImportForged -> "Quoted work '" & q.chapter-name & "' has a signature that does not verify against its signer's key"
+   is ImportUntrusted (score) -> quotation-untrusted-message q score
+
+  quotation-untrusted-message : CitesDecl, Integer -> Text
+  quotation-untrusted-message (q) (score) =
+   "Quoted work '" & q.chapter-name & "' is signed by a key scoring " & show score & ", below the floor of " & show (q.trust-floor)
+
+  quotation-diag : CitesDecl, ImportOutcome -> Diagnostic
+  quotation-diag (q) (o) =
+   let sp = span-at (q.quire.line) (q.quire.column) (q.quire.offset) (q.quire.length) (q.quire.file-id)
+   in make-error (__narrow (quotation-code o)) (quotation-message q o) sp
+
+ A chapter that quotes a work and never says how much trust a signer
+ must clear has not finished saying what it wants. With the keys pinned
+ in the source an absent floor is a weak default rather than a hole --
+ floor zero admits only keys the author pinned, at any score -- but a
+ weak default chosen by omission is not a choice, so the gate refuses
+ the chapter before resolving anything. The parser stamps an absent
+ floor as a negative sentinel; a declared floor of zero stays legal.
+
+  quotation-no-floor-diag : CitesDecl -> Diagnostic
+  quotation-no-floor-diag (q) =
+   let sp = span-at (q.quire.line) (q.quire.column) (q.quire.offset) (q.quire.length) (q.quire.file-id)
+   in make-error cdx-quotation-no-floor ("Chapter '" & q.citing-chapter & "' quotes a work but declares no trust floor; write 'trusting above N' (0 to 10000) to say how much trust a quoted work's signer must clear") sp
+
+  QuoteResolve = record {
+   qr-prefix : Text,
+   qr-bag : DiagnosticBag
+  }
+
+ A quotation names its digest with the algorithm that produced it, so
+ that the day we outgrow SHA-256 the old quotations still say what they
+ meant. The store is keyed by the digest alone.
+
+  digest-of : Text -> Text
+  digest-of (h) =
+   if text-starts-with h "sha256:" then substring h 7 (text-length h - 7) else h
+
+  resolve-each : List CitesDecl, Integer, Integer, WorksState, Text, DiagnosticBag -> QuoteResolve
+  resolve-each (qs) (i) (len) (ws) (prefix) (bag) =
+   if i >= len then QuoteResolve { qr-prefix = prefix, qr-bag = bag }
+   else let q = list-at qs i
+   in let r = gate-import (ws.ws-bundle) (ws.ws-manifest) (q.trust-floor) (digest-of (q.content-hash)) (q.chapter-name)
+   in when r.outcome
+    is ImportOk (f) -> resolve-admit qs i len ws prefix bag q (f.content)
+    is otherwise -> resolve-each qs (i + 1) len ws prefix (bag-add bag (quotation-diag q (r.outcome)))
+
+  resolve-admit : List CitesDecl, Integer, Integer, WorksState, Text, DiagnosticBag, CitesDecl, Text -> QuoteResolve
+  resolve-admit (qs) (i) (len) (ws) (prefix) (bag) (q) (content) =
+   let renamed = rewrite-chapter-header content (q.chapter-name)
+   in resolve-each qs (i + 1) len ws (prefix & renamed & "\n\n") bag
+
+  line-end-at : Text, Integer, Integer -> Integer
+  line-end-at (t) (i) (len) =
+   if i >= len then len
+   else if char-code-at t i == char-code '\n' then i
+   else line-end-at t (i + 1) len
+
+ An admitted work is bound to the name the quotation gave it, so the
+ chapter that quoted it reads by that name and not by whatever the work
+ happened to call itself.
+
+  rewrite-chapter-header : Text, Text -> Text
+  rewrite-chapter-header (content) (local-name) =
+   let len = text-length content
+   in let nl = line-end-at content 0 len
+   in let head = substring content 0 nl
+   in if text-starts-with head "Chapter:"
+      then "Chapter: " & local-name & substring content nl (len - nl)
+      else content
+
+ The bundle handed in already holds the offered-works blob and, when a
+ store disk is attached, everything the store holds on top of it. This
+ function stays pure: the disk read that assembled the bundle happened in
+ the effectful caller, and what reaches the gate here is a value.
+
+  resolve-quotations : Text, FactBundle -> QuoteResolve
+  resolve-quotations (body) (bundle) =
+   let tok-result = tokenize body 1
+   in let doc = parse-document (make-parse-state (tok-result.tokens) body)
+   in let qs = doc.quotations
+   in if list-length qs == 0 then QuoteResolve { qr-prefix = "", qr-bag = empty-bag }
+   else let q0 = list-at qs 0
+   in if q0.trust-floor < 0
+      then QuoteResolve { qr-prefix = "", qr-bag = bag-add empty-bag (quotation-no-floor-diag q0) }
+   else let ks = doc.trust-keys
+   in let manifest = build-source-manifest ks 0 (list-length ks) manifest-empty
+   in let ws = WorksState { ws-bundle = bundle, ws-manifest = manifest }
+   in resolve-each qs 0 (list-length qs) ws "" empty-bag
 
 Section: Text Compilation
 
@@ -1105,8 +1495,10 @@ Section: Entry Point
     if bag-has-errors (fe.bag) then print-line-uni "CODEGEN-HALTED: errors in bag; no IR emitted"
     else act
      let ir-text = emit-ir-chapter (ir-prune-unreachable (fe.ir) "opening") (fe.text-meta) (fe.type-defs)
-     in print-line-uni ("SIZE:" & show (text-length ir-text))
-     print-line ir-text
+     in act
+      print-line-uni ("SIZE:" & show (text-length ir-text))
+      print-line ir-text
+     end
     end
     let h-post-emit = __heap-save
     in print-line-uni (format-heap-marks-wd (fe.heap-marks & [h-pre-emit, h-post-emit]))
@@ -1132,6 +1524,32 @@ Section: Entry Point
    in if list-length parts == 0 then mode
       else list-at parts 0
 
+  mode-flag-value : Text, Text, Integer -> Integer
+  mode-flag-value (mode) (prefix) (dflt) =
+   let parts = text-split mode " "
+   in mode-value-loop parts prefix (text-length prefix) 1 (list-length parts) dflt
+
+  mode-value-loop : List Text, Text, Integer, Integer, Integer, Integer -> Integer
+  mode-value-loop (parts) (prefix) (plen) (i) (len) (dflt) =
+   if i >= len then dflt
+   else let p = list-at parts i
+   in if text-starts-with p prefix
+      then text-to-integer (substring p plen (text-length p - plen))
+      else mode-value-loop parts prefix plen (i + 1) len dflt
+
+  mode-flag-text : Text, Text -> Text
+  mode-flag-text (mode) (prefix) =
+   let parts = text-split mode " "
+   in mode-text-loop parts prefix (text-length prefix) 1 (list-length parts)
+
+  mode-text-loop : List Text, Text, Integer, Integer, Integer -> Text
+  mode-text-loop (parts) (prefix) (plen) (i) (len) =
+   if i >= len then ""
+   else let p = list-at parts i
+   in if text-starts-with p prefix
+      then substring p plen (text-length p - plen)
+      else mode-text-loop parts prefix plen (i + 1) len
+
   has-mode-flag : Text, Text -> Boolean
   has-mode-flag (mode) (flag) =
    let parts = text-split mode " "
@@ -1155,7 +1573,7 @@ Section: Entry Point
 
   parse-mode-flags : Text -> CompileFlags
   parse-mode-flags (mode) =
-   CompileFlags { prose = has-mode-flag mode "prose", escape-check = has-mode-flag mode "escape-check", poison-compact = has-mode-flag mode "poison-compact" }
+   CompileFlags { prose = has-mode-flag mode "prose", escape-check = has-mode-flag mode "escape-check", poison-compact = has-mode-flag mode "poison-compact", deck-scale = deck-scale-of mode, pipeline = pipeline-of mode }
 
   disk-partition-start : Integer = 2048
 
@@ -1175,23 +1593,100 @@ Section: Entry Point
     is None -> print-line-uni "DISK: no path on stdin"
   end
 
-  dispatch-on-mode : Text -> [Console, FileSystem] Nothing
+  compile-plain : Text, Text, Text, CompileFlags -> [Console, FileSystem] Nothing
+  compile-plain (source) (cmd) (mode) (flags) =
+   if cmd == "CDX" then emit-cdx source mode flags
+   else if cmd == "IR-UNI" then emit-ir-uni source flags
+   else if cmd == "IR-CCE" then emit-ir-cce source flags
+   else if cmd == "MEASURE" then emit-measure source flags
+   else emit-text-streaming source flags
+
+ A refused quotation halts every mode, not just the one that emits a
+ binary. Refusing to link untrusted code and then handing back its IR,
+ or its text, would be a distinction without a difference.
+
+ Resolving a quotation means parsing the source to find it, and the
+ parser allocates on the deck. There is no deck here: the phase
+ allocator is raised inside the frontend, far downstream of this point.
+ So the gate raises it and reserves its own, exactly as a phase does.
+
+ It must reserve, and not merely raise. init-phase-allocator only points
+ deck-pos at the current heap; it does not move the heap past it. A deck
+ record written there therefore lands at the same address the next bivy
+ allocation takes, and the two overwrite each other. That was the crash
+ that stopped this work before, and it looked like the parser failing.
+ It was the deck and the bivy standing on the same spot.
+
+ Two decks, following the parse phase. The scratch deck carries the
+ tokens and the syntax tree of a parse whose only purpose is to find the
+ quotations, and it is thrown away. The keep deck carries the one thing
+ that must outlive the gate: the text of the works we admitted. Copying
+ that text down into the reservation and compacting reclaims the
+ scratch, so the frontend proper starts where it would have started
+ anyway, and a source that quotes nothing never comes here at all.
+
+ A quotation may be answered from the offered-works blob, from the fact
+ store on an attached disk, or from both. The blob bundle is built first;
+ the store, when the mode line carries `store`, is read on top of it, so a
+ quotation the blob already satisfies still resolves and one it does not
+ is looked for on the disk. Reading the disk is a Device.Block effect,
+ which is why this function carries it and binds the read; a compile with
+ no store disk never calls store-read-bundle and never touches the bus.
+
+  compile-with-quotations : SourceSplit, Text, Text, CompileFlags -> [Console, FileSystem, Device.Block] Nothing
+  compile-with-quotations (split) (cmd) (mode) (flags) =
+   let mountain = init-phase-allocator
+   in let keep-height = scaled-floor (flags.deck-scale) demand-quote-keep-floor
+   in let keep-base = build keep-height
+   in let scratch-height = scaled-floor (flags.deck-scale) demand-quote-scratch-floor
+   in let scratch-base = build scratch-height
+   in let base-ws = build-works (split.sp-works)
+   in let base-bundle = base-ws.ws-bundle
+   in act
+    bundle <- if has-mode-flag mode "store" then store-read-bundle base-bundle else act base-bundle end
+    let qr = resolve-quotations (split.sp-body) bundle
+    in if bag-has-errors (qr.qr-bag)
+       then refuse-quotations (bag-errors (qr.qr-bag))
+       else admit-quotations split cmd mode flags keep-base keep-height (qr.qr-prefix)
+   end
+
+  refuse-quotations : List Diagnostic -> [Console, FileSystem] Nothing
+  refuse-quotations (errs) = act
+   print-codegen-error-header errs
+   print-line-uni "CODEGEN-HALTED: quotation refused; nothing emitted"
+  end
+
+ The keep deck is checked before it is written, not after. An overrun
+ here would be copy-sx-text writing past its reservation into the
+ scratch it is still reading -- the silent halt with a garbage pointer
+ that BuildSettings warns about -- and the check that runs afterwards
+ would run too late to say so.
+
+  admit-quotations : SourceSplit, Text, Text, CompileFlags, Integer, Integer, Text -> [Console, FileSystem] Nothing
+  admit-quotations (split) (cmd) (mode) (flags) (keep-base) (keep-height) (prefix) =
+   if check-deck-overflow (text-length prefix * 2 + 4096) keep-height == 1
+   then refuse-quotations (bag-errors (deck-overflow-bag "QUOTE-KEEP"))
+   else let dset = __deck-set keep-base
+   in let kept = deck-record (copy-sx-text keep-base prefix)
+   in let sealed = compact-phase flags poison-parse
+   in compile-plain (kept & split.sp-body) cmd mode flags
+
+  dispatch-on-mode : Text -> [Console, FileSystem, Device.Block] Nothing
   dispatch-on-mode (mode) = act
    let cmd = parse-mode-cmd mode
    in if cmd == "DISK" then emit-from-disk mode
    else act
     source-raw <- read-file-uni mode
-    let source = utf8-to-cce source-raw
+    let raw = utf8-to-cce source-raw
+    in let split = split-quoted-works raw
     in let flags = parse-mode-flags mode
-    in if cmd == "CDX" then emit-cdx source mode flags
-       else if cmd == "IR-UNI" then emit-ir-uni source flags
-       else if cmd == "IR-CCE" then emit-ir-cce source flags
-       else if cmd == "MEASURE" then emit-measure source flags
-       else emit-text-streaming source flags
+    in if has-quotations (split.sp-body)
+       then compile-with-quotations split cmd mode flags
+       else compile-plain (split.sp-body) cmd mode flags
    end
   end
 
-  opening : [Console, FileSystem] Nothing = act
+  opening : [Console, FileSystem, Device.Block] Nothing = act
    mode-result <- read-line
    when mode-result
     is Just (mode) -> dispatch-on-mode mode

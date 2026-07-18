@@ -1,0 +1,42 @@
+Chapter: EffectWidenScope
+
+Section: Body
+
+ A function that performs less than it was asked for is safe to hand over,
+ and a scope is one of the ways it can perform less.
+
+ `scoped-print` writes only to the stdout channel and says so. A parameter
+ declared `Text -> [Console] Nothing` promises its caller only that it may
+ do something Console-ish, and writing to stdout is something Console-ish.
+ The argument boundary used to refuse this (CDX2090) because it widened
+ only over the dot: a scoped label was left exactly as it was, so
+ `[Console "stdout"]` never became `[Console]` and the rows never met.
+
+ Dropping a scope looks like it should need to know what a scope MEANS --
+ a filesystem scope is a path prefix, a network scope an authority, a
+ console scope a channel, and no single test covers those. It does not,
+ and that is the whole point: the target label here carries NO scope, so
+ it states no restriction, and everything falls under no restriction.
+ There is nothing to choose between. Asking whether "/config/x" falls
+ under "/config/" is the other relation, it does need the family tag, and
+ it is still refused -- see errors/effect-widen-scope-cross.
+
+ Nothing is laundered by this. The two directions that would launder ship
+ as errors/effect-widen-scope-deny (unscoped argument into a scoped
+ parameter -- it may write anywhere and the callee believes otherwise) and
+ errors/effect-widen-scope-cross (one scope for a different one). Both
+ must stay refused; this file and those two only mean something together.
+
+  scoped-print : Text -> [Console "stdout"] Nothing
+  scoped-print (t) = act
+    print-line-uni t
+  end
+
+  apply-it : (Text -> [Console] Nothing), Text -> [Console] Nothing
+  apply-it (f) (t) = act
+    f t
+  end
+
+  opening : [Console] Nothing = act
+    apply-it scoped-print "widened"
+  end

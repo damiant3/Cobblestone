@@ -1,0 +1,95 @@
+Chapter: WorkServer
+  cites Foreword chapter Maybe
+  cites Foreword chapter FactStore
+  cites Foreword chapter ImportGate
+  cites Foreword chapter SourceDefWire
+  cites Trust chapter AgentProtocol
+  cites Kernel chapter DiskFacts
+  cites Works chapter RepoProtocolPersist
+
+ Answering "give me the work with hash X".
+
+ A quotation resolves from the local store and nowhere else. The design's order
+ is local store, then a known peer, then a registry, and the last two do not
+ exist -- but the reason they do not is not that the client is hard. It is that
+ there has never been anything on the other end. Nothing in this tree serves a
+ work to anyone. This is the other end.
+
+ The verb is by-hash and not the sync offer, deliberately (Damian, 2026-07-16).
+ `Trust chapter FactSync` can already reconcile two stores, but that is bulk: the
+ asker offers everything it holds and the answerer replies with everything the
+ offer did not name. Fetching ONE work through it means publishing your whole
+ store to ask a single question and serving your whole store to whoever asks. A
+ quotation names one hash. So the ask is one hash and the answer is one work.
+
+ What this chapter does NOT do, and must not be quietly extended to do: it does
+ not decide who may ask. Every work in the store is offered to any caller that
+ names its hash. That is a real policy and it is the right one HERE, because a
+ hash is not a name you can guess -- you cannot ask for a work you have not
+ already been told the digest of, and being told the digest is how a quotation
+ gets written in the first place. Serving by-hash is not serving the store.
+
+ Nothing here signs anything, and nothing needs to. The reply is answerable by
+ its own content: the asker hashes what came back and checks it against the hash
+ it asked for. A peer that lies is caught by the addressing, not by trust. That
+ is the same property that lets the import gate treat the transport as untrusted,
+ and it is why this is a small chapter rather than an architecture.
+
+ We say:
+
+Section: Serving
+
+ The index is built once by the caller and handed in. Rebuilding it per request
+ would re-read the whole log for every quotation.
+
+  serve-work : WorkIndex, AgentIdentity, WorkRequestMsg -> WorkReplyMsg
+  serve-work (ix) (me) (req) =
+    when work-by-hash ix (req.hash)
+      is None -> WorkReplyMsg { from = me, hash = req.hash, payload = "" }
+      is Just (d) -> WorkReplyMsg { from = me, hash = req.hash, payload = source-def-to-text d }
+
+ An empty payload means "not here", and it is not an error. A peer that does not
+ hold a work is the ordinary case; the asker tries the next one.
+
+  reply-is-empty : WorkReplyMsg -> Boolean
+  reply-is-empty (r) = text-length (r.payload) == 0
+
+Section: Asking
+
+ The request. There is nothing to it, which is the point of choosing this verb.
+
+  ask-work : AgentIdentity, Text -> WorkRequestMsg
+  ask-work (me) (hash) = WorkRequestMsg { from = me, hash = hash }
+
+Section: Taking An Answer
+
+ The only part of this exchange that matters for safety.
+
+ A reply is NOT trusted because of who sent it. It is decoded, and the work it
+ carries is hashed, and that hash must equal the hash that was asked for.
+ Anything else is refused -- a peer that sends a different work, a corrupted
+ work, or a work it made up is caught here by arithmetic rather than by
+ reputation. This is what makes an untrusted transport safe to use: the same
+ argument the import gate makes about the `%%QUOTED-WORKS%%` blob.
+
+ It checks the reply's own hash field too. A reply that names a different hash
+ than the one requested is answering a question nobody asked.
+
+  accept-reply : WorkReplyMsg, Text -> Maybe SourceDefinition
+  accept-reply (reply) (wanted) =
+    if reply.hash /= wanted then None
+    else if text-length (reply.payload) == 0 then None
+    else accept-decoded (source-def-from-text (reply.payload)) wanted
+
+  accept-decoded : Maybe SourceDefinition, Text -> Maybe SourceDefinition
+  accept-decoded (m) (wanted) =
+    when m
+      is None -> None
+      is Just (d) -> if fact-content-hash (d.sd-content) == wanted then Just d else None
+
+ What accept-reply does NOT do is decide whether the work is TRUSTED. It proves
+ the peer answered the question honestly; whether the author is somebody you
+ admit is the gate's question, and the gate already asks it -- signature, pinned
+ key, trust floor. Content addressing and trust are two checks and this chapter
+ owns exactly one of them. Conflating them is how a transport ends up deciding
+ what to believe.

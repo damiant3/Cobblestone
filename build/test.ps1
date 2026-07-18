@@ -15,6 +15,10 @@
 #   build/test.ps1 -All -Slow  # include slow tests too
 #   build/test.ps1 -Fatal     # include fatal tests (GPF/exception demos)
 #
+# Every run requires -ApprovedBy damian. The battery is run by Damian or
+# with his per-run go-ahead, never on an agent's initiative -- see
+# CLAUDE.md rule 1. The gate below is deliberate; do not work around it.
+#
 # Sidecars (all optional, presence-driven):
 #   codex*.test\foo.expected  — compile must SUCCEED, runtime output must match
 #   codex*.test\foo.failing   — compile must FAIL with listed CDX error codes
@@ -30,7 +34,7 @@
 [CmdletBinding()]
 param(
     [string]$CodexCdx,
-    [int]$Jobs = 4,
+    [int]$Jobs = 8,
     [switch]$ErrorsOnly,
     [switch]$NoErrors,
     [switch]$Apps,
@@ -39,10 +43,26 @@ param(
     [switch]$Fuzz,
     [switch]$Lib,
     [switch]$Slow,
-    [switch]$Fatal
+    [switch]$Fatal,
+    [string]$ApprovedBy
 )
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
+if ($ApprovedBy -ne 'damian') {
+    Write-Host ''
+    Write-Host 'REFUSED: the full battery runs only with explicit human approval.' -ForegroundColor Red
+    Write-Host ''
+    Write-Host 'Agent: this is not part of your verification loop, and passing the'
+    Write-Host 'approval flag without Damian saying so in THIS session is a lie.'
+    Write-Host 'Verify your change with:'
+    Write-Host '    build/build.ps1                                  # the standing gate'
+    Write-Host '    build/compile.ps1 -Src <t> -Out <o> -Log <log>   # one test'
+    Write-Host ''
+    Write-Host 'If you believe this change warrants a battery run, tell Damian why'
+    Write-Host 'in one sentence and stop. He runs it, or hands you the command.'
+    Write-Host ''
+    exit 1
+}
 Set-Location (Join-Path $PSScriptRoot '..')
 [Environment]::CurrentDirectory = (Get-Location).Path
 $Scope = if ($ErrorsOnly) { 'errors' } elseif ($NoErrors) { 'positive' } else { 'both' }
@@ -201,7 +221,13 @@ foreach ($src in $toCompile) {
     $failingFile  = Join-Path $dir "$name.failing"
     $expectedFile = Join-Path $dir "$name.expected"
     $stdinFile    = Join-Path $dir "$name.stdin"
+    # .keys holds a scancode timeline (`t:scancode` per line, t = ms since
+    # boot). .stdin reaches the serial ring; this reaches the PS/2 key cell,
+    # which is the only path a keyboard read can see.
+    $keysFile     = Join-Path $dir "$name.keys"
     $diskFile     = Join-Path $dir "$name.disk"
+    # .smp holds a core count: the test is booted with -smp N.
+    $smpFile      = Join-Path $dir "$name.smp"
     $log = Join-Path $out 'build.log'
     $bin = Join-Path $out "$name.cdx"
     $exitFile = Join-Path $out '.exitcode'
@@ -259,9 +285,14 @@ foreach ($src in $toCompile) {
         continue
     }
 
+    $smpCores = 0
+    if (Test-Path -PathType Leaf $smpFile) {
+        $smpCores = [int]((Get-Content -TotalCount 1 $smpFile).Trim())
+    }
+
     $needsRun.Add(@{
         Name = $name; Bin = $bin; Expected = $expectedFile;
-        Stdin = $stdinFile; Disk = $diskFile
+        Stdin = $stdinFile; Keys = $keysFile; Disk = $diskFile; Smp = $smpCores
     })
 }
 
@@ -280,7 +311,9 @@ if ($needsRun.Count -gt 0) {
         $bin  = $t.Bin
         $expectedFile = $t.Expected
         $stdinFile    = $t.Stdin
+        $keysFile     = $t.Keys
         $diskFile     = $t.Disk
+        $smpCores     = $t.Smp
         $out  = Join-Path $using:OutRoot $name
         $resultFile = Join-Path $using:ResultsDir $name
         $runScript  = Join-Path $using:PSScriptRoot 'test-run.ps1'
@@ -293,7 +326,9 @@ if ($needsRun.Count -gt 0) {
         try {
             $runArgs = @('-NoProfile', '-File', $runScript, '-Kernel', $bin, '-OutFile', $actual, '-PCore', $pcore)
             if (Test-Path -PathType Leaf $stdinFile) { $runArgs += @('-StdinFile', $stdinFile) }
+            if (Test-Path -PathType Leaf $keysFile)  { $runArgs += @('-KeysFile', $keysFile) }
             if (Test-Path -PathType Leaf $diskFile)  { $runArgs += @('-DiskFile', $diskFile) }
+            if ($smpCores -gt 1)                     { $runArgs += @('-Smp', $smpCores) }
             & pwsh @runArgs
             if ($LASTEXITCODE -ne 0) {
                 "FAIL_RUNTIME`t$name`trun failed" | Set-Content -Path $resultFile -Encoding UTF8

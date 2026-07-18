@@ -1,0 +1,1282 @@
+Chapter: X86-64 Code Generator
+
+ The x86-64 instruction selector for the flat LIR (design doc
+ `docs/Designs/Active/Compiler/LIR.md` section 8: the ratchet). This is the
+ first codegen-changing step of the middle-end campaign -- where the LIR the
+ `IR/Lir.codex` chapter lowers and allocates finally becomes machine code
+ rather than an opt-in dump. It runs behind a per-function dispatch: a
+ function whose body lies entirely within a construct whitelist is lowered
+ tree -> LIR -> allocated -> x86 here, and everything else falls back to the
+ existing recursive tree emitter (`emit-function-standard` /
+ `emit-function-minimal`), byte-for-byte unchanged.
+
+ **This increment covers straight-line arithmetic, branches, spills,
+ constructor-pattern matches, and direct calls:** integer literals,
+ parameters, `let`, add/subtract/multiply, `if` / `match` (literal, variable,
+ wildcard, or, and constructor patterns), spills, and calls to plain user
+ functions (`LiCall`) -- placing arguments in the argument registers, keeping
+ the heap-collision stack guard for a non-leaf, and leaving self-tail-
+ recursive functions on the tree path where TCO turns them into loops. A
+ value live across a call is safe because the allocator only uses callee-saved
+ registers, which the callee preserves. A spilled operand is loaded from its slot into a
+ scratch before use; a spilled destination is computed in a scratch and
+ stored back; a spilled parameter is stored from its argument register into
+ its slot at entry. A constructor pattern loads the variant tag and each
+ bound field from the scrutinee pointer (`LiLoad`). The selector now handles
+ every LIR instruction the lowering emits, so what falls back is exactly what
+ the lowering itself declines: calls, vector patterns, real guards, act
+ blocks, closures, and everything else -- plus, here, functions with more
+ than six parameters (a seventh arrives on the caller's stack, not in a
+ register). The whitelist grows one construct per CL.
+
+ The register file is the concrete form of "the register file is data": the
+ allocator's abstract registers `0..4` map through `lir-phys` to the four
+ callee-saved locals `RBX, R12, R13, R14` at `0..3` (the same four the tree
+ emitter fills first) and the caller-saved `RAX` at `4`. RAX is handed out
+ only to a value not live across a call -- the allocator's crossing analysis
+ restricts a cross-call value to the callee-saved pool -- so nothing kept in
+ RAX is clobbered by the call the callee makes. The reserved roles the design
+ names -- R10 the bump allocator, R15 the closure env, RBP, RSP -- never
+ arise; the whitelist has no closures and no frame pointer. Two more
+ caller-saved registers the allocator never hands out, R11 and R8, are the
+ scratch: R11 holds a spilled destination or an immediate compared on the
+ left, R8 a spilled or oversized second operand, both consumed within a
+ single instruction's selection and never live across a call. Spill slots
+ live at `[RSP + slot*8]` under a fixed-size frame the prologue reserves and
+ the epilogue releases.
+
+Section: LIR Register File (x86-64)
+
+ An abstract allocator register `k` (a `LocReg k`) is the physical register
+ `lir-phys[k]`: the four callee-saved locals `RBX, R12, R13, R14` at `0..3`,
+ the caller-saved `RAX` at `4`, and the four argument registers `RDI, RSI,
+ RDX, RCX` at `5..8`. A spill slot `k` (a `LocSlot k`) is the stack cell
+ `[RSP + k*8]`.
+
+ Everything from index 4 up is caller-saved, and the split at 4 is the whole
+ register-file policy. A value live across a call cannot sit above it (a call
+ clobbers all of it), so the allocator's crossing analysis confines crossers
+ to `[0, 4)`. A function that makes a call never uses `5..8` at all -- it
+ prefers RAX, then the callee pool -- which keeps the argument registers free
+ for argument placement and means this extension changes nothing about how a
+ non-leaf is compiled.
+
+ A leaf is where it pays. A function that makes no call has nothing beneath it
+ to clobber a caller-saved register, so it allocates `5..8` first and pushes
+ nothing: `lir-nused-callee` counts only indices below 4 and finds none. And
+ because `5..8` are the argument registers *in argument order*, and the
+ parameters are scanned first against a free file, parameter `i` is handed
+ `lir-phys[5+i]` -- the register it already arrived in -- so the entry moves
+ become `mov rdi, rdi` and are elided. A leaf that needs more than five
+ registers still falls back to the callee pool and pays for what it uses.
+
+ R8/R9 are excluded deliberately: they are the selector's scratch (spilled
+ operand staging and base pointers), as is R11.
+
+  lir-phys : List Integer = [3, 12, 13, 14, reg-rax, 7, 6, 2, 1]
+
+  lir-phys-of : Location -> Integer
+  lir-phys-of (loc) =
+   when loc
+    is LocReg (r) -> list-at lir-phys r
+    is LocSlot (s) -> 0 - 1
+
+  lir-slot-off : Integer -> Integer
+  lir-slot-off (k) = k * 8
+
+ The number of callee-saved registers this function must save and restore --
+ one past the highest `LocReg` index that is a callee-saved register (an
+ abstract index below `list-length local-regs`). RAX, the caller-saved fifth
+ register (`lir-phys` index 4), is deliberately excluded: the callee may
+ clobber it freely, so it is never pushed. Because the allocator hands out
+ the callee pool lowest-free, the used callee indices are a prefix, so
+ pushing `[0, this)` pushes exactly the ones in use. The slot count is one
+ past the highest `LocSlot` index (the allocator gives each spilled vreg its
+ own dedicated slot), and sizes the frame.
+
+  lir-nused-callee : List Location, Integer, Integer, Integer -> Integer
+  lir-nused-callee (assign) (i) (n) (acc) =
+   if i >= n then acc
+   else when (list-at assign i)
+    is LocReg (r) -> lir-nused-callee assign (i + 1) n (if (r < list-length local-regs) & ((r + 1) > acc) then r + 1 else acc)
+    is LocSlot (s) -> lir-nused-callee assign (i + 1) n acc
+
+  lir-nslots : List Location, Integer, Integer, Integer -> Integer
+  lir-nslots (assign) (i) (n) (acc) =
+   if i >= n then acc
+   else when (list-at assign i)
+    is LocSlot (s) -> lir-nslots assign (i + 1) n (if (s + 1) > acc then s + 1 else acc)
+    is LocReg (r) -> lir-nslots assign (i + 1) n acc
+
+  lir-scratch-reg : Integer = reg-r11
+
+  lir-scratch2 : Integer = reg-r8
+
+  imm-fits-i32 : Integer -> Boolean
+  imm-fits-i32 (k) = (k >= (0 - 2147483648)) & (k <= 2147483647)
+
+Section: LIR Instruction Selection (x86-64)
+
+ The allocator guarantees the destination location of an instruction never
+ coincides with a live operand's location: a def's interval begins where the
+ operands are still live, the strict-expire sweep keeps their registers
+ occupied, and each spilled vreg has its own dedicated slot -- so a def and
+ its operands are always distinct registers or distinct slots. That is what
+ lets selection compute a result in one working register and place it,
+ without an aliasing case to guard.
+
+ Load an operand into a specific register `w`: an immediate via `li` (which
+ already picks xor / mov-imm32 / mov-imm64 by magnitude), a register operand
+ via `mov-rr`, a spilled operand via a load from its stack slot.
+
+  lir-load-into : CodegenState, Integer, LirValue, List Location -> CodegenState
+  lir-load-into (st) (w) (v) (assign) =
+   when v
+    is LvImm (k) -> st-append-code st (li w k)
+    is LvReg (r) ->
+     when (list-at assign r)
+      is LocReg (pr) -> st-append-code st (mov-rr w (list-at lir-phys pr))
+      is LocSlot (ks) -> st-append-code st (mov-load w reg-rsp (lir-slot-off ks))
+
+ Apply add/subtract/multiply of a right operand into the working register,
+ which already holds the left operand. A register right operand uses the two-
+ register form; a spilled right operand is loaded into R8 first; an immediate
+ that fits a signed 32-bit field uses the immediate form (multiply by
+ immediate is the three-operand `imul-rri`), and a wider immediate is staged
+ into R8 -- so no arithmetic instruction ever truncates a literal.
+
+  lir-alu-rr : CodegenState, LirOp, Integer, Integer -> CodegenState
+  lir-alu-rr (st) (op) (pd) (pr) =
+   when op
+    is LoAdd -> st-append-code st (add-rr pd pr)
+    is LoSub -> st-append-code st (sub-rr pd pr)
+    is LoMul -> st-append-code st (imul-rr pd pr)
+    is LoRem -> st
+    is LoDiv -> st
+
+ A remainder never reaches these: `lir-sel-bin` routes `LoRem` to `idiv`
+ before the two-operand ALU is consulted, because a remainder is not one. The
+ arms are here because the match must be exhaustive, and they do nothing
+ rather than encode an instruction that does not exist.
+
+  lir-alu-imm : CodegenState, LirOp, Integer, Integer -> CodegenState
+  lir-alu-imm (st) (op) (pd) (k) =
+   when op
+    is LoAdd -> st-append-code st (add-ri pd k)
+    is LoSub -> st-append-code st (sub-ri pd k)
+    is LoMul -> st-append-code st (imul-rri pd pd k)
+    is LoRem -> st
+    is LoDiv -> st
+
+  lir-alu-gen : CodegenState, LirOp, Integer, LirValue, List Location -> CodegenState
+  lir-alu-gen (st) (op) (w) (rhs) (assign) =
+   when rhs
+    is LvReg (r) ->
+     when (list-at assign r)
+      is LocReg (pr) -> lir-alu-rr st op w (list-at lir-phys pr)
+      is LocSlot (ks) -> lir-alu-rr (st-append-code st (mov-load lir-scratch2 reg-rsp (lir-slot-off ks))) op w lir-scratch2
+    is LvImm (k) ->
+     if imm-fits-i32 k then lir-alu-imm st op w k
+     else lir-alu-rr (st-append-code st (li lir-scratch2 k)) op w lir-scratch2
+
+ A binary op: compute in a working register -- the destination register when
+ the def has one, else R11 -- by loading the left operand and applying the
+ operator with the right, then place the working register into the def's slot
+ if it was spilled.
+
+ Fusing an add or subtract of a constant into an `lea`. x86's ALU is
+ two-operand -- `dst op= src` -- so a binary whose destination is not its left
+ operand has to move first: `v = n - 1` with `v` and `n` in different
+ registers costs `mov v, n; sub v, 1`. `lea` reads a base and a displacement
+ and writes a third register, so the same value is one instruction:
+ `lea v, [n - 1]`.
+
+ Only for add and subtract (a multiply is not a displacement), only for an
+ immediate right operand that fits one, and only when the left operand is in
+ a register that is *not* the destination. If it were the destination the move
+ is already nothing -- `mov-rr` elides a self-move -- and `sub dst, 1` is
+ optimal on its own; fusing there would trade one instruction for one
+ instruction and change the bytes for no reason.
+
+ `lea` does not write flags, where `add`/`sub` do. That is a safe direction
+ and not a coincidence to rely on: the LIR never reuses arithmetic flags, it
+ emits `LiCmp` to set them and `LiBranch` to read them, and the lowering only
+ ever puts those two next to each other at the end of a block.
+
+  lir-lea-src : LirValue, List Location -> Integer
+  lir-lea-src (l) (assign) =
+   when l
+    is LvReg (lr) ->
+     when (list-at assign lr)
+      is LocReg (lpr) -> list-at lir-phys lpr
+      is LocSlot (ks) -> 0 - 1
+    is LvImm (k) -> 0 - 1
+
+  lir-lea-disp : LirOp, LirValue -> Integer
+  lir-lea-disp (op) (r) =
+   when r
+    is LvImm (k) -> when op is LoSub -> 0 - k is otherwise -> k
+    is LvReg (rr) -> 0
+
+  lir-lea-ok : LirOp, Integer, LirValue, LirValue, List Location -> Boolean
+  lir-lea-ok (op) (w) (l) (r) (assign) =
+   when op
+    is LoMul -> False
+    is otherwise ->
+     when r
+      is LvReg (rr) -> False
+      is LvImm (k) ->
+       if imm-fits-i32 (lir-lea-disp op r) == False then False
+       else let lw = lir-lea-src l assign
+       in if lw < 0 then False
+          else lw /= w
+
+ The same trade for a sum of two registers. `v = a + b` with all three in
+ different registers is `mov v, a; add v, b`; `lea v, [a + b]` is one
+ instruction. Add only -- there is no `lea` for a difference of two registers,
+ and a product only for the scale factors.
+
+ Both operands must be in registers, and neither may be the destination. The
+ allocator does not hand a definition the register of a live operand, so a
+ binary over three distinct vregs always qualifies; the exclusions are for the
+ shapes where the destination *is* an operand, which is how a loop's own
+ parameter update looks (`v1 = add v1 v0`). There the move is already elided
+ and `add v1, v0` is one instruction, so fusing would trade nothing for
+ nothing and change the bytes.
+
+  lir-lea-rr-ok : LirOp, Integer, LirValue, LirValue, List Location -> Boolean
+  lir-lea-rr-ok (op) (w) (l) (r) (assign) =
+   when op
+    is LoAdd ->
+     let lw = lir-lea-src l assign
+     in let rw = lir-lea-src r assign
+     in if lw < 0 then False
+        else if rw < 0 then False
+        else if lw == w then False
+        else rw /= w
+    is otherwise -> False
+
+ The destination sharing the right operand's register. The two-operand
+ lowering is `mov w, l; op w, r`, which writes `w` before it reads `r`, so
+ that sequence would read a value it had just destroyed. It became reachable
+ when the numbering started modelling read-then-write and let a definition
+ take a register its operand was still nominally holding.
+
+ `w` already holds `r`, which is most of the work. Add and multiply commute,
+ so `op w, l` is the answer and it is one instruction rather than two.
+ Subtract does not: `l - r` with `r` in `w` is `-(r - l)`, so negate and add.
+ Two instructions -- the same as the move-and-subtract it replaces, and
+ correct, which that would not be.
+
+  lir-alias-r : Integer, LirValue, LirValue, List Location -> Boolean
+  lir-alias-r (w) (l) (r) (assign) =
+   let rw = lir-lea-src r assign
+   in if rw /= w then False
+      else (lir-lea-src l assign) /= w
+
+  lir-sel-bin-aliased : CodegenState, LirOp, Integer, LirValue, List Location -> CodegenState
+  lir-sel-bin-aliased (st) (op) (w) (l) (assign) =
+   when op
+    is LoSub -> lir-alu-gen (st-append-code st (neg-r w)) LoAdd w l assign
+    is otherwise -> lir-alu-gen st op w l assign
+
+ A remainder, and the only operator here that does not get to pick its
+ registers. `idiv` divides RDX:RAX by its operand and leaves the remainder in
+ RDX, so the dividend is moved into RAX, `cqo` sign-extends it across RDX, and
+ the remainder is taken from RDX afterwards. The allocator has already kept
+ every value that is live across this instruction out of both registers, so
+ moving into them here destroys nothing.
+
+ The divisor is the one thing that needs care. `idiv` reads it *after*
+ RDX:RAX is set up, so it cannot be sitting in either of them -- and it cannot
+ be an immediate, which `idiv` has no form for, nor a spill slot. In any of
+ those cases it goes through the scratch register first. R11 is never
+ allocated, so nothing is displaced by borrowing it.
+
+ The two moves that bracket this both tend to vanish. The remainder's vreg is
+ hinted to RDX, so taking it out is `mov rdx, rdx`; and where the dividend is
+ already in RAX, putting it there is `mov rax, rax`.
+
+ Dividing or taking a remainder by a positive power of two is a shift or a
+ mask. The tree emitter has always done this -- `collatz` is `test rdi, 1` and
+ `sar rdi, 1` there, not two `idiv` sequences -- and the LIR emits the same
+ instructions from the same rule, because two emitters that disagree about
+ what a program means is a worse problem than a slow one.
+
+  lir-sel-pow2 : CodegenState, LirOp, Integer, LirValue, Integer, List Location -> CodegenState
+  lir-sel-pow2 (st) (op) (w) (l) (k) (assign) =
+   let st1 = lir-load-into st w l assign
+   in when op
+    is LoDiv -> st-append-code st1 (sar-ri w (int-log2 k))
+    is otherwise -> st-append-code st1 (and-ri w (k - 1))
+
+  lir-imm-val : LirValue -> Integer
+  lir-imm-val (v) =
+   when v
+    is LvImm (k) -> k
+    is LvReg (r) -> 0
+
+ The general form. `idiv` divides RDX:RAX by its operand, leaving the quotient
+ in RAX and the remainder in RDX, so the dividend is moved into RAX, `cqo`
+ sign-extends it across RDX, and the answer is taken from whichever register
+ holds it. The allocator has already kept every value live across this
+ instruction out of both, so moving into them destroys nothing, and the
+ result's vreg is hinted at the register it will land in, so taking it out
+ usually elides.
+
+ The divisor is the one thing needing care: `idiv` reads it after RDX:RAX is
+ set up, so it cannot be in either of them -- and it cannot be an immediate,
+ which `idiv` has no form for, nor a spill slot. In any of those it goes
+ through the scratch register first, which is never allocated and so displaces
+ nothing.
+
+  lir-sel-divrem : CodegenState, LirOp, Integer, LirValue, LirValue, List Location -> CodegenState
+  lir-sel-divrem (st) (op) (dst) (l) (r) (assign) =
+   let rp = lir-lea-src r assign
+   in let stage = if rp < 0 then True else if rp == reg-rax then True else rp == reg-rdx
+   in let st1 = if stage then lir-load-into st lir-scratch-reg r assign else st
+   in let dv = if stage then lir-scratch-reg else rp
+   in let st2 = lir-load-into st1 reg-rax l assign
+   in let st3 = st-append-code st2 cqo
+   in let st4 = st-append-code st3 (idiv-r dv)
+   in let res = when op is LoDiv -> reg-rax is otherwise -> reg-rdx
+   in when (list-at assign dst)
+    is LocReg (pr) -> lir-move-param-reg st4 (list-at lir-phys pr) res
+    is LocSlot (ks) -> st-append-code st4 (mov-store reg-rsp res (lir-slot-off ks))
+
+  lir-sel-rem : CodegenState, LirOp, Integer, LirValue, LirValue, List Location -> CodegenState
+  lir-sel-rem (st) (op) (dst) (l) (r) (assign) =
+   if lir-imm-pow2 r == False then lir-sel-divrem st op dst l r assign
+   else when (list-at assign dst)
+    is LocReg (pr) -> lir-sel-pow2 st op (list-at lir-phys pr) l (lir-imm-val r) assign
+    is LocSlot (ks) ->
+     st-append-code (lir-sel-pow2 st op lir-scratch-reg l (lir-imm-val r) assign) (mov-store reg-rsp lir-scratch-reg (lir-slot-off ks))
+
+ A multiply by a constant is one instruction. x86 has a three-operand `imul`
+ that reads a register and an immediate and writes a third register, so
+ loading the constant and multiplying in place -- `mov rax, 3; imul rax, rdi`
+ -- is one instruction more than it needs to be. Multiplication commutes, so
+ the constant may be on either side.
+
+  lir-is-imm : LirValue -> Boolean
+  lir-is-imm (v) =
+   when v
+    is LvImm (k) -> True
+    is LvReg (r) -> False
+
+  lir-mul-rri-ok : LirOp, LirValue, LirValue, List Location -> Boolean
+  lir-mul-rri-ok (op) (l) (r) (assign) =
+   when op
+    is LoMul ->
+     if lir-is-imm r then if (lir-lea-src l assign) >= 0 then imm-fits-i32 (lir-imm-val r) else False
+     else if lir-is-imm l then if (lir-lea-src r assign) >= 0 then imm-fits-i32 (lir-imm-val l) else False
+     else False
+    is otherwise -> False
+
+  lir-sel-mul-rri : CodegenState, Integer, LirValue, LirValue, List Location -> CodegenState
+  lir-sel-mul-rri (st) (w) (l) (r) (assign) =
+   if lir-is-imm r then st-append-code st (imul-rri w (lir-lea-src l assign) (lir-imm-val r))
+   else st-append-code st (imul-rri w (lir-lea-src r assign) (lir-imm-val l))
+
+  lir-sel-bin : CodegenState, LirOp, Integer, LirValue, LirValue, List Location -> CodegenState
+  lir-sel-bin (st) (op) (dst) (l) (r) (assign) =
+   if lir-op-divides op then lir-sel-rem st op dst l r assign
+   else lir-sel-alu st op dst l r assign
+
+  lir-sel-alu : CodegenState, LirOp, Integer, LirValue, LirValue, List Location -> CodegenState
+  lir-sel-alu (st) (op) (dst) (l) (r) (assign) =
+   when (list-at assign dst)
+    is LocReg (pr) ->
+     let w = list-at lir-phys pr
+     in if lir-lea-ok op w l r assign
+        then st-append-code st (lea w (lir-lea-src l assign) (lir-lea-disp op r))
+        else if lir-lea-rr-ok op w l r assign
+        then st-append-code st (lea-rr w (lir-lea-src l assign) (lir-lea-src r assign))
+        else if lir-mul-rri-ok op l r assign
+        then lir-sel-mul-rri st w l r assign
+        else if lir-alias-r w l r assign
+        then lir-sel-bin-aliased st op w l assign
+        else lir-alu-gen (lir-load-into st w l assign) op w r assign
+    is LocSlot (ks) ->
+     let w = lir-scratch-reg
+     in st-append-code (lir-alu-gen (lir-load-into st w l assign) op w r assign) (mov-store reg-rsp w (lir-slot-off ks))
+
+ A move: load the source into the destination register, or into R11 and
+ store to the destination slot.
+
+  lir-sel-mov : CodegenState, Integer, LirValue, List Location -> CodegenState
+  lir-sel-mov (st) (dst) (src) (assign) =
+   when (list-at assign dst)
+    is LocReg (pr) -> lir-load-into st (list-at lir-phys pr) src assign
+    is LocSlot (ks) -> st-append-code (lir-load-into st lir-scratch-reg src assign) (mov-store reg-rsp lir-scratch-reg (lir-slot-off ks))
+
+ A memory load reads `width` bytes from `[base + off]` into a destination
+ register, sign- or zero-extending a narrow field to 64 bits. A full 8-byte
+ load fills the register and needs no extension; 4/2/1-byte loads pick the
+ signed or unsigned widening move. This is the constructor-pattern primitive
+ -- the variant tag at offset 0 and each bound field at its packed offset.
+
+  lir-emit-load-w : CodegenState, Integer, Integer, Integer, Integer, Boolean -> CodegenState
+  lir-emit-load-w (st) (dr) (breg) (off) (w) (sg) =
+   if w >= 8 then st-append-code st (mov-load dr breg off)
+   else if w == 4 then st-append-code st (if sg then movsxd dr breg off else mov-load-u32 dr breg off)
+   else if w == 2 then st-append-code st (if sg then movsx-word dr breg off else movzx-word dr breg off)
+   else st-append-code st (if sg then movsx-byte dr breg off else movzx-byte dr breg off)
+
+  lir-sel-load : CodegenState, Integer, LirValue, Integer, Integer, Boolean, List Location -> CodegenState
+  lir-sel-load (st) (dst) (base) (off) (w) (sg) (assign) =
+   let bb = lir-load-oper st base lir-scratch2 assign
+   in when (list-at assign dst)
+    is LocReg (pr) -> lir-emit-load-w (bb.state) (list-at lir-phys pr) (bb.reg) off w sg
+    is LocSlot (ks) -> st-append-code (lir-emit-load-w (bb.state) lir-scratch-reg (bb.reg) off w sg) (mov-store reg-rsp lir-scratch-reg (lir-slot-off ks))
+
+ A call places each argument into its argument register (`arg-regs[i]`),
+ emits the call (recording the call-site patch, resolved to the target's
+ offset at finalize), and moves the RAX result into the destination. There is
+ no argument-shuffle hazard: every argument value is an immediate, a value in
+ a callee-saved register, or a spill slot -- never an argument register,
+ because the allocator only ever uses callee-saved registers and parameters
+ were moved out of the argument registers at entry. So the placements are
+ independent and their order does not matter. Values live across the call
+ survive it for the same reason: callee-saved registers are preserved by the
+ callee, and spill slots are memory. At most six arguments (the lowering
+ declines a seventh, which would need a stack push).
+
+ Placing a call's arguments. Each moves into the register its position
+ requires, and while the allocator kept every value out of the argument
+ registers those moves were independent and could be emitted in order. The
+ hints put values there deliberately -- that is the point, an argument already
+ sitting where it belongs needs no move at all -- and the moves stop being
+ independent the moment they do. `f b a` wants RDI <- RSI and RSI <- RDI, and
+ whichever goes first destroys the other.
+
+ So the same discipline the back-edge uses: emit a move only when nothing
+ still pending reads the register it is about to write. That orders every
+ acyclic shape, and with hints almost every shape is acyclic -- most arguments
+ are already home and their move elides. A cycle has no such move by
+ construction; stage one source into the scratch register, which is not an
+ argument register and therefore nobody's destination, and the cycle becomes a
+ chain. R11 is never allocated, so a source register equal to it means staged
+ and nothing else.
+
+ An argument coming from a slot or an immediate reads no register at all. It
+ can never be the thing another move is waiting on, and it is never what a
+ cycle is made of.
+
+  lir-argsrcs : List LirValue, Integer, Integer, List Location, List Integer -> List Integer
+  lir-argsrcs (argvals) (i) (na) (assign) (acc) =
+   if i >= na then acc
+   else lir-argsrcs argvals (i + 1) na assign (list-push acc (lir-lea-src (list-at argvals i) assign))
+
+  lir-argmv-blocked : List Integer, List Boolean, Integer, Integer, Integer, Integer -> Boolean
+  lir-argmv-blocked (srcs) (done) (i) (na) (dsti) (j) =
+   if j >= na then False
+   else if j == i then lir-argmv-blocked srcs done i na dsti (j + 1)
+   else if list-at done j then lir-argmv-blocked srcs done i na dsti (j + 1)
+   else if (list-at srcs j) == dsti then True
+   else lir-argmv-blocked srcs done i na dsti (j + 1)
+
+  lir-argmv-pick : List Integer, List Boolean, Integer, Integer -> Integer
+  lir-argmv-pick (srcs) (done) (i) (na) =
+   if i >= na then 0 - 1
+   else if list-at done i then lir-argmv-pick srcs done (i + 1) na
+   else if lir-argmv-blocked srcs done i na (list-at arg-regs i) 0 then lir-argmv-pick srcs done (i + 1) na
+   else i
+
+  lir-argmv-stageable : List Integer, List Boolean, Integer, Integer -> Integer
+  lir-argmv-stageable (srcs) (done) (i) (na) =
+   if i >= na then 0 - 1
+   else if list-at done i then lir-argmv-stageable srcs done (i + 1) na
+   else if (list-at srcs i) < 0 then lir-argmv-stageable srcs done (i + 1) na
+   else if (list-at srcs i) == lir-scratch-reg then lir-argmv-stageable srcs done (i + 1) na
+   else i
+
+  lir-place-one : CodegenState, Integer, Integer, LirValue, List Location -> CodegenState
+  lir-place-one (st) (dst) (srcreg) (val) (assign) =
+   if srcreg == lir-scratch-reg then st-append-code st (mov-rr dst lir-scratch-reg)
+   else when val
+    is LvImm (k) -> st-append-code st (li dst k)
+    is LvReg (r) ->
+     when (list-at assign r)
+      is LocReg (pr) -> st-append-code st (mov-rr dst (list-at lir-phys pr))
+      is LocSlot (ks) -> st-append-code st (mov-load dst reg-rsp (lir-slot-off ks))
+
+  lir-place-loop : CodegenState, List LirValue, List Integer, List Boolean, Integer, List Location, Integer -> CodegenState
+  lir-place-loop (st) (argvals) (srcs) (done) (na) (assign) (fuel) =
+   if fuel <= 0 then st
+   else let p = lir-argmv-pick srcs done 0 na
+   in if p >= 0
+      then lir-place-loop (lir-place-one st (list-at arg-regs p) (list-at srcs p) (list-at argvals p) assign) argvals srcs (list-set-at done p True) na assign (fuel - 1)
+      else let c = lir-argmv-stageable srcs done 0 na
+      in if c < 0 then st
+         else lir-place-loop (st-append-code st (mov-rr lir-scratch-reg (list-at srcs c))) argvals (list-set-at srcs c lir-scratch-reg) done na assign (fuel - 1)
+
+  lir-place-args : CodegenState, List LirValue, Integer, Integer, List Location -> CodegenState
+  lir-place-args (st) (argvals) (i) (na) (assign) =
+   lir-place-loop st argvals (lir-argsrcs argvals 0 na assign []) (lir-make-vec 0 na []) na assign (na * 2 + 4)
+
+  lir-sel-call : CodegenState, Integer, Text, List LirValue, List Location -> CodegenState
+  lir-sel-call (st) (dst) (name) (argvals) (assign) =
+   let st1 = lir-place-args st argvals 0 (list-length argvals) assign
+   in let st2 = emit-call-to st1 name
+   in when (list-at assign dst)
+    is LocReg (pr) -> st-append-code st2 (mov-rr (list-at lir-phys pr) reg-rax)
+    is LocSlot (ks) -> st-append-code st2 (mov-store reg-rsp reg-rax (lir-slot-off ks))
+
+Section: LIR Compares and Branch Conditions
+
+ A LIR condition maps to an x86 signed condition code -- Codex integers are
+ signed 64-bit, so the signed forms (`l`, `g`, `le`, `ge`) are the correct
+ ones.
+
+  lir-cc-of : LirCond -> Integer
+  lir-cc-of (c) =
+   when c
+    is LcEq -> cc-e
+    is LcNe -> cc-ne
+    is LcLt -> cc-l
+    is LcGt -> cc-g
+    is LcLe -> cc-le
+    is LcGe -> cc-ge
+
+ An operand in a register position: a vreg in a register is already there; a
+ spilled vreg or an immediate is staged into the given caller-saved scratch.
+ Used for the operands of a compare, where x86 has no immediate-on-the-left
+ form and only a signed-32-bit immediate on the right.
+
+  LirOperReg = record {
+   state : CodegenState,
+   reg : Integer
+  }
+
+  lir-load-oper : CodegenState, LirValue, Integer, List Location -> LirOperReg
+  lir-load-oper (st) (v) (scratch) (assign) =
+   when v
+    is LvReg (r) ->
+     when (list-at assign r)
+      is LocReg (pr) -> LirOperReg { state = st, reg = list-at lir-phys pr }
+      is LocSlot (ks) -> LirOperReg { state = st-append-code st (mov-load scratch reg-rsp (lir-slot-off ks)), reg = scratch }
+    is LvImm (k) -> LirOperReg { state = st-append-code st (li scratch k), reg = scratch }
+
+ A compare sets flags for the following conditional branch. The left operand
+ goes to R11 when it is an immediate or spilled; the right uses the immediate
+ form when it fits a signed 32-bit field, else it is staged into R8. The two
+ scratch registers are distinct, so any operand combination is handled.
+
+  lir-emit-cmp : CodegenState, LirValue, LirValue, List Location -> CodegenState
+  lir-emit-cmp (st) (l) (r) (assign) =
+   let ll = lir-load-oper st l lir-scratch-reg assign
+   in when r
+    is LvImm (k) ->
+     if imm-fits-i32 k then st-append-code (ll.state) (cmp-ri (ll.reg) k)
+     else let rr = lir-load-oper (ll.state) r lir-scratch2 assign
+          in st-append-code (rr.state) (cmp-rr (ll.reg) (rr.reg))
+    is LvReg (r2) ->
+     let rr = lir-load-oper (ll.state) r lir-scratch2 assign
+     in st-append-code (rr.state) (cmp-rr (ll.reg) (rr.reg))
+
+ A test sets flags from a bitwise AND it does not keep, and is otherwise the
+ compare's twin -- same operand staging, same two distinct scratch registers,
+ same immediate form when the mask fits a signed 32-bit field. The mask a
+ power-of-two remainder produces always fits; the staged form is here so that
+ the instruction is total over its operands rather than only over the one
+ case that reaches it today.
+
+  lir-emit-test : CodegenState, LirValue, LirValue, List Location -> CodegenState
+  lir-emit-test (st) (l) (r) (assign) =
+   let ll = lir-load-oper st l lir-scratch-reg assign
+   in when r
+    is LvImm (k) ->
+     if imm-fits-i32 k then st-append-code (ll.state) (test-ri (ll.reg) k)
+     else let rr = lir-load-oper (ll.state) r lir-scratch2 assign
+          in st-append-code (rr.state) (test-rr (ll.reg) (rr.reg))
+    is LvReg (r2) ->
+     let rr = lir-load-oper (ll.state) r lir-scratch2 assign
+     in st-append-code (rr.state) (test-rr (ll.reg) (rr.reg))
+
+Section: LIR Function Emission (x86-64)
+
+ A pending branch fixup: a rel32 slot (`patch-pos`) whose value is
+ `target-block-offset - next-ip`, resolved once every block has been laid
+ out and its offset recorded. Branch targets are forward or backward block
+ ids, and the block offsets are not known until layout completes, so the
+ branch is emitted with a zero placeholder and patched at the end.
+
+  LirFix = record {
+   patch-pos : Integer,
+   next-ip : Integer,
+   target : Integer
+  }
+
+ The emission context threaded through a function's blocks: the codegen
+ state, the byte offset of each block indexed by its (dense) id, and the
+ list of pending branch fixups.
+
+ `nused` and `frame` ride along because a `LiRet` returns from the middle of
+ the layout and has to account for them. `epi` is the block id the shared
+ epilogue is laid out at -- one past the real blocks, so it can be a branch
+ target like any other and be patched by the same machinery.
+
+  LirCtx = record {
+   state : CodegenState,
+   boffs : List Integer,
+   fixups : List LirFix,
+   nused : Integer,
+   frame : Integer,
+   epi : Integer,
+   share : Boolean,
+   canon : List Integer
+  }
+
+ Whether the epilogue is worth sharing. Every `LiRet` puts its value in RAX;
+ what follows -- releasing the frame, restoring the callee-saved registers,
+ returning -- is the same sequence at every exit. Duplicating costs its whole
+ length at each return, `nrets * e`.
+
+ Sharing can cost less than it looks. The epilogue is laid out one past the
+ last block, so if what the layout ends with is a return, that one does not
+ jump -- it falls in -- and only the other `nrets - 1` pay. But the layout does
+ not have to end with a return. A loop whose back-edge block is laid out last
+ ends in a jump, and then every return pays and sharing costs `nrets + e`.
+ Which of the two it is, is a question about the blocks, so it is asked
+ (`lir-falls-into-epi`) rather than assumed.
+
+ Both prices factor over the same product. Sharing saves `(nrets-1) * (e-1)`,
+ and the fall-through is worth exactly one unit of threshold:
+
+   falls  -> `nrets*e > (nrets-1)+e`  <=>  `(nrets-1)*(e-1) > 0`
+   !falls -> `nrets*e >  nrets   +e`  <=>  `(nrets-1)*(e-1) > 1`
+
+ So: **share when the saving beats the threshold, and the threshold is one
+ when nothing falls in.** Both terms are counts and never negative.
+
+ It lands where it should, and the answers it is easy to get wrong are the
+ ones the factored form makes obvious. `sum-to` is a leaf that saved nothing,
+ so `e` is `ret` alone: the product is zero, there is nothing to amortise, and
+ duplicating one instruction beats jumping to it. `ack` returns from a single
+ arm -- its other paths are back-edges -- so the product is zero again: one
+ return has no second copy to save. `fib` has three exits and saves two
+ registers, and four beats either threshold.
+
+ Three cuts, and each one was wrong in a way the next made visible. The first
+ ignored `nrets` and asked only whether the epilogue was longer than a jump: it
+ bought fib three instructions and quietly charged one each to ack, locals and
+ tak, every one a single-return function, and the total came out exactly where
+ it started. The second charged a jump at every return including the one that
+ falls through, which reads as a tie at two returns and a two-instruction
+ epilogue and duplicates instead -- `regright` is that shape and it cost an
+ instruction against the tree emitter. The third assumed the fall-through it
+ had just started pricing, and at that same cell with a back-edge laid out last
+ it shares on a tie and pays two five-byte jumps and an epilogue where two
+ two-byte epilogues would do.
+
+ **No benchmark can show that last one and none ever will.** At `(2,2)` the
+ two costs are exactly equal in instructions -- `nrets*e >= nrets+e` for
+ `nrets,e >= 2`, with equality only there -- so the only witness is bytes and
+ executed jumps. It survived two rounds of measurement for that reason. The
+ `epishare` bench is the shape; the harness reports bytes beside instructions
+ because instructions cannot see it.
+
+  lir-epi-len : Integer, Integer -> Integer
+  lir-epi-len (nused) (frame) =
+   (if frame > 0 then 1 else 0) + nused + 1
+
+ Whether the layout ends in a return: the last block that emits anything, since
+ blocks that emit nothing are not where control comes to rest.
+
+  lir-ends-in-ret : List LirInsn -> Boolean
+  lir-ends-in-ret (insns) =
+   let n = list-length insns
+   in if n == 0 then False
+      else when list-at insns (n - 1)
+       is LiRet (v) -> True
+       is otherwise -> False
+
+  lir-falls-into-epi : List LirBlock, Integer -> Boolean
+  lir-falls-into-epi (blocks) (i) =
+   if i < 0 then False
+   else if list-length ((list-at blocks i).insns) > 0 then lir-ends-in-ret ((list-at blocks i).insns)
+   else lir-falls-into-epi blocks (i - 1)
+
+  lir-epi-shared : Integer, Integer, Integer, Boolean -> Boolean
+  lir-epi-shared (nrets) (nused) (frame) (falls) =
+   (nrets - 1) * (lir-epi-len nused frame - 1) > (if falls then 0 else 1)
+
+  lir-count-rets-insns : List LirInsn, Integer, Integer, Integer -> Integer
+  lir-count-rets-insns (insns) (i) (n) (acc) =
+   if i >= n then acc
+   else when (list-at insns i)
+    is LiRet (v) -> lir-count-rets-insns insns (i + 1) n (acc + 1)
+    is otherwise -> lir-count-rets-insns insns (i + 1) n acc
+
+  lir-count-rets : List LirBlock, Integer, Integer, Integer -> Integer
+  lir-count-rets (blocks) (i) (n) (acc) =
+   if i >= n then acc
+   else let b = list-at blocks i
+   in lir-count-rets blocks (i + 1) n (lir-count-rets-insns (b.insns) 0 (list-length (b.insns)) acc)
+
+ A conditional branch lowers to a `jcc` to the taken block and a `jmp` to
+ the fall block, but a jump to the block that is physically next in the
+ layout is a fallthrough and is elided. `next-id` is the id of the block laid
+ out immediately after this one (-1 for the last). Three cases: the fall
+ block is next -> emit only `jcc cond -> taken` and fall into it; the taken
+ block is next -> emit `jcc (inverted cond) -> fall` and fall into the taken
+ block; neither is next -> emit both. `jcc` is six bytes with its rel32 at
+ offset two; `jmp` is five bytes with its rel32 at offset one.
+
+  lir-cond-invert : LirCond -> LirCond
+  lir-cond-invert (c) =
+   when c
+    is LcEq -> LcNe
+    is LcNe -> LcEq
+    is LcLt -> LcGe
+    is LcGe -> LcLt
+    is LcGt -> LcLe
+    is LcLe -> LcGt
+
+  lir-emit-jcc-fix : LirCtx, LirCond, Integer -> LirCtx
+  lir-emit-jcc-fix (cx) (c) (target) =
+   let jcc-pos = (cx.state).code-len
+   in let st1 = st-append-code (cx.state) (jcc (lir-cc-of c) 0)
+   in LirCtx { state = st1, boffs = cx.boffs, fixups = list-push (cx.fixups) (LirFix { patch-pos = jcc-pos + 2, next-ip = jcc-pos + 6, target = target }), nused = cx.nused, frame = cx.frame, epi = cx.epi, share = cx.share, canon = cx.canon }
+
+  lir-emit-branch : LirCtx, LirCond, Integer, Integer, Integer -> LirCtx
+  lir-emit-branch (cx) (c) (bt) (be) (next-id) =
+   if lir-canon-at (cx.canon) be == next-id then lir-emit-jcc-fix cx c bt
+   else if lir-canon-at (cx.canon) bt == next-id then lir-emit-jcc-fix cx (lir-cond-invert c) be
+   else let cx1 = lir-emit-jcc-fix cx c bt
+   in lir-emit-jump cx1 be (0 - 1)
+
+  lir-emit-jump : LirCtx, Integer, Integer -> LirCtx
+  lir-emit-jump (cx) (b) (next-id) =
+   if lir-canon-at (cx.canon) b == next-id then cx
+   else let jmp-pos = (cx.state).code-len
+   in let st1 = st-append-code (cx.state) (jmp 0)
+   in LirCtx { state = st1, boffs = cx.boffs, fixups = list-push (cx.fixups) (LirFix { patch-pos = jmp-pos + 1, next-ip = jmp-pos + 5, target = b }), nused = cx.nused, frame = cx.frame, epi = cx.epi, share = cx.share, canon = cx.canon }
+
+ One instruction inside a block. Value instructions (binary, move) and the
+ compare only advance the state; the terminators (branch, jump) also record
+ fixups. A load never reaches a selected block (the dispatch predicate
+ rejects any block containing one), so its case is a defensive no-op.
+
+  lir-ctx-st : LirCtx, CodegenState -> LirCtx
+  lir-ctx-st (cx) (st) =
+   LirCtx { state = st, boffs = cx.boffs, fixups = cx.fixups, nused = cx.nused, frame = cx.frame, epi = cx.epi, share = cx.share, canon = cx.canon }
+
+ A return from where it stands: the value into RAX, the frame released, the
+ callee-saved registers restored, `ret`. It is the same sequence the single
+ exit emits, and an `if` in tail position simply has one per arm instead of
+ driving every arm's value into a shared vreg to hand to one at the end.
+
+  lir-emit-return : CodegenState, LirValue, List Location, Integer, Integer -> CodegenState
+  lir-emit-return (st) (v) (assign) (nused) (frame) =
+   let st1 = lir-emit-result st v assign
+   in let st2 = if frame > 0 then st-append-code st1 (add-ri reg-rsp frame) else st1
+   in st-append-code (lir-pop-saved st2 (nused - 1)) x86-ret
+
+  lir-emit-binsn : LirCtx, LirInsn, Integer, List Location -> LirCtx
+  lir-emit-binsn (cx) (ins) (next-id) (assign) =
+   when ins
+    is LiBin (op) (dst) (l) (r) -> LirCtx { state = lir-sel-bin (cx.state) op dst l r assign, boffs = cx.boffs, fixups = cx.fixups, nused = cx.nused, frame = cx.frame, epi = cx.epi, share = cx.share, canon = cx.canon }
+    is LiMove (dst) (src) -> LirCtx { state = lir-sel-mov (cx.state) dst src assign, boffs = cx.boffs, fixups = cx.fixups, nused = cx.nused, frame = cx.frame, epi = cx.epi, share = cx.share, canon = cx.canon }
+    is LiCmp (l) (r) -> LirCtx { state = lir-emit-cmp (cx.state) l r assign, boffs = cx.boffs, fixups = cx.fixups, nused = cx.nused, frame = cx.frame, epi = cx.epi, share = cx.share, canon = cx.canon }
+    is LiTest (l) (r) -> LirCtx { state = lir-emit-test (cx.state) l r assign, boffs = cx.boffs, fixups = cx.fixups, nused = cx.nused, frame = cx.frame, epi = cx.epi, share = cx.share, canon = cx.canon }
+    is LiCall (dst) (name) (args) -> LirCtx { state = lir-sel-call (cx.state) dst name args assign, boffs = cx.boffs, fixups = cx.fixups, nused = cx.nused, frame = cx.frame, epi = cx.epi, share = cx.share, canon = cx.canon }
+    is LiRet (v) ->
+     if cx.share
+      then lir-emit-jump (lir-ctx-st cx (lir-emit-result (cx.state) v assign)) (cx.epi) next-id
+      else lir-ctx-st cx (lir-emit-return (cx.state) v assign (cx.nused) (cx.frame))
+    is LiBranch (c) (bt) (be) -> lir-emit-branch cx c bt be next-id
+    is LiJump (b) -> lir-emit-jump cx b next-id
+    is LiLoad (dst) (base) (off) (w) (sg) -> LirCtx { state = lir-sel-load (cx.state) dst base off w sg assign, boffs = cx.boffs, fixups = cx.fixups, nused = cx.nused, frame = cx.frame, epi = cx.epi, share = cx.share, canon = cx.canon }
+
+  lir-emit-block-insns : LirCtx, List LirInsn, Integer, Integer, Integer, List Location -> LirCtx
+  lir-emit-block-insns (cx) (insns) (i) (n) (next-id) (assign) =
+   if i >= n then cx
+   else lir-emit-block-insns (lir-emit-binsn cx (list-at insns i) next-id assign) insns (i + 1) n next-id assign
+
+ A block records its start offset (by id) before its instructions. Because
+ every control transfer is an explicit branch patched afterwards, the offset
+ table is the only thing layout order feeds into.
+
+  lir-emit-block : LirCtx, LirBlock, Integer, List Location -> LirCtx
+  lir-emit-block (cx) (b) (next-id) (assign) =
+   let cx1 = LirCtx { state = cx.state, boffs = list-set-at (cx.boffs) (b.id) ((cx.state).code-len), fixups = cx.fixups, nused = cx.nused, frame = cx.frame, epi = cx.epi, share = cx.share, canon = cx.canon }
+   in lir-emit-block-insns cx1 (b.insns) 0 (list-length (b.insns)) next-id assign
+
+ What a block falls into is the next block that emits anything, which is not
+ always the next block. When every path returns, the lowering still pushes the
+ exit block so that ids stay dense for the tables indexed by them, and that
+ block is empty and unreachable. It occupies no bytes, so the block before it
+ falls past it -- and if nothing after it emits either, what the last arm falls
+ into is the epilogue at `n`. Answering with the literally-next id instead hid
+ that from the jump elision, and the last returning arm jumped to the
+ instruction already sitting under it.
+
+  lir-next-emitting : List LirBlock, Integer, Integer -> Integer
+  lir-next-emitting (blocks) (i) (n) =
+   if i >= n then n
+   else if list-length ((list-at blocks i).insns) > 0 then (list-at blocks i).id
+   else lir-next-emitting blocks (i + 1) n
+
+ A block that emits nothing is not a place. Control never rests there: every
+ byte addressed by its id belongs to whatever emits next, so naming it and
+ naming its successor name the same instruction. `canon` says which id is the
+ one the machine can actually see -- for each block, the first block at or
+ after its layout position that emits anything, or the epilogue at `n` when
+ none does. A block that emits is its own canonical form.
+
+ Both sides of the elision must speak this language or neither does. The
+ first cut of the fall-through canonicalised only what the layout falls INTO
+ and left the jump's own target raw, so an arm ending `LiJump exit` compared
+ the exit block's id against the epilogue's and missed: `let v = if c then a
+ else b in v` seals an empty exit that both arms jump to, and each of them
+ emitted `E9 00 00 00 00` -- five bytes of jump to the instruction underneath.
+ Every benchmark returns from its arms, so not one of them has a non-tail join
+ exit and not one of them noticed.
+
+ Ids are dense but layout order is not id order, so this is indexed by id and
+ filled by position.
+
+  lir-canon-at : List Integer, Integer -> Integer
+  lir-canon-at (canon) (b) =
+   if b < 0 then b
+   else if b >= list-length canon then b
+   else list-at canon b
+
+  lir-canon-fill : List LirBlock, Integer, Integer, List Integer -> List Integer
+  lir-canon-fill (blocks) (i) (n) (acc) =
+   if i >= n then acc
+   else lir-canon-fill blocks (i + 1) n (list-set-at acc ((list-at blocks i).id) (lir-next-emitting blocks i n))
+
+  lir-canon-vec : List LirBlock, Integer -> List Integer
+  lir-canon-vec (blocks) (n) =
+   lir-canon-fill blocks 0 n (list-set-at (lir-int-vec 0 (n + 1) 0 []) n n)
+
+  lir-emit-blocks : LirCtx, List LirBlock, Integer, Integer, List Location -> LirCtx
+  lir-emit-blocks (cx) (blocks) (i) (n) (assign) =
+   if i >= n then cx
+   else let next-id = lir-next-emitting blocks (i + 1) n
+   in lir-emit-blocks (lir-emit-block cx (list-at blocks i) next-id assign) blocks (i + 1) n assign
+
+ With every block laid out and its offset known, each fixup becomes a
+ concrete rel32 written straight into the code buffer.
+
+  lir-apply-fixups : CodegenState, List LirFix, List Integer, Integer, Integer -> CodegenState
+  lir-apply-fixups (st) (fixups) (boffs) (i) (n) =
+   if i >= n then st
+   else let fx = list-at fixups i
+   in let rel = (list-at boffs (fx.target)) - (fx.next-ip)
+   in lir-apply-fixups (st-add-deferred-patch st (make-i32-patch (fx.patch-pos) rel)) fixups boffs (i + 1) n
+
+ Save and restore the callee-saved local registers the allocation used, in
+ the fixed order `RBX, R12, R13, R14`, pushed ascending and popped
+ descending, and reserve/release a fixed-size frame for the spill slots. No
+ frame pointer and no stack guard: a whitelisted body makes no call, so it
+ cannot grow the stack, exactly the pure-leaf discipline
+ `emit-function-minimal` already relies on. The frame is reserved after the
+ callee-saved pushes, so a slot's `[RSP + k*8]` address is stable through the
+ body (nothing in it touches RSP), and released before the pops.
+
+ Whether the function makes any call -- if so it is not a pure leaf, and (when
+ the build has the stack guard on) its prologue keeps the heap-collision
+ check `cmp rsp, r10; jb __out_of_memory`, the same guard the tree emitter
+ emits for non-leaves and the reason the recursion chain is caught before it
+ grows the stack into the heap. The jump position is recorded in
+ `stack-overflow-checks` and patched to `__out_of_memory` at finalize,
+ exactly as `emit-prologue` does.
+
+  lir-has-call-insns : List LirInsn, Integer, Integer -> Boolean
+  lir-has-call-insns (insns) (i) (n) =
+   if i >= n then False
+   else when (list-at insns i)
+    is LiCall (dst) (name) (args) -> True
+    is otherwise -> lir-has-call-insns insns (i + 1) n
+
+  lir-func-has-call : List LirBlock, Integer, Integer -> Boolean
+  lir-func-has-call (blocks) (i) (n) =
+   if i >= n then False
+   else if lir-has-call-insns ((list-at blocks i).insns) 0 (list-length ((list-at blocks i).insns)) then True
+   else lir-func-has-call blocks (i + 1) n
+
+  lir-stack-guard : CodegenState -> CodegenState
+  lir-stack-guard (st) =
+   let st1 = st-append-code st (cmp-rr reg-rsp reg-r10)
+   in let check-pos = st1.code-len
+   in let st2 = st-append-code st1 (jcc cc-b 0)
+   in __record-set st2 "stack-overflow-checks" (list-push (st2.stack-overflow-checks) check-pos)
+
+  lir-push-saved : CodegenState, Integer, Integer -> CodegenState
+  lir-push-saved (st) (i) (nused) =
+   if i >= nused then st
+   else lir-push-saved (st-append-code st (push-r (list-at local-regs i))) (i + 1) nused
+
+  lir-pop-saved : CodegenState, Integer -> CodegenState
+  lir-pop-saved (st) (i) =
+   if i < 0 then st
+   else lir-pop-saved (st-append-code st (pop-r (list-at local-regs i))) (i - 1)
+
+ Move each parameter from the register it arrives in (`arg-regs[i]`) to the
+ location the allocator gave its vreg -- a register, or a store into its spill
+ slot. At most six parameters; the dispatch predicate refuses a seventh, which
+ would arrive on the caller's stack.
+
+ **This is a parallel move, and the reason is a lesson.** It used to be a
+ sequence, one move per parameter in parameter order, on the stated grounds
+ that every destination was a callee-saved register or a stack slot and so
+ disjoint from the argument registers. That was true the day it was written.
+ Then the leaf register file put `RDI, RSI, RDX, RCX` into `lir-phys` at
+ `5..8`, so that a leaf could keep its parameters in the registers they
+ arrived in -- and from that moment a destination could be *another
+ parameter's arrival register*. The comment kept vouching for an invariant the
+ code had lost, and nothing re-checked it.
+
+ What it cost: `col-hue` in the foreword's Color chapter takes five parameters
+ and divides. The division masks RDX out of the free set for every value live
+ across it, so parameter 2 cannot keep the register it arrived in and is
+ placed in RCX -- which is where parameter 3 arrives. In order, that emits
+ `mov rcx,rdx` and then `mov rbx,rcx`, and the second move reads a register
+ the first one has already overwritten: `mx` is handed `b`. `col-hue` answers
+ 60 where it should answer 0, `rgb-to-hsl` reports red as yellow, and the
+ whole thing was invisible to every gate the campaign had -- the benchmarks
+ measure speed and this is an answer, the fixed point proves determinism and a
+ deterministic wrong answer is still a fixed point, and the allocation
+ verifier never sees these moves at all because they are emitted before the
+ blocks and are not LIR instructions.
+
+ So: emit a parameter's move only when no parameter still to be moved reads
+ the register it writes. When every remaining move is blocked, the moves form
+ a cycle; stage one source through R11 (never allocated, and not an argument
+ register) and the cycle opens. A destination that is a spill slot blocks
+ nothing -- it is memory, and clobbers no register. This is exactly what
+ `lir-place-args` does for call arguments twenty lines up; the same problem
+ deserved the same answer the first time.
+
+  lir-pmv-srcs : Integer, Integer, List Integer -> List Integer
+  lir-pmv-srcs (i) (np) (acc) =
+   if i >= np then acc
+   else lir-pmv-srcs (i + 1) np (list-push acc (list-at arg-regs i))
+
+  lir-pmv-dst : List Location, Integer -> Integer
+  lir-pmv-dst (assign) (i) =
+   when (list-at assign i)
+    is LocReg (pr) -> list-at lir-phys pr
+    is LocSlot (ks) -> 0 - 1
+
+  lir-pmv-blocked : List Integer, List Boolean, Integer, Integer, Integer, Integer -> Boolean
+  lir-pmv-blocked (srcs) (done) (i) (np) (dsti) (j) =
+   if j >= np then False
+   else if j == i then lir-pmv-blocked srcs done i np dsti (j + 1)
+   else if list-at done j then lir-pmv-blocked srcs done i np dsti (j + 1)
+   else if (list-at srcs j) == dsti then True
+   else lir-pmv-blocked srcs done i np dsti (j + 1)
+
+  lir-pmv-pick : List Integer, List Boolean, Integer, Integer, List Location -> Integer
+  lir-pmv-pick (srcs) (done) (i) (np) (assign) =
+   if i >= np then 0 - 1
+   else if list-at done i then lir-pmv-pick srcs done (i + 1) np assign
+   else let d = lir-pmv-dst assign i
+   in if d < 0 then i
+      else if lir-pmv-blocked srcs done i np d 0 then lir-pmv-pick srcs done (i + 1) np assign
+      else i
+
+  lir-pmv-stageable : List Integer, List Boolean, Integer, Integer -> Integer
+  lir-pmv-stageable (srcs) (done) (i) (np) =
+   if i >= np then 0 - 1
+   else if list-at done i then lir-pmv-stageable srcs done (i + 1) np
+   else if (list-at srcs i) == lir-scratch-reg then lir-pmv-stageable srcs done (i + 1) np
+   else i
+
+ The move order is decided first and emitted second, as a plan rather than as
+ bytes. A plan can be read back, and that is the whole point: the parallel
+ move above is checked below by simulating it, and a checker that re-ran the
+ planner's own reasoning would agree with it however wrong it was.
+
+  PmvStep =
+   | PmvReg (Integer) (Integer)
+   | PmvStore (Integer) (Integer)
+
+  lir-pmv-step : List Location, Integer, Integer -> PmvStep
+  lir-pmv-step (assign) (i) (srcreg) =
+   when (list-at assign i)
+    is LocReg (pr) -> PmvReg (list-at lir-phys pr) srcreg
+    is LocSlot (ks) -> PmvStore ks srcreg
+
+ `lir-pmv-stage` exists to read `srcs[c]` before the same call overwrites it.
+ `list-set-at` writes in place, and arguments evaluate left to right, so a
+ staging step built in the argument list after the rewrite would read R11 back
+ and stage a register onto itself.
+
+  lir-pmv-stage : List Integer, List Boolean, Integer, List Location, Integer, List PmvStep, Integer, Integer -> List PmvStep
+  lir-pmv-stage (srcs) (done) (np) (assign) (fuel) (acc) (c) (sc) =
+   lir-pmv-plan (list-set-at srcs c lir-scratch-reg) done np assign fuel (list-push acc (PmvReg lir-scratch-reg sc))
+
+  lir-pmv-plan : List Integer, List Boolean, Integer, List Location, Integer, List PmvStep -> List PmvStep
+  lir-pmv-plan (srcs) (done) (np) (assign) (fuel) (acc) =
+   if fuel <= 0 then acc
+   else let p = lir-pmv-pick srcs done 0 np assign
+   in if p >= 0
+      then lir-pmv-plan srcs (list-set-at done p True) np assign (fuel - 1) (list-push acc (lir-pmv-step assign p (list-at srcs p)))
+      else let c = lir-pmv-stageable srcs done 0 np
+      in if c < 0 then acc
+         else lir-pmv-stage srcs done np assign (fuel - 1) acc c (list-at srcs c)
+
+  lir-pmv-emit : CodegenState, List PmvStep, Integer, Integer -> CodegenState
+  lir-pmv-emit (st) (plan) (i) (n) =
+   if i >= n then st
+   else let step = list-at plan i
+   in when step
+    is PmvReg (d) (s) -> lir-pmv-emit (lir-move-param-reg st d s) plan (i + 1) n
+    is PmvStore (k) (s) -> lir-pmv-emit (st-append-code st (mov-store reg-rsp s (lir-slot-off k))) plan (i + 1) n
+
+ The prologue check. The allocation verifier in `IR/Lir.codex` walks the LIR
+ and asserts that every use reads its vreg from the location the assignment
+ gave it -- but it begins by *seeding* the parameters into their assigned
+ locations, which is to say it assumes the entry moves worked. That assumption
+ is the one thing here that was never true, and `[alloc-check: ok]` printed on
+ `col-hue` for ten sessions while `col-hue` was miscompiled.
+
+ So this checks the assumption instead of inheriting it. Seed a register file
+ with each parameter in the register it really arrives in, apply the planned
+ moves to that file one at a time, and then ask whether every parameter ended
+ up where the assignment promised. A move that clobbers a register a later move
+ still reads shows up as the wrong parameter index sitting in the destination.
+ The file is indexed by physical register (0..15) with spill slot `k` at
+ `16 + k`, because these moves are physical -- they are what establishes the
+ vreg-to-location invariant that the abstract LIR takes as given.
+
+ It halts rather than warns. A warning here is a warning that the binary about
+ to be written computes something other than the program, which is not a thing
+ a build should survive; `IR/IRCheck.codex` reaches the same conclusion about
+ malformed IR for the same reason.
+
+  pmv-nphys : Integer = 16
+
+  pmv-loc-sim : Location -> Integer
+  pmv-loc-sim (loc) =
+   when loc
+    is LocReg (pr) -> list-at lir-phys pr
+    is LocSlot (k) -> pmv-nphys + k
+
+  pmv-seed : List Integer, Integer, Integer -> List Integer
+  pmv-seed (file) (i) (np) =
+   if i >= np then file
+   else pmv-seed (list-set-at file (list-at arg-regs i) i) (i + 1) np
+
+  pmv-apply : List Integer, List PmvStep, Integer, Integer -> List Integer
+  pmv-apply (file) (plan) (i) (n) =
+   if i >= n then file
+   else let step = list-at plan i
+   in when step
+    is PmvReg (d) (s) -> pmv-apply (list-set-at file d (list-at file s)) plan (i + 1) n
+    is PmvStore (k) (s) -> pmv-apply (list-set-at file (pmv-nphys + k) (list-at file s)) plan (i + 1) n
+
+  pmv-viol : List Integer, List Location, Integer, Integer -> Integer
+  pmv-viol (file) (assign) (i) (np) =
+   if i >= np then 0 - 1
+   else if (list-at file (pmv-loc-sim (list-at assign i))) == i then pmv-viol file assign (i + 1) np
+   else i
+
+  lir-move-params : CodegenState, Text, Integer, List Location -> CodegenState
+  lir-move-params (st) (fname) (np) (assign) =
+   let plan = lir-pmv-plan (lir-pmv-srcs 0 np []) (lir-make-vec 0 np []) np assign (np * 2 + 4) []
+   in let nsim = pmv-nphys + lir-assign-max-slot assign 0 (list-length assign) 0
+   in let file = pmv-apply (pmv-seed (lir-int-vec 0 nsim (0 - 1) []) 0 np) plan 0 (list-length plan)
+   in let bad = pmv-viol file assign 0 np
+   in if bad < 0 then lir-pmv-emit st plan 0 (list-length plan)
+      else st-add-error st cdx-lir-prologue-violation ("The entry moves for '" & fname & "' do not place parameter " & show bad & " in " & lir-loc-text (list-at assign bad) & ", the location its vreg was allocated. Simulating the planned moves from the argument registers leaves some other parameter's value there, so this function would run with parameter " & show bad & " holding a value that is not its own. The fault is in the selector's parallel move, not in the program being compiled: a move was emitted that overwrote a register a later move still had to read.") synthetic-span
+
+ A parameter whose register is the one it arrived in needs no instruction.
+ This is the common case in a leaf: the leaf register file lists the argument
+ registers in argument order, and the parameters are allocated first against a
+ free file, so parameter `i` is usually handed exactly `arg-regs[i]` and the
+ entry move is `mov rdi, rdi`. Usually, not always -- see above.
+
+  lir-move-param-reg : CodegenState, Integer, Integer -> CodegenState
+  lir-move-param-reg (st) (dst) (src) =
+   if dst == src then st
+   else st-append-code st (mov-rr dst src)
+
+ The function result goes into RAX, the return register, before the frame is
+ released and the callee-saved registers restored (so the value is copied out
+ while its register or slot still holds it). The result is defined in the
+ exit block, which the lowering appends last, so the result move and epilogue
+ physically follow the exit block's code and a branch into the exit falls
+ through into them.
+
+  lir-emit-result : CodegenState, LirValue, List Location -> CodegenState
+  lir-emit-result (st) (res) (assign) =
+   when res
+    is LvImm (k) -> st-append-code st (li reg-rax k)
+    is LvReg (r) ->
+     when (list-at assign r)
+      is LocReg (pr) -> lir-move-param-reg st reg-rax (list-at lir-phys pr)
+      is LocSlot (ks) -> st-append-code st (mov-load reg-rax reg-rsp (lir-slot-off ks))
+
+ The whole function: record its offset and reset per-function state (the
+ same `reset-func-state` the tree path uses, so the offset lands in the
+ shared capacity-backed `fo-names`/`fo-offsets` buffers and calls resolve to
+ it), then prologue, frame reservation, parameter moves, the blocks (with
+ branch fixups applied once laid out), the result, frame release, epilogue,
+ return. A straight-line body with no spill is the degenerate case: one
+ block, no terminator, no fixups, no frame.
+
+  lir-emit-func : CodegenState, LirFunc, List Location -> CodegenState
+  lir-emit-func (st) (f) (assign) =
+   let st0 = reset-func-state st (f.name)
+   in let nused = lir-nused-callee assign 0 (list-length assign) 0
+   in let frame = lir-nslots assign 0 (list-length assign) 0 * 8
+   in let has-call = lir-func-has-call (f.blocks) 0 (list-length (f.blocks))
+   in let st1 = lir-push-saved st0 0 nused
+   in let stg = if has-call & (st0.stack-guard) then lir-stack-guard st1 else st1
+   in let st1b = if frame > 0 then st-append-code stg (emit-sub-rsp-imm32 frame) else stg
+   in let st2 = lir-move-params st1b (f.name) (f.nparams) assign
+   in let nb = list-length (f.blocks)
+   in let nrets = lir-count-rets (f.blocks) 0 nb 0
+   in let cx0 = LirCtx { state = st2, boffs = lir-int-vec 0 (nb + 1) 0 [], fixups = [], nused = nused, frame = frame, epi = nb, share = lir-epi-shared nrets nused frame (lir-falls-into-epi (f.blocks) (nb - 1)), canon = lir-canon-vec (f.blocks) nb }
+   in let cxf = lir-emit-blocks cx0 (f.blocks) 0 nb assign
+   in let cxe = lir-emit-epilogue cxf f assign nb nused frame
+   in lir-apply-fixups (cxe.state) (cxe.fixups) (cxe.boffs) 0 (list-length (cxe.fixups))
+
+ The epilogue is laid out after every block, at the id the returns branch to.
+ A function with a single exit falls into it with its result operand, exactly
+ as before. A function whose every path returns emits it once if it is worth
+ sharing, and not at all if each return already carried its own.
+
+  lir-emit-epilogue : LirCtx, LirFunc, List Location, Integer, Integer, Integer -> LirCtx
+  lir-emit-epilogue (cx) (f) (assign) (nb) (nused) (frame) =
+   let cx1 = LirCtx { state = cx.state, boffs = list-set-at (cx.boffs) nb ((cx.state).code-len), fixups = cx.fixups, nused = nused, frame = frame, epi = nb, share = cx.share, canon = cx.canon }
+   in if f.rets == False
+      then lir-ctx-st cx1 (lir-emit-return (cx1.state) (f.result) assign nused frame)
+      else if cx.share
+      then lir-ctx-st cx1 (st-append-code (lir-pop-saved (if frame > 0 then st-append-code (cx1.state) (add-ri reg-rsp frame) else (cx1.state)) (nused - 1)) x86-ret)
+      else cx1
+
+Section: LIR Dispatch
+
+ The dispatch predicate -- the ratchet. A definition is selected for the LIR
+ path only when every gate holds:
+
+  - it is not `punctual` (the LIR path does not yet emit the WCET-checked
+    prologue, so a punctual function stays on the tree path that does);
+  - it has at most six parameters (a seventh arrives on the caller's stack,
+    which the parameter mover does not read);
+  - no parameter and no return type carries a narrowing `OvError` bound (the
+    tree path inserts Eiffel-style range traps for those; the LIR path does
+    not emit them yet, so a bounded signature falls back rather than losing
+    its check);
+  - and the body lowers to the LIR whitelist at all (`lower-def-to-lir`),
+    which is the only remaining gate now that the selector handles every
+    instruction the lowering can emit.
+
+ Any failing gate answers "not handled" and the caller keeps the tree
+ emitter. The predicate re-runs the lowering and allocation the emission then
+ consumes; both are cheap, deterministic, and reclaimed with the rest of the
+ per-function scratch by the `__heap-save`/`__heap-restore` bracket
+ `emit-all-defs` wraps around every function.
+
+  lir-ty-needs-guard : CodexType -> Boolean
+  lir-ty-needs-guard (ty) =
+   when ty
+    is IntegerTy (lo) (hi) (mode) ->
+     when mode
+      is OvError -> (lo > i64-min) | (hi < i64-max)
+      is otherwise -> False
+    is otherwise -> False
+
+  lir-params-plain : List IRParam, Integer, Integer -> Boolean
+  lir-params-plain (ps) (i) (n) =
+   if i >= n then True
+   else if lir-ty-needs-guard ((list-at ps i).type-val) then False
+   else lir-params-plain ps (i + 1) n
+
+ A call target is acceptable only when it is a plain user function called at
+ its exact arity and it is not a builtin. This is the gate that keeps
+ constructors, effect operations, over- and partial applications, and
+ indirect calls on the tree path: a constructor or effect-op name is not in
+ the user-arity table (so the arity lookup fails), an over/partial call has a
+ mismatched arity, and an indirect call left the lowering with an empty root
+ name and never became a `LiCall`. The arity and builtin tables live on the
+ codegen state, which is why this gate runs in the selector, not in the
+ target-independent lowering.
+
+  lir-call-target-ok : CodegenState, Text, Integer -> Boolean
+  lir-call-target-ok (st) (name) (nargs) =
+   (lookup-x86-arity (st.user-arities) name == nargs) & (is-builtin (st.builtin-names) name == False)
+
+  lir-calls-ok-insns : CodegenState, List LirInsn, Integer, Integer -> Boolean
+  lir-calls-ok-insns (st) (insns) (i) (n) =
+   if i >= n then True
+   else when (list-at insns i)
+    is LiCall (dst) (name) (args) -> if lir-call-target-ok st name (list-length args) then lir-calls-ok-insns st insns (i + 1) n else False
+    is otherwise -> lir-calls-ok-insns st insns (i + 1) n
+
+  lir-calls-ok : CodegenState, List LirBlock, Integer, Integer -> Boolean
+  lir-calls-ok (st) (blocks) (i) (n) =
+   if i >= n then True
+   else if lir-calls-ok-insns st ((list-at blocks i).insns) 0 (list-length ((list-at blocks i).insns))
+        then lir-calls-ok st blocks (i + 1) n
+        else False
+
+  LirEmitTry = record {
+   handled : Boolean,
+   state : CodegenState
+  }
+
+  lir-not-handled : CodegenState -> LirEmitTry
+  lir-not-handled (st) = LirEmitTry { handled = False, state = st }
+
+ The backstop for the loop-spanning intervals. `lir-build-intervals` extends
+ every parameter across the whole body on the argument that in a self-tail-
+ recursive function the parameters are the only loop-carried values. This
+ checks that claim on the lowered function instead of trusting it: nothing
+ but a parameter may be live into the header. A function that carried some
+ other value around the loop would need real loop-aware interval
+ construction, so it is declined and the tree emitter keeps it. For clean
+ self-tail-recursion the check always passes; it exists so that the day it
+ does not, the result is a fallback and not a miscompile.
+
+  lir-header-live-ok : List Boolean, Integer, Integer, Integer -> Boolean
+  lir-header-live-ok (live) (i) (nv) (np) =
+   if i >= nv then True
+   else if (list-at live i) & (i >= np) then False
+   else lir-header-live-ok live (i + 1) nv np
+
+  lir-loop-shape-ok : LirFunc -> Boolean
+  lir-loop-shape-ok (f) =
+   if lir-has-backedge f == False then True
+   else let livein = lir-liveness f
+   in if list-length livein == 0 then False
+      else lir-header-live-ok (list-at livein 0) 0 (f.nvregs) (f.nparams)
+
+ The verifiers stand on the emission path. Both were written as dump-only
+ diagnostics, and dump-only is what let a coalescing bug ship wrong bytes
+ while `lir-check-func` would have named the exact violation: nothing ran
+ it. So every function the selector emits is checked first -- the lowered
+ LIR structurally, then the actual assignment the emitter is about to use
+ (not a re-derived one) -- and a violation halts the build the way the
+ prologue check does. The cost is a walk over blocks the emitter walks
+ anyway, on per-function scratch the emit loop already reclaims.
+
+  lir-verifier-halt : CodegenState, Integer between 0 and 65535, Text, Text, List Text -> CodegenState
+  lir-verifier-halt (st) (code) (which) (fname) (viol) =
+   st-add-error st code ("The " & which & " verifier rejected '" & fname & "' on the emission path: " & (list-at viol 0) & (if list-length viol > 1 then " (and " & show (list-length viol - 1) & " more)" else "") & ". The selector's output would not compute the program; the build halts rather than write it.") synthetic-span
+
+  lir-emit-try : CodegenState, IRDef -> LirEmitTry
+  lir-emit-try (st) (def) =
+   if def.is-punctual then lir-not-handled st
+   else if list-length (def.params) > 6 then lir-not-handled st
+   else if lir-params-plain (def.params) 0 (list-length (def.params)) == False then lir-not-handled st
+   else if lir-ty-needs-guard (return-bound-of (def.type-val) (list-length (def.params))) then lir-not-handled st
+   else let r = lower-def-to-lir def
+   in if r.ok == False then lir-not-handled st
+      else if lir-calls-ok st ((r.func).blocks) 0 (list-length ((r.func).blocks)) == False then lir-not-handled st
+         else if lir-loop-shape-ok (r.func) == False then lir-not-handled st
+         else let sviol = lir-check-func (r.func)
+         in if list-length sviol > 0 then LirEmitTry { handled = True, state = lir-verifier-halt st cdx-lir-structural-violation "structural" (def.name) sviol }
+            else let a = lir-alloc-linscan (r.func)
+            in let aviol = lir-alloc-check (r.func) (a.assign)
+            in if list-length aviol > 0 then LirEmitTry { handled = True, state = lir-verifier-halt st cdx-lir-allocation-violation "allocation" (def.name) aviol }
+               else LirEmitTry { handled = True, state = lir-emit-func st (r.func) (a.assign) }
+
+Page 14 of 14

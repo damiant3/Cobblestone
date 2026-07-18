@@ -5,11 +5,13 @@ Chapter: CompilerDriver
   cites Works chapter BuildManifest
   cites Foreword chapter Sha256
   cites Foreword chapter Maybe
+  cites Foreword chapter ListUtils
+  cites Foreword chapter Fat16
 
  CompilerDriver is the self-hosted compiler driver. CompilerDriver
  replaces the PS1 orchestration scripts (sample-compile-selfhost.ps1,
  pingpong-self.ps1, sweep.ps1) with Codex-native logic. The driver
- runs on the Codex OS — the compiler invokes itself via process-spawn
+ runs on the Codex OS ? the compiler invokes itself via process-spawn
  to compile samples and verify the fixed point.
 
  On bare metal with the scheduler, a compile is just: spawn a
@@ -68,16 +70,17 @@ Section: Self-Compile
     success : Boolean
   }
 
-  self-compile-plan : Text, Text, Text -> SelfCompileResult
-  self-compile-plan (codex-dir) (foreword-dir) (output-path) =
-    let source = concat-compiler-source codex-dir foreword-dir
-    in let source-hash = sha256-to-hex (sha256 (text-to-bytes source))
+  self-compile-plan : Text, Text, Text -> [FileSystem.Read, Device.Block] SelfCompileResult
+  self-compile-plan (codex-dir) (foreword-dir) (output-path) = act
+    source <- concat-compiler-source codex-dir foreword-dir
+    let source-hash = sha256-to-hex (sha256 (text-to-bytes source))
     in SelfCompileResult {
       cdx-path = output-path,
       cdx-size = text-length source,
       cdx-hash = source-hash,
       success = False
     }
+  end
 
 Section: Fixed Point Check
 
@@ -114,11 +117,12 @@ Section: Sample Compile
     output : Text
   }
 
-  evaluate-sample : Text, Boolean, Text, Text -> SampleCompileResult
-  evaluate-sample (source-path) (compile-ok) (runtime-output) (compile-log) =
+  evaluate-sample : Text, Boolean, Text, Text -> [FileSystem.Read, Device.Block] SampleCompileResult
+  evaluate-sample (source-path) (compile-ok) (runtime-output) (compile-log) = act
     let name = path-stem source-path
-    in let entry = classify-sample source-path name
-    in when entry.kind
+    in act
+    entry <- classify-sample source-path name
+    when entry.kind
       is Skipped -> SampleCompileResult { name = name, result = SkippedResult, compile-ok = False, output = "" }
       is ExpectedFailure ->
         let r = evaluate-failing compile-ok (entry.sidecar) compile-log
@@ -130,6 +134,8 @@ Section: Sample Compile
       is CompileOnly ->
         if compile-ok then SampleCompileResult { name = name, result = PassUnverified, compile-ok = True, output = "" }
         else SampleCompileResult { name = name, result = FailCompile, compile-ok = False, output = "" }
+    end
+  end
 
 Section: Sweep Driver
 
@@ -142,15 +148,16 @@ Section: Sweep Driver
     sample-count : Integer
   }
 
-  plan-sweep : Text -> SweepPlan
-  plan-sweep (test-dir) =
-    let files = list-files test-dir ".codex"
-    in let entries = for f in files -> let name = path-stem f in classify-sample f name
-    in SweepPlan {
+  plan-sweep : Text -> [FileSystem.Read, Device.Block] SweepPlan
+  plan-sweep (test-dir) = act
+    files <- list-files test-dir ".codex"
+    entries <- (for f in files -> let name = path-stem f in classify-sample f name)
+    SweepPlan {
       test-dir = test-dir,
       samples = entries,
       sample-count = list-length entries
     }
+  end
 
 Section: Seed Rebuild Driver
 

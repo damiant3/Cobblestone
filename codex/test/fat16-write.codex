@@ -1,0 +1,68 @@
+Chapter: Fat16Write
+
+  cites Foreword chapter Fat16
+
+ A Codex program can write a file. This is the test that says so, and it says
+ it by writing one and then reading it back through a path that shares no code
+ with the writer: fat16-read-text walks the directory, follows the cluster
+ chain and decodes the bytes, exactly as it did before any of this existed.
+
+ The bytes matter as much as the round trip. Codex Text is CCE internally, and
+ a FAT16 short name and a file's contents are ASCII. A writer that put CCE on
+ the disk would round-trip perfectly here -- our reader would decode what our
+ writer encoded, and the two would agree forever -- while producing a file no
+ other reader on earth could open. That is not a hypothetical: it is what
+ shipped a TLS hostname and every key-schedule label in CCE. So the harness
+ checks the raw bytes host-side as well, and this test pins the half it can:
+ the size the directory entry records, which is a byte count and not a
+ character count, and would be wrong the moment the encoding was.
+
+ We say:
+
+Section: Entry
+
+  opening : [Console, Device.Block] Nothing
+  opening = act
+    ok <- fat16-write-file "HELLO.TXT" "Hello, disk!"
+    print-line-uni ("wrote " & show ok)
+
+    there <- file-exists "HELLO.TXT"
+    print-line-uni ("exists " & show there)
+
+    vol <- fat16-init 2048
+    back <- fat16-read-text vol "HELLO.TXT"
+    print-line-uni ("readback " & maybe-text back)
+
+    entry <- fat16-resolve-path vol "HELLO.TXT"
+    print-line-uni ("size " & show (entry-size entry))
+
+    bok <- fat16-write-binary-file "BIN.DAT" [1, 2, 3, 254]
+    print-line-uni ("wrote-bin " & show bok)
+    bytes <- fat16-read-bytes vol "BIN.DAT"
+    print-line-uni ("bin " & maybe-bytes bytes)
+
+    gone <- file-exists "NOPE.XXX"
+    print-line-uni ("absent " & show gone)
+  end
+
+Section: Reporting
+
+  maybe-text : Maybe Text -> Text
+  maybe-text (m) = when m
+    is Just (t) -> t
+    is None -> "<none>"
+
+  entry-size : Maybe Fat16DirEntry -> Integer
+  entry-size (m) = when m
+    is Just (e) -> e.de-size
+    is None -> 0 - 1
+
+  maybe-bytes : Maybe (List Integer) -> Text
+  maybe-bytes (m) = when m
+    is Just (bs) -> show-bytes bs 0 (list-length bs) ""
+    is None -> "<none>"
+
+  show-bytes : List Integer, Integer, Integer, Text -> Text
+  show-bytes (bs) (i) (n) (acc) =
+    if i >= n then acc
+    else show-bytes bs (i + 1) n (acc & show (list-at bs i) & " ")

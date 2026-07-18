@@ -1,0 +1,144 @@
+Chapter: Asn1DerTest
+  cites Encode chapter Asn1
+  cites Foreword chapter Ed25519
+  cites Foreword chapter Maybe
+
+ The DER decoder, gated on the certificate the IETF published in RFC 8410
+ section 10.2 and the Ed25519 public key it published in section 10.1.
+
+ The decisive line is verify-published. It parses the certificate, slices
+ the tbsCertificate back out with asn1-raw, and checks the REAL signature
+ over those bytes with the key from 10.1. A decoder that is wrong by a
+ single byte -- one off-by-one in a length, one header included where it
+ should not be -- produces a different message, and Ed25519 says False.
+ The vector is therefore a test of the parser and not of itself.
+
+ The negatives are the other half, and they are the half that matters for
+ a parser fed hostile input. Each one is a DER rule that has cost somebody
+ a CVE, and each MUST decode to None.
+
+Section: The Published Certificate
+
+  c-cert : List Integer =
+    [48, 130, 1, 44, 48, 129, 223, 160, 3, 2, 1, 2, 2, 8, 86, 1, 
+     71, 74, 42, 141, 195, 48, 48, 5, 6, 3, 43, 101, 112, 48, 25, 49, 
+     23, 48, 21, 6, 3, 85, 4, 3, 12, 14, 73, 69, 84, 70, 32, 84, 
+     101, 115, 116, 32, 68, 101, 109, 111, 48, 30, 23, 13, 49, 54, 48, 56, 
+     48, 49, 49, 50, 49, 57, 50, 52, 90, 23, 13, 52, 48, 49, 50, 51, 
+     49, 50, 51, 53, 57, 53, 57, 90, 48, 25, 49, 23, 48, 21, 6, 3, 
+     85, 4, 3, 12, 14, 73, 69, 84, 70, 32, 84, 101, 115, 116, 32, 68, 
+     101, 109, 111, 48, 42, 48, 5, 6, 3, 43, 101, 110, 3, 33, 0, 133, 
+     32, 240, 9, 137, 48, 167, 84, 116, 139, 125, 220, 180, 62, 247, 90, 13, 
+     191, 58, 13, 38, 56, 26, 244, 235, 164, 169, 142, 170, 155, 78, 106, 163, 
+     69, 48, 67, 48, 15, 6, 3, 85, 29, 19, 1, 1, 255, 4, 5, 48, 
+     3, 1, 1, 0, 48, 14, 6, 3, 85, 29, 15, 1, 1, 0, 4, 4, 
+     3, 2, 3, 8, 48, 32, 6, 3, 85, 29, 14, 1, 1, 0, 4, 22, 
+     4, 20, 155, 31, 94, 237, 237, 4, 51, 133, 228, 247, 188, 98, 60, 89, 
+     117, 185, 11, 200, 187, 59, 48, 5, 6, 3, 43, 101, 112, 3, 65, 0, 
+     175, 35, 1, 254, 221, 201, 230, 255, 193, 204, 167, 61, 116, 214, 72, 164, 
+     57, 128, 130, 205, 219, 105, 177, 78, 77, 6, 236, 248, 26, 37, 206, 80, 
+     212, 194, 195, 235, 116, 108, 78, 221, 131, 70, 133, 110, 200, 111, 61, 206, 
+     26, 24, 101, 197, 122, 194, 123, 80, 160, 195, 80, 7, 245, 231, 217, 7]
+
+  c-capub : List Integer =
+    [25, 191, 68, 9, 105, 132, 205, 254, 133, 65, 186, 193, 103, 220, 59, 150, 
+     200, 80, 134, 170, 48, 182, 182, 203, 12, 92, 56, 173, 112, 49, 102, 225]
+
+Section: Structure
+
+  c-top : Maybe Asn1Tlv = asn1-read c-cert 0
+
+  c-kids : List Asn1Tlv =
+    when c-top
+      is None -> []
+      is Just (t) -> asn1-children c-cert t
+
+  c-tbs-raw : List Integer =
+    when asn1-nth c-kids 0
+      is None -> []
+      is Just (t) -> asn1-raw c-cert t
+
+  c-sig : List Integer =
+    when asn1-nth c-kids 2
+      is None -> []
+      is Just (t) -> bytes-or-empty (asn1-bit-string c-cert (t.tlv-hdr))
+
+ The Ed25519 OID, 1.3.101.112, in its encoded form: 06 03 2b 65 70. The
+ content octets are the identity -- see the chapter note on comparing OIDs
+ as bytes rather than as decoded numbers.
+
+  oid-ed25519 : List Integer = [43, 101, 112]
+
+  c-sigalg-is-ed25519 : Boolean =
+    when asn1-nth c-kids 1
+      is None -> False
+      is Just (alg) -> alg-oid-is c-cert alg
+
+  alg-oid-is : List Integer, Asn1Tlv -> Boolean
+  alg-oid-is (buf) (alg) =
+    when asn1-nth (asn1-children buf alg) 0
+      is None -> False
+      is Just (o) -> asn1-oid-is buf o oid-ed25519
+
+Section: Helpers
+
+  bytes-or-empty : Maybe (List Integer) -> List Integer
+  bytes-or-empty (m) = when m is None -> [] is Just (bs) -> bs
+
+  yn : Boolean -> Text
+  yn (b) = if b then "True" else "False"
+
+  tlv-none : Maybe Asn1Tlv -> Boolean
+  tlv-none (m) = when m is None -> True is Just (t) -> False
+
+  bytes-none : Maybe (List Integer) -> Boolean
+  bytes-none (m) = when m is None -> True is Just (bs) -> False
+
+Section: Negatives
+
+ Indefinite length. Legal BER, forbidden in DER, and a decoder that takes
+ it can be walked off the end of the structure it thinks it is reading.
+
+  n-indefinite : List Integer = [#30, #80, #00, #00]
+
+ Non-minimal length: 0x81 0x05 says five, and so does a bare 0x05. Two
+ encodings of one certificate means one of them can be signed and the
+ other served.
+
+  n-nonminimal : List Integer = [#02, #81, #05, 1, 2, 3, 4, 5]
+
+ A length that runs past the end of the buffer. This is the one that reads
+ memory that is not yours.
+
+  n-overrun : List Integer = [#04, #10, 1, 2]
+
+ The high-tag-number form. X.509 does not need it.
+
+  n-high-tag : List Integer = [#1F, #01, #00]
+
+ A long-form length with a leading zero octet -- again non-minimal.
+
+  n-leading-zero : List Integer = [#30, #82, #00, #05, 1, 2, 3, 4, 5]
+
+ A BIT STRING claiming three unused trailing bits. Every key and signature
+ X.509 puts in a BIT STRING has zero, so this is a value we do not
+ understand, and we refuse it rather than shift it.
+
+  n-bit-unused : List Integer = [#03, #03, #03, #AA, #BB]
+
+Section: Entry
+
+  opening : [Console] Nothing = act
+    print-line-uni ("asn1 top-tag=" & show (when c-top is None -> 0 - 1 is Just (t) -> t.tlv-tag))
+    print-line-uni ("asn1 kids=" & show (list-length c-kids))
+    print-line-uni ("asn1 tbs-raw-len=" & show (list-length c-tbs-raw))
+    print-line-uni ("asn1 sig-len=" & show (list-length c-sig))
+    print-line-uni ("asn1 sigalg-ed25519=" & yn c-sigalg-is-ed25519)
+    print-line-uni ("asn1 verify-published=" & yn (ed25519-verify c-capub c-tbs-raw c-sig))
+    print-line-uni ("asn1 rej-indefinite=" & yn (tlv-none (asn1-read n-indefinite 0)))
+    print-line-uni ("asn1 rej-nonminimal=" & yn (tlv-none (asn1-read n-nonminimal 0)))
+    print-line-uni ("asn1 rej-overrun=" & yn (tlv-none (asn1-read n-overrun 0)))
+    print-line-uni ("asn1 rej-high-tag=" & yn (tlv-none (asn1-read n-high-tag 0)))
+    print-line-uni ("asn1 rej-leading-zero=" & yn (tlv-none (asn1-read n-leading-zero 0)))
+    print-line-uni ("asn1 rej-bit-unused=" & yn (bytes-none (asn1-bit-string n-bit-unused 0)))
+  end

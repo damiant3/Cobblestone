@@ -1,0 +1,699 @@
+Chapter: LensPlan
+  cites Lens chapter LensModel
+  cites Data chapter Row
+  cites Data chapter RelAlgebra
+  cites Data chapter Executor
+  cites Data chapter Catalog
+
+ The planner turns a LensQuery into a grain-correct relational plan.
+ The v1 rule is structural, per the design's fan-out section: every
+ measure is aggregated at the grain of its own home table before any
+ join. A measure whose home table already carries every requested
+ dimension aggregates directly, with no join at all. A measure that
+ must reach a dimension on another table first groups its home table
+ by the join keys, then equi-joins the already-aggregated rows to the
+ dimension tables, then re-aggregates by the dimension columns. Sum
+ re-aggregates as sum, count as a sum of counts, min as min, max as
+ max. An average is never re-aggregated: the planner decomposes it
+ into a sum and a count over the same column, both at the home
+ grain, carries the pair through every join and re-aggregation as
+ sums, and lens-run divides the pair once after the last combine.
+ The division is integer division in v1, the same truncation the
+ engine's own average applies. Fan-out never reaches an aggregate
+ because nothing is summed after a row can be duplicated.
+
+ A dimension's table is reached by a chain of declared many-to-one
+ joins walked from the measure's home table, up to four hops deep. A
+ chain of many-to-one hops is grain-safe because every hop maps many
+ rows to one, so the aggregated home rows never multiply on the way
+ to the dimension. A table no chain reaches earns diagnostic 23, and
+ a table two distinct chains reach earns diagnostic 28, because the
+ planner refuses to pick a join path silently.
+
+ Query filters are equality tests on physical columns. A filter lands
+ on every scan of the table it names, under every aggregation,
+ therefore a filter always applies at raw-row grain: a filter on a
+ measure's home table restricts the rows that sub-aggregation sums,
+ and a filter on a dimension table restricts the dimension rows every
+ sub-plan joins against. A filter naming a table or column outside
+ the model's vocabulary, or a table the query never touches, is
+ rejected with diagnostic 27.
+
+ Result columns are physical names: each dimension contributes its
+ column name and each measure contributes its measure name as the
+ aggregate alias. An average travels through the plan as two columns,
+ the measure name suffixed __sum and __cnt, and lens-run replaces the
+ pair with the single measure-name column holding their quotient, so
+ a caller sees exactly the columns it asked for. A measure named to
+ collide with another measure's __sum or __cnt spelling would break
+ the pairing; v1 accepts that assumption rather than police names.
+ Rows sort ascending by the dimension columns so results are
+ deterministic, and a positive limit truncates after the sort. A
+ limit of zero means no limit.
+
+Section: Plan Result
+
+ lens-plan answers with a plan or with diagnostics, never both. When
+ plan-ok is False the plan-op field holds an inert placeholder scan
+ and only plan-diags speaks. The plan-avgs field names the average
+ measures whose sum-and-count column pairs lens-run must divide after
+ execution; it is empty whenever the query names no averages. Planner
+ diagnostics draw from code 20 upward; codes 1 through 7 belong to
+ the model validator. The table:
+
+ code 20 means the query names a lens this model does not declare.
+ code 21 means a queried dimension name is not in the model.
+ code 22 means a queried measure name is not in the model.
+ code 23 means no chain of many-to-one joins reaches a dimension's
+ table from a measure's home table within four hops.
+ code 24 means the query names no measures.
+ code 25 is retired: it refused average measures that would need
+ re-aggregation across a join. The planner now decomposes every
+ average into a sum and a count at the home grain, re-aggregates the
+ pair losslessly, and lens-run divides after the last combine,
+ therefore the code is never issued again.
+ code 26 is retired: it refused several measures with several
+ dimensions when the combine step was a single-column equi-join. The
+ combine step now equi-joins on the full requested-dimension column
+ set, therefore the shape plans correctly and the code is never
+ issued again.
+ code 27 means a query filter names a table or column this query
+ cannot filter: the table is not declared, the column is not part of
+ the model's vocabulary for that table, or the table takes no part in
+ the query.
+ code 28 means more than one distinct chain of many-to-one joins
+ reaches a dimension's table from a measure's home table. The message
+ names two of the paths; the modeler must remove a join or query a
+ different shape, because the planner will not pick between paths
+ silently.
+
+  LensPlanResult = record {
+    plan-ok : Boolean,
+    plan-op : RelOp,
+    plan-avgs : List Text,
+    plan-diags : List LensDiag
+  }
+
+  lp-fail : List LensDiag -> LensPlanResult
+  lp-fail (ds) = LensPlanResult { plan-ok = False, plan-op = RelScan "", plan-avgs = [], plan-diags = ds }
+
+  lp-good : RelOp, List Text -> LensPlanResult
+  lp-good (op) (avgs) = LensPlanResult { plan-ok = True, plan-op = op, plan-avgs = avgs, plan-diags = [] }
+
+Section: Name Resolution
+
+ Query names resolve against the model's declared dimensions and
+ measures. Every unknown name earns its own diagnostic so the analyst
+ sees the whole damage in one pass.
+
+  lp-dim-idx : List LensDimension, Integer, Text -> Integer
+  lp-dim-idx (ds) (i) (nm) =
+    if i >= list-length ds then -1
+    else let d = list-at ds i
+    in if d.name == nm then i
+    else lp-dim-idx ds (i + 1) nm
+
+  lp-measure-idx : List LensMeasure, Integer, Text -> Integer
+  lp-measure-idx (ms) (i) (nm) =
+    if i >= list-length ms then -1
+    else let m = list-at ms i
+    in if m.name == nm then i
+    else lp-measure-idx ms (i + 1) nm
+
+  LpDims = record {
+    lpd-dims : List LensDimension,
+    lpd-diags : List LensDiag
+  }
+
+  lp-resolve-dims : LensModel, List Text, Integer, List LensDimension, List LensDiag -> LpDims
+  lp-resolve-dims (model) (names) (i) (acc) (diags) =
+    if i >= list-length names then LpDims { lpd-dims = acc, lpd-diags = diags }
+    else let nm = list-at names i
+    in let idx = lp-dim-idx (model.dimensions) 0 nm
+    in if idx < 0 then lp-resolve-dims model names (i + 1) acc (list-push diags (lens-diag 21 ("unknown dimension " & nm)))
+    else lp-resolve-dims model names (i + 1) (list-push acc (list-at (model.dimensions) idx)) diags
+
+  LpMeasures = record {
+    lpm-measures : List LensMeasure,
+    lpm-diags : List LensDiag
+  }
+
+  lp-resolve-measures : LensModel, List Text, Integer, List LensMeasure, List LensDiag -> LpMeasures
+  lp-resolve-measures (model) (names) (i) (acc) (diags) =
+    if i >= list-length names then LpMeasures { lpm-measures = acc, lpm-diags = diags }
+    else let nm = list-at names i
+    in let idx = lp-measure-idx (model.measures) 0 nm
+    in if idx < 0 then lp-resolve-measures model names (i + 1) acc (list-push diags (lens-diag 22 ("unknown measure " & nm)))
+    else lp-resolve-measures model names (i + 1) (list-push acc (list-at (model.measures) idx)) diags
+
+Section: Join Paths
+
+ The planner trusts chains of declared many-to-one joins walked out
+ of a measure's home table. lp-find-paths enumerates the distinct
+ chains from one table to another by a depth-first walk over the
+ model's join list: each step follows a many-to-one join out of the
+ current table, the visited list forbids returning to a table so no
+ walk cycles, and the depth counter caps a chain at four hops. The
+ walk stops collecting at two paths, because one path is a plan and
+ two is diagnostic 28 no matter how many more exist; the accumulator
+ never grows past two, so the search is bounded by the join list, the
+ depth cap, and the path cap together. A path is the list of join
+ indices walked, in order, and lp-render-path spells one out as the
+ table names it passes through.
+
+  lp-join-hop : LensJoin, Text -> Boolean
+  lp-join-hop (j) (from) =
+    if j.from-table == from then
+      when j.cardinality
+        is ManyToOne -> True
+        is otherwise -> False
+    else False
+
+  lp-path-step : List LensJoin, Text, Text, Integer, List Text, List Integer, List (List Integer) -> List (List Integer)
+  lp-path-step (js) (cur) (target) (depth) (visited) (path) (acc) =
+    if list-length acc >= 2 then acc
+    else if cur == target then list-push acc path
+    else if depth <= 0 then acc
+    else lp-path-scan js cur target depth visited path acc 0
+
+  lp-path-scan : List LensJoin, Text, Text, Integer, List Text, List Integer, List (List Integer), Integer -> List (List Integer)
+  lp-path-scan (js) (cur) (target) (depth) (visited) (path) (acc) (i) =
+    if i >= list-length js then acc
+    else let j = list-at js i
+    in if lp-join-hop j cur == False then lp-path-scan js cur target depth visited path acc (i + 1)
+    else if lp-texts-contain visited 0 (j.to-table) then lp-path-scan js cur target depth visited path acc (i + 1)
+    else let sub = lp-path-step js (j.to-table) target (depth - 1) (list-push visited (j.to-table)) (list-push path i) acc
+    in lp-path-scan js cur target depth visited path sub (i + 1)
+
+  lp-find-paths : List LensJoin, Text, Text -> List (List Integer)
+  lp-find-paths (js) (from) (to) = lp-path-step js from to 4 [from] [] []
+
+  lp-render-path : List LensJoin, List Integer, Integer, Text -> Text
+  lp-render-path (js) (path) (k) (acc) =
+    if k >= list-length path then acc
+    else let j = list-at js (list-at path k)
+    in lp-render-path js path (k + 1) (acc & " -> " & j.to-table)
+
+Section: Grain Checking
+
+ The grain checker refuses every query the builder below cannot plan
+ correctly. It walks each measure against each requested dimension: a
+ dimension on the measure's own table is always fine, a dimension
+ whose table exactly one many-to-one chain reaches is fine, a table
+ no chain reaches is code 23, and a table two chains reach is code
+ 28 with both offending paths named, so the analyst sees the
+ ambiguity spelled out instead of a silently chosen join.
+
+  lp-check-reach : LensModel, List LensDimension, LensMeasure, Integer, List LensDiag -> List LensDiag
+  lp-check-reach (model) (dims) (m) (i) (acc) =
+    if i >= list-length dims then acc
+    else let d = list-at dims i
+    in if d.table == m.table then lp-check-reach model dims m (i + 1) acc
+    else let paths = lp-find-paths (model.joins) (m.table) (d.table)
+    in if list-length paths == 1 then lp-check-reach model dims m (i + 1) acc
+    else if list-length paths == 0 then lp-check-reach model dims m (i + 1) (list-push acc (lens-diag 23 ("measure " & m.name & " on table " & m.table & " cannot reach dimension " & d.name & " on table " & d.table & ": no many-to-one join chain declared")))
+    else lp-check-reach model dims m (i + 1) (list-push acc (lens-diag 28 ("measure " & m.name & " on table " & m.table & " reaches dimension " & d.name & " on table " & d.table & " by more than one many-to-one path: " & lp-render-path (model.joins) (list-at paths 0) 0 (m.table) & " and " & lp-render-path (model.joins) (list-at paths 1) 0 (m.table))))
+
+  lp-check-measures : LensModel, List LensDimension, List LensMeasure, Integer, List LensDiag -> List LensDiag
+  lp-check-measures (model) (dims) (ms) (i) (acc) =
+    if i >= list-length ms then acc
+    else lp-check-measures model dims ms (i + 1) (lp-check-reach model dims (list-at ms i) 0 acc)
+
+  lp-grain-check : LensModel, List LensDimension, List LensMeasure -> List LensDiag
+  lp-grain-check (model) (dims) (ms) =
+    lp-check-measures model dims ms 0 []
+
+Section: Aggregate Mapping
+
+ The model's Lens-prefixed aggregation kinds map onto the relational
+ algebra's aggregate functions twice: once at the home grain over the
+ raw column, and once at re-aggregation time over the alias the first
+ pass produced. Count re-aggregates as a sum of per-key counts. An
+ average never reaches either map: lp-agg-specs decomposes it into a
+ sum aliased with the __sum suffix and a count aliased with the __cnt
+ suffix, and lp-reagg-specs re-aggregates both aliases as sums, which
+ is lossless where re-aggregating an average is not. The AggAvg arms
+ below are therefore unreachable and exist so the matches stay total.
+
+  lp-is-avg : AggKind -> Boolean
+  lp-is-avg (k) =
+    when k
+      is LensAggAvg -> True
+      is otherwise -> False
+
+  lp-avg-sum-col : Text -> Text
+  lp-avg-sum-col (nm) = nm & "__sum"
+
+  lp-avg-cnt-col : Text -> Text
+  lp-avg-cnt-col (nm) = nm & "__cnt"
+
+  lp-agg-func : AggKind, Text -> AggFunc
+  lp-agg-func (k) (col) =
+    when k
+      is LensAggSum -> AggSum col
+      is LensAggCount -> AggCount
+      is LensAggAvg -> AggAvg col
+      is LensAggMin -> AggMin col
+      is LensAggMax -> AggMax col
+
+  lp-reagg-func : AggKind, Text -> AggFunc
+  lp-reagg-func (k) (col) =
+    when k
+      is LensAggSum -> AggSum col
+      is LensAggCount -> AggSum col
+      is LensAggAvg -> AggAvg col
+      is LensAggMin -> AggMin col
+      is LensAggMax -> AggMax col
+
+  lp-agg-spec : LensMeasure -> AggSpec
+  lp-agg-spec (m) = AggSpec { agg-func = lp-agg-func (m.agg) (m.column), agg-alias = m.name }
+
+  lp-reagg-spec : LensMeasure -> AggSpec
+  lp-reagg-spec (m) = AggSpec { agg-func = lp-reagg-func (m.agg) (m.name), agg-alias = m.name }
+
+  lp-agg-specs : LensMeasure -> List AggSpec
+  lp-agg-specs (m) =
+    if lp-is-avg (m.agg) == False then [lp-agg-spec m]
+    else [AggSpec { agg-func = AggSum (m.column), agg-alias = lp-avg-sum-col (m.name) }, AggSpec { agg-func = AggCount, agg-alias = lp-avg-cnt-col (m.name) }]
+
+  lp-reagg-specs : LensMeasure -> List AggSpec
+  lp-reagg-specs (m) =
+    if lp-is-avg (m.agg) == False then [lp-reagg-spec m]
+    else [AggSpec { agg-func = AggSum (lp-avg-sum-col (m.name)), agg-alias = lp-avg-sum-col (m.name) }, AggSpec { agg-func = AggSum (lp-avg-cnt-col (m.name)), agg-alias = lp-avg-cnt-col (m.name) }]
+
+Section: Bucketed Dimensions
+
+ A bucketed dimension reads its date column through a calendar
+ bucket, and its effective column everywhere in the plan is an
+ alias: the physical column name, two underscores, and the bucket
+ word, so a month bucket over order-date answers to
+ order-date__month. The alias is what group keys, display columns,
+ combine-join columns, and sort columns carry, because the bucketed
+ value is a new column the derive computes, not a reading of the old
+ one. The derive itself sits directly on the filtered scan of the
+ dimension's home table, under every aggregation, so bucket values
+ exist at raw-row grain before any group or join touches them: a
+ home-table bucket is derived under the measure's home-grain group,
+ and a foreign bucket is derived on the dimension table's own scan
+ before the equi-join reaches it. Filters keep naming physical
+ columns and sit under the derive, which is harmless because the
+ derive only appends columns. Declaring a bucket is the modeler's
+ assertion the column holds Unix seconds, per the model chapter; no
+ planner diagnostic polices it. The LbNone arm of lp-bucket-fn is
+ unreachable because every caller checks lp-dim-bucketed first; the
+ arm answers DerYear so the match stays total.
+
+  lp-dim-bucketed : LensDimension -> Boolean
+  lp-dim-bucketed (d) =
+    when d.bucket
+      is LbNone -> False
+      is otherwise -> True
+
+  lp-bucket-suffix : LensBucket -> Text
+  lp-bucket-suffix (b) =
+    when b
+      is LbNone -> ""
+      is LbYear -> "year"
+      is LbQuarter -> "quarter"
+      is LbMonth -> "month"
+      is LbDay -> "day"
+
+  lp-bucket-fn : LensBucket -> DeriveFn
+  lp-bucket-fn (b) =
+    when b
+      is LbNone -> DerYear
+      is LbYear -> DerYear
+      is LbQuarter -> DerQuarter
+      is LbMonth -> DerMonth
+      is LbDay -> DerDay
+
+  lp-dim-col : LensDimension -> Text
+  lp-dim-col (d) =
+    if lp-dim-bucketed d then d.column & "__" & lp-bucket-suffix (d.bucket)
+    else d.column
+
+  lp-derive-specs : List LensDimension, Text, Integer, List DeriveSpec -> List DeriveSpec
+  lp-derive-specs (dims) (tbl) (i) (acc) =
+    if i >= list-length dims then acc
+    else let d = list-at dims i
+    in if d.table == tbl then
+      (if lp-dim-bucketed d then lp-derive-specs dims tbl (i + 1) (list-push acc (DeriveSpec { der-alias = lp-dim-col d, der-col = d.column, der-fn = lp-bucket-fn (d.bucket) })) else lp-derive-specs dims tbl (i + 1) acc)
+    else lp-derive-specs dims tbl (i + 1) acc
+
+  lp-derived-scan : List LensDimension, List LensFilter, Text -> RelOp
+  lp-derived-scan (dims) (fs) (tbl) =
+    let specs = lp-derive-specs dims tbl 0 []
+    in if list-length specs == 0 then lp-filtered-scan fs tbl
+    else RelDerive (lp-filtered-scan fs tbl) specs
+
+Section: Column Bookkeeping
+
+ Small text-list helpers: membership and push-if-absent, so group
+ keys and attached tables stay duplicate-free. The home-side group
+ key for a foreign dimension is the first hop's left column, because
+ only that column lives on the home table; the later hops' keys ride
+ along on the joined dimension tables. The builder runs only after
+ the grain check proved exactly one path exists, so taking the first
+ found path is taking the only one. lp-measure-cols lists the columns
+ the plan itself produces per measure: the measure name, except an
+ average contributes its sum and count aliases because the division
+ happens after execution.
+
+  lp-texts-contain : List Text, Integer, Text -> Boolean
+  lp-texts-contain (ts) (i) (nm) =
+    if i >= list-length ts then False
+    else if list-at ts i == nm then True
+    else lp-texts-contain ts (i + 1) nm
+
+  lp-push-unique : List Text, Text -> List Text
+  lp-push-unique (ts) (nm) =
+    if lp-texts-contain ts 0 nm then ts else list-push ts nm
+
+  lp-home-col : LensModel, Text, LensDimension -> Text
+  lp-home-col (model) (home) (d) =
+    if d.table == home then lp-dim-col d
+    else let path = list-at (lp-find-paths (model.joins) home (d.table)) 0
+    in let j = list-at (model.joins) (list-at path 0)
+    in j.on-left
+
+  lp-group-keys : LensModel, List LensDimension, Text, Integer, List Text -> List Text
+  lp-group-keys (model) (dims) (home) (i) (acc) =
+    if i >= list-length dims then acc
+    else let d = list-at dims i
+    in lp-group-keys model dims home (i + 1) (lp-push-unique acc (lp-home-col model home d))
+
+  lp-display-cols : List LensDimension, Integer, List Text -> List Text
+  lp-display-cols (dims) (i) (acc) =
+    if i >= list-length dims then acc
+    else let d = list-at dims i
+    in lp-display-cols dims (i + 1) (lp-push-unique acc (lp-dim-col d))
+
+  lp-measure-cols : List LensMeasure, Integer, List Text -> List Text
+  lp-measure-cols (ms) (i) (acc) =
+    if i >= list-length ms then acc
+    else let m = list-at ms i
+    in if lp-is-avg (m.agg) then lp-measure-cols ms (i + 1) (list-push (list-push acc (lp-avg-sum-col (m.name))) (lp-avg-cnt-col (m.name)))
+    else lp-measure-cols ms (i + 1) (list-push acc (m.name))
+
+Section: Filters
+
+ Filter checking walks every filter three ways. The filter's table
+ must be declared. The filter's column must be part of the model's
+ vocabulary for that table: the table's primary key, a declared
+ dimension or measure column on the table, or a declared join key
+ touching the table. The table must take part in the query, as some
+ measure's home table or some requested dimension's table, because a
+ filter on an absent table would otherwise be dropped silently and
+ the numbers would answer a different question than the one asked.
+ Each failing filter earns diagnostic 27.
+
+  lp-filter-col-known : LensModel, Text, Text -> Boolean
+  lp-filter-col-known (model) (tbl) (col) =
+    if table-pk (model.tables) tbl == col then True
+    else if lp-dim-col-within (model.dimensions) 0 tbl col then True
+    else if lp-measure-col-within (model.measures) 0 tbl col then True
+    else lp-join-col-within (model.joins) 0 tbl col
+
+  lp-dim-col-within : List LensDimension, Integer, Text, Text -> Boolean
+  lp-dim-col-within (ds) (i) (tbl) (col) =
+    if i >= list-length ds then False
+    else let d = list-at ds i
+    in if d.table == tbl then (if d.column == col then True else lp-dim-col-within ds (i + 1) tbl col)
+    else lp-dim-col-within ds (i + 1) tbl col
+
+  lp-measure-col-within : List LensMeasure, Integer, Text, Text -> Boolean
+  lp-measure-col-within (ms) (i) (tbl) (col) =
+    if i >= list-length ms then False
+    else let m = list-at ms i
+    in if m.table == tbl then (if m.column == col then True else lp-measure-col-within ms (i + 1) tbl col)
+    else lp-measure-col-within ms (i + 1) tbl col
+
+  lp-join-col-within : List LensJoin, Integer, Text, Text -> Boolean
+  lp-join-col-within (js) (i) (tbl) (col) =
+    if i >= list-length js then False
+    else let j = list-at js i
+    in if j.from-table == tbl then (if j.on-left == col then True else lp-join-col-within js (i + 1) tbl col)
+    else if j.to-table == tbl then (if j.on-right == col then True else lp-join-col-within js (i + 1) tbl col)
+    else lp-join-col-within js (i + 1) tbl col
+
+  lp-filter-table-used : List LensDimension, List LensMeasure, Text -> Boolean
+  lp-filter-table-used (dims) (ms) (tbl) =
+    if lp-dim-table-within dims 0 tbl then True
+    else lp-measure-home-within ms 0 tbl
+
+  lp-dim-table-within : List LensDimension, Integer, Text -> Boolean
+  lp-dim-table-within (ds) (i) (tbl) =
+    if i >= list-length ds then False
+    else let d = list-at ds i
+    in if d.table == tbl then True
+    else lp-dim-table-within ds (i + 1) tbl
+
+  lp-measure-home-within : List LensMeasure, Integer, Text -> Boolean
+  lp-measure-home-within (ms) (i) (tbl) =
+    if i >= list-length ms then False
+    else let m = list-at ms i
+    in if m.table == tbl then True
+    else lp-measure-home-within ms (i + 1) tbl
+
+  lp-check-filters : LensModel, List LensDimension, List LensMeasure, List LensFilter, Integer, List LensDiag -> List LensDiag
+  lp-check-filters (model) (dims) (ms) (fs) (i) (acc) =
+    if i >= list-length fs then acc
+    else let f = list-at fs i
+    in let a1 = if table-declared (model.tables) (f.table) == False
+         then list-push acc (lens-diag 27 ("filter names undeclared table " & f.table))
+         else if lp-filter-col-known model (f.table) (f.column) == False
+         then list-push acc (lens-diag 27 ("filter column " & f.column & " is not in the model vocabulary for table " & f.table))
+         else if lp-filter-table-used dims ms (f.table) == False
+         then list-push acc (lens-diag 27 ("filter table " & f.table & " takes no part in this query"))
+         else acc
+    in lp-check-filters model dims ms fs (i + 1) a1
+
+ A checked filter becomes a column-versus-literal equality predicate,
+ and lp-filtered-scan wraps a table scan in one RelFilter per filter
+ naming that table. Every scan the builder emits goes through
+ lp-filtered-scan, therefore filters sit under the aggregations by
+ construction.
+
+  lp-filter-pred : LensFilter -> Predicate
+  lp-filter-pred (f) =
+    when f.value
+      is LfInt (n) -> PredColCmp (f.column) CmpEq (ValInteger n)
+      is LfText (t) -> PredColCmp (f.column) CmpEq (ValText t)
+
+  lp-filtered-scan : List LensFilter, Text -> RelOp
+  lp-filtered-scan (fs) (tbl) = lp-filtered-scan-loop fs tbl 0 (RelScan tbl)
+
+  lp-filtered-scan-loop : List LensFilter, Text, Integer, RelOp -> RelOp
+  lp-filtered-scan-loop (fs) (tbl) (i) (op) =
+    if i >= list-length fs then op
+    else let f = list-at fs i
+    in if f.table == tbl then lp-filtered-scan-loop fs tbl (i + 1) (RelFilter op (lp-filter-pred f))
+    else lp-filtered-scan-loop fs tbl (i + 1) op
+
+Section: Per-Measure Plans
+
+ One measure becomes one aggregated sub-plan keyed by the requested
+ dimension columns. The no-join case is a single group over the home
+ table. The join case is the three-step ladder the chapter opened
+ with: group the home table by the join keys and any home dimension
+ columns, equi-join along each dimension's join chain one hop at a
+ time, then group again by the dimension display columns with the
+ re-aggregation functions over the aliases the first group produced.
+ A table an earlier chain already joined is never joined twice: the
+ done list carries every attached table across chains, so two
+ dimensions whose chains share a prefix share the joined tables too,
+ and the shared table's columns carry the later hops' join keys.
+ Every scan in either case is a filtered scan, therefore query
+ filters restrict rows before any grouping runs, and every scan of a
+ table hosting a requested bucketed dimension is additionally a
+ derived scan, therefore bucket columns exist before any grouping or
+ joining reads them.
+
+  lp-needs-join : List LensDimension, Text, Integer -> Boolean
+  lp-needs-join (dims) (home) (i) =
+    if i >= list-length dims then False
+    else let d = list-at dims i
+    in if d.table /= home then True
+    else lp-needs-join dims home (i + 1)
+
+  LpAttach = record {
+    lap-op : RelOp,
+    lap-done : List Text
+  }
+
+  lp-attach-path : LensModel, List LensDimension, List LensFilter, RelOp, List Integer, Integer, List Text -> LpAttach
+  lp-attach-path (model) (dims) (fs) (op) (path) (k) (done) =
+    if k >= list-length path then LpAttach { lap-op = op, lap-done = done }
+    else let j = list-at (model.joins) (list-at path k)
+    in if lp-texts-contain done 0 (j.to-table) then lp-attach-path model dims fs op path (k + 1) done
+    else lp-attach-path model dims fs (RelEquiJoin op (lp-derived-scan dims fs (j.to-table)) [j.on-left] [j.on-right]) path (k + 1) (list-push done (j.to-table))
+
+  lp-attach-dims : LensModel, List LensDimension, List LensFilter, Text, RelOp, Integer, List Text -> RelOp
+  lp-attach-dims (model) (dims) (fs) (home) (op) (i) (done) =
+    if i >= list-length dims then op
+    else let d = list-at dims i
+    in if d.table == home then lp-attach-dims model dims fs home op (i + 1) done
+    else if lp-texts-contain done 0 (d.table) then lp-attach-dims model dims fs home op (i + 1) done
+    else let path = list-at (lp-find-paths (model.joins) home (d.table)) 0
+    in let att = lp-attach-path model dims fs op path 0 done
+    in lp-attach-dims model dims fs home (att.lap-op) (i + 1) (att.lap-done)
+
+  lp-measure-plan : LensModel, List LensDimension, List LensFilter, LensMeasure -> RelOp
+  lp-measure-plan (model) (dims) (fs) (m) =
+    if lp-needs-join dims (m.table) 0 == False
+    then RelGroup (lp-derived-scan dims fs (m.table)) (lp-display-cols dims 0 []) (lp-agg-specs m)
+    else let keys = lp-group-keys model dims (m.table) 0 []
+    in let grained = RelGroup (lp-derived-scan dims fs (m.table)) keys (lp-agg-specs m)
+    in let joined = lp-attach-dims model dims fs (m.table) grained 0 []
+    in RelGroup joined (lp-display-cols dims 0 []) (lp-reagg-specs m)
+
+Section: Assembly
+
+ Measure sub-plans combine pairwise. With dimensions present the
+ combine is an equi-join on the full list of dimension display
+ columns, therefore several measures with several dimensions pair up
+ exactly; with no dimensions each sub-plan is a single row and a
+ cross join through an always-true predicate glues them side by side.
+ After combining: project the dimension columns and the per-measure
+ plan columns, sort ascending by the dimensions, and apply a positive
+ limit. An average's sum and count columns both survive the
+ projection; lens-run collapses them after execution.
+
+  lp-measure-plans : LensModel, List LensDimension, List LensFilter, List LensMeasure, Integer, List RelOp -> List RelOp
+  lp-measure-plans (model) (dims) (fs) (ms) (i) (acc) =
+    if i >= list-length ms then acc
+    else lp-measure-plans model dims fs ms (i + 1) (list-push acc (lp-measure-plan model dims fs (list-at ms i)))
+
+  lp-combine : List RelOp, List Text, Integer, RelOp -> RelOp
+  lp-combine (plans) (dcols) (i) (acc) =
+    if i >= list-length plans then acc
+    else let p = list-at plans i
+    in if list-length dcols == 0 then lp-combine plans dcols (i + 1) (RelJoin acc p PredTrue)
+    else lp-combine plans dcols (i + 1) (RelEquiJoin acc p dcols dcols)
+
+  lp-sort-specs : List Text, Integer, List SortSpec -> List SortSpec
+  lp-sort-specs (cols) (i) (acc) =
+    if i >= list-length cols then acc
+    else lp-sort-specs cols (i + 1) (list-push acc (SortSpec { sort-col = list-at cols i, sort-dir = SortAsc }))
+
+  lp-assemble : LensModel, List LensDimension, List LensFilter, List LensMeasure, Integer -> RelOp
+  lp-assemble (model) (dims) (fs) (ms) (limit) =
+    let plans = lp-measure-plans model dims fs ms 0 []
+    in let dcols = lp-display-cols dims 0 []
+    in let combined = lp-combine plans dcols 1 (list-at plans 0)
+    in let projected = RelProject combined (proj-columns (dcols & lp-measure-cols ms 0 []))
+    in let sorted = if list-length dcols == 0 then projected else RelSort projected (lp-sort-specs dcols 0 [])
+    in if limit > 0 then RelLimit sorted limit else sorted
+
+Section: The Planner
+
+ lens-plan is the whole contract: validate the model, resolve the
+ query's names, grain-check alongside filter-check, and only then
+ build. The first failing stage answers alone, so a diagnostic list
+ never mixes model faults with query faults. A good plan carries the
+ names of its average measures so lens-run knows which column pairs
+ to divide.
+
+  lp-avg-names : List LensMeasure, Integer, List Text -> List Text
+  lp-avg-names (ms) (i) (acc) =
+    if i >= list-length ms then acc
+    else let m = list-at ms i
+    in lp-avg-names ms (i + 1) (if lp-is-avg (m.agg) then list-push acc (m.name) else acc)
+
+  lens-plan : LensModel, LensQuery -> LensPlanResult
+  lens-plan (model) (q) =
+    let vd = lens-validate model
+    in if list-length vd > 0 then lp-fail vd
+    else if q.lens-name /= model.name then lp-fail [lens-diag 20 ("unknown lens " & q.lens-name & ": this model declares " & model.name)]
+    else let rd = lp-resolve-dims model (q.dimensions) 0 [] []
+    in let rm = lp-resolve-measures model (q.measures) 0 [] []
+    in let named = (rd.lpd-diags) & (rm.lpm-diags)
+    in let counted = if list-length (q.measures) == 0 then list-push named (lens-diag 24 "query names no measures") else named
+    in if list-length counted > 0 then lp-fail counted
+    else let grained = lp-check-filters model (rd.lpd-dims) (rm.lpm-measures) (q.filters) 0 (lp-grain-check model (rd.lpd-dims) (rm.lpm-measures))
+    in if list-length grained > 0 then lp-fail grained
+    else lp-good (lp-assemble model (rd.lpd-dims) (q.filters) (rm.lpm-measures) (q.limit)) (lp-avg-names (rm.lpm-measures) 0 [])
+
+Section: Execution
+
+ lens-run drives a query end to end against a live catalog. A failed
+ plan surfaces as a query error carrying every diagnostic, code and
+ message both, so no caller ever executes a placeholder plan. A plan
+ carrying average measures comes back from the engine with each
+ average still split into its sum and count columns; lp-finish-avgs
+ rewrites the result once, after every join, combine, sort, and limit
+ has already happened: the sum column becomes the measure-name column
+ holding sum divided by count, the count column disappears, and every
+ other column passes through untouched. The division is integer
+ division in v1, the same truncation the engine's own average
+ applies. A count of zero would mean a group no row ever landed in,
+ which grouping never produces; the guard answers ValNull rather
+ than divide by zero.
+
+  lp-render-diags : List LensDiag, Integer, Text -> Text
+  lp-render-diags (ds) (i) (acc) =
+    if i >= list-length ds then acc
+    else let d = list-at ds i
+    in let line = "diag " & show (d.code) & ": " & d.message
+    in lp-render-diags ds (i + 1) (if i == 0 then line else acc & "; " & line)
+
+  lp-avg-sum-base : List Text, Integer, Text -> Text
+  lp-avg-sum-base (avgs) (i) (col) =
+    if i >= list-length avgs then ""
+    else let a = list-at avgs i
+    in if col == lp-avg-sum-col a then a
+    else lp-avg-sum-base avgs (i + 1) col
+
+  lp-avg-cnt-hit : List Text, Integer, Text -> Boolean
+  lp-avg-cnt-hit (avgs) (i) (col) =
+    if i >= list-length avgs then False
+    else if col == lp-avg-cnt-col (list-at avgs i) then True
+    else lp-avg-cnt-hit avgs (i + 1) col
+
+  lp-avg-fix-cols : List Text, List ColumnType, List Text, Integer, List Text, List ColumnType -> RowSchema
+  lp-avg-fix-cols (names) (types) (avgs) (i) (out-names) (out-types) =
+    if i >= list-length names then schema-new out-names out-types
+    else let nm = list-at names i
+    in let base = lp-avg-sum-base avgs 0 nm
+    in if base /= "" then lp-avg-fix-cols names types avgs (i + 1) (list-push out-names base) (list-push out-types ColInteger)
+    else if lp-avg-cnt-hit avgs 0 nm then lp-avg-fix-cols names types avgs (i + 1) out-names out-types
+    else lp-avg-fix-cols names types avgs (i + 1) (list-push out-names nm) (list-push out-types (list-at types i))
+
+  lp-avg-fix-schema : RowSchema, List Text -> RowSchema
+  lp-avg-fix-schema (s) (avgs) = lp-avg-fix-cols (s.col-names) (s.col-types) avgs 0 [] []
+
+  lp-avg-divide : RowData, Text -> ColumnValue
+  lp-avg-divide (row) (base) =
+    let s = val-to-integer (row-get-by-name row (lp-avg-sum-col base))
+    in let c = val-to-integer (row-get-by-name row (lp-avg-cnt-col base))
+    in if c == 0 then ValNull else ValInteger (s / c)
+
+  lp-avg-fix-vals : RowData, List Text, Integer, List ColumnValue -> List ColumnValue
+  lp-avg-fix-vals (row) (avgs) (i) (acc) =
+    if i >= list-length (row.values) then acc
+    else let nm = list-at (row.schema.col-names) i
+    in let base = lp-avg-sum-base avgs 0 nm
+    in if base /= "" then lp-avg-fix-vals row avgs (i + 1) (list-push acc (lp-avg-divide row base))
+    else if lp-avg-cnt-hit avgs 0 nm then lp-avg-fix-vals row avgs (i + 1) acc
+    else lp-avg-fix-vals row avgs (i + 1) (list-push acc (list-at (row.values) i))
+
+  lp-avg-fix-rows : List RowData, RowSchema, List Text, Integer, List RowData -> List RowData
+  lp-avg-fix-rows (rows) (fixed) (avgs) (i) (acc) =
+    if i >= list-length rows then acc
+    else let row = list-at rows i
+    in lp-avg-fix-rows rows fixed avgs (i + 1) (list-push acc (row-new fixed (lp-avg-fix-vals row avgs 0 [])))
+
+  lp-finish-avgs : QueryResult, List Text -> QueryResult
+  lp-finish-avgs (qr) (avgs) =
+    if list-length avgs == 0 then qr
+    else if qr.qr-ok == False then qr
+    else let fixed = lp-avg-fix-schema (qr.qr-schema) avgs
+    in qr-ok (lp-avg-fix-rows (qr.qr-rows) fixed avgs 0 []) fixed
+
+  lens-run : Catalog, LensModel, LensQuery -> QueryResult
+  lens-run (cat) (model) (q) =
+    let pr = lens-plan model q
+    in if pr.plan-ok == False then qr-error ("lens-plan: " & lp-render-diags (pr.plan-diags) 0 "")
+    else lp-finish-avgs (query cat (pr.plan-op)) (pr.plan-avgs)
+
+Page 1

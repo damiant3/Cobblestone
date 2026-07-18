@@ -7,7 +7,9 @@ Chapter: ConsoleEditor
   cites Works chapter RepoProtocol
   cites UI chapter Overlay
   cites UI chapter Widget
+  cites Foreword chapter FileSystem
   cites Foreword chapter Maybe
+  cites Foreword chapter Tuple
 
  Minimal console text editor for the UEFI dev console. Edits
  source files in-place on the boot image filesystem. Line-oriented
@@ -25,12 +27,14 @@ Section: Buffer List
 
   buffers-empty : BufferList = BufferList { buffers = [], active-idx = 0, buffer-count = 0 }
 
-  buffers-open : BufferList, Text, Integer -> BufferList
+  buffers-open : BufferList, Text, Integer -> [FileSystem.Read] BufferList
   buffers-open (bl) (path) (visible-rows) =
     let existing = buffers-find-path (bl.buffers) path 0 (bl.buffer-count)
     in if existing >= 0 then __record-set bl "active-idx" existing
-    else let e = editor-open path visible-rows
-    in BufferList { buffers = list-push (bl.buffers) e, active-idx = bl.buffer-count, buffer-count = bl.buffer-count + 1 }
+    else act
+      e <- editor-open path visible-rows
+      BufferList { buffers = list-push (bl.buffers) e, active-idx = bl.buffer-count, buffer-count = bl.buffer-count + 1 }
+    end
 
   buffers-find-path : List EditorState, Text, Integer, Integer -> Integer
   buffers-find-path (bufs) (path) (i) (len) =
@@ -101,10 +105,10 @@ Section: Editor State
     status : Text
   }
 
-  editor-open : Text, Integer -> EditorState
-  editor-open (path) (visible-rows) =
-    let content = read-file path
-    in let lines = text-split content "\n"
+  editor-open : Text, Integer -> [FileSystem.Read] EditorState
+  editor-open (path) (visible-rows) = act
+    content <- read-file path
+    let lines = text-split content "\n"
     in EditorState {
       file-path = path,
       lines = lines,
@@ -116,6 +120,7 @@ Section: Editor State
       dirty = False,
       status = path & " (" & show (list-length lines) & " lines)"
     }
+  end
 
   editor-new-file : Text, Integer -> EditorState
   editor-new-file (path) (visible-rows) =
@@ -130,6 +135,9 @@ Section: Editor State
       dirty = False,
       status = "new: " & path
     }
+
+  editor-empty : EditorState
+  editor-empty = editor-new-file "" 20
 
 Section: Navigation
 
@@ -233,11 +241,29 @@ Section: Editing
 
 Section: Save
 
-  editor-save : EditorState -> EditorState
-  editor-save (e) =
+ write-file answers whether the write landed, and that answer is the whole
+ reason it returns Boolean rather than Nothing: the disk can be full, the
+ root directory can be full, and a subdirectory target is refused outright
+ while the parent-directory walk is unwritten. Every one of those is
+ ordinary. So the answer is read here rather than dropped -- a save that
+ failed leaves the buffer dirty and says so, because a buffer marked clean
+ over a write that never landed is the editor throwing the author's work
+ away and reporting success. That is precisely what the old write-file
+ builtin did before it was deleted, and it is not worth reinventing one
+ layer up.
+
+  editor-save : EditorState -> [FileSystem.Write] EditorState
+  editor-save (e) = act
     let content = join-editor-lines (e.lines) 0 (e.line-count) ""
-    in let w = write-file (e.file-path) content
-    in EditorState { file-path = e.file-path, lines = e.lines, line-count = e.line-count, cursor-line = e.cursor-line, cursor-col = e.cursor-col, scroll-top = e.scroll-top, visible-rows = e.visible-rows, dirty = False, status = "saved: " & e.file-path }
+    in act
+      w <- write-file (e.file-path) content
+      editor-save-result e w
+    end
+  end
+
+  editor-save-result : EditorState, Boolean -> EditorState
+  editor-save-result (e) (ok) =
+    EditorState { file-path = e.file-path, lines = e.lines, line-count = e.line-count, cursor-line = e.cursor-line, cursor-col = e.cursor-col, scroll-top = e.scroll-top, visible-rows = e.visible-rows, dirty = if ok then False else e.dirty, status = if ok then "saved: " & e.file-path else "save failed: " & e.file-path }
 
   join-editor-lines : List Text, Integer, Integer, Text -> Text
   join-editor-lines (lines) (i) (len) (acc) =
@@ -703,7 +729,7 @@ Section: Verdict Subscription
 
   is-authored-proposal : EditorVerdicts, Text -> Boolean
   is-authored-proposal (v) (proposal-id) =
-    list-contains (v.authored-proposals) (fn x -> x == proposal-id)
+    list-contains (v.authored-proposals) (\x -> x == proposal-id)
 
   enqueue-verdict : EditorVerdicts, Verdict, Integer -> EditorVerdicts
   enqueue-verdict (v) (verdict) (now) =

@@ -27,9 +27,9 @@ pipeline. Each phase must pass before the next begins.
 4. **Sign**: Compile and run an inline Ed25519 signing program to
    embed a signature in the CDX header (bytes 40-135).
 
-5. **Canary**: Compile `codex.test/hello.codex` with the SUT and verify
-   runtime output matches `hello.expected`. This confirms the SUT can
-   compile and run a simple program.
+5. **Canary**: Compile `codex/test/factorial.codex` with the SUT and
+   verify runtime output matches `codex/test/factorial.expected`. This
+   confirms the SUT can compile and run a simple program.
 
 6. **Semantic equivalence**: The SUT emits the source in TEXT mode
    (stage1.codex). `build/compare-codex-semantic.ps1` parses both
@@ -49,6 +49,16 @@ pipeline. Each phase must pass before the next begins.
 9. **Test battery**: `build/test.ps1` runs all samples in `codex/test/`.
    Each sample has a sidecar (`.expected` for success, `.failing` for
    expected errors, `.skip` for skipped). Runs parallel VM instances.
+
+10. **Plug gates**: the five native backends (riscv, arm64, elf, pe,
+    img) must rebuild clean with the just-proven compiler
+    (`plug-binary`), and a representative transpiler subset
+    (typescript, python, rust, ptx) must run end-to-end — SUT IR over
+    the framed TCP wire through the plug VM to non-empty target text
+    (`plug-smoke`). Missing plug CDX builds once and caches; a failing
+    smoke run gets one rebuild-and-retry before failing the build.
+    The full 53-plug matrix (`codex/plugs/test-plugs.ps1`) remains a
+    manual sweep.
 
 ### Quick Commands
 
@@ -84,7 +94,9 @@ byte-for-byte against the expected output.
 | `foo.slow` | Skipped unless `-Slow` (first line = reason) |
 | `foo.fatal` | Skipped unless `-Fatal` (kills VM at runtime) |
 | `foo.stdin` | Pumped to VM serial after boot (runtime input) |
+| `foo.keys` | Scancode timeline (`t:scancode` per line, t = ms since boot) passed as `-keys-file`. This is the **keyboard**; `.stdin` is the **serial ring**. A keyboard read (`uefi-read-key` / `poll-key`) reads the PS/2 key cell and no `.stdin` reaches it — pick by what the code reads. See `docs/ExaminersAssay.md` |
 | `foo.disk` | Attached as IDE disk image |
+| `foo.smp` | Core count; the test boots with `-smp N` |
 
 ### Test Results
 
@@ -109,7 +121,7 @@ All scripts use `build/vm-config.ps1` for shared VM setup.
 
 ### codex-vm (default)
 
-`tools/codex-vm.exe` — a ~6000-line C program using Windows Hypervisor
+`tools/codex-vm.exe` — a ~8000-line C program using Windows Hypervisor
 Platform (WHP). Build with `tools/build-vm.ps1`.
 
 #### CLI Flags
@@ -126,6 +138,7 @@ codex-vm -kernel file.cdx [options]
 | `-output <file>` | — | Capture serial output to file |
 | `-disk <file>` | — | Attach IDE disk image (read/write, flushed to host) |
 | `-headless` | off | Suppress VGA/GOP display window |
+| `-board-mmio` | off | Commit and map host RAM at the three board register windows that sit above the RAM ceiling: RP2040 SIO (0xD0000000), Cortex-M PPB/SCB (0xE0000000), BCM2711 peripherals (0xFE000000, 9 MB). A board driver's register access then reads back what it wrote — the same fidelity the six sub-3GB boards get from falling inside guest RAM. **Opt-in, because it shadows the HDA and xHCI BARs**: audio and USB are dead while it is on, which a board test does not care about. Required by the pi4 / rp2040 / stm32l4 driver tests; `build/boards-test.ps1` passes it. |
 | `-uefi` | off | UEFI firmware mode (ConOut/ConIn, GOP, Block I/O, memory map, runtime services, auto-extract PE from GPT images) |
 | `-gop` | off | Activate GOP framebuffer (default 640x480) |
 | `-gop-width <N>` | 640 | GOP framebuffer width (implies `-gop`) |
@@ -138,6 +151,9 @@ codex-vm -kernel file.cdx [options]
 | `-watch <0xADDR>` | — | Hardware watchpoint via page protection |
 | `-watch-size <N>` | 8 | Watchpoint region size (max 64 bytes) |
 | `-wcet <name>` | — | Observe a function's per-invocation dynamic instruction count (repeatable, max 4 — one DR0-DR3 exec breakpoint each; needs `-map`). Prints `WCET-OBS: <fn> max=<n> calls=<k>` on exit. Observation only: no guest byte is modified. |
+| `-mouse <script>` | — | Scripted pointer: `t:x,y,btn` events separated by `;` (t = ms from boot, btn bit 0 left / 1 right / 2 middle). Injected straight into the guest, so no host cursor moves and no window takes focus. Works headless. |
+| `-mouse-file <file>` | — | Same, read from a file (one event per line, `#` comments). Use for drags, which run to dozens of samples. |
+| `-keys-file <file>` | — | Timeline keyboard: `t:scancode` per line, on the same clock as `-mouse`. Lets a script interleave typing with clicks (the older `-keys` fires on a fixed start+interval). |
 | `-screenshot <file>` | — | Save GOP framebuffer as BMP on exit |
 | `-screenshot-delay <ms>` | 0 | Delay before screenshot capture |
 | `-args <string>` | — | Boot arguments string (accessible to guest) |
@@ -150,10 +166,74 @@ Environment: `CODEX_VM_NO_TIMER=1` disables PIT timer interrupts.
 **CPU and SMP.** WHP-accelerated x86-64 (long mode, full hardware
 virtualization). Shadow register file works around WHP GPR corruption.
 Multi-core via `-smp N`: each AP gets its own WHP virtual processor
-and host thread. INIT/SIPI startup sequence: guest writes AP entry
-address to GPA 0x1000 and per-core stack addresses to a stack table;
-the LAPIC ICR write triggers AP launch. APs start in 64-bit long mode
-with their LAPIC ID in R15.
+and host thread. INIT/SIPI startup sequence: the guest writes the AP
+entry address to GPA 0x1000 and the per-core stack addresses to a stack
+table at GPA 0xF00, then writes the LAPIC ICR — an INIT IPI followed by
+two start-up IPIs, delivered to all cores excluding self. That ICR write
+is what launches the APs. They start in 64-bit long mode with their
+LAPIC ID in R15, claim a stack by core index, add themselves to the
+ready count at cell 4080 with a locked add, and then go looking for
+work; the BSP spins on that count (bounded — it gives up and continues
+single-core rather than hanging) before carrying on.
+
+**An AP runs processes.** It goes to `__idle_dispatch`, the same routine
+the boot processor goes to when it runs out of work, claims a READY slot
+out of the process table with a `LOCK CMPXCHG`, and resumes it — on that
+process's own stack, with that process's own R10. Six children spawned at
+`-smp 4` execute across four cores. `codex/test/smp-dispatch.codex` pins
+it, and pins the right thing: every claim by a core whose id is *not*
+zero bumps cell 36200, and the boot processor's id is always zero, so a
+count above zero is evidence a core other than the BSP took a process out
+of the table and executed it. Six children *finishing* would prove
+nothing — one core does that.
+
+**A process on an AP is preempted.** The PIT's IRQ reaches the boot
+processor alone, so an AP used to run whatever it was given until that
+process yielded, blocked or exited. Each AP now arms its own **LAPIC
+timer** at bring-up — periodic, on vector 48 — and raises IF, so a
+scheduling tick arrives on every core. codex-vm emulates the timer
+per-core (`lapic_timers[]`) and injects the vector from each AP's own
+thread; the kicker cancels the AP's VP every PIT period, because a
+compute-bound core never leaves `WHvRunVirtualProcessor` on its own and a
+tick that is never injected is not a clock.
+
+`codex/test/smp-preempt.codex` pins it, and pins the right thing: every
+timer interrupt taken on a core whose id is not zero bumps cell 36216, and
+the BSP's id is always zero. Six children *finishing* proves nothing here
+either — and neither does six children finishing on six cores, because an
+AP that runs its child to completion undisturbed has still never been
+preempted. The claim is about who can be interrupted, so the evidence is
+about who *was* interrupted.
+
+An idle core still spins on `pause` rather than halting, and there is no
+work stealing and no affinity (BACKLOG 4.11).
+
+**An SMP test must assert that an AP executed guest code, not that the
+work finished** — one core can finish the work. `smp-cores.codex` reads
+back the ready count, which only an AP ever increments;
+`smp-dispatch.codex` reads cell 36200, which only a core whose id is not
+zero ever bumps. Both are evidence a *different* core ran. Before those
+tests existed, codex-vm was launching the APs from the host without ever
+creating a thread to run them and incrementing the guest's ready count on
+their behalf: no AP had executed a single guest instruction, and nothing
+in the battery could tell.
+
+**An AP can be heard.** Each application processor has its own TSS and
+IST1 emergency stack, so a fault on one produces the standard `!EXC` dump
+(tagged with its core id in R15) instead of a silent triple fault. codex-vm
+serves **COM1 only** on AP threads: `handle_io()` drives stateful devices
+through VP 0's shadow register file and is not safe to re-enter from
+another thread. An AP has no business touching the IDE controller; it has
+business reporting that it died.
+
+**Do not step RIP past an MMIO instruction by a guessed length.** WHP
+does not hand you the length: `VpContext.InstructionLength` reads 0 on
+these exits and `MemoryAccess.InstructionByteCount` is the size of the
+16-byte instruction *buffer*, not the instruction. Both were taken as
+lengths at various points, and both resume mid-instruction — the
+signature is a `!EXC=06` (invalid opcode) at an address a byte or two
+inside a real instruction. `mmio_insn_len()` decodes the bytes WHP
+provides, and returns 0 rather than guessing when it cannot.
 
 **LAPIC** (0xFEE00000). Per-core local APIC: ID register, SIVR, EOI,
 ICR (lo/hi). SIPI delivery creates AP threads. Used for SMP boot and
@@ -185,11 +265,24 @@ accessed via I/O ports 0x400-0x40F:
 | 0x400 | OUT | Rasterize N triangles from guest command buffer |
 | 0x401 | OUT | Clear framebuffer to XRGB color |
 | 0x402 | OUT | Clear depth buffer |
-| 0x403-0x405 | OUT | Set light direction (x/y/z, fixed-point /1000) |
-| 0x406 | OUT | Set eye direction X (Y/Z copied from light) |
-| 0x407 | OUT | Set texture guest address |
-| 0x408-0x409 | OUT | Set texture width/height |
-| 0x40A | OUT | Commit texture upload (copy from guest RAM) |
+| 0x403 | IN | GPU rasterizer present (returns 1) |
+| 0x404-0x406 | OUT | Set light direction (x/y/z, fixed-point /1000) |
+| 0x407 | OUT | Set eye direction X (Y/Z copied from light) |
+| 0x408 | OUT | Set texture guest address |
+| 0x409-0x40A | OUT | Set texture width/height |
+| 0x40B | OUT | Commit texture upload (copy from guest RAM) |
+| 0x40C | OUT | Asset load: guest address of a null-terminated host path |
+| 0x40D | OUT | Asset load: guest destination address |
+| 0x40E | OUT | Fade-clear framebuffer toward an XRGB color |
+| 0x417 | OUT | Asset load: execute (reads the host file into guest RAM) |
+| 0x40E | IN | Asset load: low 32 bits of bytes loaded |
+| 0x40F | IN | Asset load: high 32 bits of bytes loaded |
+
+The light/eye/texture rows above were off by one until 2026-07-13. The
+asset-load execute is 0x417 and **not** 0x40E, which the OUT chain matches
+first as the fade-clear: an asset load fired at 0x40E silently faded the sky
+and reported zero bytes read. 0x40E OUT (fade) and 0x40E IN (size) do not
+collide, so the size read-back keeps its port.
 
 Includes depth buffering, per-vertex normals, diffuse+specular
 lighting, texture mapping with bilinear filtering, procedural Earth
@@ -203,9 +296,29 @@ EOT or VM exit.
 
 **NE2K NIC.** NE2000-compatible ISA NIC at I/O base 0x300. User-mode
 NAT stack with IP 10.0.2.15, gateway 10.0.2.2, DNS 10.0.2.3. Handles
-ARP (responds for gateway), DHCP (offers 10.0.2.15/24), DNS (forwards
-to host), and TCP/UDP forwarding. Port forwarding via `-portfwd` for
-host-to-guest TCP connections.
+ARP (responds for gateway), DHCP (offers 10.0.2.15/24), DNS, and TCP
+forwarding. Port forwarding via `-portfwd` for host-to-guest TCP
+connections.
+
+**DNS is answered, and until 2026-07-14 it was not.** This entry used
+to say the NAT handled "DNS (forwards to host)" and "TCP/UDP
+forwarding". Neither was true of UDP: the UDP branch of
+`nat_handle_tx` was an empty block whose entire body was the comment
+`/* UDP — minimal DNS forwarding could go here */`, so every DNS query
+any guest ever sent was silently dropped and every lookup timed out.
+Nothing noticed, because nothing in the tree could make a network call
+(`docs/PM/BACKLOG.md` 1.7).
+
+A query to port 53 is now answered by `nat_handle_dns`: it walks the
+QNAME, resolves it with `getaddrinfo` — the **host's own resolver**, so
+the hosts file, the search domain and whatever DNS the host actually
+uses all apply, and no packet leaves the process — and dresses the
+answer as a DNS response the guest's resolver parses. Only QTYPE=A/IN
+is answered; anything else returns NXDOMAIN rather than a lie.
+
+**UDP to any port other than 53 is still dropped**, and now logs
+`NAT UDP: dropped (only port 53 is served)` instead of failing in
+silence. General UDP forwarding is not implemented.
 
 **IDE Disk.** PIO-mode IDE controller at ports 0x1F0-0x1F7, 0x3F6.
 Supports IDENTIFY, READ SECTORS, WRITE SECTORS, and FLUSH CACHE.
@@ -228,9 +341,36 @@ and interrupt generation.
 PIT channel 0 at port 0x40 (host-driven periodic tick). CMOS RTC at
 port 0x70/0x71 (real host time). PC speaker via Windows Beep().
 
-**PS/2 Keyboard and Mouse.** Keyboard at port 0x60/0x64 with scan
-code queue. Mouse data written to GPA 28684 (kernel metadata cell
-`key-buffer-addr + 4`) as 3-byte packet (buttons, dx, dy).
+**PS/2 Keyboard.** Port 0x60/0x64 with a scan code queue.
+
+Scripted input (`-mouse`, `-mouse-file`, `-keys-file`) writes the same guest
+state the window proc writes -- press latch included -- so a guest cannot
+distinguish it from a hand on the mouse. This is what `build/test-gui.ps1`
+drives GOP applications with; see `docs/ExaminersAssay.md`.
+
+**Mouse (absolute, I/O ports 0xE1-0xE4).** The guest reads the mouse
+through four ports rather than shared memory (which WHP does not keep
+coherent between the window thread and the vCPU).
+
+| Port | Meaning |
+|------|---------|
+| 0xE1 | Button mask (bit 0 left, 1 right, 2 middle). The live **level**, OR the presses latched since the last read. Reading it consumes the latch. |
+| 0xE2 | Absolute x (16-bit, client coords) |
+| 0xE3 | Absolute y (16-bit). Reading it consumes 0xE4. |
+| 0xE4 | An **edge**: a new mouse event has arrived since 0xE3 was last read |
+
+0xE1 is a level and stays valid between events; 0xE4 gates only the
+position reads. **Never gate the button read on 0xE4** -- that makes a
+held button legible for exactly one poll per host mouse message and
+reads as released on every other poll, so no drag can ever be seen.
+(This was the circuits mouse bug; see `codex/foreword/ui/InputSource.codex`
+for the correct poll sequence.) The press latch on 0xE1 means a click
+whose down and up both land between two guest polls is still delivered,
+exactly once, so a slow-rendering guest does not drop clicks.
+
+The 3-byte PS/2 packet buffer at GPA 28684 (read by
+`codex/os/kernel/Mouse.codex`) is inert: codex-vm flushes it but never
+populates it, so it always reads as 'no packet'.
 
 **ACPI.** RSDP at 0xE0000, RSDT, FADT (SCI on port 0x2000, PM timer
 at 0x2004), MADT (LAPIC entries per core + IOAPIC), DSDT stub.
@@ -353,7 +493,37 @@ communicates over serial:
 Append flags: `TEXT prose`, `CDX repl`, `CDX poison`
 
 Container formats (ELF, PE, IMG) are produced by post-compile
-plugs in `codex/plugs/`. See `docs/Designs/Active/Compiler/EmitterExodus.md`.
+plugs in `codex/plugs/`.
+
+### Resolving A Quotation From A Peer (`-Peer`)
+
+A source that `quotes` a work by digest normally has to carry it in a
+`%%QUOTED-WORKS%%` blob or find it in an attached store (`-DiskFile`).
+`-Peer <host>:<port>` fetches it instead:
+
+```powershell
+build/compile.ps1 -Src x.codex -Out x.cdx -Log x.log -Peer 127.0.0.1:9300
+```
+
+`compile.ps1` scans the source for every digest it quotes and does not already
+carry, asks the peer for each over TCP, and prepends the answers to the blob
+before the compiler is booted. The peer is `tools/cdx-serve`, listening on guest
+port 9300; the client is `build/work-wire.ps1`.
+
+**The compiler is not involved and never will be.** Library Rule 2 fixes
+`codex.foreword → codex → codex.os → apps`, so the compiler citing the net stack
+inverts it — and it does not need to. It hashes the content, checks the
+signature, checks the key the source pinned and checks the trust floor itself,
+which is exactly what lets the messenger be untrusted. The host carries works;
+it never carries trust, and `work-wire.ps1` emits `WORK` lines and never a `KEY`
+line. A peer that answers with the wrong work is refused by arithmetic.
+
+The consequence to know: **the resolution order lives in the host, so this works
+only when a host drives the build.** A bare-metal stick has no fetcher.
+
+A miss is not an error — a peer that does not hold a work simply does not, and
+the compile then fails at the gate if nothing else supplies it. An unreachable
+peer is an error.
 
 ## Seed Management
 
@@ -551,17 +721,17 @@ the code range (0x100000-0x400000) to a function name.
 
 ### Manual Address Lookup
 
-```powershell
-build/resolve-rip.ps1 0x2748af                # single address
-build/resolve-rip.ps1 0x100114 0x200000        # multiple
-```
-
-Or from any script that sources vm-config.ps1:
+`Resolve-Rip` and `Resolve-Name` are functions in `build/vm-config.ps1`.
+Dot-source it, then call them:
 
 ```powershell
+. build/vm-config.ps1
 Resolve-Rip -Rip 0x2748af                     # -> "function+0xNN"
 Resolve-Name -Name "lookup-expr-type"          # -> 0x2F56FB (address)
 ```
+
+Both read `seed\Codex.map` by default; pass `-MapFile` to point at
+another map.
 
 ### Breakpoints by Function Name
 
@@ -676,7 +846,7 @@ SIZE:2176384
 1. **Read the crash report.** The harness prints resolved function
    names. Start with the RIP function and the heuristic stack trace.
 
-2. **Read the code.** `resolve-rip.ps1` gives you the function.
+2. **Read the code.** `Resolve-Rip` (vm-config.ps1) gives you the function.
    Read that function in the compiler source. Form a theory.
 
 3. **Set a breakpoint.** Use `-Break "suspect-function"` to confirm
@@ -697,16 +867,47 @@ SIZE:2176384
 | `-DebugMode` | Phase markers (`DBG:frontend`, `DBG:emit`) |
 | `-Poison` | 0xCD fill in `__alloc` (catches uninitialized fields) |
 | `-Repl` | REPL loop (for batch compilation) |
+| `-Decks <N>` | Scale every phase deck floor to N% of the `BuildSettings` defaults (100 = defaults). Sends `decks=N` on the mode line. |
+
+### The deck knob, and the deadlock it exists to break
+
+Phase deck floors live in `BuildSettings.codex` and are **compiled into
+the compiler**. `build/check-constants.ps1` hashes them and warns when the
+source and the seed disagree — but it is only a warning, and `build.ps1`
+refreshes the hash at the end of every build.
+
+That creates a deadlock. If a source grows past the floor, the compile
+fails with `CDX9002` — and raising the constant does not help, because
+the **seed doing that compile enforces its own baked-in floor**. You
+would need the new seed in order to build the new seed.
+
+`-Decks` is the way out:
+
+```powershell
+# The source outgrew the floors the current seed was built with.
+build/compile.ps1 -Src big.codex -Out big.cdx -Log big.log -Decks 200
+```
+
+Turn the floors up for the one compile that needs it, build the seed
+that carries the higher default, then turn the knob back off. Without
+it, the only escape is a two-stage bootstrap through an intermediate
+seed.
+
+**Turning the knob DOWN is sharp.** An under-reserved floor does not
+raise `CDX9002` — the parse keep-deck copy writes past the floor into
+the scratch it is still reading and the compile dies in a `#GP`
+(`!EXC=0d`) with no diagnostic, because the post-copy overflow check
+never runs. That is a pre-existing property of under-reserved floors,
+documented in `BuildSettings.codex`; the knob simply makes it reachable
+on purpose. `decks=5` on the compiler's own source demonstrates it.
 
 The survey-multiplier system (and its `-Survey` override) was deleted
 2026-07-07: phase decks are fixed generous floors and the heap range
 [6 MB, 2 GB) is demand-paged — physical memory commits on first touch.
 `compile.ps1` still accepts `-Survey` and ignores it for one transition
-cycle. See `docs/Designs/Compiler/Done/DemandPagedArena.md` (as-built)
-and `DemandPagingVictory.md` (why).
+cycle.
 
-Hardened 2026-07-06 (val CLs 7207-7211, see
-`docs/Designs/Compiler/Active/DemandPagingHardening.md`): only
+Hardened 2026-07-06 (val CLs 7207-7211): only
 not-present faults grow the heap (protection faults dump), demand
 mappings carry NX, the demand-range top derives from actual RAM (any
 `-mem` from ~128 MB boots; the top 64 MB stays present for the stack),
@@ -721,89 +922,82 @@ under WSL with QEMU TCG is a last resort for hardware watchpoints
 (DR0-DR3) on specific memory addresses. Rule 6 permits Unix tools
 for this purpose only. See `build/gdb-watchpoint.ps1`.
 
+## Reading Telemetry Off the Glass (QR)
+
+On real hardware there is no serial port. Consumer boards of this era
+expose no UART header, and the no-borrowed-substrate doctrine means there
+is no dmesg, no lsusb, and no kernel log -- nothing between the
+framebuffer and silence. Worse, the obvious workaround (write the findings
+to a file on the boot stick) routes the telemetry through USB mass
+storage, which on the machines this matters for is *itself* one of the
+broken subsystems. That mistake cost a week; the accident report is
+`docs/PM/Done/Stories/TheSilentKeyboard.md`, and its first recommendation is
+that no hardware campaign may launch without an output channel that does
+not depend on the subsystem under test.
+
+This is that channel, and it is the standing one.
+
+**The guest paints QR codes.** `apps/works/GopQr.codex` is a QR encoder in
+Codex -- version 5, error level L, mask 0, 106 bytes per code, chunked
+`i/n;` across as many codes as the report needs. It draws them straight to
+the GOP framebuffer. It needs no disk, no serial, no network, and no
+working USB. If the machine can paint pixels, it can report.
+
+**The human photographs the screen.** A phone, hand-held, is fine.
+
+**The host reads the photograph.**
+
+```powershell
+pwsh tools/qr-read.ps1 -Path D:\20260713_131201.jpg
+pwsh tools/qr-read.ps1 -Path shot.jpg -Save findings.txt   # keep the bytes
+pwsh tools/qr-read.ps1 -Path shot.jpg -ShowDebug           # when it will not read
+```
+
+It prints the exact bytes the machine emitted, reassembling the `i/n;`
+chunks in order and warning loudly if a chunk is missing rather than
+quietly handing back a truncated report. Reed-Solomon correction is real:
+a photograph of a lit screen loses modules to glare and blur, and up to 13
+corrupt codewords per code are recovered.
+
+`qr-read.ps1` is the decoder half of `GopQr` and is written as its exact
+inverse -- same reserved-module map, same zigzag, same mask, same
+generator (roots from alpha^0). Only the image decode is borrowed, from
+Windows itself; the QR decode is ours. Do not reach for a Python library
+or a QR app on your phone: the phone app will silently give you a
+*rendering* of the bytes, and this pipeline is the one that gives you the
+bytes.
+
+**Reading the output.** `-ShowDebug` prints the timing patterns of every
+symbol it sampled. Timing must read `101010...` and report `21/21`. That
+number is the honest test of whether the geometry was found:
+
+- `21/21` and no decode -- the grid is right and the payload is damaged.
+  Re-shoot with less glare.
+- anything less -- the grid is wrong, and no amount of error correction
+  will save it. Re-shoot straighter and fill the frame with the codes.
+
+**When you add a probe, render its findings as QR.** A number that only a
+human can read off a monitor is a number that arrives wrong, arrives late,
+or -- as happened -- dies with the framebuffer at power-off, having cost a
+person a walk across the building and a flash cycle to obtain.
+
 ## Poison-Alloc Diagnostic Build
 
-### Background: REPL Batch Stale Data
+`__alloc` zeroes every block it returns (calloc semantics). A **poison
+build** replaces that zero fill with `0xCD`, so any field read before it
+is written dereferences `0xCDCDCDCDCDCDCDCD` — a non-canonical address,
+and therefore an immediate page fault instead of a plausible zero.
 
-The test harness compiles multiple tests on a single VM instance via
-the REPL loop to avoid per-test VM startup overhead. Between
-compilations the REPL loop (X86_64Chapter.codex) resets R10 (bump
-allocator), deck-pos, and heap-hwm back to the arena base. It does
-NOT zero the freed memory. The `__alloc` helper was three
-instructions — `mov rax, r10; add r10, rdi; ret` — returning
-uninitialized memory.
+**This is a release gate, not a routine one.** Run it before publishing
+the seed to the public mirrors. If the battery passes against a poison
+seed, the compiler has no uninitialized-field dependencies — the zero
+fill is a safety net and not a patch holding something together.
 
-This meant the second compilation allocated records on top of the
-first compilation's stale data. Any field not explicitly written
-after allocation would silently inherit the previous compilation's
-value. On first boot the heap was zeroed by hardware, masking the
-problem. On second REPL iteration, uninitialized fields contained
-live pointers, type tags, or text references from the prior compile.
-
-### Incident Timeline
-
-| CL | Date | Event |
-|----|------|-------|
-| — | pre-1845 | Intermittent GPFs in REPL batch compilation. Plug compiler crashes under WHPX but not TCG. Crash at `text-compare` called from `bsearch-text-pos` during type lookup, with CR2 pointing into the seed's code section (partial-application trampolines). Six investigation sessions across three agents (see `docs/Test/PLUG-CRASH-INVESTIGATION.md`). |
-| 1845 | 2026-05-19 | **Root cause found.** `lookup-expr-type` in Unifier.codex used non-short-circuit `&` to guard a `list-at` access after binary search: `if pos < len & (list-at entries pos).key == k`. When the key was not found (`pos == len`), the right operand executed anyway, reading one element past the list into stale heap. The OOB value — a seed return address shifted 3 bytes — propagated through the type environment and caused a GPF when later dereferenced. Fix: split into nested `if` so the access only executes when `pos < len`. |
-| 1885 | 2026-05-20 | **Class fix.** `IrAnd`/`IrOr` now emit conditional jumps instead of bitwise AND/OR. The right operand is only evaluated when the left operand doesn't short-circuit. Eliminates the entire class of non-short-circuit guard bugs. |
-| 1927 | 2026-05-21 | **Calloc + REPL hardening.** `__alloc` now zeroes its returned block via `rep stosb` (calloc semantics). REPL loop resets `stdin-eof-flag`, `stdin-eof-settled`, `try-fail-flag`, and `deck-bound-counter` between iterations. `codegen-carry-forward` now carries `vm-profile` (was silently dropped — latent uninitialized field). |
-
-### Audit Results (CL 1927)
-
-**Binary search call sites.** All 8 distinct `bsearch-*` functions
-(~20 call sites) across Collections, TypeEnv, TypeChecker, Unifier,
-ChapterScoper, LambdaLifting, X86_64Builtins, X86_64Compound were
-audited. Every consumer follows the pattern
-`if pos < len then if element.key == searchkey then HIT else DEFAULT else DEFAULT`.
-No remaining OOB-after-miss vulnerabilities.
-
-**Record construction.** `emit-store-record-fields-by-type`
-(X86_64Compound.codex:612) iterates type-definition fields and
-matches them against provided constructor fields via
-`find-field-local-slot`. If a field name doesn't match (slot = -1),
-the field's memory is not written. In a well-typed program every
-field is provided, so this path is unreachable — but it would be
-the mechanism if a name mismatch existed. The calloc ensures zeros
-rather than stale data if this path ever fires.
-
-**`codegen-carry-forward` fix.** This function creates a fresh
-CodegenState preserving accumulated code/data but resetting locals.
-It was not copying `vm-profile` — the field was uninitialized after
-carry-forward. Fixed to carry both `vm-profile` and the new
-`poison-alloc` flag.
-
-### Poison Build: 105/105 Pass
-
-On 2026-05-21, the compiler was built with `poison-alloc = True`,
-producing a seed where `__alloc` fills every allocation with `0xCD`
-instead of zeroing. The full test battery (105 tests, 4 batch REPL
-slots) was run against this poison seed.
-
-**Result: 105 pass, 0 fail.**
-
-Every dereference of `0xCDCDCDCDCDCDCDCD` (non-canonical x86-64
-address) would be an immediate page fault. Zero failures means every
-heap-allocated record in the compiler is fully initialized before
-any field is read. There are no latent uninitialized-field
-dependencies hiding behind the calloc's zero fill.
-
-### Conclusions
-
-1. **CL 1845 was the real bug.** The non-short-circuit `&` caused
-   an OOB read that copied a stale code-section address into the
-   type environment. CL 1885 eliminated the entire class.
-2. **The calloc is a safety net, not a patch.** The poison build
-   proves the compiler initializes all its fields. The zero fill
-   prevents future regressions from producing stale-data corruption
-   — they'd produce zero-value bugs instead, which are detectable
-   but not catastrophic.
-3. **The REPL kernel state resets close the remaining exposure.**
-   `stdin-eof`, `try-fail-flag`, and `deck-bound-counter` are now
-   zeroed between iterations, preventing I/O state leakage.
-4. **The poison build is a release gate.** Before any public build,
-   run the test battery against a poison seed. If all tests pass,
-   the compiler has no uninitialized-field dependencies.
+Why it matters: the REPL loop resets R10, deck-pos and heap-hwm between
+compilations but does **not** zero the freed memory. Without the calloc,
+the second compile in a batch allocates records on top of the first
+compile's live pointers and type tags. The first boot looks clean because
+hardware zeroed the heap; the second one does not.
 
 ### How to Run a Poison Build
 
@@ -853,4 +1047,4 @@ needed internally.
    padding; every named function offset is byte-identical (cross-check
    against the seed's embedded MAP1 if unsure), so the text map is exact.
    The embedded MAP1 in each CDX is authoritative for crash reports
-   regardless — the text map only feeds `-Break` and `resolve-rip.ps1`.
+   regardless — the text map only feeds `-Break` and `Resolve-Rip`.

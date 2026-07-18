@@ -12,6 +12,16 @@ Chapter: Rp2040Board
  base+0x2000 = SET, base+0x3000 = CLR. This avoids
  read-modify-write races.
 
+ Every function here that reaches a register declares [Device.Mmio].
+ The row is what makes the access visible to the effect system, to the
+ capability manifest, and to the boot grant: a driver that touches
+ hardware while typed pure is a driver the machine cannot see.
+
+ What stays pure is worth as much as what does not. The WS2812 colour
+ packer, the PIO instruction list, the USB descriptor builders, and the
+ busy-wait delay reach no register at all -- they are arithmetic and
+ list construction -- so they are pure, and the type says so.
+
 Section: Core Addresses
 
   rp-flash-base : Integer = #10000000
@@ -36,16 +46,20 @@ Section: Resets (0x4000C000)
   rp-reset-io-bank0-bit : Integer = #20
   rp-reset-pads-bank0-bit : Integer = #100
 
-  rp-unreset : Integer -> Integer
-  rp-unreset (bits) =
-   let clr = mmio-write-32 rp-resets-clr bits
-   in rp-wait-reset-done bits 100000
+  rp-unreset : Integer -> [Device.Mmio] Integer
+  rp-unreset (bits) = act
+   clr <- (mmio-write-32 rp-resets-clr bits)
+   rp-wait-reset-done bits 100000
+  end
 
-  rp-wait-reset-done : Integer, Integer -> Integer
+  rp-wait-reset-done : Integer, Integer -> [Device.Mmio] Integer
   rp-wait-reset-done (bits) (fuel) =
    if fuel <= 0 then 0
-   else if bit-and (mmio-read-32 (rp-resets-base + rp-resets-reset-done-off)) bits == bits then 1
-   else rp-wait-reset-done bits (fuel - 1)
+   else act
+    done <- mmio-read-32 (rp-resets-base + rp-resets-reset-done-off)
+    if bit-and done bits == bits then 1
+    else rp-wait-reset-done bits (fuel - 1)
+   end
 
 Section: GPIO (SIO: 0xD0000000, IO Bank0: 0x40014000)
 
@@ -61,7 +75,7 @@ Section: GPIO (SIO: 0xD0000000, IO Bank0: 0x40014000)
 
   rp-io-bank0-base : Integer = #40014000
 
-  rp-gpio-set-function : Integer, Integer -> Integer
+  rp-gpio-set-function : Integer, Integer -> [Device.Mmio] Integer
   rp-gpio-set-function (pin) (func) =
    let ctrl-addr = rp-io-bank0-base + #004 + (pin * 8)
    in mmio-write-32 ctrl-addr func
@@ -73,33 +87,37 @@ Section: GPIO (SIO: 0xD0000000, IO Bank0: 0x40014000)
   rp-gpio-func-pio0 : Integer = 6
   rp-gpio-func-pio1 : Integer = 7
 
-  rp-gpio-set-output : Integer -> Integer
-  rp-gpio-set-output (pin) =
-   let func = rp-gpio-set-function pin rp-gpio-func-sio
-   in mmio-write-32 (rp-sio-base + rp-sio-gpio-oe-set-off) (bit-shl 1 pin)
+  rp-gpio-set-output : Integer -> [Device.Mmio] Integer
+  rp-gpio-set-output (pin) = act
+   func <- (rp-gpio-set-function pin rp-gpio-func-sio)
+   mmio-write-32 (rp-sio-base + rp-sio-gpio-oe-set-off) (bit-shl 1 pin)
+  end
 
-  rp-gpio-set-input : Integer -> Integer
-  rp-gpio-set-input (pin) =
-   let func = rp-gpio-set-function pin rp-gpio-func-sio
-   in mmio-write-32 (rp-sio-base + rp-sio-gpio-oe-clr-off) (bit-shl 1 pin)
+  rp-gpio-set-input : Integer -> [Device.Mmio] Integer
+  rp-gpio-set-input (pin) = act
+   func <- (rp-gpio-set-function pin rp-gpio-func-sio)
+   mmio-write-32 (rp-sio-base + rp-sio-gpio-oe-clr-off) (bit-shl 1 pin)
+  end
 
-  rp-gpio-set : Integer -> Integer
+  rp-gpio-set : Integer -> [Device.Mmio] Integer
   rp-gpio-set (pin) =
    mmio-write-32 (rp-sio-base + rp-sio-gpio-out-set-off) (bit-shl 1 pin)
 
-  rp-gpio-clear : Integer -> Integer
+  rp-gpio-clear : Integer -> [Device.Mmio] Integer
   rp-gpio-clear (pin) =
    mmio-write-32 (rp-sio-base + rp-sio-gpio-out-clr-off) (bit-shl 1 pin)
 
-  rp-gpio-toggle : Integer -> Integer
+  rp-gpio-toggle : Integer -> [Device.Mmio] Integer
   rp-gpio-toggle (pin) =
    mmio-write-32 (rp-sio-base + rp-sio-gpio-out-xor-off) (bit-shl 1 pin)
 
-  rp-gpio-read : Integer -> Boolean
-  rp-gpio-read (pin) =
-   bit-and (bit-shru (mmio-read-32 (rp-sio-base + rp-sio-gpio-in-off)) pin) 1 == 1
+  rp-gpio-read : Integer -> [Device.Mmio] Boolean
+  rp-gpio-read (pin) = act
+   in-val <- (mmio-read-32 (rp-sio-base + rp-sio-gpio-in-off))
+   bit-and (bit-shru in-val pin) 1 == 1
+  end
 
-  rp-gpio-write : Integer, Boolean -> Integer
+  rp-gpio-write : Integer, Boolean -> [Device.Mmio] Integer
   rp-gpio-write (pin) (high) =
    if high then rp-gpio-set pin else rp-gpio-clear pin
 
@@ -124,48 +142,58 @@ Section: UART0 (PL011, 0x40034000)
   rp-uart-cr-txe : Integer = #100
   rp-uart-cr-rxe : Integer = #200
 
-  rp-uart-init : Integer, Frequency -> Integer
+  rp-uart-init : Integer, Frequency -> [Device.Mmio] Integer
   rp-uart-init (uart-base) (baud) =
-   let unreset = rp-unreset rp-reset-uart0-bit
-   in let gpio-tx = rp-gpio-set-function 0 rp-gpio-func-uart
-   in let gpio-rx = rp-gpio-set-function 1 rp-gpio-func-uart
-   in let ibrd = 125000000 / (16 * baud)
+   let ibrd = 125000000 / (16 * baud)
    in let fbrd = 0
-   in let w-ibrd = mmio-write-32 (uart-base + rp-uart-ibrd-off) ibrd
-   in let w-fbrd = mmio-write-32 (uart-base + rp-uart-fbrd-off) fbrd
-   in let w-lcr = mmio-write-32 (uart-base + rp-uart-lcr-off) #70
-   in mmio-write-32 (uart-base + rp-uart-cr-off) (bit-or (bit-or rp-uart-cr-en rp-uart-cr-txe) rp-uart-cr-rxe)
+   in act
+    unreset <- rp-unreset rp-reset-uart0-bit
+    gpio-tx <- rp-gpio-set-function 0 rp-gpio-func-uart
+    gpio-rx <- rp-gpio-set-function 1 rp-gpio-func-uart
+    w-ibrd <- mmio-write-32 (uart-base + rp-uart-ibrd-off) ibrd
+    w-fbrd <- mmio-write-32 (uart-base + rp-uart-fbrd-off) fbrd
+    w-lcr <- (mmio-write-32 (uart-base + rp-uart-lcr-off) #70)
+    mmio-write-32 (uart-base + rp-uart-cr-off) (bit-or (bit-or rp-uart-cr-en rp-uart-cr-txe) rp-uart-cr-rxe)
+   end
 
-  rp-uart-tx-ready : Integer -> Boolean
-  rp-uart-tx-ready (uart-base) =
-   bit-and (mmio-read-32 (uart-base + rp-uart-fr-off)) rp-uart-fr-txff == 0
+  rp-uart-tx-ready : Integer -> [Device.Mmio] Boolean
+  rp-uart-tx-ready (uart-base) = act
+   fr <- (mmio-read-32 (uart-base + rp-uart-fr-off))
+   bit-and fr rp-uart-fr-txff == 0
+  end
 
-  rp-uart-send-byte : Integer, Integer -> Integer
-  rp-uart-send-byte (uart-base) (byte) =
-   let w = rp-uart-wait-tx uart-base 10000
-   in mmio-write-32 (uart-base + rp-uart-dr-off) (bit-and byte #FF)
+  rp-uart-send-byte : Integer, Integer -> [Device.Mmio] Integer
+  rp-uart-send-byte (uart-base) (byte) = act
+   w <- (rp-uart-wait-tx uart-base 10000)
+   mmio-write-32 (uart-base + rp-uart-dr-off) (bit-and byte #FF)
+  end
 
-  rp-uart-wait-tx : Integer, Integer -> Integer
+  rp-uart-wait-tx : Integer, Integer -> [Device.Mmio] Integer
   rp-uart-wait-tx (uart-base) (fuel) =
    if fuel <= 0 then 0
-   else if rp-uart-tx-ready uart-base then 1
-   else rp-uart-wait-tx uart-base (fuel - 1)
+   else act
+    ready <- rp-uart-tx-ready uart-base
+    if ready then 1 else rp-uart-wait-tx uart-base (fuel - 1)
+   end
 
-  rp-uart-print : Integer, Text -> Integer
+  rp-uart-print : Integer, Text -> [Device.Mmio] Integer
   rp-uart-print (uart-base) (s) =
    rp-uart-send-text uart-base s 0 (text-length s)
 
-  rp-uart-send-text : Integer, Text, Integer, Integer -> Integer
+  rp-uart-send-text : Integer, Text, Integer, Integer -> [Device.Mmio] Integer
   rp-uart-send-text (uart-base) (s) (i) (len) =
    if i >= len then 0
-   else let b = rp-uart-send-byte uart-base (char-code (char-at s i))
-     in rp-uart-send-text uart-base s (i + 1) len
+   else act
+    b <- (rp-uart-send-byte uart-base (char-code (char-at s i)))
+    rp-uart-send-text uart-base s (i + 1) len
+   end
 
-  rp-uart-println : Integer, Text -> Integer
-  rp-uart-println (uart-base) (s) =
-   let p = rp-uart-print uart-base s
-   in let cr = rp-uart-send-byte uart-base 13
-   in rp-uart-send-byte uart-base 10
+  rp-uart-println : Integer, Text -> [Device.Mmio] Integer
+  rp-uart-println (uart-base) (s) = act
+   p <- rp-uart-print uart-base s
+   cr <- (rp-uart-send-byte uart-base 13)
+   rp-uart-send-byte uart-base 10
+  end
 
 Section: SPI0 (PL022, 0x4003C000)
 
@@ -183,34 +211,43 @@ Section: SPI0 (PL022, 0x4003C000)
   rp-spi-sr-bsy : Integer = #10
   rp-spi-cr1-sse : Integer = #02
 
-  rp-spi-init : Integer -> Integer
-  rp-spi-init (spi-base) =
-   let unreset = rp-unreset rp-reset-spi0-bit
-   in let gpio-sck = rp-gpio-set-function 2 rp-gpio-func-spi
-   in let gpio-tx = rp-gpio-set-function 3 rp-gpio-func-spi
-   in let gpio-rx = rp-gpio-set-function 4 rp-gpio-func-spi
-   in let w-cpsr = mmio-write-32 (spi-base + rp-spi-cpsr-off) 2
-   in let w-cr0 = mmio-write-32 (spi-base + rp-spi-cr0-off) #07
-   in mmio-write-32 (spi-base + rp-spi-cr1-off) rp-spi-cr1-sse
+  rp-spi-init : Integer -> [Device.Mmio] Integer
+  rp-spi-init (spi-base) = act
+   unreset <- rp-unreset rp-reset-spi0-bit
+   gpio-sck <- rp-gpio-set-function 2 rp-gpio-func-spi
+   gpio-tx <- rp-gpio-set-function 3 rp-gpio-func-spi
+   gpio-rx <- rp-gpio-set-function 4 rp-gpio-func-spi
+   w-cpsr <- mmio-write-32 (spi-base + rp-spi-cpsr-off) 2
+   w-cr0 <- (mmio-write-32 (spi-base + rp-spi-cr0-off) #07)
+   mmio-write-32 (spi-base + rp-spi-cr1-off) rp-spi-cr1-sse
+  end
 
-  rp-spi-transfer : Integer, Integer -> Integer
-  rp-spi-transfer (spi-base) (byte) =
-   let w = rp-spi-wait-tnf spi-base 10000
-   in let wr = mmio-write-32 (spi-base + rp-spi-dr-off) (bit-and byte #FF)
-   in let r = rp-spi-wait-rne spi-base 10000
-   in bit-and (mmio-read-32 (spi-base + rp-spi-dr-off)) #FF
+  rp-spi-transfer : Integer, Integer -> [Device.Mmio] Integer
+  rp-spi-transfer (spi-base) (byte) = act
+   w <- rp-spi-wait-tnf spi-base 10000
+   wr <- mmio-write-32 (spi-base + rp-spi-dr-off) (bit-and byte #FF)
+   r <- rp-spi-wait-rne spi-base 10000
+   dr <- (mmio-read-32 (spi-base + rp-spi-dr-off))
+   bit-and dr #FF
+  end
 
-  rp-spi-wait-tnf : Integer, Integer -> Integer
+  rp-spi-wait-tnf : Integer, Integer -> [Device.Mmio] Integer
   rp-spi-wait-tnf (spi-base) (fuel) =
    if fuel <= 0 then 0
-   else if bit-and (mmio-read-32 (spi-base + rp-spi-sr-off)) rp-spi-sr-tnf > 0 then 1
-   else rp-spi-wait-tnf spi-base (fuel - 1)
+   else act
+    sr <- mmio-read-32 (spi-base + rp-spi-sr-off)
+    if bit-and sr rp-spi-sr-tnf > 0 then 1
+    else rp-spi-wait-tnf spi-base (fuel - 1)
+   end
 
-  rp-spi-wait-rne : Integer, Integer -> Integer
+  rp-spi-wait-rne : Integer, Integer -> [Device.Mmio] Integer
   rp-spi-wait-rne (spi-base) (fuel) =
    if fuel <= 0 then 0
-   else if bit-and (mmio-read-32 (spi-base + rp-spi-sr-off)) rp-spi-sr-rne > 0 then 1
-   else rp-spi-wait-rne spi-base (fuel - 1)
+   else act
+    sr <- mmio-read-32 (spi-base + rp-spi-sr-off)
+    if bit-and sr rp-spi-sr-rne > 0 then 1
+    else rp-spi-wait-rne spi-base (fuel - 1)
+   end
 
 Section: I2C0 (DW_apb_i2c, 0x40044000)
 
@@ -233,46 +270,56 @@ Section: I2C0 (DW_apb_i2c, 0x40044000)
   rp-i2c-status-tfnf : Integer = #02
   rp-i2c-status-rfne : Integer = #08
 
-  rp-i2c-init : Integer -> Integer
-  rp-i2c-init (i2c-base) =
-   let unreset = rp-unreset rp-reset-i2c0-bit
-   in let gpio-sda = rp-gpio-set-function 4 rp-gpio-func-i2c
-   in let gpio-scl = rp-gpio-set-function 5 rp-gpio-func-i2c
-   in let dis = mmio-write-32 (i2c-base + rp-i2c-enable-off) 0
-   in let con = mmio-write-32 (i2c-base + rp-i2c-con-off) (bit-or (bit-or (bit-or rp-i2c-con-master rp-i2c-con-speed-std) rp-i2c-con-restart-en) rp-i2c-con-slave-dis)
-   in let hcnt = mmio-write-32 (i2c-base + rp-i2c-ss-scl-hcnt-off) 624
-   in let lcnt = mmio-write-32 (i2c-base + rp-i2c-ss-scl-lcnt-off) 626
-   in mmio-write-32 (i2c-base + rp-i2c-enable-off) 1
+  rp-i2c-init : Integer -> [Device.Mmio] Integer
+  rp-i2c-init (i2c-base) = act
+   unreset <- rp-unreset rp-reset-i2c0-bit
+   gpio-sda <- rp-gpio-set-function 4 rp-gpio-func-i2c
+   gpio-scl <- rp-gpio-set-function 5 rp-gpio-func-i2c
+   dis <- mmio-write-32 (i2c-base + rp-i2c-enable-off) 0
+   con <- mmio-write-32 (i2c-base + rp-i2c-con-off) (bit-or (bit-or (bit-or rp-i2c-con-master rp-i2c-con-speed-std) rp-i2c-con-restart-en) rp-i2c-con-slave-dis)
+   hcnt <- mmio-write-32 (i2c-base + rp-i2c-ss-scl-hcnt-off) 624
+   lcnt <- (mmio-write-32 (i2c-base + rp-i2c-ss-scl-lcnt-off) 626)
+   mmio-write-32 (i2c-base + rp-i2c-enable-off) 1
+  end
 
-  rp-i2c-write-reg : Integer, Integer, Integer, Integer -> Integer
-  rp-i2c-write-reg (i2c-base) (dev-addr) (reg) (value) =
-   let w-tar = mmio-write-32 (i2c-base + rp-i2c-tar-off) dev-addr
-   in let w1 = rp-i2c-wait-txnf i2c-base 10000
-   in let w-reg = mmio-write-32 (i2c-base + rp-i2c-data-cmd-off) reg
-   in let w2 = rp-i2c-wait-txnf i2c-base 10000
-   in mmio-write-32 (i2c-base + rp-i2c-data-cmd-off) (bit-or value #200)
+  rp-i2c-write-reg : Integer, Integer, Integer, Integer -> [Device.Mmio] Integer
+  rp-i2c-write-reg (i2c-base) (dev-addr) (reg) (value) = act
+   w-tar <- mmio-write-32 (i2c-base + rp-i2c-tar-off) dev-addr
+   w1 <- rp-i2c-wait-txnf i2c-base 10000
+   w-reg <- mmio-write-32 (i2c-base + rp-i2c-data-cmd-off) reg
+   w2 <- (rp-i2c-wait-txnf i2c-base 10000)
+   mmio-write-32 (i2c-base + rp-i2c-data-cmd-off) (bit-or value #200)
+  end
 
-  rp-i2c-read-reg : Integer, Integer, Integer -> Integer
-  rp-i2c-read-reg (i2c-base) (dev-addr) (reg) =
-   let w-tar = mmio-write-32 (i2c-base + rp-i2c-tar-off) dev-addr
-   in let w1 = rp-i2c-wait-txnf i2c-base 10000
-   in let w-reg = mmio-write-32 (i2c-base + rp-i2c-data-cmd-off) reg
-   in let w2 = rp-i2c-wait-txnf i2c-base 10000
-   in let cmd = mmio-write-32 (i2c-base + rp-i2c-data-cmd-off) #300
-   in let w3 = rp-i2c-wait-rxne i2c-base 10000
-   in bit-and (mmio-read-32 (i2c-base + rp-i2c-data-cmd-off)) #FF
+  rp-i2c-read-reg : Integer, Integer, Integer -> [Device.Mmio] Integer
+  rp-i2c-read-reg (i2c-base) (dev-addr) (reg) = act
+   w-tar <- mmio-write-32 (i2c-base + rp-i2c-tar-off) dev-addr
+   w1 <- rp-i2c-wait-txnf i2c-base 10000
+   w-reg <- mmio-write-32 (i2c-base + rp-i2c-data-cmd-off) reg
+   w2 <- rp-i2c-wait-txnf i2c-base 10000
+   cmd <- mmio-write-32 (i2c-base + rp-i2c-data-cmd-off) #300
+   w3 <- rp-i2c-wait-rxne i2c-base 10000
+   dr <- (mmio-read-32 (i2c-base + rp-i2c-data-cmd-off))
+   bit-and dr #FF
+  end
 
-  rp-i2c-wait-txnf : Integer, Integer -> Integer
+  rp-i2c-wait-txnf : Integer, Integer -> [Device.Mmio] Integer
   rp-i2c-wait-txnf (i2c-base) (fuel) =
    if fuel <= 0 then 0
-   else if bit-and (mmio-read-32 (i2c-base + rp-i2c-status-off)) rp-i2c-status-tfnf > 0 then 1
-   else rp-i2c-wait-txnf i2c-base (fuel - 1)
+   else act
+    status <- mmio-read-32 (i2c-base + rp-i2c-status-off)
+    if bit-and status rp-i2c-status-tfnf > 0 then 1
+    else rp-i2c-wait-txnf i2c-base (fuel - 1)
+   end
 
-  rp-i2c-wait-rxne : Integer, Integer -> Integer
+  rp-i2c-wait-rxne : Integer, Integer -> [Device.Mmio] Integer
   rp-i2c-wait-rxne (i2c-base) (fuel) =
    if fuel <= 0 then 0
-   else if bit-and (mmio-read-32 (i2c-base + rp-i2c-status-off)) rp-i2c-status-rfne > 0 then 1
-   else rp-i2c-wait-rxne i2c-base (fuel - 1)
+   else act
+    status <- mmio-read-32 (i2c-base + rp-i2c-status-off)
+    if bit-and status rp-i2c-status-rfne > 0 then 1
+    else rp-i2c-wait-rxne i2c-base (fuel - 1)
+   end
 
 Section: ADC (0x4004C000)
 
@@ -285,29 +332,34 @@ Section: ADC (0x4004C000)
   rp-adc-cs-start : Integer = #04
   rp-adc-cs-ready : Integer = #100
 
-  rp-adc-init : Integer
+  rp-adc-init : [Device.Mmio] Integer
   rp-adc-init =
    mmio-write-32 (rp-adc-base + rp-adc-cs-off) rp-adc-cs-en
 
-  rp-adc-select-channel : Integer -> Integer
-  rp-adc-select-channel (ch) =
-   let cs = mmio-read-32 (rp-adc-base + rp-adc-cs-off)
-   in let cleared = bit-and cs (bit-xor #70000 (0 - 1))
-   in mmio-write-32 (rp-adc-base + rp-adc-cs-off) (bit-or cleared (bit-shl (bit-and ch 7) 12))
+  rp-adc-select-channel : Integer -> [Device.Mmio] Integer
+  rp-adc-select-channel (ch) = act
+   cs <- (mmio-read-32 (rp-adc-base + rp-adc-cs-off))
+   mmio-write-32 (rp-adc-base + rp-adc-cs-off) (bit-or (bit-and cs (bit-xor #70000 (0 - 1))) (bit-shl (bit-and ch 7) 12))
+  end
 
-  rp-adc-read : Integer -> Integer
-  rp-adc-read (ch) =
-   let sel = rp-adc-select-channel ch
-   in let cs = mmio-read-32 (rp-adc-base + rp-adc-cs-off)
-   in let start = mmio-write-32 (rp-adc-base + rp-adc-cs-off) (bit-or cs rp-adc-cs-start)
-   in let wait = rp-adc-wait-ready 10000
-   in bit-and (mmio-read-32 (rp-adc-base + rp-adc-result-off)) #FFF
+  rp-adc-read : Integer -> [Device.Mmio] Integer
+  rp-adc-read (ch) = act
+   sel <- rp-adc-select-channel ch
+   cs <- mmio-read-32 (rp-adc-base + rp-adc-cs-off)
+   start <- mmio-write-32 (rp-adc-base + rp-adc-cs-off) (bit-or cs rp-adc-cs-start)
+   wait <- rp-adc-wait-ready 10000
+   result <- (mmio-read-32 (rp-adc-base + rp-adc-result-off))
+   bit-and result #FFF
+  end
 
-  rp-adc-wait-ready : Integer -> Integer
+  rp-adc-wait-ready : Integer -> [Device.Mmio] Integer
   rp-adc-wait-ready (fuel) =
    if fuel <= 0 then 0
-   else if bit-and (mmio-read-32 (rp-adc-base + rp-adc-cs-off)) rp-adc-cs-ready > 0 then 1
-   else rp-adc-wait-ready (fuel - 1)
+   else act
+    cs <- mmio-read-32 (rp-adc-base + rp-adc-cs-off)
+    if bit-and cs rp-adc-cs-ready > 0 then 1
+    else rp-adc-wait-ready (fuel - 1)
+   end
 
 Section: PIO0 (0x50200000)
 
@@ -323,21 +375,22 @@ Section: PIO0 (0x50200000)
   rp-pio-sm0-shiftctrl-off : Integer = #0D0
   rp-pio-sm0-pinctrl-off : Integer = #0DC
 
-  rp-pio-write-instr : Integer, Integer, Integer -> Integer
+  rp-pio-write-instr : Integer, Integer, Integer -> [Device.Mmio] Integer
   rp-pio-write-instr (pio-base) (addr) (instr) =
    mmio-write-32 (pio-base + rp-pio-instr-mem-off + (addr * 4)) instr
 
-  rp-pio-sm-enable : Integer, Integer -> Integer
-  rp-pio-sm-enable (pio-base) (sm) =
-   let ctrl = mmio-read-32 (pio-base + rp-pio-ctrl-off)
-   in mmio-write-32 (pio-base + rp-pio-ctrl-off) (bit-or ctrl (bit-shl 1 sm))
+  rp-pio-sm-enable : Integer, Integer -> [Device.Mmio] Integer
+  rp-pio-sm-enable (pio-base) (sm) = act
+   ctrl <- (mmio-read-32 (pio-base + rp-pio-ctrl-off))
+   mmio-write-32 (pio-base + rp-pio-ctrl-off) (bit-or ctrl (bit-shl 1 sm))
+  end
 
-  rp-pio-sm-set-clkdiv : Integer, Integer, Integer -> Integer
+  rp-pio-sm-set-clkdiv : Integer, Integer, Integer -> [Device.Mmio] Integer
   rp-pio-sm-set-clkdiv (pio-base) (sm) (div-int) =
    let addr = pio-base + rp-pio-sm0-clkdiv-off + (sm * #18)
    in mmio-write-32 addr (bit-shl div-int 16)
 
-  rp-pio-sm-set-pinctrl : Integer, Integer, Integer, Integer -> Integer
+  rp-pio-sm-set-pinctrl : Integer, Integer, Integer, Integer -> [Device.Mmio] Integer
   rp-pio-sm-set-pinctrl (pio-base) (sm) (set-base) (set-count) =
    let addr = pio-base + rp-pio-sm0-pinctrl-off + (sm * #18)
    in mmio-write-32 addr (bit-or (bit-shl set-count 26) (bit-shl set-base 5))
@@ -359,6 +412,11 @@ Section: WS2812 NeoPixel Driver (via PIO)
 
  At 800kHz (1.25us/bit): clkdiv = 125MHz / (800kHz * 10) = ~15.6
 
+ The program itself is a list of instruction words and the colour
+ packer is arithmetic on three bytes. Neither reaches the bus, so both
+ are pure. Loading the program into instruction memory does reach the
+ bus, and that function carries the row.
+
   ws2812-pio-instr-0 : Integer = #6021
   ws2812-pio-instr-1 : Integer = #1123
   ws2812-pio-instr-2 : Integer = #1400
@@ -367,56 +425,69 @@ Section: WS2812 NeoPixel Driver (via PIO)
   ws2812-pio-program : List Integer
   ws2812-pio-program = [ws2812-pio-instr-0, ws2812-pio-instr-1, ws2812-pio-instr-2, ws2812-pio-instr-3]
 
-  ws2812-pio-load : Integer, Integer -> Integer
-  ws2812-pio-load (pio-base) (offset) =
-   let w0 = rp-pio-write-instr pio-base (offset + 0) ws2812-pio-instr-0
-   in let w1 = rp-pio-write-instr pio-base (offset + 1) ws2812-pio-instr-1
-   in let w2 = rp-pio-write-instr pio-base (offset + 2) ws2812-pio-instr-2
-   in let w3 = rp-pio-write-instr pio-base (offset + 3) ws2812-pio-instr-3
-   in 4
+  ws2812-pio-load : Integer, Integer -> [Device.Mmio] Integer
+  ws2812-pio-load (pio-base) (offset) = act
+   w0 <- rp-pio-write-instr pio-base (offset + 0) ws2812-pio-instr-0
+   w1 <- rp-pio-write-instr pio-base (offset + 1) ws2812-pio-instr-1
+   w2 <- rp-pio-write-instr pio-base (offset + 2) ws2812-pio-instr-2
+   w3 <- (rp-pio-write-instr pio-base (offset + 3) ws2812-pio-instr-3)
+   4
+  end
 
-  ws2812-init : Integer, Integer, Integer -> Integer
+  ws2812-init : Integer, Integer, Integer -> [Device.Mmio] Integer
   ws2812-init (pio-base) (sm) (pin) =
-   let func = rp-gpio-set-function pin rp-gpio-func-pio0
-   in let load = ws2812-pio-load pio-base 0
-   in let clkdiv = rp-pio-sm-set-clkdiv pio-base sm 16
-   in let pinctrl-addr = pio-base + rp-pio-sm0-pinctrl-off + (sm * #18)
-   in let pinctrl = mmio-write-32 pinctrl-addr (bit-or (bit-shl 1 29) (bit-shl pin 0))
+   let pinctrl-addr = pio-base + rp-pio-sm0-pinctrl-off + (sm * #18)
    in let shiftctrl-addr = pio-base + rp-pio-sm0-shiftctrl-off + (sm * #18)
-   in let shiftctrl = mmio-write-32 shiftctrl-addr (bit-or (bit-shl 1 19) (bit-shl 24 25))
    in let execctrl-addr = pio-base + rp-pio-sm0-execctrl-off + (sm * #18)
-   in let execctrl = mmio-write-32 execctrl-addr (bit-or (bit-shl 0 7) (bit-shl 3 12))
-   in rp-pio-sm-enable pio-base sm
+   in act
+    func <- rp-gpio-set-function pin rp-gpio-func-pio0
+    load <- ws2812-pio-load pio-base 0
+    clkdiv <- rp-pio-sm-set-clkdiv pio-base sm 16
+    pinctrl <- mmio-write-32 pinctrl-addr (bit-or (bit-shl 1 29) (bit-shl pin 0))
+    shiftctrl <- mmio-write-32 shiftctrl-addr (bit-or (bit-shl 1 19) (bit-shl 24 25))
+    execctrl <- (mmio-write-32 execctrl-addr (bit-or (bit-shl 0 7) (bit-shl 3 12)))
+    rp-pio-sm-enable pio-base sm
+   end
 
   ws2812-grb-pack : Integer, Integer, Integer -> Integer
   ws2812-grb-pack (r) (g) (b) =
    bit-or (bit-shl (bit-and g #FF) 24) (bit-or (bit-shl (bit-and r #FF) 16) (bit-shl (bit-and b #FF) 8))
 
-  ws2812-put-pixel : Integer, Integer, Integer -> Integer
+  ws2812-put-pixel : Integer, Integer, Integer -> [Device.Mmio] Integer
   ws2812-put-pixel (pio-base) (sm) (grb) =
    let txf-addr = pio-base + rp-pio-txf0-off + (sm * 4)
-   in let wait = ws2812-wait-tx-not-full pio-base sm 10000
-   in mmio-write-32 txf-addr grb
+   in act
+    wait <- (ws2812-wait-tx-not-full pio-base sm 10000)
+    mmio-write-32 txf-addr grb
+   end
 
-  ws2812-wait-tx-not-full : Integer, Integer, Integer -> Integer
+  ws2812-wait-tx-not-full : Integer, Integer, Integer -> [Device.Mmio] Integer
   ws2812-wait-tx-not-full (pio-base) (sm) (fuel) =
    if fuel <= 0 then 0
-   else let fstat = mmio-read-32 (pio-base + rp-pio-fstat-off)
-   in let full-bit = bit-and (bit-shru fstat (16 + sm)) 1
-   in if full-bit == 0 then 1
-   else ws2812-wait-tx-not-full pio-base sm (fuel - 1)
+   else act
+    fstat <- mmio-read-32 (pio-base + rp-pio-fstat-off)
+    if bit-and (bit-shru fstat (16 + sm)) 1 == 0 then 1
+    else ws2812-wait-tx-not-full pio-base sm (fuel - 1)
+   end
 
-  ws2812-send-strip : Integer, Integer, List Integer, Integer, Integer -> Integer
+  ws2812-send-strip : Integer, Integer, List Integer, Integer, Integer -> [Device.Mmio] Integer
   ws2812-send-strip (pio-base) (sm) (pixels) (i) (len) =
    if i >= len then 0
-   else let w = ws2812-put-pixel pio-base sm (list-at pixels i)
-   in ws2812-send-strip pio-base sm pixels (i + 1) len
+   else act
+    w <- (ws2812-put-pixel pio-base sm (list-at pixels i))
+    ws2812-send-strip pio-base sm pixels (i + 1) len
+   end
 
 Section: USB Device Descriptors
 
  USB 2.0 descriptor construction per USB Specification Rev 2.0 §9.6.
  The RP2040 has a USB 1.1 device controller. These functions build
  the descriptor byte sequences that the host reads during enumeration.
+
+ Building a descriptor is list construction and nothing else -- no
+ register is touched until something hands the bytes to the controller.
+ So every function in this section is pure, and none of them carries a
+ row.
 
   UsbDeviceClass =
     | UsbClassCdc
@@ -508,18 +579,21 @@ Section: LED (GP25 on Pico)
 
   rp-led-pin : Integer = 25
 
-  rp-led-init : Integer
-  rp-led-init =
-   let unreset = rp-unreset (bit-or rp-reset-io-bank0-bit rp-reset-pads-bank0-bit)
-   in rp-gpio-set-output rp-led-pin
+  rp-led-init : [Device.Mmio] Integer
+  rp-led-init = act
+   unreset <- (rp-unreset (bit-or rp-reset-io-bank0-bit rp-reset-pads-bank0-bit))
+   rp-gpio-set-output rp-led-pin
+  end
 
-  rp-led-on : Integer
+  rp-led-on : [Device.Mmio] Integer
   rp-led-on = rp-gpio-set rp-led-pin
 
-  rp-led-off : Integer
+  rp-led-off : [Device.Mmio] Integer
   rp-led-off = rp-gpio-clear rp-led-pin
 
 Section: Delay
+
+ A busy-wait touches no register, so it is pure and says so.
 
   rp-delay-loops : Integer, Integer -> Integer
   rp-delay-loops (n) (i) =

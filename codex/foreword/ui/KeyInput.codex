@@ -1,0 +1,126 @@
+Chapter: KeyInput
+
+ One keyboard read, translated once. `uefi-read-key` returns the raw
+ PS/2 Set-1 make code the IRQ1 handler left in the key cell (0 when no
+ key is waiting). `poll-key` turns that into a canonical key identity so
+ every app agrees on what a key value means:
+
+   - a letter is its UPPERCASE ASCII code (A-Z = 65-90), independent of
+     shift -- a command key is an identity, not a character
+   - a digit is its ASCII code (0-9 = 48-57), a symbol its ASCII code
+   - Enter is 13, Backspace 8, Tab 9, Escape 27, Delete 127, Space 32
+   - the arrow and navigation keys are their DOM-style key codes
+     (Left 37, Up 38, Right 39, Down 40, Home 36, End 35, PageUp 33,
+     PageDown 34), and F5 is 116
+
+ `0` means no key, which is the idle value every event loop already
+ tests. Not decoded yet: shift/caps state (letters come back uppercase,
+ shifted symbols come back unshifted) and the 0xE0-prefixed variants of
+ the navigation keys (the bare numpad codes map to the arrows instead).
+ Those are the follow-on units for full text entry.
+
+ We say:
+
+Section: Poll
+
+  poll-key : Integer
+  poll-key = scancode-to-keycode uefi-read-key
+
+Section: Translation
+
+  scancode-to-keycode : Integer -> Integer
+  scancode-to-keycode (sc) =
+    if sc == 0 then 0
+    else if sc <= 15 then sk-low sc
+    else if sc <= 41 then sk-row1 sc
+    else if sc <= 57 then sk-row2 sc
+    else sk-high sc
+
+  sk-low : Integer -> Integer
+  sk-low (sc) =
+    if sc == 1 then 27
+    else if sc == 14 then 8
+    else if sc == 15 then 9
+    else if sc == 12 then 45
+    else if sc == 13 then 61
+    else if sc == 11 then 48
+    else sc + 47
+
+  sk-row1 : Integer -> Integer
+  sk-row1 (sc) =
+    if sc == 28 then 13
+    else if sc == 26 then 91
+    else if sc == 27 then 93
+    else if sc == 29 then 0
+    else if sc == 39 then 59
+    else if sc == 40 then 39
+    else if sc == 41 then 96
+    else if sc <= 25 then sk-qwerty sc
+    else sk-asdf sc
+
+  sk-qwerty : Integer -> Integer
+  sk-qwerty (sc) =
+    if sc == 16 then 81
+    else if sc == 17 then 87
+    else if sc == 18 then 69
+    else if sc == 19 then 82
+    else if sc == 20 then 84
+    else if sc == 21 then 89
+    else if sc == 22 then 85
+    else if sc == 23 then 73
+    else if sc == 24 then 79
+    else 80
+
+  sk-asdf : Integer -> Integer
+  sk-asdf (sc) =
+    if sc == 30 then 65
+    else if sc == 31 then 83
+    else if sc == 32 then 68
+    else if sc == 33 then 70
+    else if sc == 34 then 71
+    else if sc == 35 then 72
+    else if sc == 36 then 74
+    else if sc == 37 then 75
+    else 76
+
+  sk-row2 : Integer -> Integer
+  sk-row2 (sc) =
+    if sc == 57 then 32
+    else if sc == 43 then 92
+    else if sc == 51 then 44
+    else if sc == 52 then 46
+    else if sc == 53 then 47
+    else if sc == 55 then 42
+    else if sc == 42 then 0
+    else if sc == 54 then 0
+    else if sc == 56 then 0
+    else sk-zxcv sc
+
+  sk-zxcv : Integer -> Integer
+  sk-zxcv (sc) =
+    if sc == 44 then 90
+    else if sc == 45 then 88
+    else if sc == 46 then 67
+    else if sc == 47 then 86
+    else if sc == 48 then 66
+    else if sc == 49 then 78
+    else 77
+
+  sk-high : Integer -> Integer
+  sk-high (sc) =
+    if sc == 71 then 36
+    else if sc == 72 then 38
+    else if sc == 73 then 33
+    else if sc == 75 then 37
+    else if sc == 77 then 39
+    else if sc == 79 then 35
+    else if sc == 80 then 40
+    else if sc == 81 then 34
+    else if sc == 83 then 127
+    else if sc == 87 then 122
+    else if sc == 88 then 123
+    else if sc >= 59 then sk-fkey sc
+    else 0
+
+  sk-fkey : Integer -> Integer
+  sk-fkey (sc) = if sc <= 68 then sc + 53 else 0

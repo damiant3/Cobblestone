@@ -206,8 +206,8 @@ apps/codexmagic-mobile/
   MobileApp.codex    -- entry point, navigation, auth check
   LoginPage.codex    -- login / register
   HomePage.codex     -- dashboard
-  StorePage.codex    -- packs and mana coin
-  CollectionPage.codex -- card collection browser
+  CreationsPage.codex -- the user's saved creations
+  GalleryPage.codex  -- public community gallery
   ClanPage.codex     -- clan membership, library, tournaments
   TournamentPage.codex -- tournament list, registration
   ProfilePage.codex  -- settings, history, season rewards
@@ -261,9 +261,17 @@ Phase 1 -- Skeleton (auth + navigation):
 4. MobileTheme.codex: Dark-gold theme
 5. MobileStubs.codex: Runtime stubs
 
-Phase 2 -- Economy:
+Phase 2 -- Economy: NOT BUILT, and it used to look built.
 6. StorePage.codex: Pack list, buy & open, mana coin purchase
 7. CollectionPage.codex: Card list with filters
+
+ Two files carried those names and neither carried that content: StorePage.codex
+ held `Chapter: CreationsPage` (the user's saved creations) and CollectionPage.codex
+ held `Chapter: GalleryPage` (the public gallery). The filenames matched this plan
+ while the chapters inside matched the shipped app, so the economy pages read as
+ done from the directory listing alone. The files are now named for the chapters
+ they contain, which makes the gap visible: no pack list, no mana coin purchase,
+ no card browser exists.
 
 Phase 3 -- Social:
 8. ClanPage.codex: Browse/join/create clans, member list, economy

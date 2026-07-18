@@ -87,6 +87,10 @@ Section: Agent Message Types
     | MsgHandoff (HandoffMsg)
     | MsgAnnotate (AnnotateMsg)
     | MsgVerdict (VerdictMsg)
+    | MsgSyncOffer (SyncOfferMsg)
+    | MsgSyncReply (SyncReplyMsg)
+    | MsgWorkRequest (WorkRequestMsg)
+    | MsgWorkReply (WorkReplyMsg)
 
   ProposeMsg = record {
     id : List Integer,
@@ -173,6 +177,55 @@ Section: Agent Message Types
     signature : List Integer
   }
 
+ The last two — SyncOffer and SyncReply — carry a fact-store reconciliation
+ over the same wire. An offer names the hashes a peer holds; a reply carries
+ the facts the offering peer was missing. Both bodies are opaque payload
+ bytes whose encoding belongs to the FactSync layer, exactly as Annotate and
+ Verdict defer to Works. Content addressing makes the exchange conflict-free:
+ a hash is present or it is not, and merging in either direction converges.
+
+  SyncOfferMsg = record {
+    from : AgentIdentity,
+    payload : List Integer
+  }
+
+  SyncReplyMsg = record {
+    from : AgentIdentity,
+    payload : List Integer
+  }
+
+ Ask for one work, by the hash a quotation names. Get that work or nothing.
+
+ The payload is opaque here for the same reason the sync payloads are: the Works
+ layer owns the encoding of a work, and this layer only needs to dispatch on
+ kind. What crosses is the wire form the compiler's own reader already decodes.
+
+ An empty payload is the honest answer for "I do not have it". It is not an
+ error: a peer that does not hold a work is the normal case, and the asker's job
+ is to try the next peer. Neither message is signed, and that is deliberate --
+ the reply is answerable by its own content. The asker hashes what comes back and
+ checks it against the hash it asked for, so a lying peer is caught by the
+ addressing rather than by trusting the peer. That is the same reason the gate
+ can let the transport be untrusted.
+
+ The payload is Text, where the sync payloads are bytes, and that is not
+ inconsistency. A work's wire form IS text -- it is what `sdw-encode` produces
+ and what the compiler's own reader decodes -- and content addressing here is
+ over CCE bytes by decision, so handing the text across and letting the frame
+ encode it keeps one representation rather than three. An empty payload is "not
+ here".
+
+  WorkRequestMsg = record {
+    from : AgentIdentity,
+    hash : Text
+  }
+
+  WorkReplyMsg = record {
+    from : AgentIdentity,
+    hash : Text,
+    payload : Text
+  }
+
 Section: Message Accessors
 
   msg-id : AgentMessage -> List Integer
@@ -186,6 +239,10 @@ Section: Message Accessors
     is MsgHandoff (h) -> h.id
     is MsgAnnotate (a) -> a.id
     is MsgVerdict (v) -> v.id
+    is MsgSyncOffer (s) -> []
+    is MsgSyncReply (s) -> []
+    is MsgWorkRequest (w) -> []
+    is MsgWorkReply (w) -> []
 
   msg-from : AgentMessage -> AgentIdentity
   msg-from (m) = when m
@@ -198,6 +255,10 @@ Section: Message Accessors
     is MsgHandoff (h) -> h.from
     is MsgAnnotate (a) -> a.from
     is MsgVerdict (v) -> v.from
+    is MsgSyncOffer (s) -> s.from
+    is MsgSyncReply (s) -> s.from
+    is MsgWorkRequest (w) -> w.from
+    is MsgWorkReply (w) -> w.from
 
   msg-signature : AgentMessage -> List Integer
   msg-signature (m) = when m
@@ -210,6 +271,10 @@ Section: Message Accessors
     is MsgHandoff (h) -> h.signature
     is MsgAnnotate (a) -> a.signature
     is MsgVerdict (v) -> v.signature
+    is MsgSyncOffer (s) -> []
+    is MsgSyncReply (s) -> []
+    is MsgWorkRequest (w) -> []
+    is MsgWorkReply (w) -> []
 
   msg-type-name : AgentMessage -> Text
   msg-type-name (m) = when m
@@ -222,5 +287,9 @@ Section: Message Accessors
     is MsgHandoff (h) -> "Handoff"
     is MsgAnnotate (a) -> "Annotate"
     is MsgVerdict (v) -> "Verdict"
+    is MsgSyncOffer (s) -> "SyncOffer"
+    is MsgSyncReply (s) -> "SyncReply"
+    is MsgWorkRequest (w) -> "WorkRequest"
+    is MsgWorkReply (w) -> "WorkReply"
 
 Page 1

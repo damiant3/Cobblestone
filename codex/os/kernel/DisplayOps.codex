@@ -1,0 +1,136 @@
+Chapter: DisplayOps
+  cites Kernel chapter BitmapFont
+
+ This is the implementation of the Display effect.
+
+ draw-text, draw-rect, clear and set-pixel were declared as operations
+ of the Display effect in Foreword chapter Display with no handler
+ anywhere in the tree, so a call type-checked clean and then died at the
+ end of emit with CDX2040. A name the compiler promises and cannot keep
+ is worth less than no name. They are real here, and they are not in the
+ foreword, for the reason that decides it: a display driver writes to the
+ framebuffer, the framebuffer lives behind codex.os, and a foreword
+ chapter may not depend on codex.os. A chapter that wants them cites this
+ one -- exactly as Network's fetch lives in Net chapter HttpFetch.
+
+ The surface they paint is the GOP framebuffer codex-vm renders at
+ 0xBF000000: the boot default, 640x480, one 32-bit XRGB pixel per cell,
+ row-major, no pitch padding. A write outside those bounds is dropped,
+ not wrapped. A program that has switched to another mode or resolution
+ is outside this chapter's scope; this is the standing display the way
+ HttpFetch's addresses are the standing NAT.
+
+ The four effect operations carry no colour of their own: draw-rect,
+ draw-text and clear paint white on black, and set-pixel takes the packed
+ XRGB value. A real interface needs more, so the same painting is offered
+ in full colour beside them -- fill (clear to any colour), fill-rect and
+ write-text (an XRGB argument), and write-text-font, which takes a
+ CbfFont the caller built once with display-font rather than rebuilding
+ the 2 KB font on every call. draw-text and write-text build the font
+ each call; a caller repainting text every frame should hold a font from
+ display-font and drive write-text-font, or the per-call allocations
+ accumulate on a heap with no collector.
+
+ We say:
+
+Section: Framebuffer
+
+  disp-fb-base : Integer = #BF000000
+  disp-width : Integer = 640
+  disp-height : Integer = 480
+  disp-fg : Integer = #FFFFFF
+  disp-bg : Integer = #000000
+
+  disp-offset : Integer, Integer -> Integer
+  disp-offset (x) (y) = (y * disp-width + x) * 4
+
+  disp-write : Integer, Integer, Integer -> Integer
+  disp-write (x) (y) (color) =
+    if x < 0 then 0
+    else if y < 0 then 0
+    else if x >= disp-width then 0
+    else if y >= disp-height then 0
+    else poke-32 disp-fb-base (disp-offset x y) color
+
+Section: The Display Effect
+
+  set-pixel : Integer, Integer, Integer -> [Display] Integer
+  set-pixel (x) (y) (color) = disp-write x y color
+
+  clear : [Display] Integer
+  clear = disp-fill-rows 0 disp-bg
+
+  draw-rect : Integer, Integer, Integer, Integer -> [Display] Integer
+  draw-rect (x) (y) (w) (h) = disp-rect-rows x (x + w) y (y + h) y disp-fg
+
+  draw-text : Text, Integer, Integer -> [Display] Integer
+  draw-text (s) (x) (y) = disp-text-loop cbf-init s x y disp-fg 0 (text-length s)
+
+Section: The Full-Colour Palette
+
+  fill : Integer -> [Display] Integer
+  fill (color) = disp-fill-rows 0 color
+
+  fill-rect : Integer, Integer, Integer, Integer, Integer -> [Display] Integer
+  fill-rect (x) (y) (w) (h) (color) = disp-rect-rows x (x + w) y (y + h) y color
+
+  display-font : [Display] CbfFont
+  display-font = cbf-init
+
+  write-text-font : CbfFont, Text, Integer, Integer, Integer -> [Display] Integer
+  write-text-font (font) (s) (x) (y) (color) = disp-text-loop font s x y color 0 (text-length s)
+
+  write-text : Text, Integer, Integer, Integer -> [Display] Integer
+  write-text (s) (x) (y) (color) = disp-text-loop cbf-init s x y color 0 (text-length s)
+
+Section: Fill Helpers
+
+  disp-fill-rows : Integer, Integer -> Integer
+  disp-fill-rows (y) (color) =
+    if y >= disp-height then 0
+    else let w = disp-fill-row y 0 color
+    in disp-fill-rows (y + 1) color
+
+  disp-fill-row : Integer, Integer, Integer -> Integer
+  disp-fill-row (y) (x) (color) =
+    if x >= disp-width then 0
+    else let w = disp-write x y color
+    in disp-fill-row y (x + 1) color
+
+  disp-rect-rows : Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  disp-rect-rows (x0) (x1) (y0) (y1) (cy) (color) =
+    if cy >= y1 then 0
+    else let w = disp-rect-row x0 x1 cy color
+    in disp-rect-rows x0 x1 y0 y1 (cy + 1) color
+
+  disp-rect-row : Integer, Integer, Integer, Integer -> Integer
+  disp-rect-row (x0) (x1) (cy) (color) =
+    if x0 >= x1 then 0
+    else let w = disp-write x0 cy color
+    in disp-rect-row (x0 + 1) x1 cy color
+
+Section: Text Helpers
+
+  disp-text-loop : CbfFont, Text, Integer, Integer, Integer, Integer, Integer -> Integer
+  disp-text-loop (font) (s) (x) (y) (color) (i) (len) =
+    if i >= len then 0
+    else let cce = char-code (char-at s i)
+    in let w = disp-glyph font cce (x + i * cbf-glyph-width) y color
+    in disp-text-loop font s x y color (i + 1) len
+
+  disp-glyph : CbfFont, Integer, Integer, Integer, Integer -> Integer
+  disp-glyph (font) (cce) (x) (y) (color) = disp-glyph-rows font cce x y color 0
+
+  disp-glyph-rows : CbfFont, Integer, Integer, Integer, Integer, Integer -> Integer
+  disp-glyph-rows (font) (cce) (x) (y) (color) (row) =
+    if row >= cbf-glyph-height then 0
+    else let gb = cbf-row font cce row
+    in let w = disp-glyph-cols gb x (y + row) color 0
+    in disp-glyph-rows font cce x y color (row + 1)
+
+  disp-glyph-cols : Integer, Integer, Integer, Integer, Integer -> Integer
+  disp-glyph-cols (gb) (x) (y) (color) (col) =
+    if col >= cbf-glyph-width then 0
+    else let on = bit-and (bit-shru gb (7 - col)) 1
+    in let w = if on == 1 then disp-write (x + col) y color else 0
+    in disp-glyph-cols gb x y color (col + 1)

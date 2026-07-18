@@ -1,0 +1,435 @@
+Chapter: GopAcpi
+
+ ACPI table discovery for the Option A boot path (H1b). Until now the
+ payload assumed the LAPIC at 0xFEE00000 and the IOAPIC at 0xFEC00000
+ and had no idea how to power the machine off -- a hardcoded gamble
+ that happens to hold on the boards we have tried. The firmware knows
+ the real answers and publishes them in the ACPI tables; the boot stub
+ captures the RSDP pointer from the UEFI configuration table (the RSDP
+ is a vendor table, not a protocol, so LocateProtocol cannot find it)
+ and leaves it in a cell. Everything here reads from that pointer.
+
+ The whole chapter is pure. peek-byte, peek-32, and peek-qword carry no
+ effect row, so the parser is an ordinary function over an address --
+ which means it is testable against a table set built from the spec in
+ a buffer, with no firmware and no device. codex/test/apps/acpi-parse
+ does exactly that.
+
+ Two shapes must both work. An ACPI 1.0 RSDP (revision 0) offers only a
+ 32-bit RsdtAddress, and the RSDT's entries are 32-bit. An ACPI 2.0+
+ RSDP (revision 2 and up) also offers a 64-bit XsdtAddress whose entries
+ are 64-bit; we prefer it. codex-vm publishes both. Real firmware on any
+ machine made this century publishes both.
+
+ We say:
+
+Section: Little-Endian Reads
+
+ Assembled from bytes rather than taken from peek-32, because a table
+ field like the local APIC address (0xFEE00000) has bit 31 set and a
+ sign-extending 32-bit load would report it as a negative number.
+
+  acpi-rd16 : Integer, Integer -> Integer
+  acpi-rd16 (a) (o) = peek-byte a o + peek-byte a (o + 1) * 256
+
+  acpi-rd32 : Integer, Integer -> Integer
+  acpi-rd32 (a) (o) =
+    peek-byte a o
+      + peek-byte a (o + 1) * 256
+      + peek-byte a (o + 2) * 65536
+      + peek-byte a (o + 3) * 16777216
+
+  acpi-rd64 : Integer, Integer -> Integer
+  acpi-rd64 (a) (o) = acpi-rd32 a o + acpi-rd32 a (o + 4) * 4294967296
+
+Section: Signatures and Checksums
+
+ A conforming table's bytes sum to zero modulo 256. We verify the RSDP
+ and the root table, whose lengths are small and known. We do not
+ checksum the DSDT: on real firmware it runs to kilobytes of AML, and a
+ bad byte there would surface as a failed _S5_ decode, which we handle.
+
+  acpi-sum : Integer, Integer, Integer, Integer -> Integer
+  acpi-sum (a) (i) (n) (acc) =
+    if i >= n then acc else acpi-sum a (i + 1) n (acc + peek-byte a i)
+
+  acpi-checksum-ok : Integer, Integer -> Boolean
+  acpi-checksum-ok (a) (n) = int-mod (acpi-sum a 0 n 0) 256 == 0
+
+  acpi-sig-ok : Integer, Integer, Integer, Integer, Integer -> Boolean
+  acpi-sig-ok (a) (b0) (b1) (b2) (b3) =
+    peek-byte a 0 == b0 & peek-byte a 1 == b1
+      & peek-byte a 2 == b2 & peek-byte a 3 == b3
+
+ "RSD PTR " -- eight bytes, the trailing space included.
+
+  acpi-rsdp-sig-ok : Integer -> Boolean
+  acpi-rsdp-sig-ok (a) =
+    acpi-sig-ok a 82 83 68 32
+      & peek-byte a 4 == 80 & peek-byte a 5 == 84
+      & peek-byte a 6 == 82 & peek-byte a 7 == 32
+
+  acpi-table-len : Integer -> Integer
+  acpi-table-len (t) = acpi-rd32 t 4
+
+Section: Root Table Walk
+
+ The RSDT holds 32-bit pointers from offset 36; the XSDT holds 64-bit
+ pointers from the same offset. Entry count follows from the header
+ length. acpi-find returns the address of the first table whose
+ signature matches, or 0.
+
+  acpi-entry-count : Integer, Integer -> Integer
+  acpi-entry-count (root) (entsize) =
+    let len = acpi-table-len root
+    in if len <= 36 then 0 else (len - 36) / entsize
+
+  acpi-entry-at : Integer, Integer, Integer -> Integer
+  acpi-entry-at (root) (entsize) (i) =
+    if entsize == 8 then acpi-rd64 root (36 + i * 8)
+    else acpi-rd32 root (36 + i * 4)
+
+  acpi-find : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  acpi-find (root) (entsize) (n) (i) (b0) (b1) (b2) (b3) =
+    if i >= n then 0
+    else let t = acpi-entry-at root entsize i
+    in if t /= 0 & acpi-sig-ok t b0 b1 b2 b3 then t
+    else acpi-find root entsize n (i + 1) b0 b1 b2 b3
+
+Section: MADT
+
+ Interrupt controller structures start at offset 44, each a (type,
+ length) pair. Type 1 is an I/O APIC, whose 32-bit address sits at
+ offset 4 within the structure. Type 5 overrides the local APIC address
+ with a 64-bit value and, when present, wins over the 32-bit field at
+ MADT offset 36. A zero length would not advance the walk, so we stop.
+
+  madt-lapic-base : Integer -> Integer
+  madt-lapic-base (m) = acpi-rd32 m 36
+
+  madt-scan : Integer, Integer, Integer, Integer -> Integer
+  madt-scan (m) (off) (len) (want) =
+    if off + 2 > len then 0
+    else let t = peek-byte m off
+    in let l = peek-byte m (off + 1)
+    in if l == 0 then 0
+    else if t == want then off
+    else madt-scan m (off + l) len want
+
+  madt-ioapic : Integer -> Integer
+  madt-ioapic (m) =
+    let off = madt-scan m 44 (acpi-table-len m) 1
+    in if off == 0 then 0 else acpi-rd32 m (off + 4)
+
+  madt-lapic-override : Integer -> Integer
+  madt-lapic-override (m) =
+    let off = madt-scan m 44 (acpi-table-len m) 5
+    in if off == 0 then 0 else acpi-rd64 m (off + 4)
+
+  madt-lapic : Integer -> Integer
+  madt-lapic (m) =
+    let ov = madt-lapic-override m
+    in if ov /= 0 then ov else madt-lapic-base m
+
+Section: FADT
+
+ Field offsets are the spec's, and they are not obvious: FIRMWARE_CTRL
+ at 36 and DSDT at 40, then the power-management block addresses --
+ PM1a_EVT_BLK at 56 and PM1a_CNT_BLK at 64. Reading PM1a_CNT_BLK from
+ the wrong offset yields the event block, and a shutdown written there
+ does nothing. A revision 2 FADT (length past 148) carries a 64-bit
+ X_DSDT at 140 that supersedes the 32-bit field.
+
+  fadt-dsdt : Integer -> Integer
+  fadt-dsdt (f) =
+    let len = acpi-table-len f
+    in if len >= 148 then
+      let x = acpi-rd64 f 140
+      in if x /= 0 then x else acpi-rd32 f 40
+    else acpi-rd32 f 40
+
+  fadt-pm1a-evt : Integer -> Integer
+  fadt-pm1a-evt (f) = acpi-rd32 f 56
+
+  fadt-pm1a-cnt : Integer -> Integer
+  fadt-pm1a-cnt (f) = acpi-rd32 f 64
+
+  fadt-pm1b-cnt : Integer -> Integer
+  fadt-pm1b-cnt (f) = acpi-rd32 f 68
+
+  fadt-pm1-cnt-len : Integer -> Integer
+  fadt-pm1-cnt-len (f) = peek-byte f 89
+
+  fadt-sci-int : Integer -> Integer
+  fadt-sci-int (f) = acpi-rd16 f 46
+
+ A revision 2 FADT (length 129 and up) may publish a reset register:
+ flags bit 10 (RESET_REG_SUP) at offset 112 declares it, a Generic
+ Address Structure at 116 names the register (address space id first,
+ the 64-bit address at 120), and RESET_VALUE at 128 is the byte to
+ write. A shorter FADT has no such fields and reading them would be
+ reading the next table's bytes.
+
+  fadt-flags : Integer -> Integer
+  fadt-flags (f) = acpi-rd32 f 112
+
+  fadt-reset-space : Integer -> Integer
+  fadt-reset-space (f) = peek-byte f 116
+
+  fadt-reset-addr : Integer -> Integer
+  fadt-reset-addr (f) = acpi-rd64 f 120
+
+  fadt-reset-value : Integer -> Integer
+  fadt-reset-value (f) = peek-byte f 128
+
+  fadt-reset-ok : Integer -> Boolean
+  fadt-reset-ok (f) =
+    if acpi-table-len f < 129 then False
+    else if bit-and (fadt-flags f) 1024 == 0 then False
+    else fadt-reset-addr f /= 0
+
+Section: The _S5_ Sleep Package
+
+ To power the machine off an OS writes the sleep type the firmware
+ chose, not a number it guessed. That number lives in the DSDT as
+ Name (_S5_, Package () { SLP_TYPa, SLP_TYPb, ... }), encoded in AML.
+ This is a targeted scan, not an AML interpreter: find the four bytes
+ "_S5_", require a PackageOp immediately after, skip the package length
+ and the element count, and decode the first two elements.
+
+ A package length's leading byte carries the count of following length
+ bytes in its top two bits. Elements here are constants: ZeroOp (0x00)
+ is 0, OneOp (0x01) is 1, and BytePrefix (0x0A) introduces a literal
+ byte. Anything else means an encoding we do not read, and we decline.
+
+  s5-name-at : Integer, Integer -> Boolean
+  s5-name-at (d) (p) =
+    peek-byte d p == 95 & peek-byte d (p + 1) == 83
+      & peek-byte d (p + 2) == 53 & peek-byte d (p + 3) == 95
+
+  s5-search : Integer, Integer, Integer -> Integer
+  s5-search (d) (p) (limit) =
+    if p >= limit then (-1)
+    else if s5-name-at d p & peek-byte d (p + 4) == 18 then p
+    else s5-search d (p + 1) limit
+
+ The element cursor: past "_S5_" (4) and PackageOp (1) sits the package
+ length byte, then that many extra length bytes, then NumElements.
+
+  s5-elems-start : Integer, Integer -> Integer
+  s5-elems-start (d) (p) =
+    let pl = peek-byte d (p + 5)
+    in let extra = bit-shru pl 6
+    in p + 5 + 1 + extra + 1
+
+  s5-elem-size : Integer, Integer -> Integer
+  s5-elem-size (d) (e) = if peek-byte d e == 10 then 2 else 1
+
+  s5-elem-value : Integer, Integer -> Integer
+  s5-elem-value (d) (e) =
+    let b = peek-byte d e
+    in if b == 0 then 0 else if b == 1 then 1
+    else if b == 10 then peek-byte d (e + 1) else (-1)
+
+  s5-typa : Integer, Integer -> Integer
+  s5-typa (d) (p) = s5-elem-value d (s5-elems-start d p)
+
+  s5-typb : Integer, Integer -> Integer
+  s5-typb (d) (p) =
+    let e0 = s5-elems-start d p
+    in s5-elem-value d (e0 + s5-elem-size d e0)
+
+Section: The Parse
+
+  AcpiInfo = record {
+    ai-ok : Boolean,
+    ai-rsdp : Integer,
+    ai-revision : Integer,
+    ai-root : Integer,
+    ai-xsdt : Boolean,
+    ai-tables : Integer,
+    ai-madt : Integer,
+    ai-fadt : Integer,
+    ai-dsdt : Integer,
+    ai-lapic : Integer,
+    ai-ioapic : Integer,
+    ai-pm1a-evt : Integer,
+    ai-pm1a-cnt : Integer,
+    ai-pm1b-cnt : Integer,
+    ai-pm1-cnt-len : Integer,
+    ai-sci : Integer,
+    ai-s5-ok : Boolean,
+    ai-slp-typa : Integer,
+    ai-slp-typb : Integer,
+    ai-reset-ok : Boolean,
+    ai-reset-space : Integer,
+    ai-reset-addr : Integer,
+    ai-reset-value : Integer
+  }
+
+  acpi-none : Integer -> AcpiInfo
+  acpi-none (rsdp) = AcpiInfo {
+    ai-ok = False, ai-rsdp = rsdp, ai-revision = 0, ai-root = 0,
+    ai-xsdt = False, ai-tables = 0, ai-madt = 0, ai-fadt = 0, ai-dsdt = 0,
+    ai-lapic = 0, ai-ioapic = 0, ai-pm1a-evt = 0, ai-pm1a-cnt = 0,
+    ai-pm1b-cnt = 0, ai-pm1-cnt-len = 0, ai-sci = 0,
+    ai-s5-ok = False, ai-slp-typa = 0, ai-slp-typb = 0,
+    ai-reset-ok = False, ai-reset-space = 0, ai-reset-addr = 0,
+    ai-reset-value = 0
+  }
+
+ A revision 2 RSDP must satisfy both checksums: the first twenty bytes
+ for the benefit of a 1.0 reader, and the whole declared length.
+
+  acpi-rsdp-ok : Integer -> Boolean
+  acpi-rsdp-ok (r) =
+    if acpi-rsdp-sig-ok r == False then False
+    else if acpi-checksum-ok r 20 == False then False
+    else if peek-byte r 15 < 2 then True
+    else acpi-checksum-ok r (acpi-rd32 r 20)
+
+  acpi-root-of : Integer -> Integer
+  acpi-root-of (r) =
+    if peek-byte r 15 >= 2 then
+      let x = acpi-rd64 r 24
+      in if x /= 0 then x else acpi-rd32 r 16
+    else acpi-rd32 r 16
+
+  acpi-entsize-of : Integer -> Integer
+  acpi-entsize-of (root) = if acpi-sig-ok root 88 83 68 84 then 8 else 4
+
+  acpi-parse : Integer -> AcpiInfo
+  acpi-parse (rsdp) =
+    if rsdp == 0 then acpi-none 0
+    else if acpi-rsdp-ok rsdp == False then acpi-none rsdp
+    else let root = acpi-root-of rsdp
+    in if root == 0 then acpi-none rsdp
+    else if acpi-checksum-ok root (acpi-table-len root) == False then acpi-none rsdp
+    else acpi-from-root rsdp root
+
+  acpi-from-root : Integer, Integer -> AcpiInfo
+  acpi-from-root (rsdp) (root) =
+    let entsize = acpi-entsize-of root
+    in let n = acpi-entry-count root entsize
+    in let madt = acpi-find root entsize n 0 65 80 73 67
+    in let fadt = acpi-find root entsize n 0 70 65 67 80
+    in acpi-assemble rsdp root entsize n madt fadt
+
+  acpi-assemble : Integer, Integer, Integer, Integer, Integer, Integer -> AcpiInfo
+  acpi-assemble (rsdp) (root) (entsize) (n) (madt) (fadt) =
+    let dsdt = if fadt == 0 then 0 else fadt-dsdt fadt
+    in let s5 = if dsdt == 0 then (-1) else s5-search dsdt 36 (acpi-table-len dsdt - 8)
+    in AcpiInfo {
+      ai-ok = True,
+      ai-rsdp = rsdp,
+      ai-revision = peek-byte rsdp 15,
+      ai-root = root,
+      ai-xsdt = entsize == 8,
+      ai-tables = n,
+      ai-madt = madt,
+      ai-fadt = fadt,
+      ai-dsdt = dsdt,
+      ai-lapic = if madt == 0 then 0 else madt-lapic madt,
+      ai-ioapic = if madt == 0 then 0 else madt-ioapic madt,
+      ai-pm1a-evt = if fadt == 0 then 0 else fadt-pm1a-evt fadt,
+      ai-pm1a-cnt = if fadt == 0 then 0 else fadt-pm1a-cnt fadt,
+      ai-pm1b-cnt = if fadt == 0 then 0 else fadt-pm1b-cnt fadt,
+      ai-pm1-cnt-len = if fadt == 0 then 0 else fadt-pm1-cnt-len fadt,
+      ai-sci = if fadt == 0 then 0 else fadt-sci-int fadt,
+      ai-s5-ok = s5 >= 0 & (if s5 < 0 then False else s5-typa dsdt s5 >= 0),
+      ai-slp-typa = if s5 < 0 then 0 else s5-typa dsdt s5,
+      ai-slp-typb = if s5 < 0 then 0 else s5-typb dsdt s5,
+      ai-reset-ok = if fadt == 0 then False else fadt-reset-ok fadt,
+      ai-reset-space = if fadt == 0 then 0 else if fadt-reset-ok fadt then fadt-reset-space fadt else 0,
+      ai-reset-addr = if fadt == 0 then 0 else if fadt-reset-ok fadt then fadt-reset-addr fadt else 0,
+      ai-reset-value = if fadt == 0 then 0 else if fadt-reset-ok fadt then fadt-reset-value fadt else 0
+    }
+
+Section: Power Off
+
+ The S5 transition: write the sleep type the firmware published, with
+ SLP_EN set, to the PM1a control block. SLP_TYP occupies bits 10 to 12
+ and SLP_EN is bit 13, so the value is (SLP_TYPa << 10) | 0x2000. When
+ the FADT names a PM1b control block the same is done there with
+ SLP_TYPb; a machine with a split control block needs both halves.
+
+ We do not perform the legacy ACPI-enable handshake (write ACPI_ENABLE
+ to SMI_CMD, then poll SCI_EN). UEFI firmware places the machine in
+ ACPI mode before it hands control to a boot application, so the
+ handshake belongs to the BIOS era, and issuing it blind would poke a
+ port whose meaning we have not read. If a board ever needs it, the
+ FADT already tells us its SMI_CMD and ACPI_ENABLE.
+
+ acpi-poweroff refuses rather than guesses: without a parsed FADT, a
+ decoded _S5_, and a control-block address, it returns -1 and the
+ machine stays on. A caller that gets -1 has learned something true
+ about the firmware.
+
+  acpi-slp-value : Integer -> Integer
+  acpi-slp-value (slp-typ) = slp-typ * 1024 + 8192
+
+  acpi-can-poweroff : AcpiInfo -> Boolean
+  acpi-can-poweroff (a) =
+    a.ai-ok & a.ai-s5-ok & (a.ai-pm1a-cnt /= 0) & (a.ai-slp-typa >= 0)
+
+  acpi-poweroff : AcpiInfo -> [Device.Port] Integer
+  acpi-poweroff (a) = act
+    if acpi-can-poweroff a == False then (-1)
+    else act
+      w1 <- port-out-16 (a.ai-pm1a-cnt) (acpi-slp-value (a.ai-slp-typa))
+      w2 <- if a.ai-pm1b-cnt == 0 then 0
+            else port-out-16 (a.ai-pm1b-cnt) (acpi-slp-value (a.ai-slp-typb))
+      acpi-halt 0
+    end
+  end
+
+ If the write lands, execution never reaches here. If the firmware
+ declined the transition, spin rather than fall off the end of the
+ world into whatever bytes follow.
+
+  acpi-halt : Integer -> [Device.Port] Integer
+  acpi-halt (n) = acpi-halt (n + 1)
+
+Section: Reset
+
+ Warm reset, by preference order. The FADT's reset register is the
+ firmware's own answer and is honored when declared: a byte written
+ to an I/O port or a memory address, whichever the Generic Address
+ Structure names. The 0xCF9 reset-control port is the universal PC
+ chipset fallback (bit 1 selects a hard reset, bit 2 pulses it). The
+ i8042 output-port pulse is last, and only when a status read shows a
+ controller actually present -- 0xFF is the floating bus, and writing
+ reset commands into it is theater. Unlike poweroff, reset never
+ refuses: 0xCF9 exists on every PC-compatible chipset. If every write
+ is somehow ignored, spin.
+
+  acpi-reset : AcpiInfo -> [Device.Port] Integer
+  acpi-reset (a) = act
+    r <- if a.ai-reset-ok then acpi-reset-reg a else 0
+    c1 <- port-out-byte 3321 2
+    c2 <- port-out-byte 3321 6
+    k <- port-in-byte 100
+    p <- if k /= 255 then port-out-byte 100 254 else 0
+    acpi-halt 0
+  end
+
+  acpi-reset-reg : AcpiInfo -> [Device.Port] Integer
+  acpi-reset-reg (a) = act
+    if a.ai-reset-space == 1 then port-out-byte (a.ai-reset-addr) (a.ai-reset-value)
+    else if a.ai-reset-space == 0 then poke-byte (a.ai-reset-addr) 0 (a.ai-reset-value)
+    else 0
+  end
+
+Section: Boot Cell
+
+ The Option A stub writes the RSDP pointer it found in the UEFI
+ configuration table to cell 0x8028, beside the framebuffer handoff.
+ Zero means the firmware exposed no ACPI table at all.
+
+  acpi-cell : Integer = 32768
+
+  acpi-boot-rsdp : Integer -> Integer
+  acpi-boot-rsdp (dummy) = peek-qword acpi-cell 40
+
+  acpi-boot : Integer -> AcpiInfo
+  acpi-boot (dummy) = acpi-parse (acpi-boot-rsdp 0)

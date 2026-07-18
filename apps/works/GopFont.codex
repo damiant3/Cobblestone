@@ -1,0 +1,69 @@
+Chapter: GopFont
+  cites Works chapter GopFat16
+  cites Guios chapter FontLoad
+  cites Guios chapter GuiDisplay
+
+ TrueType from the stick -- H4c. The guios font loader carries its
+ own FAT32 walk over the block-read-sector syscall, which is dead on
+ the Option A path (the stub never installs the syscall machinery
+ firmware-side of runtime-init, and the boot medium may not even be
+ an IDE disk). But everything after the sector reads is buffer-pure:
+ fb-parse-ttf takes a flat byte buffer, fb-render-ascii rasterizes
+ from it, fl-raster-to-gobf packs the coverage tables. So the port is
+ one seam: read the TTF off the ESP with gfat-read-file-bulk -- the
+ same driver stack that already reads the seed, riding the medium
+ lock -- and hand the buffer to the unchanged guios pipeline.
+
+ The rasterized font is a GopBitmapFont: 95 glyphs of 8-bit alpha
+ coverage plus advance and y-offset tables, drawn by gbf-put-text
+ with per-pixel blending against whatever is already on the panel.
+
+ We say:
+
+Section: Font Handle
+
+  GopFont = record {
+    gf-ok : Boolean,
+    gf-base : Integer,
+    gf-gw : Integer,
+    gf-gh : Integer
+  }
+
+  gfont-none : GopFont
+  gfont-none = GopFont { gf-ok = False, gf-base = 0, gf-gw = 0, gf-gh = 0 }
+
+Section: Load
+
+ One flat read, then the guios pipeline verbatim. The glyph pixel
+ lists and supersampling scratch this allocates live until the
+ caller's heap mark is restored; a desktop session loads once at
+ entry and reclaims at exit.
+
+  gfont-load : Fat16Volume, Text -> [Device.Port] GopFont
+  gfont-load (vol) (name) = act
+    size <- gfat-file-size vol name
+    if size == 0 then gfont-none
+    else act
+      let buf = __heap-save
+      in let adv = __heap-advance (size + 1024)
+      in act
+        n <- gfat-read-file-bulk vol name buf
+        if n == 0 then gfont-none
+        else let font = fb-parse-ttf buf size
+        in let rasters = fb-render-ascii buf font font-ppem
+        in let maxw = fl-max-width rasters 0 0
+        in let gbase = fl-raster-to-gobf rasters maxw font-ppem
+        in GopFont { gf-ok = True, gf-base = gbase, gf-gw = maxw, gf-gh = font-ppem }
+      end
+    end
+  end
+
+Section: Draw
+
+ gbf-put-text wants a GopBuf; ours aliases the real framebuffer with
+ the panel's stride standing as the buffer width, which is the only
+ width gbf's pixel math uses.
+
+  gfont-text : GopFont, Integer, Integer, Integer, Integer, Integer, Text, Integer -> Integer
+  gfont-text (f) (base) (stride) (h) (x) (y) (s) (fg) =
+    gbf-put-text (GopBuf { gb-base = base, gb-width = stride, gb-height = h }) (f.gf-base) (f.gf-gw) (f.gf-gh) x y s fg

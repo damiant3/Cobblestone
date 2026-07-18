@@ -1,0 +1,420 @@
+Chapter: LensQueryTest
+  cites Data chapter Catalog
+  cites Data chapter Schema
+  cites Data chapter Row
+  cites Data chapter RelAlgebra
+  cites Data chapter Executor
+  cites Data chapter Optimizer
+  cites Lens chapter LensModel
+  cites Lens chapter LensPlan
+
+ Flagship correctness test for the Lens planner: the star schema from
+ the Phase 0 spike, a governed model over it, and the queries driven
+ end to end through lens-run. Every expected number is hand-computed
+ in the prose below.
+
+ The star: four users, twelve orders, amounts in cents. Per-user
+ revenue: Alice 1500 + 5000 + 800 + 1500 = 8800, Bob 800 + 1500 +
+ 5000 = 7300, Carol 1500 + 800 + 5000 = 7300, Dave 5000 + 1500 =
+ 6500. Revenue by city: Springfield is Alice plus Carol = 16100,
+ Shelbyville is Bob = 7300, Capital City is Dave = 6500. Credit
+ limits live one per user: Alice 10000, Bob 20000, Carol 30000, Dave
+ 40000, so total credit by city is Springfield 40000, Shelbyville
+ 20000, Capital City 40000.
+
+ The second query is the fan-out case this planner exists to kill: a
+ user-grain measure (sum of users.credit-limit) asked alongside a
+ fact-grain measure (sum of orders.amount), both by city. A naive
+ engine joins users to orders first and sums the joined rows, which
+ duplicates each user's credit limit once per order: Alice 4 orders x
+ 10000 + Carol 3 x 30000 = 130000 for Springfield, Bob 3 x 20000 =
+ 60000 for Shelbyville, Dave 2 x 40000 = 80000 for Capital City,
+ all wrong. The grain-correct answers are 40000, 20000, and 40000,
+ and this test asserts them. The planner gets them by aggregating
+ credit at the users grain (no join at all) and revenue at the orders
+ grain before any join, then equi-joining the two aggregated results
+ on city.
+
+ Sorting is ascending in CCE code order, and CCE assigns letters by
+ frequency (etaoinshrdlcumwfgypbvkjxqz), therefore Shelbyville sorts
+ before Springfield and Capital City sorts last. The spike pinned the
+ same collation.
+
+ The fourth query asks for several measures across several dimensions
+ at once: total credit and revenue by city and user name. The old
+ planner refused the shape with diagnostic 26 because measure results
+ combined through a single-column equi-join; the combine step now
+ joins on the full dimension column set, so the shape plans. Each
+ city-and-name pair names exactly one user here, therefore the
+ expected rows carry each user's own credit limit next to that user's
+ own revenue: Bob 20000 and 7300, Alice 10000 and 8800, Carol 30000
+ and 7300, Dave 40000 and 6500, ordered by city first in the pinned
+ CCE collation.
+
+ The fifth query filters the fan-out query to product 1 orders. The
+ product 1 orders are order 1 (Alice 1500), order 4 (Carol 1500),
+ order 7 (Bob 1500), order 10 (Dave 1500), and order 12 (Alice 1500).
+ The filter sits inside the revenue sub-aggregation, under the group,
+ therefore filtered revenue by city is Springfield 3000 + 1500 =
+ 4500, Shelbyville 1500, Capital City 1500. A planner that applied
+ the filter after aggregation would leave revenue at the unfiltered
+ 16100, 7300, and 6500 and this test would catch the lie. Credit
+ stays 40000, 20000, 40000 because the filter names the orders table
+ and credit aggregates users alone. The sixth query filters a column
+ the model does not know and must earn diagnostic 27, never a plan.
+
+ The seventh query asks for the average order alongside total credit
+ by city. An average cannot be re-aggregated: Springfield's per-user
+ averages are Alice 8800 over 4 orders = 2200 and Carol 7300 over 3 =
+ 2433, and averaging those averages gives 2316, not the true city
+ average. The planner therefore carries the average as a sum and a
+ count, re-aggregates both as sums, and divides after the combine:
+ Springfield 16100 / 7 = 2300, Shelbyville 7300 / 3 = 2433, Capital
+ City 6500 / 2 = 3250, integer division throughout. The old planner
+ refused this query with diagnostic 25; the decomposition retired
+ the code.
+
+ The eighth query reaches two hops: revenue lives on orders, the
+ region dimension lives on regions, and the model declares orders to
+ users and users to regions, both many-to-one, so the chain is
+ grain-safe. Alice and Carol sit in region West, Bob and Dave in
+ East, so revenue by region is West 8800 + 7300 = 16100 and East
+ 7300 + 6500 = 13800. The ninth query runs against a diamond model
+ where table t is reachable from fact f through a and through b; the
+ planner must refuse with diagnostic 28 naming both paths, never
+ pick one silently.
+
+ The tenth and eleventh queries exercise time bucketing. Every order
+ carries an order-date in Unix seconds: orders 1 through 6 fall on
+ the first through sixth of June 2026 and orders 7 through 12 on the
+ first through fifth and the ninth of July 2026, order 12 at noon to
+ show the time of day washes out of the bucket. The first of January
+ 2026 is 1767225600 because fifty-six years of which fourteen are
+ leap separate it from the epoch; June the first is 151 days later
+ at 1780272000, and July the first is 181 days in at 1782864000. The
+ month bucket encodes as year times one hundred plus month, so June
+ is 202606 and July 202607. Revenue by month alone is June 1500 +
+ 5000 + 800 + 1500 + 5000 + 800 = 14600 and July 1500 + 800 + 5000 +
+ 1500 + 5000 + 1500 = 15300. The eleventh query proves the bucket
+ stays grain-correct across a join: revenue by city and month
+ derives the bucket on the orders scan, groups the home grain by
+ user-id and the bucket alias together, equi-joins users, and
+ re-aggregates by city and bucket. June revenue per city: Alice
+ 1500 + 5000 + 800 with Carol 1500 makes Springfield 8800, Bob 800
+ makes Shelbyville 800, Dave 5000 makes Capital City 5000. July:
+ Carol 800 + 5000 with Alice 1500 makes Springfield 7300, Bob 1500 +
+ 5000 makes Shelbyville 6500, Dave 1500 makes Capital City 1500.
+ The pinned explain shows the Derive node sitting between the
+ filtered scan and the home-grain group.
+
+Section: Star Schema
+
+  users-table : TableDef
+  users-table = table-def-with-pk "users" [
+    col-def-not-null "user-id" ColInteger,
+    col-def-not-null "uname" ColText,
+    col-def-not-null "city" ColText,
+    col-def-not-null "credit-limit" ColInteger,
+    col-def-not-null "region-id" ColInteger
+  ] ["user-id"]
+
+  regions-table : TableDef
+  regions-table = table-def-with-pk "regions" [
+    col-def-not-null "region-id" ColInteger,
+    col-def-not-null "region-name" ColText
+  ] ["region-id"]
+
+  orders-table : TableDef
+  orders-table = table-def-with-pk "orders" [
+    col-def-not-null "order-id" ColInteger,
+    col-def-not-null "user-id" ColInteger,
+    col-def-not-null "product-id" ColInteger,
+    col-def-not-null "amount" ColInteger,
+    col-def-not-null "order-date" ColInteger
+  ] ["order-id"]
+
+  insert-all : Catalog, Text, List RowData, Integer, Integer -> Catalog
+  insert-all (cat) (table) (rows) (i) (len) =
+    if i >= len then cat
+    else let r = catalog-insert-row cat table (list-at rows i)
+    in insert-all (r.cir-cat) table rows (i + 1) len
+
+  seed-users : Catalog -> Catalog
+  seed-users (cat) =
+    let s = table-schema users-table
+    in let rows = [
+      row-new s [ValInteger 1, ValText "Alice", ValText "Springfield", ValInteger 10000, ValInteger 1],
+      row-new s [ValInteger 2, ValText "Bob",   ValText "Shelbyville", ValInteger 20000, ValInteger 2],
+      row-new s [ValInteger 3, ValText "Carol", ValText "Springfield", ValInteger 30000, ValInteger 1],
+      row-new s [ValInteger 4, ValText "Dave",  ValText "Capital City", ValInteger 40000, ValInteger 2]
+    ]
+    in insert-all cat "users" rows 0 (list-length rows)
+
+  seed-regions : Catalog -> Catalog
+  seed-regions (cat) =
+    let s = table-schema regions-table
+    in let rows = [
+      row-new s [ValInteger 1, ValText "West"],
+      row-new s [ValInteger 2, ValText "East"]
+    ]
+    in insert-all cat "regions" rows 0 (list-length rows)
+
+  seed-orders : Catalog -> Catalog
+  seed-orders (cat) =
+    let s = table-schema orders-table
+    in let rows = [
+      row-new s [ValInteger 1,  ValInteger 1, ValInteger 1, ValInteger 1500, ValInteger 1780272000],
+      row-new s [ValInteger 2,  ValInteger 1, ValInteger 2, ValInteger 5000, ValInteger 1780358400],
+      row-new s [ValInteger 3,  ValInteger 2, ValInteger 3, ValInteger 800,  ValInteger 1780444800],
+      row-new s [ValInteger 4,  ValInteger 3, ValInteger 1, ValInteger 1500, ValInteger 1780531200],
+      row-new s [ValInteger 5,  ValInteger 4, ValInteger 2, ValInteger 5000, ValInteger 1780617600],
+      row-new s [ValInteger 6,  ValInteger 1, ValInteger 3, ValInteger 800,  ValInteger 1780704000],
+      row-new s [ValInteger 7,  ValInteger 2, ValInteger 1, ValInteger 1500, ValInteger 1782864000],
+      row-new s [ValInteger 8,  ValInteger 3, ValInteger 3, ValInteger 800,  ValInteger 1782950400],
+      row-new s [ValInteger 9,  ValInteger 3, ValInteger 2, ValInteger 5000, ValInteger 1783036800],
+      row-new s [ValInteger 10, ValInteger 4, ValInteger 1, ValInteger 1500, ValInteger 1783123200],
+      row-new s [ValInteger 11, ValInteger 2, ValInteger 2, ValInteger 5000, ValInteger 1783209600],
+      row-new s [ValInteger 12, ValInteger 1, ValInteger 1, ValInteger 1500, ValInteger 1783598400]
+    ]
+    in insert-all cat "orders" rows 0 (list-length rows)
+
+  build-star : Catalog
+  build-star =
+    let c1 = catalog-create-table catalog-new users-table
+    in let c2 = catalog-create-table (c1.cat) orders-table
+    in let c3 = catalog-create-table (c2.cat) regions-table
+    in seed-regions (seed-orders (seed-users (c3.cat)))
+
+Section: The Model
+
+ Orders is the fact, users and regions are the dimension tables, and
+ every join is declared many-to-one so the grain checker may trust
+ it. Regions sits two hops from orders, reached through users, which
+ exercises the join-chain walk. The product dimension on orders puts
+ product-id in the model's vocabulary, and the filter check demands
+ exactly that before a filter may name the column.
+
+  users-t : LensTable
+  users-t = LensTable { name = "users", primary-key = "user-id", grain = "one row per registered user" }
+
+  orders-t : LensTable
+  orders-t = LensTable { name = "orders", primary-key = "order-id", grain = "one row per order" }
+
+  regions-t : LensTable
+  regions-t = LensTable { name = "regions", primary-key = "region-id", grain = "one row per sales region" }
+
+  orders-to-users : LensJoin
+  orders-to-users = LensJoin { from-table = "orders", to-table = "users", on-left = "user-id", on-right = "user-id", cardinality = ManyToOne }
+
+  users-to-regions : LensJoin
+  users-to-regions = LensJoin { from-table = "users", to-table = "regions", on-left = "region-id", on-right = "region-id", cardinality = ManyToOne }
+
+  city-dim : LensDimension
+  city-dim = LensDimension { name = "city", table = "users", column = "city", bucket = LbNone }
+
+  uname-dim : LensDimension
+  uname-dim = LensDimension { name = "user-name", table = "users", column = "uname", bucket = LbNone }
+
+  product-dim : LensDimension
+  product-dim = LensDimension { name = "product", table = "orders", column = "product-id", bucket = LbNone }
+
+  region-dim : LensDimension
+  region-dim = LensDimension { name = "region", table = "regions", column = "region-name", bucket = LbNone }
+
+  month-dim : LensDimension
+  month-dim = LensDimension { name = "order-month", table = "orders", column = "order-date", bucket = LbMonth }
+
+  revenue-measure : LensMeasure
+  revenue-measure = LensMeasure {
+    name = "revenue",
+    table = "orders",
+    column = "amount",
+    agg = LensAggSum,
+    description = "Sum of order amounts in cents."
+  }
+
+  credit-measure : LensMeasure
+  credit-measure = LensMeasure {
+    name = "total-credit",
+    table = "users",
+    column = "credit-limit",
+    agg = LensAggSum,
+    description = "Sum of user credit limits in cents. User grain."
+  }
+
+  avg-order-measure : LensMeasure
+  avg-order-measure = LensMeasure {
+    name = "avg-order",
+    table = "orders",
+    column = "amount",
+    agg = LensAggAvg,
+    description = "Average order amount in cents. Order grain."
+  }
+
+  sales-model : LensModel
+  sales-model = LensModel {
+    name = "sales",
+    tables = [users-t, orders-t, regions-t],
+    joins = [orders-to-users, users-to-regions],
+    dimensions = [city-dim, uname-dim, product-dim, region-dim, month-dim],
+    measures = [revenue-measure, credit-measure, avg-order-measure]
+  }
+
+Section: The Diamond Model
+
+ A separate model whose join graph is a diamond: fact f reaches
+ table t through a and through b, every hop many-to-one. Both paths
+ are individually grain-safe, so only the ambiguity rule can refuse
+ the query, and it must, because the two paths can carry different
+ row mappings and the planner never picks between them silently.
+ The model is never executed; lens-plan alone is under test.
+
+  diamond-model : LensModel
+  diamond-model = LensModel {
+    name = "diamond",
+    tables = [
+      LensTable { name = "f", primary-key = "fid", grain = "one row per fact" },
+      LensTable { name = "a", primary-key = "aid", grain = "one row per a" },
+      LensTable { name = "b", primary-key = "bid", grain = "one row per b" },
+      LensTable { name = "t", primary-key = "tid", grain = "one row per t" }
+    ],
+    joins = [
+      LensJoin { from-table = "f", to-table = "a", on-left = "aid", on-right = "aid", cardinality = ManyToOne },
+      LensJoin { from-table = "f", to-table = "b", on-left = "bid", on-right = "bid", cardinality = ManyToOne },
+      LensJoin { from-table = "a", to-table = "t", on-left = "tid", on-right = "tid", cardinality = ManyToOne },
+      LensJoin { from-table = "b", to-table = "t", on-left = "tid", on-right = "tid", cardinality = ManyToOne }
+    ],
+    dimensions = [LensDimension { name = "tname", table = "t", column = "tname", bucket = LbNone }],
+    measures = [LensMeasure { name = "fsum", table = "f", column = "v", agg = LensAggSum, description = "Sum of fact values." }]
+  }
+
+Section: Queries
+
+  revenue-by-city-q : LensQuery
+  revenue-by-city-q = LensQuery { lens-name = "sales", dimensions = ["city"], measures = ["revenue"], filters = [], limit = 0 }
+
+  fanout-q : LensQuery
+  fanout-q = LensQuery { lens-name = "sales", dimensions = ["city"], measures = ["total-credit", "revenue"], filters = [], limit = 0 }
+
+  unknown-q : LensQuery
+  unknown-q = LensQuery { lens-name = "sales", dimensions = ["city"], measures = ["profit"], filters = [], limit = 0 }
+
+  two-dim-q : LensQuery
+  two-dim-q = LensQuery { lens-name = "sales", dimensions = ["city", "user-name"], measures = ["total-credit", "revenue"], filters = [], limit = 0 }
+
+  product-filter : LensFilter
+  product-filter = LensFilter { table = "orders", column = "product-id", value = LfInt 1 }
+
+  filtered-q : LensQuery
+  filtered-q = LensQuery { lens-name = "sales", dimensions = ["city"], measures = ["total-credit", "revenue"], filters = [product-filter], limit = 0 }
+
+  bad-filter-q : LensQuery
+  bad-filter-q = LensQuery {
+    lens-name = "sales",
+    dimensions = ["city"],
+    measures = ["revenue"],
+    filters = [LensFilter { table = "orders", column = "discount", value = LfInt 1 }],
+    limit = 0
+  }
+
+  avg-q : LensQuery
+  avg-q = LensQuery { lens-name = "sales", dimensions = ["city"], measures = ["total-credit", "avg-order"], filters = [], limit = 0 }
+
+  region-q : LensQuery
+  region-q = LensQuery { lens-name = "sales", dimensions = ["region"], measures = ["revenue"], filters = [], limit = 0 }
+
+  diamond-q : LensQuery
+  diamond-q = LensQuery { lens-name = "diamond", dimensions = ["tname"], measures = ["fsum"], filters = [], limit = 0 }
+
+  month-q : LensQuery
+  month-q = LensQuery { lens-name = "sales", dimensions = ["order-month"], measures = ["revenue"], filters = [], limit = 0 }
+
+  city-month-q : LensQuery
+  city-month-q = LensQuery { lens-name = "sales", dimensions = ["city", "order-month"], measures = ["revenue"], filters = [], limit = 0 }
+
+Section: Display
+
+  fmt-val : ColumnValue -> Text
+  fmt-val (v) =
+    when v
+      is ValInteger (n) -> show n
+      is ValText (t) -> t
+      is ValBoolean (b) -> if b then "True" else "False"
+      is ValNull -> "NULL"
+
+  fmt-vals : List ColumnValue, Integer, Integer, Text -> Text
+  fmt-vals (vals) (i) (len) (acc) =
+    if i >= len then acc
+    else let v = list-at vals i
+    in let sep = if i > 0 then " | " else ""
+    in fmt-vals vals (i + 1) len (acc & sep & fmt-val v)
+
+  fmt-rows : List RowData, Integer, Integer, Text -> Text
+  fmt-rows (rows) (i) (len) (acc) =
+    if i >= len then acc
+    else let row = list-at rows i
+    in let line = "  " & fmt-vals (row.values) 0 (list-length (row.values)) ""
+    in let sep = if i > 0 then "\n" else ""
+    in fmt-rows rows (i + 1) len (acc & sep & line)
+
+  fmt-qr : QueryResult -> Text
+  fmt-qr (qr) =
+    if qr.qr-ok == False then "ERROR: " & qr.qr-msg
+    else fmt-rows (qr.qr-rows) 0 (qr.qr-count) ""
+
+Section: Body
+
+  opening : [Console] Nothing = act
+    print-line-uni "=== lens query test: grain-correct planning ==="
+    let cat = build-star
+    in let revenue-qr = lens-run cat sales-model revenue-by-city-q
+    in let fanout-plan = lens-plan sales-model fanout-q
+    in let fanout-qr = lens-run cat sales-model fanout-q
+    in let bad = lens-plan sales-model unknown-q
+    in let two-dim-qr = lens-run cat sales-model two-dim-q
+    in let filtered-plan = lens-plan sales-model filtered-q
+    in let filtered-qr = lens-run cat sales-model filtered-q
+    in let bad-filter = lens-plan sales-model bad-filter-q
+    in let avg-qr = lens-run cat sales-model avg-q
+    in let region-plan = lens-plan sales-model region-q
+    in let region-qr = lens-run cat sales-model region-q
+    in let diamond = lens-plan diamond-model diamond-q
+    in let month-qr = lens-run cat sales-model month-q
+    in let city-month-plan = lens-plan sales-model city-month-q
+    in let city-month-qr = lens-run cat sales-model city-month-q
+    in act
+      print-line-uni "-- revenue by city (city | revenue)"
+      print-line-uni (fmt-qr revenue-qr)
+      print-line-uni "-- fan-out plan"
+      print-line-uni (explain (fanout-plan.plan-op) 0)
+      print-line-uni "-- fan-out: credit and revenue by city (city | total-credit | revenue)"
+      print-line-uni (fmt-qr fanout-qr)
+      print-line-uni "-- unknown measure is a diagnostic, not a plan"
+      print-line-uni (lp-render-diags (bad.plan-diags) 0 "")
+      print-line-uni "-- two dims, two measures (city | user-name | total-credit | revenue)"
+      print-line-uni (fmt-qr two-dim-qr)
+      print-line-uni "-- filtered fan-out plan (filter under the revenue group)"
+      print-line-uni (explain (filtered-plan.plan-op) 0)
+      print-line-uni "-- product 1 only: credit and revenue by city (city | total-credit | revenue)"
+      print-line-uni (fmt-qr filtered-qr)
+      print-line-uni "-- unknown filter column is a diagnostic, not a plan"
+      print-line-uni (lp-render-diags (bad-filter.plan-diags) 0 "")
+      print-line-uni "-- grain-correct average across the join (city | total-credit | avg-order)"
+      print-line-uni (fmt-qr avg-qr)
+      print-line-uni "-- multi-hop plan (orders -> users -> regions)"
+      print-line-uni (explain (region-plan.plan-op) 0)
+      print-line-uni "-- revenue by region, two hops away (region | revenue)"
+      print-line-uni (fmt-qr region-qr)
+      print-line-uni "-- two paths to one table is a diagnostic, not a plan"
+      print-line-uni (lp-render-diags (diamond.plan-diags) 0 "")
+      print-line-uni "-- revenue by month bucket (order-date__month | revenue)"
+      print-line-uni (fmt-qr month-qr)
+      print-line-uni "-- bucketed plan across a join (derive under the home-grain group)"
+      print-line-uni (explain (city-month-plan.plan-op) 0)
+      print-line-uni "-- revenue by city and month (city | order-date__month | revenue)"
+      print-line-uni (fmt-qr city-month-qr)
+      print-line-uni "lens-query-test: done"
+    end
+  end
+
+Page 1

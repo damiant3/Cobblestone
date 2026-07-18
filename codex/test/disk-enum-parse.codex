@@ -1,0 +1,67 @@
+Chapter: DiskEnumParseTest
+  cites Works chapter GopEnum
+
+ Exercises GopEnum's pure identify decoders against fixtures whose
+ byte values were derived by hand from the specs, not from the code
+ under test: the ATA model string is poked in the spec's swapped-pair
+ order (word = first char high, words little-endian on the wire), the
+ sector counts sit at word offsets 60-61 and 100-103, the NVMe model
+ at byte 24 of the controller page, the INQUIRY vendor and product at
+ bytes 8 and 16, and the FAT labels at BPB offsets 43 and 71. A
+ decoder that reads the wrong offset, skips the unswap, or feeds raw
+ ASCII to code-to-char without from-unicode cannot match the expected
+ text. The stop cases pin the printable guard: decoding must end at a
+ control byte or a high byte instead of smearing it into the name.
+
+Section: Fixture Fill
+
+  fill-bytes : Integer, Integer, List Integer, Integer -> Integer
+  fill-bytes (buf) (off) (bs) (i) =
+    if i >= list-length bs then 0
+    else let p = poke-byte buf (off + i) (list-at bs i)
+    in fill-bytes buf off bs (i + 1)
+
+  fill-const : Integer, Integer, Integer, Integer -> Integer
+  fill-const (buf) (off) (n) (v) =
+    if n <= 0 then 0
+    else let p = poke-byte buf off v
+    in fill-const buf (off + 1) (n - 1) v
+
+Section: Main
+
+  opening : [Console] Nothing = act
+    let ata = alloc-zeroed 512 64
+    in let nvm = alloc-zeroed 128 64
+    in let inq = alloc-zeroed 64 64
+    in let inq2 = alloc-zeroed 64 64
+    in let bpb = alloc-zeroed 128 64
+    in let gbuf = alloc-zeroed 16 64
+    in act
+      let f0 = fill-bytes ata 54 [69, 81, 85, 77, 72, 32, 82, 65, 68, 68, 83, 73, 32, 75] 0
+      in let f1 = fill-const ata 68 26 32
+      in let s0 = poke-32 ata 120 65536
+      in let s1 = poke-32 ata 200 4194304
+      in print-line-uni ("ata-model: " & enum-ata-model ata)
+      print-line-uni ("ata-sectors-wide: " & show (enum-ata-sectors ata))
+      let z0 = poke-32 ata 200 0
+      in print-line-uni ("ata-sectors-narrow: " & show (enum-ata-sectors ata))
+      print-line-uni ("size-mb: " & show (enum-size-mb 4194304))
+      let f2 = fill-bytes nvm 24 [81, 69, 77, 85, 32, 78, 86, 77, 101, 32, 67, 116, 114, 108, 32, 32] 0
+      in print-line-uni ("nvme-model: " & enum-nvme-model nvm)
+      let f3 = fill-bytes inq 8 [81, 69, 77, 85, 32, 32, 32, 32] 0
+      in let f4 = fill-bytes inq 16 [85, 83, 66, 32, 72, 65, 82, 68, 68, 73, 83, 75, 32, 32, 32, 32] 0
+      in print-line-uni ("usb-model: " & enum-usb-model inq)
+      let f5 = fill-const inq2 8 8 32
+      in let f6 = fill-bytes inq2 16 [83, 84, 73, 67, 75] 0
+      in print-line-uni ("usb-model-novendor: " & enum-usb-model inq2)
+      let f7 = fill-bytes bpb 43 [67, 79, 68, 69, 88, 32, 66, 79, 79, 84, 32] 0
+      in let f8 = fill-bytes bpb 71 [69, 83, 80, 32, 86, 79, 76, 32, 32, 32, 32] 0
+      in print-line-uni ("label16: " & enum-fat-label bpb False)
+      print-line-uni ("label32: " & enum-fat-label bpb True)
+      let f9 = fill-bytes gbuf 0 [65, 66, 7, 67] 0
+      in print-line-uni ("ascii-stop-low: " & enum-ascii gbuf 0 4)
+      let fa = fill-bytes gbuf 8 [88, 200, 89] 0
+      in print-line-uni ("ascii-stop-high: " & enum-ascii gbuf 8 3)
+      print-line-uni ("kinds: " & enum-kind-name 1 & " " & enum-kind-name 2 & " " & enum-kind-name 3 & " " & enum-kind-name 4 & " " & enum-kind-name 0)
+    end
+  end

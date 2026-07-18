@@ -40,7 +40,12 @@ CELL_W              EQU 08008h
 CELL_H              EQU 08010h
 CELL_STRIDE         EQU 08018h
 CELL_HEAP           EQU 08020h
+CELL_RSDP           EQU 08028h        ; ACPI RSDP pointer, 0 if firmware exposed none
 CELL_ENTROPY        EQU 07770h        ; device seed: 32 bytes (kernel cell 30576)
+
+SYS_CFG_COUNT       EQU 068h          ; SystemTable.NumberOfTableEntries
+SYS_CFG_TABLE       EQU 070h          ; SystemTable.ConfigurationTable
+CFG_ENTRY_SIZE      EQU 018h          ; sizeof(EFI_CONFIGURATION_TABLE)
 
 DECK_POS_ADDR       EQU 07030h
 HEAP_HWM_ADDR       EQU 07038h
@@ -148,6 +153,52 @@ pd_l:
     lea     rax, [rbp+HEAPBASE_OFF]
     mov     [CELL_HEAP], rax
 
+    ; ---- capture the ACPI RSDP from the UEFI configuration table ----
+    ; The RSDP is not a protocol -- LocateProtocol cannot find it. It is a
+    ; vendor table hanging off SystemTable.ConfigurationTable, keyed by GUID.
+    ; The SystemTable, the configuration table, and the ACPI tables all
+    ; survive ExitBootServices (runtime memory), and our identity map covers
+    ; them, so the walk is safe here. Prefer the ACPI 2.0 GUID (its RSDP has
+    ; an XSDT) and fall back to the 1.0 GUID. Zero means the firmware exposed
+    ; neither, and the payload reports "no ACPI" rather than guessing.
+    xor     r8, r8                       ; r8 = ACPI 1.0 RSDP candidate
+    xor     r9, r9                       ; r9 = ACPI 2.0 RSDP candidate
+    mov     rcx, [r15+SYS_CFG_COUNT]
+    mov     rdx, [r15+SYS_CFG_TABLE]
+    test    rcx, rcx
+    jz      acpi_done
+    test    rdx, rdx
+    jz      acpi_done
+cfg_loop:
+    lea     rax, acpi20_guid
+    mov     r11, [rax]
+    cmp     r11, [rdx]
+    jne     cfg_try10
+    mov     r11, [rax+8]
+    cmp     r11, [rdx+8]
+    jne     cfg_try10
+    mov     r9, [rdx+16]
+    jmp     cfg_next
+cfg_try10:
+    lea     rax, acpi10_guid
+    mov     r11, [rax]
+    cmp     r11, [rdx]
+    jne     cfg_next
+    mov     r11, [rax+8]
+    cmp     r11, [rdx+8]
+    jne     cfg_next
+    mov     r8, [rdx+16]
+cfg_next:
+    add     rdx, CFG_ENTRY_SIZE
+    dec     rcx
+    jnz     cfg_loop
+acpi_done:
+    test    r9, r9
+    jnz     acpi_store
+    mov     r9, r8
+acpi_store:
+    mov     [CELL_RSDP], r9
+
     ; ---- device entropy seed: 32 hardware-random bytes to CELL_ENTROPY ----
     ; CPUID.01H:ECX[30] gates RDRAND; each qword retries up to 32 times
     ; (transient CF=0 is architectural), then degrades to RDTSC for that
@@ -216,6 +267,16 @@ efi_main ENDP
     ALIGN 16
 gop_guid:
     BYTE 0DEh,0A9h,042h,090h, 0DCh,023h, 038h,04Ah, 096h,0FBh,07Ah,0DEh,0D0h,080h,051h,06Ah
+
+    ; EFI_ACPI_20_TABLE_GUID  8868e871-e4f1-11d3-bc22-0080c73c8881
+    ALIGN 16
+acpi20_guid:
+    BYTE 071h,0E8h,068h,088h, 0F1h,0E4h, 0D3h,011h, 0BCh,022h,000h,080h,0C7h,03Ch,088h,081h
+
+    ; ACPI_TABLE_GUID (1.0)   eb9d2d30-2d88-11d3-9a16-0090273fc14d
+    ALIGN 16
+acpi10_guid:
+    BYTE 030h,02Dh,09Dh,0EBh, 088h,02Dh, 0D3h,011h, 09Ah,016h,000h,090h,027h,03Fh,0C1h,04Dh
 
 ; CDX payload ([cdx .text][cdx .rodata]) is appended here by the build wrapper.
     ALIGN 16

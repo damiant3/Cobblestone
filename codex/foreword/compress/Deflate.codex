@@ -1,25 +1,562 @@
 Chapter: Deflate
+  cites Compress chapter Lz77
 
- Deflate compression (RFC 1951) — stored blocks (BTYPE=00). Each
- block carries a 5-byte header (BFINAL, LEN, NLEN) followed by
- verbatim data. Block size is capped at 65535 bytes per the RFC.
- This is the simplest RFC-compliant Deflate: correct framing,
- correct round-trip, no entropy coding. LZ77+Huffman compressed
- blocks (BTYPE=01/02) are a future extension.
+ Deflate (RFC 1951). Stored blocks (BTYPE=00), fixed-Huffman compressed blocks
+ (BTYPE=01), dynamic-Huffman compressed blocks (BTYPE=02), a chooser that emits
+ the smallest of the three, and a decoder for all of them.
 
- To deflate-compress gives RFC 1951 stored-block compressed bytes.
- To deflate-decompress gives original bytes from stored-block input.
+ This chapter used to emit stored blocks only. That was correct RFC 1951 and it
+ was not compression: a stored block is the input verbatim behind a five-byte
+ header, so deflate-compress returned MORE bytes than it was given, and every
+ caller reaching for Gzip -- the de facto name for "make this smaller" -- got a
+ valid gzip stream 23 bytes larger than its input. Nothing caught it for the
+ same reason nothing ever catches a pass-through: the tests asserted a
+ round-trip, and a pipe round-trips perfectly. A ROUND-TRIP TEST CANNOT TELL A
+ COMPRESSOR FROM A PIPE. The tests here now assert the output is SMALLER, which
+ is the one assertion a stored-block implementation cannot pass.
+
+ What compression is, in this format: repeated byte runs become back-references,
+ and the resulting symbols are entropy-coded. Both halves are needed. Literals
+ alone under the fixed code cost 8 bits each for 0-143 -- no gain whatsoever over
+ the input -- so it is the back-references that pay and the fixed code that makes
+ them cheap.
+
+ The matcher is Lz77's, unchanged: a 255-byte window and a 255-byte maximum
+ match. RFC 1951 permits a 32768-byte window and matches up to 258, so ours is a
+ legal subset -- every stream this emits is readable by any decoder, we simply
+ find fewer matches than zlib would. Borrowing a matcher we already have and
+ already test beats writing a second one to find a few more.
+
+ BTYPE=02 (dynamic Huffman, where the code table is built from the data and
+ shipped with the block) closes most of the remaining ratio gap against zlib on
+ skewed data. It is deflate-compress-dynamic, below.
+
+ What the fixed code cannot do is decline. It spends nine bits on every byte
+ 144..255, so high-byte or random input comes out LARGER than it went in.
+ deflate-compress-best runs all three encoders and keeps the shortest, so the
+ worst case is the stored block -- the input plus a five-byte header -- and
+ never the fixed code's growth. A caller that means "make this smaller, and
+ never larger" wants deflate-compress-best.
+
+ To deflate-compress gives RFC 1951 fixed-Huffman compressed bytes.
+ To deflate-compress-dynamic gives RFC 1951 dynamic-Huffman compressed bytes,
+ with a code table built from the data's own frequencies.
+ To deflate-compress-stored gives RFC 1951 stored-block bytes, which compress
+ nothing and are the honest answer for data that does not compress.
+ To deflate-compress-best gives whichever of the three is smallest.
+ To deflate-decompress gives the original bytes from any block type.
 
  We say:
 
 Section: Constants
 
   deflate-max-block : Integer = 65535
+  deflate-end-of-block : Integer = 256
 
-Section: Compression (Stored Blocks)
+Section: The Bit Writer
+
+ RFC 1951 section 3.1.1, and getting this backwards is the classic way to emit a
+ stream that looks right and decodes to noise: everything EXCEPT a Huffman code
+ is packed least-significant-bit first, and a Huffman code is packed
+ most-significant-bit first. So the block header and every extra-bits field go
+ through bw-bits, and every code goes through bw-code.
+
+  BitWriter = record {
+    bw-bytes : List Integer,
+    bw-cur : Integer,
+    bw-nbits : Integer
+  }
+
+  bw-empty : BitWriter
+  bw-empty = BitWriter { bw-bytes = [], bw-cur = 0, bw-nbits = 0 }
+
+  bw-bit : BitWriter, Integer -> BitWriter
+  bw-bit (w) (b) =
+    let cur = bit-or (w.bw-cur) (bit-shl (bit-and b 1) (w.bw-nbits))
+    in if w.bw-nbits == 7
+      then BitWriter { bw-bytes = list-push (w.bw-bytes) cur, bw-cur = 0, bw-nbits = 0 }
+      else BitWriter { bw-bytes = w.bw-bytes, bw-cur = cur, bw-nbits = w.bw-nbits + 1 }
+
+  bw-bits : BitWriter, Integer, Integer -> BitWriter
+  bw-bits (w) (val) (n) = bw-bits-loop w val n 0
+
+  bw-bits-loop : BitWriter, Integer, Integer, Integer -> BitWriter
+  bw-bits-loop (w) (val) (n) (i) =
+    if i >= n then w
+    else bw-bits-loop (bw-bit w (bit-and (bit-shru val i) 1)) val n (i + 1)
+
+  bw-code : BitWriter, Integer, Integer -> BitWriter
+  bw-code (w) (code) (n) = bw-code-loop w code n (n - 1)
+
+  bw-code-loop : BitWriter, Integer, Integer, Integer -> BitWriter
+  bw-code-loop (w) (code) (n) (i) =
+    if i < 0 then w
+    else bw-code-loop (bw-bit w (bit-and (bit-shru code i) 1)) code n (i - 1)
+
+  bw-finish : BitWriter -> List Integer
+  bw-finish (w) =
+    if w.bw-nbits == 0 then w.bw-bytes else list-push (w.bw-bytes) (w.bw-cur)
+
+Section: The Fixed Code
+
+ Section 3.2.6's table as two functions. The boundaries are not decoration:
+ 0-143 cost 8 bits and 144-255 cost NINE, so a stream of high bytes under the
+ fixed code is larger than its input. That is the format's bet that most data is
+ mostly low bytes.
+
+  fixed-lit-bits : Integer -> Integer
+  fixed-lit-bits (sym) =
+    if sym <= 143 then 8
+    else if sym <= 255 then 9
+    else if sym <= 279 then 7
+    else 8
+
+  fixed-lit-code : Integer -> Integer
+  fixed-lit-code (sym) =
+    if sym <= 143 then 48 + sym
+    else if sym <= 255 then 400 + (sym - 144)
+    else if sym <= 279 then sym - 256
+    else 192 + (sym - 280)
+
+Section: Length And Distance Codes
+
+ Section 3.2.5. A match length of 3..258 becomes a symbol 257..285 plus extra
+ bits; a distance of 1..32768 becomes a symbol 0..29 plus extra bits. The
+ encoder and the decoder share these base and extra functions, so the two
+ directions cannot disagree about the table.
+
+  len-extra : Integer -> Integer
+  len-extra (c) =
+    if c <= 264 then 0
+    else if c == 285 then 0
+    else (c - 261) / 4
+
+  len-base : Integer -> Integer
+  len-base (c) =
+    if c <= 264 then c - 254
+    else if c == 285 then 258
+    else if c <= 268 then 11 + (c - 265) * 2
+    else if c <= 272 then 19 + (c - 269) * 4
+    else if c <= 276 then 35 + (c - 273) * 8
+    else if c <= 280 then 67 + (c - 277) * 16
+    else 131 + (c - 281) * 32
+
+  len-code-for : Integer -> Integer
+  len-code-for (l) =
+    if l <= 10 then 257 + (l - 3)
+    else if l == 258 then 285
+    else if l <= 18 then 265 + (l - 11) / 2
+    else if l <= 34 then 269 + (l - 19) / 4
+    else if l <= 66 then 273 + (l - 35) / 8
+    else if l <= 130 then 277 + (l - 67) / 16
+    else 281 + (l - 131) / 32
+
+  dist-extra : Integer -> Integer
+  dist-extra (c) = if c < 4 then 0 else (c - 2) / 2
+
+  dist-base : Integer -> Integer
+  dist-base (c) =
+    if c < 4 then c + 1
+    else let e = dist-extra c
+    in bit-shl 1 (e + 1) + 1 + (c - (c / 2) * 2) * bit-shl 1 e
+
+  dist-code-for : Integer -> Integer
+  dist-code-for (d) =
+    if d <= 4 then d - 1
+    else if d <= 8 then 4 + (d - 5) / 2
+    else if d <= 16 then 6 + (d - 9) / 4
+    else if d <= 32 then 8 + (d - 17) / 8
+    else if d <= 64 then 10 + (d - 33) / 16
+    else if d <= 128 then 12 + (d - 65) / 32
+    else if d <= 256 then 14 + (d - 129) / 64
+    else if d <= 512 then 16 + (d - 257) / 128
+    else if d <= 1024 then 18 + (d - 513) / 256
+    else if d <= 2048 then 20 + (d - 1025) / 512
+    else if d <= 4096 then 22 + (d - 2049) / 1024
+    else if d <= 8192 then 24 + (d - 4097) / 2048
+    else if d <= 16384 then 26 + (d - 8193) / 4096
+    else 28 + (d - 16385) / 8192
+
+Section: Compression (Fixed Huffman)
+
+ One block for the whole input. A fixed-Huffman block has no length cap -- only
+ a stored block does -- so there is nothing to chunk.
+
+ The header is three bits: BFINAL=1, then BTYPE=01, both least-significant-bit
+ first, which puts 0b011 in the low bits of the first byte.
 
   deflate-compress : List Integer -> List Integer
   deflate-compress (input) =
+    let w0 = bw-bits (bw-bits bw-empty 1 1) 1 2
+    in let w1 = deflate-emit-symbols w0 input 0 (list-length input)
+    in let w2 = bw-code w1 (fixed-lit-code deflate-end-of-block) (fixed-lit-bits deflate-end-of-block)
+    in bw-finish w2
+
+  deflate-emit-symbols : BitWriter, List Integer, Integer, Integer -> BitWriter
+  deflate-emit-symbols (w) (input) (pos) (len) =
+    if pos >= len then w
+    else when lz77-find-match input pos len
+      is Lz77Match (off) (mlen) -> deflate-emit-symbols (deflate-emit-match w mlen off) input (pos + mlen) len
+      is Lz77Literal (b) -> deflate-emit-symbols (deflate-emit-literal w b) input (pos + 1) len
+
+  deflate-emit-literal : BitWriter, Integer -> BitWriter
+  deflate-emit-literal (w) (b) = bw-code w (fixed-lit-code b) (fixed-lit-bits b)
+
+ A match is four fields in order: the length symbol, its extra bits, the
+ distance symbol, its extra bits. The distance symbol is a five-bit Huffman code
+ and goes most-significant-bit first like any other code; the extra bits do not.
+
+  deflate-emit-match : BitWriter, Integer, Integer -> BitWriter
+  deflate-emit-match (w) (mlen) (dist) =
+    let lc = len-code-for mlen
+    in let w1 = bw-code w (fixed-lit-code lc) (fixed-lit-bits lc)
+    in let w2 = bw-bits w1 (mlen - len-base lc) (len-extra lc)
+    in let dc = dist-code-for dist
+    in let w3 = bw-code w2 dc 5
+    in bw-bits w3 (dist - dist-base dc) (dist-extra dc)
+
+Section: Dynamic Huffman -- Canonical Codes
+
+ RFC 1951 section 3.2.2. A dynamic block ships its own code table, built from the
+ data's own symbol frequencies, so the decoder rebuilds the exact codes from the
+ code LENGTHS alone. Everything here works on a lengths array indexed by symbol
+ (0 = symbol unused). The codes are canonical: symbols are ordered by (length,
+ then symbol), and codes are assigned in increasing numeric order within each
+ length. Encoder and decoder derive the same assignment from the same lengths.
+
+  DhNode =
+    | DhLeaf (Integer) (Integer)
+    | DhBranch (Integer) (DhNode) (DhNode)
+
+  dh-node-freq : DhNode -> Integer
+  dh-node-freq (n) = when n
+    is DhLeaf (s) (f) -> f
+    is DhBranch (f) (l) (r) -> f
+
+  dh-zeros : Integer, Integer, List Integer -> List Integer
+  dh-zeros (n) (i) (acc) =
+    if i >= n then acc
+    else dh-zeros n (i + 1) (list-push acc 0)
+
+  dh-leaves : List Integer, Integer, Integer, List DhNode -> List DhNode
+  dh-leaves (freq) (i) (nsym) (acc) =
+    if i >= nsym then acc
+    else if list-at freq i > 0 then dh-leaves freq (i + 1) nsym (list-push acc (DhLeaf i (list-at freq i)))
+    else dh-leaves freq (i + 1) nsym acc
+
+  dh-find-min : List DhNode, Integer, Integer, Integer -> Integer
+  dh-find-min (nodes) (i) (len) (best) =
+    if i >= len then best
+    else if dh-node-freq (list-at nodes i) < dh-node-freq (list-at nodes best) then dh-find-min nodes (i + 1) len i
+    else dh-find-min nodes (i + 1) len best
+
+  dh-remove-at : List DhNode, Integer, Integer, Integer, List DhNode -> List DhNode
+  dh-remove-at (nodes) (skip) (len) (i) (acc) =
+    if i >= len then acc
+    else if i == skip then dh-remove-at nodes skip len (i + 1) acc
+    else dh-remove-at nodes skip len (i + 1) (list-push acc (list-at nodes i))
+
+  dh-merge : List DhNode, Integer -> DhNode
+  dh-merge (nodes) (count) =
+    if count <= 1 then list-at nodes 0
+    else let i1 = dh-find-min nodes 0 count 0
+    in let n1 = list-at nodes i1
+    in let r1 = dh-remove-at nodes i1 count 0 []
+    in let i2 = dh-find-min r1 0 (count - 1) 0
+    in let n2 = list-at r1 i2
+    in let r2 = dh-remove-at r1 i2 (count - 1) 0 []
+    in dh-merge (list-push r2 (DhBranch (dh-node-freq n1 + dh-node-freq n2) n1 n2)) (count - 1)
+
+  dh-walk : DhNode, Integer, List Integer -> List Integer
+  dh-walk (node) (depth) (lengths) = when node
+    is DhLeaf (s) (f) -> list-set-at lengths s (if depth == 0 then 1 else depth)
+    is DhBranch (f) (l) (r) -> dh-walk r (depth + 1) (dh-walk l (depth + 1) lengths)
+
+  dh-lengths-from-freq : List Integer, Integer -> List Integer
+  dh-lengths-from-freq (freq) (nsym) =
+    let leaves = dh-leaves freq 0 nsym []
+    in let count = list-length leaves
+    in if count == 0 then dh-zeros nsym 0 []
+    else dh-walk (dh-merge leaves count) 0 (dh-zeros nsym 0 [])
+
+  dh-max-len : List Integer, Integer, Integer, Integer -> Integer
+  dh-max-len (lengths) (i) (n) (best) =
+    if i >= n then best
+    else let v = list-at lengths i
+    in dh-max-len lengths (i + 1) n (if v > best then v else best)
+
+  dh-bl-count : List Integer, Integer -> List Integer
+  dh-bl-count (lengths) (nsym) =
+    let maxlen = dh-max-len lengths 0 nsym 0
+    in dh-bl-count-loop lengths 0 nsym (dh-zeros (maxlen + 1) 0 [])
+
+  dh-bl-count-loop : List Integer, Integer, Integer, List Integer -> List Integer
+  dh-bl-count-loop (lengths) (i) (nsym) (acc) =
+    if i >= nsym then acc
+    else let l = list-at lengths i
+    in if l > 0 then dh-bl-count-loop lengths (i + 1) nsym (list-set-at acc l (list-at acc l + 1))
+    else dh-bl-count-loop lengths (i + 1) nsym acc
+
+  dh-next-code : List Integer -> List Integer
+  dh-next-code (bl) =
+    let maxlen = list-length bl - 1
+    in dh-next-code-loop bl 1 maxlen 0 (dh-zeros (maxlen + 1) 0 [])
+
+  dh-next-code-loop : List Integer, Integer, Integer, Integer, List Integer -> List Integer
+  dh-next-code-loop (bl) (len) (maxlen) (code) (acc) =
+    if len > maxlen then acc
+    else let code2 = bit-shl (code + list-at bl (len - 1)) 1
+    in dh-next-code-loop bl (len + 1) maxlen code2 (list-set-at acc len code2)
+
+  dh-canon-codes : List Integer, Integer -> List Integer
+  dh-canon-codes (lengths) (nsym) =
+    let bl = dh-bl-count lengths nsym
+    in let nc = dh-next-code bl
+    in dh-assign-codes lengths 0 nsym nc (dh-zeros nsym 0 [])
+
+  dh-assign-codes : List Integer, Integer, Integer, List Integer, List Integer -> List Integer
+  dh-assign-codes (lengths) (i) (nsym) (nc) (codes) =
+    if i >= nsym then codes
+    else let l = list-at lengths i
+    in if l > 0 then
+         let c = list-at nc l
+         in dh-assign-codes lengths (i + 1) nsym (list-set-at nc l (c + 1)) (list-set-at codes i c)
+       else dh-assign-codes lengths (i + 1) nsym nc codes
+
+  dh-sorted-syms : List Integer, Integer -> List Integer
+  dh-sorted-syms (lengths) (nsym) =
+    let maxlen = dh-max-len lengths 0 nsym 0
+    in dh-sorted-outer lengths nsym maxlen 1 []
+
+  dh-sorted-outer : List Integer, Integer, Integer, Integer, List Integer -> List Integer
+  dh-sorted-outer (lengths) (nsym) (maxlen) (len) (acc) =
+    if len > maxlen then acc
+    else dh-sorted-outer lengths nsym maxlen (len + 1) (dh-sorted-inner lengths nsym len 0 acc)
+
+  dh-sorted-inner : List Integer, Integer, Integer, Integer, List Integer -> List Integer
+  dh-sorted-inner (lengths) (nsym) (len) (sym) (acc) =
+    if sym >= nsym then acc
+    else if list-at lengths sym == len then dh-sorted-inner lengths nsym len (sym + 1) (list-push acc sym)
+    else dh-sorted-inner lengths nsym len (sym + 1) acc
+
+  DhTable = record {
+    t-bl : List Integer,
+    t-syms : List Integer,
+    t-maxlen : Integer
+  }
+
+  dh-table-of : List Integer, Integer -> DhTable
+  dh-table-of (lengths) (nsym) = DhTable {
+    t-bl = dh-bl-count lengths nsym,
+    t-syms = dh-sorted-syms lengths nsym,
+    t-maxlen = dh-max-len lengths 0 nsym 0
+  }
+
+  DhSymRead = record {
+    dr-sym : Integer,
+    dr-reader : BitReader
+  }
+
+  dh-decode-sym : BitReader, DhTable -> DhSymRead
+  dh-decode-sym (r) (t) = dh-decode-loop r (t.t-bl) (t.t-syms) (t.t-maxlen) 1 0 0 0
+
+  dh-decode-loop : BitReader, List Integer, List Integer, Integer, Integer, Integer, Integer, Integer -> DhSymRead
+  dh-decode-loop (r) (bl) (syms) (maxlen) (len) (code) (first) (index) =
+    if len > maxlen then DhSymRead { dr-sym = 0, dr-reader = r }
+    else let code2 = bit-or code (br-bit r)
+    in let r2 = br-advance r 1
+    in let count = list-at bl len
+    in if code2 - count < first then DhSymRead { dr-sym = list-at syms (index + (code2 - first)), dr-reader = r2 }
+    else dh-decode-loop r2 bl syms maxlen (len + 1) (bit-shl code2 1) (bit-shl (first + count) 1) (index + count)
+
+Section: Dynamic Huffman -- Compression
+
+ One dynamic block for the whole input. Two passes: tokenize with the Lz77
+ matcher and count symbol frequencies, then build the canonical codes and emit.
+ If any code length exceeds the RFC limit (15 for literals and distances, 7 for
+ the code-length alphabet) the block falls back to fixed Huffman, which is always
+ valid -- length-limiting is not implemented, so we decline the block rather than
+ emit an illegal code.
+
+  DhTok =
+    | DhLit (Integer)
+    | DhMat (Integer) (Integer)
+
+  dh-tokenize : List Integer, Integer, Integer, List DhTok -> List DhTok
+  dh-tokenize (input) (pos) (len) (acc) =
+    if pos >= len then acc
+    else when lz77-find-match input pos len
+      is Lz77Match (off) (mlen) -> dh-tokenize input (pos + mlen) len (list-push acc (DhMat mlen off))
+      is Lz77Literal (b) -> dh-tokenize input (pos + 1) len (list-push acc (DhLit b))
+
+  dh-count-litlen : List DhTok, Integer, Integer, List Integer -> List Integer
+  dh-count-litlen (toks) (i) (n) (freq) =
+    if i >= n then freq
+    else when list-at toks i
+      is DhLit (b) -> dh-count-litlen toks (i + 1) n (list-set-at freq b (list-at freq b + 1))
+      is DhMat (l) (d) -> let c = len-code-for l in dh-count-litlen toks (i + 1) n (list-set-at freq c (list-at freq c + 1))
+
+  dh-count-dist : List DhTok, Integer, Integer, List Integer -> List Integer
+  dh-count-dist (toks) (i) (n) (freq) =
+    if i >= n then freq
+    else when list-at toks i
+      is DhLit (b) -> dh-count-dist toks (i + 1) n freq
+      is DhMat (l) (d) -> let c = dist-code-for d in dh-count-dist toks (i + 1) n (list-set-at freq c (list-at freq c + 1))
+
+  dh-any-positive : List Integer, Integer, Integer -> Boolean
+  dh-any-positive (arr) (i) (n) =
+    if i >= n then False
+    else if list-at arr i > 0 then True
+    else dh-any-positive arr (i + 1) n
+
+  dh-highest : List Integer, Integer -> Integer
+  dh-highest (lengths) (i) =
+    if i < 0 then 0
+    else if list-at lengths i > 0 then i
+    else dh-highest lengths (i - 1)
+
+  dh-num-used : List Integer, Integer, Integer -> Integer
+  dh-num-used (lengths) (nsym) (minv) =
+    let n = dh-highest lengths (nsym - 1) + 1
+    in if n < minv then minv else n
+
+  DhCl = record {
+    dc-sym : Integer,
+    dc-extra : Integer,
+    dc-nbits : Integer
+  }
+
+  dh-run-eq : List Integer, Integer, Integer, Integer, Integer -> Integer
+  dh-run-eq (seq) (i) (n) (v) (acc) =
+    if i >= n then acc
+    else if list-at seq i == v then dh-run-eq seq (i + 1) n v (acc + 1)
+    else acc
+
+  dh-append-range : List Integer, Integer, Integer, List Integer -> List Integer
+  dh-append-range (arr) (n) (i) (acc) =
+    if i >= n then acc
+    else dh-append-range arr n (i + 1) (list-push acc (list-at arr i))
+
+  dh-cl-seq : List Integer, Integer, List Integer, Integer -> List Integer
+  dh-cl-seq (litlen) (numLit) (dist) (numDist) =
+    dh-append-range dist numDist 0 (dh-append-range litlen numLit 0 [])
+
+  dh-rle-16 : Integer, Integer, List DhCl -> List DhCl
+  dh-rle-16 (v) (rem) (acc) =
+    if rem >= 3 then let cnt = if rem > 6 then 6 else rem in dh-rle-16 v (rem - cnt) (list-push acc (DhCl { dc-sym = 16, dc-extra = cnt - 3, dc-nbits = 2 }))
+    else if rem > 0 then dh-rle-16 v (rem - 1) (list-push acc (DhCl { dc-sym = v, dc-extra = 0, dc-nbits = 0 }))
+    else acc
+
+  dh-rle : List Integer, Integer, Integer, List DhCl -> List DhCl
+  dh-rle (seq) (i) (n) (acc) =
+    if i >= n then acc
+    else let v = list-at seq i
+    in if v == 0 then
+         let run = dh-run-eq seq i n 0 0
+         in if run >= 11 then let cnt = if run > 138 then 138 else run in dh-rle seq (i + cnt) n (list-push acc (DhCl { dc-sym = 18, dc-extra = cnt - 11, dc-nbits = 7 }))
+         else if run >= 3 then dh-rle seq (i + run) n (list-push acc (DhCl { dc-sym = 17, dc-extra = run - 3, dc-nbits = 3 }))
+         else dh-rle seq (i + 1) n (list-push acc (DhCl { dc-sym = 0, dc-extra = 0, dc-nbits = 0 }))
+       else
+         let run = dh-run-eq seq i n v 0
+         in let acc1 = list-push acc (DhCl { dc-sym = v, dc-extra = 0, dc-nbits = 0 })
+         in dh-rle seq (i + run) n (dh-rle-16 v (run - 1) acc1)
+
+  dh-count-cl : List DhCl, Integer, Integer, List Integer -> List Integer
+  dh-count-cl (items) (i) (n) (freq) =
+    if i >= n then freq
+    else let it = list-at items i
+    in dh-count-cl items (i + 1) n (list-set-at freq (it.dc-sym) (list-at freq (it.dc-sym) + 1))
+
+  dh-cl-order : Integer -> Integer
+  dh-cl-order (j) = list-at [16, 17, 18, 0, 8, 7, 9, 6, 10, 5, 11, 4, 12, 3, 13, 2, 14, 1, 15] j
+
+  dh-num-cl : List Integer -> Integer
+  dh-num-cl (cllen) = dh-num-cl-loop cllen 18
+
+  dh-num-cl-loop : List Integer, Integer -> Integer
+  dh-num-cl-loop (cllen) (j) =
+    if j < 4 then 4
+    else if list-at cllen (dh-cl-order j) > 0 then j + 1
+    else dh-num-cl-loop cllen (j - 1)
+
+  dh-emit-cl-lengths : BitWriter, List Integer, Integer, Integer -> BitWriter
+  dh-emit-cl-lengths (w) (cllen) (numCl) (j) =
+    if j >= numCl then w
+    else dh-emit-cl-lengths (bw-bits w (list-at cllen (dh-cl-order j)) 3) cllen numCl (j + 1)
+
+  dh-emit-cl-data : BitWriter, List DhCl, Integer, Integer, List Integer, List Integer -> BitWriter
+  dh-emit-cl-data (w) (items) (i) (n) (clcodes) (cllen) =
+    if i >= n then w
+    else let it = list-at items i
+    in let w1 = bw-code w (list-at clcodes (it.dc-sym)) (list-at cllen (it.dc-sym))
+    in let w2 = if it.dc-nbits > 0 then bw-bits w1 (it.dc-extra) (it.dc-nbits) else w1
+    in dh-emit-cl-data w2 items (i + 1) n clcodes cllen
+
+  DhEnc = record {
+    e-codes : List Integer,
+    e-lens : List Integer
+  }
+
+  dh-put : BitWriter, DhEnc, Integer -> BitWriter
+  dh-put (w) (enc) (sym) = bw-code w (list-at (enc.e-codes) sym) (list-at (enc.e-lens) sym)
+
+  dh-emit-tokens : BitWriter, List DhTok, Integer, Integer, DhEnc, DhEnc -> BitWriter
+  dh-emit-tokens (w) (toks) (i) (n) (litenc) (distenc) =
+    if i >= n then w
+    else when list-at toks i
+      is DhLit (b) -> dh-emit-tokens (dh-put w litenc b) toks (i + 1) n litenc distenc
+      is DhMat (l) (dd) ->
+        let lc = len-code-for l
+        in let w1 = dh-put w litenc lc
+        in let w2 = bw-bits w1 (l - len-base lc) (len-extra lc)
+        in let dc = dist-code-for dd
+        in let w3 = dh-put w2 distenc dc
+        in let w4 = bw-bits w3 (dd - dist-base dc) (dist-extra dc)
+        in dh-emit-tokens w4 toks (i + 1) n litenc distenc
+
+  deflate-compress-dynamic : List Integer -> List Integer
+  deflate-compress-dynamic (input) =
+    let toks = dh-tokenize input 0 (list-length input) []
+    in let nt = list-length toks
+    in let lf0 = dh-count-litlen toks 0 nt (dh-zeros 286 0 [])
+    in let lf = list-set-at lf0 256 (list-at lf0 256 + 1)
+    in let df0 = dh-count-dist toks 0 nt (dh-zeros 30 0 [])
+    in let lllen = dh-lengths-from-freq lf 286
+    in let dlen0 = dh-lengths-from-freq df0 30
+    in let dlen = if dh-any-positive dlen0 0 30 then dlen0 else list-set-at dlen0 0 1
+    in if dh-max-len lllen 0 286 0 > 15 then deflate-compress input
+    else if dh-max-len dlen 0 30 0 > 15 then deflate-compress input
+    else dh-emit-dynamic input toks nt lllen dlen
+
+  dh-emit-dynamic : List Integer, List DhTok, Integer, List Integer, List Integer -> List Integer
+  dh-emit-dynamic (input) (toks) (nt) (lllen) (dlen) =
+    let numLit = dh-num-used lllen 286 257
+    in let numDist = dh-num-used dlen 30 1
+    in let seq = dh-cl-seq lllen numLit dlen numDist
+    in let items = dh-rle seq 0 (list-length seq) []
+    in let clf = dh-count-cl items 0 (list-length items) (dh-zeros 19 0 [])
+    in let cllen = dh-lengths-from-freq clf 19
+    in if dh-max-len cllen 0 19 0 > 7 then deflate-compress input
+    else
+      let litcodes = dh-canon-codes lllen 286
+      in let distcodes = dh-canon-codes dlen 30
+      in let clcodes = dh-canon-codes cllen 19
+      in let numCl = dh-num-cl cllen
+      in let w0 = bw-bits (bw-bits bw-empty 1 1) 2 2
+      in let w1 = bw-bits w0 (numLit - 257) 5
+      in let w2 = bw-bits w1 (numDist - 1) 5
+      in let w3 = bw-bits w2 (numCl - 4) 4
+      in let w4 = dh-emit-cl-lengths w3 cllen numCl 0
+      in let w5 = dh-emit-cl-data w4 items 0 (list-length items) clcodes cllen
+      in let litenc = DhEnc { e-codes = litcodes, e-lens = lllen }
+      in let distenc = DhEnc { e-codes = distcodes, e-lens = dlen }
+      in let w6 = dh-emit-tokens w5 toks 0 nt litenc distenc
+      in bw-finish (dh-put w6 litenc deflate-end-of-block)
+
+Section: Compression (Stored Blocks)
+
+  deflate-compress-stored : List Integer -> List Integer
+  deflate-compress-stored (input) =
     let len = list-length input
     in deflate-emit-blocks input len 0
 
@@ -42,22 +579,222 @@ Section: Compression (Stored Blocks)
     in let nlen-hi = bit-and (bit-shru (bit-xor len 65535) 8) 255
     in [bfinal, len-lo, len-hi, nlen-lo, nlen-hi]
 
+Section: Compression (Best Of Three)
+
+ Each of the three encoders emits a complete, self-describing stream with BFINAL
+ set, so deflate-decompress reads whichever one it is handed. This runs all
+ three and keeps the shortest. It is never longer than the stored block, so it
+ never grows the input past the stored header, and it takes the dynamic or fixed
+ win when there is one. The comparison is over the whole stream, not per block --
+ per-block BTYPE selection would recover a little more and is separate work.
+
+ The cost is running the matcher three times (stored does not run it; fixed once,
+ dynamic twice) and holding three candidate outputs before the pick. That is the
+ price of a size comparison over real encoders and is bounded by the input.
+
+  deflate-shorter : List Integer, List Integer -> List Integer
+  deflate-shorter (a) (b) =
+    if list-length a <= list-length b then a else b
+
+  deflate-compress-best : List Integer -> List Integer
+  deflate-compress-best (input) =
+    deflate-shorter (deflate-shorter (deflate-compress-stored input) (deflate-compress input)) (deflate-compress-dynamic input)
+
+Section: The Bit Reader
+
+  BitReader = record {
+    br-bytes : List Integer,
+    br-pos : Integer
+  }
+
+  br-bit : BitReader -> Integer
+  br-bit (r) =
+    let byte-i = (r.br-pos) / 8
+    in if byte-i >= list-length (r.br-bytes) then 0
+    else bit-and (bit-shru (list-at (r.br-bytes) byte-i) ((r.br-pos) - byte-i * 8)) 1
+
+  br-advance : BitReader, Integer -> BitReader
+  br-advance (r) (n) = BitReader { br-bytes = r.br-bytes, br-pos = (r.br-pos) + n }
+
+  br-bits : BitReader, Integer -> Integer
+  br-bits (r) (n) = br-bits-loop r n 0 0
+
+  br-bits-loop : BitReader, Integer, Integer, Integer -> Integer
+  br-bits-loop (r) (n) (i) (acc) =
+    if i >= n then acc
+    else br-bits-loop (br-advance r 1) n (i + 1) (bit-or acc (bit-shl (br-bit r) i))
+
+  br-code : BitReader, Integer -> Integer
+  br-code (r) (n) = br-code-loop r n 0 0
+
+  br-code-loop : BitReader, Integer, Integer, Integer -> Integer
+  br-code-loop (r) (n) (i) (acc) =
+    if i >= n then acc
+    else br-code-loop (br-advance r 1) n (i + 1) (bit-or (bit-shl acc 1) (br-bit r))
+
+  br-align : BitReader -> BitReader
+  br-align (r) =
+    let rem = (r.br-pos) - ((r.br-pos) / 8) * 8
+    in if rem == 0 then r else br-advance r (8 - rem)
+
+Section: Decoding A Fixed Symbol
+
+ The fixed code is decoded by width, shortest first: seven bits decides
+ end-of-block and the low length symbols, eight decides the literals below 144
+ and the high length symbols, nine decides the rest. Reading a bit at a time and
+ widening is what makes a prefix code decodable without a table.
+
+  fixed-sym : BitReader -> Integer
+  fixed-sym (r) =
+    let v7 = br-code r 7
+    in if v7 <= 23 then 256 + v7
+    else fixed-sym-8 r (bit-or (bit-shl v7 1) (br-bit (br-advance r 7)))
+
+  fixed-sym-8 : BitReader, Integer -> Integer
+  fixed-sym-8 (r) (v8) =
+    if v8 <= 191 then v8 - 48
+    else if v8 <= 199 then 280 + (v8 - 192)
+    else 144 + ((bit-or (bit-shl v8 1) (br-bit (br-advance r 8))) - 400)
+
+  fixed-sym-width : BitReader -> Integer
+  fixed-sym-width (r) =
+    let v7 = br-code r 7
+    in if v7 <= 23 then 7
+    else let v8 = bit-or (bit-shl v7 1) (br-bit (br-advance r 7))
+    in if v8 <= 199 then 8 else 9
+
 Section: Decompression
+
+ Both block types, dispatched on BTYPE. A stored block realigns to the byte
+ boundary and copies verbatim; a fixed block reads symbols until end-of-block.
 
   deflate-decompress : List Integer -> List Integer
   deflate-decompress (input) =
-    deflate-decode-blocks input 0 (list-length input) []
+    deflate-blocks (BitReader { br-bytes = input, br-pos = 0 }) []
 
-  deflate-decode-blocks : List Integer, Integer, Integer, List Integer -> List Integer
-  deflate-decode-blocks (input) (pos) (total) (acc) =
-    if pos + 4 >= total then acc
-    else let bfinal = list-at input pos
-    in let len = bit-or (list-at input (pos + 1)) (bit-shl (list-at input (pos + 2)) 8)
-    in let data-start = pos + 5
-    in let data = deflate-slice input data-start len 0 []
+  deflate-blocks : BitReader, List Integer -> List Integer
+  deflate-blocks (r) (acc) =
+    if (r.br-pos) / 8 >= list-length (r.br-bytes) then acc
+    else let bfinal = br-bit r
+    in let btype = br-bits (br-advance r 1) 2
+    in let r2 = br-advance r 3
+    in if btype == 0 then deflate-after-stored (br-align r2) bfinal acc
+    else if btype == 1 then deflate-after-fixed (deflate-fixed-block r2 acc) bfinal
+    else if btype == 2 then deflate-after-fixed (deflate-dynamic-block r2 acc) bfinal
+    else acc
+
+ A stored block's LEN and NLEN sit on the byte boundary after the header bits.
+
+  deflate-after-stored : BitReader, Integer, List Integer -> List Integer
+  deflate-after-stored (r) (bfinal) (acc) =
+    let off = (r.br-pos) / 8
+    in let len = bit-or (list-at (r.br-bytes) off) (bit-shl (list-at (r.br-bytes) (off + 1)) 8)
+    in let data = deflate-slice (r.br-bytes) (off + 4) len 0 []
     in let acc2 = acc & data
-    in if bit-and bfinal 1 == 1 then acc2
-    else deflate-decode-blocks input (data-start + len) total acc2
+    in if bfinal == 1 then acc2
+    else deflate-blocks (BitReader { br-bytes = r.br-bytes, br-pos = (off + 4 + len) * 8 }) acc2
+
+  DeflateState = record {
+    ds-reader : BitReader,
+    ds-out : List Integer
+  }
+
+  deflate-fixed-block : BitReader, List Integer -> DeflateState
+  deflate-fixed-block (r) (acc) =
+    let sym = fixed-sym r
+    in let r2 = br-advance r (fixed-sym-width r)
+    in if sym == deflate-end-of-block then DeflateState { ds-reader = r2, ds-out = acc }
+    else if sym < 256 then deflate-fixed-block r2 (list-push acc sym)
+    else deflate-fixed-match r2 acc sym
+
+  deflate-fixed-match : BitReader, List Integer, Integer -> DeflateState
+  deflate-fixed-match (r) (acc) (sym) =
+    let mlen = len-base sym + br-bits r (len-extra sym)
+    in let r2 = br-advance r (len-extra sym)
+    in let dc = br-code r2 5
+    in let r3 = br-advance r2 5
+    in let dist = dist-base dc + br-bits r3 (dist-extra dc)
+    in let r4 = br-advance r3 (dist-extra dc)
+    in deflate-fixed-block r4 (deflate-copy acc (list-length acc - dist) mlen)
+
+  deflate-copy : List Integer, Integer, Integer -> List Integer
+  deflate-copy (out) (src) (remaining) =
+    if remaining <= 0 then out
+    else deflate-copy (list-push out (list-at out src)) (src + 1) (remaining - 1)
+
+  deflate-after-fixed : DeflateState, Integer -> List Integer
+  deflate-after-fixed (st) (bfinal) =
+    if bfinal == 1 then st.ds-out
+    else deflate-blocks (st.ds-reader) (st.ds-out)
+
+Section: Decoding A Dynamic Block
+
+ The mirror of the dynamic encoder. Read HLIT/HDIST/HCLEN, read the code-length
+ code lengths in their permuted order and build that table, decode the literal
+ and distance code lengths through it (with the 16/17/18 run codes), build those
+ two tables, then decode symbols exactly as the fixed path does but through the
+ data's own codes.
+
+  DhLenRead = record {
+    dl-list : List Integer,
+    dl-reader : BitReader
+  }
+
+  dh-read-cl-lengths : BitReader, Integer, List Integer, Integer -> DhLenRead
+  dh-read-cl-lengths (r) (numCl) (acc) (j) =
+    if j >= numCl then DhLenRead { dl-list = acc, dl-reader = r }
+    else let v = br-bits r 3
+    in dh-read-cl-lengths (br-advance r 3) numCl (list-set-at acc (dh-cl-order j) v) (j + 1)
+
+  dh-repeat-append : List Integer, Integer, Integer -> List Integer
+  dh-repeat-append (acc) (val) (cnt) =
+    if cnt <= 0 then acc
+    else dh-repeat-append (list-push acc val) val (cnt - 1)
+
+  dh-read-cls : BitReader, DhTable, Integer, List Integer, Integer -> DhLenRead
+  dh-read-cls (r) (cltab) (need) (acc) (prev) =
+    if list-length acc >= need then DhLenRead { dl-list = acc, dl-reader = r }
+    else let d = dh-decode-sym r cltab
+    in let sym = d.dr-sym
+    in let r2 = d.dr-reader
+    in if sym <= 15 then dh-read-cls r2 cltab need (list-push acc sym) sym
+       else if sym == 16 then let cnt = 3 + br-bits r2 2 in dh-read-cls (br-advance r2 2) cltab need (dh-repeat-append acc prev cnt) prev
+       else if sym == 17 then let cnt = 3 + br-bits r2 3 in dh-read-cls (br-advance r2 3) cltab need (dh-repeat-append acc 0 cnt) 0
+       else let cnt = 11 + br-bits r2 7 in dh-read-cls (br-advance r2 7) cltab need (dh-repeat-append acc 0 cnt) 0
+
+  dh-fill : List Integer, Integer, Integer, List Integer, Integer -> List Integer
+  dh-fill (src) (srcoff) (count) (dst) (i) =
+    if i >= count then dst
+    else dh-fill src srcoff count (list-set-at dst i (list-at src (srcoff + i))) (i + 1)
+
+  deflate-dynamic-block : BitReader, List Integer -> DeflateState
+  deflate-dynamic-block (r) (acc) =
+    let numLit = 257 + br-bits r 5
+    in let numDist = 1 + br-bits (br-advance r 5) 5
+    in let numCl = 4 + br-bits (br-advance r 10) 4
+    in let clread = dh-read-cl-lengths (br-advance r 14) numCl (dh-zeros 19 0 []) 0
+    in let cltab = dh-table-of (clread.dl-list) 19
+    in let allread = dh-read-cls (clread.dl-reader) cltab (numLit + numDist) [] 0
+    in let alllen = allread.dl-list
+    in let lllen = dh-fill alllen 0 numLit (dh-zeros 286 0 []) 0
+    in let dlen = dh-fill alllen numLit numDist (dh-zeros 30 0 []) 0
+    in deflate-dyn-loop (allread.dl-reader) acc (dh-table-of lllen 286) (dh-table-of dlen 30)
+
+  deflate-dyn-loop : BitReader, List Integer, DhTable, DhTable -> DeflateState
+  deflate-dyn-loop (r) (acc) (ll) (dt) =
+    let d = dh-decode-sym r ll
+    in let sym = d.dr-sym
+    in let r2 = d.dr-reader
+    in if sym == deflate-end-of-block then DeflateState { ds-reader = r2, ds-out = acc }
+    else if sym < 256 then deflate-dyn-loop r2 (list-push acc sym) ll dt
+    else let mlen = len-base sym + br-bits r2 (len-extra sym)
+    in let r3 = br-advance r2 (len-extra sym)
+    in let dd = dh-decode-sym r3 dt
+    in let dsym = dd.dr-sym
+    in let r4 = dd.dr-reader
+    in let dist = dist-base dsym + br-bits r4 (dist-extra dsym)
+    in let r5 = br-advance r4 (dist-extra dsym)
+    in deflate-dyn-loop r5 (deflate-copy acc (list-length acc - dist) mlen) ll dt
 
 Section: Helpers
 
@@ -66,5 +803,3 @@ Section: Helpers
     if i >= len then acc
     else if off + i >= list-length xs then acc
     else deflate-slice xs off len (i + 1) (list-push acc (list-at xs (off + i)))
-
-Page 1

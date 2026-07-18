@@ -1,0 +1,42 @@
+Chapter: ChanLostWakeup
+
+ A producer and a consumer, each its own process, exchange two values
+ through a capacity-one blocking channel. The producer fills the channel on
+ its first send and blocks on the second; the consumer drains the first
+ value, and the rendezvous in the receiver's wake path hands the second
+ value across and wakes the producer. Both finish, and proc 0 -- which
+ waits on both -- prints "done".
+
+ This is the functional regression test for the channel-block lost-wakeup
+ (BACKLOG 4.11g). On a correct compiler it prints "done" cooperatively:
+ nothing runs between the producer's capacity check and its commit to
+ BLOCKED, so the wake is never lost. The bug lives in a ~15-instruction
+ window that no timer reliably hits, so this test cannot trigger it on its
+ own -- it is driven to a deterministic hang by a throwaway compiler built
+ with the send-block yield mutant. The technique and the mutant diff are in
+ docs/Test/Active/YieldInjectionMutant.md.
+
+Section: Body
+
+  producer : Integer -> [Concurrent] Integer
+  producer (ch) = act
+    a <- (chan-kern-send-block ch 10)
+    b <- (chan-kern-send-block ch 20)
+    b
+  end
+
+  consumer : Integer -> [Concurrent] Integer
+  consumer (ch) = act
+    x <- (chan-kern-recv-block ch)
+    y <- (chan-kern-recv-block ch)
+    y
+  end
+
+  opening : [Console, Concurrent] Nothing = act
+    ch <- chan-kern-create 1
+    p <- process-spawn (\z -> producer ch)
+    c <- process-spawn (\z -> consumer ch)
+    wp <- process-wait p
+    wc <- process-wait c
+    print-line-uni "done"
+  end

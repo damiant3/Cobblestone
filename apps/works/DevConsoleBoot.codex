@@ -28,6 +28,8 @@ Chapter: DevConsoleBoot
 
 Section: Boot Key Detection
 
+  uefi-partition-start : Integer = 2048
+
   BootKeyResult =
     | BootKeyHeld (UefiKey)
     | BootKeyNone
@@ -105,7 +107,7 @@ Section: Source Tree Indexing
   extract-first-word : Text -> Text
   extract-first-word (line) =
     let trimmed = text-trim line
-    in let sp = text-index-of trimmed " " 0
+    in let sp = text-index-of trimmed " "
     in if sp < 0 then trimmed
     else substring trimmed 0 sp
 
@@ -317,7 +319,7 @@ Section: Boot Flow
 
 Section: Dev Console Entry
 
-  enter-dev-console : UefiConsoleState -> [Console, FileSystem] None
+  enter-dev-console : UefiConsoleState -> [Console, Device.Port, Device.Block, FileSystem] Nothing
   enter-dev-console (con) =
     let disk = disk-load
     in let kp = generate-keypair (sha256 (text-to-bytes "codex-dev-console"))
@@ -332,7 +334,7 @@ Section: Dev Console Entry
       dev-console-loop state3
     end
 
-  uefi-con-blank-rows : Integer, Integer -> [Console] None
+  uefi-con-blank-rows : Integer, Integer -> [Console] Nothing
   uefi-con-blank-rows (row) (max-row) =
     if row >= max-row then act print-uni "" end
     else act
@@ -340,7 +342,7 @@ Section: Dev Console Entry
       uefi-con-blank-rows (row + 1) max-row
     end
 
-  dev-console-loop : DevConsoleState -> [Console] None
+  dev-console-loop : DevConsoleState -> [Console, Device.Port, Device.Block, FileSystem] Nothing
   dev-console-loop (state) =
     if state.running == False then act print-line-uni "Booting Codex..." end
     else act
@@ -351,12 +353,13 @@ Section: Dev Console Entry
       dev-console-input-loop state
     end
 
-  dev-console-input-loop : DevConsoleState -> [Console] None
-  dev-console-input-loop (state) =
-    let last-sec = rtc-read-reg 0
-    in dev-console-poll state last-sec
+  dev-console-input-loop : DevConsoleState -> [Console, Device.Port, Device.Block, FileSystem] Nothing
+  dev-console-input-loop (state) = act
+    last-sec <- rtc-read-reg 0
+    dev-console-poll state last-sec
+  end
 
-  dev-console-poll : DevConsoleState, Integer -> [Console] None
+  dev-console-poll : DevConsoleState, Integer -> [Console, Device.Port, Device.Block, FileSystem] Nothing
   dev-console-poll (state) (last-sec) =
     let key-result = uefi-con-poll-key
     in when key-result
@@ -366,9 +369,9 @@ Section: Dev Console Entry
           print-line-uni ""
         end
         else dev-console-dispatch state key
-      is None ->
-        let now-sec = rtc-read-reg 0
-        in if now-sec /= last-sec then act
+      is None -> act
+        now-sec <- rtc-read-reg 0
+        if now-sec /= last-sec then act
           draw-clock-row
           port-out-byte 224 1
           dev-console-poll state now-sec
@@ -377,27 +380,36 @@ Section: Dev Console Entry
           port-out-byte 224 1
           dev-console-poll state last-sec
         end
+      end
 
-  draw-clock-row : [Console] None
-  draw-clock-row =
-    let clock = rtc-date-string & " " & rtc-time-string
-    in let header = "  Codex Dev Console                                       " & clock & "  "
+  draw-clock-row : [Console, Device.Port] Nothing
+  draw-clock-row = act
+    date <- rtc-date-string
+    time <- rtc-time-string
+    let header = "  Codex Dev Console                                       " & date & " " & time & "  "
     in uefi-con-put-text 0 0 header 15 1
+  end
 
-  dev-console-dispatch : DevConsoleState, UefiKey -> [Console] None
+  dev-console-dispatch : DevConsoleState, UefiKey -> [Console, Device.Port, Device.Block, FileSystem] Nothing
   dev-console-dispatch (state) (key) = when state.mode
     is ModeViewSource -> let state2 = handle-viewer-key state key in dev-console-loop state2
-    is ModeEdit -> let state2 = handle-editor-key state key in dev-console-loop state2
+    is ModeEdit -> act
+      state2 <- handle-editor-key state key
+      dev-console-loop state2
+    end
     is otherwise -> dev-console-menu-dispatch state key
 
-  dev-console-menu-dispatch : DevConsoleState, UefiKey -> [Console] None
+  dev-console-menu-dispatch : DevConsoleState, UefiKey -> [Console, Device.Port, Device.Block, FileSystem] Nothing
   dev-console-menu-dispatch (state) (key) =
     let old-sel = state.menu.selected
     in let nav-state = menu-handle-navigation (state.menu) key
     in let action = menu-handle-key (state.menu) key
     in let state2 = __record-set state "menu" nav-state
     in when action
-      is MenuSelect (k) -> let state3 = handle-console-input state2 k in dev-console-loop state3
+      is MenuSelect (k) -> act
+        state3 <- handle-console-input state2 k
+        dev-console-loop state3
+      end
       is MenuBack -> let s = __record-set state2 "mode" ModeMainMenu in let s2 = __record-set s "menu" main-menu in dev-console-loop s2
       is MenuNone -> if old-sel == nav-state.selected then dev-console-input-loop state2
         else act
@@ -449,7 +461,7 @@ Section: Dev Console Entry
     in if prev < 0 then state
     else enter-source-viewer state prev
 
-  handle-key-for-mode : DevConsoleState, UefiKey -> DevConsoleState
+  handle-key-for-mode : DevConsoleState, UefiKey -> [Device.Port, Device.Block] DevConsoleState
   handle-key-for-mode (state) (key) =
     if uefi-key-is-escape key then handle-escape state
     else let nav-state = menu-handle-navigation (state.menu) key
@@ -460,15 +472,18 @@ Section: Dev Console Entry
       is MenuBack -> let s = __record-set state2 "mode" ModeMainMenu in __record-set s "menu" main-menu
       is MenuNone -> state2
 
-  handle-escape : DevConsoleState -> DevConsoleState
+  handle-escape : DevConsoleState -> [Device.Port] DevConsoleState
   handle-escape (state) = when state.mode
-    is ModeMainMenu -> let r = port-out-byte 3321 6 in state
+    is ModeMainMenu -> act
+      port-out-byte 3321 6
+      state
+    end
     is otherwise -> let s = __record-set state "mode" ModeMainMenu in __record-set s "menu" main-menu
 
   viewer-visible-rows : Integer = 20
   menu-visible-rows : Integer = 18
 
-  draw-console-body : DevConsoleState -> [Console] None
+  draw-console-body : DevConsoleState -> [Console, Device.Port] Nothing
   draw-console-body (state) = when state.mode
     is ModeViewSource -> act
       draw-source-lines state 4
@@ -477,16 +492,17 @@ Section: Dev Console Entry
     is ModeSystemInfo -> draw-system-info-body
     is otherwise -> draw-console-menu-body (state.menu) (state.menu.item-count)
 
-  draw-console-menu-body : MenuState, Integer -> [Console] None
+  draw-console-menu-body : MenuState, Integer -> [Console] Nothing
   draw-console-menu-body (m) (ic) = act
     draw-menu-items m 4
     uefi-con-blank-rows (if ic < menu-visible-rows then 4 + ic else 4 + menu-visible-rows + 1) 25
   end
 
-  rtc-read-reg : Integer -> Integer
-  rtc-read-reg (reg) =
-    let w = port-out-byte 112 reg
-    in port-in-byte 113
+  rtc-read-reg : Integer -> [Device.Port] Integer
+  rtc-read-reg (reg) = act
+    port-out-byte 112 reg
+    port-in-byte 113
+  end
 
   bcd-to-dec : Integer -> Integer
   bcd-to-dec (v) = (bit-shru v 4) * 10 + bit-and v 15
@@ -496,34 +512,38 @@ Section: Dev Console Entry
     let d = bcd-to-dec n
     in if d < 10 then "0" & show d else show d
 
-  rtc-time-string : Text
-  rtc-time-string =
-    let h = rtc-read-reg 4
-    in let m = rtc-read-reg 2
-    in let s = rtc-read-reg 0
-    in rtc-two-digit h & ":" & rtc-two-digit m & ":" & rtc-two-digit s
+  rtc-time-string : [Device.Port] Text
+  rtc-time-string = act
+    h <- rtc-read-reg 4
+    m <- rtc-read-reg 2
+    s <- rtc-read-reg 0
+    rtc-two-digit h & ":" & rtc-two-digit m & ":" & rtc-two-digit s
+  end
 
-  rtc-date-string : Text
-  rtc-date-string =
-    let y = rtc-read-reg 9
-    in let m = rtc-read-reg 8
-    in let d = rtc-read-reg 7
-    in "20" & rtc-two-digit y & "-" & rtc-two-digit m & "-" & rtc-two-digit d
+  rtc-date-string : [Device.Port] Text
+  rtc-date-string = act
+    y <- rtc-read-reg 9
+    m <- rtc-read-reg 8
+    d <- (rtc-read-reg 7)
+    "20" & rtc-two-digit y & "-" & rtc-two-digit m & "-" & rtc-two-digit d
+  end
 
-  draw-console-screen : DevConsoleState -> [Console] None
-  draw-console-screen (state) =
-    let clock = rtc-date-string & " " & rtc-time-string
-    in let header = "  Codex Dev Console                                       " & clock & "  "
+  draw-console-screen : DevConsoleState -> [Console, Device.Port] Nothing
+  draw-console-screen (state) = act
+    date <- rtc-date-string
+    time <- rtc-time-string
+    let header = "  Codex Dev Console                                       " & date & " " & time & "  "
     in draw-console-screen-render state header
+  end
 
-  draw-console-screen-render : DevConsoleState, Text -> [Console] None
+  draw-console-screen-render : DevConsoleState, Text -> [Console, Device.Port] Nothing
   draw-console-screen-render (state) (header) = act
     uefi-con-put-text 0 0 header 15 1
     uefi-con-put-text 2 2 (state.status) 11 0
     draw-console-body state
   end
 
-  draw-source-lines : DevConsoleState, Integer -> [Console] None
+  draw-source-lines : DevConsoleState, Integer -> [Console] Nothing
   draw-source-lines (state) (start-row) =
     let end-line = chapter-end-line (state.source-index) (state.view-chapter-idx)
     in act draw-source-loop (state.source-index.source-lines) (state.view-scroll) end-line start-row (start-row + viewer-visible-rows) end
@@ -533,7 +553,7 @@ Section: Dev Console Entry
     if line-idx >= list-length lines then "~"
     else show (line-idx + 1) & " " & list-at lines line-idx
 
-  draw-source-loop : List Text, Integer, Integer, Integer, Integer -> [Console] None
+  draw-source-loop : List Text, Integer, Integer, Integer, Integer -> [Console] Nothing
   draw-source-loop (lines) (line-idx) (end-line) (row) (max-row) =
     if row >= max-row then act print-uni "" end
     else if line-idx >= end-line then act
@@ -542,20 +562,20 @@ Section: Dev Console Entry
     end
     else draw-source-line-and-continue lines line-idx end-line row max-row
 
-  draw-source-line-and-continue : List Text, Integer, Integer, Integer, Integer -> [Console] None
+  draw-source-line-and-continue : List Text, Integer, Integer, Integer, Integer -> [Console] Nothing
   draw-source-line-and-continue (lines) (line-idx) (end-line) (row) (max-row) = act
     uefi-con-put-text row 0 (source-line-display lines line-idx) 7 0
     draw-source-loop lines (line-idx + 1) end-line (row + 1) max-row
     end
 
-  draw-viewer-footer : DevConsoleState, Integer -> [Console] None
+  draw-viewer-footer : DevConsoleState, Integer -> [Console] Nothing
   draw-viewer-footer (state) (row) =
     let end-line = chapter-end-line (state.source-index) (state.view-chapter-idx)
     in let start = chapter-start-line (state.source-index) (state.view-chapter-idx)
     in let pos = show (state.view-scroll - start + 1) & "/" & show (end-line - start)
     in draw-viewer-footer-render row pos
 
-  draw-viewer-footer-render : Integer, Text -> [Console] None
+  draw-viewer-footer-render : Integer, Text -> [Console] Nothing
   draw-viewer-footer-render (row) (pos) = act
     uefi-con-fill-row row 0 7
     uefi-con-put-text row 2 (pos & "  Up/Dn PgUp/Dn n/p:chapter Esc:back") 0 7
@@ -567,7 +587,7 @@ Section: Dev Console Entry
     in if len >= w then s
     else pad-to-width (s & " ") w
 
-  draw-menu-row : List MenuItem, Integer, Integer, Integer -> [Console] None
+  draw-menu-row : List MenuItem, Integer, Integer, Integer -> [Console] Nothing
   draw-menu-row (items) (item-idx) (sel) (start-row) =
     if item-idx < 0 then act print-uni "" end
     else if item-idx >= list-length items then act print-uni "" end
@@ -578,7 +598,7 @@ Section: Dev Console Entry
       uefi-con-put-text row 2 text (if item-idx == sel then 0 else 7) (if item-idx == sel then 7 else 0)
     end
 
-  draw-menu-items : MenuState, Integer -> [Console] None
+  draw-menu-items : MenuState, Integer -> [Console] Nothing
   draw-menu-items (m) (start-row) =
     let vis = menu-visible-rows
     in let half = vis / 2
@@ -587,18 +607,18 @@ Section: Dev Console Entry
     in let last = if first + vis > m.item-count then m.item-count else first + vis
     in draw-menu-items-render m start-row vis first last
 
-  draw-menu-items-render : MenuState, Integer, Integer, Integer, Integer -> [Console] None
+  draw-menu-items-render : MenuState, Integer, Integer, Integer, Integer -> [Console] Nothing
   draw-menu-items-render (m) (start-row) (vis) (first) (last) = act
     draw-menu-window (m.items) (m.selected) first last start-row
     draw-scroll-hint start-row vis first last (m.item-count)
   end
 
-  draw-menu-window : List MenuItem, Integer, Integer, Integer, Integer -> [Console] None
+  draw-menu-window : List MenuItem, Integer, Integer, Integer, Integer -> [Console] Nothing
   draw-menu-window (items) (sel) (i) (end-i) (row) =
     if i >= end-i then act print-uni "" end
     else draw-menu-window-item items sel i end-i row
 
-  draw-menu-window-item : List MenuItem, Integer, Integer, Integer, Integer -> [Console] None
+  draw-menu-window-item : List MenuItem, Integer, Integer, Integer, Integer -> [Console] Nothing
   draw-menu-window-item (items) (sel) (i) (end-i) (row) =
     let text = pad-to-width ((if i == sel then " > " else "   ") & (list-at items i).label) 77
     in act
@@ -606,7 +626,7 @@ Section: Dev Console Entry
       draw-menu-window items sel (i + 1) end-i (row + 1)
     end
 
-  draw-scroll-hint : Integer, Integer, Integer, Integer, Integer -> [Console] None
+  draw-scroll-hint : Integer, Integer, Integer, Integer, Integer -> [Console] Nothing
   draw-scroll-hint (sr) (vis) (first) (last) (total) =
     if total <= vis then act print-uni "" end
     else act uefi-con-put-text (sr + vis) 2 ("  [" & show (first + 1) & "-" & show last & " of " & show total & "]") 8 0 end
@@ -627,7 +647,7 @@ Section: Dev Console Entry
     else if list-at names i == target then i
     else find-chapter-index names target (i + 1) len
 
-  handle-console-input : DevConsoleState, Text -> DevConsoleState
+  handle-console-input : DevConsoleState, Text -> [Device.Block] DevConsoleState
   handle-console-input (state) (line) = when state.mode
     is ModeMainMenu ->
       let trimmed = text-trim line
@@ -680,32 +700,33 @@ Section: Dev Console Entry
 
 Section: Editor Key Handling
 
-  handle-editor-key : DevConsoleState, UefiKey -> DevConsoleState
+  handle-editor-key : DevConsoleState, UefiKey -> [FileSystem] DevConsoleState
   handle-editor-key (state) (key) =
     when state.editor
       is None -> handle-editor-path-input state key
       is Just (e) -> handle-editor-active state e key
 
-  handle-editor-path-input : DevConsoleState, UefiKey -> DevConsoleState
+  handle-editor-path-input : DevConsoleState, UefiKey -> [FileSystem.Read] DevConsoleState
   handle-editor-path-input (state) (key) =
     if uefi-key-is-escape key then
       let s = __record-set state "mode" ModeMainMenu
       in __record-set s "menu" main-menu
-    else if uefi-key-is-enter key then
-      let path = state.status
-      in let e = editor-open path 20
-      in __record-set (__record-set state "editor" (Just e)) "status" (e.status)
+    else if uefi-key-is-enter key then act
+      e <- editor-open (state.status) 20
+      __record-set (__record-set state "editor" (Just e)) "status" (e.status)
+    end
     else state
 
-  handle-editor-active : DevConsoleState, EditorState, UefiKey -> DevConsoleState
+  handle-editor-active : DevConsoleState, EditorState, UefiKey -> [FileSystem.Write] DevConsoleState
   handle-editor-active (state) (e) (key) =
     if uefi-key-is-escape key then
       let s = __record-set state "mode" ModeMainMenu
       in let s2 = __record-set s "menu" main-menu
       in __record-set s2 "editor" None
-    else if uefi-key-is-ctrl-s key then
-      let saved = editor-save e
-      in __record-set (__record-set state "editor" (Just saved)) "status" (saved.status)
+    else if uefi-key-is-ctrl-s key then act
+      saved <- editor-save e
+      __record-set (__record-set state "editor" (Just saved)) "status" (saved.status)
+    end
     else if uefi-key-is-ctrl-f key then
       __record-set state "status" "Find: (type query, press Enter)"
     else if uefi-key-is-ctrl-g key then
@@ -820,7 +841,7 @@ Section: Sweep Menu Dispatch
 
 Section: Drive Manager Dispatch
 
-  dispatch-drive-menu : Text, DevConsoleState -> DevConsoleState
+  dispatch-drive-menu : Text, DevConsoleState -> [Device.Block] DevConsoleState
   dispatch-drive-menu (key) (state) =
     if key == "list" then dm-do-list state
     else if key == "inspect" then dm-do-select-drive state "Inspect Drive"
@@ -860,7 +881,7 @@ Section: Drive Manager Dispatch
     in let label = dm-drive-label d
     in dm-build-drive-items drives (i + 1) len (list-push acc (menu-item label (show i)))
 
-  dm-try-drive-action : DevConsoleState, Text -> DevConsoleState
+  dm-try-drive-action : DevConsoleState, Text -> [Device.Block] DevConsoleState
   dm-try-drive-action (state) (key) =
     let idx = dm-parse-digit key
     in if idx < 0 then state
@@ -875,7 +896,7 @@ Section: Drive Manager Dispatch
     else if s == "3" then 3
     else 0 - 1
 
-  dm-exec-drive-action : DevConsoleState, Text, Integer -> DevConsoleState
+  dm-exec-drive-action : DevConsoleState, Text, Integer -> [Device.Block] DevConsoleState
   dm-exec-drive-action (state) (op) (idx) =
     let drives = dm-enumerate-drives
     in if idx >= list-length drives then __record-set state "status" "Drive not found"
@@ -904,20 +925,23 @@ Section: Drive Manager Dispatch
     in if ok then __record-set s "status" ("Wiped: " & drive.di-model)
     else __record-set s "status" ("Wipe failed: " & drive.di-model)
 
-  dm-exec-partition : DevConsoleState, DriveInfo -> DevConsoleState
-  dm-exec-partition (state) (drive) =
-    let w = block-select (drive.di-index)
-    in let guid = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]
-    in let ok = dm-partition-esp-plus-data (drive.di-sector-count) guid
-    in let s = __record-set state "menu" drive-manager-menu
+  dm-default-guid : List Integer
+  dm-default-guid = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]
+
+  dm-exec-partition : DevConsoleState, DriveInfo -> [Device.Block] DevConsoleState
+  dm-exec-partition (state) (drive) = act
+    block-select (drive.di-index)
+    ok <- dm-partition-esp-plus-data (drive.di-sector-count) dm-default-guid
+    let s = __record-set state "menu" drive-manager-menu
     in if ok then __record-set s "status" ("Partitioned: " & drive.di-model & " (ESP + Data)")
     else __record-set s "status" ("Partition failed: " & drive.di-model)
+  end
 
-  dm-exec-format : DevConsoleState, DriveInfo -> DevConsoleState
-  dm-exec-format (state) (drive) =
-    let w = block-select (drive.di-index)
-    in let gpt-result = gpt-read
-    in let s = __record-set state "menu" drive-manager-menu
+  dm-exec-format : DevConsoleState, DriveInfo -> [Device.Block] DevConsoleState
+  dm-exec-format (state) (drive) = act
+    block-select (drive.di-index)
+    gpt-result <- gpt-read
+    let s = __record-set state "menu" drive-manager-menu
     in when gpt-result
       is None -> __record-set s "status" ("No GPT found on " & drive.di-model & " - partition first")
       is Just (disk) ->
@@ -925,17 +949,19 @@ Section: Drive Manager Dispatch
         else let esp = list-at (disk.gd-partitions) 0
         in let start = esp.gp-start-lba
         in let sectors = (esp.gp-end-lba) - start + 1
-        in let ok = dm-format-fat32 start sectors "CODEX OS"
-        in if ok then __record-set s "status" ("Formatted partition 0 as FAT32: " & drive.di-model)
-        else __record-set s "status" ("Format failed: " & drive.di-model)
+        in act
+          ok <- dm-format-fat32 start sectors "CODEX OS"
+          if ok then __record-set s "status" ("Formatted partition 0 as FAT32: " & drive.di-model)
+          else __record-set s "status" ("Format failed: " & drive.di-model)
+        end
+  end
 
-  dm-exec-install : DevConsoleState, DriveInfo -> DevConsoleState
-  dm-exec-install (state) (drive) =
-    let w0 = block-select (drive.di-index)
-    in let guid = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]
-    in let w1 = dm-partition-esp-plus-data (drive.di-sector-count) guid
-    in let gpt-result = gpt-read
-    in let s = __record-set state "menu" drive-manager-menu
+  dm-exec-install : DevConsoleState, DriveInfo -> [Device.Block] DevConsoleState
+  dm-exec-install (state) (drive) = act
+    block-select (drive.di-index)
+    dm-partition-esp-plus-data (drive.di-sector-count) dm-default-guid
+    gpt-result <- gpt-read
+    let s = __record-set state "menu" drive-manager-menu
     in when gpt-result
       is None -> __record-set s "status" ("Install failed: could not create GPT on " & drive.di-model)
       is Just (disk) ->
@@ -943,23 +969,28 @@ Section: Drive Manager Dispatch
         else let esp = list-at (disk.gd-partitions) 0
         in let esp-start = esp.gp-start-lba
         in let esp-sectors = (esp.gp-end-lba) - esp-start + 1
-        in let w2 = dm-format-fat32 esp-start esp-sectors "CODEX OS"
-        in let target-vol = fat32-init esp-start
-        in let src-vol = fat16-init uefi-partition-start
-        in let w3 = block-select 0
-        in let kernel = fat16-read-bytes src-vol "BOOTX64.EFI"
-        in let w4 = block-select (drive.di-index)
-        in when kernel
-          is Just (data) ->
-            let w5 = fat32-mkdir target-vol (target-vol.f32-root-cluster) "EFI"
-            in let efi-entry = fat32-find-in-dir target-vol (target-vol.f32-root-cluster) "EFI"
-            in when efi-entry
-              is Just (efi-dir) ->
-                let w6 = fat32-mkdir target-vol (efi-dir.de-cluster) "BOOT"
-                in let w7 = fat32-write-file target-vol "EFI/BOOT/BOOTX64.EFI" data
-                in __record-set s "status" ("Installed Codex to " & drive.di-model)
-              is None -> __record-set s "status" "Install failed: could not create EFI directory"
-          is None -> __record-set s "status" "Install failed: could not read boot image from source"
+        in act
+          dm-format-fat32 esp-start esp-sectors "CODEX OS"
+          target-vol <- (fat32-init esp-start)
+          src-vol <- (fat16-init uefi-partition-start)
+          block-select 0
+          kernel <- (fat16-read-bytes src-vol "BOOTX64.EFI")
+          block-select (drive.di-index)
+          when kernel
+            is Just (data) -> act
+              fat32-mkdir target-vol (target-vol.f32-root-cluster) "EFI"
+              efi-entry <- (fat32-find-in-dir target-vol (target-vol.f32-root-cluster) "EFI")
+              when efi-entry
+                is Just (efi-dir) -> act
+                  fat32-mkdir target-vol (efi-dir.de-cluster) "BOOT"
+                  fat32-write-file target-vol "EFI/BOOT/BOOTX64.EFI" data
+                  __record-set s "status" ("Installed Codex to " & drive.di-model)
+                end
+                is None -> __record-set s "status" "Install failed: could not create EFI directory"
+            end
+            is None -> __record-set s "status" "Install failed: could not read boot image from source"
+        end
+  end
 
   dm-exec-alongside : DevConsoleState, DriveInfo -> DevConsoleState
   dm-exec-alongside (state) (drive) =
@@ -1014,11 +1045,13 @@ Section: System Info
     in let minor = bit-and rev 65535
     in show major & "." & show minor
 
-  draw-system-info-body : [Console] None
-  draw-system-info-body =
+  draw-system-info-body : [Console, Device.Port] Nothing
+  draw-system-info-body = act
+    date <- rtc-date-string
+    time <- (rtc-time-string)
     let vendor = sysinfo-read-fw-vendor
     in let rev = sysinfo-fw-rev-string sysinfo-read-fw-revision
-    in let clock = rtc-date-string & " " & rtc-time-string
+    in let clock = date & " " & time
     in let heap = __heap-save
     in let heap-mb = (heap - 6291456) / 1048576
     in let restored = __heap-restore heap
@@ -1029,5 +1062,6 @@ Section: System Info
       uefi-con-put-text 7 2 ("RAM:       2048 MB") 7 0
       uefi-con-put-text 9 2 "Press Escape to return" 8 0
     end
+  end
 
 Page 1

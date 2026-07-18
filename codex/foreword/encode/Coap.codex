@@ -1,4 +1,5 @@
 Chapter: Coap
+  cites Foreword chapter Maybe
 
  CoAP (Constrained Application Protocol) per RFC 7252.
  UDP-based RESTful protocol for constrained IoT devices.
@@ -145,6 +146,21 @@ Section: Convenience Builders
   coap-ack (msg-id) =
    coap-build-header CoapAcknowledgement 0 msg-id 0
 
+ coap-build-request takes a CoapMethod and turns it into a code, which
+ means it can only ever build the request half. A response carries a
+ response code (2.05 Content, 4.04 Not Found) and there is no CoapMethod
+ that spells one, so every builder above could ask and none could answer.
+ This is the same shape the missing parser had: the chapter could only
+ speak. A caller that reached for coap-build-request to build a response
+ got a packet whose code said GET, which a correct client refuses.
+
+  coap-build-response : CoapType, Integer, Integer, List Integer, List CoapOption, List Integer -> List Integer
+  coap-build-response (msg-type) (code) (msg-id) (token) (options) (payload) =
+   let header = coap-build-header msg-type code msg-id (list-length token)
+   in let opts = coap-encode-options options 0 0
+   in let payload-marker = if list-length payload > 0 then [255] else []
+   in header & token & opts & payload-marker & payload
+
 Section: Block-Wise Transfer and Observe
 
  Block-wise transfer (RFC 7959) splits a large payload across many
@@ -183,5 +199,164 @@ Section: Block-Wise Transfer and Observe
     number = coap-opt-observe,
     value = coap-uint-bytes seq
    }
+
+Section: Parsing
+
+ Every function above this line writes a packet. Nothing read one, which
+ meant a device could ask a server for a firmware image and had no way to
+ hear the answer. A block-wise download is a conversation, and this
+ chapter could only talk.
+
+ coap-parse returns Maybe, and the None is the point: a malformed packet
+ is not a packet with some fields missing, it is bytes from someone who
+ is not speaking CoAP, and a parser that guesses at them on a firmware
+ path is an attacker's instrument. Every refusal below is a rule from
+ RFC 7252 section 3, not a defensive reflex.
+
+ A packet is refused when it is shorter than the four-byte header or its
+ token runs off the end; when its version is not 1, which the RFC says to
+ ignore rather than interpret; when its token length is 9 through 15,
+ which MUST NOT be sent and is a format error to receive; when an option
+ delta or length nibble is 15, which is reserved and, outside the payload
+ marker, a format error; when an option value runs past the end of the
+ datagram; and when a payload marker has nothing behind it. That last one
+ earns its place: an empty payload is spelled by omitting the marker, so
+ a bare 0xFF is a lie about length, which is exactly the shape a
+ truncation attack takes.
+
+  CoapMessage = record {
+   cm-type : Integer between 0 and 3,
+   cm-code : Integer between 0 and 255,
+   cm-msg-id : Integer between 0 and 65535,
+   cm-token : List Integer,
+   cm-options : List CoapOption,
+   cm-payload : List Integer
+  }
+
+  CoapExt = record {
+   ce-ok : Boolean,
+   ce-val : Integer,
+   ce-next : Integer
+  }
+
+  CoapOptScan = record {
+   co-ok : Boolean,
+   co-opts : List CoapOption,
+   co-next : Integer
+  }
+
+  coap-slice : List Integer, Integer, Integer -> List Integer
+  coap-slice (bytes) (off) (len) = coap-slice-loop bytes off len 0 []
+
+  coap-slice-loop : List Integer, Integer, Integer, Integer, List Integer -> List Integer
+  coap-slice-loop (bytes) (off) (len) (i) (acc) =
+   if i >= len then acc
+   else coap-slice-loop bytes off len (i + 1) (list-push acc (list-at bytes (off + i)))
+
+ An option delta or length is a nibble, and 13 and 14 mean the real value
+ is in the bytes that follow (RFC 7252 section 3.1). The extension must
+ fit inside the datagram, so a nibble that promises bytes the packet does
+ not have is a refusal and not a zero.
+
+  coap-ext : List Integer, Integer, Integer, Integer -> CoapExt
+  coap-ext (bytes) (p) (n) (nib) =
+   if nib < 13 then CoapExt { ce-ok = True, ce-val = nib, ce-next = p }
+   else if nib == 13 then
+     if p >= n then CoapExt { ce-ok = False, ce-val = 0, ce-next = p }
+     else CoapExt { ce-ok = True, ce-val = (list-at bytes p) + 13, ce-next = p + 1 }
+   else if p + 1 >= n then CoapExt { ce-ok = False, ce-val = 0, ce-next = p }
+   else CoapExt { ce-ok = True, ce-val = (bit-or (bit-shl (list-at bytes p) 8) (list-at bytes (p + 1))) + 269, ce-next = p + 2 }
+
+  coap-scan-fail : CoapOptScan
+  coap-scan-fail = CoapOptScan { co-ok = False, co-opts = [], co-next = 0 }
+
+  coap-scan-options : List Integer, Integer, Integer, Integer, List CoapOption -> CoapOptScan
+  coap-scan-options (bytes) (i) (n) (prev) (acc) =
+   if i >= n then CoapOptScan { co-ok = True, co-opts = acc, co-next = n }
+   else if list-at bytes i == 255 then
+     (if i + 1 >= n then coap-scan-fail
+      else CoapOptScan { co-ok = True, co-opts = acc, co-next = i + 1 })
+   else let h = list-at bytes i
+   in let dn = bit-shru h 4
+   in let ln = bit-and h 15
+   in if dn == 15 then coap-scan-fail
+   else if ln == 15 then coap-scan-fail
+   else let de = coap-ext bytes (i + 1) n dn
+   in if de.ce-ok == False then coap-scan-fail
+   else let le = coap-ext bytes (de.ce-next) n ln
+   in if le.ce-ok == False then coap-scan-fail
+   else let vstart = le.ce-next
+   in if vstart + (le.ce-val) > n then coap-scan-fail
+   else let num = prev + (de.ce-val)
+   in if num > 65535 then coap-scan-fail
+   else coap-scan-options bytes (vstart + (le.ce-val)) n num (list-push acc (CoapOption {
+     number = __narrow num,
+     value = coap-slice bytes vstart (le.ce-val)
+   }))
+
+  coap-parse : List Integer -> Maybe CoapMessage
+  coap-parse (bytes) =
+   let n = list-length bytes
+   in if n < 4 then None
+   else let byte0 = list-at bytes 0
+   in let ver = bit-shru byte0 6
+   in let tkl = bit-and byte0 15
+   in if ver /= 1 then None
+   else if tkl > 8 then None
+   else if 4 + tkl > n then None
+   else let scan = coap-scan-options bytes (4 + tkl) n 0 []
+   in if scan.co-ok == False then None
+   else Just (CoapMessage {
+     cm-type = __narrow (bit-and (bit-shru byte0 4) 3),
+     cm-code = __narrow (list-at bytes 1),
+     cm-msg-id = __narrow (bit-or (bit-shl (list-at bytes 2) 8) (list-at bytes 3)),
+     cm-token = coap-slice bytes 4 tkl,
+     cm-options = scan.co-opts,
+     cm-payload = coap-slice bytes (scan.co-next) (n - (scan.co-next))
+   })
+
+Section: Reading Options
+
+ An option that is absent and an option whose value is zero are not the
+ same thing, and CoAP spells the second one with an empty value -- so
+ coap-find-option answers Maybe and the caller decides. No Block2 option
+ at all means the whole body is here; a Block2 option with an empty value
+ means block 0, no more, size 16. Collapsing those loses the difference
+ between a server that is not doing block-wise transfer and one that is.
+
+  coap-find-option : List CoapOption, Integer -> Maybe (List Integer)
+  coap-find-option (opts) (num) = coap-find-option-loop opts num 0 (list-length opts)
+
+  coap-find-option-loop : List CoapOption, Integer, Integer, Integer -> Maybe (List Integer)
+  coap-find-option-loop (opts) (num) (i) (len) =
+   if i >= len then None
+   else let o = list-at opts i
+   in if o.number == num then Just (o.value)
+   else coap-find-option-loop opts num (i + 1) len
+
+  coap-uint-value : List Integer -> Integer
+  coap-uint-value (bytes) = coap-uint-value-loop bytes 0 (list-length bytes) 0
+
+  coap-uint-value-loop : List Integer, Integer, Integer, Integer -> Integer
+  coap-uint-value-loop (bytes) (i) (len) (acc) =
+   if i >= len then acc
+   else coap-uint-value-loop bytes (i + 1) len (bit-or (bit-shl acc 8) (list-at bytes i))
+
+  coap-block-num : Integer -> Integer
+  coap-block-num (v) = bit-shru v 4
+
+  coap-block-more : Integer -> Integer
+  coap-block-more (v) = bit-and (bit-shru v 3) 1
+
+  coap-block-szx : Integer -> Integer
+  coap-block-szx (v) = bit-and v 7
+
+ Block size is two raised to szx plus four, so szx 6 is 1024 bytes. szx 7
+ is reserved (RFC 7959 section 2.2) and answers 0 rather than 2048, so a
+ caller that trusts this number cannot be walked past the end of a buffer
+ by a reserved value.
+
+  coap-block-size : Integer -> Integer
+  coap-block-size (szx) = if szx > 6 then 0 else bit-shl 1 (szx + 4)
 
 Page 1

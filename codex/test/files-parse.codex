@@ -1,0 +1,112 @@
+Chapter: FilesParseTest
+  cites Works chapter GopFiles
+  cites Works chapter GopFat16
+  cites Foreword chapter Fat16
+  cites Foreword chapter CCE
+
+ Pins the file manager's pure pieces against a directory sector built
+ here from the FAT specification, not read from any driver: a volume
+ label, a long-name entry, a directory, a dot entry, a file with a
+ FAT32 high cluster word, a freed entry, the terminal zero entry, and
+ a zombie entry past the terminal that a spec-honest lister must
+ never surface. The same buffer is decoded as FAT16 and as FAT32 to
+ pin the cluster high-word difference. Geometry, scroll clamping,
+ padding, hex lines, and the path title are asserted at the 1280x800
+ scale-2 shape the OVMF bed presents.
+
+Section: Fixture
+
+  fp-put-name : Integer, Integer, Text, Integer -> Integer
+  fp-put-name (buf) (off) (name) (i) =
+    if i >= text-length name then 0
+    else let w = poke-byte buf (off + i) (to-unicode (char-code (char-at name i)))
+    in fp-put-name buf off name (i + 1)
+
+  fp-u16 : Integer, Integer, Integer -> Integer
+  fp-u16 (buf) (off) (v) =
+    let a = poke-byte buf off (bit-and v 255)
+    in poke-byte buf (off + 1) (bit-and (bit-shru v 8) 255)
+
+  fp-u32 : Integer, Integer, Integer -> Integer
+  fp-u32 (buf) (off) (v) =
+    let a = fp-u16 buf off (bit-and v 65535)
+    in fp-u16 buf (off + 2) (bit-and (bit-shru v 16) 65535)
+
+  fp-entry : Integer, Integer, Text, Integer, Integer, Integer -> Integer
+  fp-entry (buf) (off) (name) (attr) (cluster) (size) =
+    let n = fp-put-name buf off name 0
+    in let a = poke-byte buf (off + 11) attr
+    in let c = fp-u16 buf (off + 26) cluster
+    in fp-u32 buf (off + 28) size
+
+  fp-build : Integer -> Integer
+  fp-build (buf) =
+    let e0 = fp-entry buf 0 "CODEX      " 8 0 0
+    in let e1 = fp-entry buf 32 "AAAAAAAAAAA" 15 0 0
+    in let e2 = fp-entry buf 64 "EFI        " 16 3 0
+    in let e3 = fp-entry buf 96 ".          " 16 2 0
+    in let e4 = fp-entry buf 128 "CODEX   CDX" 32 100 2139712
+    in let hi = fp-u16 buf 148 2
+    in let e5 = poke-byte buf 160 229
+    in fp-entry buf 224 "ZOMBIE  BIN" 32 9 9
+
+  fp-fixture : Integer -> Integer
+  fp-fixture (dummy) =
+    let buf = alloc-zeroed 512 64
+    in let b = fp-build buf
+    in buf
+
+  fp-free-fill : Integer, Integer -> Integer
+  fp-free-fill (buf) (i) =
+    if i >= 16 then 0
+    else let w = poke-byte buf (i * 32) 229
+    in fp-free-fill buf (i + 1)
+
+  fp-fixture2 : Integer -> Integer
+  fp-fixture2 (dummy) =
+    let buf = alloc-zeroed 512 64
+    in let f = fp-free-fill buf 0
+    in buf
+
+  fp-vol16 : Fat16Volume
+  fp-vol16 = Fat16Volume {
+    vol-part-start = 0, vol-bytes-per-sector = 512, vol-sectors-per-cluster = 1,
+    vol-reserved-sectors = 1, vol-num-fats = 2, vol-root-entry-count = 512,
+    vol-fat-sectors = 8, vol-fat-start = 1, vol-root-start = 17, vol-data-start = 49,
+    vol-total-sectors = 2048, vol-cluster-count = 1999
+  }
+
+  fp-vol32 : Fat16Volume
+  fp-vol32 = Fat16Volume {
+    vol-part-start = 0, vol-bytes-per-sector = 512, vol-sectors-per-cluster = 1,
+    vol-reserved-sectors = 32, vol-num-fats = 2, vol-root-entry-count = 0,
+    vol-fat-sectors = 64, vol-fat-start = 32, vol-root-start = 2, vol-data-start = 160,
+    vol-total-sectors = 2048, vol-cluster-count = 1888
+  }
+
+  fp-ent-line : Fat16DirEntry -> Text
+  fp-ent-line (e) = e.de-name & " a" & show (e.de-attr) & " c" & show (e.de-cluster) & " s" & show (e.de-size)
+
+Section: Main
+
+  opening : [Console] Nothing = act
+    buf <- fp-fixture 0
+    buf2 <- fp-fixture2 0
+    let es16 = gfat-collect-entries fp-vol16 buf []
+    in let es32 = gfat-collect-entries fp-vol32 buf []
+    in act
+      print-line-uni ("n " & show (list-length es16) & " " & show (list-length es32))
+      print-line-uni ("d16 " & fp-ent-line (list-at es16 0) & " / " & fp-ent-line (list-at es16 1))
+      print-line-uni ("d32 " & fp-ent-line (list-at es32 1))
+      print-line-uni ("end " & show (gfat-sector-has-end buf 16) & " " & show (gfat-sector-has-end buf2 16) & " zombies " & show (list-length (gfat-collect-entries fp-vol16 buf2 [])))
+      print-line-uni ("dot " & show (gfat-dot-entry ".") & " " & show (gfat-dot-entry "..") & " " & show (gfat-dot-entry "EFI"))
+      print-line-uni ("pad [" & gfl-pad "EFI" 6 & "] row [" & gfl-row-text (list-at es16 1) & "]")
+      print-line-uni ("size " & gfl-size-text (list-at es16 0) & " " & gfl-size-text (list-at es16 1))
+      print-line-uni ("hex [" & gfl-hex-line buf2 0 4 & "]")
+      print-line-uni ("path [" & gfl-path-text ["EFI", "BOOT"] & "]")
+      print-line-uni ("rowat " & show (gfl-row-at 1280 800 2 0 5 200 148) & " " & show (gfl-row-at 1280 800 2 0 5 200 183) & " " & show (gfl-row-at 1280 800 2 0 5 200 184) & " " & show (gfl-row-at 1280 800 2 0 5 100 200) & " " & show (gfl-row-at 1280 800 2 0 2 200 260))
+      print-line-uni ("top " & show (gfl-clamp-top 5 0 14) & " " & show (gfl-clamp-top 14 0 14) & " " & show (gfl-clamp-top 2 5 14))
+      print-line-uni ("close " & show (gfl-close-hit 1280 800 2 1200 70) & " " & show (gfl-close-hit 1280 800 2 1100 70) & " " & show (gfl-close-hit 1280 800 2 1200 100))
+      print-line-uni "files-parse ok"
+    end
+  end

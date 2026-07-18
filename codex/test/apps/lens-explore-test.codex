@@ -1,0 +1,240 @@
+Chapter: LensExploreTest
+  cites Foreword chapter TextSearch
+  cites Data chapter Catalog
+  cites Data chapter Schema
+  cites Data chapter Row
+  cites Data chapter RelAlgebra
+  cites Data chapter Executor
+  cites Data chapter Optimizer
+  cites Lens chapter LensModel
+  cites Lens chapter LensPlan
+  cites Lens chapter LensSql
+  cites Lens chapter LensDashboard
+  cites Lens chapter LensForm
+
+ The explore page driven end to end, three ways. First the bare form:
+ the model's dimensions and measures must appear as checkboxes with
+ the measure descriptions beside them, nothing checked, no results
+ section anywhere. Second the form parser alone, against the
+ urlencoded edge cases the wire can carry: repeated keys, plus and
+ percent escapes, a missing limit, a garbage limit, a later limit
+ winning, empty and bare keys dropped, and a malformed escape passing
+ through as a literal percent. Third the result page for one
+ dimension and one measure: the star schema and numbers are the
+ dashboard test's, so revenue by city is Shelbyville 7300,
+ Springfield 16100, Capital City 6500, the QueryResult comes from
+ lens-run natively, the statement text comes from lens-to-tsql over
+ the same plan, and the page must carry the table, the bar chart with
+ the same Springfield rect the dashboard test pins, the executed SQL
+ under its heading, and the two posted checkboxes still checked. The
+ closing assertions count opening and closing tags so an unbalanced
+ page fails here before any browser sees it.
+
+Section: Star Schema
+
+  users-table : TableDef
+  users-table = table-def-with-pk "users" [
+    col-def-not-null "user-id" ColInteger,
+    col-def-not-null "uname" ColText,
+    col-def-not-null "city" ColText,
+    col-def-not-null "credit-limit" ColInteger
+  ] ["user-id"]
+
+  orders-table : TableDef
+  orders-table = table-def-with-pk "orders" [
+    col-def-not-null "order-id" ColInteger,
+    col-def-not-null "user-id" ColInteger,
+    col-def-not-null "product-id" ColInteger,
+    col-def-not-null "amount" ColInteger
+  ] ["order-id"]
+
+  insert-all : Catalog, Text, List RowData, Integer, Integer -> Catalog
+  insert-all (cat) (table) (rows) (i) (len) =
+    if i >= len then cat
+    else let r = catalog-insert-row cat table (list-at rows i)
+    in insert-all (r.cir-cat) table rows (i + 1) len
+
+  seed-users : Catalog -> Catalog
+  seed-users (cat) =
+    let s = table-schema users-table
+    in let rows = [
+      row-new s [ValInteger 1, ValText "Alice", ValText "Springfield", ValInteger 10000],
+      row-new s [ValInteger 2, ValText "Bob",   ValText "Shelbyville", ValInteger 20000],
+      row-new s [ValInteger 3, ValText "Carol", ValText "Springfield", ValInteger 30000],
+      row-new s [ValInteger 4, ValText "Dave",  ValText "Capital City", ValInteger 40000]
+    ]
+    in insert-all cat "users" rows 0 (list-length rows)
+
+  seed-orders : Catalog -> Catalog
+  seed-orders (cat) =
+    let s = table-schema orders-table
+    in let rows = [
+      row-new s [ValInteger 1,  ValInteger 1, ValInteger 1, ValInteger 1500],
+      row-new s [ValInteger 2,  ValInteger 1, ValInteger 2, ValInteger 5000],
+      row-new s [ValInteger 3,  ValInteger 2, ValInteger 3, ValInteger 800],
+      row-new s [ValInteger 4,  ValInteger 3, ValInteger 1, ValInteger 1500],
+      row-new s [ValInteger 5,  ValInteger 4, ValInteger 2, ValInteger 5000],
+      row-new s [ValInteger 6,  ValInteger 1, ValInteger 3, ValInteger 800],
+      row-new s [ValInteger 7,  ValInteger 2, ValInteger 1, ValInteger 1500],
+      row-new s [ValInteger 8,  ValInteger 3, ValInteger 3, ValInteger 800],
+      row-new s [ValInteger 9,  ValInteger 3, ValInteger 2, ValInteger 5000],
+      row-new s [ValInteger 10, ValInteger 4, ValInteger 1, ValInteger 1500],
+      row-new s [ValInteger 11, ValInteger 2, ValInteger 2, ValInteger 5000],
+      row-new s [ValInteger 12, ValInteger 1, ValInteger 1, ValInteger 1500]
+    ]
+    in insert-all cat "orders" rows 0 (list-length rows)
+
+  build-star : Catalog
+  build-star =
+    let c1 = catalog-create-table catalog-new users-table
+    in let c2 = catalog-create-table (c1.cat) orders-table
+    in seed-orders (seed-users (c2.cat))
+
+Section: The Model
+
+  users-t : LensTable
+  users-t = LensTable { name = "users", primary-key = "user-id", grain = "one row per registered user" }
+
+  orders-t : LensTable
+  orders-t = LensTable { name = "orders", primary-key = "order-id", grain = "one row per order" }
+
+  orders-to-users : LensJoin
+  orders-to-users = LensJoin { from-table = "orders", to-table = "users", on-left = "user-id", on-right = "user-id", cardinality = ManyToOne }
+
+  city-dim : LensDimension
+  city-dim = LensDimension { name = "city", table = "users", column = "city", bucket = LbNone }
+
+  uname-dim : LensDimension
+  uname-dim = LensDimension { name = "user-name", table = "users", column = "uname", bucket = LbNone }
+
+  revenue-measure : LensMeasure
+  revenue-measure = LensMeasure {
+    name = "revenue",
+    table = "orders",
+    column = "amount",
+    agg = LensAggSum,
+    description = "Sum of order amounts in cents."
+  }
+
+  credit-measure : LensMeasure
+  credit-measure = LensMeasure {
+    name = "total-credit",
+    table = "users",
+    column = "credit-limit",
+    agg = LensAggSum,
+    description = "Sum of user credit limits in cents. User grain."
+  }
+
+  sales-model : LensModel
+  sales-model = LensModel {
+    name = "sales",
+    tables = [users-t, orders-t],
+    joins = [orders-to-users],
+    dimensions = [city-dim, uname-dim],
+    measures = [revenue-measure, credit-measure]
+  }
+
+Section: Text Search
+
+ Naive substring counting over the emitted pages, comparing character
+ codes pairwise. Both sides of every comparison come from the same
+ encoding, so equality is exact whatever CCE assigns.
+
+  t-match-at : Text, Text, Integer, Integer, Integer -> Boolean
+  t-match-at (hay) (needle) (pos) (j) (nlen) =
+    if j >= nlen then True
+    else if char-code (char-at hay (pos + j)) /= char-code (char-at needle j) then False
+    else t-match-at hay needle pos (j + 1) nlen
+
+  t-count-from : Text, Text, Integer, Integer, Integer, Integer -> Integer
+  t-count-from (hay) (needle) (i) (last) (nlen) (acc) =
+    if i > last then acc
+    else if t-match-at hay needle i 0 nlen then t-count-from hay needle (i + 1) last nlen (acc + 1)
+    else t-count-from hay needle (i + 1) last nlen acc
+
+  t-count : Text, Text -> Integer
+  t-count (hay) (needle) =
+    let nlen = text-length needle
+    in t-count-from hay needle 0 (text-length hay - nlen) nlen 0
+
+  t-contains : Text, Text -> Boolean
+  t-contains (hay) (needle) = t-count hay needle > 0
+
+  bool-text : Boolean -> Text
+  bool-text (b) = if b then "True" else "False"
+
+  balance : Text, Text, Text -> Text
+  balance (page) (open) (close) = show (t-count page open) & " of " & show (t-count page close)
+
+Section: Parser Probe
+
+ One line per parse: the raw body, then the fields the parser read
+ from it, dimensions and measures in arrival order and the limit as
+ an integer.
+
+  parse-line : Text -> Text
+  parse-line (body) =
+    let f = lens-form-parse body
+    in "  [" & body & "] -> dims=[" & text-join ", " (f.ff-dims) & "] meas=[" & text-join ", " (f.ff-meas) & "] limit=" & show (f.ff-limit)
+
+Section: Body
+
+  explore-q : LensQuery
+  explore-q = LensQuery { lens-name = "sales", dimensions = ["city"], measures = ["revenue"], filters = [], limit = 0 }
+
+  opening : [Console] Nothing = act
+    print-line-uni "=== lens explore test: the query builder page ==="
+    print-line-uni "-- bare form page"
+    let page0 = lens-explore-html sales-model [] [] 0
+    in let cat = build-star
+    in let qr = lens-run cat sales-model explore-q
+    in let pr = lens-plan sales-model explore-q
+    in let page1 = lens-explore-html-run sales-model ["city"] ["revenue"] 0 qr (lens-to-tsql (pr.plan-op))
+    in let page2 = lens-explore-html-run sales-model [] ["profit"] 0 (qr-error "lens-plan: diag 22: unknown measure profit") ""
+    in act
+      print-line-uni page0
+      print-line-uni "-- form parser"
+      print-line-uni (parse-line "dim=city&dim=user-name&meas=revenue&meas=total-credit&limit=5")
+      print-line-uni (parse-line "dim=order%2Dmonth&meas=a+b%20c")
+      print-line-uni (parse-line "meas=revenue")
+      print-line-uni (parse-line "meas=revenue&limit=ten")
+      print-line-uni (parse-line "limit=3&meas=revenue&limit=7")
+      print-line-uni (parse-line "dim=&meas=revenue")
+      print-line-uni (parse-line "revenue&meas=revenue")
+      print-line-uni (parse-line "dim=a%zzb")
+      print-line-uni (parse-line "meas=1%2B2")
+      print-line-uni (parse-line "")
+      print-line-uni "-- result page for city and revenue"
+      print-line-uni page1
+      print-line-uni "-- assertions"
+      print-line-uni ("bare form dim checkboxes: " & show (t-count page0 "name=\"dim\""))
+      print-line-uni ("bare form meas checkboxes: " & show (t-count page0 "name=\"meas\""))
+      print-line-uni ("bare form city box present: " & bool-text (t-contains page0 "value=\"city\""))
+      print-line-uni ("bare form user-name box present: " & bool-text (t-contains page0 "value=\"user-name\""))
+      print-line-uni ("bare form revenue box present: " & bool-text (t-contains page0 "value=\"revenue\""))
+      print-line-uni ("bare form total-credit box present: " & bool-text (t-contains page0 "value=\"total-credit\""))
+      print-line-uni ("bare form revenue description shown: " & bool-text (t-contains page0 "Sum of order amounts in cents."))
+      print-line-uni ("bare form nothing checked: " & bool-text (t-count page0 " checked" == 0))
+      print-line-uni ("bare form no results section: " & bool-text (t-count page0 "<h2>Results</h2>" == 0))
+      print-line-uni ("bare form limit defaults to zero: " & bool-text (t-contains page0 "name=\"limit\" value=\"0\""))
+      print-line-uni ("result page table present: " & bool-text (t-contains page1 "<table class=\"lens-table\">"))
+      print-line-uni ("result page springfield row: " & bool-text (t-contains page1 "<tr><td>Springfield</td><td>16100</td></tr>"))
+      print-line-uni ("result page springfield bar rect pinned: " & bool-text (t-contains page1 "<rect x=\"283\" y=\"71\" width=\"111\" height=\"209\" fill=\"#4e79a7\"/>"))
+      print-line-uni ("result page sql heading present: " & bool-text (t-contains page1 "<h3>Executed SQL</h3>"))
+      print-line-uni ("result page sql statement present: " & bool-text (t-contains page1 "GROUP BY"))
+      print-line-uni ("result page city box stays checked: " & bool-text (t-contains page1 "value=\"city\" checked"))
+      print-line-uni ("result page revenue box stays checked: " & bool-text (t-contains page1 "value=\"revenue\" checked"))
+      print-line-uni ("result page checked count: " & show (t-count page1 " checked"))
+      print-line-uni ("diag page renders the error: " & bool-text (t-contains page2 "<p class=\"lens-error\">lens-plan: diag 22: unknown measure profit</p>"))
+      print-line-uni ("diag page runs no sql: " & bool-text (t-count page2 "<h3>Executed SQL</h3>" == 0))
+      print-line-uni ("diag page draws no chart: " & bool-text (t-count page2 "<svg" == 0))
+      print-line-uni ("result svg open of close: " & balance page1 "<svg" "</svg>")
+      print-line-uni ("result section open of close: " & balance page1 "<section" "</section>")
+      print-line-uni ("result table open of close: " & balance page1 "<table" "</table>")
+      print-line-uni ("result tr open of close: " & balance page1 "<tr>" "</tr>")
+      print-line-uni ("result form open of close: " & balance page1 "<form" "</form>")
+      print-line-uni ("result fieldset open of close: " & balance page1 "<fieldset" "</fieldset>")
+      print-line-uni ("external references absent: " & bool-text (t-count page1 "http" == 0))
+      print-line-uni "lens-explore-test: done"
+    end
+  end

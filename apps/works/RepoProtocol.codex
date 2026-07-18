@@ -6,6 +6,7 @@ Chapter: RepoProtocol
   cites Trust chapter TrustLattice
   cites Net chapter MessageFraming
   cites Foreword chapter FactStore
+  cites Foreword chapter ImportGate
   cites Foreword chapter Sha256
   cites Foreword chapter Maybe
   cites Foreword chapter Hamt
@@ -114,10 +115,25 @@ Section: Verdict
       is Just (entry) ->
         verify-signature (entry.public-key) (verdict-content-string v) (v.signature)
 
+Section: Signed Facts
+
+ SignedFact, and the content a signature covers, are defined by
+ Foreword chapter ImportGate — the compiler cannot cite this chapter,
+ and it must be able to check a signature. All that belongs here is the
+ convenience of signing one with a Keypair, which is a Works notion.
+
+  sign-fact : Keypair, Fact -> SignedFact
+  sign-fact (kp) (f) = SignedFact {
+    fact = f,
+    signature = sign-content kp (fact-signing-content f),
+    signer-fingerprint = kp.fingerprint
+  }
+
 Section: Repository State
 
   RepoState = record {
     facts : BareFactStore,
+    signed-facts : HamtMap SignedFact,
     proposals : HamtMap Proposal,
     verdicts : HamtMap (List Verdict),
     keyring : Keyring,
@@ -131,6 +147,7 @@ Section: Repository State
 
   repo-empty : RepoState = RepoState {
     facts = fact-store-empty,
+    signed-facts = hamt-empty,
     proposals = hamt-empty,
     verdicts = hamt-empty,
     keyring = keyring-empty,
@@ -177,6 +194,13 @@ Section: Repository Operations
     let kr = keyring-add (repo.keyring) name pub trust
     in let lat = lattice-add-direct (repo.lattice) name trust
     in __record-set (__record-set repo "keyring" kr) "lattice" lat
+
+  repo-vouch : RepoState, Text, Text, Integer -> RepoState
+  repo-vouch (repo) (from) (target) (score) =
+    __record-set repo "lattice" (lattice-add-vouch (repo.lattice) from target score)
+
+  repo-trust-score : RepoState, Text -> Integer
+  repo-trust-score (repo) (agent) = lattice-trust-score (repo.lattice) agent
 
   repo-submit-proposal : RepoState, Proposal -> RepoState
   repo-submit-proposal (repo) (p) =
@@ -475,6 +499,84 @@ Section: Proposal Resolution
       is Accept -> all-accept-or-abstain vs (i + 1) len
       is Abstain -> all-accept-or-abstain vs (i + 1) len
       is otherwise -> False
+
+Section: Import by Hash
+
+ A repository depends on a definition from another repository by naming
+ its content hash, never its name or its location. Two repositories that
+ hold the same definition hold the same hash, so a dependency is the
+ same dependency wherever it came from.
+
+ Publishing a fact records it in the store and files its signature
+ beside it. Importing one walks four guards — present, hash-honest,
+ signed by a key we hold, signed by someone we trust — and any guard
+ that fails refuses the import outright.
+
+ The guards themselves are not here. They are in Foreword chapter
+ ImportGate, because the compiler must one day run them and the compiler
+ cannot cite this chapter. What is here is the half that is ours: the
+ keyring, the vouch lattice, and the store the facts sit in. We do the
+ expensive thinking and hand the gate a flat answer.
+
+ The guard that matters is the last one. Trust was recorded long before
+ it was enforced: the keyring has always carried a weight per key, and
+ nothing anywhere refused a definition for falling below it. A fact one
+ notch under the threshold now fails to import.
+
+ What is gated is an importer. Nothing in the compile path calls
+ repo-import yet — there is no import directive in the language and no
+ view that declares a threshold — so a program that chooses to import
+ is held to its threshold, and a build is not. Lifting the guards into
+ the foreword is the first step of that reach; it is not yet the reach.
+
+ Resolution is local-store-only. Peer query and registry discovery are
+ further reaches of the same protocol; refusing a fact does not depend
+ on where the fact came from, so the refusal is complete without them.
+
+  repo-publish-fact : RepoState, SignedFact -> RepoState
+  repo-publish-fact (repo) (sf) =
+    let f = sf.fact
+    in let new-facts = fact-store (repo.facts) f
+    in let new-signed = hamt-set (repo.signed-facts) (f.hash) sf
+    in __record-set (__record-set repo "facts" new-facts) "signed-facts" new-signed
+
+  repo-bundle : RepoState -> FactBundle
+  repo-bundle (repo) =
+    FactBundle { facts = repo.facts, signed = repo.signed-facts }
+
+ The bridge between the lattice and the gate. The gate reads scores out
+ of a flat manifest; the lattice computes them by walking a vouch graph.
+ So we build the manifest the gate needs, for exactly the one signer it
+ is about to ask about — the signer named by the SignedFact filed under
+ the hash we were handed.
+
+ Building it for one signer rather than for the whole keyring is not
+ only cheaper, it is the only thing available: a Keyring is a HAMT and a
+ HAMT cannot be enumerated (keyring-scan-name is a stub returning None
+ for exactly this reason). It also keeps the cost of an import where it
+ was — one vouch walk, for one key — instead of one per key we hold.
+
+ An empty manifest is the right answer whenever there is nobody to score:
+ no fact, no signature, or a signer we hold no key for. The gate turns
+ each of those into its own refusal.
+
+  repo-manifest-for : RepoState, Text -> TrustManifest
+  repo-manifest-for (repo) (hash) =
+    when hamt-get (repo.signed-facts) hash
+      is None -> manifest-empty
+      is Just (sf) -> repo-manifest-for-signer repo (sf.signer-fingerprint)
+
+  repo-manifest-for-signer : RepoState, Text -> TrustManifest
+  repo-manifest-for-signer (repo) (fingerprint) =
+    when keyring-lookup (repo.keyring) fingerprint
+      is None -> manifest-empty
+      is Just (entry) ->
+        let score = lattice-trust-score (repo.lattice) (entry.name)
+        in manifest-add manifest-empty fingerprint (entry.public-key) score
+
+  repo-import : RepoState, Text, Text, Integer -> ImportResult
+  repo-import (repo) (hash) (local-name) (threshold) =
+    gate-import (repo-bundle repo) (repo-manifest-for repo hash) threshold hash local-name
 
 Section: Formatting
 

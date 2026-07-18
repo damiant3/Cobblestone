@@ -1,0 +1,229 @@
+Chapter: DtlsHello
+  cites Foreword chapter Tls
+  cites Foreword chapter Maybe
+
+ The ClientHello, ServerHello and HelloRetryRequest bodies for DTLS 1.3
+ (RFC 8446 section 4.1, which RFC 9147 inherits whole). These are the
+ message bodies the D2b framing carries and the D2a machine sequences.
+
+ THE HELLORETRYREQUEST IS NOT A MESSAGE TYPE. This is the trap in this
+ chapter, and it catches everyone once. DTLS 1.2 had a distinct
+ HelloVerifyRequest; DTLS 1.3 does not. A HelloRetryRequest is a
+ ServerHello -- same message type, same structure -- whose random field
+ is a fixed magic value the working group published (RFC 8446 4.1.3). A
+ receiver that switches on message type will never see an HRR; it must
+ compare the random against the magic. Getting this wrong means the
+ cookie exchange silently never happens, which means the DoS defence of
+ D2a silently never engages.
+
+ What is here: the bodies, the cookie extension, and the parsers that
+ pull the peer's key share and cookie back out. What is NOT here, and is
+ stated rather than implied: no certificate, no CertificateVerify, and
+ therefore NO PEER AUTHENTICATION. A handshake built only from these
+ bodies is an ANONYMOUS key agreement. It resists a passive eavesdropper
+ and it does NOT resist an active man in the middle, who can simply run
+ two handshakes and sit between them. Do not describe a connection built
+ on this as secure.
+
+ To dtls-client-hello-body gives List Integer,
+   the ClientHello body: version, random, session id, cipher suites, extensions.
+
+ To dtls-server-hello-body gives List Integer,
+   the ServerHello body, carrying the server key share.
+
+ To dtls-hrr-body gives List Integer,
+   a HelloRetryRequest: a ServerHello with the magic random and a cookie.
+
+ To dtls-is-hrr gives Boolean,
+   reporting whether a ServerHello is really a HelloRetryRequest.
+
+ We say:
+
+Section: Constants
+
+ RFC 8446 section 4.1.3. A ServerHello carrying THIS random is a
+ HelloRetryRequest. It is the SHA-256 of the string "HelloRetryRequest",
+ chosen so it cannot collide with a real random by accident.
+
+  dtls-hrr-random : List Integer =
+    [207, 33, 173, 116, 229, 154, 97, 17, 190, 29, 140, 2, 30, 101, 184, 145,
+     194, 162, 17, 22, 122, 187, 140, 94, 7, 158, 9, 226, 200, 168, 51, 156]
+
+  dtls-ext-cookie-type : Integer = 44
+  dtls-legacy-version : List Integer = [3, 3]
+  dtls-supported-version : List Integer = [3, 4]
+
+Section: Cookie Extension
+
+ RFC 8446 section 4.2.2. The cookie is an opaque vector, so it carries
+ its own two-byte length inside the extension's two-byte length.
+
+  dtls-ext-cookie : List Integer -> List Integer
+  dtls-ext-cookie (cookie) =
+    let inner = tls-be16 (list-length cookie) & cookie
+    in tls-be16 dtls-ext-cookie-type & tls-be16 (list-length inner) & inner
+
+ The server's supported_versions is a single version, not a list -- the
+ client sends a vector, the server answers with the one it picked. The
+ asymmetry is real and a shared encoder gets it wrong.
+
+  dtls-ext-versions-server : List Integer =
+    tls-be16 tls-ext-supported-versions & tls-be16 2 & dtls-supported-version
+
+ The server's key_share is a bare KeyShareEntry -- again, no outer vector,
+ unlike the client's list of them.
+
+  dtls-ext-key-share-server : List Integer -> List Integer
+  dtls-ext-key-share-server (public-key) =
+    let entry = tls-be16 tls-group-x25519 & tls-be16 32 & public-key
+    in tls-be16 tls-ext-key-share & tls-be16 (list-length entry) & entry
+
+Section: ClientHello
+
+ A cookie of zero length means no cookie extension at all -- the first
+ ClientHello. The second one echoes what the server sent.
+
+  dtls-client-hello-body : List Integer, List Integer, List Integer, List Integer -> List Integer
+  dtls-client-hello-body (random) (session-id) (public-key) (cookie) =
+    let suites = tls-be16 2 & tls-be16 tls-cipher-aes-128-gcm-sha256
+    in let exts = dtls-ch-extensions public-key cookie
+    in dtls-legacy-version & random & [list-length session-id] & session-id & suites & [1, 0] & tls-be16 (list-length exts) & exts
+
+  dtls-ch-extensions : List Integer, List Integer -> List Integer
+  dtls-ch-extensions (public-key) (cookie) =
+    let base = tls-ext-versions & tls-ext-groups & tls-ext-key-share-client public-key
+    in if list-length cookie == 0 then base else base & dtls-ext-cookie cookie
+
+Section: ServerHello and HelloRetryRequest
+
+  dtls-server-hello-body : List Integer, List Integer, List Integer -> List Integer
+  dtls-server-hello-body (random) (session-id) (public-key) =
+    let exts = dtls-ext-versions-server & dtls-ext-key-share-server public-key
+    in dtls-legacy-version & random & [list-length session-id] & session-id & tls-be16 tls-cipher-aes-128-gcm-sha256 & [0] & tls-be16 (list-length exts) & exts
+
+ The HelloRetryRequest: the same structure, the magic random, and a
+ cookie instead of a key share. The server has allocated nothing at this
+ point and must not -- the cookie is what lets it stay stateless.
+
+  dtls-hrr-body : List Integer, List Integer -> List Integer
+  dtls-hrr-body (session-id) (cookie) =
+    let exts = dtls-ext-versions-server & dtls-ext-cookie cookie
+    in dtls-legacy-version & dtls-hrr-random & [list-length session-id] & session-id & tls-be16 tls-cipher-aes-128-gcm-sha256 & [0] & tls-be16 (list-length exts) & exts
+
+  dtls-is-hrr : List Integer -> Boolean
+  dtls-is-hrr (sh-body) =
+    if list-length sh-body < 34 then False
+    else dtls-eq-at sh-body 2 dtls-hrr-random 0 32
+
+  dtls-eq-at : List Integer, Integer, List Integer, Integer, Integer -> Boolean
+  dtls-eq-at (a) (ao) (b) (bo) (n) =
+    if n <= 0 then True
+    else if list-at a (ao) /= list-at b (bo) then False
+    else dtls-eq-at a (ao + 1) b (bo + 1) (n - 1)
+
+Section: Parsing the Server's Answer
+
+ Walk the extension list and pull out what we need. The extensions block
+ starts after version(2) + random(32) + session_id + cipher_suite(2) +
+ compression(1), and every hop is length-prefixed -- so every hop is a
+ chance to be lied to. Each one is bounds-checked against the buffer we
+ actually have, not against the length the peer claims.
+
+  dtls-sh-ext-offset : List Integer -> Integer
+  dtls-sh-ext-offset (b) =
+    let sid-len = list-at b 34
+    in 34 + 1 + sid-len + 2 + 1 + 2
+
+  dtls-sh-find-ext : List Integer, Integer -> Maybe (List Integer)
+  dtls-sh-find-ext (b) (want) =
+    if list-length b < 40 then None
+    else dtls-ext-scan b (dtls-sh-ext-offset b) want
+
+  dtls-ext-scan : List Integer, Integer, Integer -> Maybe (List Integer)
+  dtls-ext-scan (b) (off) (want) =
+    if off + 4 > list-length b then None
+    else dtls-ext-scan-at b off want
+
+  dtls-ext-scan-at : List Integer, Integer, Integer -> Maybe (List Integer)
+  dtls-ext-scan-at (b) (off) (want) =
+    let etype = bit-or (bit-shl (list-at b off) 8) (list-at b (off + 1))
+    in let elen = bit-or (bit-shl (list-at b (off + 2)) 8) (list-at b (off + 3))
+    in if off + 4 + elen > list-length b then None
+    else if etype == want then Just (dtls-take-at b (off + 4) elen)
+    else dtls-ext-scan b (off + 4 + elen) want
+
+ The server's key share: inside the extension, a KeyShareEntry of group,
+ length, key.
+
+  dtls-sh-key-share : List Integer -> Maybe (List Integer)
+  dtls-sh-key-share (sh-body) =
+    when dtls-sh-find-ext sh-body tls-ext-key-share
+      is None -> None
+      is Just (e) -> if list-length e < 36 then None else Just (dtls-take-at e 4 32)
+
+ The cookie out of a HelloRetryRequest: inside the extension, an opaque
+ vector with its own length.
+
+  dtls-hrr-cookie : List Integer -> Maybe (List Integer)
+  dtls-hrr-cookie (sh-body) =
+    when dtls-sh-find-ext sh-body dtls-ext-cookie-type
+      is None -> None
+      is Just (e) -> if list-length e < 2 then None else dtls-cookie-inner e
+
+  dtls-cookie-inner : List Integer -> Maybe (List Integer)
+  dtls-cookie-inner (e) =
+    let n = bit-or (bit-shl (list-at e 0) 8) (list-at e 1)
+    in if 2 + n > list-length e then None else Just (dtls-take-at e 2 n)
+
+Section: Parsing the Client's Hello
+
+ A ClientHello is NOT a ServerHello with the fields in the same places.
+ It carries a cipher_suites vector and a compression_methods vector that
+ the server's hello does not, so the extension block sits at a different
+ offset and the ServerHello parser above would read the wrong bytes.
+ This is its own walk. Getting this wrong is what made the server find
+ neither the cookie nor the client's key share on the second flight.
+
+ Layout: version(2), random(32), session_id(1+n), cipher_suites(2+n),
+ compression(1+n), extensions(2+n).
+
+  dtls-ch-ext-offset : List Integer -> Integer
+  dtls-ch-ext-offset (b) =
+    let sid = list-at b 34
+    in let o1 = 35 + sid
+    in let cs = bit-or (bit-shl (list-at b o1) 8) (list-at b (o1 + 1))
+    in let o2 = o1 + 2 + cs
+    in let comp = list-at b o2
+    in o2 + 1 + comp + 2
+
+  dtls-ch-find-ext : List Integer, Integer -> Maybe (List Integer)
+  dtls-ch-find-ext (b) (want) =
+    if list-length b < 40 then None
+    else dtls-ext-scan b (dtls-ch-ext-offset b) want
+
+ The client's key_share is a LIST of KeyShareEntry, unlike the server's
+ bare one -- so skip the 2-byte list length before the first entry's
+ group(2) and length(2).
+
+  dtls-ch-key-share : List Integer -> Maybe (List Integer)
+  dtls-ch-key-share (ch-body) =
+    when dtls-ch-find-ext ch-body tls-ext-key-share
+      is None -> None
+      is Just (e) -> if list-length e < 38 then None else Just (dtls-take-at e 6 32)
+
+  dtls-ch-cookie : List Integer -> Maybe (List Integer)
+  dtls-ch-cookie (ch-body) =
+    when dtls-ch-find-ext ch-body dtls-ext-cookie-type
+      is None -> None
+      is Just (e) -> if list-length e < 2 then None else dtls-cookie-inner e
+
+Section: Helpers
+
+  dtls-take-at : List Integer, Integer, Integer -> List Integer
+  dtls-take-at (bs) (off) (n) = dtls-take-loop bs off n 0 []
+
+  dtls-take-loop : List Integer, Integer, Integer, Integer, List Integer -> List Integer
+  dtls-take-loop (bs) (off) (n) (i) (acc) =
+    if i >= n then acc
+    else if off + i >= list-length bs then acc
+    else dtls-take-loop bs off n (i + 1) (list-push acc (list-at bs (off + i)))

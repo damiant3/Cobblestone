@@ -48,7 +48,18 @@ functions, done.
 | **STM32L4 Nucleo** | Cortex-M4F | ARM | 80 MHz | 128 KB | 13 |
 | **FE310 (HiFive1)** | RV32IMAC | RISC-V | 320 MHz | 16 KB | 7 |
 
-**108 sub-tests total.** All pass on MMIO stubs under codex-vm.
+**108 sub-tests, measured 2026-07-13** by `build/boards-test.ps1`, which is
+where the board battery lives. All nine boards pass, zero fail.
+
+They no longer "pass on MMIO stubs": since 2026-07-13 the accesses are real
+loads and stores against backed memory (see below), and every driver
+function that makes one declares `[Device.Mmio]`.
+
+QEMU virt's test is `codex/test/qemu-virt-board.codex`, not
+`qemuvirt-drivers.codex`. The first cut of `boards-test.ps1` assumed the
+naming convention, failed to find it, reported the board as untested, and
+that false gap got as far as a backlog entry before anyone checked. It has
+a test, it is in the default battery, and it returns 6.
 
 ---
 
@@ -141,9 +152,34 @@ any board — swap the `cites Boards chapter` line and rebuild.
 - **DMA completion callbacks.** The nRF DMA peripherals (UARTE, SPIM,
   TWIM, SAADC) are configured for DMA but completion is polled via
   event registers. Real DMA callbacks need interrupt support.
-- **Real hardware validation.** Every test runs on MMIO stubs (all
-  reads return 0, all writes are no-ops). The register addresses are
-  from the reference manuals but the electrical behavior is untested.
+- **Real hardware validation.** The MMIO primitives are real: a single
+  aligned 32-bit or 8-bit load/store, not a stub. Six of the nine board
+  batteries exercise genuine memory-mapped read/write under codex-vm
+  (write a register, read it back). The register addresses come from the
+  reference manuals, but the *electrical* behaviour is still untested —
+  no silicon has been in the loop.
+
+  Until 2026-07-13 this was much worse than "untested": `mmio-read-32
+  (addr) = 0` was a stub body, so all 429 call sites across the nine
+  board chapters read zero and discarded their writes. The tests passed
+  because a stub always agrees with itself.
+
+- **All nine boards run on codex-vm** (since 2026-07-13). Three of them
+  put their registers above the 3 GB RAM ceiling — the Pi4
+  (`0xFE000000`), the RP2040 (`0xD0000000`), and the STM32L4's Cortex-M
+  SCB (`0xE000ED00`) — and for a while they were skipped as unfixable.
+  That was wrong on both counts. The guest page tables now map the
+  device gigabyte, and `codex-vm -board-mmio` backs those three windows
+  with RAM, so the drivers read back what they write. The Pi4's base
+  does collide with codex-vm's emulated Intel HDA BAR, but that BAR is
+  codex-vm's own choice: `-board-mmio` shadows it, which is exactly why
+  the flag is opt-in (audio and USB are off while it is on) and why a
+  board test does not care. Run them from `build/boards-test.ps1`.
+
+  What this buys is read-back fidelity, the same the other six already
+  had. It is still not peripheral behaviour. Renode remains the real
+  target — and for the Cortex-M parts it is the only option until
+  Thumb-2 codegen exists (`docs/PM/BACKLOG.md` 3.5).
 - **Power management — WFI instruction.** STM32L4 now has the full
   sleep preparation sequence (LPMS mode select, wakeup flag clear,
   SCB SLEEPDEEP, LPTIM wakeup, clock restore). The only missing
@@ -171,5 +207,4 @@ any board — swap the `cites Boards chapter` line and rebuild.
 - `codex/boards/` — 9 board implementations
 - `codex/test/*-drivers.codex` — smoke tests
 - `docs/KingsAndCourts.md` — regulatory compliance story
-- `docs/Designs/Features/Active/IoT-Addendum.md` — board expansion plan
 - `docs/PM/IoT/` — compliance summaries, protocol references, hardware specs

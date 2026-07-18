@@ -6,6 +6,7 @@ Chapter: FirstBoot
   cites Foreword chapter Maybe
   cites Kernel chapter DiskFacts
   cites Kernel chapter IdentityManager
+  cites UI chapter KeyInput
 
  First-boot experience. When Codex boots from a USB stick for the
  first time (no IdentityFact in DiskFacts), FirstBoot runs the
@@ -69,53 +70,64 @@ Section: Initialization
 
 Section: Boot Entry Point
 
-  first-boot-entry : DiskFactStore, Integer -> DiskFactStore
+  first-boot-entry : DiskFactStore, Integer -> [Console, Identity] DiskFactStore
   first-boot-entry (store) (timestamp) =
     if sysdb-is-fresh store then
       first-boot-fresh store timestamp
     else
       first-boot-returning store
 
-  first-boot-fresh : DiskFactStore, Integer -> DiskFactStore
-  first-boot-fresh (store) (timestamp) =
-    let w0 = idm-show-lines welcome-lines
-    in let w1 = first-boot-wait-enter
-    in let result = idm-first-boot store timestamp
-    in when result.idm-result
-      is IdmOk -> result.idm-store
-      is IdmWrongPassphrase -> result.idm-store
-      is IdmNoIdentity -> result.idm-store
-      is IdmError (msg) ->
-        let w2 = idm-show-lines ["  Error: " & msg]
-        in result.idm-store
+  first-boot-fresh : DiskFactStore, Integer -> [Console, Identity] DiskFactStore
+  first-boot-fresh (store) (timestamp) = act
+    idm-show-lines welcome-lines
+    let w1 = first-boot-wait-enter
+    in act
+      result <- idm-first-boot store timestamp
+      when result.idm-result
+       is IdmOk -> result.idm-store
+       is IdmWrongPassphrase -> result.idm-store
+       is IdmNoIdentity -> result.idm-store
+       is IdmError (msg) -> act
+         idm-show-lines ["  Error: " & msg]
+         result.idm-store
+       end
+    end
+  end
 
-  first-boot-returning : DiskFactStore -> DiskFactStore
+  first-boot-returning : DiskFactStore -> [Console, Identity] DiskFactStore
   first-boot-returning (store) =
     first-boot-unlock-loop store 3
 
-  first-boot-unlock-loop : DiskFactStore, Integer -> DiskFactStore
+  first-boot-unlock-loop : DiskFactStore, Integer -> [Console, Identity] DiskFactStore
   first-boot-unlock-loop (store) (retries) =
-    if retries <= 0 then
-      let w = idm-show-lines ["", "  Too many failed attempts.", ""]
-      in store
-    else let result = idm-unlock store
-    in when result.idm-result
-      is IdmOk ->
-        let w = idm-show-lines ["", "  Identity unlocked.", ""]
-        in result.idm-store
-      is IdmWrongPassphrase ->
-        let w = idm-show-lines ["  Wrong passphrase. Try again.", ""]
-        in first-boot-unlock-loop store (retries - 1)
-      is IdmNoIdentity ->
-        let w = idm-show-lines ["  No identity found on this stick.", ""]
-        in store
-      is IdmError (msg) ->
-        let w = idm-show-lines ["  Error: " & msg]
-        in store
+    if retries <= 0 then act
+      idm-show-lines ["", "  Too many failed attempts.", ""]
+      store
+    end
+    else act
+      result <- idm-unlock store
+      when result.idm-result
+       is IdmOk -> act
+         idm-show-lines ["", "  Identity unlocked.", ""]
+         result.idm-store
+       end
+       is IdmWrongPassphrase -> act
+         idm-show-lines ["  Wrong passphrase. Try again.", ""]
+         first-boot-unlock-loop store (retries - 1)
+       end
+       is IdmNoIdentity -> act
+         idm-show-lines ["  No identity found on this stick.", ""]
+         store
+       end
+       is IdmError (msg) -> act
+         idm-show-lines ["  Error: " & msg]
+         store
+       end
+    end
 
   first-boot-wait-enter : Integer
   first-boot-wait-enter =
-    let ch = read-key
+    let ch = poll-key
     in if ch == 13 then 0
     else if ch == 10 then 0
     else first-boot-wait-enter

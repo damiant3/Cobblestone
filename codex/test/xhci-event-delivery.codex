@@ -1,0 +1,34 @@
+Chapter: XhciEventDelivery
+  cites Kernel chapter Xhci
+  cites Kernel chapter Pci
+  grounds Device.Port, Device.Mmio
+
+ A real command-ring event-delivery test, not a vacuous did-not-hang one.
+ It discovers the controller, initialises it, sets up the event ring, rings
+ the command doorbell with an ENABLE_SLOT command, then reads the event ring
+ back. A working ring answers a Command Completion event (type 33) naming the
+ assigned slot (1) with completion code 1 (success). A broken event-ring
+ window or a CRCR cycle mismatch answers "event: NONE" instead, so this test
+ fails closed if either regresses.
+
+Section: Test
+  read-event-line : Maybe Trb -> Text
+  read-event-line (m) =
+    when m
+      is None -> "event: NONE"
+      is Just (t) ->
+        "event: type=" & show (xhci-event-trb-type t)
+          & " slot=" & show (xhci-event-slot-id t)
+          & " code=" & show (xhci-event-completion-code t)
+
+  opening : [Console, Device.Port, Device.Mmio] Nothing = act
+    let xc0 = xhci-discover
+    in let xc = xhci-init-controller xc0
+    in let ev = xhci-init-event-ring xc
+    in let r = usb-enable-slot xc 1
+    in let evt = xhci-poll-event xc 0
+    in act
+      print-line-uni ("found=" & (if xc0.xc-found then "1" else "0"))
+      print-line-uni (read-event-line evt)
+    end
+  end

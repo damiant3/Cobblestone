@@ -1,18 +1,4 @@
 Chapter: Name Resolution
-  cites Codex chapter General
-  cites Codex chapter Console
-  cites Codex chapter Files
-  cites Codex chapter Process
-  cites Codex chapter Text
-  cites Codex chapter Characters
-  cites Codex chapter Numbers
-  cites Codex chapter Bitwise
-  cites Codex chapter Lists
-  cites Codex chapter Concurrency
-  cites Codex chapter State
-  cites Codex chapter Time
-  cites Codex chapter Random
-  cites Codex chapter Runtime
   cites Codex chapter Phase Allocator (deck-record)
   cites Codex chapter Build Settings (max-recursion-depth)
 
@@ -30,24 +16,49 @@ Section: Scope
  16 KB copy. With locals on their own list, the main `names` is never
  touched after chapter-scope construction.
 
- **Locals linearity**: `scope-add-local` uses mutable field assignment
- which is in-place mutation on bare metal. That means *sibling* iterations
- (sibling defs in `resolve-all-defs`, sibling arms in
- `resolve-match-arms`, sibling clauses in `resolve-handle-clauses`)
- cannot share a Scope — one sibling's additions would leak into the
- next and silently resolve misspelled names against the previous
- sibling's bindings. Each sibling-iteration site allocates a fresh
- Scope via the `Scope { names = ..., locals = ... }` constructor so
- its mutations stay isolated. The `locals` of that fresh Scope is
- either `skip-list-text-empty` (top-level defs — no outer locals) or
- `skip-list-text-clone sc.locals` (match arms / handle clauses — a
- fresh independent skip-list so subsequent `scope-add-local` on the
- fresh scope doesn't touch the outer container).
+ **Locals linearity**: `scope-add-local` uses mutable field assignment,
+ which is in-place mutation on bare metal — it changes the Scope it is
+ handed and returns that same Scope. So a Scope may be shared only where
+ every binding added to it genuinely belongs to every later reader of it.
+ The line to hold is the BINDING REGION, and it has two sides.
 
- *Sequential* accumulators (let bindings, act-stmts, lambda param
- chains) deliberately share the same Scope across siblings — each
- binding sees previous bindings, which is the intended lexical
- semantics.
+ *Within* a region, sharing is the point: sequential accumulators (the
+ bindings of one let, the statements of one act block, a lambda's param
+ chain) share one Scope so each binding sees the ones before it, which is
+ what lexical scope means.
+
+ *Entering* a region, the Scope must be forked (`scope-fork`), or the
+ region's bindings escape into the scope it was reached from. Sibling
+ iterations are the case this file always got right — sibling arms in
+ `resolve-match-arms`, sibling clauses in `resolve-handle-clauses`,
+ sibling defs in `resolve-all-defs` (which starts from
+ `skip-list-text-empty`, having no outer locals) — because one sibling's
+ additions leaking into the next would resolve a misspelled name against
+ the previous sibling's bindings.
+
+ A let body and an act block are regions too, and until BACKLOG 2.22 they
+ did not fork: a `let` inside an `if` arm left its binder bound after the
+ arm, so an out-of-scope read still RESOLVED and the error surfaced far
+ downstream as the emitter's CDX2040 (a call to a name nobody wrote). The
+ subtlety that hid it: an act-block `let` scoping over the rest of its
+ block is REAL do-notation, and it was riding on the same mutation, so
+ the leak looked like a feature from one angle and a bug from the other.
+ `resolve-act-let` now says the do-notation deliberately; every other
+ region forks.
+
+ `ATryExpr`'s three regions each fork (BACKLOG 2.23). The decision the
+ entry asked for: a fallback runs precisely when the body did NOT finish,
+ so a body binding is possibly-unwritten when the fallback reads it, and
+ the body re-runs from the top on every attempt, so the slot holds one
+ partial attempt rather than one value. The regions do not share.
+
+ Nothing relied on the old sharing -- `trying` occurs in one other source
+ file (`codex/test/try-smoke`) and no fallback there names anything from
+ its body. What the sharing did produce was a miscompile, because the
+ checker never had it: `infer-act` is handed the untouched `env` per
+ region, so a fallback's name typed as the OUTER binding while this file
+ resolved it to the body's and the emitter loaded the body's slot.
+ `codex/test/scope-try-region` pins it.
 
   mutable Scope = record {
    names : SkipListText,
@@ -73,74 +84,26 @@ Section: Scope
    let __seq = sc.locals = skip-list-text-insert (sc.locals) name
    in sc
 
+ A fork is a Scope that shares the global names and the renames but owns
+ its locals, so `scope-add-local` on it cannot reach the scope it came
+ from. Every site that opens a nested BINDING REGION forks: a let body, a
+ match arm, a handler clause, an act block, an induction's arms. The
+ three that already did wrote this constructor out by hand; naming it
+ keeps the fourth from being written slightly differently.
+
+  scope-fork : Scope -> Scope
+  scope-fork (sc) =
+   Scope { names = sc.names, locals = skip-list-text-clone (sc.locals), chapter-renames = sc.chapter-renames }
+
 Section: Built-in Names
+
+ The names, from the one table that has them (Chapter: Builtins). This was a
+ hand-written literal of 244 strings that had to agree with the type
+ environment and with the emitter by inspection alone. It does not have to
+ agree with them now; it is made of them.
+
   builtin-names : List Text
-  builtin-names =
-   ["show", "compare", "__dderiv-Show", "__dderiv-Ord", "negate", "True", "False", "Nothing",
-    "print-line", "print-line-raw", "print-line-uni", "print-uni", "print-error", "print-error-uni", "read-line", "read-line-cce",
-    "open-file", "read-all", "close-file", "read-file", "read-file-raw", "read-file-uni", "read-serial-cce",
-    "write-file", "write-binary", "write-binary-buf", "write-binary-file", "file-exists", "list-files",
-    "list-directories", "create-directory", "path-combine", "path-filename",
-    "external-compile-bare",
-    "char-at", "char-to-text", "text-length", "substring",
-    "is-letter", "is-digit", "is-whitespace",
-    "text-to-integer", "text-to-double-bits", "integer-to-text", "text-replace",
-    "text-split", "text-contains", "text-starts-with",
-    "char-code", "char-code-at", "code-to-char",
-    "list-length", "list-at", "list-insert-at", "list-set-at", "list-snoc", "list-push",
-    "text-compare", "text-concat-list", "text-to-unicode-bytes", "unicode-bytes-to-text", "raw-bytes-to-text",
-    "get-args", "get-env", "current-dir",
-    "run-process", "run-process-full", "process-exit",
-    "get-state", "set-state", "run-state",
-    "now",
-    "random-integer",
-    "fork", "await", "par", "race", "fail",
-    "block-read", "block-write",
-    "block-read-sector", "block-write-sector",
-    "block-select", "block-sector-count",
-    "peek-byte", "poke-byte", "port-in-byte", "port-out-byte",
-    "port-in-16", "port-out-16", "port-in-32", "port-out-32", "peek-32", "peek-qword", "poke-32", "flush-tlb",
-    "read-mmio", "poke-mmio",
-    "alloc-bytes",
-    "process-yield", "process-spawn", "process-exit", "process-spawn-priority", "process-wait", "get-ticks", "process-get-pid", "process-restrict-cap", "process-kill", "process-get-cap", "process-status", "process-count",
-    "chan-kern-create", "chan-kern-send", "chan-kern-recv", "chan-kern-close", "chan-kern-send-block", "chan-kern-recv-block",
-    "chan-text-send", "chan-text-recv",
-    "hardware-random",
-    "identity-whoami", "identity-set", "device-seed",
-    "key-load", "key-zero", "key-status",
-    "boot-factstore-status", "identity-set-proc", "identity-get-proc",
-    "process-spawn-with-heap",
-    "net-status", "net-get-hwaddr", "net-send-raw", "net-recv-raw",
-    "vmxon", "vmclear", "vmptrld", "vmlaunch", "vmresume", "vmread", "vmwrite",
-    "rdmsr", "wrmsr",
-    "vmlaunch-full", "vmresume-full",
-    "uefi-set-attr", "uefi-clear-screen", "uefi-set-cursor", "uefi-enable-cursor", "uefi-set-mode", "uefi-read-key", "uefi-read-key-ex", "uefi-read-file",
-    "__record-set",
-    "__linked-list-empty", "__linked-list-push", "__linked-list-to-list",
-    "__heap-save", "__heap-restore", "__heap-advance", "__memset", "address-of", "__self-type-defs",
-    "prof-start", "prof-dump", "force",
-    "__deck-pos", "__deck-set", "__deck-alloc", "__deck-enter", "__deck-exit",
-    "__narrow",
-    "__list-with-capacity",
-    "__buf-write-byte", "__buf-write-bytes", "__buf-read-bytes",
-    "bit-and", "bit-or", "bit-xor", "bit-shl", "bit-shr", "bit-shru", "bit-not",
-    "int-mod", "abs", "min", "max",
-    "Refl", "assume", "sym", "trans", "cong", "app-cong",
-    "vec-splat", "vec-extract", "vec-add", "vec-sub", "vec-mul", "vec-div",
-    "vec-reduce-add", "vec-select", "vec-load-at", "vec-store-at",
-    "mask-any", "mask-all", "mask-none", "mask-count",
-    "to-real-approx", "from-real-approx",
-    "to-real-trapping", "from-real-trapping",
-    "to-real-saturating", "from-real-saturating",
-    "real-from-int", "real-to-int",
-    "real-approx-from-int", "real-approx-to-int",
-    "real-to-bits", "bits-to-real",
-    "real-approx-to-bits", "bits-to-real-approx",
-    "vec4-splat", "vec4-extract",
-    "suggested-vector-width",
-    "atomic-load", "atomic-store", "atomic-cas", "atomic-add", "atomic-exchange", "memory-fence",
-    "vec-empty", "vec-singleton", "vec-head", "vec-cons", "vec-length",
-    "s-new", "s-send", "s-recv", "s-recv-value", "s-close"]
+  builtin-names = builtin-names-from builtins 0 (list-length builtins) []
 
 Section: Name Classification
   is-type-name : Text -> Boolean
@@ -317,7 +280,7 @@ Section: Resolve Expressions
     is AIfExpr (cond) (then-e) (else-e) (s) ->
      resolve-expr-at sc cond (depth + 1) & resolve-expr-at sc then-e (depth + 1) & resolve-expr-at sc else-e (depth + 1)
     is ALetExpr (bindings) (body) (s) ->
-     resolve-let sc bindings body 0 (list-length bindings) skip-list-text-empty []
+     resolve-let (scope-fork sc) bindings body
     is ALambdaExpr (params) (body) (s) ->
      let param-result = add-lambda-params sc params 0 (list-length params) s skip-list-text-empty []
      in param-result.errors & resolve-expr-at (param-result.scope) body (depth + 1)
@@ -328,26 +291,38 @@ Section: Resolve Expressions
     is ARecordExpr (name) (fields) (s) ->
      resolve-record-fields sc fields 0 (list-length fields) []
     is AFieldAccess (obj) (field) (s) -> resolve-expr-at sc obj (depth + 1)
-    is AActExpr (stmts) (s) -> resolve-act-stmts sc stmts 0 (list-length stmts) skip-list-text-empty []
+    is AActExpr (stmts) (s) -> resolve-act-stmts (scope-fork sc) stmts 0 (list-length stmts) skip-list-text-empty []
     is AHandleExpr (eff) (body) (clauses) (s) ->
      resolve-expr-at sc body (depth + 1) & resolve-handle-clauses sc clauses 0 (list-length clauses) []
     is AWithTimeoutExpr (timeout) (effs) (scopes) (body) (s) ->
      resolve-expr-at sc body (depth + 1)
     is ATryExpr (max) (body) (fb) (fail) (s) ->
-     resolve-act-stmts sc body 0 (list-length body) skip-list-text-empty [] & resolve-act-stmts sc fb 0 (list-length fb) skip-list-text-empty [] & resolve-act-stmts sc fail 0 (list-length fail) skip-list-text-empty []
+     resolve-try-region sc body & resolve-try-region sc fb & resolve-try-region sc fail
     is AFieldAssignExpr (rec) (field) (val) (s) ->
      resolve-expr-at sc rec (depth + 1) & resolve-expr-at sc val (depth + 1)
     is ALazyExpr (inner) (s) -> resolve-expr-at sc inner (depth + 1)
     is AErrorExpr (msg) (s) -> []
     is AInductionExpr (scrut) (arms) (s) ->
-     let sc2 = when scrut is ANameExpr (nm) (ss) -> scope-add-local sc (nm.value) is otherwise -> sc
+     let sc2 = when scrut is ANameExpr (nm) (ss) -> scope-add-local (scope-fork sc) (nm.value) is otherwise -> sc
      in resolve-match-arms sc2 arms 0 (list-length arms) []
+
+ One try region, resolved in its own fork. This is a function rather than
+ three forks written out in the arm because `Scope` is `mutable`: a
+ function returning a Scope threads it onward and therefore CONSUMES it,
+ so three `scope-fork sc` calls on one path is three owners and CDX2062
+ rejects it. Returning diagnostics borrows `sc` instead, and the fork
+ inside is consumed once per call. The uniqueness checker caught this
+ while 2.23 was being closed.
+
+  resolve-try-region : Scope, List AActStmt -> List Diagnostic
+  resolve-try-region (sc) (stmts) =
+   resolve-act-stmts (scope-fork sc) stmts 0 (list-length stmts) skip-list-text-empty []
 
   resolve-handle-clauses : Scope, List AHandleClause, Integer, Integer, List Diagnostic -> List Diagnostic
   resolve-handle-clauses (sc) (clauses) (i) (len) (errs) =
    if i == len then errs
    else let c = list-at clauses i
-   in let clause-scope = Scope { names = sc.names, locals = skip-list-text-clone (sc.locals), chapter-renames = sc.chapter-renames }
+   in let clause-scope = scope-fork sc
    in let sc2 = scope-add-local clause-scope (c.resume-name.value)
    in let resume-seen = skip-list-text-insert skip-list-text-empty (c.resume-name.value)
    in let param-result = scope-add-clause-params sc2 (c.params) 0 (list-length (c.params)) (c.span) resume-seen []
@@ -363,15 +338,28 @@ Section: Resolve Expressions
       else scope-add-clause-params (scope-add-local sc name) ps (i + 1) len clause-span (skip-list-text-insert seen name) errs
 
 Section: Resolve Let
-  resolve-let : Scope, List ALetBind, AExpr, Integer, Integer, SkipListText, List Diagnostic -> List Diagnostic
-  resolve-let (sc) (bindings) (body) (i) (len) (seen) (errs) =
-   if i == len then errs & resolve-expr sc body
+
+ The binder loop shares one Scope across the bindings on purpose — each
+ binding sees the ones before it, which is what `let a = .. in let b = a
+ .. ` means. What must NOT be shared is the scope the let was reached
+ from, so the caller hands this loop a fork. `resolve-let` forks for its
+ own body; `resolve-act-let` does not, because an act-block let scopes
+ over the rest of the block.
+
+  resolve-let-binds : Scope, List ALetBind, Integer, Integer, SkipListText, List Diagnostic -> List Diagnostic
+  resolve-let-binds (sc) (bindings) (i) (len) (seen) (errs) =
+   if i == len then errs
    else let b = list-at bindings i
    in let name = b.name.value
    in let bind-errs = resolve-expr sc (b.value)
    in let dup-errs = if skip-list-text-has seen name then [make-error cdx-duplicate-definition ("Duplicate binding: '" & name & "'") (b.span)] else []
    in let sc2 = scope-add-local sc name
-   in resolve-let sc2 bindings body (i + 1) len (skip-list-text-insert seen name) (errs & bind-errs & dup-errs)
+   in resolve-let-binds sc2 bindings (i + 1) len (skip-list-text-insert seen name) (errs & bind-errs & dup-errs)
+
+  resolve-let : Scope, List ALetBind, AExpr -> List Diagnostic
+  resolve-let (sc) (bindings) (body) =
+   let bind-errs = resolve-let-binds sc bindings 0 (list-length bindings) skip-list-text-empty []
+   in bind-errs & resolve-expr sc body
 
 Section: Resolve Lambda Parameters
   add-lambda-params : Scope, List Name, Integer, Integer, SourceSpan, SkipListText, List Diagnostic -> ResolveScopeResult
@@ -387,7 +375,7 @@ Section: Resolve Match Arms
   resolve-match-arms (sc) (arms) (i) (len) (errs) =
    if i == len then errs
    else let arm = list-at arms i
-   in let arm-scope = Scope { names = sc.names, locals = skip-list-text-clone (sc.locals), chapter-renames = sc.chapter-renames }
+   in let arm-scope = scope-fork sc
    in let pat-result = collect-pattern-names arm-scope (arm.pattern)
    in let guard-errs = resolve-expr (pat-result.scope) (arm.guard)
    in let arm-errs = resolve-expr (pat-result.scope) (arm.body)
@@ -439,13 +427,43 @@ Section: Resolve Act Statements
    else let stmt = list-at stmts i
    in when stmt
      is AActExprStmt (e) (s) ->
-      let errs2 = resolve-expr sc e
-   in resolve-act-stmts sc stmts (i + 1) len seen (errs & errs2)
+      when e
+       is ALetExpr (binds) (lbody) (ls) -> resolve-act-let sc binds lbody stmts i len seen errs
+       is otherwise ->
+        let errs2 = resolve-expr sc e
+        in resolve-act-stmts sc stmts (i + 1) len seen (errs & errs2)
      is AActBindStmt (name) (e) (s) ->
       let errs2 = resolve-expr sc e
    in let dup-errs = if skip-list-text-has seen (name.value) then [make-error cdx-duplicate-definition ("Duplicate binding: '" & name.value & "'") s] else []
    in let sc2 = scope-add-local sc (name.value)
    in resolve-act-stmts sc2 stmts (i + 1) len (skip-list-text-insert seen (name.value)) (errs & errs2 & dup-errs)
+
+ A `let` statement in an act block is do-notation: it scopes over the
+ REST of the block, not merely over its own `in` body — the rule
+ `codex/test/act-let-scope` pins, and the one lowering says by nesting
+ the remaining statements inside the let's body (`lower-act-let`). So
+ this binds into the BLOCK's scope and does not fork: here the binding
+ escaping the let is the point.
+
+ Until the fork landed on `resolve-expr-at`'s ALetExpr arm, an act-block
+ let reached the following statements the same way a let inside an if-arm
+ reached past its arm — by mutating the scope it was handed. One was the
+ language, the other was the bug, and they were the same line of code.
+
+ The chain is peeled to its innermost body so every binding in
+ `let a = .. in let b = .. in stmt` scopes over the rest, and each let
+ statement carries its OWN duplicate-tracking (a later `let a` in the
+ same block SHADOWS an earlier one, which act-let-scope also pins), so
+ the block's `seen` is passed through untouched.
+
+  resolve-act-let : Scope, List ALetBind, AExpr, List AActStmt, Integer, Integer, SkipListText, List Diagnostic -> List Diagnostic
+  resolve-act-let (sc) (binds) (body) (stmts) (i) (len) (seen) (errs) =
+   let bind-errs = resolve-let-binds sc binds 0 (list-length binds) skip-list-text-empty []
+   in when body
+    is ALetExpr (binds2) (body2) (ls2) -> resolve-act-let sc binds2 body2 stmts i len seen (errs & bind-errs)
+    is otherwise ->
+     let body-errs = resolve-expr sc body
+     in resolve-act-stmts sc stmts (i + 1) len seen (errs & bind-errs & body-errs)
 
 Section: Resolve All Definitions
   resolve-all-defs : Scope, List ADef, Integer, Integer, List Diagnostic, SkipListText, List ChapterAssignment, List ACitesDecl, List Text, Text, List RenameEntry -> List Diagnostic

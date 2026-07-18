@@ -1,10 +1,4 @@
 Chapter: X86-64 Code Generator
-  cites Codex chapter Console
-  cites Codex chapter Text
-  cites Codex chapter Characters
-  cites Codex chapter Numbers
-  cites Codex chapter Lists
-  cites Codex chapter Runtime
 
  Core emission: function prologue/epilogue, local variable management,
  expression lowering, and call emission. Compound-expression emission
@@ -652,7 +646,12 @@ Section: Function Emission
    else if prof.lp-locals /= np then False
    else should-tco def
 
-  emit-function-minimal : CodegenState, IRDef, LeafProfile -> CodegenState
+  MinimalAttempt = record {
+   ma-state : CodegenState,
+   ma-mispredict : Boolean
+  }
+
+  emit-function-minimal : CodegenState, IRDef, LeafProfile -> MinimalAttempt
   emit-function-minimal (st1a) (def) (prof) =
    let use-arg-regs = leaf-arg-reg-ok def prof
    in let st1 = if use-arg-regs then __record-set st1a "func-local-regs" (take-arg-regs (list-length (def.params)) 0 []) else st1a
@@ -680,18 +679,38 @@ Section: Function Emission
     else st3
    in let st5 = emit-to-local st4 (def.body) reg-rax (st4.tco.in-tail-pos)
    in let call-broke = if prof.lp-has-calls then False else list-length (st5.cp-offsets) > cp-before
-   in let st6 = if st5.peak-local > nlocals | st5.peak-spill > 0 | call-broke
-      then st-add-error st5 cdx-ir-error ("minimal leaf mispredict in '" & def.name & "'") (def.span)
-      else st5
-   in let st6g = emit-return-guard st6 def
+   in let mispredict = st5.peak-local > nlocals | st5.peak-spill > 0 | call-broke
+   in let st6g = emit-return-guard st5 def
    in let st7 = if use-arg-regs then st6g else emit-minimal-pops st6g nlocals
-   in st-append-code st7 x86-ret
+   in MinimalAttempt { ma-state = st-append-code st7 x86-ret, ma-mispredict = mispredict }
+
+ leaf-profile is a heuristic, and a heuristic is allowed to be wrong. It
+ sizes the minimal frame before the body is emitted, so it has to predict
+ the emitter's own temp use; it has twice guessed low (an argument
+ permutation needs a staging temp, and a nested argument expression needs
+ more than one temp per complex argument), and each time the emitter
+ overran the frame the profile had promised.
+
+ That overrun used to be a codegen halt, which made a wrong guess reject
+ valid Codex. Emission is cheap and rare here, so the mispredict is now a
+ retry: the minimal bytes are abandoned where they lie, the offset entry
+ is re-pointed past them, and the definition is emitted again through the
+ standard path. Every future under-count is a missed optimization rather
+ than a refusal to compile. Do not restore the error -- teaching the
+ profile to count permutations and depth is worth doing on top of this,
+ never instead of it.
 
   emit-function : CodegenState, IRDef -> CodegenState
   emit-function (st) (def) =
-   let st0 = reset-func-state st (def.name)
+   let sel = lir-emit-try st def
+   in if sel.handled then sel.state
+   else let st0 = reset-func-state st (def.name)
    in let prof = leaf-profile st0 def
-   in if prof.lp-ok then emit-function-minimal st0 def prof
+   in if prof.lp-ok then
+     let attempt = emit-function-minimal st0 def prof
+     in if attempt.ma-mispredict
+      then emit-function-standard (reset-func-scratch (repoint-func-offset (attempt.ma-state))) def
+      else attempt.ma-state
    else emit-function-standard st0 def
 
   emit-function-standard : CodegenState, IRDef -> CodegenState
@@ -804,6 +823,25 @@ Section: Function Emission
     is ForAllEff (id) (b) -> return-bound-of b n
     is otherwise -> ty
 
+ The eleven accumulators are sized once, on the emit deck, and pushed in
+ place: list-push writes into the reservation and allocates nothing while
+ the list stays under capacity. Past capacity a push does what any push
+ does — it doubles and reallocates — and the new backing lands in the
+ per-function bivy, which emit-all-defs reclaims with __heap-restore the
+ moment the function is done. The accumulator then points at reclaimed
+ memory and the table is silently corrupted.
+
+ That is not a hypothesis. Built with accum-capacity at 16, the compiler
+ emits a factorial whose call-patch target is the EMPTY STRING, and the
+ only thing that notices is CDX2040 reporting an unresolved call to ''.
+ At the real capacity the same corruption waits for a unit large enough
+ to reach it, and the diagnostic it would produce names nothing.
+
+ So this is checked before each function rather than discovered after.
+ It was written to be, and was never called — a guard defined and left
+ unwired is worth exactly as much as no guard, and reads like a promise
+ that the capacity is watched. ArchitectsSketchbook said it was.
+
   accum-at-capacity : CodegenState -> Boolean
   accum-at-capacity (st) =
    list-length (st.cp-offsets) >= accum-capacity * 4
@@ -840,14 +878,15 @@ Section: Function Emission
    else if is-proof-def (list-at defs i) then let erased = list-at defs i
     in let st1 = st-add-info st cdx-claim-recognized ("proof '" & erased.name & "' erased (compile-time only)") (erased.span)
     in emit-all-defs st1 defs (i + 1)
+   else if accum-at-capacity st then st-add-error st cdx-accum-overflow ("emitter accumulator full at definition '" & (list-at defs i).name & "': the emit tables are pre-allocated to accum-capacity and a push past it reallocates into scratch that this loop reclaims, corrupting the table. Raise accum-capacity in BuildSettings and rebuild the seed.") ((list-at defs i).span)
    else let def = list-at defs i
-   in let start-code-len = st.code-len
    in let h = __heap-save
    in let func-st = emit-function st def
    in let new-code-len = func-st.code-len
    in let new-data-len = func-st.data-len
    in let new-emit-work = func-st.emit-work
-   in let wcet-insns = if def.is-punctual then x86-count-insns (func-st.workspace.code-buffer) start-code-len new-code-len else 0
+   in let func-start = list-at (func-st.fo-offsets) (list-length (func-st.fo-offsets) - 1)
+   in let wcet-insns = if def.is-punctual then x86-count-insns (func-st.workspace.code-buffer) func-start new-code-len else 0
    in let restored = __heap-restore h
    in let next-st = deck-record (codegen-carry-forward st new-code-len new-data-len new-emit-work)
    in let wcet-st = if def.is-punctual then emit-wcet-check next-st def wcet-insns else next-st
@@ -887,6 +926,20 @@ Section: Local Variable Management
      slot = __narrow slot
     }] & (st.locals))
 
+ add-local prepends and lookup-local takes the first match, so a lexical
+ scope is exactly a PREFIX of st.locals: entering one adds bindings to
+ the front, leaving one drops them again. Nothing popped before, so a
+ binding introduced inside a let body or a match arm kept shadowing the
+ outer binding of the same name for the rest of the function, and the
+ stale slot still held the inner value - a silent miscompile (BACKLOG
+ 2.22). restore-locals reverts only the locals field: code, next-local,
+ peak-local, spill-count and the patch tables are threaded forward, as
+ they must be.
+
+  restore-locals : CodegenState, List LocalBinding -> CodegenState
+  restore-locals (st) (saved) =
+   __record-set st "locals" saved
+
 Section: Expression Emission
   emit-fc-barrier : EmitResult -> EmitResult
   emit-fc-barrier (r) =
@@ -922,7 +975,13 @@ Section: Expression Emission
     is IrFieldStore (rec) (field) (val) (ty) (sp) -> emit-field-store st rec field val
     is IrMatch (scrut) (branches) (ty) (sp) -> emit-match st scrut branches
     is IrList (elems) (ty) (sp) -> emit-list st elems
-    is IrAct (stmts) (ty) (sp) -> emit-act-stmts st stmts 0 (list-length stmts)
+    is IrAct (stmts) (ty) (sp) ->
+     let act-locals = st.locals
+     in let act-r = emit-act-stmts st stmts 0 (list-length stmts)
+     in EmitResult {
+      state = restore-locals (act-r.state) act-locals,
+      reg = act-r.reg
+     }
     is IrWithTimeout (secs) (effs) (scopes) (body) (ty) (sp) -> emit-fc-barrier (emit-with-timeout (fc-flush st) secs body)
     is IrFork (body) (ty) (sp) -> emit-fc-barrier (emit-fork (fc-flush st) body sp)
     is IrAwait (task) (ty) (sp) -> emit-fc-barrier (emit-await (fc-flush st) task)
@@ -1139,9 +1198,30 @@ Section: Expression Emission
    in let st1 = emit-handle-one-clause st c
    in emit-handle-clauses st1 clauses (i + 1)
 
+ The clause body is a binding region and restores the locals prefix it
+ started from (BACKLOG 2.23). The two binders here are NOT the same and
+ must not be treated the same.
+
+ `resume-name` belongs to the clause body alone. It leaked into the next
+ clause, into the handled expression, and past the `with` -- and the type
+ checker never agreed (`infer-handle-clauses` binds it into a fresh env
+ and hands the ORIGINAL env to the next clause), nor did the resolver
+ (`resolve-handle-clauses` forks per clause). So a later read of that word
+ type-checked against the outer binding and loaded the clause's slot,
+ which by then had been recycled: a silent miscompile that CRASHES
+ NOTHING and prints a plausible wrong answer.
+
+ `op-name` is added AFTER the body ON PURPOSE and must survive: the
+ handled expression reads the handler slot through it, and a multi-op
+ handler needs every earlier op still bound when its body runs. So the
+ restore goes BETWEEN the two. Each clause's saved prefix already carries
+ the op-names of the clauses before it, which is what keeps multi-op and
+ nested handlers working.
+
   emit-handle-one-clause : CodegenState, IRHandleClause -> CodegenState
   emit-handle-one-clause (st) (clause) =
-   let resume-loc = alloc-local st
+   let clause-locals = st.locals
+   in let resume-loc = alloc-local st
    in let op-loc = alloc-local (resume-loc.state)
    in let jmp-over = op-loc.state.code-len
    in let st1 = st-append-code (op-loc.state) (jmp 0)
@@ -1160,11 +1240,12 @@ Section: Expression Emission
    in let result = emit-expr (st-set-tail-pos st7 False) (clause.body)
    in let st8 = store-local (result.state) (op-loc.reg) (result.reg)
    in let st9 = emit-store-to-handler-table st8 (clause.op-name) (result.reg)
-   in add-local st9 (clause.op-name) (op-loc.reg)
+   in add-local (restore-locals st9 clause-locals) (clause.op-name) (op-loc.reg)
 
   emit-store-to-handler-table : CodegenState, Text, Integer -> CodegenState
-  emit-store-to-handler-table (st) (op-name) (val-reg) =
-   let eoa = find-effect-op-addr (st.effect-op-addrs) op-name 0 (list-length (st.effect-op-addrs))
+  emit-store-to-handler-table (st0) (op-name) (val-reg) =
+   let st = eo-note-handled st0 op-name
+   in let eoa = find-effect-op-addr (st.effect-op-addrs) op-name 0 (list-length (st.effect-op-addrs))
    in if eoa >= 0 then let tmp = alloc-local st
      in let st1 = store-local (tmp.state) (tmp.reg) val-reg
      in let st2 = st-append-code st1 (li reg-r11 eoa)
@@ -1228,6 +1309,18 @@ Section: Expression Emission
       in if i == len - 1 then EmitResult { state = st1, reg = r.reg }
       else emit-try-body-stmts st1 stmts (i + 1) len body-failed-pos
 
+ Each of the three regions is a binding region and restores the locals
+ prefix it started from (BACKLOG 2.23). A `x <- e` in the body used to
+ stay bound in the fallback, in the on-failure block, and after the end
+ -- and the type checker never agreed, because `infer-act` is handed the
+ untouched env per region. So a fallback naming the same word as an outer
+ binding type-checked against the OUTER one and loaded the BODY's slot: a
+ silent miscompile of the shadowed-let class, not a diagnostic.
+
+ The body is the sharp one. It re-runs from `retry-pos` on every attempt,
+ so its slot holds whichever attempt failed last -- there is no single
+ value a later reader could correctly be given.
+
   emit-try : CodegenState, Integer, List IRActStmt, List IRActStmt, List IRActStmt -> EmitResult
   emit-try (st) (max) (body) (fb) (fail) =
    let counter-loc = alloc-local st
@@ -1254,15 +1347,16 @@ Section: Expression Emission
    in let st12 = st-append-code st11 (jmp 0)
    in let body-start-pos = st12.code-len
    in let st13 = patch-jmp-at st12 jmp-over-pos body-start-pos
+   in let try-locals = st13.locals
    in let body-result = emit-try-body-stmts st13 body 0 (list-length body) body-failed-pos
    in let jmp-success-pos = (body-result.state).code-len
-   in let st14 = st-append-code (body-result.state) (jmp 0)
+   in let st14 = st-append-code (restore-locals (body-result.state) try-locals) (jmp 0)
    in let exhaust-pos = st14.code-len
    in let st15 = patch-jmp-at st14 jmp-exhaust-pos exhaust-pos
    in let st-fb = if list-length fb > 0
      then let fb-clear = st-append-code st15 (li reg-rdi try-fail-flag-addr & li reg-rsi 0 & mov-store reg-rdi reg-rsi 0)
        in let fb-result = emit-act-stmts (st-set-tail-pos fb-clear False) fb 0 (list-length fb)
-       in let fb-flag = st-append-code (fb-result.state) (li reg-rdi try-fail-flag-addr & mov-load reg-rsi reg-rdi 0 & cmp-ri reg-rsi 0)
+       in let fb-flag = st-append-code (restore-locals (fb-result.state) try-locals) (li reg-rdi try-fail-flag-addr & mov-load reg-rsi reg-rdi 0 & cmp-ri reg-rsi 0)
        in let jne-fail-pos = fb-flag.code-len
        in let fb-done = st-append-code fb-flag (jcc cc-ne 0)
        in EmitResult { state = fb-done, reg = fb-result.reg }
@@ -1274,12 +1368,31 @@ Section: Expression Emission
        in let st-pfb = if list-length fb > 0 then patch-jcc-at st16 (jmp-end-fb-pos - 6) fail-pos else st16
        in let fail-clear = st-append-code st-pfb (li reg-rdi try-fail-flag-addr & li reg-rsi 0 & mov-store reg-rdi reg-rsi 0)
        in let fail-result = emit-act-stmts (st-set-tail-pos fail-clear False) fail 0 (list-length fail)
-       in EmitResult { state = fail-result.state, reg = fail-result.reg }
+       in EmitResult { state = restore-locals (fail-result.state) try-locals, reg = fail-result.reg }
      else st-fb
    in let end-pos = (st-fail.state).code-len
    in let st17 = patch-jmp-at (st-fail.state) jmp-success-pos end-pos
    in let st18 = patch-jmp-at st17 jmp-end-fb-pos end-pos
    in EmitResult { state = st18, reg = st-fail.reg }
+
+ The RAX eviction below is load-bearing and must not be dropped as redundant.
+ This writes RAX with a hardcoded mov-ri64 BEFORE it calls alloc-temp, and
+ alloc-temp only evicts the register it hands out -- so without the eviction the
+ field cache goes on claiming that some earlier field access is still live in
+ RAX, which this instruction has just destroyed. A later read of that same field
+ in the same expression then hits the stale entry and uses RAX, which now holds
+ the address of this string literal.
+
+ That was a silent wrong answer, not a crash: a call of the shape
+ `f (r.field) ("some literal") (n) (list-length r.field)` compiled the last
+ argument into a read of the LITERAL's length word, so `list-length [7, 8, 9]`
+ returned 9 -- the character count of "read-text". Pinned by
+ codex/test/field-cache-text-lit. It surfaced as BACKLOG 2.28, where the bogus
+ length sent find-effect-op-addr walking off the end of a 2-element list into a
+ non-canonical pointer; the crash only appeared when the heap layout happened to
+ put something unreadable there, and every other program simply got the wrong
+ number. emit-load-from-handler-table already evicts RAX and R11 for exactly this
+ reason -- this function was the one that forgot.
 
   emit-text-lit : CodegenState, Text -> EmitResult
   emit-text-lit (st) (value) =
@@ -1293,7 +1406,7 @@ Section: Expression Emission
     patch-offset = st1.code-len + 2,
     rodata-offset = rodata-off
    }
-   in let st2 = st-append-code st1 (mov-ri64 reg-rax 0)
+   in let st2 = st-append-code (fc-evict-reg st1 reg-rax) (mov-ri64 reg-rax 0)
    in let rf-p = list-push (st2.rf-poffsets) (fixup.patch-offset)
    in let rf-r = list-push (st2.rf-roffsets) (fixup.rodata-offset)
    in let st3 = __record-set (__record-set st2 "rf-poffsets" rf-p) "rf-roffsets" rf-r
@@ -1703,8 +1816,10 @@ Section: Expression Emission
   emit-name (st) (name) (ty) =
    let slot = lookup-local (st.locals) name
    in if slot >= 0 then load-local (fs-remove st slot) slot
+      else if is-builtin (st.builtin-names) name then emit-name-nonlocal st name ty
+      else if lookup-x86-arity (st.user-arities) name >= 0 then emit-name-nonlocal st name ty
       else let eoa = find-effect-op-addr (st.effect-op-addrs) name 0 (list-length (st.effect-op-addrs))
-      in if eoa >= 0 then emit-load-from-handler-table st eoa
+      in if eoa >= 0 then emit-load-from-handler-table (eo-note-read st name) eoa
          else emit-name-nonlocal st name ty
 
   find-effect-op-addr : List EffectOpAddr, Text, Integer, Integer -> Integer
@@ -1783,13 +1898,18 @@ Section: Expression Emission
   emit-let : CodegenState, Text, IRExpr, IRExpr -> EmitResult
   emit-let (st) (name) (value) (body) =
    let saved-tail = st.tco.in-tail-pos
+   in let saved-locals = st.locals
    in let loc = alloc-local st
    in let keep = (loc.state).next-local
    in let st1 = emit-to-local (loc.state) value (loc.reg) False
    in let st1r = __record-set st1 "next-local" keep
    in let st2 = add-local st1r name (loc.reg)
    in let st3 = if value-is-fresh-alloc value then fs-add st2 (loc.reg) else st2
-   in emit-expr (st-set-tail-pos st3 saved-tail) body
+   in let r = emit-expr (st-set-tail-pos st3 saved-tail) body
+   in EmitResult {
+    state = restore-locals (r.state) saved-locals,
+    reg = r.reg
+   }
 
   is-append-list-op : IRBinaryOp -> Boolean
   is-append-list-op (op) =
@@ -2588,4 +2708,4 @@ Section: Call Emission
    in __record-set st2 "cp-targets" cp-t
 
 
-Page 1 of 10
+Page 1 of 14

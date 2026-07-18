@@ -19,32 +19,30 @@ Section: GPU Constants
 
 Section: GPU Primitives
 
-  gr-tri : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+ Composing a triangle is a Gpu.Memory effect, not a bare memory write.
+ gpu-mem-write is poke-32 with the honest row: a caller must declare
+ Gpu.Memory, which is what earns the cap-gpu-memory bit the kernel now
+ tests on the window at 0xBE000000. Reaching the same window through
+ raw poke-32 is still refused without the bit -- the type is what makes
+ the requirement visible before you run into the refusal.
+
+ An effectful value may not be let-bound (CDX2033), and every write
+ here is effectful now, so the eighteen words of a triangle are one
+ arithmetic expression rather than eighteen let-bindings. Addition is
+ left-associative and arguments evaluate left to right, so the words
+ still land in offset order -- and they are distinct offsets anyway.
+ The same rule is why the callers below nest their calls instead of
+ binding them: a call in argument or tail position is fine, only a
+ let-binding is not.
+
+  gr-tri : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> [Gpu.Memory] Integer
   gr-tri (idx) (x0) (y0) (x1) (y1) (x2) (y2) (c0) (c1) (c2) (depth) =
     let off = idx * 72
-    in let s = poke-32 gr-cmd off x0
-    in let s1 = s + poke-32 gr-cmd (off + 4) y0
-    in let s2 = s1 + poke-32 gr-cmd (off + 8) x1
-    in let s3 = s2 + poke-32 gr-cmd (off + 12) y1
-    in let s4 = s3 + poke-32 gr-cmd (off + 16) x2
-    in let s5 = s4 + poke-32 gr-cmd (off + 20) y2
-    in let s6 = s5 + poke-32 gr-cmd (off + 24) c0
-    in let s7 = s6 + poke-32 gr-cmd (off + 28) c1
-    in let s8 = s7 + poke-32 gr-cmd (off + 32) c2
-    in let s9 = s8 + poke-32 gr-cmd (off + 36) depth
-    in let sa = s9 + poke-32 gr-cmd (off + 40) depth
-    in let sb = sa + poke-32 gr-cmd (off + 44) depth
-    in let sc = sb + poke-32 gr-cmd (off + 48) 0
-    in let sd = sc + poke-32 gr-cmd (off + 52) 0
-    in let se = sd + poke-32 gr-cmd (off + 56) 0
-    in let sf = se + poke-32 gr-cmd (off + 60) 0
-    in let sg = sf + poke-32 gr-cmd (off + 64) 0
-    in sg + poke-32 gr-cmd (off + 68) 0
+    in gpu-mem-write gr-cmd off x0 + gpu-mem-write gr-cmd (off + 4) y0 + gpu-mem-write gr-cmd (off + 8) x1 + gpu-mem-write gr-cmd (off + 12) y1 + gpu-mem-write gr-cmd (off + 16) x2 + gpu-mem-write gr-cmd (off + 20) y2 + gpu-mem-write gr-cmd (off + 24) c0 + gpu-mem-write gr-cmd (off + 28) c1 + gpu-mem-write gr-cmd (off + 32) c2 + gpu-mem-write gr-cmd (off + 36) depth + gpu-mem-write gr-cmd (off + 40) depth + gpu-mem-write gr-cmd (off + 44) depth + gpu-mem-write gr-cmd (off + 48) 0 + gpu-mem-write gr-cmd (off + 52) 0 + gpu-mem-write gr-cmd (off + 56) 0 + gpu-mem-write gr-cmd (off + 60) 0 + gpu-mem-write gr-cmd (off + 64) 0 + gpu-mem-write gr-cmd (off + 68) 0
 
-  gr-rect : Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  gr-rect : Integer, Integer, Integer, Integer, Integer, Integer, Integer -> [Gpu.Memory] Integer
   gr-rect (idx) (x) (y) (w) (h) (color) (depth) =
-    let t0 = gr-tri idx x y (x + w) y x (y + h) color color color depth
-    in t0 + gr-tri (idx + 1) (x + w) y (x + w) (y + h) x (y + h) color color color depth
+    gr-tri idx x y (x + w) y x (y + h) color color color depth + gr-tri (idx + 1) (x + w) y (x + w) (y + h) x (y + h) color color color depth
 
 Section: Depth Constants
 
@@ -55,14 +53,22 @@ Section: Depth Constants
 
 Section: Frame Control
 
-  gr-clear : Integer -> [Device.Port] Integer
-  gr-clear (color) = port-out-32 #401 color
+ Commanding the rasterizer is a Gpu.Compute effect, not a bare port
+ write. gpu-out and gpu-in are port-out-32 and port-in-32 with the
+ honest row: a caller must declare Gpu.Compute, which is what earns
+ the cap-gpu-compute bit the kernel now tests on ports 0x400-0x417.
+ Reaching the same window through raw port-out-32 is still refused
+ without the bit -- the type is what makes the requirement visible
+ before you run into the refusal.
 
-  gr-clear-depth : [Device.Port] Integer
-  gr-clear-depth = port-out-32 #402 0
+  gr-clear : Integer -> [Gpu.Compute] Integer
+  gr-clear (color) = gpu-out #401 color
 
-  gr-flush : Integer -> [Device.Port] Integer
-  gr-flush (count) = port-out-32 #400 count
+  gr-clear-depth : [Gpu.Compute] Integer
+  gr-clear-depth = gpu-out #402 0
+
+  gr-flush : Integer -> [Gpu.Compute] Integer
+  gr-flush (count) = gpu-out #400 count
 
 Section: Widget Rendering
 
@@ -74,18 +80,16 @@ Section: Widget Rendering
   gf-new : Integer -> GpuFrame
   gf-new (max-tris) = GpuFrame { gf-idx = 0, gf-max = max-tris }
 
-  gr-render-tree : GpuFrame, WidgetNode, Theme, Integer -> GpuFrame
+  gr-render-tree : GpuFrame, WidgetNode, Theme, Integer -> [Gpu.Memory] GpuFrame
   gr-render-tree (gf) (w) (th) (depth) =
-    let gf2 = gr-render-node gf w th depth
-    in gr-render-children gf2 (w.wn-children) th depth 0 (w.wn-child-count)
+    gr-render-children (gr-render-node gf w th depth) (w.wn-children) th depth 0 (w.wn-child-count)
 
-  gr-render-children : GpuFrame, List WidgetNode, Theme, Integer, Integer, Integer -> GpuFrame
+  gr-render-children : GpuFrame, List WidgetNode, Theme, Integer, Integer, Integer -> [Gpu.Memory] GpuFrame
   gr-render-children (gf) (children) (th) (depth) (i) (n) =
     if i >= n then gf
-    else let gf2 = gr-render-tree gf (list-at children i) th depth
-    in gr-render-children gf2 children th depth (i + 1) n
+    else gr-render-children (gr-render-tree gf (list-at children i) th depth) children th depth (i + 1) n
 
-  gr-render-node : GpuFrame, WidgetNode, Theme, Integer -> GpuFrame
+  gr-render-node : GpuFrame, WidgetNode, Theme, Integer -> [Gpu.Memory] GpuFrame
   gr-render-node (gf) (w) (th) (depth) = when w.wn-kind
     is WkPanel -> gr-render-panel gf w th depth
     is WkLabel (txt) -> gr-render-label gf w th txt depth
@@ -95,111 +99,106 @@ Section: Widget Rendering
     is WkInput (txt) (cursor) -> gr-render-input gf w th txt cursor depth
     is WkCustom (tag) -> gr-render-panel gf w th depth
 
-  gr-render-panel : GpuFrame, WidgetNode, Theme, Integer -> GpuFrame
+  gr-render-panel : GpuFrame, WidgetNode, Theme, Integer -> [Gpu.Memory] GpuFrame
   gr-render-panel (gf) (w) (th) (depth) =
     let style = theme-resolve-panel th (w.wn-state)
     in let br = box-margin-rect (w.wn-bounds) (style.ws-margin)
     in gr-emit-rect gf (br.lr-x) (br.lr-y) (br.lr-w) (br.lr-h) (style.ws-bg) depth
 
-  gr-render-button : GpuFrame, WidgetNode, Theme, Text, Integer -> GpuFrame
+  gr-render-button : GpuFrame, WidgetNode, Theme, Text, Integer -> [Gpu.Memory] GpuFrame
   gr-render-button (gf) (w) (th) (txt) (depth) =
     let style = theme-resolve-button th (w.wn-state)
     in let br = box-margin-rect (w.wn-bounds) (style.ws-margin)
-    in let gf2 = gr-emit-rect gf (br.lr-x) (br.lr-y) (br.lr-w) (br.lr-h) (style.ws-bg) depth
     in let content = box-content-from-style (w.wn-bounds) style
     in let text-depth = if depth <= 2000 then gr-depth-top else depth - 1000
-    in gr-emit-text gf2 txt (content.lr-x) (content.lr-y) (style.ws-fg) text-depth
+    in gr-emit-text (gr-emit-rect gf (br.lr-x) (br.lr-y) (br.lr-w) (br.lr-h) (style.ws-bg) depth) txt (content.lr-x) (content.lr-y) (style.ws-fg) text-depth
 
-  gr-render-label : GpuFrame, WidgetNode, Theme, Text, Integer -> GpuFrame
+  gr-render-label : GpuFrame, WidgetNode, Theme, Text, Integer -> [Gpu.Memory] GpuFrame
   gr-render-label (gf) (w) (th) (txt) (depth) =
     let style = theme-resolve-label th (w.wn-state)
     in let content = box-content-from-style (w.wn-bounds) style
     in let text-depth = if depth <= 2000 then gr-depth-top else depth - 1000
     in gr-emit-text gf txt (content.lr-x) (content.lr-y) (style.ws-fg) text-depth
 
-  gr-render-gauge : GpuFrame, WidgetNode, Theme, Integer, Integer, Integer -> GpuFrame
+  gr-render-gauge : GpuFrame, WidgetNode, Theme, Integer, Integer, Integer -> [Gpu.Memory] GpuFrame
   gr-render-gauge (gf) (w) (th) (val) (max-val) (depth) =
     let style = theme-resolve-gauge th (w.wn-state)
     in let br = box-margin-rect (w.wn-bounds) (style.ws-margin)
-    in let gf2 = gr-emit-rect gf (br.lr-x) (br.lr-y) (br.lr-w) (br.lr-h) (style.ws-bg) depth
     in let content = box-content-from-style (w.wn-bounds) style
     in let fill-w = if max-val > 0 then content.lr-w * val / max-val else 0
-    in gr-emit-rect gf2 (content.lr-x) (content.lr-y) fill-w (content.lr-h) (style.ws-fg) depth
+    in gr-emit-rect (gr-emit-rect gf (br.lr-x) (br.lr-y) (br.lr-w) (br.lr-h) (style.ws-bg) depth) (content.lr-x) (content.lr-y) fill-w (content.lr-h) (style.ws-fg) depth
 
-  gr-render-separator : GpuFrame, WidgetNode, Theme, Integer -> GpuFrame
+  gr-render-separator : GpuFrame, WidgetNode, Theme, Integer -> [Gpu.Memory] GpuFrame
   gr-render-separator (gf) (w) (th) (depth) =
     let style = theme-resolve-separator th (w.wn-state)
     in let br = box-margin-rect (w.wn-bounds) (style.ws-margin)
     in gr-emit-rect gf (br.lr-x) (br.lr-y + br.lr-h / 2) (br.lr-w) 1 (style.ws-bg) depth
 
-  gr-render-input : GpuFrame, WidgetNode, Theme, Text, Integer, Integer -> GpuFrame
+  gr-render-input : GpuFrame, WidgetNode, Theme, Text, Integer, Integer -> [Gpu.Memory] GpuFrame
   gr-render-input (gf) (w) (th) (txt) (cursor) (depth) =
     let style = theme-resolve-input th (w.wn-state)
     in let br = box-margin-rect (w.wn-bounds) (style.ws-margin)
-    in let gf2 = gr-emit-rect gf (br.lr-x) (br.lr-y) (br.lr-w) (br.lr-h) (style.ws-bg) depth
     in let content = box-content-from-style (w.wn-bounds) style
     in let text-depth = if depth <= 2000 then gr-depth-top else depth - 1000
-    in let gf3 = gr-emit-text gf2 txt (content.lr-x) (content.lr-y) (style.ws-fg) text-depth
     in let cursor-x = content.lr-x + cursor * 6
-    in gr-emit-rect gf3 cursor-x (content.lr-y) 1 7 (style.ws-fg) text-depth
+    in gr-emit-rect (gr-emit-text (gr-emit-rect gf (br.lr-x) (br.lr-y) (br.lr-w) (br.lr-h) (style.ws-bg) depth) txt (content.lr-x) (content.lr-y) (style.ws-fg) text-depth) cursor-x (content.lr-y) 1 7 (style.ws-fg) text-depth
 
 Section: Overlay Rendering
 
-  gr-render-overlay : GpuFrame, Overlay, Theme -> GpuFrame
+  gr-render-overlay : GpuFrame, Overlay, Theme -> [Gpu.Memory] GpuFrame
   gr-render-overlay (gf) (ov) (th) =
     if ov.ov-visible then
-      let gf2 = gr-emit-rect gf (ov.ov-x) (ov.ov-y) (ov.ov-width) (ov.ov-height) ((th.th-palette).pal-bg) gr-depth-overlay
-      in let laid = widget-layout (ov.ov-widget) th (layout-rect (ov.ov-x) (ov.ov-y) (ov.ov-width) (ov.ov-height))
-      in gr-render-tree gf2 laid th gr-depth-overlay
+      let laid = widget-layout (ov.ov-widget) th (layout-rect (ov.ov-x) (ov.ov-y) (ov.ov-width) (ov.ov-height))
+      in gr-render-tree (gr-emit-rect gf (ov.ov-x) (ov.ov-y) (ov.ov-width) (ov.ov-height) ((th.th-palette).pal-bg) gr-depth-overlay) laid th gr-depth-overlay
     else gf
 
-  gr-render-overlays : GpuFrame, OverlayStack, Theme, Integer, Integer -> GpuFrame
+  gr-render-overlays : GpuFrame, OverlayStack, Theme, Integer, Integer -> [Gpu.Memory] GpuFrame
   gr-render-overlays (gf) (os) (th) (i) (n) =
     if i >= n then gf
-    else let gf2 = gr-render-overlay gf (list-at (os.os-overlays) i) th
-    in gr-render-overlays gf2 os th (i + 1) n
+    else gr-render-overlays (gr-render-overlay gf (list-at (os.os-overlays) i) th) os th (i + 1) n
 
 Section: GPU Rect Emit
 
-  gr-emit-rect : GpuFrame, Integer, Integer, Integer, Integer, Integer, Integer -> GpuFrame
+ gr-frame-bump takes the write count it does not need, because that is
+ what lets the emit stay out of let-binding position: the effectful
+ call becomes an argument to a pure function instead of a binding.
+
+  gr-frame-bump : Integer, GpuFrame -> GpuFrame
+  gr-frame-bump (written) (gf) = GpuFrame { gf-idx = gf.gf-idx + 2, gf-max = gf.gf-max }
+
+  gr-emit-rect : GpuFrame, Integer, Integer, Integer, Integer, Integer, Integer -> [Gpu.Memory] GpuFrame
   gr-emit-rect (gf) (x) (y) (w) (h) (color) (depth) =
     if w <= 0 then gf
     else if h <= 0 then gf
     else if gf.gf-idx + 2 > gf.gf-max then gf
-    else let written = gr-rect (gf.gf-idx) x y w h color depth
-    in GpuFrame { gf-idx = gf.gf-idx + 2, gf-max = gf.gf-max }
+    else gr-frame-bump (gr-rect (gf.gf-idx) x y w h color depth) gf
 
 Section: 5x7 Bitmap Text
 
-  gr-emit-text : GpuFrame, Text, Integer, Integer, Integer, Integer -> GpuFrame
+  gr-emit-text : GpuFrame, Text, Integer, Integer, Integer, Integer -> [Gpu.Memory] GpuFrame
   gr-emit-text (gf) (txt) (x) (y) (color) (depth) =
     gr-emit-text-loop gf txt x y color depth 0 (text-length txt)
 
-  gr-emit-text-loop : GpuFrame, Text, Integer, Integer, Integer, Integer, Integer, Integer -> GpuFrame
+  gr-emit-text-loop : GpuFrame, Text, Integer, Integer, Integer, Integer, Integer, Integer -> [Gpu.Memory] GpuFrame
   gr-emit-text-loop (gf) (txt) (x) (y) (color) (depth) (i) (len) =
     if i >= len then gf
-    else let ch = gr-text-char-at txt i
-    in let gf2 = gr-emit-glyph gf ch (x + i * 6) y color depth
-    in gr-emit-text-loop gf2 txt x y color depth (i + 1) len
+    else gr-emit-text-loop (gr-emit-glyph gf (gr-text-char-at txt i) (x + i * 6) y color depth) txt x y color depth (i + 1) len
 
-  gr-emit-glyph : GpuFrame, Integer, Integer, Integer, Integer, Integer -> GpuFrame
+  gr-emit-glyph : GpuFrame, Integer, Integer, Integer, Integer, Integer -> [Gpu.Memory] GpuFrame
   gr-emit-glyph (gf) (ch) (x) (y) (color) (depth) =
     let rows = gr-glyph-rows ch
     in gr-emit-glyph-rows gf rows x y color depth 0 7
 
-  gr-emit-glyph-rows : GpuFrame, List Integer, Integer, Integer, Integer, Integer, Integer, Integer -> GpuFrame
+  gr-emit-glyph-rows : GpuFrame, List Integer, Integer, Integer, Integer, Integer, Integer, Integer -> [Gpu.Memory] GpuFrame
   gr-emit-glyph-rows (gf) (rows) (x) (y) (color) (depth) (row) (max-row) =
     if row >= max-row then gf
-    else let bits = list-at rows row
-    in let gf2 = gr-emit-glyph-cols gf bits x (y + row) color depth 0 5
-    in gr-emit-glyph-rows gf2 rows x y color depth (row + 1) max-row
+    else gr-emit-glyph-rows (gr-emit-glyph-cols gf (list-at rows row) x (y + row) color depth 0 5) rows x y color depth (row + 1) max-row
 
-  gr-emit-glyph-cols : GpuFrame, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> GpuFrame
+  gr-emit-glyph-cols : GpuFrame, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> [Gpu.Memory] GpuFrame
   gr-emit-glyph-cols (gf) (bits) (x) (y) (color) (depth) (col) (max-col) =
     if col >= max-col then gf
     else if bit-and bits (bit-shl 1 (4 - col)) > 0 then
-      let gf2 = gr-emit-rect gf (x + col) y 1 1 color depth
-      in gr-emit-glyph-cols gf2 bits x y color depth (col + 1) max-col
+      gr-emit-glyph-cols (gr-emit-rect gf (x + col) y 1 1 color depth) bits x y color depth (col + 1) max-col
     else gr-emit-glyph-cols gf bits x y color depth (col + 1) max-col
 
 Section: CCE to ASCII

@@ -1,0 +1,37 @@
+Chapter: FieldGuardMutated
+
+ The adversarial half of field-guard-refine: a refinement on a field
+ must be DROPPED when the arm can reach the record.
+
+ A local is a value and cannot change once bound, which is why refining
+ one is sound with no further condition. A field is a location: b.val is
+ re-read at the store, and __record-set mutates in place. Here the guard
+ proves b.val <= 15 and the arm then writes 200 into it and reads it
+ back. A refinement that survived would silence this store and prove a
+ 200 fits 0..15 -- the lint silencing a real overflow, which is the one
+ thing it must never do.
+
+ The arm names b bare, so arm-reads-only answers False and the
+ refinement is dropped. An implementation that refined a field without
+ asking what the arm can reach would accept this.
+
+Section: Definitions
+
+  Byte = record {
+   val : Integer between 0 and 255
+  }
+
+  Nibble = record {
+   n : Integer between 0 and 15
+  }
+
+  mutating-arm : Byte -> Integer
+  mutating-arm (b) =
+   if b.val <= 15
+    then let x = __record-set b "val" 200
+         in (Nibble { n = b.val }).n
+    else 0
+
+  opening : [Console] Nothing = act
+   print-line-uni (integer-to-text (mutating-arm (Byte { val = 9 })))
+  end

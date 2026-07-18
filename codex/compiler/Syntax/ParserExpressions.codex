@@ -1,5 +1,4 @@
 Chapter: Parser
-  cites Codex chapter Lists
 
  Expression and compound expression parsing.
 
@@ -469,11 +468,34 @@ Section: Compound Expression Parsing
    in let tok = current st2
    in parse-match-branches s [] (tok.column) (tok.line) st2
 
+ An arm continues the match when it starts on the same line as the arm
+ before it, or at the column the arms are aligned on. `ln` therefore
+ means THE LINE OF THE ARM WE ARE CONTINUING FROM, and every accepted arm
+ becomes the new `ln` -- which is why `tok.line` is passed on below and
+ not the `ln` we were called with (BACKLOG 2.25).
+
+ It used to pass `ln` straight through, so `ln` stayed pinned to the line
+ the match STARTED on and `tok.line == ln` could never hold again once
+ the arms moved to a second line. The result was not "one arm per line"
+ as the entry had it: every arm on the FIRST line parsed (they all match
+ that line), the first arm of the SECOND line parsed (it matches the
+ column), and the second arm of the second line matched neither and
+ SILENTLY ENDED THE MATCH -- taking every later line with it, including
+ an `is otherwise`. Measured on a probe: `is 1 .. is 2 / is 3 .. is 4 /
+ is 5 .. is 6 / is otherwise` kept 1, 2, 3 and dropped the rest with no
+ diagnostic. Exhaustiveness is the only thing that ever caught it, and
+ only on a closed variant; an `Integer` match, or one carrying the
+ `is otherwise` that just got dropped, mis-dispatched at runtime forever.
+
+ The guard cannot simply take `tok.column >= col`: a dedented arm must
+ still end the match, and that is what `ln` advancing preserves -- it
+ only ever moves to a line an arm was already accepted on.
+
   parse-match-branches : Expr, LinkedList MatchArm, Integer, Integer, ParseState -> ParseExprResult
   parse-match-branches (scrut) (acc) (col) (ln) (st) =
    let tok = current st
    in if is-match-arm-start (current-kind st) & (tok.line == ln | tok.column == col)
-      then parse-one-match-branch scrut acc col ln st
+      then parse-one-match-branch scrut acc col (tok.line) st
       else ExprOk (deck-record (MatchExpr scrut (deck-record (__linked-list-to-list acc)))) st
 
   unwrap-pat-for-expr : ParsePatResult, (Pat, ParseState -> ParseExprResult) -> ParseExprResult
@@ -853,6 +875,20 @@ Section: Compound Expression Parsing
   finish-lambda (params) (body) (st) =
    ExprOk (deck-record (LambdaExpr params body)) st
 
+ The failure arm CONSUMES the dot, and that is the whole point of it. It
+ used to return the state it was handed, un-advanced, wearing an ExprOk:
+ the caller believed a statement had been parsed, looped, met the same
+ dot, and called back here forever. Every turn allocated an ErrExpr and a
+ statement node, so the heap climbed while the stack sank, and the compile
+ double-faulted with no diagnostic rather than reporting anything
+ (BACKLOG 2.26). Any arm that reports ExprOk without moving the position
+ is that bug again — a parser must consume a token or say why.
+
+ The trigger is ordinary prose. An unterminated act block makes the
+ statement loop swallow the chapter beneath it, and prose sentences end in
+ a period: a dot followed by a newline, or by a capitalised word, is not
+ followed by a field name, so it arrives here.
+
   parse-selector-expr : ParseState -> ParseExprResult
   parse-selector-expr (st) =
    let dot-tok = current st
@@ -863,7 +899,7 @@ Section: Compound Expression Parsing
      in let param-ref = deck-record (NameExpr param)
      in let access = deck-record (FieldExpr param-ref field)
      in ExprOk (deck-record (LambdaExpr [param] access)) st3
-     else ExprOk (ErrExpr (current st)) st
+     else ExprOk (ErrExpr dot-tok) (__record-set st2 "bag" (bag-add (st2.bag) (make-error cdx-leading-dot-continuation "A '.' selector must be followed by a field name. Field access follows its receiver on the same line (receiver.field), and a bare '.field' selector needs the field name immediately after the dot. A stray '.' often means an act block above was never closed with 'end', so the statement parser is reading prose as code." (token-to-span dot-tok))))
 
   parse-lazy-expr : ParseState -> ParseExprResult
   parse-lazy-expr (st) =

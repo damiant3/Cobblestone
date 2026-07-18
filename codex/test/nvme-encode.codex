@@ -1,0 +1,52 @@
+Chapter: NvmeEncodeTest
+  cites Works chapter GopNvme
+
+ Builds NVMe submission entries with the driver's encoders and prints
+ every dword. The expected output was generated independently in
+ Python from the spec's field layout -- opcode and command id in
+ dword zero, namespace in dword one, the PRP pair in six through
+ nine, command-specific dwords from ten -- so an encoder that puts a
+ field at the wrong offset or shifts a queue size the wrong way
+ cannot pass by construction.
+
+ The read case uses an LBA above thirty-two bits to pin the
+ dword-ten/eleven split; the write case uses an unaligned buffer so
+ the second PRP must name the next page boundary. The prp2 line
+ covers the three shapes alone: an aligned four-kilobyte run needs
+ no second pointer, an unaligned one crossing a page does, and a
+ short run that ends exactly at the boundary does not.
+
+Section: Report
+
+  dws : Integer, Integer -> Text
+  dws (sqe) (i) =
+    if i >= 16 then ""
+    else " " & show (peek-32 sqe (i * 4)) & dws sqe (i + 1)
+
+  case-line : Text, Integer -> Text
+  case-line (name) (sqe) = name & dws sqe 0
+
+Section: Main
+
+  opening : [Console] Nothing = act
+    let b = __heap-save
+    in let adv = __heap-advance 128
+    in act
+      let z0 = nvme-zero-sqe b
+      in let e0 = nvme-enc-identify b 3 0 1 8192
+      in print-line-uni (case-line "identify" b)
+      let z1 = nvme-zero-sqe b
+      in let e1 = nvme-enc-create-cq b 1 1 16 12288
+      in print-line-uni (case-line "create-cq" b)
+      let z2 = nvme-zero-sqe b
+      in let e2 = nvme-enc-create-sq b 2 1 16 16384 1
+      in print-line-uni (case-line "create-sq" b)
+      let z3 = nvme-zero-sqe b
+      in let e3 = nvme-enc-rw b nv-op-read 7 4886718345 8 20480
+      in print-line-uni (case-line "read" b)
+      let z4 = nvme-zero-sqe b
+      in let e4 = nvme-enc-rw b nv-op-write 9 100 8 13398
+      in print-line-uni (case-line "write" b)
+      print-line-uni ("prp2 " & show (nvme-prp2 4096 4096) & " " & show (nvme-prp2 13398 4096) & " " & show (nvme-prp2 16000 384))
+    end
+  end

@@ -1,0 +1,593 @@
+Chapter: HttpFetch
+  cites Kernel chapter Ne2k
+  cites Net chapter Ethernet
+  cites Net chapter NetworkStack
+  cites Net chapter TcpTransport
+  cites Net chapter NetIO
+  cites Net chapter HttpClient
+  cites Net chapter DnsResolver
+  cites Net chapter Udp
+  cites Net chapter Tcp
+  cites Net chapter TlsEndpoint
+  cites Encode chapter X509
+  cites Foreword chapter Maybe
+  cites Foreword chapter Result
+
+ This is the implementation of the Network effect.
+
+ fetch, post and resolve-dns were declared as operations of the
+ Network effect in Foreword chapter Network and no handler for them
+ existed anywhere, so the type checker vouched for the name and the
+ build died at the end of emit with CDX2040. A name the compiler
+ promises and cannot keep is worth less than no name. They are real
+ here, and they are not in the foreword, for the reason that decides
+ it: an implementation needs NetIO, NetIO is codex.os, and a foreword
+ chapter may not depend on codex.os. A chapter that wants them cites
+ this one.
+
+ The declared rows were wrong as well as unimplemented. fetch was
+ typed [Network.Read] -- but fetching sends a SYN and sends the
+ request line, and net-io-connect says [Network.Read, Network.Write]
+ because that is what it does. A read that writes to the wire is the
+ laundering the effect system exists to refuse, and this quire is
+ effect-exempt, so nothing would have caught it. All three operations
+ declare both rows. The name says what it is for; the row says what
+ it does.
+
+ Scope is unaffected: lint-scoped-call keys on the callee's name, not
+ on whether the name is a builtin, so fetch "https://host/x" is still
+ checked against a Network.Read grant and still refused with CDX4002.
+
+ We say:
+
+Section: Network Configuration
+
+ The addresses codex-vm's user-mode NAT hands out. The gateway
+ answers ARP and forwards; 10.0.2.3 is its DNS.
+
+  http-local-mac : List Integer = [82, 84, 0, 18, 52, 99]
+  http-local-ip : List Integer = [10, 0, 2, 15]
+  http-gateway-ip : List Integer = [10, 0, 2, 2]
+  http-dns-ip : List Integer = [10, 0, 2, 3]
+  http-local-port : Integer = 49232
+  http-default-port : Integer = 80
+
+Section: Character Codes
+
+ Never write a character code down. Text is CCE inside and ASCII on
+ the wire, and the two do not agree: in CCE the newline is 1 and the
+ code 10 is the digit seven. Every code here is asked for.
+
+  cce-colon : Integer = char-code (char-at ":" 0)
+  cce-slash : Integer = char-code (char-at "/" 0)
+  cce-dot : Integer = char-code (char-at "." 0)
+  cce-zero : Integer = char-code (char-at "0" 0)
+  cce-nine : Integer = char-code (char-at "9" 0)
+
+  http-is-digit : Integer -> Boolean
+  http-is-digit (c) = if c >= cce-zero then c <= cce-nine else False
+
+  http-digit-value : Integer -> Integer
+  http-digit-value (c) = c - cce-zero
+
+Section: URL Parsing
+
+ A URL is scheme://authority/path. The authority is host or host:port.
+ The scheme is read, and it decides whether the request happens at all:
+ https is refused, because this speaks HTTP and would otherwise fetch
+ it in the clear. See The Refusal, below.
+
+  url-authority-start : Text -> Integer
+  url-authority-start (u) = url-scan-scheme u 0 (text-length u)
+
+  url-scheme : Text -> Text
+  url-scheme (u) =
+   let s = url-authority-start u
+   in if s < 3 then "" else substring u 0 (s - 3)
+
+  url-scan-scheme : Text, Integer, Integer -> Integer
+  url-scan-scheme (u) (i) (len) =
+   if i + 2 >= len then 0
+   else if char-code (char-at u i) == cce-colon then
+     if char-code (char-at u (i + 1)) == cce-slash then
+       if char-code (char-at u (i + 2)) == cce-slash then i + 3
+       else url-scan-scheme u (i + 1) len
+     else url-scan-scheme u (i + 1) len
+   else url-scan-scheme u (i + 1) len
+
+  url-authority-end : Text, Integer, Integer -> Integer
+  url-authority-end (u) (i) (len) =
+   if i >= len then len
+   else if char-code (char-at u i) == cce-slash then i
+   else url-authority-end u (i + 1) len
+
+  http-authority : Text -> Text
+  http-authority (u) =
+   let s = url-authority-start u
+   in let e = url-authority-end u s (text-length u)
+   in substring u s (e - s)
+
+  url-host : Text -> Text
+  url-host (u) =
+   let a = http-authority u
+   in let c = url-find-colon a 0 (text-length a)
+   in if c < 0 then a else substring a 0 c
+
+  url-find-colon : Text, Integer, Integer -> Integer
+  url-find-colon (a) (i) (len) =
+   if i >= len then (-1)
+   else if char-code (char-at a i) == cce-colon then i
+   else url-find-colon a (i + 1) len
+
+  url-port : Text -> Integer
+  url-port (u) =
+   let a = http-authority u
+   in let c = url-find-colon a 0 (text-length a)
+   in if c < 0 then http-default-port
+   else let p = url-parse-int a (c + 1) (text-length a) 0 False
+   in if p <= 0 then http-default-port else p
+
+  url-parse-int : Text, Integer, Integer, Integer, Boolean -> Integer
+  url-parse-int (s) (i) (len) (acc) (any) =
+   if i >= len then (if any then acc else (-1))
+   else let c = char-code (char-at s i)
+   in if http-is-digit c then url-parse-int s (i + 1) len (acc * 10 + http-digit-value c) True
+   else (if any then acc else (-1))
+
+  url-path : Text -> Text
+  url-path (u) =
+   let s = url-authority-start u
+   in let e = url-authority-end u s (text-length u)
+   in if e >= text-length u then "/" else substring u e (text-length u - e)
+
+Section: Host Addresses
+
+ A host that is already a dotted quad is not looked up. Anything else
+ goes to the resolver on the wire.
+
+  http-is-dotted-quad : Text -> Boolean
+  http-is-dotted-quad (h) = http-quad-scan h 0 (text-length h) 0 False
+
+  http-quad-scan : Text, Integer, Integer, Integer, Boolean -> Boolean
+  http-quad-scan (h) (i) (len) (dots) (any) =
+   if i >= len then (if dots == 3 then any else False)
+   else let c = char-code (char-at h i)
+   in if c == cce-dot then http-quad-scan h (i + 1) len (dots + 1) False
+   else if http-is-digit c then http-quad-scan h (i + 1) len dots True
+   else False
+
+  http-parse-quad : Text -> List Integer
+  http-parse-quad (h) = http-quad-parts h 0 (text-length h) 0 False []
+
+  http-quad-parts : Text, Integer, Integer, Integer, Boolean, List Integer -> List Integer
+  http-quad-parts (h) (i) (len) (cur) (any) (acc) =
+   if i >= len then (if any then list-push acc cur else acc)
+   else let c = char-code (char-at h i)
+   in if c == cce-dot then http-quad-parts h (i + 1) len 0 False (list-push acc cur)
+   else http-quad-parts h (i + 1) len (cur * 10 + http-digit-value c) True acc
+
+Section: DNS On The Wire
+
+ An A-record query to the NAT's resolver over UDP. The destination MAC
+ is the broadcast address because the ARP cache starts empty and the
+ NAT answers for the gateway either way -- this is what NetworkStack's
+ resolve-dst-mac already does for every TCP connection in the tree.
+
+  http-dns-budget : Integer = 3000000
+  http-dns-tx-id : Integer = 4919
+
+  http-dns-query : Text -> [Network.Read, Network.Write] List Integer
+  http-dns-query (host) =
+   let frame = udp-build-frame mac-broadcast http-local-mac http-local-ip http-dns-ip 1024 dns-port (dns-build-a-query http-dns-tx-id host)
+   in act
+    sent <- ne2k-send-frame frame
+    http-dns-await host 0
+   end
+
+  http-dns-await : Text, Integer -> [Network.Read] List Integer
+  http-dns-await (host) (tries) =
+   if tries > http-dns-budget then []
+   else let hp = __heap-save
+   in act
+    frame <- ne2k-recv-frame
+    if list-length frame == 0 then let restored = __heap-restore hp
+      in http-dns-await host (tries + 1)
+    else let addr = http-dns-extract frame
+    in if list-length addr == 4 then addr
+    else let restored2 = __heap-restore hp
+    in http-dns-await host (tries + 1)
+   end
+
+ The reply is an ethernet frame carrying IP carrying UDP carrying the
+ DNS answer. Anything that is not that is not our reply, and a frame
+ that is not ours must cost nothing, which is what the heap-restore
+ above is for.
+
+  http-dns-extract : List Integer -> List Integer
+  http-dns-extract (frame) =
+   if eth-ethertype frame /= eth-type-ipv4 then []
+   else let ip = eth-payload frame
+   in if ip-proto ip /= ip-proto-udp then []
+   else let dg = udp-parse (ip-payload ip)
+   in let resp = dns-parse-response (dg.payload)
+   in when dns-first-a-record resp
+    is Just (a) -> a
+    is None -> []
+
+  http-host-address : Text -> [Network.Read, Network.Write] List Integer
+  http-host-address (host) =
+   if http-is-dotted-quad host then http-parse-quad host
+   else http-dns-query host
+
+Section: Response Framing
+
+ HTTP/1.0 has two ways to end a body: the server names its length, or
+ the server closes. Both are honoured. The length is the one that lets
+ the read stop without waiting for a FIN, so it is checked first.
+
+  http-headers-end : List Integer, Integer, Integer -> Integer
+  http-headers-end (bs) (i) (len) =
+   if i + 3 >= len then (-1)
+   else if list-at bs i == 13 then
+     if list-at bs (i + 1) == 10 then
+       if list-at bs (i + 2) == 13 then
+         if list-at bs (i + 3) == 10 then i + 4
+         else http-headers-end bs (i + 1) len
+       else http-headers-end bs (i + 1) len
+     else http-headers-end bs (i + 1) len
+   else http-headers-end bs (i + 1) len
+
+  http-body-complete : List Integer -> Boolean
+  http-body-complete (bs) =
+   let he = http-headers-end bs 0 (list-length bs)
+   in if he < 0 then False
+   else let cl = http-content-length bs he
+   in if cl < 0 then False
+   else list-length bs - he >= cl
+
+Section: Receive
+
+ A receive loop of our own rather than net-io-recv-raw, because that
+ one returns only when a frame carried payload and so cannot see the
+ FIN that ends a close-delimited body: it would spin out its whole
+ budget after the last byte had already arrived. This one watches the
+ connection state and stops on the close.
+
+ The response is accumulated into ONE list, reserved up front and
+ pushed into in place. The obvious loop -- acc & chunk, once per
+ segment -- copies the whole accumulator every 1400 bytes, which is
+ quadratic in the number of segments: a 1 MB body arrives in ~750
+ segments and would allocate something like 400 MB to receive, none of
+ it reclaimable before the call returns, on a heap with no collector.
+ list-push writes in place while the list is under capacity, so the
+ reservation makes the accumulation linear. The cap is the reservation,
+ and a body past it stops the read rather than growing the list.
+
+ The header offset and the declared length are found once and then
+ carried, for the same reason: rescanning the accumulator every segment
+ to answer "are we done yet" is the same quadratic in time.
+
+  http-recv-budget : Integer = 3000000
+  http-max-response : Integer = 1048576
+
+  HttpRecv = record {
+    transport : TcpTransportState,
+    data : List Integer
+  }
+
+  http-append : List Integer, List Integer, Integer, Integer -> List Integer
+  http-append (acc) (chunk) (i) (n) =
+   if i >= n then acc
+   else if list-length acc >= http-max-response then acc
+   else http-append (list-push acc (list-at chunk i)) chunk (i + 1) n
+
+  http-recv : TcpTransportState, List Integer, Integer, Integer, Integer -> [Network.Read, Network.Write] HttpRecv
+  http-recv (ts) (acc) (head-end) (want) (tries) =
+   if tries > http-recv-budget then HttpRecv { transport = ts, data = acc }
+   else if http-have-all acc head-end want then HttpRecv { transport = ts, data = acc }
+   else if list-length acc >= http-max-response then HttpRecv { transport = ts, data = acc }
+   else let hp = __heap-save
+   in act
+    frame <- ne2k-recv-frame
+    if list-length frame == 0 then let restored = __heap-restore hp
+      in http-recv ts acc head-end want (tries + 1)
+    else let r = net-process-frame (ts.session) frame
+    in act
+      ts1 <- flush-transport-outbox (TcpTransportState { session = r.session, recv-buf = ts.recv-buf, recv-base = ts.recv-base, recv-len = ts.recv-len, recv-cap = ts.recv-cap, messages-sent = ts.messages-sent, messages-received = ts.messages-received })
+      let acc2 = http-append acc (r.data) 0 (list-length (r.data))
+      in let he = if head-end < 0 then http-headers-end acc2 0 (list-length acc2) else head-end
+      in let cl = if want < 0 then (if he < 0 then (-1) else http-content-length acc2 he) else want
+      in when (ts1.session).conn.state
+       is TcpEstablished -> http-recv ts1 acc2 he cl (tries + 1)
+       is otherwise -> HttpRecv { transport = ts1, data = acc2 }
+    end
+   end
+
+  http-have-all : List Integer, Integer, Integer -> Boolean
+  http-have-all (acc) (head-end) (want) =
+   if head-end < 0 then False
+   else if want < 0 then False
+   else list-length acc - head-end >= want
+
+Section: The Network Scope Gate
+
+ The runtime chokepoint for the network authority scope (BACKLOG 1.5),
+ the twin of Fat16's fat16-scope-admits for the filesystem path. A
+ program declaring [Network.Write "api.example.com"] has that authority
+ written into its process-table cell by the boot grant (or copied in at
+ spawn, or installed by the verified loader). The compile time checker
+ only sees literal URLs; a URL built at runtime from input is exactly
+ what this gate is here to catch, so the check reads the destination
+ authority off the runtime url and compares it to the grant with the
+ same relation the type checker uses: a host matches whole, a port is
+ compared only when the grant names one, and an empty grant admits every
+ host (an unscoped program is unrestricted, which is what the empty
+ authority already means).
+
+ net-request-authority mirrors the type checker's url-authority: it
+ appends the scheme's default port when the url leaves it implicit, so a
+ grant written "host:80" and a fetch of "http://host/" agree on the port
+ the way they do at compile time.
+
+  auth-host : Text -> Text
+  auth-host (a) =
+   let c = url-find-colon a 0 (text-length a)
+   in if c < 0 then a else substring a 0 c
+
+  auth-port : Text -> Text
+  auth-port (a) =
+   let c = url-find-colon a 0 (text-length a)
+   in if c < 0 then "" else substring a (c + 1) (text-length a - c - 1)
+
+  net-authority-admits : Text, Text -> Boolean
+  net-authority-admits (grant) (res) =
+   if auth-host grant /= auth-host res then False
+   else let gp = auth-port grant
+   in let rp = auth-port res
+   in if text-length gp == 0 then True
+      else if text-length rp == 0 then True
+      else gp == rp
+
+  net-request-authority : Text -> Text
+  net-request-authority (url) =
+   let a = http-authority url
+   in if url-find-colon a 0 (text-length a) >= 0 then a
+      else a & ":" & (if url-scheme url == "https" then "443" else "80")
+
+  net-scope-admits : Text -> Boolean
+  net-scope-admits (url) =
+   let grant = process-get-network-scope process-get-pid
+   in if text-length grant == 0 then True
+      else net-authority-admits grant (net-request-authority url)
+
+Section: The Request
+
+ Every way this can fail is a distinct Err, and none of them is an
+ empty string. The first cut returned Text, so a host that would not
+ resolve, a host that would not answer, and a server that returned an
+ empty body were all "" and the caller could not tell them apart. A
+ silently wrong answer is the thing this project least tolerates, and
+ an error channel is the cheapest possible way not to give one.
+
+  http-request : Text, Text, Text -> [Network.Read, Network.Write] Result Text Text
+  http-request (method) (url) (body) =
+   if net-scope-admits url == False then Err ("network: " & net-request-authority url & " is outside this program's grant")
+   else let scheme = url-scheme url
+   in if scheme == "https" then Err (https-refusal url)
+   else let host = url-host url
+   in let path = url-path url
+   in let port = url-port url
+   in act
+    addr <- http-host-address host
+    if list-length addr /= 4 then Err ("dns: cannot resolve " & host)
+    else let sess = net-session-new http-local-mac http-local-ip http-gateway-ip http-local-port port addr 1000
+    in let req = if method == "POST" then http-post-request host path body else http-get-request host path
+    in let bytes = http-serialize-request req
+    in act
+      ts1 <- net-io-connect (transport-new sess)
+      when (ts1.session).conn.state
+       is TcpEstablished -> http-exchange ts1 bytes
+       is otherwise -> Err ("connect: " & host & ":" & show port & " did not answer")
+    end
+   end
+
+  http-exchange : TcpTransportState, List Integer -> [Network.Read, Network.Write] Result Text Text
+  http-exchange (ts) (bytes) = act
+    ts2 <- net-io-send-raw ts bytes
+    r <- http-recv ts2 (__list-with-capacity http-max-response) (-1) (-1) 0
+    ts3 <- net-io-close (r.transport)
+    let resp = http-parse-response (r.data)
+    in if resp.valid then Ok (resp.body) else Err "http: no response"
+  end
+
+Section: The Refusal
+
+ An https URL is not fetched. It would be fetched in the CLEAR -- this
+ chapter speaks HTTP/1.0 and negotiates nothing -- and a caller that
+ wrote https has said, in the only way the URL lets them, that the
+ bytes must not cross the wire unprotected. Honouring the scheme as a
+ parse and ignoring it as a promise is how a transport-security bug
+ gets shipped, so the request is refused and says why. Foreword chapter
+ Tls exists; wiring it in is what would make https mean https, and
+ until someone does, this is the honest answer.
+
+  https-refusal : Text -> Text
+  https-refusal (url) = "https: TLS is not implemented here; refusing to fetch " & url & " in the clear"
+
+Section: HTTPS Over TLS 1.3
+
+ The authenticated https path. This is what makes `https` mean https rather
+ than a refusal: it runs a real TLS 1.3 handshake over the same TCP
+ transport the cleartext path uses, then carries the HTTP request and
+ response as application data under the negotiated keys. The TLS itself --
+ the handshake, the record protection, the Ed25519 X.509 authentication,
+ the man-in-the-middle defence -- is `Net chapter TlsEndpoint`, proven end
+ to end by `codex/test/apps/tls-fetch-loopback`.
+
+ Two things enter from the caller and are never invented here, because a
+ chapter that invents them invents a weak key or a lie: the client's
+ ephemeral X25519 private key and 32-byte handshake random (entropy), and
+ the trust anchors plus calendar time the server's certificate is checked
+ against (the security policy). A caller with no anchors gets no
+ authentication and this refuses to pretend otherwise.
+
+ The bare one-argument `fetch` still refuses https below: it has nowhere to
+ carry anchors or entropy, so it cannot make an authenticated connection,
+ and an anonymous one under the https scheme would be exactly the false
+ promise this project does not ship. Authenticated fetch is this function.
+
+ The live exchange cannot run in the headless battery -- it starts no TLS
+ server -- so this is compile-verified and rests on the loopback for
+ correctness, the same standing as the cleartext live half (BACKLOG 1.7).
+
+  https-port : Text -> Integer
+  https-port (url) =
+   let a = http-authority url
+   in if url-find-colon a 0 (text-length a) >= 0 then url-port url else 443
+
+  fetch-tls : Text, List Integer, List Integer, List X509Anchor, List Integer -> [Network.Read, Network.Write] Result Text Text
+  fetch-tls (url) (client-priv) (random) (anchors) (cal-now) =
+   if net-scope-admits url == False then Err ("network: " & net-request-authority url & " is outside this program's grant")
+   else if url-scheme url /= "https" then Err "fetch-tls: url is not https"
+   else fetch-tls-connect url (url-host url) (url-path url) (https-port url) client-priv random anchors cal-now
+
+  fetch-tls-connect : Text, Text, Text, Integer, List Integer, List Integer, List X509Anchor, List Integer -> [Network.Read, Network.Write] Result Text Text
+  fetch-tls-connect (url) (host) (path) (port) (client-priv) (random) (anchors) (cal-now) = act
+    addr <- http-host-address host
+    if list-length addr /= 4 then Err ("dns: cannot resolve " & host)
+    else let sess = net-session-new http-local-mac http-local-ip http-gateway-ip http-local-port port addr 1000
+    in act
+      ts1 <- net-io-connect (transport-new sess)
+      when (ts1.session).conn.state
+       is TcpEstablished -> https-run ts1 host path client-priv random anchors cal-now
+       is otherwise -> Err ("connect: " & host & ":" & show port & " did not answer")
+    end
+  end
+
+ One TLS record framed off the TCP byte stream. A record is a five-byte
+ header whose last two bytes are the length of what follows, so the whole
+ record is 5 + that. Bytes are pulled until a full record is present; a
+ stream that stops before one completes ends the read rather than blocking
+ forever.
+
+  HttpsRecv = record {
+    hr-ts : TcpTransportState,
+    hr-rec : List Integer,
+    hr-rest : List Integer,
+    hr-ok : Boolean
+  }
+
+  HttpsHs = record {
+    hh-ts : TcpTransportState,
+    hh-ep : TlsEp,
+    hh-rest : List Integer
+  }
+
+  tls-record-ready : List Integer -> Boolean
+  tls-record-ready (buf) =
+   if list-length buf < 5 then False
+   else list-length buf >= 5 + (list-at buf 3 * 256 + list-at buf 4)
+
+  tls-split-record : TcpTransportState, List Integer -> HttpsRecv
+  tls-split-record (ts) (buf) =
+   let n = 5 + (list-at buf 3 * 256 + list-at buf 4)
+   in HttpsRecv { hr-ts = ts, hr-rec = http-slice buf 0 n, hr-rest = http-slice buf n (list-length buf - n), hr-ok = True }
+
+  http-slice : List Integer, Integer, Integer -> List Integer
+  http-slice (bs) (off) (n) = http-slice-loop bs off n 0 []
+
+  http-slice-loop : List Integer, Integer, Integer, Integer, List Integer -> List Integer
+  http-slice-loop (bs) (off) (n) (i) (acc) =
+   if i >= n then acc
+   else if off + i >= list-length bs then acc
+   else http-slice-loop bs off n (i + 1) (list-push acc (list-at bs (off + i)))
+
+  tls-recv-record : TcpTransportState, List Integer, Integer -> [Network.Read, Network.Write] HttpsRecv
+  tls-recv-record (ts) (buf) (guard) =
+   if guard <= 0 then HttpsRecv { hr-ts = ts, hr-rec = [], hr-rest = buf, hr-ok = False }
+   else if tls-record-ready buf then tls-split-record ts buf
+   else act
+    rr <- net-io-recv-raw ts 0
+    if rr.has-data == False then HttpsRecv { hr-ts = rr.transport, hr-rec = [], hr-rest = buf, hr-ok = False }
+    else tls-recv-record (rr.transport) (buf & rr.data) (guard - 1)
+   end
+
+  https-send-all : TcpTransportState, List (List Integer) -> [Network.Write] TcpTransportState
+  https-send-all (ts) (recs) = https-send-loop ts recs 0
+
+  https-send-loop : TcpTransportState, List (List Integer), Integer -> [Network.Write] TcpTransportState
+  https-send-loop (ts) (recs) (i) =
+   if i >= list-length recs then ts
+   else act
+    ts1 <- net-io-send-raw ts (list-at recs i)
+    https-send-loop ts1 recs (i + 1)
+   end
+
+ Drive the handshake: send our ClientHello, then for every server record
+ feed it to the endpoint and send whatever the endpoint answers, until the
+ endpoint reports the handshake done or the stream stalls.
+
+  https-run : TcpTransportState, Text, Text, List Integer, List Integer, List X509Anchor, List Integer -> [Network.Read, Network.Write] Result Text Text
+  https-run (ts) (host) (path) (client-priv) (random) (anchors) (cal-now) =
+   let st0 = tls-ep-hello (tls-ep-client-new client-priv random anchors cal-now)
+   in act
+    ts1 <- https-send-all ts (st0.tes-out)
+    hs <- https-drive ts1 (st0.tes-ep) []
+    if tls-ep-done (hs.hh-ep) == False then Err "https: handshake did not complete"
+    else if tls-ep-authenticated (hs.hh-ep) == False then Err "https: server certificate not authenticated"
+    else https-request hs host path
+   end
+
+  https-drive : TcpTransportState, TlsEp, List Integer -> [Network.Read, Network.Write] HttpsHs
+  https-drive (ts) (ep) (buf) =
+   if tls-ep-done ep then HttpsHs { hh-ts = ts, hh-ep = ep, hh-rest = buf }
+   else act
+    rr <- tls-recv-record ts buf 100000
+    if rr.hr-ok == False then HttpsHs { hh-ts = rr.hr-ts, hh-ep = ep, hh-rest = rr.hr-rest }
+    else let step = tls-ep-recv ep (rr.hr-rec)
+    in act
+     ts2 <- https-send-all (rr.hr-ts) (step.tes-out)
+     https-drive ts2 (step.tes-ep) (rr.hr-rest)
+    end
+   end
+
+ The request goes out as application data under the client key; the
+ response records come back until the server closes, each decrypted and
+ appended to the endpoint's application buffer, and that buffer is the HTTP
+ response the ordinary parser then reads.
+
+  https-request : HttpsHs, Text, Text -> [Network.Read, Network.Write] Result Text Text
+  https-request (hs) (host) (path) =
+   let send-step = tls-ep-send-app (hs.hh-ep) (http-serialize-request (http-get-request host path))
+   in act
+    ts1 <- https-send-all (hs.hh-ts) (send-step.tes-out)
+    got <- https-recv-app ts1 (send-step.tes-ep) (hs.hh-rest) 0
+    ts2 <- net-io-close (got.hh-ts)
+    let parsed = http-parse-response (tls-ep-app-in (got.hh-ep))
+    in if parsed.valid then Ok (parsed.body) else Err "https: no response"
+   end
+
+  https-recv-app : TcpTransportState, TlsEp, List Integer, Integer -> [Network.Read, Network.Write] HttpsHs
+  https-recv-app (ts) (ep) (buf) (tries) =
+   if tries > 3000000 then HttpsHs { hh-ts = ts, hh-ep = ep, hh-rest = buf }
+   else act
+    rr <- tls-recv-record ts buf 100000
+    if rr.hr-ok == False then HttpsHs { hh-ts = rr.hr-ts, hh-ep = ep, hh-rest = rr.hr-rest }
+    else https-recv-app (rr.hr-ts) ((tls-ep-recv ep (rr.hr-rec)).tes-ep) (rr.hr-rest) (tries + 1)
+   end
+
+Section: The Network Effect
+
+  fetch : Text -> [Network.Read, Network.Write] Result Text Text
+  fetch (url) = http-request "GET" url ""
+
+  post : Text, Text -> [Network.Read, Network.Write] Result Text Text
+  post (url) (body) = http-request "POST" url body
+
+  resolve-dns : Text -> [Network.Read, Network.Write] Result Text Text
+  resolve-dns (host) = act
+    addr <- http-host-address host
+    if list-length addr /= 4 then Err ("dns: cannot resolve " & host) else Ok (format-ip addr)
+  end
+
+Page 1

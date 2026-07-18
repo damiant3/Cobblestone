@@ -1,0 +1,114 @@
+Chapter: RepoArchive
+  cites Foreword chapter Maybe
+  cites Foreword chapter FactStore
+  cites Foreword chapter ImportGate
+  cites Foreword chapter Console
+  cites Kernel chapter DiskFacts
+  cites Kernel chapter AppPersist
+  cites Works chapter KeyManager
+  cites Works chapter FactArchive
+  cites Works chapter RepoProtocolPersist
+
+ A base is a signed, compressed copy of a range of the log's own sectors.
+
+ What this pins, in order of how badly it would hurt to lose:
+
+ The artifact is SMALLER than what it holds. That assertion is the whole point
+ of stating it out loud: BACKLOG 5.13 exists because four chapters in the
+ compression quire compress nothing, and every one of their tests passes,
+ because a pass-through round-trips perfectly. A round-trip test cannot tell a
+ compressor from a pipe. This one can.
+
+ The three refusals. An untrusted signer is refused. A tampered artifact is
+ refused, and refused BEFORE it is expanded -- the artifact hash is checked on
+ the bytes as handed over, which is the only order that can decline a
+ decompression bomb. And what comes out is checked against the plain hash the
+ same signature covered, so a decoder that is subtly wrong cannot pass itself
+ off as history.
+
+ And the round-trip: the bytes that come back out are the log's sectors, byte
+ for byte, which is what makes the artifact a fact log rather than a thing
+ shaped like one.
+
+ THE .disk SIDECAR IS LOAD-BEARING. Without a disk attached, every write is
+ dropped and every read returns zeros -- and this test PASSED that way while it
+ was being written. It reported a real compression ratio (3072 zero bytes
+ compress wonderfully) and an exact round-trip (zeros round-trip perfectly),
+ because the archive machinery agreed with itself about nothing at all. Only the
+ last assertion, which needs a fact to actually be on the disk to read back,
+ caught it. Delete the sidecar and this test goes green against an empty disk.
+
+Section: Entry
+
+  kind-source : Integer = 30
+
+ Repetitive content, deliberately. Lz4 finds matches or it does not, and a base
+ of three unique short strings would tell us nothing about whether the codec
+ works.
+
+  filler : Integer, Text -> Text
+  filler (n) (acc) = if n <= 0 then acc else filler (n - 1) (acc & "the same bytes again and again ")
+
+  body : Text -> Text
+  body (name) = name & ": " & filler 24 ""
+
+  seed-bytes : List Integer = [7, 7, 7, 7, 7, 7, 7, 7]
+
+  tamper : List Integer, Integer, Integer, List Integer -> List Integer
+  tamper (xs) (i) (len) (acc) =
+    if i >= len then acc
+    else tamper xs (i + 1) len (list-push acc (if i == 0 then 255 - (list-at xs i) else list-at xs i))
+
+  opened-len : Maybe (List Integer) -> Text
+  opened-len (m) =
+    when m
+      is Just (bs) -> show (list-length bs)
+      is None -> "REFUSED"
+
+  base-hash-of : Maybe BaseRecord -> Text
+  base-hash-of (m) =
+    when m
+      is Just (b) -> b.br-artifact-hash
+      is None -> "NO BASE"
+
+  opening : [Device.Block, Console.Write] Nothing = act
+    let s0 = disk-init
+    in let s1 = app-write-fact s0 kind-source (body "alpha") 1
+    in let s2 = app-write-fact s1 kind-source (body "beta") 2
+    in let s3 = app-write-fact s2 kind-source (body "gamma") 3
+    in let flushed = disk-checkpoint s3
+    in let sb = flushed.superblock
+    in let head = sb.log-head
+    in let kp = generate-keypair seed-bytes
+    in let manifest = manifest-add manifest-empty (kp.fingerprint) (kp.public-key) 10000
+    in let art = archive-build fact-log-start head 3 fa-no-prev kp 100
+    in let base = art.aa-base
+    in let comp = art.aa-bytes
+    in let plain-len = (head - fact-log-start) * 512
+    in act
+      print-line-uni ("facts written: " & show (disk-fact-count flushed))
+      print-line-uni ("plain bytes: " & show plain-len)
+      print-line-uni ("compressed bytes: " & show (list-length comp))
+      print-line-uni ("compressed smaller: " & show (list-length comp < plain-len))
+      print-line-uni ("codec: " & base.br-codec)
+      print-line-uni ("covers to sector: " & show (base.br-covers-to))
+      print-line-uni ("prev base: " & base.br-prev-base)
+
+      print-line-uni ("verifies: " & show (base-verify base manifest 5000))
+      print-line-uni ("untrusted signer: " & show (base-verify base manifest-empty 5000))
+
+      print-line-uni ("open: " & opened-len (archive-open comp base manifest 5000))
+      print-line-uni ("open untrusted: " & opened-len (archive-open comp base manifest-empty 5000))
+      print-line-uni ("open tampered: " & opened-len (archive-open (tamper comp 0 (list-length comp) []) base manifest 5000))
+
+      let saved = base-save flushed base
+      in act
+        print-line-uni ("log still readable: " & show (list-length (app-scan-all saved kind-source)))
+        let found = base-current saved manifest 5000
+        in print-line-uni ("base recorded: " & show (base-hash-of found == base.br-artifact-hash))
+        let none-found = base-current saved manifest-empty 5000
+        in print-line-uni ("untrusted base is not the base: " & show (base-hash-of none-found))
+      end
+    end
+  end
+

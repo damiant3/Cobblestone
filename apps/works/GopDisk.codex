@@ -1,5 +1,7 @@
 Chapter: GopDisk
   cites Works chapter GopAhci
+  cites Works chapter GopNvme
+  cites Works chapter GopUsbMsc
 
  Post-ExitBootServices disk reads. Once the boot stub calls
  ExitBootServices the firmware's Block I/O protocol is gone, so the
@@ -139,29 +141,127 @@ Section: Multi-Sector Read
     end
   end
 
+ A machine with no legacy IDE controller floats the bus: every status
+ read answers 0xFF, which fakes BSY, DRQ, and ERR all at once. The
+ fuel-bounded waits then time out holding 0xFF, the DRQ test passes,
+ and the drain loop "reads" sectors of all-ones and reports success --
+ a phantom disk full of garbage that outranks the real one in the
+ dispatch. All-ones is the same floating-bus signature the i8042 and
+ LAPIC probes retire on; one status read up front retires the whole
+ controller.
+
+  ide-absent : [Device.Port] Boolean
+  ide-absent = act
+    s <- port-in-byte ide-status
+    s == 255
+  end
+
   ide-read-into : Integer, Integer, Integer -> [Device.Port] Integer
   ide-read-into (lba) (count) (dest) = act
+    absent <- ide-absent
+    if absent then 0
+    else ide-read-run lba count dest
+  end
+
+  ide-read-run : Integer, Integer, Integer -> [Device.Port] Integer
+  ide-read-run (lba) (count) (dest) = act
     if count <= 0 then 1
     else act
       let n = if count > ide-max-chunk then ide-max-chunk else count
       in act
         ok <- ide-read-chunk lba n dest
         if ok == 0 then 0
-        else ide-read-into (lba + n) (count - n) (dest + n * 512)
+        else ide-read-run (lba + n) (count - n) (dest + n * 512)
       end
     end
   end
 
- Bulk read through whichever controller answers. AHCI is tried first and
- does the whole thing in one DMA; the IDE fallback chunks it.
+Section: Medium Selection
+
+ Dispatch order answers "which controller responds", not "which
+ medium is mine" -- and on a real machine the internal SATA disk
+ responds on AHCI before the boot stick responds on USB, so every
+ read above this layer would come from the WRONG disk. The selection
+ cells fix the medium by content: GopMedium probes each candidate
+ (does its ESP carry our own CODEX.CDX?) by steering these cells and
+ locks the winner. While the magic is present, every read and write
+ in this chapter goes straight to the selected medium; without it,
+ the dispatch order below stands, which is also how the probe itself
+ reads. The magic is written LAST, so firmware residue in the cells
+ cannot impersonate a selection.
+
+  med-cells : Integer = 36608
+  med-cells-magic : Integer = #3144454D
+
+  med-kind-ahci : Integer = 1
+  med-kind-ide : Integer = 2
+  med-kind-usb : Integer = 3
+  med-kind-nvme : Integer = 4
+
+  med-selected : Integer
+  med-selected =
+    if peek-32 med-cells 0 /= med-cells-magic then 0
+    else peek-32 med-cells 4
+
+  med-sel-index : Integer
+  med-sel-index = peek-32 med-cells 8
+
+  med-set : Integer, Integer -> Integer
+  med-set (kind) (index) =
+    let k = poke-32 med-cells 4 kind
+    in let i = poke-32 med-cells 8 index
+    in poke-32 med-cells 0 med-cells-magic
+
+  med-clear : Integer -> Integer
+  med-clear (dummy) = poke-32 med-cells 0 0
+
+ Bulk read through the selected medium when one is locked, else
+ through whichever controller answers. AHCI is tried first and does
+ the whole thing in one DMA; the IDE fallback chunks it; USB mass
+ storage is last because its bring-up is the heaviest and boards
+ present fixed disks on the other two. On a machine that booted from
+ a USB stick with no other disk, USB is the only path that answers.
+
+  disk-read-selected : Integer, Integer, Integer, Integer -> [Device.Port] Boolean
+  disk-read-selected (sel) (lba) (count) (dest) = act
+    if sel == med-kind-ahci then act
+      hba <- ahci-find-nth med-sel-index
+      if hba.hba-ok then ahci-read-into-on hba lba count dest /= 0
+      else False
+    end
+    else if sel == med-kind-nvme then act
+      n <- nvme-read-into lba count dest
+      n /= 0
+    end
+    else if sel == med-kind-ide then act
+      i <- ide-read-into lba count dest
+      i /= 0
+    end
+    else act
+      u <- usb-read-into lba count dest
+      u /= 0
+    end
+  end
 
   disk-read-into : Integer, Integer, Integer -> [Device.Port] Boolean
   disk-read-into (lba) (count) (dest) = act
-    a <- ahci-read-into lba count dest
-    if a /= 0 then True
+    let sel = med-selected
+    in if sel /= 0 then disk-read-selected sel lba count dest
     else act
-      i <- ide-read-into lba count dest
-      i /= 0
+      a <- ahci-read-into lba count dest
+      if a /= 0 then True
+      else act
+        n <- nvme-read-into lba count dest
+        if n /= 0 then True
+        else act
+          i <- ide-read-into lba count dest
+          if i /= 0 then True
+          else act
+            u <- usb-read-into lba count dest
+            u /= 0
+          end
+        end
+      end
     end
   end
 
@@ -219,39 +319,86 @@ Section: Multi-Sector Write
 
   ide-write-into : Integer, Integer, Integer -> [Device.Port] Integer
   ide-write-into (lba) (count) (src) = act
+    absent <- ide-absent
+    if absent then 0
+    else ide-write-run lba count src
+  end
+
+  ide-write-run : Integer, Integer, Integer -> [Device.Port] Integer
+  ide-write-run (lba) (count) (src) = act
     if count <= 0 then 1
     else act
       let n = if count > ide-max-chunk then ide-max-chunk else count
       in act
         ok <- ide-write-chunk lba n src
         if ok == 0 then 0
-        else ide-write-into (lba + n) (count - n) (src + n * 512)
+        else ide-write-run (lba + n) (count - n) (src + n * 512)
       end
     end
   end
 
- Bulk write through whichever controller answers. AHCI DMAs the whole
- run; IDE chunks it and issues one flush at the end.
+ Bulk write through the selected medium when one is locked, else
+ through whichever controller answers. AHCI DMAs the whole run; IDE
+ chunks it and issues one flush at the end; USB rides last, same
+ order as reads -- a write must land on the same medium a read would
+ have come from.
+
+  disk-write-selected : Integer, Integer, Integer, Integer -> [Device.Port] Boolean
+  disk-write-selected (sel) (lba) (count) (src) = act
+    if sel == med-kind-ahci then act
+      hba <- ahci-find-nth med-sel-index
+      if hba.hba-ok then ahci-issue-on hba lba count src ahci-cmd-write True /= 0
+      else False
+    end
+    else if sel == med-kind-nvme then act
+      n <- nvme-write-into lba count src
+      n /= 0
+    end
+    else if sel == med-kind-ide then act
+      i <- ide-write-into lba count src
+      if i /= 0 then act
+        fl <- ide-flush
+        True
+      end
+      else False
+    end
+    else act
+      u <- usb-write-into lba count src
+      u /= 0
+    end
+  end
 
   disk-write-into : Integer, Integer, Integer -> [Device.Port] Boolean
   disk-write-into (lba) (count) (src) = act
-    a <- ahci-write-into lba count src
-    if a /= 0 then True
+    let sel = med-selected
+    in if sel /= 0 then disk-write-selected sel lba count src
     else act
-      i <- ide-write-into lba count src
-      if i == 0 then False
+      a <- ahci-write-into lba count src
+      if a /= 0 then True
       else act
-        fl <- ide-flush
-        True
+        n <- nvme-write-into lba count src
+        if n /= 0 then True
+        else act
+          i <- ide-write-into lba count src
+          if i /= 0 then act
+            fl <- ide-flush
+            True
+          end
+          else act
+            u <- usb-write-into lba count src
+            u /= 0
+          end
+        end
       end
     end
   end
 
 Section: Dispatch
 
- Try AHCI, then legacy IDE. `dr-via` names the controller that answered
- so the caller can say which path reached the disk -- on a boot screen
- that distinction is the difference between "we read the stick" and "we
+ Try the selected medium, else AHCI, then legacy IDE, then USB mass
+ storage. `dr-via` names the controller that answered so the caller
+ can say which path reached the disk -- on a boot screen that
+ distinction is the difference between "we read the stick" and "we
  read something".
 
   DiskRead = record {
@@ -260,14 +407,45 @@ Section: Dispatch
     dr-via : Text
   }
 
+  disk-read-sector-selected : Integer, Integer -> [Device.Port] DiskRead
+  disk-read-sector-selected (sel) (lba) = act
+    let buf = alloc-zeroed 512 64
+    in act
+      ok <- disk-read-selected sel lba 1 buf
+      if ok == False then DiskRead { dr-ok = False, dr-buf = 0, dr-via = "none" }
+      else if sel == med-kind-ahci then DiskRead { dr-ok = True, dr-buf = buf, dr-via = "AHCI" }
+      else if sel == med-kind-nvme then DiskRead { dr-ok = True, dr-buf = buf, dr-via = "NVMe" }
+      else if sel == med-kind-ide then DiskRead { dr-ok = True, dr-buf = buf, dr-via = "IDE PIO" }
+      else DiskRead { dr-ok = True, dr-buf = buf, dr-via = "USB" }
+    end
+  end
+
   disk-read-sector : Integer -> [Device.Port] DiskRead
   disk-read-sector (lba) = act
+    let sel = med-selected
+    in if sel /= 0 then disk-read-sector-selected sel lba
+    else disk-read-sector-order lba
+  end
+
+  disk-read-sector-order : Integer -> [Device.Port] DiskRead
+  disk-read-sector-order (lba) = act
     a <- ahci-read-sector lba
     if a.ar-ok then DiskRead { dr-ok = True, dr-buf = a.ar-buf, dr-via = "AHCI" }
     else act
-      i <- ide-read-sector lba
-      if i.ir-ok then DiskRead { dr-ok = True, dr-buf = i.ir-buf, dr-via = "IDE PIO" }
-      else DiskRead { dr-ok = False, dr-buf = 0, dr-via = "none" }
+      nbuf <- nvme-read-sector lba
+      if nbuf /= 0 then DiskRead { dr-ok = True, dr-buf = nbuf, dr-via = "NVMe" }
+      else act
+        i <- ide-read-sector lba
+        if i.ir-ok then DiskRead { dr-ok = True, dr-buf = i.ir-buf, dr-via = "IDE PIO" }
+        else act
+          let buf = alloc-zeroed 512 64
+          in act
+            u <- usb-read-into lba 1 buf
+            if u /= 0 then DiskRead { dr-ok = True, dr-buf = buf, dr-via = "USB" }
+            else DiskRead { dr-ok = False, dr-buf = 0, dr-via = "none" }
+          end
+        end
+      end
     end
   end
 
@@ -275,6 +453,13 @@ Section: IDE Sector Read
 
   ide-read-sector : Integer -> [Device.Port] IdeRead
   ide-read-sector (lba) = act
+    absent <- ide-absent
+    if absent then IdeRead { ir-ok = False, ir-buf = 0 }
+    else ide-read-sector-run lba
+  end
+
+  ide-read-sector-run : Integer -> [Device.Port] IdeRead
+  ide-read-sector-run (lba) = act
     w0 <- ide-wait-not-busy ide-poll-fuel
     dh <- port-out-byte ide-drive (bit-or 224 (bit-and (bit-shru lba 24) 15))
     sc <- port-out-byte ide-sect-count 1
@@ -290,6 +475,37 @@ Section: IDE Sector Read
       in act
         r <- ide-read-words buf 0
         IdeRead { ir-ok = True, ir-buf = buf }
+      end
+    end
+  end
+
+Section: Identify
+
+ IDENTIFY DEVICE (0xEC) answers one 512-byte sector describing the
+ drive: the model string sits at words 27-46 and the sector counts at
+ words 60-61 (LBA28) and 100-103 (LBA48). No LBA registers to program;
+ select the drive, issue, drain one sector. Behind the same floating-bus
+ gate as every other IDE entry, and a DRQ that never arrives (no device
+ on a present controller) returns zero instead of a garbage page.
+
+  ide-cmd-identify : Integer = 236
+
+  ide-identify : [Device.Port] Integer
+  ide-identify = act
+    absent <- ide-absent
+    if absent then 0
+    else act
+      w0 <- ide-wait-not-busy ide-poll-fuel
+      dh <- port-out-byte ide-drive 224
+      cm <- port-out-byte ide-command ide-cmd-identify
+      s <- ide-wait-drq ide-poll-fuel
+      if bit-and s ide-st-drq == 0 then 0
+      else act
+        let buf = alloc-zeroed 512 64
+        in act
+          r <- ide-read-words buf 0
+          buf
+        end
       end
     end
   end

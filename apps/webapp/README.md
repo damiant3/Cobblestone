@@ -22,4 +22,4 @@ plug (`codex/plugs/html/build.ps1`), add the typed stub to
 `WebRuntime`, regenerate apps (`build/build-apps.ps1`). One change,
 every app gets it.
 
-Design: `docs/Designs/Apps/WebApp/Active/BaseTemplate.md`.
+Design: `design/Done/BaseTemplate.md`.

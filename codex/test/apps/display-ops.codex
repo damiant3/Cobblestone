@@ -1,0 +1,56 @@
+Chapter: DisplayOpsTest
+  cites Kernel chapter DisplayOps
+  cites Kernel chapter BitmapFont
+
+ The Display effect operations are performable now, not unhandled effect
+ operations. This program drives the four effect ops -- clear, set-pixel,
+ draw-rect, draw-text -- and the full-colour palette beside them --
+ fill-rect, write-text and write-text-font over a hoisted display-font --
+ against the GOP framebuffer at 0xBF000000, then reads the pixels back to
+ prove each one painted what it claimed and in the colour it was given.
+ clear establishes a known black field, so an unpainted pixel reads 0.
+ Each effectful draw is threaded through a step helper in argument
+ position, the sanctioned position for an effectful call outside an
+ act-bind; the boot grant from opening's own manifest supplies the
+ Display capability bit. The glyph rows: 'A' (CCE 41) has row-2 byte 24 =
+ 0b00011000 so column 3 is lit; 'B' (CCE 58) row-2 byte 124 lights
+ column 1; 'C' (CCE 50) row-2 byte 60 lights column 2.
+
+Section: Body
+
+  check-all : Integer -> [Display] Text
+  check-all (z) =
+    if peek-32 #BF000000 ((20 * 640 + 10) * 4) /= #123456 then "FAIL: set-pixel"
+    else if peek-32 #BF000000 ((102 * 640 + 102) * 4) /= #FFFFFF then "FAIL: rect interior not painted"
+    else if peek-32 #BF000000 ((106 * 640 + 106) * 4) /= 0 then "FAIL: rect leaked outside its bounds"
+    else if peek-32 #BF000000 ((202 * 640 + 203) * 4) /= #FFFFFF then "FAIL: glyph pixel not lit"
+    else if peek-32 #BF000000 ((200 * 640 + 200) * 4) /= 0 then "FAIL: glyph blank row painted"
+    else if peek-32 #BF000000 ((102 * 640 + 302) * 4) /= #123456 then "FAIL: fill-rect colour wrong"
+    else if peek-32 #BF000000 ((302 * 640 + 301) * 4) /= #00FF00 then "FAIL: write-text colour wrong"
+    else if peek-32 #BF000000 ((302 * 640 + 322) * 4) /= #FF0000 then "FAIL: write-text-font colour wrong"
+    else "PASS"
+
+  after-wtext : Integer -> [Display] Text
+  after-wtext (z) = check-all (write-text-font display-font "C" 320 300 #FF0000)
+
+  after-fillrect : Integer -> [Display] Text
+  after-fillrect (z) = after-wtext (write-text "B" 300 300 #00FF00)
+
+  after-text : Integer -> [Display] Text
+  after-text (e) = after-fillrect (fill-rect 300 100 8 8 #123456)
+
+  after-rect : Integer -> [Display] Text
+  after-rect (d) = after-text (draw-text "A" 200 200)
+
+  after-pixel : Integer -> [Display] Text
+  after-pixel (b) = after-rect (draw-rect 100 100 5 5)
+
+  after-clear : Integer -> [Display] Text
+  after-clear (a) = after-pixel (set-pixel 10 20 #123456)
+
+  run-display : Integer -> [Display] Text
+  run-display (x) = after-clear clear
+
+  opening : [Console, Display] Nothing = act
+    print-line-uni (run-display 0)
+  end

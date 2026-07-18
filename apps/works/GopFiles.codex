@@ -1,0 +1,377 @@
+Chapter: GopFiles
+  cites Works chapter GopFat16
+  cites Works chapter GopDraw
+  cites Works chapter GopUsbKbd
+  cites Works chapter GopUsbMouse
+  cites Kernel chapter BitmapFont
+  cites Foreword chapter Fat16
+  cites Foreword chapter CCE
+  cites Foreword chapter Maybe
+
+ The file manager -- H4e's first app on the desktop. It browses the
+ boot medium's ESP through the same GopFat16 mount every storage
+ screen uses, riding the medium lock, so the volume on the glass is
+ the volume the machine booted from. The list is the directory's
+ decoded entries; Enter or a click descends into a directory or opens
+ a byte view of a file; Esc climbs back up and finally returns to the
+ desktop.
+
+ The loop keeps the desk's law: idle is the keyboard mailbox take and
+ the allocation-free mouse pump; everything that allocates -- a
+ directory listing, a repaint, a sector read for the preview -- runs
+ only when an event asks for it. The preview reads exactly one
+ sector: the first 128 bytes name a file better than a two-megabyte
+ read that would sit on a heap with no collector.
+
+ We say:
+
+Section: Palette and Geometry
+
+  gfl-col-bg : Integer = #1B2440
+  gfl-col-title : Integer = #2E5C8A
+  gfl-col-text : Integer = #909CB0
+  gfl-col-bright : Integer = #FFFFFF
+  gfl-col-sel : Integer = #3A5C9A
+  gfl-col-dim : Integer = #5A6478
+  gfl-col-green : Integer = #00FF00
+
+ The pane floats over the desktop to the right of the sidebar. Every
+ measure derives from the panel rectangle and the scale, so the same
+ code lays out 640x480 and 1280x800.
+
+  gfl-px : Integer, Integer -> Integer
+  gfl-px (w) (s) = 90 * s
+
+  gfl-py : Integer, Integer -> Integer
+  gfl-py (h) (s) = 30 * s
+
+  gfl-pw : Integer, Integer -> Integer
+  gfl-pw (w) (s) = w - 120 * s
+
+  gfl-ph : Integer, Integer -> Integer
+  gfl-ph (h) (s) = h - 74 * s
+
+  gfl-row-h : Integer -> Integer
+  gfl-row-h (s) = 18 * s
+
+  gfl-rows-y0 : Integer, Integer -> Integer
+  gfl-rows-y0 (h) (s) = gfl-py h s + 44 * s
+
+  gfl-rows-vis : Integer, Integer -> Integer
+  gfl-rows-vis (h) (s) = (gfl-ph h s - 74 * s) / gfl-row-h s
+
+ The row under a screen point, or -1: shared by hover and click so
+ the two can never disagree about what the pointer is on.
+
+  gfl-row-at : Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  gfl-row-at (w) (h) (s) (top) (n) (mx) (my) =
+    let y0 = gfl-rows-y0 h s
+    in if mx < gfl-px w s then -1
+    else if mx >= gfl-px w s + gfl-pw w s then -1
+    else if my < y0 then -1
+    else let row = top + (my - y0) / gfl-row-h s
+    in if row >= n then -1
+    else if row - top >= gfl-rows-vis h s then -1
+    else row
+
+  gfl-close-hit : Integer, Integer, Integer, Integer, Integer -> Boolean
+  gfl-close-hit (w) (h) (s) (mx) (my) =
+    let bx = gfl-px w s + gfl-pw w s - 16 * s
+    in if mx < bx then False
+    else if mx >= gfl-px w s + gfl-pw w s then False
+    else if my < gfl-py h s then False
+    else if my >= gfl-py h s + 20 * s then False
+    else True
+
+ Keep the selection on screen: the top row follows the selection when
+ it walks off either edge of the window.
+
+  gfl-clamp-top : Integer, Integer, Integer -> Integer
+  gfl-clamp-top (sel) (top) (vis) =
+    if sel < top then sel
+    else if sel >= top + vis then sel - vis + 1
+    else top
+
+Section: Formatting
+
+  gfl-pad : Text, Integer -> Text
+  gfl-pad (t) (width) =
+    if text-length t >= width then t
+    else gfl-pad (t & " ") width
+
+  gfl-is-dir : Fat16DirEntry -> Boolean
+  gfl-is-dir (e) = bit-and (e.de-attr) 16 == 16
+
+  gfl-size-text : Fat16DirEntry -> Text
+  gfl-size-text (e) = if gfl-is-dir e then "<DIR>" else show (e.de-size)
+
+  gfl-row-text : Fat16DirEntry -> Text
+  gfl-row-text (e) = gfl-pad (e.de-name) 16 & gfl-size-text e
+
+  gfl-hex-digit : Integer -> Text
+  gfl-hex-digit (v) =
+    if v == 0 then "0" else if v == 1 then "1" else if v == 2 then "2"
+    else if v == 3 then "3" else if v == 4 then "4" else if v == 5 then "5"
+    else if v == 6 then "6" else if v == 7 then "7" else if v == 8 then "8"
+    else if v == 9 then "9" else if v == 10 then "a" else if v == 11 then "b"
+    else if v == 12 then "c" else if v == 13 then "d" else if v == 14 then "e"
+    else "f"
+
+  gfl-hex-byte : Integer -> Text
+  gfl-hex-byte (b) = gfl-hex-digit (bit-and (bit-shru b 4) 15) & gfl-hex-digit (bit-and b 15)
+
+  gfl-ascii : Integer -> Text
+  gfl-ascii (c) =
+    if c < 32 then "."
+    else if c > 126 then "."
+    else char-to-text (code-to-char (from-unicode c))
+
+ One preview line: sixteen bytes as hex then the same sixteen as
+ printable ASCII, the shape every hex viewer trains an eye for.
+
+  gfl-hex-line : Integer, Integer, Integer -> Text
+  gfl-hex-line (buf) (off) (n) =
+    gfl-hex-run buf off n "" & " " & gfl-ascii-run buf off n ""
+
+  gfl-hex-run : Integer, Integer, Integer, Text -> Text
+  gfl-hex-run (buf) (off) (n) (acc) =
+    if n == 0 then acc
+    else gfl-hex-run buf (off + 1) (n - 1) (acc & gfl-hex-byte (peek-byte buf off) & " ")
+
+  gfl-ascii-run : Integer, Integer, Integer, Text -> Text
+  gfl-ascii-run (buf) (off) (n) (acc) =
+    if n == 0 then acc
+    else gfl-ascii-run buf (off + 1) (n - 1) (acc & gfl-ascii (peek-byte buf off))
+
+  gfl-path-text : List Text -> Text
+  gfl-path-text (names) = gfl-path-loop names 0 "ESP:/"
+
+  gfl-path-loop : List Text, Integer, Text -> Text
+  gfl-path-loop (names) (i) (acc) =
+    if i >= list-length names then acc
+    else gfl-path-loop names (i + 1) (acc & list-at names i & "/")
+
+Section: Drawing
+
+  gfl-draw-frame : Integer, Integer, Integer, Integer, Integer, CbfFont, Text -> Integer
+  gfl-draw-frame (base) (w) (h) (stride) (s) (font) (title) =
+    let px = gfl-px w s
+    in let py = gfl-py h s
+    in let pw = gfl-pw w s
+    in let ph = gfl-ph h s
+    in let body = gop-fill-rect base stride px py pw ph gfl-col-bg
+    in let bar = gop-fill-rect base stride px py pw (20 * s) gfl-col-title
+    in let cap = gop-draw-text base stride font (px + 6 * s) (py + 2 * s) title gfl-col-bright s 0
+    in gop-draw-text base stride font (px + pw - 14 * s) (py + 2 * s) "x" gfl-col-bright s 0
+
+  gfl-draw-rows : Integer, Integer, Integer, Integer, Integer, CbfFont, List Fat16DirEntry, Integer, Integer, Integer -> Integer
+  gfl-draw-rows (base) (w) (h) (stride) (s) (font) (entries) (sel) (top) (i) =
+    let n = list-length entries
+    in if top + i >= n then 0
+    else if i >= gfl-rows-vis h s then 0
+    else let idx = top + i
+    in let y = gfl-rows-y0 h s + i * gfl-row-h s
+    in let px = gfl-px w s
+    in let hl = if idx == sel then gop-fill-rect base stride px y (gfl-pw w s) (gfl-row-h s) gfl-col-sel else 0
+    in let e = list-at entries idx
+    in let fg = if idx == sel then gfl-col-bright else if gfl-is-dir e then gfl-col-text else gfl-col-dim
+    in let t = gop-draw-text base stride font (px + 10 * s) (y + s) (gfl-row-text e) fg s 0
+    in gfl-draw-rows base w h stride s font entries sel top (i + 1)
+
+  gfl-draw-list : Integer, Integer, Integer, Integer, Integer, CbfFont, List Fat16DirEntry, Integer, Integer, List Text -> Integer
+  gfl-draw-list (base) (w) (h) (stride) (s) (font) (entries) (sel) (top) (names) =
+    let f = gfl-draw-frame base w h stride s font ("Files  " & gfl-path-text names)
+    in let px = gfl-px w s
+    in let py = gfl-py h s
+    in let hdr = gop-draw-text base stride font (px + 10 * s) (py + 26 * s) (gfl-pad "name" 16 & "size") gfl-col-dim s 0
+    in let rows = gfl-draw-rows base w h stride s font entries sel top 0
+    in let none = if list-length entries == 0 then gop-draw-text base stride font (px + 10 * s) (gfl-rows-y0 h s) "(empty directory)" gfl-col-dim s 0 else 0
+    in gop-draw-text base stride font (px + 10 * s) (py + gfl-ph h s - 18 * s) "Up/Down move   Enter open   Esc back" gfl-col-green s 0
+
+  gfl-draw-preview : Integer, Integer, Integer, Integer, Integer, CbfFont, Fat16DirEntry, Integer, Integer -> Integer
+  gfl-draw-preview (base) (w) (h) (stride) (s) (font) (e) (buf) (got) =
+    let f = gfl-draw-frame base w h stride s font ("File  " & e.de-name)
+    in let px = gfl-px w s
+    in let py = gfl-py h s
+    in let sz = gop-draw-text base stride font (px + 10 * s) (py + 26 * s) (show (e.de-size) & " bytes") gfl-col-bright s 0
+    in let n = if got > 128 then 128 else got
+    in let lines = gfl-preview-lines base w h stride s font buf 0 n
+    in gop-draw-text base stride font (px + 10 * s) (py + gfl-ph h s - 18 * s) "Esc back" gfl-col-green s 0
+
+  gfl-preview-lines : Integer, Integer, Integer, Integer, Integer, CbfFont, Integer, Integer, Integer -> Integer
+  gfl-preview-lines (base) (w) (h) (stride) (s) (font) (buf) (off) (n) =
+    if off >= n then 0
+    else let take = if n - off > 16 then 16 else n - off
+    in let y = gfl-rows-y0 h s + (off / 16) * gfl-row-h s
+    in let t = gop-draw-text base stride font (gfl-px w s + 10 * s) y (gfl-hex-line buf off take) gfl-col-text s 0
+    in gfl-preview-lines base w h stride s font buf (off + 16) n
+
+Section: Navigation State
+
+ The descent is two parallel stacks -- the cluster of every directory
+ on the path (a negative sentinel names the FAT16 fixed root) and its
+ name for the title bar. Pop rebuilds all but the last; the lists are
+ a screen deep at most.
+
+  gfl-pop-int : List Integer -> List Integer
+  gfl-pop-int (xs) = gfl-pop-int-loop xs 0 []
+
+  gfl-pop-int-loop : List Integer, Integer, List Integer -> List Integer
+  gfl-pop-int-loop (xs) (i) (acc) =
+    if i >= list-length xs - 1 then acc
+    else gfl-pop-int-loop xs (i + 1) (list-push acc (list-at xs i))
+
+  gfl-pop-text : List Text -> List Text
+  gfl-pop-text (xs) = gfl-pop-text-loop xs 0 []
+
+  gfl-pop-text-loop : List Text, Integer, List Text -> List Text
+  gfl-pop-text-loop (xs) (i) (acc) =
+    if i >= list-length xs - 1 then acc
+    else gfl-pop-text-loop xs (i + 1) (list-push acc (list-at xs i))
+
+  gfl-cur-dir : List Integer -> Integer
+  gfl-cur-dir (clusters) = list-at clusters (list-length clusters - 1)
+
+  gfl-list-cur : Fat16Volume, List Integer -> [Device.Port] List Fat16DirEntry
+  gfl-list-cur (vol) (clusters) = act
+    let cur = gfl-cur-dir clusters
+    in if cur < 0 then gfat-list-root vol
+    else gfat-list-dir vol cur
+  end
+
+Section: Preview
+
+ One sector answers the whole view. An empty file has no cluster to
+ read and says so honestly.
+
+  gfl-preview : Integer, Integer, Integer, Integer, Integer, CbfFont, UsbKbd, UsbMouse, Integer, Fat16Volume, Fat16DirEntry -> [Device.Port] Integer
+  gfl-preview (base) (w) (h) (stride) (s) (font) (kbd) (mouse) (cs) (vol) (e) = act
+    if e.de-size == 0 | e.de-cluster < 2 then act
+      hd <- cursor-hide cs base stride
+      f <- gfl-draw-frame base w h stride s font ("File  " & e.de-name)
+      t <- gop-draw-text base stride font (gfl-px w s + 10 * s) (gfl-py h s + 26 * s) "empty file" gfl-col-dim s 0
+      t2 <- gop-draw-text base stride font (gfl-px w s + 10 * s) (gfl-py h s + gfl-ph h s - 18 * s) "Esc back" gfl-col-green s 0
+      cu <- if mouse.um-ok then cursor-update cs base stride w h s (mouse-x mouse) (mouse-y mouse) else 0
+      gfl-wait-back base w h stride s kbd mouse cs
+    end
+    else act
+      b <- disk-read-sector (fat16-cluster-sector vol (e.de-cluster))
+      let hd = cursor-hide cs base stride
+      in let got = if b.dr-ok then (if e.de-size < 512 then e.de-size else 512) else 0
+      in let d = gfl-draw-preview base w h stride s font e (b.dr-buf) got
+      in let cu = if mouse.um-ok then cursor-update cs base stride w h s (mouse-x mouse) (mouse-y mouse) else 0
+      in gfl-wait-back base w h stride s kbd mouse cs
+    end
+  end
+
+  gfl-wait-back : Integer, Integer, Integer, Integer, Integer, UsbKbd, UsbMouse, Integer -> [Device.Port] Integer
+  gfl-wait-back (base) (w) (h) (stride) (s) (kbd) (mouse) (cs) = act
+    sc <- kbd-take kbd
+    let mv = mouse-pump mouse w h
+    in let cu = if mv == 1 then cursor-update cs base stride w h s (mouse-x mouse) (mouse-y mouse) else 0
+    in let back = mv == 1 & mouse-clicked mouse & gfl-close-hit w h s (mouse-x mouse) (mouse-y mouse)
+    in if sc == 1 then 0
+    else if sc == 28 then 0
+    else if back then 0
+    else gfl-wait-back base w h stride s kbd mouse cs
+  end
+
+Section: Loop
+
+  gfl-activate : Integer, Integer, Integer, Integer, Integer, CbfFont, UsbKbd, UsbMouse, Integer, Fat16Volume, List Fat16DirEntry, Integer, List Integer, List Text -> [Device.Port] Integer
+  gfl-activate (base) (w) (h) (stride) (s) (font) (kbd) (mouse) (cs) (vol) (entries) (sel) (clusters) (names) = act
+    let e = list-at entries sel
+    in if gfl-is-dir e then act
+      let c2 = list-push clusters (e.de-cluster)
+      in let n2 = list-push names (e.de-name)
+      in act
+        ents <- gfl-list-cur vol c2
+        d <- gfl-redraw base w h stride s font mouse cs ents 0 0 n2
+        gfl-loop base w h stride s font kbd mouse cs vol ents 0 0 c2 n2
+      end
+    end
+    else act
+      p <- gfl-preview base w h stride s font kbd mouse cs vol e
+      d <- gfl-redraw base w h stride s font mouse cs entries sel (gfl-clamp-top sel 0 (gfl-rows-vis h s)) names
+      gfl-loop base w h stride s font kbd mouse cs vol entries sel (gfl-clamp-top sel 0 (gfl-rows-vis h s)) clusters names
+    end
+  end
+
+  gfl-back : Integer, Integer, Integer, Integer, Integer, CbfFont, UsbKbd, UsbMouse, Integer, Fat16Volume, List Integer, List Text -> [Device.Port] Integer
+  gfl-back (base) (w) (h) (stride) (s) (font) (kbd) (mouse) (cs) (vol) (clusters) (names) = act
+    if list-length clusters <= 1 then 0
+    else act
+      let c2 = gfl-pop-int clusters
+      in let n2 = gfl-pop-text names
+      in act
+        ents <- gfl-list-cur vol c2
+        d <- gfl-redraw base w h stride s font mouse cs ents 0 0 n2
+        gfl-loop base w h stride s font kbd mouse cs vol ents 0 0 c2 n2
+      end
+    end
+  end
+
+ The cursor hides BEFORE a repaint and is re-placed after: the pane
+ covers only part of the panel, so clearing the flag without
+ restoring would leave the old cursor pixels standing on the
+ sidebar and bake them into the next saved patch.
+
+  gfl-redraw : Integer, Integer, Integer, Integer, Integer, CbfFont, UsbMouse, Integer, List Fat16DirEntry, Integer, Integer, List Text -> Integer
+  gfl-redraw (base) (w) (h) (stride) (s) (font) (mouse) (cs) (entries) (sel) (top) (names) =
+    let hd = cursor-hide cs base stride
+    in let d = gfl-draw-list base w h stride s font entries sel top names
+    in if mouse.um-ok then cursor-update cs base stride w h s (mouse-x mouse) (mouse-y mouse) else 0
+
+  gfl-move : Integer, Integer, Integer, Integer, Integer, CbfFont, UsbKbd, UsbMouse, Integer, Fat16Volume, List Fat16DirEntry, Integer, Integer, List Integer, List Text -> [Device.Port] Integer
+  gfl-move (base) (w) (h) (stride) (s) (font) (kbd) (mouse) (cs) (vol) (entries) (sel) (top) (clusters) (names) = act
+    let t2 = gfl-clamp-top sel top (gfl-rows-vis h s)
+    in let d = gfl-redraw base w h stride s font mouse cs entries sel t2 names
+    in gfl-loop base w h stride s font kbd mouse cs vol entries sel t2 clusters names
+  end
+
+  gfl-loop : Integer, Integer, Integer, Integer, Integer, CbfFont, UsbKbd, UsbMouse, Integer, Fat16Volume, List Fat16DirEntry, Integer, Integer, List Integer, List Text -> [Device.Port] Integer
+  gfl-loop (base) (w) (h) (stride) (s) (font) (kbd) (mouse) (cs) (vol) (entries) (sel) (top) (clusters) (names) = act
+    sc <- kbd-take kbd
+    let n = list-length entries
+    in let mv = mouse-pump mouse w h
+    in let cu = if mv == 1 then cursor-update cs base stride w h s (mouse-x mouse) (mouse-y mouse) else 0
+    in let hover = if mv == 1 then gfl-row-at w h s top n (mouse-x mouse) (mouse-y mouse) else -1
+    in let clicked = mv == 1 & mouse-clicked mouse
+    in if sc == 1 then gfl-back base w h stride s font kbd mouse cs vol clusters names
+    else if clicked & gfl-close-hit w h s (mouse-x mouse) (mouse-y mouse) then gfl-back base w h stride s font kbd mouse cs vol clusters names
+    else if clicked & hover >= 0 then gfl-activate base w h stride s font kbd mouse cs vol entries hover clusters names
+    else if sc == 72 & sel > 0 then gfl-move base w h stride s font kbd mouse cs vol entries (sel - 1) top clusters names
+    else if sc == 80 & sel < n - 1 then gfl-move base w h stride s font kbd mouse cs vol entries (sel + 1) top clusters names
+    else if sc == 28 & n > 0 then gfl-activate base w h stride s font kbd mouse cs vol entries sel clusters names
+    else if hover >= 0 & hover /= sel then gfl-move base w h stride s font kbd mouse cs vol entries hover top clusters names
+    else gfl-loop base w h stride s font kbd mouse cs vol entries sel top clusters names
+  end
+
+Section: Entry
+
+ Mounting rides the medium lock; a machine with no readable ESP gets
+ an honest pane and a way back.
+
+  gfl-run : Integer, Integer, Integer, Integer, CbfFont, UsbKbd, UsbMouse, Integer -> [Device.Port] Integer
+  gfl-run (base) (w) (h) (stride) (font) (kbd) (mouse) (cs) = act
+    m <- gfat-mount-esp
+    let s = ui-scale w
+    in if m.gm-ok == False then act
+      hd <- cursor-hide cs base stride
+      f <- gfl-draw-frame base w h stride s font "Files"
+      t <- gop-draw-text base stride font (gfl-px w s + 10 * s) (gfl-py h s + 26 * s) "no FAT ESP on the boot medium" gfl-col-dim s 0
+      t2 <- gop-draw-text base stride font (gfl-px w s + 10 * s) (gfl-py h s + gfl-ph h s - 18 * s) "Esc back" gfl-col-green s 0
+      cu <- if mouse.um-ok then cursor-update cs base stride w h s (mouse-x mouse) (mouse-y mouse) else 0
+      gfl-wait-back base w h stride s kbd mouse cs
+    end
+    else act
+      let root-flag = if gfat-is32 (m.gm-vol) then (m.gm-vol).vol-root-start else -1
+      in let clusters = [root-flag]
+      in let names = []
+      in act
+        ents <- gfl-list-cur (m.gm-vol) clusters
+        d <- gfl-redraw base w h stride s font mouse cs ents 0 0 names
+        gfl-loop base w h stride s font kbd mouse cs (m.gm-vol) ents 0 0 clusters names
+      end
+    end
+  end

@@ -1,0 +1,143 @@
+Chapter: RepoSourceFact
+  cites Works chapter RepoProtocolPersist
+  cites Works chapter KeyManager
+  cites Foreword chapter FactStore
+  cites Foreword chapter ImportGate
+  cites Foreword chapter Hamt
+  cites Foreword chapter Maybe
+  cites Foreword chapter Sha256
+  cites Kernel chapter DiskFacts
+  cites Kernel chapter AppPersist
+  cites Foreword chapter Console
+
+ Codex stores its own source. BACKLOG 6.1.
+
+ A SourceDefinition used to be a pointer: a hash, and a Perforce path where
+ the bytes could be found. The bytes stayed in Perforce. This test writes a
+ real chapter -- its actual text, not a description of it -- to a block device
+ as a content-addressed, Ed25519-signed fact, boots the store back off the
+ disk, and puts it through the same import gate the compiler's quotation gate
+ uses. The gate must admit it, and the bytes must come back identical.
+
+ The body below is deliberately hostile to the old encoding. It contains a
+ PIPE, because a pipe is how this language writes a sum type and nearly every
+ chapter in the tree has one; the old format was pipe-delimited and would have
+ cut this file to pieces at its own type declaration. It contains newlines,
+ which no single-sector fact could hold anyway -- and a fact bigger than one
+ sector used to end the replay and take every fact behind it with it.
+
+ Four things are asserted, and each of them was false a day ago:
+   the bytes survive the round trip through the disk, byte for byte;
+   the hash the fact is filed under actually addresses those bytes;
+   the gate admits the fact, which means the signature it carries is the
+     signature the gate verifies -- not the ad-hoc string the bridge used to
+     sign, which no verifier in the tree had ever heard of;
+   and a forged body is caught, which is the only reason any of the rest of
+     it is worth anything.
+
+Section: The Source We Are Going To Store
+
+  chapter-body : Text
+  chapter-body =
+    "Chapter: Colour\n"
+    & "\n"
+    & " A colour is one of three things, and the bar is how we say so.\n"
+    & "\n"
+    & "Section: Definitions\n"
+    & "\n"
+    & "  Colour =\n"
+    & "   | Red\n"
+    & "   | Green\n"
+    & "   | Blue\n"
+    & "\n"
+    & "  name-of : Colour -> Text\n"
+    & "  name-of (c) =\n"
+    & "   when c\n"
+    & "    is Red -> \"red\"\n"
+    & "    is Green -> \"green\"\n"
+    & "    is Blue -> \"blue\"\n"
+    & "\n"
+    & "Page 1\n"
+
+Section: Helpers
+
+  test-keypair : Keypair
+  test-keypair = generate-keypair (sha256 (text-to-bytes "codex-6.1-source-fact"))
+
+  outcome-name : ImportOutcome -> Text
+  outcome-name (o) =
+    when o
+      is ImportOk (f) -> "ImportOk"
+      is ImportMissing -> "ImportMissing"
+      is ImportCorrupt -> "ImportCorrupt"
+      is ImportUnsigned -> "ImportUnsigned"
+      is ImportUnknownSigner -> "ImportUnknownSigner"
+      is ImportForged -> "ImportForged"
+      is ImportUntrusted (s) -> "ImportUntrusted"
+
+  admitted-content : ImportOutcome -> Text
+  admitted-content (o) =
+    when o
+      is ImportOk (f) -> f.content
+      is otherwise -> ""
+
+  unsigned-def : Text -> SourceDefinition
+  unsigned-def (body) =
+    SourceDefinition {
+      sd-hash = "",
+      sd-path = "codex/foreword/core/Colour.codex",
+      sd-quire = "Foreword",
+      sd-chapter = "Colour",
+      sd-signer = "",
+      sd-signature = [],
+      sd-author = "",
+      sd-timestamp = 0,
+      sd-content = body
+    }
+
+Section: Entry
+
+  opening : [Device.Block, Console.Write] Nothing = act
+    let kp = test-keypair
+    in let def = sign-definition kp (unsigned-def chapter-body) 1700000000
+    in let manifest = manifest-add manifest-empty (kp.fingerprint) (kp.public-key) 100
+    in let store = disk-init
+    in let saved = repo-persist-save-definition store def 1700000000
+    in act
+      print-line-uni ("source bytes: " & show (text-length chapter-body))
+      print-line-uni ("stored under its own content hash: " & (if def.sd-hash == fact-content-hash chapter-body then "yes" else "NO"))
+
+      let loaded = disk-load
+      in let defs = repo-persist-load-all-definitions loaded
+      in let back = list-at defs 0
+      in act
+        print-line-uni ("definitions read back off the disk: " & show (list-length defs))
+        print-line-uni ("bytes survive the round trip: " & (if back.sd-content == chapter-body then "identical" else "CORRUPTED"))
+        print-line-uni ("the pipe survived: " & (if text-contains (back.sd-content) "| Red" then "yes" else "NO"))
+
+        let bundle = repo-bundle-from-disk loaded
+        in let r = gate-import bundle manifest 50 (back.sd-hash) "Colour"
+        in act
+          print-line-uni ("the gate: " & outcome-name (r.outcome))
+          print-line-uni ("the gate handed back the source: " & (if admitted-content (r.outcome) == chapter-body then "identical" else "NOT THE SOURCE"))
+        end
+
+        let forged = SourceDefinition {
+          sd-hash = back.sd-hash,
+          sd-path = back.sd-path,
+          sd-quire = back.sd-quire,
+          sd-chapter = back.sd-chapter,
+          sd-signer = back.sd-signer,
+          sd-signature = back.sd-signature,
+          sd-author = back.sd-author,
+          sd-timestamp = back.sd-timestamp,
+          sd-content = chapter-body & " -- and one more thing"
+        }
+        in let bad-bundle = bundle-from-definitions [forged]
+        in let bad = gate-import bad-bundle manifest 50 (back.sd-hash) "Colour"
+        in print-line-uni ("a body that does not match its hash: " & outcome-name (bad.outcome))
+      end
+    end
+  end
+
+Page 1

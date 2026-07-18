@@ -3,7 +3,18 @@ Chapter: DeflateGzipTest
   cites Compress chapter Gzip
   cites Encode chapter Crc32
 
- Round-trip test: compress then decompress, verify byte identity.
+ Compress, decompress, verify byte identity -- and verify the output is SMALLER,
+ which is the assertion this test was missing for its whole life.
+
+ Every check here passed while Deflate emitted stored blocks and compressed
+ nothing, because a round-trip cannot tell a compressor from a pipe: a
+ pass-through round-trips perfectly. The inputs did not help either -- five
+ bytes of "Hello" and twenty ascending integers cannot compress under any
+ encoder, so even a correct compressor could not have proved itself on them.
+
+ So there is a compressible input now (a long repeated run), and the size
+ assertion is on it. A stored-block implementation fails that line and cannot be
+ made to pass it.
 
 Section: Helpers
 
@@ -27,20 +38,83 @@ Section: Helpers
     in let ok = if list-length decompressed == list-length input then list-equal input decompressed 0 (list-length input) else False
     in label & "=" & if ok then "pass" else "fail"
 
+  check-best-roundtrip : List Integer, Text -> Text
+  check-best-roundtrip (input) (label) =
+    let compressed = deflate-compress-best input
+    in let decompressed = deflate-decompress compressed
+    in let ok = if list-length decompressed == list-length input then list-equal input decompressed 0 (list-length input) else False
+    in label & "=" & if ok then "pass" else "fail"
+
+  check-smaller : List Integer, Text -> Text
+  check-smaller (input) (label) =
+    let compressed = deflate-compress input
+    in label & "=" & if list-length compressed < list-length input then "pass" else "fail"
+
+  check-gzip-smaller : List Integer, Text -> Text
+  check-gzip-smaller (input) (label) =
+    let compressed = gzip-compress input
+    in label & "=" & if list-length compressed < list-length input then "pass" else "fail"
+
 Section: Body
 
   test-empty : List Integer = []
   test-small : List Integer = [72, 101, 108, 108, 111]
   test-medium : List Integer = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20]
 
+ Six bytes repeated a hundred times. Long enough that gzip's eighteen bytes of
+ container do not swamp the win, and repetitive enough that a matcher has
+ something to find.
+
+  test-repeated : List Integer = repeated 600 0 []
+
+  repeated : Integer, Integer, List Integer -> List Integer
+  repeated (n) (i) (acc) =
+    if i >= n then acc
+    else repeated n (i + 1) (list-push acc (65 + (i - (i / 6) * 6)))
+
+ A pseudo-random stream over all 256 byte values. Full entropy: the LCG leaves
+ almost no runs to match, and 256 near-uniform symbols cost about eight bits
+ each under any code, so the fixed block inflates (0..143 cost eight bits,
+ 144..255 cost nine) and the dynamic block pays for a code table it cannot earn
+ back. The stored block -- the input plus a five-byte header -- is the smallest
+ of the three. This is the input a chooser must get right: it must decline both
+ compressed blocks and fall back to stored, so best is shorter than fixed and
+ equal to stored. A deflate-compress that never chooses fails best-vs-fixed here.
+
+  test-incompressible : List Integer = gen-rand 512 0 12345 []
+
+  lcg-next : Integer -> Integer
+  lcg-next (s) =
+    let t = s * 1103515245 + 12345
+    in t - (t / 2147483648) * 2147483648
+
+  rand-byte : Integer -> Integer
+  rand-byte (s) = (s / 65536) - ((s / 65536) / 256) * 256
+
+  gen-rand : Integer, Integer, Integer, List Integer -> List Integer
+  gen-rand (n) (i) (s) (acc) =
+    if i >= n then acc
+    else let s2 = lcg-next s
+    in gen-rand n (i + 1) s2 (list-push acc (rand-byte s2))
+
   opening : [Console] Nothing = act
     print-line-uni (check-roundtrip test-empty "deflate-empty")
     print-line-uni (check-roundtrip test-small "deflate-small")
     print-line-uni (check-roundtrip test-medium "deflate-medium")
+    print-line-uni (check-roundtrip test-repeated "deflate-repeated")
     print-line-uni (check-gzip-roundtrip test-small "gzip-small")
     print-line-uni (check-gzip-roundtrip test-medium "gzip-medium")
+    print-line-uni (check-gzip-roundtrip test-repeated "gzip-repeated")
     print-line-uni ("gzip-valid=" & if gzip-valid (gzip-compress test-small) then "pass" else "fail")
     print-line-uni ("gzip-invalid=" & if gzip-valid [0, 0, 0] then "fail" else "pass")
+    print-line-uni (check-smaller test-repeated "deflate-smaller")
+    print-line-uni (check-gzip-smaller test-repeated "gzip-smaller")
+    print-line-uni (check-best-roundtrip test-empty "best-empty")
+    print-line-uni (check-best-roundtrip test-repeated "best-repeated")
+    print-line-uni (check-best-roundtrip test-incompressible "best-incompressible")
+    print-line-uni ("best-smaller=" & if list-length (deflate-compress-best test-repeated) < list-length test-repeated then "pass" else "fail")
+    print-line-uni ("best-vs-fixed=" & if list-length (deflate-compress-best test-incompressible) < list-length (deflate-compress test-incompressible) then "pass" else "fail")
+    print-line-uni ("best-is-stored=" & if list-length (deflate-compress-best test-incompressible) == list-length (deflate-compress-stored test-incompressible) then "pass" else "fail")
   end
 
 Page 1

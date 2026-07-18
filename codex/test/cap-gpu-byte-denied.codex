@@ -1,0 +1,58 @@
+Chapter: CapGpuByteDenied
+  cites Foreword chapter Console
+
+ The GPU window guard covers the byte and qword primitives, not just
+ the 32-bit pair. poke-byte, peek-byte and peek-qword consult the
+ per-process capability word before touching the window at 0xBE000000.
+
+ The program declares Gpu.Memory, so the boot grant carries bit 18 and
+ the writes under the grant land; it then strips its own grant word and
+ a byte write is refused with -1, a qword read is refused with -1, and
+ after the grant is restored the byte still holds the value written
+ under it -- the evidence the refused write never reached the window.
+
+ probe returns a bitmask so a single number says which checks held: all
+ seven set is 127. On a seed whose byte/qword helpers are NOT guarded
+ the denied writes land and the mask is 7 (only the three granted
+ checks) -- the difference between 7 and 127 is exactly the guard.
+
+Section: Body
+
+  gpu-cmd : Integer = #BE000000
+
+  proc0-cap-addr : Integer = 20536
+
+  cap-gpu-memory-bit : Integer = 262144
+
+  strip-grant : Integer -> Integer
+  strip-grant (x) =
+    let lo = poke-32 proc0-cap-addr 0 0
+    in let hi = poke-32 proc0-cap-addr 4 0
+    in 0
+
+  restore-grant : Integer -> Integer
+  restore-grant (x) = poke-32 proc0-cap-addr 0 cap-gpu-memory-bit
+
+  probe : Integer -> Integer
+  probe (x) =
+    let g1 = poke-byte gpu-cmd 0 65
+    in let r1 = peek-byte gpu-cmd 0
+    in let q1 = peek-qword gpu-cmd 0
+    in let s = strip-grant 0
+    in let g2 = poke-byte gpu-cmd 0 66
+    in let d1 = peek-byte gpu-cmd 0
+    in let dq = peek-qword gpu-cmd 0
+    in let r = restore-grant 0
+    in let r3 = peek-byte gpu-cmd 0
+    in (if g1 == 0 then 1 else 0)
+     + (if r1 == 65 then 2 else 0)
+     + (if q1 /= 0 - 1 then 4 else 0)
+     + (if g2 == 0 - 1 then 8 else 0)
+     + (if d1 == 0 - 1 then 16 else 0)
+     + (if dq == 0 - 1 then 32 else 0)
+     + (if r3 == 65 then 64 else 0)
+
+  opening : [Console, Gpu.Memory] Nothing = act
+    anchor <- gpu-mem-write gpu-cmd 32 12345
+    print-line-uni ("guard: " & show (probe 0))
+  end

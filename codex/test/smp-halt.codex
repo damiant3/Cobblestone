@@ -1,0 +1,45 @@
+Chapter: SmpHalt
+
+ An idle core halts instead of busy-spinning, and is woken again to pick up
+ work. This is the workload that exercises the wake path hardest: the boot
+ program spawns one child at a time and waits on it, so between cycles three
+ of four cores have nothing to run and halt on `hlt`. Each cycle the boot
+ program itself blocks in `process-wait`, its core halts, the child runs on
+ another core and exits, the exit wake loop marks the waiter READY, and a
+ halted core must wake from its timer, scan, and resume it.
+
+ A lost wake anywhere in that chain -- a waiter that commits to BLOCKED after
+ the child's exit already scanned past it, a half-built spawn claimed before
+ its slice is set, an idle core that halts and is never woken -- shows up as
+ a hang: one of the waits never returns and the final line never prints. The
+ spin is sized so the child outlives a scheduling tick, so the waiter really
+ does block and its core really does halt rather than finding the child
+ already done. Run it many times; a single hang is a failure.
+
+Section: Body
+
+  spin : Integer, Integer -> Integer
+  spin (n) (acc) = if n == 0 then acc else spin (n - 1) (acc + 1)
+
+  child-body : Integer -> Integer
+  child-body (x) = spin 50000000 0
+
+  opening : [Console, Concurrent] Nothing = act
+    a <- process-spawn (\x -> child-body x)
+    wa <- process-wait a
+    b <- process-spawn (\x -> child-body x)
+    wb <- process-wait b
+    c <- process-spawn (\x -> child-body x)
+    wc <- process-wait c
+    d <- process-spawn (\x -> child-body x)
+    wd <- process-wait d
+    e <- process-spawn (\x -> child-body x)
+    we <- process-wait e
+    f <- process-spawn (\x -> child-body x)
+    wf <- process-wait f
+    g <- process-spawn (\x -> child-body x)
+    wg <- process-wait g
+    h <- process-spawn (\x -> child-body x)
+    wh <- process-wait h
+    print-line-uni "all waits returned"
+  end

@@ -1,69 +1,56 @@
-# Agent Reek Work Plan
+# reek -- workplan
 
-**Date**: 2026-07-04
-**Stream**: //Codex/reek (parent //Codex/main)
-**Active workstream**: Magic Format Solver (`apps/games/magic`)
-**Last CL**: 6995 (reek). NOT copied up to main (app-only; Damian: main
-doesn't need it. Run `magic Test` 101/0 first if pushing.)
+*Status, not journal. Per-CL history is in Perforce. Durable process truths are in
+`docs/Agents/PerforceProcess.md` and `CLAUDE.md`, not here. This file is the current
+picture and the next moves only. Keep it under ~80 lines.*
 
-Status of record for the app: `docs/Designs/Apps/MagicSolver/Active/
-MagicFormatSolver.md` (its "Current state" section is kept current).
+## Status
 
----
+Landing the LIR / middle-end codegen work (large, seed-carrying) -- tested through
+the full battery, all plugs, all apps. Once it lands, every agent merges it down
+before starting the polish round. You own the seed lane: seed-carrying changes flow
+through you first.
 
-## Current focus: Magic Format Solver
+## My target -- 3.9: CDX whole-program dead-code elimination
 
-A Comprehensive-Rules classic-MTG engine + GA format solver + set tester
-in `apps/games/magic`, surfaced in a WPF Command Bridge. Everything is
-app code -- **no seed rebuild ever needed**. One thing per CL: source +
-a self-checking PASS/FAIL demo + a memory/time verdict; `magic Test`
-must stay **101/0**.
+Every top-level def is emitted whether or not it is reachable from `opening`, so the
+seed carries dead weight (the occurrence analyser found ~11 KB nothing calls). The
+LIR/middle-end you just landed makes the root-set analysis this needs tractable.
+- Machinery half-exists: `ir-prune-unreachable` (Emit/IRTextEmitter.codex) is a
+  flood-fill DCE, but it runs ONLY on IR-text output for plugs, never on CDX emit.
+- NOT a wire-it-in one-liner. The compiler reaches code indirectly -- effect handlers
+  via the dispatch table, the REPL loop, builtin-dispatched functions -- so `opening`
+  alone is an insufficient root set and a naive flood-fill ships a broken compiler.
+  The work IS the correct conservative root set.
+Seed-carrying: land ahead of blu's 7.20 so the seed order is clean.
 
-### Done (through CL 6995)
+## My lane (own it; others stay out)
 
-- **Mechanics**: full ABU combat (first strike, trample, vigilance,
-  flying/reach, deathtouch-kills, regeneration, all evasion), sweepers,
-  the X-spell family, prevention (Fog/CoP), auras/anthems, triggers,
-  activated abilities (incl. tap-AI auto-firing Royal Assassin/Scepter/
-  Disk), belief model, priority window. Pool = **146 authored cards**
-  (Power Nine complete).
-- **Deckbuilding realism**: mana artifacts in decks; fast-mana AI
-  (turn-1 Mox taps turn 1); two-colour **splash** decks (spells +
-  creatures via dual lands / splash basics / any-rocks); the GA evolves
-  the splash colour.
-- **AI depth**: control closes games (unblockable win-cons always
-  attack); AI **London mulligan** in the pre-game (tightened LEA metagame
-  spread 100 -> 67).
+codex/compiler Emit, IR, LIR, middle-end, Semantics; codex/plugs codegen. Not blu's
+Types/Syntax, not fester's apps/boot/codex-vm.c.
 
-### Constraint (locked with Damian, 2026-07-04)
+## Open in my lane (BACKLOG, after the target)
 
-The mulligan is a **static, simple** strategy on purpose -- a controlled
-variable so the solver measures **deck strength**, not mulligan skill.
-Do NOT add adaptive / hand-aware / opponent-aware mulligan AI.
+- 3.8 residue: the LIR selector reaching the emitted binary (if the landing work did
+  not fully close it); range analysis at the emit boundary -- `IrLet`/`IrName` lose a
+  proved bound at its use.
+- 3.1 ARM64 allocator folds INTO the LIR; do not build a standalone one.
+- 2.15/2.18 the silent-shadow diagnostic (a def shadowing a builtin/chapter with
+  different COST is silent, e.g. the O(n) Hamt `list-insert-at`). Error-vs-warning is
+  a Damian decision.
+- 3.6 cross-arch battery honest + gated (2 ARM64 fails; build-leg vs tier).
 
-Also locked: cards are **authored IR** (CardLibrary.codex), not parsed --
-the OracleParse runtime parser is a bootstrap shim, not the source of
-truth; do not extend it.
+## For other agents
 
-### Next levers (pick highest value when redirected)
+- LIR landed: re-vet any codegen claim in your memory against the new tree.
+- BACKLOG 2.31 (REPL 2nd-compile #GP in find-effect-op-addr) is FIXED (CL 8872).
+  It was the same defect as the closed 2.28: field-cache stale-RAX in `emit-text-lit`
+  made `list-length (st.effect-op-addrs)` read the "read-text" literal length word (9).
+  Verified: all three crashing ordered pairs exit 0 on the depot seed. The
+  "shared `[]` across the R10 reset" lead was a wrong hypothesis -- do not chase it.
 
-1. **AI depth** (the real remaining metagame lever): smarter sequencing
-   -- hold removal for genuine threats, play around counters, deploy a
-   clock. Control still loses to fast aggro on LEA (White Weenie 100%).
-2. **GA**: evolve deck ratios/colour harder; run the evolution loop to
-   convergence and report format balance.
-3. **Cards**: fill ABU toward ~295 (niche remainders); UntapTarget
-   (Twiddle).
-4. **Splash refinement**: heavier splash mana; smarter dual selection.
+## The one lesson to keep from the LIR campaign
 
-Not: deckbuilding basics (done), mulligan strategy (intentionally static).
-
----
-
-## Paused workstreams (resolved / on hold)
-
-- **FontExplorer / TrueTypeWriter / GuiOS** (see
-  `reek-fontexplorer-workplan.md`): TTF crash RESOLVED (CL 5846), GuiOS
-  polish RESOLVED (CL 5856). f64 GPU-kernel fix resolved. Idle.
-- **Circuits EDA** (see `reek-circuits-workplan.md`): schematic editor
-  foundation laid; mouse-click VM-input bug pending a codex-vm fix. Idle.
+`gen2 === gen3` proves DETERMINISM, not correctness -- a compiler that miscompiles
+the same way twice still reaches a byte-identical fixed point. A wrong answer needs a
+`.expected`; a wasted instruction needs a bench; neither is caught by the fixed point.

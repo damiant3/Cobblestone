@@ -58,8 +58,7 @@
 6. **FR 6**: Timely Response to Events — Codex mapping:
    `[HardRealtime]` compile-time WCET proofs guarantee bounded
    response time. Deadline miss detection via watchdog with fact
-   store logging provides auditable evidence. See
-   `docs/Designs/OS/Active/HardRealtime.md`.
+   store logging provides auditable evidence.
 7. **FR 7**: Resource Availability — Codex mapping: linear types
    guarantee no resource leaks; `[HardRealtime]` guarantees bounded
    memory (no OOM) via region-only allocation with no heap. Effect

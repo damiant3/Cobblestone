@@ -1,13 +1,23 @@
 Chapter: Board
 
- Hardware abstraction layer for IoT targets. Peripherals are linear
- resources: open them, use them, close them. The type system prevents
- leaving a bus half-configured, double-releasing a peripheral, or
- sleeping with a transaction in flight.
+ Hardware abstraction layer for IoT targets. This chapter defines the
+ configuration types and the MMIO surface. Register-level drivers live
+ in the board chapters (Stm32F4Board, Esp32C6Board, Pi4Board,
+ QemuVirtBoard, and five others).
 
- This chapter defines the effect interfaces and configuration types.
- Register-level implementations live in board-specific chapters
- (Stm32F4Board, Esp32C6Board, Pi4Board, QemuVirtBoard).
+ Touching a register is device I/O and is typed [Device.Mmio], so a
+ driver cannot read or write hardware while claiming to be pure.
+
+ Peripherals are linear resources: open them, use them, close them. The
+ type system counts every mention of a handle, so forgetting to close
+ one is a leak the compiler rejects (CDX2063), releasing one twice is
+ rejected (CDX2061), and touching one after release is rejected for the
+ same reason -- the close consumed it.
+
+ This chapter used to say all of that and mean none of it. There was no
+ linear handle, and the MMIO primitives returned zero. Both are now
+ real, and the claim is pinned by codex/test/hal-peripheral-linear and
+ the three adversarial probes beside it.
 
 Section: Pin Modes
 
@@ -118,60 +128,268 @@ Section: Board Identity
 
 Section: MMIO Primitives
 
- MMIO read/write are codegen intrinsics on bare-metal targets.
- On x86, they map to mov instructions. On ARM/RISC-V, they map
- to ldr/str with volatile ordering. These declarations provide
- the type signatures; the codegen plug emits the actual
- instructions. On the hosted (codex-vm) target, they are
- implemented via __buf-read-bytes / __buf-write-bytes against
- the memory-mapped I/O region.
+ Touching a memory-mapped register is device I/O, and it is typed as
+ such: every primitive here declares [Device.Mmio]. That row is what
+ makes a board driver's register access visible to the effect system,
+ to the capability manifest, and to the boot grant. Without it a
+ function could read and write hardware while typed pure, which is
+ precisely the hole that read-mmio's own [Device.Mmio] row and
+ errors/cap-launder-pure-mmio exist to close.
 
-  mmio-read-32 : Integer -> Integer
-  mmio-read-32 (addr) = 0
+ These are real memory-mapped accesses. read-mmio-32 / poke-mmio-32
+ emit a single aligned 32-bit load or store (mov eax, [rdi] /
+ mov [rdi], edx); read-mmio / poke-mmio are their byte-width
+ counterparts. A peripheral register is one transaction: most of these
+ MCUs REQUIRE a single aligned word access, and assembling one out of
+ four byte reads is a different transaction that on real silicon does
+ not work. That is why the 32-bit pair exists.
 
-  mmio-write-32 : Integer, Integer -> Integer
-  mmio-write-32 (addr) (value) = 0
+ They used to return zero. `mmio-read-32 (addr) = 0` was a stub, and
+ with 429 call sites across the nine board chapters it meant the entire
+ board layer read nothing and wrote nowhere -- while the tests passed,
+ because a stub always agrees with itself.
 
-  mmio-read-8 : Integer -> Integer
-  mmio-read-8 (addr) = 0
+ What a load lands on is the target's business. On real silicon it is
+ the peripheral. Under codex-vm (x86-64) a board register window inside
+ mapped RAM behaves as RAM, which gives honest read-back semantics --
+ write a value, read it back -- and is a far better simulation than a
+ constant zero. Windows in the PCI MMIO hole above 3 GB (the Pi4 at
+ 0xFE000000, the RP2040 at 0xD0000000, the Cortex-M SCB at 0xE000ED00)
+ are not backed on an x86 host; those drivers are for their own silicon
+ and belong on Renode, not on codex-vm.
 
-  mmio-write-8 : Integer, Integer -> Integer
-  mmio-write-8 (addr) (value) = 0
+  mmio-read-32 : Integer -> [Device.Mmio] Integer
+  mmio-read-32 (addr) = read-mmio-32 addr 0
+
+  mmio-write-32 : Integer, Integer -> [Device.Mmio] Integer
+  mmio-write-32 (addr) (value) = poke-mmio-32 addr 0 value
+
+  mmio-read-8 : Integer -> [Device.Mmio] Integer
+  mmio-read-8 (addr) = read-mmio addr 0
+
+  mmio-write-8 : Integer, Integer -> [Device.Mmio] Integer
+  mmio-write-8 (addr) (value) = poke-mmio addr 0 value
 
 Section: UART Polled I/O (Platform-Independent)
 
-  uart-poll-send-byte : Integer, Integer -> Integer
+  uart-poll-send-byte : Integer, Integer -> [Device.Mmio] Integer
   uart-poll-send-byte (uart-data-reg) (byte) =
    mmio-write-8 uart-data-reg byte
 
-  uart-poll-send-bytes : Integer, List Integer, Integer, Integer -> Integer
+  uart-poll-send-bytes : Integer, List Integer, Integer, Integer -> [Device.Mmio] Integer
   uart-poll-send-bytes (uart-data-reg) (bytes) (i) (len) =
    if i >= len then 0
-   else let w = uart-poll-send-byte uart-data-reg (list-at bytes i)
-   in uart-poll-send-bytes uart-data-reg bytes (i + 1) len
+   else act
+    w <- uart-poll-send-byte uart-data-reg (list-at bytes i)
+    uart-poll-send-bytes uart-data-reg bytes (i + 1) len
+   end
 
-  uart-poll-send-text : Integer, Text, Integer, Integer -> Integer
+  uart-poll-send-text : Integer, Text, Integer, Integer -> [Device.Mmio] Integer
   uart-poll-send-text (uart-data-reg) (text) (i) (len) =
    if i >= len then 0
    else let c = char-code (char-at text i)
-   in let w = uart-poll-send-byte uart-data-reg c
-   in uart-poll-send-text uart-data-reg text (i + 1) len
+   in act
+    w <- uart-poll-send-byte uart-data-reg c
+    uart-poll-send-text uart-data-reg text (i + 1) len
+   end
+
+Section: Linear Peripheral Handles
+
+ A peripheral is a resource, not a value. You open it, you use it, you
+ close it, and you do each of those exactly once. A handle that is
+ dropped leaves a bus configured and clocked with nobody owning it; a
+ handle that is released twice tears down a peripheral a second time,
+ which on real silicon can re-trigger a clock gate or strand a DMA
+ transfer mid-flight.
+
+ So the handles are `linear`. The type system counts every mention:
+ forgetting to close is CDX2063 (leak), closing twice is CDX2061
+ (double release), and using a handle after closing it is CDX2061 as
+ well, because the close consumed it.
+
+ The handle is a single-constructor variant carrying the peripheral's
+ base address, which lets an operation destructure it (one mention),
+ do its register access, and hand back a fresh handle. That thread-it-
+ through shape is what keeps the resource exactly-once while still
+ letting a caller do a sequence of writes.
+
+  UartPort =
+    | UartPort (Integer)
+
+  SpiBus =
+    | SpiBus (Integer)
+
+  uart-open : Integer, UartConfig -> [Device.Mmio] linear UartPort
+  uart-open (base) (cfg) = act
+   w <- mmio-write-32 (base + 8) (cfg.baud)
+   UartPort base
+  end
+
+  uart-send : linear UartPort, Integer -> [Device.Mmio] linear UartPort
+  uart-send (port) (byte) =
+   when port
+    is UartPort (b) -> act
+      w <- mmio-write-8 b byte
+      UartPort b
+    end
+
+  uart-close : linear UartPort -> [Device.Mmio] Integer
+  uart-close (port) =
+   when port
+    is UartPort (b) -> mmio-write-32 (b + 12) 0
+
+  spi-open : Integer, SpiConfig -> [Device.Mmio] linear SpiBus
+  spi-open (base) (cfg) = act
+   w <- mmio-write-32 base (cfg.clock-hz)
+   SpiBus base
+  end
+
+  spi-close : linear SpiBus -> [Device.Mmio] Integer
+  spi-close (bus) =
+   when bus
+    is SpiBus (b) -> mmio-write-32 b 0
+
+Section: Flash
+
+ Flash is the authority to rewrite the firmware the device boots, and it
+ is the one peripheral whose misuse does not lose a transaction but the
+ machine. So it is typed [Flash]: its own capability, with its own id in
+ the CDX manifest, not a member of the generic Device family.
+
+ It could have been spelled Device.Flash for free, and that is the trap.
+ A dotted effect answers to its base, so Device.Flash would have landed
+ in the same manifest slot the UART driver above already occupies, and a
+ signed binary would have said the same word about a program that blinks
+ an LED and a program that can overwrite its own boot image. The
+ distinction IS the capability. It is worth a table.
+
+ The row is [Flash, Device.Mmio] because both are true. Programming a
+ flash controller is register work, and declaring only [Flash] would
+ launder the register access the Mmio row exists to make visible. Flash
+ is the authority; Device.Mmio is the mechanism. A driver holding
+ Device.Mmio alone still cannot call anything here -- it has the
+ mechanism and not the authority, which is the whole point.
+
+ A bank is linear, and its lifecycle is the one the hardware demands:
+ unlock, program, lock. An unsealed bank is not a leaked handle, it is a
+ live write path into the running image, so dropping one is CDX2063 and
+ sealing it twice is CDX2061.
+
+ A page write polls the controller's busy flag under a fuel cap, and a
+ poll that runs out of fuel is a real failure -- the write did not land.
+ That failure is not thrown away: the bank counts it, and flash-seal-bank
+ reports the total, so a caller learns at seal time whether the bank it
+ just staged is sound. That is the moment OTA asks the question.
+
+ The register model is the STM32F4/L4 flash-controller shape (RM0090
+ section 3.9: KEYR at +4, SR at +12, CR at +16, unlocked by writing the
+ two key words in order), carried on a generic base exactly as the UART
+ and SPI handles above are. Its honesty has the same limit as theirs: no
+ silicon has been in the loop, and a controller with a different map
+ needs its own implementation in its board chapter. What is proven here
+ is the lifecycle and the effect gate -- which is what
+ docs/Designs/Active/IoT/OTAFirmwareUpdate.md's staging write was
+ blocked on -- and not the electrical behaviour.
+
+  FlashBank =
+    | FlashBank (Integer) (Integer)
+
+  flash-keyr-offset : Integer = 4
+  flash-sr-offset : Integer = 12
+  flash-cr-offset : Integer = 16
+
+  flash-unlock-key-1 : Integer = #45670123
+  flash-unlock-key-2 : Integer = #CDEF89AB
+
+  flash-cr-program : Integer = 1
+  flash-cr-lock : Integer = #80000000
+  flash-sr-busy : Integer = #10000
+
+  flash-poll-fuel : Integer = 100000
+
+  flash-wait-ready : Integer, Integer -> [Device.Mmio] Integer
+  flash-wait-ready (base) (fuel) =
+   if fuel <= 0 then 0 - 1
+   else act
+    sr <- mmio-read-32 (base + flash-sr-offset)
+    if bit-and sr flash-sr-busy == 0 then 0
+    else flash-wait-ready base (fuel - 1)
+   end
+
+  flash-program-bytes : Integer, List Integer, Integer, Integer -> [Device.Mmio] Integer
+  flash-program-bytes (addr) (bytes) (i) (len) =
+   if i >= len then 0
+   else act
+    w <- mmio-write-8 (addr + i) (list-at bytes i)
+    flash-program-bytes addr bytes (i + 1) len
+   end
+
+  flash-open-bank : Integer -> [Flash, Device.Mmio] linear FlashBank
+  flash-open-bank (base) = act
+   k1 <- mmio-write-32 (base + flash-keyr-offset) flash-unlock-key-1
+   k2 <- mmio-write-32 (base + flash-keyr-offset) flash-unlock-key-2
+   FlashBank base 0
+  end
+
+  flash-write-page : linear FlashBank, Integer, List Integer -> [Flash, Device.Mmio] linear FlashBank
+  flash-write-page (bank) (addr) (bytes) =
+   when bank
+    is FlashBank (b) (faults) -> act
+      pg <- mmio-write-32 (b + flash-cr-offset) flash-cr-program
+      w <- flash-program-bytes addr bytes 0 (list-length bytes)
+      r <- flash-wait-ready b flash-poll-fuel
+      idle <- mmio-write-32 (b + flash-cr-offset) 0
+      FlashBank b (if r == 0 then faults else faults + 1)
+    end
+
+  flash-seal-bank : linear FlashBank -> [Flash, Device.Mmio] Integer
+  flash-seal-bank (bank) =
+   when bank
+    is FlashBank (b) (faults) -> act
+      lk <- mmio-write-32 (b + flash-cr-offset) flash-cr-lock
+      if faults == 0 then 0 else 0 - faults
+    end
+
+ One aligned 32-bit program, and the reason it exists is atomicity.
+ flash-write-page walks its payload a byte at a time, which is right for
+ an image and wrong for a commit point: a power loss halfway through four
+ byte-writes leaves a word that is neither the old value nor the new one.
+ An OTA boot record's candidate flag is exactly that commit point --
+ OTAFirmwareUpdate.md requires it be a single write, because the device
+ must wake up having either fully accepted the candidate or never heard
+ of it, with no third state. On the real parts this is one option-byte
+ program on STM32 and one otadata entry on ESP32-C6.
+
+ A caller that needs a word to land or not land uses this. A caller
+ writing an image uses flash-write-page.
+
+  flash-write-word : linear FlashBank, Integer, Integer -> [Flash, Device.Mmio] linear FlashBank
+  flash-write-word (bank) (addr) (value) =
+   when bank
+    is FlashBank (b) (faults) -> act
+      pg <- mmio-write-32 (b + flash-cr-offset) flash-cr-program
+      w <- mmio-write-32 addr value
+      r <- flash-wait-ready b flash-poll-fuel
+      idle <- mmio-write-32 (b + flash-cr-offset) 0
+      FlashBank b (if r == 0 then faults else faults + 1)
+    end
 
 Section: GPIO Helpers
 
-  gpio-set : Integer, Integer -> Integer
+  gpio-set : Integer, Integer -> [Device.Mmio] Integer
   gpio-set (gpio-bsrr-reg) (pin) =
    mmio-write-32 gpio-bsrr-reg (bit-shl 1 pin)
 
-  gpio-clear : Integer, Integer -> Integer
+  gpio-clear : Integer, Integer -> [Device.Mmio] Integer
   gpio-clear (gpio-bsrr-reg) (pin) =
    mmio-write-32 gpio-bsrr-reg (bit-shl 1 (pin + 16))
 
-  gpio-toggle : Integer, Integer, Integer -> Integer
-  gpio-toggle (gpio-odr-reg) (gpio-bsrr-reg) (pin) =
-   let current = mmio-read-32 gpio-odr-reg
-   in if bit-and current (bit-shl 1 pin) == 0
+  gpio-toggle : Integer, Integer, Integer -> [Device.Mmio] Integer
+  gpio-toggle (gpio-odr-reg) (gpio-bsrr-reg) (pin) = act
+   current <- mmio-read-32 gpio-odr-reg
+   if bit-and current (bit-shl 1 pin) == 0
     then gpio-set gpio-bsrr-reg pin
     else gpio-clear gpio-bsrr-reg pin
+  end
 
 Page 1

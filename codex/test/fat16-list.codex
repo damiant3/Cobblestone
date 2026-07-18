@@ -1,0 +1,49 @@
+Chapter: Fat16List
+  cites Foreword chapter Fat16
+
+ A listing with no disk attached returns the empty list, so a correct
+ implementation and a broken one are indistinguishable without a disk. This
+ test attaches one: fat16-list.disk is a GPT image whose FAT16 ESP holds
+ CODEX.CDX in the root and BOOTX64.EFI inside EFI/BOOT, so it pins the
+ root listing, the subdirectory walk, the file/directory split and the
+ extension filter against bytes that are really there.
+
+ It also pins the two answers that were wrong. file-exists returned False
+ for every path on every disk, because it guarded on block-sector-count,
+ which reads 0 on a disk that is attached and reads perfectly. And the
+ guard it replaces cannot simply be dropped: with no disk the boot record
+ parses out of zeroes, bytes-per-sector is 0, and the root-directory size
+ divides by it. fat16-init is total now and the volume itself says whether
+ it is usable.
+
+ We say:
+
+Section: Reporting
+
+  show-list : Text, List Text, Integer, Integer -> [Console] Nothing
+  show-list (label) (xs) (i) (n) =
+    if i >= n then act print-line-uni (label & " end") end
+    else act
+      print-line-uni (label & " " & list-at xs i)
+      show-list label xs (i + 1) n
+    end
+
+Section: Entry
+
+  opening : [Console, Device.Block] Nothing
+  opening = act
+    hit <- file-exists "CODEX.CDX"
+    print-line-uni ("exists-present " & show hit)
+    miss <- file-exists "NOPE.XXX"
+    print-line-uni ("exists-absent " & show miss)
+    dirs <- list-directories ""
+    show-list "rootdir" dirs 0 (list-length dirs)
+    files <- list-files "" ""
+    show-list "rootfile" files 0 (list-length files)
+    boot <- list-files "EFI/BOOT" ""
+    show-list "bootfile" boot 0 (list-length boot)
+    cdx <- list-files "" ".CDX"
+    show-list "extfilter" cdx 0 (list-length cdx)
+    nope <- list-files "" ".ZZZ"
+    show-list "extnomatch" nope 0 (list-length nope)
+  end

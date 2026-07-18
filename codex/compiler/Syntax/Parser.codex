@@ -1,7 +1,4 @@
 Chapter: Parser
-  cites Codex chapter Text
-  cites Codex chapter Characters
-  cites Codex chapter Lists
 
  The parser transforms a flat token list into a concrete syntax tree.
 
@@ -772,7 +769,9 @@ Section: Document Parsing
    in let (imp-list, imp-st) = parse-citations st2 "" []
    in let doc = parse-top-level [] [] [] imp-list "" [] [] [] [] imp-st
    in let ci = scan-class-instance-defs (make-parse-state (st.tokens) "") [] []
-   in __record-set (__record-set doc "class-defs" (ci.class-defs)) "instance-defs" (ci.instance-defs)
+   in let pag-errs = check-pagination (scan-chapter-pages (make-parse-state (st.tokens) "") [])
+   in let doc2 = __record-set (__record-set doc "class-defs" (ci.class-defs)) "instance-defs" (ci.instance-defs)
+   in __record-set doc2 "parse-bag" (add-bag-diags (doc2.parse-bag) pag-errs 0 (list-length pag-errs))
 
   deck-copy-text : Text -> Text
   deck-copy-text (t) =
@@ -799,16 +798,204 @@ Section: Document Parsing
            quire = quire-tok,
            chapter-name = cite-title,
            selected-names = sel-names,
-           citing-chapter = citing
+           citing-chapter = citing,
+           decl-kind = decl-cite,
+           content-hash = "",
+           trust-floor = 0
           })))
      else let st6 = skip-newlines st5
      in parse-citations st6 citing (__linked-list-push acc (deck-record (CitesDecl {
           quire = quire-tok,
           chapter-name = cite-title,
           selected-names = [],
-          citing-chapter = citing
+          citing-chapter = citing,
+          decl-kind = decl-cite,
+          content-hash = "",
+          trust-floor = 0
          })))
     else (deck-record (__linked-list-to-list acc), st)
+
+Section: Quotations
+
+ A quotation binds a local name to a definition named only by the digest
+ of its content. The word joining the two is an ordinary word, not a
+ keyword: the language is full of lists named as, including in this
+ compiler, in the foreword, and in the reverse-reverse proof. It needs
+ no protection, because the declaration it sits in has already been
+ opened unambiguously.
+
+ The digest arrives as a text literal, whose token text still carries
+ its quotation marks; the body is what lies between them.
+
+  quote-body-text : Token -> Text
+  quote-body-text (tok) =
+   let n = tok.length
+   in if n < 2 then ""
+      else deck-record (substring (tok.source) (tok.offset + 1) (n - 2))
+
+  parse-quotation : ParseState, Text -> (CitesDecl, ParseState)
+  parse-quotation (st) (citing) =
+   let qtok = current st
+   in let st1 = advance st
+   in let hash-tok = current st1
+   in let st2 = advance st1
+   in let st3 = if is-ident (current-kind st2) then advance st2 else st2
+   in let name-tok = current st3
+   in let st4 = skip-newlines (advance st3)
+   in (deck-record (CitesDecl {
+        quire = qtok,
+        chapter-name = deck-copy-text (token-text name-tok),
+        selected-names = [],
+        citing-chapter = citing,
+        decl-kind = decl-quote,
+        content-hash = quote-body-text hash-tok,
+        trust-floor = 0
+       }), st4)
+
+ A trust floor sets the threshold for the whole chapter. It is carried
+ through the header as a declaration like any other and sorted out at
+ the end, because it may be written after the quotations it governs.
+
+  parse-trusting : ParseState, Text -> (CitesDecl, ParseState)
+  parse-trusting (st) (citing) =
+   let ttok = current st
+   in let st1 = advance st
+   in if is-text-lit (current-kind st1)
+      then parse-trusting-key ttok st1 citing
+      else parse-trusting-floor ttok st1 citing
+
+ A trust FLOOR: trusting above N. The floor is the threshold every quoted
+ work's signer must clear. The above word is optional.
+
+  parse-trusting-floor : Token, ParseState, Text -> (CitesDecl, ParseState)
+  parse-trusting-floor (ttok) (st1) (citing) =
+   let st2 = if is-above-keyword (current-kind st1) then advance st1 else st1
+   in let n-tok = current st2
+   in let st3 = skip-newlines (advance st2)
+   in (deck-record (CitesDecl {
+        quire = ttok,
+        chapter-name = "",
+        selected-names = [],
+        citing-chapter = citing,
+        decl-kind = decl-trust,
+        content-hash = "",
+        trust-floor = text-to-integer (token-text n-tok)
+       }), st3)
+
+ A trusted KEY: trusting "<fingerprint>" "<public-key-hex>" <score>. The
+ fingerprint is the lookup name a signed work will claim; the public key is
+ the bytes its signature is verified against; the score is how far this
+ source trusts that key. Because the key is named here in the source rather
+ than in the offered works, a forged work signed by any other key is
+ verified against the wrong bytes and refused -- the messenger cannot
+ vouch for its own message. The two texts still carry their quotation
+ marks in the token, so the body is what quote-body-text lifts out.
+
+  parse-trusting-key : Token, ParseState, Text -> (CitesDecl, ParseState)
+  parse-trusting-key (ttok) (st1) (citing) =
+   let fp-tok = current st1
+   in let st2 = advance st1
+   in let pub-tok = current st2
+   in let st3 = advance st2
+   in let score-tok = current st3
+   in let st4 = skip-newlines (advance st3)
+   in (deck-record (CitesDecl {
+        quire = ttok,
+        chapter-name = quote-body-text fp-tok,
+        selected-names = [],
+        citing-chapter = citing,
+        decl-kind = decl-trust-key,
+        content-hash = quote-body-text pub-tok,
+        trust-floor = text-to-integer (token-text score-tok)
+       }), st4)
+
+Section: Grounds
+
+ A grounds declaration names the hardware effects a chapter is the
+ SOURCE of -- the layer where the abstraction meets the metal. Its
+ functions may perform those effects without declaring them (the
+ internal exemption, no bookkeeping); a function that DECLARES the
+ effect in its signature publishes it to out-of-kernel callers (a root).
+ The exemption is scoped to the named effects, so a chapter grounding
+ Device.Port that performs Device.Mmio is still rejected. Each named
+ effect rides the header as a decl-grounds CitesDecl carrying the effect
+ name (chapter-name) and the chapter that grounds it (citing-chapter);
+ grounds-strings collects them into the Document as "slug\neffect"
+ entries the type checker reads. See BACKLOG 1.8 and
+ docs/Designs/Active/Language/GroundsBoundary.md. A dotted effect
+ (Device.Mmio) is read base-dot-member, the same shape parse-effect-names
+ reads inside a row.
+
+  parse-grounds : Token, ParseState, Text, LinkedList CitesDecl -> (List CitesDecl, ParseState)
+  parse-grounds (gtok) (st) (citing) (acc) =
+   if is-type-ident (current-kind st) | is-ident (current-kind st) then
+    let tok = current st
+    in let st2 = advance st
+    in if is-dot (current-kind st2) then
+        let st3 = advance st2
+        in let sub = current st3
+        in parse-grounds gtok (advance st3) citing (__linked-list-push acc (deck-record (CitesDecl {
+             quire = gtok,
+             chapter-name = deck-copy-text (token-text tok & "." & token-text sub),
+             selected-names = [],
+             citing-chapter = citing,
+             decl-kind = decl-grounds,
+             content-hash = "",
+             trust-floor = 0
+            })))
+       else parse-grounds gtok st2 citing (__linked-list-push acc (deck-record (CitesDecl {
+             quire = gtok,
+             chapter-name = deck-copy-text (token-text tok),
+             selected-names = [],
+             citing-chapter = citing,
+             decl-kind = decl-grounds,
+             content-hash = "",
+             trust-floor = 0
+            })))
+   else if is-comma (current-kind st) then parse-grounds gtok (advance st) citing acc
+   else (deck-record (__linked-list-to-list acc), skip-newlines st)
+
+  grounds-strings : List CitesDecl, Integer, Integer, List Text -> List Text
+  grounds-strings (ds) (i) (len) (acc) =
+   if i >= len then acc
+   else let d = list-at ds i
+   in if d.decl-kind == decl-grounds
+      then grounds-strings ds (i + 1) len (list-push acc (deck-record ((d.citing-chapter) & "\n" & (d.chapter-name))))
+      else grounds-strings ds (i + 1) len acc
+
+Section: Sorting Out The Header
+
+ The parser accumulates cites, quotes and trust floors into one list as
+ it walks the header. These three take it apart again once the whole
+ chapter has been read.
+
+  filter-decl-kind : List CitesDecl, Integer, Integer, Integer, List CitesDecl -> List CitesDecl
+  filter-decl-kind (ds) (want) (i) (len) (acc) =
+   if i >= len then acc
+   else let d = list-at ds i
+   in if d.decl-kind == want
+      then filter-decl-kind ds want (i + 1) len (list-push acc d)
+      else filter-decl-kind ds want (i + 1) len acc
+
+ A chapter declaring more than one floor gets the last one it wrote. A
+ chapter declaring none is stamped with the negative sentinel the caller
+ seeds, so the quotation gate can tell an absent floor from a declared
+ floor of zero and refuse the former.
+
+  header-trust-floor : List CitesDecl, Integer, Integer, Integer -> Integer
+  header-trust-floor (ds) (i) (len) (acc) =
+   if i >= len then acc
+   else let d = list-at ds i
+   in if d.decl-kind == decl-trust
+      then header-trust-floor ds (i + 1) len (d.trust-floor)
+      else header-trust-floor ds (i + 1) len acc
+
+  stamp-trust-floor : List CitesDecl, Integer, Integer, Integer, List CitesDecl -> List CitesDecl
+  stamp-trust-floor (qs) (floor) (i) (len) (acc) =
+   if i >= len then acc
+   else let q = list-at qs i
+   in let stamped = deck-record (__record-set q "trust-floor" floor)
+   in stamp-trust-floor qs floor (i + 1) len (list-push acc stamped)
 
   parse-selected-names : ParseState, LinkedList Token -> (List Token, ParseState)
   parse-selected-names (st) (acc) =
@@ -837,6 +1024,121 @@ Section: Document Parsing
             else False
          else False
     else False
+
+Section: Chapter Pagination
+
+ A chapter may span several files. Each file is a PAGE, and says so:
+ `Page 3 of 13`. That is why a repeated `Chapter:` name is not an error
+ -- the X86-64 code generator is one chapter across thirteen files, and
+ the parser is right to merge them.
+
+ But nothing checked the markers, and they drifted. The X86-64 chapter
+ grew from ten files to thirteen; the three new ones never got a marker
+ and M stayed at 10. Six of the seven multi-file chapters in the tree
+ were coherent; that one was not, and no gate could tell.
+
+ The cost of not checking is not untidiness. While a bare repeat is
+ legal, an ACCIDENTAL duplicate chapter name is indistinguishable from
+ a deliberate page: two chapters called Hamt in one quire merge under
+ one slug, a name defined in both collides or shadows, and the program
+ compiles and runs meaning something neither file said. Coherent
+ pagination is what tells the two apart -- a real page declares itself
+ one of M, and an accident does not.
+
+ So: a chapter that appears once needs nothing. A chapter that appears
+ k > 1 times must have, on every page, `Page N of M` with M == k and
+ the N distinct. Anything else is CDX3004.
+
+  PageOcc = record {
+   po-chapter : Text,
+   po-n : Integer,
+   po-m : Integer,
+   po-span : SourceSpan
+  }
+
+ The marker is `Page` `N` [`of` `M`]. is-page-marker has already
+ established the `Page` and the N, so the M is a lookahead past them:
+ the token after N is the lowercase identifier `of`, and the one after
+ that is the count. A page with no `of` reports M as 0, which is what
+ the k > 1 rule rejects.
+
+  page-marker-n : ParseState -> Integer
+  page-marker-n (st) = text-to-integer (token-text (current (advance st)))
+
+  page-marker-m : ParseState -> Integer
+  page-marker-m (st) =
+   let st2 = advance (advance st)
+   in if is-ident (current-kind st2) then
+       if (token-text (current st2)) == "of" then text-to-integer (token-text (current (advance st2)))
+       else 0
+      else 0
+
+  set-last-page : List PageOcc, Integer, Integer -> List PageOcc
+  set-last-page (occs) (n) (m) =
+   let len = list-length occs
+   in if len == 0 then occs
+   else let last = list-at occs (len - 1)
+   in list-set-at occs (len - 1) (deck-record (PageOcc {
+    po-chapter = last.po-chapter,
+    po-n = n,
+    po-m = m,
+    po-span = last.po-span
+   }))
+
+  scan-chapter-pages : ParseState, List PageOcc -> List PageOcc
+  scan-chapter-pages (st) (acc) =
+   if is-done st then acc
+   else if is-chapter-header st then
+    let tok = current st
+    in let title = extract-header-title st
+    in scan-chapter-pages (skip-to-next-line st) (list-push acc (deck-record (PageOcc {
+     po-chapter = title,
+     po-n = 0,
+     po-m = 0,
+     po-span = token-to-span tok
+    })))
+   else if is-page-marker st then
+    let n = page-marker-n st
+    in let m = page-marker-m st
+    in scan-chapter-pages (skip-to-next-line st) (set-last-page acc n m)
+   else scan-chapter-pages (advance st) acc
+
+  count-chapter-occs : List PageOcc, Text, Integer, Integer, Integer -> Integer
+  count-chapter-occs (occs) (name) (i) (len) (acc) =
+   if i == len then acc
+   else if (list-at occs i).po-chapter == name then count-chapter-occs occs name (i + 1) len (acc + 1)
+   else count-chapter-occs occs name (i + 1) len acc
+
+  count-chapter-page-n : List PageOcc, Text, Integer, Integer, Integer, Integer -> Integer
+  count-chapter-page-n (occs) (name) (n) (i) (len) (acc) =
+   if i == len then acc
+   else let o = list-at occs i
+   in if o.po-chapter == name then
+       if o.po-n == n then count-chapter-page-n occs name n (i + 1) len (acc + 1)
+       else count-chapter-page-n occs name n (i + 1) len acc
+      else count-chapter-page-n occs name n (i + 1) len acc
+
+  check-pagination : List PageOcc -> List Diagnostic
+  check-pagination (occs) = check-pagination-loop occs 0 (list-length occs) []
+
+  check-pagination-loop : List PageOcc, Integer, Integer, List Diagnostic -> List Diagnostic
+  check-pagination-loop (occs) (i) (len) (errs) =
+   if i == len then errs
+   else let o = list-at occs i
+   in let k = count-chapter-occs occs (o.po-chapter) 0 len 0
+   in if k <= 1 then check-pagination-loop occs (i + 1) len errs
+      else if o.po-m == 0
+       then check-pagination-loop occs (i + 1) len (errs & [make-error cdx-chapter-pagination ("Chapter '" & (o.po-chapter) & "' spans " & show k & " files, but this page carries no 'Page N of M' marker. Number the pages, or an accidental duplicate chapter name is indistinguishable from a deliberate page and the two merge silently.") (o.po-span)])
+      else if o.po-m /= k
+       then check-pagination-loop occs (i + 1) len (errs & [make-error cdx-chapter-pagination ("Chapter '" & (o.po-chapter) & "' spans " & show k & " files but this page declares 'of " & show (o.po-m) & "'. The declared page count must equal the number of files the chapter spans.") (o.po-span)])
+      else if count-chapter-page-n occs (o.po-chapter) (o.po-n) 0 len 0 > 1
+       then check-pagination-loop occs (i + 1) len (errs & [make-error cdx-chapter-pagination ("Chapter '" & (o.po-chapter) & "' has two pages numbered " & show (o.po-n) & ". Each page of a chapter needs a distinct number.") (o.po-span)])
+      else check-pagination-loop occs (i + 1) len errs
+
+  add-bag-diags : DiagnosticBag, List Diagnostic, Integer, Integer -> DiagnosticBag
+  add-bag-diags (bag) (ds) (i) (len) =
+   if i == len then bag
+   else add-bag-diags (bag-add bag (list-at ds i)) ds (i + 1) len
 
   is-page-number : TokenKind -> Boolean
   is-page-number (k) =
@@ -1020,13 +1322,19 @@ Section: Document Parsing
   parse-top-level : LinkedList Def, LinkedList TypeDef, LinkedList EffectDef, List CitesDecl, Text, LinkedList Text, LinkedList Text, LinkedList ProseBlock, LinkedList AnnotationNode, ParseState -> Document
   parse-top-level (defs) (type-defs) (effect-defs) (imports) (ch-title) (sec-titles) (prose) (blocks) (anns) (st) =
    if is-done st then let prose-text = deck-record (text-concat-list (deck-record (__linked-list-to-list prose)))
+    in let hdr-len = list-length imports
+    in let floor = header-trust-floor imports 0 hdr-len (-1)
+    in let raw-quotes = filter-decl-kind imports decl-quote 0 hdr-len []
     in deck-record (Document {
     defs = deck-record (__linked-list-to-list defs),
     type-defs = deck-record (__linked-list-to-list type-defs),
     effect-defs = deck-record (__linked-list-to-list effect-defs),
     class-defs = [],
     instance-defs = [],
-    citations = imports,
+    citations = deck-record (filter-decl-kind imports decl-cite 0 hdr-len []),
+    quotations = deck-record (stamp-trust-floor raw-quotes floor 0 (list-length raw-quotes) []),
+    trust-keys = deck-record (filter-decl-kind imports decl-trust-key 0 hdr-len []),
+    ground-effects = deck-record (grounds-strings imports 0 hdr-len []),
     chapter-title = ch-title,
     section-titles = deck-record (__linked-list-to-list sec-titles),
     prose = prose-text,
@@ -1043,6 +1351,12 @@ Section: Document Parsing
    else if is-page-marker st then parse-top-level defs type-defs effect-defs imports ch-title sec-titles prose blocks anns (skip-to-next-line st)
    else if is-cites-keyword (current-kind st) then let (cite-imports, cite-st) = parse-citations st ch-title []
      in parse-top-level defs type-defs effect-defs (deck-record (imports & cite-imports)) ch-title sec-titles prose blocks anns cite-st
+   else if is-quotes-keyword (current-kind st) then let (q, q-st) = parse-quotation st ch-title
+     in parse-top-level defs type-defs effect-defs (deck-record (imports & [q])) ch-title sec-titles prose blocks anns q-st
+   else if is-trusting-keyword (current-kind st) then let (t, t-st) = parse-trusting st ch-title
+     in parse-top-level defs type-defs effect-defs (deck-record (imports & [t])) ch-title sec-titles prose blocks anns t-st
+   else if is-grounds-keyword (current-kind st) then let (g, g-st) = parse-grounds (current st) (advance st) ch-title []
+     in parse-top-level defs type-defs effect-defs (deck-record (imports & g)) ch-title sec-titles prose blocks anns g-st
    else if is-effect-keyword (current-kind st) then parse-top-level-effect defs type-defs effect-defs imports ch-title sec-titles prose blocks anns st
    else if is-class-keyword (current-kind st) then let st-c1 = advance st
     in let st-c2 = advance st-c1
@@ -1416,6 +1730,7 @@ Section: Header Scanning (streaming)
    else if is-page-marker st then scan-top-level headers type-defs effect-defs imports cur-chap ch-title sec-titles (skip-to-next-line st)
    else if is-cites-keyword (current-kind st) then let (cite-imports, cite-st) = parse-citations st cur-chap []
      in scan-top-level headers type-defs effect-defs (deck-record (imports & cite-imports)) cur-chap ch-title sec-titles cite-st
+   else if is-quotes-keyword (current-kind st) | is-trusting-keyword (current-kind st) | is-grounds-keyword (current-kind st) then scan-top-level headers type-defs effect-defs imports cur-chap ch-title sec-titles (skip-to-next-line st)
    else if is-effect-keyword (current-kind st) then scan-top-level-effect headers type-defs effect-defs imports cur-chap ch-title sec-titles st
    else if is-class-keyword (current-kind st) then let st-c1 = advance st
     in let st-c2 = advance st-c1

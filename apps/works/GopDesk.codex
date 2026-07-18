@@ -1,0 +1,244 @@
+Chapter: GopDesk
+  cites Works chapter GopDraw
+  cites Works chapter GopComposite
+  cites Works chapter GopFont
+  cites Works chapter GopFat16
+  cites Works chapter GopFiles
+  cites Works chapter GopUsbKbd
+  cites Works chapter GopUsbMouse
+  cites Kernel chapter BitmapFont
+  cites UI chapter Widget
+  cites UI chapter Theme
+  cites UI chapter Layout
+  cites UI chapter Event
+
+ The desktop shell frame on the real runtime -- H4's first rung. The
+ guios desktop proved a 19-app shell in the emulator, but it leans on
+ codex-vm devices no real machine has: a host-side triangle rasterizer
+ at MMIO 0xBE000000 with doorbell ports 0x400-0x402, absolute mouse
+ coordinates synthesized on ports 0xE1-0xE4, and frame pacing by
+ port-224 VM exits. This chapter is the frame those apps will land on,
+ built only from what the Option A runtime actually provides: the GOP
+ framebuffer from the handoff cells, keyboard and mouse from the H2
+ USB stack (or PS/2 through the same mailbox), the PIT tick cell for
+ pacing, and the CMOS RTC for wall-clock time.
+
+ There is no frame loop running at a made-up rate. The desktop is
+ event-driven: the loop polls the keyboard mailbox and the mouse pump
+ -- both allocation-free when idle -- and repaints exactly what an
+ event dirtied. The clock redraws when the tick cell says a second
+ has passed. A machine showing an idle desktop executes a poll loop
+ that allocates nothing and writes nothing.
+
+ We say:
+
+Section: Palette and Layout
+
+  dk-col-wall : Integer = #16213E
+  dk-col-task : Integer = #0D1526
+  dk-col-win : Integer = #223055
+  dk-col-title : Integer = #2E5C8A
+  dk-col-text : Integer = #909CB0
+  dk-col-bright : Integer = #FFFFFF
+  dk-col-green : Integer = #00FF00
+
+  dk-task-h : Integer = 28
+  dk-win-w : Integer = 360
+  dk-win-h : Integer = 160
+  dk-title-h : Integer = 20
+
+  dk-win-x : Integer, Integer -> Integer
+  dk-win-x (w) (s) = (w - dk-win-w * s) / 2
+
+  dk-win-y : Integer, Integer -> Integer
+  dk-win-y (h) (s) = (h - dk-task-h * s - dk-win-h * s) / 2
+
+Section: RTC
+
+ The CMOS RTC answers on ports 0x70/0x71 on every PC, virtual or
+ real -- no VM convenience involved. Registers 0, 2, 4 are seconds,
+ minutes, hours, BCD-encoded.
+
+  rtc-read : Integer -> [Device.Port] Integer
+  rtc-read (reg) = act
+    w <- port-out-byte 112 reg
+    port-in-byte 113
+  end
+
+  dk-bcd : Integer -> Integer
+  dk-bcd (n) = (n / 16) * 10 + int-mod n 16
+
+  dk-pad2 : Integer -> Text
+  dk-pad2 (n) = if n < 10 then "0" & show n else show n
+
+Section: Chrome
+
+ The shell chrome built with the real widget system -- the same
+ shapes GuiShell's shell-build-root produces: a sidebar column of app
+ buttons pinned 160 wide, and a right-hand column of flexible content
+ over a 24-pixel taskbar row. The compositor lays it out against the
+ real panel rectangle and paints it in software; the buttons become
+ live in a later rung.
+
+ A panel is born flexible (wn-flex 1); chrome that owns a fixed edge
+ must say so, or the row splits the panel with its flexible sibling.
+
+  desk-sidebar : Integer -> WidgetNode
+  desk-sidebar (dummy) =
+    widget-set-flex (widget-set-min (widget-panel "sidebar" DirColumn 1 [widget-label "brand" "CODEX", widget-button "files" "Files", widget-button "editor" "Editor", widget-button "terminal" "Terminal", widget-button "monitor" "Monitor", widget-button "settings" "Settings"]) 160 0) 0
+
+  desk-taskbar : Integer -> WidgetNode
+  desk-taskbar (dummy) =
+    widget-set-flex (widget-set-min (widget-panel "taskbar" DirRow 4 [widget-label "task-brand" "CODEX", widget-set-flex (widget-label "task-spacer" "") 1]) 0 24) 0
+
+  desk-chrome : Integer -> WidgetNode
+  desk-chrome (dummy) =
+    widget-panel "root" DirRow 0 [desk-sidebar 0, widget-set-flex (widget-panel "right" DirColumn 0 [widget-set-flex (widget-panel "content" DirColumn 0 []) 1, desk-taskbar 0]) 1]
+
+Section: Drawing
+
+ Body text prefers the TrueType font read off the stick's own ESP;
+ without one the CBF bitmap font stands in, and a status line names
+ which is on the glass.
+
+  desk-line : Integer, Integer, Integer, CbfFont, Integer, GopFont, Integer, Integer, Text, Integer -> Integer
+  desk-line (base) (stride) (h) (font) (s) (tf) (x) (y) (t) (fg) =
+    if tf.gf-ok then gfont-text tf base stride h x y t fg
+    else gop-draw-text base stride font x y t fg s 0
+
+  desk-window : Integer, Integer, Integer, Integer, CbfFont, Integer, GopFont -> Integer
+  desk-window (base) (w) (h) (stride) (font) (s) (tf) =
+    let wx = dk-win-x w s
+    in let wy = dk-win-y h s
+    in let body = gop-fill-rect base stride wx wy (dk-win-w * s) (dk-win-h * s) dk-col-win
+    in let title = gop-fill-rect base stride wx wy (dk-win-w * s) (dk-title-h * s) dk-col-title
+    in let cap = gop-draw-text base stride font (wx + 6 * s) (wy + 2 * s) "Welcome" dk-col-bright s 0
+    in let xbox = gop-draw-text base stride font (wx + dk-win-w * s - 14 * s) (wy + 2 * s) "x" dk-col-bright s 0
+    in let l1 = desk-line base stride h font s tf (wx + 10 * s) (wy + 32 * s) "The Codex desktop frame on the bare runtime." dk-col-text
+    in let l2 = desk-line base stride h font s tf (wx + 10 * s) (wy + 52 * s) "Input arrives over USB HID or PS/2; the clock" dk-col-text
+    in let l3 = desk-line base stride h font s tf (wx + 10 * s) (wy + 72 * s) "runs on PIT ticks and the CMOS RTC. No emulator" dk-col-text
+    in let l4 = desk-line base stride h font s tf (wx + 10 * s) (wy + 92 * s) "devices, no frame pacing, no font disk." dk-col-text
+    in let l5 = desk-line base stride h font s tf (wx + 10 * s) (wy + 108 * s) (if tf.gf-ok then "Font: TrueType CMUNSS.TTF from this stick's ESP." else "Font: CBF bitmap (no TTF on the ESP).") dk-col-bright
+    in desk-line base stride h font s tf (wx + 10 * s) (wy + 128 * s) "Files (or f) browses this stick. Esc returns to the menu." dk-col-green
+
+ The bounded tree comes back to the caller: it is the hit-test map
+ that makes the sidebar buttons live.
+
+  desk-draw : Integer, Integer, Integer, Integer, CbfFont, Integer, GopFont -> WidgetNode
+  desk-draw (base) (w) (h) (stride) (font) (s) (tf) =
+    let laid = comp-render base stride font (desk-chrome 0) theme-terminal w h
+    in let win = desk-window base w h stride font s tf
+    in laid
+
+ The clock sits at the right end of the widget taskbar (24 pixels,
+ bottom of the panel), painted in the taskbar's own theme colors so a
+ redraw leaves no seam.
+
+  desk-draw-clock : Integer, Integer, Integer, Integer, CbfFont, Text -> Integer
+  desk-draw-clock (base) (w) (h) (stride) (font) (t) =
+    let st = resolve-state (theme-terminal.th-panel) 0
+    in let tw = text-length t * 8
+    in let tx = w - tw - 8
+    in let ty = h - 24 + 4
+    in let bg = gop-fill-rect base stride tx ty tw 16 (st.ws-bg)
+    in gop-draw-text base stride font tx ty t (st.ws-fg) 1 0
+
+Section: Clock Gate
+
+ One RTC read per second, gated by the PIT tick cell the runtime-init
+ spine keeps counting (cell 28672, ~18 ticks per second). Between
+ seconds the gate is two peeks and a compare.
+
+  desk-clock : Integer, Integer, Integer, Integer, CbfFont, Integer -> [Device.Port] Integer
+  desk-clock (base) (w) (h) (stride) (font) (ds) = act
+    let now = peek-32 28672 0
+    in if now - peek-32 ds 8 < 18 then 0
+    else act
+      hh <- rtc-read 4
+      mm <- rtc-read 2
+      ss <- rtc-read 0
+      let st = poke-32 ds 8 now
+      in desk-draw-clock base w h stride font (dk-pad2 (dk-bcd hh) & ":" & dk-pad2 (dk-bcd mm) & ":" & dk-pad2 (dk-bcd ss))
+    end
+  end
+
+Section: Hit Testing
+
+  desk-close-hit : Integer, Integer, Integer, Integer, Integer -> Boolean
+  desk-close-hit (w) (h) (s) (mx) (my) =
+    let wx = dk-win-x w s
+    in let wy = dk-win-y h s
+    in let bx = wx + dk-win-w * s - 16 * s
+    in if mx < bx then False
+    else if mx >= wx + dk-win-w * s then False
+    else if my < wy then False
+    else if my >= wy + dk-title-h * s then False
+    else True
+
+Section: Loop
+
+ Esc or a left-click on the close box leaves the desktop and returns
+ to the caller (the boot menu). The self tail call keeps the loop
+ constant-stack; the pet flag build keeps the watchdog quiet.
+
+ Widget hit: the click point resolved against the bounded tree the
+ compositor returned. Only the Files button is live today; a click
+ on an id with no app behind it is a click on inert chrome.
+
+  desk-widget-hit : WidgetNode, Integer, Integer, Text -> Boolean
+  desk-widget-hit (root) (mx) (my) (id) =
+    when ev-hit-widget root mx my
+      is Just (wgt) -> wgt.wn-id == id
+      is None -> False
+
+ Returning from an app repaints the whole desktop. The cursor hides
+ BEFORE the repaint (restore then clear -- clearing alone bakes the
+ old cursor pixels into the next saved patch wherever the repaint
+ does not cover them) and is re-placed after.
+
+  desk-files : Integer, Integer, Integer, Integer, CbfFont, GopFont, UsbKbd, UsbMouse, Integer, Integer -> [Device.Port] Integer
+  desk-files (base) (w) (h) (stride) (font) (tf) (kbd) (mouse) (ds) (cs) = act
+    r <- gfl-run base w h stride font kbd mouse cs
+    hd <- cursor-hide cs base stride
+    let root = desk-draw base w h stride font (ui-scale w) tf
+    in let c0 = if mouse.um-ok then cursor-update cs base stride w h (ui-scale w) (mouse-x mouse) (mouse-y mouse) else 0
+    in desk-loop base w h stride font tf kbd mouse ds cs root
+  end
+
+  desk-loop : Integer, Integer, Integer, Integer, CbfFont, GopFont, UsbKbd, UsbMouse, Integer, Integer, WidgetNode -> [Device.Port] Integer
+  desk-loop (base) (w) (h) (stride) (font) (tf) (kbd) (mouse) (ds) (cs) (root) = act
+    sc <- kbd-take kbd
+    ck <- desk-clock base w h stride font ds
+    let mv = mouse-pump mouse w h
+    in let cu = if mv == 1 then cursor-update cs base stride w h (ui-scale w) (mouse-x mouse) (mouse-y mouse) else 0
+    in let clicked = mv == 1 & mouse-clicked mouse
+    in let closed = clicked & desk-close-hit w h (ui-scale w) (mouse-x mouse) (mouse-y mouse)
+    in let files = if sc == 33 then True else clicked & desk-widget-hit root (mouse-x mouse) (mouse-y mouse) "files"
+    in if sc == 1 then 0
+    else if closed then 0
+    else if files then desk-files base w h stride font tf kbd mouse ds cs
+    else desk-loop base w h stride font tf kbd mouse ds cs root
+  end
+
+ The TrueType face comes off the boot medium through the same mount
+ every storage screen uses; a stick without one leaves gf-ok False
+ and the desk speaks CBF.
+
+  desk-font : Integer -> [Device.Port] GopFont
+  desk-font (dummy) = act
+    m <- gfat-mount-esp
+    if m.gm-ok == False then gfont-none
+    else gfont-load (m.gm-vol) "CMUNSS.TTF"
+  end
+
+  desk-run : Integer, Integer, Integer, Integer, CbfFont, UsbKbd, UsbMouse -> [Device.Port] Integer
+  desk-run (base) (w) (h) (stride) (font) (kbd) (mouse) = act
+    tf <- desk-font 0
+    let s = ui-scale w
+    in let ds = alloc-zeroed 64 64
+    in let cs = alloc-zeroed 2048 64
+    in let wp = mouse-warp mouse (w / 2) (h / 2)
+    in let root = desk-draw base w h stride font s tf
+    in let c0 = cursor-update cs base stride w h s (w / 2) (h / 2)
+    in desk-loop base w h stride font tf kbd mouse ds cs root
+  end

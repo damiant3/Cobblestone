@@ -20,7 +20,6 @@ $headerLiteral = ($headerBytes | ForEach-Object { $_.ToString() }) -join ','
 
 $src = @"
 Chapter: SelfVerifySeed
-  cites Codex chapter General
   cites Verify chapter CdxBinary
   cites Foreword chapter Ed25519
   cites Foreword chapter Sha256

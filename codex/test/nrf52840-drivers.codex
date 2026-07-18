@@ -7,65 +7,83 @@ Chapter: Nrf52840Drivers
  without real hardware. Task/event waits terminate immediately
  since event registers read as 0 (fuel-bounded loops).
 
+ The driver functions declare [Device.Mmio], so the tests that call them
+ declare it too. A test chapter is not on the effect-exemption list, so
+ the row the drivers carry is checked right here, at the first caller
+ outside the quire.
+
+ The BLE beacon builder and the GATT attribute tables are pure -- they
+ assemble bytes and never reach the radio -- so they are bound with plain
+ lets. If someone gives one of them a register access later, those lines
+ stop compiling.
+
 Section: Definitions
 
-  test-clock : Integer
-  test-clock =
-   let hf = nrf-clock-start-hfclk
-   in let lf = nrf-clock-start-lfclk
-   in 1
+  test-clock : [Device.Mmio] Integer
+  test-clock = act
+   hf <- nrf-clock-start-hfclk
+   lf <- (nrf-clock-start-lfclk)
+   1
+  end
 
-  test-gpio : Integer
-  test-gpio =
-   let a = nrf-gpio-set-output nrf-p0-base 13
-   in let b = nrf-gpio-set-input nrf-p0-base 4
-   in let c = nrf-gpio-set-pull nrf-p0-base 4 1
-   in let d = nrf-gpio-write nrf-p0-base 13 True
-   in let e = nrf-gpio-read nrf-p0-base 13
-   in let f = nrf-gpio-toggle nrf-p0-base 13
-   in 1
+  test-gpio : [Device.Mmio] Integer
+  test-gpio = act
+   a <- nrf-gpio-set-output nrf-p0-base 13
+   b <- nrf-gpio-set-input nrf-p0-base 4
+   c <- nrf-gpio-set-pull nrf-p0-base 4 1
+   d <- nrf-gpio-write nrf-p0-base 13 True
+   e <- nrf-gpio-read nrf-p0-base 13
+   f <- (nrf-gpio-toggle nrf-p0-base 13)
+   1
+  end
 
-  test-led : Integer
-  test-led =
-   let a = nrf-led-init
-   in let b = nrf-led-on nrf-led1-pin
-   in let c = nrf-led-off nrf-led1-pin
-   in 1
+  test-led : [Device.Mmio] Integer
+  test-led = act
+   a <- nrf-led-init
+   b <- nrf-led-on nrf-led1-pin
+   c <- (nrf-led-off nrf-led1-pin)
+   1
+  end
 
-  test-uart : Integer
-  test-uart =
-   let a = nrf-uarte-init nrf-uarte0-base 6 nrf-baud-115200
-   in let b = nrf-uarte-send-byte nrf-uarte0-base 65
-   in let c = nrf-uarte-print nrf-uarte0-base "hello"
-   in let d = nrf-uarte-println nrf-uarte0-base "world"
-   in 1
+  test-uart : [Device.Mmio] Integer
+  test-uart = act
+   a <- nrf-uarte-init nrf-uarte0-base 6 nrf-baud-115200
+   b <- nrf-uarte-send-byte nrf-uarte0-base 65
+   c <- nrf-uarte-print nrf-uarte0-base "hello"
+   d <- (nrf-uarte-println nrf-uarte0-base "world")
+   1
+  end
 
-  test-spi : Integer
-  test-spi =
-   let a = nrf-spim-init nrf-spim0-base 25 24 23
-   in let b = nrf-spim-transfer nrf-spim0-base #AA
-   in 1
+  test-spi : [Device.Mmio] Integer
+  test-spi = act
+   a <- nrf-spim-init nrf-spim0-base 25 24 23
+   b <- (nrf-spim-transfer nrf-spim0-base #AA)
+   1
+  end
 
-  test-i2c : Integer
-  test-i2c =
-   let a = nrf-twim-init nrf-twim0-base 26 27
-   in let b = nrf-twim-write-reg nrf-twim0-base #68 #6B 0
-   in let c = nrf-twim-read-reg nrf-twim0-base #68 #75
-   in 1
+  test-i2c : [Device.Mmio] Integer
+  test-i2c = act
+   a <- nrf-twim-init nrf-twim0-base 26 27
+   b <- nrf-twim-write-reg nrf-twim0-base #68 #6B 0
+   c <- (nrf-twim-read-reg nrf-twim0-base #68 #75)
+   1
+  end
 
-  test-adc : Integer
-  test-adc =
-   let a = nrf-saadc-init 0
-   in let b = nrf-saadc-read (nrf-sram-base + nrf-sram-size - 320)
-   in 1
+  test-adc : [Device.Mmio] Integer
+  test-adc = act
+   a <- nrf-saadc-init 0
+   b <- (nrf-saadc-read (nrf-sram-base + nrf-sram-size - 320))
+   1
+  end
 
-  test-radio : Integer
-  test-radio =
-   let a = nrf-radio-config-ble
-   in let b = nrf-radio-set-channel 37
-   in let c = nrf-radio-set-channel 38
-   in let d = nrf-radio-set-channel 39
-   in 1
+  test-radio : [Device.Mmio] Integer
+  test-radio = act
+   a <- nrf-radio-config-ble
+   b <- nrf-radio-set-channel 37
+   c <- nrf-radio-set-channel 38
+   d <- (nrf-radio-set-channel 39)
+   1
+  end
 
   test-ble-beacon : Integer
   test-ble-beacon =
@@ -98,18 +116,16 @@ Section: Definitions
    let a = nrf-delay-ms 1
    in 1
 
-  opening : Integer =
-   let cl = test-clock
-   in let g = test-gpio
-   in let l = test-led
-   in let u = test-uart
-   in let s = test-spi
-   in let i = test-i2c
-   in let a = test-adc
-   in let r = test-radio
-   in let b = test-ble-beacon
-   in let ga = test-gatt
-   in let d = test-delay
-   in cl + g + l + u + s + i + a + r + b + ga + d
+  opening : [Device.Mmio] Integer = act
+   cl <- test-clock
+   g <- test-gpio
+   l <- test-led
+   u <- test-uart
+   s <- test-spi
+   i <- test-i2c
+   a <- test-adc
+   r <- (test-radio)
+   cl + g + l + u + s + i + a + r + test-ble-beacon + test-gatt + test-delay
+  end
 
 Page 1

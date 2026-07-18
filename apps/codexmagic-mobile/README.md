@@ -7,8 +7,8 @@ A .NET MAUI companion app for the CodexMagic collectible card game, targeting An
 - **MobileApp** — Entry point, session resume, page routing (6 pages), bottom nav bar, event dispatch
 - **LoginPage** — Login and registration forms with two-mode toggle, posts to `/api/auth/*`, stores token in local storage
 - **HomePage** — Dashboard: player identity, creations count, quick-action buttons, logout
-- **StorePage** (CreationsPage) — Lists user's saved creations with delete and refresh
-- **CollectionPage** (GalleryPage) — Public community gallery with type filter and Remix action
+- **CreationsPage** — Lists user's saved creations with delete and refresh
+- **GalleryPage** — Public community gallery with type filter and Remix action
 - **ClanPage** — Placeholder page: static "Coming Soon" feature list
 - **ProfilePage** — Profile display, export-my-creations action, app info, sign-out
 - **MobileTheme** — Dark-gold mobile theme with larger touch targets, complete StateStyles, runtime stubs

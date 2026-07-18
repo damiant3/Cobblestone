@@ -1,0 +1,29 @@
+Chapter: SmpRiscvBoot
+
+ A secondary hart executes guest code on RISC-V, checked from inside the
+ guest. Under QEMU virt with -smp N -bios none every hart enters __start
+ at reset; hart 0 boots normally, and a hart whose mhartid is non-zero
+ branches to the AP path in the boot stub, stores 1 to the marker cell at
+ 0x80090000, and parks. That cell is written only by a core that ran our
+ guest code -- for these backends, until now, none ever had. Reading it
+ back non-zero is honest evidence a second hart is genuinely executing.
+ A test showing that some computation finished proves nothing: hart 0
+ alone can do that. This reads the cell a secondary alone can write.
+
+Section: Probe
+
+  ap-marker-addr : Integer = #80090000
+
+  poll-ap : Integer -> Integer
+  poll-ap (fuel) =
+   if fuel <= 0 then 0
+   else let v = peek-qword ap-marker-addr 0
+   in if v /= 0 then 1
+   else poll-ap (fuel - 1)
+
+  opening : [Console] Nothing
+  opening = act
+    let ran = poll-ap 100000000
+    in if ran /= 0 then print-line "an ap executed guest code"
+    else print-line "AP DID NOT RUN"
+  end

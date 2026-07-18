@@ -1,0 +1,36 @@
+Chapter: ScopeLetArmGlobal
+  cites Foreword chapter Console
+
+ BACKLOG 2.22. A `let` bound inside an `if` arm does not escape the arm,
+ so a later read of that name finds whatever was in scope all along --
+ here, a GLOBAL of a different type.
+
+ This is the direction that makes the leak visible as a REJECTION rather
+ than a miscompile. `env-bind-local` reached the caller's environment
+ through `__record-set`, which is an in-place field store returning the
+ same record, so the arm's `inner : Integer` stayed bound after the arm
+ ended and shadowed the global `inner : Text` at the read. The checker
+ then rejected this file with CDX2001 (Text vs Integer) -- a valid
+ program the emitter would have compiled correctly, refused by the type
+ checker alone.
+
+ `act-let-scope` pins the sibling rule (an act-block let DOES scope over
+ the rest of the block) and `arm-local: 23` there pins the emitter's
+ half of this one. This file pins the CHECKER's half: the two must agree
+ about the same program, and until 2.22 they did not.
+
+Section: Definitions
+
+  inner : Text
+  inner = "GLOBAL"
+
+Section: Entry
+
+  arm-scoped : Integer -> Text
+  arm-scoped (n) =
+   let w = if n > 0 then let inner = n * 10 in inner + 1 else 0
+   in inner
+
+  opening : [Console] Nothing = act
+   print-line-uni ("arm-scoped: " & arm-scoped 2)
+  end

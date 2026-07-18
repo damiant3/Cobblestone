@@ -1,0 +1,265 @@
+Chapter: GopUsbKbd
+  cites Works chapter GopXhci
+  cites Works chapter GopAhci
+  cites Works chapter GopHid
+  cites Works chapter GopKey
+  cites Foreword chapter Maybe
+
+ USB HID boot keyboard over GopXhci: the transport half of H2b. On a
+ machine with no PS/2 controller the firmware's keyboard emulation
+ dies at ExitBootServices; the keys keep arriving as 8-byte boot
+ reports on an interrupt endpoint of a USB keyboard. This chapter
+ fetches those reports and feeds them through GopHid's decoder into
+ the same one-byte mailbox the PS/2 interrupt handler fills, so
+ gk-take and every consumer above it are untouched.
+
+ The pump is a three-phase machine driven from the consumer's own
+ poll loop, one action per call: idle arms a single interrupt IN
+ transfer; armed checks the event ring without blocking; drain walks
+ the decoder one event per call until the previous report has
+ converged on the current one, then returns to idle. No transfer is
+ armed while draining, so the report buffer is stable under the
+ decoder's feet. A key struck and released entirely between two
+ reports is dropped -- exactly the mailbox discipline GopKey defends:
+ input that arrived while the machine was busy must not replay into
+ whatever screen appears next.
+
+ The event check accepts any transfer event, because this driver
+ owns the only endpoint generating them. Sharing the controller with
+ the mass-storage driver is a later concern: each of the two connect
+ paths resets the controller, so today they are alternatives, not
+ housemates.
+
+ We say:
+
+Section: Keyboard State
+
+  uk-ph-idle : Integer = 0
+  uk-ph-armed : Integer = 1
+  uk-ph-drain : Integer = 2
+
+  UsbKbd = record {
+    uk-ok : Boolean,
+    uk-host : XhciHost,
+    uk-dev : UsbDev,
+    uk-dci : Integer,
+    uk-ring : Integer,
+    uk-report : Integer,
+    uk-prev : Integer,
+    uk-state : Integer
+  }
+
+  kbd-no-kbd : UsbKbd
+  kbd-no-kbd = UsbKbd { uk-ok = False, uk-host = xhci-no-host, uk-dev = xhci-no-dev, uk-dci = 0, uk-ring = 0, uk-report = 0, uk-prev = 0, uk-state = 0 }
+
+Section: Configuration Descriptor Walk
+
+ The boot keyboard interface is class 3 (HID), subclass 1 (boot),
+ protocol 1 (keyboard); its interrupt IN endpoint follows it before
+ the next interface descriptor. A zero length byte terminates the
+ walk rather than looping forever.
+
+  kbd-cfg-total : Integer -> Integer
+  kbd-cfg-total (cfg) = bit-or (peek-byte cfg 2) (bit-shl (peek-byte cfg 3) 8)
+
+  kbd-find-interface : Integer, Integer, Integer -> Integer
+  kbd-find-interface (cfg) (off) (total) =
+    if off >= total then -1
+    else let len = peek-byte cfg off
+    in if len == 0 then -1
+    else if peek-byte cfg (off + 1) /= 4 then kbd-find-interface cfg (off + len) total
+    else if peek-byte cfg (off + 5) /= 3 then kbd-find-interface cfg (off + len) total
+    else if peek-byte cfg (off + 6) /= 1 then kbd-find-interface cfg (off + len) total
+    else if peek-byte cfg (off + 7) /= 1 then kbd-find-interface cfg (off + len) total
+    else off
+
+  kbd-find-int-in : Integer, Integer, Integer -> Integer
+  kbd-find-int-in (cfg) (off) (total) =
+    if off >= total then -1
+    else let len = peek-byte cfg off
+    in if len == 0 then -1
+    else if peek-byte cfg (off + 1) == 4 then -1
+    else if peek-byte cfg (off + 1) /= 5 then kbd-find-int-in cfg (off + len) total
+    else if bit-and (peek-byte cfg (off + 3)) 3 /= 3 then kbd-find-int-in cfg (off + len) total
+    else if bit-and (peek-byte cfg (off + 2)) 128 == 0 then kbd-find-int-in cfg (off + len) total
+    else off
+
+  kbd-ep-maxpkt : Integer, Integer -> Integer
+  kbd-ep-maxpkt (cfg) (off) = bit-or (peek-byte cfg (off + 4)) (bit-shl (peek-byte cfg (off + 5)) 8)
+
+Section: Boot Protocol
+
+ SET_PROTOCOL is a HID class request to the interface: bmRequestType
+ 33 (host-to-device, class, interface), bRequest 11, wValue 0 for the
+ boot protocol, wIndex naming the interface. Without it a keyboard
+ may speak its report-descriptor protocol, whose layout this driver
+ never parses.
+
+  usb-set-protocol : XhciHost, UsbDev, Integer, Integer -> Boolean
+  usb-set-protocol (xh) (dev) (iface) (proto) =
+    xhci-ctrl-nodata xh dev 33 11 proto iface
+
+ SET_IDLE is the companion HID class request every host issues after
+ SET_PROTOCOL: bmRequestType 33 (host-to-device, class, interface),
+ bRequest 10, wValue 0 (duration 0 = report only on change, no
+ periodic idle reports), wIndex the interface. Without it a keyboard
+ left with a nonzero idle rate streams duplicate reports on a timer
+ instead of reporting key changes. Some keyboards STALL the request;
+ a stall is not fatal, so the result is not gated on.
+
+  usb-set-idle : XhciHost, UsbDev, Integer -> Boolean
+  usb-set-idle (xh) (dev) (iface) =
+    xhci-ctrl-nodata xh dev 33 10 0 iface
+
+Section: Connect
+
+  kbd-connect : [Device.Port] UsbKbd
+  kbd-connect = act
+    xh <- xhci-connect
+    if xh.xh-ok then kbd-try-ports xh 0
+    else kbd-no-kbd
+  end
+
+ Walk the root ports for the first device carrying a boot keyboard
+ interface -- the mass-storage stick on port one is somebody else's
+ device.
+
+  kbd-try-ports : XhciHost, Integer -> UsbKbd
+  kbd-try-ports (xh) (from) =
+    let port = xhci-find-port xh from
+    in if port < 0 then kbd-no-kbd
+    else let speed = xhci-reset-port xh port
+    in if speed == 0 then kbd-try-ports xh (port + 1)
+    else let k = kbd-open-port xh port speed
+    in if k.uk-ok then k
+    else kbd-try-ports xh (port + 1)
+
+  kbd-open-port : XhciHost, Integer, Integer -> UsbKbd
+  kbd-open-port (xh) (port) (speed) =
+    let dev = xhci-open-device xh port speed
+    in if dev.ud-ok == False then kbd-no-kbd
+    else let cfg = alloc-zeroed 256 64
+    in let g = usb-get-descriptor xh dev 2 0 cfg 255
+    in if g == False then kbd-no-kbd
+    else let total = kbd-cfg-total cfg
+    in let iface = kbd-find-interface cfg 0 total
+    in if iface < 0 then kbd-no-kbd
+    else let ep = kbd-find-int-in cfg (iface + peek-byte cfg iface) total
+    in if ep < 0 then kbd-no-kbd
+    else kbd-open-endpoint xh dev (peek-byte cfg (iface + 2)) (peek-byte cfg 5) (bit-and (peek-byte cfg (ep + 2)) 15) (kbd-ep-maxpkt cfg ep) (peek-byte cfg (ep + 6))
+
+ The endpoint's service interval comes from its descriptor's
+ bInterval and the device speed, through xhci-ep-interval -- dword
+ zero of the endpoint context, the field a spec-strict controller
+ rejects as a parameter error when left zero.
+
+  kbd-open-endpoint : XhciHost, UsbDev, Integer, Integer, Integer, Integer, Integer -> UsbKbd
+  kbd-open-endpoint (xh) (dev) (iface) (cfgv) (epnum) (maxpkt) (binterval) =
+    let sc = usb-set-configuration xh dev cfgv
+    in if sc == False then kbd-no-kbd
+    else let bp = usb-set-protocol xh dev iface 0
+    in if bp == False then kbd-no-kbd
+    else let si = usb-set-idle xh dev iface
+    in let dci = epnum * 2 + 1
+    in let ring = xhci-ring-new
+    in let r0 = xhci-set-ep-ring (dev.ud-ctx) dci (xhci-ring-trbs ring) (xh.xh-ctxsz)
+    in let ictx = xhci-ictx-single dci 7 maxpkt (xhci-ring-trbs ring) (xhci-ep-interval (dev.ud-speed) binterval) (xh.xh-ctxsz) (dev.ud-ctx)
+    in let ce = xhci-configure-endpoint xh dev ictx
+    in if ce.xe-ok == False then kbd-no-kbd
+    else if ce.xe-code /= trb-cc-success then kbd-no-kbd
+    else UsbKbd { uk-ok = True, uk-host = xh, uk-dev = dev, uk-dci = dci, uk-ring = ring, uk-report = alloc-zeroed 64 64, uk-prev = alloc-zeroed 64 64, uk-state = alloc-zeroed 64 64 }
+
+Section: The Pump
+
+ One action per call, from the consumer's own poll loop. The armed
+ check is non-blocking: fuel zero means xhci-wait-event looks at the
+ event ring exactly once. A device holding the transfer NAKed until a
+ key changes state costs the loop nothing.
+
+  kbd-set-phase : UsbKbd, Integer -> Integer
+  kbd-set-phase (k) (ph) =
+    let w = poke-32 (k.uk-state) 0 ph
+    in 0
+
+  kbd-arm : UsbKbd -> Integer
+  kbd-arm (k) =
+    let w = xhci-ring-push (k.uk-ring) (k.uk-report) 0 8 (bit-or (bit-shl trb-t-normal 10) trb-flag-ioc)
+    in let db = xhci-ring-doorbell (k.uk-host) ((k.uk-dev).ud-slot) (k.uk-dci)
+    in kbd-set-phase k uk-ph-armed
+
+ The idle path must allocate NOTHING: this check runs millions of
+ times a second from a poll loop on a machine with no garbage
+ collector, and a record return is a heap allocation per call --
+ polled naively the heap climbs into the stack and __out_of_memory
+ halts the machine in seconds, which reads as a dead keyboard.
+ xhci-wait-xfer is built for exactly this seat: an integer-returning,
+ allocation-free wait that also consults the per-slot latch -- on a
+ shared host a storage wait may have already consumed this endpoint's
+ completion off the ring and latched it, and a raw ring peek would
+ miss it forever.
+
+  kbd-check : UsbKbd -> Integer
+  kbd-check (k) =
+    let code = xhci-wait-xfer (k.uk-host) ((k.uk-dev).ud-slot) 0
+    in if code == 0 then 0
+    else kbd-set-phase k uk-ph-drain
+
+ Drain hands the mailbox one scancode per call, the same overwrite
+ the PS/2 interrupt handler performs. The store is the low dword
+ only: the cell's high half is zero from boot and every ISR store is
+ zero-extended, and gk-take masks to the low byte besides. When the
+ decoder reports no remaining difference, the previous report has
+ converged and the next call re-arms.
+
+  kbd-drain : UsbKbd -> Integer
+  kbd-drain (k) =
+    let sc = hid-step (k.uk-prev) (k.uk-report)
+    in if sc == 0 then kbd-set-phase k uk-ph-idle
+    else let w = poke-32 gk-cell 0 sc
+    in sc
+
+  kbd-pump : UsbKbd -> Integer
+  kbd-pump (k) =
+    if k.uk-ok == False then 0
+    else if xhci-released 0 /= 0 then 0
+    else let ph = peek-32 (k.uk-state) 0
+    in if ph == uk-ph-armed then kbd-check k
+    else if ph == uk-ph-drain then kbd-drain k
+    else kbd-arm k
+
+Section: The Fallback
+
+ A keyboard that enumerates and stays silent is the failure this arc
+ was built around, and the only honest proof that a keyboard works is
+ a keystroke. So the boot offers one: if nothing at all arrives while
+ a screen is waiting for a key, the machine hands the controller back
+ to its firmware (GopXhci) and the firmware's legacy emulation -- the
+ SMM handler that was presenting this very keyboard as a PS/2 one
+ until the ownership handoff silenced it -- returns. Scancodes then
+ land in the kernel key cell by IRQ, and gk-take reads them through
+ the same mailbox the USB pump was filling, so every consumer above
+ here is unchanged and none of them need to know which keyboard they
+ got.
+
+ The pump above stops at the handback: the controller is no longer
+ ours, and ringing a doorbell on a device firmware has re-owned is
+ how a working machine is turned into a hung one. The guard is a
+ single cell read on the idle path, which is what this loop can
+ afford.
+
+  kbd-released : Integer -> Integer
+  kbd-released (d) = xhci-released 0
+
+  kbd-handback : Integer -> Integer
+  kbd-handback (d) = xhci-release-ownership 0
+
+ The consumer-facing read: pump once, then consume the mailbox. With
+ no USB keyboard connected the pump is a single flag test and this is
+ gk-take exactly; with one connected, USB scancodes land in the same
+ cell the PS/2 interrupt handler fills, so a consumer polling this
+ sees whichever keyboard the machine actually has.
+
+  kbd-take : UsbKbd -> Integer
+  kbd-take (k) =
+    let p = kbd-pump k
+    in gk-take 0

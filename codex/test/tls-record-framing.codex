@@ -1,0 +1,64 @@
+Chapter: TlsFramingTest
+  cites Net chapter HttpFetch
+
+ The fetch-tls receive path frames one TLS record at a time off the TCP
+ byte stream: a five-byte header whose last two bytes are the payload
+ length, so a whole record is 5 + that. This pins the split math -- the
+ part of the https path a headless battery can exercise without a server --
+ against a stream of three concatenated records of different lengths,
+ including a partial buffer that must NOT be reported ready. The live
+ socket loop around this math still needs a real server (BACKLOG 1.9 / 1.7).
+
+ We say:
+
+Section: Fixtures
+
+  rec-a : List Integer = [22, 3, 3, 0, 3, 1, 2, 3]
+  rec-b : List Integer = [23, 3, 3, 0, 2, 9, 9]
+  rec-c : List Integer = [23, 3, 3, 0, 1, 7]
+  stream : List Integer = rec-a & rec-b & rec-c
+
+Section: Helpers
+
+  tf-eq : List Integer, List Integer -> Boolean
+  tf-eq (a) (b) =
+    if list-length a /= list-length b then False else tf-eq-loop a b 0 (list-length a)
+
+  tf-eq-loop : List Integer, List Integer, Integer, Integer -> Boolean
+  tf-eq-loop (a) (b) (i) (n) =
+    if i >= n then True else if list-at a i /= list-at b i then False else tf-eq-loop a b (i + 1) n
+
+  rec-len : List Integer -> Integer
+  rec-len (buf) = 5 + (list-at buf 3 * 256 + list-at buf 4)
+
+Section: Checks
+
+  n1 : Integer = rec-len stream
+  first : List Integer = http-slice stream 0 n1
+  rest1 : List Integer = http-slice stream n1 (list-length stream - n1)
+
+  n2 : Integer = rec-len rest1
+  second : List Integer = http-slice rest1 0 n2
+  rest2 : List Integer = http-slice rest1 n2 (list-length rest1 - n2)
+
+  n3 : Integer = rec-len rest2
+  third : List Integer = http-slice rest2 0 n3
+  rest3 : List Integer = http-slice rest2 n3 (list-length rest2 - n3)
+
+  test-ready-full : Text = "framing ready-full=" & show (tls-record-ready stream)
+  test-ready-partial : Text = "framing ready-partial=" & show (tls-record-ready (http-slice stream 0 6))
+  test-first : Text = "framing first=" & show (tf-eq first rec-a)
+  test-second : Text = "framing second=" & show (tf-eq second rec-b)
+  test-third : Text = "framing third=" & show (tf-eq third rec-c)
+  test-drained : Text = "framing drained=" & show (list-length rest3)
+
+Section: Entry
+
+  opening : [Console] Nothing = act
+    print-line-uni test-ready-full
+    print-line-uni test-ready-partial
+    print-line-uni test-first
+    print-line-uni test-second
+    print-line-uni test-third
+    print-line-uni test-drained
+  end

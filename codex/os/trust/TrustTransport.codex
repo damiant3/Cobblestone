@@ -111,6 +111,10 @@ Section: Agent Message Serialization
     is MsgHandoff (h) -> tag-handoff
     is MsgAnnotate (a) -> tag-annotate
     is MsgVerdict (v) -> tag-verdict
+    is MsgSyncOffer (s) -> tag-sync-offer
+    is MsgSyncReply (s) -> tag-sync-reply
+    is MsgWorkRequest (w) -> tag-work-request
+    is MsgWorkReply (w) -> tag-work-reply
 
   encode-agent-msg-body : AgentMessage -> List Integer
   encode-agent-msg-body (m) = when m
@@ -123,6 +127,10 @@ Section: Agent Message Serialization
     is MsgHandoff (h) -> encode-handoff-body h
     is MsgAnnotate (a) -> encode-annotate-body a
     is MsgVerdict (v) -> encode-verdict-body v
+    is MsgSyncOffer (s) -> encode-sync-offer-body s
+    is MsgSyncReply (s) -> encode-sync-reply-body s
+    is MsgWorkRequest (w) -> encode-work-request-body w
+    is MsgWorkReply (w) -> encode-work-reply-body w
 
   encode-propose-body : ProposeMsg -> List Integer
   encode-propose-body (p) =
@@ -159,6 +167,26 @@ Section: Agent Message Serialization
   encode-verdict-body : VerdictMsg -> List Integer
   encode-verdict-body (v) =
     frame-encode-bytes (v.id) & frame-encode-bytes (v.from.public-key) & frame-encode-bytes (v.in-reply-to) & frame-encode-bytes (v.payload) & frame-encode-bytes (v.signature)
+
+  encode-sync-offer-body : SyncOfferMsg -> List Integer
+  encode-sync-offer-body (s) =
+    frame-encode-bytes (s.from.public-key) & frame-encode-bytes (s.payload)
+
+  encode-sync-reply-body : SyncReplyMsg -> List Integer
+  encode-sync-reply-body (s) =
+    frame-encode-bytes (s.from.public-key) & frame-encode-bytes (s.payload)
+
+ The hash rides in the reply as well as the request, so a reply stands on its own
+ rather than depending on the asker remembering what it asked. It costs 64 bytes
+ and it means a reply can be checked by anyone holding it.
+
+  encode-work-request-body : WorkRequestMsg -> List Integer
+  encode-work-request-body (w) =
+    frame-encode-bytes (w.from.public-key) & frame-encode-text (w.hash)
+
+  encode-work-reply-body : WorkReplyMsg -> List Integer
+  encode-work-reply-body (w) =
+    frame-encode-bytes (w.from.public-key) & frame-encode-text (w.hash) & frame-encode-text (w.payload)
 
 Section: Sub-Encoders
   encode-capability : Capability -> List Integer
@@ -207,7 +235,11 @@ Section: Agent Message Deserialization
     else if tag == tag-interrupt then MsgInterrupt (decode-interrupt-body body)
     else if tag == tag-handoff then MsgHandoff (decode-handoff-body body)
     else if tag == tag-annotate then MsgAnnotate (decode-annotate-body body)
-    else MsgVerdict (decode-verdict-body body)
+    else if tag == tag-verdict then MsgVerdict (decode-verdict-body body)
+    else if tag == tag-sync-offer then MsgSyncOffer (decode-sync-offer-body body)
+    else if tag == tag-sync-reply then MsgSyncReply (decode-sync-reply-body body)
+    else if tag == tag-work-request then MsgWorkRequest (decode-work-request-body body)
+    else MsgWorkReply (decode-work-reply-body body)
 
   decode-propose-body : List Integer -> ProposeMsg
   decode-propose-body (bs) =
@@ -297,6 +329,31 @@ Section: Agent Message Deserialization
     in let r4 = frame-decode-bytes bs (r3.next-offset)
     in let r5 = frame-decode-bytes bs (r4.next-offset)
     in VerdictMsg { id = r1.value, from = AgentIdentity { public-key = r2.value }, in-reply-to = r3.value, payload = r4.value, signature = r5.value }
+
+  decode-sync-offer-body : List Integer -> SyncOfferMsg
+  decode-sync-offer-body (bs) =
+    let r1 = frame-decode-bytes bs 0
+    in let r2 = frame-decode-bytes bs (r1.next-offset)
+    in SyncOfferMsg { from = AgentIdentity { public-key = r1.value }, payload = r2.value }
+
+  decode-sync-reply-body : List Integer -> SyncReplyMsg
+  decode-sync-reply-body (bs) =
+    let r1 = frame-decode-bytes bs 0
+    in let r2 = frame-decode-bytes bs (r1.next-offset)
+    in SyncReplyMsg { from = AgentIdentity { public-key = r1.value }, payload = r2.value }
+
+  decode-work-request-body : List Integer -> WorkRequestMsg
+  decode-work-request-body (bs) =
+    let r1 = frame-decode-bytes bs 0
+    in let hr = frame-decode-text bs (r1.next-offset)
+    in WorkRequestMsg { from = AgentIdentity { public-key = r1.value }, hash = hr.value }
+
+  decode-work-reply-body : List Integer -> WorkReplyMsg
+  decode-work-reply-body (bs) =
+    let r1 = frame-decode-bytes bs 0
+    in let hr = frame-decode-text bs (r1.next-offset)
+    in let pr = frame-decode-text bs (hr.next-offset)
+    in WorkReplyMsg { from = AgentIdentity { public-key = r1.value }, hash = hr.value, payload = pr.value }
 
 Section: Sub-Decoders
   CapDecodeResult = record {
@@ -403,7 +460,7 @@ Section: Send and Receive Agent Messages
   trust-feed-frame : TrustSession, List Integer -> TrustSession
   trust-feed-frame (sess) (frame) =
     let rr = transport-process-frame (sess.transport) frame
-    in TrustSession { transport = TcpTransportState { session = (rr.transport).session, recv-buf = (rr.transport).recv-buf, messages-sent = (rr.transport).messages-sent, messages-received = (rr.transport).messages-received }, peer-key = sess.peer-key, peer-trust = sess.peer-trust, authenticated = sess.authenticated, messages-exchanged = sess.messages-exchanged }
+    in TrustSession { transport = TcpTransportState { session = (rr.transport).session, recv-buf = (rr.transport).recv-buf, recv-base = (rr.transport).recv-base, recv-len = (rr.transport).recv-len, recv-cap = (rr.transport).recv-cap, messages-sent = (rr.transport).messages-sent, messages-received = (rr.transport).messages-received }, peer-key = sess.peer-key, peer-trust = sess.peer-trust, authenticated = sess.authenticated, messages-exchanged = sess.messages-exchanged }
 
 Section: Session Queries
   trust-is-authenticated : TrustSession -> Boolean

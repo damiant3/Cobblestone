@@ -81,7 +81,7 @@ This lets us:
 
 Replace the PowerShell build scripts with equivalent Codex code that
 runs inside the compiler's own boot environment. This is the 7-phase
-plan from `docs/Designs/Build/Active/Build.md`, with Phase 1 (FAT16
+plan from `docs/Designs/Active/Build/Build.md`, with Phase 1 (FAT16
 reader) already complete.
 
 Track B is the critical path to hardware sovereignty. Track A can
@@ -108,25 +108,40 @@ to document kinds 30-38.
 - Wire AnnotationStore load/save through the sidecar path
 - Wire MutationLog to append to a file (currently in-memory list)
 
-### A2: Source-as-Facts — Scanner DONE (2026-06-20)
+### A2: Source-as-Facts — scanner RETIRED, ingest reborn as cdx-store (2026-07-16)
 
-`build/scan-source-facts.ps1`: PowerShell scanner that walks the
-entire source tree, computes SHA-256 of each `.codex` file, detects
-quire from directory structure, extracts chapter from `Chapter:`
-line, and outputs a pipe-delimited manifest matching the
-SourceDefinition format from RepoProtocolPersist (kind 30).
-1270 source files across 137 quires on first run.
+The scanner shipped on 2026-06-20 and was deleted on 2026-07-16. It
+walked the tree and hashed each `.codex` file with `Get-FileHash`, which
+reads the file's bytes off the disk — its UTF-8 bytes. **Content
+addressing is over CCE bytes** (Damian, 2026-07-14): hashing is not an
+I/O function, so a work is addressed by its internal encoding, not by
+whatever the wire happened to carry. Every address the scanner emitted
+was therefore one the compiler — which reads and hashes in CCE — could
+never look up.
 
-Excludes: `old/`, `build-output/`, `test-output/`, `output-*`,
-`test-input/`, `docs/`, `Done/`. Test files included with
-`-IncludeTests`.
+The manifest it produced carried no content either, only
+`hash|path|quire|chapter`, so `SourceFactsBridge` stored definitions
+whose `sd-content` was the empty string. A quotation resolving by digest
+would have found the wrong address holding no body. The chain could not
+have worked, and nothing measured it.
 
-**Remaining A2 work:**
-- Ed25519 signing (happens in Codex, not PS1 — needs a small
-  Codex program that reads the manifest over serial, signs each
-  SourceDefinition with KeyManager, and persists to DiskFacts
-  kind 30 on an attached disk image)
-- Post-submit hook integration (run scanner after `p4 submit`)
+Retired together, all superseded by `tools/cdx-store.codex`:
+`build/scan-source-facts.ps1`, `build/post-submit-scan.ps1`, their two
+Shell-DSL generators under `codex/build/`, and
+`apps/works/SourceFactsBridge.codex`.
+
+The ingest that replaces them is `tools/cdx-store.codex`, driven by
+`build/store-source.ps1`: one named file, converted to CCE at the
+boundary, hashed over the CCE bytes, signed, and stored **with its
+content**.
+
+**Remaining A2 work** (tracked as `docs/PM/BACKLOG.md` 6.1):
+- Bulk ingest. `store-source.ps1` boots one VM per file; the whole-tree
+  sweep the scanner did in one pass has no correct equivalent yet.
+- Post-submit hook. Nothing records source facts after a `p4 submit`;
+  the hook that used to is gone because what it recorded was wrong.
+- Multi-byte source. `cdx-store` converts the single-byte range only.
+- Signing identity. `cdx-store` signs with a fixed tool key.
 
 ### A3: Annotation Workflow (Live) — DONE (2026-06-20)
 

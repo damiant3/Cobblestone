@@ -1,0 +1,247 @@
+Chapter: Poly1305
+
+ Poly1305 one-time authenticator (RFC 8439). Takes a 32-byte one-time
+ key and a message, and produces a 16-byte tag. Paired with ChaCha20
+ it forms the ChaCha20-Poly1305 AEAD; it is never to be used with a
+ key that is reused across messages, because two messages under one
+ key reveal the key.
+
+ The message is read as coefficients of a polynomial over the prime
+ field 2^130 - 5, evaluated at a secret point r, and the result is
+ masked with a secret pad s. Both r and s come from the one-time key.
+
+ Section: Field Representation explains the limbs. In short: 130 bits
+ will not fit in a machine integer, so the accumulator is carried in
+ five limbs of 26 bits. Every partial product is then at most about
+ 2^58 and stays inside a 64-bit Integer with room to spare -- which is
+ the whole reason for the 26-bit choice, and the reason the carry
+ chain below looks the way it does.
+
+ To poly1305-mac gives List Integer,
+   authenticating a message under a 32-byte one-time key, returning a 16-byte tag.
+
+ To poly1305-verify gives Boolean,
+   recomputing the tag and comparing it against a candidate in constant time.
+
+ We say:
+
+Section: Constants
+
+  poly-mask26 : Integer = #3FFFFFF
+  poly-mask32 : Integer = #FFFFFFFF
+  poly-bit26 : Integer = #4000000
+
+Section: Field Representation
+
+ The key's first 16 bytes are r, clamped per RFC 8439 section 2.5:
+ the top four bits of each 32-bit word are cleared, and the bottom two
+ bits of the upper three words. The clamp is what bounds the partial
+ products, so it is a correctness requirement and not a formality --
+ the odd-looking constants below are the clamp and the 26-bit split
+ folded into one mask each.
+
+  poly-r-limbs : List Integer -> List Integer
+  poly-r-limbs (key) =
+    let r0 = bit-and (poly-le32 key 0) #3FFFFFF
+    in let r1 = bit-and (bit-shru (poly-le32 key 3) 2) #3FFFF03
+    in let r2 = bit-and (bit-shru (poly-le32 key 6) 4) #3FFC0FF
+    in let r3 = bit-and (bit-shru (poly-le32 key 9) 6) #3F03FFF
+    in let r4 = bit-and (bit-shru (poly-le32 key 12) 8) #FFFFF
+    in [r0, r1, r2, r3, r4]
+
+Section: Message Absorption
+
+ Each 16-byte block is read as a 128-bit little-endian number with an
+ extra 1 bit set above it, then added to the accumulator. A trailing
+ partial block carries that 1 byte explicitly instead (poly-final-block
+ appends it), so its high bit is not set again here -- that is what the
+ hibit argument distinguishes, and getting it backwards produces a tag
+ that is wrong only for messages whose length is not a multiple of 16.
+
+  poly-add-block : List Integer, List Integer, Integer -> List Integer
+  poly-add-block (h) (blk) (hibit) =
+    let h0 = list-at h 0 + bit-and (poly-le32 blk 0) poly-mask26
+    in let h1 = list-at h 1 + bit-and (bit-shru (poly-le32 blk 3) 2) poly-mask26
+    in let h2 = list-at h 2 + bit-and (bit-shru (poly-le32 blk 6) 4) poly-mask26
+    in let h3 = list-at h 3 + bit-and (bit-shru (poly-le32 blk 9) 6) poly-mask26
+    in let h4 = list-at h 4 + bit-or (bit-shru (poly-le32 blk 12) 8) (bit-shl hibit 24)
+    in [h0, h1, h2, h3, h4]
+
+Section: Multiply by r
+
+ Schoolbook multiplication of the five limbs, with the reduction by
+ 2^130 = 5 folded in: any term that would land above limb 4 wraps down
+ by a factor of 5, which is what the s-values are.
+
+  poly-mul-r : List Integer, List Integer -> List Integer
+  poly-mul-r (h) (r) =
+    let h0 = list-at h 0
+    in let h1 = list-at h 1
+    in let h2 = list-at h 2
+    in let h3 = list-at h 3
+    in let h4 = list-at h 4
+    in let r0 = list-at r 0
+    in let r1 = list-at r 1
+    in let r2 = list-at r 2
+    in let r3 = list-at r 3
+    in let r4 = list-at r 4
+    in let s1 = r1 * 5
+    in let s2 = r2 * 5
+    in let s3 = r3 * 5
+    in let s4 = r4 * 5
+    in let d0 = h0 * r0 + h1 * s4 + h2 * s3 + h3 * s2 + h4 * s1
+    in let d1 = h0 * r1 + h1 * r0 + h2 * s4 + h3 * s3 + h4 * s2
+    in let d2 = h0 * r2 + h1 * r1 + h2 * r0 + h3 * s4 + h4 * s3
+    in let d3 = h0 * r3 + h1 * r2 + h2 * r1 + h3 * r0 + h4 * s4
+    in let d4 = h0 * r4 + h1 * r3 + h2 * r2 + h3 * r1 + h4 * r0
+    in poly-carry d0 d1 d2 d3 d4
+
+  poly-carry : Integer, Integer, Integer, Integer, Integer -> List Integer
+  poly-carry (d0) (d1) (d2) (d3) (d4) =
+    let c0 = bit-shru d0 26
+    in let e0 = bit-and d0 poly-mask26
+    in let t1 = d1 + c0
+    in let c1 = bit-shru t1 26
+    in let e1 = bit-and t1 poly-mask26
+    in let t2 = d2 + c1
+    in let c2 = bit-shru t2 26
+    in let e2 = bit-and t2 poly-mask26
+    in let t3 = d3 + c2
+    in let c3 = bit-shru t3 26
+    in let e3 = bit-and t3 poly-mask26
+    in let t4 = d4 + c3
+    in let c4 = bit-shru t4 26
+    in let e4 = bit-and t4 poly-mask26
+    in let f0 = e0 + c4 * 5
+    in let c5 = bit-shru f0 26
+    in [bit-and f0 poly-mask26, e1 + c5, e2, e3, e4]
+
+Section: Blocks
+
+  poly-blocks : List Integer, List Integer, List Integer, Integer, Integer -> List Integer
+  poly-blocks (r) (h) (msg) (pos) (n) =
+    if pos >= n then h
+    else if n - pos >= 16 then
+      poly-blocks r (poly-mul-r (poly-add-block h (poly-block-at msg pos) 1) r) msg (pos + 16) n
+    else poly-mul-r (poly-add-block h (poly-final-block msg pos (n - pos)) 0) r
+
+  poly-block-at : List Integer, Integer -> List Integer
+  poly-block-at (bs) (off) = poly-block-loop bs off 0 []
+
+  poly-block-loop : List Integer, Integer, Integer, List Integer -> List Integer
+  poly-block-loop (bs) (off) (i) (acc) =
+    if i >= 16 then acc
+    else poly-block-loop bs off (i + 1) (list-push acc (list-at bs (off + i)))
+
+  poly-final-block : List Integer, Integer, Integer -> List Integer
+  poly-final-block (msg) (pos) (len) = poly-fb-loop msg pos len 0 []
+
+  poly-fb-loop : List Integer, Integer, Integer, Integer, List Integer -> List Integer
+  poly-fb-loop (msg) (pos) (len) (i) (acc) =
+    if i >= 16 then acc
+    else if i < len then poly-fb-loop msg pos len (i + 1) (list-push acc (list-at msg (pos + i)))
+    else if i == len then poly-fb-loop msg pos len (i + 1) (list-push acc 1)
+    else poly-fb-loop msg pos len (i + 1) (list-push acc 0)
+
+Section: Final Reduction
+
+ The accumulator is fully carried, then reduced mod 2^130 - 5 by the
+ standard trick: compute h + 5 (which is h - p carried into the top),
+ and keep it only if it did not borrow. The selection is branch-free.
+ A comparison here would be a timing oracle on the tag, so the sign
+ bit of g4 becomes an all-ones or all-zeros mask instead.
+
+  poly-final-carry : List Integer -> List Integer
+  poly-final-carry (h) =
+    let h0 = list-at h 0
+    in let c1 = bit-shru (list-at h 1) 26
+    in let e1 = bit-and (list-at h 1) poly-mask26
+    in let t2 = list-at h 2 + c1
+    in let c2 = bit-shru t2 26
+    in let e2 = bit-and t2 poly-mask26
+    in let t3 = list-at h 3 + c2
+    in let c3 = bit-shru t3 26
+    in let e3 = bit-and t3 poly-mask26
+    in let t4 = list-at h 4 + c3
+    in let c4 = bit-shru t4 26
+    in let e4 = bit-and t4 poly-mask26
+    in let f0 = h0 + c4 * 5
+    in let c0 = bit-shru f0 26
+    in [bit-and f0 poly-mask26, e1 + c0, e2, e3, e4]
+
+  poly-reduce : List Integer -> List Integer
+  poly-reduce (h) =
+    let g0a = list-at h 0 + 5
+    in let cg0 = bit-shru g0a 26
+    in let g1a = list-at h 1 + cg0
+    in let cg1 = bit-shru g1a 26
+    in let g2a = list-at h 2 + cg1
+    in let cg2 = bit-shru g2a 26
+    in let g3a = list-at h 3 + cg2
+    in let cg3 = bit-shru g3a 26
+    in let g4 = list-at h 4 + cg3 - poly-bit26
+    in let take-g = (bit-shru g4 63) - 1
+    in let keep-h = bit-xor take-g #FFFFFFFFFFFFFFFF
+    in [poly-pick (list-at h 0) (bit-and g0a poly-mask26) take-g keep-h,
+        poly-pick (list-at h 1) (bit-and g1a poly-mask26) take-g keep-h,
+        poly-pick (list-at h 2) (bit-and g2a poly-mask26) take-g keep-h,
+        poly-pick (list-at h 3) (bit-and g3a poly-mask26) take-g keep-h,
+        poly-pick (list-at h 4) (bit-and g4 poly-mask26) take-g keep-h]
+
+  poly-pick : Integer, Integer, Integer, Integer -> Integer
+  poly-pick (hv) (gv) (take-g) (keep-h) =
+    bit-or (bit-and hv keep-h) (bit-and gv take-g)
+
+Section: Emit
+
+ The five limbs are repacked into four 32-bit words (dropping anything
+ above bit 127 -- the tag is h mod 2^128), then the secret pad s from
+ the key's upper half is added with carry.
+
+  poly-emit : List Integer, List Integer -> List Integer
+  poly-emit (h) (key) =
+    let f0 = bit-and (bit-or (list-at h 0) (bit-shl (list-at h 1) 26)) poly-mask32
+    in let f1 = bit-and (bit-or (bit-shru (list-at h 1) 6) (bit-shl (list-at h 2) 20)) poly-mask32
+    in let f2 = bit-and (bit-or (bit-shru (list-at h 2) 12) (bit-shl (list-at h 3) 14)) poly-mask32
+    in let f3 = bit-and (bit-or (bit-shru (list-at h 3) 18) (bit-shl (list-at h 4) 8)) poly-mask32
+    in let t0 = f0 + poly-le32 key 16
+    in let t1 = f1 + poly-le32 key 20 + bit-shru t0 32
+    in let t2 = f2 + poly-le32 key 24 + bit-shru t1 32
+    in let t3 = f3 + poly-le32 key 28 + bit-shru t2 32
+    in poly-le-bytes t0 & poly-le-bytes t1 & poly-le-bytes t2 & poly-le-bytes t3
+
+Section: Entry Points
+
+  poly1305-mac : List Integer, List Integer -> List Integer
+  poly1305-mac (key) (msg) =
+    let r = poly-r-limbs key
+    in let h = poly-blocks r [0, 0, 0, 0, 0] msg 0 (list-length msg)
+    in poly-emit (poly-reduce (poly-final-carry h)) key
+
+  poly1305-verify : List Integer, List Integer, List Integer -> Boolean
+  poly1305-verify (key) (msg) (tag) =
+    poly-tags-equal (poly1305-mac key msg) tag
+
+  poly-tags-equal : List Integer, List Integer -> Boolean
+  poly-tags-equal (a) (b) =
+    if list-length a /= list-length b then False
+    else poly-tags-loop a b 0 (list-length a) 0
+
+  poly-tags-loop : List Integer, List Integer, Integer, Integer, Integer -> Boolean
+  poly-tags-loop (a) (b) (i) (len) (diff) =
+    if i >= len then diff == 0
+    else poly-tags-loop a b (i + 1) len (bit-or diff (bit-xor (list-at a i) (list-at b i)))
+
+Section: Byte Conversion
+
+  poly-le32 : List Integer, Integer -> Integer
+  poly-le32 (bs) (off) =
+    let b0 = list-at bs off
+    in let b1 = bit-shl (list-at bs (off + 1)) 8
+    in let b2 = bit-shl (list-at bs (off + 2)) 16
+    in let b3 = bit-shl (list-at bs (off + 3)) 24
+    in bit-or b0 (bit-or b1 (bit-or b2 b3))
+
+  poly-le-bytes : Integer -> List Integer
+  poly-le-bytes (w) =
+    [bit-and w 255, bit-and (bit-shru w 8) 255, bit-and (bit-shru w 16) 255, bit-and (bit-shru w 24) 255]

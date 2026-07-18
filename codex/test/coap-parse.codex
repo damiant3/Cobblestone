@@ -1,0 +1,135 @@
+Chapter: CoapParseTest
+  cites Encode chapter Coap
+  cites Foreword chapter Maybe
+
+ The other half of the conversation. Until now this chapter could build a
+ CoAP request and not read a response, so a block-wise download was a
+ device shouting into a socket.
+
+ The round trip is the first assertion: a packet this chapter built is a
+ packet this chapter can read back, field for field, including a Block2
+ option carrying block 2 / more / szx 6 and a real payload. The builder
+ and the parser are written against RFC 7252 separately, so agreeing is
+ evidence.
+
+ The refusals are the rest, and they matter more. A parser that cannot
+ fail is not a parser -- it is a function that returns something. Each
+ case below is a message-format error the RFC names, and each answers
+ None rather than a half-filled record: a packet shorter than the header,
+ a version of 2, a token length of 9, an option whose value runs past the
+ end of the datagram, a payload marker with nothing behind it, and a
+ reserved option-delta nibble of 15.
+
+ The empty-payload case is the one to keep. An empty payload is spelled
+ by omitting the marker, so a bare 0xFF is a lie about length -- the
+ shape of a truncation attack.
+
+ opening returns the count of passing checks.
+
+Section: Helpers
+
+  bytes-eq : List Integer, List Integer -> Boolean
+  bytes-eq (a) (b) =
+   if list-length a /= list-length b then False
+   else bytes-eq-loop a b 0 (list-length a)
+
+  bytes-eq-loop : List Integer, List Integer, Integer, Integer -> Boolean
+  bytes-eq-loop (a) (b) (i) (len) =
+   if i >= len then True
+   else if list-at a i /= list-at b i then False
+   else bytes-eq-loop a b (i + 1) len
+
+  flag : Boolean -> Integer
+  flag (b) = if b then 1 else 0
+
+  refused : Maybe CoapMessage -> Integer
+  refused (m) =
+   when m
+    is None -> 1
+    is Just (x) -> 0
+
+Section: The Round Trip
+
+ A Block2 response: 2.05 Content, block 2, more set, szx 6, with a body.
+
+  sample : List Integer
+  sample =
+   let opts = [coap-block-option coap-opt-block2 2 1 6]
+   in let body = [10, 20, 30, 40]
+   in coap-build-request CoapAcknowledgement CoapGet 4660 [171, 205] opts body
+
+  check-round-trip : Integer
+  check-round-trip =
+   when coap-parse sample
+    is None -> 0
+    is Just (m) ->
+      flag (m.cm-msg-id == 4660)
+      + flag (bytes-eq (m.cm-token) [171, 205])
+      + flag (bytes-eq (m.cm-payload) [10, 20, 30, 40])
+      + flag (list-length (m.cm-options) == 1)
+
+  check-block-decode : Integer
+  check-block-decode =
+   when coap-parse sample
+    is None -> 0
+    is Just (m) ->
+      when coap-find-option (m.cm-options) coap-opt-block2
+       is None -> 0
+       is Just (v) ->
+         let bv = coap-uint-value v
+         in flag (coap-block-num bv == 2)
+          + flag (coap-block-more bv == 1)
+          + flag (coap-block-szx bv == 6)
+          + flag (coap-block-size (coap-block-szx bv) == 1024)
+
+ An absent option is not a zero option. A response with no Block2 at all
+ means the whole body arrived, and the parser must say so.
+
+  check-absent-option : Integer
+  check-absent-option =
+   when coap-parse (coap-build-request CoapConfirmable CoapGet 1 [] [] [7])
+    is None -> 0
+    is Just (m) ->
+      when coap-find-option (m.cm-options) coap-opt-block2
+       is None -> 1
+       is Just (v) -> 0
+
+ szx 7 is reserved. Answering 2048 for it would walk a caller off the end
+ of a buffer, so it answers 0.
+
+  check-reserved-szx : Integer
+  check-reserved-szx = flag (coap-block-size 7 == 0)
+
+Section: The Refusals
+
+  check-truncated : Integer
+  check-truncated = refused (coap-parse [64, 1])
+
+  check-bad-version : Integer
+  check-bad-version = refused (coap-parse [128, 69, 18, 52])
+
+  check-long-token : Integer
+  check-long-token = refused (coap-parse [73, 69, 18, 52, 1, 2, 3, 4, 5, 6, 7, 8, 9])
+
+  check-runaway-option : Integer
+  check-runaway-option = refused (coap-parse [64, 69, 18, 52, 10, 1, 2])
+
+  check-empty-payload : Integer
+  check-empty-payload = refused (coap-parse [64, 69, 18, 52, 255])
+
+  check-reserved-nibble : Integer
+  check-reserved-nibble = refused (coap-parse [64, 69, 18, 52, 240, 1])
+
+Section: Body
+
+  opening : Integer =
+   check-round-trip
+   + check-block-decode
+   + check-absent-option
+   + check-reserved-szx
+   + check-truncated
+   + check-bad-version
+   + check-long-token
+   + check-runaway-option
+   + check-empty-payload
+   + check-reserved-nibble

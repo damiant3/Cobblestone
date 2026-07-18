@@ -1,0 +1,84 @@
+Chapter: Fat16Mkdir
+  cites Foreword chapter Fat16
+
+ BACKLOG 7.15: a Codex program can create a directory. create-directory was a
+ compiler builtin whose emitter raised CDX2043 and explained that the parent
+ walk and the dot entries were not written. That was honest, and an honest
+ refusal is still a refusal. The name is out of the builtin tables now and the
+ work is in Foreword chapter Fat16, next to write-file and file-exists, for the
+ same reason they are: the machine does not know what a directory is, and FAT16
+ does.
+
+ This starts from a volume with no subdirectory at all -- unlike fat16-subdir,
+ whose /SUB is built host-side -- so every directory here was made by the code
+ under test. That is the point: the read-back walks a tree this chapter built.
+
+ The assertions worth naming:
+
+ "twice" must be False. Making a directory that exists would otherwise claim a
+ second cluster and commit a second entry under the same name: two directories,
+ one name, and a walk that finds whichever comes first.
+
+ "nested" and "write-deep" are the ones that would fail if the dot entries were
+ wrong. fat16-poke-dir-entry writes an 8.3 name by splitting on the first dot,
+ which turns "." into an empty base and an empty extension -- eleven spaces. A
+ directory built that way lists fine and cannot be climbed out of, so the dot
+ names are poked as literal bytes instead. Two levels deep is what exercises
+ the walk that would fall over.
+
+ "no-parent" pins the refusal, because writing a directory entry into a parent
+ that does not exist is the corruption this would otherwise cause quietly.
+
+ The harness checks the raw bytes host-side as well: '.' is 2E followed by ten
+ spaces and points at its own cluster, '..' is 2E 2E followed by nine and
+ points at 0 when the parent is the root, which is the spec's convention and
+ not the root's actual sector. A round trip through our own reader cannot see
+ either of those being wrong.
+
+ We say:
+
+Section: Entry
+
+  opening : [Console, Device.Block] Nothing
+  opening = act
+    vol <- fat16-init 2048
+
+    made <- fat16-create-directory vol "CFG"
+    print-line-uni ("made " & show made)
+
+    e <- fat16-resolve-path vol "CFG"
+    print-line-uni ("resolve " & describe e)
+
+    again <- fat16-create-directory vol "CFG"
+    print-line-uni ("twice " & show again)
+
+    w <- fat16-write-file "CFG/APP.TXT" "in a made dir"
+    print-line-uni ("write-into " & show w)
+
+    back <- fat16-read-text vol "CFG/APP.TXT"
+    print-line-uni ("readback " & maybe-text back)
+
+    nested <- fat16-create-directory vol "CFG/SUB2"
+    print-line-uni ("nested " & show nested)
+
+    w2 <- fat16-write-file "CFG/SUB2/DEEP.TXT" "two levels"
+    print-line-uni ("write-deep " & show w2)
+
+    back2 <- fat16-read-text vol "CFG/SUB2/DEEP.TXT"
+    print-line-uni ("readback-deep " & maybe-text back2)
+
+    orphan <- fat16-create-directory vol "NOPE/X"
+    print-line-uni ("no-parent " & show orphan)
+  end
+
+Section: Reporting
+
+  maybe-text : Maybe Text -> Text
+  maybe-text (m) = when m
+    is Just (t) -> t
+    is None -> "<none>"
+
+  describe : Maybe Fat16DirEntry -> Text
+  describe (m) = when m
+    is Just (e) -> e.de-name & " attr=" & show (e.de-attr) & " isdir=" & show (bit-and (e.de-attr) 16 == 16)
+    is None -> "<none>"

@@ -12,11 +12,19 @@ Chapter: Culling
 
 Section: Frustum Planes
 
+ The plane coefficients come straight out of a Mat4, which is Real, so they
+ are Real. They were integers from the era when Mat4 was fixed-point, which
+ is why extraction could not type-check at all: every one of the twenty-four
+ coefficients was a Real being dropped into an integer field. A normalized
+ plane's a, b and c are a unit normal and d is a signed distance in world
+ units, so the AABB test below is a plain dot product with no thousandths in
+ it.
+
   FrustumPlane = record {
-    fp-a : Integer,
-    fp-b : Integer,
-    fp-c : Integer,
-    fp-d : Integer
+    fp-a : Real,
+    fp-b : Real,
+    fp-c : Real,
+    fp-d : Real
   }
 
   Frustum = record {
@@ -57,9 +65,9 @@ Section: Frustum Planes
 
   fp-normalize : FrustumPlane -> FrustumPlane
   fp-normalize (p) =
-    let len = cull-isqrt (p.fp-a * p.fp-a + p.fp-b * p.fp-b + p.fp-c * p.fp-c)
-    in if len == 0 then p
-    else FrustumPlane { fp-a = p.fp-a * 1000 / len, fp-b = p.fp-b * 1000 / len, fp-c = p.fp-c * 1000 / len, fp-d = p.fp-d * 1000 / len }
+    let len = mat4-sqrt (p.fp-a * p.fp-a + p.fp-b * p.fp-b + p.fp-c * p.fp-c)
+    in if len ~ 0.0 then p
+    else FrustumPlane { fp-a = p.fp-a / len, fp-b = p.fp-b / len, fp-c = p.fp-c / len, fp-d = p.fp-d / len }
 
 Section: AABB Frustum Test
 
@@ -87,16 +95,16 @@ Section: AABB Frustum Test
 
   fp-test-aabb : FrustumPlane, MeshBounds -> Integer
   fp-test-aabb (p) (b) =
-    let px = if p.fp-a >= 0 then b.mb-max-x else b.mb-min-x
-    in let py = if p.fp-b >= 0 then b.mb-max-y else b.mb-min-y
-    in let pz = if p.fp-c >= 0 then b.mb-max-z else b.mb-min-z
-    in let nx = if p.fp-a >= 0 then b.mb-min-x else b.mb-max-x
-    in let ny = if p.fp-b >= 0 then b.mb-min-y else b.mb-max-y
-    in let nz = if p.fp-c >= 0 then b.mb-min-z else b.mb-max-z
-    in let d-pos = p.fp-a * px / 1000 + p.fp-b * py / 1000 + p.fp-c * pz / 1000 + p.fp-d
-    in if d-pos < 0 then 0 - 1
-    else let d-neg = p.fp-a * nx / 1000 + p.fp-b * ny / 1000 + p.fp-c * nz / 1000 + p.fp-d
-    in if d-neg >= 0 then 1
+    let px = if p.fp-a >= 0.0 then b.mb-max-x else b.mb-min-x
+    in let py = if p.fp-b >= 0.0 then b.mb-max-y else b.mb-min-y
+    in let pz = if p.fp-c >= 0.0 then b.mb-max-z else b.mb-min-z
+    in let nx = if p.fp-a >= 0.0 then b.mb-min-x else b.mb-max-x
+    in let ny = if p.fp-b >= 0.0 then b.mb-min-y else b.mb-max-y
+    in let nz = if p.fp-c >= 0.0 then b.mb-min-z else b.mb-max-z
+    in let d-pos = p.fp-a * real-from-int px + p.fp-b * real-from-int py + p.fp-c * real-from-int pz + p.fp-d
+    in if d-pos < 0.0 then 0 - 1
+    else let d-neg = p.fp-a * real-from-int nx + p.fp-b * real-from-int ny + p.fp-c * real-from-int nz + p.fp-d
+    in if d-neg >= 0.0 then 1
     else 0
 
 Section: Backface Culling
@@ -167,16 +175,6 @@ Section: Near-Plane Clipping (Sutherland-Hodgman)
       cv-u = inside.cv-u + (outside.cv-u - inside.cv-u) * t / 1000,
       cv-v = inside.cv-v + (outside.cv-v - inside.cv-v) * t / 1000
     }
-
-Section: Helpers
-
-  cull-isqrt : Integer -> Integer
-  cull-isqrt (n) = if n <= 0 then 0 else cull-isqrt-loop n (n / 2 + 1)
-
-  cull-isqrt-loop : Integer, Integer -> Integer
-  cull-isqrt-loop (n) (guess) =
-    let next = (guess + n / guess) / 2
-    in if next >= guess then guess else cull-isqrt-loop n next
 
 Section: Formatting
 

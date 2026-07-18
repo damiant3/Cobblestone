@@ -1,0 +1,60 @@
+Chapter: ZstdInterop
+  cites Compress chapter Zstd
+
+ A probe for build/zstd-interop-test.ps1. It prints each input and its
+ zstd-compressed bytes as decimals so a real zstd decoder (python zstandard on
+ the host) can prove the output is genuinely RFC 8878, not merely decodable by
+ our own decoder. A round-trip through our own pair cannot see a frame-header or
+ block-header bug both halves share -- the two-byte Frame_Content_Size that added
+ 256 in a real decoder shipped green for exactly that reason. This has no
+ .expected: the host harness is the judge, so the file carries a .skip.
+
+ We say:
+
+Section: Body
+
+  nr-byte : Integer -> Integer
+  nr-byte (i) = list-at [65, 66, 65, 67, 65, 66, 65, 68] (i - (i / 8) * 8)
+
+  gen-nr : Integer, Integer, List Integer -> List Integer
+  gen-nr (n) (i) (acc) =
+    if i >= n then acc
+    else gen-nr n (i + 1) (list-push acc (nr-byte i))
+
+  nr2-byte : Integer -> Integer
+  nr2-byte (i) = list-at [10, 71, 10, 40, 10, 71, 10, 40, 71, 40, 71, 10] (i - (i / 12) * 12)
+
+  gen-nr2 : Integer, Integer, List Integer -> List Integer
+  gen-nr2 (n) (i) (acc) =
+    if i >= n then acc
+    else gen-nr2 n (i + 1) (list-push acc (nr2-byte i))
+
+  run-of : Integer, Integer, Integer, List Integer -> List Integer
+  run-of (v) (n) (i) (acc) =
+    if i >= n then acc
+    else run-of v n (i + 1) (list-push acc v)
+
+  show-bytes : List Integer, Integer, Integer, Text -> Text
+  show-bytes (xs) (i) (n) (acc) =
+    if i >= n then acc
+    else show-bytes xs (i + 1) n (acc & " " & show (list-at xs i))
+
+  emit-line : Text, List Integer -> Text
+  emit-line (label) (xs) = label & ":" & show-bytes xs 0 (list-length xs) ""
+
+  opening : [Console] Nothing = act
+    let huf = gen-nr 320 0 []
+    in let huf2 = gen-nr2 300 0 []
+    in let rle = run-of 65 300 0 []
+    in let mixed = [1, 2, 3] & run-of 9 40 0 [] & [4, 5, 6, 7]
+    in act
+      print-line-uni (emit-line "huf-orig" huf)
+      print-line-uni (emit-line "huf-comp" (zstd-compress huf))
+      print-line-uni (emit-line "huf2-orig" huf2)
+      print-line-uni (emit-line "huf2-comp" (zstd-compress huf2))
+      print-line-uni (emit-line "rle-orig" rle)
+      print-line-uni (emit-line "rle-comp" (zstd-compress rle))
+      print-line-uni (emit-line "mixed-orig" mixed)
+      print-line-uni (emit-line "mixed-comp" (zstd-compress mixed))
+    end
+  end

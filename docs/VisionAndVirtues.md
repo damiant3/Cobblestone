@@ -26,8 +26,8 @@ clean. Write the book. Then begin the repository.
 The repository remembers everything. The language says what you mean.
 The machine checks that you meant it.
 
-*Full source documents: `docs/Stories/Vision/NewRepository.txt`,
-`docs/Stories/Vision/IntelligenceLayer.txt`*
+*Full source documents: `docs/PM/Stories/Vision/NewRepository.txt`,
+`docs/PM/Stories/Vision/IntelligenceLayer.txt`*
 
 ---
 
@@ -96,7 +96,7 @@ and memory safety.
 All data representations are immutable. Builders and accumulators are
 mutable during construction, then frozen. Narrow exceptions (e.g.
 `__record-set`) are controlled concessions documented in
-`docs/KNOWN-CONDITIONS.md`, surviving only because single ownership
+`docs/Test/Active/KNOWN-CONDITIONS.md`, surviving only because single ownership
 is threaded linearly.
 
 ### 6. Test What Matters
@@ -122,7 +122,7 @@ reaching for it prematurely.
 ### 9. One Thing at a Time
 
 Each file does one thing. Each Chapter does one thing. Each CL does
-one thing. The compiler is ~28,000 lines across 54 files. A wrong
+one thing. The compiler is ~39,900 lines across 60 files. A wrong
 change in one place surfaces as a silent corruption three pipeline
 stages later.
 

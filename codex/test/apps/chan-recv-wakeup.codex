@@ -1,0 +1,36 @@
+Chapter: ChanRecvWakeup
+
+ The receiver-side companion to chan-lost-wakeup. A consumer blocks on an
+ empty capacity-one channel; a producer sends one value, and the wake path
+ hands it across. Both finish and proc 0 -- which waits on both -- prints
+ "rdone".
+
+ On a correct compiler this prints "rdone" cooperatively: nothing runs
+ between the consumer's emptiness check and its commit to BLOCKED, so the
+ wake is never lost. The recv-block lost-wakeup (BACKLOG 4.11g) lives in a
+ ~15-instruction window that no timer reliably hits; this test is driven to
+ a deterministic hang by a throwaway compiler built with the recv-block
+ yield mutant. See docs/Test/Active/YieldInjectionMutant.md.
+
+Section: Body
+
+  consumer : Integer -> [Console, Concurrent] Integer
+  consumer (ch) = act
+    x <- (chan-kern-recv-block ch)
+    x
+  end
+
+  producer : Integer -> [Console, Concurrent] Integer
+  producer (ch) = act
+    a <- (chan-kern-send-block ch 42)
+    a
+  end
+
+  opening : [Console, Concurrent] Nothing = act
+    ch <- chan-kern-create 1
+    c <- process-spawn (\z -> consumer ch)
+    p <- process-spawn (\z -> producer ch)
+    wc <- (process-wait c)
+    wp <- (process-wait p)
+    print-line-uni "rdone"
+  end

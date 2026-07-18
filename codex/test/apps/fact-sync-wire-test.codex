@@ -1,0 +1,44 @@
+Chapter: FactSyncWireTest
+  cites Trust chapter FactSync
+  cites Trust chapter AgentProtocol
+  cites Trust chapter TrustTransport
+  cites Net chapter MessageFraming
+  cites Foreword chapter FactStore
+  cites Foreword chapter Maybe
+  cites Foreword chapter Console
+
+ The fact-sync verb, carried over the trust wire. A holds h1 and h2, B holds
+ h2 and h3. A offers every hash it holds; the offer is encoded to a tagged
+ frame body and decoded back, exactly as TrustTransport would put it on TCP;
+ B answers with the facts A did not name (just h3); that reply crosses the
+ same wire and A absorbs it. After one round A holds all three, and the reply
+ carried exactly the one fact A was missing.
+
+Section: Helpers
+
+  mk : Text -> Fact
+  mk (h) = Fact { hash = h, kind = DefinitionFact, content = h, author = "", timestamp = 0 }
+
+ A message, encoded to (tag, body) bytes and decoded back -- the round trip
+ every AgentMessage makes across TrustTransport.
+
+  wire : AgentMessage -> AgentMessage
+  wire (m) = decode-agent-msg (encode-agent-msg m) (encode-agent-msg-body m)
+
+Section: Entry
+
+  opening : [Console] Nothing = act
+    let a = fact-store (fact-store fact-store-empty (mk "h1")) (mk "h2")
+    in let b = fact-store (fact-store fact-store-empty (mk "h2")) (mk "h3")
+    in let offer-w = wire (MsgSyncOffer (fact-sync-make-offer a (AgentIdentity { public-key = [1] })))
+    in let reply = when offer-w
+       is MsgSyncOffer (o) -> fact-sync-answer-offer b (AgentIdentity { public-key = [2] }) o
+       is otherwise -> SyncReplyMsg { from = AgentIdentity { public-key = [] }, payload = [] }
+    in let reply-w = wire (MsgSyncReply reply)
+    in let a2 = when reply-w
+       is MsgSyncReply (r) -> fact-sync-absorb-reply a r
+       is otherwise -> a
+    in print-line-uni ("a=" & show (fact-count a2) & " ah3=" & show (fact-has a2 "h3") & " reply=" & show (list-length (sync-decode-facts (reply.payload))) & " type=" & msg-type-name offer-w)
+  end
+
+Page 1

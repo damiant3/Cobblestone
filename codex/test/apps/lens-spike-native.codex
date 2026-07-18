@@ -1,0 +1,205 @@
+Chapter: LensSpikeNative
+  cites Data chapter Catalog
+  cites Data chapter Schema
+  cites Data chapter Row
+  cites Data chapter RelAlgebra
+  cites Data chapter Executor
+  cites Data chapter HashJoin
+
+ Phase 0a spike for Lens, the governed analytics platform
+ (apps/lens/DESIGN.md). Proves the native analytics substrate:
+ a tiny star schema lives in Codex DB, and a hand-written
+ relational-algebra aggregation answers a business question with
+ known numbers. The fact table is orders; the dimensions are users
+ and products. The question is revenue by user city: a many-to-one
+ hash join from orders to users on user-id, projection to
+ (city, amount), then group-and-sum through the volcano executor.
+ Every printed number is hand-computed in the seed data below.
+
+Section: Star Schema
+
+  users-table : TableDef
+  users-table = table-def-with-pk "users" [
+    col-def-not-null "user-id" ColInteger,
+    col-def-not-null "uname" ColText,
+    col-def-not-null "city" ColText
+  ] ["user-id"]
+
+  products-table : TableDef
+  products-table = table-def-with-pk "products" [
+    col-def-not-null "product-id" ColInteger,
+    col-def-not-null "pname" ColText,
+    col-def-not-null "price" ColInteger
+  ] ["product-id"]
+
+  orders-table : TableDef
+  orders-table = table-def-with-pk "orders" [
+    col-def-not-null "order-id" ColInteger,
+    col-def-not-null "user-id" ColInteger,
+    col-def-not-null "product-id" ColInteger,
+    col-def-not-null "amount" ColInteger
+  ] ["order-id"]
+
+Section: Seed Data
+
+ Amounts are cents. Per-user revenue: Alice 8800, Bob 7300,
+ Carol 7300, Dave 6500. By city: Springfield is Alice plus Carol
+ which is 16100, Shelbyville is Bob which is 7300, Capital City is
+ Dave which is 6500. Total 29900.
+
+  insert-all : Catalog, Text, List RowData, Integer, Integer -> Catalog
+  insert-all (cat) (table) (rows) (i) (len) =
+    if i >= len then cat
+    else let r = catalog-insert-row cat table (list-at rows i)
+    in insert-all (r.cir-cat) table rows (i + 1) len
+
+  seed-users : Catalog -> Catalog
+  seed-users (cat) =
+    let s = table-schema users-table
+    in let rows = [
+      row-new s [ValInteger 1, ValText "Alice", ValText "Springfield"],
+      row-new s [ValInteger 2, ValText "Bob",   ValText "Shelbyville"],
+      row-new s [ValInteger 3, ValText "Carol", ValText "Springfield"],
+      row-new s [ValInteger 4, ValText "Dave",  ValText "Capital City"]
+    ]
+    in insert-all cat "users" rows 0 (list-length rows)
+
+  seed-products : Catalog -> Catalog
+  seed-products (cat) =
+    let s = table-schema products-table
+    in let rows = [
+      row-new s [ValInteger 1, ValText "Anvil",  ValInteger 1500],
+      row-new s [ValInteger 2, ValText "Rocket", ValInteger 5000],
+      row-new s [ValInteger 3, ValText "Skates", ValInteger 800]
+    ]
+    in insert-all cat "products" rows 0 (list-length rows)
+
+  seed-orders : Catalog -> Catalog
+  seed-orders (cat) =
+    let s = table-schema orders-table
+    in let rows = [
+      row-new s [ValInteger 1,  ValInteger 1, ValInteger 1, ValInteger 1500],
+      row-new s [ValInteger 2,  ValInteger 1, ValInteger 2, ValInteger 5000],
+      row-new s [ValInteger 3,  ValInteger 2, ValInteger 3, ValInteger 800],
+      row-new s [ValInteger 4,  ValInteger 3, ValInteger 1, ValInteger 1500],
+      row-new s [ValInteger 5,  ValInteger 4, ValInteger 2, ValInteger 5000],
+      row-new s [ValInteger 6,  ValInteger 1, ValInteger 3, ValInteger 800],
+      row-new s [ValInteger 7,  ValInteger 2, ValInteger 1, ValInteger 1500],
+      row-new s [ValInteger 8,  ValInteger 3, ValInteger 3, ValInteger 800],
+      row-new s [ValInteger 9,  ValInteger 3, ValInteger 2, ValInteger 5000],
+      row-new s [ValInteger 10, ValInteger 4, ValInteger 1, ValInteger 1500],
+      row-new s [ValInteger 11, ValInteger 2, ValInteger 2, ValInteger 5000],
+      row-new s [ValInteger 12, ValInteger 1, ValInteger 1, ValInteger 1500]
+    ]
+    in insert-all cat "orders" rows 0 (list-length rows)
+
+  build-star : Catalog
+  build-star =
+    let c1 = catalog-create-table catalog-new users-table
+    in let c2 = catalog-create-table (c1.cat) products-table
+    in let c3 = catalog-create-table (c2.cat) orders-table
+    in seed-orders (seed-products (seed-users (c3.cat)))
+
+Section: Revenue by City
+
+ The join is many-to-one from the orders fact to the users
+ dimension, so no fan-out is possible and a direct group-and-sum
+ after the join is grain-correct. The hash join builds on the small
+ users side and probes with orders; each merged row carries the
+ order amount and the buyer's city. The merged rows are projected
+ to (city, amount) with the relational-algebra projection, loaded
+ into a result table, and the final aggregation and sort run
+ through the executor. The sort is ascending in CCE code order,
+ and CCE assigns letters by frequency (etaoinshrdlcumwfgypbvkjxqz),
+ not alphabetically, therefore Shelbyville sorts before Capital
+ City. The expected sidecar pins that collation.
+
+  city-amounts-table : TableDef
+  city-amounts-table = table-def "city-amounts" [
+    col-def-not-null "city" ColText,
+    col-def-not-null "amount" ColInteger
+  ]
+
+  project-rows : List RowData, Projection, Integer, Integer, List RowData -> List RowData
+  project-rows (rows) (proj) (i) (len) (acc) =
+    if i >= len then acc
+    else let row = list-at rows i
+    in project-rows rows proj (i + 1) len (list-push acc (proj-apply proj row))
+
+  revenue-by-city : Catalog -> QueryResult
+  revenue-by-city (cat) =
+    let orders-qr = query cat (RelScan "orders")
+    in let users-qr = query cat (RelScan "users")
+    in let hj = hash-join (users-qr.qr-rows) (orders-qr.qr-rows) "user-id" "user-id"
+    in let projected = project-rows (hj.hj-rows) (proj-columns ["city", "amount"]) 0 (hj.hj-count) []
+    in let cr = catalog-create-table cat city-amounts-table
+    in let cat2 = insert-all (cr.cat) "city-amounts" projected 0 (list-length projected)
+    in let grouped = RelGroup (RelScan "city-amounts") ["city"] [AggSpec { agg-func = AggSum "amount", agg-alias = "revenue" }]
+    in let sorted = RelSort grouped [SortSpec { sort-col = "city", sort-dir = SortAsc }]
+    in query cat2 sorted
+
+  total-revenue : Catalog -> QueryResult
+  total-revenue (cat) =
+    let grouped = RelGroup (RelScan "orders") [] [AggSpec { agg-func = AggSum "amount", agg-alias = "revenue" }]
+    in query cat grouped
+
+Section: Display
+
+  fmt-val : ColumnValue -> Text
+  fmt-val (v) =
+    when v
+      is ValInteger (n) -> show n
+      is ValText (t) -> t
+      is ValBoolean (b) -> if b then "True" else "False"
+      is ValNull -> "NULL"
+
+  fmt-vals : List ColumnValue, Integer, Integer, Text -> Text
+  fmt-vals (vals) (i) (len) (acc) =
+    if i >= len then acc
+    else let v = list-at vals i
+    in let sep = if i > 0 then " | " else ""
+    in fmt-vals vals (i + 1) len (acc & sep & fmt-val v)
+
+  fmt-rows : List RowData, Integer, Integer, Text -> Text
+  fmt-rows (rows) (i) (len) (acc) =
+    if i >= len then acc
+    else let row = list-at rows i
+    in let line = "  " & fmt-vals (row.values) 0 (list-length (row.values)) ""
+    in let sep = if i > 0 then "\n" else ""
+    in fmt-rows rows (i + 1) len (acc & sep & line)
+
+  fmt-qr : QueryResult -> Text
+  fmt-qr (qr) =
+    if qr.qr-ok == False then "ERROR: " & qr.qr-msg
+    else fmt-rows (qr.qr-rows) 0 (qr.qr-count) ""
+
+  qr-first-int : QueryResult -> Integer
+  qr-first-int (qr) =
+    if qr.qr-count == 0 then 0
+    else val-to-integer (row-get (list-at (qr.qr-rows) 0) 0)
+
+  counts-line : Catalog -> Text
+  counts-line (cat) =
+    let u = catalog-table-row-count cat "users"
+    in let p = catalog-table-row-count cat "products"
+    in let o = catalog-table-row-count cat "orders"
+    in "star schema: users=" & show u & " products=" & show p & " orders=" & show o
+
+Section: Body
+
+  opening : [Console] Nothing = act
+    print-line-uni "=== lens spike: native analytics substrate ==="
+    let cat = build-star
+    in act
+      print-line-uni (counts-line cat)
+      print-line-uni ("total-revenue: " & show (qr-first-int (total-revenue cat)))
+      let by-city = revenue-by-city cat
+      in act
+        print-line-uni ("revenue-by-city (" & show (by-city.qr-count) & " rows):")
+        print-line-uni (fmt-qr by-city)
+        print-line-uni "lens-spike-native: done"
+      end
+    end
+  end
+
+Page 1

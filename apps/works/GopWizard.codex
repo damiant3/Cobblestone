@@ -1,6 +1,9 @@
 Chapter: GopWizard
   cites Works chapter GopDraw
+  cites Works chapter GopKey
   cites Works chapter GopText
+  cites Works chapter GopRtc
+  cites Works chapter GopUsbKbd
   cites Works chapter GopFat16
   cites Kernel chapter BitmapFont
   cites Foreword chapter Ed25519
@@ -13,8 +16,10 @@ Chapter: GopWizard
  The first-boot ceremony on the GOP framebuffer (B2.2 + B2.3). The
  flow mirrors FirstBoot's phase model -- welcome, identity, upstream,
  complete -- rendered with GopDraw and driven by GopText fields over
- the raw PS/2 keyboard, because on the Option A boot path firmware is
- gone: no ConOut, no ConIn.
+ whichever keyboard the machine has: PS/2 by IRQ, or USB HID by the
+ pump the context carries (wz-kbd), because on the Option A boot path
+ firmware is gone: no ConOut, no ConIn, and on most modern machines
+ no PS/2 controller either.
 
  Identity follows the IdentityManager recipe: entropy is hashed with
  SHA-256 into an Ed25519 seed, the public key's hash is the
@@ -40,7 +45,8 @@ Section: Context
     wz-h : Integer,
     wz-stride : Integer,
     wz-font : CbfFont,
-    wz-scale : Integer
+    wz-scale : Integer,
+    wz-kbd : UsbKbd
   }
 
   wz-col-bg : Integer = 1710638
@@ -84,11 +90,175 @@ Section: Context
 
 Section: Key Wait
 
+ The wait polls through kbd-take so a USB keyboard's Enter arrives
+ exactly like a PS/2 one; with no USB keyboard connected the pump is
+ a flag test and this is gk-take in a loop, unchanged.
+
+ This wait is also the keyboard proof gate, because it is the one
+ place the boot stops and asks a human to press something. A key --
+ any key, not just the Enter this screen wants -- proves the keyboard
+ delivers, and restarts the window. Silence proves nothing on its
+ own: a machine whose keyboard is simply unattended looks exactly
+ like a machine whose USB HID endpoint enumerated and never spoke.
+ The gate treats them the same on purpose, because the remedy is
+ harmless to the first and is the only remedy for the second: after
+ a bounded silence the controller goes back to firmware (kbd-handback)
+ and its legacy emulation answers instead. The cost is the USB boot
+ stick, which shares the controller; a machine nobody can type on
+ could not have used it anyway. See docs/PM/Done/Stories/TheSilentKeyboard.md.
+
+ The window is measured on the CMOS real-time clock, NOT on the PIT
+ tick, and that is the whole lesson of the first attempt. The tick
+ cell (28672) is filled by the timer interrupt, so it only advances
+ on a machine whose PIC and PIT survived ExitBootServices and whose
+ IDT is live. The first build of this gate trusted it, fired
+ perfectly under OVMF, and on the ASUS -- the one machine it was
+ written for -- never fired at all: the elapsed time was permanently
+ zero, so the wait for a key that could never come was itself
+ unbounded. The RTC is read straight off ports 0x70/0x71 with no
+ interrupt, no PIC, and no handler in the path; a machine that can
+ boot at all has one. The gate now counts the seconds it sees the
+ RTC turn over, which is a clock the firmware cannot take away.
+
+ Both clocks are reported on the glass while the gate waits, because
+ a boot that fails to fire must say WHY: if pit stays 0 while rtc
+ climbs, the timer interrupt is dead on that machine and everything
+ else built on the tick (the watchdog, preemption, any timeout) is
+ dead with it. That is a finding, not a nuisance.
+
+ The gate fires at most once -- the handback records its own
+ decision -- so a firmware that refuses to take the controller back
+ is not asked twice.
+
+ wz-wait-enter-from tail-calls ITSELF so the compiler's TCO turns the
+ poll into a jump; the gate is a helper returning an integer, exactly
+ as the menu's dispatchers are, because mutual recursion would grow
+ the stack until the machine died waiting for a keystroke.
+
+ The gate reports its own vitals, unconditionally, on a fixed spin
+ interval -- not when a second turns over, and not when a key
+ arrives. The first two builds of this gate each depended on a clock
+ to say anything at all, and each went silent on the one machine it
+ was written for: a screen that prints nothing cannot be
+ distinguished from a loop that is not running, an RTC that never
+ ticks, or a keyboard streaming garbage that resets the window every
+ iteration. Those are three different faults and they looked
+ identical. The spin counter is the one number that cannot lie: if it
+ climbs, the loop is alive, and every other number on the line is
+ then worth reading.
+
+ The window resets only on a real MAKE code (1..0x7F). A break code,
+ and in particular the i8042's power-on 0xFA acknowledgement -- which
+ lands in the mailbox on a machine with an i8042 and no PS/2 keyboard
+ -- must not count as proof that a human is typing, or a board that
+ emits one holds the gate open forever and never falls back.
+
+ The spin backstop is for ONE case, and it must never pre-empt a
+ working clock: a machine where neither the timer interrupt NOR the
+ real-time clock advances at all. Written as a plain spin budget it
+ fired within a second or two on real silicon -- that CPU spins tens
+ of millions of times a second, so sixty million spins is not "a long
+ wait", it is an instant -- and it handed the controller back before
+ the thirty-second window had even begun, switching off the very
+ keyboard pump whose silence it was supposed to be measuring. A
+ budget in spins is not a duration. It only becomes one when there is
+ nothing else to count by.
+
+ So the backstop now requires that the RTC has NEVER moved: elapsed
+ still zero after a spin count no working machine reaches without the
+ clock turning over once. On a board whose RTC ticks -- which is every
+ board we have met -- the thirty seconds are the only thing that can
+ fire this gate.
+
+ The window is THIRTY seconds and it announces itself, because the
+ handback is not free: it costs the USB stick, and on a machine whose
+ firmware offers no legacy emulation it costs the USB keyboard too.
+ A ten-second window fired while a human was still reading the
+ welcome screen -- caught in the emulator, where the fallback has
+ nothing to fall back TO, and a working keyboard was destroyed by the
+ mechanism meant to save it. So the machine now says what it is about
+ to do, counts down where the operator can see it, and any keystroke
+ at all calls the whole thing off. A person who has not touched a key
+ in half a minute, on a screen that says "Press Enter to begin", does
+ not have a working keyboard.
+
+  wz-gate-secs : Integer = 30
+  wz-noclock-spins : Integer = 500000000
+  wz-note-every : Integer = 262144
+
+  wz-pit : Integer -> Integer
+  wz-pit (d) = peek-qword 28672 0
+
+ The clock is read through GopRtc, which waits out Update-In-Progress,
+ reads twice, and rejects anything that is not a second. Reading the
+ seconds register raw -- as this gate did, for three builds -- returns
+ garbage while the part is updating, and a poll loop reading millions of
+ times a second lands in that window constantly. The window then counted
+ thirty "seconds" in microseconds, handed the controller back before the
+ countdown could be seen, and switched off the keyboard pump whose
+ silence it was measuring. An unreadable clock is reported as -1 and
+ changes nothing: it is not a tick, and it never becomes one.
+
+ A status row is cleared across the WHOLE panel, not across the text
+ column: these lines are longer than the ceremony's prose, and a
+ clear sized to the column leaves the tail of the previous, longer
+ line standing beside the new one.
+
+  wz-clear-row : WzCtx, Integer -> Integer
+  wz-clear-row (c) (row) =
+    gop-fill-rect (c.wz-base) (c.wz-stride) 0 (wz-row c row) (c.wz-w) (18 * c.wz-scale) wz-col-bg
+
+  wz-countdown : Integer -> Text
+  wz-countdown (elapsed) =
+    let n = wz-gate-secs - elapsed
+    in if n < 0 then "0" else show n
+
+  wz-status-line : Integer -> Text
+  wz-status-line (elapsed) =
+    if kbd-released 0 /= 0 then "Handed back to firmware. Try the keyboard now."
+    else "No key -- firmware keyboard in " & wz-countdown elapsed & "s. Press a key."
+
+  wz-vitals : WzCtx, Integer, Integer, Integer, Integer -> Integer
+  wz-vitals (c) (spins) (elapsed) (raw) (sc) =
+    let z = wz-clear-row c 13
+    in let y = wz-clear-row c 14
+    in let t = wz-text c 13 (wz-status-line elapsed) wz-col-warn
+    in wz-text c 14 ("spin=" & show (spins / 1024) & "k s=" & show elapsed & " rtc=" & show raw & " pit=" & show (wz-pit 0) & " sc=" & show sc) wz-col-text
+
+  wz-gate-fire : WzCtx -> Integer
+  wz-gate-fire (c) = kbd-handback 0
+
+  wz-real-key : Integer -> Boolean
+  wz-real-key (sc) = sc > 0 & sc < 128
+
   wz-wait-enter : WzCtx -> [Device.Port] Integer
   wz-wait-enter (c) = act
-    status <- port-in-byte 100
-    sc <- if bit-and status 1 > 0 then port-in-byte 96 else 0
-    if sc == 28 then 0 else wz-wait-enter c
+    r <- rtc-seconds 0
+    wz-wait-enter-from c r 0 0 0
+  end
+
+ An unreadable second (-1) is carried through as no change at all: prev is
+ left standing, elapsed does not move, and the loop simply asks again. A
+ clock that cannot be read is not a clock that has ticked.
+
+  wz-wait-enter-from : WzCtx, Integer, Integer, Integer, Integer -> [Device.Port] Integer
+  wz-wait-enter-from (c) (prev) (elapsed) (spins) (last) = act
+    sc <- kbd-take (c.wz-kbd)
+    now <- rtc-seconds 0
+    let seen = if wz-real-key sc then sc else last
+    in let good = now >= 0
+    in let tick = good & now /= prev
+    in let e2 = if tick then elapsed + 1 else elapsed
+    in let p2 = if good then now else prev
+    in let note = if int-mod spins wz-note-every == 0 then wz-vitals c spins e2 now seen else 0
+    in let fire = if kbd-released 0 /= 0 then 0
+      else if wz-real-key sc then 0
+      else if e2 >= wz-gate-secs then wz-gate-fire c
+      else if e2 == 0 & spins >= wz-noclock-spins then wz-gate-fire c
+      else 0
+    in if sc == 28 then 0
+    else if wz-real-key sc then wz-wait-enter-from c p2 0 0 seen
+    else wz-wait-enter-from c p2 e2 (spins + 1) seen
   end
 
 Section: Welcome
@@ -105,6 +275,7 @@ Section: Welcome
     in let t6 = wz-text c 8 "  2. Configure an upstream server (optional)" wz-col-text
     in let t7 = wz-text c 9 "  3. Choose your preferred interface" wz-col-text
     in let t8 = wz-text c 11 "Press Enter to begin." wz-col-green
+    in let t9 = wz-text c 13 ("Keyboard: " & (if (c.wz-kbd).uk-ok then "USB HID" else "PS/2")) wz-col-text
     in wz-wait-enter c
 
 Section: Passphrase
@@ -122,9 +293,9 @@ Section: Passphrase
     t2 <- wz-text c 3 "private key; without it the key cannot be used." wz-col-text
     t3 <- if text-length note > 0 then wz-text c 10 note wz-col-warn else 0
     t4 <- wz-text c 5 "Passphrase:" wz-col-text
-    p1 <- gt-input (wz-field c 6 32 True)
+    p1 <- gt-input (wz-field c 6 32 True) (c.wz-kbd)
     t5 <- wz-text c 8 "Confirm:" wz-col-text
-    p2 <- gt-input (wz-field c 9 32 True)
+    p2 <- gt-input (wz-field c 9 32 True) (c.wz-kbd)
     if p1.gl-text == p2.gl-text then
       if text-length (p1.gl-text) >= 4 then GtLine { gl-text = p1.gl-text, gl-entropy = p1.gl-entropy * 31 + p2.gl-entropy }
       else wz-passphrase c "Too short - use four or more characters."
@@ -139,7 +310,7 @@ Section: Entropy
     t0 <- wz-text c 0 "Entropy" wz-col-title
     t1 <- wz-text c 2 "Type a random sentence. Its characters and your typing" wz-col-text
     t2 <- wz-text c 3 "time are mixed into the key material." wz-col-text
-    s <- gt-input (wz-field c 5 48 False)
+    s <- gt-input (wz-field c 5 48 False) (c.wz-kbd)
     s
   end
 
@@ -152,7 +323,7 @@ Section: Upstream
     t1 <- wz-text c 2 "For complex tasks a local agent can escalate to a" wz-col-text
     t2 <- wz-text c 3 "full-size model on a remote server. Enter its address," wz-col-text
     t3 <- wz-text c 4 "or press Enter alone to skip." wz-col-text
-    s <- gt-input (wz-field c 6 48 False)
+    s <- gt-input (wz-field c 6 48 False) (c.wz-kbd)
     s
   end
 
@@ -350,23 +521,45 @@ Section: Flow
     in let t3 = wz-text c 5 "Press Enter to choose your interface." wz-col-green
     in wz-wait-enter c
 
+ Boot-diag trace lines (temporary, real-hardware bring-up): same
+ bottom-region geometry as GopBoot's boot-trace, rows 4 and up, so
+ on a machine with no serial the last line standing names the
+ wizard step that died. Each screen's clear wipes them; a death
+ mid-clear leaves them readable below the partial fill.
+
+  wz-trace : WzCtx, Integer, Text -> Integer
+  wz-trace (c) (row) (t) =
+    let y = (c.wz-h) / 2 + 80 + row * 14
+    in let bg = gop-fill-rect (c.wz-base) (c.wz-stride) 8 y 400 12 0
+    in gop-draw-text (c.wz-base) (c.wz-stride) (c.wz-font) 8 y t #00FF00 1 0
+
   wizard-run : WzCtx -> [Device.Port, Device.Mmio] Text
   wizard-run (c) = act
-    present <- wz-identity-present
-    if present then act
-      wb <- wz-welcome-back c
-      let r = "returning"
-      in r
-    end
-    else act
-      w0 <- wz-welcome c
-      pp <- wz-passphrase c ""
-      sent <- wz-entropy c
-      up <- wz-upstream c
-      wid <- wz-keygen (pp.gl-text) (sent.gl-text) (pp.gl-entropy * 2654435761 + sent.gl-entropy * 40503 + up.gl-entropy)
-      saved <- wz-save-identity wid
-      done <- wz-complete c wid (up.gl-text) saved
-      let fp = wid.wid-fingerprint
-      in fp
+    let t0 = wz-trace c 4 "wz: detect..."
+    in act
+      present <- wz-identity-present
+      t1 <- wz-trace c 5 (if present then "wz: returning..." else "wz: fresh, welcome...")
+      if present then act
+        wb <- wz-welcome-back c
+        let r = "returning"
+        in r
+      end
+      else act
+        w0 <- wz-welcome c
+        t2 <- wz-trace c 6 "wz: welcome up, wait Enter"
+        pp <- wz-passphrase c ""
+        t3 <- wz-trace c 6 "wz: entropy screen"
+        sent <- wz-entropy c
+        t4 <- wz-trace c 6 "wz: upstream screen"
+        up <- wz-upstream c
+        t5 <- wz-trace c 6 "wz: keygen..."
+        wid <- wz-keygen (pp.gl-text) (sent.gl-text) (pp.gl-entropy * 2654435761 + sent.gl-entropy * 40503 + up.gl-entropy)
+        t6 <- wz-trace c 6 "wz: save identity..."
+        saved <- wz-save-identity wid
+        done <- wz-complete c wid (up.gl-text) saved
+        let fp = wid.wid-fingerprint
+        in fp
+      end
     end
   end
+

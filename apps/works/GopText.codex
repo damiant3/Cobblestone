@@ -1,13 +1,19 @@
 Chapter: GopText
   cites Works chapter GopDraw
+  cites Works chapter GopKey
+  cites Works chapter GopUsbKbd
   cites Kernel chapter BitmapFont
   cites Kernel chapter Keyboard
   cites Foreword chapter StringUtils
 
- A single-line text field on the GOP framebuffer, driven by the raw
- PS/2 controller (B2.1). Scancodes come from data port 0x60, polled
- the same way the boot menu polls; the kernel keyboard chapter's pure
- layout machinery (kb-process-scancode) turns them into CCE characters
+ A single-line text field on the GOP framebuffer (B2.1). Scancodes
+ come from the kernel key-buffer cell -- fed by the keyboard IRQ the
+ runtime-init spine installs (GopKey), and by the USB HID pump when
+ the machine's keyboard is USB (H2b): the read loop takes a UsbKbd
+ and polls through kbd-take, which pumps the interrupt endpoint and
+ then consumes the cell. With no USB keyboard the pump is a flag test
+ and the loop is unchanged. The kernel keyboard chapter's pure layout
+ machinery (kb-process-scancode) turns scancodes into CCE characters
  with shift, caps, and dead-key handling. The field echoes as it
  edits, draws a block cursor after the text, supports backspace, and
  can mask its echo with asterisks for passphrase entry. Enter returns
@@ -110,20 +116,19 @@ Section: Input Loop
 
   hpet-base : Integer = 4275044352
 
-  gt-read-line : GtField, Text, KbState, Integer -> [Device.Port, Device.Mmio] GtLine
-  gt-read-line (f) (buf) (st) (ent) = act
-    status <- port-in-byte 100
-    sc <- if bit-and status 1 > 0 then port-in-byte 96 else 0
+  gt-read-line : GtField, UsbKbd, Text, KbState, Integer -> [Device.Port, Device.Mmio] GtLine
+  gt-read-line (f) (k) (buf) (st) (ent) = act
+    sc <- kbd-take k
     hp <- if sc == 0 then 0 else read-mmio hpet-base 240
-    if sc == 0 then gt-read-line f buf st ent
+    if sc == 0 then gt-read-line f k buf st ent
     else if sc == 28 then GtLine { gl-text = buf, gl-entropy = ent }
     else let ev = kb-process-scancode st (__narrow sc)
-    in gt-read-line f (gt-apply f buf ev) (ev.state) (ent * 1099511628211 + hp * 31 + peek-qword 28672 0 + sc)
+    in gt-read-line f k (gt-apply f buf ev) (ev.state) (ent * 1099511628211 + hp * 31 + peek-qword 28672 0 + sc)
   end
 
-  gt-input : GtField -> [Device.Port, Device.Mmio] GtLine
-  gt-input (f) = act
+  gt-input : GtField, UsbKbd -> [Device.Port, Device.Mmio] GtLine
+  gt-input (f) (k) = act
     h0 <- read-mmio hpet-base 240
     d <- gt-draw f ""
-    gt-read-line f "" kb-state-new h0
+    gt-read-line f k "" kb-state-new h0
   end

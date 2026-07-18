@@ -1,6 +1,7 @@
 Chapter: Fat16
   cites Foreword chapter Maybe
   cites Foreword chapter CCE
+  cites Foreword chapter StringUtils
 
  A Fat16Volume is a record containing partition layout parameters parsed from the BPB.
  To fat16-init gives a Fat16Volume from a partition start sector.
@@ -23,7 +24,9 @@ Section: Types
     vol-fat-sectors : Integer,
     vol-fat-start : Integer,
     vol-root-start : Integer,
-    vol-data-start : Integer
+    vol-data-start : Integer,
+    vol-total-sectors : Integer,
+    vol-cluster-count : Integer
   }
 
   Fat16DirEntry = record {
@@ -49,11 +52,41 @@ Section: BPB Parsing
     fat16-parse-bpb part-start buf
   end
 
+ A boot record that does not parse is an unusable volume, not a fault.
+ With no disk attached the block device hands back a sector of zeroes, and
+ bytes-per-sector reads 0 -- the very number the root-directory size is
+ divided by, two lines down. Dividing there takes the machine out with
+ !EXC=00, so the sector must be refused before the arithmetic, not after
+ it: nothing downstream gets the chance to notice a bad volume if reaching
+ the volume is what crashed.
+
+ fat16-init is total now. Ask fat16-vol-is-usable before trusting what it
+ returns.
+
+  fat16-zero-volume : Integer -> Fat16Volume
+  fat16-zero-volume (part-start) =
+    Fat16Volume {
+      vol-part-start = part-start,
+      vol-bytes-per-sector = 0,
+      vol-sectors-per-cluster = 0,
+      vol-reserved-sectors = 0,
+      vol-num-fats = 0,
+      vol-root-entry-count = 0,
+      vol-fat-sectors = 0,
+      vol-fat-start = 0,
+      vol-root-start = 0,
+      vol-data-start = 0,
+      vol-total-sectors = 0,
+      vol-cluster-count = 0
+    }
+
   fat16-parse-bpb : Integer, Integer -> Fat16Volume
   fat16-parse-bpb (part-start) (buf) =
     let bps = fat16-read-u16 buf 11
     in let spc = peek-byte buf 13
-    in let reserved = fat16-read-u16 buf 14
+    in if bps == 0 then fat16-zero-volume part-start
+    else if spc == 0 then fat16-zero-volume part-start
+    else let reserved = fat16-read-u16 buf 14
     in let nfats = peek-byte buf 16
     in let root-cnt = fat16-read-u16 buf 17
     in let fat-sz = fat16-read-u16 buf 22
@@ -61,6 +94,9 @@ Section: BPB Parsing
     in let root-dir-sectors = (root-cnt * 32 + bps - 1) / bps
     in let root-start = fat-start + nfats * fat-sz
     in let data-start = root-start + root-dir-sectors
+    in let total = fat16-total-sectors buf
+    in let data-sectors = total - (data-start - part-start)
+    in let clusters = if data-sectors <= 0 then 0 else data-sectors / spc
     in Fat16Volume {
       vol-part-start = part-start,
       vol-bytes-per-sector = bps,
@@ -71,8 +107,22 @@ Section: BPB Parsing
       vol-fat-sectors = fat-sz,
       vol-fat-start = fat-start,
       vol-root-start = root-start,
-      vol-data-start = data-start
+      vol-data-start = data-start,
+      vol-total-sectors = total,
+      vol-cluster-count = clusters
     }
+
+ The 16-bit total-sector count at offset 19 is zero on any volume that does
+ not fit in it, and the real count is then the 32-bit field at offset 32.
+ Reading only the first would size every volume above 32 MB as empty, which
+ is not a small error here: vol-cluster-count is the bound on the free-cluster
+ scan, and a bound of zero means the allocator reports a full disk on a disk
+ that is entirely free.
+
+  fat16-total-sectors : Integer -> Integer
+  fat16-total-sectors (buf) =
+    let small = fat16-read-u16 buf 19
+    in if small == 0 then fat16-read-u32 buf 32 else small
 
 Section: FAT Chain
 
@@ -88,6 +138,679 @@ Section: FAT Chain
   fat16-cluster-sector : Fat16Volume, Integer -> Integer
   fat16-cluster-sector (vol) (cluster) =
     (vol.vol-data-start) + (cluster - 2) * (vol.vol-sectors-per-cluster)
+
+Section: Writing The FAT
+
+ A volume carries vol-num-fats copies of the FAT, laid end to end after the
+ reserved sectors, and they are not decoration -- they are the redundancy the
+ format is built on. A driver that updates one copy and not the others leaves
+ a disk whose two answers to "what follows this cluster" disagree, and the
+ next thing to mount it is entitled to believe either one. Every write here
+ goes to every copy. That is what fat16-write-fat-entry is for, and it is why
+ nothing below it writes a FAT sector directly.
+
+ fat16-read-fat-entry takes a copy index because the test needs to interrogate
+ the copies separately -- asking copy 1 whether it agrees with copy 0 is the
+ only way to catch a writer that quietly updates just the first.
+
+  fat16-write-u16 : Integer, Integer, Integer -> Integer
+  fat16-write-u16 (buf) (off) (val) =
+    let lo = poke-byte buf off (bit-and val 255)
+    in poke-byte buf (off + 1) (bit-and (bit-shru val 8) 255)
+
+  fat16-fat-entry-sector : Fat16Volume, Integer, Integer -> Integer
+  fat16-fat-entry-sector (vol) (fat-index) (cluster) =
+    (vol.vol-fat-start) + fat-index * (vol.vol-fat-sectors)
+      + (cluster * 2) / (vol.vol-bytes-per-sector)
+
+  fat16-fat-entry-offset : Fat16Volume, Integer -> Integer
+  fat16-fat-entry-offset (vol) (cluster) =
+    int-mod (cluster * 2) (vol.vol-bytes-per-sector)
+
+  fat16-read-fat-entry : Fat16Volume, Integer, Integer -> [Device.Block] Integer
+  fat16-read-fat-entry (vol) (fat-index) (cluster) = act
+    buf <- block-read-sector (fat16-fat-entry-sector vol fat-index cluster)
+    fat16-read-u16 buf (fat16-fat-entry-offset vol cluster)
+  end
+
+  fat16-write-fat-entry : Fat16Volume, Integer, Integer -> [Device.Block] Integer
+  fat16-write-fat-entry (vol) (cluster) (value) =
+    fat16-write-fat-copies vol 0 cluster value
+
+  fat16-write-fat-copies : Fat16Volume, Integer, Integer, Integer -> [Device.Block] Integer
+  fat16-write-fat-copies (vol) (i) (cluster) (value) =
+    if i >= (vol.vol-num-fats) then 0
+    else act
+      buf <- block-read-sector (fat16-fat-entry-sector vol i cluster)
+      s <- fat16-put-fat-entry vol i cluster value buf
+      fat16-write-fat-copies vol (i + 1) cluster value
+    end
+
+  fat16-put-fat-entry : Fat16Volume, Integer, Integer, Integer, Integer -> [Device.Block] Integer
+  fat16-put-fat-entry (vol) (fat-index) (cluster) (value) (buf) =
+    let w = fat16-write-u16 buf (fat16-fat-entry-offset vol cluster) value
+    in block-write-sector (fat16-fat-entry-sector vol fat-index cluster) buf
+
+Section: Allocating A Cluster
+
+ The scan reads a FAT sector once and walks every entry in it before moving
+ on. That is not tidiness: block-read-sector bump-allocates a fresh 512-byte
+ buffer on every call and never frees it, so asking it one cluster at a time
+ would cost 512 bytes per cluster examined -- megabytes to cross a FAT, on a
+ machine with no garbage collector. Per sector, it costs 512 bytes per 256
+ clusters.
+
+ A free entry is 0. Clusters number from 2, and the last valid one is
+ vol-cluster-count + 1. Zero is returned when the volume is full, because 0
+ is not a cluster anyone can allocate -- it is the free marker itself.
+
+  fat16-last-cluster : Fat16Volume -> Integer
+  fat16-last-cluster (vol) = (vol.vol-cluster-count) + 1
+
+  fat16-find-free-cluster : Fat16Volume -> [Device.Block] Integer
+  fat16-find-free-cluster (vol) = fat16-scan-free-sectors vol 2
+
+  fat16-scan-free-sectors : Fat16Volume, Integer -> [Device.Block] Integer
+  fat16-scan-free-sectors (vol) (c) =
+    if c > fat16-last-cluster vol then 0
+    else act
+      buf <- block-read-sector (fat16-fat-entry-sector vol 0 c)
+      fat16-scan-free-step vol c buf
+    end
+
+  fat16-scan-free-step : Fat16Volume, Integer, Integer -> [Device.Block] Integer
+  fat16-scan-free-step (vol) (c) (buf) =
+    let per-sector = (vol.vol-bytes-per-sector) / 2
+    in let sector-last = (c / per-sector) * per-sector + per-sector - 1
+    in let upto = min sector-last (fat16-last-cluster vol)
+    in let found = fat16-scan-free-in-sector vol buf c upto
+    in if found > 0 then found
+       else fat16-scan-free-sectors vol (sector-last + 1)
+
+  fat16-scan-free-in-sector : Fat16Volume, Integer, Integer, Integer -> Integer
+  fat16-scan-free-in-sector (vol) (buf) (c) (upto) =
+    if c > upto then 0
+    else if fat16-read-u16 buf (fat16-fat-entry-offset vol c) == 0 then c
+    else fat16-scan-free-in-sector vol buf (c + 1) upto
+
+  fat16-alloc-cluster : Fat16Volume -> [Device.Block] Integer
+  fat16-alloc-cluster (vol) = act
+    c <- fat16-find-free-cluster vol
+    fat16-claim-cluster vol c
+  end
+
+  fat16-claim-cluster : Fat16Volume, Integer -> [Device.Block] Integer
+  fat16-claim-cluster (vol) (c) =
+    if c == 0 then 0
+    else act
+      w <- fat16-write-fat-entry vol c 65535
+      if w == 0 then c else 0
+    end
+
+Section: Writing Bytes Into Clusters
+
+ A sector is written by reading it, poking the bytes that change, and writing
+ it back. That is not a wasted read: block-write-sector writes a whole 512-byte
+ buffer, and the only way to get a buffer here is block-read-sector, which
+ allocates one. Read-modify-write costs nothing extra and it is the only shape
+ that does not need an allocator of its own.
+
+ An act block here never ends on a bare value. `w <- write-something ...`
+ followed by a lone `True`, or a lone `c`, parses in the source only if the
+ application is parenthesised -- and the text emitter does not reprint those
+ parentheses, so the re-emitted source stops parsing and the text round-trip
+ goes red. The source compiling is not the standard; the source the emitter
+ prints has to compile too. The fix is to end on something a parser can never
+ mistake for a trailing argument, which means an `if`. Both places that needed
+ it got more honest for the trouble: they now report what the write actually
+ returned instead of assuming it worked.
+
+ The tail of the last cluster is zero-filled rather than left as whatever the
+ disk happened to hold. A file whose final cluster carries the previous
+ tenant's bytes past end-of-file is a disclosure, not a formatting detail.
+
+  fat16-bytes-per-cluster : Fat16Volume -> Integer
+  fat16-bytes-per-cluster (vol) =
+    (vol.vol-bytes-per-sector) * (vol.vol-sectors-per-cluster)
+
+  fat16-clusters-needed : Fat16Volume, Integer -> Integer
+  fat16-clusters-needed (vol) (n) =
+    if n == 0 then 1
+    else (n + fat16-bytes-per-cluster vol - 1) / (fat16-bytes-per-cluster vol)
+
+  fat16-fill-sector : Integer, List Integer, Integer, Integer, Integer -> Integer
+  fat16-fill-sector (buf) (bytes) (start) (i) (bps) =
+    if i >= bps then 0
+    else let src = start + i
+    in let b = if src < list-length bytes then list-at bytes src else 0
+    in let w = poke-byte buf i b
+    in fat16-fill-sector buf bytes start (i + 1) bps
+
+  fat16-write-data-sector : Fat16Volume, Integer, List Integer, Integer -> [Device.Block] Integer
+  fat16-write-data-sector (vol) (sector) (bytes) (start) = act
+    buf <- block-read-sector sector
+    fat16-put-data-sector vol sector bytes start buf
+  end
+
+  fat16-put-data-sector : Fat16Volume, Integer, List Integer, Integer, Integer -> [Device.Block] Integer
+  fat16-put-data-sector (vol) (sector) (bytes) (start) (buf) =
+    let f = fat16-fill-sector buf bytes start 0 (vol.vol-bytes-per-sector)
+    in block-write-sector sector buf
+
+  fat16-write-cluster : Fat16Volume, Integer, List Integer, Integer, Integer -> [Device.Block] Integer
+  fat16-write-cluster (vol) (cluster) (bytes) (start) (i) =
+    if i >= (vol.vol-sectors-per-cluster) then 0
+    else let sec = fat16-cluster-sector vol cluster + i
+    in let at = start + i * (vol.vol-bytes-per-sector)
+    in act
+      w <- fat16-write-data-sector vol sec bytes at
+      fat16-write-cluster vol cluster bytes start (i + 1)
+    end
+
+ The chain is built as it is written: allocate a cluster, fill it, and only
+ then decide whether another is needed. Each new cluster is claimed as
+ end-of-chain first and the previous link is repointed at it afterwards, so
+ the FAT never contains a link to a cluster that is not yet marked as owned.
+ A crash between the two leaves a lost cluster, which chkdsk understands; the
+ other order leaves a chain running into free space, which it does not.
+
+  fat16-write-chain : Fat16Volume, Integer, List Integer, Integer -> [Device.Block] Integer
+  fat16-write-chain (vol) (cluster) (bytes) (start) = act
+    w <- fat16-write-cluster vol cluster bytes start 0
+    fat16-extend-chain vol cluster bytes (start + fat16-bytes-per-cluster vol)
+  end
+
+  fat16-extend-chain : Fat16Volume, Integer, List Integer, Integer -> [Device.Block] Integer
+  fat16-extend-chain (vol) (prev) (bytes) (start) =
+    if start >= list-length bytes then 1
+    else act
+      next <- fat16-alloc-cluster vol
+      fat16-link-and-continue vol prev next bytes start
+    end
+
+  fat16-link-and-continue : Fat16Volume, Integer, Integer, List Integer, Integer -> [Device.Block] Integer
+  fat16-link-and-continue (vol) (prev) (next) (bytes) (start) =
+    if next == 0 then 0
+    else act
+      l <- fat16-write-fat-entry vol prev next
+      fat16-write-chain vol next bytes start
+    end
+
+Section: Writing A Directory Entry
+
+ FAT short names are the OEM character set -- ASCII, on any disk anyone will
+ hand us. Codex Text is CCE. char-code returns the CCE code point, so writing
+ it raw would put CCE on the disk: "CODEX" would go down as bytes no other
+ reader recognises, and our own reader would agree with it perfectly, because
+ fat16-extract-name maps back through the same table. to-unicode is the
+ boundary, and it is the same boundary from-unicode crosses on the way in.
+
+  fat16-name-byte : Text, Integer -> Integer
+  fat16-name-byte (s) (i) =
+    if i >= text-length s then 32
+    else to-unicode (char-code (char-at s i))
+
+  fat16-poke-83 : Integer, Integer, Text, Text -> Integer
+  fat16-poke-83 (buf) (off) (base) (ext) =
+    let b = fat16-poke-run buf off base 0 8
+    in fat16-poke-run buf (off + 8) ext 0 3
+
+  fat16-poke-run : Integer, Integer, Text, Integer, Integer -> Integer
+  fat16-poke-run (buf) (off) (s) (i) (n) =
+    if i >= n then 0
+    else let w = poke-byte buf (off + i) (fat16-name-byte s i)
+    in fat16-poke-run buf off s (i + 1) n
+
+  fat16-base-of : Text -> Text
+  fat16-base-of (name) =
+    let dot = text-index-of name "."
+    in if dot < 0 then fat16-upper name
+       else fat16-upper (text-substring name 0 dot)
+
+  fat16-ext-of : Text -> Text
+  fat16-ext-of (name) =
+    let dot = text-index-of name "."
+    in if dot < 0 then ""
+       else fat16-upper (text-substring name (dot + 1) (text-length name - dot - 1))
+
+  fat16-poke-dir-entry : Integer, Integer, Text, Integer, Integer, Integer -> Integer
+  fat16-poke-dir-entry (buf) (off) (name) (attr) (cluster) (size) =
+    let n = fat16-poke-83 buf off (fat16-base-of name) (fat16-ext-of name)
+    in let a = poke-byte buf (off + 11) attr
+    in let z = fat16-zero-run buf (off + 12) 0 14
+    in let c = fat16-write-u16 buf (off + 26) cluster
+    in let s1 = fat16-write-u16 buf (off + 28) (bit-and size 65535)
+    in fat16-write-u16 buf (off + 30) (bit-and (bit-shru size 16) 65535)
+
+  fat16-zero-run : Integer, Integer, Integer, Integer -> Integer
+  fat16-zero-run (buf) (off) (i) (n) =
+    if i >= n then 0
+    else let w = poke-byte buf (off + i) 0
+    in fat16-zero-run buf off (i + 1) n
+
+ A free root slot is one whose first byte is 0 (never used) or 0xE5 (deleted).
+ The root directory is a flat region of vol-root-entry-count entries; there is
+ no chain to follow and no growing it. A full root is a real condition on
+ FAT16 and it is reported, not worked around.
+
+  fat16-find-free-slot : Fat16Volume -> [Device.Block] Integer
+  fat16-find-free-slot (vol) =
+    fat16-scan-slot-sectors vol (vol.vol-root-start) 0
+
+  fat16-root-sector-count : Fat16Volume -> Integer
+  fat16-root-sector-count (vol) =
+    ((vol.vol-root-entry-count) * 32 + (vol.vol-bytes-per-sector) - 1)
+      / (vol.vol-bytes-per-sector)
+
+  fat16-scan-slot-sectors : Fat16Volume, Integer, Integer -> [Device.Block] Integer
+  fat16-scan-slot-sectors (vol) (sector) (i) =
+    if i >= fat16-root-sector-count vol then 0 - 1
+    else act
+      buf <- block-read-sector sector
+      fat16-scan-slot-step vol sector i buf
+    end
+
+  fat16-scan-slot-step : Fat16Volume, Integer, Integer, Integer -> [Device.Block] Integer
+  fat16-scan-slot-step (vol) (sector) (i) (buf) =
+    let found = fat16-free-slot-in-sector buf 0 ((vol.vol-bytes-per-sector) / 32)
+    in if found >= 0 then sector * 512 + found
+       else fat16-scan-slot-sectors vol (sector + 1) (i + 1)
+
+  fat16-free-slot-in-sector : Integer, Integer, Integer -> Integer
+  fat16-free-slot-in-sector (buf) (i) (n) =
+    if i >= n then 0 - 1
+    else let first = peek-byte buf (i * 32)
+    in if first == 0 then i * 32
+       else if first == 229 then i * 32
+       else fat16-free-slot-in-sector buf (i + 1) n
+
+ The same search, over a cluster chain instead of the root's fixed region.
+ A subdirectory has no root-entry-count to bound it and no contiguity to
+ assume: it is a chain, so this follows the chain exactly as the read side
+ does, and gives up when the chain ends rather than when a count runs out.
+ It answers the same thing fat16-find-free-slot answers -- a byte address, or
+ -1 -- so fat16-create-at-slot cannot tell the two apart, which is the whole
+ reason writing into a subdirectory needed no new write code.
+
+ The free-slot test itself is shared (fat16-free-slot-in-sector): a slot is
+ free when its first byte is 0 or 0xE5, and that is true of a directory's
+ cluster exactly as it is of the root.
+
+  fat16-find-free-slot-in-dir : Fat16Volume, Integer -> [Device.Block] Integer
+  fat16-find-free-slot-in-dir (vol) (cluster) =
+    if fat16-is-end cluster then 0 - 1
+    else act
+      found <- fat16-scan-dir-slot-sectors vol (fat16-cluster-sector vol cluster) (vol.vol-sectors-per-cluster)
+      fat16-free-slot-or-next vol cluster found
+    end
+
+  fat16-free-slot-or-next : Fat16Volume, Integer, Integer -> [Device.Block] Integer
+  fat16-free-slot-or-next (vol) (cluster) (found) =
+    if found >= 0 then found
+    else fat16-find-free-slot-in-dir vol (fat16-next-cluster vol cluster)
+
+  fat16-scan-dir-slot-sectors : Fat16Volume, Integer, Integer -> [Device.Block] Integer
+  fat16-scan-dir-slot-sectors (vol) (sector) (remaining) =
+    if remaining == 0 then 0 - 1
+    else act
+      buf <- block-read-sector sector
+      fat16-scan-dir-slot-step vol sector remaining buf
+    end
+
+  fat16-scan-dir-slot-step : Fat16Volume, Integer, Integer, Integer -> [Device.Block] Integer
+  fat16-scan-dir-slot-step (vol) (sector) (remaining) (buf) =
+    let found = fat16-free-slot-in-sector buf 0 ((vol.vol-bytes-per-sector) / 32)
+    in if found >= 0 then sector * 512 + found
+       else fat16-scan-dir-slot-sectors vol (sector + 1) (remaining - 1)
+
+Section: Growing A Directory
+
+ A subdirectory whose every slot is taken is not full in the way a root is
+ full. The root is a fixed region between the FATs and the data area and it
+ genuinely cannot grow. A subdirectory is a cluster chain, and a chain is
+ exactly the thing that can have another cluster put on the end of it. Both
+ refusals used to read the same from outside -- False, nothing written -- so a
+ volume with a gigabyte free would decline to record a file, and the caller
+ could not tell that from the honest refusal of a full root.
+
+ This is the search's tail, not a new search. fat16-find-free-slot-in-dir
+ answers -1 when it runs off the end of the chain; the only question that -1
+ leaves open is whether the chain could be longer. So the answer is layered on
+ rather than folded in: find first, and grow only when the find comes back
+ empty. A directory that has a free slot never allocates anything.
+
+ The order is claim, zero, then link, and each step is the reason the next one
+ is safe. fat16-alloc-cluster marks the new cluster as end-of-chain before
+ anyone points at it, so the FAT never carries a link into free space. Zeroing
+ happens before the link for the same reason it happens when a directory is
+ born: a reader stops at the first slot whose first byte is zero, so a cluster
+ joined to the chain still holding its last tenant's bytes would read as
+ entries -- deleted files reappearing inside a directory that never had them.
+ Link last, and the growth is invisible until it is complete and correct.
+
+ A failure at any step answers -1, which is the same no the caller already
+ handles, and leaves at worst a claimed cluster attached to nothing. That is a
+ lost cluster, which chkdsk understands and reclaims; the alternative orders
+ lose data instead.
+
+  fat16-find-or-grow-slot-in-dir : Fat16Volume, Integer -> [Device.Block] Integer
+  fat16-find-or-grow-slot-in-dir (vol) (cluster) = act
+    found <- fat16-find-free-slot-in-dir vol cluster
+    fat16-slot-or-grow vol cluster found
+  end
+
+  fat16-slot-or-grow : Fat16Volume, Integer, Integer -> [Device.Block] Integer
+  fat16-slot-or-grow (vol) (cluster) (found) =
+    if found >= 0 then found
+    else act
+      last <- fat16-last-cluster-of vol cluster
+      fat16-grow-dir-at vol last
+    end
+
+ The walk stops on anything that is not a cluster a chain can continue into,
+ not only on the end-of-chain marker. A free entry (0) or a reserved one (1)
+ in the middle of a chain is a corrupt volume, and treating it as the end
+ stops here rather than recursing forever on a disk that lies.
+
+  fat16-dir-chain-ends-at : Integer -> Boolean
+  fat16-dir-chain-ends-at (c) =
+    if c < 2 then True else fat16-is-end c
+
+  fat16-last-cluster-of : Fat16Volume, Integer -> [Device.Block] Integer
+  fat16-last-cluster-of (vol) (cluster) = act
+    next <- fat16-next-cluster vol cluster
+    if fat16-dir-chain-ends-at next then cluster else fat16-last-cluster-of vol next
+  end
+
+  fat16-grow-dir-at : Fat16Volume, Integer -> [Device.Block] Integer
+  fat16-grow-dir-at (vol) (last) = act
+    fresh <- fat16-alloc-cluster vol
+    fat16-grow-dir-with vol last fresh
+  end
+
+  fat16-grow-dir-with : Fat16Volume, Integer, Integer -> [Device.Block] Integer
+  fat16-grow-dir-with (vol) (last) (fresh) =
+    if fresh == 0 then 0 - 1
+    else act
+      z <- fat16-zero-dir-cluster vol fresh 0
+      fat16-link-grown-dir vol last fresh
+    end
+
+  fat16-zero-dir-cluster : Fat16Volume, Integer, Integer -> [Device.Block] Integer
+  fat16-zero-dir-cluster (vol) (cluster) (i) =
+    if i >= (vol.vol-sectors-per-cluster) then 0
+    else act
+      w <- fat16-write-data-sector vol (fat16-cluster-sector vol cluster + i) [] 0
+      fat16-zero-dir-cluster vol cluster (i + 1)
+    end
+
+ The grown cluster's first slot is its first byte, because the cluster was
+ just zeroed and every slot in it is free.
+
+  fat16-link-grown-dir : Fat16Volume, Integer, Integer -> [Device.Block] Integer
+  fat16-link-grown-dir (vol) (last) (fresh) = act
+    l <- fat16-write-fat-entry vol last fresh
+    if l == 0 then fat16-cluster-sector vol fresh * 512 else 0 - 1
+  end
+
+Section: Creating A File
+
+ fat16-create-file answers True only when the entry is on the disk and every
+ cluster of the file is behind it. It refuses rather than half-writes: no free
+ cluster, no free slot, or a parent directory that does not exist all return
+ False with nothing written.
+
+ A subdirectory target used to be refused outright, and the refusal was honest
+ while the parent walk was unwritten -- dropping "a/b.txt" into the root under
+ the name "A" would have been worse than saying no. The walk is written now,
+ and it turned out to be the smaller half of the job: everything below
+ fat16-create-at-slot takes a slot as a byte address and does not care where
+ that address came from. The root is a flat fixed region and a subdirectory is
+ a cluster chain, so finding the free slot is the only thing that differs, and
+ finding it is the only new code. The chain walk itself is the read side's
+ (fat16-walk-path), used verbatim to resolve the parent.
+
+ A parent whose every slot is taken is no longer refused: a subdirectory is a
+ cluster chain and grows one when it runs out, which is the Growing A
+ Directory section above. A full ROOT is still refused, and that refusal is
+ the honest one -- the root is a fixed region and there is nowhere for it to
+ go.
+
+  fat16-create-file : Fat16Volume, Text, List Integer -> [Device.Block] Boolean
+  fat16-create-file (vol) (name) (bytes) =
+    if fat16-scope-admits name == False then False
+    else if fat16-vol-is-usable vol == False then False
+    else if text-contains name "/" then fat16-create-in-subdir vol name bytes
+    else act
+      slot <- fat16-find-free-slot vol
+      fat16-create-at-slot vol name bytes slot
+    end
+
+ The parent is parts[0..n-2] and the leaf is parts[n-1], so resolving the
+ parent is fat16-walk-path over one fewer part than the path has. A single
+ name would leave nothing to walk, which is why n < 2 is refused here rather
+ than reaching the walk -- it cannot happen through fat16-create-file, whose
+ slash test is what sent us here, but this function does not get to assume its
+ caller.
+
+  fat16-create-in-subdir : Fat16Volume, Text, List Integer -> [Device.Block] Boolean
+  fat16-create-in-subdir (vol) (path) (bytes) =
+    let parts = fat16-split-path path
+    in let n = list-length parts
+    in if n < 2 then False
+    else when fat16-walk-path vol parts 0 (n - 1)
+      is None -> False
+      is Just (dir) -> fat16-create-in-dir-entry vol dir (list-at parts (n - 1)) bytes
+
+ A parent that resolves but is a FILE is refused. Without this test the entry
+ would be written into whatever data cluster the file's contents occupy, which
+ corrupts the file and produces a directory entry no walk will ever find.
+
+  fat16-create-in-dir-entry : Fat16Volume, Fat16DirEntry, Text, List Integer -> [Device.Block] Boolean
+  fat16-create-in-dir-entry (vol) (dir) (leaf) (bytes) =
+    if bit-and (dir.de-attr) 16 == 16
+      then fat16-create-in-cluster-dir vol (dir.de-cluster) leaf bytes
+      else False
+
+  fat16-create-in-cluster-dir : Fat16Volume, Integer, Text, List Integer -> [Device.Block] Boolean
+  fat16-create-in-cluster-dir (vol) (cluster) (leaf) (bytes) = act
+    slot <- fat16-find-or-grow-slot-in-dir vol cluster
+    fat16-create-at-slot vol leaf bytes slot
+  end
+
+  fat16-create-at-slot : Fat16Volume, Text, List Integer, Integer -> [Device.Block] Boolean
+  fat16-create-at-slot (vol) (name) (bytes) (slot) =
+    if slot < 0 then False
+    else act
+      first <- fat16-alloc-cluster vol
+      fat16-create-with-cluster vol name bytes slot first
+    end
+
+  fat16-create-with-cluster : Fat16Volume, Text, List Integer, Integer, Integer -> [Device.Block] Boolean
+  fat16-create-with-cluster (vol) (name) (bytes) (slot) (first) =
+    if first == 0 then False
+    else act
+      w <- fat16-write-chain vol first bytes 0
+      fat16-commit-entry vol name bytes slot first w
+    end
+
+  fat16-commit-entry : Fat16Volume, Text, List Integer, Integer, Integer, Integer -> [Device.Block] Boolean
+  fat16-commit-entry (vol) (name) (bytes) (slot) (first) (ok) =
+    if ok == 0 then False
+    else act
+      buf <- block-read-sector (slot / 512)
+      fat16-put-entry-and-write vol name bytes slot first buf
+    end
+
+  fat16-put-entry-and-write : Fat16Volume, Text, List Integer, Integer, Integer, Integer -> [Device.Block] Boolean
+  fat16-put-entry-and-write (vol) (name) (bytes) (slot) (first) (buf) =
+    let p = fat16-poke-dir-entry buf (int-mod slot 512) name 32 first (list-length bytes)
+    in act
+      s <- block-write-sector (slot / 512) buf
+      if s == 0 then True else False
+    end
+
+Section: Creating A Directory
+
+ create-directory was a compiler builtin that could not create a directory.
+ Its emitter raised CDX2043 and said so, which was honest and is better than
+ the write-file builtin it sat next to (that one printed to the console and
+ reported success). But an honest refusal is still a refusal, and a filesystem
+ a program can write into but cannot make a directory in is a strange shape.
+ So it is here now, next to write-file and file-exists, for the same reason
+ they are: the machine does not know what a directory is, and FAT16 does.
+
+ A directory is a file whose contents are directory entries and whose attr
+ bit 0x10 is set. Making one is: claim a cluster, zero it so no previous
+ tenant's bytes read as entries, write . and .. into its first two slots, and
+ commit an entry for it in the parent. The dot entries are not decoration --
+ .. is how every walker climbs, and its cluster is 0 when the parent is the
+ root, which is the spec's convention and not the root's actual sector.
+
+ Zeroing the cluster is load-bearing rather than tidy. A directory's extent is
+ not recorded anywhere: a reader stops at the first slot whose first byte is
+ 0. Leave the cluster as found and whatever bytes were there are read as
+ entries, so the new directory is born holding the deleted contents of
+ whatever used it last.
+
+ It refuses rather than half-writes, the same as fat16-create-file: no free
+ cluster, no free slot, a parent that does not exist, a parent that is a file,
+ or a name already taken all answer False with nothing written.
+
+  fat16-create-directory : Fat16Volume, Text -> [Device.Block] Boolean
+  fat16-create-directory (vol) (path) =
+    if fat16-scope-admits path == False then False
+    else if fat16-vol-is-usable vol == False then False
+    else if text-length path == 0 then False
+    else act
+      taken <- fat16-resolve-path vol path
+      fat16-mkdir-if-free vol path taken
+    end
+
+ A name that already exists is refused before anything is claimed. Without
+ this, making a directory twice would allocate a second cluster and commit a
+ second entry under the same name -- two directories, one name, and a walk
+ that finds whichever comes first.
+
+  fat16-mkdir-if-free : Fat16Volume, Text, Maybe Fat16DirEntry -> [Device.Block] Boolean
+  fat16-mkdir-if-free (vol) (path) (taken) = when taken
+    is Just (e) -> False
+    is None ->
+      if text-contains path "/" then fat16-mkdir-in-subdir vol path
+      else fat16-mkdir-in-root vol path
+
+  fat16-mkdir-in-root : Fat16Volume, Text -> [Device.Block] Boolean
+  fat16-mkdir-in-root (vol) (name) = act
+    slot <- fat16-find-free-slot vol
+    fat16-mkdir-at-slot vol name slot 0
+  end
+
+  fat16-mkdir-in-subdir : Fat16Volume, Text -> [Device.Block] Boolean
+  fat16-mkdir-in-subdir (vol) (path) =
+    let parts = fat16-split-path path
+    in let n = list-length parts
+    in if n < 2 then False
+    else when fat16-walk-path vol parts 0 (n - 1)
+      is None -> False
+      is Just (dir) -> fat16-mkdir-under vol dir (list-at parts (n - 1))
+
+  fat16-mkdir-under : Fat16Volume, Fat16DirEntry, Text -> [Device.Block] Boolean
+  fat16-mkdir-under (vol) (dir) (leaf) =
+    if bit-and (dir.de-attr) 16 == 16
+      then fat16-mkdir-in-cluster vol (dir.de-cluster) leaf
+      else False
+
+  fat16-mkdir-in-cluster : Fat16Volume, Integer, Text -> [Device.Block] Boolean
+  fat16-mkdir-in-cluster (vol) (parent) (leaf) = act
+    slot <- fat16-find-or-grow-slot-in-dir vol parent
+    fat16-mkdir-at-slot vol leaf slot parent
+  end
+
+  fat16-mkdir-at-slot : Fat16Volume, Text, Integer, Integer -> [Device.Block] Boolean
+  fat16-mkdir-at-slot (vol) (name) (slot) (parent) =
+    if slot < 0 then False
+    else act
+      first <- fat16-alloc-cluster vol
+      fat16-mkdir-with-cluster vol name slot parent first
+    end
+
+  fat16-mkdir-with-cluster : Fat16Volume, Text, Integer, Integer, Integer -> [Device.Block] Boolean
+  fat16-mkdir-with-cluster (vol) (name) (slot) (parent) (first) =
+    if first == 0 then False
+    else act
+      z <- fat16-mkdir-init-cluster vol first parent 0
+      fat16-mkdir-commit vol name slot first
+    end
+
+ The cluster is zeroed a sector at a time through the same read-modify-write
+ the data path uses, and the dot entries go into the first sector after it is
+ clear. An empty byte list fills the sector with zeroes, which is exactly what
+ fat16-fill-sector does past the end of its input.
+
+  fat16-mkdir-init-cluster : Fat16Volume, Integer, Integer, Integer -> [Device.Block] Integer
+  fat16-mkdir-init-cluster (vol) (cluster) (parent) (i) =
+    if i >= (vol.vol-sectors-per-cluster) then fat16-mkdir-write-dots vol cluster parent
+    else act
+      w <- fat16-write-data-sector vol (fat16-cluster-sector vol cluster + i) [] 0
+      fat16-mkdir-init-cluster vol cluster parent (i + 1)
+    end
+
+  fat16-mkdir-write-dots : Fat16Volume, Integer, Integer -> [Device.Block] Integer
+  fat16-mkdir-write-dots (vol) (cluster) (parent) = act
+    buf <- block-read-sector (fat16-cluster-sector vol cluster)
+    fat16-mkdir-poke-dots vol cluster parent buf
+  end
+
+  fat16-mkdir-poke-dots : Fat16Volume, Integer, Integer, Integer -> [Device.Block] Integer
+  fat16-mkdir-poke-dots (vol) (cluster) (parent) (buf) =
+    let d1 = fat16-poke-dot-entry buf 0 1 cluster
+    in let d2 = fat16-poke-dot-entry buf 32 2 parent
+    in block-write-sector (fat16-cluster-sector vol cluster) buf
+
+ The dot entries cannot go through fat16-poke-dir-entry, and this is the kind
+ of thing that is obvious only once. That function writes an 8.3 name via
+ fat16-base-of, which splits on the FIRST dot and keeps what is before it --
+ so "." yields an empty base and an empty extension, and the entry lands as
+ eleven spaces. The directory would be created, it would look fine in a
+ listing, and nothing would ever climb out of it, because .. would not be
+ there under any name a walker looks for. So the two dot names are poked as
+ literal bytes (46 is '.'), space-padded to 11, and the rest of the entry is
+ laid out exactly as fat16-poke-dir-entry lays it out.
+
+  fat16-poke-dot-entry : Integer, Integer, Integer, Integer -> Integer
+  fat16-poke-dot-entry (buf) (off) (dots) (cluster) =
+    let n = fat16-poke-dot-name buf off dots
+    in let a = poke-byte buf (off + 11) 16
+    in let z = fat16-zero-run buf (off + 12) 0 14
+    in let c = fat16-write-u16 buf (off + 26) cluster
+    in let s1 = fat16-write-u16 buf (off + 28) 0
+    in fat16-write-u16 buf (off + 30) 0
+
+  fat16-poke-dot-name : Integer, Integer, Integer -> Integer
+  fat16-poke-dot-name (buf) (off) (dots) =
+    let d1 = poke-byte buf off 46
+    in let d2 = if dots > 1 then poke-byte buf (off + 1) 46 else 0
+    in fat16-fill-run buf (off + dots) 0 (11 - dots) 32
+
+  fat16-fill-run : Integer, Integer, Integer, Integer, Integer -> Integer
+  fat16-fill-run (buf) (off) (i) (n) (v) =
+    if i >= n then 0
+    else let w = poke-byte buf (off + i) v
+    in fat16-fill-run buf off (i + 1) n v
+
+  fat16-mkdir-commit : Fat16Volume, Text, Integer, Integer -> [Device.Block] Boolean
+  fat16-mkdir-commit (vol) (name) (slot) (first) = act
+    buf <- block-read-sector (slot / 512)
+    fat16-mkdir-put-entry vol name slot first buf
+  end
+
+  fat16-mkdir-put-entry : Fat16Volume, Text, Integer, Integer, Integer -> [Device.Block] Boolean
+  fat16-mkdir-put-entry (vol) (name) (slot) (first) (buf) =
+    let p = fat16-poke-dir-entry buf (int-mod slot 512) name 16 first 0
+    in act
+      s <- block-write-sector (slot / 512) buf
+      if s == 0 then True else False
+    end
 
 Section: Directory Reading
 
@@ -216,9 +939,39 @@ Section: Path Resolution
     else let c = char-at s i
     in fat16-upper-loop s (i + 1) len (acc & char-to-text (to-upper c))
 
+ The runtime half of the scope check (BACKLOG 1.5). A capability effect
+ may carry a scope literal naming the resources the grant covers, and
+ until now nothing read it at runtime: the compiler refused an
+ out-of-scope path it could SEE, and a path computed at runtime walked
+ straight past the promise. A grant that only binds the paths you wrote
+ as literals is not a grant, it is a lint.
+
+ The relation is a PREFIX, and it is a prefix because the effect family
+ is a filesystem one -- the same judgement scope-admits makes in the
+ type checker, where a network grant is an authority and a console
+ grant is a channel instead. Scope is not one relation. Do not
+ "simplify" this into a single text-starts-with shared with those.
+
+ An empty scope admits everything, which is what an unscoped grant
+ means and what the empty prefix already says by itself. That is also
+ why process-get-scope never answers with a null.
+
+ There is NO single chokepoint here, and believing there was one is how
+ this nearly shipped with every write ungated. Reads funnel through
+ fat16-resolve-path. Writes do NOT -- they go to fat16-create-file. The
+ root listing goes through neither. So the gate is applied three times,
+ and a fourth caller that reaches the disk another way needs a fourth.
+
+  fat16-scope-admits : Text -> Boolean
+  fat16-scope-admits (path) =
+    let grant = process-get-scope process-get-pid
+    in if text-length grant == 0 then True
+       else text-starts-with path grant
+
   fat16-resolve-path : Fat16Volume, Text -> [Device.Block] Maybe Fat16DirEntry
   fat16-resolve-path (vol) (path) =
-    let parts = fat16-split-path path
+    if fat16-scope-admits path == False then None
+    else let parts = fat16-split-path path
     in fat16-walk-path vol parts 0 (list-length parts)
 
   fat16-walk-path : Fat16Volume, List Text, Integer, Integer -> [Device.Block] Maybe Fat16DirEntry
@@ -309,11 +1062,121 @@ Section: File Reading
       is Just (entry) -> True
       is None -> False
 
+Section: Asking Whether A File Is There
+
+ file-exists was a compiler builtin whose entire body was one
+ instruction, `li rd, 1`. It returned True for every path, existing or
+ not, so every existence check in every program took the same branch and
+ took it for the same reason: nobody was looking. It is a real lookup
+ now, and it lives here rather than in the emitter because the machine
+ has no idea what a file is. FAT16 does, and FAT16 is written in Codex,
+ over the block device, a few lines above.
+
+ The disk is asked about first, and that guard is not politeness. With no
+ disk attached the block device hands back zeroes, the boot record parses
+ into a volume whose bytes-per-sector is zero, and the first thing that
+ divides by it takes the machine down. No disk means no files: that is an
+ answer, not a fault.
+
+ The guard asked the wrong thing, and asking it wrongly cost the whole
+ function. It called block-sector-count, which returned 0 on a disk that was
+ attached and read perfectly, so the guard fired every time and file-exists
+ answered False for every path on every disk. The builtin it replaced
+ answered True for every path. Same disease, opposite constant, and the
+ second one is harder to see, because a missing file is a believable answer.
+
+ That counter is fixed now (2026-07-13). The cause was not the guest: the ATA
+ IDENTIFY was always correct. codex-vm returned 0xFF for the LBA-mid and
+ LBA-high registers, which is the floating-bus "no drive" answer, and reading
+ 0x00/0x00 there after a drive select IS the ATA device signature -- so the
+ drive detect concluded there was no disk and branched away before ever
+ issuing IDENTIFY. Reads worked throughout, because READ SECTORS writes those
+ registers and the write path was fine.
+
+ The guard below still does not consult it, and should not. Whether the volume
+ parses is the question this function actually needs answered, and it is the
+ one that stays right no matter what the counter does.
+
+ So ask the volume, which is the thing actually at risk. A no-disk volume
+ parses out of a sector of zeroes and its bytes-per-sector is zero; that is
+ the value the division would fault on, and it is the value to refuse. The
+ check is now local to what it protects and depends on nothing else -- which
+ is why it did not need revisiting when the counter was repaired, and why it
+ should not start leaning on it again.
+
+  fat16-boot-partition-start : Integer = 2048
+
+  fat16-vol-is-usable : Fat16Volume -> Boolean
+  fat16-vol-is-usable (vol) =
+    (vol.vol-bytes-per-sector) > 0 & (vol.vol-sectors-per-cluster) > 0
+
+  file-exists : Text -> [Device.Block] Boolean
+  file-exists (path) = fat16-exists-on-disk path
+
+  fat16-exists-on-disk : Text -> [Device.Block] Boolean
+  fat16-exists-on-disk (path) = act
+    vol <- fat16-init fat16-boot-partition-start
+    if fat16-vol-is-usable vol == False then False
+    else fat16-file-exists vol path
+  end
+
+Section: Saving A File
+
+ write-file was a compiler builtin that printed its content to the console and
+ reported success. A program that saved a file saved nothing and was told
+ otherwise -- silent data loss, and the loudest possible argument for why a
+ name the compiler cannot keep should not be in the emitter. It refused
+ honestly (CDX2043) for a while, which was better. This is better still: it
+ writes the file.
+
+ The effect row is [Device.Block] and not [FileSystem.Write], because
+ [Device.Block] is what it actually does. There is no filesystem beneath this
+ -- there is a disk, and a FAT16 volume we parse ourselves, and the row says
+ so. A caller that wanted the fiction can no longer have it.
+
+ These return Boolean, not Nothing. Saving is exactly the operation whose
+ failure a caller must be able to see: the disk can be full, the root
+ directory can be full, and both are ordinary. A save that cannot fail is the
+ builtin we just deleted.
+
+ The names carry the fat16- prefix, and that is deliberate rather than
+ timid. Foreword chapter FileSystem declares write-file as an *effect
+ operation* -- the abstract, handler-dispatched interface -- and a bare
+ write-file defined here would collide with it in any chapter citing both.
+ That is the duplicate-name hazard the backlog already tracks; it is not
+ worth spending on a shorter name. file-exists took the bare name because
+ nothing else claims it.
+
+  fat16-text-bytes : Text, Integer, Integer, List Integer -> List Integer
+  fat16-text-bytes (s) (i) (n) (acc) =
+    if i >= n then acc
+    else let b = to-unicode (char-code (char-at s i))
+    in fat16-text-bytes s (i + 1) n (list-push acc b)
+
+  fat16-write-file : Text, Text -> [Device.Block] Boolean
+  fat16-write-file (path) (content) =
+    let bytes = fat16-text-bytes content 0 (text-length content) []
+    in fat16-write-binary-file path bytes
+
+  fat16-write-binary-file : Text, List Integer -> [Device.Block] Boolean
+  fat16-write-binary-file (path) (bytes) = act
+    vol <- fat16-init fat16-boot-partition-start
+    fat16-create-file vol path bytes
+  end
+
 Section: Root Listing
+
+ A scoped grant may not enumerate the root. Listing "/" answers with
+ every name on the volume, including the ones the scope exists to keep
+ out of reach, and a grant over "/config/" does not admit "/". This is
+ the third gate, and it is the one a reader would never think to look
+ for: neither fat16-list-root nor fat16-root-entries touches
+ fat16-resolve-path, so neither of them was covered by the read gate.
 
   fat16-list-root : Fat16Volume -> [Device.Block] List Text
   fat16-list-root (vol) =
-    let root-sectors = ((vol.vol-root-entry-count) * 32 + (vol.vol-bytes-per-sector) - 1) / (vol.vol-bytes-per-sector)
+    if fat16-scope-admits "/" == False then []
+    else let root-sectors = ((vol.vol-root-entry-count) * 32 + (vol.vol-bytes-per-sector) - 1) / (vol.vol-bytes-per-sector)
     in fat16-list-root-sectors vol (vol.vol-root-start) root-sectors 0 []
 
   fat16-list-root-sectors : Fat16Volume, Integer, Integer, Integer, List Text -> [Device.Block] List Text
@@ -341,5 +1204,143 @@ Section: Root Listing
     else if fat16-is-volume-label buf off then fat16-list-sector-entries buf (i + 1) count acc
     else let entry = fat16-read-dir-entry buf off
     in fat16-list-sector-entries buf (i + 1) count (list-push acc (entry.de-name))
+
+Section: Listing Any Directory
+
+ fat16-list-root answers for the root and drops everything but the name,
+ which is enough to show a listing and not enough to answer a question
+ about it. list-files and list-directories need the attribute byte, to
+ tell a file from a directory, and they need to reach a named directory
+ and not only the root -- fat16-resolve-path already walks the tree to
+ read a file, so the walk is not new here, only its use.
+
+ The listing is by entry. A caller filters for what it came for.
+
+  fat16-entries-in-sector : Integer, Integer, Integer, List Fat16DirEntry -> List Fat16DirEntry
+  fat16-entries-in-sector (buf) (i) (count) (acc) =
+    if i >= count then acc
+    else let off = i * 32
+    in if fat16-is-free-entry buf off then
+      if peek-byte buf off == 0 then acc
+      else fat16-entries-in-sector buf (i + 1) count acc
+    else if fat16-is-lfn-entry buf off then fat16-entries-in-sector buf (i + 1) count acc
+    else if fat16-is-volume-label buf off then fat16-entries-in-sector buf (i + 1) count acc
+    else fat16-entries-in-sector buf (i + 1) count (list-push acc (fat16-read-dir-entry buf off))
+
+  fat16-root-entries : Fat16Volume -> [Device.Block] List Fat16DirEntry
+  fat16-root-entries (vol) =
+    if fat16-scope-admits "/" == False then []
+    else let root-sectors = ((vol.vol-root-entry-count) * 32 + (vol.vol-bytes-per-sector) - 1) / (vol.vol-bytes-per-sector)
+    in fat16-root-entry-sectors vol (vol.vol-root-start) root-sectors 0 []
+
+  fat16-root-entry-sectors : Fat16Volume, Integer, Integer, Integer, List Fat16DirEntry -> [Device.Block] List Fat16DirEntry
+  fat16-root-entry-sectors (vol) (sector) (remaining) (checked) (acc) =
+    if remaining == 0 then acc
+    else if checked >= (vol.vol-root-entry-count) then acc
+    else act
+      buf <- block-read-sector sector
+      let per = (vol.vol-bytes-per-sector) / 32
+      in fat16-root-entry-sectors vol (sector + 1) (remaining - 1) (checked + per) (fat16-entries-in-sector buf 0 per acc)
+    end
+
+ A directory that is not the root is a cluster chain, exactly like a file.
+
+  fat16-cluster-entries : Fat16Volume, Integer, List Fat16DirEntry -> [Device.Block] List Fat16DirEntry
+  fat16-cluster-entries (vol) (cluster) (acc) =
+    if fat16-is-end cluster then acc
+    else act
+      here <- fat16-cluster-entry-sectors vol (fat16-cluster-sector vol cluster) (vol.vol-sectors-per-cluster) acc
+      next <- fat16-next-cluster vol cluster
+      fat16-cluster-entries vol next here
+    end
+
+  fat16-cluster-entry-sectors : Fat16Volume, Integer, Integer, List Fat16DirEntry -> [Device.Block] List Fat16DirEntry
+  fat16-cluster-entry-sectors (vol) (sector) (remaining) (acc) =
+    if remaining == 0 then acc
+    else act
+      buf <- block-read-sector sector
+      let per = (vol.vol-bytes-per-sector) / 32
+      in fat16-cluster-entry-sectors vol (sector + 1) (remaining - 1) (fat16-entries-in-sector buf 0 per acc)
+    end
+
+  fat16-is-root-path : Text -> Boolean
+  fat16-is-root-path (p) =
+    text-length p == 0 | p == "/" | p == "."
+
+  fat16-is-dir-entry : Fat16DirEntry -> Boolean
+  fat16-is-dir-entry (e) = bit-and (e.de-attr) 16 == 16
+
+  fat16-list-dir : Fat16Volume, Text -> [Device.Block] List Fat16DirEntry
+  fat16-list-dir (vol) (path) =
+    if fat16-is-root-path path then fat16-root-entries vol
+    else act
+      found <- fat16-resolve-path vol path
+      when found
+        is Just (entry) ->
+          if fat16-is-dir-entry entry then fat16-cluster-entries vol (entry.de-cluster) []
+          else []
+        is None -> []
+    end
+
+Section: Listing A Directory By Name
+
+ list-files and list-directories were compiler builtins with no emitter.
+ They resolved, they type-checked, and the build died at emit. They live
+ here for the same reason file-exists does: the machine does not know what
+ a directory is, and FAT16 does.
+
+ They take a path, not just the root. FAT16 stores 8.3 names, so the
+ extension a caller filters on is at most three characters; an empty
+ extension matches every file. The dot and dot-dot entries are not
+ directories anyone asked for and are dropped.
+
+ No disk means no files, and the volume is what says so: with nothing
+ attached the boot record parses out of zeroes and its bytes-per-sector is
+ zero, which is the value the division would fault on. Ask the volume, not
+ block-sector-count -- that counter reads 0 on a disk that works, and
+ resting a filesystem answer on it is what made file-exists answer False
+ for every path on every disk.
+
+  list-files : Text, Text -> [Device.Block] List Text
+  list-files (dir) (ext) = act
+    vol <- fat16-init fat16-boot-partition-start
+    if fat16-vol-is-usable vol == False then []
+    else act
+      entries <- fat16-list-dir vol dir
+      fat16-pick-files entries 0 (list-length entries) ext []
+    end
+  end
+
+  fat16-pick-files : List Fat16DirEntry, Integer, Integer, Text, List Text -> List Text
+  fat16-pick-files (es) (i) (n) (ext) (acc) =
+    if i >= n then acc
+    else let e = list-at es i
+    in if fat16-is-dir-entry e then fat16-pick-files es (i + 1) n ext acc
+    else if fat16-name-has-ext (e.de-name) ext then fat16-pick-files es (i + 1) n ext (list-push acc (e.de-name))
+    else fat16-pick-files es (i + 1) n ext acc
+
+  fat16-name-has-ext : Text, Text -> Boolean
+  fat16-name-has-ext (name) (ext) =
+    if text-length ext == 0 then True
+    else text-ends-with (fat16-upper name) (fat16-upper ext)
+
+  list-directories : Text -> [Device.Block] List Text
+  list-directories (dir) = act
+    vol <- fat16-init fat16-boot-partition-start
+    if fat16-vol-is-usable vol == False then []
+    else act
+      entries <- fat16-list-dir vol dir
+      fat16-pick-dirs entries 0 (list-length entries) []
+    end
+  end
+
+  fat16-pick-dirs : List Fat16DirEntry, Integer, Integer, List Text -> List Text
+  fat16-pick-dirs (es) (i) (n) (acc) =
+    if i >= n then acc
+    else let e = list-at es i
+    in if fat16-is-dir-entry e == False then fat16-pick-dirs es (i + 1) n acc
+    else if (e.de-name) == "." then fat16-pick-dirs es (i + 1) n acc
+    else if (e.de-name) == ".." then fat16-pick-dirs es (i + 1) n acc
+    else fat16-pick-dirs es (i + 1) n (list-push acc (e.de-name))
 
 Page 1

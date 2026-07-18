@@ -1,0 +1,307 @@
+Chapter: Interval
+
+ The shared interval-arithmetic kernel for the compiler's two range
+ provers. The checker's aexpr-proven-range and the emitter's
+ ir-expr-proven-range each carry a private, hand-written copy of
+ interval arithmetic today; both refuse everything but non-negative
+ operands, so a named local holding a provably small signed value has
+ no provable range at all. This chapter is the single kernel both
+ provers will consume, written for full signed i64 semantics and
+ verified by an exhaustive containment test
+ (codex/test/interval-exhaustive.codex) in the ConstantRange
+ discipline: every transfer function states its soundness contract in
+ prose, and the test checks that contract against the runtime's own
+ operators for every interval over a small universe. The kernel is
+ pure arithmetic over a two-field record; it allocates one record per
+ call and nothing else.
+
+ An Interval is the set of signed 64-bit integers { v : lo <= v <= hi }
+ with INCLUSIVE endpoints. The full i64 range is the "unknown"
+ interval: it is always a sound answer, and every transfer function
+ returns it whenever an endpoint computation would overflow i64. The
+ kernel proves containment only - no relational facts, no strides, no
+ known bits; the full list of what it deliberately does not do is in
+ the Limitations section at the end.
+
+Section: Representation
+
+ Two distinguished values. iv-unknown is the full i64 range, the
+ sound answer of last resort. iv-empty is the empty interval - the
+ witness that no value can flow, produced by intersecting disjoint
+ ranges. Empty is represented by lo > hi, tested by iv-is-empty, and
+ every function in this chapter that produces an empty result returns
+ the one canonical value iv-empty, never any other lo > hi pair.
+ Returning iv-unknown for an empty intersection would be sound but
+ lossy; the distinguished empty is one comparison and keeps
+ dead-branch facts exact. A transfer function handed an empty operand
+ returns iv-empty: the soundness contracts below quantify over the
+ concrete members of the inputs, and an empty input has none, so the
+ empty result is vacuously sound and maximally precise.
+
+  Interval = record {
+   lo : Integer,
+   hi : Integer
+  }
+
+ The i64 endpoint constants. The compiler defines i64-min and i64-max
+ in the Codex Types chapter, but this chapter must stand alone for
+ consumers that cite only the kernel, and redefining those names here
+ would collide in the self-compile unit, so the kernel carries its
+ own prefixed copies.
+
+  iv-i64-max : Integer = 9223372036854775807
+
+  iv-i64-min : Integer = 0 - 9223372036854775807 - 1
+
+  iv-unknown : Interval = Interval { lo = iv-i64-min, hi = iv-i64-max }
+
+  iv-empty : Interval = Interval { lo = 1, hi = 0 }
+
+  iv-is-unknown : Interval -> Boolean
+  iv-is-unknown (a) = a.lo == iv-i64-min & a.hi == iv-i64-max
+
+  iv-is-empty : Interval -> Boolean
+  iv-is-empty (a) = a.lo > a.hi
+
+  iv-exact : Integer -> Interval
+  iv-exact (n) = Interval { lo = n, hi = n }
+
+Section: Overflow Refusal
+
+ Predicates that decide whether an i64 endpoint computation would
+ overflow, without themselves overflowing. Addition uses the standard
+ rearrangement: a + b overflows iff b > 0 and a > max - b, or b <= 0
+ and a < min - b; both right-hand sides stay in range under their
+ guards. Subtraction mirrors it. Multiplication compares against a
+ truncating division of the endpoint constants - Codex integer
+ division truncates toward zero, which is exactly the rounding these
+ bounds need - after handling the two corners where either operand is
+ -1 against i64-min, because negating i64-min is itself an overflow.
+
+  iv-add-overflows : Integer, Integer -> Boolean
+  iv-add-overflows (a) (b) =
+   if b > 0 then a > iv-i64-max - b
+   else a < iv-i64-min - b
+
+  iv-sub-overflows : Integer, Integer -> Boolean
+  iv-sub-overflows (a) (b) =
+   if b > 0 then a < iv-i64-min + b
+   else a > iv-i64-max + b
+
+  iv-mul-overflows : Integer, Integer -> Boolean
+  iv-mul-overflows (a) (b) =
+   if a == 0 | b == 0 then False
+   else if a == 0 - 1 then b == iv-i64-min
+   else if b == 0 - 1 then a == iv-i64-min
+   else if b > 0 then a > iv-i64-max / b | a < iv-i64-min / b
+   else a > iv-i64-min / b | a < iv-i64-max / b
+
+ Integer minimum and maximum, used to order corner results below.
+
+  iv-int-min : Integer, Integer -> Integer
+  iv-int-min (a) (b) = if a <= b then a else b
+
+  iv-int-max : Integer, Integer -> Integer
+  iv-int-max (a) (b) = if a >= b then a else b
+
+Section: Addition
+
+ SOUNDNESS CONTRACT: for every concrete pair (x, y) with x in the
+ input's range and y in the other input's range, the concrete result
+ x + y lies inside the returned interval. Addition is monotone in
+ both arguments, so the exact bounds are the endpoint sums; if either
+ endpoint sum would overflow i64, the answer is iv-unknown, which is
+ always sound.
+
+  iv-add : Interval, Interval -> Interval
+  iv-add (a) (b) =
+   if iv-is-empty a | iv-is-empty b then iv-empty
+   else if iv-add-overflows (a.lo) (b.lo) | iv-add-overflows (a.hi) (b.hi) then iv-unknown
+   else Interval { lo = a.lo + b.lo, hi = a.hi + b.hi }
+
+Section: Subtraction
+
+ SOUNDNESS CONTRACT: for every concrete pair (x, y) with x in the
+ input's range and y in the other input's range, the concrete result
+ x - y lies inside the returned interval. Subtraction is monotone up
+ in the left argument and monotone down in the right, so the exact
+ bounds are lo = a.lo - b.hi and hi = a.hi - b.lo; if either would
+ overflow i64, the answer is iv-unknown.
+
+  iv-sub : Interval, Interval -> Interval
+  iv-sub (a) (b) =
+   if iv-is-empty a | iv-is-empty b then iv-empty
+   else if iv-sub-overflows (a.lo) (b.hi) | iv-sub-overflows (a.hi) (b.lo) then iv-unknown
+   else Interval { lo = a.lo - b.hi, hi = a.hi - b.lo }
+
+Section: Negation
+
+ SOUNDNESS CONTRACT: for every concrete x in the input's range, the
+ concrete result 0 - x lies inside the returned interval. Negation
+ swaps and negates the endpoints exactly, except that negating
+ iv-i64-min overflows, so any interval containing it answers
+ iv-unknown.
+
+  iv-neg : Interval -> Interval
+  iv-neg (a) =
+   if iv-is-empty a then iv-empty
+   else if a.lo == iv-i64-min then iv-unknown
+   else Interval { lo = 0 - a.hi, hi = 0 - a.lo }
+
+Section: Multiplication
+
+ SOUNDNESS CONTRACT: for every concrete pair (x, y) with x in the
+ input's range and y in the other input's range, the concrete result
+ x * y lies inside the returned interval. For fixed x the product is
+ monotone in y (direction given by the sign of x) and symmetrically
+ for fixed y, so over the input box the extremes are attained at the
+ four corners; the result is the min and max of the four corner
+ products. If any corner product would overflow i64, the answer is
+ iv-unknown.
+
+  iv-mul : Interval, Interval -> Interval
+  iv-mul (a) (b) =
+   if iv-is-empty a | iv-is-empty b then iv-empty
+   else if iv-mul-overflows (a.lo) (b.lo) | iv-mul-overflows (a.lo) (b.hi) | iv-mul-overflows (a.hi) (b.lo) | iv-mul-overflows (a.hi) (b.hi) then iv-unknown
+   else let p1 = a.lo * b.lo
+   in let p2 = a.lo * b.hi
+   in let p3 = a.hi * b.lo
+   in let p4 = a.hi * b.hi
+   in Interval {
+    lo = iv-int-min (iv-int-min p1 p2) (iv-int-min p3 p4),
+    hi = iv-int-max (iv-int-max p1 p2) (iv-int-max p3 p4)
+   }
+
+Section: Division
+
+ SOUNDNESS CONTRACT: for every concrete pair (x, y) with x in the
+ input's range, y in the other input's range, and y not zero, the
+ concrete result x / y lies inside the returned interval. Codex
+ division truncates toward zero (idiv), and truncating division is
+ monotone in the dividend for a fixed divisor and monotone in the
+ divisor over a divisor range of fixed sign, so the extremes over the
+ box are attained at the four corners. A divisor range containing
+ zero answers iv-unknown: the range still holds nonzero divisors
+ whose quotients must be contained, and unknown contains them all.
+ The single overflowing corner, iv-i64-min divided by -1, also
+ answers iv-unknown; a negative divisor range contains -1 exactly
+ when its high endpoint is -1.
+
+  iv-div : Interval, Interval -> Interval
+  iv-div (a) (b) =
+   if iv-is-empty a | iv-is-empty b then iv-empty
+   else if b.lo <= 0 & b.hi >= 0 then iv-unknown
+   else if a.lo == iv-i64-min & b.hi == 0 - 1 then iv-unknown
+   else let q1 = a.lo / b.lo
+   in let q2 = a.lo / b.hi
+   in let q3 = a.hi / b.lo
+   in let q4 = a.hi / b.hi
+   in Interval {
+    lo = iv-int-min (iv-int-min q1 q2) (iv-int-min q3 q4),
+    hi = iv-int-max (iv-int-max q1 q2) (iv-int-max q3 q4)
+   }
+
+Section: Modulo
+
+ SOUNDNESS CONTRACT: for every concrete pair (x, y) with x in the
+ input's range, y in the other input's range, and y not zero, the
+ concrete result int-mod x y lies inside the returned interval. What
+ the runtime actually does (emit-int-mod-builtin in
+ Emit/X86_64Builtins.codex): idiv leaves the truncated remainder,
+ which carries the sign of the DIVIDEND, and a negative remainder is
+ then corrected by adding the absolute value of the divisor. The
+ result is therefore Euclidean - always in [0, abs(y) - 1] - for
+ every sign combination, negative dividends and negative divisors
+ included. The bound is [0, m] where m is the largest abs(y) - 1 over
+ the divisor corners; abs(iv-i64-min) - 1 is exactly iv-i64-max, so
+ the magnitude is computable at every corner. A divisor range
+ containing zero answers iv-unknown, same argument as division.
+
+  iv-mod-mag : Integer -> Integer
+  iv-mod-mag (n) =
+   if n == iv-i64-min then iv-i64-max
+   else if n < 0 then (0 - n) - 1
+   else n - 1
+
+  iv-mod : Interval, Interval -> Interval
+  iv-mod (a) (b) =
+   if iv-is-empty a | iv-is-empty b then iv-empty
+   else if b.lo <= 0 & b.hi >= 0 then iv-unknown
+   else Interval { lo = 0, hi = iv-int-max (iv-mod-mag (b.lo)) (iv-mod-mag (b.hi)) }
+
+Section: Union
+
+ SOUNDNESS CONTRACT: every concrete x in either input's range lies
+ inside the returned interval. The result is the convex hull - the
+ gap between disjoint inputs is included, because an interval cannot
+ represent it. An empty side contributes nothing and the other side
+ is returned unchanged. No overflow is possible: the result endpoints
+ are copies of input endpoints.
+
+  iv-union : Interval, Interval -> Interval
+  iv-union (a) (b) =
+   if iv-is-empty a & iv-is-empty b then iv-empty
+   else if iv-is-empty a then b
+   else if iv-is-empty b then a
+   else Interval { lo = iv-int-min (a.lo) (b.lo), hi = iv-int-max (a.hi) (b.hi) }
+
+Section: Intersection
+
+ SOUNDNESS CONTRACT: every concrete x that lies in BOTH inputs'
+ ranges lies inside the returned interval; the returned interval is
+ in fact exactly the set of such x. Disjoint inputs produce the
+ canonical iv-empty. An empty input needs no special case: taking the
+ max of the lows and the min of the highs against any lo > hi pair
+ yields lo > hi again, which normalizes to iv-empty.
+
+  iv-intersect : Interval, Interval -> Interval
+  iv-intersect (a) (b) =
+   let n-lo = iv-int-max (a.lo) (b.lo)
+   in let n-hi = iv-int-min (a.hi) (b.hi)
+   in if n-lo > n-hi then iv-empty
+   else Interval { lo = n-lo, hi = n-hi }
+
+Section: Minimum and Maximum
+
+ SOUNDNESS CONTRACT: for every concrete pair (x, y) with x in the
+ input's range and y in the other input's range, the concrete result
+ min(x, y) lies inside the returned interval - and symmetrically for
+ max. min(x, y) is at least the smaller lo and at most the smaller hi
+ (it is bounded above by both x and y separately); max mirrors the
+ argument with the larger endpoints. Both are exact and cannot
+ overflow.
+
+  iv-min : Interval, Interval -> Interval
+  iv-min (a) (b) =
+   if iv-is-empty a | iv-is-empty b then iv-empty
+   else Interval { lo = iv-int-min (a.lo) (b.lo), hi = iv-int-min (a.hi) (b.hi) }
+
+  iv-max : Interval, Interval -> Interval
+  iv-max (a) (b) =
+   if iv-is-empty a | iv-is-empty b then iv-empty
+   else Interval { lo = iv-int-max (a.lo) (b.lo), hi = iv-int-max (a.hi) (b.hi) }
+
+Section: Limitations
+
+ What this kernel provably does not do, so nobody rediscovers the
+ gaps the hard way.
+
+ It carries no relational facts: it cannot express i != j, x < y, or
+ any link between two expressions - each interval is an independent
+ fact about one value. It carries no stride or congruence information
+ (an interval of even numbers is indistinguishable from its hull) and
+ no known-bits domain. It refuses to iv-unknown whenever ANY endpoint
+ computation would overflow i64; there are no wrapping intervals, so
+ a sum that overflows loses everything, not just the overflowing end.
+ Division and modulo refuse the whole answer when the divisor range
+ merely CONTAINS zero - no splitting of a mixed-sign divisor range
+ around zero is attempted. The modulo bound is magnitude-only,
+ [0, max abs(divisor) - 1]: it does not exploit the dividend at all,
+ so int-mod of a small non-negative dividend by a large divisor is
+ not recognized as the dividend itself. Union returns the convex
+ hull, losing any gap between disjoint inputs. And the empty interval
+ is a single canonical witness, not a representation of arbitrary
+ empty sets: consumers must test with iv-is-empty, never compare
+ endpoints of an empty result.
+
+Page 1

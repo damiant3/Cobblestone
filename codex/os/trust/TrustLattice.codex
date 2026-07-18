@@ -62,36 +62,79 @@ Section: Lattice Operations
 
 Section: Trust Computation
 
+ Every voucher is re-scored by walking its own vouchers, so without a memo
+ the walk is a tree of fan-out b truncated at depth 5: b + b^2 + ... + b^5
+ nodes, exponential in the vouch fan-out (BACKLOG 6.4). Measured on a dense
+ graph before this memo existed, one lookup cost 2 ticks at b=15, 34 at
+ b=23 and 89 at b=27 -- the last two ratios are 2.83 and 2.62 against a
+ b^5 prediction of 2.75 and 2.61, so the shape was real and not a guess.
+ Nearly five seconds for a single score, and an import pays this at build
+ time.
+
+ THE MEMO IS KEYED ON THE AGENT AND THE DEPTH, AND KEYING IT ON THE AGENT
+ ALONE WOULD BE WRONG. The depth cap truncates the walk, so an agent's
+ score is a function of how much depth budget is left when it is reached:
+ at depth 5 `best-vouch-score` asks at depth 6, is refused by the cap, and
+ the score collapses to `direct-score`, while the same agent at depth 0
+ gets the full five-deep walk. An agent with no direct score and one good
+ voucher genuinely scores above zero at depth 0 and exactly zero at depth
+ 5. Cache that under a bare agent name and the first answer poisons every
+ later one.
+
+ The memo is a `mutable` record, and every function here returns an
+ Integer rather than the memo, so each one BORROWS it -- which is what
+ lets `best-vouch-score` hand the same memo to both the voucher's lookup
+ and its own tail on one path. A function that RETURNED the memo would
+ consume it and the second hand-off would be CDX2062.
+
+ One memo per public lookup: it lives as long as the answer takes and its
+ size is bounded by agents x 6, so the exponential recomputation is traded
+ for a table that cannot outgrow the lattice.
+
+  mutable TrustMemo = record {
+    scores : HamtMap Integer
+  }
+
+  memo-key : Text, Integer -> Text
+  memo-key (agent) (depth) = agent & "@" & show depth
+
   lattice-trust-score : TrustLattice, Text -> Integer
   lattice-trust-score (lat) (agent) =
-    let entry = hamt-get (lat.entries) agent
-    in when entry
-      is Just (e) -> compute-trust lat e 0
-      is None -> trust-none
+    let memo = TrustMemo { scores = hamt-empty }
+    in lattice-trust-score-at-depth lat memo agent 0
 
-  compute-trust : TrustLattice, TrustEntry, Integer -> Integer
-  compute-trust (lat) (entry) (depth) =
+  compute-trust : TrustLattice, TrustMemo, TrustEntry, Integer -> Integer
+  compute-trust (lat) (memo) (entry) (depth) =
     if depth > 5 then trust-none
     else let direct = entry.direct-score
-    in let indirect = best-vouch-score lat (entry.vouches) 0 (list-length (entry.vouches)) depth
+    in let indirect = best-vouch-score lat memo (entry.vouches) 0 (list-length (entry.vouches)) depth
     in max-int direct indirect
 
-  best-vouch-score : TrustLattice, List Vouch, Integer, Integer, Integer -> Integer
-  best-vouch-score (lat) (vouches) (i) (len) (depth) =
+  best-vouch-score : TrustLattice, TrustMemo, List Vouch, Integer, Integer, Integer -> Integer
+  best-vouch-score (lat) (memo) (vouches) (i) (len) (depth) =
     if i == len then trust-none
     else let v = list-at vouches i
-    in let voucher-trust = lattice-trust-score-at-depth lat (v.from) (depth + 1)
+    in let voucher-trust = lattice-trust-score-at-depth lat memo (v.from) (depth + 1)
     in let decayed = decay-trust voucher-trust (v.score)
-    in let rest = best-vouch-score lat vouches (i + 1) len depth
+    in let rest = best-vouch-score lat memo vouches (i + 1) len depth
     in max-int decayed rest
 
-  lattice-trust-score-at-depth : TrustLattice, Text, Integer -> Integer
-  lattice-trust-score-at-depth (lat) (agent) (depth) =
+  lattice-trust-score-at-depth : TrustLattice, TrustMemo, Text, Integer -> Integer
+  lattice-trust-score-at-depth (lat) (memo) (agent) (depth) =
     if depth > 5 then trust-none
-    else let entry = hamt-get (lat.entries) agent
-    in when entry
-      is Just (e) -> compute-trust lat e depth
+    else let cached = hamt-get (memo.scores) (memo-key agent depth)
+    in when cached
+      is Just (c) -> c
+      is None -> score-and-memo lat memo agent depth
+
+  score-and-memo : TrustLattice, TrustMemo, Text, Integer -> Integer
+  score-and-memo (lat) (memo) (agent) (depth) =
+    let entry = hamt-get (lat.entries) agent
+    in let score = when entry
+      is Just (e) -> compute-trust lat memo e depth
       is None -> trust-none
+    in let __seq = memo.scores = hamt-set (memo.scores) (memo-key agent depth) score
+    in score
 
   decay-trust : Integer, Integer -> Integer
   decay-trust (voucher-score) (vouch-strength) =

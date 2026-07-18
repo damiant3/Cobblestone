@@ -1,0 +1,34 @@
+Chapter: ScopeLetArmEscape
+  cites Foreword chapter Console
+
+ BACKLOG 2.22, the adversarial half. `inner` is bound only inside the
+ if-arm's let, and the arm has ended by the time `w + inner` runs, so
+ the read is out of scope and this program must not compile.
+
+ This rejects at the read, by name, with a line and a column. Getting
+ there took removing the same aliasing bug from three places, and the
+ diagnostic names which one is answering:
+
+ The EMITTER used to answer, with `CDX2040: Unresolved call to 'inner'
+ (redirected to __unresolved_trap)` -- a call the author never wrote --
+ because `env-bind-local` and `scope-add-local` both wrote their binding
+ into the CALLER's scope, so the name was still bound when the arm ended
+ and both the resolver and the checker let it through.
+
+ Then the CHECKER answered (CDX2002), once the type environment stopped
+ aliasing. Now the RESOLVER answers (CDX3002), which is the right phase:
+ an out-of-scope name is a resolution question, and the resolver reaches
+ it first. If this test ever reports CDX2002 or CDX2040 again, a scope
+ fork has been lost -- the program is still rejected, so only the CODE
+ tells you the discipline regressed.
+
+Section: Entry
+
+  escapes : Integer -> Integer
+  escapes (n) =
+   let w = if n > 0 then let inner = n * 10 in inner + 1 else 0
+   in w + inner
+
+  opening : [Console] Nothing = act
+   print-line-uni ("escapes: " & integer-to-text (escapes 2))
+  end

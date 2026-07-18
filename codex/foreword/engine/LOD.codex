@@ -65,16 +65,21 @@ Section: LOD Selection
 
 Section: Screen-Space Size Estimation
 
+ MeshBounds are integer world coordinates and Mat4 is Real, so the centre
+ crosses into clip space and the pixel size crosses back. At v4w = 1.0 the w
+ is a true homogeneous coordinate; the old code passed 1000 and then divided
+ the thousandths back out again.
+
   lod-screen-size : MeshBounds, Mat4, Integer, Integer -> Integer
   lod-screen-size (bounds) (mvp) (vp-w) (vp-h) =
     let cx = (bounds.mb-min-x + bounds.mb-max-x) / 2
     in let cy = (bounds.mb-min-y + bounds.mb-max-y) / 2
     in let cz = (bounds.mb-min-z + bounds.mb-max-z) / 2
     in let radius = lod-max3 (bounds.mb-max-x - bounds.mb-min-x) (bounds.mb-max-y - bounds.mb-min-y) (bounds.mb-max-z - bounds.mb-min-z) / 2
-    in let clip = mat4-transform-vec4 mvp (Vec4 { v4x = cx, v4y = cy, v4z = cz, v4w = 1000 })
-    in if clip.v4w <= 0 then 0
-    else let ndc-radius = radius * 1000 / clip.v4w
-    in let pixel-size = ndc-radius * vp-h / 1000
+    in let clip = mat4-transform-vec4 mvp (Vec4 { v4x = real-from-int cx, v4y = real-from-int cy, v4z = real-from-int cz, v4w = 1.0 })
+    in if clip.v4w <= 0.0 then 0
+    else let ndc-radius = real-from-int radius / clip.v4w
+    in let pixel-size = real-to-int (ndc-radius * real-from-int vp-h)
     in if pixel-size < 0 then 0 - pixel-size else pixel-size
 
 Section: Bayer Dither Matrix (4x4)

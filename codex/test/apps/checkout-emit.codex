@@ -1,0 +1,85 @@
+Chapter: CheckoutEmit
+  cites Works chapter RepoProtocolPersist
+  cites Works chapter KeyManager
+  cites Foreword chapter FactStore
+  cites Foreword chapter Hamt
+  cites Foreword chapter Maybe
+  cites Foreword chapter Sha256
+  cites Kernel chapter DiskFacts
+  cites Kernel chapter AppPersist
+  cites Foreword chapter Console
+
+ Stage one of two. This program stores a REAL PROGRAM in the fact store, revises
+ it, checks the current tree back out, and prints it -- and what it prints is
+ fed straight to the compiler by build/test-compile-from-store.ps1, which then
+ runs the result.
+
+ If that binary prints its greeting, a program was compiled out of the fact
+ store. That sentence has been the point of BACKLOG 6.1 since the founding
+ document, and this is the first time it is literally true.
+
+ On its own -- as a BVT test -- this pins the checkout BYTE FOR BYTE, because
+ its expected output IS the source the store hands back. If a single character
+ of the stored program is corrupted, reordered, truncated or superseded
+ incorrectly, the expected file will not match, and it will not match in a way
+ you can read.
+
+ The first edition is WRONG ON PURPOSE. If the checkout ever takes it, the
+ compiled binary announces the fact instead of the greeting, and stage two fails
+ loudly rather than passing a lie.
+
+Section: The Program We Are Going To Store
+
+  program-v1 : Text
+  program-v1 =
+    "Chapter: Stored\n"
+    & "  cites Foreword chapter Console\n"
+    & "\n"
+    & "Section: Body\n"
+    & "\n"
+    & "  opening : [Console.Write] Nothing = act\n"
+    & "    print-line-uni \"THE SUPERSEDED EDITION -- checkout is broken\"\n"
+    & "  end\n"
+    & "\n"
+    & "Page 1\n"
+
+  program-v2 : Text
+  program-v2 =
+    "Chapter: Stored\n"
+    & "  cites Foreword chapter Console\n"
+    & "\n"
+    & "Section: Body\n"
+    & "\n"
+    & "  greeting : Text\n"
+    & "  greeting = \"I was compiled out of the fact store.\"\n"
+    & "\n"
+    & "  opening : [Console.Write] Nothing = act\n"
+    & "    print-line-uni greeting\n"
+    & "  end\n"
+    & "\n"
+    & "Page 1\n"
+
+Section: Helpers
+
+  press : Keypair
+  press = generate-keypair (sha256 (text-to-bytes "checkout-emit"))
+
+  def-of : Text, Text -> SourceDefinition
+  def-of (path) (body) =
+    SourceDefinition {
+      sd-hash = "", sd-path = path, sd-quire = "Stored", sd-chapter = "Stored",
+      sd-signer = "", sd-signature = [], sd-author = "", sd-timestamp = 0,
+      sd-content = body
+    }
+
+Section: Entry
+
+  opening : [Device.Block, Console.Write] Nothing = act
+    let s0 = disk-init
+    in let s1 = repo-persist-save-definition s0 (sign-definition press (def-of "stored.codex" program-v1) 1) 1
+    in let s2 = repo-persist-save-definition s1 (sign-definition press (def-of "stored.codex" program-v2) 2) 2
+    in let ix = repo-index-from-disk disk-load
+    in print-uni (repo-checkout ix)
+  end
+
+Page 1

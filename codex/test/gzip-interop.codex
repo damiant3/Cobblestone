@@ -1,0 +1,61 @@
+Chapter: GzipInterop
+  cites Compress chapter Deflate
+  cites Compress chapter Gzip
+
+ A probe for build/gzip-interop-test.ps1. It prints each input and its
+ Gzip- and raw-Deflate-compressed bytes as decimals so python's zlib -- an
+ independent RFC 1951/1952 decoder -- can prove our output is genuinely
+ interoperable, not merely decodable by our own decoder. Both a compressible
+ input (which takes the dynamic-Huffman block) and a full-entropy input (which
+ must fall back to a stored block without inflating past it) are checked, so the
+ stored fallback is proven zlib-valid too. No .expected: the harness is the
+ judge, so the file carries a .skip.
+
+ We say:
+
+Section: Body
+
+  rep-byte : Integer -> Integer
+  rep-byte (i) = 65 + (i - (i / 6) * 6)
+
+  gen-rep : Integer, Integer, List Integer -> List Integer
+  gen-rep (n) (i) (acc) =
+    if i >= n then acc
+    else gen-rep n (i + 1) (list-push acc (rep-byte i))
+
+  lcg-next : Integer -> Integer
+  lcg-next (s) =
+    let t = s * 1103515245 + 12345
+    in t - (t / 2147483648) * 2147483648
+
+  rand-byte : Integer -> Integer
+  rand-byte (s) = (s / 65536) - ((s / 65536) / 256) * 256
+
+  gen-rand : Integer, Integer, Integer, List Integer -> List Integer
+  gen-rand (n) (i) (s) (acc) =
+    if i >= n then acc
+    else let s2 = lcg-next s
+    in gen-rand n (i + 1) s2 (list-push acc (rand-byte s2))
+
+  show-bytes : List Integer, Integer, Integer, Text -> Text
+  show-bytes (xs) (i) (n) (acc) =
+    if i >= n then acc
+    else show-bytes xs (i + 1) n (acc & " " & show (list-at xs i))
+
+  emit-line : Text, List Integer -> Text
+  emit-line (label) (xs) = label & ":" & show-bytes xs 0 (list-length xs) ""
+
+  opening : [Console] Nothing = act
+    let rep = gen-rep 600 0 []
+    in let rnd = gen-rand 300 0 12345 []
+    in act
+      print-line-uni (emit-line "gzc-orig" rep)
+      print-line-uni (emit-line "gzc-comp" (gzip-compress rep))
+      print-line-uni (emit-line "gzr-orig" rnd)
+      print-line-uni (emit-line "gzr-comp" (gzip-compress rnd))
+      print-line-uni (emit-line "dfc-orig" rep)
+      print-line-uni (emit-line "dfc-comp" (deflate-compress-best rep))
+      print-line-uni (emit-line "dfr-orig" rnd)
+      print-line-uni (emit-line "dfr-comp" (deflate-compress-best rnd))
+    end
+  end

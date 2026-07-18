@@ -17,6 +17,24 @@ Section: Work Budgets
   max-emit-work : Integer = 16777216
   max-parse-fuel : Integer = 16777216
 
+ max-parse-fuel is a budget for the WHOLE unit, not a bound on recursion,
+ and the difference is what BACKLOG 2.26 died of. A parse arm that returns
+ without consuming a token spins, and each turn costs a few stack frames
+ but only one fuel: the stack runs out a gigabyte down, millions of frames
+ deep, long before sixteen million fuel does, so the guard cannot fire and
+ the compile double-faults with no diagnostic. Lowering the budget is not
+ the answer -- it is sized for the unit's real work, and a budget below
+ that cascades into a heap blow-up instead, because an exhausted parse
+ call returns an error node and the parse carries on.
+
+ max-parse-stall bounds the thing that actually goes wrong: consecutive
+ fuel-consuming calls at the SAME token position. A parse that progresses
+ resets it, so no legitimate program can reach it however deeply nested --
+ the grammar chain at any one token is tens of calls, not thousands. A
+ parse that cannot progress reaches it in microseconds and says so.
+
+  max-parse-stall : Integer = 4096
+
 Section: Demand Decks
 
  Every phase deck is a generous fixed floor. Address space is the only
@@ -25,9 +43,31 @@ Section: Demand Decks
  source. These replaced the survey multiplier system, which sized decks
  from source length and corrupted silently when it under-reserved.
 
+ A floor that is not generous ENOUGH fails the same way the multiplier
+ did: the parse keep-deck copy (copy-sx-document) writes past the floor
+ into the scratch it is still reading, the copier dereferences its own
+ overwrite, and the compile dies in a #GP with no diagnostic -- the
+ post-copy overflow check never runs. A 444 KB single-unit source (the
+ GopBoot boot bundle) was the first to push the copied CST past 64 MB.
+ The keep floor now matches the scratch floor's class; the failure
+ signature, should any floor under-reserve again, is a silent halt in
+ copy-sx-* with a garbage pointer in the fault dump.
+
+ The PARSE floors were not generous, whatever the comment above claimed.
+ On 2026-07-13 the compiler grew by about 80 KB of source - the foreword
+ chapters behind the quotation gate, chiefly Ed25519 and Sha256 - and
+ PARSE overflowed at 192 MB. The floor had been sitting within roughly a
+ kilobyte of its limit: the build before the last one passed, and adding
+ a single function to a prose block tipped it over. Nobody had noticed
+ because nothing had grown the compiler in a while.
+
+ That is the failure this section warns about, arriving exactly as
+ predicted, and it is the reason these two are now 384 MB rather than
+ 192. A floor you can reach by writing one more function is not a floor.
+
   demand-lex-floor : Integer = 100663296
-  demand-parse-keep-floor : Integer = 67108864
-  demand-parse-scratch-floor : Integer = 201326592
+  demand-parse-keep-floor : Integer = 402653184
+  demand-parse-scratch-floor : Integer = 402653184
   demand-desugar-floor : Integer = 67108864
   demand-scope-floor : Integer = 100663296
   demand-check-floor : Integer = 671088640
@@ -37,6 +77,19 @@ Section: Demand Decks
   demand-resolve-floor : Integer = 201326592
   demand-lift-floor : Integer = 100663296
   demand-inline-floor : Integer = 100663296
+
+ The quotation gate runs before the frontend does, and it parses the
+ source to find the quotations it must gate. That parse needs decks of
+ its own, because the frontend has not raised any yet. The scratch floor
+ carries the tokens and the syntax tree of a parse that is thrown away,
+ so it is sized as a LEX and a PARSE together; the keep floor carries
+ the one thing that survives, the text of the works we admitted, so it
+ is sized as source text and is checked against before it is written.
+
+ A source that quotes nothing reserves neither.
+
+  demand-quote-keep-floor : Integer = 67108864
+  demand-quote-scratch-floor : Integer = 503316480
 
 Section: Recursion Limits
   max-recursion-depth : Integer = 1024

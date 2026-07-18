@@ -6,10 +6,28 @@ Chapter: HashJoin
  Hash join for equi-join predicates on large unsorted relations.
  Build phase: hash the smaller (build) side into a hash table.
  Probe phase: scan the larger (probe) side and look up matches.
+ Keys are one or more columns per side, paired positionally. A
+ composite key is the concatenation of every keyed value rendered by
+ val-to-text, each part preceded by its length and a colon, therefore
+ no arrangement of values can collide with a different arrangement.
 
  We say:
 
+Section: Composite Keys
+
+  hj-key-loop : RowData, List Text, Integer, Integer, Text -> Text
+  hj-key-loop (row) (cols) (i) (len) (acc) =
+    if i >= len then acc
+    else let part = val-to-text (row-get-by-name row (list-at cols i))
+    in hj-key-loop row cols (i + 1) len (acc & show (text-length part) & ":" & part)
+
+  hj-key : RowData, List Text -> Text
+  hj-key (row) (cols) = hj-key-loop row cols 0 (list-length cols) ""
+
 Section: Hash Join
+
+ hash-join-keys is the general form; hash-join wraps a single column
+ pair in singleton lists for the callers that join on one column.
 
   HashJoinResult = record {
     hj-rows : List RowData,
@@ -18,34 +36,38 @@ Section: Hash Join
     hj-probe-count : Integer
   }
 
-  hash-join : List RowData, List RowData, Text, Text -> HashJoinResult
-  hash-join (build-rows) (probe-rows) (build-col) (probe-col) =
-    let ht = hj-build build-rows build-col 0 (list-length build-rows) hamt-empty
-    in let result = hj-probe probe-rows build-rows ht probe-col build-col 0 (list-length probe-rows) [] 0
+  hash-join-keys : List RowData, List RowData, List Text, List Text -> HashJoinResult
+  hash-join-keys (build-rows) (probe-rows) (build-cols) (probe-cols) =
+    let ht = hj-build build-rows build-cols 0 (list-length build-rows) hamt-empty
+    in let result = hj-probe probe-rows build-rows ht probe-cols build-cols 0 (list-length probe-rows) [] 0
     in result
 
-  hj-build : List RowData, Text, Integer, Integer, HamtMap (List Integer) -> HamtMap (List Integer)
-  hj-build (rows) (col) (i) (len) (ht) =
+  hash-join : List RowData, List RowData, Text, Text -> HashJoinResult
+  hash-join (build-rows) (probe-rows) (build-col) (probe-col) =
+    hash-join-keys build-rows probe-rows [build-col] [probe-col]
+
+  hj-build : List RowData, List Text, Integer, Integer, HamtMap (List Integer) -> HamtMap (List Integer)
+  hj-build (rows) (cols) (i) (len) (ht) =
     if i >= len then ht
     else let row = list-at rows i
-    in let key = val-to-text (row-get-by-name row col)
+    in let key = hj-key row cols
     in let existing = hamt-get ht key
     in let updated = when existing
       is None -> hamt-set ht key [i]
       is Just (idxs) -> hamt-set ht key (list-push idxs i)
-    in hj-build rows col (i + 1) len updated
+    in hj-build rows cols (i + 1) len updated
 
-  hj-probe : List RowData, List RowData, HamtMap (List Integer), Text, Text, Integer, Integer, List RowData, Integer -> HashJoinResult
-  hj-probe (probe-rows) (build-rows) (ht) (probe-col) (build-col) (i) (len) (acc) (probes) =
+  hj-probe : List RowData, List RowData, HamtMap (List Integer), List Text, List Text, Integer, Integer, List RowData, Integer -> HashJoinResult
+  hj-probe (probe-rows) (build-rows) (ht) (probe-cols) (build-cols) (i) (len) (acc) (probes) =
     if i >= len then HashJoinResult { hj-rows = acc, hj-count = list-length acc, hj-build-size = hamt-size ht, hj-probe-count = probes }
     else let prow = list-at probe-rows i
-    in let key = val-to-text (row-get-by-name prow probe-col)
+    in let key = hj-key prow probe-cols
     in let matches = hamt-get ht key
     in when matches
-      is None -> hj-probe probe-rows build-rows ht probe-col build-col (i + 1) len acc (probes + 1)
+      is None -> hj-probe probe-rows build-rows ht probe-cols build-cols (i + 1) len acc (probes + 1)
       is Just (idxs) ->
         let joined = hj-emit-matches prow build-rows idxs 0 (list-length idxs) acc
-        in hj-probe probe-rows build-rows ht probe-col build-col (i + 1) len joined (probes + 1)
+        in hj-probe probe-rows build-rows ht probe-cols build-cols (i + 1) len joined (probes + 1)
 
   hj-emit-matches : RowData, List RowData, List Integer, Integer, Integer, List RowData -> List RowData
   hj-emit-matches (prow) (build-rows) (idxs) (i) (len) (acc) =
@@ -63,23 +85,23 @@ Section: Left Hash Join
 
   hash-left-join : List RowData, List RowData, Text, Text -> HashJoinResult
   hash-left-join (left-rows) (right-rows) (left-col) (right-col) =
-    let ht = hj-build right-rows right-col 0 (list-length right-rows) hamt-empty
-    in hj-left-probe left-rows right-rows ht left-col right-col 0 (list-length left-rows) []
+    let ht = hj-build right-rows [right-col] 0 (list-length right-rows) hamt-empty
+    in hj-left-probe left-rows right-rows ht [left-col] [right-col] 0 (list-length left-rows) []
 
-  hj-left-probe : List RowData, List RowData, HamtMap (List Integer), Text, Text, Integer, Integer, List RowData -> HashJoinResult
-  hj-left-probe (left-rows) (right-rows) (ht) (left-col) (right-col) (i) (len) (acc) =
+  hj-left-probe : List RowData, List RowData, HamtMap (List Integer), List Text, List Text, Integer, Integer, List RowData -> HashJoinResult
+  hj-left-probe (left-rows) (right-rows) (ht) (left-cols) (right-cols) (i) (len) (acc) =
     if i >= len then HashJoinResult { hj-rows = acc, hj-count = list-length acc, hj-build-size = hamt-size ht, hj-probe-count = i }
     else let lrow = list-at left-rows i
-    in let key = val-to-text (row-get-by-name lrow left-col)
+    in let key = hj-key lrow left-cols
     in let matches = hamt-get ht key
     in when matches
       is None ->
         let null-right = hj-null-row right-rows
         in let combined = hj-merge-rows lrow null-right
-        in hj-left-probe left-rows right-rows ht left-col right-col (i + 1) len (list-push acc combined)
+        in hj-left-probe left-rows right-rows ht left-cols right-cols (i + 1) len (list-push acc combined)
       is Just (idxs) ->
         let joined = hj-emit-matches lrow right-rows idxs 0 (list-length idxs) acc
-        in hj-left-probe left-rows right-rows ht left-col right-col (i + 1) len joined
+        in hj-left-probe left-rows right-rows ht left-cols right-cols (i + 1) len joined
 
   hj-null-row : List RowData -> RowData
   hj-null-row (sample-rows) =

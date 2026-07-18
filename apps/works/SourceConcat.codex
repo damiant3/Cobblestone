@@ -1,5 +1,7 @@
 Chapter: SourceConcat
   cites Foreword chapter Sort
+  cites Foreword chapter Path
+  cites Foreword chapter Fat16
   cites Foreword chapter Maybe
 
  SourceConcat concatenates Codex compiler source into a single text
@@ -74,23 +76,26 @@ Section: Transitive Foreword Resolution
     cq-ordered : List Text
   }
 
-  resolve-forewords-transitive : Text, List Text -> CiteQueue
+  resolve-forewords-transitive : Text, List Text -> [FileSystem.Read, Device.Block] CiteQueue
   resolve-forewords-transitive (foreword-dir) (initial-names) =
     process-cite-queue foreword-dir (CiteQueue { cq-seen = [], cq-ordered = [] }) initial-names 0 (list-length initial-names)
 
-  process-cite-queue : Text, CiteQueue, List Text, Integer, Integer -> CiteQueue
+  process-cite-queue : Text, CiteQueue, List Text, Integer, Integer -> [FileSystem.Read, Device.Block] CiteQueue
   process-cite-queue (foreword-dir) (q) (names) (i) (len) =
     if i >= len then q
     else let name = list-at names i
     in if list-has-text (q.cq-seen) name 0 (list-length (q.cq-seen))
       then process-cite-queue foreword-dir q names (i + 1) len
-    else let path = path-combine foreword-dir (name & ".codex")
-    in if file-exists path then
-      let content = read-file path
-      in let sub-cites = extract-foreword-cites content
+    else let path = path-join foreword-dir (name & ".codex")
+    in if file-exists path then act
+      content <- read-file path
+      let sub-cites = extract-foreword-cites content
       in let q2 = CiteQueue { cq-seen = list-push (q.cq-seen) name, cq-ordered = list-push (q.cq-ordered) name }
-      in let q3 = process-cite-queue foreword-dir q2 sub-cites 0 (list-length sub-cites)
-      in process-cite-queue foreword-dir q3 names (i + 1) len
+      in act
+        q3 <- process-cite-queue foreword-dir q2 sub-cites 0 (list-length sub-cites)
+        process-cite-queue foreword-dir q3 names (i + 1) len
+      end
+    end
     else process-cite-queue foreword-dir (CiteQueue { cq-seen = list-push (q.cq-seen) name, cq-ordered = q.cq-ordered }) names (i + 1) len
 
   list-has-text : List Text, Text, Integer, Integer -> Boolean
@@ -101,78 +106,97 @@ Section: Transitive Foreword Resolution
 
 Section: Foreword Loading
 
-  load-forewords : Text, List Text -> Text
+  load-forewords : Text, List Text -> [FileSystem.Read, Device.Block] Text
   load-forewords (foreword-dir) (names) =
     load-forewords-loop foreword-dir names 0 (list-length names) ""
 
-  load-forewords-loop : Text, List Text, Integer, Integer, Text -> Text
+  load-forewords-loop : Text, List Text, Integer, Integer, Text -> [FileSystem.Read, Device.Block] Text
   load-forewords-loop (foreword-dir) (names) (i) (len) (acc) =
     if i >= len then acc
     else let name = list-at names i
-    in let path = path-combine foreword-dir (name & ".codex")
-    in if file-exists path then
-      let content = read-file path
-      in let renamed = rename-chapter-header content "Foreword"
+    in let path = path-join foreword-dir (name & ".codex")
+    in if file-exists path then act
+      content <- read-file path
+      let renamed = rename-chapter-header content "Foreword"
       in load-forewords-loop foreword-dir names (i + 1) len (acc & renamed & "\n\n")
+    end
     else load-forewords-loop foreword-dir names (i + 1) len acc
 
 Section: Source Tree Loading
 
-  load-source-tree : Text -> Text
-  load-source-tree (codex-dir) =
-    let root-files = sort-by (list-files codex-dir ".codex") (\a b -> text-compare a b)
-    in let root-text = load-files-with-quire codex-dir root-files "" 0 (list-length root-files) ""
-    in let sub-dirs = sort-by (list-directories codex-dir) (\a b -> text-compare a b)
-    in let sub-text = load-subdirs codex-dir sub-dirs 0 (list-length sub-dirs) ""
-    in root-text & sub-text
+  load-source-tree : Text -> [FileSystem.Read, Device.Block] Text
+  load-source-tree (codex-dir) = act
+    raw-root <- list-files codex-dir ".codex"
+    raw-dirs <- list-directories codex-dir
+    let root-files = sort-by raw-root (\a b -> text-compare a b)
+    in let sub-dirs = sort-by raw-dirs (\a b -> text-compare a b)
+    in act
+      root-text <- load-files-with-quire codex-dir root-files "" 0 (list-length root-files) ""
+      sub-text <- load-subdirs codex-dir sub-dirs 0 (list-length sub-dirs) ""
+      root-text & sub-text
+    end
+  end
 
-  load-subdirs : Text, List Text, Integer, Integer, Text -> Text
+  load-subdirs : Text, List Text, Integer, Integer, Text -> [FileSystem.Read, Device.Block] Text
   load-subdirs (codex-dir) (dirs) (i) (len) (acc) =
     if i >= len then acc
     else let dir-name = list-at dirs i
-    in let dir-path = path-combine codex-dir dir-name
-    in let files = sort-by (list-files dir-path ".codex") (\a b -> text-compare a b)
-    in let text = load-files-with-quire dir-path files dir-name 0 (list-length files) ""
-    in load-subdirs codex-dir dirs (i + 1) len (acc & text)
+    in let dir-path = path-join codex-dir dir-name
+    in act
+      raw-files <- list-files dir-path ".codex"
+      let files = sort-by raw-files (\a b -> text-compare a b)
+      in act
+        text <- load-files-with-quire dir-path files dir-name 0 (list-length files) ""
+        load-subdirs codex-dir dirs (i + 1) len (acc & text)
+      end
+    end
 
-  load-files-with-quire : Text, List Text, Text, Integer, Integer, Text -> Text
+  load-files-with-quire : Text, List Text, Text, Integer, Integer, Text -> [FileSystem.Read, Device.Block] Text
   load-files-with-quire (dir) (paths) (quire) (i) (len) (acc) =
     if i >= len then acc
-    else let content = read-file (list-at paths i)
-    in let renamed = rename-chapter-header content quire
-    in load-files-with-quire dir paths quire (i + 1) len (acc & renamed & "\n\n")
+    else act
+      content <- read-file (list-at paths i)
+      let renamed = rename-chapter-header content quire
+      in load-files-with-quire dir paths quire (i + 1) len (acc & renamed & "\n\n")
+    end
 
 Section: Full Concatenation
 
-  concat-compiler-source : Text, Text -> Text
-  concat-compiler-source (codex-dir) (foreword-dir) =
-    let all-files = list-files codex-dir ".codex"
-    in let sub-dirs = list-directories codex-dir
-    in let all-cites = collect-all-cites codex-dir all-files sub-dirs
-    in let resolved = resolve-forewords-transitive foreword-dir all-cites
-    in let foreword-text = load-forewords foreword-dir (resolved.cq-ordered)
-    in let source-text = load-source-tree codex-dir
-    in foreword-text & source-text
+  concat-compiler-source : Text, Text -> [FileSystem.Read, Device.Block] Text
+  concat-compiler-source (codex-dir) (foreword-dir) = act
+    all-files <- list-files codex-dir ".codex"
+    sub-dirs <- list-directories codex-dir
+    all-cites <- collect-all-cites codex-dir all-files sub-dirs
+    resolved <- resolve-forewords-transitive foreword-dir all-cites
+    foreword-text <- load-forewords foreword-dir (resolved.cq-ordered)
+    source-text <- load-source-tree codex-dir
+    foreword-text & source-text
+  end
 
-  collect-all-cites : Text, List Text, List Text -> List Text
-  collect-all-cites (codex-dir) (root-files) (sub-dirs) =
-    let root-cites = collect-cites-from-files root-files 0 (list-length root-files) []
-    in collect-subdir-cites codex-dir sub-dirs 0 (list-length sub-dirs) root-cites
+  collect-all-cites : Text, List Text, List Text -> [FileSystem.Read, Device.Block] List Text
+  collect-all-cites (codex-dir) (root-files) (sub-dirs) = act
+    root-cites <- collect-cites-from-files root-files 0 (list-length root-files) []
+    collect-subdir-cites codex-dir sub-dirs 0 (list-length sub-dirs) root-cites
+  end
 
-  collect-cites-from-files : List Text, Integer, Integer, List Text -> List Text
+  collect-cites-from-files : List Text, Integer, Integer, List Text -> [FileSystem.Read, Device.Block] List Text
   collect-cites-from-files (paths) (i) (len) (acc) =
     if i >= len then acc
-    else let content = read-file (list-at paths i)
-    in let found = extract-foreword-cites content
-    in collect-cites-from-files paths (i + 1) len (merge-unique acc found 0 (list-length found))
+    else act
+      content <- read-file (list-at paths i)
+      let found = extract-foreword-cites content
+      in collect-cites-from-files paths (i + 1) len (merge-unique acc found 0 (list-length found))
+    end
 
-  collect-subdir-cites : Text, List Text, Integer, Integer, List Text -> List Text
+  collect-subdir-cites : Text, List Text, Integer, Integer, List Text -> [FileSystem.Read, Device.Block] List Text
   collect-subdir-cites (codex-dir) (dirs) (i) (len) (acc) =
     if i >= len then acc
-    else let dir-path = path-combine codex-dir (list-at dirs i)
-    in let files = list-files dir-path ".codex"
-    in let sub-acc = collect-cites-from-files files 0 (list-length files) acc
-    in collect-subdir-cites codex-dir dirs (i + 1) len sub-acc
+    else let dir-path = path-join codex-dir (list-at dirs i)
+    in act
+      files <- list-files dir-path ".codex"
+      sub-acc <- collect-cites-from-files files 0 (list-length files) acc
+      collect-subdir-cites codex-dir dirs (i + 1) len sub-acc
+    end
 
   merge-unique : List Text, List Text, Integer, Integer -> List Text
   merge-unique (acc) (items) (i) (len) =

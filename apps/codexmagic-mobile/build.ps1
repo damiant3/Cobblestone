@@ -32,8 +32,8 @@ function Add-Chapter {
 Add-Chapter (Join-Path $AppDir 'MobileTheme.codex') -StripCites @('MobileApp')
 Add-Chapter (Join-Path $AppDir 'LoginPage.codex') -StripCites @('MobileApp')
 Add-Chapter (Join-Path $AppDir 'HomePage.codex') -StripCites @('MobileApp')
-Add-Chapter (Join-Path $AppDir 'StorePage.codex') -StripCites @('MobileApp')    # CreationsPage
-Add-Chapter (Join-Path $AppDir 'CollectionPage.codex') -StripCites @('MobileApp')  # GalleryPage
+Add-Chapter (Join-Path $AppDir 'CreationsPage.codex') -StripCites @('MobileApp')
+Add-Chapter (Join-Path $AppDir 'GalleryPage.codex') -StripCites @('MobileApp')
 Add-Chapter (Join-Path $AppDir 'ClanPage.codex') -StripCites @('MobileApp')
 Add-Chapter (Join-Path $AppDir 'ProfilePage.codex') -StripCites @('MobileApp')
 Add-Chapter (Join-Path $AppDir 'MobileApp.codex') -StripCites @('MobileApp')

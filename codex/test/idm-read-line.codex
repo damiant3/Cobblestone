@@ -1,0 +1,50 @@
+Chapter: IdmReadLine
+  cites Kernel chapter IdentityManager
+
+ The first-boot ceremony's passphrase reader, driven by a keyboard.
+
+ codex/test/idm-key-tests covers the cryptography under this chapter and
+ found real bugs there, but it reaches none of the input path: every
+ function it calls is a pure function of its arguments, and the reader
+ that supplies those arguments needs a keyboard nothing could drive. This
+ is the other half, and it is the half BACKLOG 7.14 is about.
+
+ `idm-read-line-bytes` loops until Enter. It read `uefi-read-key` -- the
+ raw PS/2 Set-1 make code -- and compared the result against ASCII 13.
+ Enter's make code is 28, so the comparison could never hold: the loop ran
+ forever, and every byte it collected was a scancode rather than a
+ character. The passphrase prompt could not be answered, which is what the
+ skip reason "blocks waiting for keyboard input" had been reporting all
+ along, in the voice of an environment limitation.
+
+ So the assertion is that this returns at all. The `.keys` sidecar types
+ A, B, Enter (make codes 30, 48, 28); the reader must yield exactly two
+ bytes and stop. A regression to the raw call does not make this test
+ wrong -- it makes it hang, and the harness's wall budget calls that a
+ failure.
+
+ The bytes are 65 and 66: uppercase, though nothing here pressed shift.
+ `poll-key` has no shift latch yet, so a passphrase is folded to uppercase
+ before it is hashed. That is a property of every identity created this
+ way, and this test pins it: teaching `poll-key` to decode shift would
+ change these two numbers, and would silently stop every existing
+ passphrase from unlocking its key.
+
+Section: Definitions
+
+  irl-show : List Integer, Integer, Integer -> [Console] Integer
+  irl-show (xs) (i) (len) =
+    if i >= len then 0
+    else act
+      print-line-uni (integer-to-text (list-at xs i))
+      irl-show xs (i + 1) len
+    end
+
+  opening : [Console] Nothing = act
+    let bs = idm-read-line-bytes
+    in act
+      print-line-uni (integer-to-text (list-length bs))
+      irl-show bs 0 (list-length bs)
+      print-line-uni "returned"
+    end
+  end

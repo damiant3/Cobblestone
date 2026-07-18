@@ -17,13 +17,13 @@ Chapter: VgaShell
  We say:
 
 Section: Color Scheme
-  vga-sh-hdr : Integer = vga-attr vga-white vga-blue
-  vga-sh-body : Integer = vga-attr vga-light-gray vga-black
-  vga-sh-ok : Integer = vga-attr vga-light-green vga-black
-  vga-sh-prompt : Integer = vga-attr vga-light-green vga-black
-  vga-sh-input : Integer = vga-attr vga-white vga-black
-  vga-sh-output : Integer = vga-attr vga-cyan vga-black
-  vga-sh-error : Integer = vga-attr vga-light-red vga-black
+  vga-sh-hdr : Integer between 0 and 255 = __narrow (vga-attr vga-white vga-blue)
+  vga-sh-body : Integer between 0 and 255 = __narrow (vga-attr vga-light-gray vga-black)
+  vga-sh-ok : Integer between 0 and 255 = __narrow (vga-attr vga-light-green vga-black)
+  vga-sh-prompt : Integer between 0 and 255 = __narrow (vga-attr vga-light-green vga-black)
+  vga-sh-input : Integer between 0 and 255 = __narrow (vga-attr vga-white vga-black)
+  vga-sh-output : Integer between 0 and 255 = __narrow (vga-attr vga-cyan vga-black)
+  vga-sh-error : Integer between 0 and 255 = __narrow (vga-attr vga-light-red vga-black)
 
 Section: Boot Banner
   vga-sh-banner : VgaCursor -> VgaCursor
@@ -44,7 +44,7 @@ Section: Prompt Drawing
     in VgaCursor { row = cur2.row, col = cur2.col, attr = vga-sh-input }
 
 Section: Shell REPL with VGA
-  vga-sh-repl : ShellState, BinaryStore, VgaCursor -> [Console] Nothing
+  vga-sh-repl : ShellState, BinaryStore, VgaCursor -> [Console, Identity] Nothing
   vga-sh-repl (state) (bs) (cur) = act
     let cur1 = vga-sh-draw-prompt cur
     in print-line-uni ">"
@@ -62,20 +62,28 @@ Section: Shell REPL with VGA
             print-line-uni out
             vga-sh-repl state bs cur4
           end
-        is ParseOk (cmd) ->
-          let dr = dispatch cmd state bs
-          in let out-attr = if dr.running then vga-sh-output else vga-sh-body
-          in let cur4 = vga-cursor-write-line (VgaCursor { row = cur3.row, col = 0, attr = out-attr }) (dr.output)
-          in if dr.running then act
-            print-line-uni (dr.output)
-            vga-sh-repl (dr.new-state) bs cur4
-          end
-          else print-line-uni (dr.output)
+        is ParseOk (cmd) -> act
+          dr <- dispatch cmd state bs
+          vga-sh-continue dr bs cur3
+        end
      is None -> print-line-uni "eof"
   end
 
+ dispatch reads the system identity on the info command, so it is
+ act-bound and the loop continues in a helper.
+
+  vga-sh-continue : DispatchResult, BinaryStore, VgaCursor -> [Console, Identity] Nothing
+  vga-sh-continue (dr) (bs) (cur3) =
+    let out-attr = if dr.running then vga-sh-output else vga-sh-body
+    in let cur4 = vga-cursor-write-line (VgaCursor { row = cur3.row, col = 0, attr = out-attr }) (dr.output)
+    in if dr.running then act
+      print-line-uni (dr.output)
+      vga-sh-repl (dr.new-state) bs cur4
+    end
+    else print-line-uni (dr.output)
+
 Section: Entry Point
-  vga-sh-start : ShellState, BinaryStore -> [Console] Nothing
+  vga-sh-start : ShellState, BinaryStore -> [Console, Identity] Nothing
   vga-sh-start (state) (bs) =
     let cur = vga-sh-banner (vga-cursor-new vga-sh-body)
     in vga-sh-repl state bs cur

@@ -11,18 +11,23 @@ Chapter: TerrainGen
  top-to-bottom (north pole first), RGB per pixel.
 
  GPU upload sequence:
-   port-out-32 #408 <buffer-address>
-   port-out-32 #409 <width>
-   port-out-32 #40A <height>
-   port-out-32 #40B 0    -- commit
+   gpu-out #408 <buffer-address>
+   gpu-out #409 <width>
+   gpu-out #40A <height>
+   gpu-out #40B 0    -- commit
 
  Asset load from host disk:
    Write null-terminated path to guest RAM, then:
-   port-out-32 #40C <path-address>
-   port-out-32 #40D <dest-address>
-   port-out-32 #40E 0    -- execute load
-   port-in-32  #40E      -- returns low 32 bits of bytes loaded
-   port-in-32  #40F      -- returns high 32 bits of bytes loaded
+   gpu-out #40C <path-address>
+   gpu-out #40D <dest-address>
+   gpu-out #417 0    -- execute load
+   gpu-in  #40E      -- returns low 32 bits of bytes loaded
+   gpu-in  #40F      -- returns high 32 bits of bytes loaded
+
+ The execute trigger is #417 and not #40E, which is the fireworks
+ fade-clear on the way out. Firing the load at #40E only faded the sky and
+ reported zero bytes, so this chapter silently fell back to a procedural
+ planet and the real earth texture on disk was never once read.
 
  We say:
 
@@ -35,13 +40,18 @@ Section: Constants
 
 Section: Asset Loading
 
-  tg-load-file : Text, Integer, Integer -> Integer
+  tg-load-file : Text, Integer, Integer -> [Gpu.Compute] Integer
   tg-load-file (path) (dest) (path-buf) =
     let written = tg-write-path path path-buf 0
-    in let w1 = port-out-32 #40C path-buf
-    in let w2 = port-out-32 #40D dest
-    in let w3 = port-out-32 #40E 0
-    in port-in-32 #40E
+    in tg-load-fire path-buf dest
+
+  tg-load-fire : Integer, Integer -> [Gpu.Compute] Integer
+  tg-load-fire (path-buf) (dest) = act
+    w1 <- gpu-out #40C path-buf
+    w2 <- gpu-out #40D dest
+    w3 <- gpu-out #417 0
+    gpu-in #40E
+  end
 
   tg-write-path : Text, Integer, Integer -> Integer
   tg-write-path (s) (addr) (i) =
@@ -50,21 +60,29 @@ Section: Asset Loading
     in let w = poke-byte addr i ch
     in tg-write-path s addr (i + 1)
 
-  tg-load-earth-image : Integer
-  tg-load-earth-image =
-    let sz = tg-load-file "apps/globe/earth-texture.raw" tex-buf-addr tex-path-addr
-    in if sz > 0 then
-      let w = if sz == 2048 * 1024 * 3 then 2048
-        else if sz == 4096 * 2048 * 3 then 4096
-        else if sz == 1024 * 512 * 3 then 1024
-        else 512
-      in let h = sz / (w * 3)
-      in let wa = port-out-32 #408 tex-buf-addr
-      in let wb = port-out-32 #409 w
-      in let wc = port-out-32 #40A h
-      in let wd = port-out-32 #40B 0
-      in sz
-    else 0
+  tg-load-earth-image : [Gpu.Compute] Integer
+  tg-load-earth-image = act
+    sz <- tg-load-file "apps/globe/earth-texture.raw" tex-buf-addr tex-path-addr
+    if sz > 0 then tg-commit-earth sz else 0
+  end
+
+  tg-commit-earth : Integer -> [Gpu.Compute] Integer
+  tg-commit-earth (sz) =
+    let w = if sz == 2048 * 1024 * 3 then 2048
+      else if sz == 4096 * 2048 * 3 then 4096
+      else if sz == 1024 * 512 * 3 then 1024
+      else 512
+    in let h = sz / (w * 3)
+    in tg-upload-tex tex-buf-addr w h sz
+
+  tg-upload-tex : Integer, Integer, Integer, Integer -> [Gpu.Compute] Integer
+  tg-upload-tex (addr) (w) (h) (ret) = act
+    wa <- gpu-out #408 addr
+    wb <- gpu-out #409 w
+    wc <- gpu-out #40A h
+    wd <- gpu-out #40B 0
+    ret
+  end
 
 Section: Noise
 
@@ -233,13 +251,10 @@ Section: Texture Generation
     | PkMars
     | PkRandom
 
-  tg-generate : PlanetKind, Integer -> Integer
+  tg-generate : PlanetKind, Integer -> [Gpu.Compute] Integer
   tg-generate (kind) (seed) =
     let written = tg-write-rows kind seed 0
-    in let wa = port-out-32 #408 tex-buf-addr
-    in let wb = port-out-32 #409 tex-w
-    in let wc = port-out-32 #40A tex-h
-    in port-out-32 #40B 0
+    in tg-upload-tex tex-buf-addr tex-w tex-h 0
 
   tg-write-rows : PlanetKind, Integer, Integer -> Integer
   tg-write-rows (kind) (seed) (row) =

@@ -106,7 +106,47 @@ Section: Aggregate Functions
     agg-alias : Text
   }
 
+Section: Derived Date Buckets
+
+ A derive computes calendar buckets from date columns. Dates are Unix
+ seconds stored in ColInteger by convention, and DeriveFn is a closed
+ enumeration of the four bucketings rather than an expression
+ language: a bucket is a governed vocabulary word, not an escape
+ hatch. Each bucket encodes as an integer that sorts chronologically.
+ DerYear yields the year itself, 2026. DerQuarter yields year times
+ ten plus the quarter, 20263 for the third quarter of 2026. DerMonth
+ yields year times one hundred plus the month, 202607 for July 2026.
+ DerDay yields year times ten thousand plus month times one hundred
+ plus the day, 20260709 for the ninth of July 2026. A DeriveSpec
+ names the source column, the bucketing, and the alias the computed
+ column answers to.
+
+  DeriveFn =
+    | DerYear
+    | DerQuarter
+    | DerMonth
+    | DerDay
+
+  DeriveSpec = record {
+    der-alias : Text,
+    der-col : Text,
+    der-fn : DeriveFn
+  }
+
 Section: Relational Operators
+
+ RelEquiJoin is the equality join on a list of named columns from each
+ side, paired positionally: the first left column must equal the first
+ right column, the second the second, and onward. A single-column join
+ carries singleton lists. Predicates compare a column against a
+ literal, never against another column, therefore RelJoin cannot
+ express an equi-join between two relations; RelEquiJoin carries the
+ column lists directly and the executor delegates to the hash join.
+ Merged rows keep every column from both sides, duplicate names
+ included, and a lookup by name finds the left occurrence first —
+ project immediately after joining. RelDerive appends one computed
+ ColInteger column per DeriveSpec to every row of its child and
+ passes the child's own columns through untouched.
 
   RelOp =
     | RelScan (Text)
@@ -117,12 +157,34 @@ Section: Relational Operators
     | RelDistinct (RelOp)
     | RelJoin (RelOp) (RelOp) (Predicate)
     | RelLeftJoin (RelOp) (RelOp) (Predicate)
+    | RelEquiJoin (RelOp) (RelOp) (List Text) (List Text)
+    | RelDerive (RelOp) (List DeriveSpec)
     | RelGroup (RelOp) (List Text) (List AggSpec)
     | RelUnion (RelOp) (RelOp)
     | RelIntersect (RelOp) (RelOp)
     | RelExcept (RelOp) (RelOp)
 
 Section: Query Plan Display
+
+ rel-equi-label renders an equi-join's column pairing as the comma
+ separated left list, an equals sign, and the comma separated right
+ list, therefore a singleton join renders exactly as the one-column
+ form always did. rel-derive-label renders a derive as the comma
+ separated list of its computed aliases, so a plan display names
+ what the derive adds without repeating the source columns.
+
+  rel-cols-text : List Text, Integer, Text -> Text
+  rel-cols-text (cols) (i) (acc) =
+    if i >= list-length cols then acc
+    else rel-cols-text cols (i + 1) (acc & (if i > 0 then "," else "") & list-at cols i)
+
+  rel-equi-label : List Text, List Text -> Text
+  rel-equi-label (lcols) (rcols) = rel-cols-text lcols 0 "" & "=" & rel-cols-text rcols 0 ""
+
+  rel-derive-label : List DeriveSpec, Integer, Text -> Text
+  rel-derive-label (specs) (i) (acc) =
+    if i >= list-length specs then acc
+    else rel-derive-label specs (i + 1) (acc & (if i > 0 then "," else "") & (list-at specs i).der-alias)
 
   rel-op-name : RelOp -> Text
   rel-op-name (op) =
@@ -135,6 +197,8 @@ Section: Query Plan Display
       is RelDistinct (child) -> "Distinct"
       is RelJoin (left) (right) (pred) -> "Join"
       is RelLeftJoin (left) (right) (pred) -> "LeftJoin"
+      is RelEquiJoin (left) (right) (lcols) (rcols) -> "EquiJoin(" & rel-equi-label lcols rcols & ")"
+      is RelDerive (child) (specs) -> "Derive(" & rel-derive-label specs 0 "" & ")"
       is RelGroup (child) (cols) (aggs) -> "GroupBy"
       is RelUnion (left) (right) -> "Union"
       is RelIntersect (left) (right) -> "Intersect"

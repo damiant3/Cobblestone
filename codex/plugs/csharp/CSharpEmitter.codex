@@ -1,16 +1,35 @@
 Chapter: CSharp Emitter
 
-  cites Codex chapter Text
-  cites Codex chapter Lists
 
  Generates C# source code from the IR.
 
 Section: Type Definition Emission
 
+ Each type def emits once by name. Codex refuses duplicate type names
+ program-wide (CDX3001), so a repeated name in the parsed list can
+ only be the IR parser's placeholder for a type-def kind it does not
+ model - every unit-def parses to an empty record named Unknown - and
+ emitting the placeholder twice is invalid C#. The first occurrence
+ wins; nothing references the placeholder, it exists only so the
+ emitted source is complete.
+
   emit-type-defs : List ATypeDef, Integer -> Text
   emit-type-defs (tds) (i) =
    if i == list-length tds then ""
+   else if type-def-name-before tds (type-def-name (list-at tds i)) 0 i then emit-type-defs tds (i + 1)
    else emit-type-def (list-at tds i) & "\n" & emit-type-defs tds (i + 1)
+
+  type-def-name : ATypeDef -> Text
+  type-def-name (td) =
+   when td
+    is ARecordTypeDef (name) (tparams) (fields) (s) -> name.value
+    is AVariantTypeDef (name) (tparams) (ctors) (s) -> name.value
+
+  type-def-name-before : List ATypeDef, Text, Integer, Integer -> Boolean
+  type-def-name-before (tds) (nm) (i) (stop) =
+   if i >= stop then False
+   else if type-def-name (list-at tds i) == nm then True
+   else type-def-name-before tds nm (i + 1) stop
 
   infer-tparams-from-fields : List ARecordFieldDef, Integer, List Name -> List Name
   infer-tparams-from-fields (fields) (i) (acc) =
@@ -416,9 +435,15 @@ Section: Tail Call Optimization
 
 Section: Definition Emission
 
+ A definition whose name is a platform-seam override (Platform Seam
+ Overrides, CSharpEmitterExpressions) is not emitted at all: its call
+ sites are rewritten to the runtime preamble, so its native body would
+ be dead code in the C# output.
+
   emit-def : IRDef, List ArityEntry -> Text
   emit-def (d) (arities) =
-   if should-tco d then emit-tco-def d arities
+   if is-seam-override (d.name) then ""
+   else if should-tco d then emit-tco-def d arities
    else let ret = get-return-type (d.type-val) (list-length (d.params))
    in let gen = generic-suffix (d.type-val)
    in "    public static " & cs-type ret & " " & sanitize (d.name) & gen & "(" & emit-def-params (d.params) 0 & ") => " & emit-expr (d.body) arities & ";\n"
@@ -501,11 +526,20 @@ Section: Chapter Emission
    "    }\n",
    "}\n\n"]
 
+ The _Buf arena is allocated lazily on the first byte-level access, not
+ at class load: heap_save/heap_restore/heap_advance track only the
+ bump pointer and never touch the array, so a program that uses the
+ deck discipline without raw buffer I/O never pays for the arena at
+ all. The size defaults to the historical 512 MB and can be overridden
+ with the LENS_BUF_MB environment variable. Programs that do use the
+ buffer see identical semantics - only the allocation moment moves.
+
   emit-buf-runtime : Text
   emit-buf-runtime =
    text-concat-list [
    "static class _Buf {\n",
-   "    static byte[] _mem = new byte[512 * 1024 * 1024];\n",
+   "    static byte[] _mem_;\n",
+   "    static byte[] _mem { get { if (_mem_ == null) { long _mb = 512; string _e = Environment.GetEnvironmentVariable(\"LENS_BUF_MB\"); if (!string.IsNullOrEmpty(_e) && long.TryParse(_e, out long _v) && _v > 0) _mb = _v; _mem_ = new byte[_mb * 1024 * 1024]; } return _mem_; } }\n",
    "    static long _ptr = 0;\n",
    "    public static long heap_save() => _ptr;\n",
    "    public static long heap_restore(object p) { _ptr = (long)p; return 0; }\n",
@@ -534,6 +568,109 @@ Section: Chapter Emission
    "    public static long set_state(long v) { _value = v; return 0; }\n",
    "}\n\n"]
 
+ _LensSql backs the lens-sql-exec seam binding (apps/lens/DESIGN.md
+ 4.4, Target B). One process-wide connection, opened lazily from the
+ LENS_SQL_CONN environment variable so temp tables survive across
+ calls within a run; rows stream through SqlDataReader one at a time
+ into List of List of string (bounded per-row peak, DESIGN 7). The
+ class references Microsoft.Data.SqlClient by full name, so the
+ generated source needs no extra using lines; the package reference
+ comes from the emit-app.ps1 -SqlClient switch. NULL cells render as
+ the text NULL, matching the Phase 0 spike shim.
+
+  emit-lenssql-runtime : Text
+  emit-lenssql-runtime =
+   text-concat-list [
+   "static class _LensSql {\n",
+   "    static Microsoft.Data.SqlClient.SqlConnection _cn;\n",
+   "    static Microsoft.Data.SqlClient.SqlConnection _open() {\n",
+   "        if (_cn == null) {\n",
+   "            string _cs = Environment.GetEnvironmentVariable(\"LENS_SQL_CONN\");\n",
+   "            if (string.IsNullOrEmpty(_cs)) throw new InvalidOperationException(\"LENS_SQL_CONN not set\");\n",
+   "            _cn = new Microsoft.Data.SqlClient.SqlConnection(_cs);\n",
+   "            _cn.Open();\n",
+   "        }\n",
+   "        return _cn;\n",
+   "    }\n",
+   "    public static List<List<string>> exec(string sql) {\n",
+   "        List<List<string>> _rows = new List<List<string>>();\n",
+   "        using (Microsoft.Data.SqlClient.SqlCommand _cmd = new Microsoft.Data.SqlClient.SqlCommand(sql, _open()))\n",
+   "        using (Microsoft.Data.SqlClient.SqlDataReader _rd = _cmd.ExecuteReader()) {\n",
+   "            while (_rd.Read()) {\n",
+   "                List<string> _row = new List<string>(_rd.FieldCount);\n",
+   "                for (int _i = 0; _i < _rd.FieldCount; _i++) _row.Add(_rd.IsDBNull(_i) ? \"NULL\" : Convert.ToString(_rd.GetValue(_i)));\n",
+   "                _rows.Add(_row);\n",
+   "            }\n",
+   "        }\n",
+   "        return _rows;\n",
+   "    }\n",
+   "}\n\n"]
+
+ _LensHttp backs the lens-http-next, lens-http-reply, and
+ lens-http-reply-html seam bindings (apps/lens/LensSeam.codex, Http
+ section). One HttpListener per port, created and started lazily on
+ the first next call for that port; the accepted context parks in a
+ per-port slot between next and reply, so the pairing is strict by
+ construction. next answers method, path, and body as three texts;
+ the two reply flavors share one sender and differ only in content
+ type - application/json for reply, text/html for reply_html - each
+ sending status 200 and answering zero, or one when no request is
+ pending. Everything references System.Net by full name so the
+ generated source needs no extra using lines and no packages - the
+ listener is platform-built-in, unlike _LensSql's SqlClient.
+
+  emit-lenshttp-runtime : Text
+  emit-lenshttp-runtime =
+   text-concat-list [
+   "static class _LensHttp {\n",
+   "    static readonly Dictionary<long, System.Net.HttpListener> _ls = new Dictionary<long, System.Net.HttpListener>();\n",
+   "    static readonly Dictionary<long, System.Net.HttpListenerContext> _pending = new Dictionary<long, System.Net.HttpListenerContext>();\n",
+   "    static System.Net.HttpListener _listener(long port) {\n",
+   "        if (!_ls.TryGetValue(port, out System.Net.HttpListener _l)) {\n",
+   "            _l = new System.Net.HttpListener();\n",
+   "            _l.Prefixes.Add(\"http://localhost:\" + port + \"/\");\n",
+   "            _l.Start();\n",
+   "            _ls[port] = _l;\n",
+   "        }\n",
+   "        return _l;\n",
+   "    }\n",
+   "    public static List<string> next(long port) {\n",
+   "        System.Net.HttpListenerContext _cx = _listener(port).GetContext();\n",
+   "        _pending[port] = _cx;\n",
+   "        string _body;\n",
+   "        using (System.IO.StreamReader _rd = new System.IO.StreamReader(_cx.Request.InputStream, System.Text.Encoding.UTF8)) _body = _rd.ReadToEnd().Replace(\"\\r\", \"\");\n",
+   "        return new List<string> { _cx.Request.HttpMethod, _cx.Request.Url.AbsolutePath, _body };\n",
+   "    }\n",
+   "    public static long reply(long port, string body) => _send(port, body, \"application/json\");\n",
+   "    public static long reply_html(long port, string body) => _send(port, body, \"text/html; charset=utf-8\");\n",
+   "    static long _send(long port, string body, string ct) {\n",
+   "        if (!_pending.TryGetValue(port, out System.Net.HttpListenerContext _cx)) return 1;\n",
+   "        _pending.Remove(port);\n",
+   "        byte[] _bs = System.Text.Encoding.UTF8.GetBytes(body);\n",
+   "        _cx.Response.StatusCode = 200;\n",
+   "        _cx.Response.ContentType = ct;\n",
+   "        _cx.Response.ContentLength64 = _bs.Length;\n",
+   "        _cx.Response.OutputStream.Write(_bs, 0, _bs.Length);\n",
+   "        _cx.Response.OutputStream.Close();\n",
+   "        return 0;\n",
+   "    }\n",
+   "}\n\n"]
+
+ The seam preambles are emitted only when the compiled module actually
+ defines the seam functions - the arity map carries every def in the
+ IR, so membership there is the exact condition. Modules that never
+ cite the seam chapter produce byte-identical output with no
+ barbarian package dependencies.
+
+  emit-seam-runtimes : List ArityEntry -> Text
+  emit-seam-runtimes (arities) =
+   let sql = if lookup-arity arities "lens-sql-exec" >= 0 then emit-lenssql-runtime else ""
+   in let http = if lookup-arity arities "lens-http-next" >= 0 then emit-lenshttp-runtime
+      else if lookup-arity arities "lens-http-reply" >= 0 then emit-lenshttp-runtime
+      else if lookup-arity arities "lens-http-reply-html" >= 0 then emit-lenshttp-runtime
+      else ""
+   in sql & http
+
   opening-return-type : List IRDef -> CodexType
   opening-return-type (defs) = opening-return-loop defs 0
 
@@ -559,7 +696,7 @@ Section: Chapter Emission
    in let header = "using System;\nusing System.Collections.Generic;\nusing System.IO;\nusing System.Linq;\nusing System.Threading.Tasks;\n\n"
    in let class-name = "Codex_" & sanitize (m.name.value)
    in let entry = opening-emit-entry class-name (opening-return-type (m.defs))
-   in text-concat-list ([header, entry, emit-cce-runtime, emit-buf-runtime, emit-state-runtime, emit-type-defs type-defs 0, emit-class-header (m.name.value)] & emit-defs-list (m.defs) 0 arities & ["}\n"])
+   in text-concat-list ([header, entry, emit-cce-runtime, emit-buf-runtime, emit-state-runtime, emit-seam-runtimes arities, emit-type-defs type-defs 0, emit-class-header (m.name.value)] & emit-defs-list (m.defs) 0 arities & ["}\n"])
 
   emit-csharp-parts : IRChapter, List ATypeDef -> List Text
   emit-csharp-parts (m) (type-defs) =
@@ -567,7 +704,7 @@ Section: Chapter Emission
    in let header = "using System;\nusing System.Collections.Generic;\nusing System.IO;\nusing System.Linq;\nusing System.Threading.Tasks;\n\n"
    in let class-name = "Codex_" & sanitize (m.name.value)
    in let entry = opening-emit-entry class-name (opening-return-type (m.defs))
-   in [header, entry, emit-cce-runtime, emit-buf-runtime, emit-state-runtime, emit-type-defs type-defs 0, emit-class-header (m.name.value)] & emit-defs-list (m.defs) 0 arities & ["}\n"]
+   in [header, entry, emit-cce-runtime, emit-buf-runtime, emit-state-runtime, emit-seam-runtimes arities, emit-type-defs type-defs 0, emit-class-header (m.name.value)] & emit-defs-list (m.defs) 0 arities & ["}\n"]
 
   emit-chapter : IRChapter -> Text
   emit-chapter (m) =
@@ -575,7 +712,7 @@ Section: Chapter Emission
    in let header = "using System;\nusing System.Collections.Generic;\nusing System.IO;\nusing System.Linq;\nusing System.Threading.Tasks;\n\n"
    in let class-name = "Codex_" & sanitize (m.name.value)
    in let entry = opening-emit-entry class-name (opening-return-type (m.defs))
-   in text-concat-list ([header, entry, emit-cce-runtime, emit-buf-runtime, emit-state-runtime, emit-class-header (m.name.value)] & emit-defs-list (m.defs) 0 arities & ["}\n"])
+   in text-concat-list ([header, entry, emit-cce-runtime, emit-buf-runtime, emit-state-runtime, emit-seam-runtimes arities, emit-class-header (m.name.value)] & emit-defs-list (m.defs) 0 arities & ["}\n"])
 
   emit-class-header : Text -> Text
   emit-class-header (name) =

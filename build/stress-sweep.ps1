@@ -5,7 +5,8 @@ param(
     [int]$Jobs = 7,
     [switch]$Pin,
     [switch]$ContinueOnFailure,
-    [string]$LogPath = 'build-output\stress-sweep.log'
+    [string]$LogPath = 'build-output\stress-sweep.log',
+    [string]$ApprovedBy
 )
 
 Set-StrictMode -Version Latest
@@ -25,7 +26,7 @@ while ($true) {
 
     $tmp = [System.IO.Path]::GetTempFileName()
     try {
-        $sweepArgs = @('-NoProfile','-File',$sweepScript,'-Jobs',$Jobs)
+        $sweepArgs = @('-NoProfile','-File',$sweepScript,'-Jobs',$Jobs,'-ApprovedBy',$ApprovedBy)
         if ($Pin) { $sweepArgs += '-Pin' }
         & pwsh @sweepArgs *>&1 | Tee-Object -FilePath $tmp | Out-Null
         $exit = $LASTEXITCODE

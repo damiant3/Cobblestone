@@ -1,0 +1,115 @@
+Chapter: DtlsHelloTest
+  cites Foreword chapter Aes
+  cites Foreword chapter Maybe
+  cites Encode chapter DtlsHello
+
+ The DTLS 1.3 hello bodies (RFC 8446 4.1, inherited by RFC 9147).
+
+ The assertion that earns its keep here is dtls-is-hrr. In DTLS 1.3 a
+ HelloRetryRequest is NOT a message type -- it is a ServerHello carrying
+ a magic random. A receiver that switches on message type will never see
+ one, the cookie exchange silently never happens, and the whole DoS
+ defence of D2a silently never engages. So the test asserts that a real
+ ServerHello is NOT mistaken for an HRR and that an HRR IS recognised.
+
+Section: Fixtures
+
+  h-random : List Integer =
+    [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
+     1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1]
+
+  h-sid : List Integer =
+    [2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2,
+     2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2]
+
+  h-pub : List Integer =
+    [3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3,
+     3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3]
+
+  h-cookie : List Integer = [9, 8, 7, 6, 5, 4, 3, 2]
+
+  x-hex : List Integer -> Text
+  x-hex (bs) = x-hex-loop bs 0 (list-length bs) ""
+
+  x-hex-loop : List Integer, Integer, Integer, Text -> Text
+  x-hex-loop (bs) (i) (n) (acc) =
+    if i >= n then acc
+    else x-hex-loop bs (i + 1) n (acc & aes-hex-byte (list-at bs i))
+
+Section: ClientHello
+
+ The first ClientHello has no cookie extension at all. The second echoes
+ the server's, and is therefore longer.
+
+  ch1 : List Integer = dtls-client-hello-body h-random h-sid h-pub []
+  ch2 : List Integer = dtls-client-hello-body h-random h-sid h-pub h-cookie
+
+  test-ch : Text =
+    "dh ch1=" & show (list-length ch1) & " ch2=" & show (list-length ch2) & " grew=" & show (list-length ch2 > list-length ch1)
+
+Section: ServerHello vs HelloRetryRequest
+
+ Same message type, same structure. Only the random tells them apart.
+
+  sh : List Integer = dtls-server-hello-body h-random h-sid h-pub
+  hrr : List Integer = dtls-hrr-body h-sid h-cookie
+
+  test-sh-not-hrr : Text =
+    "dh sh-is-hrr=" & show (dtls-is-hrr sh)
+
+  test-hrr-is-hrr : Text =
+    "dh hrr-is-hrr=" & show (dtls-is-hrr hrr)
+
+Section: Extraction
+
+ The server's key share comes back out of the ServerHello, and the cookie
+ out of the HelloRetryRequest. A ServerHello has no cookie and an HRR has
+ no key share -- asking for the wrong one must return None rather than
+ garbage, because garbage here becomes a shared secret.
+
+  test-sh-key : Text =
+    when dtls-sh-key-share sh
+      is None -> "dh sh-key=NONE"
+      is Just (k) -> "dh sh-key=" & x-hex k
+
+  test-hrr-cookie : Text =
+    when dtls-hrr-cookie hrr
+      is None -> "dh hrr-cookie=NONE"
+      is Just (c) -> "dh hrr-cookie=" & x-hex c
+
+  test-sh-no-cookie : Text =
+    when dtls-hrr-cookie sh
+      is None -> "dh sh-cookie=NONE"
+      is Just (c) -> "dh sh-cookie=" & x-hex c
+
+  test-hrr-no-key : Text =
+    when dtls-sh-key-share hrr
+      is None -> "dh hrr-key=NONE"
+      is Just (k) -> "dh hrr-key=" & x-hex k
+
+Section: Lying Lengths
+
+ Every hop through the extension list is length-prefixed, and every
+ length is a chance for the peer to lie. An extension whose length runs
+ past the buffer must be refused, not read.
+
+  liar : List Integer =
+    dtls-take-at sh 0 (list-length sh - 10)
+
+  test-liar : Text =
+    when dtls-sh-key-share liar
+      is None -> "dh liar=REJECTED"
+      is Just (k) -> "dh liar=ACCEPTED-" & show (list-length k)
+
+Section: Entry
+
+  opening : [Console] Nothing = act
+    print-line-uni test-ch
+    print-line-uni test-sh-not-hrr
+    print-line-uni test-hrr-is-hrr
+    print-line-uni test-sh-key
+    print-line-uni test-hrr-cookie
+    print-line-uni test-sh-no-cookie
+    print-line-uni test-hrr-no-key
+    print-line-uni test-liar
+  end

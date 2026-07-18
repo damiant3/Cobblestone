@@ -1,0 +1,348 @@
+Chapter: RankedTextSet
+
+ An indexable sorted set of Text values, backed by a skip list.
+ O(log n) expected for insert, lookup, index access and rank.
+ General-purpose version for use outside the compiler core.
+
+ THIS CHAPTER IS A FORK, AND THE FORK IS DELIBERATE. The compiler
+ keeps its own skip list in Codex chapter SkipListText, and the two
+ must never share a name. They are not rot and they are not
+ duplication to be reconciled: the compiler's copy wraps every record
+ construction in deck-record, so its nodes are allocated on the phase
+ deck and survive phase-compact, while this one makes ordinary bivy
+ allocations for user programs. Deleting either and citing the other
+ is exactly the wrong fix.
+
+ What made that dangerous was that both chapters were called
+ SkipListText and every one of their 44 definitions -- types,
+ public API and internal helpers alike -- was spelled identically. A
+ repeated Chapter: name is the language's own multi-file page idiom,
+ so co-resident they would merge rather than complain, and a colliding
+ definition is slug-mangled in silence. The moment anything cited the
+ foreword copy into the compiler's unit, the compiler could find
+ itself calling the BIVY version -- whose nodes are reclaimed at the
+ next phase-compact while a live skip list still points at them. That
+ is memory corruption, not a mangled callee, and sorted-builtin-names
+ and NameResolver's scope are both skip lists. It was dormant only
+ because nothing had cited it yet.
+
+ The names are distinct now, so the collision cannot happen. Do not
+ rename them back toward each other.
+
+Section: Types
+
+  RankedTextNode = record {
+   value : Text,
+   is-end : Boolean,
+   forward : List RankedTextNode,
+   spans : List Integer
+  }
+
+  RankedTextSet = record {
+   head : RankedTextNode,
+   size : Integer between 0 and 4294967295,
+   max-level : Integer between 0 and 255
+  }
+
+Section: Constants
+
+  ranked-text-max-height : Integer
+  ranked-text-max-height = 16
+
+Section: Internal Helpers
+
+  rts-make-end-node : RankedTextNode
+  rts-make-end-node =
+   RankedTextNode {
+    value = "",
+    is-end = True,
+    forward = [],
+    spans = []
+   }
+
+  rts-replicate-node : Integer, RankedTextNode -> List RankedTextNode
+  rts-replicate-node (n) (v) =
+   rts-replicate-node-loop n v 0 []
+
+  rts-replicate-node-loop : Integer, RankedTextNode, Integer, List RankedTextNode -> List RankedTextNode
+  rts-replicate-node-loop (n) (v) (i) (acc) =
+   if i == n then acc
+   else rts-replicate-node-loop n v (i + 1) (list-push acc v)
+
+  rts-replicate-int : Integer, Integer -> List Integer
+  rts-replicate-int (n) (v) =
+   rts-replicate-int-loop n v 0 []
+
+  rts-replicate-int-loop : Integer, Integer, Integer, List Integer -> List Integer
+  rts-replicate-int-loop (n) (v) (i) (acc) =
+   if i == n then acc
+   else rts-replicate-int-loop n v (i + 1) (list-push acc v)
+
+  rts-trailing-zeros : Integer -> Integer
+  rts-trailing-zeros (n) =
+   if n == 0 then 0
+   else rts-trailing-zeros-loop n 0
+
+  rts-trailing-zeros-loop : Integer, Integer -> Integer
+  rts-trailing-zeros-loop (n) (acc) =
+   if n / 2 * 2 /= n then acc
+   else rts-trailing-zeros-loop (n / 2) (acc + 1)
+
+  rts-pick-height : Integer -> Integer
+  rts-pick-height (counter) =
+   let raw = 1 + rts-trailing-zeros counter
+   in if raw > ranked-text-max-height then ranked-text-max-height
+      else raw
+
+Section: Construction
+
+  ranked-text-empty : RankedTextSet
+  ranked-text-empty =
+   let end-node = rts-make-end-node
+   in let head-forward = rts-replicate-node ranked-text-max-height end-node
+   in let head-spans = rts-replicate-int ranked-text-max-height 0
+   in RankedTextSet {
+    head = RankedTextNode {
+     value = "",
+     is-end = False,
+     forward = head-forward,
+     spans = head-spans
+    },
+    size = 0,
+    max-level = 0
+   }
+
+Section: Query
+
+  ranked-text-size : RankedTextSet -> Integer
+  ranked-text-size (s) = s.size
+
+  ranked-text-is-empty : RankedTextSet -> Boolean
+  ranked-text-is-empty (s) = s.size == 0
+
+  ranked-text-has : RankedTextSet, Text -> Boolean
+  ranked-text-has (s) (v) =
+   if s.size == 0 then False
+   else rts-has-descend (s.head) (s.max-level - 1) v
+
+  rts-has-descend : RankedTextNode, Integer, Text -> Boolean
+  rts-has-descend (node) (level) (v) =
+   if level < 0 then False
+   else let node2 = rts-advance-while-less node level v
+   in let next = list-at (node2.forward) level
+   in if next.is-end then rts-has-descend node2 (level - 1) v
+      else if next.value == v then True
+      else rts-has-descend node2 (level - 1) v
+
+  rts-advance-while-less : RankedTextNode, Integer, Text -> RankedTextNode
+  rts-advance-while-less (node) (level) (v) =
+   let next = list-at (node.forward) level
+   in if next.is-end then node
+      else if text-compare (next.value) v < 0 then rts-advance-while-less next level v
+      else node
+
+Section: Indexed Access
+
+  RankedTextAdvance = record {
+   node : RankedTextNode,
+   pos : Integer between 0 and 4294967295 wrapping
+  }
+
+  ranked-text-at : RankedTextSet, Integer -> Text
+  ranked-text-at (s) (i) =
+   if i < 0 then ""
+   else if i >= s.size then ""
+   else rts-at-descend (s.head) 0 (i + 1) (s.max-level - 1)
+
+  rts-at-descend : RankedTextNode, Integer, Integer, Integer -> Text
+  rts-at-descend (node) (pos) (target) (level) =
+   if level < 0 then
+    if pos == target then node.value
+    else ""
+   else let advanced = rts-advance-with-spans node pos target level
+   in rts-at-descend (advanced.node) (advanced.pos) target (level - 1)
+
+  rts-advance-with-spans : RankedTextNode, Integer, Integer, Integer -> RankedTextAdvance
+  rts-advance-with-spans (node) (pos) (target) (level) =
+   let next = list-at (node.forward) level
+   in if next.is-end then RankedTextAdvance { node = node, pos = pos }
+      else let span = list-at (node.spans) level
+      in if pos + span > target then RankedTextAdvance { node = node, pos = pos }
+      else rts-advance-with-spans next (pos + span) target level
+
+  ranked-text-rank-of : RankedTextSet, Text -> Integer
+  ranked-text-rank-of (s) (v) =
+   if s.size == 0 then 0 - 1
+   else rts-rank-descend (s.head) 0 v (s.max-level - 1)
+
+  rts-rank-descend : RankedTextNode, Integer, Text, Integer -> Integer
+  rts-rank-descend (node) (pos) (v) (level) =
+   if level < 0 then
+    let next = list-at (node.forward) 0
+    in if next.is-end then 0 - 1
+       else if text-compare (next.value) v == 0 then pos
+       else 0 - 1
+   else let advanced = rts-advance-rank node pos v level
+   in rts-rank-descend (advanced.node) (advanced.pos) v (level - 1)
+
+  rts-advance-rank : RankedTextNode, Integer, Text, Integer -> RankedTextAdvance
+  rts-advance-rank (node) (pos) (v) (level) =
+   let next = list-at (node.forward) level
+   in if next.is-end then RankedTextAdvance { node = node, pos = pos }
+      else if text-compare (next.value) v < 0 then
+       let span = list-at (node.spans) level
+       in rts-advance-rank next (pos + span) v level
+      else RankedTextAdvance { node = node, pos = pos }
+
+Section: Iteration
+
+  ranked-text-to-list : RankedTextSet -> List Text
+  ranked-text-to-list (s) =
+   if s.size == 0 then []
+   else rts-to-list-loop (list-at (s.head.forward) 0) []
+
+  rts-to-list-loop : RankedTextNode, List Text -> List Text
+  rts-to-list-loop (node) (acc) =
+   if node.is-end then acc
+   else rts-to-list-loop (list-at (node.forward) 0) (list-push acc (node.value))
+
+Section: Bulk Construction
+
+  ranked-text-from-list : List Text -> RankedTextSet
+  ranked-text-from-list (xs) =
+   rts-from-list-loop xs 0 (list-length xs) ranked-text-empty
+
+  rts-from-list-loop : List Text, Integer, Integer, RankedTextSet -> RankedTextSet
+  rts-from-list-loop (xs) (i) (len) (acc) =
+   if i == len then acc
+   else rts-from-list-loop xs (i + 1) len (ranked-text-insert acc (list-at xs i))
+
+  ranked-text-clone : RankedTextSet -> RankedTextSet
+  ranked-text-clone (s) =
+   ranked-text-from-list (ranked-text-to-list s)
+
+  ranked-text-union : RankedTextSet, RankedTextSet -> RankedTextSet
+  ranked-text-union (a) (b) =
+   let xs = ranked-text-to-list b
+   in rts-union-loop a xs 0 (list-length xs)
+
+  rts-union-loop : RankedTextSet, List Text, Integer, Integer -> RankedTextSet
+  rts-union-loop (a) (xs) (i) (len) =
+   if i == len then a
+   else rts-union-loop (ranked-text-insert a (list-at xs i)) xs (i + 1) len
+
+Section: Insertion
+
+  RankedTextPath = record {
+   nodes : List RankedTextNode,
+   ranks : List Integer
+  }
+
+  ranked-text-insert : RankedTextSet, Text -> RankedTextSet
+  ranked-text-insert (s) (v) =
+   let path = rts-build-update-path s v
+   in let pred0 = list-at (path.nodes) 0
+   in let next0 = list-at (pred0.forward) 0
+   in if next0.is-end == False then
+        if next0.value == v then s
+        else rts-install-new-node s v path
+      else rts-install-new-node s v path
+
+  rts-build-update-path : RankedTextSet, Text -> RankedTextPath
+  rts-build-update-path (s) (v) =
+   let init-nodes = rts-replicate-node ranked-text-max-height (s.head)
+   in let init-ranks = rts-replicate-int ranked-text-max-height 0
+   in rts-build-update-loop (s.head) 0 (s.max-level - 1) v init-nodes init-ranks
+
+  rts-build-update-loop : RankedTextNode, Integer, Integer, Text, List RankedTextNode, List Integer -> RankedTextPath
+  rts-build-update-loop (cursor) (pos) (level) (v) (nodes) (ranks) =
+   if level < 0 then RankedTextPath { nodes = nodes, ranks = ranks }
+   else let advanced = rts-advance-less-with-spans cursor pos level v
+   in let nodes2 = list-set-at nodes level (advanced.node)
+   in let ranks2 = list-set-at ranks level (advanced.pos)
+   in rts-build-update-loop (advanced.node) (advanced.pos) (level - 1) v nodes2 ranks2
+
+  rts-advance-less-with-spans : RankedTextNode, Integer, Integer, Text -> RankedTextAdvance
+  rts-advance-less-with-spans (node) (pos) (level) (v) =
+   let next = list-at (node.forward) level
+   in if next.is-end then RankedTextAdvance { node = node, pos = pos }
+      else if text-compare (next.value) v < 0 then
+       let span = list-at (node.spans) level
+       in rts-advance-less-with-spans next (pos + span) level v
+      else RankedTextAdvance { node = node, pos = pos }
+
+  rts-install-new-node : RankedTextSet, Text, RankedTextPath -> RankedTextSet
+  rts-install-new-node (s) (v) (path) =
+   let new-height = rts-pick-height (s.size + 1)
+   in let path2 = rts-extend-path-for-height s path new-height
+   in let new-pos = list-at (path2.ranks) 0 + 1
+   in let new-node = rts-allocate-node v new-height path2 new-pos
+   in let s2 = rts-splice-new-node s path2 new-node new-height new-pos 0
+   in let new-max = if new-height > s2.max-level then new-height else s2.max-level
+   in let s3 = rts-bump-spans-above s2 path2 new-height new-max
+   in RankedTextSet {
+    head = s3.head,
+    size = s3.size + 1,
+    max-level = __narrow new-max
+   }
+
+  rts-extend-path-for-height : RankedTextSet, RankedTextPath, Integer -> RankedTextPath
+  rts-extend-path-for-height (s) (path) (new-height) =
+   if new-height <= s.max-level then path
+   else rts-extend-path-loop s path (s.max-level) new-height
+
+  rts-extend-path-loop : RankedTextSet, RankedTextPath, Integer, Integer -> RankedTextPath
+  rts-extend-path-loop (s) (path) (l) (new-height) =
+   if l == new-height then path
+   else let nodes2 = list-set-at (path.nodes) l (s.head)
+   in let ranks2 = list-set-at (path.ranks) l 0
+   in let dummy = list-set-at (s.head.spans) l (s.size)
+   in rts-extend-path-loop s (RankedTextPath { nodes = nodes2, ranks = ranks2 }) (l + 1) new-height
+
+  rts-allocate-node : Text, Integer, RankedTextPath, Integer -> RankedTextNode
+  rts-allocate-node (v) (height) (path) (new-pos) =
+   let init-forward = rts-replicate-node height rts-make-end-node
+   in let init-spans = rts-replicate-int height 0
+   in let node-forward = rts-fill-new-forward path height init-forward 0
+   in let node-spans = rts-fill-new-spans path height init-spans new-pos 0
+   in RankedTextNode {
+    value = v,
+    is-end = False,
+    forward = node-forward,
+    spans = node-spans
+   }
+
+  rts-fill-new-forward : RankedTextPath, Integer, List RankedTextNode, Integer -> List RankedTextNode
+  rts-fill-new-forward (path) (height) (acc) (i) =
+   if i == height then acc
+   else let pred = list-at (path.nodes) i
+   in let target = list-at (pred.forward) i
+   in rts-fill-new-forward path height (list-set-at acc i target) (i + 1)
+
+  rts-fill-new-spans : RankedTextPath, Integer, List Integer, Integer, Integer -> List Integer
+  rts-fill-new-spans (path) (height) (acc) (new-pos) (i) =
+   if i == height then acc
+   else let pred = list-at (path.nodes) i
+   in let pred-rank = list-at (path.ranks) i
+   in let old-span = list-at (pred.spans) i
+   in let new-span = old-span - (new-pos - pred-rank - 1)
+   in rts-fill-new-spans path height (list-set-at acc i new-span) new-pos (i + 1)
+
+  rts-splice-new-node : RankedTextSet, RankedTextPath, RankedTextNode, Integer, Integer, Integer -> RankedTextSet
+  rts-splice-new-node (s) (path) (new-node) (height) (new-pos) (i) =
+   if i == height then s
+   else let pred = list-at (path.nodes) i
+   in let pred-rank = list-at (path.ranks) i
+   in let dummy1 = list-set-at (pred.forward) i new-node
+   in let dummy2 = list-set-at (pred.spans) i (new-pos - pred-rank)
+   in rts-splice-new-node s path new-node height new-pos (i + 1)
+
+  rts-bump-spans-above : RankedTextSet, RankedTextPath, Integer, Integer -> RankedTextSet
+  rts-bump-spans-above (s) (path) (from-level) (max-level-val) =
+   if from-level >= max-level-val then s
+   else let pred = list-at (path.nodes) from-level
+   in let old = list-at (pred.spans) from-level
+   in let dummy = list-set-at (pred.spans) from-level (old + 1)
+   in rts-bump-spans-above s path (from-level + 1) max-level-val
+
+Page 1

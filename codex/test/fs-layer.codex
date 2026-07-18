@@ -1,0 +1,59 @@
+Chapter: FsLayer
+  cites Foreword chapter FileSystem
+  cites Foreword chapter Fat16
+
+ The FileSystem layer of BACKLOG 1.5: a handler services the FileSystem
+ effect's ops over the disk, and the program above it never touches the
+ disk at all.
+
+ app-body is the program. Its row says FileSystem.Read and
+ FileSystem.Write and nothing else -- it performs read-text and
+ write-file as bare effect ops and could not name a sector if it wanted
+ to. serve-files is the layer. Its row says Device.Block and nothing
+ else: the `with FileSystem` handler discharges the app's whole family
+ by the dotted lattice (rung 1), and each clause services its op with a
+ fat16 call, whose Device.Block is what the clause bodies re-emit into
+ the layer's own row. That is the attenuation this test exists to pin:
+ the authority to touch the disk lives in the layer, the app carries
+ only the FileSystem grant, and neither signature could absorb the
+ other's without the def boundary rejecting it.
+
+ The runtime half is a real round trip: the app writes NOTE.TXT through
+ the handler, reads it back through the handler, and the bytes must
+ match. The absent path answers through the same handler, so a wrong
+ dispatch cannot hide -- a read that went to the serial port instead of
+ the disk (the read-file builtin trap this op exists to avoid) would
+ hang or answer garbage, never "<absent>".
+
+Section: Layer
+
+  fsl-read-vol : Fat16Volume, Text -> [Device.Block] Text
+  fsl-read-vol (vol) (p) = when fat16-read-text vol p
+    is Just (t) -> t
+    is None -> "<absent>"
+
+  fsl-read : Text -> [Device.Block] Text
+  fsl-read (p) = fsl-read-vol (fat16-init fat16-boot-partition-start) p
+
+  serve-files : Integer -> [Device.Block] Text
+  serve-files (x) = act
+    with FileSystem (app-body x)
+      read-text (p) (resume) = resume (fsl-read p)
+      write-file (p) (c) (resume) = resume (fat16-write-file p c)
+  end
+
+Section: App
+
+  app-body : Integer -> [FileSystem.Read, FileSystem.Write] Text
+  app-body (x) =
+    if x == 0 then
+      (if write-file "NOTE.TXT" "from the layer" then read-text "NOTE.TXT" else "<write failed>")
+    else read-text "NOPE.XXX"
+
+Section: Entry
+
+  opening : [Console, Device.Block] Nothing
+  opening = act
+    print-line-uni ("layer " & serve-files 0)
+    print-line-uni ("absent " & serve-files 1)
+  end

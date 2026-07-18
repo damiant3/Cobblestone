@@ -1,7 +1,4 @@
 Chapter: CSharpPlug
-  cites Codex chapter General
-  cites Codex chapter Text
-  cites Codex chapter Characters
   cites Net chapter NetIO
   cites Net chapter NetworkStack
   cites Net chapter TcpTransport
@@ -54,25 +51,29 @@ Section: Helpers
 
 Section: Streaming Send
 
-  send-text-loop : TcpTransportState, Text, Integer, Integer -> TcpTransportState
+  send-text-loop : TcpTransportState, Text, Integer, Integer -> [Network.Write] TcpTransportState
   send-text-loop (ts) (t) (off) (len) =
    if off >= len then ts
    else let stop = if off + 1400 > len then len else off + 1400
    in let chunk = text-to-bytes-chunk t off stop []
    in let r = net-send (ts.session) chunk
-   in let ts1 = TcpTransportState { session = r.session, recv-buf = ts.recv-buf, messages-sent = ts.messages-sent, messages-received = ts.messages-received }
-   in let ts2 = flush-transport-outbox ts1
-   in send-text-loop ts2 t stop len
+   in let ts1 = TcpTransportState { session = r.session, recv-buf = ts.recv-buf, recv-base = ts.recv-base, recv-len = ts.recv-len, recv-cap = ts.recv-cap, messages-sent = ts.messages-sent, messages-received = ts.messages-received }
+   in act
+    ts2 <- flush-transport-outbox ts1
+    send-text-loop ts2 t stop len
+   end
 
-  send-text : TcpTransportState, Text -> TcpTransportState
+  send-text : TcpTransportState, Text -> [Network.Write] TcpTransportState
   send-text (ts) (t) = send-text-loop ts t 0 (text-length t)
 
-  stream-defs : TcpTransportState, List IRDef, List ArityEntry, Integer, Integer -> TcpTransportState
+  stream-defs : TcpTransportState, List IRDef, List ArityEntry, Integer, Integer -> [Network.Write] TcpTransportState
   stream-defs (ts) (defs) (arities) (i) (n) =
    if i >= n then ts
    else let cs = emit-def (list-at defs i) arities
-   in let ts1 = send-text ts (cs & "\n")
-   in stream-defs ts1 defs arities (i + 1) n
+   in act
+    ts1 <- send-text ts (cs & "\n")
+    stream-defs ts1 defs arities (i + 1) n
+   end
 
  Stream C# one def at a time to the output ring (print-uni, fire-and-
  forget) reclaiming the per-def parse + emit heap with __heap-restore
@@ -93,46 +94,50 @@ Section: Streaming Send
 
 Section: Drain
 
-  drain-wait : TcpTransportState, Integer -> Integer
+  drain-wait : TcpTransportState, Integer -> [Network.Read] Integer
   drain-wait (ts) (tries) =
    if tries > 5000000 then 0
-   else let frame = ne2k-recv-frame
-   in if list-length frame == 0 then drain-wait ts (tries + 1)
-   else 0
+   else act
+    frame <- ne2k-recv-frame
+    if list-length frame == 0 then drain-wait ts (tries + 1)
+    else 0
+   end
 
 Section: Body
 
-  opening : [Console, FileSystem] Nothing = act
+  opening : [Console, FileSystem, Network.Read, Network.Write] Nothing =
    let sess = net-session-new local-mac local-ip gateway-ip 49152 9100 host-ip 1000
    in let ts = transport-new sess
-   in let ts1 = net-io-connect ts
-   in let recv = net-io-recv-loop ts1 0
-   in if recv.has-message then
-    let ir-text = bytes-to-text (recv.body) 0 (list-length (recv.body))
-    in let tokens = tokenize ir-text
-    in let tree = build-tree tokens
-    in let xs = sexp-list tree
-    in let chap-name = sexp-str (list-at xs 1)
-    in let type-defs = parse-atype-defs (walk-named-list xs "type-defs")
-    in let def-sexps = walk-named-list xs "defs"
-    in let n = list-length def-sexps
-    in let arities = build-arity-map-sexp def-sexps 1 n []
-    in let class-name = "Codex_" & sanitize chap-name
-    in act
-     print-uni (render-usings [cs-using "System", cs-using "System.Collections.Generic", cs-using "System.IO", cs-using "System.Linq", cs-using "System.Threading.Tasks"] 0 5 "")
-     print-uni "\n"
-     print-uni (opening-emit-entry class-name (opening-return-type-sexp def-sexps 1 n))
-     print-uni emit-cce-runtime
-     print-uni emit-buf-runtime
-     print-uni emit-state-runtime
-     print-uni (emit-type-defs type-defs 0)
-     print-uni (emit-class-header chap-name)
-     stream-defs-sexp def-sexps arities 1 n
-     print-uni "}\n"
-     let closed = net-io-close (recv.transport)
-     in print-uni ""
-    end
-   else act print-line-uni "FAIL" end
-  end
+   in act
+    ts1 <- net-io-connect ts
+    recv <- net-io-recv-loop ts1 0
+    if recv.has-message then
+     let ir-text = bytes-to-text (recv.body) 0 (list-length (recv.body))
+     in let tokens = tokenize ir-text
+     in let tree = build-tree tokens
+     in let xs = sexp-list tree
+     in let chap-name = sexp-str (list-at xs 1)
+     in let type-defs = parse-atype-defs (walk-named-list xs "type-defs")
+     in let def-sexps = walk-named-list xs "defs"
+     in let n = list-length def-sexps
+     in let arities = build-arity-map-sexp def-sexps 1 n []
+     in let class-name = "Codex_" & sanitize chap-name
+     in act
+      print-uni (render-usings [cs-using "System", cs-using "System.Collections.Generic", cs-using "System.IO", cs-using "System.Linq", cs-using "System.Threading.Tasks"] 0 5 "")
+      print-uni "\n"
+      print-uni (opening-emit-entry class-name (opening-return-type-sexp def-sexps 1 n))
+      print-uni emit-cce-runtime
+      print-uni emit-buf-runtime
+      print-uni emit-state-runtime
+      print-uni (emit-seam-runtimes arities)
+      print-uni (emit-type-defs type-defs 0)
+      print-uni (emit-class-header chap-name)
+      stream-defs-sexp def-sexps arities 1 n
+      print-uni "}\n"
+      closed <- net-io-close (recv.transport)
+      print-uni ""
+     end
+    else print-line-uni "FAIL"
+   end
 
 Page 1

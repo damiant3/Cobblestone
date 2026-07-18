@@ -1,0 +1,73 @@
+Chapter: DiskFactsCompact
+  cites Kernel chapter DiskFacts
+  cites Kernel chapter AppPersist
+  cites Foreword chapter FactStore
+  cites Foreword chapter Hamt
+  cites Foreword chapter Maybe
+  cites Foreword chapter Sha256
+  cites Foreword chapter Console
+
+ Compaction must not eat a collection.
+
+ It used to keep ONE FACT PER KIND: it walked the log, dropped any entry whose
+ kind it had already seen, and rewrote what was left. That is right for a kind
+ holding a single current value -- the browser's history blob is rewritten
+ whole, and only the newest matters -- and it destroys any kind holding a
+ collection. Kind 24 is secret ENTRIES. Kind 25 is FileShare manifests. Kind 26
+ is revocation records. Kind 30 is every source definition in the repository.
+
+ So: write three distinct facts of kind 30, and one exact duplicate of the
+ first. Compaction must keep the three, because nothing on the disk says one
+ supersedes another, and it may collapse the duplicate, because the same kind
+ and the same content hash IS the same fact. Under the old rule this test would
+ report one survivor and two destroyed source files.
+
+ The other half is order. The old walk collected survivors newest-first and
+ rewrote the log in that order, so a compacted log came out REVERSED -- and
+ app-scan-last, which trusts log order to mean recency, would then hand back
+ the OLDEST fact of a kind. Survivors keep their log order here. The copy of
+ alpha that survives is the newest one, so alpha ends up where that copy sat,
+ which is last: beta, gamma, alpha.
+
+Section: Entry
+
+  kind-source : Integer = 30
+
+  shown : Maybe Fact -> Text
+  shown (m) =
+   when m
+    is Just (f) -> f.content
+    is None -> "LOST"
+
+  joined : List Text, Integer, Integer, Text -> Text
+  joined (xs) (i) (len) (acc) =
+   if i >= len then acc
+   else joined xs (i + 1) len (if i == 0 then list-at xs i else acc & "," & list-at xs i)
+
+  opening : [Device.Block, Console.Write] Nothing = act
+    let s0 = disk-init
+    in let s1 = app-write-fact s0 kind-source "alpha" 1
+    in let s2 = app-write-fact s1 kind-source "beta" 2
+    in let s3 = app-write-fact s2 kind-source "gamma" 3
+    in let s4 = app-write-fact s3 kind-source "alpha" 4
+    in let flushed = disk-checkpoint s4
+    in act
+      print-line-uni ("written (alpha beta gamma alpha): " & show (disk-fact-count flushed))
+
+      let packed = disk-compact flushed
+      in act
+        print-line-uni ("after compaction: " & show (disk-fact-count packed))
+        let all = app-scan-all packed kind-source
+        in print-line-uni ("survivors, in log order: " & joined all 0 (list-length all) "")
+
+        let reloaded = disk-load
+        in act
+          print-line-uni ("alpha: " & shown (disk-read-fact reloaded (fact-content-hash "alpha")))
+          print-line-uni ("beta:  " & shown (disk-read-fact reloaded (fact-content-hash "beta")))
+          print-line-uni ("gamma: " & shown (disk-read-fact reloaded (fact-content-hash "gamma")))
+        end
+      end
+    end
+  end
+
+Page 1

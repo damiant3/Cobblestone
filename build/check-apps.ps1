@@ -14,7 +14,7 @@ $ErrorActionPreference = 'Stop'
 $Repo = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 
 # Pages not produced by the widget pipeline (see build-apps.ps1 $Skip)
-$Skip = @('fishtank')
+$Skip = @()
 
 # name -> regex the page must match
 $Invariants = [ordered]@{

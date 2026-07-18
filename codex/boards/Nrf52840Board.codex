@@ -10,6 +10,16 @@ Chapter: Nrf52840Board
  TASKS_ register to trigger an action, read EVENTS_ registers for
  completion. SHORTS registers wire events to tasks in hardware.
 
+ Every function here that reaches a register declares [Device.Mmio].
+ The row is what makes the access visible to the effect system, to the
+ capability manifest, and to the boot grant.
+
+ What stays pure is worth as much as what does not. The BLE advertising
+ PDU builders and the GATT attribute tables construct data over lists and
+ text and never touch the radio's registers -- the radio driver does that,
+ with the row to say so. The busy-wait delay spins on the CPU and touches
+ nothing. Those are pure, and the types say so.
+
 Section: Core Addresses
 
   nrf-flash-base : Integer = #00000000
@@ -25,21 +35,26 @@ Section: CLOCK (0x40000000)
   nrf-clock-hfclkstarted : Integer = #40000100
   nrf-clock-lfclkstarted : Integer = #40000104
 
-  nrf-clock-start-hfclk : Integer
-  nrf-clock-start-hfclk =
-   let w = mmio-write-32 nrf-clock-hfclkstart 1
-   in nrf-clock-wait-started nrf-clock-hfclkstarted 100000
+  nrf-clock-start-hfclk : [Device.Mmio] Integer
+  nrf-clock-start-hfclk = act
+   w <- (mmio-write-32 nrf-clock-hfclkstart 1)
+   nrf-clock-wait-started nrf-clock-hfclkstarted 100000
+  end
 
-  nrf-clock-start-lfclk : Integer
-  nrf-clock-start-lfclk =
-   let w = mmio-write-32 nrf-clock-lfclkstart 1
-   in nrf-clock-wait-started nrf-clock-lfclkstarted 100000
+  nrf-clock-start-lfclk : [Device.Mmio] Integer
+  nrf-clock-start-lfclk = act
+   w <- (mmio-write-32 nrf-clock-lfclkstart 1)
+   nrf-clock-wait-started nrf-clock-lfclkstarted 100000
+  end
 
-  nrf-clock-wait-started : Integer, Integer -> Integer
+  nrf-clock-wait-started : Integer, Integer -> [Device.Mmio] Integer
   nrf-clock-wait-started (event-addr) (fuel) =
    if fuel <= 0 then 0
-   else if mmio-read-32 event-addr > 0 then 1
-   else nrf-clock-wait-started event-addr (fuel - 1)
+   else act
+    ev <- mmio-read-32 event-addr
+    if ev > 0 then 1
+    else nrf-clock-wait-started event-addr (fuel - 1)
+   end
 
 Section: GPIO (P0: 0x50000000, P1: 0x50000300)
 
@@ -54,40 +69,48 @@ Section: GPIO (P0: 0x50000000, P1: 0x50000300)
   nrf-gpio-dirclr-off : Integer = #51C
   nrf-gpio-pincnf-base-off : Integer = #700
 
-  nrf-gpio-set-output : Integer, Integer -> Integer
+  nrf-gpio-set-output : Integer, Integer -> [Device.Mmio] Integer
   nrf-gpio-set-output (port-base) (pin) =
-   let dirset = mmio-write-32 (port-base + nrf-gpio-dirset-off) (bit-shl 1 pin)
-   in let cnf-addr = port-base + nrf-gpio-pincnf-base-off + (pin * 4)
-   in mmio-write-32 cnf-addr 3
+   let cnf-addr = port-base + nrf-gpio-pincnf-base-off + (pin * 4)
+   in act
+    dirset <- (mmio-write-32 (port-base + nrf-gpio-dirset-off) (bit-shl 1 pin))
+    mmio-write-32 cnf-addr 3
+   end
 
-  nrf-gpio-set-input : Integer, Integer -> Integer
+  nrf-gpio-set-input : Integer, Integer -> [Device.Mmio] Integer
   nrf-gpio-set-input (port-base) (pin) =
-   let dirclr = mmio-write-32 (port-base + nrf-gpio-dirclr-off) (bit-shl 1 pin)
-   in let cnf-addr = port-base + nrf-gpio-pincnf-base-off + (pin * 4)
-   in mmio-write-32 cnf-addr 0
+   let cnf-addr = port-base + nrf-gpio-pincnf-base-off + (pin * 4)
+   in act
+    dirclr <- (mmio-write-32 (port-base + nrf-gpio-dirclr-off) (bit-shl 1 pin))
+    mmio-write-32 cnf-addr 0
+   end
 
-  nrf-gpio-set-pull : Integer, Integer, Integer -> Integer
+  nrf-gpio-set-pull : Integer, Integer, Integer -> [Device.Mmio] Integer
   nrf-gpio-set-pull (port-base) (pin) (pull) =
    let cnf-addr = port-base + nrf-gpio-pincnf-base-off + (pin * 4)
-   in let cnf = mmio-read-32 cnf-addr
-   in let cleared = bit-and cnf (bit-xor #0C (0 - 1))
-   in mmio-write-32 cnf-addr (bit-or cleared (bit-shl pull 2))
+   in act
+    cnf <- (mmio-read-32 cnf-addr)
+    mmio-write-32 cnf-addr (bit-or (bit-and cnf (bit-xor #0C (0 - 1))) (bit-shl pull 2))
+   end
 
-  nrf-gpio-write : Integer, Integer, Boolean -> Integer
+  nrf-gpio-write : Integer, Integer, Boolean -> [Device.Mmio] Integer
   nrf-gpio-write (port-base) (pin) (high) =
    if high then mmio-write-32 (port-base + nrf-gpio-outset-off) (bit-shl 1 pin)
    else mmio-write-32 (port-base + nrf-gpio-outclr-off) (bit-shl 1 pin)
 
-  nrf-gpio-read : Integer, Integer -> Boolean
-  nrf-gpio-read (port-base) (pin) =
-   bit-and (bit-shru (mmio-read-32 (port-base + nrf-gpio-in-off)) pin) 1 == 1
+  nrf-gpio-read : Integer, Integer -> [Device.Mmio] Boolean
+  nrf-gpio-read (port-base) (pin) = act
+   pins <- (mmio-read-32 (port-base + nrf-gpio-in-off))
+   bit-and (bit-shru pins pin) 1 == 1
+  end
 
-  nrf-gpio-toggle : Integer, Integer -> Integer
-  nrf-gpio-toggle (port-base) (pin) =
-   let out = mmio-read-32 (port-base + nrf-gpio-out-off)
-   in let bit = bit-and (bit-shru out pin) 1
-   in if bit == 1 then mmio-write-32 (port-base + nrf-gpio-outclr-off) (bit-shl 1 pin)
-      else mmio-write-32 (port-base + nrf-gpio-outset-off) (bit-shl 1 pin)
+  nrf-gpio-toggle : Integer, Integer -> [Device.Mmio] Integer
+  nrf-gpio-toggle (port-base) (pin) = act
+   out <- mmio-read-32 (port-base + nrf-gpio-out-off)
+   if bit-and (bit-shru out pin) 1 == 1
+    then mmio-write-32 (port-base + nrf-gpio-outclr-off) (bit-shl 1 pin)
+    else mmio-write-32 (port-base + nrf-gpio-outset-off) (bit-shl 1 pin)
+  end
 
 Section: UARTE0 (0x40002000)
 
@@ -108,43 +131,52 @@ Section: UARTE0 (0x40002000)
 
   nrf-baud-115200 : Integer = #01D7E000
 
-  nrf-uarte-init : Integer, Integer, Frequency -> Integer
-  nrf-uarte-init (uarte-base) (tx-pin) (baud-code) =
-   let pin-tx = mmio-write-32 (uarte-base + nrf-uarte-psel-txd-off) tx-pin
-   in let baud = mmio-write-32 (uarte-base + nrf-uarte-baudrate-off) baud-code
-   in mmio-write-32 (uarte-base + nrf-uarte-enable-off) 8
+  nrf-uarte-init : Integer, Integer, Frequency -> [Device.Mmio] Integer
+  nrf-uarte-init (uarte-base) (tx-pin) (baud-code) = act
+   pin-tx <- mmio-write-32 (uarte-base + nrf-uarte-psel-txd-off) tx-pin
+   baud <- (mmio-write-32 (uarte-base + nrf-uarte-baudrate-off) baud-code)
+   mmio-write-32 (uarte-base + nrf-uarte-enable-off) 8
+  end
 
-  nrf-uarte-send-byte : Integer, Integer -> Integer
+  nrf-uarte-send-byte : Integer, Integer -> [Device.Mmio] Integer
   nrf-uarte-send-byte (uarte-base) (byte) =
    let buf-addr = nrf-sram-base + nrf-sram-size - 64
-   in let w-buf = mmio-write-32 buf-addr (bit-and byte #FF)
-   in let w-ptr = mmio-write-32 (uarte-base + nrf-uarte-txd-ptr-off) buf-addr
-   in let w-cnt = mmio-write-32 (uarte-base + nrf-uarte-txd-maxcnt-off) 1
-   in let clr = mmio-write-32 (uarte-base + nrf-uarte-endtx-off) 0
-   in let start = mmio-write-32 (uarte-base + nrf-uarte-starttx) 1
-   in nrf-uarte-wait-endtx uarte-base 10000
+   in act
+    w-buf <- mmio-write-32 buf-addr (bit-and byte #FF)
+    w-ptr <- mmio-write-32 (uarte-base + nrf-uarte-txd-ptr-off) buf-addr
+    w-cnt <- mmio-write-32 (uarte-base + nrf-uarte-txd-maxcnt-off) 1
+    clr <- mmio-write-32 (uarte-base + nrf-uarte-endtx-off) 0
+    start <- (mmio-write-32 (uarte-base + nrf-uarte-starttx) 1)
+    nrf-uarte-wait-endtx uarte-base 10000
+   end
 
-  nrf-uarte-wait-endtx : Integer, Integer -> Integer
+  nrf-uarte-wait-endtx : Integer, Integer -> [Device.Mmio] Integer
   nrf-uarte-wait-endtx (uarte-base) (fuel) =
    if fuel <= 0 then 0
-   else if mmio-read-32 (uarte-base + nrf-uarte-endtx-off) > 0 then 1
-   else nrf-uarte-wait-endtx uarte-base (fuel - 1)
+   else act
+    ev <- mmio-read-32 (uarte-base + nrf-uarte-endtx-off)
+    if ev > 0 then 1
+    else nrf-uarte-wait-endtx uarte-base (fuel - 1)
+   end
 
-  nrf-uarte-print : Integer, Text -> Integer
+  nrf-uarte-print : Integer, Text -> [Device.Mmio] Integer
   nrf-uarte-print (uarte-base) (s) =
    nrf-uarte-send-text uarte-base s 0 (text-length s)
 
-  nrf-uarte-send-text : Integer, Text, Integer, Integer -> Integer
+  nrf-uarte-send-text : Integer, Text, Integer, Integer -> [Device.Mmio] Integer
   nrf-uarte-send-text (uarte-base) (s) (i) (len) =
    if i >= len then 0
-   else let b = nrf-uarte-send-byte uarte-base (char-code (char-at s i))
-     in nrf-uarte-send-text uarte-base s (i + 1) len
+   else act
+    b <- (nrf-uarte-send-byte uarte-base (char-code (char-at s i)))
+    nrf-uarte-send-text uarte-base s (i + 1) len
+   end
 
-  nrf-uarte-println : Integer, Text -> Integer
-  nrf-uarte-println (uarte-base) (s) =
-   let p = nrf-uarte-print uarte-base s
-   in let cr = nrf-uarte-send-byte uarte-base 13
-   in nrf-uarte-send-byte uarte-base 10
+  nrf-uarte-println : Integer, Text -> [Device.Mmio] Integer
+  nrf-uarte-println (uarte-base) (s) = act
+   p <- nrf-uarte-print uarte-base s
+   cr <- (nrf-uarte-send-byte uarte-base 13)
+   nrf-uarte-send-byte uarte-base 10
+  end
 
 Section: SPIM0 (0x40003000)
 
@@ -167,33 +199,40 @@ Section: SPIM0 (0x40003000)
   nrf-spi-freq-4m : Integer = #40000000
   nrf-spi-freq-8m : Integer = #80000000
 
-  nrf-spim-init : Integer, Integer, Integer, Integer -> Integer
-  nrf-spim-init (spim-base) (sck-pin) (mosi-pin) (miso-pin) =
-   let p-sck = mmio-write-32 (spim-base + nrf-spim-psel-sck-off) sck-pin
-   in let p-mosi = mmio-write-32 (spim-base + nrf-spim-psel-mosi-off) mosi-pin
-   in let p-miso = mmio-write-32 (spim-base + nrf-spim-psel-miso-off) miso-pin
-   in let freq = mmio-write-32 (spim-base + nrf-spim-frequency-off) nrf-spi-freq-1m
-   in mmio-write-32 (spim-base + nrf-spim-enable-off) 7
+  nrf-spim-init : Integer, Integer, Integer, Integer -> [Device.Mmio] Integer
+  nrf-spim-init (spim-base) (sck-pin) (mosi-pin) (miso-pin) = act
+   p-sck <- mmio-write-32 (spim-base + nrf-spim-psel-sck-off) sck-pin
+   p-mosi <- mmio-write-32 (spim-base + nrf-spim-psel-mosi-off) mosi-pin
+   p-miso <- mmio-write-32 (spim-base + nrf-spim-psel-miso-off) miso-pin
+   freq <- (mmio-write-32 (spim-base + nrf-spim-frequency-off) nrf-spi-freq-1m)
+   mmio-write-32 (spim-base + nrf-spim-enable-off) 7
+  end
 
-  nrf-spim-transfer : Integer, Integer -> Integer
+  nrf-spim-transfer : Integer, Integer -> [Device.Mmio] Integer
   nrf-spim-transfer (spim-base) (byte) =
    let buf = nrf-sram-base + nrf-sram-size - 128
-   in let w-buf = mmio-write-32 buf (bit-and byte #FF)
-   in let w-txptr = mmio-write-32 (spim-base + nrf-spim-txd-ptr-off) buf
-   in let w-txcnt = mmio-write-32 (spim-base + nrf-spim-txd-maxcnt-off) 1
    in let rx-buf = buf + 4
-   in let w-rxptr = mmio-write-32 (spim-base + nrf-spim-rxd-ptr-off) rx-buf
-   in let w-rxcnt = mmio-write-32 (spim-base + nrf-spim-rxd-maxcnt-off) 1
-   in let clr = mmio-write-32 (spim-base + nrf-spim-end-off) 0
-   in let start = mmio-write-32 (spim-base + nrf-spim-start-off) 1
-   in let wait = nrf-spim-wait-end spim-base 10000
-   in bit-and (mmio-read-32 rx-buf) #FF
+   in act
+    w-buf <- mmio-write-32 buf (bit-and byte #FF)
+    w-txptr <- mmio-write-32 (spim-base + nrf-spim-txd-ptr-off) buf
+    w-txcnt <- mmio-write-32 (spim-base + nrf-spim-txd-maxcnt-off) 1
+    w-rxptr <- mmio-write-32 (spim-base + nrf-spim-rxd-ptr-off) rx-buf
+    w-rxcnt <- mmio-write-32 (spim-base + nrf-spim-rxd-maxcnt-off) 1
+    clr <- mmio-write-32 (spim-base + nrf-spim-end-off) 0
+    start <- mmio-write-32 (spim-base + nrf-spim-start-off) 1
+    wait <- nrf-spim-wait-end spim-base 10000
+    rx <- (mmio-read-32 rx-buf)
+    bit-and rx #FF
+   end
 
-  nrf-spim-wait-end : Integer, Integer -> Integer
+  nrf-spim-wait-end : Integer, Integer -> [Device.Mmio] Integer
   nrf-spim-wait-end (spim-base) (fuel) =
    if fuel <= 0 then 0
-   else if mmio-read-32 (spim-base + nrf-spim-end-off) > 0 then 1
-   else nrf-spim-wait-end spim-base (fuel - 1)
+   else act
+    ev <- mmio-read-32 (spim-base + nrf-spim-end-off)
+    if ev > 0 then 1
+    else nrf-spim-wait-end spim-base (fuel - 1)
+   end
 
 Section: TWIM0 (I2C, 0x40003000 — shared with SPIM via instance ID)
 
@@ -217,45 +256,54 @@ Section: TWIM0 (I2C, 0x40003000 — shared with SPIM via instance ID)
   nrf-i2c-freq-100k : Integer = #01980000
   nrf-i2c-freq-400k : Integer = #06400000
 
-  nrf-twim-init : Integer, Integer, Integer -> Integer
-  nrf-twim-init (twim-base) (scl-pin) (sda-pin) =
-   let p-scl = mmio-write-32 (twim-base + nrf-twim-psel-scl-off) scl-pin
-   in let p-sda = mmio-write-32 (twim-base + nrf-twim-psel-sda-off) sda-pin
-   in let freq = mmio-write-32 (twim-base + nrf-twim-frequency-off) nrf-i2c-freq-100k
-   in mmio-write-32 (twim-base + nrf-twim-enable-off) 6
+  nrf-twim-init : Integer, Integer, Integer -> [Device.Mmio] Integer
+  nrf-twim-init (twim-base) (scl-pin) (sda-pin) = act
+   p-scl <- mmio-write-32 (twim-base + nrf-twim-psel-scl-off) scl-pin
+   p-sda <- mmio-write-32 (twim-base + nrf-twim-psel-sda-off) sda-pin
+   freq <- (mmio-write-32 (twim-base + nrf-twim-frequency-off) nrf-i2c-freq-100k)
+   mmio-write-32 (twim-base + nrf-twim-enable-off) 6
+  end
 
-  nrf-twim-write-reg : Integer, Integer, Integer, Integer -> Integer
+  nrf-twim-write-reg : Integer, Integer, Integer, Integer -> [Device.Mmio] Integer
   nrf-twim-write-reg (twim-base) (dev-addr) (reg) (value) =
    let buf = nrf-sram-base + nrf-sram-size - 192
-   in let w-reg = mmio-write-32 buf reg
-   in let w-val = mmio-write-32 (buf + 1) value
-   in let w-addr = mmio-write-32 (twim-base + nrf-twim-address-off) dev-addr
-   in let w-ptr = mmio-write-32 (twim-base + nrf-twim-txd-ptr-off) buf
-   in let w-cnt = mmio-write-32 (twim-base + nrf-twim-txd-maxcnt-off) 2
-   in let clr = mmio-write-32 (twim-base + nrf-twim-stopped-off) 0
-   in let start = mmio-write-32 (twim-base + nrf-twim-starttx-off) 1
-   in nrf-twim-wait-stopped twim-base 10000
+   in act
+    w-reg <- mmio-write-32 buf reg
+    w-val <- mmio-write-32 (buf + 1) value
+    w-addr <- mmio-write-32 (twim-base + nrf-twim-address-off) dev-addr
+    w-ptr <- mmio-write-32 (twim-base + nrf-twim-txd-ptr-off) buf
+    w-cnt <- mmio-write-32 (twim-base + nrf-twim-txd-maxcnt-off) 2
+    clr <- mmio-write-32 (twim-base + nrf-twim-stopped-off) 0
+    start <- (mmio-write-32 (twim-base + nrf-twim-starttx-off) 1)
+    nrf-twim-wait-stopped twim-base 10000
+   end
 
-  nrf-twim-read-reg : Integer, Integer, Integer -> Integer
+  nrf-twim-read-reg : Integer, Integer, Integer -> [Device.Mmio] Integer
   nrf-twim-read-reg (twim-base) (dev-addr) (reg) =
    let tx-buf = nrf-sram-base + nrf-sram-size - 192
    in let rx-buf = nrf-sram-base + nrf-sram-size - 256
-   in let w-reg = mmio-write-32 tx-buf reg
-   in let w-addr = mmio-write-32 (twim-base + nrf-twim-address-off) dev-addr
-   in let w-txptr = mmio-write-32 (twim-base + nrf-twim-txd-ptr-off) tx-buf
-   in let w-txcnt = mmio-write-32 (twim-base + nrf-twim-txd-maxcnt-off) 1
-   in let w-rxptr = mmio-write-32 (twim-base + nrf-twim-rxd-ptr-off) rx-buf
-   in let w-rxcnt = mmio-write-32 (twim-base + nrf-twim-rxd-maxcnt-off) 1
-   in let clr = mmio-write-32 (twim-base + nrf-twim-stopped-off) 0
-   in let start = mmio-write-32 (twim-base + nrf-twim-starttx-off) 1
-   in let wait = nrf-twim-wait-stopped twim-base 10000
-   in bit-and (mmio-read-32 rx-buf) #FF
+   in act
+    w-reg <- mmio-write-32 tx-buf reg
+    w-addr <- mmio-write-32 (twim-base + nrf-twim-address-off) dev-addr
+    w-txptr <- mmio-write-32 (twim-base + nrf-twim-txd-ptr-off) tx-buf
+    w-txcnt <- mmio-write-32 (twim-base + nrf-twim-txd-maxcnt-off) 1
+    w-rxptr <- mmio-write-32 (twim-base + nrf-twim-rxd-ptr-off) rx-buf
+    w-rxcnt <- mmio-write-32 (twim-base + nrf-twim-rxd-maxcnt-off) 1
+    clr <- mmio-write-32 (twim-base + nrf-twim-stopped-off) 0
+    start <- mmio-write-32 (twim-base + nrf-twim-starttx-off) 1
+    wait <- nrf-twim-wait-stopped twim-base 10000
+    rx <- (mmio-read-32 rx-buf)
+    bit-and rx #FF
+   end
 
-  nrf-twim-wait-stopped : Integer, Integer -> Integer
+  nrf-twim-wait-stopped : Integer, Integer -> [Device.Mmio] Integer
   nrf-twim-wait-stopped (twim-base) (fuel) =
    if fuel <= 0 then 0
-   else if mmio-read-32 (twim-base + nrf-twim-stopped-off) > 0 then 1
-   else nrf-twim-wait-stopped twim-base (fuel - 1)
+   else act
+    ev <- mmio-read-32 (twim-base + nrf-twim-stopped-off)
+    if ev > 0 then 1
+    else nrf-twim-wait-stopped twim-base (fuel - 1)
+   end
 
 Section: SAADC (0x40007000)
 
@@ -270,27 +318,33 @@ Section: SAADC (0x40007000)
   nrf-saadc-result-maxcnt-off : Integer = #630
   nrf-saadc-ch0-pselp-off : Integer = #510
 
-  nrf-saadc-init : Integer -> Integer
-  nrf-saadc-init (channel) =
-   let en = mmio-write-32 (nrf-saadc-base + nrf-saadc-enable-off) 1
-   in let res = mmio-write-32 (nrf-saadc-base + nrf-saadc-resolution-off) 3
-   in mmio-write-32 (nrf-saadc-base + nrf-saadc-ch0-pselp-off + (channel * 16)) (channel + 1)
+  nrf-saadc-init : Integer -> [Device.Mmio] Integer
+  nrf-saadc-init (channel) = act
+   en <- mmio-write-32 (nrf-saadc-base + nrf-saadc-enable-off) 1
+   res <- (mmio-write-32 (nrf-saadc-base + nrf-saadc-resolution-off) 3)
+   mmio-write-32 (nrf-saadc-base + nrf-saadc-ch0-pselp-off + (channel * 16)) (channel + 1)
+  end
 
-  nrf-saadc-read : Integer -> Integer
-  nrf-saadc-read (result-buf) =
-   let w-ptr = mmio-write-32 (nrf-saadc-base + nrf-saadc-result-ptr-off) result-buf
-   in let w-cnt = mmio-write-32 (nrf-saadc-base + nrf-saadc-result-maxcnt-off) 1
-   in let clr = mmio-write-32 (nrf-saadc-base + nrf-saadc-end-off) 0
-   in let start = mmio-write-32 (nrf-saadc-base + nrf-saadc-start-off) 1
-   in let sample = mmio-write-32 (nrf-saadc-base + nrf-saadc-sample-off) 1
-   in let wait = nrf-saadc-wait-end 10000
-   in bit-and (mmio-read-32 result-buf) #3FFF
+  nrf-saadc-read : Integer -> [Device.Mmio] Integer
+  nrf-saadc-read (result-buf) = act
+   w-ptr <- mmio-write-32 (nrf-saadc-base + nrf-saadc-result-ptr-off) result-buf
+   w-cnt <- mmio-write-32 (nrf-saadc-base + nrf-saadc-result-maxcnt-off) 1
+   clr <- mmio-write-32 (nrf-saadc-base + nrf-saadc-end-off) 0
+   start <- mmio-write-32 (nrf-saadc-base + nrf-saadc-start-off) 1
+   sample <- mmio-write-32 (nrf-saadc-base + nrf-saadc-sample-off) 1
+   wait <- nrf-saadc-wait-end 10000
+   val <- (mmio-read-32 result-buf)
+   bit-and val #3FFF
+  end
 
-  nrf-saadc-wait-end : Integer -> Integer
+  nrf-saadc-wait-end : Integer -> [Device.Mmio] Integer
   nrf-saadc-wait-end (fuel) =
    if fuel <= 0 then 0
-   else if mmio-read-32 (nrf-saadc-base + nrf-saadc-end-off) > 0 then 1
-   else nrf-saadc-wait-end (fuel - 1)
+   else act
+    ev <- mmio-read-32 (nrf-saadc-base + nrf-saadc-end-off)
+    if ev > 0 then 1
+    else nrf-saadc-wait-end (fuel - 1)
+   end
 
 Section: RADIO (2.4 GHz, 0x40001000)
 
@@ -316,17 +370,18 @@ Section: RADIO (2.4 GHz, 0x40001000)
 
   nrf-ble-access-addr : Integer = #8E89BED6
 
-  nrf-radio-config-ble : Integer
-  nrf-radio-config-ble =
-   let mode = mmio-write-32 (nrf-radio-base + nrf-radio-mode-off) nrf-radio-mode-ble-1mbit
-   in let pcnf0 = mmio-write-32 (nrf-radio-base + nrf-radio-pcnf0-off) #00030006
-   in let pcnf1 = mmio-write-32 (nrf-radio-base + nrf-radio-pcnf1-off) #00040025
-   in let base0 = mmio-write-32 (nrf-radio-base + nrf-radio-base0-off) (bit-shl nrf-ble-access-addr 8)
-   in let pfx0 = mmio-write-32 (nrf-radio-base + nrf-radio-prefix0-off) (bit-and (bit-shru nrf-ble-access-addr 24) #FF)
-   in let txaddr = mmio-write-32 (nrf-radio-base + nrf-radio-txaddress-off) 0
-   in mmio-write-32 (nrf-radio-base + nrf-radio-txpower-off) 0
+  nrf-radio-config-ble : [Device.Mmio] Integer
+  nrf-radio-config-ble = act
+   mode <- mmio-write-32 (nrf-radio-base + nrf-radio-mode-off) nrf-radio-mode-ble-1mbit
+   pcnf0 <- mmio-write-32 (nrf-radio-base + nrf-radio-pcnf0-off) #00030006
+   pcnf1 <- mmio-write-32 (nrf-radio-base + nrf-radio-pcnf1-off) #00040025
+   base0 <- mmio-write-32 (nrf-radio-base + nrf-radio-base0-off) (bit-shl nrf-ble-access-addr 8)
+   pfx0 <- mmio-write-32 (nrf-radio-base + nrf-radio-prefix0-off) (bit-and (bit-shru nrf-ble-access-addr 24) #FF)
+   txaddr <- (mmio-write-32 (nrf-radio-base + nrf-radio-txaddress-off) 0)
+   mmio-write-32 (nrf-radio-base + nrf-radio-txpower-off) 0
+  end
 
-  nrf-radio-set-channel : Integer -> Integer
+  nrf-radio-set-channel : Integer -> [Device.Mmio] Integer
   nrf-radio-set-channel (ch) =
    let freq = if ch == 37 then 2 else if ch == 38 then 26 else if ch == 39 then 80 else ch * 2 + 4
    in mmio-write-32 (nrf-radio-base + nrf-radio-frequency-off) freq
@@ -337,6 +392,9 @@ Section: BLE Advertising PDU
  PDU Header (2 bytes): PDU type (4 bits) + flags (4 bits) + length (8 bits)
  AdvA (6 bytes): advertiser address
  AdvData (0-31 bytes): AD structures (length + type + data)
+
+ The builders below assemble bytes. They never reach the radio -- that is
+ nrf-radio-config-ble's job -- so they are pure, and their types say so.
 
   BleAdvType =
     | AdvInd
@@ -418,6 +476,9 @@ Section: GATT Service Definitions
  the data a BLE peripheral advertises to connected clients.
 
  Standard 16-bit UUIDs from Bluetooth SIG Assigned Numbers.
+
+ An attribute table is data. Nothing here reads or writes a register, so
+ nothing here carries a row.
 
   GattPermission =
     | GattRead
@@ -513,20 +574,23 @@ Section: LED (P0.13 on nRF52840-DK)
   nrf-led3-pin : Integer = 15
   nrf-led4-pin : Integer = 16
 
-  nrf-led-init : Integer
-  nrf-led-init =
-   let l1 = nrf-gpio-set-output nrf-p0-base nrf-led1-pin
-   in let l2 = nrf-gpio-set-output nrf-p0-base nrf-led2-pin
-   in let l3 = nrf-gpio-set-output nrf-p0-base nrf-led3-pin
-   in nrf-gpio-set-output nrf-p0-base nrf-led4-pin
+  nrf-led-init : [Device.Mmio] Integer
+  nrf-led-init = act
+   l1 <- nrf-gpio-set-output nrf-p0-base nrf-led1-pin
+   l2 <- nrf-gpio-set-output nrf-p0-base nrf-led2-pin
+   l3 <- (nrf-gpio-set-output nrf-p0-base nrf-led3-pin)
+   nrf-gpio-set-output nrf-p0-base nrf-led4-pin
+  end
 
-  nrf-led-on : Integer -> Integer
+  nrf-led-on : Integer -> [Device.Mmio] Integer
   nrf-led-on (pin) = nrf-gpio-write nrf-p0-base pin False
 
-  nrf-led-off : Integer -> Integer
+  nrf-led-off : Integer -> [Device.Mmio] Integer
   nrf-led-off (pin) = nrf-gpio-write nrf-p0-base pin True
 
 Section: Delay
+
+ A busy-wait touches no register, so it is pure and says so.
 
   nrf-delay-loops : Integer, Integer -> Integer
   nrf-delay-loops (n) (i) =

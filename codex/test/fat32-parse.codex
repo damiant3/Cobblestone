@@ -1,0 +1,132 @@
+Chapter: Fat32ParseTest
+  cites Works chapter GopFat16
+  cites Foreword chapter Fat16
+  cites Foreword chapter Maybe
+
+ Exercises the pure half of the Gop FAT32 support against fixtures
+ laid down at the spec's own offsets. A BPB whose 16-bit FAT size is
+ zero must parse as the 32-bit layout with the root CLUSTER in the
+ shared record; end-of-chain must follow the volume's width -- the
+ case `big=no` pins the bug where a valid FAT32 cluster number past
+ 65528 trips the FAT16 sentinel and silently ends every long chain;
+ FAT entries must be read masked (an entry whose only set bits are
+ the reserved top nibble is FREE) -- and the dir32 versus dir16 pair
+ shows exactly why the 32-bit directory scanner exists: the same
+ sector decoded by the 16-bit scanner loses the cluster high word.
+
+Section: Writers
+
+  wr-bytes : Integer, Integer, List Integer, Integer -> Integer
+  wr-bytes (a) (o) (bs) (i) =
+    if i >= list-length bs then 0
+    else let p = poke-byte a (o + i) (list-at bs i)
+    in wr-bytes a o bs (i + 1)
+
+  zero-fill : Integer, Integer, Integer -> Integer
+  zero-fill (b) (i) (n) =
+    if i >= n then 0 else let p = poke-byte b i 0 in zero-fill b (i + 1) n
+
+  build-bpb32 : Integer -> Integer
+  build-bpb32 (b) =
+    let z = zero-fill b 0 512
+    in let bps = gfat-put-u16 b 11 512
+    in let spc = poke-byte b 13 1
+    in let rsv = gfat-put-u16 b 14 32
+    in let nf = poke-byte b 16 2
+    in let f16 = gfat-put-u16 b 22 0
+    in let f32 = gfat-put-u32 b 36 516
+    in gfat-put-u32 b 44 2
+
+  build-bpb16 : Integer -> Integer
+  build-bpb16 (b) =
+    let z = zero-fill b 0 512
+    in let bps = gfat-put-u16 b 11 512
+    in let spc = poke-byte b 13 4
+    in let rsv = gfat-put-u16 b 14 1
+    in let nf = poke-byte b 16 2
+    in let rc = gfat-put-u16 b 17 512
+    in gfat-put-u16 b 22 256
+
+ The 32-bit FAT fixture: cluster 2 chains to 3, cluster 3 ends the
+ chain, cluster 4 carries ONLY reserved-nibble dirt (free once
+ masked), cluster 5 chains to 7 under a dirty nibble.
+
+  build-fat32 : Integer -> Integer
+  build-fat32 (b) =
+    let z = zero-fill b 0 512
+    in let e2 = gfat-put-u32 b 8 3
+    in let e3 = gfat-put-u32 b 12 268435448
+    in let e4 = gfat-put-u32 b 16 3758096384
+    in let e5 = gfat-put-u32 b 20 4026531847
+    in 0
+
+  build-fat16 : Integer -> Integer
+  build-fat16 (b) =
+    let z = zero-fill b 0 512
+    in let e2 = gfat-put-u16 b 4 65535
+    in let e3 = gfat-put-u16 b 6 9
+    in let e4 = gfat-put-u16 b 8 9
+    in 0
+
+ The directory fixture: a long-name entry, a volume label, then
+ CODEX.CDX with starting-cluster high word 1 and low word 2.
+
+  build-dir : Integer -> Integer
+  build-dir (b) =
+    let z = zero-fill b 0 512
+    in let l0 = poke-byte b 0 65
+    in let l1 = poke-byte b 11 15
+    in let v0 = wr-bytes b 32 [67, 79, 68, 69, 88, 32, 32, 32, 32, 32, 32] 0
+    in let v1 = poke-byte b 43 8
+    in let n = wr-bytes b 64 [67, 79, 68, 69, 88, 32, 32, 32, 67, 68, 88] 0
+    in let at = poke-byte b 75 32
+    in let hi = gfat-put-u16 b 84 1
+    in let lo = gfat-put-u16 b 90 2
+    in gfat-put-u32 b 92 1234
+
+Section: Report
+
+  yn : Boolean -> Text
+  yn (v) = if v then "yes" else "no"
+
+  vol-line : Text, Fat16Volume -> Text
+  vol-line (tag) (v) =
+    tag & " is32=" & yn (gfat-is32 v) & " spc=" & show (v.vol-sectors-per-cluster)
+      & " fatsz=" & show (v.vol-fat-sectors) & " fat-start=" & show (v.vol-fat-start)
+      & " root=" & show (v.vol-root-start) & " data-start=" & show (v.vol-data-start)
+
+  entry-line : Text, Maybe Fat16DirEntry -> Text
+  entry-line (tag) (e) =
+    when e
+      is None -> tag & " none"
+      is Just (d) -> tag & " cluster=" & show (d.de-cluster) & " size=" & show (d.de-size)
+
+Section: Main
+
+  opening : [Console] Nothing = act
+    let b = __heap-save
+    in let adv = __heap-advance 2048
+    in act
+      let w32 = build-bpb32 b
+      in let v32 = gfat-parse-bpb 2048 b
+      in act
+        print-line-uni (vol-line "bpb32" v32)
+        let w16 = build-bpb16 b
+        in let v16 = gfat-parse-bpb 2048 b
+        in act
+          print-line-uni (vol-line "bpb16" v16)
+          print-line-uni ("is-end32 eoc=" & yn (gfat-is-end v32 268435448) & " below=" & yn (gfat-is-end v32 268435447) & " big=" & yn (gfat-is-end v32 70000))
+          print-line-uni ("is-end16 eoc=" & yn (gfat-is-end v16 65528) & " big=" & yn (gfat-is-end v16 70000))
+          let f32 = build-fat32 (b + 512)
+          in print-line-uni ("fat32 next2=" & show (gfat-fat-next v32 (b + 512) 2) & " next3=" & show (gfat-fat-next v32 (b + 512) 3) & " next4=" & show (gfat-fat-next v32 (b + 512) 4) & " next5=" & show (gfat-fat-next v32 (b + 512) 5) & " free=" & show (gfat-find-free v32 (b + 512) 2 128))
+          let f16 = build-fat16 (b + 512)
+          in print-line-uni ("fat16 next2=" & show (gfat-fat-next v16 (b + 512) 2) & " free=" & show (gfat-find-free v16 (b + 512) 2 128))
+          let d = build-dir (b + 1024)
+          in act
+            print-line-uni (entry-line "dir32" (gfat-scan-entries32 (b + 1024) "CODEX.CDX" 0 16))
+            print-line-uni (entry-line "dir16" (fat16-scan-sector-entries (b + 1024) "CODEX.CDX" 0 16))
+          end
+        end
+      end
+    end
+  end

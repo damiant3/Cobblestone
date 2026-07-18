@@ -1,0 +1,97 @@
+Chapter: SimplifyCheck
+
+ Drives the REAL simplifier (IR/Simplify.codex, via the `simplify`
+ pass) over real lowered IR. Each function below is one rewrite family
+ the simplifier must apply, written as ordinary Codex so the compiler
+ lowers it to the shape the pass then rewrites — there is no
+ reimplementation here.
+
+ The battery compiles this file with the DEFAULT pipeline, in which
+ `simplify` does not run, and checks the runtime output against
+ `simplify-check.expected`. That pins the ANSWERS. The proof that the
+ simplifier preserves them is out of band and recorded in
+ `simplify-check.simplify-expected`: the same file compiled with
+ `-Passes simplify` must produce byte-identical serial output and a
+ `SIMPLIFY: rewrites=N` line with N greater than zero. Same answers with
+ the pass on and off is the whole safety claim for a semantics-preserving
+ rewrite; the rewrite count is the proof the pass actually fired rather
+ than passing the program through untouched.
+
+ The shapes:
+
+  - sc-fold: a literal let feeding integer arithmetic  -> 5
+             (propagate 2, fold 2 + 3)
+  - sc-cmp:  a literal let feeding a comparison in an   -> 1
+             if condition (propagate 4, fold 4 < 10 to
+             True, take the then-arm)
+  - sc-neg:  negate of a propagated literal             -> -4
+             (propagate 5, fold -5, fold -5 + 1)
+  - sc-bool: a boolean or of two literals deciding an   -> 7
+             if (fold True or False to True, take the
+             then-arm)
+  - sc-text: a folded text builtin                       -> 5
+             (fold text-length "hello")
+  - sc-dead: a pure-valued let never used in the body    -> 42
+             (drop the dead binding u = n + 1, fold 6 * 7)
+  - sc-copy: copy propagation through two name-bindings   -> 100
+             (a = n, b = a both propagate; n + 100)
+  - sc-once: a pure value used exactly once, inlined      -> 9
+             (s = n * n folds into its single use, + 9)
+  - sc-cap:  an ADVERSARIAL capture case that must NOT     -> 2
+             inline: x = n cannot be propagated into
+             `let n = x + 1 in n * 2` because the inner
+             let binds n, the value's own free name. The
+             simplifier must SKIP it. If it wrongly inlines,
+             the answer changes - and the fixed point cannot
+             see that, so this diff is the real guard.
+  - sc-lamcap: the same hazard through a LAMBDA binder      -> 10
+             rather than a let - x = n cannot inline into
+             `(\n -> x + n) 10`; exercises the lambda path
+             of the capture check.
+
+Section: Shapes
+
+  sc-fold : Integer -> Integer
+  sc-fold (n) = let x = 2 in x + 3
+
+  sc-cmp : Integer -> Integer
+  sc-cmp (n) = let m = 4 in if m < 10 then 1 else 0
+
+  sc-neg : Integer -> Integer
+  sc-neg (n) = let a = 5 in (-a) + 1
+
+  sc-bool : Integer -> Integer
+  sc-bool (n) = if True | False then 7 else 8
+
+  sc-text : Integer -> Integer
+  sc-text (n) = text-length "hello"
+
+  sc-dead : Integer -> Integer
+  sc-dead (n) = let u = n + 1 in 6 * 7
+
+  sc-copy : Integer -> Integer
+  sc-copy (n) = let a = n in let b = a in b + 100
+
+  sc-once : Integer -> Integer
+  sc-once (n) = let s = n * n in s + 9
+
+  sc-cap : Integer -> Integer
+  sc-cap (n) = let x = n in let n = x + 1 in n * 2
+
+  sc-lamcap : Integer -> Integer
+  sc-lamcap (n) = let x = n in (\n -> x + n) 10
+
+Section: Entry
+
+  opening : [Console] Nothing = act
+   print-line-uni (show (sc-fold 0))
+   print-line-uni (show (sc-cmp 0))
+   print-line-uni (show (sc-neg 0))
+   print-line-uni (show (sc-bool 0))
+   print-line-uni (show (sc-text 0))
+   print-line-uni (show (sc-dead 0))
+   print-line-uni (show (sc-copy 0))
+   print-line-uni (show (sc-once 0))
+   print-line-uni (show (sc-cap 0))
+   print-line-uni (show (sc-lamcap 0))
+  end

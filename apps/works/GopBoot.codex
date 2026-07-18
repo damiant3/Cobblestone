@@ -1,7 +1,16 @@
 Chapter: GopBoot
+  cites Works chapter GopAcpi
   cites Works chapter GopDraw
+  cites Works chapter GopKey
+  cites Works chapter GopUsb
+  cites Works chapter GopXhci
+  cites Works chapter GopUsbKbd
+  cites Works chapter GopUsbMouse
   cites Works chapter GopDisk
   cites Works chapter GopFat16
+  cites Works chapter GopMedium
+  cites Works chapter GopEnum
+  cites Works chapter GopDesk
   cites Works chapter GopWake
   cites Works chapter GopWizard
   cites Verify chapter WakeCeremony
@@ -12,11 +21,12 @@ Chapter: GopBoot
  A3/B1.1: an interactive menu on the Option A boot path. The stub hands us
  the GOP framebuffer through cells at 0x8000 (base/width/height/stride),
  sets up the heap, and jumps here after ExitBootServices. Firmware is gone;
- ConOut is dead. We draw a menu with the CBF bitmap font and drive it from
- the real PS/2 controller (status port 0x64, data port 0x60), which works
- on metal -- there is no firmware key buffer after ExitBootServices. Up/Down
- move the selection, Enter chooses. First interactive UI rendered entirely
- by a Codex program post-EBS.
+ ConOut is dead. The first act is runtime-init (H1a): it installs the GDT,
+ IDT, TSS, syscall MSRs, and the PIC/PIT/keyboard setup, so from that
+ point the tick counter runs and every keystroke arrives by IRQ in the
+ kernel key-buffer cell (GopKey). We draw a menu with the CBF bitmap font
+ and drive it from that cell. Up/Down move the selection, Enter chooses.
+ First interactive UI rendered entirely by a Codex program post-EBS.
 
  We say:
 
@@ -33,22 +43,29 @@ Section: Framebuffer Handoff
 
 Section: Menu Model
 
-  menu-count : Integer = 4
+  menu-count : Integer = 5
 
   menu-label : Integer -> Text
   menu-label (i) =
     if i == 0 then "Dev Console"
     else if i == 1 then "Graphical UI"
     else if i == 2 then "Serial REPL"
-    else "Reboot"
+    else if i == 3 then "Restart"
+    else "Power Off"
+
+  menu-desktop : Integer = 1
+
+  menu-restart : Integer = 3
+
+  menu-power-off : Integer = 4
 
 Section: Layout
 
  The stub reports the panel's real mode through the handoff cells;
- every position derives from it. The menu block (title, four rows, a
+ every position derives from it. The menu block (title, five rows, a
  status line) is centered on the panel, and glyphs double on panels
- 1024 pixels wide or wider (ui-scale, in GopDraw). The block is 196
- base units tall: title row 16, gap 32, four rows of 28, gap 20,
+ 1024 pixels wide or wider (ui-scale, in GopDraw). The block is 224
+ base units tall: title row 16, gap 32, five rows of 28, gap 20,
  status row 16.
 
   menu-box-w : Integer -> Integer
@@ -58,13 +75,13 @@ Section: Layout
   menu-left (w) (scale) = (w - menu-box-w scale) / 2
 
   menu-top : Integer, Integer -> Integer
-  menu-top (h) (scale) = (h - 196 * scale) / 2
+  menu-top (h) (scale) = (h - 224 * scale) / 2
 
   items-top : Integer, Integer -> Integer
   items-top (h) (scale) = menu-top h scale + 48 * scale
 
   msg-y : Integer, Integer -> Integer
-  msg-y (h) (scale) = items-top h scale + 132 * scale
+  msg-y (h) (scale) = items-top h scale + 160 * scale
 
 Section: Rendering
 
@@ -95,14 +112,37 @@ Section: Rendering
     in let title = draw-title base w h stride font scale
     in draw-item base w h stride font scale sel 0
 
+Section: Cursor
+
+ The cursor primitives (save-under patch, restore, draw) live in
+ GopDraw so the desktop shell shares them. A pointer position maps to
+ the menu row whose selection bar covers it, or to no row at all.
+
+  menu-row-at : Integer, Integer, Integer, Integer, Integer -> Integer
+  menu-row-at (w) (h) (scale) (mx) (my) =
+    let left = menu-left w scale
+    in if mx < left then -1
+    else if mx >= left + menu-box-w scale then -1
+    else let top = items-top h scale - 4 * scale
+    in if my < top then -1
+    else let row = (my - top) / (28 * scale)
+    in if row >= menu-count then -1 else row
+
 Section: Loop
 
- Read the PS/2 controller directly: status port 0x64 (100), data port 0x60
- (96). Bit 0 of status = output buffer full (a byte is waiting). This works
- on real hardware after ExitBootServices, unlike codex-vm's cell 28680. A
- make code is < 0x80; break codes and the 0xE0 extended prefix are >= 0x80
- and simply fall through the dispatcher's else (the extended arrow's second
- byte, e.g. 0x48, is an ordinary make code on the next poll).
+ Consume scancodes from the kernel key-buffer cell via gk-take. With the
+ runtime-init spine installed, the keyboard IRQ handler reads port 0x60
+ and stores the byte there -- polling the port directly would race the
+ handler and lose the byte. A make code is < 0x80; break codes, key ACKs
+ (0xFA), and the 0xE0 extended prefix are >= 0x80 and simply fall through
+ the dispatcher's else (the extended arrow's second byte, e.g. 0x48, is an
+ ordinary make code on the next read).
+
+ The mouse rides the same loop: one pump per iteration, and only when a
+ report actually arrived does the pointer move -- hovering a row moves
+ the selection, a left-click on a row fires it, exactly as Enter would.
+ The pump's idle path is a flag test and an event-ring peek; the loop
+ stays allocation-free between human inputs.
 
   menu-up : Integer -> Integer
   menu-up (sel) = if sel <= 0 then menu-count - 1 else sel - 1
@@ -137,11 +177,87 @@ Section: Loop
     in let msg = gop-draw-text base stride font (menu-left w scale + 16 * scale) (msg-y h scale) ("Selected: " & menu-label sel) col-green scale 0
     in sel
 
-  menu-loop : Integer, Integer, Integer, Integer, CbfFont, Integer -> [Device.Port] Integer
-  menu-loop (base) (w) (h) (stride) (font) (sel) = act
-    status <- port-in-byte 100
-    sc <- if bit-and status 1 > 0 then port-in-byte 96 else 0
-    menu-loop base w h stride font (menu-next base w h stride font sel sc)
+ Enter on the last two items leaves the loop for good: the machine
+ reads the sleep type or the reset register out of its own firmware's
+ tables and powers itself off or restarts. Every other key round-trips
+ through menu-next, which returns the new selection, keeping menu-loop
+ a direct self-tail-call so the compiler's TCO turns it into a jump.
+
+ One pure step handles everything short of leaving the loop: keyboard
+ first (a queued scancode must never be lost to a mouse twitch), then
+ the pointer -- a click confirms the hovered row, plain hover moves
+ the bar. Any repaint invalidates the cursor patch; a movement
+ repaints the cursor last, so it rides above whatever was drawn.
+
+  menu-step : Integer, Integer, Integer, Integer, CbfFont, UsbMouse, Integer, Integer, Integer, Integer, Integer, Boolean -> Integer
+  menu-step (base) (w) (h) (stride) (font) (mouse) (cs) (sel) (sc) (mv) (hover) (clicked) =
+    let s1 = menu-next base w h stride font sel sc
+    in let hovered = mv == 1 & hover >= 0
+    in let s2 = if clicked & hover >= 0 then confirm base w h stride font hover
+    else if hovered & hover /= s1 then redraw base w h stride font hover
+    else s1
+    in let drew = sc == 72 | sc == 80 | sc == 28 | (clicked & hover >= 0) | (hovered & hover /= s1)
+    in let iv = if drew then poke-32 cs 0 0 else 0
+    in let cu = if mv == 1 then cursor-update cs base stride w h (ui-scale w) (mouse-x mouse) (mouse-y mouse) else 0
+    in s2
+
+  menu-loop : Integer, Integer, Integer, Integer, CbfFont, UsbKbd, UsbMouse, Integer, Integer -> [Device.Port] Integer
+  menu-loop (base) (w) (h) (stride) (font) (kbd) (mouse) (cs) (sel) = act
+    sc <- kbd-take kbd
+    let mv = mouse-pump mouse w h
+    in let hover = if mv == 1 then menu-row-at w h (ui-scale w) (mouse-x mouse) (mouse-y mouse) else -1
+    in let clicked = if mv == 1 then mouse-clicked mouse else False
+    in let tgt = if clicked & hover >= 0 then hover else sel
+    in let fire = sc == 28 | (clicked & hover >= 0)
+    in if fire & tgt == menu-power-off then power-off base w h stride font kbd mouse cs
+    else if fire & tgt == menu-restart then do-restart base w h stride font kbd
+    else if fire & tgt == menu-desktop then menu-desk base w h stride font kbd mouse cs
+    else menu-loop base w h stride font kbd mouse cs (menu-step base w h stride font mouse cs sel sc mv hover clicked)
+  end
+
+ The desktop borrows the whole panel; when it returns (Esc or its
+ close box) the menu redraws and the cursor patch is invalidated --
+ the desktop's cursor state block is its own.
+
+  menu-desk : Integer, Integer, Integer, Integer, CbfFont, UsbKbd, UsbMouse, Integer -> [Device.Port] Integer
+  menu-desk (base) (w) (h) (stride) (font) (kbd) (mouse) (cs) = act
+    dk <- desk-run base w h stride font kbd mouse
+    d2 <- draw-menu base w h stride font menu-desktop
+    let iv = poke-32 cs 0 0
+    in menu-loop base w h stride font kbd mouse cs menu-desktop
+  end
+
+ If the firmware published no usable _S5_ the request is refused, and
+ saying so on the screen is more use than a machine that silently stays
+ on. acpi-poweroff only returns in that case.
+
+ Reset never refuses -- 0xCF9 exists on every PC chipset -- so unlike
+ power-off there is no fall-through message to draw: the tail call
+ into acpi-reset either reboots the machine or spins.
+
+  do-restart : Integer, Integer, Integer, Integer, CbfFont, UsbKbd -> [Device.Port] Integer
+  do-restart (base) (w) (h) (stride) (font) (kbd) = act
+    let scale = ui-scale w
+    in let a = acpi-boot 0
+    in act
+      d <- draw-menu base w h stride font menu-restart
+      m <- gop-draw-text base stride font (menu-left w scale + 16 * scale) (msg-y h scale) "Restarting..." col-green scale 0
+      acpi-reset a
+    end
+  end
+
+  power-off : Integer, Integer, Integer, Integer, CbfFont, UsbKbd, UsbMouse, Integer -> [Device.Port] Integer
+  power-off (base) (w) (h) (stride) (font) (kbd) (mouse) (cs) = act
+    let scale = ui-scale w
+    in let a = acpi-boot 0
+    in act
+      d <- draw-menu base w h stride font menu-power-off
+      m <- gop-draw-text base stride font (menu-left w scale + 16 * scale) (msg-y h scale) "Powering off..." col-green scale 0
+      r <- acpi-poweroff a
+      f <- gop-draw-text base stride font (menu-left w scale + 16 * scale) (msg-y h scale + 20 * scale) "This firmware published no usable _S5_ sleep state." col-item scale 0
+      let iv = poke-32 cs 0 0
+      in menu-loop base w h stride font kbd mouse cs menu-power-off
+    end
   end
 
 Section: Disk Probe
@@ -298,30 +414,241 @@ Section: Wake Ceremony
     wz-wait-enter c
   end
 
+Section: Disk Inventory
+
+ H3c: the machine names every disk it can reach -- controller, model
+ from the device's own identify data, size, ESP volume label, and
+ whether our CODEX.CDX is aboard -- and points at the one it booted
+ from. The enumeration walks GopEnum's candidates and restores the
+ medium lock, so the line marked as the boot medium is read from the
+ same cells every later storage call obeys.
+
+  disk-line-head : DiskInfo -> Text
+  disk-line-head (d) =
+    let model = if text-length (d.di-model) == 0 then "(unknown model)" else d.di-model
+    in enum-kind-name (d.di-kind) & " " & show (d.di-index) & ": " & model
+
+  disk-line-tail : DiskInfo -> Text
+  disk-line-tail (d) =
+    let mb = ", " & show (enum-size-mb (d.di-sectors)) & " MB"
+    in let lbl = if text-length (d.di-label) > 0 then ", '" & d.di-label & "'" else ""
+    in let cdx = if d.di-codex then " [CODEX.CDX]" else ""
+    in mb & lbl & cdx
+
+  disk-is-medium : DiskInfo -> Boolean
+  disk-is-medium (d) = med-selected == d.di-kind & med-sel-index == d.di-index
+
+  disks-rows : WzCtx, List DiskInfo, Integer -> Integer
+  disks-rows (c) (ds) (i) =
+    if i >= list-length ds then 0
+    else let d = list-at ds i
+    in let sel = disk-is-medium d
+    in let col = if sel then wz-col-green else wz-col-text
+    in let mark = if sel then "  <- boot medium" else ""
+    in let t = wz-text c (2 + i) (disk-line-head d & disk-line-tail d & mark) col
+    in disks-rows c ds (i + 1)
+
+  disks-screen : WzCtx -> [Device.Port] Integer
+  disks-screen (c) = act
+    ds <- enum-disks
+    d0 <- wz-clear c
+    t0 <- wz-text c 0 "Disks" wz-col-title
+    t1 <- if list-length ds == 0 then wz-text c 2 "No disk answered on any controller." wz-col-warn
+          else disks-rows c ds 0
+    t2 <- wz-text c 11 "Press Enter to continue." wz-col-green
+    wz-wait-enter c
+  end
+
+Section: xHCI Truth
+
+ The USB host controller is where real hardware and the emulator
+ diverge most, and where a machine that finds no keyboard and no
+ boot stick goes silent. The bring-up records what it saw into a
+ diagnostic cell block (GopXhci); this screen reads it back onto the
+ glass, because on metal there is no serial log to read it from. It
+ answers, in order: is there an xHCI controller at all; does it use
+ 64-byte contexts we must honour; did firmware release ownership;
+ did reset and run succeed; and -- the decisive line -- how many
+ root ports report a device connected. All-zero connect bits point
+ below the enumeration path, at port power or chipset routing; live
+ connect bits with no enumerated device point above it.
+
+  xd-hex-nib : Integer -> Text
+  xd-hex-nib (n) =
+    if n == 0 then "0" else if n == 1 then "1" else if n == 2 then "2"
+    else if n == 3 then "3" else if n == 4 then "4" else if n == 5 then "5"
+    else if n == 6 then "6" else if n == 7 then "7" else if n == 8 then "8"
+    else if n == 9 then "9" else if n == 10 then "a" else if n == 11 then "b"
+    else if n == 12 then "c" else if n == 13 then "d" else if n == 14 then "e"
+    else "f"
+
+  xd-hnib : Integer, Integer -> Text
+  xd-hnib (v) (sh) = xd-hex-nib (bit-and (bit-shru v sh) 15)
+
+  xd-hex32 : Integer -> Text
+  xd-hex32 (v) = "#" & xd-hnib v 28 & xd-hnib v 24 & xd-hnib v 20 & xd-hnib v 16 & xd-hnib v 12 & xd-hnib v 8 & xd-hnib v 4 & xd-hnib v 0
+
+  xd-hex16 : Integer -> Text
+  xd-hex16 (v) = xd-hnib v 12 & xd-hnib v 8 & xd-hnib v 4 & xd-hnib v 0
+
+  xd-yn : Integer -> Text
+  xd-yn (v) = if v == 0 then "n" else "y"
+
+  xhci-own-colour : Integer
+  xhci-own-colour =
+    if xdiag-get 9 == 0 then wz-col-text
+    else if xdiag-get 12 == 1 then wz-col-green
+    else wz-col-warn
+
+  xhci-port-rows : WzCtx, Integer, Integer, Integer -> Integer
+  xhci-port-rows (c) (i) (n) (row) =
+    if i >= n then 0
+    else if i >= 8 then 0
+    else if row > 12 then 0
+    else let raw = xdiag-get (20 + i)
+    in let ccs = bit-and raw 1
+    in let ped = bit-and (bit-shru raw 1) 1
+    in let pr = bit-and (bit-shru raw 4) 1
+    in let spd = bit-and (bit-shru raw 10) 15
+    in let t = wz-text c row ("port" & show i & " PORTSC=" & xd-hex32 raw & " CCS=" & xd-yn ccs & " PED=" & xd-yn ped & " PR=" & xd-yn pr & " spd=" & show spd) (if ccs == 0 then wz-col-text else wz-col-green)
+    in xhci-port-rows c (i + 1) n (row + 1)
+
+  xhci-draw-full : WzCtx -> Integer
+  xhci-draw-full (c) =
+    let t1 = wz-text c 2 ("Controller " & xd-hex16 (xdiag-get 2) & ":" & xd-hex16 (xdiag-get 3) & "  caplen=" & show (xdiag-get 4)) wz-col-green
+    in let t2 = wz-text c 3 ("HCCPARAMS1=" & xd-hex32 (xdiag-get 5) & "  CSZ=" & show (xdiag-get 6) & "(" & (if xdiag-get 6 == 0 then "32B" else "64B") & ")  PPC=" & show (xdiag-get 7) & "  xECP=" & show (xdiag-get 8)) (if xdiag-get 6 == 0 then wz-col-text else wz-col-warn)
+    in let t3 = wz-text c 4 ("Ownership legsup=" & xd-yn (xdiag-get 9) & " before=" & xd-hex32 (xdiag-get 10) & " after=" & xd-hex32 (xdiag-get 11) & " released=" & xd-yn (xdiag-get 12)) xhci-own-colour
+    in let t4 = wz-text c 5 ("slots=" & show (xdiag-get 13) & " ports=" & show (xdiag-get 14) & " reset=" & xd-yn (xdiag-get 15) & " cnr=" & xd-yn (xdiag-get 16) & " run=" & xd-yn (xdiag-get 17) & " connected=" & show (xdiag-get 18)) wz-col-text
+    in let t5 = wz-text c 6 ("Intel USB2 routing applied=" & xd-yn (xdiag-get 36) & " xusb2prm=" & xd-hex32 (xdiag-get 37)) (if xdiag-get 36 == 1 then wz-col-green else wz-col-text)
+    in xhci-port-rows c 0 (xdiag-get 14) 7
+
+  xhci-draw : WzCtx -> Integer
+  xhci-draw (c) =
+    let d = wz-clear c
+    in let t0 = wz-text c 0 "USB Host Controller (xHCI)" wz-col-title
+    in if xdiag-get 0 /= xhci-diag-magic then wz-text c 2 "No xHCI diagnostic captured (bring-up did not run)." wz-col-warn
+    else if xdiag-get 1 == 0 then
+      let e0 = wz-text c 2 "No xHCI controller found on the PCI bus." wz-col-warn
+      in let e1 = wz-text c 4 "This machine exposes USB only through EHCI or a" wz-col-text
+      in wz-text c 5 "companion controller, or routes its ports elsewhere." wz-col-text
+    else xhci-draw-full c
+
+  xhci-screen : WzCtx -> [Device.Port] Integer
+  xhci-screen (c) = act
+    let d = xhci-draw c
+    in let t = wz-text c 13 "Press Enter to continue." wz-col-green
+    in wz-wait-enter c
+  end
+
 Section: Entry
 
- After ExitBootServices the firmware often leaves the PS/2 keyboard disabled.
- Re-enable it before ANY input: 0x64 <- 0xAE (enable keyboard interface at
- the 8042 controller), then 0x60 <- 0xF4 (tell the keyboard to enable
- scanning). The first-boot ceremony (GopWizard) runs first -- until the
- storage stack lands there is no saved identity to detect, so every boot is
- a first boot -- then the interface menu takes over.
+ The first act on the boot path is runtime-init (H1a): GDT, IDT, TSS,
+ syscall MSRs, then the PIC/PIT/keyboard setup ending in sti -- which
+ also re-enables the PS/2 keyboard interface and scanning that firmware
+ often leaves disabled after ExitBootServices (and skips itself cleanly
+ on a machine with no i8042 at all). From here ticks run, keystrokes
+ arrive by IRQ, and a fault dumps !EXC instead of triple faulting.
+ Second act: usb-attach (H2) enumerates the USB bus ONCE -- keyboard
+ and boot-stick disk configured on the same running controller, the
+ disk handle published so every later storage call transfers without a
+ reset. On a machine with no PS/2 controller the USB keyboard is the
+ only input there is; a machine without one gets kbd-no-kbd, whose
+ pump is a flag test. Third act: medium-select probes every disk for
+ our own CODEX.CDX and locks GopDisk onto the one carrying it, so a
+ real machine's internal drive cannot shadow the boot stick. The
+ first-boot ceremony (GopWizard) runs next, then the interface menu
+ takes over.
 
-  run-menu : Integer, Integer, Integer, Integer, CbfFont -> [Device.Port] Integer
-  run-menu (base) (w) (h) (stride) (font) = act
-    d0 <- draw-menu base w h stride font 0
-    menu-loop base w h stride font 0
+  run-menu : Integer, Integer, Integer, Integer, CbfFont, UsbKbd, UsbMouse -> [Device.Port] Integer
+  run-menu (base) (w) (h) (stride) (font) (kbd) (mouse) = act
+    let cs = alloc-zeroed 2048 64
+    in let wp = mouse-warp mouse (w / 2) (h / 2)
+    in act
+      d0 <- draw-menu base w h stride font 0
+      menu-loop base w h stride font kbd mouse cs 0
+    end
   end
 
-  boot-flow : WzCtx, Integer, Integer, Integer, Integer, CbfFont -> [Device.Port, Device.Mmio] Integer
-  boot-flow (ctx) (base) (w) (h) (stride) (font) = act
-    ke <- port-out-byte 100 174
-    ks <- port-out-byte 96 244
-    fp <- wizard-run ctx
-    dp <- disk-probe ctx
-    wk <- wake-screen ctx
-    run-menu base w h stride font
+ On real metal there is no serial log, so the boot narrates itself
+ on the glass. Before the runtime spine comes up -- when the only
+ working thing is the framebuffer the stub handed over -- four
+ bright bars and the mode numbers are painted with the REPORTED
+ stride: a stride or mode mismatch shows as banded smear instead of
+ clean bars, and the bar ORDER (red, green, blue, white) exposes a
+ BGR/RGB pixel-format swap at a glance. After each boot stage a
+ green trace line lands top-right; on a machine that hangs, the
+ last line standing names the stage that died. A healthy boot shows
+ the diag for a couple of seconds and the wizard then paints over
+ all of it -- the diag matters exactly on the machine that never
+ gets that far.
+
+  boot-diag : Integer, Integer, Integer, Integer, CbfFont -> Integer
+  boot-diag (base) (w) (h) (stride) (font) =
+    let b1 = gop-fill-rect base stride 0 0 w (h / 8) #FF0000
+    in let b2 = gop-fill-rect base stride 0 (h / 8) w (h / 8) #00FF00
+    in let b3 = gop-fill-rect base stride 0 (h / 4) w (h / 8) #0000FF
+    in let b4 = gop-fill-rect base stride 0 (h * 3 / 8) w (h / 8) #FFFFFF
+    in let bg = gop-fill-rect base stride 0 (h / 2) w (h / 2) 0
+    in let l1 = gop-draw-text base stride font 8 (h / 2 + 8) ("CODEX BOOT DIAG   bars: red green blue white") #FFFFFF 1 0
+    in let l2 = gop-draw-text base stride font 8 (h / 2 + 24) ("w=" & show w & "  h=" & show h & "  stride=" & show stride) #FFFFFF 1 0
+    in let l3 = gop-draw-text base stride font 8 (h / 2 + 40) ("fb=" & show base) #FFFFFF 1 0
+    in gop-draw-text base stride font 8 (h / 2 + 56) ("heap=" & show (peek-qword 32800 0) & "  rsp~" & show (peek-qword 28736 0)) #FFFFFF 1 0
+
+  boot-spin : Integer -> Integer
+  boot-spin (n) = if n <= 0 then 0 else boot-spin (n - 1)
+
+ The trace column lives in the diag's black bottom region so paint
+ damage at the top of the panel cannot eat it. Every stage writes a
+ line when it STARTS and another when it completes: on a machine
+ that dies mid-stage, the last line names the stage that died.
+
+  boot-trace : Integer, Integer, Integer, CbfFont, Integer, Text -> Integer
+  boot-trace (base) (stride) (h) (font) (row) (t) =
+    let y = h / 2 + 80 + row * 14
+    in let bg = gop-fill-rect base stride 8 y 400 12 0
+    in gop-draw-text base stride font 8 y t #00FF00 1 0
+
+  boot-flow : Integer, Integer, Integer, Integer, CbfFont -> [Device.Port, Device.Mmio] Integer
+  boot-flow (base) (w) (h) (stride) (font) = act
+    let dg = boot-diag base w h stride font
+    in let sp = boot-spin 150000000
+    in let t0 = boot-trace base stride h font 0 "stage: spine..."
+    in act
+      ri <- runtime-init 0
+      let t1 = boot-trace base stride h font 1 "spine OK  stage: usb..."
+      in act
+        att <- usb-attach
+        let t2 = boot-trace base stride h font 2 ("usb OK kbd=" & (if (att.ua-kbd).uk-ok then "Y" else "n") & " mouse=" & (if (att.ua-mouse).um-ok then "Y" else "n") & " disk=" & (if (att.ua-disk).md-ok then "Y" else "n") & "  stage: medium...")
+        in act
+          med <- medium-select
+          let t3 = boot-trace base stride h font 3 ("medium kind=" & show med & "  stage: wizard...")
+          in let kbd = att.ua-kbd
+          in let mouse = att.ua-mouse
+          in boot-screens base w h stride font kbd mouse
+        end
+      end
+    end
   end
+
+  boot-screens : Integer, Integer, Integer, Integer, CbfFont, UsbKbd, UsbMouse -> [Device.Port, Device.Mmio] Integer
+  boot-screens (base) (w) (h) (stride) (font) (kbd) (mouse) =
+    let ctx = WzCtx {
+      wz-base = base,
+      wz-w = w,
+      wz-h = h,
+      wz-stride = stride,
+      wz-font = font,
+      wz-scale = ui-scale w,
+      wz-kbd = kbd
+    }
+    in act
+      fp <- wizard-run ctx
+      dp <- disk-probe ctx
+      dk <- disks-screen ctx
+      xs <- xhci-screen ctx
+      wk <- wake-screen ctx
+      run-menu base w h stride font kbd mouse
+    end
 
   opening : [Device.Port, Device.Mmio] Integer
   opening =
@@ -330,12 +657,4 @@ Section: Entry
     in let h = peek-qword gop-cell-base 16
     in let stride = peek-qword gop-cell-base 24
     in let font = cbf-init
-    in let ctx = WzCtx {
-      wz-base = base,
-      wz-w = w,
-      wz-h = h,
-      wz-stride = stride,
-      wz-font = font,
-      wz-scale = ui-scale w
-    }
-    in boot-flow ctx base w h stride font
+    in boot-flow base w h stride font

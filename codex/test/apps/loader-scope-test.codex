@@ -1,0 +1,92 @@
+Chapter: LoaderScopeTest
+  cites Verify chapter ProcessCaps
+  cites Verify chapter VerifiedLoader
+  cites Verify chapter CdxVerifier
+  cites Verify chapter CdxBinary
+  cites Trust chapter TrustLattice
+  cites Trust chapter PolicyEngine
+  cites Foreword chapter Ed25519
+  cites Foreword chapter Sha256
+  cites Foreword chapter Sha512
+  cites Foreword chapter Maybe
+  cites Foreword chapter Hamt
+  cites Foreword chapter FactStore
+
+ A scope survives the verified load.
+
+ The boot ring gave proc 0 its scope from the compiler. This is the other
+ door into a process table: a signed binary, verified against a trust
+ lattice and a policy, whose approved grant is written into a slot the
+ new process will run under. Until now only half the grant made that
+ journey. The verifier decoded the scope -- it always could, the format
+ carries it -- and CapGrant then folded the capability list into a bare
+ bitmask and dropped it. A binary whose manifest said "filesystem read,
+ under /config/" was loaded with filesystem read over the whole volume:
+ the authority arrived and the limit on it did not, which is the worse
+ half to lose.
+
+ Two binaries are built here, identical but for the scope literal, and
+ that comparison is the test. The scoped one must arrive scoped. The
+ unscoped one must arrive unscoped -- and that half matters, because a
+ loader that wrote "/config/" into every slot regardless would pass a
+ test that only ever checked the scoped case.
+
+ The denied load is the third assertion and the sharpest. An untrusted
+ author (the empty lattice puts it below the policy threshold) must have
+ NEITHER half of its grant installed: not the bits, and not the scope.
+ A loader that refused the capability word but wrote the scope anyway
+ would be writing an attacker's string into a live process-table slot.
+
+Section: Helpers
+  show-bool : Boolean -> Text
+  show-bool (b) = if b then "True" else "False"
+
+  test-sk : List Integer = [157, 97, 177, 157, 239, 253, 90, 96, 186, 132, 74, 244, 146, 236, 44, 196, 68, 73, 197, 105, 123, 50, 105, 25, 112, 59, 172, 3, 28, 174, 127, 96]
+
+  scoped-binary : List Integer
+  scoped-binary = cdx-encode-signed (CdxBinaryParts {
+    flags = cdx-flag-bare-metal,
+    capabilities = [
+      CdxCapability { cap-id = cdx-cap-filesystem, direction = cdx-dir-read, scope = "/config/", max-duration = 0 }
+    ],
+    effects = ["FileSystem"],
+    text-bytes = [144, 195],
+    rodata-bytes = [],
+    entry-offset = 0,
+    stack-size = 65536,
+    heap-size = 65536,
+    trust-threshold = 5000
+  }) test-sk
+
+  open-binary : List Integer
+  open-binary = cdx-encode-signed (CdxBinaryParts {
+    flags = cdx-flag-bare-metal,
+    capabilities = [
+      CdxCapability { cap-id = cdx-cap-filesystem, direction = cdx-dir-read, scope = "", max-duration = 0 }
+    ],
+    effects = ["FileSystem"],
+    text-bytes = [144, 195],
+    rodata-bytes = [],
+    entry-offset = 0,
+    stack-size = 65536,
+    heap-size = 65536,
+    trust-threshold = 5000
+  }) test-sk
+
+Section: Body
+  opening : [Console, Capability] Nothing =
+    let lat = lattice-add-direct lattice-empty (read-author-key scoped-binary) 8000
+    in let policy = policy-add-rule (policy-empty "test") (rule-allow "allow-all" AlwaysTrue)
+    in let scoped = evaluate-load scoped-binary lat policy 0 fact-store-empty 100
+    in let opened = evaluate-load open-binary lat policy 0 fact-store-empty 100
+    in let denied = evaluate-load scoped-binary lattice-empty policy 0 fact-store-empty 100
+    in act
+      w1 <- apply-load-decision 5 scoped
+      print-line-uni ("scoped approved=" & show-bool (load-approved scoped) & " scope=[" & read-process-scope 5 & "]")
+
+      w2 <- apply-load-decision 6 opened
+      print-line-uni ("open   approved=" & show-bool (load-approved opened) & " scope=[" & read-process-scope 6 & "]")
+
+      w3 <- apply-load-decision 8 denied
+      print-line-uni ("denied wired=" & show-bool w3 & " bits=" & show (read-process-grant 8) & " scope=[" & read-process-scope 8 & "]")
+    end

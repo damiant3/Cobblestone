@@ -3,9 +3,11 @@ Chapter: Executor
   cites Data chapter Catalog
   cites Data chapter Row
   cites Data chapter Heap
+  cites Data chapter HashJoin
   cites Foreword chapter Maybe
   cites Foreword chapter Sort
   cites Foreword chapter Hamt
+  cites Foreword chapter DateTime
 
  Volcano-style query executor. Walks the RelOp tree and materializes
  results. Each operator produces a list of rows. Future optimization:
@@ -57,6 +59,8 @@ Section: Execute
       is RelDistinct (child) -> exec-distinct cat child
       is RelJoin (left) (right) (pred) -> exec-join cat left right pred
       is RelLeftJoin (left) (right) (pred) -> exec-left-join cat left right pred
+      is RelEquiJoin (left) (right) (lcols) (rcols) -> exec-equi-join cat left right lcols rcols
+      is RelDerive (child) (specs) -> exec-derive cat child specs
       is RelGroup (child) (cols) (aggs) -> exec-group cat child cols aggs
       is RelUnion (left) (right) -> exec-union cat left right
       is RelIntersect (left) (right) -> exec-intersect cat left right
@@ -235,6 +239,27 @@ Section: Left Join
     in if pred-eval pred combined then Just rrow
     else exec-left-find-match lrow rights pred (ri + 1) rcount
 
+Section: Equi Join
+
+ Both children evaluate to full row lists and the hash join does the
+ matching: the right side is the build input, the left side probes.
+ The join keys are the column lists paired positionally, hashed as one
+ composite key per row. The hash join emits probe values before build
+ values, therefore the merged rows carry the left side's columns first
+ and the merged schema mirrors the nested-loop join's left-then-right
+ order. Duplicate column names survive the merge and a lookup by name
+ finds the left occurrence, in the same manner as the other joins.
+
+  exec-equi-join : Catalog, RelOp, RelOp, List Text, List Text -> QueryResult
+  exec-equi-join (cat) (left-op) (right-op) (left-cols) (right-cols) =
+    let left = query cat left-op
+    in if left.qr-ok == False then left
+    else let right = query cat right-op
+    in if right.qr-ok == False then right
+    else let hj = hash-join-keys (right.qr-rows) (left.qr-rows) right-cols left-cols
+    in let schema = exec-merge-schemas (left.qr-schema) (right.qr-schema)
+    in qr-ok (hj.hj-rows) schema
+
 Section: Row Merging
 
   exec-merge-rows : RowData, RowData -> RowData
@@ -256,6 +281,61 @@ Section: Row Merging
   exec-make-nulls (n) (acc) =
     if n <= 0 then acc
     else exec-make-nulls (n - 1) (list-push acc ValNull)
+
+Section: Derive
+
+ A derive is a single pass over the input rows: each row keeps its
+ own values and gains one computed ColInteger per DeriveSpec, read
+ from the spec's source column as Unix seconds and bucketed by the
+ encodings the RelAlgebra chapter documents. The extended schema is
+ the input schema merged with the derived columns through the same
+ exec-merge-schemas the joins use, built once before the row walk.
+ The calendar split leans on the DateTime foreword: unix-to-datetime
+ walks years linearly from 1970, which is at worst a few dozen
+ iterations per row and acceptable at the row counts this executor
+ materializes; the quarter is the month shifted down one, divided by
+ three, shifted back up.
+
+  exec-derive : Catalog, RelOp, List DeriveSpec -> QueryResult
+  exec-derive (cat) (child) (specs) =
+    let input = query cat child
+    in if input.qr-ok == False then input
+    else let schema = exec-merge-schemas (input.qr-schema) (schema-new (exec-derive-names specs 0 (list-length specs) []) (exec-derive-types specs 0 (list-length specs) []))
+    in let derived = exec-derive-rows (input.qr-rows) specs schema 0 (input.qr-count) []
+    in qr-ok derived schema
+
+  exec-derive-names : List DeriveSpec, Integer, Integer, List Text -> List Text
+  exec-derive-names (specs) (i) (len) (acc) =
+    if i >= len then acc
+    else exec-derive-names specs (i + 1) len (list-push acc ((list-at specs i).der-alias))
+
+  exec-derive-types : List DeriveSpec, Integer, Integer, List ColumnType -> List ColumnType
+  exec-derive-types (specs) (i) (len) (acc) =
+    if i >= len then acc
+    else exec-derive-types specs (i + 1) len (list-push acc ColInteger)
+
+  exec-derive-rows : List RowData, List DeriveSpec, RowSchema, Integer, Integer, List RowData -> List RowData
+  exec-derive-rows (rows) (specs) (schema) (i) (len) (acc) =
+    if i >= len then acc
+    else let row = list-at rows i
+    in let vals = row.values & exec-derive-vals row specs 0 (list-length specs) []
+    in exec-derive-rows rows specs schema (i + 1) len (list-push acc (row-new schema vals))
+
+  exec-derive-vals : RowData, List DeriveSpec, Integer, Integer, List ColumnValue -> List ColumnValue
+  exec-derive-vals (row) (specs) (i) (len) (acc) =
+    if i >= len then acc
+    else let spec = list-at specs i
+    in let ts = val-to-integer (row-get-by-name row (spec.der-col))
+    in exec-derive-vals row specs (i + 1) len (list-push acc (ValInteger (exec-derive-bucket (spec.der-fn) ts)))
+
+  exec-derive-bucket : DeriveFn, Integer -> Integer
+  exec-derive-bucket (fn) (ts) =
+    let dt = unix-to-datetime ts
+    in when fn
+      is DerYear -> dt.year
+      is DerQuarter -> dt.year * 10 + (dt.month - 1) / 3 + 1
+      is DerMonth -> dt.year * 100 + dt.month
+      is DerDay -> dt.year * 10000 + dt.month * 100 + dt.day
 
 Section: Group By
 

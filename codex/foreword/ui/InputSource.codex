@@ -2,14 +2,39 @@ Chapter: InputSource
   cites UI chapter Event
   cites UI chapter BoxModel
 
- Bare-metal input polling. Reads mouse from I/O ports 0xE1-0xE4
- (absolute coordinates written by codex-vm) and keyboard from
- GPA 28680 (scan code byte). Produces Event records that the
- Orchestrator can dispatch.
+ Bare-metal input polling. Produces Event records that the
+ Orchestrator can dispatch. The keyboard arrives in the kernel
+ key-buffer cell (28680), written by the IRQ1 interrupt handler or
+ by a USB HID pump; the cell is consumed with a single atomic
+ exchange because a plain read-then-clear races the handler and
+ loses the key. The pointer arrives one of two ways: on the bare
+ runtime a driver folds relative reports into an absolute position
+ and publishes it to the pointer mailbox cells below (magic word
+ written last, so firmware residue cannot impersonate a pointer);
+ without a publisher the legacy codex-vm ports 0xE1-0xE4 answer,
+ guarded against the floating bus, where an absent device reads
+ 0xFF and every status bit lies.
+
+ On the port fallback, 0xE1 (buttons) is a LEVEL -- it holds the
+ current button mask and stays valid between events -- while 0xE4 is
+ an EDGE: a new mouse event arrived, consumed by the 0xE3 read. So
+ presence (0xE4 not floating 0xFF) gates the BUTTON read and
+ freshness (0xE4 == 1) gates the POSITION reads only. Gating the
+ button on the edge makes a held button legible for exactly one poll
+ per host mouse message and read as released on every other poll --
+ a press-and-hold becomes a millisecond pulse and no drag can ever
+ be seen.
 
 Section: Constants
 
   is-kb-addr : Integer = 28680
+
+ The pointer mailbox: [0] magic "PTR1", [4] x, [8] y, [12] buttons
+ (bit 0 left, bit 1 right, bit 2 middle). Published by the machine's
+ pointer driver (GopUsbMouse on the Option A runtime).
+
+  ptr-cells : Integer = 36736
+  ptr-cells-magic : Integer = #31525450
 
 Section: Types
 
@@ -43,23 +68,29 @@ Section: Construction
 
 Section: Polling
 
+ No port-0x60 read here: with the keyboard interrupt handler live,
+ polling the data port races the handler for the byte and one of
+ them loses it. The cell is the only keyboard surface.
+
   raw-input-poll : RawInput -> [Device.Port] RawInput
   raw-input-poll (ri) = act
-    dummy <- port-in-byte 96
     sc <- ri-take-key
-    has-mouse <- port-in-byte #E4
-    btn <- if has-mouse > 0 then port-in-byte #E1 else 0
-    abs-x <- if has-mouse > 0 then port-in-16 #E2 else ri.ri-mx
-    abs-y <- if has-mouse > 0 then port-in-16 #E3 else ri.ri-my
+    mp <- ri-pointer-published
+    e4 <- if mp == 1 then 255 else port-in-byte #E4
+    btn <- if mp == 1 then peek-32 ptr-cells 12 else if e4 == 255 then 0 else port-in-byte #E1
+    abs-x <- if mp == 1 then peek-32 ptr-cells 4 else if e4 == 1 then port-in-16 #E2 else ri.ri-mx
+    abs-y <- if mp == 1 then peek-32 ptr-cells 8 else if e4 == 1 then port-in-16 #E3 else ri.ri-my
     ri-build ri sc btn abs-x abs-y
   end
 
   ri-take-key : Integer
-  ri-take-key =
-    let sc = peek-byte is-kb-addr 0
-    in let ck = if sc /= 0 then poke-byte is-kb-addr 0 0 else 0
-    in let ignore = ck
-    in sc
+  ri-take-key = bit-and (atomic-exchange is-kb-addr 0) 255
+
+  ri-pointer-published : Integer
+  ri-pointer-published = if peek-32 ptr-cells 0 == ptr-cells-magic then 1 else 0
+
+  ri-mouse-flag : Integer -> Integer
+  ri-mouse-flag (hm) = if hm == 0 then 0 else if hm == 255 then 0 else 1
 
   ri-build : RawInput, Integer, Integer, Integer, Integer -> RawInput
   ri-build (ri) (sc) (btn) (abs-x) (abs-y) =

@@ -1,0 +1,340 @@
+Chapter: LensSql
+  cites Data chapter Row
+  cites Data chapter RelAlgebra
+
+ The T-SQL emitter for Target B (DESIGN.md 4.4, 5.2 item 9). Target N
+ hands a plan tree straight to the local executor and never renders
+ text; Target B must speak to Microsoft SQL Server, so this chapter
+ turns a RelOp tree into one T-SQL statement. The emitter covers
+ exactly the shapes the Lens planner builds: filtered scans, date
+ bucket derives over those scans, home grain groups, equi-joins
+ between derived tables, the cross join that glues dimensionless
+ measures together, projection, ascending sorts, and a positive
+ limit rendered as TOP. It is a pure text builder; the
+ statement it returns is what lens-sql-exec carries to the warehouse.
+
+ Grain correctness is inherited, not re-derived. The planner already
+ aggregated every measure at its home grain before any join, so each
+ RelGroup emits as a GROUP BY inside its own derived table and each
+ RelEquiJoin emits as an INNER JOIN between derived tables on the
+ composite key columns. The generated SQL therefore reads the way a
+ careful warehouse hand writes it, with no symmetric-aggregate hash
+ incantations anywhere.
+
+ Column references need care because merged join rows keep duplicate
+ names and the executor resolves a lookup to the left occurrence
+ first. The emitter mirrors that rule: every FROM clause remembers its
+ leftmost item's alias and known output columns, and a column that
+ appears in that known set is qualified to the leftmost alias while
+ any other column stays bare for SQL Server to resolve against the
+ remaining items. Join keys always qualify both sides. Under the
+ planner's star shapes the bare names are unambiguous by
+ construction; a model whose physical tables share unrelated column
+ names is outside what v1 emits.
+
+Section: Lexical Pieces
+
+ Identifiers quote with brackets and a closing bracket doubles inside
+ them. Text literals quote with single quotes and a quote doubles
+ inside them, which is the whole T-SQL escape story for both. Boolean
+ values render as the bit literals 1 and 0.
+
+  tsql-ident : Text -> Text
+  tsql-ident (name) = "[" & text-replace name "]" "]]" & "]"
+
+  tsql-text-lit : Text -> Text
+  tsql-text-lit (t) = "'" & text-replace t "'" "''" & "'"
+
+  tsql-value : ColumnValue -> Text
+  tsql-value (v) =
+    when v
+      is ValInteger (n) -> show n
+      is ValText (t) -> tsql-text-lit t
+      is ValBoolean (b) -> if b then "1" else "0"
+      is ValNull -> "NULL"
+
+  tsql-cmp : CmpOp -> Text
+  tsql-cmp (op) =
+    when op
+      is CmpEq -> "="
+      is CmpNe -> "<>"
+      is CmpLt -> "<"
+      is CmpGt -> ">"
+      is CmpLe -> "<="
+      is CmpGe -> ">="
+
+Section: Predicates
+
+ The planner only builds column-versus-literal equality tests, but the
+ predicate grammar is small enough to cover whole. PredTrue and
+ PredFalse render as the standard always-true and always-false
+ comparisons so a predicate always lands somewhere a WHERE clause can
+ hold it.
+
+  tsql-pred : Predicate -> Text
+  tsql-pred (p) =
+    when p
+      is PredColCmp (col) (op) (val) -> tsql-ident col & " " & tsql-cmp op & " " & tsql-value val
+      is PredAnd (a) (b) -> "(" & tsql-pred a & " AND " & tsql-pred b & ")"
+      is PredOr (a) (b) -> "(" & tsql-pred a & " OR " & tsql-pred b & ")"
+      is PredNot (a) -> "NOT (" & tsql-pred a & ")"
+      is PredTrue -> "1 = 1"
+      is PredFalse -> "1 = 0"
+
+Section: Column References
+
+ tsql-col is the left-occurrence rule in one function: a column known
+ to belong to the FROM clause's leftmost item qualifies to that item's
+ alias, anything else stays bare.
+
+  tsql-texts-contain : List Text, Integer, Text -> Boolean
+  tsql-texts-contain (ts) (i) (nm) =
+    if i >= list-length ts then False
+    else if list-at ts i == nm then True
+    else tsql-texts-contain ts (i + 1) nm
+
+  tsql-col : Text, List Text, Text -> Text
+  tsql-col (alias) (cols) (col) =
+    if tsql-texts-contain cols 0 col then tsql-ident alias & "." & tsql-ident col
+    else tsql-ident col
+
+  tsql-col-items : List Text, Text, List Text, Integer, Text -> Text
+  tsql-col-items (names) (alias) (cols) (i) (acc) =
+    if i >= list-length names then acc
+    else let piece = tsql-col alias cols (list-at names i)
+    in tsql-col-items names alias cols (i + 1) (if i == 0 then piece else acc & ", " & piece)
+
+Section: Aggregates
+
+  tsql-agg : AggFunc, Text, List Text -> Text
+  tsql-agg (f) (alias) (cols) =
+    when f
+      is AggCount -> "COUNT(*)"
+      is AggSum (c) -> "SUM(" & tsql-col alias cols c & ")"
+      is AggMin (c) -> "MIN(" & tsql-col alias cols c & ")"
+      is AggMax (c) -> "MAX(" & tsql-col alias cols c & ")"
+      is AggAvg (c) -> "AVG(" & tsql-col alias cols c & ")"
+
+  tsql-agg-items : List AggSpec, Text, List Text, Integer, Text -> Text
+  tsql-agg-items (specs) (alias) (cols) (i) (acc) =
+    if i >= list-length specs then acc
+    else let s = list-at specs i
+    in let piece = tsql-agg (s.agg-func) alias cols & " AS " & tsql-ident (s.agg-alias)
+    in tsql-agg-items specs alias cols (i + 1) (if i == 0 then piece else acc & ", " & piece)
+
+Section: From Clauses
+
+ A TsqlFrom is a rendered FROM clause plus the bookkeeping the parent
+ SELECT needs: the leftmost item's alias, that item's known output
+ columns when it is a derived table with a computed shape, a star flag
+ when the item exposes a physical table's whole column set, and the
+ next free alias number. Aliases count upward as q0, q1, q2 across
+ the whole statement, so every derived table in the emitted text is
+ uniquely named.
+
+  TsqlFrom = record {
+    tf-sql : Text,
+    tf-alias : Text,
+    tf-cols : List Text,
+    tf-star : Boolean,
+    tf-next : Integer
+  }
+
+  tsql-alias : Integer -> Text
+  tsql-alias (n) = "q" & show n
+
+ The planner wraps every scan in zero or more single-predicate
+ filters, so filter emission peels the whole chain into one WHERE
+ conjunction over the base scan. A filter over anything other than a
+ scan never leaves the planner; the fallback wraps the emitted child
+ statement the same way so the arm stays honest anyway.
+
+  TsqlPeel = record {
+    tp-base : RelOp,
+    tp-pred : Text
+  }
+
+  tsql-peel : RelOp, Text -> TsqlPeel
+  tsql-peel (op) (acc) =
+    when op
+      is RelFilter (child) (pred) -> tsql-peel child (if acc == "" then tsql-pred pred else acc & " AND " & tsql-pred pred)
+      is otherwise -> TsqlPeel { tp-base = op, tp-pred = acc }
+
+  tsql-from-filter : RelOp, Integer -> TsqlFrom
+  tsql-from-filter (op) (n) =
+    let peeled = tsql-peel op ""
+    in when peeled.tp-base
+      is RelScan (t) -> TsqlFrom { tf-sql = "(SELECT * FROM " & tsql-ident t & " WHERE " & peeled.tp-pred & ") AS " & tsql-ident (tsql-alias n), tf-alias = tsql-alias n, tf-cols = [], tf-star = True, tf-next = n + 1 }
+      is otherwise ->
+        let s = tsql-select (peeled.tp-base) n 0 []
+        in let inner = tsql-alias (s.sel-next)
+        in let outer = tsql-alias (s.sel-next + 1)
+        in TsqlFrom { tf-sql = "(SELECT * FROM (" & s.sel-sql & ") AS " & tsql-ident inner & " WHERE " & peeled.tp-pred & ") AS " & tsql-ident outer, tf-alias = outer, tf-cols = s.sel-cols, tf-star = s.sel-star, tf-next = s.sel-next + 2 }
+
+ A derive emits as a derived table that projects the child item's
+ whole column set through the child's alias and appends one computed
+ bucket column per spec. Date columns hold Unix seconds as BIGINT on
+ the warehouse, so every bucket expression converts through
+ DATEADD(second, column, '19700101') and recombines YEAR, MONTH,
+ DATEPART quarter, and DAY arithmetically to produce exactly the
+ integers the native executor's encodings produce: year, year times
+ ten plus quarter, year times one hundred plus month, year times ten
+ thousand plus month times one hundred plus day. The two targets
+ therefore bucket identically, and the lens-sql test pins both sides
+ against the same numbers.
+
+  tsql-derive-expr : DeriveFn, Text -> Text
+  tsql-derive-expr (fn) (col) =
+    let d = "DATEADD(second, " & col & ", '19700101')"
+    in when fn
+      is DerYear -> "YEAR(" & d & ")"
+      is DerQuarter -> "YEAR(" & d & ") * 10 + DATEPART(quarter, " & d & ")"
+      is DerMonth -> "YEAR(" & d & ") * 100 + MONTH(" & d & ")"
+      is DerDay -> "YEAR(" & d & ") * 10000 + MONTH(" & d & ") * 100 + DAY(" & d & ")"
+
+  tsql-derive-items : List DeriveSpec, Text, Integer, Text -> Text
+  tsql-derive-items (specs) (alias) (i) (acc) =
+    if i >= list-length specs then acc
+    else let s = list-at specs i
+    in let piece = tsql-derive-expr (s.der-fn) (tsql-ident alias & "." & tsql-ident (s.der-col)) & " AS " & tsql-ident (s.der-alias)
+    in tsql-derive-items specs alias (i + 1) (if i == 0 then piece else acc & ", " & piece)
+
+  tsql-from-derive : RelOp, List DeriveSpec, Integer -> TsqlFrom
+  tsql-from-derive (child) (specs) (n) =
+    let f = tsql-from child n
+    in let a = tsql-alias (f.tf-next)
+    in TsqlFrom { tf-sql = "(SELECT " & tsql-ident (f.tf-alias) & ".*, " & tsql-derive-items specs (f.tf-alias) 0 "" & " FROM " & f.tf-sql & ") AS " & tsql-ident a, tf-alias = a, tf-cols = [], tf-star = True, tf-next = f.tf-next + 1 }
+
+ Equi-join keys pair positionally and both sides always qualify: the
+ left column to the clause's leftmost alias, where the planner puts
+ every join key it groups by, and the right column to the joined
+ item's own alias.
+
+  tsql-on-pairs : List Text, List Text, Text, Text, Integer, Text -> Text
+  tsql-on-pairs (lc) (rc) (lalias) (ralias) (i) (acc) =
+    if i >= list-length lc then acc
+    else let piece = tsql-ident lalias & "." & tsql-ident (list-at lc i) & " = " & tsql-ident ralias & "." & tsql-ident (list-at rc i)
+    in tsql-on-pairs lc rc lalias ralias (i + 1) (if i == 0 then piece else acc & " AND " & piece)
+
+ tsql-from renders joins flat: the left side stays a clause, the right
+ side becomes exactly one item, and the leftmost bookkeeping rides
+ through so nested equi-joins keep qualifying against the original
+ grained table. RelJoin only reaches this emitter as the planner's
+ always-true glue between dimensionless measure rows and renders as
+ CROSS JOIN; any other predicate falls back to INNER JOIN ON.
+
+  tsql-from : RelOp, Integer -> TsqlFrom
+  tsql-from (op) (n) =
+    when op
+      is RelScan (t) -> TsqlFrom { tf-sql = tsql-ident t & " AS " & tsql-ident (tsql-alias n), tf-alias = tsql-alias n, tf-cols = [], tf-star = True, tf-next = n + 1 }
+      is RelFilter (child) (pred) -> tsql-from-filter op n
+      is RelEquiJoin (l) (r) (lc) (rc) ->
+        let lf = tsql-from l n
+        in let rf = tsql-from-item r (lf.tf-next)
+        in TsqlFrom { tf-sql = lf.tf-sql & " INNER JOIN " & rf.tf-sql & " ON " & tsql-on-pairs lc rc (lf.tf-alias) (rf.tf-alias) 0 "", tf-alias = lf.tf-alias, tf-cols = lf.tf-cols, tf-star = lf.tf-star, tf-next = rf.tf-next }
+      is RelJoin (l) (r) (pred) ->
+        let lf = tsql-from l n
+        in let rf = tsql-from-item r (lf.tf-next)
+        in let glue = when pred
+          is PredTrue -> " CROSS JOIN " & rf.tf-sql
+          is otherwise -> " INNER JOIN " & rf.tf-sql & " ON " & tsql-pred pred
+        in TsqlFrom { tf-sql = lf.tf-sql & glue, tf-alias = lf.tf-alias, tf-cols = lf.tf-cols, tf-star = lf.tf-star, tf-next = rf.tf-next }
+      is otherwise -> tsql-from-item op n
+
+  tsql-from-item : RelOp, Integer -> TsqlFrom
+  tsql-from-item (op) (n) =
+    when op
+      is RelScan (t) -> TsqlFrom { tf-sql = tsql-ident t & " AS " & tsql-ident (tsql-alias n), tf-alias = tsql-alias n, tf-cols = [], tf-star = True, tf-next = n + 1 }
+      is RelFilter (child) (pred) -> tsql-from-filter op n
+      is RelDerive (child) (specs) -> tsql-from-derive child specs n
+      is otherwise ->
+        let s = tsql-select op n 0 []
+        in let a = tsql-alias (s.sel-next)
+        in TsqlFrom { tf-sql = "(" & s.sel-sql & ") AS " & tsql-ident a, tf-alias = a, tf-cols = s.sel-cols, tf-star = s.sel-star, tf-next = s.sel-next + 1 }
+
+Section: Select Statements
+
+ A TsqlSel is a complete SELECT statement plus its output column
+ bookkeeping. TOP and ORDER BY thread down as parameters because
+ T-SQL puts both inside the statement whose head the planner's
+ RelLimit and RelSort wrap from outside: the limit and sort arms
+ simply pass their payload into the child and emit nothing of their
+ own, which is exactly right for the planner's limit-over-sort-over-
+ project crown.
+
+  TsqlSel = record {
+    sel-sql : Text,
+    sel-cols : List Text,
+    sel-star : Boolean,
+    sel-next : Integer
+  }
+
+  tsql-top : Integer -> Text
+  tsql-top (k) = if k > 0 then "TOP " & show k & " " else ""
+
+  tsql-order-items : List SortSpec, Integer, Text -> Text
+  tsql-order-items (specs) (i) (acc) =
+    if i >= list-length specs then acc
+    else let s = list-at specs i
+    in let dir = when s.sort-dir
+      is SortAsc -> " ASC"
+      is SortDesc -> " DESC"
+    in let piece = tsql-ident (s.sort-col) & dir
+    in tsql-order-items specs (i + 1) (if i == 0 then piece else acc & ", " & piece)
+
+  tsql-order : List SortSpec -> Text
+  tsql-order (specs) =
+    if list-length specs == 0 then ""
+    else " ORDER BY " & tsql-order-items specs 0 ""
+
+  tsql-aliases : List AggSpec, Integer, List Text -> List Text
+  tsql-aliases (specs) (i) (acc) =
+    if i >= list-length specs then acc
+    else tsql-aliases specs (i + 1) (list-push acc ((list-at specs i).agg-alias))
+
+ The group arm is the grain carrier: keys and aggregates form the
+ select list, the same key references form the GROUP BY, and the
+ output shape is keys then aliases, which is what every parent join
+ and projection relies on. The wrap helper turns the relational
+ nodes that are pure FROM material into a SELECT star statement, and
+ the otherwise arm names the operators this planner never produces
+ so an out-of-subset tree is visible in the emitted text instead of
+ silently wrong.
+
+  tsql-select : RelOp, Integer, Integer, List SortSpec -> TsqlSel
+  tsql-select (op) (n) (top) (order) =
+    when op
+      is RelGroup (child) (keys) (aggs) ->
+        let f = tsql-from child n
+        in let key-part = tsql-col-items keys (f.tf-alias) (f.tf-cols) 0 ""
+        in let agg-part = tsql-agg-items aggs (f.tf-alias) (f.tf-cols) 0 ""
+        in let items = if list-length keys == 0 then agg-part else key-part & ", " & agg-part
+        in let grouped = if list-length keys == 0 then "" else " GROUP BY " & key-part
+        in TsqlSel { sel-sql = "SELECT " & tsql-top top & items & " FROM " & f.tf-sql & grouped & tsql-order order, sel-cols = keys & tsql-aliases aggs 0 [], sel-star = False, sel-next = f.tf-next }
+      is RelProject (child) (proj) ->
+        let f = tsql-from child n
+        in let cols = proj.proj-cols
+        in let items = if list-length cols == 0 then "*" else tsql-col-items cols (f.tf-alias) (f.tf-cols) 0 ""
+        in TsqlSel { sel-sql = "SELECT " & tsql-top top & items & " FROM " & f.tf-sql & tsql-order order, sel-cols = cols, sel-star = (list-length cols == 0), sel-next = f.tf-next }
+      is RelSort (child) (specs) -> tsql-select child n top specs
+      is RelLimit (child) (k) -> tsql-select child n k order
+      is RelScan (t) -> tsql-wrap op n top order
+      is RelFilter (child) (pred) -> tsql-wrap op n top order
+      is RelDerive (child) (specs) -> tsql-wrap op n top order
+      is RelEquiJoin (l) (r) (lc) (rc) -> tsql-wrap op n top order
+      is RelJoin (l) (r) (pred) -> tsql-wrap op n top order
+      is otherwise -> TsqlSel { sel-sql = "SELECT NULL AS " & tsql-ident "unsupported-relop", sel-cols = ["unsupported-relop"], sel-star = False, sel-next = n }
+
+  tsql-wrap : RelOp, Integer, Integer, List SortSpec -> TsqlSel
+  tsql-wrap (op) (n) (top) (order) =
+    let f = tsql-from op n
+    in TsqlSel { sel-sql = "SELECT " & tsql-top top & "* FROM " & f.tf-sql & tsql-order order, sel-cols = [], sel-star = True, sel-next = f.tf-next }
+
+Section: The Emitter
+
+ lens-to-tsql is the whole contract: one plan tree in, one statement
+ out. Callers hold a plan the planner already grain-checked, so the
+ statement is grain correct by construction.
+
+  lens-to-tsql : RelOp -> Text
+  lens-to-tsql (op) = (tsql-select op 0 0 []).sel-sql

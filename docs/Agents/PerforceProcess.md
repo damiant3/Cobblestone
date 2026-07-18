@@ -46,9 +46,17 @@ p4 clean codex/... apps/...
 # 3. Unshelve your changes back to the workspace
 p4 unshelve -s <CL> -c <CL>
 
+# 3a. If the depot moved while you were shelved -- which is exactly what a
+#     merge-down does -- unshelve leaves your files BEHIND head, and it does
+#     not schedule the resolve. `p4 resolve -n` will tell you there is
+#     nothing to resolve. It is wrong. These two commands are what fix it:
+p4 sync                      # THIS is what schedules the resolve
+p4 resolve -am               # three-way merge: your shelf + the new head
+build/p4-stale-check.ps1     # refuses to continue if anything is still behind
+
 # 4. NOW run gates
-codex.build/build.ps1
-codex.build/test.ps1 -Jobs 4
+build/build.ps1
+build/test.ps1 -Jobs 4
 ```
 
 `p4 clean` is also the fix when a build mysteriously bakes in a name or
@@ -116,6 +124,95 @@ correct gate dance order is exactly: shelve → revert → sync -f → clean
 → unshelve → build. If you edit a file AFTER unshelving (e.g. a fix
 mid-gate), you must re-`shelve -f` before the next revert or you lose
 it again.
+### `p4 unshelve` silently drops an `add` — "Can't clobber writable file"
+
+**This is the worst one on this page. It cost every test added on
+2026-07-13, and nothing noticed for hours.**
+
+**Symptom:** A CL contains edits and one or more new files. You do the gate
+dance (shelve, revert, unshelve), submit, copy up — and **the edits land and
+the new files do not**. `p4 submit` reports success. `p4 describe` shows only
+the edits. The new files sit on disk looking perfectly fine, and are not in
+the depot at all. Docs you wrote in the same CL now name tests that do not
+exist.
+
+**Cause:** `p4 revert` on a file opened for **add** removes it from the CL
+but **leaves the file on disk** (correctly — it was never in the depot to
+restore). When you then `p4 unshelve`, Perforce finds a writable file already
+sitting there and prints:
+
+```
+//Codex/blu/codex/test/smp-cores.codex#none - unshelved, opened for add
+Can't clobber writable file D:/.../codex/test/smp-cores.codex
+```
+
+The first line makes it look fine. **It is not fine.** The second line means
+the add was **not opened**. The file is untracked, the CL now holds only the
+edits, and the submit is a success that leaves your new files behind.
+
+**A dropped add is invisible to every check you would normally run.** It is
+not a conflict. It is not a stale revision. It is not an unresolved file.
+`p4 opened` does not list it, so nothing is out of date. It is simply
+*absent*, and absence has no diff.
+
+**Fix:** Never wave past `Can't clobber writable file`. Either delete the
+on-disk copy before unshelving, or `p4 unshelve -f` to force the clobber, and
+then **check `p4 opened -c <CL>` actually lists every file you expect** before
+you submit.
+
+**Detect (do this every time):**
+
+```powershell
+build/p4-stale-check.ps1     # lists on-disk files that are not in the depot
+p4 files //Codex/main/<the-file-you-added>   # after copy-up: is it really there?
+```
+
+The rule that would have caught it in seconds: **after any copy-up, `p4 files`
+the artifacts you claim to have added.** A doc that names a test is not
+evidence the test exists.
+
+### Unshelving onto a moved depot: `p4 resolve -n` lies to you
+
+**Symptom:** You shelve work, merge down from main, unshelve — and your
+file no longer contains what the merge-down just brought in. `p4 resolve
+-n` says **"No file(s) to resolve"**, and `p4 fstat` shows no `unresolved`
+flag. Everything looks clean. It is not.
+
+**Cause:** `p4 unshelve` restores the shelved bytes and opens the file at
+the revision it was shelved **at**, not at head. A merge-down moves head.
+So the file is now the shelved content, and every revision submitted in
+between is missing from your copy. **Perforce does not schedule the
+resolve at unshelve time** — only `p4 sync` does that. Until you sync, the
+one command you would reach for to check reports that you are clean.
+
+Measured 2026-07-13 by reproducing it deliberately: after a merge-down, an
+unshelved `BACKLOG.md` sat at `haveRev 29` against `headRev 31`, with
+`p4 resolve -n` reporting nothing to do.
+
+**The depot is not at risk from doing nothing** — `p4 submit` does block on
+an out-of-date file. The risk is the *recovery*: an agent who has just been
+told there is nothing to resolve reaches for `p4 resolve -ay` (accept
+yours) to get moving, and that silently drops every revision another agent
+submitted while the work was shelved. This is the same shape as the
+move-trap below: the damage does not appear where the mistake was made.
+
+**Fix — two commands, and they are not optional:**
+
+```powershell
+p4 unshelve -s <CL> -c <CL>
+p4 sync                      # schedules the resolve unshelve did not
+p4 resolve -am               # three-way merge; keeps your shelf AND the new head
+build/p4-stale-check.ps1     # asserts nothing is still behind
+```
+
+Verified: the auto-merge keeps both sides (1 chunk yours, 6 theirs, 0
+conflicting), and the guard fails before the fix and passes after.
+
+**Detect:** `build/p4-stale-check.ps1` compares every opened file's
+`haveRev` against `headRev` and refuses to pass if any is behind or
+unresolved. Run it after every unshelve and before every submit. It exists
+because the built-in check answers the wrong question.
+
 **Detect:** After a gate build, compare the gate `build/output/Sut.cdx`
 hash against a SUT you compiled by hand from the same source. A
 mismatch means the gate built different bytes than you think — usually
@@ -132,6 +229,9 @@ p4 shelve -c <CL>      # Save to Perforce (preserves work)
 p4 revert -c <CL> ...  # Restore depot state on disk
   ... run gates ...
 p4 unshelve -s <CL>    # Restore changes after gates
+p4 sync                # schedules the resolve unshelve did NOT
+p4 resolve -am         # merge shelf with any head that moved under you
+build/p4-stale-check.ps1   # assert nothing is behind; resolve -n will not tell you
 p4 shelve -d -c <CL>   # Delete shelf before submit
 p4 submit -c <CL>      # Submit
 ```
@@ -186,6 +286,30 @@ catch offenders.
 **Cause:** Perforce `text` type files get CRLF translation on Windows and an appended trailing newline. `.expected` sidecars are compared byte-for-byte against serial output (which is LF-only). A `text`-typed `.expected` file gains `\r` bytes and/or an extra `\n` that the runtime never emits.
 **Fix:** The test harness strips `\r` from expected files, but cannot detect a spurious trailing newline. If a test fails with an off-by-one length mismatch, hex-dump both files and check for a trailing `0x0A 0x0A` in expected vs `0x0A` in actual. Fix by removing the trailing blank line from the `.expected` file, or retype it as `binary` with `p4 retype -t binary <file>`.
 
+### 6. Traps consolidated from agent memories (each rediscovered more than once)
+
+- **`p4 change -i` with no `Files:` section EMPTIES the changelist.** Creating a
+  numbered CL by piping a spec whose Files section you stripped (or string-joined
+  wrong) moves your opened files out of the CL. Create the CL empty, then
+  `p4 edit -c <cl> <files>` (or `p4 reopen -c <cl>`) to populate it. Reek
+  rediscovered this at least four times.
+- **`p4 edit <file>` with no `-c <cl>` goes to the DEFAULT changelist** and gets
+  left out of a numbered submit. Always pass `-c` once the CL exists.
+- **ONE target path per `p4 copy --from`.** A second path is read as the TARGET, not
+  a second source: `copy --from fester //main/A //main/B` opens B for integrate FROM
+  A. Copy each file in its own command and READ the `... - sync/integrate from ...`
+  line it prints -- it names the real source, so a wrong one is visible before submit.
+- **`p4 opened` LIES before a resolve.** After a merge-down it can show unresolved
+  `branch` resolves as `delete`; submitting on that reading wipes other agents' new
+  files. Run `p4 resolve` first, then trust `p4 opened`.
+- **Use `p4 diff2 -q` for true content parity, not `p4 interchanges`** -- the latter
+  is unreliable in streams and shows phantom entries.
+- **`Select-String` misreads p4 `unicode`-typed files** (most `.codex` are unicode by
+  typemap). Use the Grep tool (ripgrep) for content searches over depot files.
+- **A docs-only change still wants a NUMBERED CL** even though it needs no token:
+  `p4 edit` with no `-c` has no CL number, and AgentGrid's build-request needs an
+  integer if you later decide the change is not docs-only after all.
+
 ## Key Principle
 
 Perforce tracks file OPENS, not file CONTENT. When you `p4 edit` a file, Perforce marks it as open. Whatever bytes are on disk at submit time get submitted. There is no staging area like git. This means:
@@ -196,6 +320,13 @@ Perforce tracks file OPENS, not file CONTENT. When you `p4 edit` a file, Perforc
 - The on-disk state is the source of truth for compilation
 
 ## Dev Streams
+
+### Experimental Sub-Branches (a dev stream off a dev stream)
+
+To save speculative work in the repo **without promoting it** -- a campaign
+that must prove itself before it earns main -- branch a sub-stream off your
+own dev stream and submit there. Routine, commands, and the live traps are in
+`docs/Agents/RiskyBusiness.md`. First cut: the LIR selector (`//Codex/reek-lir`).
 
 ### Why We Use Them
 
@@ -313,24 +444,45 @@ regardless of what `interchanges` says.
 The seed built on the child stream may not match what the parent produces,
 because the source concat can differ between workspaces.
 
+**The installed seed must be `build/output/Sut.cdx` — the signed one.**
+`build/output/NewSeed.cdx` is a copy of the unsigned `stage1.cdx`
+(`build.ps1`:401). The sign phase patches the public key and signature
+into `Sut.cdx` **in place** (`build.ps1`:272-274) and touches nothing
+else, so a seed installed from `NewSeed.cdx` carries zeros where its
+signature belongs and fails `build/test-self-verify.ps1` with
+`SIGNATURE INVALID`. The content hash (bytes 8-39) deliberately excludes
+the signature region so the fixed-point test works on signed and unsigned
+alike — which is exactly why a hash match will *not* catch this for you.
+Run the self-verify.
+
 ```powershell
 # On the PARENT workspace with the copy-up CL unshelved:
 
 # 1. Run full build — this rebuilds from the shelved seed
-codex.build/build.ps1
+build/build.ps1
 
-# 2. Check Sut content hash against seed content hash (bytes 8-39)
-#    If Sut === seed, the seed is already the fixed point.
-#    If Sut !== seed but stage1 === stage2, replace the seed:
-Copy-Item -Force codex.build/output/NewSeed.cdx seed/Codex.cdx
+# 2. Check Sut content hash against seed content hash (bytes 8-39).
+#    If Sut === seed, the seed is already the fixed point — nothing to do.
+#    If Sut !== seed but stage1 === stage2, the fixed-point content is
+#    STAGE1's, not Sut's (Sut was built by the OLD seed). Install the
+#    unsigned NewSeed.cdx as an intermediate bootstrap and converge:
+Copy-Item -Force build/output/NewSeed.cdx seed/Codex.cdx
+build/build.ps1            # now converges: SUT === stage1 in one pass
 
-# 3. Revert the integrate on the seed, re-edit, and re-shelve
+# 3. Install the SIGNED fixed point as the seed
+Copy-Item -Force build/output/Sut.cdx seed/Codex.cdx
+
+# 4. Prove it — this is the step that catches an unsigned seed
+build/test-self-verify.ps1   # must print THE SEED VERIFIES ITSELF
+
+# 5. Revert the integrate on the seed, re-edit, and re-shelve
 p4 revert //Codex/<PARENT>/seed/Codex.cdx
 p4 edit -c <CL> //Codex/<PARENT>/seed/Codex.cdx
 # (copy the proven seed)
 p4 shelve -r -c <CL>
 
-# 4. Only submit after the seed content hash matches Sut === stage1 === stage2
+# 6. Only submit after the seed content hash matches Sut === stage1 === stage2
+#    AND test-self-verify.ps1 is green
 ```
 
 **Why this matters:** The compiler is a fixed point of itself. A seed from a

@@ -53,11 +53,6 @@ Section: Setup
     in let r2 = execute-cmd (CmdTrust author-key 10000) (r1.new-state)
     in r2.new-state
 
-  installed-state : ShellState
-  installed-state =
-    let dr = dispatch (InputInstall "hello") test-state test-store
-    in dr.new-state
-
 Section: Helpers
   check-parse : Text -> Text
   check-parse (line) =
@@ -66,13 +61,24 @@ Section: Helpers
       is ParseOk (cmd) -> "ok"
       is ParseError (msg) -> "err: " & msg
 
-  dispatch-output : ShellInput, ShellState -> Text
-  dispatch-output (input) (state) =
-    let dr = dispatch input state test-store
-    in dr.output
+ The info command reads the system identity, so dispatch carries the
+ Identity effect and its results are act-bound. The projections out of
+ DispatchResult stay pure.
+
+  dr-output : DispatchResult -> Text
+  dr-output (dr) = dr.output
+
+  dr-state : DispatchResult -> ShellState
+  dr-state (dr) = dr.new-state
+
+  dispatch-output : ShellInput, ShellState -> [Identity] Text
+  dispatch-output (input) (state) = dr-output (dispatch input state test-store)
+
+  installed-state : Integer -> [Identity] ShellState
+  installed-state (x) = dr-state (dispatch (InputInstall "hello") test-state test-store)
 
 Section: Tests
-  opening : [Console] Nothing = act
+  opening : [Console, Identity] Nothing = act
     print-line-uni (check-parse "install hello")
     print-line-uni (check-parse "run hello")
     print-line-uni (check-parse "revoke hello 5")
@@ -89,9 +95,10 @@ Section: Tests
     print-line-uni (check-parse "instal")
     print-line-uni (check-parse "revoke hello abc")
     print-line-uni "---"
+    inst <- installed-state 0
     print-line-uni (dispatch-output (InputInstall "hello") test-state)
-    print-line-uni (dispatch-output (InputStatus "hello") installed-state)
-    print-line-uni (dispatch-output (InputRun "hello") installed-state)
+    print-line-uni (dispatch-output (InputStatus "hello") inst)
+    print-line-uni (dispatch-output (InputRun "hello") inst)
     print-line-uni (dispatch-output InputList test-state)
     print-line-uni (dispatch-output (InputRun "missing") test-state)
     print-line-uni (dispatch-output (InputInstall "ghost") test-state)
@@ -100,8 +107,8 @@ Section: Tests
     print-line-uni "---"
     print-line-uni (check-parse "verify hello")
     print-line-uni (check-parse "save")
-    print-line-uni (dispatch-output (InputVerify "hello") installed-state)
-    print-line-uni (dispatch-output (InputVerify "ghost") installed-state)
+    print-line-uni (dispatch-output (InputVerify "hello") inst)
+    print-line-uni (dispatch-output (InputVerify "ghost") inst)
     print-line-uni (dispatch-output InputSave test-state)
     print-line-uni (check-parse "info")
     print-line-uni (dispatch-output InputInfo test-state)

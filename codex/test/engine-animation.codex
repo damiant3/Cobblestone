@@ -1,0 +1,86 @@
+Chapter: EngineAnimation
+  cites Foreword chapter Console
+  cites Engine chapter Skinning
+  cites Engine chapter AnimBlend
+  cites Engine chapter Musculature
+  cites Engine chapter Mesh
+  cites Math chapter Matrix4
+  cites Math chapter Quaternion
+
+ Runtime coverage for the animation half of the engine foreword. These chapters
+ could not type-check until CL 7517 and have never run; the migration to Real
+ was checked by the compiler, and the compiler cannot see a scale factor.
+
+ The invariants here are the ones a wrong conversion breaks and a type does not
+ catch. Identity means identity: skinning a vertex through an identity bone
+ leaves the vertex exactly where it was, and any factor lost or gained at the
+ Vertex-to-Vec3 boundary moves it. A blend at nought is the first pose and a
+ blend at one is the second, exactly, or the thousandths were misread. Weights
+ that sum to one preserve position however they are split between bones.
+
+ Writing these found a bug the type checker had passed: bp-identity scaled by a
+ thousand, because Vec3 was fixed-point when Skinning was written and a thousand
+ meant unity there, while mat4-scale takes 1.0 as identity. The identity pose was
+ a thousandfold magnification. Scene3D's t3-identity had the same defect.
+
+ We say:
+
+Section: Fixtures
+
+  vert-at : Integer, Integer, Integer -> Vertex
+  vert-at (x) (y) (z) = vertex x y z 0 1000 0 0 0 #FFFFFF
+
+  pose-at : Real, Real, Real -> BonePose
+  pose-at (x) (y) (z) = BonePose { bp-pos = vec3-new x y z, bp-rot = quat-identity, bp-scale = vec3-new 1.0 1.0 1.0 }
+
+  ident-palette : List Mat4
+  ident-palette = [mat4-identity, mat4-identity]
+
+ A bone that translates by a known amount, so a skinned vertex has an answer
+ that can be written down rather than merely eyeballed.
+
+  shift-palette : List Mat4
+  shift-palette = [mat4-identity, mat4-translate 600.0 0.0 0.0]
+
+Section: Reporting
+
+  show-vert : Vertex -> Text
+  show-vert (v) = show (v.vp-x) & "," & show (v.vp-y) & "," & show (v.vp-z)
+
+  show-pose : BonePose -> Text
+  show-pose (p) = show (real-to-int (p.bp-pos.vx)) & "," & show (real-to-int (p.bp-pos.vy)) & "," & show (real-to-int (p.bp-pos.vz))
+
+  show-scale : BonePose -> Text
+  show-scale (p) = show (real-to-int (p.bp-scale.vx * 1000.0))
+
+Section: Entry
+
+  opening : [Console] Nothing = act
+    let v = vert-at 300 400 500
+    in let ident = skin-vertex v (sw-single 0) ident-palette
+    in let shifted = skin-vertex v (sw-single 1) shift-palette
+    in let half = skin-vertex v (sw-dual 0 1 500) shift-palette
+    in let a = pose-at 0.0 0.0 0.0
+    in let b = pose-at 1000.0 2000.0 3000.0
+    in let at0 = bp-lerp a b 0
+    in let at500 = bp-lerp a b 500
+    in let at1000 = bp-lerp a b 1000
+    in let added = pose-additive [a] [b] 250 1
+    in let sys = ms-add ms-new (muscle-new "biceps" (BoneAttach { ba-bone-idx = 0, ba-offset-x = 0, ba-offset-y = 0, ba-offset-z = 0 }) (BoneAttach { ba-bone-idx = 1, ba-offset-x = 0, ba-offset-y = 800, ba-offset-z = 0 }) 800 500 400)
+    in let relaxed = ms-displace-vertex sys 0 400 0 ident-palette
+    in let flexed = ms-displace-vertex (ms-activate sys 0 1000) 0 400 0 ident-palette
+    in act
+      print-line-uni ("identity scale : " & show-scale bp-identity)
+      print-line-uni ("skin identity  : " & show-vert ident)
+      print-line-uni ("skin shifted   : " & show-vert shifted)
+      print-line-uni ("skin half      : " & show-vert half)
+      print-line-uni ("lerp at 0      : " & show-pose at0)
+      print-line-uni ("lerp at 500    : " & show-pose at500)
+      print-line-uni ("lerp at 1000   : " & show-pose at1000)
+      print-line-uni ("additive 250   : " & show-pose (list-at added 0))
+      print-line-uni ("muscle relaxed : " & show (relaxed.md-dy))
+      print-line-uni ("muscle flexed  : " & show (flexed.md-dy))
+    end
+  end
+
+Page 1

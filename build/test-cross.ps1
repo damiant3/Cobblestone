@@ -65,7 +65,12 @@ $skipFile   = Join-Path $dir "$name.skip"
 $slowFile   = Join-Path $dir "$name.slow"
 $fatalFile  = Join-Path $dir "$name.fatal"
 $failingFile = Join-Path $dir "$name.failing"
+$smpFile    = Join-Path $dir "$name.smp"
 
+if (Test-Path -PathType Leaf $smpFile) {
+    Write-Host "SKIPPED: $name (multi-core -- run build/test-cross-smp.ps1)" -ForegroundColor Yellow
+    exit 0
+}
 if (Test-Path -PathType Leaf $skipFile) {
     $reason = (Get-Content -TotalCount 1 $skipFile)
     Write-Host "SKIPPED: $name ($reason)" -ForegroundColor Yellow

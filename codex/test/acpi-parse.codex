@@ -1,0 +1,292 @@
+Chapter: AcpiParseTest
+  cites Works chapter GopAcpi
+
+ Builds an ACPI table set in a heap buffer and parses it. The bytes are
+ laid down from the ACPI specification -- signatures, lengths, and every
+ field at its spec offset -- not from the parser's own idea of where
+ things live, so a parser that reads PM1a_CNT_BLK from the wrong offset
+ reports the event block and fails here. The fixture's ground truth was
+ generated independently in Python.
+
+ SLP_TYPa is 5 and SLP_TYPb is 7, deliberately not the zero that QEMU's
+ own _S5_ happens to carry: a driver that skips the AML decode and
+ hardcodes the value it saw on one emulator cannot pass.
+
+ Both root-table shapes are covered. A revision 0 RSDP offers only the
+ RSDT and its 32-bit entries; a revision 2 RSDP offers the XSDT and its
+ 64-bit entries and must be preferred. The final case corrupts one RSDP
+ byte and expects the checksum to reject the whole thing.
+
+Section: Layout
+
+ Offsets within the blob, matching the fixture generator.
+
+  off-rsdp : Integer = 0
+  off-rsdt : Integer = 256
+  off-xsdt : Integer = 384
+  off-fadt : Integer = 512
+  off-madt : Integer = 768
+  off-dsdt : Integer = 1024
+  blob-size : Integer = 1280
+
+Section: Writers
+
+  zero-fill : Integer, Integer, Integer -> Integer
+  zero-fill (b) (i) (n) =
+    if i >= n then 0 else let p = poke-byte b i 0 in zero-fill b (i + 1) n
+
+  wr32 : Integer, Integer, Integer -> Integer
+  wr32 (a) (o) (v) =
+    let p0 = poke-byte a o (int-mod v 256)
+    in let p1 = poke-byte a (o + 1) (int-mod (bit-shru v 8) 256)
+    in let p2 = poke-byte a (o + 2) (int-mod (bit-shru v 16) 256)
+    in poke-byte a (o + 3) (int-mod (bit-shru v 24) 256)
+
+  wr64 : Integer, Integer, Integer -> Integer
+  wr64 (a) (o) (v) =
+    let lo = wr32 a o (int-mod v 4294967296)
+    in wr32 a (o + 4) (v / 4294967296)
+
+  wr16 : Integer, Integer, Integer -> Integer
+  wr16 (a) (o) (v) =
+    let p0 = poke-byte a o (int-mod v 256)
+    in poke-byte a (o + 1) (int-mod (bit-shru v 8) 256)
+
+  wr-sig : Integer, Integer, Integer, Integer, Integer -> Integer
+  wr-sig (a) (b0) (b1) (b2) (b3) =
+    let p0 = poke-byte a 0 b0
+    in let p1 = poke-byte a 1 b1
+    in let p2 = poke-byte a 2 b2
+    in poke-byte a 3 b3
+
+ Every SDT header carries revision, an OEM id, an OEM table id, and an
+ OEM revision. Their bytes matter only to the checksum, but the fixture
+ writes real ones so it is a table a firmware could have published.
+
+  wr-bytes : Integer, Integer, List Integer, Integer -> Integer
+  wr-bytes (a) (o) (bs) (i) =
+    if i >= list-length bs then 0
+    else let p = poke-byte a (o + i) (list-at bs i)
+    in wr-bytes a o bs (i + 1)
+
+  wr-header : Integer, Integer, Integer -> Integer
+  wr-header (t) (len) (rev) =
+    let l = wr32 t 4 len
+    in let r = poke-byte t 8 rev
+    in let oem = wr-bytes t 10 [67, 79, 68, 69, 88, 32] 0
+    in let oid = wr-bytes t 16 [70, 73, 88, 84, 85, 82, 69, 32] 0
+    in wr32 t 24 1
+
+  store-cksum : Integer, Integer, Integer -> Integer
+  store-cksum (t) (len) (ckoff) =
+    poke-byte t ckoff (int-mod (256 - int-mod (acpi-sum t 0 len 0) 256) 256)
+
+Section: Tables
+
+ MADT: local APIC address at 36, flags at 40, then a Type 0 processor
+ entry (length 8) and a Type 1 I/O APIC entry (length 12) whose address
+ sits four bytes into the structure.
+
+  build-madt : Integer -> Integer
+  build-madt (b) =
+    let m = b + off-madt
+    in let s = wr-sig m 65 80 73 67
+    in let h = wr-header m 64 3
+    in let la = wr32 m 36 4276092928
+    in let fl = wr32 m 40 1
+    in let e0 = wr-bytes m 44 [0, 8, 0, 0] 0
+    in let e0f = wr32 m 48 1
+    in let e1 = wr-bytes m 52 [1, 12, 0, 0] 0
+    in let e1a = wr32 m 56 4273995776
+    in let e1g = wr32 m 60 0
+    in store-cksum m 64 9
+
+ DSDT: the header, then Name (_S5_, Package (4) { 5, 7, 0, 0 }) in AML.
+ 0x08 NameOp, "_S5_", 0x12 PackageOp, 0x08 package length, 0x04 element
+ count, then two BytePrefix constants and two zeros.
+
+  build-dsdt : Integer -> Integer
+  build-dsdt (b) =
+    let d = b + off-dsdt
+    in let s = wr-sig d 68 83 68 84
+    in let h = wr-header d 50 1
+    in let aml = wr-bytes d 36 [8, 95, 83, 53, 95, 18, 8, 4, 10, 5, 10, 7, 0, 0] 0
+    in store-cksum d 50 9
+
+ The revision 2 shape adds the reset register: flags bit 10 at 112,
+ the Generic Address Structure at 116 (I/O space, address 0x1234),
+ and RESET_VALUE 0x42 at 128 -- deliberately NOT the 0xCF9 QEMU
+ publishes, so a driver that hardcodes the port it saw on one
+ emulator cannot pass. The revision 1 shape stays 116 bytes long,
+ pinning the parser's length guard: reset fields on a short FADT are
+ the next table's bytes.
+
+  build-fadt : Integer, Boolean -> Integer
+  build-fadt (b) (reset) =
+    let f = b + off-fadt
+    in let len = if reset then 129 else 116
+    in let s = wr-sig f 70 65 67 80
+    in let h = wr-header f len 1
+    in let fc = wr32 f 36 0
+    in let ds = wr32 f 40 (b + off-dsdt)
+    in let pm = poke-byte f 45 1
+    in let sci = wr16 f 46 9
+    in let smi = wr32 f 48 45060
+    in let en = poke-byte f 52 241
+    in let di = poke-byte f 53 240
+    in let ae = wr32 f 56 1536
+    in let be = wr32 f 60 0
+    in let ac = wr32 f 64 1540
+    in let bc = wr32 f 68 0
+    in let el = poke-byte f 88 4
+    in let cl = poke-byte f 89 2
+    in let rst = if reset then build-fadt-reset f else 0
+    in store-cksum f len 9
+
+  build-fadt-reset : Integer -> Integer
+  build-fadt-reset (f) =
+    let fl = wr32 f 112 1024
+    in let sp = poke-byte f 116 1
+    in let bw = poke-byte f 117 8
+    in let bo = poke-byte f 118 0
+    in let ac = poke-byte f 119 1
+    in let ad = wr64 f 120 4660
+    in poke-byte f 128 66
+
+  build-rsdt : Integer -> Integer
+  build-rsdt (b) =
+    let r = b + off-rsdt
+    in let s = wr-sig r 82 83 68 84
+    in let h = wr-header r 44 1
+    in let e0 = wr32 r 36 (b + off-fadt)
+    in let e1 = wr32 r 40 (b + off-madt)
+    in store-cksum r 44 9
+
+  build-xsdt : Integer -> Integer
+  build-xsdt (b) =
+    let x = b + off-xsdt
+    in let s = wr-sig x 88 83 68 84
+    in let h = wr-header x 52 1
+    in let e0 = wr64 x 36 (b + off-fadt)
+    in let e1 = wr64 x 44 (b + off-madt)
+    in store-cksum x 52 9
+
+ The RSDP is not an SDT: its signature is eight bytes, its first
+ checksum covers only the first twenty, and revision 2 adds a length, a
+ 64-bit XSDT pointer, and a second checksum over the whole thing.
+
+  build-rsdp : Integer, Integer -> Integer
+  build-rsdp (b) (rev) =
+    let r = b + off-rsdp
+    in let s = wr-bytes r 0 [82, 83, 68, 32, 80, 84, 82, 32] 0
+    in let oem = wr-bytes r 9 [67, 79, 68, 69, 88, 32] 0
+    in let rv = poke-byte r 15 rev
+    in let rt = wr32 r 16 (b + off-rsdt)
+    in let ext = if rev >= 2 then build-rsdp-ext b else 0
+    in let c1 = store-cksum r 20 8
+    in if rev >= 2 then store-cksum r 36 32 else 0
+
+  build-rsdp-ext : Integer -> Integer
+  build-rsdp-ext (b) =
+    let r = b + off-rsdp
+    in let ln = wr32 r 20 36
+    in wr64 r 24 (b + off-xsdt)
+
+  build-all : Integer, Integer -> Integer
+  build-all (b) (rev) =
+    let z = zero-fill b 0 blob-size
+    in let m = build-madt b
+    in let d = build-dsdt b
+    in let f = build-fadt b (rev >= 2)
+    in let rt = build-rsdt b
+    in let xt = build-xsdt b
+    in build-rsdp b rev
+
+Section: Report
+
+ Table addresses are reported as offsets from the blob base, so the
+ expected output does not depend on where the heap happened to be.
+
+  yn : Boolean -> Text
+  yn (v) = if v then "yes" else "no"
+
+  report : Integer, AcpiInfo -> Text
+  report (b) (a) =
+    "ok=" & yn (a.ai-ok) & " rev=" & show (a.ai-revision)
+      & " xsdt=" & yn (a.ai-xsdt) & " root=+" & show (a.ai-root - b)
+      & " tables=" & show (a.ai-tables)
+
+  report2 : Integer, AcpiInfo -> Text
+  report2 (b) (a) =
+    "fadt=+" & show (a.ai-fadt - b) & " madt=+" & show (a.ai-madt - b)
+      & " dsdt=+" & show (a.ai-dsdt - b)
+
+  report3 : AcpiInfo -> Text
+  report3 (a) =
+    "lapic=" & show (a.ai-lapic) & " ioapic=" & show (a.ai-ioapic)
+
+  report4 : AcpiInfo -> Text
+  report4 (a) =
+    "pm1a-evt=" & show (a.ai-pm1a-evt) & " pm1a-cnt=" & show (a.ai-pm1a-cnt)
+      & " cnt-len=" & show (a.ai-pm1-cnt-len) & " sci=" & show (a.ai-sci)
+
+  report5 : AcpiInfo -> Text
+  report5 (a) =
+    "s5=" & yn (a.ai-s5-ok) & " typa=" & show (a.ai-slp-typa)
+      & " typb=" & show (a.ai-slp-typb)
+
+  report6 : AcpiInfo -> Text
+  report6 (a) =
+    "reset=" & yn (a.ai-reset-ok) & " space=" & show (a.ai-reset-space)
+      & " addr=" & show (a.ai-reset-addr) & " value=" & show (a.ai-reset-value)
+
+Section: Cases
+
+  case-rev : Integer, Integer -> AcpiInfo
+  case-rev (b) (rev) =
+    let built = build-all b rev
+    in acpi-parse (b + off-rsdp)
+
+ Corrupting one byte of the OEM id leaves the signature intact and the
+ revision intact, so only the checksum can catch it.
+
+  case-corrupt : Integer -> AcpiInfo
+  case-corrupt (b) =
+    let built = build-all b 2
+    in let bad = poke-byte (b + off-rsdp) 10 88
+    in acpi-parse (b + off-rsdp)
+
+ A zero pointer is the honest "firmware exposed no ACPI" answer.
+
+  case-null : Integer -> AcpiInfo
+  case-null (dummy) = acpi-parse 0
+
+Section: Main
+
+  opening : [Console] Nothing = act
+    let b = __heap-save
+    in let adv = __heap-advance (blob-size + 256)
+    in act
+      let a2 = case-rev b 2
+      in act
+        print-line-uni ("rev2 " & report b a2)
+        print-line-uni ("rev2 " & report2 b a2)
+        print-line-uni ("rev2 " & report3 a2)
+        print-line-uni ("rev2 " & report4 a2)
+        print-line-uni ("rev2 " & report5 a2)
+        print-line-uni ("rev2 " & report6 a2)
+      end
+      let a0 = case-rev b 0
+      in act
+        print-line-uni ("rev0 " & report b a0)
+        print-line-uni ("rev0 " & report2 b a0)
+        print-line-uni ("rev0 " & report4 a0)
+        print-line-uni ("rev0 " & report5 a0)
+        print-line-uni ("rev0 " & report6 a0)
+      end
+      let bad = case-corrupt b
+      in print-line-uni ("corrupt ok=" & yn (bad.ai-ok))
+      let none = case-null 0
+      in print-line-uni ("null ok=" & yn (none.ai-ok))
+    end
+  end

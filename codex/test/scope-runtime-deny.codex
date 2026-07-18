@@ -1,0 +1,70 @@
+Chapter: ScopeRuntimeDeny
+  cites Foreword chapter Fat16
+
+ Scope is enforced at RUNTIME, and this is the test that says so.
+
+ Until now a scope literal was a compile-time lint and nothing more: the
+ checker refused an out-of-scope path it could SEE (CDX4002, keyed on
+ the operation's name), and any path the program computed instead of
+ spelling walked straight past the promise. The grant was binding on
+ literals and on nothing else. Here the scope reaches the disk: the
+ boot grant writes it into proc 0's process-table entry, and Fat16 asks
+ for it before it touches a sector.
+
+ This program grants itself FileSystem.Read "OK" and then does the same
+ three things scope-runtime-open does with no scope at all. The
+ comparison is the whole test -- same code, same blank disk, one scope
+ literal apart:
+
+   OK.TXT   is admitted by the prefix, and the write and the read-back
+            both work. Enforcement that also denies the permitted case
+            is just a broken filesystem.
+
+   NO.TXT   is outside the prefix. The WRITE is refused -- and that gate
+            is not on fat16-resolve-path, which is what makes it the
+            interesting one: writes go through fat16-create-file and
+            never touch the resolver, so a scope check placed only where
+            the backlog once said would have let this write through
+            while looking total. The read is refused too.
+
+   the root is not admitted by a grant over "OK", so the listing is
+            empty -- even though OK.TXT demonstrably exists, because we
+            just wrote it and read it back. That is the third gate, and
+            it is the one nobody would think to look for: neither
+            fat16-list-root nor fat16-root-entries goes through the
+            resolver either. A grant that cannot read a file but can
+            enumerate every name on the volume has not been scoped.
+
+ The paths here are literals only because they are easier to read. The
+ fat16-* functions are ordinary functions and not effect operations, so
+ the compile-time check does not key on them at all -- nothing rejected
+ this program at compile time, and the refusals below are the running
+ machine's.
+
+Section: Entry
+
+  opening : [Console, FileSystem.Read "OK", Device.Block] Nothing
+  opening = act
+    ok <- fat16-write-file "OK.TXT" "yes"
+    print-line-uni ("in-scope write " & show ok)
+
+    no <- fat16-write-file "NO.TXT" "nope"
+    print-line-uni ("out-of-scope write " & show no)
+
+    vol <- fat16-init 2048
+    back <- fat16-read-text vol "OK.TXT"
+    print-line-uni ("in-scope read " & maybe-text back)
+
+    deny <- fat16-read-text vol "NO.TXT"
+    print-line-uni ("out-of-scope read " & maybe-text deny)
+
+    names <- fat16-list-root vol
+    print-line-uni ("root listing " & show (list-length names))
+  end
+
+Section: Reporting
+
+  maybe-text : Maybe Text -> Text
+  maybe-text (m) = when m
+    is Just (t) -> t
+    is None -> "<none>"

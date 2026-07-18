@@ -1,4 +1,5 @@
 Chapter: Tls
+  cites Foreword chapter CCE
   cites Foreword chapter AesGcm
   cites Foreword chapter Sha256
   cites Foreword chapter Hmac
@@ -45,14 +46,14 @@ Chapter: Tls
  To tls-build-client-hello gives List Integer,
    serializing a ClientHello message into a complete TLS record.
 
- To tls-hkdf-extract gives List Integer,
-   performing the HKDF-Extract step using HMAC-SHA256 with the given salt and input keying material.
+ To tls13-expand-label gives List Integer,
+   performing HKDF-Expand-Label per RFC 8446 section 7.1 over the real foreword HKDF.
 
- To tls-hkdf-expand gives List Integer,
-   performing the HKDF-Expand step, returning the requested number of bytes of key material.
+ To tls13-derive-secret gives List Integer,
+   performing Derive-Secret: HKDF-Expand-Label over a transcript hash, one hash length wide.
 
  To tls-derive-keys gives TlsKeyMaterial,
-   deriving client and server handshake keys from the shared secret and transcript hashes.
+   running the RFC 8446 key schedule from the X25519 shared secret and the transcript hash to the two handshake write keys.
 
  To tls-init-client gives TlsState,
    creating initial client-side TLS state from a private key.
@@ -185,23 +186,7 @@ Section: Extensions
     in let entries = tls-be16 (list-length entry) & entry
     in tls-be16 tls-ext-key-share & tls-be16 (list-length entries) & entries
 
-Section: Key Derivation (HKDF-based, simplified)
-  tls-hkdf-extract : List Integer, List Integer -> List Integer
-  tls-hkdf-extract (salt) (ikm) = hmac-sha256 salt ikm
-
-  tls-hkdf-expand : List Integer, List Integer, Integer -> List Integer
-  tls-hkdf-expand (prk) (info) (length) =
-    let block = hmac-sha256 prk (info & [1])
-    in tls-take-bytes block length
-
-  tls-derive-keys : List Integer, List Integer, List Integer -> TlsKeyMaterial
-  tls-derive-keys (shared-secret) (client-hello-hash) (server-hello-hash) =
-    let early-secret = tls-hkdf-extract (list-zeros 32) (list-zeros 32)
-    in let derived = tls-hkdf-expand early-secret [100, 101, 114, 105, 118, 101, 100] 32
-    in let handshake-secret = tls-hkdf-extract derived shared-secret
-    in let client-hs-key = tls-hkdf-expand handshake-secret [99, 32, 104, 115] 16
-    in let server-hs-key = tls-hkdf-expand handshake-secret [115, 32, 104, 115] 16
-    in TlsKeyMaterial { tkm-client-key = client-hs-key, tkm-server-key = server-hs-key, tkm-handshake-secret = handshake-secret }
+Section: Key Material
 
   TlsKeyMaterial = record {
     tkm-client-key : List Integer,
@@ -236,8 +221,18 @@ Section: Helpers
   tls-take-bytes : List Integer, Integer -> List Integer
   tls-take-bytes (bytes) (n) = tls-slice bytes 0 n []
 
+ tls-text-to-bytes is what puts the SNI hostname on the wire, so it must
+ emit ASCII. It used to be tls-t2b -- bare char-code, which yields the
+ CCE code point, not the byte a peer expects. `example.com` went out as
+ CCE and no server could have matched it. Same defect as the key-schedule
+ labels, same fix: convert at the I/O boundary.
+
+ tls-t2b is kept, unexported in spirit, ONLY as the pin in
+ codex/test/tls13-schedule.codex that demonstrates the trap. Do not reach
+ for it to build wire bytes.
+
   tls-text-to-bytes : Text -> List Integer
-  tls-text-to-bytes (s) = tls-t2b s 0 (text-length s) []
+  tls-text-to-bytes (s) = tls13-ascii s
 
   tls-t2b : Text, Integer, Integer, List Integer -> List Integer
   tls-t2b (s) (i) (len) (acc) =
@@ -254,32 +249,199 @@ Section: Formatting
     let type-name = if r.tls-rec-type == 22 then "handshake" else if r.tls-rec-type == 23 then "application" else if r.tls-rec-type == 21 then "alert" else "type-" & show (r.tls-rec-type)
     in type-name & " v=" & show (r.tls-rec-version) & " len=" & show (list-length (r.tls-rec-payload))
 
-Section: TLS 1.3 Key Schedule Bridge
+Section: TLS 1.3 Key Schedule
 
-  tls13-derive-secret : List Integer, Text, List Integer -> List Integer
-  tls13-derive-secret (secret) (label) (messages-hash) =
-    let label-bytes = tls-t2b label 0 (text-length label) []
-    in let info = tls13-hkdf-label label-bytes messages-hash 32
-    in hkdf-expand secret info 32
+ The real one, RFC 8446 section 7.1, over the real foreword HKDF (RFC
+ 5869, counter-chained). It is gated on the published handshake trace in
+ RFC 8448 -- every secret, key and IV below is checked against a value
+ the IETF printed, not against this chapter agreeing with itself.
+
+ This section replaces two earlier ones, and it is worth recording what
+ they did, because both were wrong in ways that looked right:
+
+ The first defined its own tls-hkdf-expand as a single HMAC block with a
+ hardcoded counter of 1 -- not HKDF-Expand at all. It silently returned
+ SHORT for any request above 32 bytes rather than failing, and
+ tls-derive-keys built the handshake keys on it using ad-hoc labels
+ ("c hs", "s hs") that appear in no specification. Deleted.
+
+ The second was structurally correct but computed the early secret as
+ HKDF-Extract(0, [0]) -- a ONE-byte IKM. RFC 8446 writes that input as
+ "0", meaning a string of Hash.length zero bytes; a single zero byte is a
+ different number and produces a different early secret, and therefore a
+ different everything. Fixed here, and the RFC 8448 vector is what
+ catches it.
 
   tls13-hkdf-label : List Integer, List Integer, Integer -> List Integer
   tls13-hkdf-label (label) (context) (length) =
-    [bit-shru length 8, bit-and length 255]
-    & [6 + list-length label] & [116, 108, 115, 49, 51, 32] & label
-    & [list-length context] & context
+    let hi = bit-and (bit-shru length 8) 255
+    in let lo = bit-and length 255
+    in [hi, lo] & [6 + list-length label] & [116, 108, 115, 49, 51, 32] & label & [list-length context] & context
 
-  tls13-handshake-keys : List Integer, List Integer -> List Integer
-  tls13-handshake-keys (shared-secret) (hello-hash) =
-    let early-secret = hkdf-extract [] [0]
-    in let derived = tls13-derive-secret early-secret "derived" (sha256 [])
-    in let hs-secret = hkdf-extract derived shared-secret
-    in tls13-derive-secret hs-secret "c hs traffic" hello-hash
+ The label goes on the wire as ASCII, and Codex Text is CCE. `char-code`
+ alone returns the CCE code point -- for "derived" that is
+ 16 0d 15 11 21 0d 16, not the 64 65 72 69 76 65 64 the RFC means. The
+ conversion at the I/O boundary is `to-unicode`, and skipping it is the
+ whole reason this chapter's key schedule was wrong below the first rung:
+ every secret after the early secret is derived through a label, so one
+ mis-encoded label silently poisons everything downstream while still
+ producing 32 confident-looking bytes.
 
-  tls13-encrypt-record : List Integer, List Integer, List Integer, Integer -> List Integer
-  tls13-encrypt-record (key) (nonce) (plaintext) (seq) =
-    let iv = tls13-xor-nonce nonce seq
-    in let result = aesgcm-encrypt key iv plaintext [23, 3, 3]
-    in result.ciphertext & result.tag
+  tls13-ascii : Text -> List Integer
+  tls13-ascii (s) = tls13-ascii-loop s 0 (text-length s) []
+
+  tls13-ascii-loop : Text, Integer, Integer, List Integer -> List Integer
+  tls13-ascii-loop (s) (i) (n) (acc) =
+    if i >= n then acc
+    else tls13-ascii-loop s (i + 1) n (list-push acc (to-unicode (char-code (char-at s i))))
+
+  tls13-expand-label : List Integer, Text, List Integer, Integer -> List Integer
+  tls13-expand-label (secret) (label) (context) (length) =
+    hkdf-expand secret (tls13-hkdf-label (tls13-ascii label) context length) length
+
+ Derive-Secret(Secret, Label, Messages) = HKDF-Expand-Label(Secret,
+ Label, Transcript-Hash(Messages), Hash.length). The context is a hash,
+ never the messages themselves.
+
+  tls13-derive-secret : List Integer, Text, List Integer -> List Integer
+  tls13-derive-secret (secret) (label) (messages-hash) =
+    tls13-expand-label secret label messages-hash 32
+
+ A trap worth naming, because it cost real time and it will cost the
+ next reader the same: the foreword `sha256` returns the compressor's
+ internal state, which is eight 32-bit WORDS, not thirty-two bytes.
+ `sha256-to-hex` renders it with `words-to-hex`, and `Hkdf` wraps every
+ hash it touches in `hkdf-words-to-bytes` for exactly this reason. Feed
+ the word list into a key schedule as if it were bytes and you get
+ plausible-looking key material that is wrong from the second rung down.
+ tls13-hash is the byte-valued hash; use it, and never `sha256` directly,
+ anywhere a transcript hash is wanted.
+
+  tls13-hash : List Integer -> List Integer
+  tls13-hash (msg) = hkdf-words-to-bytes (sha256 msg)
+
+ The schedule proper. Each step is one line of RFC 8446's ladder.
+
+  tls13-early-secret : List Integer
+  tls13-early-secret = hkdf-extract (list-zeros 32) (list-zeros 32)
+
+  tls13-derived : List Integer
+  tls13-derived = tls13-derive-secret tls13-early-secret "derived" (tls13-hash [])
+
+  tls13-handshake-secret : List Integer -> List Integer
+  tls13-handshake-secret (ecdhe) = hkdf-extract tls13-derived ecdhe
+
+  tls13-client-hs-traffic : List Integer, List Integer -> List Integer
+  tls13-client-hs-traffic (hs-secret) (transcript-hash) =
+    tls13-derive-secret hs-secret "c hs traffic" transcript-hash
+
+  tls13-server-hs-traffic : List Integer, List Integer -> List Integer
+  tls13-server-hs-traffic (hs-secret) (transcript-hash) =
+    tls13-derive-secret hs-secret "s hs traffic" transcript-hash
+
+ A traffic secret is not a key. The write key and IV are expanded out of
+ it with an EMPTY context -- a detail that is easy to get wrong by
+ passing the transcript hash again, which yields plausible bytes that
+ decrypt nothing.
+
+  tls13-traffic-key : List Integer -> List Integer
+  tls13-traffic-key (traffic-secret) = tls13-expand-label traffic-secret "key" [] 16
+
+  tls13-traffic-iv : List Integer -> List Integer
+  tls13-traffic-iv (traffic-secret) = tls13-expand-label traffic-secret "iv" [] 12
+
+ tls-derive-keys is the whole ladder in one call: the X25519 shared
+ secret and the ClientHello..ServerHello transcript hash in, the two
+ handshake write keys out.
+
+  tls-derive-keys : List Integer, List Integer -> TlsKeyMaterial
+  tls-derive-keys (ecdhe) (transcript-hash) =
+    let hs = tls13-handshake-secret ecdhe
+    in let c = tls13-client-hs-traffic hs transcript-hash
+    in let s = tls13-server-hs-traffic hs transcript-hash
+    in TlsKeyMaterial { tkm-client-key = tls13-traffic-key c, tkm-server-key = tls13-traffic-key s, tkm-handshake-secret = hs }
+
+Section: TLS 1.3 Application Secrets
+
+ The rungs above the handshake secret. RFC 8446 section 7.1: the master
+ secret is HKDF-Extract of a zero IKM keyed by Derive-Secret(handshake,
+ "derived", ""), and the two application traffic secrets come off the
+ master over the transcript hash taken through the server's Finished --
+ the same hash the client's own Finished is computed over. These are what
+ protect application data, so a handshake that stops at the handshake
+ traffic secrets (as the DTLS endpoint does) cannot carry a byte of it.
+
+  tls13-master-secret : List Integer -> List Integer
+  tls13-master-secret (hs-secret) =
+    hkdf-extract (tls13-derive-secret hs-secret "derived" (tls13-hash [])) (list-zeros 32)
+
+  tls13-client-ap-traffic : List Integer, List Integer -> List Integer
+  tls13-client-ap-traffic (master) (transcript-hash) =
+    tls13-derive-secret master "c ap traffic" transcript-hash
+
+  tls13-server-ap-traffic : List Integer, List Integer -> List Integer
+  tls13-server-ap-traffic (master) (transcript-hash) =
+    tls13-derive-secret master "s ap traffic" transcript-hash
+
+Section: TLS 1.3 Record Layer
+
+ A TLS 1.3 record on the wire is application_data (23), legacy version
+ 0x0303, a length, then AEAD-Encrypt over the TLSInnerPlaintext -- the
+ real content, one byte naming the real content type, and zero padding.
+ The AEAD's additional data is the five-byte record header, length
+ INCLUDED: leave the length unauthenticated and an attacker rewrites it
+ and the AEAD never notices. RFC 8446 section 7.5 / 5.2. This is
+ AES-128-GCM; the ChaCha20-Poly1305 suite is the same shape over the
+ other open/seal pair.
+
+ Decrypt returns None on a tag mismatch, and that None is the whole
+ security property, not an error to paper over: a record that does not
+ authenticate yields no plaintext, not partial plaintext.
+
+  TlsInner = record {
+    ti-type : Integer,
+    ti-data : List Integer
+  }
+
+  tls13-rec-nonce : List Integer, Integer -> List Integer
+  tls13-rec-nonce (iv) (seq) = tls13-xor-nonce iv seq
+
+  tls13-rec-aad : Integer -> List Integer
+  tls13-rec-aad (enc-len) =
+    [tls-content-application, 3, 3, bit-and (bit-shru enc-len 8) 255, bit-and enc-len 255]
+
+  tls13-record-encrypt : List Integer, List Integer, Integer, Integer, List Integer -> List Integer
+  tls13-record-encrypt (key) (iv) (seq) (content-type) (content) =
+    let inner = content & [content-type]
+    in let enc-len = list-length inner + 16
+    in let r = aesgcm-encrypt key (tls13-rec-nonce iv seq) inner (tls13-rec-aad enc-len)
+    in tls13-rec-aad enc-len & r.ciphertext & r.tag
+
+  tls13-record-decrypt : List Integer, List Integer, Integer, List Integer -> Maybe TlsInner
+  tls13-record-decrypt (key) (iv) (seq) (wire) =
+    if list-length wire < 6 then None
+    else let enc-len = list-at wire 3 * 256 + list-at wire 4
+    in if enc-len < 17 then None
+    else if 5 + enc-len > list-length wire then None
+    else let aad = tls-take-bytes wire 5
+    in let enc = tls-slice wire 5 enc-len []
+    in let ct = tls-take-bytes enc (enc-len - 16)
+    in let tag = tls-slice enc (enc-len - 16) 16 []
+    in when aesgcm-decrypt key (tls13-rec-nonce iv seq) ct aad tag
+      is Just (inner) -> tls13-strip-inner inner
+      is None -> None
+
+  tls13-strip-inner : List Integer -> Maybe TlsInner
+  tls13-strip-inner (inner) =
+    let p = tls13-last-nonzero inner (list-length inner - 1)
+    in if p < 0 then None
+    else Just (TlsInner { ti-type = list-at inner p, ti-data = tls-take-bytes inner p })
+
+  tls13-last-nonzero : List Integer, Integer -> Integer
+  tls13-last-nonzero (bs) (i) =
+    if i < 0 then (-1)
+    else if list-at bs i /= 0 then i
+    else tls13-last-nonzero bs (i - 1)
 
   tls13-xor-nonce : List Integer, Integer -> List Integer
   tls13-xor-nonce (base-nonce) (seq) =

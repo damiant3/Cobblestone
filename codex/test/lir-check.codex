@@ -1,0 +1,220 @@
+Chapter: LirCheck
+  cites Foreword chapter MathLib
+
+ Drives the REAL LIR lowering (IR/Lir.codex, via the `lir-dump` pass) over
+ real lowered IR. Each straight-line, `if`, and scalar `match` function
+ below is lowered to the flat LIR, structurally verified, and dumped; the
+ non-lowerable ones (a call, an act block, a constructor-pattern match) are
+ declined. There is no reimplementation here: the shapes are ordinary
+ Codex, the compiler lowers them to IRExpr, and `-Passes lir-dump` runs
+ `lower-def-to-lir` + `lir-check-func` over each and prints one line per
+ definition to the compile log. The pinned answers live in
+ `lir-check.lir-expected`, read off the real lowering and hand-checked.
+
+ The default battery compiles this file with the DEFAULT pipeline (the LIR
+ pass does not run) and checks the runtime output against
+ `lir-check.expected` -- that pins that the functions actually COMPUTE
+ correctly, so the LIR dump is being read against working programs.
+
+ Each lowerable function also gets a `LIVE <name>: bN in {..}` line beside
+ its `LIR` line, pinning the backward liveness (Section: Liveness in
+ `Lir.codex`): a parameter is live at the entry block, the result vreg is
+ live at the exit block, and a value is live across exactly the blocks
+ between its definition and its last use.
+
+ A third `ALLOC <name>: v0->r0 v1->r0 ... [alloc-check: ok]` line pins the
+ linear-scan register assignment (Section: Allocator) and the allocation
+ verifier's verdict on it (Section: Allocation Verifier). The assignment
+ now shows register reuse -- two vregs with disjoint live ranges share a
+ register (e.g. sl-mix's v2 reuses v0's) -- and sl-wide, with five live
+ parameters over four registers, shows spill slots (`sN`). The verifier
+ runs over the real allocation and accepts it; corrupting the assignment
+ makes it fire.
+
+ The shapes:
+
+  - sl-add:     two params, one add          -> one block
+  - sl-mix:     a let feeding an add          -> one block
+  - sl-nest:    nested binary over 2 params   -> one block
+  - sl-wide:    five params summed            -> spills: 4 regs, 5 live params
+  - if-min:     an if with literal arms       -> four blocks, fused compare
+  - if-operand: an if feeding an add          -> the join block consumes the if
+  - if-nest:    an if nested in an arm        -> six blocks, non-contiguous order
+  - sw-min:     match, one literal + wildcard -> decision chain, one test
+  - sw-three:   match, two literals + wildcard -> chained tests
+  - sw-var:     match, literal + var catch-all -> the var binds the scrutinee
+  - sw-ctor:    match on constructor patterns -> tag load, then field load per bind
+  - nl-call:    a call -> NOT lowered (outside the whitelist)
+  - if-even:    a power-of-two remainder against zero -> emits ONE `test`
+  - if-odd:     the same fused, negated                -> `test`, inverted branch
+  - if-mod4:    a wider power of two                   -> `test` against mask 3
+  - if-mod3:    a remainder by three                   -> NOT fused (not a power of two)
+  - if-mod-one: a remainder against one, not zero      -> NOT fused (not against zero)
+
+ **These five are pinned by their VALUES, not by their dump lines, and the
+ reason is a trap worth knowing.** The `lir-dump` pass prints the lowering,
+ and the leaf inliner that turns `math-mod` into a remainder runs later, in
+ the INLINE phase. So all five dump as `call math-mod` with an ordinary
+ compare, and every one of them emits something else. The dump below is not a
+ view of what these functions compile to, and reading it as one would say the
+ fusion never fires when in fact it always does. What the dump is good for is
+ the block structure; what these five are for is the answers.
+
+ The last two are the negative half and they are the point of the pair. The
+ fusion is guarded on a power-of-two divisor and on a comparison against
+ zero, and a guard that nothing tests is a guard that is not there. Both are
+ chosen so a broken guard changes an answer rather than merely a shape:
+ `if-mod3 6` is 1, and a mask-2 fusion escaping onto it would say 0.
+
+ `if-even` is called with negative arguments on purpose. The mask and the
+ remainder do not agree in general -- they differ in sign and value for a
+ negative dividend, because the remainder follows the quotient's rounding and
+ the mask does not -- and they agree on zero-ness alone, which is exactly and
+ only what the fusion asks. -4 is even and -5 is odd, and the fused form has
+ to say so.
+
+Section: Shapes
+
+  sl-add : Integer, Integer -> Integer
+  sl-add (x) (y) = x + y
+
+  sl-mix : Integer -> Integer
+  sl-mix (x) = let a = x * 2 in a + 3
+
+  sl-nest : Integer, Integer -> Integer
+  sl-nest (x) (y) = (x + y) * (x - y)
+
+  sl-wide : Integer, Integer, Integer, Integer, Integer -> Integer
+  sl-wide (a) (b) (c) (d) (e) = a + b + c + d + e
+
+  if-min : Integer -> Integer
+  if-min (n) = if n > 0 then 1 else 0
+
+  if-operand : Integer -> Integer
+  if-operand (n) = (if n > 0 then 10 else 20) + n
+
+  if-nest : Integer -> Integer
+  if-nest (n) = if n > 0 then (if n > 5 then 2 else 1) else 0
+
+  sw-min : Integer -> Integer
+  sw-min (n) =
+    when n
+      is 0 -> 10
+      is otherwise -> 20
+
+  sw-three : Integer -> Integer
+  sw-three (n) =
+    when n
+      is 0 -> 100
+      is 1 -> 200
+      is otherwise -> 300
+
+  sw-var : Integer -> Integer
+  sw-var (n) =
+    when n
+      is 0 -> 0
+      is x -> x + 1
+
+  sw-or : Integer -> Integer
+  sw-or (n) =
+    when n
+      is 0 | 1 -> 5
+      is otherwise -> 9
+
+  Sw =
+   | SwA (Integer)
+   | SwB
+
+  sw-ctor : Sw -> Integer
+  sw-ctor (s) =
+    when s
+      is SwA (x) -> x
+      is SwB -> 0
+
+  nl-call : Integer -> Integer
+  nl-call (n) = sl-add n n
+
+ `col-hue` from the foreword's Color chapter, kept whole because every part of
+ it is load-bearing. Five parameters, so the allocator runs out of the
+ argument registers it prefers; and a division, which masks RDX out of the
+ free set for everything live across it, so parameter 2 cannot keep the
+ register it arrived in and is placed in RCX -- where parameter 3 arrives.
+ Emitted in parameter order, `mov rcx,rdx` then `mov rbx,rcx` hands `mx` the
+ value of `b`.
+
+ That returned 60 instead of 0: `rgb-to-hsl` called red yellow, and
+ `color-test` had been failing on the selector for as long as the leaf
+ register file has existed. Drop the division and it does not reproduce.
+ Drop a parameter and it does not reproduce. This is the shape.
+
+ Pinned by its ANSWERS. No benchmark can see this -- it is a wrong answer,
+ not a slow one -- and no verifier can either: the entry moves are emitted
+ before the blocks and are not LIR instructions, so `[alloc-check: ok]` below
+ is a verdict on a function whose prologue the verifier never looked at.
+
+  pmv-clash : Integer, Integer, Integer, Integer, Integer -> Integer
+  pmv-clash (a) (b) (c) (d) (e) =
+    if d == a then let raw = (b - c) * 60 / e
+      in if raw < 0 then raw + 360 else raw
+    else if d == b then (c - a) * 60 / e + 120
+    else (a - b) * 60 / e + 240
+
+ The function result is a use. `s` is both the result and the source of the
+ one join move the then-arm makes, and the else-arm's division keeps the dead
+ let alive through simplification. A coalescer that counts only instruction
+ operands sees a single use, folds the add into the join vreg, and the result
+ reads a vreg nothing defines -- RAX by default, so the else path answered
+ the division: coal-result 5 -2 said -50 where it must say 6. The then path
+ answers 6 either way, which is why the shape survives a spot check.
+
+  coal-result : Integer, Integer -> Integer
+  coal-result (a) (b) = let s = a + 1 in let y = (if b > 0 then s else 100 / b) in s
+
+  if-even : Integer -> Integer
+  if-even (n) = if math-mod n 2 == 0 then 1 else 0
+
+  if-odd : Integer -> Integer
+  if-odd (n) = if math-mod n 2 /= 0 then 1 else 0
+
+  if-mod4 : Integer -> Integer
+  if-mod4 (n) = if math-mod n 4 == 0 then 1 else 0
+
+  if-mod3 : Integer -> Integer
+  if-mod3 (n) = if math-mod n 3 == 0 then 1 else 0
+
+  if-mod-one : Integer -> Integer
+  if-mod-one (n) = if math-mod n 2 == 1 then 1 else 0
+
+Section: Entry
+
+  opening : [Console] Nothing = act
+   print-line-uni (show (sl-add 3 4))
+   print-line-uni (show (sl-mix 5))
+   print-line-uni (show (sl-nest 5 3))
+   print-line-uni (show (sl-wide 1 2 3 4 5))
+   print-line-uni (show (if-min 4))
+   print-line-uni (show (if-operand 4))
+   print-line-uni (show (if-nest 8))
+   print-line-uni (show (sw-min 0))
+   print-line-uni (show (sw-three 1))
+   print-line-uni (show (sw-var 7))
+   print-line-uni (show (sw-or 1))
+   print-line-uni (show (sw-ctor (SwA 42)))
+   print-line-uni (show (sw-ctor SwB))
+   print-line-uni (show (if-even 4))
+   print-line-uni (show (if-even 7))
+   print-line-uni (show (if-even (-4)))
+   print-line-uni (show (if-even (-5)))
+   print-line-uni (show (if-odd 7))
+   print-line-uni (show (if-odd (-5)))
+   print-line-uni (show (if-mod4 8))
+   print-line-uni (show (if-mod4 6))
+   print-line-uni (show (if-mod3 6))
+   print-line-uni (show (if-mod3 7))
+   print-line-uni (show (if-mod-one 7))
+   print-line-uni (show (pmv-clash 255 0 0 255 255))
+   print-line-uni (show (pmv-clash 0 255 0 255 255))
+   print-line-uni (show (pmv-clash 0 0 255 255 255))
+   print-line-uni (show (coal-result 5 (-2)))
+   print-line-uni (show (coal-result 5 3))
+  end

@@ -1,0 +1,286 @@
+Chapter: DtlsHandshake
+  cites Foreword chapter Hmac
+  cites Foreword chapter Hkdf
+  cites Foreword chapter Maybe
+
+ The DTLS 1.3 handshake machine (RFC 9147 sections 5.1, 5.7, 5.8, 7).
+ Phase D2 of the plan in docs/Designs/Active/IoT/ProtocolStack.md.
+
+ This is a pure function of state and event, in the tcp-step style:
+ step : State, Event -> (State, List Action). It performs no I/O, sets
+ no timers itself, and sends nothing. It decides, and the binding layer
+ (D3) does. That is what makes a datagram protocol -- whose whole
+ difficulty is loss, reordering and duplication -- testable as an
+ ordinary battery sample: a scripted event sequence in, an action trace
+ out, no network and no peer.
+
+ What it is not: it does not authenticate anybody. The credential
+ question (PSK vs raw public key vs X.509) is still deliberately open,
+ and the flight machine is agnostic to it -- it sequences flights,
+ retransmits them, and runs the cookie exchange. Whether the peer's
+ certificate is acceptable is a verdict handed in from outside. Do not
+ read a completed handshake here as a trusted peer.
+
+ To dtls-hs-step gives DtlsHsStep,
+   advancing the client handshake by one event and returning the actions to take.
+
+ To dtls-cookie gives List Integer,
+   computing the stateless HelloRetryRequest cookie for a client address.
+
+ To dtls-amplification-ok gives Boolean,
+   reporting whether a send stays inside the RFC 9147 three-times anti-amplification limit.
+
+ We say:
+
+Section: Constants
+
+ RFC 9147 section 5.8.2: implementations SHOULD use an initial timer
+ value of 1000 ms and double the value at each retransmission, up to no
+ less than 60 seconds.
+
+  dtls-hs-initial-timer : Integer = 1000
+  dtls-hs-max-timer : Integer = 60000
+
+ The RFC does not bound the number of retransmissions -- it expects a
+ human or a profile to decide when to give up. Bare metal cannot leave
+ that open: an unbounded retry loop against a black hole is a hang, and
+ a hang on a device nobody can reach is the failure this project exists
+ to prevent. So the machine gives up after a fixed count and says so.
+ This is OUR bound, not the RFC's, and it is stated rather than buried.
+
+  dtls-hs-max-retries : Integer = 10
+
+ RFC 9147 section 5.1: if a server receives a ClientHello with an
+ invalid cookie, it MUST terminate the handshake with an
+ illegal_parameter alert. That alert is 47.
+
+  dtls-alert-illegal-parameter : Integer = 47
+  dtls-alert-timeout : Integer = 80
+
+ Flight numbers, RFC 9147 section 5.7 figure 7. Odd flights are the
+ client's.
+
+  dtls-flight-ch1 : Integer = 1
+  dtls-flight-hrr : Integer = 2
+  dtls-flight-ch2 : Integer = 3
+  dtls-flight-fin : Integer = 5
+
+Section: Types
+
+  DtlsHsPhase =
+    | PhStart
+    | PhWaitServerHello
+    | PhWaitAck
+    | PhConnected
+    | PhFailed
+
+  DtlsAction =
+    | ActSend (Integer)
+    | ActSetTimer (Integer)
+    | ActDeliverKeys
+    | ActAck
+    | ActAbort (Integer)
+
+  DtlsEvent =
+    | EvStart (Integer)
+    | EvHelloRetry (List Integer) (Integer)
+    | EvServerFlight (Integer)
+    | EvAck (Integer)
+    | EvTimeout (Integer)
+
+  DtlsHsState = record {
+    hs-phase : DtlsHsPhase,
+    hs-flight : Integer,
+    hs-timer : Integer,
+    hs-retries : Integer,
+    hs-cookie : List Integer
+  }
+
+  DtlsHsStep = record {
+    step-state : DtlsHsState,
+    step-actions : List DtlsAction
+  }
+
+  dtls-hs-new : DtlsHsState
+  dtls-hs-new =
+    DtlsHsState { hs-phase = PhStart, hs-flight = 0, hs-timer = dtls-hs-initial-timer, hs-retries = 0, hs-cookie = [] }
+
+Section: The Step
+
+ One event in, one state and an action list out. Every branch is total;
+ an event that makes no sense in the current phase produces no actions
+ and no state change, because a datagram protocol receives nonsense all
+ the time and crashing on it is the attack.
+
+  dtls-hs-step : DtlsHsState, DtlsEvent -> DtlsHsStep
+  dtls-hs-step (st) (ev) =
+    when ev
+      is EvStart (now) -> dtls-hs-on-start st now
+      is EvHelloRetry (cookie) (now) -> dtls-hs-on-hrr st cookie now
+      is EvServerFlight (now) -> dtls-hs-on-server-flight st now
+      is EvAck (now) -> dtls-hs-on-ack st now
+      is EvTimeout (now) -> dtls-hs-on-timeout st now
+
+ Flight 1: the bare ClientHello, no cookie. A fresh flight always
+ resets the retransmission timer to its initial value -- the backoff
+ belongs to a flight, not to the connection.
+
+  dtls-hs-on-start : DtlsHsState, Integer -> DtlsHsStep
+  dtls-hs-on-start (st) (now) =
+    when st.hs-phase
+      is PhStart -> dtls-hs-send st dtls-flight-ch1 PhWaitServerHello now []
+      is otherwise -> dtls-hs-idle st
+
+ Flight 3: the ClientHello again, this time echoing the server's cookie.
+ The client does not get to decide whether to do this -- if the server
+ asked, it asks because it will not allocate state until the cookie comes
+ back, and a client that ignores the HelloRetryRequest simply never gets
+ a handshake.
+
+  dtls-hs-on-hrr : DtlsHsState, List Integer, Integer -> DtlsHsStep
+  dtls-hs-on-hrr (st) (cookie) (now) =
+    when st.hs-phase
+      is PhWaitServerHello -> dtls-hs-send st dtls-flight-ch2 PhWaitServerHello now cookie
+      is otherwise -> dtls-hs-idle st
+
+ The server's flight 4 landed. Keys are deliverable now, and the client
+ sends its own flight 5 and waits to be acknowledged.
+
+  dtls-hs-on-server-flight : DtlsHsState, Integer -> DtlsHsStep
+  dtls-hs-on-server-flight (st) (now) =
+    when st.hs-phase
+      is PhWaitServerHello -> dtls-hs-finish-flight st now
+      is otherwise -> dtls-hs-idle st
+
+  dtls-hs-finish-flight : DtlsHsState, Integer -> DtlsHsStep
+  dtls-hs-finish-flight (st) (now) =
+    let next = DtlsHsState { hs-phase = PhWaitAck, hs-flight = dtls-flight-fin, hs-timer = dtls-hs-initial-timer, hs-retries = 0, hs-cookie = st.hs-cookie }
+    in DtlsHsStep { step-state = next, step-actions = [ActDeliverKeys, ActSend dtls-flight-fin, ActSetTimer (now + dtls-hs-initial-timer)] }
+
+ An ACK for the last flight ends the handshake. RFC 9147 section 5.8.1:
+ the WAITING state is left on an ACK as well as on a timer or a peer
+ flight, and this is the one that means success.
+
+  dtls-hs-on-ack : DtlsHsState, Integer -> DtlsHsStep
+  dtls-hs-on-ack (st) (now) =
+    when st.hs-phase
+      is PhWaitAck -> DtlsHsStep { step-state = __record-set st "hs-phase" PhConnected, step-actions = [] }
+      is otherwise -> dtls-hs-idle st
+
+Section: Retransmission
+
+ RFC 9147 section 5.8.2. Double on every retransmission, clamp at 60
+ seconds, and -- our bound, not the RFC's -- give up after
+ dtls-hs-max-retries rather than retrying into a black hole forever.
+
+ A connected machine ignores timers. A failed one stays failed. Neither
+ is an accident: a stale timer arriving after the handshake completed is
+ normal on a lossy link, and re-arming on it would keep a finished
+ connection retransmitting into a peer that has moved on.
+
+  dtls-hs-on-timeout : DtlsHsState, Integer -> DtlsHsStep
+  dtls-hs-on-timeout (st) (now) =
+    when st.hs-phase
+      is PhWaitServerHello -> dtls-hs-retry st now
+      is PhWaitAck -> dtls-hs-retry st now
+      is otherwise -> dtls-hs-idle st
+
+  dtls-hs-retry : DtlsHsState, Integer -> DtlsHsStep
+  dtls-hs-retry (st) (now) =
+    if st.hs-retries + 1 > dtls-hs-max-retries then dtls-hs-give-up st
+    else dtls-hs-retry-now st now
+
+  dtls-hs-give-up : DtlsHsState -> DtlsHsStep
+  dtls-hs-give-up (st) =
+    DtlsHsStep { step-state = __record-set st "hs-phase" PhFailed, step-actions = [ActAbort dtls-alert-timeout] }
+
+  dtls-hs-retry-now : DtlsHsState, Integer -> DtlsHsStep
+  dtls-hs-retry-now (st) (now) =
+    let t = dtls-hs-backoff (st.hs-timer)
+    in let next = DtlsHsState { hs-phase = st.hs-phase, hs-flight = st.hs-flight, hs-timer = t, hs-retries = st.hs-retries + 1, hs-cookie = st.hs-cookie }
+    in DtlsHsStep { step-state = next, step-actions = [ActSend (st.hs-flight), ActSetTimer (now + t)] }
+
+  dtls-hs-backoff : Integer -> Integer
+  dtls-hs-backoff (t) =
+    let doubled = t * 2
+    in if doubled > dtls-hs-max-timer then dtls-hs-max-timer else doubled
+
+Section: Step Helpers
+
+  dtls-hs-send : DtlsHsState, Integer, DtlsHsPhase, Integer, List Integer -> DtlsHsStep
+  dtls-hs-send (st) (flight) (phase) (now) (cookie) =
+    let next = DtlsHsState { hs-phase = phase, hs-flight = flight, hs-timer = dtls-hs-initial-timer, hs-retries = 0, hs-cookie = cookie }
+    in DtlsHsStep { step-state = next, step-actions = [ActSend flight, ActSetTimer (now + dtls-hs-initial-timer)] }
+
+  dtls-hs-idle : DtlsHsState -> DtlsHsStep
+  dtls-hs-idle (st) = DtlsHsStep { step-state = st, step-actions = [] }
+
+Section: The Stateless Cookie
+
+ RFC 9147 section 5.1. The point of the cookie is that the server keeps
+ NOTHING between the two ClientHellos: it derives the cookie from the
+ client's address under a secret only it knows, and on the second
+ ClientHello it recomputes and compares. An attacker who forges a source
+ address never receives the cookie, so it can never produce the second
+ ClientHello, so it can never make the server allocate anything.
+
+ This is the whole denial-of-service story, and it works only because
+ there is no table here to fill. If you find yourself adding a map from
+ address to cookie, you have rebuilt the vulnerability.
+
+  dtls-cookie : List Integer, List Integer -> List Integer
+  dtls-cookie (secret) (client-addr) = hkdf-words-to-bytes (hmac-sha256 secret client-addr)
+
+ The comparison is constant-time. A cookie check that returns early on
+ the first differing byte leaks, under timing, how much of a guess was
+ right -- which turns an unforgeable token into a guessable one.
+
+  dtls-cookie-valid : List Integer, List Integer, List Integer -> Boolean
+  dtls-cookie-valid (secret) (client-addr) (offered) =
+    dtls-bytes-equal (dtls-cookie secret client-addr) offered
+
+  dtls-bytes-equal : List Integer, List Integer -> Boolean
+  dtls-bytes-equal (a) (b) =
+    if list-length a /= list-length b then False
+    else dtls-bytes-equal-loop a b 0 (list-length a) 0
+
+  dtls-bytes-equal-loop : List Integer, List Integer, Integer, Integer, Integer -> Boolean
+  dtls-bytes-equal-loop (a) (b) (i) (n) (diff) =
+    if i >= n then diff == 0
+    else dtls-bytes-equal-loop a b (i + 1) n (bit-or diff (bit-xor (list-at a i) (list-at b i)))
+
+ The server's verdict on an incoming ClientHello. Three outcomes and no
+ fourth: no cookie offered means send a HelloRetryRequest and keep no
+ state; a cookie that verifies means proceed; a cookie that does not
+ verify MUST abort with illegal_parameter (RFC 9147 section 5.1) -- it
+ is NOT the same as no cookie, and quietly re-issuing a
+ HelloRetryRequest instead would hand an attacker an oracle and a free
+ retry.
+
+  dtls-server-verdict : List Integer, List Integer, List Integer -> DtlsAction
+  dtls-server-verdict (secret) (client-addr) (offered) =
+    if list-length offered == 0 then ActSend dtls-flight-hrr
+    else if dtls-cookie-valid secret client-addr offered then ActDeliverKeys
+    else ActAbort dtls-alert-illegal-parameter
+
+Section: Anti-Amplification
+
+ RFC 9147 section 5.1: a server SHOULD limit the amount of data it sends
+ toward a client address to three times the amount of data sent by the
+ client, before it verifies that the client can receive data at that
+ address.
+
+ Without this, DTLS is a reflector: an attacker spoofs a victim's source
+ address, sends a small ClientHello, and the server sprays a much larger
+ flight at the victim. The cookie stops state exhaustion; this stops the
+ bandwidth amplification. They are different attacks and both need
+ closing.
+
+  dtls-amplification-ok : Integer, Integer, Integer -> Boolean
+  dtls-amplification-ok (received) (already-sent) (want) =
+    already-sent + want <= received * 3
+
+  dtls-amplification-budget : Integer, Integer -> Integer
+  dtls-amplification-budget (received) (already-sent) =
+    let left = received * 3 - already-sent
+    in if left < 0 then 0 else left

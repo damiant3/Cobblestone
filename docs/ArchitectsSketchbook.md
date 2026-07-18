@@ -8,7 +8,7 @@ and platform constraints for the Codex bare-metal compiler.
 The bare-metal system occupies a single flat physical address space.
 All addresses are identity-mapped (virtual = physical). The single
 governing constant is `bare-metal-ram-size` (3 GB) in
-`codex/Emit/X86_64State.codex`. Every other memory value derives from
+`codex/compiler/Emit/X86_64State.codex`. Every other memory value derives from
 it.
 
 ### Static Layout (boot time)
@@ -35,7 +35,7 @@ Address              Size       Region
 ### Kernel Metadata Cells (0x7000 region)
 
 Fixed addresses for runtime state. Defined in
-`codex/Emit/X86_64Boot.codex`, starting at byte 28672 (0x7000).
+`codex/compiler/Emit/X86_64Boot.codex`, starting at byte 28672 (0x7000).
 
 | Address | Name | Width | Purpose |
 |---------|------|-------|---------|
@@ -72,10 +72,16 @@ Fixed addresses for runtime state. Defined in
 | 33056 | nic-rx-buf-addr | 1536 | NIC receive buffer |
 | 34592 | nic-tx-buf-addr | 1536 | NIC transmit buffer |
 | 36128 | try-fail-flag-addr | 8 | Try/fail exception flag |
+| 36200 | **ap-dispatch-count-addr** | 8 | Processes claimed by a core whose id is not zero. Only `__idle_dispatch` writes it, and the BSP's id is always zero, so a value above zero is evidence an application processor took a process out of the table and ran it. Read by `codex/test/smp-dispatch.codex` |
+
+**Do not claim a cell in this band without grepping `tools/codex-vm.c`
+first.** 36152 is a permanent booby trap (a legacy codex-vm output-ring
+write position), and 36160 / 36168 / 36176 are codex-vm's blit cells —
+the host writes them. 36200 was the first free slot above them.
 
 ### Derived Constants
 
-Defined in `codex/Emit/X86_64State.codex`:
+Defined in `codex/compiler/Emit/X86_64State.codex`:
 
 | Constant | Value | Purpose |
 |----------|-------|---------|
@@ -86,7 +92,7 @@ Defined in `codex/Emit/X86_64State.codex`:
 
 The CDX header heap field and ELF segment memsz are both computed as
 `bare-metal-ram-size - bare-metal-heap-base` (~3 GB minus 6 MB) in
-`codex/Emit/X86_64Chapter.codex`.
+`codex/compiler/Emit/X86_64Chapter.codex`.
 
 ## Register Convention
 
@@ -137,7 +143,7 @@ the counter without swapping R10.
 
 ## Phase Allocator
 
-Defined in `codex/Core/PhaseAllocator.codex`. The compiler runs in
+Defined in `codex/compiler/Core/PhaseAllocator.codex`. The compiler runs in
 phases (lex, parse, scope, check, lower, lift, emit). Each phase
 allocates temporary data that can be discarded before the next phase.
 The phase allocator provides this via two mechanisms:
@@ -180,7 +186,7 @@ Bivy is used for scratch data within a phase.
    reclaiming all bivy scratch from the phase.
 
 Phase boundaries are recorded in `PhaseMetrics` records and reported
-as `heap-marks` in the compile pipeline (`codex/opening.codex`).
+as `heap-marks` in the compile pipeline (`codex/compiler/opening.codex`).
 
 ## Compilation Phase Map
 
@@ -201,8 +207,7 @@ BuildSettings.codex`, Demand Decks section). The heap range
 commits identity 2 MB pages on first touch, so a floor costs address
 space, not memory — physical consumption is what a phase actually
 writes. The survey-multiplier system that previously sized decks from
-source length was deleted 2026-07-07 (see
-`docs/Designs/Compiler/Done/DemandPagedArena.md`).
+source length was deleted 2026-07-07.
 The pipeline has 6 TEXT-mode frontend phases plus emit. CDX mode adds
 RESOLVE, LIFT, and INLINE between LOWER and EMIT (CL 2429 split the
 frontend so TEXT skips those). ConstructedTy resolution and lambda
@@ -250,44 +255,21 @@ A phase that exceeds its floor halts with CDX9002 (DeckOverflow, now
 "deck floor exceeded") — retained as a hard guard, though the selfhost
 runs at 2-6x headroom under every floor.
 
-### CHECK Deck Overflow (CL 2574/2596)
+### Why the floors are flat, not derived
 
-The CHECK phase survey originally used `S × 95 + 1 MB`. This was
-sufficient for normal compiler source (~2-3 type definitions per
-file) but failed for plug source where PlugTypes.codex defines
-~40 types in 368 lines (~15x normal type density). The deck
-overflowed silently (CDX9002 was a warning), corrupting heap data.
-Subsequent type-checker reads hit corrupted `ParamEntry` records
-containing non-canonical addresses, triggering GPF.
+The compiler used to size each phase deck from a formula over the source
+length (`survey-*-mul`). **That system is deleted.** The multipliers could
+not be sized honestly — they were non-monotonic (20 worked, 25 did not,
+40 silently miscompiled a grown self-compile), and an under-reservation
+corrupted the heap rather than raising a diagnostic.
 
-Three fixes: (1) `survey-headroom` (120%) now applies to CHECK,
-(2) `survey-check-mul` raised from 95 → 200 → 400, (3) CDX9002
-promoted from warning to error (halts cleanly on overflow).
+The fix was structural, not numeric: flat generous floors over
+demand-paged address space. Type-dense plug source and the selfhost draw
+from the same reservation and pay only for the pages they touch. A floor
+costs address space, not memory.
 
-The survey-formula era ended 2026-07-07: multipliers could not be
-sized honestly (the settings were non-monotonic — 20 worked, 25 did
-not, 40 silently miscompiled a grown self-compile), and the fix was
-structural, not numeric. CHECK now reserves a flat 640 MB floor over
-demand-paged address space; type-dense plug source and the selfhost
-draw from the same reservation and pay only for pages they touch.
-The full account is in `docs/Designs/Compiler/Done/DemandPagingVictory.md`.
-
-Prior measurement (CL 2169, S ≈ 1,158,497 bytes) for comparison:
-
-| Phase | Deck (2169) | Deck (2454) | Bivy (2169) | Bivy (2454) |
-|-------|------------|------------|------------|------------|
-| LEX | 11.2 MB | 13.2 MB | 21.7 MB | 21.9 MB |
-| PARSE | 5.3 MB | 5.4 MB | 25.1 MB | 25.4 MB |
-| DESUGAR | 19.0 MB | 19.2 MB | 0.04 MB | 0.04 MB |
-| SCOPE | 11.5 MB | 11.6 MB | 31.3 MB | 31.7 MB |
-| CHECK | 65.9 MB | 66.1 MB | ~0 | ~0 |
-| LOWER | 90.9 MB | 92.5 MB | 457 MB | ~0 |
-
-LOWER bivy dropped from 457 MB to ~0 because the TEXT path (CL 2429)
-runs LOWER on deck directly; the 457 MB bivy was the CDX path running
-LOWER on bivy before RESOLVE copies to deck. All deck values track
-within ~2 MB of the CL 2169 baseline — proportional to source growth
-(1,174 KB vs 1,158 KB).
+If you find `survey-*-mul`, `SurveyConfig`, `-Survey`, or
+reservation-by-formula referenced anywhere, it is stale.
 
 ```
 Heap (after desugar boundary compact, CDX selfhost)
@@ -380,12 +362,27 @@ Emit deck
 
 ### Accumulator Capacity
 
-`accum-capacity` = 32768 (defined in `codex/Core/BuildSettings.codex`).
+`accum-capacity` = **65536** (defined in `codex/compiler/Core/BuildSettings.codex`
+— this line said 32768 until it was re-measured; do not carry it forward).
 
 All accumulator lists are pre-allocated via `__list-with-capacity`.
 `list-push` writes in-place with no allocation as long as the list
 stays within capacity. The `accum-at-capacity` guard in
-`codex/Emit/X86_64.codex` checks all 11 lists before each function.
+`codex/compiler/Emit/X86_64.codex` checks all 11 lists before each function
+and halts with **CDX9002-band `CDX9005` (AccumOverflow)**.
+
+**Exceeding capacity corrupts the table; it does not merely cost heap.**
+A push past capacity doubles and reallocates like any other, and the new
+backing lands in the per-function bivy that `emit-all-defs` reclaims with
+`__heap-restore` — so the accumulator is left pointing at reclaimed memory.
+Measured, not assumed: built with `accum-capacity` at 16, the compiler
+emits a factorial whose call-patch target is the empty string, and the
+only complaint is `CDX2040: Unresolved call to ''`. This is why the
+accumulators are sized once on the deck and why the guard exists.
+
+**That guard was written and never called** until 2026-07-16 — this
+paragraph asserted it ran for as long as it did not. A guard defined and
+left unwired is worth exactly what no guard is worth.
 
 ### Emit Output Buffers
 
@@ -398,13 +395,13 @@ Current selfhost binary: ~2.3 MB code, ~100 KB data.
 
 ## Emit Allocator
 
-Defined in `codex/Emit/EmitAllocator.codex`. The code generator needs
+Defined in `codex/compiler/Emit/EmitAllocator.codex`. The code generator needs
 two large contiguous buffers for the output binary:
 
 - **code-buffer**: Machine code (x86-64 instructions). Capacity set by
-  `code-buffer-size` in `codex/Core/BuildSettings.codex` (currently 8 MB).
+  `code-buffer-size` in `codex/compiler/Core/BuildSettings.codex` (currently 8 MB).
 - **data-buffer**: Static data (string literals, CCE tables). Capacity
-  set by `data-buffer-size` in `codex/Core/BuildSettings.codex`
+  set by `data-buffer-size` in `codex/compiler/Core/BuildSettings.codex`
   (currently 2 MB).
 
 `init-emit-workspace(text-cap, data-cap)` allocates both buffers from
@@ -424,9 +421,47 @@ Heap and stack share the arena between `bare-metal-heap-base` (6 MB) and
 register R10; the stack grows downward via RSP. See the Register
 Convention table above for the full register map.
 
+### Spawn Regions (Slot-Indexed)
+
+Spawned-process regions are slot-indexed, never carved from the
+spawner's R10: process slot N owns the fixed region
+`spawn-pool-base + N * spawn-slot-region-size` — 1 GB base, 32 MB per
+slot, 16 slots spanning [1 GB, 1.5 GB) of demand-paged address space.
+`__spawn_pool_carve` (X86_64ProcessHelpers) reads the claimed slot
+index from R12 and the region size from RDX, returning the heap base
+in RDI and the stack top in RSI — five instructions, no memory cell,
+no cursor.
+
+**The process table is the allocator.** A slot freed by exit or kill
+frees its region; the next spawn into that slot reuses the same
+addresses. A long-running spawn loop therefore plateaus at its
+working set instead of consuming fresh address space per spawn
+(physical pages commit on first touch and stay committed, so reuse
+bounds physical consumption at the per-slot high-water mark; `__alloc`
+zero-fills, so a reused region's stale bytes are never visible
+through allocations). Pinned by `codex/test/spawn-reuse.codex`.
+
+Plain `process-spawn` regions hold `proc-spawn-heap-size` +
+`proc-spawn-stack-size` (1 MB + 1 MB); `process-spawn-with-heap`
+takes a caller-chosen heap size, bounds-checked at the call site —
+a request that cannot fit inside one slot region (heap + 1 MB stack
+> 32 MB) is refused with -1, never silently overlapped. The parent
+pre-touches the child's stack pages before the child first runs
+(`emit-spawn-stack-pretouch`) because a stack must never point into
+a not-present page. Spawn-capable programs need the demand-range top
+above 1.5 GB (any `-mem` from ~1664 MB; the default is 3072).
+
+**Do not carve a spawn region from the spawner's own R10 frontier.** That
+is correct only for proc 0, which owns the whole heap; a spawned child
+owns a fixed region, so a child spawning a grandchild hands out memory
+overlapping its own stack. The slot table is the allocator — use it.
+
+**Guest cell 36152 must never be claimed for metadata** — legacy codex-vm
+builds read it as the retired 0x700000 output-ring write position.
+
 ### Collision Detection
 
-Every function prologue (`emit-prologue` in `codex/Emit/X86_64.codex`)
+Every function prologue (`emit-prologue` in `codex/compiler/Emit/X86_64.codex`)
 performs two checks:
 
 1. **Stack tracking**: Compare RSP against the stored minimum
@@ -480,7 +515,7 @@ control serial channel as `HEAP:<value>` at the end of each compile run.
 
 ### Trampoline (Boot)
 
-The multiboot trampoline (`codex/Emit/X86_64IO.codex`) contains
+The multiboot trampoline (`codex/compiler/Emit/X86_64IO.codex`) contains
 hardcoded 32-bit machine code that runs before long mode is active.
 It identity-maps 4 GB of physical memory using 2 MB pages:
 
@@ -493,20 +528,45 @@ This mapping is temporary. It exists only long enough for the 64-bit
 
 ### Runtime
 
-`emit-build-process-page-tables` in `codex/Emit/X86_64Boot.codex`
-builds identity-mapping page tables sized to `bare-metal-ram-size`:
+`emit-build-process-page-tables` in `codex/compiler/Emit/X86_64Boot.codex`
+builds identity-mapping page tables covering RAM plus the device
+gigabyte above it:
 
 - PML4 at pml4-addr (one entry pointing to PDPT)
-- PDPT at pml4-addr + 4096 (bare-metal-pd-count entries, one per GB)
+- PDPT at pml4-addr + 4096 (`bare-metal-total-pd-count` entries, one per GB)
 - PD pages at pml4-addr + 8192 onward (512 entries each, 2 MB pages)
 
-With 3 GB RAM: 3 PDs = (2 + 3) * 4096 = 20 KB total, from 0x8000 to
-0x12000.
+With 3 GB RAM: 3 RAM PDs + 1 device PD = (2 + 4) * 4096 = 24 KB total,
+from 0x8000 to 0xE000. The GDT (0x12800) and TSS (0x13000) sit above it.
 
 The runtime tables replace the trampoline tables via `mov cr3, rax`
-during `emit-process-setup`. After this point, only memory up to
-`bare-metal-ram-size` is mapped. Accessing addresses above this will
-page-fault.
+during `emit-process-setup`.
+
+#### The device gigabyte
+
+`emit-fill-device-pd` maps `[3 GB, 4 GB)` identity — present, read-write,
+NX (nothing up there is code). It costs one 4 KB page directory and
+nothing at runtime. `bare-metal-device-pd-index`, `-device-page-start`,
+`-device-page-end` and `-total-pd-count` are in `X86_64State.codex`.
+
+This is where everything x86 puts above RAM lives: the LAPIC at
+0xFEE00000, the IOAPIC at 0xFEC00000, the HPET at 0xFED00000, and every
+PCI BAR codex-vm advertises. Until 2026-07-13 the tables stopped at
+`bare-metal-ram-size` and all of it was unmapped, which is why codex-vm's
+device model reaches almost everything through port I/O rather than MMIO —
+**the device model grew around a ceiling that is now gone.** Reach for
+MMIO first when adding a device.
+
+The `#PF` handler and `emit-demand-unmap` both address the PDs as one
+flat array of 8-byte entries based at 0xA000; the device PD extends that
+array contiguously (page 1536's entry lands at 0xD000, which is exactly
+where PD 3 begins), so their arithmetic is unchanged. The demand range
+only ever spans pages 3..1024, so it never reaches the device PD.
+
+The consequence to know: **a stray pointer above 3 GB now reaches the
+bus instead of faulting.** That is what it would do on real hardware,
+where those addresses are decoded by devices rather than by RAM — but it
+does mean the page tables no longer catch a wild high pointer for you.
 
 ### Demand Paging (2026-07-07, hardened 2026-07-06 val CLs 7207-7210)
 
@@ -536,8 +596,7 @@ pre-touch every 2 MB page of the stacks they carve from the heap
 double fault is delivered on the TSS IST1 emergency stack (TSS at
 0x13000, GDT at 0x12800, 2 KB stack below 0x14800) and produces the
 standard `!EXC` dump instead of a silent triple fault. BSP only —
-an AP double fault is still fatal (per-core TSS is future work, see
-`docs/Designs/Compiler/Active/DemandPagingHardening.md`).
+an AP double fault is still fatal (per-core TSS is future work).
 
 ## SMP Memory Model
 
@@ -545,6 +604,39 @@ When codex-vm runs with `-smp N` (N > 1), the guest boots with
 multiple virtual processors. The core count is written to GPA 0xFF8
 before boot; the boot code reads it to decide whether to send
 INIT/SIPI to start application processors.
+
+**Bring-up.** `emit-smp-init` (`X86_64Boot.codex`) publishes the AP entry
+point at GPA 0x1000 and the stack table at GPA 0xF00, then writes the
+LAPIC ICR: an INIT IPI, then two start-up IPIs, destination shorthand
+"all excluding self". The ICR write is what starts the cores. Each AP
+takes its stack from the table by core index, adds one to the ready
+count (cell 4080) with a locked add, and then goes to `__idle_dispatch`
+to look for work. The BSP spins on that count — on `pause`, not `hlt`:
+nothing sends the BSP an interrupt when an AP checks in, so a halted BSP
+would never wake. The spin is fuel capped, so a core that never answers
+costs a delay and not the boot.
+
+The start-up IPI's vector field is zero. On real silicon that field names
+the 4 KB page an AP begins executing in, which caps the entry below 1 MB
+and requires a real-mode trampoline; codex-vm takes the full 64-bit entry
+from GPA 0x1000 instead. Physical multi-core needs that trampoline
+written (BACKLOG 4.2).
+
+**Per-core TSS and emergency stacks.** A double fault is delivered on the
+stack named by IST1 in the TSS the task register points at. The task
+register is per-core and a TSS cannot be shared — two cores would fight
+over its busy bit and be handed the same emergency stack — so the GDT
+carries one TSS descriptor per core at selector `24 + core * 16`, the TSS
+array holds one 128-byte-strided entry per core at `0x13000`, and each
+core's IST1 points at its own 2 KB stack in `[0x15000, 0x1D000)`, below
+the AP idle stacks. Each AP loads the runtime GDT (the hypervisor starts
+it on the boot GDT, which carries no TSS) and then its own task register,
+and reports back what the CPU accepted at `0x13800 + core * 8`.
+
+Two things must be true for a fault on an AP to be *seen*: the core needs
+its own emergency stack, **and** codex-vm has to serve COM1 on the AP
+thread. Miss the second and the guest writes a perfectly good dump that
+the host throws away.
 
 **Per-core stacks.** Each AP gets an independent idle stack. The BSP
 stack starts at the actual RAM top (GPA 0xFE8). AP idle stacks live
@@ -557,14 +649,72 @@ the stack table at GPA 0xF00 before SIPI; codex-vm falls back to
 `0xC0000000 - i * 0x10000` only for table entries left zero. Real
 work on an AP runs on scheduler-provided stacks.
 
-**Per-core heap.** The `CoreHeap` module
-(`codex/os/sched/CoreHeap.codex`) splits the bivy arena equally
-among cores: each core gets `(heap-end - heap-base) / N` bytes.
-Core 0 (BSP) uses the standard R10 bump allocator. Each AP sets
-R10 to its own arena slice on boot. No contention on R10.
+**Scheduling on an AP.** An application processor is not a special case.
+It goes to **`__idle_dispatch`** — the same routine the boot processor
+goes to when it runs out of work — walks the 16-slot process table,
+claims a READY slot with a `LOCK CMPXCHG` on the state word
+(READY → RUNNING), takes the time slice its priority is due, and resumes
+it. From that instant the core is running a real process, on that
+process's own stack, with that process's own R10.
 
-**LAPIC ID.** Each AP starts with its LAPIC ID in R15. The
-`CoreState` module uses this for per-core data lookup.
+Core 0 may claim slot 0; an AP may not. Slot 0 is the program the machine
+booted and it owns the boot stack and the main heap.
+
+**A core that parks must leave the process's stack first.** This is the
+whole reason `__idle_dispatch` exists as a routine rather than a loop
+inlined at each site. A core with no work is still standing on the stack
+of the process it was last running — and `process-wait` marks itself
+BLOCKED, so the wake loop is about to mark it READY, another core will
+claim it, and resume it *on that stack*. Two cores, one stack; the parked
+core's next interrupt pushes a frame straight through the other core's
+process. So the parked core switches RSP to its own idle stack **before**
+it scans. `process-exit`, `process-wait` and the channel block path all
+end in `jmp __idle_dispatch` for exactly this reason.
+
+**Per-core identity: a core asks the process it is standing in.** There is
+no MSR, no LAPIC read and no GS base involved. `proc-core-offset` (process
+entry offset 8) records the core that claimed the slot, stamped by
+whichever core won the CMPXCHG; an AP seeds its own id from R15 at
+bring-up. A core recovers its identity by reading that field out of the
+process it is currently running, and from the id it computes its idle
+stack: `ap-stacks-base + (core + 1) * ap-stack-size`. AP idle stacks are
+handed out from index 1, so region slot 0 was free and is the BSP's.
+
+**Per-core heap: there isn't one, and none is needed.** `CoreHeap`
+(`codex/os/sched/CoreHeap.codex`) is a **pure model — nothing calls it**,
+and no AP has ever set R10 from it. It is not
+needed on the critical path either: a spawned process carries its own
+slot-indexed heap region *and its own R10* in its saved context, so a core
+running one gets the right allocator by resuming it. Whether the
+*compiler's* bivy should be split per core is a separate and open
+question — see `docs/PM/BACKLOG.md` 4.11.
+
+**Every core has a clock.** The PIT's IRQ reaches the boot processor
+alone, so an AP used to run whatever it was given until that process
+yielded, blocked or exited. Each AP now arms its **own local APIC timer**
+at bring-up (`emit-ap-timer-init`, `X86_64Boot.codex`): it enables its
+LAPIC, programs the LVT timer periodic on **vector 48**, sets the initial
+count, and only then raises IF. A process on an application processor is
+preempted exactly as one on the BSP is.
+
+Two clocks therefore arrive at `__interrupt_common`: **vector 32** (the
+PIT, on the BSP) and **vector 48** (an AP's local timer). They run the
+same scheduling path — it was always per-core-safe, deriving the running
+process from the interrupted RSP and claiming a replacement with a
+CMPXCHG — and differ only in **which chip is told the interrupt is over**:
+the 8259 for the PIT, the local APIC for the LAPIC timer
+(`emit-timer-eoi`). Send the wrong one and the raising chip believes the
+interrupt is still in service and never delivers another, which reads as a
+core that was preempted exactly once and then stopped.
+
+The tick count is incremented with a **locked** add, because more than one
+core increments it now; a plain load-add-store loses ticks.
+
+Evidence lives at cell **36216** (`ap-preempt-count-addr`): every timer
+interrupt taken on a core whose id is not zero bumps it, and the BSP's id
+is always zero. `codex/test/smp-preempt.codex` reads it. What is still
+open is BACKLOG 4.11: no work stealing, no affinity, an idle core
+pause-spins rather than halting, and proc-0 migration is unproven.
 
 **Atomics.** Six builtins: `atomic-load`, `atomic-store`,
 `atomic-cas`, `atomic-add`, `atomic-exchange`, `memory-fence`.
@@ -605,18 +755,31 @@ overflow. There is no guard page.
 
 ## Codegen Quality vs C and the JITs
 
-Function-body x86-64 instruction counts for the four micro-benchmarks
-in `bench/` (build + compare with `bench/compare.ps1`). Measured
-2026-06-12, seed F5F85EF6. Full optimization history and per-CL
-breakdown: `docs/Designs/Compiler/Active/CodegenAnalysis.md`.
+Function-body x86-64 instruction counts for the benchmarks in `bench/`
+(build + compare with `bench/compare.ps1`). The Codex column is measured
+2026-07-17 on the shipping seed C0B74DBE with the LIR selector live; the
+C and JIT reference columns (cl.exe, the .NET JITs) were measured
+2026-06-12 and do not move. The four primordial benches carry the full
+reference set; the elaborate benches have no in-tree x86 C/JIT reference,
+so only the Codex count is shown. Full optimization history and per-CL
+breakdown: `docs/Reference/CodegenAnalysis.md`.
 
-| Bench | Codex | C /Od | C /O2 | C# JIT | F# JIT |
-|-------|------:|------:|------:|-------:|-------:|
-| fib   | 21    | 19    | 20    | 21     | 21     |
-| fact  | 15    | 16    | 15    | 16     | 15     |
+| Bench    | Codex | C /Od | C /O2 | C# JIT | F# JIT |
+|----------|------:|------:|------:|-------:|-------:|
+| fib      | 22    | 19    | 20    | 21     | 21     |
+| fact     | 13    | 16    | 15    | 16     | 15     |
+| gcd      | 10    | 18    | 14    | 11     | 9      |
+| sum      | 7     | 20    | 23    | 9      | 4      |
+| ack      | 23    | --    | --    | --     | --     |
+| tak      | 37    | --    | --    | --     | --     |
+| collatz  | 13    | --    | --    | --     | --     |
+| locals   | 18    | --    | --    | --     | --     |
+| regright | 14    | --    | --    | --     | --     |
 
-| gcd   | 17    | 18    | 14    | 11     | 9      |
-| sum   | 14    | 20    | 23    | 9      | 4      |
+Codex now beats C /O2 on fact (13 vs 15), gcd (10 vs 14), and sum (7 vs
+23, a 70 percent reduction); fib is +2 over /O2. Against the JITs, gcd
+(10) beats the C# JIT (11), and sum (7) beats it (9); the F# JIT still
+wins gcd (9) and sum (4) by tight margins.
 
 Campaign start (CL 3091): fib 107, fact 79, gcd 79, sum 82. The
 structural changes that closed the gap, in order: destination-driven
@@ -630,10 +793,13 @@ IrRemInt with the leaf inliner (math-mod sites become inline
 idiv/RDX), and commutative both-complex shortcut (pop+op replaces
 mov+pop+mov+op for tree-recursive add/mul).
 
-sum-to-N beats C at both optimization levels. The remaining gaps are
-frame discipline the C compilers do not pay (the guard pair on
-recursive functions) and the registers the JITs win through full
-linear-scan allocation of named bindings -- the next frontier.
+sum-to-N beats C at both optimization levels. The remaining gap to the
+JITs is the registers they win through full linear-scan allocation of
+named bindings. The LIR selector now carries a Wimmer linear-scan
+allocator and is live in the default pipeline (BACKLOG 3.8), but it is
+instruction-neutral against the tree emitter today -- so beating the tree
+on named-binding allocation, and widening the class of functions the
+selector handles, is the next frontier.
 
 ### RISC-V RV64 Codegen Quality (CL 6287)
 

@@ -1,0 +1,263 @@
+Chapter: GopHid
+
+ USB HID boot-keyboard reports, decoded into Set-1 scancodes (H2b).
+
+ On a machine with no PS/2 controller -- which is most machines made in
+ the last decade -- the firmware's keyboard emulation dies at
+ ExitBootServices and the boot payload goes deaf. The keys are still
+ there, arriving as 8-byte reports on an interrupt endpoint of a USB
+ keyboard. This chapter turns those reports into the same Set-1
+ scancodes the PS/2 ISR produces, so every consumer above it --
+ kb-process-scancode, the wizard's text field, the boot menu -- is
+ unchanged and cannot tell the difference.
+
+ The whole chapter is pure. It reads and writes two 8-byte buffers and
+ calls nothing effectful, so the decode is battery-tested against report
+ sequences taken from the HID specification, with no controller and no
+ keyboard. codex/test/hid-decode does exactly that.
+
+ Boot report layout (HID 1.11, Appendix B.1): byte 0 is a modifier
+ bitmap, byte 1 is reserved, and bytes 2 through 7 carry up to six
+ usage IDs of keys currently held. It is a set, not a queue: nothing in
+ the report says which key changed. Usage 0x01 in any slot is
+ ErrorRollOver -- more keys are down than the keyboard can report, and
+ the whole report is meaningless.
+
+ We say:
+
+Section: One Event At A Time
+
+ A single report transition can imply several events at once: pressing
+ Shift and H together yields a Shift make and an H make. The consumers
+ above take one scancode at a time from a one-byte mailbox, so this
+ chapter hands back one event per call and advances prev one step
+ toward cur. No queue, no allocation: prev converges on cur after as
+ many calls as there were changes, and a caller that stops early simply
+ sees the rest of the events on its next visit.
+
+ The order matters. Modifier presses come before key presses, so Shift
+ is down before H arrives; key releases come before modifier releases,
+ so H lifts before Shift does. A consumer tracking shift state with
+ kb-process-scancode therefore sees exactly the sequence a PS/2
+ keyboard would have sent.
+
+Section: Usage Tables
+
+ An independent transcription of the HID Usage Tables, Keyboard/Keypad
+ page (0x07), into IBM PC/AT Set-1 make codes. A break code is the make
+ code with bit 7 set. Zero means a usage this table does not name; the
+ decoder consumes such a key (so prev still converges) and reports no
+ scancode for it.
+
+  hid-letter-sc : Integer -> Integer
+  hid-letter-sc (u) =
+    if u == 4 then 30 else if u == 5 then 48 else if u == 6 then 46
+    else if u == 7 then 32 else if u == 8 then 18 else if u == 9 then 33
+    else if u == 10 then 34 else if u == 11 then 35 else if u == 12 then 23
+    else if u == 13 then 36 else if u == 14 then 37 else if u == 15 then 38
+    else if u == 16 then 50 else if u == 17 then 49 else if u == 18 then 24
+    else if u == 19 then 25 else if u == 20 then 16 else if u == 21 then 19
+    else if u == 22 then 31 else if u == 23 then 20 else if u == 24 then 22
+    else if u == 25 then 47 else if u == 26 then 17 else if u == 27 then 45
+    else if u == 28 then 21 else if u == 29 then 44
+    else 0
+
+  hid-digit-sc : Integer -> Integer
+  hid-digit-sc (u) =
+    if u == 30 then 2 else if u == 31 then 3 else if u == 32 then 4
+    else if u == 33 then 5 else if u == 34 then 6 else if u == 35 then 7
+    else if u == 36 then 8 else if u == 37 then 9 else if u == 38 then 10
+    else if u == 39 then 11
+    else 0
+
+  hid-punct-sc : Integer -> Integer
+  hid-punct-sc (u) =
+    if u == 40 then 28 else if u == 41 then 1 else if u == 42 then 14
+    else if u == 43 then 15 else if u == 44 then 57 else if u == 45 then 12
+    else if u == 46 then 13 else if u == 47 then 26 else if u == 48 then 27
+    else if u == 49 then 43 else if u == 51 then 39 else if u == 52 then 40
+    else if u == 53 then 41 else if u == 54 then 51 else if u == 55 then 52
+    else if u == 56 then 53 else if u == 57 then 58
+    else 0
+
+ F1 through F10 are contiguous at 59; F11 and F12 are not.
+
+  hid-fn-sc : Integer -> Integer
+  hid-fn-sc (u) =
+    if u >= 58 & u <= 67 then 59 + (u - 58)
+    else if u == 68 then 87 else if u == 69 then 88
+    else 0
+
+ The navigation keys a real PS/2 keyboard sends with an 0xE0 prefix.
+ Our consumers drop the prefix byte and act on the second byte, so the
+ bare make code is exactly what they expect to see.
+
+  hid-nav-sc : Integer -> Integer
+  hid-nav-sc (u) =
+    if u == 79 then 77 else if u == 80 then 75 else if u == 81 then 80
+    else if u == 82 then 72 else if u == 73 then 71 else if u == 74 then 73
+    else if u == 75 then 83 else if u == 77 then 79 else if u == 78 then 81
+    else 0
+
+  hid-usage-sc : Integer -> Integer
+  hid-usage-sc (u) =
+    let a = hid-letter-sc u
+    in if a /= 0 then a
+    else let b = hid-digit-sc u
+    in if b /= 0 then b
+    else let c = hid-punct-sc u
+    in if c /= 0 then c
+    else let d = hid-fn-sc u
+    in if d /= 0 then d
+    else hid-nav-sc u
+
+ Modifier bits, in the order the report packs them: LCtrl, LShift,
+ LAlt, LGui, RCtrl, RShift, RAlt, RGui. Only the four that Set-1 names
+ without an 0xE2 prefix are mapped. The Gui keys and the right-hand
+ Ctrl and Alt are extended keys; reporting nothing for them is honest,
+ where reporting their left-hand twin would be a lie.
+
+  hid-mod-sc : Integer -> Integer
+  hid-mod-sc (b) =
+    if b == 0 then 29 else if b == 1 then 42
+    else if b == 2 then 56 else if b == 5 then 54
+    else 0
+
+Section: Report Inspection
+
+  hid-bit : Integer -> Integer
+  hid-bit (b) = bit-shl 1 b
+
+  hid-mod-set : Integer, Integer -> Boolean
+  hid-mod-set (buf) (b) = bit-and (peek-byte buf 0) (hid-bit b) /= 0
+
+ A usage of 0 is an empty slot and 1 is ErrorRollOver; both are below
+ the first real key (4), so "greater than 3" is the liveness test.
+
+  hid-slot-live : Integer -> Boolean
+  hid-slot-live (u) = u > 3
+
+  hid-holds : Integer, Integer, Integer -> Boolean
+  hid-holds (buf) (u) (i) =
+    if i > 7 then False
+    else if peek-byte buf i == u then True
+    else hid-holds buf u (i + 1)
+
+  hid-has-rollover : Integer, Integer -> Boolean
+  hid-has-rollover (cur) (i) =
+    if i > 7 then False
+    else if peek-byte cur i == 1 then True
+    else hid-has-rollover cur (i + 1)
+
+Section: Finding The Change
+
+ Each of these returns the first difference of its kind, or -1.
+
+  hid-find-mod-press : Integer, Integer, Integer -> Integer
+  hid-find-mod-press (prev) (cur) (b) =
+    if b > 7 then (-1)
+    else if hid-mod-set cur b & (hid-mod-set prev b == False) then b
+    else hid-find-mod-press prev cur (b + 1)
+
+  hid-find-mod-release : Integer, Integer, Integer -> Integer
+  hid-find-mod-release (prev) (cur) (b) =
+    if b > 7 then (-1)
+    else if hid-mod-set prev b & (hid-mod-set cur b == False) then b
+    else hid-find-mod-release prev cur (b + 1)
+
+  hid-find-key-press : Integer, Integer, Integer -> Integer
+  hid-find-key-press (prev) (cur) (i) =
+    if i > 7 then (-1)
+    else let u = peek-byte cur i
+    in if hid-slot-live u & (hid-holds prev u 2 == False) then u
+    else hid-find-key-press prev cur (i + 1)
+
+  hid-find-key-release : Integer, Integer, Integer -> Integer
+  hid-find-key-release (prev) (cur) (i) =
+    if i > 7 then (-1)
+    else let u = peek-byte prev i
+    in if hid-slot-live u & (hid-holds cur u 2 == False) then i
+    else hid-find-key-release prev cur (i + 1)
+
+  hid-free-slot : Integer, Integer -> Integer
+  hid-free-slot (prev) (i) =
+    if i > 7 then (-1)
+    else if hid-slot-live (peek-byte prev i) == False then i
+    else hid-free-slot prev (i + 1)
+
+Section: Applying The Change
+
+ Each applier mutates prev and returns the scancode it implies, or -1
+ for a change that was applied but names no Set-1 code. Returning -1
+ rather than 0 keeps "nothing left to do" distinct from "nothing to
+ say about this key".
+
+  hid-unmapped : Integer = -1
+
+  hid-do-mod-press : Integer, Integer -> Integer
+  hid-do-mod-press (prev) (b) =
+    let p = poke-byte prev 0 (bit-or (peek-byte prev 0) (hid-bit b))
+    in let sc = hid-mod-sc b
+    in if sc == 0 then hid-unmapped else sc
+
+  hid-do-mod-release : Integer, Integer -> Integer
+  hid-do-mod-release (prev) (b) =
+    let p = poke-byte prev 0 (bit-and (peek-byte prev 0) (255 - hid-bit b))
+    in let sc = hid-mod-sc b
+    in if sc == 0 then hid-unmapped else bit-or sc 128
+
+ A press with no free slot cannot be recorded, so it must not be
+ reported either: prev would never converge and the key would repeat
+ forever. Six down is the report's own limit, so this is unreachable
+ from a conforming device.
+
+  hid-do-key-press : Integer, Integer -> Integer
+  hid-do-key-press (prev) (u) =
+    let s = hid-free-slot prev 2
+    in if s < 0 then 0
+    else let p = poke-byte prev s u
+    in let sc = hid-usage-sc u
+    in if sc == 0 then hid-unmapped else sc
+
+  hid-do-key-release : Integer, Integer -> Integer
+  hid-do-key-release (prev) (i) =
+    let u = peek-byte prev i
+    in let p = poke-byte prev i 0
+    in let sc = hid-usage-sc u
+    in if sc == 0 then hid-unmapped else bit-or sc 128
+
+Section: The Step
+
+  hid-apply-one : Integer, Integer -> Integer
+  hid-apply-one (prev) (cur) =
+    let mp = hid-find-mod-press prev cur 0
+    in if mp >= 0 then hid-do-mod-press prev mp
+    else let kp = hid-find-key-press prev cur 2
+    in if kp >= 0 then hid-do-key-press prev kp
+    else let kr = hid-find-key-release prev cur 2
+    in if kr >= 0 then hid-do-key-release prev kr
+    else let mr = hid-find-mod-release prev cur 0
+    in if mr >= 0 then hid-do-mod-release prev mr
+    else 0
+
+ An unmapped change is consumed and the search continues, so a key this
+ table does not name costs one iteration rather than stalling the
+ stream. The fuel bounds that search at more changes than a report can
+ possibly carry (eight modifiers plus six keys, pressed and released).
+
+  hid-step-fuel : Integer, Integer, Integer -> Integer
+  hid-step-fuel (prev) (cur) (fuel) =
+    if fuel <= 0 then 0
+    else let r = hid-apply-one prev cur
+    in if r == hid-unmapped then hid-step-fuel prev cur (fuel - 1)
+    else r
+
+ The one entry point. Returns the next Set-1 scancode implied by the
+ difference between the last report and this one, or 0 when there is
+ nothing left. An ErrorRollOver report is discarded whole, leaving prev
+ untouched, so the keys still held are not spuriously released.
+
+  hid-step : Integer, Integer -> Integer
+  hid-step (prev) (cur) =
+    if hid-has-rollover cur 2 then 0
+    else hid-step-fuel prev cur 32

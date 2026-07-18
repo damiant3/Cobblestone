@@ -1,0 +1,85 @@
+Chapter: CdxStore
+  cites Works chapter RepoProtocolPersist
+  cites Works chapter KeyManager
+  cites Foreword chapter FactStore
+  cites Foreword chapter Maybe
+  cites Foreword chapter Sha256
+  cites Foreword chapter CCE
+  cites Kernel chapter DiskFacts
+  cites Kernel chapter AppPersist
+  cites Foreword chapter Console
+
+ The first thing that is not a test to write the fact store: a real file,
+ read off the wire, signed, and stored as a content-addressed
+ SourceDefinition on the attached disk. It is the ingest half of "delete
+ GitHub" -- the writer the compiler's reader (FactDisk) has been waiting
+ for, so that a source in the repository was put there by a tool a person
+ runs, not only by a test that hardcodes its own work.
+
+ The input is one header line -- path|quire|chapter -- and then the source
+ itself, everything after the first newline, up to a NUL. The wire is UTF-8;
+ the store is CCE. Those are not the same bytes, and the difference is the
+ whole of the hashing rule: hashing is not an I/O function, so a work is
+ addressed by its internal CCE bytes, and a tool that stored the UTF-8 off
+ the wire would file the work under an address the compiler -- which reads
+ and hashes in CCE -- could never look it up by. So the body is converted
+ code point by code point through from-unicode before it is stored, the same
+ crossing the compiler makes on its own source. This handles the ASCII and
+ single-byte range that source code lives in; a multi-byte UTF-8 sequence
+ would need real decoding first, which this tool does not yet do.
+
+ The signing identity is a fixed tool key here. A deployment signs with the
+ box's own identity; that this key is well-known does not weaken the
+ demonstration -- the signature is real and the gate checks it against
+ whatever manifest the reader trusts.
+
+Section: Identity
+
+  press : Keypair
+  press = generate-keypair (sha256 (text-to-bytes "codex-store-tool"))
+
+Section: Entry
+
+  opening : [Device.Block, Console] Nothing = act
+    hdr <- read-line
+    when hdr
+     is None -> print-line-uni "cdx-store: no header on stdin (want path|quire|chapter)"
+     is Just (header) -> store-body header (read-serial-cce "src")
+  end
+
+ A code point CCE does not carry -- a carriage return, a tab -- has no CCE
+ code and from-unicode answers negative one for it. It is dropped, exactly
+ as the compiler's own conversion drops it: CCE has no code point for a
+ carriage return, so a CRLF file and an LF file are the same text once they
+ are inside.
+
+  to-cce : Text, Integer, Integer, Text -> Text
+  to-cce (raw) (i) (len) (acc) =
+    if i >= len then acc
+    else let c = from-unicode (char-code (char-at raw i))
+    in if c < 0 then to-cce raw (i + 1) len acc
+       else to-cce raw (i + 1) len (acc & char-to-text (code-to-char c))
+
+  store-body : Text, Text -> [Device.Block, Console] Nothing
+  store-body (header) (raw) = act
+    let body = to-cce raw 0 (text-length raw) ""
+    in let parts = text-split header "|"
+    in if list-length parts < 3
+       then print-line-uni "cdx-store: header must be path|quire|chapter"
+       else store-parts parts body
+  end
+
+  store-parts : List Text, Text -> [Device.Block, Console] Nothing
+  store-parts (parts) (body) = act
+    let def = SourceDefinition {
+      sd-hash = "", sd-path = list-at parts 0, sd-quire = list-at parts 1,
+      sd-chapter = list-at parts 2, sd-signer = "", sd-signature = [],
+      sd-author = "codex-store", sd-timestamp = 1, sd-content = body
+    }
+    in let signed = sign-definition press def 1
+    in let s0 = disk-init
+    in let s1 = repo-persist-save-definition s0 signed 1
+    in print-line-uni ("stored " & signed.sd-hash & " " & signed.sd-path)
+  end
+
+Page 1

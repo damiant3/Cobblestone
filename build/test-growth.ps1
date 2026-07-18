@@ -2,7 +2,7 @@
 #
 # The survey-era killer: growing the compiler source by a few KB pushed
 # a deck past its formula-sized reservation and silently miscompiled
-# (see docs/Designs/Compiler/Done/DemandPagingVictory.md — +3 KB was
+# (see docs/Designs/Done/Compiler/DemandPagingVictory.md — +3 KB was
 # enough at check-mul 40). This test appends generated ballast to the
 # concatenated compiler source and asserts the CDX pingpong stays
 # byte-identical AND a diagnostic still prints clean — the exact class

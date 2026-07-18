@@ -1,0 +1,37 @@
+Chapter: NetworkScopeSpawn
+  cites Net chapter HttpFetch
+
+ A child may not escape its parent's network scope by being born -- the
+ twin of scope-runtime-spawn for the network authority.
+
+ The process table copies the parent's capability MASK and its
+ filesystem scope into a child at spawn; the network scope must travel
+ beside them. If it did not, a program scoped to "ok.host" could spawn a
+ child whose network-scope cell was zero, and a zero authority is an
+ unscoped grant -- the child would inherit the right to reach the
+ network and lose the limit on where, which is a capability
+ amplification dressed as a fork.
+
+ So the parent here is scoped to "ok.host" and does nothing itself. The
+ child asks the gate about both hosts and reports both answers in one
+ number: ten if the in-scope host is admitted, plus one if the
+ out-of-scope host is admitted.
+
+   10  the in-scope host is admitted and the out-of-scope host is
+       refused -- the scope came with the child. The only pass.
+   11  both admitted: the child's scope cell was zero and the door is
+       open. The number this test exists to catch.
+    0  neither: the gate is broken shut in a spawned process, and a test
+       that only checked the refusal would have called that a pass.
+
+ Both net-scope-admits calls sit in argument position rather than a let
+ bind, the same discipline scope-runtime-spawn keeps: nest, do not bind.
+
+Section: Entry
+
+  opening : [Concurrent, Console, Network.Write "ok.host"] Integer
+  opening = act
+    pid <- process-spawn (\x -> poke-byte 28000 0 ((if net-scope-admits "http://ok.host/" then 10 else 0) + (if net-scope-admits "http://evil.host/" then 1 else 0)))
+    let y = process-yield
+    in peek-byte 28000 0
+  end

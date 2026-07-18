@@ -20,7 +20,7 @@ the last 3 characters of the directory name (e.g. `NewRepository-val`
 Read ALL files in the root of `docs/` using the Read tool. Do them in
 parallel. These are non-negotiable — every session must read them:
 
-- `docs/Apps.md`
+- `docs/CuratorsCatalogue.md`
 - `docs/ArchitectsSketchbook.md`
 - `docs/DevelopersGuide.md`
 - `docs/DevelopersRulebook.md`
@@ -44,20 +44,46 @@ Then launch THREE parallel agents (use the Agent tool, model: haiku)
 to read the rest. Each agent reads its assigned files and returns a
 short summary. All three must run concurrently:
 
-**Agent A — PM docs:**
-- `docs/PM/CurrentPlan.md`
-- `docs/PM/BACKLOG.md`
+**Agent A — PM docs (the open work):**
+- `docs/PM/CurrentPlan.md` — the shape and priority order
+- `docs/PM/BACKLOG.md` — **the register of every open capability**
+
+Agent A must return the open work, not a summary of the project's
+health. Specifically: the top gaps from CurrentPlan in priority order,
+and from BACKLOG the items that are actionable now and (a) in this
+agent's lane, or (b) unowned. Name them concretely. "The project is
+in good shape" is a failed report.
+
+**Skip every entry marked `Deferred`.** The decision to wait has already
+been made and re-reporting it each session wastes the reader's time. Do
+not list them, do not summarize them, do not argue for them. Report a
+deferred entry only if you found direct evidence its text is now false —
+which is a correction, not a status update.
 
 **Agent B — Perforce process and agent workplans:**
 - `docs/Agents/PerforceProcess.md`
+- `docs/Agents/CoordinationProtocol.md` — the AgentGrid build-token
+  protocol; you must hold the token before any gate run or submit
 - Glob for `docs/Agents/*-workplan.md` and read every match.
   These are inter-agent communication — other agents' current plans,
   streams, and status. Note anything relevant to your own work.
 
-**Agent C — Active designs:**
-- Glob for `docs/Designs/*/Active/**/*` and `docs/Designs/Apps/*/Active/**/*`
-- Read every match
-- Skip `Done/` and `History/`
+**Agent C — Active designs (catalog only, do NOT read every doc in full):**
+- Glob for `docs/Designs/Active/**/*` to get the file list.
+- For EACH match, read only its opening with the Read tool's `limit`
+  parameter (`limit: 60`) — the title, status, and summary live at the
+  top. Do **not** read whole design docs; there are ~25 of them and
+  reading them in full overflows your context before you can report.
+  A bounded prefix per file is enough for the one-line catalog below.
+- Return a catalog: one line per design doc — path, the capability it
+  designs, and whether it is in-progress or a not-yet-started proposal.
+  Group by subdirectory. This is a map of where the live work is, not a
+  digest of each design.
+- Skip `docs/Designs/Done/` — it is the archive (shipped and superseded
+  designs, folded together), kept for reference but NOT read at init.
+- `docs/Reference/` is also NOT read at init (surveys and position docs).
+- App designs now live under `apps/<app>/design/` and are intentionally
+  NOT read at init (read them when you work that app).
 
 ## Step 4 — Check .p4config
 
@@ -85,14 +111,24 @@ Run these commands in parallel (use the PowerShell tool):
 5. `p4 depots` — find depot paths (needed for next commands)
 
 
-## Step 6 — Check memory
+## Step 6 — Check coordination mailbox
+
+Read `.agentgrid` in the working directory root (JSON:
+`{ agent, coordinationDir }`). If it exists, list the coordination
+directory and check for leftovers from a prior session: a stale
+`build-grant` means you may still HOLD the build token — if you are not
+mid-gate, write `build-complete` there to release it; a stale
+`build-request` you no longer intend should be deleted. If `.agentgrid`
+does not exist, AgentGrid is not managing this workspace — skip.
+
+## Step 7 — Check memory
 
 Read your memory index at the path shown in your system context
 (typically `~/.claude/projects/<project-key>/memory/MEMORY.md`). Read
 every memory file listed there. These contain handoff notes,
 feedback, and project state from prior sessions.
 
-## Step 7 — Report
+## Step 8 — Report
 
 After ALL steps complete, report to the user:
 
@@ -100,8 +136,18 @@ After ALL steps complete, report to the user:
 - **Perforce state:** pending CLs, shelved CLs, opened files,
   merge-down/copy-up status (one line each)
 - **Handoff notes:** anything relevant from memory
-- **Scope reminder:** what this agent works on (from memory, if recorded)
+- **Open work:** the top 3-5 items from `docs/PM/BACKLOG.md` and
+  `docs/PM/CurrentPlan.md` that are **actionable now and in your lane**,
+  named concretely, with a word on which are unowned. **Omit every entry
+  marked `Deferred`** — those are known, decided, and not this session's
+  work. **This section is not optional and must not be replaced by a
+  battery count** — a green battery is not the absence of work, it is the
+  reason the work is visible.
+
+  Keep it to what the reader does not already know. The register is read
+  every session by every agent; reciting the same standing gaps back to
+  the person who wrote them is noise, not diligence.
 - End with: "Ready for instructions."
 
 Keep the report compact — no headers larger than bold text, no
-repeating doc contents. Just the status.
+repeating doc contents. Just the status and the open work.

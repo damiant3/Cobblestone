@@ -1676,7 +1676,11 @@ Section: I/O Boundary Helpers
 
    in let st36n = emit-poke-mmio-helper st36m
 
-   in let st36a = emit-port-in-byte-helper st36n
+   in let st36m4 = emit-read-mmio-32-helper st36n
+
+   in let st36n4 = emit-poke-mmio-32-helper st36m4
+
+   in let st36a = emit-port-in-byte-helper st36n4
 
    in let st36b = emit-port-out-byte-helper st36a
 
@@ -1710,7 +1714,9 @@ Section: I/O Boundary Helpers
 
    in let st38 = emit-process-resume-helper st37e
 
-   in let st39 = emit-process-yield-helper st38
+   in let st38a = emit-idle-dispatch-helper st38
+
+   in let st39 = emit-process-yield-helper st38a
 
    in let st40 = emit-process-exit-helper st39
 
@@ -1720,7 +1726,9 @@ Section: I/O Boundary Helpers
 
    in let st42 = emit-process-spawn-priority-helper st41
 
-   in let st43 = emit-process-wait-helper st42
+   in let st42a = emit-process-spawn-on-core-helper st42
+
+   in let st43 = emit-process-wait-helper st42a
 
    in let st44 = emit-get-ticks-helper st43
 
@@ -1740,7 +1748,15 @@ Section: I/O Boundary Helpers
 
    in let st52 = emit-process-get-cap-helper st51
 
-   in let st53 = emit-process-status-helper st52
+   in let st52s = emit-process-get-scope-helper st52
+
+   in let st52t = emit-process-set-scope-helper st52s
+
+   in let st52u = emit-process-get-network-scope-helper st52t
+
+   in let st52v = emit-process-set-network-scope-helper st52u
+
+   in let st53 = emit-process-status-helper st52v
 
    in let st54 = emit-process-count-helper st53
 
@@ -1820,9 +1836,92 @@ Section: I/O Boundary Helpers
 
    in let st89 = emit-prof-start-helper st88
 
-   in emit-prof-dump-helper st89
+   in let st90 = emit-prof-dump-helper st89
 
+   in emit-fs-servicer-helpers st90
 
+ The default FileSystem handler stubs (BACKLOG 1.14). Emitted only when
+ the program cites FileSystem -- read-text always appears in that effect's
+ definition, so its handler slot existing is exactly the signal that the
+ servicer workers (fat16-servicer-read / -write, in FileSystem.codex,
+ which cites Fat16) are present to be called. A program that never names
+ the effect emits neither stub, so its finalize carries no unresolved
+ reference to a worker it does not have.
+
+ Each stub is the compiler's default discharge for one FileSystem op. It
+ checks the running process's direction bit (cap-filesystem-read for a
+ read, -write for a write) against its own capability word -- so a program
+ GRANTED FileSystem.Read that performs write-file is refused here, which is
+ the runtime half of the grant that nothing enforced before. On a pass it
+ raises the kernel fs-elevated cell, which the block syscalls honour in
+ place of cap-block-device (emit-block-elev-gate), calls the fat16 worker,
+ and lowers the cell again. The elevation is inline and has no callable
+ name of its own on purpose: a bare elevate primitive would let any
+ program raise the cell and then drive block-write-sector directly, which
+ is the exact bypass this design exists to close. The stub is safe to name
+ because it gates itself before it elevates. Path scope is not re-checked
+ here; fat16 already enforces it (fat16-scope-admits).
+
+  emit-fs-servicer-helpers : CodegenState -> CodegenState
+  emit-fs-servicer-helpers (st) =
+   if find-effect-op-addr (st.effect-op-addrs) "read-text" 0 (list-length (st.effect-op-addrs)) < 0 then st
+   else let st1 = emit-fs-read-servicer-helper st
+   in emit-fs-write-servicer-helper st1
+
+  emit-fs-read-servicer-helper : CodegenState -> CodegenState
+  emit-fs-read-servicer-helper (st) =
+   let fn-off = st.code-len
+   in let n = list-push (st.fo-names) "__fs-read-servicer"
+   in let o = list-push (st.fo-offsets) fn-off
+   in let st0 = __record-set (__record-set st "fo-names" n) "fo-offsets" o
+   in let st1 = emit-check-capability st0 cap-filesystem-read
+   in let deny-pos = st1.code-len
+   in let st2 = st-append-code st1 (jcc cc-ae 0)
+   in let st3 = st-append-code st2 (push-r reg-rdi)
+   in let st4 = st-append-code st3 (li reg-rax fs-elevated-addr)
+   in let st5 = st-append-code st4 (li reg-rcx 1)
+   in let st6 = st-append-code st5 (mov-store reg-rax reg-rcx 0)
+   in let st7 = st-append-code st6 (pop-r reg-rdi)
+   in let st8 = emit-call-to st7 "fat16-servicer-read"
+   in let st9 = st-append-code st8 (push-r reg-rax)
+   in let st10 = st-append-code st9 (li reg-rax fs-elevated-addr)
+   in let st11 = st-append-code st10 (li reg-rcx 0)
+   in let st12 = st-append-code st11 (mov-store reg-rax reg-rcx 0)
+   in let st13 = st-append-code st12 (pop-r reg-rax)
+   in let st14 = st-append-code st13 x86-ret
+   in let deny = st14.code-len
+   in let empty = emit-text-lit st14 ""
+   in let st15 = st-append-code (empty.state) (mov-rr reg-rax (empty.reg))
+   in let st16 = st-append-code st15 x86-ret
+   in patch-jcc-at st16 deny-pos deny
+
+  emit-fs-write-servicer-helper : CodegenState -> CodegenState
+  emit-fs-write-servicer-helper (st) =
+   let fn-off = st.code-len
+   in let n = list-push (st.fo-names) "__fs-write-servicer"
+   in let o = list-push (st.fo-offsets) fn-off
+   in let st0 = __record-set (__record-set st "fo-names" n) "fo-offsets" o
+   in let st1 = emit-check-capability st0 cap-filesystem-write
+   in let deny-pos = st1.code-len
+   in let st2 = st-append-code st1 (jcc cc-ae 0)
+   in let st3 = st-append-code st2 (push-r reg-rdi)
+   in let st3b = st-append-code st3 (push-r reg-rsi)
+   in let st4 = st-append-code st3b (li reg-rax fs-elevated-addr)
+   in let st5 = st-append-code st4 (li reg-rcx 1)
+   in let st6 = st-append-code st5 (mov-store reg-rax reg-rcx 0)
+   in let st6b = st-append-code st6 (pop-r reg-rsi)
+   in let st7 = st-append-code st6b (pop-r reg-rdi)
+   in let st8 = emit-call-to st7 "fat16-servicer-write"
+   in let st9 = st-append-code st8 (push-r reg-rax)
+   in let st10 = st-append-code st9 (li reg-rax fs-elevated-addr)
+   in let st11 = st-append-code st10 (li reg-rcx 0)
+   in let st12 = st-append-code st11 (mov-store reg-rax reg-rcx 0)
+   in let st13 = st-append-code st12 (pop-r reg-rax)
+   in let st14 = st-append-code st13 x86-ret
+   in let deny = st14.code-len
+   in let st15 = st-append-code st14 (li reg-rax 0)
+   in let st16 = st-append-code st15 x86-ret
+   in patch-jcc-at st16 deny-pos deny
 
   emit-prof-start-helper : CodegenState -> CodegenState
   emit-prof-start-helper (st) =
@@ -1959,9 +2058,15 @@ Section: I/O Boundary Helpers
 
    in let st33 = st-append-code st32 (mov-store-word reg-r11 reg-rax 0)
 
-   in let st34 = st-append-code st33 [72, 139, 4, 37, 0, 128, 0, 0]
+   in let st34 = st-append-code st33 ([72, 139, 4, 37] & write-i32 uefi-systab-addr)
 
-   in let st35 = st-append-code st34 [72, 139, 72, 64]
+   in let st34a = st-append-code st34 [72, 133, 192]
+
+   in let nosys-skip = st34a.code-len
+
+   in let st34b = st-append-code st34a (jcc cc-e 0)
+
+   in let st35 = st-append-code st34b [72, 139, 72, 64]
 
    in let st36 = st-append-code st35 (mov-rr reg-rdx reg-rsp)
 
@@ -1977,7 +2082,9 @@ Section: I/O Boundary Helpers
 
    in let st40a = st-append-code st40 [65, 90]
 
-   in let st41 = st-append-code st40a (add-ri reg-rsp 2048)
+   in let st40b = patch-jcc-at st40a nosys-skip (st40a.code-len)
+
+   in let st41 = st-append-code st40b (add-ri reg-rsp 2048)
 
    in let st42 = st-append-code st41 (pop-r reg-r15 & pop-r reg-r14 & pop-r reg-r13 & pop-r reg-r12 & pop-r reg-rbx)
 
@@ -2019,8 +2126,11 @@ Section: I/O Boundary Helpers
    in let st25 = st-append-code st24 (add-rr reg-r11 reg-rsp)
    in let st26 = st-append-code st25 (li reg-rax 0)
    in let st27 = st-append-code st26 (mov-store-word reg-r11 reg-rax 0)
-   in let st28 = st-append-code st27 [72, 139, 4, 37, 0, 128, 0, 0]
-   in let st29 = st-append-code st28 [72, 139, 72, 64]
+   in let st28 = st-append-code st27 ([72, 139, 4, 37] & write-i32 uefi-systab-addr)
+   in let st28a = st-append-code st28 [72, 133, 192]
+   in let nosys-skip = st28a.code-len
+   in let st28b = st-append-code st28a (jcc cc-e 0)
+   in let st29 = st-append-code st28b [72, 139, 72, 64]
    in let st30 = st-append-code st29 (mov-rr reg-rdx reg-rsp)
    in let st31 = st-append-code st30 [72, 137, 203]
    in let st31a = st-append-code st31 [65, 82]
@@ -2028,7 +2138,8 @@ Section: I/O Boundary Helpers
    in let st33 = st-append-code st32 [255, 83, 8]
    in let st34 = st-append-code st33 (add-ri reg-rsp 32)
    in let st34a = st-append-code st34 [65, 90]
-   in let st35 = st-append-code st34a (add-ri reg-rsp 2048)
+   in let st34b = patch-jcc-at st34a nosys-skip (st34a.code-len)
+   in let st35 = st-append-code st34b (add-ri reg-rsp 2048)
    in let st36 = st-append-code st35 (pop-r reg-r15 & pop-r reg-r14 & pop-r reg-r13 & pop-r reg-r12 & pop-r reg-rbx)
    in let st37 = st-append-code st36 (pop-r reg-rbp)
    in st-append-code st37 [195]
@@ -2068,9 +2179,12 @@ Section: I/O Boundary Helpers
    in let st28 = st-append-code st27 [199, 132, 36, 4, 1, 0, 0, 89, 100, 210, 17]
    in let st29 = st-append-code st28 [199, 132, 36, 8, 1, 0, 0, 142, 57, 0, 160]
    in let st30 = st-append-code st29 [199, 132, 36, 12, 1, 0, 0, 201, 105, 114, 59]
-   in let st31 = st-append-code st30 (li reg-rax 32768)
+   in let st31 = st-append-code st30 (li reg-rax uefi-systab-addr)
    in let st32 = st-append-code st31 (mov-load reg-rax reg-rax 0)
-   in let st33 = st-append-code st32 (mov-load reg-rbx reg-rax 96)
+   in let st32a = st-append-code st32 [72, 133, 192]
+   in let nosys-fail = st32a.code-len
+   in let st32b = st-append-code st32a (jcc cc-e 0)
+   in let st33 = st-append-code st32b (mov-load reg-rbx reg-rax 96)
    in let st34 = st-append-code st33 [72, 141, 140, 36, 0, 1, 0, 0]
    in let st35 = st-append-code st34 [72, 49, 210]
    in let st36 = st-append-code st35 [76, 141, 132, 36, 16, 1, 0, 0]
@@ -2138,7 +2252,8 @@ Section: I/O Boundary Helpers
    in let st94 = patch-jcc-at st93 sfs-fail (st93.code-len)
    in let st95 = patch-jcc-at st94 vol-fail (st94.code-len)
    in let st96 = patch-jcc-at st95 open-fail (st95.code-len)
-   in let st97 = st-append-code st96 (mov-rr reg-r10 reg-r13)
+   in let st96b = patch-jcc-at st96 nosys-fail (st93.code-len)
+   in let st97 = st-append-code st96b (mov-rr reg-r10 reg-r13)
    in let st98 = st-append-code st97 (mov-rr reg-rax reg-r10)
    in let st99 = st-append-code st98 (li reg-r11 0)
    in let st100 = st-append-code st99 (mov-store reg-rax reg-r11 0)
@@ -2436,7 +2551,7 @@ Section: UEFI Console Helpers
 
   uefi-load-conout : List Integer
 
-  uefi-load-conout = [72, 139, 4, 37, 0, 128, 0, 0, 72, 139, 72, 64]
+  uefi-load-conout = [72, 139, 4, 37] & write-i32 uefi-systab-addr & [72, 139, 72, 64]
 
 
 
@@ -2558,55 +2673,30 @@ Section: UEFI Console Helpers
 
 
 
+ uefi-read-key reads the PS/2 keyboard, not a UEFI system table. After
+ ExitBootServices there is no system table at any address -- the old
+ body read one through uefi-systab-addr and only ever returned -1 -- so
+ console input comes off the same key cell the IRQ1 handler fills from
+ port 0x60 (key-buffer-addr). The read is an atomic exchange-with-zero
+ so a key is consumed exactly once and does not race the ISR producer,
+ masked to the scancode byte; an empty cell reads back 0, which is the
+ idle answer every caller already tests for.
+
   emit-uefi-read-key-helper : CodegenState -> CodegenState
 
   emit-uefi-read-key-helper (st) =
 
    let st0 = record-func-offset st "uefi-read-key"
 
-   in let st1 = st-append-code st0 (push-r reg-rbp & mov-rr reg-rbp reg-rsp & push-r reg-rbx & push-r reg-r12 & sub-ri reg-rsp 64)
+   in let st1 = st-append-code st0 (li reg-rdi key-buffer-addr)
 
-   in let st2 = st-append-code st1 [72, 139, 4, 37, 0, 128, 0, 0]
+   in let st2 = st-append-code st1 (li reg-rax 0)
 
-   in let st3 = st-append-code st2 [72, 139, 88, 48, 76, 139, 96, 96]
+   in let st3 = st-append-code st2 [72, 135, 7]
 
-   in let st4 = st-append-code st3 [72, 137, 217, 72, 141, 85, 216]
+   in let st4 = st-append-code st3 [72, 37, 255, 0, 0, 0]
 
-   in let st5 = st-append-code st4 [65, 82, 72, 131, 236, 40, 255, 83, 8, 72, 131, 196, 40, 65, 90]
-
-   in let st6 = st-append-code st5 [72, 133, 192]
-
-   in let st7 = st-append-code st6 [72, 199, 192, 255, 255, 255, 255]
-
-   in let jnz-pos = st7.code-len
-
-   in let st8 = st-append-code st7 (jcc cc-ne 0)
-
-   in let st9 = st-append-code st8 [15, 183, 69, 216]
-
-   in let st10 = st-append-code st9 [72, 193, 224, 16]
-
-   in let st11 = st-append-code st10 [15, 183, 77, 218]
-
-   in let st12 = st-append-code st11 [72, 9, 200]
-
-   in let jmp-pos = st12.code-len
-
-   in let st13 = st-append-code st12 (jmp 0)
-
-   in let st14 = patch-jcc-at st13 jnz-pos (st13.code-len)
-
-   in let st15 = st-append-code st14 [65, 82, 185, 80, 195, 0, 0]
-
-   in let st16 = st-append-code st15 [72, 131, 236, 40, 65, 255, 148, 36, 248, 0, 0, 0, 72, 131, 196, 40, 65, 90]
-
-   in let st17 = st-append-code st16 [72, 199, 192, 255, 255, 255, 255]
-
-   in let st18 = patch-jmp-at st17 jmp-pos (st17.code-len)
-
-   in let st19 = st-append-code st18 (add-ri reg-rsp 64 & pop-r reg-r12 & pop-r reg-rbx & pop-r reg-rbp)
-
-   in st-append-code st19 x86-ret
+   in st-append-code st4 x86-ret
 
 
 
@@ -2630,9 +2720,21 @@ Section: UEFI Console Helpers
 
    in let st7 = st-append-code st6 [199, 68, 36, 60, 23, 166, 37, 170]
 
-   in let st8 = st-append-code st7 (li reg-rax 32768)
+   in let st8 = st-append-code st7 ([72, 139, 4, 37] & write-i32 uefi-systab-addr)
 
-   in let st9 = st-append-code st8 (mov-load reg-rax reg-rax 0)
+   in let st8a = st-append-code st8 [72, 133, 192]
+
+   in let have-sys-pos = st8a.code-len
+
+   in let st8b = st-append-code st8a (jcc cc-ne 0)
+
+   in let st8c = st-append-code st8b [72, 199, 192, 255, 255, 255, 255]
+
+   in let nosys-jmp = st8c.code-len
+
+   in let st8d = st-append-code st8c (jmp 0)
+
+   in let st9 = patch-jcc-at st8d have-sys-pos (st8d.code-len)
 
    in let st10 = st-append-code st9 (mov-load reg-rbx reg-rax 96)
 
@@ -2676,7 +2778,9 @@ Section: UEFI Console Helpers
 
    in let st29 = patch-jcc-at st28 jnz-pos (st28.code-len)
 
-   in let st30 = st-append-code st29 [77, 137, 250]
+   in let st29b = patch-jmp-at st29 nosys-jmp (st29.code-len)
+
+   in let st30 = st-append-code st29b [77, 137, 250]
 
    in let st31 = st-append-code st30 [72, 129, 196, 88, 0, 0, 0]
 
@@ -3431,7 +3535,7 @@ Section: Binary Output
 
    in let st10 = st-append-code st9 [199, 68, 36, 60, 201, 105, 114, 59]
 
-   in let st11 = st-append-code st10 (li reg-rax 32768)
+   in let st11 = st-append-code st10 (li reg-rax uefi-systab-addr)
 
    in let st12 = st-append-code st11 (mov-load reg-rax reg-rax 0)
 
@@ -3495,6 +3599,15 @@ Section: Binary Output
 
 
 
+ peek-byte, poke-byte and peek-qword carry the same window guard as
+ peek-32 / poke-32. Without it a byte-wise or qword writer would reach
+ the rasterizer's command buffer at 0xBE000000 without earning
+ cap-gpu-memory -- the guard is on the sanctioned write path, not the
+ access width, so every width that can touch the window is gated. The
+ guard is the same three-ALU-op top-byte test, and it costs peek-qword
+ (a memo-table primitive) the same predicted, memory-free branch it
+ costs peek-32.
+
   emit-peek-byte-helper : CodegenState -> CodegenState
 
   emit-peek-byte-helper (st) =
@@ -3509,9 +3622,19 @@ Section: Binary Output
 
    in let st1 = st-append-code st0 (add-rr reg-rdi reg-rsi)
 
-   in let st2 = st-append-code st1 [72, 15, 182, 7]
+   in let g = emit-gpu-mem-guard st1
 
-   in st-append-code st2 x86-ret
+   in let st2 = st-append-code (g.state) [72, 15, 182, 7]
+
+   in let st3 = st-append-code st2 x86-ret
+
+   in let fail-pos = st3.code-len
+
+   in let st4 = st-append-code st3 (li reg-rax (0 - 1))
+
+   in let st5 = st-append-code st4 x86-ret
+
+   in patch-jcc-at st5 (g.deny-offset) fail-pos
 
 
 
@@ -3529,11 +3652,21 @@ Section: Binary Output
 
    in let st1 = st-append-code st0 (add-rr reg-rdi reg-rsi)
 
-   in let st2 = st-append-code st1 [136, 23]
+   in let g = emit-gpu-mem-guard st1
+
+   in let st2 = st-append-code (g.state) [136, 23]
 
    in let st3 = st-append-code st2 (li reg-rax 0)
 
-   in st-append-code st3 x86-ret
+   in let st4 = st-append-code st3 x86-ret
+
+   in let fail-pos = st4.code-len
+
+   in let st5 = st-append-code st4 (li reg-rax (0 - 1))
+
+   in let st6 = st-append-code st5 x86-ret
+
+   in patch-jcc-at st6 (g.deny-offset) fail-pos
 
 
 
@@ -3576,6 +3709,83 @@ Section: Binary Output
    in let st3 = st-append-code st2 (li reg-rax 0)
 
    in st-append-code st3 x86-ret
+
+ The 32-bit MMIO pair. Almost every peripheral register on the target
+ MCUs is a 32-bit word, and many of them REQUIRE a single aligned
+ word access -- assembling one out of four byte reads is not the same
+ transaction and on real silicon does not work. read-mmio and
+ poke-mmio above are byte-width, which is why the board HAL could not
+ use them and shipped `mmio-read-32 (addr) = 0` instead.
+
+ RDI is the base, RSI the offset, RDX the value. The load is
+ `mov eax, [rdi]` (8B 07), which zero-extends into RAX by the x86-64
+ rule that a 32-bit write clears the upper half; the store is
+ `mov [rdi], edx` (89 17).
+
+  emit-read-mmio-32-helper : CodegenState -> CodegenState
+
+  emit-read-mmio-32-helper (st) =
+
+   let fn-off = st.code-len
+
+   in let n = list-push (st.fo-names) "read-mmio-32"
+
+   in let o = list-push (st.fo-offsets) fn-off
+
+   in let st0 = __record-set (__record-set st "fo-names" n) "fo-offsets" o
+
+   in let st1 = st-append-code st0 (add-rr reg-rdi reg-rsi)
+
+   in let g = emit-gpu-mem-guard st1
+
+   in let st2 = st-append-code (g.state) [139, 7]
+
+   in let st3 = st-append-code st2 x86-ret
+
+   in let fail-pos = st3.code-len
+
+   in let st4 = st-append-code st3 (li reg-rax (0 - 1))
+
+   in let st5 = st-append-code st4 x86-ret
+
+   in patch-jcc-at st5 (g.deny-offset) fail-pos
+
+ The 32-bit MMIO pair reaches memory the same way poke-32 does, so it
+ carries the same window guard. Without it, Device.Mmio would be a way
+ around Gpu.Memory: a chapter that declared the board row could write
+ the rasterizer's command buffer through read-mmio-32 and poke-mmio-32
+ and never earn bit 18. These are driver-rate, not memo-rate, so the
+ guard costs them nothing worth counting.
+
+  emit-poke-mmio-32-helper : CodegenState -> CodegenState
+
+  emit-poke-mmio-32-helper (st) =
+
+   let fn-off = st.code-len
+
+   in let n = list-push (st.fo-names) "poke-mmio-32"
+
+   in let o = list-push (st.fo-offsets) fn-off
+
+   in let st0 = __record-set (__record-set st "fo-names" n) "fo-offsets" o
+
+   in let st1 = st-append-code st0 (add-rr reg-rdi reg-rsi)
+
+   in let g = emit-gpu-mem-guard st1
+
+   in let st2 = st-append-code (g.state) [137, 23]
+
+   in let st3 = st-append-code st2 (li reg-rax 0)
+
+   in let st4 = st-append-code st3 x86-ret
+
+   in let fail-pos = st4.code-len
+
+   in let st5 = st-append-code st4 (li reg-rax (0 - 1))
+
+   in let st6 = st-append-code st5 x86-ret
+
+   in patch-jcc-at st6 (g.deny-offset) fail-pos
 
 
 
@@ -3683,13 +3893,23 @@ Section: Binary Output
 
    in let st0 = __record-set (__record-set st "fo-names" n) "fo-offsets" o
 
-   in let st1 = st-append-code st0 (mov-rr reg-rdx reg-rdi)
+   in let g = emit-gpu-port-guard st0
+
+   in let st1 = st-append-code (g.state) (mov-rr reg-rdx reg-rdi)
 
    in let st2 = st-append-code st1 [49, 192]
 
    in let st3 = st-append-code st2 [237]
 
-   in st-append-code st3 x86-ret
+   in let st4 = st-append-code st3 x86-ret
+
+   in let fail-pos = st4.code-len
+
+   in let st5 = st-append-code st4 (li reg-rax (0 - 1))
+
+   in let st6 = st-append-code st5 x86-ret
+
+   in patch-jcc-at st6 (g.deny-offset) fail-pos
 
 
 
@@ -3705,7 +3925,9 @@ Section: Binary Output
 
    in let st0 = __record-set (__record-set st "fo-names" n) "fo-offsets" o
 
-   in let st1 = st-append-code st0 (mov-rr reg-rdx reg-rdi)
+   in let g = emit-gpu-port-guard st0
+
+   in let st1 = st-append-code (g.state) (mov-rr reg-rdx reg-rdi)
 
    in let st2 = st-append-code st1 (mov-rr reg-rax reg-rsi)
 
@@ -3713,7 +3935,15 @@ Section: Binary Output
 
    in let st4 = st-append-code st3 (li reg-rax 0)
 
-   in st-append-code st4 x86-ret
+   in let st5 = st-append-code st4 x86-ret
+
+   in let fail-pos = st5.code-len
+
+   in let st6 = st-append-code st5 (li reg-rax (0 - 1))
+
+   in let st7 = st-append-code st6 x86-ret
+
+   in patch-jcc-at st7 (g.deny-offset) fail-pos
 
 
 
@@ -3731,9 +3961,19 @@ Section: Binary Output
 
    in let st1 = st-append-code st0 (add-rr reg-rdi reg-rsi)
 
-   in let st2 = st-append-code st1 [139, 7]
+   in let g = emit-gpu-mem-guard st1
 
-   in st-append-code st2 x86-ret
+   in let st2 = st-append-code (g.state) [139, 7]
+
+   in let st3 = st-append-code st2 x86-ret
+
+   in let fail-pos = st3.code-len
+
+   in let st4 = st-append-code st3 (li reg-rax (0 - 1))
+
+   in let st5 = st-append-code st4 x86-ret
+
+   in patch-jcc-at st5 (g.deny-offset) fail-pos
 
 
 
@@ -3751,9 +3991,19 @@ Section: Binary Output
 
    in let st1 = st-append-code st0 (add-rr reg-rdi reg-rsi)
 
-   in let st2 = st-append-code st1 [72, 139, 7]
+   in let g = emit-gpu-mem-guard st1
 
-   in st-append-code st2 x86-ret
+   in let st2 = st-append-code (g.state) [72, 139, 7]
+
+   in let st3 = st-append-code st2 x86-ret
+
+   in let fail-pos = st3.code-len
+
+   in let st4 = st-append-code st3 (li reg-rax (0 - 1))
+
+   in let st5 = st-append-code st4 x86-ret
+
+   in patch-jcc-at st5 (g.deny-offset) fail-pos
 
 
 
@@ -3771,11 +4021,21 @@ Section: Binary Output
 
    in let st1 = st-append-code st0 (add-rr reg-rdi reg-rsi)
 
-   in let st2 = st-append-code st1 [137, 23]
+   in let g = emit-gpu-mem-guard st1
+
+   in let st2 = st-append-code (g.state) [137, 23]
 
    in let st3 = st-append-code st2 (li reg-rax 0)
 
-   in st-append-code st3 x86-ret
+   in let st4 = st-append-code st3 x86-ret
+
+   in let fail-pos = st4.code-len
+
+   in let st5 = st-append-code st4 (li reg-rax (0 - 1))
+
+   in let st6 = st-append-code st5 x86-ret
+
+   in patch-jcc-at st6 (g.deny-offset) fail-pos
 
 
 
@@ -3919,5 +4179,4 @@ Section: Binary Output
 
    in st-append-code st2 x86-ret
 
-
-
+Page 11 of 14

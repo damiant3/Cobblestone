@@ -4,6 +4,7 @@ Chapter: IdentityManager
   cites Foreword chapter Ed25519
   cites Foreword chapter Aes256
   cites Foreword chapter Hkdf
+  cites UI chapter KeyInput
   cites Kernel chapter DiskFacts
 
  Identity lifecycle manager. Orchestrates the first-boot ceremony
@@ -48,30 +49,31 @@ Section: Types
 
 Section: First-Boot Ceremony
 
-  idm-first-boot : DiskFactStore, Integer -> IdmOutcome
-  idm-first-boot (store) (timestamp) =
+  idm-first-boot : DiskFactStore, Integer -> [Console, Identity] IdmOutcome
+  idm-first-boot (store) (timestamp) = act
     let seed-bytes = idm-read-device-seed
-    in let kb-entropy = idm-collect-keyboard-entropy
-    in let combined = sha256 (seed-bytes & kb-entropy)
-    in let seed = idm-hash-words-to-bytes combined
-    in let keypair = idm-generate-keypair seed
-    in let pub-key = keypair.ikp-public
-    in let priv-key = keypair.ikp-private
-    in let fingerprint = idm-fingerprint pub-key
-    in let w0 = idm-show-lines [
-      "",
-      "  Identity created.",
-      "  Fingerprint: " & fingerprint,
-      ""
-    ]
-    in let passphrase = idm-prompt-passphrase-create
-    in when passphrase
-      is None -> IdmOutcome { idm-store = store, idm-result = IdmError "Passphrase mismatch" }
-      is Just (pp-bytes) ->
+    in act
+      kb-entropy <- idm-collect-keyboard-entropy
+      let combined = sha256 (seed-bytes & kb-entropy)
+      in let seed = idm-hash-words-to-bytes combined
+      in let keypair = idm-generate-keypair seed
+      in let pub-key = keypair.ikp-public
+      in let priv-key = keypair.ikp-private
+      in let fingerprint = idm-fingerprint pub-key
+      in act
+        idm-show-lines [
+          "",
+          "  Identity created.",
+          "  Fingerprint: " & fingerprint,
+          ""
+        ]
+        passphrase <- idm-prompt-passphrase-create
+        when passphrase
+         is None -> IdmOutcome { idm-store = store, idm-result = IdmError "Passphrase mismatch" }
+         is Just (pp-bytes) ->
         let salt = idm-read-random-bytes 16
         in let iv = idm-read-random-bytes 16
-        in let derived = hkdf salt pp-bytes idm-hkdf-info 32
-        in let derived-bytes = idm-hash-words-to-bytes derived
+        in let derived-bytes = idm-derive-key salt pp-bytes
         in let encrypted = aes256-cbc-encrypt (aes256-pkcs7-pad priv-key) derived-bytes iv
         in let rec = IdentityRecord {
           id-version = 1,
@@ -89,52 +91,83 @@ Section: First-Boot Ceremony
         }
         in let store3 = sysdb-write-boot-config store2 default-config timestamp
         in let store4 = disk-checkpoint store3
-        in let loaded = idm-load-key-to-pinned priv-key
-        in let zeroed = idm-zero-list pp-bytes 0
-        in let zeroed2 = idm-zero-list derived-bytes 0
-        in let zeroed3 = idm-zero-list priv-key 0
-        in let w1 = idm-show-lines [
-          "  Identity saved and loaded.",
-          "  You are now authenticated.",
-          ""
-        ]
-        in IdmOutcome { idm-store = store4, idm-result = IdmOk }
+        in act
+          loaded <- idm-load-key-to-pinned priv-key
+          let zeroed = idm-zero-list pp-bytes 0
+          in let zeroed2 = idm-zero-list derived-bytes 0
+          in let zeroed3 = idm-zero-list priv-key 0
+          in act
+            idm-show-lines [
+              "  Identity saved and loaded.",
+              "  You are now authenticated.",
+              ""
+            ]
+            IdmOutcome { idm-store = store4, idm-result = IdmOk }
+          end
+        end
+      end
+    end
+  end
 
 Section: Unlock Flow
 
-  idm-unlock : DiskFactStore -> IdmOutcome
+  idm-unlock : DiskFactStore -> [Console, Identity] IdmOutcome
   idm-unlock (store) =
     let id-maybe = sysdb-find-identity store
     in when id-maybe
       is None -> IdmOutcome { idm-store = store, idm-result = IdmNoIdentity }
-      is Just (rec) ->
-        let pp-bytes = idm-prompt-passphrase "  Passphrase: "
-        in let derived = hkdf (rec.id-salt) pp-bytes idm-hkdf-info 32
-        in let derived-bytes = idm-hash-words-to-bytes derived
+      is Just (rec) -> act
+        pp-bytes <- idm-prompt-passphrase "  Passphrase: "
+        let derived-bytes = idm-derive-key (rec.id-salt) pp-bytes
         in let decrypted-padded = aes256-cbc-decrypt (rec.id-encrypted-key) derived-bytes (rec.id-iv)
         in let decrypted = aes256-pkcs7-unpad decrypted-padded
         in let verify-pub = ed25519-public-key decrypted
-        in if idm-bytes-eq verify-pub (rec.id-public-key) then
-          let loaded = idm-load-key-to-pinned decrypted
-          in let zeroed = idm-zero-list pp-bytes 0
-          in let zeroed2 = idm-zero-list derived-bytes 0
-          in let zeroed3 = idm-zero-list decrypted 0
-          in IdmOutcome { idm-store = store, idm-result = IdmOk }
-        else
-          let zeroed = idm-zero-list pp-bytes 0
-          in let zeroed2 = idm-zero-list derived-bytes 0
-          in let zeroed3 = idm-zero-list decrypted 0
-          in IdmOutcome { idm-store = store, idm-result = IdmWrongPassphrase }
+        in if idm-bytes-eq verify-pub (rec.id-public-key) then idm-unlock-accept store pp-bytes derived-bytes decrypted
+        else idm-unlock-refuse store pp-bytes derived-bytes decrypted
+      end
+
+ The two outcomes are named functions rather than branches written inline,
+ because the accepting one has to load the key into pinned memory before it
+ wipes the plaintext, and that load is effectful: inline it needs an act-bind
+ nested inside an if inside an act, which is the exact shape that has scoped
+ an `in` to the wrong `let` before now. A single-line dispatch to two named
+ functions cannot do that. Both branches zero every plaintext buffer on every
+ path -- the refusing one zeroes the same three the accepting one does, which
+ is the property worth reading them side by side to check.
+
+  idm-unlock-accept : DiskFactStore, List Integer, List Integer, List Integer -> [Identity] IdmOutcome
+  idm-unlock-accept (store) (pp-bytes) (derived-bytes) (decrypted) = act
+    loaded <- idm-load-key-to-pinned decrypted
+    let zeroed = idm-zero-list pp-bytes 0
+    in let zeroed2 = idm-zero-list derived-bytes 0
+    in let zeroed3 = idm-zero-list decrypted 0
+    in IdmOutcome { idm-store = store, idm-result = IdmOk }
+  end
+
+  idm-unlock-refuse : DiskFactStore, List Integer, List Integer, List Integer -> IdmOutcome
+  idm-unlock-refuse (store) (pp-bytes) (derived-bytes) (decrypted) =
+    let zeroed = idm-zero-list pp-bytes 0
+    in let zeroed2 = idm-zero-list derived-bytes 0
+    in let zeroed3 = idm-zero-list decrypted 0
+    in IdmOutcome { idm-store = store, idm-result = IdmWrongPassphrase }
 
 Section: Lock
 
-  idm-lock : Integer
+ These three reach the pinned key through key-zero and key-status, so they
+ carry [Identity] and say so. The row is not bookkeeping: Identity is a real
+ capability with a manifest bit, and a program that can lock, unlock, or ask
+ after the private key is exercising authority a program that merely prints
+ does not have. Declaring it here is what makes that authority visible in the
+ signature of everything above -- up to and including first-boot's own entry
+ point, which is the one place a reader should be able to see it.
+
+  idm-lock : [Identity] Integer
   idm-lock = key-zero
 
-  idm-is-unlocked : Boolean
+  idm-is-unlocked : [Identity] Boolean
   idm-is-unlocked = key-status == 1
 
-  idm-check-timeout : Integer -> Integer
+  idm-check-timeout : Integer -> [Identity] Integer
   idm-check-timeout (current-tick) =
     if key-status == 0 then 0
     else let lock-tick = idm-read-lock-tick
@@ -147,15 +180,14 @@ Section: Lock
 
 Section: Passphrase Change
 
-  idm-change-passphrase : DiskFactStore, Integer -> IdmOutcome
+  idm-change-passphrase : DiskFactStore, Integer -> [Console] IdmOutcome
   idm-change-passphrase (store) (timestamp) =
     let id-maybe = sysdb-find-identity store
     in when id-maybe
       is None -> IdmOutcome { idm-store = store, idm-result = IdmNoIdentity }
-      is Just (rec) ->
-        let old-pp = idm-prompt-passphrase "  Current passphrase: "
-        in let old-derived = hkdf (rec.id-salt) old-pp idm-hkdf-info 32
-        in let old-derived-bytes = idm-hash-words-to-bytes old-derived
+      is Just (rec) -> act
+        old-pp <- idm-prompt-passphrase "  Current passphrase: "
+        let old-derived-bytes = idm-derive-key (rec.id-salt) old-pp
         in let decrypted-padded = aes256-cbc-decrypt (rec.id-encrypted-key) old-derived-bytes (rec.id-iv)
         in let decrypted = aes256-pkcs7-unpad decrypted-padded
         in let verify-pub = ed25519-public-key decrypted
@@ -164,8 +196,9 @@ Section: Passphrase Change
           in let z1 = idm-zero-list old-derived-bytes 0
           in let z2 = idm-zero-list decrypted 0
           in IdmOutcome { idm-store = store, idm-result = IdmWrongPassphrase }
-        else let new-pp = idm-prompt-passphrase-create
-        in when new-pp
+        else act
+          new-pp <- idm-prompt-passphrase-create
+          when new-pp
           is None ->
             let z0 = idm-zero-list old-pp 0
             in let z1 = idm-zero-list old-derived-bytes 0
@@ -174,8 +207,7 @@ Section: Passphrase Change
           is Just (new-pp-bytes) ->
             let new-salt = idm-read-random-bytes 16
             in let new-iv = idm-read-random-bytes 16
-            in let new-derived = hkdf new-salt new-pp-bytes idm-hkdf-info 32
-            in let new-derived-bytes = idm-hash-words-to-bytes new-derived
+            in let new-derived-bytes = idm-derive-key new-salt new-pp-bytes
             in let new-encrypted = aes256-cbc-encrypt (aes256-pkcs7-pad decrypted) new-derived-bytes new-iv
             in let new-rec = IdentityRecord {
               id-version = 1,
@@ -193,6 +225,8 @@ Section: Passphrase Change
             in let z3 = idm-zero-list new-pp-bytes 0
             in let z4 = idm-zero-list new-derived-bytes 0
             in IdmOutcome { idm-store = store3, idm-result = IdmOk }
+        end
+      end
 
 Section: Install Copy
 
@@ -206,7 +240,7 @@ Section: Install Copy
 
 Section: Kernel Memory Interface
 
-  idm-load-key-to-pinned : List Integer -> Integer
+  idm-load-key-to-pinned : List Integer -> [Identity] Integer
   idm-load-key-to-pinned (key-bytes) =
     let buf = alloc-bytes 32
     in let w = idm-poke-list buf key-bytes 0
@@ -248,17 +282,18 @@ Section: Entropy Collection
     let seed-addr = 30576
     in idm-peek-bytes seed-addr count 0 []
 
-  idm-collect-keyboard-entropy : List Integer
-  idm-collect-keyboard-entropy =
-    let w = idm-show-lines [
+  idm-collect-keyboard-entropy : [Console] List Integer
+  idm-collect-keyboard-entropy = act
+    idm-show-lines [
       "",
       "  Type a random sentence for additional entropy,",
       "  then press Enter:",
       "  "
     ]
-    in let input = idm-read-line-bytes
+    let input = idm-read-line-bytes
     in let ticks-after = get-ticks
     in input & [bit-and ticks-after 255, bit-and (bit-shru ticks-after 8) 255]
+  end
 
 Section: Keypair Generation
 
@@ -276,10 +311,20 @@ Section: Keypair Generation
   idm-take-bytes : List Integer, Integer -> List Integer
   idm-take-bytes (words) (n) = idm-take-loop words n 0 []
 
+ Take n bytes, padding a short source with zeros. The padding branch used
+ to push one zero and return, so idm-take-bytes [7,7] 4 answered [7,7,0]:
+ three bytes, not four, and no further padding. It recurses now.
+
+ It has never mattered, and that is not a reason to leave it: the only
+ caller is idm-generate-keypair, whose seed is idm-hash-words-to-bytes of
+ a sha256 -- eight words, exactly 32 bytes -- so the short path was never
+ taken. A helper that pads on request must pad, or the first caller with
+ a shorter source gets a key built from a truncated seed and no error.
+
   idm-take-loop : List Integer, Integer, Integer, List Integer -> List Integer
   idm-take-loop (src) (n) (i) (acc) =
     if i >= n then acc
-    else if i >= list-length src then list-push acc 0
+    else if i >= list-length src then idm-take-loop src n (i + 1) (list-push acc 0)
     else idm-take-loop src n (i + 1) (list-push acc (list-at src i))
 
 Section: Fingerprint
@@ -291,41 +336,64 @@ Section: Fingerprint
 
 Section: Console I/O Helpers
 
-  idm-show-lines : List Text -> Integer
+ `idm-rlb-loop` reads through `poll-key`, not `uefi-read-key`. The raw
+ call returns a PS/2 Set-1 make code, and this loop tests its result
+ against ASCII: Enter's make code is 28, never 13, so a loop over the raw
+ call cannot terminate and every byte it collects is a scancode. That is
+ the bug the skip reason "blocks waiting for keyboard input" was
+ describing.
+
+ `poll-key` has no shift latch yet, so a letter arrives as its UPPERCASE
+ ASCII code whatever the typist did. A passphrase is therefore folded to
+ uppercase before it is ever hashed. This is a property of the stored
+ identity, not of this loop: teaching `poll-key` to decode shift would
+ change what these bytes are, and every passphrase created before that day
+ would stop unlocking its key. Fold here deliberately, or migrate, but do
+ not let it change by accident.
+
+  idm-show-lines : List Text -> [Console] Integer
   idm-show-lines (lines) = idm-show-loop lines 0 (list-length lines)
 
-  idm-show-loop : List Text, Integer, Integer -> Integer
+  idm-show-loop : List Text, Integer, Integer -> [Console] Integer
   idm-show-loop (lines) (i) (len) =
     if i >= len then 0
-    else let w = print-line-uni (list-at lines i)
-    in idm-show-loop lines (i + 1) len
+    else act
+      print-line-uni (list-at lines i)
+      idm-show-loop lines (i + 1) len
+    end
 
-  idm-prompt-passphrase : Text -> List Integer
-  idm-prompt-passphrase (prompt) =
-    let w = print prompt
-    in idm-read-line-bytes
+  idm-prompt-passphrase : Text -> [Console] List Integer
+  idm-prompt-passphrase (prompt) = act
+    print-uni prompt
+    idm-read-line-bytes
+  end
 
-  idm-prompt-passphrase-create : Maybe (List Integer)
-  idm-prompt-passphrase-create =
-    let w0 = print "  Create a passphrase: "
-    in let pp1 = idm-read-line-bytes
-    in let w1 = print "  Confirm passphrase:  "
-    in let pp2 = idm-read-line-bytes
-    in if idm-bytes-eq pp1 pp2 then
-      let z = idm-zero-list pp2 0
-      in Just pp1
-    else
-      let z0 = idm-zero-list pp1 0
-      in let z1 = idm-zero-list pp2 0
-      in let w2 = print-line-uni "  Passphrases do not match."
-      in None
+  idm-prompt-passphrase-create : [Console] Maybe (List Integer)
+  idm-prompt-passphrase-create = act
+    print-uni "  Create a passphrase: "
+    let pp1 = idm-read-line-bytes
+    in act
+      print-uni "  Confirm passphrase:  "
+      let pp2 = idm-read-line-bytes
+      in if idm-bytes-eq pp1 pp2 then
+        let z = idm-zero-list pp2 0
+        in Just pp1
+      else
+        let z0 = idm-zero-list pp1 0
+        in let z1 = idm-zero-list pp2 0
+        in act
+          print-line-uni "  Passphrases do not match."
+          None
+        end
+    end
+  end
 
   idm-read-line-bytes : List Integer
   idm-read-line-bytes = idm-rlb-loop []
 
   idm-rlb-loop : List Integer -> List Integer
   idm-rlb-loop (acc) =
-    let ch = read-key
+    let ch = poll-key
     in if ch == 0 then idm-rlb-loop acc
     else if ch == 13 then acc
     else if ch == 10 then acc
@@ -348,6 +416,31 @@ Section: Byte Utilities
     if i >= list-length xs then 0
     else let w = list-set-at xs i 0
     in idm-zero-list xs (i + 1)
+
+ The passphrase-derived AES-256 key. It was written out at all four sites
+ that need it -- both encrypts and both decrypts -- and it was wrong at
+ all four, in the same way: each ran hkdf's result through
+ idm-hash-words-to-bytes.
+
+ hkdf returns BYTES. hkdf-expand converts every hmac block with
+ hkdf-words-to-bytes and then takes `length` of them, so `hkdf ... 32` is
+ 32 bytes, and codex/test/apps/hkdf-vector-test pins exactly that against
+ RFC 5869. Expanding them again turned each byte b into [0,0,0,b]: a
+ 128-element key, 97 of them zero, of which AES-256 takes the first 32 --
+ eight bytes of real entropy in a 256-bit key.
+
+ Nothing could see it. The same wrong key encrypted and decrypted, so the
+ ceremony round-tripped: a passphrase set at first boot unlocked
+ correctly, and the only symptom was a number nobody read. That is why it
+ is one function now -- a derivation written four times is a derivation
+ that can be wrong four times -- and why idm-key-tests asserts its LENGTH
+ rather than round-tripping it. A round trip agrees with itself.
+
+ idm-hash-words-to-bytes stays: sha256 really does return words, and the
+ first-boot seed above is the one place that is the right conversion.
+
+  idm-derive-key : List Integer, List Integer -> List Integer
+  idm-derive-key (salt) (pp-bytes) = hkdf salt pp-bytes idm-hkdf-info 32
 
   idm-hash-words-to-bytes : List Integer -> List Integer
   idm-hash-words-to-bytes (words) = idm-hw2b words 0 (list-length words) []

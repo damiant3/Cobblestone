@@ -1,0 +1,227 @@
+Chapter: TlsCert
+  cites Encode chapter X509
+  cites Foreword chapter Tls
+  cites Foreword chapter Ed25519
+  cites Foreword chapter Maybe
+
+ The two handshake messages that turn an anonymous key agreement into an
+ authenticated one: Certificate (RFC 8446 section 4.4.2) and
+ CertificateVerify (section 4.4.3). Without these, DTLS agrees a key with
+ whoever answered -- which is exactly what an active man in the middle
+ arranges to be.
+
+ CertificateVerify is the whole mechanism, and it is worth saying plainly
+ what it does. The peer signs the TRANSCRIPT -- every handshake byte so far,
+ including its own key share. So a man in the middle who substitutes his
+ own key share changes the transcript, and the signature he would need is
+ one over a transcript he cannot make the real peer sign. He does not hold
+ the certificate's private key, so he cannot produce it. That is the entire
+ defence, and it rests on the signature covering the transcript rather than
+ covering, say, the certificate.
+
+ THE SIGNED CONTENT IS NOT THE TRANSCRIPT HASH. RFC 8446 section 4.4.3
+ wraps it:
+
+   64 bytes of 0x20, then a context string, then one 0x00, then the hash.
+
+ The 64 spaces exist so that a signature made by a TLS 1.3 peer can never
+ be mistaken for one made by a TLS 1.2 peer, whose signed content began
+ with the handshake hash directly. The context string differs by ROLE --
+ "server CertificateVerify" versus "client CertificateVerify" -- so a
+ server's signature cannot be replayed back at a client as if the client
+ had made it. Drop the prefix, or use one role's string for both, and the
+ message still verifies against itself while losing the property it exists
+ for.
+
+ The context string is ASCII. It goes through tls13-ascii and NOT through
+ char-code, because Codex Text is CCE: char-code "TLS" gives the CCE code
+ points, not 54 4c 53. This exact bug encoded every label in the TLS key
+ schedule and shipped an SNI hostname no server could match (BACKLOG 5.8).
+ It is invisible to a round-trip test, because both sides make the same
+ mistake and agree.
+
+ To tls-cv-content gives List Integer, building the bytes a CertificateVerify signs.
+ To tls-cv-verify gives Boolean, checking a peer's CertificateVerify against its certificate's key.
+
+ We say:
+
+Section: Signature Schemes
+
+ ed25519, 0x0807 (RFC 8446 section 4.2.3). Two bytes on the wire.
+
+  tls-scheme-ed25519-hi : Integer = #08
+  tls-scheme-ed25519-lo : Integer = #07
+
+ signature_algorithms, extension type 13. A ClientHello that omits it is
+ telling the server it cannot do certificate authentication at all, which
+ is why the anonymous handshake never needed it.
+
+  tls-ext-signature-algorithms : Integer = #0D
+
+ The extension body: a two-byte list length, then the schemes. We offer
+ exactly one, because we implement exactly one, and offering a scheme we
+ cannot perform is how a handshake dies late instead of early.
+
+  tls-sigalgs-ext : List Integer =
+    [#00, tls-ext-signature-algorithms, #00, #04, #00, #02,
+     tls-scheme-ed25519-hi, tls-scheme-ed25519-lo]
+
+Section: The Signed Content
+
+ 64 spaces, the role's context string, a zero, and the transcript hash.
+
+  tls-cv-space-count : Integer = 64
+
+  tls-cv-content : Boolean, List Integer -> List Integer
+  tls-cv-content (is-server) (transcript-hash) =
+    tls-cv-spaces 0 [] & tls-cv-context is-server & [#00] & transcript-hash
+
+  tls-cv-spaces : Integer, List Integer -> List Integer
+  tls-cv-spaces (i) (acc) =
+    if i >= tls-cv-space-count then acc
+    else tls-cv-spaces (i + 1) (list-push acc #20)
+
+ The role separation. These two strings are the reason a server's signature
+ cannot be reflected at a client.
+
+  tls-cv-context : Boolean -> List Integer
+  tls-cv-context (is-server) =
+    if is-server then tls13-ascii "TLS 1.3, server CertificateVerify"
+    else tls13-ascii "TLS 1.3, client CertificateVerify"
+
+Section: CertificateVerify
+
+ struct { SignatureScheme algorithm; opaque signature<0..2^16-1>; }
+
+  tls-cv-encode : Boolean, List Integer, List Integer, List Integer -> List Integer
+  tls-cv-encode (is-server) (priv) (pub) (transcript-hash) =
+    tls-cv-wrap (ed25519-sign priv pub (tls-cv-content is-server transcript-hash))
+
+  tls-cv-wrap : List Integer -> List Integer
+  tls-cv-wrap (sig) =
+    [tls-scheme-ed25519-hi, tls-scheme-ed25519-lo,
+     bit-shru (list-length sig) 8, bit-and (list-length sig) #FF] & sig
+
+ Checking one. The key comes from the peer's certificate -- which the chain
+ walk has already decided to trust -- and it must be a key that can sign at
+ all, which X509 makes a type rather than a hope.
+
+ is-server is what the CHECKER expects, not what the message claims. A
+ message does not get to tell us which role it was signed for; that is the
+ whole point of the context string.
+
+  tls-cv-verify : Boolean, X509Key, List Integer, List Integer -> Boolean
+  tls-cv-verify (expect-server) (key) (body) (transcript-hash) =
+    if x509-can-verify key == False then False
+    else if list-length body < 4 then False
+    else tls-cv-scheme expect-server key body transcript-hash
+
+ An unexpected scheme is refused rather than ignored. A verifier that skips
+ the algorithm field is a verifier that can be handed a signature of a kind
+ it did not agree to.
+
+  tls-cv-scheme : Boolean, X509Key, List Integer, List Integer -> Boolean
+  tls-cv-scheme (expect-server) (key) (body) (transcript-hash) =
+    if list-at body 0 /= tls-scheme-ed25519-hi then False
+    else if list-at body 1 /= tls-scheme-ed25519-lo then False
+    else tls-cv-sig expect-server key body transcript-hash (tls-cv-len body)
+
+  tls-cv-len : List Integer -> Integer
+  tls-cv-len (body) = list-at body 2 * 256 + list-at body 3
+
+ The declared length must match what is actually there. A length field
+ nobody checks is a length field an attacker writes.
+
+  tls-cv-sig : Boolean, X509Key, List Integer, List Integer, Integer -> Boolean
+  tls-cv-sig (expect-server) (key) (body) (transcript-hash) (n) =
+    if n /= 64 then False
+    else if list-length body /= 4 + n then False
+    else ed25519-verify (key.xk-bytes) (tls-cv-content expect-server transcript-hash) (tlsc-slice body 4 n)
+
+Section: Certificate
+
+ struct { opaque certificate_request_context<0..2^8-1>;
+          CertificateEntry certificate_list<0..2^24-1>; }
+ CertificateEntry { opaque cert_data<1..2^24-1>;
+                    Extension extensions<0..2^16-1>; }
+
+ The request context is empty for a server's certificate. Three-byte
+ lengths throughout, which is the part everyone gets wrong once.
+
+  tls-cert-encode : List (List Integer) -> List Integer
+  tls-cert-encode (certs) = tls-cert-wrap (tls-cert-entries certs 0 [])
+
+  tls-cert-wrap : List Integer -> List Integer
+  tls-cert-wrap (entries) = [#00] & tls-u24 (list-length entries) & entries
+
+  tls-cert-entries : List (List Integer), Integer, List Integer -> List Integer
+  tls-cert-entries (certs) (i) (acc) =
+    if i >= list-length certs then acc
+    else tls-cert-entries certs (i + 1) (acc & tls-cert-entry (list-at certs i))
+
+ Each entry: the DER, then an empty extensions vector.
+
+  tls-cert-entry : List Integer -> List Integer
+  tls-cert-entry (der) = tls-u24 (list-length der) & der & [#00, #00]
+
+  tls-u24 : Integer -> List Integer
+  tls-u24 (n) = [bit-and (bit-shru n 16) #FF, bit-and (bit-shru n 8) #FF, bit-and n #FF]
+
+  tls-u24-at : List Integer, Integer -> Integer
+  tls-u24-at (bs) (i) =
+    list-at bs i * 65536 + list-at bs (i + 1) * 256 + list-at bs (i + 2)
+
+ Parsing one. Every length is checked against what is actually present
+ before it is believed, because a Certificate message is the first thing an
+ unauthenticated peer sends us.
+
+  tls-cert-parse : List Integer -> Maybe (List (List Integer))
+  tls-cert-parse (body) =
+    if list-length body < 4 then None
+    else tls-cert-ctx body (list-at body 0)
+
+  tls-cert-ctx : List Integer, Integer -> Maybe (List (List Integer))
+  tls-cert-ctx (body) (ctx-len) =
+    if 1 + ctx-len + 3 > list-length body then None
+    else tls-cert-list body (1 + ctx-len)
+
+  tls-cert-list : List Integer, Integer -> Maybe (List (List Integer))
+  tls-cert-list (body) (off) =
+    if off + 3 > list-length body then None
+    else tls-cert-list-of body (off + 3) (tls-u24-at body off)
+
+  tls-cert-list-of : List Integer, Integer, Integer -> Maybe (List (List Integer))
+  tls-cert-list-of (body) (off) (n) =
+    if off + n /= list-length body then None
+    else tls-cert-walk body off (off + n) []
+
+ The walk stops on the first thing it cannot read. It does not skip ahead
+ looking for something that parses.
+
+  tls-cert-walk : List Integer, Integer, Integer, List (List Integer) -> Maybe (List (List Integer))
+  tls-cert-walk (body) (off) (stop) (acc) =
+    if off == stop then Just acc
+    else if off + 3 > stop then None
+    else tls-cert-one body off stop acc (tls-u24-at body off)
+
+  tls-cert-one : List Integer, Integer, Integer, List (List Integer), Integer -> Maybe (List (List Integer))
+  tls-cert-one (body) (off) (stop) (acc) (n) =
+    if n < 1 then None
+    else if off + 3 + n + 2 > stop then None
+    else tls-cert-ext body (off + 3 + n) stop (list-push acc (tlsc-slice body (off + 3) n))
+
+  tls-cert-ext : List Integer, Integer, Integer, List (List Integer) -> Maybe (List (List Integer))
+  tls-cert-ext (body) (off) (stop) (acc) =
+    if off + 2 > stop then None
+    else tls-cert-walk body (off + 2 + (list-at body off * 256 + list-at body (off + 1))) stop acc
+
+Section: Slice
+
+  tlsc-slice : List Integer, Integer, Integer -> List Integer
+  tlsc-slice (bs) (off) (n) = tlsc-slice-loop bs off n 0 []
+
+  tlsc-slice-loop : List Integer, Integer, Integer, Integer, List Integer -> List Integer
+  tlsc-slice-loop (bs) (off) (n) (i) (acc) =
+    if i >= n then acc
+    else if off + i >= list-length bs then acc
+    else tlsc-slice-loop bs off n (i + 1) (list-push acc (list-at bs (off + i)))

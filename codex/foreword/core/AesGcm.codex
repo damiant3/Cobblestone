@@ -1,11 +1,18 @@
 Chapter: AesGcm
   cites Foreword chapter Aes
+  cites Foreword chapter Aes256
 
- AES-128-GCM authenticated encryption (NIST SP 800-38D). Provides
+ AES-GCM authenticated encryption (NIST SP 800-38D). Provides
  confidentiality via AES-CTR and authenticity via GHASH over the
  Galois field GF(2^128). The combined AEAD construction is the
  standard cipher suite for TLS 1.3 and modern protocols. Nonces
  must be exactly 12 bytes (96 bits), the NIST-recommended length.
+
+ Both AES-128-GCM and AES-256-GCM are provided. The key length
+ selects the variant: a 16-byte key encrypts under 10 rounds, a
+ 32-byte key under 14. Everything above the block cipher -- CTR
+ mode, GHASH, the tag -- is identical for the two, so the choice
+ is made once, in gcm-expand, and never again.
 
  To aesgcm-encrypt gives ciphertext and authentication tag.
  To aesgcm-decrypt gives plaintext if the tag verifies, Nothing otherwise.
@@ -19,12 +26,30 @@ Section: Types
     tag : List Integer
   }
 
+Section: Key Size Dispatch
+
+ The 256-bit key schedule is 240 bytes against the 128-bit schedule's
+ 176, and the block cipher runs 14 rounds against 10. Those are the
+ only two differences, and they are both consequences of the key
+ length. gcm-expand reads the key, gcm-block reads the schedule it
+ produced; no caller above this section knows which variant it is in.
+
+  gcm-expand : List Integer -> List Integer
+  gcm-expand (key) =
+    if list-length key >= 32 then aes256-expand-key key
+    else aes-expand-key-128 key
+
+  gcm-block : List Integer, List Integer -> List Integer
+  gcm-block (block) (ks) =
+    if list-length ks >= 240 then aes256-encrypt-block block ks
+    else aes-encrypt-block block ks
+
 Section: Encrypt
 
   aesgcm-encrypt : List Integer, List Integer, List Integer, List Integer -> AesGcmResult
   aesgcm-encrypt (key) (nonce) (plaintext) (aad) =
-    let ks = aes-expand-key-128 key
-    in let h = aes-encrypt-block (gcm-zeros 16 0 []) ks
+    let ks = gcm-expand key
+    in let h = gcm-block (gcm-zeros 16 0 []) ks
     in let ct = gcm-ctr-encrypt ks (gcm-inc32 (gcm-make-j0 nonce)) plaintext 0 (list-length plaintext) []
     in let tag = gcm-compute-tag ks h (gcm-make-j0 nonce) aad ct
     in AesGcmResult { ciphertext = ct, tag = tag }
@@ -33,8 +58,8 @@ Section: Decrypt
 
   aesgcm-decrypt : List Integer, List Integer, List Integer, List Integer, List Integer -> Maybe (List Integer)
   aesgcm-decrypt (key) (nonce) (ciphertext) (aad) (tag) =
-    let ks = aes-expand-key-128 key
-    in let h = aes-encrypt-block (gcm-zeros 16 0 []) ks
+    let ks = gcm-expand key
+    in let h = gcm-block (gcm-zeros 16 0 []) ks
     in let expected = gcm-compute-tag ks h (gcm-make-j0 nonce) aad ciphertext
     in if gcm-tags-equal expected tag then
       Just (gcm-ctr-encrypt ks (gcm-inc32 (gcm-make-j0 nonce)) ciphertext 0 (list-length ciphertext) [])
@@ -45,7 +70,7 @@ Section: CTR Mode
   gcm-ctr-encrypt : List Integer, List Integer, List Integer, Integer, Integer, List Integer -> List Integer
   gcm-ctr-encrypt (ks) (ctr) (input) (i) (len) (acc) =
     if i >= len then acc
-    else let block = aes-encrypt-block ctr ks
+    else let block = gcm-block ctr ks
     in let chunk-len = if len - i < 16 then len - i else 16
     in let xored = gcm-xor-chunk block input i chunk-len 0 []
     in gcm-ctr-encrypt ks (gcm-inc32 ctr) input (i + chunk-len) len (acc & xored)
@@ -65,7 +90,7 @@ Section: GHASH
     in let len-block = gcm-len-block (list-length aad) (list-length ct)
     in let data = aad-padded & ct-padded & len-block
     in let ghash = gcm-ghash h data 0 (list-length data) (gcm-zeros 16 0 [])
-    in let e-j0 = aes-encrypt-block j0 ks
+    in let e-j0 = gcm-block j0 ks
     in gcm-xor-blocks ghash e-j0
 
   gcm-ghash : List Integer, List Integer, Integer, Integer, List Integer -> List Integer

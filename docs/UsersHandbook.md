@@ -2,22 +2,25 @@
 
 ## VS Code Setup
 
-Syntax highlighting, error squiggles, hover types, go-to-definition,
-and completion for `.codex` files in Visual Studio Code.
+The `tools\vscode` extension gives `.codex` files syntax highlighting,
+bracket matching, and indentation rules in Visual Studio Code. It needs
+no .NET, no compiler build, and no language server.
+
+Rich editor features — error squiggles, hover types, go-to-definition,
+completion — are **not available today**. See "What is not available"
+below before you go looking for them.
 
 ### Prerequisites
 
-1. **.NET 8 SDK** — `dotnet --version` should show `8.x.x` or higher.
-2. **Node.js (LTS)** — `node --version` and `npm --version` should work.
-3. **Visual Studio Code**.
+**Visual Studio Code.** That is all.
 
-### Build the extension (one-time)
+Node.js is optional and only needed to re-compile the extension's
+TypeScript or to package a `.vsix`. The compiled `out\extension.js` is
+already in the depot, and the parts that do the work (the TextMate
+grammar and the language configuration) are declarative JSON that VS
+Code reads directly — they never run any code.
 
-```powershell
-cd tools\vscode
-npm install
-npm run compile
-```
+**Do not install .NET for this.** Nothing in the working extension uses it.
 
 ### Install into VS Code
 
@@ -27,42 +30,90 @@ npm run compile
 2. Browse to `tools\vscode` inside the repo root → **Select Folder**.
 3. Reload when prompted.
 
+Open any `.codex` file. The status bar should read **Codex** and the
+file should be colored.
+
 **Option B — Package and install**
+
+Needs Node.js (LTS).
 
 ```powershell
 cd tools\vscode
+npm install
+npm run compile
 npm install -g @vscode/vsce
 vsce package
 ```
 
 Then `Ctrl+Shift+P` → **"Extensions: Install from VSIX..."** → select the `.vsix`.
 
-### What you get
+### What works today
+
+All of the following come from `syntaxes\codex.tmLanguage.json` and
+`language-configuration.json`. No process is started; nothing can fail.
 
 | Feature | Trigger |
 |---------|---------|
 | Syntax highlighting | Automatic on `.codex` files |
-| Error squiggles | On save or change |
-| Hover types | Mouse over any name |
-| Go to definition | `F12` |
-| Peek definition | `Alt+F12` |
-| Completion | `Ctrl+Space` |
-| Document outline | Explorer sidebar → Outline |
+| — chapter/section/foreword headers | `Chapter:`, `Section:`, `Foreword:` |
+| — prose declarations (`We say:`, `To …`) | Automatic |
+| — keywords, types, effect rows (`[Identity]`) | Automatic |
+| — strings (incl. `"""` triple), chars, hex (`#FF`) numbers | Automatic |
+| — annotations (`@name`) | Automatic |
+| — arrow/unicode operators (`->`, `→`, `⊢`, `∀`) | Automatic |
+| Bracket matching and auto-close | Typing `(`, `[`, `{`, `"` |
+| Surround-with-bracket on selection | Select, then type a bracket |
+| Auto-indent after `act` / `then` / `else` / `in` / `for` / `=` | Newline |
+| Codex word boundaries (kebab-case names stay whole) | Double-click, `Ctrl+←/→` |
+| Comment/fold/select by indentation | VS Code defaults |
 
-### Using a pre-built server (faster startup)
+### What is not available
 
-```powershell
-dotnet publish src\Codex.Lsp\Codex.Lsp.csproj -c Release -r win-x64 --self-contained -o out\lsp
-```
+| Feature | Status |
+|---------|--------|
+| Error squiggles | **NOT AVAILABLE** |
+| Hover types | **NOT AVAILABLE** |
+| Go to definition / peek | **NOT AVAILABLE** |
+| Completion | **NOT AVAILABLE** |
+| Document outline | **NOT AVAILABLE** |
 
-Set `codex.serverPath` in VS Code settings to the produced executable path.
+**Why.** Every one of these is a language-server feature. The only
+Codex language server ever written was `src\Codex.Lsp`, part of the C#
+reference compiler. That compiler is **permanently retired** — it lives
+under `old/` as historical record and is never built, invoked, or
+edited. Its LSP went with it. A **Codex-native language server has not
+been written yet**: there is no `.codex` implementation of the LSP
+protocol anywhere in the tree.
+
+The extension still carries the client half of that arrangement.
+`src\extension.ts` unconditionally starts a `LanguageClient` on
+activation, pointed at a `src\Codex.Lsp\Codex.Lsp.csproj` that no
+longer exists at the repo root. Activation therefore fails and VS Code
+may show a one-time error notification. **This is expected and
+harmless.** Dismiss it. Grammar and language-configuration
+contributions are declarative — VS Code applies them whether or not the
+extension's code activates — so highlighting, brackets, and indentation
+work regardless. The `codex.serverPath` setting is likewise vestigial:
+there is no server for it to point at. Leave it empty.
+
+**This gap is known and owned.** Rich editor support is tracked as open
+work: `docs/PM/CurrentPlan.md` gap 7, "Editor and debugger maturity"
+(syntax highlighting in GUI mode, F5 compile-and-run, watch
+expressions, real debug info in the CDX). A Codex-native language
+server is the missing piece for the VS Code half. New work items land
+in `docs/PM/BACKLOG.md`. The capability is wanted; it has not been
+rebuilt yet.
 
 ### Troubleshooting
 
-- **No highlighting** — check file extension is `.codex`, language mode shows "Codex" in status bar.
-- **No squiggles/hover** — `View → Output → Codex Language Server` for errors. Run `dotnet build Codex.sln`.
-- **"spawn dotnet ENOENT"** — .NET not on PATH. Restart VS Code or set `codex.serverPath`.
-- **Missing project file** — open the repo root folder, not a subfolder.
+- **No highlighting** — check the file extension is `.codex` and the
+  status bar language mode reads "Codex". If it reads "Plain Text",
+  the extension is not installed or VS Code was not reloaded.
+- **"Couldn't start client Codex Language Server" / "spawn dotnet ENOENT"**
+  — expected. There is no language server. Dismiss the notification;
+  highlighting is unaffected. Do not install .NET, and do not try to
+  build anything under `old/`.
+- **No squiggles/hover/F12** — not a fault. See "What is not available".
 
 ## UEFI Dev Console USB Boot
 
@@ -181,13 +232,17 @@ Image Protocol to find the correct boot device, instead of
 
 ### QEMU testing
 
+Run from the repo root. QEMU needs an absolute path for `-drive`, so
+resolve it rather than hardcoding a workspace.
+
 ```powershell
 Copy-Item seed\Codex.img build-output\boot-test.img -Force
 Set-ItemProperty build-output\boot-test.img -Name IsReadOnly -Value $false
+$img = (Resolve-Path build-output\boot-test.img).Path
 & 'D:\Program Files\qemu\qemu-system-x86_64.exe' `
   -accel tcg `
   -drive 'if=pflash,format=raw,readonly=on,file=D:\Program Files\qemu\share\edk2-x86_64-code.fd' `
-  -drive 'format=raw,file=D:\Projects\NewRepository-reek\build-output\boot-test.img' `
+  -drive "format=raw,file=$img" `
   -m 2048
 ```
 

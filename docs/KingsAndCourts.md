@@ -27,8 +27,6 @@ hard real-time story that ties them together.
 
 ## 1. Hard Real-Time — The `punctual` Keyword
 
-Full design: `docs/Designs/OS/Active/HardRealtime.md`
-
 ### The Problem
 
 Safety-critical systems (IEC 62443, EU CRA Article 6, IEC 62304)
@@ -97,7 +95,7 @@ compile-time bounded-execution enforcement:
 
 ## 2. EU Cyber Resilience Act (CRA)
 
-Full mapping: `docs/Designs/Features/Active/CRA-Compliance-Matrix.md`
+Full mapping: `docs/Reference/CRA-Compliance-Matrix.md`
 
 The CRA (Regulation 2024/2847) requires all products with digital
 elements sold in the EU to meet essential cybersecurity requirements.
@@ -153,7 +151,7 @@ prevents the relevant vulnerability classes:
 
 ## 3. ETSI EN 303 645
 
-Full mapping: `docs/Designs/Features/Active/ETSI-303645-Mapping.md`
+Full mapping: `docs/Reference/ETSI-303645-Mapping.md`
 
 ETSI EN 303 645 is the European standard for consumer IoT security,
 with 33 mandatory provisions across 13 categories. Codex satisfies or
@@ -195,7 +193,7 @@ It is the default state.
 
 ## 4. IEC 62443 (Industrial Automation)
 
-Full mapping: `docs/Designs/Features/Active/IEC62443-Evidence.md`
+Full mapping: `docs/Reference/IEC62443-Evidence.md`
 
 IEC 62443 is the international standard for industrial automation
 and control system (IACS) security. Codex maps to the component-level
@@ -242,7 +240,7 @@ Nine target boards with register-level drivers. Full details in
 | STM32L4 Nucleo | Cortex-M4F 80 MHz | ARM | Low-power modes, LPTIM |
 | FE310 (HiFive1) | RV32IMAC 320 MHz | RISC-V | PWM, PLIC |
 
-88 sub-tests total. All register addresses from official reference
+108 sub-tests total. All register addresses from official reference
 manuals.
 
 ---
@@ -276,18 +274,14 @@ NVIDIA in the data center, ARM Mali on the gateway, CPU on the sensor
 node. Same signed CDX, same trust chain, same effect-typed safety
 guarantees.
 
-Design: `docs/Designs/Backends/Active/DualTargetGpuCompilation.md`
-
 ---
 
 ## Cross-References
 
-- `docs/Designs/OS/Active/HardRealtime.md` — full punctual design and prior art survey
-- `docs/Designs/Features/Active/CRA-Compliance-Matrix.md` — CRA requirement mapping
-- `docs/Designs/Features/Active/ETSI-303645-Mapping.md` — ETSI provision mapping
-- `docs/Designs/Features/Active/IEC62443-Evidence.md` — IEC 62443 evidence mapping
+- `docs/Reference/CRA-Compliance-Matrix.md` — CRA requirement mapping
+- `docs/Reference/ETSI-303645-Mapping.md` — ETSI provision mapping
+- `docs/Reference/IEC62443-Evidence.md` — IEC 62443 evidence mapping
 - `docs/PM/IoT/` — compliance summaries, protocol references, hardware specs
 - `docs/PM/Stories/Vision/CodexIoTPlan.md` — IoT strategic prospectus
-- `docs/Designs/Backends/Active/DualTargetGpuCompilation.md` — GPU for IoT edge
 - `codex/foreword/punctual/` — the punctual library (8 chapters)
 - `codex/foreword/core/ComplianceEvidence.codex` — automated evidence report

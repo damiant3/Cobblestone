@@ -8,7 +8,76 @@ Chapter: GopDraw
  as a scale-by-scale square, so the same font renders 8x16 at scale 1
  and 16x32 at scale 2. Panels 1024 pixels wide or wider use scale 2.
 
+ The mouse cursor is drawn by saving the pixels beneath it, painting a
+ small white block with a dark border, and restoring the patch on the
+ next move -- a full-panel repaint per mouse twitch would run at
+ report rate for nothing. Any draw that clears or repaints beneath the
+ cursor invalidates the saved patch; the next movement repaints the
+ cursor over the fresh screen. State block: [0] valid, [4] x, [8] y,
+ [12] clamped width, [16] clamped height, saved pixels from [32] at a
+ fixed 16-pixel pitch.
+
  We say:
+
+Section: Cursor
+
+  cursor-w : Integer = 8
+  cursor-h : Integer = 12
+
+  cursor-save-cols : Integer, Integer, Integer, Integer, Integer -> Integer
+  cursor-save-cols (cs) (base) (stride) (r) (c) =
+    if c >= peek-32 cs 12 then 0
+    else let a = poke-32 cs (32 + (r * 16 + c) * 4) (peek-32 base (((peek-32 cs 8 + r) * stride + peek-32 cs 4 + c) * 4))
+    in cursor-save-cols cs base stride r (c + 1)
+
+  cursor-save-rows : Integer, Integer, Integer, Integer -> Integer
+  cursor-save-rows (cs) (base) (stride) (r) =
+    if r >= peek-32 cs 16 then 0
+    else let cc = cursor-save-cols cs base stride r 0
+    in cursor-save-rows cs base stride (r + 1)
+
+  cursor-rest-cols : Integer, Integer, Integer, Integer, Integer -> Integer
+  cursor-rest-cols (cs) (base) (stride) (r) (c) =
+    if c >= peek-32 cs 12 then 0
+    else let a = poke-32 base (((peek-32 cs 8 + r) * stride + peek-32 cs 4 + c) * 4) (peek-32 cs (32 + (r * 16 + c) * 4))
+    in cursor-rest-cols cs base stride r (c + 1)
+
+  cursor-rest-rows : Integer, Integer, Integer, Integer -> Integer
+  cursor-rest-rows (cs) (base) (stride) (r) =
+    if r >= peek-32 cs 16 then 0
+    else let cc = cursor-rest-cols cs base stride r 0
+    in cursor-rest-rows cs base stride (r + 1)
+
+  cursor-min : Integer, Integer -> Integer
+  cursor-min (a) (b) = if a < b then a else b
+
+ Hide before a repaint, not just clear the flag: clearing alone is
+ correct only when the repaint covers the cursor. A pane that covers
+ part of the panel leaves the old cursor pixels standing outside it,
+ and the next save-under bakes them into the patch -- a permanent
+ ghost the first restore stamps back. Restore first, then clear;
+ the repaint may then paint anywhere, and the next update saves a
+ clean patch.
+
+  cursor-hide : Integer, Integer, Integer -> Integer
+  cursor-hide (cs) (base) (stride) =
+    if peek-32 cs 0 == 0 then 0
+    else let r = cursor-rest-rows cs base stride 0
+    in poke-32 cs 0 0
+
+  cursor-update : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  cursor-update (cs) (base) (stride) (pw) (ph) (s) (mx) (my) =
+    let r0 = if peek-32 cs 0 /= 0 then cursor-rest-rows cs base stride 0 else 0
+    in let cwc = cursor-min (cursor-w * s) (pw - mx)
+    in let chc = cursor-min (cursor-h * s) (ph - my)
+    in let s0 = poke-32 cs 4 mx
+    in let s1 = poke-32 cs 8 my
+    in let s2 = poke-32 cs 12 cwc
+    in let s3 = poke-32 cs 16 chc
+    in let sv = cursor-save-rows cs base stride 0
+    in let d0 = gop-fill-rect base stride mx my cwc chc 1052688
+    in let d1 = if cwc > 2 * s then (if chc > 2 * s then gop-fill-rect base stride (mx + s) (my + s) (cwc - 2 * s) (chc - 2 * s) 16777215 else 0) else 0
+    in poke-32 cs 0 1
 
 Section: Pixel
 

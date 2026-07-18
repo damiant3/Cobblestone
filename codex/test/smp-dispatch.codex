@@ -1,0 +1,55 @@
+Chapter: SmpDispatch
+
+ An application processor claims a process out of the process table and
+ runs it.
+
+ Six children are spawned and each spins for a while before exiting. The
+ boot processor takes one; every other core is in the same dispatch loop
+ and takes one too. Each claim made by a core whose id is not zero adds
+ one to cell 36200 with a locked add, and the boot processor's id is
+ always zero.
+
+ Nothing else writes that cell. The host does not touch it and no path the
+ boot processor can take reaches it. So a value above zero is not evidence
+ that six processes ran -- it is evidence that a core which is not the boot
+ processor took one out of the table and executed it. A probe that only
+ showed six children finishing would pass exactly as happily on one core,
+ and a test that cannot fail is how SMP came to be faked here once already.
+
+ The spin is long on purpose. An idle core now halts rather than busy-scans,
+ and rises again on a wake IPI or its timer, so it takes a millisecond or so
+ to claim newly published work -- during which the never-halting boot
+ processor, arriving in the dispatch loop the instant it blocks, can run a
+ short child to completion itself. If each child finished in less than that
+ wake latency the boot processor would take all six and no application
+ processor would claim any, and the test would report NO AP RAN A PROCESS
+ while dispatch worked perfectly. The child outlives the wake by a wide
+ margin, so a core that wakes has work still waiting. This is the same
+ reason smp-preempt spins long.
+
+Section: Body
+
+  spin : Integer, Integer -> Integer
+  spin (n) (acc) = if n == 0 then acc else spin (n - 1) (acc + 1)
+
+  child-body : Integer -> Integer
+  child-body (x) = spin 100000000 0
+
+  opening : [Console, Concurrent] Nothing = act
+    a <- process-spawn (\x -> child-body x)
+    b <- process-spawn (\x -> child-body x)
+    c <- process-spawn (\x -> child-body x)
+    d <- process-spawn (\x -> child-body x)
+    e <- process-spawn (\x -> child-body x)
+    f <- process-spawn (\x -> child-body x)
+    wa <- process-wait a
+    wb <- process-wait b
+    wc <- process-wait c
+    wd <- process-wait d
+    we <- process-wait e
+    wf <- process-wait f
+    print-line-uni ("aps checked in: " & show (atomic-load 4080))
+    print-line-uni (if atomic-load 36200 > 0
+                    then "an ap claimed and ran a process"
+                    else "NO AP RAN A PROCESS")
+  end

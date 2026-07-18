@@ -1,0 +1,66 @@
+Chapter: LapicRegs
+
+  cites Kernel chapter Lapic
+
+ Smoke test for the local APIC driver.
+
+ It demands a specific number. The version register reports 0x00050014
+ about itself, and that constant is the whole point of testing it: an
+ unmapped device gigabyte, an unserved MMIO exit and a stub body all
+ answer 0, and so does a legitimately-empty ISR. A test that only
+ asserted the drain returns 0 would pass on a driver that does nothing
+ at all -- the block-identify trap, where a function that always answers
+ the same thing looks exactly like one that works. The version is the one
+ register here that a broken path cannot fake.
+
+ The SIVR round trip is the write half, and it is the sharper of the two:
+ a value the guest chose comes back only if a real write reached the
+ decoder and a real read found it there. It read back 0xFE for a while,
+ because the emulator's MMIO write path took the value from RAX rather
+ than from the register the store named, and no guest driver had ever
+ written a LAPIC register whose value mattered.
+
+ What is NOT claimed. The drain is compiled, called, and returns 0: that
+ pins that it type-checks and terminates, nothing more, because codex-vm
+ does not model the ISR and so has nothing in service to acknowledge.
+ lapic-eoi's write is reached only through the drain and therefore never
+ fires here. Neither is covered, and this test does not pretend they are.
+
+ The driver functions declare [Device.Mmio], so this test declares it
+ too: a test chapter is not effect-exempt, so the row is checked here,
+ at the first caller outside the quire.
+
+Section: Definitions
+
+  test-version : [Device.Mmio] Integer
+  test-version = act
+    v <- lapic-version
+    if v == #50014 then 1 else 0
+  end
+
+  test-sivr-roundtrip : [Device.Mmio] Integer
+  test-sivr-roundtrip = act
+    w <- lapic-set-sivr #1FF
+    v <- lapic-sivr
+    if v == #1FF then 1 else 0
+  end
+
+  test-bsp-id : [Device.Mmio] Integer
+  test-bsp-id = act
+    v <- lapic-id
+    if v == 0 then 1 else 0
+  end
+
+  test-drain-quiet : [Device.Mmio] Integer
+  test-drain-quiet = act
+    n <- lapic-drain
+    if n == 0 then 1 else 0
+  end
+
+  opening : [Console, Device.Mmio] Nothing = act
+    a <- test-version
+    b <- test-sivr-roundtrip
+    c <- test-bsp-id
+    d <- test-drain-quiet
+    print-line-uni (integer-to-text (a + b + c + d))
+  end

@@ -1,8 +1,4 @@
 Chapter: ElfPlug
-  cites Codex chapter General
-  cites Codex chapter Text
-  cites Codex chapter Characters
-  cites Codex chapter Lists
   cites Net chapter NetIO
   cites Net chapter NetworkStack
   cites Net chapter TcpTransport
@@ -27,28 +23,32 @@ Section: Streaming Send
    if i >= n then 0
    else spin-wait (i + 1) n
 
-  send-bytes-loop : TcpTransportState, List Integer, Integer, Integer -> TcpTransportState
+  send-bytes-loop : TcpTransportState, List Integer, Integer, Integer -> [Network.Write] TcpTransportState
   send-bytes-loop (ts) (bs) (off) (len) =
    if off >= len then ts
    else let stop = if off + 1400 > len then len else off + 1400
    in let chunk = slice-bytes bs off stop
    in let r = net-send (ts.session) chunk
-   in let ts1 = TcpTransportState { session = r.session, recv-buf = ts.recv-buf, messages-sent = ts.messages-sent, messages-received = ts.messages-received }
-   in let ts2 = flush-transport-outbox ts1
-   in let w = spin-wait 0 10000000
-   in send-bytes-loop ts2 bs stop len
+   in let ts1 = TcpTransportState { session = r.session, recv-buf = ts.recv-buf, recv-base = ts.recv-base, recv-len = ts.recv-len, recv-cap = ts.recv-cap, messages-sent = ts.messages-sent, messages-received = ts.messages-received }
+   in act
+    ts2 <- flush-transport-outbox ts1
+    let w = spin-wait 0 10000000
+    in send-bytes-loop ts2 bs stop len
+   end
 
-  send-bytes : TcpTransportState, List Integer -> TcpTransportState
+  send-bytes : TcpTransportState, List Integer -> [Network.Write] TcpTransportState
   send-bytes (ts) (bs) = send-bytes-loop ts bs 0 (list-length bs)
 
 Section: Drain
 
-  drain-wait : TcpTransportState, Integer -> Integer
+  drain-wait : TcpTransportState, Integer -> [Network.Read] Integer
   drain-wait (ts) (tries) =
    if tries > 5000000 then 0
-   else let frame = ne2k-recv-frame
-   in if list-length frame == 0 then drain-wait ts (tries + 1)
-   else 0
+   else act
+    frame <- ne2k-recv-frame
+    if list-length frame == 0 then drain-wait ts (tries + 1)
+    else 0
+   end
 
 Section: Function Table from Buffer
 
@@ -138,32 +138,35 @@ Section: ELF Builder (buffer-based)
 
 Section: Body
 
-  opening : [Console, FileSystem] Nothing = act
+  opening : [Console, FileSystem, Network.Read, Network.Write] Nothing =
    let cce-table = build-cce-to-ascii-table cce-to-unicode-table
    in let sess = net-session-new local-mac local-ip gateway-ip 49152 9100 host-ip 1000
    in let ts = transport-new sess
-   in let ts1 = net-io-connect ts
-   in let recv = net-io-recv-loop ts1 0
-   in if recv.has-message then
-    let payload = recv.body
-    in let payload-len = list-length payload
-    in let payload-buf = __heap-save
-    in let pa = __heap-advance payload-len
-    in let pw = __buf-write-bytes payload-buf 0 payload
-    in let hp = __heap-save
-    in let hdr-bytes = __buf-read-bytes payload-buf 0 12
-    in let code-len = read-i32-le hdr-bytes 0
-    in let data-len = read-i32-le hdr-bytes 4
-    in let func-count = read-i32-le hdr-bytes 8
-    in let hr = __heap-restore hp
-    in let code-off = 12
-    in let data-off = code-off + code-len
-    in let func-off = data-off + data-len
-    in let funcs = parse-func-table-from-buf payload-buf func-off func-count
-    in let elf-bytes = build-elf-from-payload payload-buf code-len data-len code-off data-off (funcs.names) (funcs.offsets) cce-table
-    in let ts5 = send-bytes (recv.transport) elf-bytes
-    in let ts6 = net-io-close ts5
-    in let drained = drain-wait ts6 0
-    in act print-line-uni ("OK elf=" & show (list-length elf-bytes + drained - drained) & " code=" & show code-len & " data=" & show data-len & " funcs=" & show func-count) end
-   else act print-line-uni "FAIL" end
-  end
+   in act
+    ts1 <- net-io-connect ts
+    recv <- net-io-recv-loop ts1 0
+    if recv.has-message then
+     let payload = recv.body
+     in let payload-len = list-length payload
+     in let payload-buf = __heap-save
+     in let pa = __heap-advance payload-len
+     in let pw = __buf-write-bytes payload-buf 0 payload
+     in let hp = __heap-save
+     in let hdr-bytes = __buf-read-bytes payload-buf 0 12
+     in let code-len = read-i32-le hdr-bytes 0
+     in let data-len = read-i32-le hdr-bytes 4
+     in let func-count = read-i32-le hdr-bytes 8
+     in let hr = __heap-restore hp
+     in let code-off = 12
+     in let data-off = code-off + code-len
+     in let func-off = data-off + data-len
+     in let funcs = parse-func-table-from-buf payload-buf func-off func-count
+     in let elf-bytes = build-elf-from-payload payload-buf code-len data-len code-off data-off (funcs.names) (funcs.offsets) cce-table
+     in act
+      ts5 <- send-bytes (recv.transport) elf-bytes
+      ts6 <- net-io-close ts5
+      drained <- drain-wait ts6 0
+      print-line-uni ("OK elf=" & show (list-length elf-bytes + drained - drained) & " code=" & show code-len & " data=" & show data-len & " funcs=" & show func-count)
+     end
+    else print-line-uni "FAIL"
+   end

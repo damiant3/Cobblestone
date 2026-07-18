@@ -1,0 +1,690 @@
+Chapter: SPIRV Binary Emitter
+  cites Foreword chapter CCE
+
+ Walks the typed IR and emits a SPIR-V word stream (List Integer), the
+ thing a driver actually consumes, using the primitives in SPIRV Binary.
+ It is the binary twin of the disassembling emitter (SPIRV Emitter): same
+ IR shapes, same lowering decisions, but every identifier is a number and
+ every instruction is words, not text. The two will fold together once
+ the text side becomes a disassembler over these words; until then this is
+ the one that produces something dispatchable.
+
+ Reserved ids: 1 = %bool, 2 = %i64, 3 = %f64. Everything else -- function
+ ids, function-type ids, constants, parameters, temporaries -- is handed
+ out from next-id starting at 4, so the id bound is next-id at the end.
+
+Section: Types
+
+  spv-b-is-real : CodexType -> Boolean
+  spv-b-is-real (ty) =
+   when ty
+    is RealTy -> True
+    is RealApproxTy -> True
+    is RealTrappingTy -> True
+    is RealSaturatingTy -> True
+    is FunTy (param) (ret) -> spv-b-is-real ret
+    is EffectfulTy (names) (texts) (inner) -> spv-b-is-real inner
+    is otherwise -> False
+
+  spv-b-param-is-real : IRParam -> Boolean
+  spv-b-param-is-real (p) =
+   spv-b-is-real (p.type-val)
+
+  spv-b-type-id : Boolean -> Integer
+  spv-b-type-id (isf) =
+   if isf then 3 else 2
+
+Section: Context
+
+  SpvBBind = record { bn : Text, bi : Integer, bf : Boolean }
+  SpvBConst = record { cv : Integer, ci : Integer }
+  SpvBFunc = record { fnm : Text, fid : Integer }
+  SpvBFType = record { sig : Text, tid : Integer }
+
+  SpvBCtx = record {
+   next-id : Integer,
+   binds : List SpvBBind,
+   iconsts : List SpvBConst,
+   fconsts : List SpvBConst,
+   const-words : List Integer,
+   funcs : List SpvBFunc,
+   ftypes : List SpvBFType
+  }
+
+  SpvBRes = record {
+   words : List Integer,
+   rid : Integer,
+   isf : Boolean,
+   ctx : SpvBCtx
+  }
+
+  spv-b-fresh : SpvBCtx -> Integer
+  spv-b-fresh (c) = c.next-id
+
+  spv-b-bump : SpvBCtx -> SpvBCtx
+  spv-b-bump (c) =
+   SpvBCtx { next-id = c.next-id + 1, binds = c.binds, iconsts = c.iconsts, fconsts = c.fconsts, const-words = c.const-words, funcs = c.funcs, ftypes = c.ftypes }
+
+  spv-b-set-binds : SpvBCtx, List SpvBBind -> SpvBCtx
+  spv-b-set-binds (c) (bs) =
+   SpvBCtx { next-id = c.next-id, binds = bs, iconsts = c.iconsts, fconsts = c.fconsts, const-words = c.const-words, funcs = c.funcs, ftypes = c.ftypes }
+
+  spv-b-bind : SpvBCtx, Text, Integer, Boolean -> SpvBCtx
+  spv-b-bind (c) (n) (id) (isf) =
+   spv-b-set-binds c (list-insert-at (c.binds) 0 (SpvBBind { bn = n, bi = id, bf = isf }))
+
+  spv-b-find : List SpvBBind, Text, Integer -> Integer
+  spv-b-find (bs) (n) (i) =
+   if i >= list-length bs then -1
+   else if ((list-at bs i).bn) == n then i
+   else spv-b-find bs n (i + 1)
+
+  spv-b-lookup-func : List SpvBFunc, Text, Integer -> Integer
+  spv-b-lookup-func (fs) (n) (i) =
+   if i >= list-length fs then -1
+   else if ((list-at fs i).fnm) == n then ((list-at fs i).fid)
+   else spv-b-lookup-func fs n (i + 1)
+
+  spv-b-lookup-ftype : List SpvBFType, Text, Integer -> Integer
+  spv-b-lookup-ftype (ts) (s) (i) =
+   if i >= list-length ts then -1
+   else if ((list-at ts i).sig) == s then ((list-at ts i).tid)
+   else spv-b-lookup-ftype ts s (i + 1)
+
+Section: Constants
+
+ Every literal is a module-scope OpConstant, deduplicated by value so a
+ constant is declared once, as SPIR-V requires. The words go on
+ const-words; the expression that needed it carries away only the id. A
+ 64-bit value -- integer or the raw bit pattern of a float -- is two words.
+
+  spv-b-find-const : List SpvBConst, Integer, Integer -> Integer
+  spv-b-find-const (cs) (v) (i) =
+   if i >= list-length cs then -1
+   else if ((list-at cs i).cv) == v then ((list-at cs i).ci)
+   else spv-b-find-const cs v (i + 1)
+
+  spv-b-int-const : SpvBCtx, Integer -> SpvBRes
+  spv-b-int-const (c) (n) =
+   let hit = spv-b-find-const (c.iconsts) n 0
+   in if hit >= 0 then SpvBRes { words = [], rid = hit, isf = False, ctx = c }
+   else let id = spv-b-fresh c
+   in let c2 = SpvBCtx {
+    next-id = c.next-id + 1,
+    binds = c.binds,
+    iconsts = list-push (c.iconsts) (SpvBConst { cv = n, ci = id }),
+    fconsts = c.fconsts,
+    const-words = (c.const-words) & spv-instr spv-op-constant ([ 2, id ] & spv-u64-words n),
+    funcs = c.funcs,
+    ftypes = c.ftypes
+   }
+   in SpvBRes { words = [], rid = id, isf = False, ctx = c2 }
+
+  spv-b-float-const : SpvBCtx, Integer -> SpvBRes
+  spv-b-float-const (c) (bits) =
+   let hit = spv-b-find-const (c.fconsts) bits 0
+   in if hit >= 0 then SpvBRes { words = [], rid = hit, isf = True, ctx = c }
+   else let id = spv-b-fresh c
+   in let c2 = SpvBCtx {
+    next-id = c.next-id + 1,
+    binds = c.binds,
+    iconsts = c.iconsts,
+    fconsts = list-push (c.fconsts) (SpvBConst { cv = bits, ci = id }),
+    const-words = (c.const-words) & spv-instr spv-op-constant ([ 3, id ] & spv-u64-words bits),
+    funcs = c.funcs,
+    ftypes = c.ftypes
+   }
+   in SpvBRes { words = [], rid = id, isf = True, ctx = c2 }
+
+Section: Operator Mapping
+
+  spv-b-arith-op : IRBinaryOp -> Integer
+  spv-b-arith-op (op) =
+   when op
+    is IrAddInt -> spv-op-iadd
+    is IrSubInt -> spv-op-isub
+    is IrMulInt -> spv-op-imul
+    is IrDivInt -> spv-op-sdiv
+    is IrRemInt -> spv-op-srem
+    is IrPowInt -> spv-op-imul
+    is IrAddNum | IrAddVec | IrAddRealApprox | IrAddRealTrapping | IrAddRealSaturating -> spv-op-fadd
+    is IrSubNum | IrSubVec | IrSubRealApprox | IrSubRealTrapping | IrSubRealSaturating -> spv-op-fsub
+    is IrMulNum | IrMulVec | IrMulRealApprox | IrMulRealTrapping | IrMulRealSaturating -> spv-op-fmul
+    is IrDivNum | IrDivVec | IrDivRealApprox | IrDivRealTrapping | IrDivRealSaturating -> spv-op-fdiv
+    is IrAnd -> spv-op-bitwise-and
+    is IrOr -> spv-op-bitwise-or
+    is otherwise -> spv-op-iadd
+
+  spv-b-op-is-float : IRBinaryOp -> Boolean
+  spv-b-op-is-float (op) =
+   when op
+    is IrAddNum | IrAddVec | IrAddRealApprox | IrAddRealTrapping | IrAddRealSaturating -> True
+    is IrSubNum | IrSubVec | IrSubRealApprox | IrSubRealTrapping | IrSubRealSaturating -> True
+    is IrMulNum | IrMulVec | IrMulRealApprox | IrMulRealTrapping | IrMulRealSaturating -> True
+    is IrDivNum | IrDivVec | IrDivRealApprox | IrDivRealTrapping | IrDivRealSaturating -> True
+    is otherwise -> False
+
+  spv-b-cmp-op : IRBinaryOp, Boolean -> Integer
+  spv-b-cmp-op (op) (isf) =
+   if isf then
+    when op
+     is IrEq | IrApproxEq | IrApproxEqExact -> spv-op-fordequal
+     is IrNotEq -> spv-op-fordnotequal
+     is IrLt | IrLtVec -> spv-op-fordlessthan
+     is IrGt | IrGtVec -> spv-op-fordgreaterthan
+     is IrLtEq | IrLtEqVec -> spv-op-fordlessthanequal
+     is IrGtEq | IrGtEqVec -> spv-op-fordgreaterthanequal
+     is otherwise -> spv-op-fordequal
+   else
+    when op
+     is IrEq | IrApproxEq | IrApproxEqExact -> spv-op-iequal
+     is IrNotEq -> spv-op-inotequal
+     is IrLt | IrLtVec -> spv-op-slessthan
+     is IrGt | IrGtVec -> spv-op-sgreaterthan
+     is IrLtEq | IrLtEqVec -> spv-op-slessthanequal
+     is IrGtEq | IrGtEqVec -> spv-op-sgreaterthanequal
+     is otherwise -> spv-op-iequal
+
+  spv-b-is-comparison : IRBinaryOp -> Boolean
+  spv-b-is-comparison (op) =
+   when op
+    is IrEq -> True
+    is IrNotEq -> True
+    is IrLt | IrLtVec -> True
+    is IrGt | IrGtVec -> True
+    is IrLtEq | IrLtEqVec -> True
+    is IrGtEq | IrGtEqVec -> True
+    is IrApproxEq -> True
+    is IrApproxEqExact -> True
+    is otherwise -> False
+
+Section: Expression Emission
+
+  spv-b-emit : SpvBCtx, IRExpr, Integer -> SpvBRes
+  spv-b-emit (c) (e) (depth) =
+   if depth >= 256 then spv-b-int-const c 0
+   else when e
+    is IrIntLit (n) (sp) -> spv-b-int-const c n
+    is IrNumLit (n) (sp) -> spv-b-float-const c n
+    is IrBoolLit (b) (sp) -> spv-b-int-const c (if b then 1 else 0)
+    is IrCharLit (n) (sp) -> spv-b-int-const c n
+    is IrTextLit (s) (sp) -> spv-b-int-const c 0
+    is IrName (n) (ty) (sp) ->
+     let i = spv-b-find (c.binds) n 0
+     in if i >= 0 then
+      let b = list-at (c.binds) i
+      in SpvBRes { words = [], rid = b.bi, isf = b.bf, ctx = c }
+     else spv-b-int-const c 0
+    is IrBinary (op) (l) (r) (ty) (sp) -> spv-b-emit-binary c op l r depth
+    is IrNegate (operand) (sp) ->
+     let s = spv-b-emit c operand (depth + 1)
+     in let id = spv-b-fresh (s.ctx)
+     in let c2 = spv-b-bump (s.ctx)
+     in let opcode = if s.isf then spv-op-fnegate else spv-op-snegate
+     in SpvBRes {
+      words = (s.words) & spv-instr opcode [ spv-b-type-id (s.isf), id, s.rid ],
+      rid = id,
+      isf = s.isf,
+      ctx = c2
+     }
+    is IrIf (cond) (th) (el) (ty) (sp) -> spv-b-emit-if c cond th el depth
+    is IrLet (name) (ty) (val) (body) (sp) ->
+     let vr = spv-b-emit c val (depth + 1)
+     in let bound = spv-b-bind (vr.ctx) name (vr.rid) (vr.isf)
+     in let br = spv-b-emit bound body (depth + 1)
+     in SpvBRes { words = (vr.words) & (br.words), rid = br.rid, isf = br.isf, ctx = br.ctx }
+    is IrApply (f) (a) (ty) (sp) -> spv-b-emit-apply c e depth
+    is IrLambda (params) (body) (ty) (sp) -> spv-b-emit c body (depth + 1)
+    is IrList (elems) (ty) (sp) -> spv-b-int-const c 0
+    is IrMatch (scrut) (branches) (ty) (sp) -> spv-b-int-const c 0
+    is IrAct (stmts) (ty) (sp) -> spv-b-int-const c 0
+    is IrHandle (eff) (body) (clauses) (ty) (sp) -> spv-b-emit c body (depth + 1)
+    is IrWithTimeout (secs) (effs) (scopes) (body) (ty) (sp) -> spv-b-emit c body (depth + 1)
+    is IrRecord (name) (fields) (ty) (sp) -> spv-b-int-const c 0
+    is IrFieldAccess (rec) (field) (ty) (sp) -> spv-b-int-const c 0
+    is IrFieldStore (rec) (field) (val) (ty) (sp) -> spv-b-int-const c 0
+    is IrFork (body) (ty) (sp) -> spv-b-emit c body (depth + 1)
+    is IrAwait (task) (ty) (sp) -> spv-b-emit c task (depth + 1)
+    is IrTry (max) (body) (fb) (fail-stmts) (ty) (sp) -> spv-b-int-const c 0
+    is IrError (msg) (ty) (sp) -> spv-b-int-const c 0
+
+  spv-b-emit-binary : SpvBCtx, IRBinaryOp, IRExpr, IRExpr, Integer -> SpvBRes
+  spv-b-emit-binary (c) (op) (l) (r) (depth) =
+   let lr = spv-b-emit c l (depth + 1)
+   in let rr = spv-b-emit (lr.ctx) r (depth + 1)
+   in if spv-b-is-comparison op then
+    let opf = (lr.isf) | (rr.isf)
+    in let pb = spv-b-fresh (rr.ctx)
+    in let c1 = spv-b-bump (rr.ctx)
+    in let id = spv-b-fresh c1
+    in let c2 = spv-b-bump c1
+    in let zr = spv-b-int-const c2 0
+    in let onr = spv-b-int-const (zr.ctx) 1
+    in SpvBRes {
+     words = (lr.words) & (rr.words)
+      & spv-instr (spv-b-cmp-op op opf) [ 1, pb, lr.rid, rr.rid ]
+      & spv-instr spv-op-select [ 2, id, pb, onr.rid, zr.rid ],
+     rid = id,
+     isf = False,
+     ctx = onr.ctx
+    }
+   else
+    let isf = spv-b-op-is-float op
+    in let id = spv-b-fresh (rr.ctx)
+    in let c2 = spv-b-bump (rr.ctx)
+    in SpvBRes {
+     words = (lr.words) & (rr.words)
+      & spv-instr (spv-b-arith-op op) [ spv-b-type-id isf, id, lr.rid, rr.rid ],
+     rid = id,
+     isf = isf,
+     ctx = c2
+    }
+
+  spv-b-emit-if : SpvBCtx, IRExpr, IRExpr, IRExpr, Integer -> SpvBRes
+  spv-b-emit-if (c) (cond) (th) (el) (depth) =
+   let cr = spv-b-emit c cond (depth + 1)
+   in let zr = spv-b-int-const (cr.ctx) 0
+   in let pb = spv-b-fresh (zr.ctx)
+   in let c1 = spv-b-bump (zr.ctx)
+   in let lbl-then = spv-b-fresh c1
+   in let c2 = spv-b-bump c1
+   in let lbl-else = spv-b-fresh c2
+   in let c3 = spv-b-bump c2
+   in let lbl-merge = spv-b-fresh c3
+   in let c4 = spv-b-bump c3
+   in let tr = spv-b-emit c4 th (depth + 1)
+   in let er = spv-b-emit (tr.ctx) el (depth + 1)
+   in let phi = spv-b-fresh (er.ctx)
+   in let c5 = spv-b-bump (er.ctx)
+   in let isf = (tr.isf) | (er.isf)
+   in SpvBRes {
+    words = (cr.words)
+     & spv-instr spv-op-inotequal [ 1, pb, cr.rid, zr.rid ]
+     & spv-instr spv-op-selection-merge [ lbl-merge, 0 ]
+     & spv-instr spv-op-branch-conditional [ pb, lbl-then, lbl-else ]
+     & spv-instr spv-op-label [ lbl-then ]
+     & (tr.words)
+     & spv-instr spv-op-branch [ lbl-merge ]
+     & spv-instr spv-op-label [ lbl-else ]
+     & (er.words)
+     & spv-instr spv-op-branch [ lbl-merge ]
+     & spv-instr spv-op-label [ lbl-merge ]
+     & spv-instr spv-op-phi [ spv-b-type-id isf, phi, tr.rid, lbl-then, er.rid, lbl-else ],
+    rid = phi,
+    isf = isf,
+    ctx = c5
+   }
+
+  spv-b-emit-apply : SpvBCtx, IRExpr, Integer -> SpvBRes
+  spv-b-emit-apply (c) (e) (depth) =
+   let chain = collect-apply-chain e []
+   in when (chain.root)
+    is IrName (n) (ty) (sp) -> spv-b-emit-call c n (chain.args) (spv-b-is-real ty) depth
+    is otherwise -> spv-b-int-const c 0
+
+  spv-b-emit-call : SpvBCtx, Text, List IRExpr, Boolean, Integer -> SpvBRes
+  spv-b-emit-call (c) (name) (args) (ret-float) (depth) =
+   let ar = spv-b-emit-args c args 0 [] [] depth
+   in let fid = spv-b-lookup-func (c.funcs) name 0
+   in if fid < 0 then spv-b-int-const (ar.ctx) 0
+   else let id = spv-b-fresh (ar.ctx)
+   in let c2 = spv-b-bump (ar.ctx)
+   in SpvBRes {
+    words = (ar.words) & spv-instr spv-op-function-call ([ spv-b-type-id ret-float, id, fid ] & (ar.arg-ids)),
+    rid = id,
+    isf = ret-float,
+    ctx = c2
+   }
+
+  SpvBArgs = record { words : List Integer, arg-ids : List Integer, ctx : SpvBCtx }
+
+  spv-b-emit-args : SpvBCtx, List IRExpr, Integer, List Integer, List Integer, Integer -> SpvBArgs
+  spv-b-emit-args (c) (args) (i) (accw) (accids) (depth) =
+   if i >= list-length args then SpvBArgs { words = accw, arg-ids = accids, ctx = c }
+   else let ar = spv-b-emit c (list-at args i) (depth + 1)
+   in spv-b-emit-args (ar.ctx) args (i + 1) (accw & (ar.words)) (list-push accids (ar.rid)) depth
+
+Section: Function Emission
+
+  spv-b-emit-params : SpvBCtx, List IRParam, Integer, List Integer -> SpvBRes
+  spv-b-emit-params (c) (params) (i) (accw) =
+   if i >= list-length params then SpvBRes { words = accw, rid = 0, isf = False, ctx = c }
+   else let p = list-at params i
+   in let isf = spv-b-param-is-real p
+   in let id = spv-b-fresh c
+   in let c1 = spv-b-bump c
+   in let c2 = spv-b-bind c1 (p.name) id isf
+   in spv-b-emit-params c2 params (i + 1) (accw & spv-instr spv-op-function-parameter [ spv-b-type-id isf, id ])
+
+  spv-b-emit-def : SpvBCtx, IRDef -> SpvBRes
+  spv-b-emit-def (c) (d) =
+   let fid = spv-b-lookup-func (c.funcs) (d.name) 0
+   in let ret-float = spv-b-is-real (d.type-val)
+   in let ftid = spv-b-lookup-ftype (c.ftypes) (spv-b-sig d) 0
+   in let fresh = spv-b-set-binds c []
+   in let ps = spv-b-emit-params fresh (d.params) 0 []
+   in let lbl = spv-b-fresh (ps.ctx)
+   in let c1 = spv-b-bump (ps.ctx)
+   in let body = spv-b-emit c1 (d.body) 0
+   in SpvBRes {
+    words = spv-instr spv-op-function [ spv-b-type-id ret-float, fid, 0, ftid ]
+     & (ps.words)
+     & spv-instr spv-op-label [ lbl ]
+     & (body.words)
+     & spv-instr spv-op-return-value [ body.rid ]
+     & spv-instr spv-op-function-end [],
+    rid = fid,
+    isf = ret-float,
+    ctx = body.ctx
+   }
+
+  spv-b-emit-defs : SpvBCtx, List IRDef, Integer, List Integer -> SpvBRes
+  spv-b-emit-defs (c) (defs) (i) (accw) =
+   if i >= list-length defs then SpvBRes { words = accw, rid = 0, isf = False, ctx = c }
+   else let r = spv-b-emit-def c (list-at defs i)
+   in spv-b-emit-defs (r.ctx) defs (i + 1) (accw & (r.words))
+
+Section: Function Types
+
+ A signature key: one character for the return type and one per parameter,
+ f for a float, i for an integer. Two functions with the same key share
+ one OpTypeFunction; the key also spells out the words the declaration
+ needs, so the type list is built straight from it with no second walk of
+ the defs.
+
+  spv-b-sig : IRDef -> Text
+  spv-b-sig (d) =
+   (if spv-b-is-real (d.type-val) then "f" else "i") & spv-b-sig-params (d.params) 0
+
+  spv-b-sig-params : List IRParam, Integer -> Text
+  spv-b-sig-params (params) (i) =
+   if i >= list-length params then ""
+   else (if spv-b-param-is-real (list-at params i) then "f" else "i") & spv-b-sig-params params (i + 1)
+
+  spv-b-assign-funcs : SpvBCtx, List IRDef, Integer -> SpvBCtx
+  spv-b-assign-funcs (c) (defs) (i) =
+   if i >= list-length defs then c
+   else let d = list-at defs i
+   in let id = spv-b-fresh c
+   in let c2 = SpvBCtx {
+    next-id = c.next-id + 1,
+    binds = c.binds, iconsts = c.iconsts, fconsts = c.fconsts, const-words = c.const-words,
+    funcs = list-push (c.funcs) (SpvBFunc { fnm = d.name, fid = id }),
+    ftypes = c.ftypes
+   }
+   in spv-b-assign-funcs c2 defs (i + 1)
+
+  spv-b-assign-ftypes : SpvBCtx, List IRDef, Integer -> SpvBCtx
+  spv-b-assign-ftypes (c) (defs) (i) =
+   if i >= list-length defs then c
+   else let d = list-at defs i
+   in let s = spv-b-sig d
+   in if spv-b-lookup-ftype (c.ftypes) s 0 >= 0 then spv-b-assign-ftypes c defs (i + 1)
+   else let id = spv-b-fresh c
+   in let c2 = SpvBCtx {
+    next-id = c.next-id + 1,
+    binds = c.binds, iconsts = c.iconsts, fconsts = c.fconsts, const-words = c.const-words,
+    funcs = c.funcs,
+    ftypes = list-push (c.ftypes) (SpvBFType { sig = s, tid = id })
+   }
+   in spv-b-assign-ftypes c2 defs (i + 1)
+
+  spv-b-ftype-words : List SpvBFType, Integer -> List Integer
+  spv-b-ftype-words (ts) (i) =
+   if i >= list-length ts then []
+   else let t = list-at ts i
+   in spv-instr spv-op-type-function ([ t.tid ] & spv-b-sig-type-ids (t.sig) 0) & spv-b-ftype-words ts (i + 1)
+
+  spv-b-sig-type-ids : Text, Integer -> List Integer
+  spv-b-sig-type-ids (s) (i) =
+   if i >= text-length s then []
+   else (if (char-code (char-at s i)) == (char-code (char-at "f" 0)) then 3 else 2) :: spv-b-sig-type-ids s (i + 1)
+
+Section: GLCompute Entry Wrapper
+
+ A callable function is not a dispatchable shader. Vulkan runs a module by
+ its entry point: a void() function that reads the invocation index from
+ the GlobalInvocationId builtin and its data from storage buffers. This
+ mirrors the PTX plug's entry wrapper and its convention -- a function
+ whose last parameter is named gid is a kernel; gid is the global index,
+ the earlier parameters are per-element inputs, and the return is the
+ per-element output. For invocation i the wrapper loads input[i] from each
+ input buffer, calls the kernel with those and i, and stores the result to
+ the output buffer.
+
+ The buffers are std430 blocks (a struct wrapping a runtime array), one
+ descriptor set per kernel and one binding per buffer, inputs first, output
+ last. Sixteen module-shared ids carry the builtin plumbing and the two
+ element-typed (f64 and i64) buffer type chains; the rest are per kernel.
+
+  spv-b-last-name : List IRParam -> Text
+  spv-b-last-name (params) =
+   if list-length params == 0 then ""
+   else (list-at params (list-length params - 1)).name
+
+  spv-b-is-entry : IRDef -> Boolean
+  spv-b-is-entry (d) =
+   if list-length (d.params) >= 1 then spv-b-last-name (d.params) == "gid" else False
+
+  spv-b-count-entries : List IRDef, Integer -> Integer
+  spv-b-count-entries (defs) (i) =
+   if i >= list-length defs then 0
+   else (if spv-b-is-entry (list-at defs i) then 1 else 0) + spv-b-count-entries defs (i + 1)
+
+  spv-b-ids-from : Integer, Integer -> List Integer
+  spv-b-ids-from (start) (count) =
+   if count <= 0 then [] else start :: spv-b-ids-from (start + 1) (count - 1)
+
+  SpvGpuIds = record {
+   void-id : Integer, voidfn-id : Integer, uint-id : Integer, v3-id : Integer,
+   pin-v3 : Integer, pin-u : Integer, u0 : Integer, gid-var : Integer,
+   farr : Integer, fstruct : Integer, fpstruct : Integer, fpelem : Integer,
+   iarr : Integer, istruct : Integer, ipstruct : Integer, ipelem : Integer,
+   next-id : Integer
+  }
+
+  spv-gpu-alloc : Integer -> SpvGpuIds
+  spv-gpu-alloc (s) =
+   SpvGpuIds {
+    void-id = s, voidfn-id = s + 1, uint-id = s + 2, v3-id = s + 3,
+    pin-v3 = s + 4, pin-u = s + 5, u0 = s + 6, gid-var = s + 7,
+    farr = s + 8, fstruct = s + 9, fpstruct = s + 10, fpelem = s + 11,
+    iarr = s + 12, istruct = s + 13, ipstruct = s + 14, ipelem = s + 15,
+    next-id = s + 16
+   }
+
+  spv-b-buf-struct-ptr : SpvGpuIds, Boolean -> Integer
+  spv-b-buf-struct-ptr (g) (isf) = if isf then g.fpstruct else g.ipstruct
+
+  spv-b-buf-elem-ptr : SpvGpuIds, Boolean -> Integer
+  spv-b-buf-elem-ptr (g) (isf) = if isf then g.fpelem else g.ipelem
+
+ The shared plumbing: the void function type for main, the 32-bit uint and
+ its 3-vector for GlobalInvocationId, the input pointer types, the constant
+ zero index, both buffer type chains (runtime array in a Block struct, a
+ pointer to the struct and a pointer to an element), and the builtin
+ variable. Decorations forward-reference these ids, which SPIR-V permits.
+
+  spv-gpu-shared-types : SpvGpuIds -> List Integer
+  spv-gpu-shared-types (g) =
+   spv-instr spv-op-type-void [ g.void-id ]
+    & spv-instr spv-op-type-function [ g.voidfn-id, g.void-id ]
+    & spv-instr spv-op-type-int [ g.uint-id, 32, 0 ]
+    & spv-instr spv-op-type-vector [ g.v3-id, g.uint-id, 3 ]
+    & spv-instr spv-op-type-pointer [ g.pin-v3, spv-sc-input, g.v3-id ]
+    & spv-instr spv-op-type-pointer [ g.pin-u, spv-sc-input, g.uint-id ]
+    & spv-instr spv-op-constant [ g.uint-id, g.u0, 0 ]
+    & spv-instr spv-op-type-runtime-array [ g.farr, 3 ]
+    & spv-instr spv-op-type-struct [ g.fstruct, g.farr ]
+    & spv-instr spv-op-type-pointer [ g.fpstruct, spv-sc-storage-buffer, g.fstruct ]
+    & spv-instr spv-op-type-pointer [ g.fpelem, spv-sc-storage-buffer, 3 ]
+    & spv-instr spv-op-type-runtime-array [ g.iarr, 2 ]
+    & spv-instr spv-op-type-struct [ g.istruct, g.iarr ]
+    & spv-instr spv-op-type-pointer [ g.ipstruct, spv-sc-storage-buffer, g.istruct ]
+    & spv-instr spv-op-type-pointer [ g.ipelem, spv-sc-storage-buffer, 2 ]
+    & spv-instr spv-op-variable [ g.pin-v3, g.gid-var, spv-sc-input ]
+
+  spv-gpu-shared-deco : SpvGpuIds -> List Integer
+  spv-gpu-shared-deco (g) =
+   spv-instr spv-op-decorate [ g.gid-var, spv-dec-builtin, spv-bi-global-invocation-id ]
+    & spv-instr spv-op-decorate [ g.farr, spv-dec-array-stride, 8 ]
+    & spv-instr spv-op-member-decorate [ g.fstruct, 0, spv-dec-offset, 0 ]
+    & spv-instr spv-op-decorate [ g.fstruct, spv-dec-block ]
+    & spv-instr spv-op-decorate [ g.iarr, spv-dec-array-stride, 8 ]
+    & spv-instr spv-op-member-decorate [ g.istruct, 0, spv-dec-offset, 0 ]
+    & spv-instr spv-op-decorate [ g.istruct, spv-dec-block ]
+
+  SpvBLoads = record { words : List Integer, vals : List Integer, nid : Integer }
+
+  spv-b-load-inputs : SpvGpuIds, List IRParam, List Integer, Integer, Integer, Integer, Integer, List Integer, List Integer -> SpvBLoads
+  spv-b-load-inputs (g) (params) (inbufs) (gid64) (j) (nin) (id) (accw) (accvals) =
+   if j >= nin then SpvBLoads { words = accw, vals = accvals, nid = id }
+   else let isf = spv-b-param-is-real (list-at params j)
+   in let eptr = id
+   in let val = id + 1
+   in let w = spv-instr spv-op-access-chain [ spv-b-buf-elem-ptr g isf, eptr, list-at inbufs j, g.u0, gid64 ] & spv-instr spv-op-load [ spv-b-type-id isf, val, eptr ]
+   in spv-b-load-inputs g params inbufs gid64 (j + 1) nin (id + 2) (accw & w) (list-push accvals val)
+
+  spv-b-input-gvars : SpvGpuIds, List IRParam, List Integer, Integer, Integer -> List Integer
+  spv-b-input-gvars (g) (params) (inbufs) (j) (nin) =
+   if j >= nin then []
+   else spv-instr spv-op-variable [ spv-b-buf-struct-ptr g (spv-b-param-is-real (list-at params j)), list-at inbufs j, spv-sc-storage-buffer ]
+    & spv-b-input-gvars g params inbufs (j + 1) nin
+
+  spv-b-input-decos : List IRParam, List Integer, Integer, Integer, Integer -> List Integer
+  spv-b-input-decos (params) (inbufs) (j) (nin) (ordinal) =
+   if j >= nin then []
+   else spv-instr spv-op-decorate [ list-at inbufs j, spv-dec-descriptor-set, ordinal ]
+    & spv-instr spv-op-decorate [ list-at inbufs j, spv-dec-binding, j ]
+    & spv-b-input-decos params inbufs (j + 1) nin ordinal
+
+  SpvKern = record {
+   deco : List Integer, gvars : List Integer, main : List Integer,
+   entry : List Integer, exec : List Integer, nid : Integer
+  }
+
+  spv-b-one-kernel : SpvBCtx, SpvGpuIds, IRDef, Integer, Integer -> SpvKern
+  spv-b-one-kernel (ctx) (g) (d) (ordinal) (nid) =
+   let nin = list-length (d.params) - 1
+   in let ret-real = spv-b-is-real (d.type-val)
+   in let fid = spv-b-lookup-func (ctx.funcs) (d.name) 0
+   in let inbufs = spv-b-ids-from nid nin
+   in let outbuf = nid + nin
+   in let mainid = nid + nin + 1
+   in let lblid = nid + nin + 2
+   in let gidptr = nid + nin + 3
+   in let gidu = nid + nin + 4
+   in let gid64 = nid + nin + 5
+   in let loads = spv-b-load-inputs g (d.params) inbufs gid64 0 nin (nid + nin + 6) [] []
+   in let res = loads.nid
+   in let optr = loads.nid + 1
+   in SpvKern {
+    deco = spv-b-input-decos (d.params) inbufs 0 nin ordinal
+     & spv-instr spv-op-decorate [ outbuf, spv-dec-descriptor-set, ordinal ]
+     & spv-instr spv-op-decorate [ outbuf, spv-dec-binding, nin ],
+    gvars = spv-b-input-gvars g (d.params) inbufs 0 nin
+     & spv-instr spv-op-variable [ spv-b-buf-struct-ptr g ret-real, outbuf, spv-sc-storage-buffer ],
+    main = spv-instr spv-op-function [ g.void-id, mainid, 0, g.voidfn-id ]
+     & spv-instr spv-op-label [ lblid ]
+     & spv-instr spv-op-access-chain [ g.pin-u, gidptr, g.gid-var, g.u0 ]
+     & spv-instr spv-op-load [ g.uint-id, gidu, gidptr ]
+     & spv-instr spv-op-uconvert [ 2, gid64, gidu ]
+     & (loads.words)
+     & spv-instr spv-op-function-call ([ spv-b-type-id ret-real, res, fid ] & (loads.vals) & [ gid64 ])
+     & spv-instr spv-op-access-chain [ spv-b-buf-elem-ptr g ret-real, optr, outbuf, g.u0, gid64 ]
+     & spv-instr spv-op-store [ optr, res ]
+     & spv-instr spv-op-return []
+     & spv-instr spv-op-function-end [],
+    entry = spv-instr spv-op-entry-point ([ spv-em-glcompute, mainid ] & spv-string-words (d.name) & [ g.gid-var ] & inbufs & [ outbuf ]),
+    exec = spv-instr spv-op-execution-mode [ mainid, spv-exm-localsize, 64, 1, 1 ],
+    nid = loads.nid + 2
+   }
+
+  spv-b-emit-kernels : SpvBCtx, SpvGpuIds, List IRDef, Integer, Integer, SpvKern -> SpvKern
+  spv-b-emit-kernels (ctx) (g) (defs) (i) (ordinal) (acc) =
+   if i >= list-length defs then acc
+   else let d = list-at defs i
+   in if spv-b-is-entry d then
+    let k = spv-b-one-kernel ctx g d ordinal (acc.nid)
+    in spv-b-emit-kernels ctx g defs (i + 1) (ordinal + 1) (SpvKern {
+     deco = (acc.deco) & (k.deco), gvars = (acc.gvars) & (k.gvars), main = (acc.main) & (k.main),
+     entry = (acc.entry) & (k.entry), exec = (acc.exec) & (k.exec), nid = k.nid
+    })
+   else spv-b-emit-kernels ctx g defs (i + 1) ordinal acc
+
+Section: Module Assembly
+
+ The word stream in the order SPIR-V demands: capabilities, the memory
+ model, the scalar types, the function types, the constants, then the
+ functions. Ids for functions and function-types are handed out first, so
+ a call names an id that already exists; constants and temporaries fill in
+ during emission. No entry point yet -- these are callable functions, not
+ a dispatchable shader (BACKLOG 3.4 (a)).
+
+  spv-b-preamble : List Integer
+  spv-b-preamble =
+   spv-instr spv-op-capability [ spv-cap-shader ]
+    & spv-instr spv-op-capability [ spv-cap-int64 ]
+    & spv-instr spv-op-capability [ spv-cap-float64 ]
+    & spv-instr spv-op-memory-model [ spv-addr-logical, spv-mm-glsl450 ]
+
+  emit-spirv-binary-chapter : IRChapter, List ATypeDef -> List Integer
+  emit-spirv-binary-chapter (ch) (tds) =
+   let c0 = SpvBCtx { next-id = 4, binds = [], iconsts = [], fconsts = [], const-words = [], funcs = [], ftypes = [] }
+   in let c1 = spv-b-assign-funcs c0 (ch.defs) 0
+   in let c2 = spv-b-assign-ftypes c1 (ch.defs) 0
+   in let body = spv-b-emit-defs c2 (ch.defs) 0 []
+   in if spv-b-count-entries (ch.defs) 0 > 0 then spv-b-assemble-dispatch ch body
+   else spv-b-assemble-callable body
+
+ A module of callable functions: capabilities, memory model, the scalar
+ types, function types, constants, then the functions. No entry point.
+
+  spv-b-assemble-callable : SpvBRes -> List Integer
+  spv-b-assemble-callable (body) =
+   spv-header ((body.ctx).next-id)
+    & spv-b-preamble
+    & spv-instr spv-op-type-bool [ 1 ]
+    & spv-instr spv-op-type-int [ 2, 64, 1 ]
+    & spv-instr spv-op-type-float [ 3, 64 ]
+    & spv-b-ftype-words ((body.ctx).ftypes) 0
+    & ((body.ctx).const-words)
+    & (body.words)
+
+ A dispatchable module adds, in SPIR-V's required order, the entry points
+ and execution modes, the annotations (shared builtin/buffer decorations
+ then the per-kernel descriptor bindings), the shared GPU types and buffer
+ variables among the scalar types and constants, and the main wrappers
+ after the callable functions they call.
+
+  spv-b-assemble-dispatch : IRChapter, SpvBRes -> List Integer
+  spv-b-assemble-dispatch (ch) (body) =
+   let g = spv-gpu-alloc ((body.ctx).next-id)
+   in let kern = spv-b-emit-kernels (body.ctx) g (ch.defs) 0 0 (SpvKern { deco = [], gvars = [], main = [], entry = [], exec = [], nid = g.next-id })
+   in spv-header (kern.nid)
+    & spv-b-preamble
+    & (kern.entry)
+    & (kern.exec)
+    & spv-gpu-shared-deco g
+    & (kern.deco)
+    & spv-instr spv-op-type-bool [ 1 ]
+    & spv-instr spv-op-type-int [ 2, 64, 1 ]
+    & spv-instr spv-op-type-float [ 3, 64 ]
+    & spv-b-ftype-words ((body.ctx).ftypes) 0
+    & ((body.ctx).const-words)
+    & spv-gpu-shared-types g
+    & (kern.gvars)
+    & (body.words)
+    & (kern.main)
+
+Section: Word Serialization
+
+ The words leave the guest as text -- space-separated decimals on one line
+ -- because the plug's channel to the host is a serial text stream. The
+ host packs them little-endian into the .spv; the values, which are the
+ work, are computed here.
+
+  spv-b-words-to-text : List Integer, Integer -> Text
+  spv-b-words-to-text (ws) (i) =
+   if i >= list-length ws then ""
+   else (if i == 0 then "" else " ") & integer-to-text (list-at ws i) & spv-b-words-to-text ws (i + 1)

@@ -1,8 +1,4 @@
 Chapter: Lowering
-  cites Codex chapter Text
-  cites Codex chapter Characters
-  cites Codex chapter Lists
-  cites Codex chapter Concurrency
   cites Codex chapter Build Settings (max-recursion-depth)
 
  Transforms the typed AST into the intermediate representation.
@@ -66,23 +62,30 @@ Section: Expression Lowering
         is ForAllTy (id) (body) -> deep-resolve (ctx.ust) body
         is ForAllEff (id) (body) -> deep-resolve (ctx.ust) body
         is otherwise -> rec-ty
-     in let resolved-rec-ty = when stripped-rec-ty
-        is RecordTy (rn) (ra) (rf) -> stripped-rec-ty
+     in let refined-rec-ty = refine-receiver-ty rec-ir stripped-rec-ty ctx
+     in let resolved-rec-ty = when refined-rec-ty
+        is RecordTy (rn) (ra) (rf) -> refined-rec-ty
         is ConstructedTy (cname) (cargs) ->
          let ctor-raw = lookup-type-split (ctx.overlay) (ctx.base) (cname.value)
      in let resolved-record = when ctor-raw
-            is ErrorTy -> stripped-rec-ty
+            is ErrorTy -> refined-rec-ty
             is otherwise -> strip-fun-args (deep-resolve (ctx.ust) ctor-raw)
      in when resolved-record
           is RecordTy (rn) (ra) (rf) -> resolved-record
-          is otherwise -> stripped-rec-ty
-        is otherwise -> stripped-rec-ty
+          is otherwise -> refined-rec-ty
+        is otherwise -> refined-rec-ty
      in let field-ty = when resolved-rec-ty
         is RecordTy (rname) (rargs) (rfields) -> lookup-record-field rfields (field.value)
         is otherwise -> ty
-     in let actual-field-ty = when field-ty
-        is ErrorTy -> ty
+     in let inst-field-ty = when refined-rec-ty
+        is ConstructedTy (icn) (icargs) ->
+         (when resolved-rec-ty
+          is RecordTy (irn) (ira) (irf) -> fa-apply-subst (fa-pair-args ira icargs 0 (list-length ira) []) field-ty
+          is otherwise -> field-ty)
         is otherwise -> field-ty
+     in let actual-field-ty = when inst-field-ty
+        is ErrorTy -> ty
+        is otherwise -> inst-field-ty
      in let fixed-rec = when rec-ty
         is RecordTy (rn) (ra) (rf) -> rec-ir
         is otherwise -> set-ir-expr-type rec-ir resolved-rec-ty
@@ -146,6 +149,46 @@ Section: Expression Lowering
    in let param = deck-record (IRParam { name = unit-n, type-val = int-ty-default, span = s })
    in let lam = deck-record (IrLambda (list-push [] param) if-expr ty s)
    in deck-record (IrLet cell-n cty cell-ir lam s)
+
+  fa-pair-args : List CodexType, List CodexType, Integer, Integer, List TypeBinding -> List TypeBinding
+  fa-pair-args (args-r) (args-s) (i) (len) (acc) =
+   if i == len then acc
+   else if i >= list-length args-s then acc
+   else let r = list-at args-r i
+   in let s = list-at args-s i
+   in when r
+    is ConstructedTy (name) (sub-args) ->
+     if list-length sub-args == 0 then fa-pair-args args-r args-s (i + 1) len (list-push acc (TypeBinding { name = name.value, bound-type = s }))
+     else fa-pair-args args-r args-s (i + 1) len acc
+    is TypeVar (id) -> fa-pair-args args-r args-s (i + 1) len (list-push acc (TypeBinding { name = "#tv" & show id, bound-type = s }))
+    is otherwise -> fa-pair-args args-r args-s (i + 1) len acc
+
+  fa-apply-subst : List TypeBinding, CodexType -> CodexType
+  fa-apply-subst (subst) (ty) =
+   if list-length subst == 0 then ty
+   else when ty
+    is TypeVar (id) -> lookup-subst subst ("#tv" & show id) ty
+    is ConstructedTy (name) (args) ->
+     if list-length args == 0 then lookup-subst subst (name.value) ty
+     else deck-record (ConstructedTy name (for a in args -> fa-apply-subst subst a))
+    is FunTy (p) (row) (r) -> deck-record (FunTy (fa-apply-subst subst p) row (fa-apply-subst subst r))
+    is ListTy (e) -> deck-record (ListTy (fa-apply-subst subst e))
+    is LinkedListTy (e) -> deck-record (LinkedListTy (fa-apply-subst subst e))
+    is EffectfulTy (effs) (sc) (r) -> deck-record (EffectfulTy effs sc (fa-apply-subst subst r))
+    is otherwise -> ty
+
+  refine-receiver-ty : IRExpr, CodexType, LowerCtx -> CodexType
+  refine-receiver-ty (rec-ir) (stripped) (ctx) =
+   if ty-has-typevars stripped == False then stripped
+   else when rec-ir
+    is IrName (rname) (rt) (rs) ->
+     let bound = lookup-type-split (ctx.overlay) (ctx.base) rname
+     in when bound
+      is ErrorTy -> stripped
+      is otherwise ->
+       let rb = strip-forall-ty (deep-resolve (ctx.ust) bound)
+       in if ty-has-typevars rb then stripped else rb
+    is otherwise -> stripped
 
   lower-name : Text, CodexType, LowerCtx, SourceSpan -> IRExpr
   lower-name (name) (ty) (ctx) (sp) =
@@ -946,7 +989,54 @@ Section: Collections and Act
       }
    in lower-act-stmts-acc stmts ty ctx2 (i + 1) len (list-push acc (deck-record (IrDoBind (name.value) val-ty val-ir sp)))
      is AActExprStmt (e) (sp) ->
-      lower-act-stmts-acc stmts ty ctx (i + 1) len (list-push acc (deck-record (IrDoExec (lower-expr e ty ctx) sp)))
+      when e
+       is ALetExpr (binds) (lbody) (ls) ->
+        list-push acc (deck-record (IrDoExec (lower-act-let binds 0 lbody stmts ty ctx i len ls) sp))
+       is otherwise ->
+        lower-act-stmts-acc stmts ty ctx (i + 1) len (list-push acc (deck-record (IrDoExec (lower-expr e ty ctx) sp)))
+
+ A `let` statement in an act block is do-notation: it scopes over the
+ REST of the block, not merely over its own `in` body. Lowering it as a
+ sibling IrDoExec left the following statements naming a binding from
+ outside the let's body - ill-scoped IR that only ran because the
+ emitter's locals table was flat per function (BACKLOG 2.22). So the let
+ becomes the LAST statement of the enclosing act, and its body becomes a
+ nested IrAct of [the let's own body] ++ [the remaining statements].
+ Execution order is unchanged. ir-expr-type of an IrLet is the type of
+ its body, and the nested act's type is the type of the block's original
+ last statement, so the enclosing block still types as it did.
+
+ A trailing let CHAIN is peeled to its innermost body, so every binding
+ in the chain scopes over the rest of the block. `codex/test/mask-ops`
+ writes `let a = .. in let b = .. in let m1 = .. in print m1` and then
+ reads m1 from three sibling statements; peeling only the outermost let
+ leaves m1 bound beside them, not above them, and it fails to resolve.
+
+  lower-act-let : List ALetBind, Integer, AExpr, List AActStmt, CodexType, LowerCtx, Integer, Integer, SourceSpan -> IRExpr
+  lower-act-let (binds) (j) (body) (stmts) (ty) (ctx) (i) (len) (sp) =
+   if j == list-length binds then
+    when body
+     is ALetExpr (binds2) (body2) (ls2) -> lower-act-let binds2 0 body2 stmts ty ctx i len ls2
+     is otherwise ->
+      let body-ir = lower-expr body ty ctx
+      in let rest = lower-act-stmts-acc stmts ty ctx (i + 1) len []
+      in if list-length rest == 0 then body-ir
+         else let inner = [deck-record (IrDoExec body-ir (ir-expr-span body-ir))] & rest
+         in deck-record (IrAct inner (act-block-type inner (ir-expr-type body-ir)) sp)
+   else let b = list-at binds j
+   in let val-ir = lower-expr (b.value) ErrorTy ctx
+   in let val-ty = deep-resolve (ctx.ust) (ir-expr-type val-ir)
+   in let ctx2 = LowerCtx {
+    overlay = OverlayCons (TypeBinding {
+     name = b.name.value,
+     bound-type = val-ty
+    }) (ctx.overlay),
+    base = ctx.base,
+    ust = ctx.ust,
+    local-type-vars = ctx.local-type-vars,
+    chapter-renames = ctx.chapter-renames
+   }
+   in deck-record (IrLet (b.name.value) val-ty val-ir (lower-act-let binds (j + 1) body stmts ty ctx2 i len sp) sp)
 
   lower-handle : Name, AExpr, List AHandleClause, CodexType, LowerCtx, SourceSpan -> IRExpr
   lower-handle (eff) (body) (clauses) (ty) (ctx) (sp) =

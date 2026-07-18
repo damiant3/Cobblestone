@@ -1,0 +1,64 @@
+Chapter: SpirvBinaryProbe
+
+ A self-check for the SPIR-V binary encoder. It hand-builds the smallest
+ well-formed GLCompute module -- capability, memory model, an entry point
+ named main, a void() function that just returns -- encodes it to words,
+ and validates the stream. It then validates a deliberately miscounted
+ module, because a validator that only ever says VALID is indistinguishable
+ from one that does nothing.
+
+Section: Probe
+
+ The ids are numbers, not names: %void=1, %fnty=2, %main=3, %label=4, so
+ the id bound is 5. This is exactly the skeleton the emitter will wrap its
+ functions inside once the word path is wired in.
+
+  spv-min-module : List Integer
+  spv-min-module =
+   let m0 = spv-header 5
+   in let m1 = m0 & spv-instr spv-op-capability [ spv-cap-shader ]
+   in let m2 = m1 & spv-instr spv-op-memory-model [ spv-addr-logical, spv-mm-glsl450 ]
+   in let m3 = m2 & spv-instr spv-op-entry-point ([ spv-em-glcompute, 3 ] & spv-string-words "main")
+   in let m4 = m3 & spv-instr spv-op-execution-mode [ 3, spv-exm-localsize, 1, 1, 1 ]
+   in let m5 = m4 & spv-instr spv-op-type-void [ 1 ]
+   in let m6 = m5 & spv-instr spv-op-type-function [ 2, 1 ]
+   in let m7 = m6 & spv-instr spv-op-function [ 1, 3, 0, 2 ]
+   in let m8 = m7 & spv-instr spv-op-label [ 4 ]
+   in let m9 = m8 & spv-instr spv-op-return []
+   in m9 & spv-instr spv-op-function-end []
+
+ A single word whose header claims three words but stands alone. The walk
+ must refuse it rather than read two words that are not there.
+
+  spv-broken-module : List Integer
+  spv-broken-module =
+   spv-header 5 & [ 3 * 65536 + spv-op-type-void ]
+
+ Two well-shaped modules that a driver would still refuse: one defines the
+ id 1 twice, one names an id at the bound. The structural walk passes both;
+ the id walk must not.
+
+  spv-dup-module : List Integer
+  spv-dup-module =
+   spv-header 5 & spv-instr spv-op-type-void [ 1 ] & spv-instr spv-op-type-void [ 1 ]
+
+  spv-oob-module : List Integer
+  spv-oob-module =
+   spv-header 2 & spv-instr spv-op-type-void [ 5 ]
+
+ A module whose ids are all unique and in range, but whose OpReturnValue
+ names id 9, which nothing defines. Structural and id-integrity pass; the
+ reference check must not.
+
+  spv-dangling-module : List Integer
+  spv-dangling-module =
+   spv-header 10 & spv-instr spv-op-type-void [ 1 ] & spv-instr spv-op-type-function [ 2, 1 ] & spv-instr spv-op-function [ 1, 3, 0, 2 ] & spv-instr spv-op-label [ 4 ] & spv-instr spv-op-return-value [ 9 ] & spv-instr spv-op-function-end []
+
+  opening : [Console] Nothing = act
+   print-line-uni ("SPIRV-BIN words=" & integer-to-text (list-length spv-min-module) & " bound=" & integer-to-text (list-at spv-min-module 3))
+   print-line-uni ("SPIRV-BIN valid-module: " & spv-validate spv-min-module)
+   print-line-uni ("SPIRV-BIN broken-module: " & spv-validate spv-broken-module)
+   print-line-uni ("SPIRV-BIN dup-id-module: " & spv-validate spv-dup-module)
+   print-line-uni ("SPIRV-BIN oob-id-module: " & spv-validate spv-oob-module)
+   print-line-uni ("SPIRV-BIN dangling-module: " & spv-validate spv-dangling-module)
+  end

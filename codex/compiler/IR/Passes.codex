@@ -1,0 +1,137 @@
+Chapter: Passes
+
+ Runs the IR-to-IR passes as an ordered pipeline. The pipeline is
+ data — a list of pass names — so a pass can be switched off,
+ reordered, or ablated by editing one list instead of rethreading a
+ call chain. Dispatch is deliberately by name rather than through
+ function-valued record fields: one list names the passes, one
+ function maps a name to its transform, and nothing else has to
+ exist for a pass to be registered.
+
+Section: Pass Result
+
+ A pass returns its chapter and whatever it has to say about it. The
+ rewriters have nothing to say and return the empty list; the checker
+ rewrites nothing and returns everything it found. One shape carries
+ both, because a pipeline with two kinds of pass in it is a pipeline
+ with two ways to be wired wrong.
+
+  IRPassResult = record {
+   chapter : IRChapter,
+   violations : List Text,
+   infos : List Text
+  }
+
+Section: Pass Registry
+
+ An unknown name is the identity transform. A diagnostic for a
+ misspelled pass name belongs to the configuration surface and
+ arrives with it; until then the pipeline must never turn a bad
+ name into a changed program.
+
+ `ir-check` is a checker in a rewriter's clothing. It is registered
+ like any other pass so it can be placed anywhere — and more than once
+ — in the pipeline: `passes=fold-constants,ir-check,inline-leaf-calls,
+ ir-check` brackets each rewriter with a validation of what it
+ produced. It returns the chapter unchanged and reports through the
+ violation channel instead. It is deliberately NOT in
+ `default-ir-pipeline`: the shipping compiler pays nothing for a
+ validator it never runs, and the validator is wanted exactly when a
+ pass is under suspicion.
+
+ `occ-report` is the same shape, but on the OTHER channel: an analysis
+ wearing a rewriter's clothing. It runs the occurrence analyser
+ (`occ-report-chapter`) over every definition and returns the chapter
+ UNCHANGED, reporting each definition's per-binder classifications — one
+ `OCC <def>: name=Class, name=Class` line per definition — as **infos,
+ not violations**. That distinction is the whole reason the result
+ carries two lists. `ir-check`'s findings are errors: malformed IR means
+ the binary is not the program, so the compile halts. `occ-report`'s
+ findings are information about well-formed IR, so they ride the info
+ channel, do not halt, and never claim to be an error — running
+ `-Passes occ-report` reports the classifications AND still emits a
+ binary. It exists so the analyser can be driven over real lowered IR
+ and its answers read from the compile log, before any pass consumes
+ them. Like `ir-check` it is NOT in `default-ir-pipeline`.
+
+ `simplify` is a real rewriter — the GHC-style simplifier
+ (`IR/Simplify.codex`) — that folds constants, propagates literals, and
+ takes the known arm of a decided `if`, iterated to a fixpoint. It
+ returns the rewritten chapter AND, on the info channel, one line with
+ its rewrite count, so `-Passes simplify` both transforms the program
+ and reports how much it did. It is opt-in and NOT in
+ `default-ir-pipeline`: it absorbs the rules of the hardcoded
+ `fold-constants` pass but does not yet replace it, so the shipping
+ compiler's output is unchanged until that swap lands as its own CL.
+
+ `lir-dump` is on the analysis channel like `occ-report`: it lowers each
+ definition to the flat LIR (`IR/Lir.codex`, step 5), runs the structural
+ verifier, and reports one `LIR <def>: ...` line per definition — the dump
+ plus the check result, or a note that the function was outside the
+ whitelist. It rewrites nothing and emits a binary, so `-Passes lir-dump`
+ drives the real lowering over real IR and reads the answer from the
+ compile log, before any allocator consumes it. NOT in
+ `default-ir-pipeline`.
+
+ Unlike the other passes, `lir-dump` does NOT execute inside this
+ pipeline: the constructor-pattern increment needs its scrutinee's
+ resolved `SumTy`, and this pipeline runs before the RESOLVE phase. So the
+ registry entry is inert (it returns nothing) and `opening.codex` produces
+ the LIR report from `lir-report-if` after RESOLVE and LIFT, over the same
+ `cdx-chapter` the emitter consumes. The pipeline name is still the
+ trigger; only the execution site moved.
+
+  default-ir-pipeline : List Text
+  default-ir-pipeline = ["fold-constants", "inline-leaf-calls"]
+
+  run-ir-pass : Text, IRChapter -> IRPassResult
+  run-ir-pass (name) (ch) =
+   if name == "fold-constants" then IRPassResult { chapter = fold-constants-in-chapter ch, violations = [], infos = [] }
+   else if name == "inline-leaf-calls" then IRPassResult { chapter = inline-leaf-calls-in-chapter ch, violations = [], infos = [] }
+   else if name == "ir-check" then IRPassResult { chapter = ch, violations = ir-check ch, infos = [] }
+   else if name == "occ-report" then IRPassResult { chapter = ch, violations = [], infos = occ-report-chapter ch }
+   else if name == "simplify" then let o = simplify-run ch in IRPassResult { chapter = o.chapter, violations = [], infos = o.infos }
+   else if name == "lir-dump" then IRPassResult { chapter = ch, violations = [], infos = [] }
+   else IRPassResult { chapter = ch, violations = [], infos = [] }
+
+Section: Pipeline
+
+ The chapter folds through the named passes in list order. The loop
+ carries an index, the current chapter, and the violations reported so
+ far; every allocation is the pass's own, on whatever deck the caller
+ placed the run.
+
+ Each violation is tagged with the slot that produced it, so a pipeline
+ carrying `ir-check` twice says which of the two fired — that is the
+ whole point of the exercise, attributing malformed IR to the pass that
+ made it. A pass that reports nothing costs nothing here: the tagging
+ loop sees an empty list and returns.
+
+  run-ir-pipeline : List Text, IRChapter -> IRPassResult
+  run-ir-pipeline (names) (ch) =
+   run-ir-pipeline-loop names 0 (list-length names) ch [] []
+
+  run-ir-pipeline-loop : List Text, Integer, Integer, IRChapter, List Text, List Text -> IRPassResult
+  run-ir-pipeline-loop (names) (i) (len) (ch) (vs) (infos) =
+   if i >= len then IRPassResult { chapter = ch, violations = vs, infos = infos }
+   else let r = run-ir-pass (list-at names i) ch
+   in let vs2 = tag-pass-violations vs i (r.violations) 0 (list-length (r.violations))
+   in let infos2 = tag-pass-violations infos i (r.infos) 0 (list-length (r.infos))
+   in run-ir-pipeline-loop names (i + 1) len (r.chapter) vs2 infos2
+
+  tag-pass-violations : List Text, Integer, List Text, Integer, Integer -> List Text
+  tag-pass-violations (acc) (slot) (vs) (i) (len) =
+   if i >= len then acc
+   else tag-pass-violations (list-push acc ("pass " & integer-to-text slot & ": " & (list-at vs i))) slot vs (i + 1) len
+
+Section: Configuration
+
+ The pipeline arrives on the mode line as `passes=name,name` — comma
+ separated, no spaces — and the split lives here so the grammar sits
+ beside the registry it names. The knob is the ablation surface: a
+ pass that cannot be switched off cannot be measured, and the
+ middle-end campaign scores pipeline configurations against each
+ other rather than trusting any pass on reputation.
+
+  parse-pipeline-names : Text -> List Text
+  parse-pipeline-names (names) = text-split names ","

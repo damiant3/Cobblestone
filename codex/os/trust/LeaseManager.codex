@@ -62,8 +62,93 @@ Section: Store Operations
     }
     in LeaseStore { leases = list-push (store.leases) l, count = store.count + 1, revoked-count = store.revoked-count }
 
-  lease-handoff : LeaseStore, HandoffMsg, Integer -> LeaseStore
+Section: Handoff
+
+ A handoff passes authority from one agent to another, and it may only
+ ATTENUATE. Until now it read the capability and the scope straight out
+ of the message and wrote them into a new lease for the recipient,
+ without once asking whether the sender held them: any agent able to put
+ a HandoffMsg on the wire could mint any authority it liked and address
+ it to anyone. Nothing called it yet, which is the only reason that was
+ not a live capability-amplification hole.
+
+ The decision is a variant rather than a store, so a caller cannot take
+ the amplifying path by ignoring a flag. There is no lease-handoff that
+ answers a bare store: refusal is in the type, and a when must handle it.
+
+ Four things are checked against the sender's own live lease, and all
+ four are the same judgement -- the handoff may not exceed what the
+ sender holds: the capability direction, the scope direction, the two
+ scope texts, and the expiry. A handoff that outlives the lease it came
+ from is amplification in time, which is the easiest of the four to miss.
+
+  HandoffDecision =
+    | HandoffAccepted (LeaseStore)
+    | HandoffRefused (Text)
+
+ The direction vocabulary is the manifest's -- 0 read, 1 write, 2
+ readwrite -- so a holder of readwrite may pass on any of the three and a
+ holder of read may pass on read alone. It is named here rather than
+ cited because the single table all three quires could read is BACKLOG
+ 1.12 and 1.13, and adding a fourth exported spelling of it would make
+ that gap worse. PolicyEngine spells the same 2 as a bare literal.
+
+  lease-dir-readwrite : Integer = 2
+
+  lease-dir-le : Integer, Integer -> Boolean
+  lease-dir-le (handed) (held) = held == lease-dir-readwrite | handed == held
+
+ Scope is compared as universal-or-exact, and that is deliberate. An
+ empty scope admits everything, which is the reading the verified loader
+ and Fat16 already share. Anything else must match exactly, so a handoff
+ that NARROWS a scope is refused today even though narrowing is safe.
+ That over-rejects and can never amplify, which is the sound direction to
+ fail in, and it is the same standing argument BACKLOG 1.3 rests on.
+
+ The reason it is not a prefix test is written at fat16-scope-admits:
+ scope is not one relation. A filesystem scope is a prefix, a network
+ scope is an authority, a console scope is a channel, and a Lease carries
+ no family tag to choose between them. A single text-starts-with here
+ would silently admit host evil.example.com under a grant for
+ example.com. Refusing until the family is modelled is the honest answer.
+
+  lease-scope-le : Text, Text -> Boolean
+  lease-scope-le (handed) (held) = text-length held == 0 | handed == held
+
+  lease-find-active-for : LeaseStore, AgentIdentity, Text, Integer -> Maybe Lease
+  lease-find-active-for (store) (who) (cap-name) (now) =
+    lease-find-active-loop (store.leases) 0 (store.count) (lease-bytes-to-hex (who.public-key)) cap-name now
+
+  lease-find-active-loop : List Lease, Integer, Integer, Text, Text, Integer -> Maybe Lease
+  lease-find-active-loop (leases) (i) (len) (holder-hex) (cap-name) (now) =
+    if i >= len then None
+    else let l = list-at leases i
+    in if lease-bytes-to-hex ((l.holder).public-key) == holder-hex & (l.capability).name == cap-name & now < l.expires
+      then Just l
+      else lease-find-active-loop leases (i + 1) len holder-hex cap-name now
+
+  lease-handoff : LeaseStore, HandoffMsg, Integer -> HandoffDecision
   lease-handoff (store) (h) (now) =
+    when lease-find-active-for store (h.from) ((h.capability).name) now
+      is None -> HandoffRefused ("sender holds no active lease for capability " & (h.capability).name)
+      is Just (src) -> lease-handoff-against store h now src
+
+  lease-handoff-against : LeaseStore, HandoffMsg, Integer, Lease -> HandoffDecision
+  lease-handoff-against (store) (h) (now) (src) =
+    if lease-dir-le ((h.capability).direction) ((src.capability).direction) == False
+      then HandoffRefused "handoff widens the capability direction beyond the sender's lease"
+    else if lease-dir-le ((h.scope).direction) ((src.scope).direction) == False
+      then HandoffRefused "handoff widens the scope direction beyond the sender's lease"
+    else if lease-scope-le ((h.capability).scope) ((src.capability).scope) == False
+      then HandoffRefused "handoff widens the capability scope beyond the sender's lease"
+    else if lease-scope-le ((h.scope).path) ((src.scope).path) == False
+      then HandoffRefused "handoff widens the scope path beyond the sender's lease"
+    else if h.expires > src.expires
+      then HandoffRefused "handoff outlives the sender's lease"
+    else HandoffAccepted (lease-handoff-commit store h now)
+
+  lease-handoff-commit : LeaseStore, HandoffMsg, Integer -> LeaseStore
+  lease-handoff-commit (store) (h) (now) =
     let l = Lease {
       id = lease-bytes-to-hex (h.id),
       holder = h.to,
