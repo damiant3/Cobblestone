@@ -42,7 +42,15 @@ Section: Phase Measurement
    deck-origin : Integer between 0 and 4294967295
   }
 
+ A phase carries the name it is known by. Without it the metrics list is
+ positional, and a reader has to map DECK-4 onto a phase by counting
+ `phase-start` calls in `opening.codex` -- which is how one entry came
+ to hold two ratios that disagreed by a factor of four with nobody able to
+ settle which phase either described. A measurement that needs a decoder
+ ring is a measurement that will be misquoted.
+
   PhaseMetrics = record {
+   label : Text,
    bivy-origin : Integer between 0 and 4294967295,
    bivy-hwm : Integer between 0 and 4294967295,
    deck-origin : Integer between 0 and 4294967295,
@@ -54,16 +62,80 @@ Section: Phase Measurement
    let bivy = pitch 0
    in PhaseStart { bivy-origin = bivy, deck-origin = __deck-pos }
 
-  phase-measure : PhaseStart -> PhaseMetrics
-  phase-measure (ps) =
+  phase-measure : PhaseStart, Text -> PhaseMetrics
+  phase-measure (ps) (label) =
    let hwm = __heap-save
    in let deck-now = __deck-pos
    in deck-record (PhaseMetrics {
+    label = label,
     bivy-origin = ps.bivy-origin,
     bivy-hwm = hwm,
     deck-origin = ps.deck-origin,
     deck-end = deck-now
    })
+
+ The write-path bound every guarded phase shares. A phase
+ that reserves a deck passes its ceiling down to whichever loop writes
+ that deck in bulk, and the loop asks this before each item: is there
+ still a guard band's worth of room? A ceiling of zero means unbounded,
+ which is what a caller with no reservation of its own passes.
+
+ This is a WRITE-path check on purpose. check-deck-overflow runs after
+ the phase, which is after a deck that grew into the bivy has already
+ been read back -- so it reports damage rather than preventing it, and
+ it cannot even do that reliably, because phase-measure's own record is
+ allocated on the deck that overflowed.
+
+  deck-short-of : Integer, Integer -> Boolean
+  deck-short-of (ceiling) (band) =
+   if ceiling > 0 & __deck-pos + band >= ceiling then True else False
+
+ There are two of these because there are two ways a phase writes its
+ deck, and only one of them moves __deck-pos.
+
+ __deck-pos reads the deck-pos cell. deck-record is compiled by
+ emit-deck-record-wrapper into __deck-enter, the body, __deck-exit:
+ enter copies the cell into R10 and exit writes R10 back, and the
+ write-back happens only when the nesting counter returns to zero. So
+ inside a phase-wide deck-record extent the cell is FROZEN at the
+ deck's base for the whole phase, and every allocation in that extent
+ moves R10 instead. A loop that sits inside such an extent and asks
+ deck-short-of is asking whether base + band >= base + height -- a
+ question about the FLOOR's width that never mentions the usage, true
+ only when the floor is narrower than the band.
+
+ Measured 2026-07-21: an in-loop probe through rewrite-ir-defs, over
+ the 2.81 MB selfhost, printed __deck-pos as 0x168961a2 on every one
+ of its iterations while the phase wrote 19.1 MB. Starving that floor
+ to 16 MB did not raise CDX9002; it crashed in __text_compare on a
+ garbage pointer, which is the failure the guard exists to prevent,
+ with the guard present and compiled in.
+
+ A phase whose deck writes go through MANY SMALL deck-record extents
+ is the other case: each extent's exit returns the counter to zero and
+ writes R10 back, so the cell tracks the frontier and deck-short-of is
+ live. SCOPE is that shape (resolve-expr wraps per-pattern-variable
+ results), which is why its guard works.
+
+ Use deck-bound-short-of from inside a phase-wide extent and
+ deck-short-of from outside one. Getting this backwards is silent in
+ both directions: deck-short-of inside an extent never fires, and
+ deck-bound-short-of outside one reads the bivy pointer, which is
+ above every deck ceiling, and fires on the first item.
+
+ Which one a loop is in is a fact about the CODE and not about the
+ phase. RESOLVE, LIFT, LOWER and the PARSE-KEEP copy are all inside
+ theirs and all read R10. CHECK is not, and nothing about CHECK's shape
+ says so: check-chapter issues a bare __deck-exit immediately before
+ check-all-defs and a __deck-enter after it, three lines apart, so the
+ walk between them is bivy-bound and reads the cell. Look for that pair
+ before choosing a predicate; assuming from the phase's name gets it
+ wrong for exactly one phase, and wrong there is a compiler that
+ type-checks one definition and emits nothing.
+
+  deck-bound-short-of : Integer, Integer -> Boolean
+  deck-bound-short-of (ceiling) (band) =
+   if ceiling > 0 & __heap-save + band >= ceiling then True else False
 
   phase-compact : Nothing = __heap-restore (__deck-pos)
 

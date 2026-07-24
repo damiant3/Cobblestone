@@ -1,8 +1,9 @@
 Chapter: Lir
   cites Codex chapter Build Settings (max-recursion-depth)
+  cites Codex chapter IR Chapter (ir-expr-type)
 
  The flat low-level IR: the representation on which register allocation
- will happen (design doc `docs/Designs/Active/Compiler/LIR.md`, middle-end
+ will happen (middle-end
  campaign step 5). The tree `IRExpr` has no linear order and no basic
  blocks, so linear-scan allocation cannot be expressed over it; the LIR is
  that linear order. This chapter is the second increment — it adds basic
@@ -34,7 +35,7 @@ Chapter: Lir
  own block that moves its value into the shared result vreg and jumps to a
  join block, and lowering continues in the join. There are no loops — the
  tree IR has none — so flattening a body yields a DAG and the join is the
- only merge point, exactly as `LIR.md` section 3 specifies. A `match` over
+ only merge point, exactly as the LIR design specifies. A `match` over
  a scalar scrutinee with literal, variable, and wildcard patterns lowers
  the same way: the scrutinee becomes an operand, and the arms become a
  decision chain of `LiCmp`/branch tests ending in an unconditional
@@ -58,14 +59,14 @@ Chapter: Lir
  loops), and `-Passes lir-dump` prints it as one `LIVE <def>: bN in {..}`
  line per lowerable function beside the `LIR <def>:` dump.
 
- It also carries the **allocation verifier** (Section: Allocation Verifier,
- LIR.md section 4): given each vreg an assigned location, it re-derives what
+ It also carries the **allocation verifier** (Section: Allocation
+ Verifier): given each vreg an assigned location, it re-derives what
  each location holds along every path and asserts every use reads its vreg
  from that location -- the checker that stands before the allocator so the
  allocator is validated from its first line.
 
  And it now carries the **linear-scan allocator** itself (Section:
- Allocator, LIR.md section 5: Wimmer 2005 minus splitting, on a DAG). It
+ Allocator -- Wimmer 2005 minus splitting, on a DAG). It
  computes each vreg's live interval over a flat instruction numbering,
  lets values with disjoint intervals share a register, and spills a whole
  interval to a stack slot by furthest-next-use (Belady) when registers run
@@ -74,8 +75,7 @@ Chapter: Lir
  `ALLOC <def>: v0->r0 v1->r0 ... [alloc-check: ok]` line per function, now
  showing register reuse and (under pressure) spill slots. It is still
  analysis only: nothing the compiler emits changes, because the x86
- selector that would consume this allocation is a later ratchet step
- (LIR.md section 8).
+ selector that would consume this allocation is a later ratchet step.
 
 Section: Representation
 
@@ -348,14 +348,64 @@ Section: Lowering
     is LoDiv -> True
     is otherwise -> False
 
+ The power-of-two shortcut is only the same answer as idiv when the
+ dividend cannot be negative: `sar` floors and `and` answers the
+ non-negative residue, while idiv truncates and leaves the dividend's
+ sign on the remainder. Three separate consumers read `lir-imm-pow2` --
+ the selector, the div-position map that models the RAX/RDX clobber, and
+ the register hinter -- so the decision cannot be made at any one of
+ them without the other two disagreeing. It is made once, here at
+ lowering, by refusing to hand the operand down as an immediate at all;
+ every consumer then sees a register and takes the general path
+ together.
+
+ The test is the dividend's declared IR type rather than the emitter's
+ proven-range environment, which is richer but lives in the wrong
+ direction of the dependency graph. The two therefore admit slightly
+ different sets of divisions to the one-instruction form. They cannot
+ disagree about the ANSWER, which is the property that matters, and a
+ bounded dividend -- the common case this shortcut exists for -- is
+ proven by both.
+
+  lir-pow2-dividend-nonneg : IRExpr -> Boolean
+  lir-pow2-dividend-nonneg (e) =
+   when ir-expr-type e
+    is IntegerTy (lo) (hi) (m) -> lo >= 0
+    is otherwise -> False
+
  The comparison operators a fused condition accepts, and the mapping to a
  branch condition. Any other operator in condition position falls to the
  value path (compare the materialised boolean against zero).
 
-  lir-cmp-whitelisted : IRBinaryOp -> Boolean
-  lir-cmp-whitelisted (op) =
+ Equality is whitelisted only for the operand types a machine `cmp` answers
+ correctly. `IrEq` on Text is a call to `__str_eq`, not a compare of the two
+ values, and a fused branch would compare the two POINTERS instead -- two
+ equal strings at different addresses would take the else arm. The tree
+ emitter has always guarded this in `is-fusable-int-comparison`; this is the
+ same guard, and its absence here is what made
+ `if a == b then 1 else 0` over Text answer 0 while the identical comparison
+ with Text-typed branches answered correctly, because only the first shape
+ was LIR-eligible.
+
+ The type is not resolved through the definition table here (that needs a
+ CodegenState this pass does not have), so an alias for Integer is declined
+ rather than fused. Declining costs an instruction or two; accepting a type
+ this cannot vouch for costs a wrong answer.
+
+  lir-cmp-operand-fusable : CodexType -> Boolean
+  lir-cmp-operand-fusable (ty) =
+   when ty
+    is IntegerTy (lo) (hi) (mode) | BooleanTy | CharTy -> True
+    is UnitTy (n) (inner) -> when inner
+     is IntegerTy (lo2) (hi2) (m2) | BooleanTy | CharTy -> True
+     is otherwise -> False
+    is otherwise -> False
+
+  lir-cmp-whitelisted : IRBinaryOp, CodexType -> Boolean
+  lir-cmp-whitelisted (op) (left-ty) =
    when op
-    is IrEq | IrNotEq | IrLt | IrGt | IrLtEq | IrGtEq -> True
+    is IrEq | IrNotEq -> lir-cmp-operand-fusable left-ty
+    is IrLt | IrGt | IrLtEq | IrGtEq -> True
     is otherwise -> False
 
   lir-cond-of : IRBinaryOp -> LirCond
@@ -410,6 +460,19 @@ Section: Lowering
      in if rl.ok == False then rl
         else let rr = lower-lir-expr env r (rl.counter) (rl.blocks) (rl.cur) (rl.curi) (rl.bctr) (depth + 1) (loop-notail lc)
         in if rr.ok == False then rr
+           else if lir-op-divides (lir-op-of op) & lir-imm-pow2 (rr.val) & lir-pow2-dividend-nonneg l == False
+           then let mv = rr.counter
+            in let dst = mv + 1
+            in LowerRes {
+             val = LvReg dst,
+             counter = dst + 1,
+             blocks = rr.blocks,
+             cur = rr.cur,
+             curi = list-push (list-push (rr.curi) (deck-record (LiMove mv (rr.val)))) (deck-record (LiBin (lir-op-of op) dst (rl.val) (LvReg mv))),
+             bctr = rr.bctr,
+             ok = True,
+             term = False
+            }
            else let dst = rr.counter
            in LowerRes {
             val = LvReg dst,
@@ -761,7 +824,7 @@ Section: Lowering
     is IrBinary (op) (l) (r) (t) (s) ->
      if lir-cond-is-zero-test op r & lir-rem-pow2-mask l >= 0
       then lower-if-test env op l counter blocks cur curi bctr depth lc
-     else if lir-cmp-whitelisted op == False then cond-value-path env c counter blocks cur curi bctr depth lc
+     else if lir-cmp-whitelisted op (ir-expr-type l) == False then cond-value-path env c counter blocks cur curi bctr depth lc
      else let rl = lower-lir-expr env l counter blocks cur curi bctr (depth + 1) lc
      in if rl.ok == False then cond-fail (rl.counter) (rl.blocks) (rl.cur) (rl.curi) (rl.bctr)
         else let rr = lower-lir-expr env r (rl.counter) (rl.blocks) (rl.cur) (rl.curi) (rl.bctr) (depth + 1) lc
@@ -893,12 +956,19 @@ Section: Lowering
     is IrWildPat (s) -> ctor-subs-simple subs (i + 1) n
     is otherwise -> False
 
+ A Text literal pattern is declined rather than lowered. The test below
+ is `LiCmp` against `pat-lit-to-integer` of the literal's spelling, and
+ a Text value is a pointer -- comparing it against the integer parse of
+ "sin" matches nothing, ever. Text equality needs a __str_eq call, which
+ the tree emitter does and this selector has no shape for, so the whole
+ match goes there instead of being lowered wrongly here.
+
   pat-lowerable : IRPat -> Boolean
   pat-lowerable (p) =
    when p
     is IrWildPat (s) -> True
     is IrVarPat (nm) (t) (s) -> True
-    is IrLitPat (v) (t) (s) -> True
+    is IrLitPat (v) (t) (s) -> when t is TextTy -> False is otherwise -> True
     is IrCtorPat (nm) (subs) (t) (s) ->
      when t
       is SumTy (sn) (sa) (cs) -> if lir-ctor-tag cs nm 0 >= 0 then ctor-subs-simple subs 0 (list-length subs) else False
@@ -964,7 +1034,7 @@ Section: Lowering
      let tagval = when t is SumTy (sn) (sa) (cs) -> lir-ctor-tag cs nm 0 is otherwise -> 0 - 1
      in let tag-dst = counter
      in MatchTestRes { curi = list-push (list-push curi (deck-record (LiLoad tag-dst sv 0 8 False))) (deck-record (LiCmp (LvReg tag-dst) (LvImm tagval))), counter = counter + 1 }
-    is IrLitPat (v) (t) (s) -> MatchTestRes { curi = list-push curi (deck-record (LiCmp sv (LvImm (lit-text-to-integer v)))), counter = counter }
+    is IrLitPat (v) (t) (s) -> MatchTestRes { curi = list-push curi (deck-record (LiCmp sv (LvImm (pat-lit-to-integer v)))), counter = counter }
     is otherwise -> MatchTestRes { curi = list-push curi (deck-record (LiCmp sv (LvImm 0))), counter = counter }
 
   match-branch-ok : IRBranch -> Boolean
@@ -986,9 +1056,12 @@ Section: Lowering
  block, then binds the pattern and lowers the body in the body block. Every
  arm's body moves its value into the shared result vreg `d` and jumps to
  the join, so the verifier sees `d` defined on every path into the join.
- The literal value comes from `lit-text-to-integer` and the tag from the
+ The literal value comes from `pat-lit-to-integer` and the tag from the
  constructor's declaration index, exactly as the tree emitter's
- `emit-pattern` derives them, so the two agree.
+ `emit-pattern` derives them, so the two agree. It is that function and
+ not `lit-text-to-integer` because a pattern carries its source spelling,
+ and a Boolean spells letters; both sites read a pattern, so both had the
+ same defect and both take the same cure.
 
   lower-match-chain : List LirEnvEntry, List IRBranch, Integer, Integer, LirValue, Integer, Integer, Integer, List LirBlock, Integer, List LirInsn, Integer, Integer, LirLoopCtx -> LowerRes
   lower-match-chain (env) (branches) (i) (n) (sv) (d) (join-id) (counter) (blocks) (cur) (curi) (bctr) (depth) (lc) =
@@ -1306,7 +1379,7 @@ Section: Move Coalescing
 
 Section: Structural Verifier
 
- The destination-driven invariant the design doc (LIR.md section 4) states
+ The destination-driven invariant the design states
  for the allocator to rely on, generalised from a straight line to a DAG
  of blocks: every vreg is defined exactly once, and every use reads a vreg
  that is defined on every path reaching it. A violation here is a lowering
@@ -1505,8 +1578,8 @@ Section: Structural Verifier
 Section: Liveness
 
  Backward liveness over the block DAG, the foundation the linear-scan
- allocator needs (LIR.md section 5: "Liveness is one backward pass over
- blocks in reverse topological order"). Because the LIR has no loops --
+ allocator needs: liveness is one backward pass over
+ blocks in reverse topological order. Because the LIR has no loops --
  flattening a loop-free tree yields a DAG -- there is no fixpoint: a single
  backward sweep suffices. A vreg is live at a point if some path from there
  uses it before redefining it.
@@ -1645,7 +1718,7 @@ Section: Liveness
 
 Section: Allocator
 
- The linear-scan register allocator (LIR.md section 5: Wimmer 2005 minus
+ The linear-scan register allocator (Wimmer 2005 minus
  splitting, on a DAG). It replaces the trivial bijective placeholder with a
  real allocation: values whose live ranges do not overlap share a register,
  and when registers run out a whole interval is spilled to a stack slot,
@@ -1661,68 +1734,83 @@ Section: Allocator
  liveness (keep a value in a register or slot longer than needed), never
  under-state it, so it is safe, and the allocation verifier backstops any
  lowering that would break the assumption. Interval splitting,
- rematerialisation, and stack-slot recycling are v2 (LIR.md section 9);
+ rematerialisation, and stack-slot recycling are v2;
  this increment is whole-interval spill with one dedicated slot per spilled
  vreg.
 
- The register file is a flat count here -- `lir-alloc-nregs` allocatable
- registers, numbered 0.. -- of which the first `lir-alloc-ncallee` are the
- callee-saved "local" registers the x86 emitter fills first (RBX, R12, R13,
- R14; `docs/ArchitectsSketchbook.md`) and the remainder are caller-saved
- registers a call may clobber. That distinction is the one fixed-interval
- constraint the design names (LIR.md section 5) that bites: a caller-saved
- register cannot hold a value live across a call. So an interval that crosses
- a call is restricted to the callee-saved pool (or a spill slot); an interval
- that does not may take a caller-saved one.
+ The register file is a flat count -- `nregs` allocatable registers, numbered
+ 0.. -- of which the first `ncallee` are the callee-saved "local" registers a
+ target's emitter fills first and the remainder are caller-saved registers a
+ call may clobber. That distinction is the one fixed-interval constraint the
+ design names that bites: a caller-saved register cannot
+ hold a value live across a call. So an interval that crosses a call is
+ restricted to the callee-saved pool (or a spill slot); an interval that does
+ not may take a caller-saved one.
 
  The caller-saved part is split again, and that split is what a leaf turns on.
- Index `lir-alloc-ncallee` is RAX, which any function may use for a value that
- crosses nothing. `[lir-alloc-nargregs, lir-alloc-nregs)` are the argument
+ Index `ncallee` is the scratch return register, which any function may use
+ for a value that crosses nothing. `[nargregs, nregs)` are the argument
  registers, and only a function that makes **no call** may touch them: in
  anything else they are needed to place arguments, and a call would clobber
  them anyway. A leaf has neither problem, so it takes them first -- which is
  how it comes to push nothing (the selector saves only indices below
- `lir-alloc-ncallee`, and a leaf uses none) and how its parameters land in the
+ `ncallee`, and a leaf uses none) and how its parameters land in the
  registers they arrived in (the argument registers are listed in argument
  order and the parameters are scanned first, in order, against a free file).
 
- The physical mapping (abstract index -> x86 register) still lives in the
- selector; the pool structure lives here, so the register file stays data --
- a different target is a different count and a different set of splits.
+ None of those numbers are written down here. The physical mapping (abstract
+ index -> machine register) lives in the selector, and so now does the pool
+ structure that indexes it: both travel in as one `LirTarget`, so the register
+ file is data in fact and not only in prose. A different target is a different
+ record, and no code in this chapter carries a value belonging to any one
+ machine.
 
- Determinism is a correctness requirement (LIR.md section 6): the fixed
+ The prose still does, and deliberately. x86-64 is the worked example
+ throughout -- RAX, RDX and `idiv` appear below because a policy is easier to
+ read against a real register file than against five letters. Read those as
+ illustration; the allocator sees only `tgt`.
+
+ Determinism is a correctness requirement: the fixed
  point is byte-identity, so every choice is fully ordered. Intervals are
  processed by start then vreg; the chosen free register is the lowest in its
  pool; the spill victim is the active interval of greatest fin, ties broken by
  greatest vreg.
 
-  lir-alloc-ncallee : Integer
-  lir-alloc-ncallee = 4
+ A division fixes registers, and that is the last piece of pool structure. A
+ call clobbers every caller-saved register and a value live across one has to
+ retreat to the callee-saved pool; a division clobbers exactly two, and
+ treating it like a call would be far too blunt -- `gcd`'s parameters are
+ carried around its loop and therefore live across its remainder, so the
+ callee-saved pool would cost it two pushes and two pops to avoid two
+ registers it never wanted.
 
-  lir-alloc-nargregs : Integer
-  lir-alloc-nargregs = 5
+ So they are named, as `diva` and `divb`. On x86-64 `idiv` takes the dividend
+ in RDX:RAX and leaves the remainder in RDX, which is abstract index 4 and
+ index 7 -- but that is the selector's business to say, not this chapter's.
 
-  lir-alloc-nregs : Integer
-  lir-alloc-nregs = 9
+ **A target that fixes no registers sets both to -1**, and every consumer of
+ the pair is written to mean it: `lir-free-mask` compares indices for equality
+ and -1 equals none of them, `lir-hint-insns` produces -1 as the hint and
+ `lir-hint-usable` rejects a negative hint, and `lir-alloc-clobber-div` guards
+ each index before it writes. That last one is the reason the guard exists: a
+ bare `list-set-at occ (0 - 1)` is an out-of-range write, so a target with no
+ division-fixed pair would have corrupted the verifier's occupant map rather
+ than excluding nothing. ARM64 `sdiv` and RISC-V `div` are three-operand and
+ fix nothing, so this is the first path a retarget takes, not a hypothetical.
 
- The two registers a division fixes. A call clobbers every caller-saved
- register and a value live across one has to retreat to the callee-saved pool;
- a division clobbers exactly two, and treating it like a call would be far too
- blunt -- `gcd`'s parameters are carried around its loop and therefore live
- across its remainder, so the callee-saved pool would cost it two pushes and
- two pops to avoid two registers it never wanted.
+ `budget` is the width of the location index space the verifier maps -- the
+ registers a `LocReg` index may name -- and must be at least `nregs`. It is
+ wider than the allocatable file on purpose: it sizes an occupant array, so
+ slack is cheap and an overflow is a wrong answer.
 
- So they are named. On x86-64 `idiv` takes the dividend in RDX:RAX and leaves
- the remainder in RDX, which is abstract index 4 (RAX) and index 7 (RDX, the
- third argument register). Like the rest of the pool structure this is data: a
- target that fixes different registers names different indices, and one that
- fixes none has nothing to exclude.
-
-  lir-alloc-diva : Integer
-  lir-alloc-diva = 4
-
-  lir-alloc-divb : Integer
-  lir-alloc-divb = 7
+  LirTarget = record {
+   ncallee : Integer,
+   nargregs : Integer,
+   nregs : Integer,
+   diva : Integer,
+   divb : Integer,
+   budget : Integer
+  }
 
  An interval is a vreg's live range over a flat numbering of the function's
  instructions (blocks in list order, which is topological; instructions
@@ -1970,9 +2058,9 @@ Section: Allocator
   lir-true-vec (i) (n) (acc) =
    if i >= n then acc else lir-true-vec (i + 1) n (list-push acc True)
 
-  lir-loc-init : Integer, Integer, List Location -> List Location
-  lir-loc-init (i) (n) (acc) =
-   if i >= n then acc else lir-loc-init (i + 1) n (list-push acc (deck-record (LocReg lir-alloc-ncallee)))
+  lir-loc-init : LirTarget, Integer, Integer, List Location -> List Location
+  lir-loc-init (tgt) (i) (n) (acc) =
+   if i >= n then acc else lir-loc-init tgt (i + 1) n (list-push acc (deck-record (LocReg (tgt.ncallee))))
 
   lir-free-lowest : List Boolean, Integer, Integer -> Integer
   lir-free-lowest (free) (i) (n) =
@@ -2099,9 +2187,9 @@ Section: Allocator
    in if (start < cp) & (cp < fin) then True
       else lir-ivl-crosses start fin callpos (i + 1) n
 
- A non-crosser prefers RAX -- index `lir-alloc-ncallee`, the caller-saved
- register -- and falls back to the lowest free callee register. Preferring
- RAX keeps the callee-saved pool free for the crossers that need it.
+ A non-crosser prefers RAX -- index `ncallee`, the caller-saved register --
+ and falls back to the lowest free callee register. Preferring RAX keeps the
+ callee-saved pool free for the crossers that need it.
 
  In a leaf that preference is not merely unnecessary, it is backwards. A
  function that makes no call has nothing that can clobber a caller-saved
@@ -2146,19 +2234,19 @@ Section: Allocator
  callee-saved whatever it would prefer, and every register a hint names is
  caller-saved.
 
-  lir-hint-usable : List Boolean, Integer -> Boolean
-  lir-hint-usable (free) (hint) =
+  lir-hint-usable : LirTarget, List Boolean, Integer -> Boolean
+  lir-hint-usable (tgt) (free) (hint) =
    if hint < 0 then False
-   else if hint >= lir-alloc-nregs then False
+   else if hint >= (tgt.nregs) then False
    else list-at free hint
 
-  lir-free-nc : List Boolean, Boolean, Boolean, Integer -> Integer
-  lir-free-nc (free) (leaf) (isparam) (hint) =
-   if lir-hint-usable free hint then hint
-   else if leaf == False then lir-free-nc-call free
-   else if isparam then lir-free-leaf-arg free
-   else if list-at free lir-alloc-ncallee then lir-alloc-ncallee
-   else lir-free-leaf-arg free
+  lir-free-nc : LirTarget, List Boolean, Boolean, Boolean, Integer -> Integer
+  lir-free-nc (tgt) (free) (leaf) (isparam) (hint) =
+   if lir-hint-usable tgt free hint then hint
+   else if leaf == False then lir-free-nc-call tgt free
+   else if isparam then lir-free-leaf-arg tgt free
+   else if list-at free (tgt.ncallee) then tgt.ncallee
+   else lir-free-leaf-arg tgt free
 
  A parameter is never hinted, and the reason is not that it would not help.
  It is that a parameter already arrives somewhere: the entry moves put each
@@ -2176,47 +2264,47 @@ Section: Allocator
     is LvReg (r) -> if r < np then h else if r >= nv then h else list-set-at h r want
     is LvImm (k) -> h
 
-  lir-hint-args : List LirValue, List Integer, Integer, Integer, Integer, Integer -> List Integer
-  lir-hint-args (args) (h) (i) (n) (nv) (np) =
+  lir-hint-args : LirTarget, List LirValue, List Integer, Integer, Integer, Integer, Integer -> List Integer
+  lir-hint-args (tgt) (args) (h) (i) (n) (nv) (np) =
    if i >= n then h
-   else if i >= (lir-alloc-nregs - lir-alloc-nargregs) then h
-   else lir-hint-args args (lir-hint-set h (list-at args i) (lir-alloc-nargregs + i) nv np) (i + 1) n nv np
+   else if i >= ((tgt.nregs) - (tgt.nargregs)) then h
+   else lir-hint-args tgt args (lir-hint-set h (list-at args i) ((tgt.nargregs) + i) nv np) (i + 1) n nv np
 
-  lir-hint-insns : List LirInsn, List Integer, Integer, Integer, Integer, Integer -> List Integer
-  lir-hint-insns (insns) (h) (i) (n) (nv) (np) =
+  lir-hint-insns : LirTarget, List LirInsn, List Integer, Integer, Integer, Integer, Integer -> List Integer
+  lir-hint-insns (tgt) (insns) (h) (i) (n) (nv) (np) =
    if i >= n then h
    else when (list-at insns i)
     is LiCall (dst) (name) (args) ->
-     let h1 = lir-hint-args args h 0 (list-length args) nv np
-     in lir-hint-insns insns (lir-hint-set h1 (LvReg dst) lir-alloc-ncallee nv np) (i + 1) n nv np
+     let h1 = lir-hint-args tgt args h 0 (list-length args) nv np
+     in lir-hint-insns tgt insns (lir-hint-set h1 (LvReg dst) (tgt.ncallee) nv np) (i + 1) n nv np
     is LiBin (op) (dst) (l) (r) ->
-     if lir-imm-pow2 r then lir-hint-insns insns h (i + 1) n nv np
+     if lir-imm-pow2 r then lir-hint-insns tgt insns h (i + 1) n nv np
      else when op
-      is LoRem -> lir-hint-insns insns (lir-hint-set h (LvReg dst) lir-alloc-divb nv np) (i + 1) n nv np
-      is LoDiv -> lir-hint-insns insns (lir-hint-set h (LvReg dst) lir-alloc-diva nv np) (i + 1) n nv np
-      is otherwise -> lir-hint-insns insns h (i + 1) n nv np
-    is otherwise -> lir-hint-insns insns h (i + 1) n nv np
+      is LoRem -> lir-hint-insns tgt insns (lir-hint-set h (LvReg dst) (tgt.divb) nv np) (i + 1) n nv np
+      is LoDiv -> lir-hint-insns tgt insns (lir-hint-set h (LvReg dst) (tgt.diva) nv np) (i + 1) n nv np
+      is otherwise -> lir-hint-insns tgt insns h (i + 1) n nv np
+    is otherwise -> lir-hint-insns tgt insns h (i + 1) n nv np
 
-  lir-hint-blocks : List LirBlock, List Integer, Integer, Integer, Integer, Integer -> List Integer
-  lir-hint-blocks (blocks) (h) (i) (n) (nv) (np) =
+  lir-hint-blocks : LirTarget, List LirBlock, List Integer, Integer, Integer, Integer, Integer -> List Integer
+  lir-hint-blocks (tgt) (blocks) (h) (i) (n) (nv) (np) =
    if i >= n then h
    else let b = list-at blocks i
-   in lir-hint-blocks blocks (lir-hint-insns (b.insns) h 0 (list-length (b.insns)) nv np) (i + 1) n nv np
+   in lir-hint-blocks tgt blocks (lir-hint-insns tgt (b.insns) h 0 (list-length (b.insns)) nv np) (i + 1) n nv np
 
-  lir-hints : LirFunc -> List Integer
-  lir-hints (f) =
-   lir-hint-blocks (f.blocks) (lir-int-vec 0 (f.nvregs) (0 - 1) []) 0 (list-length (f.blocks)) (f.nvregs) (f.nparams)
+  lir-hints : LirTarget, LirFunc -> List Integer
+  lir-hints (tgt) (f) =
+   lir-hint-blocks tgt (f.blocks) (lir-int-vec 0 (f.nvregs) (0 - 1) []) 0 (list-length (f.blocks)) (f.nvregs) (f.nparams)
 
-  lir-free-leaf-arg : List Boolean -> Integer
-  lir-free-leaf-arg (free) =
-   let fa = lir-free-lowest free lir-alloc-nargregs lir-alloc-nregs
+  lir-free-leaf-arg : LirTarget, List Boolean -> Integer
+  lir-free-leaf-arg (tgt) (free) =
+   let fa = lir-free-lowest free (tgt.nargregs) (tgt.nregs)
    in if fa >= 0 then fa
-      else lir-free-nc-call free
+      else lir-free-nc-call tgt free
 
-  lir-free-nc-call : List Boolean -> Integer
-  lir-free-nc-call (free) =
-   if list-at free lir-alloc-ncallee then lir-alloc-ncallee
-   else lir-free-lowest free 0 lir-alloc-ncallee
+  lir-free-nc-call : LirTarget, List Boolean -> Integer
+  lir-free-nc-call (tgt) (free) =
+   if list-at free (tgt.ncallee) then tgt.ncallee
+   else lir-free-lowest free 0 (tgt.ncallee)
 
  Place an interval in a free register, or spill it whole to a fresh slot.
  Factored out because the crosser and non-crosser paths share them.
@@ -2271,73 +2359,453 @@ Section: Allocator
  from what remains. A value that crosses a call as well is already confined to
  the callee-saved pool, which the division does not touch.
 
-  lir-free-mask : List Boolean, Integer, Integer, Integer, List Boolean -> List Boolean
-  lir-free-mask (free) (a) (b) (i) (acc) =
-   if i >= lir-alloc-nregs then acc
-   else if (i == a) | (i == b) then lir-free-mask free a b (i + 1) (list-push acc False)
-   else lir-free-mask free a b (i + 1) (list-push acc (list-at free i))
+  lir-free-mask : LirTarget, List Boolean, Integer, Integer, Integer, List Boolean -> List Boolean
+  lir-free-mask (tgt) (free) (a) (b) (i) (acc) =
+   if i >= (tgt.nregs) then acc
+   else if (i == a) | (i == b) then lir-free-mask tgt free a b (i + 1) (list-push acc False)
+   else lir-free-mask tgt free a b (i + 1) (list-push acc (list-at free i))
 
  The call-crossing arm: a value live across a call needs a callee-saved
  register, so it looks in the low (callee-saved) range and spills itself if
  none is free.
 
-  lir-scan-cross : LirIvl, LirScan, LirExpire -> LirScan
-  lir-scan-cross (iv) (st) (ex) =
-   let fr = lir-free-lowest (ex.free) 0 lir-alloc-ncallee
+  lir-scan-cross : LirTarget, LirIvl, LirScan, LirExpire -> LirScan
+  lir-scan-cross (tgt) (iv) (st) (ex) =
+   let fr = lir-free-lowest (ex.free) 0 (tgt.ncallee)
    in if fr >= 0 then lir-place-reg iv st (ex.active) (ex.free) fr
       else lir-spill-self iv st (ex.active) (ex.free)
 
  A value crossing a division cannot use RAX or RDX (idiv destroys them), so
  those are masked out of the free set before the general placement scan.
 
-  lir-scan-avail : LirIvl, LirExpire, List Integer -> List Boolean
-  lir-scan-avail (iv) (ex) (divpos) =
+  lir-scan-avail : LirTarget, LirIvl, LirExpire, List Integer -> List Boolean
+  lir-scan-avail (tgt) (iv) (ex) (divpos) =
    if lir-ivl-crosses (iv.start) (iv.fin) divpos 0 (list-length divpos)
-   then lir-free-mask (ex.free) lir-alloc-diva lir-alloc-divb 0 []
+   then lir-free-mask tgt (ex.free) (tgt.diva) (tgt.divb) 0 []
    else ex.free
 
  The non-crossing arm: place into any free register the general scan hands
  out (honouring the hint and the division mask), or evict a lower-priority
  interval when the file is full.
 
-  lir-scan-nocross : LirIvl, LirScan, LirExpire, List Integer, List Integer, List Integer -> LirScan
-  lir-scan-nocross (iv) (st) (ex) (callpos) (hints) (divpos) =
-   let avail = lir-scan-avail iv ex divpos
-   in let fr = lir-free-nc avail (list-length callpos == 0) (iv.start == 0 - 1) (list-at hints (iv.vreg))
+  lir-scan-nocross : LirTarget, LirIvl, LirScan, LirExpire, List Integer, List Integer, List Integer -> LirScan
+  lir-scan-nocross (tgt) (iv) (st) (ex) (callpos) (hints) (divpos) =
+   let avail = lir-scan-avail tgt iv ex divpos
+   in let fr = lir-free-nc tgt avail (list-length callpos == 0) (iv.start == 0 - 1) (list-at hints (iv.vreg))
    in if fr >= 0 then lir-place-reg iv st (ex.active) (ex.free) fr
       else lir-scan-evict iv st (ex.active) (ex.free)
 
  One interval placed. Expire the intervals that ended before this one starts,
  then take the crossing arm if it spans a call, else the general arm. The two
  arms were inline nested lets until a text-emitter round-trip bug on that
- shape forced the split (BACKLOG); they are the same computation.
+ shape forced the split; they are the same computation.
 
-  lir-scan-step : LirIvl, LirScan, List Integer, List Integer, List Integer -> LirScan
-  lir-scan-step (iv) (st) (callpos) (hints) (divpos) =
+  lir-scan-step : LirTarget, LirIvl, LirScan, List Integer, List Integer, List Integer -> LirScan
+  lir-scan-step (tgt) (iv) (st) (callpos) (hints) (divpos) =
    let ex = lir-scan-expire (st.active) 0 (list-length (st.active)) (iv.start) [] (st.free)
    in if lir-ivl-crosses (iv.start) (iv.fin) callpos 0 (list-length callpos)
-      then lir-scan-cross iv st ex
-      else lir-scan-nocross iv st ex callpos hints divpos
+      then lir-scan-cross tgt iv st ex
+      else lir-scan-nocross tgt iv st ex callpos hints divpos
 
-  lir-scan-loop : List LirIvl, Integer, Integer, LirScan, List Integer, List Integer, List Integer -> LirScan
-  lir-scan-loop (ivs) (i) (n) (st) (callpos) (hints) (divpos) =
+  lir-scan-loop : LirTarget, List LirIvl, Integer, Integer, LirScan, List Integer, List Integer, List Integer -> LirScan
+  lir-scan-loop (tgt) (ivs) (i) (n) (st) (callpos) (hints) (divpos) =
    if i >= n then st
-   else lir-scan-loop ivs (i + 1) n (lir-scan-step (list-at ivs i) st callpos hints divpos) callpos hints divpos
+   else lir-scan-loop tgt ivs (i + 1) n (lir-scan-step tgt (list-at ivs i) st callpos hints divpos) callpos hints divpos
 
-  lir-alloc-linscan : LirFunc -> AllocRes
-  lir-alloc-linscan (f) =
+  lir-alloc-linscan : LirTarget, LirFunc -> AllocRes
+  lir-alloc-linscan (tgt) (f) =
    let nv = f.nvregs
    in let ivs = lir-build-intervals f
    in let callpos = lir-callpos f
    in let divpos = lir-divpos f
-   in let hints = lir-hints f
-   in let st0 = LirScan { assign = lir-loc-init 0 nv [], active = [], free = lir-true-vec 0 lir-alloc-nregs [], nslots = 0 }
-   in let stf = lir-scan-loop ivs 0 (list-length ivs) st0 callpos hints divpos
+   in let hints = lir-hints tgt f
+   in let st0 = LirScan { assign = lir-loc-init tgt 0 nv [], active = [], free = lir-true-vec 0 (tgt.nregs) [], nslots = 0 }
+   in let stf = lir-scan-loop tgt ivs 0 (list-length ivs) st0 callpos hints divpos
    in AllocRes { assign = stf.assign, ok = True }
+
+Section: Entry Moves
+
+ The allocator says where each parameter's vreg lives. The ABI says where it
+ arrives. When those differ something has to move it, and that something is not
+ an LIR instruction: it runs before the first block, and the allocation
+ verifier below does not check it. That verifier SEEDS the parameters into
+ their assigned locations and proceeds, which is to say it assumes these moves
+ worked. The assumption is the one thing in the LIR that was never checked, and
+ `col-hue` was miscompiled behind it for ten sessions while `[alloc-check: ok]`
+ printed on every build.
+
+ The moves are planned here rather than in a backend, in ABSTRACT register
+ indices, because nothing about the problem is target-specific: parameter `i`
+ arrives in abstract index `nargregs + i` and has to reach `assign[i]`. A
+ backend maps indices to its own registers when it emits.
+ `Emit/X86_64Lir.codex` carries its own copy planned in physical registers,
+ written before this existed; the two agree on the algorithm, and a
+ backend-side copy of compiler logic that nothing diffs is a known bug class,
+ so that one should be replaced by this rather than kept beside it.
+
+ **The order matters and the naive order is wrong.** One move per parameter in
+ parameter order is correct only while no destination is another parameter's
+ arrival register. That held on x86-64 until its register file let a leaf keep
+ parameters where they arrived, and from that moment a destination could be
+ another parameter's source: `col-hue` takes five parameters and divides, the
+ division masks a register out of the free set, and the resulting
+ `mov rcx,rdx; mov rbx,rcx` had the second move read a register the first had
+ already overwritten. So a move is emitted only when no move still to come
+ reads the register it writes. When every remaining move is blocked they form a
+ cycle, and one source is staged through a scratch index (`nregs`, one past the
+ allocatable file, which every backend has spare) to open it. A destination
+ that is a spill slot blocks nothing: it is memory, and clobbers no register.
+
+  LirEmv =
+   | EmvMove (Integer) (Integer)
+   | EmvStore (Integer) (Integer)
+
+  lir-emv-scratch : LirTarget -> Integer
+  lir-emv-scratch (tgt) = tgt.nregs
+
+  lir-emv-srcs : LirTarget, Integer, Integer, List Integer -> List Integer
+  lir-emv-srcs (tgt) (i) (np) (acc) =
+   if i >= np then acc
+   else lir-emv-srcs tgt (i + 1) np (list-push acc ((tgt.nargregs) + i))
+
+  lir-emv-dst : List Location, Integer -> Integer
+  lir-emv-dst (assign) (i) =
+   when (list-at assign i)
+    is LocReg (r) -> r
+    is LocSlot (k) -> 0 - 1
+
+  lir-emv-blocked : List Integer, List Boolean, Integer, Integer, Integer, Integer -> Boolean
+  lir-emv-blocked (srcs) (done) (i) (np) (dsti) (j) =
+   if j >= np then False
+   else if j == i then lir-emv-blocked srcs done i np dsti (j + 1)
+   else if list-at done j then lir-emv-blocked srcs done i np dsti (j + 1)
+   else if (list-at srcs j) == dsti then True
+   else lir-emv-blocked srcs done i np dsti (j + 1)
+
+  lir-emv-pick : List Integer, List Boolean, Integer, Integer, List Location -> Integer
+  lir-emv-pick (srcs) (done) (i) (np) (assign) =
+   if i >= np then 0 - 1
+   else if list-at done i then lir-emv-pick srcs done (i + 1) np assign
+   else let d = lir-emv-dst assign i
+   in if d < 0 then i
+      else if lir-emv-blocked srcs done i np d 0 then lir-emv-pick srcs done (i + 1) np assign
+      else i
+
+  lir-emv-stageable : List Integer, List Boolean, Integer, Integer, Integer -> Integer
+  lir-emv-stageable (srcs) (done) (i) (np) (sc) =
+   if i >= np then 0 - 1
+   else if list-at done i then lir-emv-stageable srcs done (i + 1) np sc
+   else if (list-at srcs i) == sc then lir-emv-stageable srcs done (i + 1) np sc
+   else i
+
+  lir-emv-step : List Location, Integer, Integer -> LirEmv
+  lir-emv-step (assign) (i) (srcreg) =
+   when (list-at assign i)
+    is LocReg (r) -> EmvMove r srcreg
+    is LocSlot (k) -> EmvStore k srcreg
+
+ `lir-emv-stage` exists to read `srcs[c]` before the same call overwrites it:
+ `list-set-at` writes in place and arguments evaluate left to right, so a
+ staging step built in the argument list after the rewrite would read the
+ scratch back and stage a register onto itself.
+
+  lir-emv-stage : LirTarget, List Integer, List Boolean, Integer, List Location, Integer, List LirEmv, Integer, Integer -> List LirEmv
+  lir-emv-stage (tgt) (srcs) (done) (np) (assign) (fuel) (acc) (c) (sc) =
+   lir-emv-plan tgt (list-set-at srcs c (lir-emv-scratch tgt)) done np assign fuel (list-push acc (EmvMove (lir-emv-scratch tgt) sc))
+
+  lir-emv-plan : LirTarget, List Integer, List Boolean, Integer, List Location, Integer, List LirEmv -> List LirEmv
+  lir-emv-plan (tgt) (srcs) (done) (np) (assign) (fuel) (acc) =
+   if fuel <= 0 then acc
+   else let p = lir-emv-pick srcs done 0 np assign
+   in if p >= 0
+      then lir-emv-plan tgt srcs (list-set-at done p True) np assign (fuel - 1) (list-push acc (lir-emv-step assign p (list-at srcs p)))
+      else let c = lir-emv-stageable srcs done 0 np (lir-emv-scratch tgt)
+      in if c < 0 then acc
+         else lir-emv-stage tgt srcs done np assign (fuel - 1) acc c (list-at srcs c)
+
+  lir-emv-for : LirTarget, LirFunc, List Location -> List LirEmv
+  lir-emv-for (tgt) (f) (assign) =
+   lir-emv-plan tgt (lir-emv-srcs tgt 0 (f.nparams) []) (lir-make-vec 0 (f.nparams) []) (f.nparams) assign ((f.nparams) * 2 + 4) []
+
+ The check, and the reason it simulates rather than re-derives. A checker that
+ re-ran the planner's own reasoning would agree with it however wrong it was,
+ which is exactly how the allocation verifier missed `col-hue`. So: seed a
+ register file with each parameter in the register it really arrives in, apply
+ the planned moves one at a time, then ask whether every parameter ended where
+ the assignment promised. A move that clobbers a register a later move still
+ reads shows up as the wrong parameter index sitting in the destination. The
+ file is indexed by abstract register, with the staging scratch at `nregs` and
+ spill slot `k` at `nregs + 1 + k`.
+
+  lir-emv-sim-loc : LirTarget, Location -> Integer
+  lir-emv-sim-loc (tgt) (loc) =
+   when loc
+    is LocReg (r) -> r
+    is LocSlot (k) -> (tgt.nregs) + 1 + k
+
+  lir-emv-seed : LirTarget, List Integer, Integer, Integer -> List Integer
+  lir-emv-seed (tgt) (file) (i) (np) =
+   if i >= np then file
+   else lir-emv-seed tgt (list-set-at file ((tgt.nargregs) + i) i) (i + 1) np
+
+  lir-emv-apply : LirTarget, List Integer, List LirEmv, Integer, Integer -> List Integer
+  lir-emv-apply (tgt) (file) (plan) (i) (n) =
+   if i >= n then file
+   else when (list-at plan i)
+    is EmvMove (d) (s) -> lir-emv-apply tgt (list-set-at file d (list-at file s)) plan (i + 1) n
+    is EmvStore (k) (s) -> lir-emv-apply tgt (list-set-at file ((tgt.nregs) + 1 + k) (list-at file s)) plan (i + 1) n
+
+  lir-emv-viol : LirTarget, List Integer, List Location, Integer, Integer -> Integer
+  lir-emv-viol (tgt) (file) (assign) (i) (np) =
+   if i >= np then 0 - 1
+   else if (list-at file (lir-emv-sim-loc tgt (list-at assign i))) == i then lir-emv-viol tgt file assign (i + 1) np
+   else i
+
+  lir-emv-check : LirTarget, LirFunc, List Location, List LirEmv -> Integer
+  lir-emv-check (tgt) (f) (assign) (plan) =
+   let nsim = (tgt.nregs) + 2 + lir-assign-max-slot assign 0 (list-length assign) 0
+   in let file = lir-emv-apply tgt (lir-emv-seed tgt (lir-int-vec 0 nsim (0 - 1) []) 0 (f.nparams)) plan 0 (list-length plan)
+   in lir-emv-viol tgt file assign 0 (f.nparams)
+
+  lir-emv-text : List LirEmv, Integer, Integer, Text -> Text
+  lir-emv-text (plan) (i) (n) (acc) =
+   if i >= n then acc
+   else when (list-at plan i)
+    is EmvMove (d) (s) -> lir-emv-text plan (i + 1) n (acc & (if acc == "" then "" else " ") & "r" & integer-to-text d & "<-r" & integer-to-text s)
+    is EmvStore (k) (s) -> lir-emv-text plan (i + 1) n (acc & (if acc == "" then "" else " ") & "s" & integer-to-text k & "<-r" & integer-to-text s)
+
+ The precondition, and it is not decoration: it was violated on this check's
+ first run. `nargregs + i` is where parameter `i` arrives only while there IS
+ an `i`th argument register, and a target has `nregs - nargregs` of them. The
+ narrow probe descriptor has two, and `pmv-clash` has five parameters, so three
+ of its sources indexed past the end of the register file and the simulation
+ reported a violation. That is the right answer to the wrong question: a sixth
+ parameter on x86-64 and a ninth on ARM64 arrive on the CALLER's stack, and
+ moving one is a load rather than a register move. Both selectors already
+ decline such a function before they reach the allocator (x86-64 at six
+ parameters, ARM64 at eight, each its own argument-register count), so the
+ planner is never asked in a real compile. The dump says so rather than
+ planning something that cannot be right.
+
+  lir-emv-nargregs : LirTarget -> Integer
+  lir-emv-nargregs (tgt) = (tgt.nregs) - (tgt.nargregs)
+
+  lir-emv-dump : LirTarget, LirFunc, List Location -> Text
+  lir-emv-dump (tgt) (f) (assign) =
+   if (f.nparams) > lir-emv-nargregs tgt then " [entry: beyond the argument registers]"
+   else let plan = lir-emv-for tgt f assign
+   in let bad = lir-emv-check tgt f assign plan
+   in " [entry: " & (if list-length plan == 0 then "none" else lir-emv-text plan 0 (list-length plan) "") & (if bad < 0 then "" else " VIOLATION p" & integer-to-text bad) & "]"
+
+Section: Argument Moves
+
+ The mirror of the entry moves, and the same problem pointed the other way. An
+ entry move takes a parameter from where the ABI put it to where the allocator
+ put it; an argument move takes a call's operand from where the allocator put
+ it to where the ABI wants it. Parameter `i` arrives in abstract index
+ `nargregs + i`, and argument `i` has to reach that same index.
+
+ It is planned here for the reason the entry moves are: nothing about the
+ ordering is target-specific, and a backend-side copy of it is the bug class
+ that kept `col-hue` miscompiled for ten sessions. A backend supplies the
+ mapping from an abstract index to one of its registers and nothing else.
+ `Emit/X86_64Lir.codex` carries its own copy planned in physical registers
+ (`lir-place-args`), written before this existed and agreeing with it on the
+ algorithm; that one should be replaced by this rather than kept beside it.
+
+ **The naive order is wrong here for a sharper reason than at entry.** The
+ destinations ARE the argument registers, and the argument registers are
+ allocatable, so a source is routinely another argument's destination. `f b a`
+ with both parameters still in the registers they arrived in wants
+ `x0 <- x1` and `x1 <- x0`, and whichever is emitted first destroys the other.
+ So a move is emitted only when no move still to come reads the register it
+ writes, and when every remaining move is blocked they form a cycle: one source
+ is staged through the scratch index (`nregs`, one past the allocatable file,
+ which is not an argument register and therefore nobody's destination) and the
+ cycle becomes a chain.
+
+ An argument that is an immediate, or a value the allocator spilled, reads no
+ register at all. It can never be what another move is waiting on and it is
+ never part of a cycle, which is why `lir-amv-srcreg` answers -1 for both.
+
+  LirAmv =
+   | AmvMove (Integer) (Integer)
+   | AmvLoad (Integer) (Integer)
+   | AmvImm (Integer) (Integer)
+
+  lir-amv-scratch : LirTarget -> Integer
+  lir-amv-scratch (tgt) = tgt.nregs
+
+  lir-amv-nargregs : LirTarget -> Integer
+  lir-amv-nargregs (tgt) = (tgt.nregs) - (tgt.nargregs)
+
+  lir-amv-srcreg : List LirValue, List Location, Integer -> Integer
+  lir-amv-srcreg (argvals) (assign) (i) =
+   when (list-at argvals i)
+    is LvImm (k) -> 0 - 1
+    is LvReg (r) ->
+     when (list-at assign r)
+      is LocReg (pr) -> pr
+      is LocSlot (k) -> 0 - 1
+
+  lir-amv-srcs : List LirValue, List Location, Integer, Integer, List Integer -> List Integer
+  lir-amv-srcs (argvals) (assign) (i) (na) (acc) =
+   if i >= na then acc
+   else lir-amv-srcs argvals assign (i + 1) na (list-push acc (lir-amv-srcreg argvals assign i))
+
+  lir-amv-blocked : List Integer, List Boolean, Integer, Integer, Integer, Integer -> Boolean
+  lir-amv-blocked (srcs) (done) (i) (na) (dsti) (j) =
+   if j >= na then False
+   else if j == i then lir-amv-blocked srcs done i na dsti (j + 1)
+   else if list-at done j then lir-amv-blocked srcs done i na dsti (j + 1)
+   else if (list-at srcs j) == dsti then True
+   else lir-amv-blocked srcs done i na dsti (j + 1)
+
+  lir-amv-pick : LirTarget, List Integer, List Boolean, Integer, Integer -> Integer
+  lir-amv-pick (tgt) (srcs) (done) (i) (na) =
+   if i >= na then 0 - 1
+   else if list-at done i then lir-amv-pick tgt srcs done (i + 1) na
+   else if lir-amv-blocked srcs done i na ((tgt.nargregs) + i) 0 then lir-amv-pick tgt srcs done (i + 1) na
+   else i
+
+  lir-amv-stageable : List Integer, List Boolean, Integer, Integer, Integer -> Integer
+  lir-amv-stageable (srcs) (done) (i) (na) (sc) =
+   if i >= na then 0 - 1
+   else if list-at done i then lir-amv-stageable srcs done (i + 1) na sc
+   else if (list-at srcs i) < 0 then lir-amv-stageable srcs done (i + 1) na sc
+   else if (list-at srcs i) == sc then lir-amv-stageable srcs done (i + 1) na sc
+   else i
+
+ A staged argument's source is the scratch index and no longer whatever the
+ assignment says, so the step is read off `srcs` first and off the argument
+ only when it was never staged.
+
+  lir-amv-step : LirTarget, List LirValue, List Location, Integer, Integer -> LirAmv
+  lir-amv-step (tgt) (argvals) (assign) (i) (srcreg) =
+   if srcreg == lir-amv-scratch tgt then AmvMove ((tgt.nargregs) + i) (lir-amv-scratch tgt)
+   else when (list-at argvals i)
+    is LvImm (k) -> AmvImm ((tgt.nargregs) + i) i
+    is LvReg (r) ->
+     when (list-at assign r)
+      is LocReg (pr) -> AmvMove ((tgt.nargregs) + i) pr
+      is LocSlot (k) -> AmvLoad ((tgt.nargregs) + i) k
+
+ `lir-amv-stage` exists for `lir-emv-stage`'s reason: `list-set-at` writes in
+ place and arguments evaluate left to right, so a staging step built in the
+ argument list after the rewrite would read the scratch back and stage a
+ register onto itself.
+
+  lir-amv-stage : LirTarget, List LirValue, List Integer, List Boolean, Integer, List Location, Integer, List LirAmv, Integer, Integer -> List LirAmv
+  lir-amv-stage (tgt) (argvals) (srcs) (done) (na) (assign) (fuel) (acc) (c) (sc) =
+   lir-amv-plan tgt argvals (list-set-at srcs c (lir-amv-scratch tgt)) done na assign fuel (list-push acc (AmvMove (lir-amv-scratch tgt) sc))
+
+  lir-amv-plan : LirTarget, List LirValue, List Integer, List Boolean, Integer, List Location, Integer, List LirAmv -> List LirAmv
+  lir-amv-plan (tgt) (argvals) (srcs) (done) (na) (assign) (fuel) (acc) =
+   if fuel <= 0 then acc
+   else let p = lir-amv-pick tgt srcs done 0 na
+   in if p >= 0
+      then lir-amv-plan tgt argvals srcs (list-set-at done p True) na assign (fuel - 1) (list-push acc (lir-amv-step tgt argvals assign p (list-at srcs p)))
+      else let c = lir-amv-stageable srcs done 0 na (lir-amv-scratch tgt)
+      in if c < 0 then acc
+         else lir-amv-stage tgt argvals srcs done na assign (fuel - 1) acc c (list-at srcs c)
+
+  lir-amv-for : LirTarget, List LirValue, List Location -> List LirAmv
+  lir-amv-for (tgt) (argvals) (assign) =
+   let na = list-length argvals
+   in lir-amv-plan tgt argvals (lir-amv-srcs argvals assign 0 na []) (lir-make-vec 0 na []) na assign (na * 2 + 4) []
+
+ The check, and it simulates for the reason `lir-emv-check` does: a checker
+ that re-ran the planner's reasoning would agree with it however wrong it was.
+
+ The file is indexed by location and seeded so that every location holds
+ ITSELF -- register `r` holds token `r`, spill slot `k` holds token
+ `nregs + 1 + k` -- rather than by argument index, because two arguments can
+ read the same register (`f x x`) and a file keyed by argument would have to
+ choose between them. An immediate is a token of its own past the end of the
+ file, one per argument position, so an immediate landing in the wrong register
+ is as visible as a clobbered move.
+
+  lir-amv-simsize : LirTarget, List Location -> Integer
+  lir-amv-simsize (tgt) (assign) = (tgt.nregs) + 1 + lir-assign-max-slot assign 0 (list-length assign) 0
+
+  lir-amv-seed : Integer, Integer, List Integer -> List Integer
+  lir-amv-seed (i) (n) (acc) =
+   if i >= n then acc
+   else lir-amv-seed (i + 1) n (list-push acc i)
+
+  lir-amv-apply : LirTarget, List Integer, List LirAmv, Integer, Integer, Integer -> List Integer
+  lir-amv-apply (tgt) (file) (plan) (i) (n) (base) =
+   if i >= n then file
+   else when (list-at plan i)
+    is AmvMove (d) (s) -> lir-amv-apply tgt (list-set-at file d (list-at file s)) plan (i + 1) n base
+    is AmvLoad (d) (k) -> lir-amv-apply tgt (list-set-at file d (list-at file ((tgt.nregs) + 1 + k))) plan (i + 1) n base
+    is AmvImm (d) (a) -> lir-amv-apply tgt (list-set-at file d (base + a)) plan (i + 1) n base
+
+  lir-amv-want : LirTarget, List LirValue, List Location, Integer, Integer -> Integer
+  lir-amv-want (tgt) (argvals) (assign) (i) (base) =
+   when (list-at argvals i)
+    is LvImm (k) -> base + i
+    is LvReg (r) ->
+     when (list-at assign r)
+      is LocReg (pr) -> pr
+      is LocSlot (k) -> (tgt.nregs) + 1 + k
+
+  lir-amv-viol : LirTarget, List Integer, List LirValue, List Location, Integer, Integer, Integer -> Integer
+  lir-amv-viol (tgt) (file) (argvals) (assign) (i) (na) (base) =
+   if i >= na then 0 - 1
+   else if (list-at file ((tgt.nargregs) + i)) == lir-amv-want tgt argvals assign i base then lir-amv-viol tgt file argvals assign (i + 1) na base
+   else i
+
+  lir-amv-check : LirTarget, List LirValue, List Location, List LirAmv -> Integer
+  lir-amv-check (tgt) (argvals) (assign) (plan) =
+   let n = lir-amv-simsize tgt assign
+   in let file = lir-amv-apply tgt (lir-amv-seed 0 n []) plan 0 (list-length plan) n
+   in lir-amv-viol tgt file argvals assign 0 (list-length argvals) n
+
+  lir-amv-text : List LirAmv, Integer, Integer, Text -> Text
+  lir-amv-text (plan) (i) (n) (acc) =
+   if i >= n then acc
+   else when (list-at plan i)
+    is AmvMove (d) (s) -> lir-amv-text plan (i + 1) n (acc & (if acc == "" then "" else " ") & "r" & integer-to-text d & "<-r" & integer-to-text s)
+    is AmvLoad (d) (k) -> lir-amv-text plan (i + 1) n (acc & (if acc == "" then "" else " ") & "r" & integer-to-text d & "<-s" & integer-to-text k)
+    is AmvImm (d) (a) -> lir-amv-text plan (i + 1) n (acc & (if acc == "" then "" else " ") & "r" & integer-to-text d & "<-imm" & integer-to-text a)
+
+ The same precondition the entry planner has, for the same reason: an argument
+ past the last argument register goes on the callee's stack, which is a push
+ and not a register move. Every selector declines such a call before it reaches
+ here, so the dump says so rather than planning something that cannot be right.
+
+  lir-amv-call-text : LirTarget, List LirValue, List Location -> Text
+  lir-amv-call-text (tgt) (argvals) (assign) =
+   if list-length argvals > lir-amv-nargregs tgt then "beyond the argument registers"
+   else let plan = lir-amv-for tgt argvals assign
+   in let bad = lir-amv-check tgt argvals assign plan
+   in (if list-length plan == 0 then "none" else lir-amv-text plan 0 (list-length plan) "") & (if bad < 0 then "" else " VIOLATION a" & integer-to-text bad)
+
+  lir-amv-insns-text : LirTarget, List LirInsn, Integer, Integer, List Location, Text -> Text
+  lir-amv-insns-text (tgt) (insns) (i) (n) (assign) (acc) =
+   if i >= n then acc
+   else when (list-at insns i)
+    is LiCall (dst) (name) (args) -> lir-amv-insns-text tgt insns (i + 1) n assign (acc & (if acc == "" then "" else " | ") & name & " " & lir-amv-call-text tgt args assign)
+    is otherwise -> lir-amv-insns-text tgt insns (i + 1) n assign acc
+
+  lir-amv-blocks-text : LirTarget, List LirBlock, Integer, Integer, List Location, Text -> Text
+  lir-amv-blocks-text (tgt) (blocks) (i) (n) (assign) (acc) =
+   if i >= n then acc
+   else lir-amv-blocks-text tgt blocks (i + 1) n assign (lir-amv-insns-text tgt ((list-at blocks i).insns) 0 (list-length ((list-at blocks i).insns)) assign acc)
+
+ A function with no call prints nothing rather than an empty bracket, so the
+ pins for call-free definitions are unchanged and the rows that move are
+ exactly the rows that call something.
+
+  lir-amv-dump : LirTarget, LirFunc, List Location -> Text
+  lir-amv-dump (tgt) (f) (assign) =
+   let t = lir-amv-blocks-text tgt (f.blocks) 0 (list-length (f.blocks)) assign ""
+   in if t == "" then "" else " [args: " & t & "]"
 
 Section: Allocation Verifier
 
- The allocation verifier (LIR.md section 4), distinct from the structural
+ The allocation verifier, distinct from the structural
  one. The structural verifier checks the LOWERING (every vreg defined once,
  used only where defined). This one checks the ALLOCATOR's output: given an
  assignment of each vreg to a physical location, it re-derives what each
@@ -2347,7 +2815,7 @@ Section: Allocation Verifier
  first line -- "validate the result, not the transformer."
 
  A location is a physical register or a spill slot. Slots are first-class
- from the start (LIR.md section 4: the property that would have caught a
+ from the start (they are the property that would have caught a
  spill-slot reuse corruption); the linear-scan allocator (Section:
  Allocator) produces both, and this verifier checks both -- `nloc` sizes
  the occupant map to the registers plus however many slots the allocation
@@ -2367,14 +2835,11 @@ Section: Allocation Verifier
  fails exactly when a second vreg was allocated the same register while V
  was still live, the miscompile the verifier exists to catch.
 
-  lir-reg-budget : Integer
-  lir-reg-budget = 12
-
   lir-loc-index : Location, Integer -> Integer
-  lir-loc-index (loc) (nregs) =
+  lir-loc-index (loc) (budget) =
    when loc
     is LocReg (n) -> n
-    is LocSlot (n) -> nregs + n
+    is LocSlot (n) -> budget + n
 
   lir-loc-text : Location -> Text
   lir-loc-text (loc) =
@@ -2394,8 +2859,8 @@ Section: Allocation Verifier
 
  The number of distinct spill slots an assignment uses (the largest slot
  index plus one, or zero if nothing spilled). The verifier sizes its
- occupant map to `lir-reg-budget + this`, so a slot's location index
- (`lir-reg-budget + slot`) is always in range.
+ occupant map to the target's `budget` plus this, so a slot's location index
+ (`budget + slot`) is always in range.
 
   lir-assign-max-slot : List Location, Integer, Integer, Integer -> Integer
   lir-assign-max-slot (assign) (i) (n) (acc) =
@@ -2421,100 +2886,109 @@ Section: Allocation Verifier
    if i >= n then acc else lir-alloc-init-entries (i + 1) n (list-push acc [])
 
   lir-assigned-loc : List Location, Integer, Integer -> Integer
-  lir-assigned-loc (assign) (vreg) (nregs) =
-   if vreg < 0 then 0 - 1 else if vreg >= list-length assign then 0 - 1 else lir-loc-index (list-at assign vreg) nregs
+  lir-assigned-loc (assign) (vreg) (budget) =
+   if vreg < 0 then 0 - 1 else if vreg >= list-length assign then 0 - 1 else lir-loc-index (list-at assign vreg) budget
 
   lir-alloc-seed-params : List Location, Integer, Integer, Integer, List Integer -> List Integer
-  lir-alloc-seed-params (assign) (i) (np) (nregs) (occ) =
+  lir-alloc-seed-params (assign) (i) (np) (budget) (occ) =
    if i >= np then occ
-   else lir-alloc-seed-params assign (i + 1) np nregs (list-set-at occ (lir-loc-index (list-at assign i) nregs) i)
+   else lir-alloc-seed-params assign (i + 1) np budget (list-set-at occ (lir-loc-index (list-at assign i) budget) i)
 
   lir-alloc-use-msg : Text, Integer, Integer, LirValue, List Integer, List Location, Integer, List Text -> List Text
-  lir-alloc-use-msg (fname) (bid) (i) (v) (occ) (assign) (nregs) (msgs) =
+  lir-alloc-use-msg (fname) (bid) (i) (v) (occ) (assign) (budget) (msgs) =
    when v
     is LvImm (k) -> msgs
     is LvReg (r) ->
-     let fl = lir-assigned-loc assign r nregs
+     let fl = lir-assigned-loc assign r budget
      in if fl < 0 then list-push msgs ((fname) & ": alloc use of unassigned vreg " & integer-to-text r)
         else if (list-at occ fl) == r then msgs
         else list-push msgs ((fname) & ": alloc vreg " & integer-to-text r & " not in " & lir-loc-text (list-at assign r) & " at block " & integer-to-text bid & " insn " & integer-to-text i)
 
   lir-alloc-def : Integer, List Integer, List Location, Integer -> List Integer
-  lir-alloc-def (dst) (occ) (assign) (nregs) =
-   let fl = lir-assigned-loc assign dst nregs
+  lir-alloc-def (dst) (occ) (assign) (budget) =
+   let fl = lir-assigned-loc assign dst budget
    in if fl < 0 then occ else list-set-at occ fl dst
 
- A call clobbers every caller-saved allocatable register (LIR.md section 4).
- In abstract register space those are the indices `[lir-alloc-ncallee,
- lir-alloc-nregs)` -- here the single RAX at index `lir-alloc-ncallee`. Any
+ A call clobbers every caller-saved allocatable register.
+ In abstract register space those are the indices `[ncallee, nregs)`. Any
  vreg the allocator left there is scrubbed to unknown, so a value the
- allocator wrongly kept in RAX across a call fails its next use here rather
- than only in the emitted bytes. The occupant map is indexed by the abstract
- register number (`lir-loc-index` of a `LocReg` is its index), so this reads
- the allocator's constants, not the verifier's wider `lir-reg-budget`.
+ allocator wrongly kept in a caller-saved register across a call fails its
+ next use here rather than only in the emitted bytes. The occupant map is
+ indexed by the abstract register number (`lir-loc-index` of a `LocReg` is
+ its index), so this reads the target's allocatable file, not its wider
+ `budget`.
 
   lir-alloc-clobber-cs : List Integer, Integer, Integer -> List Integer
   lir-alloc-clobber-cs (occ) (j) (n) =
    if j >= n then occ
    else lir-alloc-clobber-cs (list-set-at occ j (0 - 1)) (j + 1) n
 
- A division destroys RAX and RDX and nothing else, and the allocator's
- crossing test masks exactly those two out of the free set. The checker
- mirrors that here or it is blind at the one spot the masking protects: a
- value the allocator wrongly kept in RAX or RDX across a division must fail
- its next use. The predicate is the same one `lir-divpos` records positions
- with, so a power-of-two division -- emitted as a shift or mask, destroying
- nothing -- clobbers nothing here either. The division's own result is
- recorded after the scrub, because landing the quotient in RAX or the
- remainder in RDX is legitimate and hinted for.
+ A division destroys the two registers the target names in `diva`/`divb` and
+ nothing else, and the allocator's crossing test masks exactly those two out
+ of the free set. The checker mirrors that here or it is blind at the one spot
+ the masking protects: a value the allocator wrongly kept in either across a
+ division must fail its next use. The predicate is the same one `lir-divpos`
+ records positions with, so a power-of-two division -- emitted as a shift or
+ mask, destroying nothing -- clobbers nothing here either. The division's own
+ result is recorded after the scrub, because landing the quotient or the
+ remainder in a fixed register is legitimate and hinted for.
 
-  lir-alloc-clobber-div : List Integer -> List Integer
-  lir-alloc-clobber-div (occ) =
-   list-set-at (list-set-at occ lir-alloc-diva (0 - 1)) lir-alloc-divb (0 - 1)
+ Each index is guarded, because a target that fixes nothing names -1 and a
+ `list-set-at` at -1 is an out-of-range write. Scrubbing nothing is the whole
+ meaning of -1 here, and it has to be expressible without corrupting the map
+ that expresses it.
+
+  lir-alloc-clobber-one : List Integer, Integer -> List Integer
+  lir-alloc-clobber-one (occ) (r) =
+   if r < 0 then occ else list-set-at occ r (0 - 1)
+
+  lir-alloc-clobber-div : LirTarget, List Integer -> List Integer
+  lir-alloc-clobber-div (tgt) (occ) =
+   lir-alloc-clobber-one (lir-alloc-clobber-one occ (tgt.diva)) (tgt.divb)
 
   lir-alloc-use-msg-list : Text, Integer, Integer, List LirValue, List Integer, List Location, Integer, List Text, Integer, Integer -> List Text
-  lir-alloc-use-msg-list (fname) (bid) (ii) (args) (occ) (assign) (nregs) (msgs) (i) (n) =
+  lir-alloc-use-msg-list (fname) (bid) (ii) (args) (occ) (assign) (budget) (msgs) (i) (n) =
    if i >= n then msgs
-   else lir-alloc-use-msg-list fname bid ii args occ assign nregs (lir-alloc-use-msg fname bid ii (list-at args i) occ assign nregs msgs) (i + 1) n
+   else lir-alloc-use-msg-list fname bid ii args occ assign budget (lir-alloc-use-msg fname bid ii (list-at args i) occ assign budget msgs) (i + 1) n
 
   LirAllocWalk = record {
    occ : List Integer,
    msgs : List Text
   }
 
-  lir-alloc-check-insns : Text, Integer, List LirInsn, Integer, Integer, List Integer, List Location, Integer, List Text -> LirAllocWalk
-  lir-alloc-check-insns (fname) (bid) (insns) (i) (len) (occ) (assign) (nregs) (msgs) =
+  lir-alloc-check-insns : LirTarget, Text, Integer, List LirInsn, Integer, Integer, List Integer, List Location, Integer, List Text -> LirAllocWalk
+  lir-alloc-check-insns (tgt) (fname) (bid) (insns) (i) (len) (occ) (assign) (budget) (msgs) =
    if i >= len then LirAllocWalk { occ = occ, msgs = msgs }
    else let ins = list-at insns i
    in when ins
     is LiBin (op) (dst) (l) (r) ->
-     let m1 = lir-alloc-use-msg fname bid i l occ assign nregs msgs
-     in let m2 = lir-alloc-use-msg fname bid i r occ assign nregs m1
-     in let occ1 = if lir-divpos-op ins then lir-alloc-clobber-div occ else occ
-     in lir-alloc-check-insns fname bid insns (i + 1) len (lir-alloc-def dst occ1 assign nregs) assign nregs m2
+     let m1 = lir-alloc-use-msg fname bid i l occ assign budget msgs
+     in let m2 = lir-alloc-use-msg fname bid i r occ assign budget m1
+     in let occ1 = if lir-divpos-op ins then lir-alloc-clobber-div tgt occ else occ
+     in lir-alloc-check-insns tgt fname bid insns (i + 1) len (lir-alloc-def dst occ1 assign budget) assign budget m2
     is LiMove (dst) (src) ->
-     let m1 = lir-alloc-use-msg fname bid i src occ assign nregs msgs
-     in lir-alloc-check-insns fname bid insns (i + 1) len (lir-alloc-def dst occ assign nregs) assign nregs m1
+     let m1 = lir-alloc-use-msg fname bid i src occ assign budget msgs
+     in lir-alloc-check-insns tgt fname bid insns (i + 1) len (lir-alloc-def dst occ assign budget) assign budget m1
     is LiLoad (dst) (base) (off) (w) (sg) ->
-     let m1 = lir-alloc-use-msg fname bid i base occ assign nregs msgs
-     in lir-alloc-check-insns fname bid insns (i + 1) len (lir-alloc-def dst occ assign nregs) assign nregs m1
+     let m1 = lir-alloc-use-msg fname bid i base occ assign budget msgs
+     in lir-alloc-check-insns tgt fname bid insns (i + 1) len (lir-alloc-def dst occ assign budget) assign budget m1
     is LiCmp (l) (r) ->
-     let m1 = lir-alloc-use-msg fname bid i l occ assign nregs msgs
-     in let m2 = lir-alloc-use-msg fname bid i r occ assign nregs m1
-     in lir-alloc-check-insns fname bid insns (i + 1) len occ assign nregs m2
+     let m1 = lir-alloc-use-msg fname bid i l occ assign budget msgs
+     in let m2 = lir-alloc-use-msg fname bid i r occ assign budget m1
+     in lir-alloc-check-insns tgt fname bid insns (i + 1) len occ assign budget m2
     is LiTest (l) (r) ->
-     let m1 = lir-alloc-use-msg fname bid i l occ assign nregs msgs
-     in let m2 = lir-alloc-use-msg fname bid i r occ assign nregs m1
-     in lir-alloc-check-insns fname bid insns (i + 1) len occ assign nregs m2
+     let m1 = lir-alloc-use-msg fname bid i l occ assign budget msgs
+     in let m2 = lir-alloc-use-msg fname bid i r occ assign budget m1
+     in lir-alloc-check-insns tgt fname bid insns (i + 1) len occ assign budget m2
     is LiCall (dst) (name) (args) ->
-     let m1 = lir-alloc-use-msg-list fname bid i args occ assign nregs msgs 0 (list-length args)
-     in let occ1 = lir-alloc-clobber-cs occ lir-alloc-ncallee lir-alloc-nregs
-     in lir-alloc-check-insns fname bid insns (i + 1) len (lir-alloc-def dst occ1 assign nregs) assign nregs m1
+     let m1 = lir-alloc-use-msg-list fname bid i args occ assign budget msgs 0 (list-length args)
+     in let occ1 = lir-alloc-clobber-cs occ (tgt.ncallee) (tgt.nregs)
+     in lir-alloc-check-insns tgt fname bid insns (i + 1) len (lir-alloc-def dst occ1 assign budget) assign budget m1
     is LiRet (v) ->
-     let m1 = lir-alloc-use-msg fname bid i v occ assign nregs msgs
-     in lir-alloc-check-insns fname bid insns (i + 1) len occ assign nregs m1
-    is LiBranch (c) (bt) (be) -> lir-alloc-check-insns fname bid insns (i + 1) len occ assign nregs msgs
-    is LiJump (b) -> lir-alloc-check-insns fname bid insns (i + 1) len occ assign nregs msgs
+     let m1 = lir-alloc-use-msg fname bid i v occ assign budget msgs
+     in lir-alloc-check-insns tgt fname bid insns (i + 1) len occ assign budget m1
+    is LiBranch (c) (bt) (be) -> lir-alloc-check-insns tgt fname bid insns (i + 1) len occ assign budget msgs
+    is LiJump (b) -> lir-alloc-check-insns tgt fname bid insns (i + 1) len occ assign budget msgs
 
   AllocPropRes = record {
    entries : List (List Integer),
@@ -2534,37 +3008,73 @@ Section: Allocation Verifier
    last-occ : List Integer
   }
 
-  lir-alloc-check-blocks : Text, List LirBlock, Integer, Integer, List (List Integer), List Boolean, List Location, Integer, Integer, List Text, List Integer -> LirAllocState
-  lir-alloc-check-blocks (fname) (blocks) (i) (len) (entries) (seen) (assign) (nregs) (nloc) (msgs) (last-occ) =
+  lir-alloc-check-blocks : LirTarget, Text, List LirBlock, Integer, Integer, List (List Integer), List Boolean, List Location, Integer, Integer, List Text, List Integer -> LirAllocState
+  lir-alloc-check-blocks (tgt) (fname) (blocks) (i) (len) (entries) (seen) (assign) (budget) (nloc) (msgs) (last-occ) =
    if i >= len then LirAllocState { msgs = msgs, last-occ = last-occ }
    else let b = list-at blocks i
    in let running = lir-occ-copy (list-at entries (b.id)) 0 nloc []
-   in let w = lir-alloc-check-insns fname (b.id) (b.insns) 0 (list-length (b.insns)) running assign nregs msgs
+   in let w = lir-alloc-check-insns tgt fname (b.id) (b.insns) 0 (list-length (b.insns)) running assign budget msgs
    in let succs = lir-block-succs (b.insns)
    in let prop = lir-alloc-propagate entries seen (w.occ) succs 0 (list-length succs) nloc
-   in lir-alloc-check-blocks fname blocks (i + 1) len (prop.entries) (prop.seen) assign nregs nloc (w.msgs) (w.occ)
+   in lir-alloc-check-blocks tgt fname blocks (i + 1) len (prop.entries) (prop.seen) assign budget nloc (w.msgs) (w.occ)
 
   lir-alloc-result-msg : Text, LirValue, List Integer, List Location, Integer, List Text -> List Text
-  lir-alloc-result-msg (fname) (res) (occ) (assign) (nregs) (msgs) =
+  lir-alloc-result-msg (fname) (res) (occ) (assign) (budget) (msgs) =
    when res
     is LvImm (k) -> msgs
     is LvReg (r) ->
-     let fl = lir-assigned-loc assign r nregs
+     let fl = lir-assigned-loc assign r budget
      in if fl < 0 then list-push msgs ((fname) & ": alloc result vreg " & integer-to-text r & " unassigned")
         else if (list-at occ fl) == r then msgs
         else list-push msgs ((fname) & ": alloc result vreg " & integer-to-text r & " not in " & lir-loc-text (list-at assign r) & " at exit")
 
-  lir-alloc-check : LirFunc, List Location -> List Text
-  lir-alloc-check (f) (assign) =
+ The descriptor's own invariants, checked before the walk that depends on
+ them. `budget` sizes the occupant array the verifier indexes with a
+ `LocReg`, so a budget below `nregs` lets a legitimate assignment address
+ past the end of it; the pools must nest (`0 <= ncallee <= nargregs <=
+ nregs`) because every free-set scan walks those ranges; and each
+ division-fixed index is either -1 or a real register.
+
+ **Without this the failure lands on the wrong suspect.** Built with
+ `budget` 8 against `nregs` 19, the allocator's assignment is correct and
+ the verifier answers 44 violations across 16 of the 28 `lir-check`
+ definitions, every one of them naming the allocator. The fault is one
+ number in a hand-written table, and a retarget writes this table by hand:
+ the retarget's second step wrote two of them, and the budget one was
+ discovered by building it wrong on purpose.
+
+ It answers a violation rather than a warning because a wrong descriptor
+ cannot produce a trustworthy verdict, and a verifier that keeps going on
+ a table it cannot trust is worse than one that stops.
+
+  lir-target-viol : LirTarget, Text -> List Text
+  lir-target-viol (tgt) (fname) =
+   if (tgt.nregs) < 1 then [fname & ": LirTarget.nregs is " & integer-to-text (tgt.nregs) & "; a target needs at least one allocatable register"]
+   else if (tgt.ncallee) < 0 then [fname & ": LirTarget.ncallee is negative (" & integer-to-text (tgt.ncallee) & ")"]
+   else if (tgt.ncallee) > (tgt.nargregs) then [fname & ": LirTarget.ncallee (" & integer-to-text (tgt.ncallee) & ") exceeds nargregs (" & integer-to-text (tgt.nargregs) & "); the pools must nest"]
+   else if (tgt.nargregs) > (tgt.nregs) then [fname & ": LirTarget.nargregs (" & integer-to-text (tgt.nargregs) & ") exceeds nregs (" & integer-to-text (tgt.nregs) & "); the pools must nest"]
+   else if (tgt.budget) < (tgt.nregs) then [fname & ": LirTarget.budget (" & integer-to-text (tgt.budget) & ") is below nregs (" & integer-to-text (tgt.nregs) & "); budget sizes the occupant array a LocReg indexes, so it must be at least nregs"]
+   else if ((tgt.diva) >= (tgt.nregs)) | ((tgt.diva) < (0 - 1)) then [fname & ": LirTarget.diva is " & integer-to-text (tgt.diva) & "; expected -1 (this target fixes none) or an index below nregs"]
+   else if ((tgt.divb) >= (tgt.nregs)) | ((tgt.divb) < (0 - 1)) then [fname & ": LirTarget.divb is " & integer-to-text (tgt.divb) & "; expected -1 (this target fixes none) or an index below nregs"]
+   else []
+
+  lir-alloc-check : LirTarget, LirFunc, List Location -> List Text
+  lir-alloc-check (tgt) (f) (assign) =
+   let tviol = lir-target-viol tgt (f.name)
+   in if list-length tviol > 0 then tviol
+   else lir-alloc-check-ok tgt f assign
+
+  lir-alloc-check-ok : LirTarget, LirFunc, List Location -> List Text
+  lir-alloc-check-ok (tgt) (f) (assign) =
    let nb = list-length (f.blocks)
-   in let nregs = lir-reg-budget
-   in let nloc = nregs + lir-assign-max-slot assign 0 (list-length assign) 0
+   in let budget = tgt.budget
+   in let nloc = budget + lir-assign-max-slot assign 0 (list-length assign) 0
    in let entries0 = lir-alloc-init-entries 0 nb []
-   in let occ0 = lir-alloc-seed-params assign 0 (f.nparams) nregs (lir-occ-make 0 nloc [])
+   in let occ0 = lir-alloc-seed-params assign 0 (f.nparams) budget (lir-occ-make 0 nloc [])
    in let entries1 = list-set-at entries0 0 occ0
    in let seen1 = list-set-at (lir-make-vec 0 nb []) 0 True
-   in let st = lir-alloc-check-blocks (f.name) (f.blocks) 0 nb entries1 seen1 assign nregs nloc [] (lir-occ-make 0 nloc [])
-   in lir-alloc-result-msg (f.name) (f.result) (st.last-occ) assign nregs (st.msgs)
+   in let st = lir-alloc-check-blocks tgt (f.name) (f.blocks) 0 nb entries1 seen1 assign budget nloc [] (lir-occ-make 0 nloc [])
+   in lir-alloc-result-msg (f.name) (f.result) (st.last-occ) assign budget (st.msgs)
 
 Section: Dump and Pass
 
@@ -2668,11 +3178,11 @@ Section: Dump and Pass
    if i >= n then acc
    else lir-assign-text assign (i + 1) n (acc & (if acc == "" then "" else " ") & "v" & integer-to-text i & "->" & lir-loc-text (list-at assign i))
 
-  lir-alloc-dump : LirFunc -> Text
-  lir-alloc-dump (f) =
-   let a = lir-alloc-linscan f
-   in let viol = lir-alloc-check f (a.assign)
-   in "ALLOC " & (f.name) & ": " & lir-assign-text (a.assign) 0 (f.nvregs) "" & (if list-length viol == 0 then " [alloc-check: ok]" else " [alloc-check: " & integer-to-text (list-length viol) & " violations]")
+  lir-alloc-dump : LirTarget, LirFunc -> Text
+  lir-alloc-dump (tgt) (f) =
+   let a = lir-alloc-linscan tgt f
+   in let viol = lir-alloc-check tgt f (a.assign)
+   in "ALLOC " & (f.name) & ": " & lir-assign-text (a.assign) 0 (f.nvregs) "" & (if list-length viol == 0 then " [alloc-check: ok]" else " [alloc-check: " & integer-to-text (list-length viol) & " violations]") & lir-emv-dump tgt f (a.assign) & lir-amv-dump tgt f (a.assign)
 
  The opt-in pass. For each definition it lowers to the LIR as far as the
  whitelist allows; a lowerable function reports its dump and any structural
@@ -2680,8 +3190,8 @@ Section: Dump and Pass
  lowered. The lines ride the info channel, the same as `occ-report`, so
  `-Passes lir-dump` reports without halting and still emits a binary.
 
-  lir-report-chapter : IRChapter -> List Text
-  lir-report-chapter (ch) = lir-report-defs (ch.defs) 0 (list-length (ch.defs)) []
+  lir-report-chapter : LirTarget, IRChapter -> List Text
+  lir-report-chapter (tgt) (ch) = lir-report-defs tgt (ch.defs) 0 (list-length (ch.defs)) []
 
  The post-resolve entry point. `lir-dump` names itself in the pass
  pipeline, but a constructor pattern needs resolved types, so the report is
@@ -2690,27 +3200,60 @@ Section: Dump and Pass
  `cdx-chapter`; when the pipeline does not request `lir-dump` it returns the
  empty list and costs nothing.
 
-  lir-pipeline-wants : List Text, Integer, Integer -> Boolean
-  lir-pipeline-wants (names) (i) (n) =
+  lir-pipeline-has : List Text, Text, Integer, Integer -> Boolean
+  lir-pipeline-has (names) (want) (i) (n) =
    if i >= n then False
-   else if list-at names i == "lir-dump" then True
-   else lir-pipeline-wants names (i + 1) n
+   else if list-at names i == want then True
+   else lir-pipeline-has names want (i + 1) n
 
-  lir-report-if : List Text, IRChapter -> List Text
-  lir-report-if (pipeline) (ch) =
-   if lir-pipeline-wants pipeline 0 (list-length pipeline) then lir-report-chapter ch else []
+  lir-pipeline-wants : List Text, Integer, Integer -> Boolean
+  lir-pipeline-wants (names) (i) (n) = lir-pipeline-has names "lir-dump" i n
 
-  lir-report-defs : List IRDef, Integer, Integer, List Text -> List Text
-  lir-report-defs (defs) (i) (len) (acc) =
+  lir-report-if : LirTarget, List Text, IRChapter -> List Text
+  lir-report-if (tgt) (pipeline) (ch) =
+   if lir-pipeline-wants pipeline 0 (list-length pipeline) then lir-report-chapter tgt ch else []
+
+ The second-target probe. `lir-report-chapter` above answers what the LIR
+ IS -- the lowering, the liveness, the assignment -- and three quarters of
+ that does not move when the target does: `lower-def-to-lir` and
+ `lir-check-func` take no `LirTarget` at all, so re-running them under a
+ second descriptor would print the same lines twice and prove nothing.
+ What moves is the assignment and the allocation verifier's verdict on it,
+ so that is all this reports, one line per lowerable definition, tagged
+ with the target it was allocated for.
+
+ The structural verdict rides along despite being target-independent,
+ because a probe that reported only what it expected to change could not
+ tell a target-neutral allocator from one that quietly stopped lowering.
+
+  lir-alloc-probe-def : LirTarget, Text, IRDef -> Text
+  lir-alloc-probe-def (tgt) (tag) (d) =
+   let r = lower-def-to-lir d
+   in let viol = lir-check-func (r.func)
+   in tag & " " & lir-alloc-dump tgt (r.func) & (if list-length viol == 0 then " [check: ok]" else " [check: " & integer-to-text (list-length viol) & " violations]")
+
+  lir-alloc-probe-defs : LirTarget, Text, List IRDef, Integer, Integer, List Text -> List Text
+  lir-alloc-probe-defs (tgt) (tag) (defs) (i) (len) (acc) =
+   if i >= len then acc
+   else let d = list-at defs i
+   in if (lower-def-to-lir d).ok == False then lir-alloc-probe-defs tgt tag defs (i + 1) len acc
+      else lir-alloc-probe-defs tgt tag defs (i + 1) len (list-push acc (lir-alloc-probe-def tgt tag d))
+
+  lir-alloc-probe-if : LirTarget, Text, Text, List Text, IRChapter -> List Text
+  lir-alloc-probe-if (tgt) (tag) (pass) (pipeline) (ch) =
+   if lir-pipeline-has pipeline pass 0 (list-length pipeline) then lir-alloc-probe-defs tgt tag (ch.defs) 0 (list-length (ch.defs)) [] else []
+
+  lir-report-defs : LirTarget, List IRDef, Integer, Integer, List Text -> List Text
+  lir-report-defs (tgt) (defs) (i) (len) (acc) =
    if i >= len then acc
    else let d = list-at defs i
    in let r = lower-def-to-lir d
-   in if r.ok == False then lir-report-defs defs (i + 1) len (list-push acc ("LIR " & (d.name) & ": (not in the LIR whitelist)"))
+   in if r.ok == False then lir-report-defs tgt defs (i + 1) len (list-push acc ("LIR " & (d.name) & ": (not in the LIR whitelist)"))
       else let viol = lir-check-func (r.func)
       in let line = lir-dump-func (r.func) & (if list-length viol == 0 then " [check: ok]" else " [check: " & integer-to-text (list-length viol) & " violations]")
       in let live-line = lir-liveness-text (r.func)
-      in let alloc-line = lir-alloc-dump (r.func)
-      in lir-report-defs defs (i + 1) len (append-violations (list-push (list-push (list-push acc line) live-line) alloc-line) viol 0 (list-length viol))
+      in let alloc-line = lir-alloc-dump tgt (r.func)
+      in lir-report-defs tgt defs (i + 1) len (append-violations (list-push (list-push (list-push acc line) live-line) alloc-line) viol 0 (list-length viol))
 
   append-violations : List Text, List Text, Integer, Integer -> List Text
   append-violations (acc) (viol) (i) (len) =

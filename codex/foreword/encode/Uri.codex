@@ -1,6 +1,7 @@
 Chapter: Uri
   cites Foreword chapter Maybe
   cites Foreword chapter CCE
+  cites Foreword chapter StringUtils
 
  URI parsing and construction (RFC 3986 subset). Breaks a URI
  string into scheme, host, port, path, and query components.
@@ -121,6 +122,90 @@ Section: Query String Parsing
       else uri-parse-query-loop q (i + 1) len acc key (val & char-to-text (char-at q i)) False
     else if in-key then uri-parse-query-loop q (i + 1) len acc (key & char-to-text (char-at q i)) val True
     else uri-parse-query-loop q (i + 1) len acc key (val & char-to-text (char-at q i)) False
+
+Section: Percent Encoding
+
+ RFC 3986 section 2. This chapter parsed URIs from the day it was
+ written and could not produce one safely, because there was no
+ percent-encoder in it or anywhere else: `uri-encode` was CALLED by
+ `Net chapter OAuthClient` and DEFINED nowhere, which is why that
+ chapter has never compiled. `url-encode` is not the missing name
+ either -- it is the HTML plug's JS-bridge builtin for browser apps
+ and reaches nothing on bare metal.
+
+ The encoding is over OCTETS, not characters, and that is the whole
+ subtlety. RFC 3986 percent-encodes bytes, and a non-ASCII character is
+ several of them, so encoding per character emits one escape where the
+ standard wants two or three and no server decodes it back.
+
+ **`text-to-unicode-bytes` does not give octets.** The name reads as
+ though it does; it answers one integer per character, that integer
+ being the Unicode CODE POINT. Written against the name, this encoder
+ turned U+00E9 into `%E9` -- a single byte, and not a legal UTF-8
+ sequence at all. The right answer is `%C3%A9`, and the only reason
+ that was noticed is that `codex/test/uri-encode` was written to check
+ it rather than to check the ASCII cases everyone gets right.
+
+ So the UTF-8 expansion is done here, explicitly, in `uri-enc-cp`: one
+ escape below U+0080, two below U+0800, three below U+10000, four
+ above. Arithmetic rather than bit operations, because the constants
+ read as the RFC's own (192, 224, 240 are the lead-byte markers and 128
+ is the continuation marker) and a reader can check them against the
+ table without translating.
+
+ Unreserved is exactly `ALPHA / DIGIT / "-" / "." / "_" / "~"`
+ (section 2.3) and everything else is escaped. That is deliberately
+ the strict reading: encoding a character that did not need it is
+ always safe to decode, and leaving one that did is what puts an
+ unescaped `&` in a query value and silently splits a parameter in
+ two.
+
+ The hex digits are indexed out of a literal rather than computed from
+ a code point, because the arithmetic is where this would go wrong:
+ text is CCE internally, `0` is not 48 there, and building a digit by
+ adding to a code point is the mistake that this chapter's neighbours
+ have made repeatedly. Indexing a literal cannot have that bug.
+
+  uri-encode : Text -> Text
+  uri-encode (s) =
+    let bs = text-to-unicode-bytes s
+    in uri-enc-loop bs 0 (list-length bs) ""
+
+  uri-enc-loop : List Integer, Integer, Integer, Text -> Text
+  uri-enc-loop (cs) (i) (n) (acc) =
+    if i >= n then acc
+    else uri-enc-loop cs (i + 1) n (acc & uri-enc-cp (list-at cs i))
+
+  uri-enc-cp : Integer -> Text
+  uri-enc-cp (c) =
+    if c < 128 then uri-enc-ascii c
+    else if c < 2048 then uri-pct (192 + c / 64) & uri-pct (128 + int-mod c 64)
+    else if c < 65536 then uri-pct (224 + c / 4096) & uri-pct (128 + int-mod (c / 64) 64) & uri-pct (128 + int-mod c 64)
+    else uri-pct (240 + c / 262144) & uri-pct (128 + int-mod (c / 4096) 64) & uri-pct (128 + int-mod (c / 64) 64) & uri-pct (128 + int-mod c 64)
+
+  uri-enc-ascii : Integer -> Text
+  uri-enc-ascii (b) =
+    if uri-unreserved b then char-to-text (code-to-char (from-unicode b))
+    else uri-pct b
+
+  uri-pct : Integer -> Text
+  uri-pct (b) = "%" & uri-hex-digit (b / 16) & uri-hex-digit (int-mod b 16)
+
+  uri-in-range : Integer, Integer, Integer -> Boolean
+  uri-in-range (b) (lo) (hi) = if b < lo then False else b <= hi
+
+  uri-unreserved : Integer -> Boolean
+  uri-unreserved (b) =
+    if uri-in-range b 65 90 then True
+    else if uri-in-range b 97 122 then True
+    else if uri-in-range b 48 57 then True
+    else if b == 45 then True
+    else if b == 46 then True
+    else if b == 95 then True
+    else b == 126
+
+  uri-hex-digit : Integer -> Text
+  uri-hex-digit (v) = text-take (text-drop "0123456789ABCDEF" v) 1
 
 Section: Formatting
   format-uri : UriComponents -> Text

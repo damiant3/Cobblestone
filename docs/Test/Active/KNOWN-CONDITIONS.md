@@ -9,10 +9,11 @@ Three rules for this file:
 - **A resolved condition leaves.** Its record is the changelist that
   closed it. A fixed bug documented at length here is not "context"; it
   is a trap that makes the live entries harder to find.
-- **An open capability does not live here — it lives in
-  `docs/PM/BACKLOG.md`.** This file says "do not chase this"; the
-  backlog says "someone should build this". Where a condition below
-  implies work, it links to the backlog item.
+- **An open capability does not live here.** This file says "do not
+  chase this", which is a different claim from "someone should build
+  this". Where a condition below implies work, the work is not tracked
+  by this file and, since 2026-07-23, is not tracked by a
+  platform-wide register either.
 - **Verify before trusting.** Every entry carries the date it was last
   checked against the tree.
 
@@ -53,7 +54,7 @@ correct value is `-7`. Reproduces on the depot seed (the tree is what
 compiles it there).
 
 **Scope is narrow, and shrinking — this is why the note is here and not
-in the backlog.**
+filed as work.**
 
 - The tree's **general multi-arg TCO path is correct.** A 7-parameter
   version of the same shape compiles and runs correctly; only the
@@ -108,7 +109,7 @@ ClearScreen nor R10-clobber is an obvious culprit either.
 `uefi-con-blank-rows`) for screen clearing — it is safe regardless of the
 unknown cause. Do not reintroduce ClearScreen without a clean repro probe
 (allocate, pattern-fill, ClearScreen, verify the pattern survives) on the
-suspect hardware. The corruption cause is open work (`BACKLOG.md` 4.9),
+suspect hardware. The corruption cause is open work, untracked,
 reproducible only on OVMF or the suspect hardware. The UEFI boot surface
 is fester's arena (`BootRoadmap.md`).
 

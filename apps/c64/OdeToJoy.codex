@@ -1,0 +1,78 @@
+Chapter: OdeToJoy
+
+ A SID music demo: Beethoven's "Ode to Joy" on C64 voice 1, a plain
+ triangle lead. It is a standalone program -- its own opening, separate
+ from the emulator's -- that drives the SID synthesizer directly to show
+ the chip making music rather than a single beep. Build and hear it with:
+
+   build/compile.ps1 -Src apps/c64/OdeToJoy.codex -Out ode.cdx -Log ode.log
+   tools/codex-vm.exe -kernel ode.cdx -mem 3072
+
+ Two parallel lists carry the tune: the note frequencies and each note's
+ length in eighth-note units (a quarter is 2, a dotted quarter 3, a half
+ 4), so the two phrases land on their long notes instead of marching in
+ equal steps. Each note holds gated for its length minus a short gap,
+ then gates off for the gap so the next note re-plucks. sid-render-stream
+ keeps the oscillator running across notes, so a pitch change does not
+ click, and hda-play-pcm paces the whole thing to real time. The SID
+ frequency register is Hz * 2^24 / 985248, so C4..G4 are 4455, 5001,
+ 5613, 5947, 6675.
+
+  cites Foreword chapter List
+  cites Foreword chapter Console
+  cites C64 chapter Sid
+  cites Kernel chapter HdaAudio
+
+ We say:
+
+Section: Playback
+
+  unit-samples : Integer = 10000
+  gap-samples : Integer = 1400
+
+  gate-off-gap : Integer, Integer, Integer -> [Audio] Integer
+  gate-off-gap (regs) (rt) (buf) =
+    let a4 = poke-byte regs 4 #10
+    in let r = sid-render-stream regs rt buf gap-samples
+    in hda-play-pcm buf (gap-samples * 4)
+
+  play-note : Integer, Integer, Integer, Integer, Integer -> [Audio] Integer
+  play-note (regs) (rt) (buf) (freq) (dur) =
+    let on = dur * unit-samples - gap-samples
+    in let a0 = poke-byte regs 0 (bit-and freq 255)
+    in let a1 = poke-byte regs 1 (bit-shru freq 8)
+    in let a4 = poke-byte regs 4 #11
+    in let r1 = sid-render-stream regs rt buf on
+    in act
+      p1 <- hda-play-pcm buf (on * 4)
+      g <- gate-off-gap regs rt buf
+      p1 + g
+    end
+
+  play-seq : Integer, Integer, Integer, List Integer, List Integer, Integer -> [Audio] Integer
+  play-seq (regs) (rt) (buf) (notes) (durs) (i) =
+    if i >= list-length notes then 0
+    else act
+      p <- play-note regs rt buf (list-at notes i) (list-at durs i)
+      rest <- play-seq regs rt buf notes durs (i + 1)
+      p + rest
+    end
+
+Section: Entry
+
+  opening : [Console, Audio] Nothing = act
+    let regs = alloc-bytes 32
+    in let d5 = poke-byte regs 5 0
+    in let d6 = poke-byte regs 6 #F0
+    in let d24 = poke-byte regs 24 15
+    in let rt = alloc-bytes 64
+    in let z = sid-rt-reset rt
+    in let buf = alloc-bytes (4 * unit-samples * 4)
+    in let melody = [5613, 5613, 5947, 6675, 6675, 5947, 5613, 5001, 4455, 4455, 5001, 5613, 5613, 5001, 5001, 5613, 5613, 5947, 6675, 6675, 5947, 5613, 5001, 4455, 4455, 5001, 5613, 5001, 4455, 4455]
+    in let durs = [2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 3, 1, 4, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 3, 1, 4]
+    in act
+      print-line-uni "Ode to Joy"
+      done <- play-seq regs rt buf melody durs 0
+      print-line-uni "done"
+    end
+  end

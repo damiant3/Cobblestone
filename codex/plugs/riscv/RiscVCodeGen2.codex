@@ -438,7 +438,29 @@ Section: Control Flow
 
   rv-emit-let : RvState, Text, IRExpr, IRExpr -> RvEmitResult
   rv-emit-let (st) (name) (value) (body) =
+   let saved-len = list-length (st.locals)
+   in let br = rv-emit-let-bound st name value body
+   in RvEmitResult {
+    state = rv-restore-locals (br.state) saved-len,
+    reg = br.reg
+   }
+
+ The result-dest override that steers the let VALUE into the local's
+ register is scoped to the value and restored before the BODY is
+ emitted. It leaked into the body until 2026-07-23, so every
+ dest-honoring emitter in the body wrote the live local: in
+ `text-index-of`, the five-argument marshal into `str-index-loop`
+ evaluated the literal `0` and `slen - sublen + 1` straight into the
+ register still holding `sublen`, and the call went out with limit 12
+ and sublen 12 on an 11-character string -- every `text-contains` on
+ this lane answered False through it. Found by disassembly of the
+ reduced probe; only FRAMED functions were affected, because the
+ frameless arm never sets a dest.
+
+  rv-emit-let-bound : RvState, Text, IRExpr, IRExpr -> RvEmitResult
+  rv-emit-let-bound (st) (name) (value) (body) =
    let saved-tail = st.tco.in-tail-pos
+   in let saved-dest = (st.tco).result-dest
    in let st0 = rv-set-tail-pos st False
    in if rv-is-frameless-mode st then
     let vr = rv-emit-expr st0 value
@@ -450,13 +472,13 @@ Section: Control Flow
    in let vr = rv-emit-expr st1 value
    in if vr.reg == loc.reg then
     let st2 = rv-bind-local (vr.state) name (loc.reg)
-    in rv-emit-expr (rv-set-tail-pos st2 saved-tail) body
+    in rv-emit-expr (rv-set-tail-pos (rv-set-result-dest st2 saved-dest) saved-tail) body
    else if rv-is-stable-reg (vr.reg) then
     let st2 = rv-bind-local (vr.state) name (vr.reg)
-    in rv-emit-expr (rv-set-tail-pos st2 saved-tail) body
+    in rv-emit-expr (rv-set-tail-pos (rv-set-result-dest st2 saved-dest) saved-tail) body
    else let st2 = rv-store-local (vr.state) (loc.reg) (vr.reg)
    in let st3 = rv-bind-local st2 name (loc.reg)
-   in rv-emit-expr (rv-set-tail-pos st3 saved-tail) body
+   in rv-emit-expr (rv-set-tail-pos (rv-set-result-dest st3 saved-dest) saved-tail) body
 
   rv-emit-act : RvState, List IRActStmt -> RvEmitResult
   rv-emit-act (st) (stmts) =
@@ -560,7 +582,7 @@ Section: Apply
         in if tag >= 0 then if list-length args == 0 then rv-emit-nullary-ctor st-nt tag
           else rv-emit-sum-ctor st-nt args tag
         else rv-emit-direct-call st-nt name args
-       is FunTy (pt) (rt) ->
+       is FunTy (pt) (fnrow) (rt) ->
         let known = rv-find-func-offset (st-nt.func-names) (st-nt.func-offsets) name 0
         in if known >= 0 then
          let known-arity = rv-find-func-arity (st-nt.func-names) (st-nt.func-arities) name 0
@@ -607,7 +629,7 @@ Section: Apply
     is IrBoolLit (v) (s) -> acc
     is IrTextLit (v) (s) -> acc
     is IrBinary (op) (l) (r) (t) (s) -> rv-collect-free r bound (rv-collect-free l bound acc)
-    is IrNegate (x) (s) -> rv-collect-free x bound acc
+    is IrNegate (x) (nty) (s) -> rv-collect-free x bound acc
     is IrApply (f) (a) (t) (s) -> rv-collect-free a bound (rv-collect-free f bound acc)
     is IrLet (n) (t) (v) (b) (s) -> rv-collect-free b (list-push bound n) (rv-collect-free v bound acc)
     is IrIf (c) (th) (el) (t) (s) -> rv-collect-free el bound (rv-collect-free th bound (rv-collect-free c bound acc))
@@ -636,7 +658,7 @@ Section: Apply
   rv-fun-arity : CodexType -> Integer
   rv-fun-arity (ty) =
    when ty
-    is FunTy (pt) (rt) -> 1 + rv-fun-arity rt
+    is FunTy (pt) (fnrow) (rt) -> 1 + rv-fun-arity rt
     is otherwise -> 0
 
   rv-emit-closure-over-apply : RvState, Integer, List IRExpr, Integer -> RvEmitResult
@@ -789,7 +811,7 @@ Section: Apply
 
   rv-emit-two-arg-call : RvState, Text, IRExpr, IRExpr -> RvEmitResult
   rv-emit-two-arg-call (st) (name) (arg0) (arg1) =
-   if rv-right-is-simple arg1 then
+   if rv-right-is-simple st arg1 then
     let st0 = rv-set-result-dest st rv-a0
     in let er0 = rv-emit-expr st0 arg0
     in let st1 = if er0.reg == rv-a0 then er0.state else rv-emit (er0.state) (rv-mv rv-a0 (er0.reg))
@@ -798,7 +820,7 @@ Section: Apply
     in let st3 = if er1.reg == rv-a1 then er1.state else rv-emit (er1.state) (rv-mv rv-a1 (er1.reg))
     in let st4 = rv-emit-call-to st3 name
     in RvEmitResult { state = st4, reg = rv-a0 }
-   else if rv-right-is-simple arg0 then
+   else if rv-right-is-simple st arg0 then
     let st0 = rv-set-result-dest st rv-a1
     in let er1 = rv-emit-expr st0 arg1
     in let st1 = if er1.reg == rv-a1 then er1.state else rv-emit (er1.state) (rv-mv rv-a1 (er1.reg))
@@ -828,12 +850,9 @@ Section: Apply
     let p2mm = rv-pow2-lit (list-at args 1)
     in if p2mm > 1 then rv-emit-rem-pow2 st (list-at args 0) p2mm
     else rv-emit-two-arg-binop st (list-at args 0) (list-at args 1) rv-rem
-   else if name == "int-mod" & list-length args == 2 then
-    let p2im = rv-pow2-lit (list-at args 1)
-    in if p2im > 1 then rv-emit-rem-pow2 st (list-at args 0) p2im
-    else rv-emit-two-arg-binop st (list-at args 0) (list-at args 1) rv-rem
+   else if name == "int-mod" & list-length args == 2 then rv-emit-int-mod st (list-at args 0) (list-at args 1)
    else let user-fn = rv-find-func-offset (st.func-names) (st.func-offsets) name 0
-   in if user-fn >= 0 then rv-emit-user-call st name args
+   in if (user-fn >= 0) & (rv-is-inline-here name (list-length args) == False) then rv-emit-user-call st name args
    else if name == "__narrow" & list-length args == 1 then rv-emit-expr st (list-at args 0)
    else if name == "address-of" & list-length args == 1 then rv-emit-address-of st (list-at args 0)
    else if name == "__record-set" & list-length args == 3 then rv-emit-record-set-builtin st args
@@ -848,17 +867,17 @@ Section: Apply
    else if name == "min" & list-length args == 2 then rv-emit-min-max st args False
    else if name == "max" & list-length args == 2 then rv-emit-min-max st args True
    else if name == "math-mod" & list-length args == 2 then rv-emit-two-arg-binop st (list-at args 0) (list-at args 1) rv-rem
-   else if name == "int-mod" & list-length args == 2 then rv-emit-two-arg-binop st (list-at args 0) (list-at args 1) rv-rem
+   else if name == "int-mod" & list-length args == 2 then rv-emit-int-mod st (list-at args 0) (list-at args 1)
    else if name == "fail" & list-length args == 1
     then let st1 = rv-emit-call-to st "__try_fail"
     in RvEmitResult { state = st1, reg = rv-a0 }
    else if name == "force" & list-length args == 1 then rv-emit-force st (list-at args 0)
    else if name == "freeze" & list-length args == 1 then rv-emit-expr st (list-at args 0)
    else if name == "bit-not" & list-length args == 1 then rv-emit-bit-not st (list-at args 0)
-   else if name == "bit-and" & list-length args == 2 then rv-emit-two-arg-binop st (list-at args 0) (list-at args 1) rv-and
-   else if name == "bit-or" & list-length args == 2 then rv-emit-two-arg-binop st (list-at args 0) (list-at args 1) rv-or
-   else if name == "bit-xor" & list-length args == 2 then rv-emit-two-arg-binop st (list-at args 0) (list-at args 1) rv-xor
-   else if name == "bit-shr" & list-length args == 2 then rv-emit-two-arg-binop st (list-at args 0) (list-at args 1) rv-sra
+   else if name == "bit-and" & list-length args == 2 then rv-emit-bit-binop st (list-at args 0) (list-at args 1) "and"
+   else if name == "bit-or" & list-length args == 2 then rv-emit-bit-binop st (list-at args 0) (list-at args 1) "or"
+   else if name == "bit-xor" & list-length args == 2 then rv-emit-bit-binop st (list-at args 0) (list-at args 1) "xor"
+   else if name == "bit-shr" & list-length args == 2 then rv-emit-bit-binop st (list-at args 0) (list-at args 1) "shr"
    else if name == "print-line-raw" & list-length args == 1 then rv-emit-single-arg-call st "print-line-uni" (list-at args 0)
    else if name == "print-uni" & list-length args == 1 then rv-emit-single-arg-call st "print-line-uni" (list-at args 0)
    else if name == "print-error" & list-length args == 1 then rv-emit-single-arg-call st "print-line-uni" (list-at args 0)
@@ -868,8 +887,8 @@ Section: Apply
    else if name == "code-to-char" & list-length args == 1 then rv-emit-expr st (list-at args 0)
    else if name == "print-line" & list-length args == 1 then rv-emit-single-arg-call st "print-line-uni" (list-at args 0)
    else if name == "integer-to-text" & list-length args == 1 then rv-emit-single-arg-call st "integer-to-text" (list-at args 0)
-   else if name == "bit-shl" & list-length args == 2 then rv-emit-two-arg-binop st (list-at args 0) (list-at args 1) rv-sll
-   else if name == "bit-shru" & list-length args == 2 then rv-emit-two-arg-binop st (list-at args 0) (list-at args 1) rv-srl
+   else if name == "bit-shl" & list-length args == 2 then rv-emit-bit-binop st (list-at args 0) (list-at args 1) "shl"
+   else if name == "bit-shru" & list-length args == 2 then rv-emit-bit-binop st (list-at args 0) (list-at args 1) "shru"
    else if name == "is-digit" & list-length args == 1 then rv-emit-is-char-class st (list-at args 0) 3 12
    else if name == "is-letter" & list-length args == 1 then rv-emit-is-char-class st (list-at args 0) 13 64
    else if name == "is-whitespace" & list-length args == 1 then rv-emit-is-char-class st (list-at args 0) 2 2
@@ -889,6 +908,12 @@ Section: Apply
    else if name == "from-real-saturating" & list-length args == 1 then rv-emit-expr st (list-at args 0)
    else if name == "text-to-double-bits" & list-length args == 1 then rv-emit-single-arg-call st "__text_to_double" (list-at args 0)
    else if name == "suggested-vector-width" & list-length args == 1 then rv-emit-suggested-vector-width st (list-at args 0)
+   else if name == "vec-add" & list-length args == 2 then rv-emit-vec-arith st args 0
+   else if name == "vec-sub" & list-length args == 2 then rv-emit-vec-arith st args 1
+   else if name == "vec-mul" & list-length args == 2 then rv-emit-vec-arith st args 2
+   else if name == "vec-div" & list-length args == 2 then rv-emit-vec-arith st args 3
+   else if name == "vec-load-at" & list-length args == 1 then rv-emit-vec-load-at st (list-at args 0)
+   else if name == "vec-store-at" & list-length args == 2 then rv-emit-vec-store-at st (list-at args 0) (list-at args 1)
    else if name == "vec-extract" & list-length args == 2 then rv-emit-vec-extract st (list-at args 0) (list-at args 1)
    else if name == "vec-reduce-add" & list-length args == 1 then rv-emit-vec-reduce-add st (list-at args 0)
    else if name == "vec-select" & list-length args == 3 then rv-emit-vec-select st args
@@ -925,16 +950,26 @@ Section: Apply
    else if name == "vec-singleton" & list-length args == 1 then rv-emit-single-arg-call st "list-cons" (list-at args 0)
    else if name == "write-file" & list-length args == 2 then rv-emit-int-lit st 0
    else if name == "write-binary" & list-length args == 1 then rv-emit-int-lit st 0
-   else if name == "read-line" then rv-emit-empty-text st
-   else if name == "read-line-cce" then rv-emit-empty-text st
-   else if name == "read-file" & list-length args == 1 then rv-emit-empty-text st
-   else if name == "read-file-raw" & list-length args == 1 then rv-emit-empty-text st
-   else if name == "read-file-uni" & list-length args == 1 then rv-emit-empty-text st
+   else if name == "read-line" then rv-emit-maybe-none st
+   else if name == "read-line-cce" then rv-emit-maybe-none st
+   else if name == "read-file" & list-length args == 1 then rv-emit-unsupported-read st "read-file"
+   else if name == "read-file-raw" & list-length args == 1 then rv-emit-unsupported-read st "read-file-raw"
+   else if name == "read-file-uni" & list-length args == 1 then rv-emit-unsupported-read st "read-file-uni"
    else if name == "read-serial-cce" & list-length args == 1 then rv-emit-empty-text st
    else if name == "prof-start" then rv-emit-int-lit st 0
    else if name == "prof-dump" then rv-emit-int-lit st 0
    else if name == "__self-type-defs" then rv-emit-int-lit st 0
-   else if name == "uefi-read-file" & list-length args == 1 then rv-emit-empty-text st
+   else if name == "uefi-read-file" & list-length args == 1 then rv-emit-unsupported-read st "uefi-read-file"
+   else if name == "port-in-byte" then rv-emit-unsupported-port st "port-in-byte"
+   else if name == "port-out-byte" then rv-emit-unsupported-port st "port-out-byte"
+   else if name == "port-in-16" then rv-emit-unsupported-port st "port-in-16"
+   else if name == "port-out-16" then rv-emit-unsupported-port st "port-out-16"
+   else if name == "port-in-32" then rv-emit-unsupported-port st "port-in-32"
+   else if name == "port-out-32" then rv-emit-unsupported-port st "port-out-32"
+   else if name == "gpu-in" then rv-emit-unsupported-port st "gpu-in"
+   else if name == "gpu-out" then rv-emit-unsupported-port st "gpu-out"
+   else if name == "gpu-mem-read" then rv-emit-unsupported-port st "gpu-mem-read"
+   else if name == "gpu-mem-write" then rv-emit-unsupported-port st "gpu-mem-write"
    else if name == "text-replace" & list-length args == 3 then rv-emit-three-arg-call st "text-replace" args
    else if name == "text-split" & list-length args == 2 then rv-emit-two-arg-call st "text-split" (list-at args 0) (list-at args 1)
    else if name == "__buf-write-byte" & list-length args == 3 then rv-emit-three-arg-call st "__buf-write-byte" args
@@ -972,7 +1007,7 @@ Section: Apply
     is IrCharLit (v) (s) -> True
     is IrBinary (op) (l) (r) (t) (s) ->
      rv-arg-is-safe-for-direct l & rv-arg-is-safe-for-direct r
-    is IrNegate (x) (s) -> rv-arg-is-safe-for-direct x
+    is IrNegate (x) (nty) (s) -> rv-arg-is-safe-for-direct x
     is otherwise -> False
 
   rv-all-args-simple : List IRExpr, Integer -> Boolean
@@ -1145,6 +1180,7 @@ Section: Records and Sum Types
    when ty
     is RecordTy (rn) (tvars) (fields) -> rn.value
     is ConstructedTy (tname) (args) -> tname.value
+    is TypeCon (tname) -> tname.value
     is otherwise -> ""
 
   rv-emit-record : RvState, List IRFieldVal, CodexType -> RvEmitResult
@@ -1369,7 +1405,7 @@ Section: Records and Sum Types
   rv-find-field-in-type-defs (defs) (type-name) (field-name) (i) =
    if i >= list-length defs then 0 - 1
    else when list-at defs i
-    is ARecordTypeDef (dn) (tparams) (fields) (sp) ->
+    is ARecordTypeDef (dn) (tparams) (fields) (recmut) (sp) ->
      if dn.value == type-name then rv-find-rec-field-index fields field-name 0
      else rv-find-field-in-type-defs defs type-name field-name (i + 1)
     is otherwise -> rv-find-field-in-type-defs defs type-name field-name (i + 1)
@@ -1384,7 +1420,7 @@ Section: Records and Sum Types
   rv-find-field-in-any-type-def (defs) (field-name) (i) =
    if i >= list-length defs then 0 - 1
    else when list-at defs i
-    is ARecordTypeDef (dn) (tparams) (fields) (sp) ->
+    is ARecordTypeDef (dn) (tparams) (fields) (recmut) (sp) ->
      let idx = rv-find-rec-field-index fields field-name 0
      in if idx >= 0 then idx
      else rv-find-field-in-any-type-def defs field-name (i + 1)

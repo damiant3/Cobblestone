@@ -90,10 +90,11 @@ Section: Type Definition Emission
   emit-gvy-type-def : ATypeDef -> Text
   emit-gvy-type-def (td) =
    when td
-    is ARecordTypeDef (name) (tparams) (fields) (s) ->
+    is ARecordTypeDef (name) (tparams) (fields) (recmut) (s) ->
      "def make_" & gvy-sanitize (name.value) & "(Map m) { m + [_type: \"" & name.value & "\"] }\n"
     is AVariantTypeDef (name) (tparams) (ctors) (s) ->
      emit-gvy-ctors ctors 0
+    is AUnitTypeDef (name) (unitbase) (s) -> ""
 
   emit-gvy-ctors : List AVariantCtorDef, Integer -> Text
   emit-gvy-ctors (ctors) (i) =
@@ -117,7 +118,7 @@ Section: Expression Emission
     is IrCharLit (n) (sp) -> integer-to-text n
     is IrName (n) (ty) (sp) -> emit-gvy-name n arities
     is IrBinary (op) (l) (r) (ty) (sp) -> emit-gvy-binary op l r arities
-    is IrNegate (operand) (sp) -> "(-" & emit-gvy-expr-at operand arities (depth + 1) & ")"
+    is IrNegate (operand) (nty) (sp) -> "(-" & emit-gvy-expr-at operand arities (depth + 1) & ")"
     is IrIf (c) (t) (el) (ty) (sp) -> "(" & emit-gvy-expr-at c arities (depth + 1) & " ? " & emit-gvy-expr-at t arities (depth + 1) & " : " & emit-gvy-expr-at el arities (depth + 1) & ")"
     is IrLet (name) (ty) (val) (body) (sp) -> "({ def " & gvy-sanitize name & " = " & emit-gvy-expr-at val arities (depth + 1) & "; " & emit-gvy-expr-at body arities (depth + 1) & " })()"
     is IrApply (f) (a) (ty) (sp) -> emit-gvy-apply e arities
@@ -286,7 +287,7 @@ Section: Apply Emission
     BuiltinEntry { name = "negate", tag = 10 },
     BuiltinEntry { name = "print-line-uni", tag = 11 },
     BuiltinEntry { name = "process-exit", tag = 12 },
-    BuiltinEntry { name = "read-file", tag = 13 },
+    BuiltinEntry { name = "read-text", tag = 13 },
     BuiltinEntry { name = "show", tag = 14 },
     BuiltinEntry { name = "substring", tag = 15 },
     BuiltinEntry { name = "text-contains", tag = 16 },
@@ -321,7 +322,7 @@ Section: Apply Emission
    else if tag == 1 then "(int)" & a0 & ".charAt(" & emit-gvy-expr (list-at args 1) arities & ")"
    else if tag == 2 then a0
    else if tag == 3 then "((char)" & a0 & ").toString()"
-   else if tag == 4 then "(" & a0 & " % " & emit-gvy-expr (list-at args 1) arities & ")"
+   else if tag == 4 then "({ _a, _b -> def _m = Math.abs(_b); def _r = _a % _m; _r < 0 ? _r + _m : _r }.call(" & a0 & ", " & emit-gvy-expr (list-at args 1) arities & "))"
    else if tag == 5 then "\"${" & a0 & "}\""
    else if tag == 6 then a0 & "[" & emit-gvy-expr (list-at args 1) arities & "]"
    else if tag == 7 then a0 & ".size()"

@@ -12,6 +12,7 @@ Section: Constants
   kernal-rom : Integer = #A12000
   char-rom : Integer = #A14000
   color-ram-base : Integer = #A15000
+  sid-state : Integer = #A16000
 
 Section: Bank Configuration
 
@@ -63,7 +64,7 @@ Section: Memory Read
   c64-read-io-reg : Integer -> Integer
   c64-read-io-reg (addr) =
     if addr < #D400 then peek-byte vic-state (addr - #D000)
-    else if addr < #D800 then 0
+    else if addr < #D800 then peek-byte sid-state (bit-and (addr - #D400) 31)
     else if addr < #DC00 then peek-byte color-ram-base (addr - #D800)
     else if addr < #DD00 then cia1-read (addr - #DC00)
     else if addr < #DE00 then cia2-read (addr - #DD00)
@@ -88,7 +89,7 @@ Section: Memory Write
   c64-write-io-reg : Integer, Integer -> Integer
   c64-write-io-reg (addr) (val) =
     if addr < #D400 then poke-byte vic-state (addr - #D000) val
-    else if addr < #D800 then 0
+    else if addr < #D800 then poke-byte sid-state (bit-and (addr - #D400) 31) (bit-and val #FF)
     else if addr < #DC00 then poke-byte color-ram-base (addr - #D800) (bit-and val #0F)
     else if addr < #DD00 then cia1-write (addr - #DC00) val
     else if addr < #DE00 then cia2-write (addr - #DD00) val
@@ -109,40 +110,60 @@ Section: IDE Disk ROM Loader
    Sectors 16-31:  KERNAL ROM   (8 KB)
    Sectors 32-39:  CHARGEN ROM  (4 KB)
 
-  ide-read-sector : Integer, Integer -> Integer
-  ide-read-sector (lba) (dest) =
-    let d0 = port-out-byte #1F6 (bit-or #E0 (bit-and (bit-shru lba 24) #0F))
-    in let d1 = port-out-byte #1F2 1
-    in let d2 = port-out-byte #1F3 (bit-and lba #FF)
-    in let d3 = port-out-byte #1F4 (bit-and (bit-shru lba 8) #FF)
-    in let d4 = port-out-byte #1F5 (bit-and (bit-shru lba 16) #FF)
-    in let d5 = port-out-byte #1F7 #20
-    in let d6 = ide-wait-ready 0
-    in d0 + d1 + d2 + d3 + d4 + d5 + d6 + ide-read-256-words dest 0
+  ide-read-sector : Integer, Integer -> [Device.Port] Integer
+  ide-read-sector (lba) (dest) = act
+    d0 <- port-out-byte #1F6 (bit-or #E0 (bit-and (bit-shru lba 24) #0F))
+    d1 <- port-out-byte #1F2 1
+    d2 <- port-out-byte #1F3 (bit-and lba #FF)
+    d3 <- port-out-byte #1F4 (bit-and (bit-shru lba 8) #FF)
+    d4 <- port-out-byte #1F5 (bit-and (bit-shru lba 16) #FF)
+    d5 <- port-out-byte #1F7 #20
+    d6 <- ide-wait-ready 0
+    d7 <- ide-read-256-words dest 0
+    d0 + d1 + d2 + d3 + d4 + d5 + d6 + d7
+  end
 
-  ide-wait-ready : Integer -> Integer
-  ide-wait-ready (dummy) =
-    let status = port-in-byte #1F7
-    in if bit-and status 8 /= 0 then 0
+  ide-wait-ready : Integer -> [Device.Port] Integer
+  ide-wait-ready (dummy) = act
+    status <- port-in-byte #1F7
+    if bit-and status 8 /= 0 then 0
     else ide-wait-ready 0
+  end
 
-  ide-read-256-words : Integer, Integer -> Integer
+  ide-store-word : Integer, Integer, Integer -> Integer
+  ide-store-word (dest) (i) (word) =
+    (poke-byte dest (i * 2) (bit-and word #FF)) + (poke-byte dest (i * 2 + 1) (bit-and (bit-shru word 8) #FF))
+
+  ide-read-256-words : Integer, Integer -> [Device.Port] Integer
   ide-read-256-words (dest) (i) =
     if i >= 256 then 0
-    else let word = port-in-16 #1F0
-    in let d0 = poke-byte dest (i * 2) (bit-and word #FF)
-    in let d1 = poke-byte dest (i * 2 + 1) (bit-and (bit-shru word 8) #FF)
-    in d0 + d1 + ide-read-256-words dest (i + 1)
+    else act
+      word <- port-in-16 #1F0
+      tail <- ide-store-then-read dest i word
+      tail
+    end
 
-  load-roms-from-disk : Integer -> Integer
-  load-roms-from-disk (dummy) =
-    let d0 = load-rom-sectors basic-rom 0 16 0
-    in let d1 = load-rom-sectors kernal-rom 16 16 0
-    in let d2 = load-rom-sectors char-rom 32 8 0
-    in d0 + d1 + d2
+  ide-store-then-read : Integer, Integer, Integer -> [Device.Port] Integer
+  ide-store-then-read (dest) (i) (word) =
+    let stored = ide-store-word dest i word
+    in act
+      rest <- ide-read-256-words dest (i + 1)
+      stored + rest
+    end
 
-  load-rom-sectors : Integer, Integer, Integer, Integer -> Integer
+  load-roms-from-disk : Integer -> [Device.Port] Integer
+  load-roms-from-disk (dummy) = act
+    d0 <- load-rom-sectors basic-rom 0 16 0
+    d1 <- load-rom-sectors kernal-rom 16 16 0
+    d2 <- load-rom-sectors char-rom 32 8 0
+    d0 + d1 + d2
+  end
+
+  load-rom-sectors : Integer, Integer, Integer, Integer -> [Device.Port] Integer
   load-rom-sectors (dest) (lba) (count) (offset) =
     if count <= 0 then 0
-    else let d = ide-read-sector lba (dest + offset)
-    in d + load-rom-sectors dest (lba + 1) (count - 1) (offset + 512)
+    else act
+      d <- ide-read-sector lba (dest + offset)
+      rest <- load-rom-sectors dest (lba + 1) (count - 1) (offset + 512)
+      d + rest
+    end

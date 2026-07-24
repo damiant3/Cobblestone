@@ -1,0 +1,66 @@
+Chapter: WhenArmTailCallTest
+
+ Four recursion shapes, differing only in where the recursive call
+ sits. Three of them worked on RISC-V for as long as anyone measured
+ and the fourth did not, which is what made the defect hard to see: a
+ tail call under `if` allocates no local, and a NON-tail call inside a
+ `when` arm needs `ra` and therefore gets a frame anyway. Only a TAIL
+ call inside a `when` arm landed in the gap, where the function was
+ emitted frameless and its match then allocated a callee-saved
+ register the frameless prologue never saved.
+
+ So the two lines either side of 04 are not padding. They are what
+ says the defect is the call SHAPE and not `when`, not recursion, and
+ not tail calls.
+
+ No parametric types, no foreword, no lists -- the payload here is an
+ Integer so nothing but the call shape is under test.
+
+Section: Types
+
+  Step =
+   | Go (Integer)
+   | Stop
+
+Section: Helpers
+
+ Tail call under if. Known good.
+
+  by-if : Integer, Integer -> Integer
+  by-if (n) (acc) = if n <= 0 then acc else by-if (n - 1) (acc + 1)
+
+ Non-tail call inside a when arm: the result is consumed by an add,
+ so the frame must stay. Known good.
+
+  by-when-nontail : Step -> Integer
+  by-when-nontail (s) =
+    when s
+     is Go (n) -> 1 + (if n <= 1 then 0 else by-when-nontail (Go (n - 1)))
+     is Stop -> 0
+
+ Tail call inside a when arm: the arm's value IS the call.
+
+  by-when-tail : Step, Integer -> Integer
+  by-when-tail (s) (acc) =
+    when s
+     is Go (n) -> if n <= 0 then acc else by-when-tail (Go (n - 1)) (acc + 1)
+     is Stop -> acc
+
+ The same, with the guard outside so the arm is nothing but the call.
+
+  by-when-bare : Step, Integer -> Integer
+  by-when-bare (s) (acc) =
+    when s
+     is Go (n) -> by-when-bare (if n <= 1 then Stop else Go (n - 1)) (acc + 1)
+     is Stop -> acc
+
+Section: Entry
+
+  opening : [Console] Nothing = act
+    print-line-uni "01 start"
+    print-line-uni ("02 if-tail " & show (by-if 10 0))
+    print-line-uni ("03 when-nontail " & show (by-when-nontail (Go 10)))
+    print-line-uni ("04 when-tail " & show (by-when-tail (Go 10) 0))
+    print-line-uni ("05 when-bare " & show (by-when-bare (Go 10) 0))
+    print-line-uni "06 done"
+  end

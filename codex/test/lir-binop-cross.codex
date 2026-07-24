@@ -1,0 +1,92 @@
+Chapter: LirBinopCross
+  cites Foreword chapter Console
+
+ The shapes that lower to a single LIR block of straight-line `LiBin`
+ arithmetic: `diff` lowers to `b0: v2 = sub v0 v1 => v2`, `addup` to
+ `b0: v3 = add v0 v1; v4 = add v3 v2 => v4`, `poly` to
+ `b0: v1 = mul v0 v0; v2 = add v1 v0 => v2`.
+
+ This is the second construct the ARM64 LIR selector claims
+ (`codex/plugs/arm64/Arm64Lir.codex`) and the first that consumes the
+ register assignment, so on that backend these definitions are emitted by a
+ different code path from every other function in the file, and their bytes
+ depend on what the allocator answered. x86-64 compiles them the way it
+ always did, which is what makes the two answers comparable.
+
+ The cases are chosen so that a selector can fail one without failing all.
+ `diff` is non-commutative, so an emitter that swapped the operands would
+ pass `addup` and fail this: 9 - 4 is 5 and 4 - 9 is -5. `chain-sub` puts a
+ subtract downstream of another subtract, where a wrong operand order
+ compounds instead of cancelling. `scale` and `offset` carry an immediate,
+ which is the operand that has to be materialised into a scratch register
+ because ARM64 multiply has no immediate form. `poly` reads the same vreg as
+ both operands of one instruction. `reuse` reads a parameter again after it
+ has been used, which a selector that clobbered a source while writing a
+ destination would get wrong -- the case x86-64 needs aliasing machinery for
+ and a three-operand machine does not.
+
+ `wide` uses all eight argument registers, so the parameter window is fully
+ occupied while the arithmetic runs.
+
+ `wide-sub` is the row the sensitivity run actually needs, and the reason
+ is the frontend, not the selectors: the cost-based inliner folds every
+ small function here into `opening` before any plug sees it, so on a plug
+ lane the selector receives only the eight-parameter shapes, and `wide` is
+ all-commutative -- an emitter that swapped its operands would still
+ answer 36. Measured 2026-07-23 on riscv64 via the `lir-handled` report:
+ of these ten, `wide` alone reached the selector. `wide-sub` keeps the
+ eight-parameter bulk that defeats the inliner and chains subtracts, so a
+ swapped operand order cannot cancel and cannot hide.
+
+ `via-call` exists so the answers are not read only from the definitions
+ themselves: it calls them, which means the function offsets and arities the
+ selector registers have to be right for an ordinary call to land, and the
+ caller is a tree-emitted function reading a selector-emitted one.
+
+Section: Straight-Line Arithmetic
+
+  diff : Integer, Integer -> Integer
+  diff (a) (b) = a - b
+
+  addup : Integer, Integer, Integer -> Integer
+  addup (a) (b) (c) = a + b + c
+
+  chain-sub : Integer, Integer, Integer -> Integer
+  chain-sub (a) (b) (c) = a - b - c
+
+  scale : Integer -> Integer
+  scale (a) = a * 3
+
+  offset : Integer -> Integer
+  offset (a) = a + 100
+
+  poly : Integer -> Integer
+  poly (x) = x * x + x
+
+  reuse : Integer, Integer -> Integer
+  reuse (a) (b) = a * b - a
+
+  wide : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  wide (a) (b) (c) (d) (e) (f) (g) (h) = a + b + c + d + e + f + g + h
+
+  wide-sub : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  wide-sub (a) (b) (c) (d) (e) (f) (g) (h) = a - b - c + d * e - f * g - h
+
+  via-call : Integer -> Integer
+  via-call (n) = diff n 4 + scale n
+
+Section: Entry
+
+  opening : [Console] Nothing = act
+    print-line-uni ("diff: " & show (diff 9 4))
+    print-line-uni ("diff-neg: " & show (diff 4 9))
+    print-line-uni ("addup: " & show (addup 1 2 3))
+    print-line-uni ("chain-sub: " & show (chain-sub 20 5 3))
+    print-line-uni ("scale: " & show (scale 7))
+    print-line-uni ("offset: " & show (offset 7))
+    print-line-uni ("poly: " & show (poly 5))
+    print-line-uni ("reuse: " & show (reuse 6 4))
+    print-line-uni ("wide: " & show (wide 1 2 3 4 5 6 7 8))
+    print-line-uni ("wide-sub: " & show (wide-sub 100 3 5 2 7 4 6 9))
+    print-line-uni ("via-call: " & show (via-call 10))
+  end

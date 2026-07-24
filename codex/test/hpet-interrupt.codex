@@ -1,0 +1,108 @@
+Chapter: HpetInterrupt
+  cites Foreword chapter Board
+  grounds Device.Mmio
+
+ A comparator match reaches the processor.
+
+ This is the rung the battery could not reach. codex-vm injects a tick
+ every 55 ms from a host thread whatever the guest programmed, so a guest
+ that programs a timer and then observes a tick has learned nothing --
+ the tick was coming anyway. The only way to ask the question used to be
+ to take the host's generator out of the picture with CODEX_VM_NO_TIMER,
+ which is not a knob the harness can set, so this ran by hand or not at
+ all.
+
+ What made that necessary was not the host tick but the guest: nothing it
+ could read recorded that any vector had arrived except the two timers.
+ __interrupt_common answers the PIT and the local timer specially and
+ returns from every other vector without leaving a mark, so a delivered
+ interrupt and a dropped one were indistinguishable from inside.
+
+ The handler now records the count and the number of every vector that is
+ NOT a timer, and the timer vectors deliberately do not touch those cells.
+ That is what lets this run in the ordinary battery: the host's periodic
+ tick is vector 32 and cannot appear here, so a count above zero on the
+ line this test programmed is evidence of that line and nothing else.
+
+ The probe routes timer 0 to IOAPIC line 2 and gives that line vector 80,
+ a number no other device in this machine uses. Serial interrupts are
+ never injected and there is no keyboard timeline attached, so vector 80
+ is the only one that can reach the counter -- and the test demands the
+ recorded vector be exactly 80 rather than merely that something arrived.
+
+ We say:
+
+Section: Register Addresses
+
+  hpet-config : Integer = #FED00010
+  hpet-counter-lo : Integer = #FED000F0
+  hpet-t0-config : Integer = #FED00100
+  hpet-t0-cmp-lo : Integer = #FED00108
+
+  ioapic-index : Integer = #FEC00000
+  ioapic-data : Integer = #FEC00010
+
+  devint-count-cell : Integer = 36240
+  devint-last-vec-cell : Integer = 36248
+
+Section: Routing
+
+ Bit 2 of the timer configuration enables its interrupt and bits 9
+ through 13 carry the line. Redirection entry 2 is the pair of selectors
+ 0x14 and 0x15; the low half takes the vector with delivery mode fixed
+ and the mask clear.
+
+  hpet-t0-route-2-enabled : Integer = #404
+  ioapic-redir2-lo : Integer = #14
+  ioapic-redir2-hi : Integer = #15
+  probe-vector : Integer = 80
+
+  route-timer : Integer -> [Device.Mmio] Integer
+  route-timer (x) = act
+    s0 <- mmio-write-32 ioapic-index ioapic-redir2-lo
+    d0 <- mmio-write-32 ioapic-data probe-vector
+    s1 <- mmio-write-32 ioapic-index ioapic-redir2-hi
+    d1 <- mmio-write-32 ioapic-data 0
+    e <- mmio-write-32 hpet-config 1
+    c <- mmio-write-32 hpet-t0-config hpet-t0-route-2-enabled
+    x
+  end
+
+Section: Spin
+
+ Each turn is a VM exit, which is what lets the host advance its device
+ models and deliver anything it has queued.
+
+  spin : Integer -> [Device.Mmio] Integer
+  spin (n) =
+    if n <= 0 then 0
+    else let v = mmio-read-32 hpet-counter-lo
+    in v + spin (n - 1)
+
+Section: Probe
+
+  probe : Text
+  probe = act
+    r <- route-timer 0
+    now <- mmio-read-32 hpet-counter-lo
+    t <- mmio-write-32 hpet-t0-cmp-lo (now + 1000)
+    before <- peek-qword devint-count-cell 0
+    s <- spin 20000
+    after <- peek-qword devint-count-cell 0
+    vec <- peek-qword devint-last-vec-cell 0
+    verdict before after vec
+  end
+
+  verdict : Integer, Integer, Integer -> Text
+  verdict (before) (after) (vec) =
+    if after <= before then "hpet interrupt: never delivered"
+    else if vec /= probe-vector then "hpet interrupt: wrong vector " & show vec
+    else "hpet interrupt: delivered on vector 80"
+
+Section: Entry
+
+  opening : [Console] Integer
+  opening = act
+    print-line-uni probe
+    let r = 0 in r
+  end

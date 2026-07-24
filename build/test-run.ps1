@@ -16,6 +16,11 @@ param(
     [string]$StdinFile = '',
     [string]$KeysFile = '',
     [string]$DiskFile = '',
+    # Extra codex-vm flags for tests whose subject is the MACHINE rather than
+    # the program: a bus topology, a disabled timer, a device that has to be
+    # absent. Without a per-test knob such a test can only be a .skip, and a
+    # skipped test proves nothing at all.
+    [string]$VmArgsFile = '',
     [int]$Smp = 0,
     [int]$PCore = 1
 )
@@ -56,6 +61,14 @@ try {
         $vmArgs += @('-disk', $diskWork)
     }
     if ($Smp -gt 1) { $vmArgs += @('-smp', "$Smp") }
+    if ($VmArgsFile -and (Test-Path -PathType Leaf $VmArgsFile)) {
+        # Whitespace-separated flags, '#' comments, blank lines ignored.
+        foreach ($line in (Get-Content $VmArgsFile)) {
+            $line = $line.Trim()
+            if (-not $line -or $line.StartsWith('#')) { continue }
+            $vmArgs += ($line -split '\s+')
+        }
+    }
 
     $proc = Start-Process -FilePath $script:CodexVmBin -ArgumentList $vmArgs `
         -PassThru -WindowStyle Hidden -RedirectStandardError $stderrFile

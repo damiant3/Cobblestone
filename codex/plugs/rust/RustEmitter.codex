@@ -40,17 +40,24 @@ Section: Type Mapping
     is CharTy -> "i64"
     is VoidTy -> "()"
     is NothingTy -> "()"
+    is ProofTy -> "()"
+    is PropEqTy (pl) (pr) -> "()"
     is UnitTy (n) (inner) -> "()"
     is ErrorTy -> "Box<dyn std::any::Any>"
-    is FunTy (p) (r) -> "Box<dyn Fn(" & rs-type p & ") -> " & rs-type r & ">"
+    is FunTy (p) (fnrow) (r) -> "Box<dyn Fn(" & rs-type p & ") -> " & rs-type r & ">"
     is ListTy (elem) -> "Vec<" & rs-type elem & ">"
     is LinkedListTy (elem) -> "Vec<" & rs-type elem & ">"
     is TypeVar (id) -> "Box<dyn std::any::Any>"
     is ForAllTy (id) (body) -> rs-type body
+    is ForAllEff (id) (body) -> rs-type body
+    is LinearTy (body) -> rs-type body
+    is TypeApply (body) (tyarg) -> rs-type body
     is SumTy (name) (ty-args) (ctors) -> rs-sanitize (name.value)
     is RecordTy (name) (ty-args) (fields) -> rs-sanitize (name.value)
     is ConstructedTy (name) (args) -> rs-sanitize (name.value)
+    is TypeCon (name) -> rs-sanitize (name.value)
     is VectorTy (vn) (vt) -> "Vec<" & rs-type vt & ">"
+    is VectorMaskTy (vn) -> "Vec<bool>"
     is EffectfulTy (effects) (sc) (ret) -> rs-type ret
 
 Section: Constructor-to-Enum Map
@@ -190,11 +197,12 @@ Section: Type Definition Emission
   emit-rs-type-def : ATypeDef -> Text
   emit-rs-type-def (td) =
    when td
-    is ARecordTypeDef (name) (tparams) (fields) (s) ->
+    is ARecordTypeDef (name) (tparams) (fields) (recmut) (s) ->
      "#[derive(Debug, Clone, PartialEq)]\nstruct " & rs-sanitize (name.value) & " {\n" & emit-rs-record-fields fields 0 & "}\n"
     is AVariantTypeDef (name) (tparams) (ctors) (s) ->
      if is-tup-type (name.value) then ""
      else "#[derive(Debug, Clone, PartialEq)]\nenum " & rs-sanitize (name.value) & " {\n" & emit-rs-variant-ctors ctors 0 & "}\n"
+    is AUnitTypeDef (name) (unitbase) (s) -> ""
 
   emit-rs-record-fields : List ARecordFieldDef, Integer -> Text
   emit-rs-record-fields (fields) (i) =
@@ -220,8 +228,12 @@ Section: Type Definition Emission
     is ANamedType (name) (s) -> rs-atype-name (name.value)
     is AFunType (p) (r) (s) -> "Box<dyn Fn(" & emit-rs-atype-expr p & ") -> " & emit-rs-atype-expr r & ">"
     is AAppType (base) (args) (s) -> emit-rs-atype-expr base
-    is AEffectType (effs) (scopes) (r) (s) -> emit-rs-atype-expr r
+    is AEffectType (effs) (scopes) (efftail) (r) (s) -> emit-rs-atype-expr r
     is ABoundedIntType (b) (lo) (hi) (mode) (s) -> emit-rs-atype-expr b
+    is ALinearType (b) (s) -> emit-rs-atype-expr b
+    is AConstrainedType (ctcls) (ctparam) (b) (s) -> emit-rs-atype-expr b
+    is AForallType (fav) (favt) (b) (s) -> emit-rs-atype-expr b
+    is APropEqType (b) (peright) (s) -> emit-rs-atype-expr b
 
   rs-atype-name : Text -> Text
   rs-atype-name (n) =
@@ -295,7 +307,7 @@ Section: Expression Emission
     is IrCharLit (n) (sp) -> integer-to-text n & "_i64"
     is IrName (n) (ty) (sp) -> emit-rs-name n ty arities ctor-map
     is IrBinary (op) (l) (r) (ty) (sp) -> emit-rs-binary op l r ty arities ctor-map
-    is IrNegate (operand) (sp) -> "(-" & emit-rs-expr-at operand arities ctor-map (depth + 1) & ")"
+    is IrNegate (operand) (nty) (sp) -> "(-" & emit-rs-expr-at operand arities ctor-map (depth + 1) & ")"
     is IrIf (c) (t) (el) (ty) (sp) -> "if " & emit-rs-expr-at c arities ctor-map (depth + 1) & " { " & emit-rs-expr-at t arities ctor-map (depth + 1) & " } else { " & emit-rs-expr-at el arities ctor-map (depth + 1) & " }"
     is IrLet (name) (ty) (val) (body) (sp) -> "{ let " & rs-sanitize name & " = " & emit-rs-expr-at val arities ctor-map (depth + 1) & "; " & emit-rs-expr-at body arities ctor-map (depth + 1) & " }"
     is IrApply (f) (a) (ty) (sp) -> emit-rs-apply e arities ctor-map
@@ -332,8 +344,11 @@ Section: Expression Emission
   is-fn-type : CodexType -> Boolean
   is-fn-type (ty) =
    when ty
-    is FunTy (p) (r) -> True
+    is FunTy (p) (fnrow) (r) -> True
     is ForAllTy (id) (body) -> is-fn-type body
+    is ForAllEff (id) (body) -> is-fn-type body
+    is LinearTy (body) -> is-fn-type body
+    is TypeApply (body) (tyarg) -> is-fn-type body
     is otherwise -> False
 
 Section: Builtin Dispatch
@@ -394,7 +409,7 @@ Section: Builtin Dispatch
    RsBuiltinEmitter { name = "open-file", emit = \args arities cm -> "std::fs::File::open(" & emit-rs-expr (list-at args 0) arities cm & ").unwrap()" },
    RsBuiltinEmitter { name = "read-all", emit = \args arities cm -> "{ use std::io::Read; let mut s = String::new(); " & emit-rs-expr (list-at args 0) arities cm & ".read_to_string(&mut s).unwrap(); s }" },
    RsBuiltinEmitter { name = "close-file", emit = \args arities cm -> "drop(" & emit-rs-expr (list-at args 0) arities cm & ")" },
-   RsBuiltinEmitter { name = "read-file", emit = \args arities cm -> "std::fs::read_to_string(" & emit-rs-expr (list-at args 0) arities cm & ").unwrap()" },
+   RsBuiltinEmitter { name = "read-text", emit = \args arities cm -> "std::fs::read_to_string(" & emit-rs-expr (list-at args 0) arities cm & ").unwrap()" },
    RsBuiltinEmitter { name = "write-file", emit = \args arities cm -> "std::fs::write(" & emit-rs-expr (list-at args 0) arities cm & ", " & emit-rs-expr (list-at args 1) arities cm & ").unwrap()" },
    RsBuiltinEmitter { name = "file-exists", emit = \args arities cm -> "std::path::Path::new(&" & emit-rs-expr (list-at args 0) arities cm & ").exists()" },
    RsBuiltinEmitter { name = "read-line", emit = \args arities cm -> "{ let mut s = String::new(); std::io::stdin().read_line(&mut s).unwrap(); s.trim().to_string() }" },
@@ -649,6 +664,8 @@ Section: Act Emission
    when ty
     is VoidTy -> False
     is NothingTy -> False
+    is ProofTy -> False
+    is PropEqTy (pl) (pr) -> False
     is otherwise -> True
 
   emit-rs-act-stmts : List IRActStmt, Integer, Integer, Boolean, List ArityEntry, List CtorEnumEntry -> Text
@@ -769,13 +786,16 @@ Section: Definition Emission
   get-rs-return-type (ty) (n) =
    if n == 0 then rs-strip-forall ty
    else when rs-strip-forall ty
-    is FunTy (p) (r) -> get-rs-return-type r (n - 1)
+    is FunTy (p) (fnrow) (r) -> get-rs-return-type r (n - 1)
     is otherwise -> ty
 
   rs-strip-forall : CodexType -> CodexType
   rs-strip-forall (ty) =
    when ty
     is ForAllTy (id) (body) -> rs-strip-forall body
+    is ForAllEff (id) (body) -> rs-strip-forall body
+    is LinearTy (body) -> rs-strip-forall body
+    is TypeApply (body) (tyarg) -> rs-strip-forall body
     is otherwise -> ty
 
   emit-rs-def : IRDef, List ArityEntry, List CtorEnumEntry -> Text
@@ -806,8 +826,11 @@ Section: Chapter Emission
   rs-strip-fun-args : CodexType -> CodexType
   rs-strip-fun-args (ty) =
    when ty
-    is FunTy (p) (r) -> rs-strip-fun-args r
+    is FunTy (p) (fnrow) (r) -> rs-strip-fun-args r
     is ForAllTy (id) (body) -> rs-strip-fun-args body
+    is ForAllEff (id) (body) -> rs-strip-fun-args body
+    is LinearTy (body) -> rs-strip-fun-args body
+    is TypeApply (body) (tyarg) -> rs-strip-fun-args body
     is EffectfulTy (effs) (sc) (ret) -> ret
     is otherwise -> ty
 
@@ -817,6 +840,8 @@ Section: Chapter Emission
     is EffectfulTy (effs) (sc) (ret) -> True
     is VoidTy -> True
     is NothingTy -> True
+    is ProofTy -> True
+    is PropEqTy (pl) (pr) -> True
     is otherwise -> False
 
   emit-rs-entry-point : CodexType -> Text

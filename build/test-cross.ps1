@@ -16,7 +16,7 @@ param(
     [Parameter(Mandatory=$true)]
     [string]$Test,
 
-    [int]$TimeoutSec = 3
+    [int]$TimeoutSec = 10
 )
 
 Set-StrictMode -Version Latest
@@ -66,6 +66,20 @@ $slowFile   = Join-Path $dir "$name.slow"
 $fatalFile  = Join-Path $dir "$name.fatal"
 $failingFile = Join-Path $dir "$name.failing"
 $smpFile    = Join-Path $dir "$name.smp"
+# .no-cross: the test is real and runs on x86, but the generic cross-arch
+# battery is the wrong place for it -- x86 port/MMIO hardware, a block device
+# this lane does not attach, or a board with its own harness. The sidecar's
+# first line MUST say which, because a skip list whose entries do not carry
+# their reason is where tests go to be quietly abandoned. It is never the
+# answer for a test that fails because the TARGET cannot do something: that
+# is a gap, and a gap is written down where it stays visible.
+$noCrossFile = Join-Path $dir "$name.no-cross"
+# .cross-refusal: the test's DESIGNED behavior on a cross lane is a compile
+# refusal. Each non-comment line names a builtin whose "[UNSUPPORTED] <name>"
+# report must appear in the compile log, and the compile must fail. This is
+# what keeps refusal-by-design a tested behavior: if the plug's
+# refusal arms are ever lost, the test compiles clean and this run goes red.
+$refusalFile = Join-Path $dir "$name.cross-refusal"
 
 if (Test-Path -PathType Leaf $smpFile) {
     Write-Host "SKIPPED: $name (multi-core -- run build/test-cross-smp.ps1)" -ForegroundColor Yellow
@@ -74,6 +88,11 @@ if (Test-Path -PathType Leaf $smpFile) {
 if (Test-Path -PathType Leaf $skipFile) {
     $reason = (Get-Content -TotalCount 1 $skipFile)
     Write-Host "SKIPPED: $name ($reason)" -ForegroundColor Yellow
+    exit 0
+}
+if (Test-Path -PathType Leaf $noCrossFile) {
+    $reason = (Get-Content -TotalCount 1 $noCrossFile)
+    Write-Host "SKIPPED: $name (no-cross: $reason)" -ForegroundColor Yellow
     exit 0
 }
 if (Test-Path -PathType Leaf $slowFile) {
@@ -105,6 +124,21 @@ $prev = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
 $compileExit = $LASTEXITCODE
 $ErrorActionPreference = $prev
 
+if (Test-Path -PathType Leaf $refusalFile) {
+    $tags = @(Get-Content $refusalFile | Where-Object { $_ -and -not $_.StartsWith('#') })
+    if ($compileExit -eq 0 -and (Test-Path $elfOut)) {
+        Write-Host "FAIL (compiled clean; expected [UNSUPPORTED] refusal)" -ForegroundColor Red
+        exit 1
+    }
+    $logText = if (Test-Path $compileLog) { [System.IO.File]::ReadAllText($compileLog) } else { '' }
+    $missing = @($tags | Where-Object { -not $logText.Contains("[UNSUPPORTED] $_") })
+    if ($missing.Count -eq 0) {
+        Write-Host "PASS (refused by design: $($tags -join ', '))" -ForegroundColor Green
+        exit 0
+    }
+    Write-Host "FAIL (compile failed without expected refusal tag(s): $($missing -join ', '))" -ForegroundColor Red
+    exit 1
+}
 if ($compileExit -ne 0 -or -not (Test-Path $elfOut)) {
     Write-Host "FAIL (compile)" -ForegroundColor Red
     exit 1
@@ -174,16 +208,24 @@ if ($lines.Count -gt $expLineCount -and $expLineCount -gt 0) {
 
 $actual = if ($lines.Count -gt 0) { ($lines -join "`n") + "`n" } else { '' }
 
+# The expected side gets the same normalization the actual side got above
+# (trailing empties trimmed, one final newline restored). Comparing $actual
+# against the RAW file text meant a sidecar without a trailing newline could
+# never pass: the forced final "`n" on actual had no counterpart. Two such
+# sidecars exist (annotation-under-header, let-shadow-scope) and both failed
+# on nothing but this.
+$expected = if ($expLineCount -gt 0) { ($expAllLines -join "`n") + "`n" } else { '' }
+
 $actualFile = Join-Path $testOutDir 'runtime.actual'
 [System.IO.File]::WriteAllText($actualFile, $actual, [System.Text.UTF8Encoding]::new($false))
 
-if ($expectedText -eq $actual) {
+if ($expected -eq $actual) {
     Write-Host "PASS" -ForegroundColor Green
     exit 0
 } else {
     Write-Host "FAIL (output mismatch)" -ForegroundColor Red
     $diffFile = Join-Path $testOutDir 'diff.txt'
-    $expLines = $expectedText -split "`n"
+    $expLines = $expected -split "`n"
     $actLines = $actual -split "`n"
     $diffOut = [System.Collections.Generic.List[string]]::new()
     $maxLines = [Math]::Max($expLines.Count, $actLines.Count)

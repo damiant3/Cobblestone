@@ -12,6 +12,7 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
 $Repo = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
+. (Join-Path $PSScriptRoot 'quire-map.ps1')
 if (-not $CodexDir) { $CodexDir = Join-Path $Repo 'codex\compiler' }
 $CodexDir   = (Resolve-Path $CodexDir).Path
 $ForewordDir = Join-Path $Repo 'codex\foreword\core'
@@ -39,16 +40,25 @@ function Add-WithQuire {
 #    with compile.ps1's Resolve-CiteOrder (same quires, same
 #    "Quire--Chapter" prefix) or the gate's raw concat and the
 #    per-compile resolution disagree about what a unit is.
-$libQuireDirs = [ordered]@{
-    'Foreword' = $ForewordDir
-    'Math'     = Join-Path $Repo 'codex\foreword\math'
+#
+# The pattern comes from build/quire-map.ps1 and is not built here.
+# What stays local is the POLICY, not the syntax: the compiler's unit
+# admits library quires only, so $libQuireNames is an allowlist over the
+# shared registry rather than a second copy of it. A quire added to the
+# registry does not silently join the compiler's unit, and a cite whose
+# syntax the registry accepts is read the same way here as everywhere
+# else.
+$libQuireNames = @('Foreword', 'Math')
+$libQuireDirs = [ordered]@{}
+foreach ($q in $libQuireNames) {
+    if (-not $QuireDirs[$q]) { throw "concat-codex-self: quire '$q' is not registered in build/quire-map.ps1" }
+    $libQuireDirs[$q] = Join-Path $Repo $QuireDirs[$q]
 }
-$quireAlt = ($libQuireDirs.Keys -join '|')
-$citePat = "^\s*cites\s+($quireAlt)\s+chapter\s+([A-Za-z_][A-Za-z0-9_-]*)"
+$citePat = $StrictCitePat
 $queue = [System.Collections.Generic.Queue[object]]::new()
 Get-ChildItem $CodexDir -Recurse -Depth 2 -Filter '*.codex' -File | ForEach-Object {
     foreach ($l in [System.IO.File]::ReadAllLines($_.FullName)) {
-        if ($l -match $citePat) { $queue.Enqueue(@{ Quire = $matches[1]; Name = $matches[2] }) }
+        if ($l -match $citePat -and $libQuireDirs.Contains($matches[1])) { $queue.Enqueue(@{ Quire = $matches[1]; Name = $matches[2] }) }
     }
 }
 $seen = [System.Collections.Generic.HashSet[string]]::new()
@@ -60,7 +70,7 @@ while ($queue.Count -gt 0) {
     if (-not (Test-Path -PathType Leaf $fwPath)) { continue }
     $fwLines = [System.IO.File]::ReadAllLines($fwPath)
     foreach ($l in $fwLines) {
-        if ($l -match $citePat) { $queue.Enqueue(@{ Quire = $matches[1]; Name = $matches[2] }) }
+        if ($l -match $citePat -and $libQuireDirs.Contains($matches[1])) { $queue.Enqueue(@{ Quire = $matches[1]; Name = $matches[2] }) }
     }
     $ordered += @{ Quire = $fw.Quire; Name = $fw.Name; Path = $fwPath }
 }

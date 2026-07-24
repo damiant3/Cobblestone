@@ -268,13 +268,13 @@ As of 2026-07-04:
 
 The compiler is a hard fixed point of itself on bare metal.
 
-**`seed/Codex.cdx`** (2,551,486 bytes, ~2.43 MB) — the canonical seed:
+**`seed/Codex.cdx`** (2,605,339 bytes, ~2.48 MB) — the canonical seed:
 
 | Algorithm | Digest |
 |---|---|
-| Content hash prefix | `6C687349` |
-| SHA-256 | `C0B74DBE413B3B25BB5CF47E30F32EC1471092F3A72F36F55D890453CD9A4FB6` |
-| MD5 | `D5FBC70086858266190149F154B9029C` |
+| Content hash prefix | `43EE85E3` |
+| SHA-256 | `2288668D4A89313C20E534770A983E3E2872ECDF3C401F4D402D94CFB4682F3C` |
+| MD5 | `95D4D94818CD9EECDDA1C3CC98480DDF` |
 
 The seed grew from ~1.83 MB to ~1.88 MB on 2026-07-01, absorbing the
 CCE output boundary (tier0/1/2 UTF-8 conversion), the proof infrastructure

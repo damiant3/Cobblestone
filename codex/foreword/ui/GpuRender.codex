@@ -72,6 +72,24 @@ Section: Frame Control
 
 Section: Widget Rendering
 
+ A child renders one step IN FRONT of its parent, and anything drawn over
+ a fill it overlaps does too. The rasterizer's test is a strict
+ depth < stored (codex-vm.c, gpu_raster_tri), so a rect at the SAME depth
+ as one already covering that pixel is discarded rather than blended. Draw
+ a whole tree at one depth and only the root survives: every descendant
+ loses to the fill its parent just wrote, geometry is submitted, the
+ triangle count looks healthy, and the frame is empty. That is how the
+ GuiOS desktop came to render nothing but its CPU-drawn text, and it is
+ the same defect that blanked the circuits SIM tab.
+
+ Siblings share a depth deliberately. A layout gives them disjoint rects,
+ so they never contend, and spending a level per sibling would exhaust the
+ band. The step is one, which is exact: a rect carries the same depth at
+ all three vertices, and the edge functions at any interior point sum to
+ the doubled area, so the interpolated depth is that value with no
+ rounding. Bands are 1000 apart (scene, chrome, overlay, top), which
+ leaves room for a tree far deeper than any real one.
+
   GpuFrame = record {
     gf-idx : Integer,
     gf-max : Integer
@@ -87,7 +105,7 @@ Section: Widget Rendering
   gr-render-children : GpuFrame, List WidgetNode, Theme, Integer, Integer, Integer -> [Gpu.Memory] GpuFrame
   gr-render-children (gf) (children) (th) (depth) (i) (n) =
     if i >= n then gf
-    else gr-render-children (gr-render-tree gf (list-at children i) th depth) children th depth (i + 1) n
+    else gr-render-children (gr-render-tree gf (list-at children i) th (depth - 1)) children th depth (i + 1) n
 
   gr-render-node : GpuFrame, WidgetNode, Theme, Integer -> [Gpu.Memory] GpuFrame
   gr-render-node (gf) (w) (th) (depth) = when w.wn-kind
@@ -103,7 +121,7 @@ Section: Widget Rendering
   gr-render-panel (gf) (w) (th) (depth) =
     let style = theme-resolve-panel th (w.wn-state)
     in let br = box-margin-rect (w.wn-bounds) (style.ws-margin)
-    in gr-emit-rect gf (br.lr-x) (br.lr-y) (br.lr-w) (br.lr-h) (style.ws-bg) depth
+    in gr-emit-box gf br (style.ws-bg) (style.ws-border) depth
 
   gr-render-button : GpuFrame, WidgetNode, Theme, Text, Integer -> [Gpu.Memory] GpuFrame
   gr-render-button (gf) (w) (th) (txt) (depth) =
@@ -111,7 +129,7 @@ Section: Widget Rendering
     in let br = box-margin-rect (w.wn-bounds) (style.ws-margin)
     in let content = box-content-from-style (w.wn-bounds) style
     in let text-depth = if depth <= 2000 then gr-depth-top else depth - 1000
-    in gr-emit-text (gr-emit-rect gf (br.lr-x) (br.lr-y) (br.lr-w) (br.lr-h) (style.ws-bg) depth) txt (content.lr-x) (content.lr-y) (style.ws-fg) text-depth
+    in gr-emit-text (gr-emit-box gf br (style.ws-bg) (style.ws-border) depth) txt (content.lr-x) (content.lr-y) (style.ws-fg) text-depth
 
   gr-render-label : GpuFrame, WidgetNode, Theme, Text, Integer -> [Gpu.Memory] GpuFrame
   gr-render-label (gf) (w) (th) (txt) (depth) =
@@ -126,7 +144,7 @@ Section: Widget Rendering
     in let br = box-margin-rect (w.wn-bounds) (style.ws-margin)
     in let content = box-content-from-style (w.wn-bounds) style
     in let fill-w = if max-val > 0 then content.lr-w * val / max-val else 0
-    in gr-emit-rect (gr-emit-rect gf (br.lr-x) (br.lr-y) (br.lr-w) (br.lr-h) (style.ws-bg) depth) (content.lr-x) (content.lr-y) fill-w (content.lr-h) (style.ws-fg) depth
+    in gr-emit-rect (gr-emit-box gf br (style.ws-bg) (style.ws-border) depth) (content.lr-x) (content.lr-y) fill-w (content.lr-h) (style.ws-fg) (depth - 1)
 
   gr-render-separator : GpuFrame, WidgetNode, Theme, Integer -> [Gpu.Memory] GpuFrame
   gr-render-separator (gf) (w) (th) (depth) =
@@ -141,7 +159,7 @@ Section: Widget Rendering
     in let content = box-content-from-style (w.wn-bounds) style
     in let text-depth = if depth <= 2000 then gr-depth-top else depth - 1000
     in let cursor-x = content.lr-x + cursor * 6
-    in gr-emit-rect (gr-emit-text (gr-emit-rect gf (br.lr-x) (br.lr-y) (br.lr-w) (br.lr-h) (style.ws-bg) depth) txt (content.lr-x) (content.lr-y) (style.ws-fg) text-depth) cursor-x (content.lr-y) 1 7 (style.ws-fg) text-depth
+    in gr-emit-rect (gr-emit-text (gr-emit-box gf br (style.ws-bg) (style.ws-border) depth) txt (content.lr-x) (content.lr-y) (style.ws-fg) text-depth) cursor-x (content.lr-y) 1 7 (style.ws-fg) text-depth
 
 Section: Overlay Rendering
 
@@ -172,6 +190,47 @@ Section: GPU Rect Emit
     else if h <= 0 then gf
     else if gf.gf-idx + 2 > gf.gf-max then gf
     else gr-frame-bump (gr-rect (gf.gf-idx) x y w h color depth) gf
+
+Section: Bordered Box
+
+ A styled widget is a fill inside a border, and until 2026-07-21 this
+ backend drew only the fill. Every built-in theme sets a one-pixel border
+ and a panel background equal to the page background, so the border was the
+ only thing distinguishing a panel from what it sat on -- and the CPU
+ renderer in UI Render draws it (render-panel calls render-border, as do the
+ gauge, button and input paths there). Two backends, one theme, and the one
+ every bare-metal app uses silently discarded a style the other honoured.
+ That is what left the GuiOS sidebar and taskbar without a visible extent
+ after the depth defect was fixed: the geometry was in front of its parent,
+ it was counted, and it was the colour of what it covered.
+
+ The four edges and the fill are DISJOINT rects at ONE depth, rather than a
+ full-bleed fill with a border laid over it. That is deliberate. The
+ rasterizer's test is a strict depth < stored, so an overlapping border
+ would have to take a depth step, and the step below a node is the one its
+ children already occupy. Rects that do not overlap never contend, so no
+ step is needed and the depth band is left alone.
+
+ A zero-width side costs nothing -- gr-emit-rect answers its input unchanged
+ for a non-positive extent -- so a border-none style emits exactly the one
+ fill it always did.
+
+ The five emits are one expression on one line for the reason given above
+ gr-tri: each is effectful, an effectful value may not be let-bound
+ (CDX2033), and an application broken across lines is CDX1070. The widths
+ and the inner band are pure, so those are let-bound and the geometry reads
+ off them.
+
+  gr-emit-box : GpuFrame, LayoutRect, Integer, Border, Integer -> [Gpu.Memory] GpuFrame
+  gr-emit-box (gf) (r) (bg) (bdr) (depth) =
+    let wt = (bdr.bdr-top).brd-width
+    in let wb = (bdr.bdr-bottom).brd-width
+    in let wl = (bdr.bdr-left).brd-width
+    in let wr = (bdr.bdr-right).brd-width
+    in let iy = r.lr-y + wt
+    in let ih = box-clamp0 (r.lr-h - wt - wb)
+    in let iw = box-clamp0 (r.lr-w - wl - wr)
+    in gr-emit-rect (gr-emit-rect (gr-emit-rect (gr-emit-rect (gr-emit-rect gf (r.lr-x + wl) iy iw ih bg depth) (r.lr-x) (r.lr-y) (r.lr-w) wt ((bdr.bdr-top).brd-color) depth) (r.lr-x) (r.lr-y + r.lr-h - wb) (r.lr-w) wb ((bdr.bdr-bottom).brd-color) depth) (r.lr-x) iy wl ih ((bdr.bdr-left).brd-color) depth) (r.lr-x + r.lr-w - wr) iy wr ih ((bdr.bdr-right).brd-color) depth
 
 Section: 5x7 Bitmap Text
 

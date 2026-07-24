@@ -392,7 +392,7 @@ deposit box, and publish the image. The drawer is the launch pad.
   technically. Its trust machinery is the same code II hardens.
 - **IV (Body)** grounds it all in matter and begins replication. It can
   proceed in parallel; its early rungs (real-metal battery, ARM64
-  self-host) are already on the backlog.
+  self-host) are already recorded elsewhere.
 - **V (Seed)** is the integral of the other four. Its first rung — the
   Time Capsule — is buildable early and should be, because it is the
   project's best artifact of intent: the book that compiles itself,

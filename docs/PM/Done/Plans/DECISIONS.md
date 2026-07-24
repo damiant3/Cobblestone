@@ -146,15 +146,6 @@ Significant design and engineering decisions are recorded here in chronological 
 
 ---
 
-## Decision: No String Interpolation Syntax
-**Date**: 2026-03 (Damian's answer to Q4)
-**Context**: The lexer was designed with `${ }` interpolation in mind.
-**Decision**: No string interpolation. Use `++` for concatenation and named functions like `integer-to-text` for conversion.
-**Rationale**: `${}` is visual noise that reduces readability — contrary to Codex's prose-first philosophy. Named functions are clearer: "convert this integer to text" vs "embed this integer in a string template." The language should not add special syntax to make string building easier when function composition already works.
-**Consequences**: No lexer/parser changes needed. The `InterpolationMode` from the original lexer design is permanently deferred.
-
----
-
 ## Decision: Inductive Hypothesis Registration in Proof Checker
 **Date**: 2026-03 (M10)
 **Context**: Proof by induction requires the inductive hypothesis (IH) to be available in the step case. The checker already had `CheckInduction` with case splitting but did not register the IH.

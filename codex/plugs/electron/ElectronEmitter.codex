@@ -72,7 +72,7 @@ Section: Expression Emission
     is IrCharLit (n) (sp) -> "String.fromCharCode(" & show n & ")"
     is IrName (n) (ty) (sp) -> el-sanitize n
     is IrBinary (op) (l) (r) (ty) (sp) -> emit-el-binary op l r arities indent
-    is IrNegate (x) (sp) -> "(-(" & emit-el-expr x arities indent & "))"
+    is IrNegate (x) (nty) (sp) -> "(-(" & emit-el-expr x arities indent & "))"
     is IrIf (c) (t) (el) (ty) (sp) -> "(" & emit-el-expr c arities indent & " ? " & emit-el-expr t arities indent & " : " & emit-el-expr el arities indent & ")"
     is IrLet (name) (ty) (val) (body) (sp) -> "(() => { const " & el-sanitize name & " = " & emit-el-expr val arities indent & "; return " & emit-el-expr body arities indent & "; })()"
     is IrApply (f) (a) (ty) (sp) -> emit-el-apply e arities indent
@@ -230,6 +230,7 @@ Section: Type Definitions
      "function " & el-sanitize (name.value) & "(fields) { return { _type: \"" & name.value & "\", ...fields }; }\n"
     is AVariantTypeDef (name) (tparams) (ctors) (s) ->
      emit-el-variant-ctors ctors 0
+    is AUnitTypeDef (name) (unitbase) (s) -> ""
 
   emit-el-variant-ctors : List AVariantCtorDef, Integer -> Text
   emit-el-variant-ctors (ctors) (i) =
@@ -273,10 +274,10 @@ Section: Definition Emission
 
 Section: Electron App Assembly
 
-  emit-electron-chapter : IRChapter, List ATypeDef -> Text
-  emit-electron-chapter (m) (type-defs) =
+  emit-electron-chapter : IRChapter, IRTextMeta, List ATypeDef -> Text
+  emit-electron-chapter (m) (meta) (type-defs) =
    let arities = build-arity-map (m.defs) 0 []
-   in let title = if m.chapter-title == "" then "App" else m.chapter-title
+   in let title = if meta.chapter-title == "" then "App" else meta.chapter-title
    in let builtins = "function print_line_uni(s) { const el = document.createElement('div'); el.textContent = s; document.getElementById('app').appendChild(el); }\nfunction show(n) { return String(n); }\nfunction text_length(s) { return s.length; }\nfunction text_replace(s, a, b) { return s.split(a).join(b); }\nfunction text_compare(a, b) { return a < b ? -1 : a > b ? 1 : 0; }\nfunction list_length(xs) { return xs.length; }\nfunction list_at(xs, i) { return xs[i]; }\nfunction integer_to_text(n) { return String(n); }\nfunction negate(n) { return -n; }\n\n"
    in let types-text = emit-el-type-defs type-defs 0
    in let defs-text = emit-el-defs (m.defs) 0 arities

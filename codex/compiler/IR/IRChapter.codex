@@ -28,7 +28,7 @@ Section: IR Expressions
    | IrCharLit (Integer) (SourceSpan)
    | IrName (Text) (CodexType) (SourceSpan)
    | IrBinary (IRBinaryOp) (IRExpr) (IRExpr) (CodexType) (SourceSpan)
-   | IrNegate (IRExpr) (SourceSpan)
+   | IrNegate (IRExpr) (CodexType) (SourceSpan)
    | IrIf (IRExpr) (IRExpr) (IRExpr) (CodexType) (SourceSpan)
    | IrLet (Text) (CodexType) (IRExpr) (IRExpr) (SourceSpan)
    | IrApply (IRExpr) (IRExpr) (CodexType) (SourceSpan)
@@ -113,12 +113,64 @@ Section: IR Definitions
    span : SourceSpan
   }
 
+  ProseTransition =
+   | PtNone
+   | PtWeSay
+   | PtThisIsWritten
+
+  ProseTemplate =
+   | PtNoTemplate
+   | PtRecordTemplate (Text)
+   | PtVariantTemplate (Text)
+   | PtFunctionTemplate (Text)
+   | PtConstraintTemplate
+   | PtProofTemplate
+   | PtProcedureTemplate
+   | PtQuantifiedTemplate
+
+  ProseBlock = record {
+   text : Text,
+   transition : ProseTransition,
+   template : ProseTemplate,
+   anchor : Text,
+   offset : Integer
+  }
+
+ The anchor is the name of the definition the block describes: the
+ template's own name where the template carries one (the author's
+ explicit claim), otherwise the nearest def or type-def that follows
+ the block in the source. An empty anchor means no definition follows.
+ The offset is the source offset of the prose line, recorded at
+ collection so the anchoring pass can order blocks against defs.
+
+ These four are declared here rather than in Syntax chapter
+ SyntaxNodes, where the parser that builds them lives, because the
+ plug bundle takes this chapter's declarations and not that one's.
+ A plug that cannot name ProseBlock cannot read the pblocks form the
+ text emitter writes, and the field it leaves empty is indistinguishable
+ from a chapter that carried no prose.
+
+  AnnotationNode = record {
+   kind : Text,
+   target : Text,
+   body : Text
+  }
+
   IRTextMeta = record {
    chapter-title : Text,
    prose : Text,
    section-titles : List Text,
-   ctor-names : List Text
+   ctor-names : List Text,
+   prose-blocks : List ProseBlock,
+   annotations : List AnnotationNode
   }
+
+ prose-blocks and annotations carry the per-definition record through
+ to emission: each prose block holds the anchor naming the definition
+ the block describes, and each annotation already names its target.
+ Both lists are empty unless the compile ran with the prose flag or
+ the source carried annotations; the text emitters print them so a
+ downstream reader can pair prose with the definition it belongs to.
 
 Section: IR Expression Type
   ir-expr-type : IRExpr -> CodexType
@@ -130,7 +182,7 @@ Section: IR Expression Type
     is IrBoolLit (v) (s) -> BooleanTy
     is IrCharLit (v) (s) -> CharTy
     is IrName (n) (t) (s) | IrBinary (op) (l) (r) (t) (s) -> t
-    is IrNegate (x) (s) -> ir-expr-type x
+    is IrNegate (x) (t) (s) -> t
     is IrIf (c) (th) (el) (t) (s) -> t
     is IrLet (n) (t) (v) (b) (s) -> ir-expr-type b
     is IrApply (f) (a) (t) (s) | IrLambda (ps) (b) (t) (s) -> t
@@ -153,6 +205,6 @@ Section: IR Expression Type
   ir-expr-span : IRExpr -> SourceSpan
   ir-expr-span (e) =
    when e
-    is IrIntLit (v) (s) | IrNumLit (v) (s) | IrTextLit (v) (s) | IrBoolLit (v) (s) | IrCharLit (v) (s) | IrName (n) (t) (s) | IrBinary (op) (l) (r) (t) (s) | IrNegate (x) (s) | IrIf (c) (th) (el) (t) (s) | IrLet (n) (t) (v) (b) (s) | IrApply (f) (a) (t) (s) | IrLambda (ps) (b) (t) (s) | IrList (es) (t) (s) | IrMatch (sc) (bs) (t) (s) | IrAct (ss) (t) (s) | IrHandle (eff) (h) (cs) (t) (s) | IrWithTimeout (secs) (effs) (scopes) (body) (t) (s) | IrRecord (n) (fs) (t) (s) | IrFieldAccess (r) (f) (t) (s) | IrFork (body) (t) (s) | IrAwait (task) (t) (s) | IrTry (max) (body) (fb) (fail) (t) (s) | IrFieldStore (r) (f) (v) (t) (s) | IrError (m) (t) (s) -> s
+    is IrIntLit (v) (s) | IrNumLit (v) (s) | IrTextLit (v) (s) | IrBoolLit (v) (s) | IrCharLit (v) (s) | IrName (n) (t) (s) | IrBinary (op) (l) (r) (t) (s) | IrNegate (x) (nt) (s) | IrIf (c) (th) (el) (t) (s) | IrLet (n) (t) (v) (b) (s) | IrApply (f) (a) (t) (s) | IrLambda (ps) (b) (t) (s) | IrList (es) (t) (s) | IrMatch (sc) (bs) (t) (s) | IrAct (ss) (t) (s) | IrHandle (eff) (h) (cs) (t) (s) | IrWithTimeout (secs) (effs) (scopes) (body) (t) (s) | IrRecord (n) (fs) (t) (s) | IrFieldAccess (r) (f) (t) (s) | IrFork (body) (t) (s) | IrAwait (task) (t) (s) | IrTry (max) (body) (fb) (fail) (t) (s) | IrFieldStore (r) (f) (v) (t) (s) | IrError (m) (t) (s) -> s
 
 Page 1

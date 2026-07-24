@@ -33,8 +33,14 @@ function Resolve-Source {
     $sb = [System.Text.StringBuilder]::new(524288)
     foreach ($l in (Format-CiteChapters -Ordered $ordered)) { [void]$sb.Append($l + "`n") }
     foreach ($l in $lines) { [void]$sb.Append($l + "`n") }
-    return $sb.ToString()
+    # The regions ride along so build.log can name the file and the file's own
+    # line. This assembler builds its own unit and writes its own log, so it
+    # has to map back itself -- compile.ps1 doing it is not enough, and the
+    # battery is the path that matters for a `.failing` position pin.
+    return @{ Text = $sb.ToString(); Regions = (Get-DiagRegions -Ordered $ordered -SrcPath $SrcPath) }
 }
+
+$regionsByName = @{}
 
 # Build combined REPL input
 $inputSb = [System.Text.StringBuilder]::new(10485760)
@@ -50,6 +56,7 @@ for ($i = 0; $i -lt $sources.Count; $i++) {
         continue
     }
     $testNames.Add($name)
+    $regionsByName[$name] = $resolved.Regions
     $flagsFile = Join-Path ([System.IO.Path]::GetDirectoryName($sources[$i])) "$name.flags"
     $extraFlags = if (Test-Path -PathType Leaf $flagsFile) { ' ' + (Get-Content -TotalCount 1 $flagsFile).Trim() } else { '' }
     # Plain CDX: the batch session loops because the SEED is repl-built.
@@ -59,7 +66,7 @@ for ($i = 0; $i -lt $sources.Count; $i++) {
     # binaries get Exit mode and halt cleanly on their own.
     $mode = "CDX$extraFlags`n"
     [void]$inputSb.Append($mode)
-    [void]$inputSb.Append($resolved)
+    [void]$inputSb.Append($resolved.Text)
     [void]$inputSb.Append([char]4)
 }
 if ($testNames.Count -eq 0) { exit 0 }
@@ -146,7 +153,7 @@ while ($testIdx -lt $testNames.Count -and $pos -lt $raw.Length -and -not $vmDead
         else { if ($line) { $logLines.Add($line) } }
     }
 
-    [System.IO.File]::WriteAllLines((Join-Path $testOut 'build.log'), $logLines.ToArray(), [System.Text.UTF8Encoding]::new($false))
+    [System.IO.File]::WriteAllLines((Join-Path $testOut 'build.log'), ($logLines | ForEach-Object { Convert-DiagLine -Line $_ -Regions $regionsByName[$name] }), [System.Text.UTF8Encoding]::new($false))
     $exitCode | Set-Content -Path (Join-Path $testOut '.exitcode') -Encoding UTF8
     $testIdx++
 }

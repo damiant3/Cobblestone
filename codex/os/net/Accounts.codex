@@ -18,8 +18,7 @@ Chapter: Accounts
  NOTE (compiler): byte conversion is local (str-bytes-loop), not WebServer's
  text-to-bytes. Passing an empty-list literal [] as an argument to a
  cross-chapter function call currently poisons bare-metal type inference
- (bogus "List vs Fun" in NetworkStack). Local helpers sidestep it. See
- docs/Designs/Compiler/Active.
+ (bogus "List vs Fun" in NetworkStack). Local helpers sidestep it.
 
  We say:
 
@@ -93,7 +92,7 @@ Section: Operations
   err-json : Text -> Text
   err-json (m) = "{\"error\":" & jstr m & "}"
 
-  auth-register : AuthState, Text, Text, Text -> AuthStep
+  auth-register : AuthState, Text, Text, Text -> [Device.Block] AuthStep
   auth-register (s) (h) (d) (pw) =
     if text-length h == 0 then AuthStep { astate = s, resp = err-json "handle required" }
     else when find-handle (s.accounts) 0 (list-length (s.accounts)) h
@@ -103,8 +102,10 @@ Section: Operations
         in let ph = hash-pw (salt-for id) pw
         in let acc = Account { acc-id = id, handle = h, display = d, pwhash = ph }
         in let s2 = AuthState { accounts = list-push (s.accounts) acc, sessions = s.sessions, next-id = id + 1, nonce = s.nonce + 1 }
-        in let sv = accounts-save s2
-        in AuthStep { astate = s2, resp = "{\"id\":" & show id & ",\"handle\":" & jstr h & "}" }
+        in act
+          sv <- accounts-save s2
+          AuthStep { astate = s2, resp = "{\"id\":" & show id & ",\"handle\":" & jstr h & "}" }
+        end
 
   auth-login : AuthState, Text, Text -> AuthStep
   auth-login (s) (h) (pw) =
@@ -216,7 +217,7 @@ Section: Durability
     if i >= n then acc
     else ar-accts buf (i + 1) n (list-push acc (ar-acct buf (2 + i * slot-size)))
 
-  accounts-save : AuthState -> Integer
+  accounts-save : AuthState -> [Device.Block] Integer
   accounts-save (s) =
     let n = list-length (s.accounts)
     in let buf = alloc-bytes 512
@@ -224,16 +225,17 @@ Section: Durability
     in let w = aw-accts buf (s.accounts) 0 n
     in block-write-sector acct-sector buf
 
-  accounts-load : Integer -> AuthState
-  accounts-load (x) =
-    let buf = block-read-sector acct-sector
-    in let raw = ar-u16 buf 0
+  accounts-load : Integer -> [Device.Block] AuthState
+  accounts-load (x) = act
+    buf <- block-read-sector acct-sector
+    let raw = ar-u16 buf 0
     in let n = if raw > 3 then 0 else raw
     in AuthState { accounts = ar-accts buf 0 n [], sessions = [], next-id = n + 1, nonce = 1 }
+  end
 
 Section: Routing + Serve Loop
 
-  auth-route : (Maybe Account, Text -> Text), AuthState, Text -> AuthStep
+  auth-route : (Maybe Account, Text -> [Device.Block] Text), AuthState, Text -> [Device.Block] AuthStep
   auth-route (app) (s) (path) =
     let base = path-base path
     in if base == "/api/auth/register" then auth-register s (qp path "u") (qp path "d") (qp path "p")
@@ -244,33 +246,36 @@ Section: Routing + Serve Loop
 
   AuthLoop = record { astate : AuthState, transport : TcpTransportState }
 
-  auth-handle : (Maybe Account, Text -> Text), AuthLoop, TransportRecvResult -> AuthLoop
+  auth-handle : (Maybe Account, Text -> [Device.Block] Text), AuthLoop, TransportRecvResult -> [Device.Block, Network.Write] AuthLoop
   auth-handle (app) (ls) (recv) =
     let req = bytes-to-text (recv.body) 0 (list-length (recv.body)) ""
-    in let path = extract-path req
-    in let step = auth-route app (ls.astate) path
-    in let ts2 = web-send (recv.transport) (step.resp)
-    in AuthLoop { astate = step.astate, transport = ts2 }
+    in let path = extract-web-path req
+    in act
+      step <- auth-route app (ls.astate) path
+      ts2 <- web-send (recv.transport) (step.resp)
+      AuthLoop { astate = step.astate, transport = ts2 }
+    end
 
-  auth-loop : (Maybe Account, Text -> Text), AuthLoop -> [Console] Integer
+  auth-loop : (Maybe Account, Text -> [Device.Block] Text), AuthLoop -> [Console, Device.Block, Network.Read, Network.Write] Integer
   auth-loop (app) (ls) = act
-    let recv = net-io-recv-loop (ls.transport) 0
-    in if recv.has-message then act
-      let next = auth-handle app ls recv
-      in auth-loop app next
+    recv <- net-io-recv-loop (ls.transport) 0
+    if recv.has-message then act
+      next <- auth-handle app ls recv
+      auth-loop app next
     end
     else act
       0
     end
   end
 
-  auth-serve : (Maybe Account, Text -> Text) -> [Console] Integer
+  auth-serve : (Maybe Account, Text -> [Device.Block] Text) -> [Console, Device.Block, Network.Read, Network.Write] Integer
   auth-serve (app) =
     let sess = net-session-new local-mac local-ip gateway-ip 49152 9100 host-ip 1000
     in let ts = transport-new sess
-    in let ts1 = net-io-connect ts
     in act
+      ts1 <- net-io-connect ts
       auth-loop app (AuthLoop { astate = accounts-load 0, transport = ts1 })
     end
 
 Page 1
+

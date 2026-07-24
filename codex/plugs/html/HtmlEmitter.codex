@@ -138,17 +138,24 @@ Section: Type Emission
     is CharTy -> "string"
     is VoidTy -> "void"
     is NothingTy -> "void"
+    is ProofTy -> "void"
+    is PropEqTy (pl) (pr) -> "void"
     is UnitTy (n) (inner) -> "void"
     is ErrorTy -> "any"
-    is FunTy (p) (r) -> "Function"
+    is FunTy (p) (fnrow) (r) -> "Function"
     is ListTy (elem) -> "Array"
     is LinkedListTy (elem) -> "Array"
     is TypeVar (id) -> "any"
     is ForAllTy (id) (body) -> emit-html-type body
+    is ForAllEff (id) (body) -> emit-html-type body
+    is LinearTy (body) -> emit-html-type body
+    is TypeApply (body) (tyarg) -> emit-html-type body
     is SumTy (name) (ty-args) (ctors) -> name.value
     is RecordTy (name) (args) (fields) -> name.value
     is ConstructedTy (name) (args) -> name.value
+    is TypeCon (name) -> name.value
     is VectorTy (vn) (vt) -> "Array"
+    is VectorMaskTy (vn) -> "Array"
     is EffectfulTy (effs) (sc) (ret) -> emit-html-type ret
 
 Section: JavaScript Expression Emission
@@ -163,7 +170,7 @@ Section: JavaScript Expression Emission
     is IrCharLit (n) (sp) -> "String.fromCharCode(" & show n & ")"
     is IrName (n) (ty) (sp) -> html-sanitize n
     is IrBinary (op) (l) (r) (ty) (sp) -> emit-js-binary op l r arities indent
-    is IrNegate (x) (sp) -> "(-(" & emit-js-expr x arities indent & "))"
+    is IrNegate (x) (nty) (sp) -> "(-(" & emit-js-expr x arities indent & "))"
     is IrIf (c) (t) (el) (ty) (sp) -> "(" & emit-js-expr c arities indent & " ? " & emit-js-expr t arities indent & " : " & emit-js-expr el arities indent & ")"
     is IrLet (name) (ty) (val) (body) (sp) -> emit-js-let name val body arities indent
     is IrApply (f) (a) (ty) (sp) -> emit-js-apply e arities indent
@@ -369,6 +376,7 @@ Section: Type Definitions
     is AVariantTypeDef (name) (tparams) (ctors) (s) ->
      if is-tup-type (name.value) then ""
      else emit-js-variant-ctors ctors 0
+    is AUnitTypeDef (name) (base) (s) -> ""
 
   emit-js-variant-ctors : List AVariantCtorDef, Integer -> Text
   emit-js-variant-ctors (ctors) (i) =
@@ -491,10 +499,10 @@ Section: Chapter Emission
    in if d.name == "opening" then d.type-val
       else opening-return-type-loop defs (i + 1) len
 
-  emit-html-chapter : IRChapter, List ATypeDef -> Text
-  emit-html-chapter (m) (type-defs) =
+  emit-html-chapter : IRChapter, IRTextMeta, List ATypeDef -> Text
+  emit-html-chapter (m) (meta) (type-defs) =
    let arities = build-arity-map (m.defs) 0 []
-   in let title = if m.chapter-title == "" then "Codex App" else m.chapter-title
+   in let title = if meta.chapter-title == "" then "Codex App" else meta.chapter-title
    in let builtins = "function print_line_uni(s) { const el = document.createElement('div'); el.textContent = s; document.getElementById('app').appendChild(el); }\nfunction print_line(s) { print_line_uni(s); }\nfunction show(n) { return String(n); }\nfunction text_length(s) { return s.length; }\nfunction text_replace(s, a, b) { return s.split(a).join(b); }\nfunction text_compare(a, b) { return a < b ? -1 : a > b ? 1 : 0; }\nfunction substring(s, start, len) { return s.slice(start, start + len); }\nfunction char_to_text(c) { return c; }\nfunction char_code_at(s, i) { return s.charCodeAt(i); }\nfunction int_mod(a, b) { return Math.trunc(a) % Math.trunc(b); }\nfunction list_snoc(xs, x) { return [...xs, x]; }\nfunction list_length(xs) { return xs.length; }\nfunction list_at(xs, i) { return xs[i]; }\nfunction list_push(xs, x) { return [...xs, x]; }\nfunction integer_to_text(n) { return String(n); }\nfunction char_code(c) { return c.charCodeAt ? c.charCodeAt(0) : c; }\nfunction char_at(s, i) { return s[i]; }\nfunction negate(n) { return -n; }\nfunction bit_xor(a,b){return (Math.trunc(a)^Math.trunc(b));}\nfunction bit_and(a,b){return (Math.trunc(a)&Math.trunc(b));}\nfunction bit_or(a,b){return (Math.trunc(a)|Math.trunc(b));}\nfunction bit_shl(a,n){return (Math.trunc(a)<<n);}\nfunction bit_shr(a,n){return (Math.trunc(a)>>n);}\nfunction bit_shru(a,n){return (Math.trunc(a)>>>n);}\nfunction bit_not(a){return (~Math.trunc(a));}\n\n"
    in let types-text = emit-js-type-defs type-defs 0
    in let defs-text = emit-js-defs (m.defs) 0 arities
@@ -896,8 +904,9 @@ Section: Chapter Emission
    if i >= len then acc
    else let td = list-at tds i
    in let name = when td
-     is ARecordTypeDef (nm) (tp) (fs) (sp) -> nm.value
+     is ARecordTypeDef (nm) (tp) (fs) (recmut) (sp) -> nm.value
      is AVariantTypeDef (nm) (tp) (cs) (sp) -> nm.value
+     is AUnitTypeDef (nm) (unitbase) (sp) -> nm.value
    in if is-builtin-type name then emit-js-type-defs-acc tds (i + 1) len acc
    else emit-js-type-defs-acc tds (i + 1) len (list-push acc (emit-js-type-def td))
 

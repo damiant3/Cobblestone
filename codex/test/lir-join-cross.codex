@@ -1,0 +1,74 @@
+Chapter: LirJoinCross
+
+ The join-shaped `if`: one whose arms do not return but compute into a shared
+ vreg and jump to a join block, where the joined value is used. This is the
+ shape `LiMove` and `LiJump` admit (LirRetarget step 4g), and it is distinct
+ from the returning `if` of `lir-branch-cross`, whose arms each `LiRet`.
+
+ An `if` reaches this shape when it is in NON-tail position -- its value feeds
+ surrounding code -- so each arm ends `LiMove v_s <arm>; LiJump join` and the
+ join carries the result. `let v = if ... in v` leaves the join block empty;
+ `(if ...) + 1` puts the continuation in it.
+
+ Pinned by ANSWERS, because the plug and x86-64 reach them by different
+ instructions and the answers are what must agree. The sensitivity proof that
+ the ARM64 LIR path actually emits these -- rather than the tree emitter behind
+ it -- is a perturbation of `a64-lir-emit-mov`, run once by hand: corrupting it
+ breaks exactly these rows and nothing else in the ARM64 battery.
+
+Section: Shapes
+
+ An empty-exit join: the joined value is the whole result, so the join block
+ carries nothing and the arms fall out the bottom into the epilogue.
+
+  sel-let : Integer -> Integer
+  sel-let (c) =
+   let v = if c > 0 then 3 else 4
+   in v
+
+ A join with a continuation in the exit block: the `+ 1` lands in the join
+ rather than leaving it empty.
+
+  sel-add : Integer -> Integer
+  sel-add (c) =
+   (if c > 0 then 10 else 20) + 1
+
+ A join whose arms are parameters, not immediates, so each `LiMove` copies a
+ register rather than materialising a literal.
+
+  sel-reg : Integer, Integer, Integer -> Integer
+  sel-reg (c) (x) (y) =
+   let v = if c > 0 then x else y
+   in v * 2
+
+ A nested join: the inner `if` is itself non-tail, feeding the outer arm.
+
+  sel-nest : Integer, Integer -> Integer
+  sel-nest (a) (b) =
+   (if a > 0 then (if b > 0 then 1 else 2) else 3) + 10
+
+ Two independent joins in sequence, so a second `LiMove`/`LiJump` pair follows
+ the first's join block.
+
+  sel-seq : Integer, Integer -> Integer
+  sel-seq (a) (b) =
+   let p = if a > 0 then 5 else 6
+   in let q = if b > 0 then 7 else 8
+   in p * 10 + q
+
+Section: Entry
+
+  opening : [Console] Nothing = act
+   print-line-uni (show (sel-let 1))
+   print-line-uni (show (sel-let (-1)))
+   print-line-uni (show (sel-add 1))
+   print-line-uni (show (sel-add (-1)))
+   print-line-uni (show (sel-reg 1 30 40))
+   print-line-uni (show (sel-reg (-1) 30 40))
+   print-line-uni (show (sel-nest 1 1))
+   print-line-uni (show (sel-nest 1 (-1)))
+   print-line-uni (show (sel-nest (-1) 5))
+   print-line-uni (show (sel-seq 1 1))
+   print-line-uni (show (sel-seq 1 (-1)))
+   print-line-uni (show (sel-seq (-1) (-1)))
+  end

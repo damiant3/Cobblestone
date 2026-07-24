@@ -215,7 +215,7 @@ Section: __real_to_text
    in let i = a64-rt-emit i (arm64-lsr-imm 0 0 1)
    in let i = a64-rt-emit i (arm64-mov 19 0)
    in let i = a64-rt-emit i (arm64-cbz 22 16)
-   in let i = i & arm64-movz 9 71 0
+   in let i = i & arm64-movz 9 73 0
    in let i = a64-rt-emit i (arm64-strb 9 20 8)
    in let i = i & arm64-movz 21 1 0
    in let i = i & arm64-movz 9 0 0
@@ -536,12 +536,28 @@ Section: __list_empty
 
 Section: int-mod
 
+ int-mod answers the NON-NEGATIVE residue, which is not what sdiv leaves
+ behind. x86-64's emit-int-mod-reg-locals takes idiv's remainder and, when it
+ is negative, adds the divisor's magnitude; this helper stopped at the
+ remainder, so int-mod (-7) 3 was -1 here and 2 there. Measured against
+ codex/test/modprobe: three of eight sign combinations disagreed with x86, and
+ it is the whole of interval-exhaustive's 62086 failures, all of them in mod,
+ because iv-mod's transfer function is written for a non-negative result.
+ Branchless because the offsets are then not mine to get wrong: |y| by
+ negate-and-select, the corrected value computed either way, and one more
+ select on the sign of the remainder.
+
   a64-rt-int-mod : List Integer
   a64-rt-int-mod =
    let i = []
    in let i = a64-rt-emit i (arm64-sdiv 9 0 1)
-   in let i = a64-rt-emit i (arm64-mul 9 9 1)
-   in let i = a64-rt-emit i (arm64-sub 0 0 9)
+   in let i = a64-rt-emit i (arm64-msub 0 9 1 0)
+   in let i = a64-rt-emit i (arm64-neg 9 1)
+   in let i = a64-rt-emit i (arm64-cmp-imm 1 0)
+   in let i = a64-rt-emit i (arm64-csel 9 1 9 arm64-cond-ge)
+   in let i = a64-rt-emit i (arm64-add 9 0 9)
+   in let i = a64-rt-emit i (arm64-cmp-imm 0 0)
+   in let i = a64-rt-emit i (arm64-csel 0 0 9 arm64-cond-ge)
    in a64-rt-emit i arm64-ret
 
 Section: Builtin Helpers
@@ -630,22 +646,45 @@ Section: Patching Helper
 
 Section: Exception Vector Table
 
-  a64-rt-vt-entry : List Integer
-  a64-rt-vt-entry =
+ Sixteen entries of 0x80 bytes each. Every one of them used to be the same
+ `WFI + B .self`, which is why any ARM64 fault presented as a hang with no
+ output rather than as something you could read: the CL 8221 regression was
+ an undefined `hvc` trapping to entry 4, and it cost 238 tests before anyone
+ could see what it was.
+
+ Each entry now loads its own index into x9 and branches to the shared
+ handler emitted after the runtime helpers. The branch cannot be built here
+ because the handler's address is not known until everything between has
+ been emitted, so slot 1 goes out as a NOP and `a64-emit-runtime` patches
+ all sixteen once it knows. The remaining 30 slots stay `WFI + B .self`, so
+ an entry reached with the handler unpatched parks exactly as before rather
+ than falling into the next entry.
+
+ The index tells you which exception it was: 0-3 are current EL with SP0,
+ 4-7 current EL with SPx (4 is the synchronous one an ordinary fault takes),
+ 8-11 lower EL running AArch64, 12-15 lower EL running AArch32.
+
+  a64-rt-vt-entry-n : Integer -> List Integer
+  a64-rt-vt-entry-n (idx) =
    let wfi = [31, 32, 3, 213]
    in let bself = [255, 255, 255, 23]
-   in wfi & bself & wfi & bself & wfi & bself & wfi & bself
-   & wfi & bself & wfi & bself & wfi & bself & wfi & bself
-   & wfi & bself & wfi & bself & wfi & bself & wfi & bself
-   & wfi & bself & wfi & bself & wfi & bself & wfi & bself
+   in let pad = wfi & bself
+   in arm64-movz 9 idx 0 & arm64-nop
+   & pad & pad & pad & pad & pad & pad & pad & pad
+   & pad & pad & pad & pad & pad & pad & pad
 
-  a64-rt-vt-4entries : List Integer
-  a64-rt-vt-4entries =
-   a64-rt-vt-entry & a64-rt-vt-entry & a64-rt-vt-entry & a64-rt-vt-entry
+  a64-rt-vt-build : Integer, List Integer -> List Integer
+  a64-rt-vt-build (i) (acc) =
+   if i >= 16 then acc
+   else a64-rt-vt-build (i + 1) (acc & a64-rt-vt-entry-n i)
 
   a64-rt-vector-table : List Integer
-  a64-rt-vector-table =
-   a64-rt-vt-4entries & a64-rt-vt-4entries & a64-rt-vt-4entries & a64-rt-vt-4entries
+  a64-rt-vector-table = a64-rt-vt-build 0 []
+
+ Slot 1 of entry i, in instructions from the start of the table.
+
+  a64-rt-vt-branch-slot : Integer -> Integer
+  a64-rt-vt-branch-slot (idx) = idx * 32 + 1
 
   a64-rt-adr-x9-minus-0x800 : List Integer = [9, 192, 255, 16]
 
@@ -662,7 +701,7 @@ Section: __start (QEMU virt boot stub)
  spike); the 64-bit CPU_ON function id is 0xC4000003. hvc #0 is 0xD4000002,
  little-endian [2, 0, 0, 212]. The AP marker cell is mid-RAM (0x60000000),
  far from the heap (grows up from 0x40202000) and the stack (down from
- 0x80000000). Written only by a core that ran our guest code (BACKLOG 4.2).
+ 0x80000000). Written only by a core that ran our guest code.
 
   a64-rt-hvc : List Integer = [2, 0, 0, 212]
   a64-rt-cpu-on-id : Integer = #C4000003
@@ -789,6 +828,17 @@ Section: MMIO Helpers
   a64-rt-poke-qword =
    arm64-add 0 0 1 & arm64-str 2 0 0 & arm64-movz 0 0 0 & arm64-ret
 
+ tag-equal reads the constructor tag word at [p+0] of both variant values
+ and answers their equality without touching a field. `cset x0, eq` is
+ spelled inline here rather than through `a64-csinc-eq`, which lives in a
+ later chapter.
+
+  a64-rt-tag-equal : List Integer
+  a64-rt-tag-equal =
+   arm64-ldr 2 0 0 & arm64-ldr 3 1 0 & arm64-cmp 2 3
+    & [(bit-and #9A9F17E0 255), (bit-and (bit-shru #9A9F17E0 8) 255), (bit-and (bit-shru #9A9F17E0 16) 255), (bit-and (bit-shru #9A9F17E0 24) 255)]
+    & arm64-ret
+
 Section: Buffer Helpers
 
   a64-rt-buf-write-byte : List Integer
@@ -865,60 +915,35 @@ Section: Heap Management Helpers
   a64-rt-alloc-bytes =
    arm64-mov 9 0 & arm64-mov 0 28 & arm64-add 28 28 9 & arm64-ret
 
-Section: list-set-at (a0=list, a1=index, a2=value -> new list copy)
+Section: list-set-at (a0=list, a1=index, a2=value -> the same list)
+
+ Writes the slot and returns the list it was given, which is the
+ semantics the Developer's Guide states and `__list_set_at` on x86-64
+ implements in five instructions. Element i lives at [list + 8 + i*8],
+ so the whole operation is a shift, an add, a store and a return; x0
+ already holds the list, so nothing needs to move into place.
+
+ This used to allocate a fresh list and copy every element into it,
+ returning the copy. That is a different language. Code that mutates a
+ list for its effect and returns something else lost every write --
+ Ed25519's `fe-carry` is what exposed it, calling `fe-carry-pass` for
+ the carry it hands back while the reduced limbs go into the list it
+ passed in. Under copy semantics those limbs landed in copies that
+ were discarded, so carry propagation vanished. It is invisible on
+ small values and wrong on real ones, which is why `fe-mul` of one by
+ one looked correct while `ge-double` of the base point did not.
+
+ The copy also cost what it should not: an allocation and an O(n) copy
+ for every single element write, in loops that set sixteen limbs at a
+ time.
 
   a64-rt-list-set-at : List Integer
   a64-rt-list-set-at =
    let i = []
-   in let i = a64-rt-emit i (arm64-add-imm 28 28 7)
-   in let i = i & arm64-lsr-imm 28 28 3
-   in let i = i & arm64-lsl-imm 28 28 3
-   in let i = a64-rt-emit i (arm64-stp-pre 29 30 31 (0 - 64))
-   in let i = a64-rt-emit i (arm64-stp 19 20 31 16)
-   in let i = a64-rt-emit i (arm64-stp 21 22 31 32)
-   in let i = a64-rt-emit i (arm64-stp 23 24 31 48)
-   in let i = a64-rt-emit i (arm64-mov 19 0)
-   in let i = a64-rt-emit i (arm64-mov 20 1)
-   in let i = a64-rt-emit i (arm64-mov 21 2)
-   in let i = a64-rt-emit i (arm64-ldr 22 19 0)
-   in let i = a64-rt-emit i (arm64-ldr 23 19 (-8))
-   in let i = a64-rt-emit i (arm64-str 23 28 0)
-   in let i = a64-rt-emit i (arm64-add-imm 0 28 8)
-   in let i = a64-rt-emit i (arm64-str 22 0 0)
-   in let i = a64-rt-emit i (arm64-add-imm 24 23 2)
-   in let i = i & arm64-lsl-imm 24 24 3
-   in let i = a64-rt-emit i (arm64-add 28 28 24)
-   in let i = i & arm64-movz 9 0 0
-   in let loop = list-length i / 4
-   in let i = a64-rt-emit i (arm64-cmp 9 22)
-   in let exit = list-length i / 4
-   in let i = a64-rt-emit i arm64-nop
-   in let i = a64-rt-emit i (arm64-cmp 9 20)
-   in let not-target = list-length i / 4
-   in let i = a64-rt-emit i arm64-nop
-   in let i = i & arm64-lsl-imm 10 9 3
-   in let i = a64-rt-emit i (arm64-add 11 0 10)
-   in let i = a64-rt-emit i (arm64-str 21 11 8)
-   in let skip = list-length i / 4
-   in let i = a64-rt-emit i arm64-nop
-   in let not-target-l = list-length i / 4
-   in let i = i & arm64-lsl-imm 10 9 3
-   in let i = a64-rt-emit i (arm64-add 11 19 10)
-   in let i = a64-rt-emit i (arm64-ldr 12 11 8)
-   in let i = a64-rt-emit i (arm64-add 11 0 10)
-   in let i = a64-rt-emit i (arm64-str 12 11 8)
-   in let done = list-length i / 4
-   in let i = a64-rt-emit i (arm64-add-imm 9 9 1)
-   in let i = a64-rt-emit i (arm64-b ((loop - list-length i / 4) * 4))
-   in let exit-l = list-length i / 4
-   in let i = a64-rt-emit i (arm64-ldp 23 24 31 48)
-   in let i = a64-rt-emit i (arm64-ldp 21 22 31 32)
-   in let i = a64-rt-emit i (arm64-ldp 19 20 31 16)
-   in let i = a64-rt-emit i (arm64-ldp-post 29 30 31 64)
-   in let i = a64-rt-emit i arm64-ret
-   in let i = a64-patch-insn-raw i exit (arm64-b-cond 10 ((exit-l - exit) * 4))
-   in let i = a64-patch-insn-raw i not-target (arm64-b-cond 1 ((not-target-l - not-target) * 4))
-   in a64-patch-insn-raw i skip (arm64-b ((done - skip) * 4))
+   in let i = i & arm64-lsl-imm 1 1 3
+   in let i = a64-rt-emit i (arm64-add 1 0 1)
+   in let i = a64-rt-emit i (arm64-str 2 1 8)
+   in a64-rt-emit i arm64-ret
 
 Section: list-insert-at (a0=list, a1=index, a2=value -> new list)
 
@@ -1108,7 +1133,7 @@ Section: text-to-integer (a0=text -> integer, 0 if invalid)
    in let i = i & arm64-movz 12 0 0
    in let i = a64-rt-emit i (arm64-add 13 10 11)
    in let i = a64-rt-emit i (arm64-ldrb 13 13 0)
-   in let i = i & arm64-movz 14 71 0
+   in let i = i & arm64-movz 14 73 0
    in let i = a64-rt-emit i (arm64-cmp 13 14)
    in let not-neg = list-length i / 4
    in let i = a64-rt-emit i arm64-nop
@@ -1751,6 +1776,208 @@ Section: Unicode Conversion
    in let i = a64-rt-emit i (arm64-ldp-post 29 30 31 64)
    in a64-rt-emit i arm64-ret
 
+Section: Boot Tail
+
+ The last of `__start`: start `opening`, then park. Two shapes, chosen by
+ the mode line's `smp` flag.
+
+ The multi-core shape asks PSCI to start core 1 at the AP stub below,
+ through an `hvc #0` whose immediate is patched to the stub's offset. That
+ instruction is only legal where PSCI answers it. QEMU virt does; the
+ committed Renode board does not, so the guest never reaches `opening` and
+ the UART stays silent for the whole run. That is what shipping this
+ sequence unconditionally cost: not the SMP test, but every other ARM64
+ program on Renode.
+
+ This used to say the undefined instruction trapped to a vector entry and
+ parked on its `WFI + B .self`. It cannot have. Renode enters at EL3 and
+ `__start` set `VBAR_EL1` only, so no table was installed on that board at
+ all and no entry was reachable to park on. The silence was real and
+ opt-in was the right fix; the step in between was invented.
+
+ The single-core shape is the same tail without the PSCI call or the AP
+ stub, and it is what a program gets unless it asks for a second core.
+
+  a64-emit-smp-boot : A64State -> A64State
+  a64-emit-smp-boot (st) =
+   let adr-idx = st.insn-count
+   in let st4a = a64-emit st arm64-nop
+   in let st4b = a64-emit-li st4a 0 a64-rt-cpu-on-id
+   in let st4c = a64-emit-li st4b 1 1
+   in let st4d = a64-emit-li st4c 3 0
+   in let st4e = a64-emit st4d a64-rt-hvc
+   in let st5 = a64-emit-call-to st4e "opening"
+   in let st6 = a64-emit st5 a64-rt-wfi
+   in let st7 = a64-emit st6 (arm64-b (-4))
+   in let ap-idx = st7.insn-count
+   in let st7a = a64-emit-li st7 1 a64-rt-ap-marker-addr
+   in let st7b = a64-emit-li st7a 2 1
+   in let st7c = a64-emit st7b (arm64-str-w 2 1 0)
+   in let st7d = a64-emit st7c a64-rt-wfi
+   in let st7e = a64-emit st7d (arm64-b (-4))
+   in a64-patch-insn st7e adr-idx (a64-adr-bytes ((ap-idx - adr-idx) * 4) 2)
+
+  a64-emit-uni-boot : A64State -> A64State
+  a64-emit-uni-boot (st) =
+   let st5 = a64-emit-call-to st "opening"
+   in let st6 = a64-emit st5 a64-rt-wfi
+   in a64-emit st6 (arm64-b (-4))
+
+Section: Fault Handler
+
+ What every vector entry branches to. It runs with x9 holding the entry
+ index and prints one line to the PL011 before parking:
+
+   !A64FAULT V=4 ESR=0000000002000000 ELR=0000000040200018 FAR=0000000000000000
+
+ Then `WFI + B .self`, the same park as before -- the point is not to
+ recover, it is to say what happened. Nothing here calls a runtime helper
+ and nothing here touches the stack, because a handler that needs either
+ one is a handler that faults again on the faults worth reading.
+
+ x19 keeps the index because the character writer clobbers x9. x10 is the
+ UART, x11 the value being printed, x12-x14 the hex loop.
+
+  a64-rt-fault-putc : List Integer, Integer -> List Integer
+  a64-rt-fault-putc (i) (c) =
+   let i = a64-rt-emit i (arm64-movz 9 c 0)
+   in a64-rt-emit i (arm64-str-w 9 10 0)
+
+  a64-rt-fault-puts : List Integer, List Integer, Integer -> List Integer
+  a64-rt-fault-puts (i) (cs) (n) =
+   if n >= list-length cs then i
+   else a64-rt-fault-puts (a64-rt-fault-putc i (list-at cs n)) cs (n + 1)
+
+ Print register `src` as hex, most significant nibble first, starting at bit
+ `start-shift`. Pass 60 for a full 16-nibble register and 0 for a single
+ nibble.
+
+  a64-rt-fault-hex : List Integer, Integer, Integer -> List Integer
+  a64-rt-fault-hex (i) (src) (start-shift) =
+   let i = a64-rt-emit i (arm64-movz 12 start-shift 0)
+   in let i = a64-rt-emit i (arm64-movz 14 15 0)
+   in let loop = list-length i / 4
+   in let i = a64-rt-emit i (arm64-lsr 13 src 12)
+   in let i = a64-rt-emit i (arm64-and 13 13 14)
+   in let i = a64-rt-emit i (arm64-cmp-imm 13 10)
+   in let lt-slot = list-length i / 4
+   in let i = a64-rt-emit i arm64-nop
+   in let i = a64-rt-emit i (arm64-add-imm 13 13 55)
+   in let skip-slot = list-length i / 4
+   in let i = a64-rt-emit i arm64-nop
+   in let digit = list-length i / 4
+   in let i = a64-rt-emit i (arm64-add-imm 13 13 48)
+   in let store = list-length i / 4
+   in let i = a64-rt-emit i (arm64-str-w 13 10 0)
+   in let i = a64-rt-emit i (arm64-cmp-imm 12 0)
+   in let done-slot = list-length i / 4
+   in let i = a64-rt-emit i arm64-nop
+   in let i = a64-rt-emit i (arm64-sub-imm 12 12 4)
+   in let i = a64-rt-emit i (arm64-b ((loop - list-length i / 4) * 4))
+   in let done = list-length i / 4
+   in let i = a64-patch-insn-raw i lt-slot (arm64-b-cond arm64-cond-lt ((digit - lt-slot) * 4))
+   in let i = a64-patch-insn-raw i skip-slot (arm64-b ((store - skip-slot) * 4))
+   in a64-patch-insn-raw i done-slot (arm64-b-cond arm64-cond-eq ((done - done-slot) * 4))
+
+ ESR, ELR and FAR are banked per exception level, and we do not get to
+ assume which one we are at: QEMU virt enters at EL1, and the committed
+ Renode board enters at EL3 (it declares `supportsTwoSecurityStates` and
+ wires an EL3 timer). Reading the EL1 copy at EL3 answers about a level the
+ fault did not happen at. So read the EL once into x20 and dispatch.
+
+ That difference is not cosmetic. It is why the vector table was inert on
+ Renode for its whole existence -- `__start` set VBAR_EL1 and nothing else,
+ so at EL3 the table was never installed and a fault took the reset
+ behaviour instead of an entry. Any diagnosis that assumed a fault reached
+ an entry on Renode was reasoning about a table the hardware was ignoring.
+
+  a64-rt-fault-mrs-el : List Integer, Integer, Integer -> List Integer
+  a64-rt-fault-mrs-el (i) (dst) (base) =
+   let i = a64-rt-emit i (arm64-cmp-imm 20 3)
+   in let e3 = list-length i / 4
+   in let i = a64-rt-emit i arm64-nop
+   in let i = a64-rt-emit i (arm64-cmp-imm 20 2)
+   in let e2 = list-length i / 4
+   in let i = a64-rt-emit i arm64-nop
+   in let i = a64-rt-emit i (arm64-mrs dst base)
+   in let d1 = list-length i / 4
+   in let i = a64-rt-emit i arm64-nop
+   in let l2 = list-length i / 4
+   in let i = a64-rt-emit i (arm64-mrs dst (base + #2000))
+   in let d2 = list-length i / 4
+   in let i = a64-rt-emit i arm64-nop
+   in let l3 = list-length i / 4
+   in let i = a64-rt-emit i (arm64-mrs dst (base + #3000))
+   in let done = list-length i / 4
+   in let i = a64-patch-insn-raw i e3 (arm64-b-cond arm64-cond-eq ((l3 - e3) * 4))
+   in let i = a64-patch-insn-raw i e2 (arm64-b-cond arm64-cond-eq ((l2 - e2) * 4))
+   in let i = a64-patch-insn-raw i d1 (arm64-b ((done - d1) * 4))
+   in a64-patch-insn-raw i d2 (arm64-b ((done - d2) * 4))
+
+  a64-rt-fault-handler : List Integer
+  a64-rt-fault-handler =
+   let i = a64-rt-emit [] (arm64-mov 19 9)
+   in let i = i & arm64-li 10 a64-rt-pl011-base
+   in let i = a64-rt-emit i (arm64-mrs 20 sysreg-currentel)
+   in let i = a64-rt-emit i (arm64-lsr-imm 20 20 2)
+   in let i = a64-rt-emit i (arm64-movz 21 3 0)
+   in let i = a64-rt-emit i (arm64-and 20 20 21)
+   in let i = a64-rt-fault-puts i [33, 65, 54, 52, 70, 65, 85, 76, 84, 32, 86, 61] 0
+   in let i = a64-rt-fault-hex i 19 0
+   in let i = a64-rt-fault-puts i [32, 69, 76, 61] 0
+   in let i = a64-rt-fault-hex i 20 0
+   in let i = a64-rt-fault-puts i [32, 69, 83, 82, 61] 0
+   in let i = a64-rt-fault-mrs-el i 11 sysreg-esr-el1
+   in let i = a64-rt-fault-hex i 11 60
+   in let i = a64-rt-fault-puts i [32, 69, 76, 82, 61] 0
+   in let i = a64-rt-fault-mrs-el i 11 sysreg-elr-el1
+   in let i = a64-rt-fault-hex i 11 60
+   in let i = a64-rt-fault-puts i [32, 70, 65, 82, 61] 0
+   in let i = a64-rt-fault-mrs-el i 11 sysreg-far-el1
+   in let i = a64-rt-fault-hex i 11 60
+   in let i = a64-rt-fault-putc i 10
+   in let i = a64-rt-emit i a64-rt-wfi
+   in a64-rt-emit i (arm64-b (-4))
+
+ Install the table at whatever level we are actually running at. x9 holds
+ the table address on entry and must survive; x11 and x12 are scratch and
+ are reloaded by the caller straight after.
+
+  a64-rt-write-vbar-current-el : List Integer
+  a64-rt-write-vbar-current-el =
+   let i = a64-rt-emit [] (arm64-mrs 11 sysreg-currentel)
+   in let i = a64-rt-emit i (arm64-lsr-imm 11 11 2)
+   in let i = a64-rt-emit i (arm64-movz 12 3 0)
+   in let i = a64-rt-emit i (arm64-and 11 11 12)
+   in let i = a64-rt-emit i (arm64-cmp-imm 11 3)
+   in let e3 = list-length i / 4
+   in let i = a64-rt-emit i arm64-nop
+   in let i = a64-rt-emit i (arm64-cmp-imm 11 2)
+   in let e2 = list-length i / 4
+   in let i = a64-rt-emit i arm64-nop
+   in let i = a64-rt-emit i (arm64-msr sysreg-vbar-el1 9)
+   in let d1 = list-length i / 4
+   in let i = a64-rt-emit i arm64-nop
+   in let l2 = list-length i / 4
+   in let i = a64-rt-emit i (arm64-msr sysreg-vbar-el2 9)
+   in let d2 = list-length i / 4
+   in let i = a64-rt-emit i arm64-nop
+   in let l3 = list-length i / 4
+   in let i = a64-rt-emit i (arm64-msr sysreg-vbar-el3 9)
+   in let done = list-length i / 4
+   in let i = a64-patch-insn-raw i e3 (arm64-b-cond arm64-cond-eq ((l3 - e3) * 4))
+   in let i = a64-patch-insn-raw i e2 (arm64-b-cond arm64-cond-eq ((l2 - e2) * 4))
+   in let i = a64-patch-insn-raw i d1 (arm64-b ((done - d1) * 4))
+   in a64-patch-insn-raw i d2 (arm64-b ((done - d2) * 4))
+
+ Point all sixteen entries at the handler now that its address is known.
+
+  a64-rt-patch-vectors : A64State, Integer, Integer -> A64State
+  a64-rt-patch-vectors (st) (handler) (idx) =
+   if idx >= 16 then st
+   else let slot = a64-rt-vt-branch-slot idx
+    in a64-rt-patch-vectors (a64-patch-insn st slot (arm64-b ((handler - slot) * 4))) handler (idx + 1)
+
 Section: Emit All Runtime Helpers
 
   a64-emit-runtime : A64State -> A64State
@@ -1761,7 +1988,8 @@ Section: Emit All Runtime Helpers
    in let cbnz-idx = st1.insn-count
    in let st1z = a64-emit st1 arm64-nop
    in let st1a = a64-emit st1z a64-rt-adr-x9-minus-0x800
-   in let st1b = a64-emit st1a (arm64-msr sysreg-vbar-el1 9)
+   in let wv = a64-rt-write-vbar-current-el
+   in let st1b = a64-emit-block st1a wv 0 (list-length wv)
    in let st1b1 = a64-emit-li st1b 9 #300000
    in let st1b2 = a64-emit st1b1 (arm64-msr a64-rt-cpacr-el1 9)
    in let st1b3 = a64-emit-block st1b2 arm64-isb 0 4
@@ -1783,22 +2011,7 @@ Section: Emit All Runtime Helpers
    in let c2u-table = a64-build-cce-to-unicode [] 0
    in let st3d = a64-write-table-loop st3c 10 c2u-table 0
    in let st3e = a64-patch-insn st3d cbnz-idx (arm64-cbnz 28 ((uefi-label - cbnz-idx) * 4))
-   in let adr-idx = st3e.insn-count
-   in let st4a = a64-emit st3e arm64-nop
-   in let st4b = a64-emit-li st4a 0 a64-rt-cpu-on-id
-   in let st4c = a64-emit-li st4b 1 1
-   in let st4d = a64-emit-li st4c 3 0
-   in let st4e = a64-emit st4d a64-rt-hvc
-   in let st5 = a64-emit-call-to st4e "opening"
-   in let st6 = a64-emit st5 a64-rt-wfi
-   in let st7 = a64-emit st6 (arm64-b (-4))
-   in let ap-idx = st7.insn-count
-   in let st7a = a64-emit-li st7 1 a64-rt-ap-marker-addr
-   in let st7b = a64-emit-li st7a 2 1
-   in let st7c = a64-emit st7b (arm64-str-w 2 1 0)
-   in let st7d = a64-emit st7c a64-rt-wfi
-   in let st7e = a64-emit st7d (arm64-b (-4))
-   in let st7f = a64-patch-insn st7e adr-idx (a64-adr-bytes ((ap-idx - adr-idx) * 4) 2)
+   in let st7f = if (st.extra).smp-boot then a64-emit-smp-boot st3e else a64-emit-uni-boot st3e
    in let st8 = a64-record-func st7f "print-line-uni"
    in let st8a = a64-record-func st8 "print-line"
    in let plu = a64-rt-print-line-uni
@@ -1871,7 +2084,9 @@ Section: Emit All Runtime Helpers
    in let f62 = a64-rt-peek-qword in let st63 = a64-emit-block st62 f62 0 (list-length f62)
    in let st64 = a64-record-func st63 "poke-qword"
    in let f64 = a64-rt-poke-qword in let st65 = a64-emit-block st64 f64 0 (list-length f64)
-   in let st66 = a64-record-func st65 "__buf-write-byte"
+   in let st65a = a64-record-func st65 "tag-equal"
+   in let f65a = a64-rt-tag-equal in let st65b = a64-emit-block st65a f65a 0 (list-length f65a)
+   in let st66 = a64-record-func st65b "__buf-write-byte"
    in let f66 = a64-rt-buf-write-byte in let st67 = a64-emit-block st66 f66 0 (list-length f66)
    in let st68 = a64-record-func st67 "__buf-read-bytes"
    in let f68 = a64-rt-buf-read-bytes in let st69 = a64-emit-block st68 f68 0 (list-length f68)
@@ -1955,6 +2170,10 @@ Section: Emit All Runtime Helpers
    in let f146 = a64-rt-text-to-unicode-bytes in let st147 = a64-emit-block st146 f146 0 (list-length f146)
    in let st148 = a64-record-func st147 "unicode-bytes-to-text"
    in let f148 = a64-rt-unicode-bytes-to-text in let st149 = a64-emit-block st148 f148 0 (list-length f148)
-   in a64-emit st149 arm64-ret
+   in let st150 = a64-emit st149 arm64-ret
+   in let handler = st150.insn-count
+   in let fh = a64-rt-fault-handler
+   in let st151 = a64-emit-block st150 fh 0 (list-length fh)
+   in a64-rt-patch-vectors st151 handler 0
 
 Page 1

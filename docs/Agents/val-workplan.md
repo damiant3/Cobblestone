@@ -4,42 +4,103 @@
 `docs/Agents/PerforceProcess.md` and `CLAUDE.md`, not here. This file is the current
 picture and the next moves only. Keep it under ~80 lines.*
 
-## Status
+## Status -- 2026-07-22 (session end)
 
-Repository protocol landed through peer resolution: `cdx-store`, `cdx-serve` (the
-first test that drives a Codex TCP server), and host-fetches-a-quoted-work-from-a-peer
-(6.2). Merge reek's LIR down before starting the target.
+**No red gate, nothing shelved or pending, tree clean both clients, no stray VMs,
+token released. Everything of mine is integrated through main 10406.** Depot seed
+unchanged all session at
+`B180343660EBB6CF67C7B7319DB4980EE501E9FF7C31CA5949C8741699D0EAA8` (2604983
+bytes) -- **no CL carried a seed**, checked after every gate, because neither the
+compute bridge nor the foreword quires are cited by the compiler.
 
-## My target -- 5.13: Zstd and Brotli actually compress
+### Shipped this session (main CL), all no-seed
 
-Two of the eight compress chapters return MORE bytes than input while wearing a
-standard name -- a public embarrassment. Nothing catches it because no test asserts
-the output is SMALLER.
-- The existing `compress-zstd` / `compress-brotli` tests do not even round-trip; they
-  are compile-and-print smoke tests that never call the compressor. Any fix ships a
-  COMPRESSIBLE input AND a size assertion (`deflate-gzip-test` is the model).
-- Real work: Deflate BTYPE=02 (dynamic Huffman, most of the remaining ratio) and a
-  fixed-vs-stored chooser so incompressible input falls back instead of inflating by
-  ~1 byte per 8.
-Leaf foreword -- NO seed. Runs fully parallel to the seed-carrying changes.
+- **BACKLOG 4.17 CLOSED.** Compute-bridge matmul auto-runs on the RTX 4060 Ti
+  above ~400^3 flops (10296 conv1d/max-pool/clamp, 10314 conv2d, 10338/10339).
+- **BACKLOG 7.20 CLOSED (10376, 10381, 10394).** `foreword-all-compile` cites
+  **415 chapters, up from 177** -- every chapter in every foreword quire, and it
+  compiles and runs with **zero CDX3006**. Thirteen broken AI chapters fixed
+  (10376) and given per-chapter tests; four cross-chapter collisions fixed
+  (10381): `Pressure`, `LoadResult`, `MdBlock`+5 ctors, and `md-parse` /
+  `rgb-lerp` / `rgb-brightness`.
+- **BACKLOG 7.30 CLOSED (10394).** The two `Lwm2m` chapters merged into one
+  (Encode survives, Foreword's deleted). Its TLV encoder was the wrong one and
+  the test only asserted `length > 0`; `lwm2m-encode` now checks bytes.
+- **BACKLOG 7.28 CLOSED (10406) WITHOUT building what it asked for.** See below.
 
-## My lane (own it; others stay out)
+### Gate truth
 
-codex/os (repo protocol, net), codex/foreword/compress, fact archival, and the public
-git mirror. Not reek's compiler, not blu's parser.
+`build/build.ps1` run **four times, GREEN every time**, hard fixed point ONE PASS,
+`constants.hash` 262 unchanged throughout. **No seed installed or submitted, so
+`test-self-verify.ps1` is NOT APPLICABLE and was NOT RUN. The full battery was NOT
+RUN** (Damian's tool) -- except one `-FW -NoErrors` run he approved in-session:
+**719 total, 684 pass, 11 fail, 24 skip.**
 
-## Open in my lane (BACKLOG, after the target)
+**8 of those 11 look real and are NOT mine** -- `induction-assoc`,
+`induction-list`, `induction-param`, `induction-parse`, `proof-smoke` all fail
+`CDX4020 not emitted`; `prose-anchor` fails `CDX1101 not emitted`;
+`annotation-under-header` and `interval-exhaustive` fail on output. All are root
+battery, on depot source and the depot seed, and none of these classes is retried
+by the harness. The other three (`effect-widen-scope`, `field-guard-refine`,
+`fresh-alloc-narrow`) were `FAIL_COMPILE` under load and **compile clean
+standalone** -- contention. **Reported to Damian; nobody has picked them up.**
 
-- 6.2 residue: the registry (the design's third tier; does not exist in any form).
-- 6.1 ingest polish: bulk ingest, post-submit hook, a UTF-8 decoder in CCE, and
-  sign-with-box-key -- BLOCKED: IdentityManager destroys the plaintext key and there
-  is no `key-sign` intrinsic.
+### 7.28: closed by proving the work was wrong to do
 
-## For other agents
+It asked for a verifier over the tree emitter's tail-call shuffle. Not built.
+Re-measured with `-Passes lir-dump` on the compiler's source: **1,529 selected /
+3,879 declined = 28.3 per cent**, against the entry's own 1,507 / 3,825 = **also
+28.3 per cent**. Four LirRetarget steps (4f-4i) landed between the two and the
+tree path's share did not move; the counts grew only because the source did. So
+the tree emitter is not being retired and the entry's hedge was false -- which
+argues FOR building it, and is why it had to be measured. It still should not be
+built: the gap is the whole tree emitter (its prologue is 7.19), and `LIR.md` s8
+already funds the answer.
 
-- You own the public push mechanics: the git mirror lives inside the fester-main
-  workspace (github -> master, gitlab -> main via `git push gitlab master:main`);
-  never `git add -A`, use `git add -u` + explicit new paths; do not publish
-  `apps/games/magic/`.
-- Before the push: `seed/Codex.img` is stale (needs a rebuild) and the poison build
-  is Damian's call.
+**The real defect was two lines.** `codex/test/tco-shuffle-spill` and
+`tco-direct-arg-reads` are the repros of the two miscompiles, added by the CLs
+that fixed them, and **neither was in the BVT**. Both are in it now (58 tests,
+~13s). **`build/build.ps1` runs `build/bvt.ps1`, NOT the default battery** -- a
+test in `codex/test/` root is pinned but NOT gated unless `bvt.ps1` names it.
+
+### OTHER AGENTS
+
+- **fester duplicated my 7.20 work** and landed 208 cites at main 10379 while I
+  was extending to 416. Caught at the mandatory merge-down; my list was a strict
+  superset so nothing was lost. Second duplicate-work collision in a month (7.29
+  was the first). **After init, say the pick out loud before building.**
+- **A copy-up can silently drop files.** `p4 copy --from //Codex/val` at main
+  10381 carried 10 of 13 -- it left the three that had entered the CL as
+  *integrate* records from a merge-down. Main kept the old content while I
+  reported the item closed. **Count the copy's files against the CL's, and
+  `p4 print` off MAIN before saying anything landed.** Submit the merge-down as
+  its OWN CL rather than folding integrate records into the work CL.
+- **The compute bridge:** `GpuBridge` (`codex/os/kernel`), doorbell ports
+  0x420-0x423, guest buffers **cmd #BD000000 (6 MB), reply #BD600000**. All 17
+  ops have entry points. The COM3 slab is committed at boot in codex-vm -- do not
+  move a bridge buffer without checking the commit covers it, or the host memcpy
+  hits reserved memory (0xC0000005). A box with no NVIDIA GPU refuses a device
+  launch rather than falling back; do not soften that.
+
+**Source no longer cites `BACKLOG <n>.<m>` or a design-doc filename.** The
+register renumbers and design docs move, so a number in source rots into pointing
+at the WRONG entry. Write the gap in prose.
+
+### Next in the val lane
+
+Nothing blocked, nothing to resume, nothing shelved.
+
+- **The 8 red root-battery tests above** are the most concrete open thing, and
+  they are unowned. Five are one class (`CDX4020 not emitted` across the proof
+  tests).
+- **6.1** store cutover is **not available work** (Damian, 2026-07-22): waits on
+  infrastructure and a tree not moving under codegen/syntax. Do not pick it up.
+- **Grounds migration** (CurrentPlan gap 1, `GroundsBoundary.md`): migrate
+  `codex/os` off the blanket effect-exemption onto explicit `grounds`. Touches
+  the compiler's exemption list, so word to reek first.
+- **Damian, 2026-07-22, on how I work:** *"you agents don't finish out stuff,
+  spend time documenting nits and nags and hangnails, you run full builds and
+  gated pushes for one tiny feature at a time, instead of batching up work."*
+  Batch several items into ONE gate and ONE token hold; finish an item to
+  landed-and-verified-on-main before writing prose about it; skip doc hygiene
+  unless the change makes an existing doc false.

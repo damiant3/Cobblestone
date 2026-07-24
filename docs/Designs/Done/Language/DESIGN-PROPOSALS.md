@@ -1,14 +1,13 @@
 # Language Design Proposals
 
-> **Filed to Done 2026-07-15 (val):** eight of the ten proposals shipped; the two that remain — P5 (tag equality) and P6 (string interpolation) — are tracked in BACKLOG 2.10. Moved out of Active to keep init light; reopen if P5/P6 are picked up.
+> **Filed to Done 2026-07-15 (val):** eight of the ten proposals shipped; the one that remains, P5 (tag equality), is tracked in BACKLOG 2.10. Moved out of Active to keep init light; reopen if P5 is picked up.
 
-Proposed enhancements to the Codex language. These are additive — they don't
+Proposed enhancements to the Codex language. These are additive, they don't
 break existing code.
 
-**Eight of the original ten shipped.** What remains is P5 (tag equality)
-and P6 (string interpolation). The shipped proposals are recorded below
-with where they landed, so nobody re-proposes them; their full text is
-gone.
+**Eight of the original ten shipped and one was rejected.** What remains is
+P5 (tag equality). The shipped proposals are recorded below with where they
+landed, so nobody re-proposes them; their full text is gone.
 
 ## Shipped
 
@@ -53,42 +52,15 @@ on the tag word.
 
 ---
 
-## P6: String Interpolation
-
-**Problem:** String construction uses verbose concatenation chains.
-
-```
-"Expected " & show expected & " but found " & show actual
-```
-
-**Proposed:**
-
-```
-"Expected {show expected} but found {show actual}"
-```
-
-**Impact:** Readability in emitters and diagnostic messages. The CSharpEmitter
-and CodexEmitter have dozens of multi-part string concatenations.
-
-**Implementation:**
-- Lexer: recognize `{` inside string literals as interpolation start
-- Parser: parse interpolated segments as expressions
-- Desugarer: expand to `++` concatenation (simplest) or dedicated IR node
-- Note: must not conflict with record literal syntax `Name { field = ... }`
-
----
-
 ## Implementation Priority
 
-Only two proposals are left, and neither is urgent — both are
-convenience, not correctness or performance. The correctness (P8),
-performance (P3, P7, P9, P10), and readability (P1, P2, P4) proposals
-have all landed.
+One proposal is left and it is not urgent: it is convenience, not
+correctness or performance. The correctness (P8), performance (P3, P7,
+P9, P10), and readability (P1, P2, P4) proposals have all landed.
 
 | Feature | Effort | Impact |
 |---------|--------|--------|
 | P5: Tag equality | 1 day | Convenience |
-| P6: String interpolation | 2-3 days | Readability |
 
 Note on P5: its motivating example (`types-equal` in `Unifier.codex`)
 is now writable with the tuple patterns and `|` alternatives that

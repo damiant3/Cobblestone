@@ -8,22 +8,10 @@ Set-Location (Join-Path $PSScriptRoot '../..')
 $outDir = Split-Path $Out -Parent
 if (-not (Test-Path $outDir)) { New-Item -ItemType Directory -Path $outDir -Force | Out-Null }
 
-$chapters = @(
-    'apps/c64/RomData.codex',
-    'apps/c64/Memory.codex',
-    'apps/c64/Cia.codex',
-    'apps/c64/Cpu6502.codex',
-    'apps/c64/opening.codex'
-)
-
-$srcPath = "build/output/c64.codex"
-$sb = [System.Text.StringBuilder]::new()
-foreach ($ch in $chapters) {
-    $lines = [System.IO.File]::ReadAllLines($ch)
-    foreach ($l in $lines) { [void]$sb.AppendLine($l) }
-}
-[System.IO.File]::WriteAllText($srcPath, $sb.ToString(), [System.Text.UTF8Encoding]::new($false))
-Write-Host "Concatenated c64 source: $($sb.Length) bytes"
-
+# Compile the entry chapter directly and let compile.ps1 resolve every `cites`
+# through the quire map. Hand-concatenating the chapters here double-included
+# each one the C64 quire also resolves, which halts with CDX3001 (duplicate
+# type) the moment the quire is registered -- the same dead-build trap circuits
+# had. The entry chapter is the source of truth for the chapter set.
 Write-Host "Compiling..."
-pwsh build/compile.ps1 -Src $srcPath -Out $Out -Log $Log
+pwsh build/compile.ps1 -Src apps/c64/opening.codex -Out $Out -Log $Log

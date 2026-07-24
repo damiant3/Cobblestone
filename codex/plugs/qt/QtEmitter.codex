@@ -72,7 +72,7 @@ Section: Expression Emission
     is IrCharLit (n) (sp) -> "String.fromCharCode(" & show n & ")"
     is IrName (n) (ty) (sp) -> qt-sanitize n
     is IrBinary (op) (l) (r) (ty) (sp) -> emit-qt-binary op l r arities indent
-    is IrNegate (x) (sp) -> "(-(" & emit-qt-expr x arities indent & "))"
+    is IrNegate (x) (nty) (sp) -> "(-(" & emit-qt-expr x arities indent & "))"
     is IrIf (c) (t) (el) (ty) (sp) -> "(" & emit-qt-expr c arities indent & " ? " & emit-qt-expr t arities indent & " : " & emit-qt-expr el arities indent & ")"
     is IrLet (name) (ty) (val) (body) (sp) -> "(function() { var " & qt-sanitize name & " = " & emit-qt-expr val arities indent & "; return " & emit-qt-expr body arities indent & "; })()"
     is IrApply (f) (a) (ty) (sp) -> emit-qt-apply e arities indent
@@ -109,7 +109,7 @@ Section: Binary Operators
     is IrAddInt | IrAddNum | IrAddRealApprox | IrAddRealTrapping | IrAddRealSaturating -> "(" & lhs & " + " & rhs & ")"
     is IrSubInt | IrSubNum | IrSubRealApprox | IrSubRealTrapping | IrSubRealSaturating -> "(" & lhs & " - " & rhs & ")"
     is IrMulInt | IrMulNum | IrMulRealApprox | IrMulRealTrapping | IrMulRealSaturating -> "(" & lhs & " * " & rhs & ")"
-    is IrDivInt -> "Math.floor(" & lhs & " / " & rhs & ")"
+    is IrDivInt -> "Math.trunc(" & lhs & " / " & rhs & ")"
     is IrDivNum | IrDivRealApprox | IrDivRealTrapping | IrDivRealSaturating -> "(" & lhs & " / " & rhs & ")"
     is IrRemInt -> "(" & lhs & " % " & rhs & ")"
     is IrPowInt -> "Math.pow(" & lhs & ", " & rhs & ")"
@@ -236,6 +236,7 @@ Section: Type Definitions
      "function " & qt-sanitize (name.value) & "(fields) { var r = { _type: \"" & name.value & "\" }; for (var k in fields) r[k] = fields[k]; return r; }\n"
     is AVariantTypeDef (name) (tparams) (ctors) (s) ->
      emit-qt-variant-ctors ctors 0
+    is AUnitTypeDef (name) (unitbase) (s) -> ""
 
   emit-qt-variant-ctors : List AVariantCtorDef, Integer -> Text
   emit-qt-variant-ctors (ctors) (i) =
@@ -279,10 +280,10 @@ Section: Definition Emission
 
 Section: QML Assembly
 
-  emit-qt-chapter : IRChapter, List ATypeDef -> Text
-  emit-qt-chapter (m) (type-defs) =
+  emit-qt-chapter : IRChapter, IRTextMeta, List ATypeDef -> Text
+  emit-qt-chapter (m) (meta) (type-defs) =
    let arities = build-arity-map (m.defs) 0 []
-   in let title = if m.chapter-title == "" then "App" else m.chapter-title
+   in let title = if meta.chapter-title == "" then "App" else meta.chapter-title
    in let builtins = "function print_line_uni(s) { outputModel.append({text: s}); }\nfunction show(n) { return String(n); }\nfunction text_length(s) { return s.length; }\nfunction text_replace(s, a, b) { return s.split(a).join(b); }\nfunction text_compare(a, b) { return a < b ? -1 : a > b ? 1 : 0; }\nfunction list_length(xs) { return xs.length; }\nfunction list_at(xs, i) { return xs[i]; }\nfunction integer_to_text(n) { return String(n); }\nfunction negate(n) { return -n; }\n\n"
    in let types-text = emit-qt-type-defs type-defs 0
    in let defs-text = emit-qt-defs (m.defs) 0 arities

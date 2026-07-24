@@ -258,6 +258,7 @@ Section: Records and Sum Types
    when ty
     is RecordTy (rn) (tvars) (fields) -> rn.value
     is ConstructedTy (tname) (args) -> tname.value
+    is TypeCon (tname) -> tname.value
     is SumTy (sname) (args) (ctors) -> sname.value
     is otherwise -> ""
 
@@ -601,7 +602,7 @@ Section: Records and Sum Types
   a64-find-field-in-type-defs (defs) (type-name) (field-name) (i) =
    if i >= list-length defs then 0 - 1
    else when list-at defs i
-    is ARecordTypeDef (dn) (tparams) (fields) (sp) ->
+    is ARecordTypeDef (dn) (tparams) (fields) (recmut) (sp) ->
      if dn.value == type-name then a64-find-rec-field-index fields field-name 0
      else a64-find-field-in-type-defs defs type-name field-name (i + 1)
     is otherwise -> a64-find-field-in-type-defs defs type-name field-name (i + 1)
@@ -616,7 +617,7 @@ Section: Records and Sum Types
   a64-find-field-in-any-type-def (defs) (field-name) (i) =
    if i >= list-length defs then 0 - 1
    else when list-at defs i
-    is ARecordTypeDef (dn) (tparams) (fields) (sp) ->
+    is ARecordTypeDef (dn) (tparams) (fields) (recmut) (sp) ->
      let idx = a64-find-rec-field-index fields field-name 0
      in if idx >= 0 then idx
      else a64-find-field-in-any-type-def defs field-name (i + 1)
@@ -644,6 +645,19 @@ Section: Match
    guard-patch : Integer,
    guard-reg : Integer
   }
+
+ A literal pattern's value arrives as its source spelling. `True` and
+ `False` are the Boolean scrutinee's 1 and 0; `parse-int-text` reads
+ neither and answers 0 for both, so every `is True` and `is False`
+ compared against 0 and the arms inverted. Characters were reduced to
+ digits by the desugarer and pass through unchanged. This mirrors the
+ compiler's `pat-lit-to-integer`.
+
+  a64-pat-lit-to-integer : Text -> Integer
+  a64-pat-lit-to-integer (t) =
+   if t == "True" then 1
+   else if t == "False" then 0
+   else parse-int-text t
 
   a64-emit-match-guard : A64State, IRExpr -> A64GuardResult
   a64-emit-match-guard (st) (guard) =
@@ -719,8 +733,8 @@ Section: Match
      in let st3 = a64-emit st2 (arm64-cmp (tag-r.reg) (exp-r.reg))
      in let bne-index = st3.insn-count
      in let st4 = a64-emit st3 arm64-nop
-     in let st5 = a64-bind-ctor-fields st4 sub-pats scrut-reg 0
-     in let guard-r = a64-emit-match-guard st5 (branch.guard)
+     in let fields = a64-bind-ctor-fields st4 sub-pats scrut-reg 0 []
+     in let guard-r = a64-emit-match-guard (fields.state) (branch.guard)
      in let br = a64-emit-expr (guard-r.state) (branch.body)
      in let st6 = a64-store-local (br.state) result-reg (br.reg)
      in let jmp-end-index = st6.insn-count
@@ -729,28 +743,24 @@ Section: Match
      in let st8 = a64-emit-match-branches st7 branches scrut-reg result-reg (i + 1)
      in let end-index = st8.insn-count
      in let st9 = a64-patch-insn st8 bne-index (arm64-b-cond 1 ((next-start - bne-index) * 4))
-     in let st10 = a64-patch-guard st9 guard-r next-start
+     in let st9b = a64-patch-vec-bne-list st9 (fields.bne-indices) next-start
+     in let st10 = a64-patch-guard st9b guard-r next-start
      in a64-patch-insn st10 jmp-end-index (arm64-b ((end-index - jmp-end-index) * 4))
     is IrLitPat (value) (ty) (s) ->
-     let lit-val = parse-int-text value
-     in let lr = a64-load-local st scrut-reg
-     in let cr = a64-alloc-temp (lr.state)
-     in let st1 = a64-emit-li (cr.state) (cr.reg) lit-val
-     in let st2 = a64-emit st1 (arm64-cmp (lr.reg) (cr.reg))
-     in let bne-index = st2.insn-count
-     in let st3 = a64-emit st2 (arm64-b-cond 1 0)
-     in let guard-r = a64-emit-match-guard st3 (branch.guard)
+     let lr = a64-load-local st scrut-reg
+     in let chk = a64-emit-pat-lit-test (lr.state) (lr.reg) value ty
+     in let guard-r = a64-emit-match-guard (chk.state) (branch.guard)
      in let br = a64-emit-expr (guard-r.state) (branch.body)
      in let st4 = a64-store-local (br.state) result-reg (br.reg)
      in let jmp-end-index = st4.insn-count
      in let st5 = a64-emit st4 (arm64-b 0)
      in let next-start = st5.insn-count
-     in let st6 = a64-patch-insn st5 bne-index (arm64-b-cond 1 ((next-start - bne-index) * 4))
+     in let st6 = a64-patch-vec-bne-list st5 (chk.bne-indices) next-start
      in let st7 = a64-patch-guard st6 guard-r next-start
      in let st8 = a64-emit-match-branches (__record-set st7 "next-local" saved-nl) branches scrut-reg result-reg (i + 1)
      in let end-index = st8.insn-count
      in a64-patch-insn st8 jmp-end-index (arm64-b ((end-index - jmp-end-index) * 4))
-    is IrVecPat (lane-pats) (s) ->
+    is IrVecPat (lane-pats) (vecty) (s) ->
      let lr = a64-load-local st scrut-reg
      in let check-r = a64-emit-vec-lane-checks (lr.state) (lr.reg) lane-pats 0 []
      in let guard-r = a64-emit-match-guard (check-r.state) (branch.guard)
@@ -772,7 +782,7 @@ Section: Match
    if i >= list-length pats then A64VecCheckResult { state = st, bne-indices = bne-acc }
    else when list-at pats i
     is IrLitPat (value) (ty) (s) ->
-     let lit-val = parse-int-text value
+     let lit-val = a64-pat-lit-to-integer value
      in let lr = a64-alloc-temp st
      in let st1 = a64-emit (lr.state) (arm64-ldr (lr.reg) vec-reg (i * 8))
      in let cr = a64-alloc-temp st1
@@ -872,9 +882,45 @@ Section: Match
    in let st1 = a64-emit (pr.state) (arm64-str (vr.reg) (pr.reg) (8 + i * 8))
    in a64-store-ctor-captures st1 args cap-locals ptr-local (i + 1)
 
-  a64-bind-ctor-fields : A64State, List IRPat, Integer, Integer -> A64State
-  a64-bind-ctor-fields (st) (pats) (scrut-reg) (i) =
-   if i >= list-length pats then st
+ A literal sub-pattern inside a constructor pattern used to be DROPPED: this
+ walk bound IrVarPat and let everything else fall out of its otherwise arm, so
+ the constructor tag was the only thing tested and `is BInt (0)` matched any
+ BInt. Whichever arm's CONSTRUCTOR matched first won, which collapses a
+ multi-way dispatch onto one arm. Measured on ARM64 2026-07-21 with
+ codex/test/literal-subpattern: by-int answered 10 for every input, by-text 20,
+ by-flag 30, by-pair 40. The x86-64 emitter carried the identical defect until
+ 2026-07-20, where it made apps/cvmm's Calculator treat every operator as plus.
+
+ Each literal now emits its own test and its own branch, and every index this
+ returns has to be patched by the caller -- a single patch slot was the other
+ half of the original bug, because a second failing test had nowhere to go.
+
+ A Text literal cannot be a cmp. The scrutinee holds a POINTER and
+ a64-pat-lit-to-integer answers a number for the spelling, so `is "sin"`
+ matched nothing at any nesting depth. Text goes through __str_eq, the helper
+ IrEq already uses for the same comparison.
+
+  a64-emit-pat-lit-test : A64State, Integer, Text, CodexType -> A64VecCheckResult
+  a64-emit-pat-lit-test (st) (val-reg) (spelling) (ty) =
+   if a64-is-text-type ty then
+    let tr = a64-emit-text-lit st spelling
+    in let st1 = a64-emit (tr.state) (arm64-mov a64-x0 val-reg)
+    in let st2 = a64-emit st1 (arm64-mov a64-x1 (tr.reg))
+    in let st3 = a64-emit-call-to st2 "__str_eq"
+    in let cr = a64-alloc-temp st3
+    in let st4 = a64-emit-li (cr.state) (cr.reg) 1
+    in let st5 = a64-emit st4 (arm64-cmp a64-x0 (cr.reg))
+    in let bne = st5.insn-count
+    in A64VecCheckResult { state = a64-emit st5 arm64-nop, bne-indices = [bne] }
+   else let cr = a64-alloc-temp st
+   in let st1 = a64-emit-li (cr.state) (cr.reg) (a64-pat-lit-to-integer spelling)
+   in let st2 = a64-emit st1 (arm64-cmp val-reg (cr.reg))
+   in let bne = st2.insn-count
+   in A64VecCheckResult { state = a64-emit st2 arm64-nop, bne-indices = [bne] }
+
+  a64-bind-ctor-fields : A64State, List IRPat, Integer, Integer, List Integer -> A64VecCheckResult
+  a64-bind-ctor-fields (st) (pats) (scrut-reg) (i) (bnes) =
+   if i >= list-length pats then A64VecCheckResult { state = st, bne-indices = bnes }
    else when list-at pats i
     is IrVarPat (name) (ty) (s) ->
      let loc = a64-alloc-local st
@@ -882,13 +928,19 @@ Section: Match
      in if loc.reg < a64-spill-base then
       let st1 = a64-emit (lr.state) (arm64-ldr (loc.reg) (lr.reg) ((i + 1) * 8))
       in let st2 = a64-bind-local st1 name (loc.reg)
-      in a64-bind-ctor-fields st2 pats scrut-reg (i + 1)
+      in a64-bind-ctor-fields st2 pats scrut-reg (i + 1) bnes
      else let tr = a64-alloc-temp (lr.state)
       in let st1 = a64-emit (tr.state) (arm64-ldr (tr.reg) (lr.reg) ((i + 1) * 8))
       in let st2 = a64-store-local st1 (loc.reg) (tr.reg)
       in let st3 = a64-bind-local st2 name (loc.reg)
-      in a64-bind-ctor-fields st3 pats scrut-reg (i + 1)
-    is otherwise -> a64-bind-ctor-fields st pats scrut-reg (i + 1)
+      in a64-bind-ctor-fields st3 pats scrut-reg (i + 1) bnes
+    is IrLitPat (value) (ty) (s) ->
+     let lr = a64-load-local st scrut-reg
+     in let fr = a64-alloc-temp (lr.state)
+     in let st1 = a64-emit (fr.state) (arm64-ldr (fr.reg) (lr.reg) ((i + 1) * 8))
+     in let chk = a64-emit-pat-lit-test st1 (fr.reg) value ty
+     in a64-bind-ctor-fields (chk.state) pats scrut-reg (i + 1) (bnes & (chk.bne-indices))
+    is otherwise -> a64-bind-ctor-fields st pats scrut-reg (i + 1) bnes
 
 Section: List Emission
 
@@ -984,7 +1036,7 @@ Section: Tail Call Optimization
      if a64-binary-op-has-call op then True
      else if a64-binary-eq-has-call op l then True
      else a64-has-any-call l fname | a64-has-any-call r fname
-    is IrNegate (x) (s) -> a64-has-any-call x fname
+    is IrNegate (x) (nty) (s) -> a64-has-any-call x fname
     is IrFieldAccess (rec) (f) (t) (s) -> a64-has-any-call rec fname
     is IrRecord (n) (fields) (t) (s) -> True
     is IrList (elems) (t) (s) -> True
@@ -1029,6 +1081,48 @@ Section: Tail Call Optimization
       is _ -> False
     is _ -> False
 
+ A direct call to one of these builtins at the matching arity is lowered
+ inline by `a64-emit-direct-call`, and the frameless analysis
+ (`a64-has-any-call`, via `a64-is-known-inline`) treats it as call-free.
+ But every bitwise op also has an 8-byte runtime helper for its
+ first-class use, registered by name in `func-names` at plug init, so
+ the user-wins dispatch looked the helper up BEFORE reaching the inline
+ arm and a direct `bit-and k 255` emitted a `bl` to it. In a frameless
+ function that `bl` clobbers x30 and the argument registers, and the
+ function's `ret` returned into its own loop body forever -- that is
+ `codex/test/tco-bitop-loop`'s silent hang, root-caused by disassembly
+ 2026-07-23, and the same shape that miscompiled the crypto leaves when
+ the widened frame-elision gate was tried. Skipping the helper for an inline
+ builtin at its own arity is what makes the emission agree with the
+ analysis; first-class references still find the helper. This mirrors
+ `rv-is-inline-here`, RISC-V's CL 9789 fix for the identical defect, and
+ the sets are deliberately the same: the bit ops and the two mods, NOT
+ `abs`/`negate`/`min`/`max`, so a user definition shadowing those still
+ wins as it does on x86-64.
+
+  a64-is-inline-2arg : Text -> Boolean
+  a64-is-inline-2arg (n) =
+   if n == "math-mod" then True
+   else if n == "int-mod" then True
+   else if n == "bit-and" then True
+   else if n == "bit-or" then True
+   else if n == "bit-xor" then True
+   else if n == "bit-shl" then True
+   else if n == "bit-shr" then True
+   else if n == "bit-shru" then True
+   else False
+
+  a64-is-inline-1arg : Text -> Boolean
+  a64-is-inline-1arg (n) =
+   if n == "bit-not" then True
+   else False
+
+  a64-is-inline-here : Text, Integer -> Boolean
+  a64-is-inline-here (name) (nargs) =
+   if nargs == 2 then a64-is-inline-2arg name
+   else if nargs == 1 then a64-is-inline-1arg name
+   else False
+
   a64-is-known-inline : Text -> Boolean
   a64-is-known-inline (name) =
    if name == "math-mod" then True
@@ -1070,7 +1164,7 @@ Section: Tail Call Optimization
      if a64-binary-op-has-call op then True
      else if a64-binary-eq-has-call op l then True
      else a64-has-any-call l fname | a64-has-any-call r fname
-    is IrNegate (x) (s) -> a64-has-any-call x fname
+    is IrNegate (x) (nty) (s) -> a64-has-any-call x fname
     is IrLambda (p) (b) (t) (s) -> True
     is IrHandle (eff) (body) (clauses) (ty) (s) -> True
     is IrAct (stmts) (t) (s) -> True
@@ -1079,14 +1173,164 @@ Section: Tail Call Optimization
     is IrFieldAccess (rec) (f) (t) (s) -> a64-has-any-call rec fname
     is otherwise -> False
 
+ The gate no longer requires self-recursion: an ordinary
+ call-free leaf takes the frameless path too, and the win is thousands of
+ leaves that were paying a full frame for a body that cannot grow the
+ stack. The two admitted shapes need different proofs and get them. A
+ self-recursive function keeps the exact TCO predicate that was proven
+ safe before this widening: the frameless emitter turns its tail
+ self-call into a jump to the loop top, so a body with no NON-tail call
+ is safe, and that is what `a64-body-has-non-tail-call` checks. A
+ non-recursive leaf has no such loop, so its body must emit no call at
+ all, which is the positive whitelist `a64-frameless-body-ok`. Both cap
+ the local count at six, the size of the frameless register file, and
+ both cap parameters at eight, because `a64-bind-params-frameless` binds
+ only the first eight and a ninth would arrive as a free name and emit
+ the very `bl` framelessness cannot survive.
+
+ `opening` is declined by name for the reason the LIR try declines it:
+ the framed path is not an ordinary emitter for the entry point, it
+ appends the print-result epilogue (`integer-to-text` then
+ `print-line-uni`), and the frameless path has no such special case. The
+ old gate excluded `opening` only incidentally -- it is never
+ self-recursive, so `a64-should-tco` was False -- and the widening to
+ plain leaves would otherwise admit `opening : Integer = 0` frameless and
+ emit a correct function that prints nothing. `list-append-perf-N8-L7`
+ caught exactly that.
+
   a64-can-be-frameless : IRDef -> Boolean
   a64-can-be-frameless (def) =
-   if a64-should-tco def == False then False
+   if def.name == "opening" then False
+   else let all-params = when def.body
+    is IrLambda (lp) (lb) (lt) (ls) -> lp
+    is otherwise -> def.params
+   in if list-length all-params > 8 then False
    else let body = when def.body
     is IrLambda (lp) (lb) (lt) (ls) -> lb
     is otherwise -> def.body
-   in if a64-body-has-non-tail-call body (def.name) then False
-   else a64-count-ir-locals body (def.name) <= 6
+   in if a64-count-ir-locals body (def.name) > 6 then False
+   else if a64-should-tco def
+        then a64-body-has-non-tail-call body (def.name) == False
+        else a64-frameless-body-ok def
+
+ The second analysis is a POSITIVE whitelist, and it is positive on
+ purpose: the reverted attempt used a blocklist of call shapes and was
+ defeated by every shape it forgot to list. A frameless leaf writes no
+ frame, so its body may emit no `bl` (a `bl` overwrites x30 with no save
+ and the `ret` re-enters the body forever) and may touch no local past
+ the six-register frameless file. Rather than enumerate the emitting
+ shapes -- a bare nullary name (`f (x) = x + some-constant`), a list
+ literal (`aes-sbox`, `cpt-key`), a record, a match, an act, and whatever
+ the emitter grows next, each an `a64-emit-call-to` -- this walk names
+ the shapes that are SAFE and frames everything else. A body is safe iff
+ it is a bound name, a literal, a negate of a safe body, a non-appending
+ binary over safe operands, a let whose value and body are safe, an if
+ whose parts are safe, or an application of an `a64-is-inline-here`
+ builtin to safe arguments. Any other node -- any call to a non-inline
+ name, any allocating literal -- is unsafe, so the default arm frames.
+ Coverage given up on purpose: a leaf that reads a bare nullary constant
+ or builds a small record stays framed. The win is the thousands of pure
+ arithmetic and bitwise leaves, which this admits and the old TCO-only
+ gate did not. `codex/test/frameless-leaf-probe` pins the shapes.
+
+ The whitelist was arrived at by shipping a blocklist first and watching
+ it regress `chacha20poly1305`, `aesgcm256` and `cce-tier1` -- all green
+ on the base, all broken by a frameless table constant the blocklist did
+ not name. A blocklist for this is a list of every way a body can emit a
+ call, which is not a closed set; a whitelist of the ways it cannot is.
+
+  a64-name-in : List Text, Text, Integer -> Boolean
+  a64-name-in (bound) (n) (i) =
+   if i >= list-length bound then False
+   else if list-at bound i == n then True
+   else a64-name-in bound n (i + 1)
+
+  a64-frameless-apply-safe : IRExpr, IRExpr, List Text, Integer -> Boolean
+  a64-frameless-apply-safe (f) (a) (bound) (nargs) =
+   if a64-frameless-safe a bound == False then False
+   else when f
+    is IrName (n) (t) (s) -> a64-is-inline-here n (nargs + 1)
+    is IrApply (f2) (a2) (t2) (s2) -> a64-frameless-apply-safe f2 a2 bound (nargs + 1)
+    is otherwise -> False
+
+  a64-frameless-safe : IRExpr, List Text -> Boolean
+  a64-frameless-safe (e) (bound) =
+   when e
+    is IrName (n) (t) (s) -> a64-name-in bound n 0
+    is IrIntLit (v) (s) -> True
+    is IrNumLit (v) (s) -> True
+    is IrCharLit (v) (s) -> True
+    is IrBoolLit (v) (s) -> True
+    is IrNegate (x) (nty) (s) -> a64-frameless-safe x bound
+    is IrBinary (op) (l) (r) (t) (s) ->
+     if a64-binary-op-has-call op then False
+     else if a64-binary-eq-has-call op l then False
+     else a64-frameless-safe l bound & a64-frameless-safe r bound
+    is IrLet (n) (t) (v) (b) (s) ->
+     if a64-frameless-safe v bound then a64-frameless-safe b (bound & [n]) else False
+    is IrIf (c) (th) (el) (t) (s) ->
+     a64-frameless-safe c bound & a64-frameless-safe th bound & a64-frameless-safe el bound
+    is IrApply (f) (a) (t) (s) -> a64-frameless-apply-safe f a bound 0
+    is otherwise -> False
+
+  a64-param-name-list : List IRParam, Integer, List Text -> List Text
+  a64-param-name-list (params) (i) (acc) =
+   if i >= list-length params then acc
+   else a64-param-name-list params (i + 1) (list-push acc ((list-at params i).name))
+
+  a64-frameless-body-ok : IRDef -> Boolean
+  a64-frameless-body-ok (def) =
+   let all-params = when def.body
+    is IrLambda (lp) (lb) (lt) (ls) -> lp
+    is otherwise -> def.params
+   in let body = when def.body
+    is IrLambda (lp) (lb) (lt) (ls) -> lb
+    is otherwise -> def.body
+   in a64-frameless-safe body (a64-param-name-list all-params 0 [])
+
+ The frameless analysis treats every `a64-is-known-inline` name as
+ call-free, but that list is BROADER than the set `a64-is-inline-here`
+ actually inlines: `abs`, `negate`, `min` and `max` are analysed as
+ inline yet, when a definition in the module shadows one, the dispatch
+ emits a REAL `bl` to it (user-wins, deliberately kept for these -- a
+ shadowed `abs` answers the user's body on x86-64 and must here too).
+ A `bl` in a frameless function clobbers x30 with no save, and the
+ `ret` returns into the loop body forever. So a body that calls a
+ shadowed member of that residue takes the framed path, where the `bl`
+ is what a frame is for. The bit ops and mods are NOT in the residue:
+ `a64-is-inline-here` inlines them regardless of registration, so the
+ emission agrees with the analysis there and frameless coverage is
+ unchanged for them.
+
+  a64-shadowed-inline-name : A64State, Text -> Boolean
+  a64-shadowed-inline-name (st) (name) =
+   if a64-is-known-inline name == False then False
+   else if a64-is-inline-2arg name | a64-is-inline-1arg name then False
+   else if a64-is-known-builtin name /= 1 then False
+   else a64-find-func-offset (st.func-names) (st.func-offsets) name 0 >= 0
+
+  a64-apply-head-shadowed : A64State, IRExpr -> Boolean
+  a64-apply-head-shadowed (st) (f) =
+   when f
+    is IrName (n) (t) (s) -> a64-shadowed-inline-name st n
+    is IrApply (f2) (a2) (t2) (s2) -> a64-apply-head-shadowed st f2
+    is otherwise -> False
+
+  a64-body-calls-shadowed-inline : A64State, IRExpr -> Boolean
+  a64-body-calls-shadowed-inline (st) (e) =
+   when e
+    is IrApply (f) (a) (t) (s) ->
+     if a64-apply-head-shadowed st f then True
+     else a64-body-calls-shadowed-inline st f | a64-body-calls-shadowed-inline st a
+    is IrIf (c) (th) (el) (t) (s) ->
+     a64-body-calls-shadowed-inline st c | a64-body-calls-shadowed-inline st th | a64-body-calls-shadowed-inline st el
+    is IrLet (n) (t) (v) (b) (s) ->
+     a64-body-calls-shadowed-inline st v | a64-body-calls-shadowed-inline st b
+    is IrBinary (op) (l) (r) (t) (s) ->
+     a64-body-calls-shadowed-inline st l | a64-body-calls-shadowed-inline st r
+    is IrNegate (x) (nty) (s) -> a64-body-calls-shadowed-inline st x
+    is IrLambda (p) (b) (t) (s) -> a64-body-calls-shadowed-inline st b
+    is otherwise -> False
 
   a64-collect-param-locals : List A64Local, List IRParam, Integer, List Integer -> List Integer
   a64-collect-param-locals (locals) (params) (i) (acc) =
@@ -1115,7 +1359,7 @@ Section: Tail Call Optimization
    when e
     is IrApply (f) (a) (t) (s) -> True
     is IrBinary (op) (l) (r) (t) (s) -> a64-arg-has-call l | a64-arg-has-call r
-    is IrNegate (x) (s) -> a64-arg-has-call x
+    is IrNegate (x) (nty) (s) -> a64-arg-has-call x
     is IrIf (c) (th) (el) (t) (s) -> True
     is otherwise -> False
 
@@ -1156,27 +1400,58 @@ Section: Tail Call Optimization
    when e
     is IrName (n) (t) (s) -> a64-lookup-local locals n 0 == slot
     is IrBinary (op) (l) (r) (t) (s) -> a64-expr-refs-local l slot locals | a64-expr-refs-local r slot locals
-    is IrNegate (x) (s) -> a64-expr-refs-local x slot locals
+    is IrNegate (x) (nty) (s) -> a64-expr-refs-local x slot locals
     is IrFieldAccess (rec) (f) (t) (s) -> a64-expr-refs-local rec slot locals
     is IrIntLit (v) (s) -> False
     is IrBoolLit (v) (s) -> False
     is IrCharLit (v) (s) -> False
     is otherwise -> True
 
+ Writing a parameter destroys the value any later argument still reads out
+ of it, so the two writes have an order and only one of them may be wrong.
+ If argument 0 reads parameter 1, parameter 0 must be written first; if
+ argument 1 reads parameter 0, parameter 1 must be written first. Both at
+ once is a cycle and no order saves it, so that alone falls back to the
+ general path, which saves every argument before copying any.
+
+ p-shift (n) (a) = p-shift (n - 1) (a + a - n) is the shape that exposed
+ this: it answered -2 where -33 is correct, because a + a - n was
+ evaluated against the already-decremented n. The guard tested only the
+ safe direction, so the hazard it existed to catch was the one it let
+ through. RiscVCodeGen3's rv-emit-tail-call-direct is the same rule.
+
   a64-can-direct-tco : A64State, List IRExpr, List Integer -> Boolean
   a64-can-direct-tco (st) (args) (param-locals) =
    if list-length args /= 2 then False
    else if a64-arg-has-call (list-at args 0) then False
    else if a64-arg-has-call (list-at args 1) then False
-   else if a64-expr-refs-local (list-at args 0) (list-at param-locals 1) (st.locals) then False
+   else if a64-tco-arg-cycle st args param-locals then False
    else True
+
+  a64-tco-arg-cycle : A64State, List IRExpr, List Integer -> Boolean
+  a64-tco-arg-cycle (st) (args) (param-locals) =
+   a64-expr-refs-local (list-at args 0) (list-at param-locals 1) (st.locals)
+    & a64-expr-refs-local (list-at args 1) (list-at param-locals 0) (st.locals)
+
+  a64-tco-direct-p0-first : A64State, A64TcoState, IRExpr, IRExpr -> A64State
+  a64-tco-direct-p0-first (st) (tco) (a0) (a1) =
+   let st1 = a64-emit-expr-to st a0 (list-at (tco.param-locals) 0)
+   in a64-emit-expr-to st1 a1 (list-at (tco.param-locals) 1)
+
+  a64-tco-direct-p1-first : A64State, A64TcoState, IRExpr, IRExpr -> A64State
+  a64-tco-direct-p1-first (st) (tco) (a0) (a1) =
+   let st1 = a64-emit-expr-to st a1 (list-at (tco.param-locals) 1)
+   in a64-emit-expr-to st1 a0 (list-at (tco.param-locals) 0)
 
   a64-emit-tail-call-general : A64State, A64TcoState, List IRExpr -> A64EmitResult
   a64-emit-tail-call-general (st) (tco) (args) =
    if a64-can-direct-tco st args (tco.param-locals) then
     let saved-nl = st.next-local
-    in let st1 = a64-emit-expr-to st (list-at args 0) (list-at (tco.param-locals) 0)
-    in let st2 = a64-emit-expr-to st1 (list-at args 1) (list-at (tco.param-locals) 1)
+    in let a0 = list-at args 0
+    in let a1 = list-at args 1
+    in let p0-first = a64-expr-refs-local a0 (list-at (tco.param-locals) 1) (st.locals)
+    in let st2 = if p0-first then a64-tco-direct-p0-first st tco a0 a1
+     else a64-tco-direct-p1-first st tco a0 a1
     in let st3 = __record-set st2 "next-local" saved-nl
     in let offset = (tco.loop-top - st3.insn-count) * 4
     in A64EmitResult { state = a64-emit st3 (arm64-b offset), reg = a64-x0 }
@@ -1246,7 +1521,9 @@ Section: Module Emission
 
   a64-emit-function : A64State, IRDef -> A64State
   a64-emit-function (st) (def) =
-   if a64-can-be-frameless def then a64-emit-function-frameless st def
+   let lt = a64-lir-emit-try st def
+   in if lt.handled then lt.state
+   else if a64-can-be-frameless def & (a64-body-calls-shadowed-inline st (def.body)) == False then a64-emit-function-frameless st def
    else let body-locals = a64-count-ir-locals (def.body) (def.name)
    in let total-locals = list-length (def.params) + body-locals
    in let save-pairs = a64-compute-save-pairs total-locals
@@ -1282,6 +1559,9 @@ Section: Module Emission
    in let st5 = if def.name == "opening" then
     if a64-opening-returns-int (def.type-val) then
      let st5a = a64-emit-call-to st5 "integer-to-text"
+     in a64-emit-call-to st5a "print-line-uni"
+    else if a64-opening-returns-real (def.type-val) then
+     let st5a = a64-emit-call-to st5 "__real_to_text"
      in a64-emit-call-to st5a "print-line-uni"
     else if a64-opening-returns-text (def.type-val) then a64-emit-call-to st5 "print-line-uni"
     else st5
@@ -1359,7 +1639,7 @@ Section: Module Emission
    when ty
     is IntegerTy (lo) (hi) (m) -> True
     is EffectfulTy (effs) (scopes) (ret) -> a64-opening-returns-int ret
-    is FunTy (p) (r) -> a64-opening-returns-int r
+    is FunTy (p) (fnrow) (r) -> a64-opening-returns-int r
     is otherwise -> False
 
   a64-opening-returns-text : CodexType -> Boolean
@@ -1367,7 +1647,18 @@ Section: Module Emission
    when ty
     is TextTy -> True
     is EffectfulTy (effs) (scopes) (ret) -> a64-opening-returns-text ret
-    is FunTy (p) (r) -> a64-opening-returns-text r
+    is FunTy (p) (fnrow) (r) -> a64-opening-returns-text r
+    is otherwise -> False
+
+  a64-opening-returns-real : CodexType -> Boolean
+  a64-opening-returns-real (ty) =
+   when ty
+    is RealTy -> True
+    is RealApproxTy -> True
+    is RealTrappingTy -> True
+    is RealSaturatingTy -> True
+    is EffectfulTy (effs) (scopes) (ret) -> a64-opening-returns-real ret
+    is FunTy (p) (fnrow) (r) -> a64-opening-returns-real r
     is otherwise -> False
 
   a64-emit-opening-print : A64State, Boolean -> A64State
@@ -1387,15 +1678,16 @@ Section: Module Emission
    in let st5 = a64-emit st4 arm64-ret
    in a64-patch-insn st5 cbz-idx (arm64-cbz 0 ((ret-idx - cbz-idx) * 4))
 
-  a64-emit-module : A64State, IRChapter, List ATypeDef, List Text -> A64State
-  a64-emit-module (st) (chapter) (tdefs) (eff-ops) =
+  a64-emit-module : A64State, IRChapter, List ATypeDef, List Text, Boolean -> A64State
+  a64-emit-module (st) (chapter) (tdefs) (eff-ops) (smp) =
    let addrs = a64-assign-effect-op-addrs eff-ops 0 (list-length eff-ops) []
    in let htb = if list-length eff-ops > 0 then #40100000 else 0
-   in let new-extra = A64Extra { effect-op-addrs = addrs, handler-table-base = htb, type-defs = tdefs, learned-fields = [], wcet-reports = [], state-local = 0 - 1 }
-   in let stored = a64-store-effect-addrs addrs
+   in let new-extra = A64Extra { effect-op-addrs = addrs, handler-table-base = htb, type-defs = tdefs, learned-fields = [], wcet-reports = [], state-local = 0 - 1, smp-boot = smp, runtime-funcs = 0 }
    in let st1 = __record-set st "extra" new-extra
    in let st2 = a64-emit-runtime st1
-   in let st3 = a64-emit-all-defs st2 (chapter.defs) 0
+   in let ex2 = __record-set (st2.extra) "runtime-funcs" (list-length (st2.func-names))
+   in let st2b = __record-set st2 "extra" ex2
+   in let st3 = a64-emit-all-defs st2b (chapter.defs) 0
    in let st3w = a64-check-builtin-collisions st3 (st3.func-names) 0
    in let st4 = a64-patch-calls st3w
    in let st5 = a64-patch-func-addrs st4
@@ -1437,41 +1729,55 @@ Section: Effect Handler Emission
    let st1 = a64-emit-li st 9 addr
    in a64-emit st1 (arm64-str val-reg 9 0)
 
+ A handle saves each operation's current handler for the duration of its body
+ and puts it back afterwards. That saving used to PUSH on the stack, and a
+ spill slot is addressed off SP (a64-store-local: [SP, slot*8 + 96]), so a body
+ that spilled resolved every slot 16 bytes per clause away from where the same
+ slot resolves outside the handle. Two handles in sequence then aliased:
+ measured, a two-clause handle wrote its result to SP+128 after popping and the
+ next handle wrote SP+160 while SP was still 32 low -- the same byte -- so the
+ earlier result came back holding the later one. The saved handlers live in
+ ordinary frame locals now and SP does not move inside a frame.
+
+  A64HandlerSlots = record {
+   hs-state : A64State,
+   hs-slots : List Integer
+  }
+
   a64-emit-handle : A64State, Text, IRExpr, List IRHandleClause, CodexType -> A64EmitResult
   a64-emit-handle (st) (eff) (body) (clauses) (ty) =
-   let st1 = a64-push-handler-slots st clauses 0 (list-length clauses)
-   in let st2 = a64-emit-handle-clauses st1 clauses 0
+   let pushed = a64-push-handler-slots st clauses 0 (list-length clauses) []
+   in let st2 = a64-emit-handle-clauses (pushed.hs-state) clauses 0
    in let body-result = a64-emit-expr st2 body
-   in let st3 = a64-pop-handler-slots (body-result.state) clauses (list-length clauses)
+   in let st3 = a64-pop-handler-slots (body-result.state) clauses (pushed.hs-slots) (list-length clauses)
    in let saved = a64-alloc-local st3
    in let st4 = a64-store-local (saved.state) (saved.reg) (body-result.reg)
    in a64-load-local st4 (saved.reg)
 
-  a64-push-handler-slots : A64State, List IRHandleClause, Integer, Integer -> A64State
-  a64-push-handler-slots (st) (clauses) (i) (len) =
-   if i >= len then st
+  a64-push-handler-slots : A64State, List IRHandleClause, Integer, Integer, List Integer -> A64HandlerSlots
+  a64-push-handler-slots (st) (clauses) (i) (len) (acc) =
+   if i >= len then A64HandlerSlots { hs-state = st, hs-slots = acc }
    else let c = list-at clauses i
    in let eoa = a64-find-effect-op-addr ((st.extra).effect-op-addrs) (c.op-name) 0
    in if eoa >= 0 then
      let st1 = a64-emit-li st 9 eoa
      in let st2 = a64-emit st1 (arm64-ldr 10 9 0)
-     in let st4 = a64-emit st2 (arm64-sub-imm a64-sp a64-sp 16)
-     in let st5 = a64-emit st4 (arm64-str 10 a64-sp 0)
-     in a64-push-handler-slots st5 clauses (i + 1) len
-   else a64-push-handler-slots st clauses (i + 1) len
+     in let loc = a64-alloc-local st2
+     in let st3 = a64-store-local (loc.state) (loc.reg) 10
+     in a64-push-handler-slots st3 clauses (i + 1) len (list-push acc (loc.reg))
+   else a64-push-handler-slots st clauses (i + 1) len (list-push acc (0 - 1))
 
-  a64-pop-handler-slots : A64State, List IRHandleClause, Integer -> A64State
-  a64-pop-handler-slots (st) (clauses) (i) =
+  a64-pop-handler-slots : A64State, List IRHandleClause, List Integer, Integer -> A64State
+  a64-pop-handler-slots (st) (clauses) (slots) (i) =
    if i <= 0 then st
    else let c = list-at clauses (i - 1)
+   in let slot = list-at slots (i - 1)
    in let eoa = a64-find-effect-op-addr ((st.extra).effect-op-addrs) (c.op-name) 0
-   in if eoa >= 0 then
-     let st1 = a64-emit st (arm64-ldr 10 a64-sp 0)
-     in let st3 = a64-emit st1 (arm64-add-imm a64-sp a64-sp 16)
-     in let st4 = a64-emit-li st3 9 eoa
-     in let st5 = a64-emit st4 (arm64-str 10 9 0)
-     in a64-pop-handler-slots st5 clauses (i - 1)
-   else a64-pop-handler-slots st clauses (i - 1)
+   in if eoa >= 0 & slot >= 0 then
+     let lr = a64-load-local st slot
+     in let st1 = a64-emit-store-handler (lr.state) eoa (lr.reg)
+     in a64-pop-handler-slots st1 clauses slots (i - 1)
+   else a64-pop-handler-slots st clauses slots (i - 1)
 
   a64-emit-handle-clauses : A64State, List IRHandleClause, Integer -> A64State
   a64-emit-handle-clauses (st) (clauses) (i) =
@@ -1601,12 +1907,12 @@ Section: Effect Handler Emission
   a64-patch-calls-loop (st) (patches) (i) =
    if i >= list-length patches then st
    else let patch = list-at patches i
-   in let target-offset = a64-find-func-offset (st.func-names) (st.func-offsets) (patch.target) 0
+   in let target-offset = a64-find-func-offset (st.func-names) (st.func-offsets) (patch.target) ((st.extra).runtime-funcs)
    in if target-offset >= 0
     then let rel = (target-offset - patch.insn-index) * 4
     in let st1 = a64-patch-insn st (patch.insn-index) (arm64-bl rel)
     in a64-patch-calls-loop st1 patches (i + 1)
-    else a64-patch-calls-loop st patches (i + 1)
+    else a64-patch-calls-loop (a64-add-shadow-warning st ("[WARN] unresolved call to '" & (patch.target) & "': the arm64 plug emits no such function, and the branch was left unpatched -- reaching it reads a stale x0")) patches (i + 1)
 
   a64-patch-func-addrs : A64State -> A64State
   a64-patch-func-addrs (st) =
@@ -1616,7 +1922,7 @@ Section: Effect Handler Emission
   a64-patch-func-addrs-loop (st) (fixups) (i) =
    if i >= list-length fixups then st
    else let fixup = list-at fixups i
-   in let target-offset = a64-find-func-offset (st.func-names) (st.func-offsets) (fixup.target) 0
+   in let target-offset = a64-find-func-offset (st.func-names) (st.func-offsets) (fixup.target) ((st.extra).runtime-funcs)
    in if target-offset >= 0
     then let offset = (target-offset - fixup.insn-index) * 4
     in let st1 = a64-patch-insn st (fixup.insn-index) (a64-encode-adr-signed (fixup.rd) offset)
@@ -1652,11 +1958,37 @@ Section: Effect Handler Emission
    in let w = bit-or (bit-or (bit-or #10000000 rd) (bit-shl immlo 29)) (bit-shl immhi 5)
    in [bit-and w 255, bit-and (bit-shru w 8) 255, bit-and (bit-shru w 16) 255, bit-and (bit-shru w 24) 255]
 
-  a64-find-func-offset : List Text, List Integer, Text, Integer -> Integer
-  a64-find-func-offset (names) (offsets) (target) (i) =
+ Name resolution: first match among the DEFINITIONS, with a leading
+ runtime registration skipped when a definition exists. The fourth
+ parameter is the runtime/definition boundary -- the count of names the
+ runtime registered before the first definition was emitted, stamped
+ into `extra.runtime-funcs` by `a64-emit-module` -- and the rule is
+ exactly two cases. A name whose first occurrence is at or past the
+ boundary is a definition, and the FIRST definition wins, which is what
+ the tree has always done and what `dtls-hello`'s expectations encode
+ for its colliding hello builders. A name whose first occurrence is
+ below the boundary is a runtime helper; if a definition of the same
+ name exists above the boundary, the definition wins -- that is
+ shadowing (`codex/test/shadow-builtin-fold`: `text-length (s) = 99`
+ must beat the runtime's `text-length`) -- and otherwise the helper is
+ the only thing there is. Plain last-match was tried first and bound
+ `dtls-hello`'s duplicate definitions to the wrong body; measured both
+ ways 2026-07-23. A caller passing 0 gets plain first-match.
+
+  a64-find-name-index : List Text, Text, Integer -> Integer
+  a64-find-name-index (names) (target) (i) =
    if i >= list-length names then 0 - 1
-   else if list-at names i == target then list-at offsets i
-   else a64-find-func-offset names offsets target (i + 1)
+   else if list-at names i == target then i
+   else a64-find-name-index names target (i + 1)
+
+  a64-find-func-offset : List Text, List Integer, Text, Integer -> Integer
+  a64-find-func-offset (names) (offsets) (target) (rtn) =
+   let i = a64-find-name-index names target 0
+   in if i < 0 then 0 - 1
+   else if i >= rtn then list-at offsets i
+   else let j = a64-find-name-index names target rtn
+   in if j >= 0 then list-at offsets j
+   else list-at offsets i
 
   a64-wcet-report : IRDef, Integer -> Text
   a64-wcet-report (def) (insn-count) =
@@ -1790,6 +2122,21 @@ Section: Stub Builtins
    let r = a64-alloc-temp st
    in let st1 = a64-emit (r.state) (arm64-mov (r.reg) a64-heap-reg)
    in let st2 = a64-emit st1 (arm64-movz a64-x9 0 0)
+   in let st3 = a64-emit st2 (arm64-str a64-x9 a64-heap-reg 0)
+   in let st4 = a64-emit st3 (arm64-add-imm a64-heap-reg a64-heap-reg 8)
+   in A64EmitResult { state = st4, reg = r.reg }
+
+ `read-line` is typed `Maybe Text`, so a lane with no stdin pump answers
+ the honest EOF: a None cell, tag 1, which is what x86-64's `__read_line`
+ stores at end of input. It answered an empty TEXT here until 2026-07-23,
+ and an empty text read back through a `when` on Maybe decodes as
+ `Just <garbage>` -- the tag word is 0, which is Just's tag.
+
+  a64-emit-maybe-none : A64State -> A64EmitResult
+  a64-emit-maybe-none (st) =
+   let r = a64-alloc-temp st
+   in let st1 = a64-emit (r.state) (arm64-mov (r.reg) a64-heap-reg)
+   in let st2 = a64-emit st1 (arm64-movz a64-x9 1 0)
    in let st3 = a64-emit st2 (arm64-str a64-x9 a64-heap-reg 0)
    in let st4 = a64-emit st3 (arm64-add-imm a64-heap-reg a64-heap-reg 8)
    in A64EmitResult { state = st4, reg = r.reg }

@@ -237,24 +237,26 @@ Section: HTTP Transport
     erp-requests : Integer
   }
 
-  erp-handle-request : ErpLoop, TransportRecvResult -> ErpLoop
+  erp-handle-request : ErpLoop, TransportRecvResult -> [Network.Write] ErpLoop
   erp-handle-request (ls) (recv) =
     let req = http-parse-request (recv.body)
-    in if req.valid == False then
-      let err-bytes = http-encode (erp-bad-request "malformed request")
-      in let ts2 = net-io-send-raw (ls.erp-transport) err-bytes
-      in ErpLoop { erp-transport = ts2, erp-state = ls.erp-state, erp-requests = ls.erp-requests + 1 }
+    in if req.valid == False then act
+      ts2 <- net-io-send-raw (ls.erp-transport) (http-encode (erp-bad-request "malformed request"))
+      ErpLoop { erp-transport = ts2, erp-state = ls.erp-state, erp-requests = ls.erp-requests + 1 }
+    end
     else let (st2, resp) = erp-route (ls.erp-state) req
       in let resp-bytes = http-encode resp
-      in let ts2 = net-io-send-raw (ls.erp-transport) resp-bytes
-      in ErpLoop { erp-transport = ts2, erp-state = st2, erp-requests = ls.erp-requests + 1 }
+      in act
+        ts2 <- net-io-send-raw (ls.erp-transport) resp-bytes
+        ErpLoop { erp-transport = ts2, erp-state = st2, erp-requests = ls.erp-requests + 1 }
+      end
 
-  erp-loop : ErpLoop -> [Console] Integer
+  erp-loop : ErpLoop -> [Console, Network.Read, Network.Write] Integer
   erp-loop (ls) = act
-    let recv = net-io-recv-loop (ls.erp-transport) 0
-    in if recv.has-message then act
-      let next = erp-handle-request ls recv
-      in erp-loop next
+    recv <- net-io-recv-loop (ls.erp-transport) 0
+    if recv.has-message then act
+      next <- erp-handle-request ls recv
+      erp-loop next
     end
     else act
       ls.erp-requests
@@ -266,12 +268,12 @@ Section: HTTP Transport
   erp-gateway-ip : List Integer = [10, 0, 2, 2]
   erp-host-ip : List Integer = [127, 0, 0, 1]
 
-  erp-server : ErpState -> [Console] Integer
+  erp-server : ErpState -> [Console, Network.Read, Network.Write] Integer
   erp-server (st) =
     let sess = net-session-new erp-local-mac erp-local-ip erp-gateway-ip 49154 9200 erp-host-ip 2000
     in let ts = transport-new sess
-    in let ts1 = net-io-connect ts
     in act
+      ts1 <- net-io-connect ts
       erp-loop (ErpLoop { erp-transport = ts1, erp-state = st, erp-requests = 0 })
     end
 

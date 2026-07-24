@@ -1,0 +1,61 @@
+Chapter: WhenArmNonTail
+  cites Foreword chapter Console
+
+ A codegen regression. A recursive function whose body is a `when`
+ needs its return address saved when an arm makes a NON-tail call, even
+ though another arm makes a tail call that would let it skip the frame's
+ ra. my-filter is the smallest shape: the ICons arm's then-branch conses
+ the recursive result (`ICons h (my-filter pred t)`, non-tail) while its
+ else-branch is a tail call. On RISC-V the plug's ra-need analysis had no
+ IrMatch arm, answered "no ra needed", elided the save, and my-filter
+ looped back into itself on return -- stopping the program mid-output.
+ my-map (arm conses a value, no tail call) always worked; sum-real (a
+ pure tail loop, no non-tail call) must keep skipping ra. Reduced from
+ list-test.
+
+Section: Loop
+
+  IntList =
+   | INil
+   | ICons (Integer) (IntList)
+
+  is-even : Integer -> Boolean
+  is-even (n) = (n / 2) * 2 == n
+
+  dbl : Integer -> Integer
+  dbl (n) = n * 2
+
+  my-sum : IntList -> Integer
+  my-sum (xs) =
+   when xs
+    is ICons (h) (t) -> h + my-sum t
+    is INil -> 0
+
+  my-map : (Integer -> Integer), IntList -> IntList
+  my-map (f) (xs) =
+   when xs
+    is ICons (h) (t) -> ICons (f h) (my-map f t)
+    is INil -> INil
+
+  my-filter : (Integer -> Boolean), IntList -> IntList
+  my-filter (pred) (xs) =
+   when xs
+    is ICons (h) (t) -> if pred h then ICons h (my-filter pred t) else my-filter pred t
+    is INil -> INil
+
+  sum-real : IntList, Integer -> Integer
+  sum-real (xs) (acc) =
+   when xs
+    is ICons (h) (t) -> sum-real t (acc + h)
+    is INil -> acc
+
+Section: Entry
+
+  opening : [Console] Nothing = act
+    let nums = ICons 1 (ICons 2 (ICons 3 (ICons 4 (ICons 5 INil))))
+    in act
+     print-line-uni ("map-sum: " & show (my-sum (my-map dbl nums)))
+     print-line-uni ("filter-sum: " & show (my-sum (my-filter is-even nums)))
+     print-line-uni ("tail-loop: " & show (sum-real nums 100))
+    end
+  end

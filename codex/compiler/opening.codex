@@ -1,5 +1,5 @@
 Chapter: Opening
-  cites Codex chapter Phase Allocator (phase-start, phase-measure, phase-compact, phase-compact-poison, PhaseStart, PhaseMetrics)
+  cites Codex chapter Phase Allocator (phase-start, phase-measure, phase-compact, phase-compact-poison, PhaseStart, PhaseMetrics, deck-short-of)
   cites Foreword chapter Maybe
   cites Foreword chapter Fat16
   cites Foreword chapter ImportGate
@@ -7,11 +7,13 @@ Chapter: Opening
 
  Entry point for the Codex compiler.
 
-  cites Emit chapter Codex Emitter (emit-codex-text-chapter, emit-type-defs, emit-def)
-  cites Emit chapter IR Text Emitter (emit-ir-chapter, ir-prune-unreachable)
+  cites Emit chapter Codex Emitter (codex-emit-text-chapter, codex-emit-type-defs, codex-emit-def)
+  cites Emit chapter IR Text Emitter (emit-ir-chapter, ir-prune-unreachable, ir-prune-unreachable-roots)
   cites Emit chapter Emit Allocator (emit-build)
-  cites Emit chapter X86-64 Code Generator (x86-64-emit-cdx, x86-64-emit-cdx-with-exit-mode, X86_64ExitMode, ExitRepl, Exit, X86_64WatchdogMode, WatchdogProgress, WatchdogPet, pmap-self-test, pmap-escape-count, pmap-escape-count-quiet, pmap-escape-list-quiet, utf8-to-cce)
-  cites Semantics chapter Name Resolution (resolve-chapter, check-entry-point-duplicate, check-duplicate-cites, count-typecheck-units)
+  cites Emit chapter X86-64 Code Generator (x86-64-emit-cdx, x86-64-emit-cdx-with-exit-mode, ir-chapter-with-proofs, keep-proof-defs, X86_64ExitMode, ExitRepl, Exit, X86_64WatchdogMode, WatchdogProgress, WatchdogPet, pmap-self-test, pmap-escape-count, pmap-escape-count-quiet, pmap-escape-list-quiet, utf8-to-cce, lir-target-x86)
+  cites Semantics chapter Name Resolution (resolve-chapter, check-entry-point-duplicate, check-duplicate-cites, check-cites-resolve, count-typecheck-units)
+  cites Codex chapter LirTargets (lir-target-a64-shape, lir-target-narrow-shape)
+  cites Foreword chapter CCE (to-unicode)
 
 Section: Compile Flags
 
@@ -20,11 +22,12 @@ Section: Compile Flags
    escape-check : Boolean,
    poison-compact : Boolean,
    deck-scale : Integer,
+   phase-trace : Boolean,
    pipeline : List Text
   }
 
   compile-flags-default : CompileFlags
-  compile-flags-default = CompileFlags { prose = False, escape-check = False, poison-compact = False, deck-scale = 100, pipeline = default-ir-pipeline }
+  compile-flags-default = CompileFlags { prose = False, escape-check = False, poison-compact = False, deck-scale = 100, phase-trace = False, pipeline = default-ir-pipeline }
 
  Every phase deck floor is scaled by deck-scale, a percentage carried on
  the mode line as `decks=N`. A hundred means the floors as written in
@@ -57,11 +60,24 @@ Section: Compile Flags
  ablation surface the middle-end campaign is built on — a pass that
  cannot be switched off cannot be measured.
 
+ **`passes=name` REPLACES the default; `passes=+name` adds to it.** Both
+ are wanted and the difference is not guessable, which is why the additive
+ form exists and why the pipeline is reported into the log
+ (`run-ir-pipeline`, `IR/Passes.codex`). A replacement is what an ablation
+ needs. Adding a *reporter* is what almost every other caller needs, and
+ spelling that as a replacement silently switches off `fold-constants` and
+ `inline-leaf-calls`, which is exactly what `build/lir-dump-test.ps1` did
+ for its whole existence, pinning a program the compiler never emits, with
+ `math-mod` still a call. The prose in `lir-check.codex` then reasoned from
+ that output that the inliner ran in a later phase. It does not; the flag
+ was emptying the pipeline it ran in.
+
   pipeline-of : Text -> List Text
   pipeline-of (mode) =
    let v = mode-flag-text mode "passes="
    in if v == "" then default-ir-pipeline
       else if v == "none" then []
+      else if text-starts-with v "+" then default-ir-pipeline & parse-pipeline-names (substring v 1 (text-length v - 1))
       else parse-pipeline-names v
 
   poison-lex : Integer = 161
@@ -87,10 +103,26 @@ Section: Compile Flags
    else if byte == 169 then "FRONTEND"
    else ""
 
+ A phase that runs out of deck does not always live long enough to say
+ so. The post-hoc check-deck-overflow runs at the END of a phase, and a
+ phase whose deck grew into the bivy has already read its own overwrite
+ by then: the compile dies in a garbage-pointer fault whose crash site
+ names a runtime helper (__linked_list_to_list, copy-sx-text) shared by
+ half the frontend, so the site does not identify the phase. Measured
+ 2026-07-21 on the 2.80 MB selfhost, `-Decks` at 20, 40, 50 and 60 all
+ die that way and the four logs name three different helpers.
+ phase-trace is the discriminator: under the existing `debug` mode flag
+ every completed phase writes one PH: line over the control channel, so
+ the last line before a crash bounds the failure to the phase after it.
+ It writes through port-out-byte rather than print-line-uni because the
+ phase chain is a pure let-chain and a Console row here would have to be
+ threaded through every phase signature.
+
   compact-phase : CompileFlags, Integer -> Nothing
   compact-phase (flags) (byte) =
-   if flags.poison-compact then phase-compact-poison byte
-   else phase-compact
+   let marked = phase-trace-mark (flags.phase-trace) byte
+   in if flags.poison-compact then phase-compact-poison byte
+      else phase-compact
 
 Section: Compile Target
 
@@ -104,11 +136,41 @@ Section: Compile Target
 
 Section: Frontend
 
- Two frontend builders: compile-frontend (TEXT/IR/MEASURE — LOWER on
- deck, no RESOLVE/LIFT) and compile-frontend-cdx (CDX — LOWER on
+ Two frontend builders: compile-frontend-passes (TEXT/IR/MEASURE -- LOWER on
+ deck, no RESOLVE/LIFT) and compile-frontend-cdx (CDX -- LOWER on
  deck, then RESOLVE on deck, then LIFT on deck). Both paths wrap
  lower-chapter in deck-record; rewrite-ir-defs does not deep-copy
  all referenced type data, so bivy placement is unsafe (CL 2968).
+
+ **Whether the IR pass pipeline runs is a parameter, and it has to be.**
+ compile-frontend-passes serves two consumers with opposite needs. The IR
+ emitters hand their chapter to a plug, which wants the same optimised IR
+ the CDX emitter compiles: without the pipeline every leaf call x86
+ inlines arrives at the ARM64 and RISC-V backends as a real call, and the
+ power-of-two remainder fusion cannot happen at all, because nothing
+ inlined the remainder for it to fuse. The TEXT emitters print definitions
+ back as source, and build.ps1's semantic-equivalence leg compares each
+ printed definition against the one in the file. An inlined body is not
+ that definition. Running the pipeline for both turns that leg red on
+ every build, by construction; running it for neither is what left the
+ plug lanes on raw lowering. So compile-frontend (TEXT, MEASURE) passes
+ False and compile-frontend-ir (IR) passes True, and the two wrappers
+ exist so that a call site states which one it is.
+
+ **This path DOES merge the pipeline's own diagnostics into its bag**, the
+ same ir-check-violation-bag and occ-info-bag compile-frontend-cdx uses, so
+ a `-Passes ir-check` or `-Passes occ-report` run in IR mode reports what it
+ found. It has to do it through frontend-bag-with-passes (below) and not
+ inline, and that is not a style choice: adding the two bags directly to
+ this function's own bag-merge-all killed the compiler in `bag-add` with a
+ general protection fault, reading a Text where a Diagnostic belongs, on a
+ source as small as codex/test/arithmetic. It was not the bags' contents --
+ two EMPTY extra bags did it as reliably as one holding an info, and the CDX
+ path merges fourteen bags the same way without complaint. This function's
+ let-chain is long enough that the two extra bindings pushed its register
+ allocation over a spill boundary; the helper keeps the binding count here
+ and does the merge where there is room. Pinned by
+ `build/ir-passes-test.ps1`. BACKLOG 3.24.
 
   CompileFrontend = record {
    type-defs : List ATypeDef,
@@ -133,6 +195,7 @@ Section: Frontend
    doc : Document,
    colliding : SkipListText,
    assignments : List ChapterAssignment,
+   chapter-names : List Text,
    parse-bag : DiagnosticBag,
    heap-marks : List Integer,
    phase-metrics : List PhaseMetrics
@@ -173,7 +236,7 @@ Section: Frontend
       }
    in CompileFrontend {
     type-defs = [],
-    text-meta = IRTextMeta { chapter-title = "", prose = "", section-titles = [], ctor-names = [] },
+    text-meta = IRTextMeta { chapter-title = "", prose = "", section-titles = [], ctor-names = [], prose-blocks = [], annotations = [] },
     ir = blank-ir,
     cdx-ir = blank-ir,
     sorted-type-defs = [],
@@ -197,6 +260,8 @@ Section: Frontend
       ground-effects = [],
       chapter-title = "",
       prose = "",
+      prose-blocks = [],
+      annotations = [],
       section-titles = [],
       rt-names = [],
       rt-budgets = [],
@@ -213,6 +278,28 @@ Section: Frontend
     heap-marks = marks,
     phase-metrics = []
    }
+
+ Hand this plain Integers captured from __deck-pos, never fields read back
+ out of a PhaseMetrics. phase-measure allocates its record with deck-record,
+ on the phase's own deck, at the END of the phase -- so a phase that has
+ overflowed allocates the record describing that overflow past its own
+ reservation, in bivy territory, where it is promptly overwritten. The
+ instrument is destroyed by the exact condition it exists to measure, and
+ the verdict computed from it is noise in BOTH directions.
+
+ Measured 2026-07-21 with `compile.ps1 -Measure` on the 2.80 MB selfhost,
+ LOWER's reported deck-origin is a sane heap address at `-Decks` 91 and 100
+ (no overflow) and reads 15, 29 and 3,571,777,536 at 88, 89 and 90. That
+ last one makes `deck-end - deck-origin` NEGATIVE, so the check answers
+ "fits" for a phase that is 169 KB over its floor -- which is the whole of
+ the non-monotonic knob: 88 and 89 report, 90 passes on a
+ negative subtraction, 91 genuinely fits.
+
+ An Integer let-binding is a value, not a heap record, so it cannot be
+ trampled by the allocation it is measuring. The RECORD is still wrong when
+ a phase overflows and that is a reporting defect worth knowing about when
+ reading a `-Measure` table; the fix for it is the write-path guard that
+ stops the overflow happening, not a better record.
 
   check-deck-overflow : Integer, Integer -> Integer
   check-deck-overflow (usage) (budget) =
@@ -243,6 +330,28 @@ Section: Frontend
   serial-hex (val) = serial-hex-loop val 60
 
   serial-newline : Integer = serial-byte 10
+
+
+ char-code answers the CCE code point and the wire wants Unicode, so
+ every byte goes through to-unicode. Sending char-code straight out
+ spells a label nobody can read and looks like a corrupted log rather
+ than like an encoding mistake.
+
+  serial-text-loop : Text, Integer, Integer -> Integer
+  serial-text-loop (t) (i) (len) =
+   if i >= len then 0
+   else let w = serial-byte (to-unicode (char-code (char-at t i)))
+   in serial-text-loop t (i + 1) len
+
+  serial-text : Text -> Integer
+  serial-text (t) = serial-text-loop t 0 (text-length t)
+
+  phase-trace-mark : Boolean, Integer -> Integer
+  phase-trace-mark (on) (byte) =
+   if on
+    then let w = serial-text ("PH:" & poison-phase-label byte)
+    in serial-newline
+   else 0
 
   scan-deck-dangling : Integer, Integer, Integer, Integer, Integer -> Integer
   scan-deck-dangling (addr) (deck-end) (bivy-lo) (bivy-hi) (count) =
@@ -321,13 +430,13 @@ Section: Frontend
    in let lex-deck-height = scaled-floor (flags.deck-scale) demand-lex-floor
    in let lex-base = build lex-deck-height
    in let lex-phase = phase-start
-   in let tok-result = tokenize-into source 1 (flags.prose)
+   in let tok-result = tokenize-into source 1 (flags.prose) (lex-base + lex-deck-height)
    in let tokens = tok-result.tokens
    in let lex-errors = tok-result.errors
    in let lex-bag = deck-record (bag-from-list lex-errors)
    in if bag-has-errors lex-bag
       then LexResult { tokens = [], bag = lex-bag, heap-marks = [h0], phase-metrics = [] }
-      else let lex-metrics = phase-measure lex-phase
+      else let lex-metrics = phase-measure lex-phase "LEX"
    in let lex-ov = check-deck-overflow (lex-metrics.deck-end - lex-metrics.deck-origin) lex-deck-height
    in let lex-ov-bag = if lex-ov == 1 then deck-overflow-bag "LEX" else no-overflow-bag
    in let lex-esc-bag = escape-check-bag (flags.escape-check) lex-metrics "LEX"
@@ -358,34 +467,43 @@ Section: Frontend
    let h1 = __heap-save
    in let parse-keep-height = scaled-floor (flags.deck-scale) demand-parse-keep-floor
    in let parse-base = build parse-keep-height
+   in let parse-guard = pitch demand-parse-guard-band
    in let parse-scratch-height = scaled-floor (flags.deck-scale) demand-parse-scratch-floor
-   in let scratch-base = build parse-scratch-height
+   in let scratch-base = build (parse-scratch-height + (if parse-guard < 0 then 1 else 0))
+   in let scratch-ceiling = scratch-base + parse-scratch-height
    in let parse-phase = phase-start
    in let st = make-parse-state tokens source
    in let scan = scan-document st
    in let h2 = __heap-save
-   in let assignments-s = deck-record (build-all-assignments source (scan.def-headers) 0 [])
-   in let colliding-s = deck-record (find-colliding-names assignments-s)
+   in let assignments-s = if deck-short-of scratch-ceiling demand-parse-scratch-guard-band then [] else deck-record (build-all-assignments source (scan.def-headers) 0 [])
+   in let colliding-s = if deck-short-of scratch-ceiling demand-parse-scratch-guard-band then skip-list-text-empty else deck-record (find-colliding-names assignments-s)
    in let h3 = __heap-save
    in let entry-dup-bag = bag-from-list (check-entry-point-duplicate assignments-s)
-   in let doc = parse-document (make-parse-state tokens source)
+   in let bset = deck-record (skip-list-text-from-list builtin-names)
+   in let shadow-bag = bag-from-list (check-shadowed-builtins (scan.def-headers) bset 0 (list-length (scan.def-headers)) [])
+   in let collide-bag = bag-from-list (check-cross-chapter-collisions (scan.def-headers) colliding-s assignments-s 0 (list-length (scan.def-headers)) [])
+   in let doc = parse-document (make-parse-state tokens source) scratch-ceiling
    in let prose-diags = if flags.prose then check-prose-consistency doc & check-prose-banned doc else []
    in let h4 = __heap-save
-   in let parse-bag = deck-record (bag-merge-all [doc.parse-bag, entry-dup-bag, bag-from-list prose-diags])
+   in let parse-sat = if deck-short-of scratch-ceiling demand-parse-scratch-guard-band then 1 else 0
+   in let parse-bag = deck-record (bag-merge-all [doc.parse-bag, entry-dup-bag, shadow-bag, collide-bag, bag-from-list prose-diags])
    in if bag-has-errors parse-bag
-      then ParseResult { doc = doc, colliding = colliding-s, assignments = assignments-s, parse-bag = parse-bag, heap-marks = [h0, h1, h2, h3, h4], phase-metrics = prior-metrics }
-      else let parse-metrics = phase-measure parse-phase
+      then ParseResult { doc = doc, colliding = colliding-s, assignments = assignments-s, chapter-names = scan.chapter-names, parse-bag = parse-bag, heap-marks = [h0, h1, h2, h3, h4], phase-metrics = prior-metrics }
+      else let parse-metrics = phase-measure parse-phase "PARSE"
    in let parse-ov = check-deck-overflow (parse-metrics.deck-end - parse-metrics.deck-origin) parse-scratch-height
    in let dset-keep = __deck-set parse-base
    in let keep-phase = phase-start
-   in let doc2 = deck-record (copy-sx-document parse-base doc)
+   in let gcopy = deck-record (copy-sx-document-guarded parse-base (parse-base + parse-keep-height) doc)
+   in let doc2 = gcopy.doc
    in let assignments = deck-record (for a in assignments-s -> deck-record (ChapterAssignment { def-name = copy-sx-text parse-base (a.def-name), chapter-slug = copy-sx-text parse-base (a.chapter-slug) }))
+   in let chapter-names-k = deck-record (copy-sx-texts parse-base (scan.chapter-names))
    in let colliding-names = skip-list-text-to-list colliding-s
    in let colliding = deck-record (skip-list-text-from-list (copy-sx-texts parse-base colliding-names))
    in let parse-bag-d = deck-record (copy-sx-bag parse-base parse-bag)
-   in let keep-metrics = phase-measure keep-phase
+   in let keep-metrics = phase-measure keep-phase "PARSE-KEEP"
    in let keep-ov = check-deck-overflow (keep-metrics.deck-end - keep-metrics.deck-origin) parse-keep-height
    in let parse-metrics-d = deck-record (PhaseMetrics {
+    label = parse-metrics.label,
     bivy-origin = parse-metrics.bivy-origin,
     bivy-hwm = parse-metrics.bivy-hwm,
     deck-origin = parse-metrics.deck-origin,
@@ -393,6 +511,7 @@ Section: Frontend
    })
    in let scratch-top = if parse-metrics.deck-end > parse-metrics.bivy-hwm then parse-metrics.deck-end else parse-metrics.bivy-hwm
    in let keep-esc-metrics = PhaseMetrics {
+    label = keep-metrics.label,
     bivy-origin = parse-metrics.deck-origin,
     bivy-hwm = scratch-top,
     deck-origin = keep-metrics.deck-origin,
@@ -400,11 +519,18 @@ Section: Frontend
    }
    in let keep-esc-bag = deck-record (escape-check-bag (flags.escape-check) keep-esc-metrics "PARSE")
    in let parse-precise-bag = deck-record (precise-escape-bag (flags.escape-check) (address-of doc2) "Document" keep-esc-metrics "PARSE")
-   in let parse-ov-bag = if parse-ov == 1 then deck-overflow-bag "PARSE" else no-overflow-bag
-   in let keep-ov-bag = if keep-ov == 1 then deck-overflow-bag "PARSE-KEEP" else no-overflow-bag
+   in let parse-ov-bag = if parse-ov == 1 | parse-sat == 1 then deck-overflow-bag "PARSE" else no-overflow-bag
+   in let keep-ov-bag = if keep-ov == 1 | gcopy.sat == 1 then deck-overflow-bag "PARSE-KEEP" else no-overflow-bag
    in let parse-bag2 = deck-record (bag-merge-all [parse-bag-d, parse-ov-bag, keep-ov-bag, keep-esc-bag, parse-precise-bag])
-   in let parse-phase-metrics = deck-record (list-push prior-metrics parse-metrics-d)
-   in let result = deck-record (ParseResult { doc = doc2, colliding = colliding, assignments = assignments, parse-bag = parse-bag2, heap-marks = [h0, h1, h2, h3, h4], phase-metrics = parse-phase-metrics })
+   in let keep-metrics-d = deck-record (PhaseMetrics {
+    label = keep-metrics.label,
+    bivy-origin = keep-metrics.bivy-origin,
+    bivy-hwm = keep-metrics.bivy-hwm,
+    deck-origin = keep-metrics.deck-origin,
+    deck-end = keep-metrics.deck-end
+   })
+   in let parse-phase-metrics = deck-record (list-push (list-push prior-metrics parse-metrics-d) keep-metrics-d)
+   in let result = deck-record (ParseResult { doc = doc2, colliding = colliding, assignments = assignments, chapter-names = chapter-names-k, parse-bag = parse-bag2, heap-marks = [h0, h1, h2, h3, h4], phase-metrics = parse-phase-metrics })
    in let sealed = compact-phase flags poison-parse
    in result
 
@@ -413,37 +539,46 @@ Section: Frontend
    let desugar-deck-height = scaled-floor (flags.deck-scale) demand-desugar-floor
    in let desugar-base = build desugar-deck-height
    in let desugar-phase = phase-start
-   in let ast = desugar-document source (pr.doc) chapter-name
-   in let desugar-metrics = phase-measure desugar-phase
+   in let dr = desugar-document source (pr.doc) chapter-name (desugar-base + desugar-deck-height)
+   in let ast = dr.dr-chapter
+   in let desugar-metrics = phase-measure desugar-phase "DESUGAR"
    in let desugar-ov = check-deck-overflow (desugar-metrics.deck-end - desugar-metrics.deck-origin) desugar-deck-height
    in let dset-keep = __deck-set fk-base
    in let keep-phase = phase-start
-   in let ast2 = deck-record (copy-as-chapter fk-base ast)
+   in let fk-ceiling = fk-base + fk-height - demand-frontend-keep-guard-band
+   in let fkcopy = deck-record (copy-as-chapter-guarded fk-base fk-ceiling ast)
+   in let ast2 = fkcopy.chapter
    in let assignments = deck-record (for a in (pr.assignments) -> deck-record (ChapterAssignment { def-name = copy-sx-text fk-base (a.def-name), chapter-slug = copy-sx-text fk-base (a.chapter-slug) }))
+   in let chapter-names = deck-record (copy-sx-texts fk-base (pr.chapter-names))
    in let colliding-names = skip-list-text-to-list (pr.colliding)
    in let colliding = deck-record (skip-list-text-from-list (copy-sx-texts fk-base colliding-names))
    in let parse-bag-d = deck-record (copy-sx-bag fk-base (pr.parse-bag))
    in let heap-marks-d = deck-record (for h in (pr.heap-marks) -> h)
-   in let desugar-metrics-d = deck-record (PhaseMetrics { bivy-origin = desugar-metrics.bivy-origin, bivy-hwm = desugar-metrics.bivy-hwm, deck-origin = desugar-metrics.deck-origin, deck-end = desugar-metrics.deck-end })
-   in let phase-metrics-d = deck-record (for m in (pr.phase-metrics) -> deck-record (PhaseMetrics { bivy-origin = m.bivy-origin, bivy-hwm = m.bivy-hwm, deck-origin = m.deck-origin, deck-end = m.deck-end }))
-   in let keep-metrics = phase-measure keep-phase
+   in let desugar-metrics-d = deck-record (PhaseMetrics { label = desugar-metrics.label, bivy-origin = desugar-metrics.bivy-origin, bivy-hwm = desugar-metrics.bivy-hwm, deck-origin = desugar-metrics.deck-origin, deck-end = desugar-metrics.deck-end })
+   in let phase-metrics-d = deck-record (for m in (pr.phase-metrics) -> deck-record (PhaseMetrics { label = m.label, bivy-origin = m.bivy-origin, bivy-hwm = m.bivy-hwm, deck-origin = m.deck-origin, deck-end = m.deck-end }))
+   in let keep-metrics = phase-measure keep-phase "DESUGAR-KEEP"
    in let keep-ov = check-deck-overflow (keep-metrics.deck-end - keep-metrics.deck-origin) fk-height
-   in let desugar-ov-bag = deck-record (if desugar-ov == 1 then deck-overflow-bag "DESUGAR" else no-overflow-bag)
-   in let keep-ov-bag = deck-record (if keep-ov == 1 then deck-overflow-bag "DESUGAR-KEEP" else no-overflow-bag)
+   in let desugar-ov-bag = deck-record (if desugar-ov == 1 | dr.dr-sat == 1 then deck-overflow-bag "DESUGAR" else no-overflow-bag)
+   in let keep-ov-bag = deck-record (if keep-ov == 1 | fkcopy.sat == 1 then deck-overflow-bag "DESUGAR-KEEP" else no-overflow-bag)
    in let desugar-esc-bag = deck-record (escape-check-bag (flags.escape-check) desugar-metrics "DESUGAR")
    in let desugar-sealed = compact-phase flags poison-desugar
    in let h5 = __heap-save
    in let scope-deck-height = scaled-floor (flags.deck-scale) demand-scope-floor
    in let scope-base = build scope-deck-height
+   in let scope-ceiling = scope-base + scope-deck-height
+   in let scope-origin = __deck-pos
    in let scope-phase = phase-start
-   in let scoped = scope-achapter ast2 colliding assignments
+   in let scoped = scope-achapter ast2 colliding assignments scope-ceiling
    in let h6 = __heap-save
    in let cite-bag = deck-record (check-duplicate-cites (scoped.citations))
-   in let resolve-result = resolve-chapter scoped colliding assignments
-   in let resolve-bag = deck-record (bag-merge-all [parse-bag-d, cite-bag, resolve-result.bag, desugar-ov-bag, keep-ov-bag, desugar-esc-bag, pmap-selftest-bag True])
-   in let scope-metrics = phase-measure scope-phase
-   in let scope-ov = check-deck-overflow (scope-metrics.deck-end - scope-metrics.deck-origin) scope-deck-height
-   in let scope-ov-bag = if scope-ov == 1 then deck-overflow-bag "SCOPE" else no-overflow-bag
+   in let missing-cite-bag = deck-record (check-cites-resolve (scoped.citations) assignments chapter-names)
+   in let resolve-result = resolve-chapter scoped colliding assignments scope-ceiling
+   in let resolve-bag = deck-record (bag-merge-all [parse-bag-d, cite-bag, missing-cite-bag, resolve-result.bag, desugar-ov-bag, keep-ov-bag, desugar-esc-bag, pmap-selftest-bag True])
+   in let scope-end = __deck-pos
+   in let scope-sat = if deck-short-of scope-ceiling demand-scope-guard-band then 1 else 0
+   in let scope-metrics = phase-measure scope-phase "SCOPE"
+   in let scope-ov = check-deck-overflow (scope-end - scope-origin) scope-deck-height
+   in let scope-ov-bag = if scope-ov == 1 | scope-sat == 1 then deck-overflow-bag "SCOPE" else no-overflow-bag
    in let scope-esc-bag = escape-check-bag (flags.escape-check) scope-metrics "SCOPE"
    in let scope-precise-bag = precise-escape-bag (flags.escape-check) (address-of scoped) "AChapter" scope-metrics "SCOPE"
    in let resolve-bag2 = deck-record (bag-merge-all [resolve-bag, scope-ov-bag, scope-esc-bag, scope-precise-bag])
@@ -472,15 +607,18 @@ Section: Frontend
    in let keep-height = scaled-floor (flags.deck-scale) demand-check-keep-floor
    in let keep-base = build keep-height
    in let check-base = build check-deck-height
+   in let check-ceiling = check-base + check-deck-height
+   in let check-origin = __deck-pos
    in let check-phase = phase-start
-   in let check-result = deck-record (check-chapter (sr.scoped) (sr.renames) (sr.colliding) (sr.assignments))
+   in let check-result = deck-record (check-chapter (sr.scoped) (sr.renames) (sr.colliding) (sr.assignments) check-ceiling)
    in let h8 = __heap-save
    in let cap-diags = deck-record (check-opening-capabilities (check-result.types))
-   in let cap-coherence-diags = deck-record check-cap-vocab-coherent
-   in let check-bag0 = deck-record (bag-merge-all [sr.resolve-bag, check-result.state.bag, bag-from-list cap-diags, bag-from-list cap-coherence-diags])
-   in let check-metrics = phase-measure check-phase
-   in let check-ov = check-deck-overflow (check-metrics.deck-end - check-metrics.deck-origin) check-deck-height
-   in let check-ov-bag = if check-ov == 1 then deck-overflow-bag "CHECK" else no-overflow-bag
+   in let check-bag0 = deck-record (bag-merge-all [sr.resolve-bag, check-result.state.bag, bag-from-list cap-diags])
+   in let check-end = __deck-pos
+   in let check-sat = if deck-short-of check-ceiling demand-check-guard-band then 1 else 0
+   in let check-metrics = phase-measure check-phase "CHECK"
+   in let check-ov = check-deck-overflow (check-end - check-origin) check-deck-height
+   in let check-ov-bag = if check-ov == 1 | check-sat == 1 then deck-overflow-bag "CHECK" else no-overflow-bag
    in let check-esc-bag = escape-check-bag (flags.escape-check) check-metrics "CHECK"
    in let check-bag = deck-record (bag-merge-all [check-bag0, check-ov-bag, check-esc-bag])
    in let check-heap-marks = deck-record (list-push (sr.heap-marks) h8)
@@ -490,7 +628,9 @@ Section: Frontend
       else let resolved-env = deck-record (for b in (check-result.env.bindings) -> deck-record (TypeBinding { name = b.name, bound-type = deep-resolve (check-result.state) (b.bound-type) }))
       in let sorted-all0 = deck-record (resolve-all-bindings (check-result.state) (sort-bindings (check-result.types & resolved-env)) 0 (list-length (check-result.types) + list-length resolved-env) (__list-with-capacity (list-length (check-result.types) + list-length resolved-env)))
       in let sorted-et0 = deck-record (resolve-all-expr-types (check-result.state) (sort-expr-types (check-result.state.expr-types)) 0 (list-length (check-result.state.expr-types)) (__list-with-capacity (list-length (check-result.state.expr-types))))
-      in let memo-pop = list-length sorted-et0 * 32 + list-length sorted-all0 * 32 + 1024
+      in let memo-pop0 = list-length sorted-et0 * 32 + list-length sorted-all0 * 32 + 1024
+      in let memo-graph = (check-metrics.deck-end - check-metrics.deck-origin) / 64
+      in let memo-pop = if memo-graph > memo-pop0 then memo-graph else memo-pop0
       in let memo-slots = memo-pow2-at-least (memo-pop * 2) 4096
       in let memo-table = pitch (memo-slots * 8)
       in let memo-z = __memset memo-table 0 (memo-slots * 8)
@@ -517,7 +657,9 @@ Section: Frontend
        mc-cap-text = memo-pop,
        mc-cap-name = memo-pop / 2 + 16,
        mc-cap-row = memo-pop / 16 + 16,
-       mc-cap-list = memo-pop / 4 + 16
+       mc-cap-list = memo-pop / 4 + 16,
+       mc-ceiling = keep-base + keep-height - 4194304,
+       mc-sat = 0
       }
       in let keep-set = __deck-set keep-base
       in let keep-phase = phase-start
@@ -528,10 +670,10 @@ Section: Frontend
       in let kept-bag = deck-record (copy-sx-bag keep-base check-bag)
       in let kept-ust-bag = deck-record (copy-sx-bag keep-base (check-result.state.bag))
       in let kept-marks = deck-record (copy-list-with-headroom check-heap-marks 0)
-      in let kept-metrics = deck-record (for m in check-phase-metrics -> deck-record (PhaseMetrics { bivy-origin = m.bivy-origin, bivy-hwm = m.bivy-hwm, deck-origin = m.deck-origin, deck-end = m.deck-end }))
-      in let keep-metrics = phase-measure keep-phase
+      in let kept-metrics = deck-record (for m in check-phase-metrics -> deck-record (PhaseMetrics { label = m.label, bivy-origin = m.bivy-origin, bivy-hwm = m.bivy-hwm, deck-origin = m.deck-origin, deck-end = m.deck-end }))
+      in let keep-metrics = phase-measure keep-phase "CHECK-KEEP"
       in let keep-ov = check-deck-overflow (keep-metrics.deck-end - keep-metrics.deck-origin) keep-height
-      in let keep-ov-bag = if keep-ov == 1 then deck-overflow-bag "CHECK-KEEP" else no-overflow-bag
+      in let keep-ov-bag = if keep-ov == 1 | mc.mc-sat == 1 then deck-overflow-bag "CHECK-KEEP" else no-overflow-bag
       in let keep-stat-bag = if flags.escape-check then deck-record (bag-from-list [make-warning cdx-escape-violation ("KEEP-STAT used=" & show (keep-metrics.deck-end - keep-metrics.deck-origin) & " ty=" & show (list-length (mc.mc-ty)) & " text=" & show (list-length (mc.mc-text)) & " name=" & show (list-length (mc.mc-name)) & " row=" & show (list-length (mc.mc-row)) & " tylists=" & show (list-length (mc.mc-tylist)) & "/" & show (sum-tylist-lens (mc.mc-tylist) 0 (list-length (mc.mc-tylist)) 0) & " fieldlists=" & show (list-length (mc.mc-fieldlist)) & "/" & show (sum-fieldlist-lens (mc.mc-fieldlist) 0 (list-length (mc.mc-fieldlist)) 0) & " ctorlists=" & show (list-length (mc.mc-ctorlist)) & "/" & show (sum-ctorlist-lens (mc.mc-ctorlist) 0 (list-length (mc.mc-ctorlist)) 0) & " labellists=" & show (list-length (mc.mc-labellist)) & "/" & show (sum-labellist-lens (mc.mc-labellist) 0 (list-length (mc.mc-labellist)) 0) & " subs=" & show (list-length kept-subs) & " et=" & show (list-length sorted-et) & " binds=" & show (list-length sorted-all)) synthetic-span]) else bag-from-list []
       in let final-bag = deck-record (bag-merge-all [kept-bag, keep-ov-bag, keep-stat-bag])
       in let pre-sorted-ust = deck-record (UnificationState {
@@ -545,7 +687,7 @@ Section: Frontend
        scope-grants = [],
        chapter-grounds = []
       })
-      in let result = deck-record (CompileChecked {
+      in let result0 = deck-record (CompileChecked {
        scoped = sr.scoped,
        all-bindings = sorted-all,
        ust = pre-sorted-ust,
@@ -557,6 +699,16 @@ Section: Frontend
        heap-marks = kept-marks,
        phase-metrics = kept-metrics
       })
+      in let check-scratch-top = if check-metrics.deck-end > check-metrics.bivy-hwm then check-metrics.deck-end else check-metrics.bivy-hwm
+      in let check-esc-metrics = PhaseMetrics {
+       label = keep-metrics.label,
+       bivy-origin = check-metrics.deck-origin,
+       bivy-hwm = check-scratch-top,
+       deck-origin = keep-metrics.deck-origin,
+       deck-end = keep-metrics.deck-end
+      }
+      in let check-precise-bag = deck-record (precise-escape-bag (flags.escape-check) (address-of result0) "CompileChecked" check-esc-metrics "CHECK")
+      in let result = __record-set result0 "bag" (deck-record (bag-merge-all [final-bag, check-precise-bag]))
    in let sealed = compact-phase flags poison-check
    in result
 
@@ -578,26 +730,65 @@ Section: Frontend
 
   compile-frontend : Text, Text, CompileFlags -> CompileFrontend
   compile-frontend (source) (chapter-name) (flags) =
+   compile-frontend-passes source chapter-name flags False
+
+  compile-frontend-ir : Text, Text, CompileFlags -> CompileFrontend
+  compile-frontend-ir (source) (chapter-name) (flags) =
+   compile-frontend-passes source chapter-name flags True
+
+ The ir-check and occ-report passes get their diagnostics into the frontend
+ bag through this helper rather than inline in compile-frontend-passes, and
+ the reason is a codegen cliff, not tidiness. compile-frontend-passes is a
+ very long let-chain, and adding the two extra bindings an inline merge
+ needs pushed its register allocation over a spill boundary: the compiler
+ then died in bag-add reading a Text where a Diagnostic belongs, on a source
+ as small as codex/test/arithmetic, whether the extra bags held anything or
+ not (two empty bags did it as reliably as one holding an info). The merge
+ itself was never the problem -- compile-frontend-cdx merges fourteen bags
+ the same way without complaint. Doing it here keeps the caller's binding
+ count exactly where the four-bag version had it and moves the extra
+ bindings into a small function with room to spare. The two inner
+ deck-records match compile-frontend-cdx's, so the bag survives the frontend
+ compact. BACKLOG 3.24, found by reek closing 3.23.
+
+  frontend-bag-with-passes : DiagnosticBag, DiagnosticBag, DiagnosticBag, DiagnosticBag, IRPassResult -> DiagnosticBag
+  frontend-bag-with-passes (base) (ov) (esc) (precise) (passed) =
+   bag-merge-all [base, ov, esc, precise,
+     deck-record (ir-check-violation-bag (passed.violations)),
+     deck-record (occ-info-bag (passed.infos))]
+
+  compile-frontend-passes : Text, Text, CompileFlags, Boolean -> CompileFrontend
+  compile-frontend-passes (source) (chapter-name) (flags) (run-passes) =
    let checked = compile-checked source chapter-name flags
    in if bag-has-errors (checked.bag) then halted-frontend (checked.bag) (checked.heap-marks)
    else let lower-deck-height = scaled-floor (flags.deck-scale) demand-lower-floor
    in let lower-base = build lower-deck-height
+   in let lower-ceiling = lower-base + lower-deck-height
+   in let lower-origin = __deck-pos
    in let lower-phase = phase-start
-   in let ir = deck-record (lower-chapter (checked.scoped) (checked.all-bindings) (checked.ust) (checked.ctor-names) (checked.renames) (checked.colliding) (checked.assignments))
+   in let ir-raw = deck-record (lower-chapter (checked.scoped) (checked.all-bindings) (checked.ust) (checked.ctor-names) (checked.renames) (checked.colliding) (checked.assignments) lower-ceiling)
+   in let passed = if run-passes then deck-record (run-ir-pipeline (flags.pipeline) ir-raw)
+      else IRPassResult { chapter = ir-raw, violations = [], infos = [] }
+   in let ir = passed.chapter
    in let tm = deck-record (IRTextMeta {
     chapter-title = checked.scoped.chapter-title,
     prose = checked.scoped.prose,
     section-titles = checked.scoped.section-titles,
-    ctor-names = checked.ctor-names
+    ctor-names = checked.ctor-names,
+    prose-blocks = checked.scoped.prose-blocks,
+    annotations = checked.scoped.annotations
    })
-   in let lower-metrics = phase-measure lower-phase
-   in let lower-ov = check-deck-overflow (lower-metrics.deck-end - lower-metrics.deck-origin) lower-deck-height
+   in let lower-end = __deck-pos
+   in let lower-sat = if deck-short-of lower-ceiling demand-lower-guard-band then 1 else 0
+   in let lower-metrics = phase-measure lower-phase "LOWER"
+   in let lower-ov = check-deck-overflow (lower-end - lower-origin) lower-deck-height
+   in let lower-precise-bag = deck-record (precise-escape-bag (flags.escape-check) (address-of ir) "IRChapter" lower-metrics "LOWER")
    in let lower-sealed = compact-phase flags poison-lower
    in let blank-ir = IRChapter { name = ir.name, defs = [], effect-op-names = ir.effect-op-names, span = ir.span }
    in let pm1 = deck-record (list-push (checked.phase-metrics) lower-metrics)
-   in let lower-ov-bag = if lower-ov == 1 then deck-overflow-bag "LOWER" else no-overflow-bag
+   in let lower-ov-bag = if lower-ov == 1 | lower-sat == 1 then deck-overflow-bag "LOWER" else no-overflow-bag
    in let lower-esc-bag = escape-check-bag (flags.escape-check) lower-metrics "LOWER"
-   in let fe-bag = deck-record (bag-merge-all [checked.bag, lower-ov-bag, lower-esc-bag])
+   in let fe-bag = deck-record (frontend-bag-with-passes (checked.bag) lower-ov-bag lower-esc-bag lower-precise-bag passed)
    in let result = deck-record (CompileFrontend {
     type-defs = checked.scoped.type-defs,
     text-meta = tm,
@@ -618,47 +809,58 @@ Section: Frontend
    in if bag-has-errors (checked.bag) then halted-frontend (checked.bag) (checked.heap-marks)
    else let lower-deck-height = scaled-floor (flags.deck-scale) demand-lower-floor
    in let lower-base = build lower-deck-height
+   in let lower-ceiling = lower-base + lower-deck-height
+   in let lower-origin = __deck-pos
    in let lower-phase = phase-start
-   in let ir-raw = deck-record (lower-chapter (checked.scoped) (checked.all-bindings) (checked.ust) (checked.ctor-names) (checked.renames) (checked.colliding) (checked.assignments))
+   in let ir-raw = deck-record (lower-chapter (checked.scoped) (checked.all-bindings) (checked.ust) (checked.ctor-names) (checked.renames) (checked.colliding) (checked.assignments) lower-ceiling)
    in let passed = deck-record (run-ir-pipeline (flags.pipeline) ir-raw)
    in let ir = passed.chapter
    in let ir-check-bag = deck-record (ir-check-violation-bag (passed.violations))
    in let occ-report-bag = deck-record (occ-info-bag (passed.infos))
-   in let lower-metrics = phase-measure lower-phase
-   in let lower-ov = check-deck-overflow (lower-metrics.deck-end - lower-metrics.deck-origin) lower-deck-height
+   in let lower-end = __deck-pos
+   in let lower-sat = if deck-short-of lower-ceiling demand-lower-guard-band then 1 else 0
+   in let lower-metrics = phase-measure lower-phase "LOWER"
+   in let lower-ov = check-deck-overflow (lower-end - lower-origin) lower-deck-height
+   in let lower-precise-bag = deck-record (precise-escape-bag (flags.escape-check) (address-of ir) "IRChapter" lower-metrics "LOWER")
    in let lower-sealed = compact-phase flags poison-lower
    in let resolve-deck-height = scaled-floor (flags.deck-scale) demand-resolve-floor
    in let resolve-base = build resolve-deck-height
+   in let resolve-ceiling = resolve-base + resolve-deck-height
    in let resolve-phase = phase-start
    in let type-map = deck-record (build-type-def-map (checked.scoped.type-defs) 0 (list-length (checked.scoped.type-defs)) [])
    in let stds = deck-record (sort-bindings (type-map & checked.all-bindings))
-   in let resolved-defs = deck-record (rewrite-ir-defs stds (ir.defs))
-   in let resolve-metrics = phase-measure resolve-phase
+   in let resolved-defs = deck-record (rewrite-ir-defs stds (ir.defs) resolve-ceiling)
+   in let resolve-sat = if deck-short-of resolve-ceiling demand-resolve-guard-band then 1 else 0
+   in let resolve-metrics = phase-measure resolve-phase "RESOLVE"
    in let resolve-ov = check-deck-overflow (resolve-metrics.deck-end - resolve-metrics.deck-origin) resolve-deck-height
    in let lift-deck-height = scaled-floor (flags.deck-scale) demand-lift-floor
    in let lift-base = build lift-deck-height
+   in let lift-ceiling = lift-base + lift-deck-height
    in let lift-phase = phase-start
    in let cdx-chapter = deck-record (lift-lambdas (IRChapter {
     name = ir.name,
     defs = resolved-defs,
     effect-op-names = ir.effect-op-names,
     span = ir.span
-   }))
-   in let lift-metrics = phase-measure lift-phase
+   }) lift-ceiling)
+   in let lift-sat = if deck-short-of lift-ceiling demand-lift-guard-band then 1 else 0
+   in let lift-metrics = phase-measure lift-phase "LIFT"
    in let lift-ov = check-deck-overflow (lift-metrics.deck-end - lift-metrics.deck-origin) lift-deck-height
    in let tm = deck-record (IRTextMeta {
     chapter-title = checked.scoped.chapter-title,
     prose = checked.scoped.prose,
     section-titles = checked.scoped.section-titles,
-    ctor-names = checked.ctor-names
+    ctor-names = checked.ctor-names,
+    prose-blocks = checked.scoped.prose-blocks,
+    annotations = checked.scoped.annotations
    })
    in let blank-ir = IRChapter { name = ir.name, defs = [], effect-op-names = ir.effect-op-names, span = ir.span }
    in let pm1 = deck-record (list-push (checked.phase-metrics) lower-metrics)
    in let pm2 = deck-record (list-push pm1 resolve-metrics)
    in let pm3 = deck-record (list-push pm2 lift-metrics)
-   in let lower-ov-bag = if lower-ov == 1 then deck-overflow-bag "LOWER" else no-overflow-bag
-   in let resolve-ov-bag = if resolve-ov == 1 then deck-overflow-bag "RESOLVE" else no-overflow-bag
-   in let lift-ov-bag = if lift-ov == 1 then deck-overflow-bag "LIFT" else no-overflow-bag
+   in let lower-ov-bag = if lower-ov == 1 | lower-sat == 1 then deck-overflow-bag "LOWER" else no-overflow-bag
+   in let resolve-ov-bag = if resolve-ov == 1 | resolve-sat == 1 then deck-overflow-bag "RESOLVE" else no-overflow-bag
+   in let lift-ov-bag = if lift-ov == 1 | lift-sat == 1 then deck-overflow-bag "LIFT" else no-overflow-bag
    in let lower-esc-bag = escape-check-bag (flags.escape-check) lower-metrics "LOWER"
    in let resolve-esc-bag = escape-check-bag (flags.escape-check) resolve-metrics "RESOLVE"
    in let lift-esc-bag = escape-check-bag (flags.escape-check) lift-metrics "LIFT"
@@ -686,8 +888,10 @@ Section: Frontend
          deck-live-warn "stds" "lower-scratch" (pmap-escape-list-quiet stds-root "TypeBinding" (lower-metrics.deck-end) (lower-metrics.bivy-hwm))])
        else bag-from-list []
       else bag-from-list []
-   in let lir-report-bag = deck-record (occ-info-bag (lir-report-if (flags.pipeline) cdx-chapter))
-   in let fe-bag = deck-record (bag-merge-all [checked.bag, ir-check-bag, occ-report-bag, lir-report-bag, lower-ov-bag, resolve-ov-bag, lift-ov-bag, lower-esc-bag, resolve-esc-bag, lift-esc-bag, dl-bag])
+   in let lir-report-bag = deck-record (occ-info-bag (lir-report-if lir-target-x86 (flags.pipeline) cdx-chapter))
+   in let lir-probe-bag = deck-record (occ-info-bag (lir-alloc-probe-if lir-target-a64-shape "A64" "lir-dump-a64" (flags.pipeline) cdx-chapter))
+   in let lir-narrow-bag = deck-record (occ-info-bag (lir-alloc-probe-if lir-target-narrow-shape "NARROW" "lir-dump-a64" (flags.pipeline) cdx-chapter))
+   in let fe-bag = deck-record (bag-merge-all [checked.bag, ir-check-bag, occ-report-bag, lir-report-bag, lir-probe-bag, lir-narrow-bag, lower-ov-bag, resolve-ov-bag, lift-ov-bag, lower-esc-bag, resolve-esc-bag, lift-esc-bag, lower-precise-bag, dl-bag])
    in let result = deck-record (CompileFrontend {
     type-defs = checked.scoped.type-defs,
     text-meta = tm,
@@ -704,15 +908,22 @@ Section: Frontend
 
 Section: Library Loading
 
- Scans the user source for library cite declarations (Foreword, Kernel,
- OS, Works), reads each chapter file from its quire directory, and
- renames chapter headers to "Quire--Name" so they coexist with the
- citing chapter in a single preconcatenated source.
+ Classifies a cite by quire and maps a quire to its directory. What used
+ to live here as well was a whole file-reading loader -- `load-cited-
+ foreword` over `read-and-rename-library` and `load-and-advance-library`,
+ renaming chapter headers to "Quire--Name" so they could be concatenated.
+ **Nothing ever called it.** The host does this job: `Resolve-CiteOrder`
+ in `build/quire-map.ps1`, driven by `build/compile.ps1`, which is also
+ what actually raises CDX3010 when a cited chapter is not on disk.
 
-  ForewordLoadResult = record {
-   prefix : Text,
-   bag : DiagnosticBag
-  }
+ Deleted 2026-07-18. It mattered because that dead loop
+ held the compiler's ONLY raise of `cdx-missing-cite`, so the code read as
+ though the compiler diagnosed a missing cite when no path could reach it.
+ The registry entry stays -- the code is real and the host emits it -- but
+ the compiler no longer pretends to raise it. `dedup-library-cites` and
+ `ForewordLoadResult` went with it, having no other caller;
+ `filter-library-cites`, `is-library-quire` and `quire-to-dir` stayed,
+ because Disk Foreword Loading below uses all three.
 
   is-library-quire : Text -> Boolean
   is-library-quire (q) =
@@ -770,44 +981,6 @@ Section: Library Loading
       then filter-library-cites citations (i + 1) len (list-push acc c)
       else filter-library-cites citations (i + 1) len acc
 
-  dedup-library-cites : List CitesDecl, Integer, Integer, List CitesDecl, List Text -> List CitesDecl
-  dedup-library-cites (cs) (i) (len) (acc) (seen) =
-   if i == len then acc
-   else let c = list-at cs i
-   in let key = token-text (c.quire) & ":" & c.chapter-name
-   in if text-set-has seen key
-      then dedup-library-cites cs (i + 1) len acc seen
-      else dedup-library-cites cs (i + 1) len (list-push acc c) (text-set-insert seen key)
-
-  load-and-advance-library : List CitesDecl, Integer, Integer, List Text, DiagnosticBag, Text, Text, Text, Boolean -> [FileSystem] ForewordLoadResult
-  load-and-advance-library (fwc) (i) (len) (chunks) (bag) (quire) (name) (path) (found) =
-   if found then act
-     content <- read-file-uni path
-     read-and-rename-library fwc (i + 1) len (list-push chunks (text-replace content ("Chapter: " & name) ("Chapter: " & quire & "--" & name) & "\n\n")) bag
-   end
-   else let cite = list-at fwc i
-   in let missing-bag = bag-add bag (make-error cdx-missing-cite ("Cited " & quire & " chapter '" & name & "' not found (expected " & path & ")") (span-at (cite.quire.line) (cite.quire.column) (cite.quire.offset) (cite.quire.length) (cite.quire.file-id)))
-   in read-and-rename-library fwc (i + 1) len chunks missing-bag
-
-  read-and-rename-library : List CitesDecl, Integer, Integer, List Text, DiagnosticBag -> [FileSystem] ForewordLoadResult
-  read-and-rename-library (fwc) (i) (len) (chunks) (bag) =
-   if i == len then ForewordLoadResult { prefix = text-concat-list chunks, bag = bag }
-   else let cite = list-at fwc i
-   in let name = cite.chapter-name
-   in let quire = token-text (cite.quire)
-   in let path = quire-to-dir quire & name & ".codex"
-   in act
-     found <- file-exists path
-     load-and-advance-library fwc i len chunks bag quire name path found
-   end
-
-  load-cited-foreword : Text -> [FileSystem] ForewordLoadResult
-  load-cited-foreword (source) =
-   let tok-result = tokenize source 1
-   in let doc = parse-document (make-parse-state (tok-result.tokens) source)
-   in let lib-cites = filter-library-cites (doc.citations) 0 (list-length (doc.citations)) []
-   in let uniq = dedup-library-cites lib-cites 0 (list-length lib-cites) [] []
-   in read-and-rename-library uniq 0 (list-length uniq) [] empty-bag
 
 Section: Disk Foreword Loading
 
@@ -819,7 +992,7 @@ Section: Disk Foreword Loading
   disk-extract-cites : Text -> List CitesDecl
   disk-extract-cites (source) =
    let tok-result = tokenize source 1
-   in let doc = parse-document (make-parse-state (tok-result.tokens) source)
+   in let doc = parse-document (make-parse-state (tok-result.tokens) source) 0
    in filter-library-cites (doc.citations) 0 (list-length (doc.citations)) []
 
   disk-load-cite : Fat16Volume, DiskLoadState, Text, Text -> DiskLoadState
@@ -1183,7 +1356,7 @@ Section: Refusing A Quotation
   resolve-quotations : Text, FactBundle -> QuoteResolve
   resolve-quotations (body) (bundle) =
    let tok-result = tokenize body 1
-   in let doc = parse-document (make-parse-state (tok-result.tokens) body)
+   in let doc = parse-document (make-parse-state (tok-result.tokens) body) 0
    in let qs = doc.quotations
    in if list-length qs == 0 then QuoteResolve { qr-prefix = "", qr-bag = empty-bag }
    else let q0 = list-at qs 0
@@ -1209,7 +1382,7 @@ Section: Text Compilation
   emit-for-text-target : CompileTarget, IRChapter, IRTextMeta, List ATypeDef, List RenameEntry -> Text
   emit-for-text-target (target) (ir) (meta) (type-defs) (renames) =
    when target
-    is CtCodexText -> emit-codex-text-chapter ir meta type-defs renames
+    is CtCodexText -> codex-emit-text-chapter ir meta type-defs renames
     is CtX86_64Bare | CtCdx -> ""
 
 Section: Binary Compilation
@@ -1221,10 +1394,37 @@ Section: Binary Compilation
   compile-to-cdx : CompileFrontend -> EmitChapterResult
   compile-to-cdx (fe) = compile-to-cdx-with-exit-mode fe Exit False WatchdogProgress
 
+ The CDX root set. `opening` is the entry point and the root of
+ everything the machine will run. The two fat16 servicer workers are not
+ reachable from it by name: the default FileSystem handler stubs
+ (emit-fs-servicer-helpers, X86_64Helpers) call them through a hardcoded
+ string in the emitter, so no IR body anywhere mentions them and a
+ flood-fill from `opening` alone would drop the workers out from under
+ the stubs that call them.
+
+ They are named unconditionally rather than behind the emitter's own
+ read-text guard. A program that does not cite FileSystem never defines
+ them, and a root that names no definition is skipped -- so the guard
+ would buy two definitions in the programs that do cite it, at the price
+ of a second copy of a condition free to drift from the first.
+
+ A root omitted here is not a silent wrong binary. Every way emitted code
+ reaches a function is checked at finalize: a call through
+ check-call-patch-targets, an address-of through check-func-addr-targets,
+ an effect-op slot through check-effect-op-reads. Each raises CDX2040 (or
+ its effect-op sibling) naming the function, and the bag then refuses the
+ binary. The failure mode of a wrong root set is a red build that names
+ what is missing.
+
+  cdx-emit-roots : List Text
+  cdx-emit-roots = ["opening", "fat16-servicer-read", "fat16-servicer-write"]
+
   compile-to-cdx-with-exit-mode : CompileFrontend, X86_64ExitMode, Boolean, X86_64WatchdogMode -> EmitChapterResult
   compile-to-cdx-with-exit-mode (fe) (exit-mode) (poison) (wd-mode) =
    if bag-has-errors (fe.bag) then EmitChapterResult { header-bytes = [], content-buf = 0, content-len = 0, tail-bytes = [], bag = fe.bag, symbol-map = [] }
-   else let emit-result = x86-64-emit-cdx-with-exit-mode (fe.cdx-ir) (fe.sorted-type-defs) exit-mode poison False wd-mode
+   else let proofs = keep-proof-defs [] ((fe.cdx-ir).defs) 0
+    in let pruned = ir-prune-unreachable-roots (fe.cdx-ir) cdx-emit-roots
+    in let emit-result = x86-64-emit-cdx-with-exit-mode (ir-chapter-with-proofs pruned proofs) (fe.sorted-type-defs) exit-mode poison False wd-mode
     in EmitChapterResult {
      header-bytes = emit-result.header-bytes,
      content-buf = emit-result.content-buf,
@@ -1336,7 +1536,7 @@ Section: Streaming Emission
   emit-streaming-ir-defs (ir-defs) (ctor-names) (renames) (i) (len) =
    if i == len then print-line-uni ""
    else let h = __heap-save
-   in let text = emit-def (list-at ir-defs i) ctor-names renames
+   in let text = codex-emit-def (list-at ir-defs i) ctor-names renames
    in act
     print-line-uni text
     let restored = __heap-restore h
@@ -1359,7 +1559,7 @@ Section: Streaming Emission
       then let header = if fe.text-meta.chapter-title == "" then ""
            else "Chapter: " & fe.text-meta.chapter-title & "\n\n"
              & if fe.text-meta.prose == "" then "" else " " & fe.text-meta.prose & "\n\n"
-      in let type-defs-text = emit-type-defs (fe.type-defs) 0
+      in let type-defs-text = codex-emit-type-defs (fe.type-defs) 0
       in act
        print-line-uni wd-marks
        print-line-uni (header & type-defs-text)
@@ -1368,8 +1568,8 @@ Section: Streaming Emission
    in let header = if fe.text-meta.chapter-title == "" then ""
       else "Chapter: " & fe.text-meta.chapter-title & "\n\n"
         & if fe.text-meta.prose == "" then "" else " " & fe.text-meta.prose & "\n\n"
-   in let type-defs-text = emit-type-defs (fe.type-defs) 0
-   in let first-text = emit-def (list-at ir-defs 0) (fe.text-meta.ctor-names) (fe.renames)
+   in let type-defs-text = codex-emit-type-defs (fe.type-defs) 0
+   in let first-text = codex-emit-def (list-at ir-defs 0) (fe.text-meta.ctor-names) (fe.renames)
    in act
     print-line-uni wd-marks
     print-line-uni (header & type-defs-text & first-text)
@@ -1467,10 +1667,11 @@ Section: Entry Point
 
   emit-ir-uni : Text, CompileFlags -> [Console] Nothing
   emit-ir-uni (source) (flags) =
-   let fe = compile-frontend source "Program" flags
+   let fe = compile-frontend-ir source "Program" flags
    in let h-pre-emit = __heap-save
    in act
     print-codegen-error-header (bag-errors (fe.bag))
+    print-bag-notices (fe.bag)
     if bag-has-errors (fe.bag) then print-line-uni "CODEGEN-HALTED: errors in bag; no IR emitted"
     else act
      print-line-uni "IR-BEGIN"
@@ -1488,7 +1689,7 @@ Section: Entry Point
 
   emit-ir-cce : Text, CompileFlags -> [Console] Nothing
   emit-ir-cce (source) (flags) =
-   let fe = compile-frontend source "Program" flags
+   let fe = compile-frontend-ir source "Program" flags
    in let h-pre-emit = __heap-save
    in act
     print-codegen-error-header (bag-errors (fe.bag))
@@ -1516,7 +1717,7 @@ Section: Entry Point
   format-phase-decks (ms) (i) (len) (acc) =
    if i == len then acc
    else let m = list-at ms i
-   in format-phase-decks ms (i + 1) len (acc & "DECK-" & integer-to-text i & ":origin=" & integer-to-text (m.deck-origin) & " end=" & integer-to-text (m.deck-end) & " used=" & integer-to-text (m.deck-end - m.deck-origin) & " bivy-hwm=" & integer-to-text (m.bivy-hwm) & "\n")
+   in format-phase-decks ms (i + 1) len (acc & "DECK-" & integer-to-text i & ":phase=" & (m.label) & " origin=" & integer-to-text (m.deck-origin) & " end=" & integer-to-text (m.deck-end) & " used=" & integer-to-text (m.deck-end - m.deck-origin) & " bivy-origin=" & integer-to-text (m.bivy-origin) & " bivy-hwm=" & integer-to-text (m.bivy-hwm) & " bivy-used=" & integer-to-text (m.bivy-hwm - m.bivy-origin) & "\n")
 
   parse-mode-cmd : Text -> Text
   parse-mode-cmd (mode) =
@@ -1573,17 +1774,22 @@ Section: Entry Point
 
   parse-mode-flags : Text -> CompileFlags
   parse-mode-flags (mode) =
-   CompileFlags { prose = has-mode-flag mode "prose", escape-check = has-mode-flag mode "escape-check", poison-compact = has-mode-flag mode "poison-compact", deck-scale = deck-scale-of mode, pipeline = pipeline-of mode }
+   CompileFlags { prose = has-mode-flag mode "prose", escape-check = has-mode-flag mode "escape-check", poison-compact = has-mode-flag mode "poison-compact", deck-scale = deck-scale-of mode, phase-trace = has-mode-flag mode "debug", pipeline = pipeline-of mode }
 
-  disk-partition-start : Integer = 2048
+ The volume is resolved from the disk's own GPT rather than assumed to start
+ at LBA 2048. That constant was only ever right for an image our GptWriter
+ laid down; a stick partitioned elsewhere, or our own dual-boot install,
+ puts the volume at a different offset and DISK mode read the wrong sectors.
+ fat16-boot-volume walks the partition table and takes the first entry that
+ parses as FAT16, falling back to 2048 when there is no readable GPT.
 
   emit-from-disk : Text -> [Console, FileSystem] Nothing
   emit-from-disk (mode) = act
    path-result <- read-line
+   vol <- fat16-boot-volume
    when path-result
     is Just (path) ->
-      let vol = fat16-init disk-partition-start
-      in when fat16-read-text vol path
+      when fat16-read-text vol path
         is Just (source) ->
           let foreword-prefix = disk-resolve-forewords vol source
           in let full = foreword-prefix & source

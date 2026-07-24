@@ -72,7 +72,7 @@ Section: Expression Emission
     is IrCharLit (n) (sp) -> show n
     is IrName (n) (ty) (sp) -> gtk-sanitize n
     is IrBinary (op) (l) (r) (ty) (sp) -> emit-gtk-binary op l r arities
-    is IrNegate (x) (sp) -> "(-" & emit-gtk-expr x arities & ")"
+    is IrNegate (x) (nty) (sp) -> "(-" & emit-gtk-expr x arities & ")"
     is IrIf (c) (t) (el) (ty) (sp) -> "(" & emit-gtk-expr t arities & " if " & emit-gtk-expr c arities & " else " & emit-gtk-expr el arities & ")"
     is IrLet (name) (ty) (val) (body) (sp) -> "(lambda " & gtk-sanitize name & ": " & emit-gtk-expr body arities & ")(" & emit-gtk-expr val arities & ")"
     is IrApply (f) (a) (ty) (sp) -> emit-gtk-apply e arities
@@ -109,9 +109,9 @@ Section: Binary Operators
     is IrAddInt | IrAddNum | IrAddRealApprox | IrAddRealTrapping | IrAddRealSaturating -> "(" & lhs & " + " & rhs & ")"
     is IrSubInt | IrSubNum | IrSubRealApprox | IrSubRealTrapping | IrSubRealSaturating -> "(" & lhs & " - " & rhs & ")"
     is IrMulInt | IrMulNum | IrMulRealApprox | IrMulRealTrapping | IrMulRealSaturating -> "(" & lhs & " * " & rhs & ")"
-    is IrDivInt -> "(" & lhs & " // " & rhs & ")"
+    is IrDivInt -> "((lambda _a, _b: (abs(_a) // abs(_b)) * (1 if (_a >= 0) == (_b >= 0) else -1))(" & lhs & ", " & rhs & "))"
     is IrDivNum | IrDivRealApprox | IrDivRealTrapping | IrDivRealSaturating -> "(" & lhs & " / " & rhs & ")"
-    is IrRemInt -> "(" & lhs & " % " & rhs & ")"
+    is IrRemInt -> "((lambda _a, _b: (abs(_a) % abs(_b)) * (1 if _a >= 0 else -1))(" & lhs & ", " & rhs & "))"
     is IrPowInt -> "(" & lhs & " ** " & rhs & ")"
     is IrEq -> "(" & lhs & " == " & rhs & ")"
     is IrNotEq -> "(" & lhs & " != " & rhs & ")"
@@ -283,6 +283,7 @@ Section: Type Definitions
      in "@dataclass\nclass " & sname & ":\n" & emit-gtk-record-field-defs fields 0 & "\n"
     is AVariantTypeDef (name) (tparams) (ctors) (s) ->
      emit-gtk-variant-ctor-defs ctors 0
+    is AUnitTypeDef (name) (unitbase) (s) -> ""
 
   emit-gtk-record-field-defs : List ARecordFieldDef, Integer -> Text
   emit-gtk-record-field-defs (fields) (i) =
@@ -333,10 +334,10 @@ Section: Definition Emission
 
 Section: GTK Application Assembly
 
-  emit-gtk-chapter : IRChapter, List ATypeDef -> Text
-  emit-gtk-chapter (m) (type-defs) =
+  emit-gtk-chapter : IRChapter, IRTextMeta, List ATypeDef -> Text
+  emit-gtk-chapter (m) (meta) (type-defs) =
    let arities = build-arity-map (m.defs) 0 []
-   in let title = if m.chapter-title == "" then "App" else m.chapter-title
+   in let title = if meta.chapter-title == "" then "App" else meta.chapter-title
    in let imports = "import gi\ngi.require_version('Gtk', '4.0')\nfrom gi.repository import Gtk\nfrom dataclasses import dataclass\nimport struct\n\n"
    in let builtins = "_output_lines = []\ndef print_line_uni(s):\n    _output_lines.append(str(s))\ndef show(n): return str(n)\ndef text_length(s): return len(s)\ndef text_replace(s, a, b): return s.replace(a, b)\ndef text_compare(a, b): return 0 if a == b else (-1 if a < b else 1)\ndef list_length(xs): return len(xs)\ndef list_at(xs, i): return xs[i]\ndef integer_to_text(n): return str(n)\ndef negate(n): return -n\n\n"
    in let types-text = emit-gtk-type-defs type-defs 0

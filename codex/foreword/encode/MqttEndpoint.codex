@@ -1,0 +1,344 @@
+Chapter: MqttEndpoint
+  cites Encode chapter Mqtt
+  cites Foreword chapter Maybe
+
+ The MQTT v5 client endpoint: the binding that turns the Mqtt codec --
+ which only ever built packets, and until 2026-07-23 could not read one
+ at all -- into a session with a broker.
+
+ It is PURE, in the style of `CoapEndpoint`, `TlsEndpoint` and
+ `DtlsEndpoint`: bytes in, bytes out, no socket and no clock. The
+ transport `now` is a caller-supplied tick that drives retransmission and
+ keepalive, and a thin caller carries the bytes over TCP. The reliability
+ and correlation live here and are exercised by a loopback; the wire is
+ `tools/mqtt-client.codex`.
+
+ WHY THIS IS NOT SHAPED LIKE THE CoAP ONE. CoAP runs on datagrams, so its
+ endpoint takes exactly one datagram and answers with whole datagrams.
+ MQTT runs on TCP, which delivers a byte STREAM: a segment can carry half
+ a packet, or three packets, or the tail of one and the head of the next.
+ So this endpoint takes a buffer and reports how much of it it consumed,
+ and the caller keeps the remainder. Getting that wrong is not a subtle
+ failure -- it desynchronises the stream permanently on the first
+ coalesced segment, which is exactly what a broker sends under load.
+
+ QoS 1 IS THE RELIABILITY, AND TCP IS NOT IT. TCP guarantees the bytes
+ arrive at the far socket; it says nothing about the broker having
+ accepted the message, and a reconnect loses whatever was in flight. So a
+ QoS 1 PUBLISH is held until its PUBACK matches by packet identifier, and
+ retransmitted with the DUP flag if the broker stays silent past the
+ deadline. That is the retransmission this row wanted, at the layer that
+ can actually promise anything.
+
+ AN MqttEp IS THREADED LINEARLY, like every other endpoint here. The
+ state updates go through `__record-set`, which stores into the record and
+ returns the same one, so a value that has been passed to one of these
+ functions is spent and the caller must use what came back. Branching two
+ exchanges off one endpoint value does not give two sessions -- it gives
+ one session and two names for it, and the older name then reads state it
+ does not own.
+
+ To mqtt-ep-connect gives MqttEpStep, opening the session.
+ To mqtt-ep-recv gives MqttEpStep, feeding whatever bytes have arrived.
+ To mqtt-ep-tick gives MqttEpStep, advancing the retransmission and keepalive clocks.
+
+ We say:
+
+Section: Constants
+
+  mqtt-t-connack : Integer = 2
+  mqtt-t-publish : Integer = 3
+  mqtt-t-puback : Integer = 4
+  mqtt-t-pubrec : Integer = 5
+  mqtt-t-pubrel : Integer = 6
+  mqtt-t-pubcomp : Integer = 7
+  mqtt-t-suback : Integer = 9
+  mqtt-t-pingresp : Integer = 13
+
+  mqtt-st-idle : Integer = 0
+  mqtt-st-connecting : Integer = 1
+  mqtt-st-ready : Integer = 2
+  mqtt-st-failed : Integer = 3
+
+ Where an outstanding publish has got to. QoS 1 has one step and QoS 2
+ has two, and the difference matters on the retransmission path: an
+ unanswered PUBLISH is resent, but an unanswered PUBREL is resent as a
+ PUBREL. Resending the PUBLISH there would re-run an exchange the broker
+ has already taken delivery of, which is precisely the duplicate "exactly
+ once" exists to prevent.
+
+  mqtt-ph-none : Integer = 0
+  mqtt-ph-puback : Integer = 1
+  mqtt-ph-pubrec : Integer = 2
+  mqtt-ph-pubcomp : Integer = 3
+
+ The republish deadline, in the same unit as the caller's `now`. MQTT
+ fixes no value for this -- section 4.4 says only that a client MUST
+ redeliver an unacknowledged message -- so it is a choice, and a
+ conservative one: long enough that an ordinary broker answers first.
+
+  mqtt-ack-timeout : Integer = 5000
+  mqtt-max-retransmit : Integer = 4
+
+Section: Types
+
+  MqttEp = record {
+    me-state : Integer,
+    me-next-id : Integer,
+    me-connack : Integer,
+    me-suback : Integer,
+    me-sub-id : Integer,
+    me-pending-id : Integer,
+    me-pending-packet : List Integer,
+    me-pending-deadline : Integer,
+    me-retries : Integer,
+    me-acked : Boolean,
+    me-phase : Integer,
+    me-in-topic : List Integer,
+    me-in-payload : List Integer,
+    me-in-count : Integer,
+    me-in-rec-id : Integer
+  }
+
+  MqttEpStep = record {
+    ms-ep : MqttEp,
+    ms-out : List (List Integer),
+    ms-consumed : Integer
+  }
+
+Section: Construction
+
+  mqtt-ep-new : MqttEp
+  mqtt-ep-new =
+    MqttEp { me-state = mqtt-st-idle, me-next-id = 1, me-connack = (-1), me-suback = (-1),
+             me-sub-id = (-1), me-pending-id = (-1), me-pending-packet = [], me-pending-deadline = 0,
+             me-retries = 0, me-acked = True, me-phase = mqtt-ph-none,
+             me-in-topic = [], me-in-payload = [], me-in-count = 0, me-in-rec-id = (-1) }
+
+  mqtt-ep-idle : MqttEp -> MqttEpStep
+  mqtt-ep-idle (ep) = MqttEpStep { ms-ep = ep, ms-out = [], ms-consumed = 0 }
+
+ A packet identifier is drawn from a counter that wraps at 65535 and
+ never yields zero, which the protocol forbids (section 2.2.1).
+
+  mqtt-id-inc : Integer -> Integer
+  mqtt-id-inc (n) = if n >= 65535 then 1 else n + 1
+
+Section: Opening The Session
+
+  mqtt-ep-connect : MqttEp, MqttConnectConfig -> MqttEpStep
+  mqtt-ep-connect (ep) (cfg) =
+    MqttEpStep { ms-ep = __record-set ep "me-state" mqtt-st-connecting,
+                 ms-out = [mqtt-build-connect cfg], ms-consumed = 0 }
+
+  mqtt-ep-subscribe : MqttEp, Text, MqttQos -> MqttEpStep
+  mqtt-ep-subscribe (ep) (topic) (qos) =
+    if ep.me-state /= mqtt-st-ready then mqtt-ep-idle ep
+    else let pid = ep.me-next-id
+    in let ep2 = __record-set (__record-set ep "me-next-id" (mqtt-id-inc pid)) "me-sub-id" pid
+    in MqttEpStep { ms-ep = ep2, ms-out = [mqtt-build-subscribe pid topic qos], ms-consumed = 0 }
+
+Section: Publishing
+
+ At QoS 0 the packet goes out and is forgotten -- there is nothing to
+ wait for and nothing to retransmit, which is what "at most once" means.
+ At QoS 1 it is held: the identifier, the exact bytes, and the deadline,
+ because a message that cannot be resent is a message with no delivery
+ guarantee at all.
+
+ ONE OUTSTANDING PUBLISH AT A TIME. A second while one is unacknowledged
+ is refused rather than queued, the same call `CoapEndpoint` makes for the
+ same reason: a queue is a larger client's concern and this one says so by
+ not pretending to have one.
+
+  mqtt-ep-publish : MqttEp, Text, List Integer, MqttQos, Integer -> MqttEpStep
+  mqtt-ep-publish (ep) (topic) (payload) (qos) (now) =
+    if ep.me-state /= mqtt-st-ready then mqtt-ep-idle ep
+    else if ep.me-acked == False then mqtt-ep-idle ep
+    else if mqtt-qos-value qos == 0
+    then MqttEpStep { ms-ep = ep, ms-out = [mqtt-build-publish topic payload qos False 0], ms-consumed = 0 }
+    else let pid = ep.me-next-id
+    in let pkt = mqtt-build-publish topic payload qos False pid
+    in let phase = if mqtt-qos-value qos == 1 then mqtt-ph-puback else mqtt-ph-pubrec
+    in let a1 = __record-set ep "me-next-id" (mqtt-id-inc pid)
+    in let a2 = __record-set a1 "me-pending-id" pid
+    in let a3 = __record-set a2 "me-pending-packet" pkt
+    in let a4 = __record-set a3 "me-pending-deadline" (now + mqtt-ack-timeout)
+    in let a5 = __record-set a4 "me-retries" 0
+    in let a6 = __record-set a5 "me-acked" False
+    in let ep2 = __record-set a6 "me-phase" phase
+    in MqttEpStep { ms-ep = ep2, ms-out = [pkt], ms-consumed = 0 }
+
+Section: Receiving
+
+ Take as many whole packets out of the buffer as it holds, and report the
+ byte count consumed so the caller can keep the rest. A partial packet at
+ the end consumes nothing and waits for more bytes.
+
+  mqtt-ep-recv : MqttEp, List Integer, Integer -> MqttEpStep
+  mqtt-ep-recv (ep) (buf) (now) = mqtt-ep-drain ep buf 0 [] now
+
+  mqtt-ep-drain : MqttEp, List Integer, Integer, List (List Integer), Integer -> MqttEpStep
+  mqtt-ep-drain (ep) (buf) (used) (outs) (now) =
+    when mqtt-parse (mqtt-slice buf used (list-length buf))
+      is None -> MqttEpStep { ms-ep = ep, ms-out = outs, ms-consumed = used }
+      is Just (p) ->
+        let step = mqtt-ep-on-packet ep p now
+        in mqtt-ep-drain (step.ms-ep) buf (used + p.mp-total) (outs & (step.ms-out)) now
+
+  mqtt-ep-on-packet : MqttEp, MqttPacket, Integer -> MqttEpStep
+  mqtt-ep-on-packet (ep) (p) (now) =
+    if p.mp-type == mqtt-t-connack then mqtt-ep-on-connack ep p
+    else if p.mp-type == mqtt-t-suback then mqtt-ep-on-suback ep p
+    else if p.mp-type == mqtt-t-puback then mqtt-ep-on-puback ep p
+    else if p.mp-type == mqtt-t-pubrec then mqtt-ep-on-pubrec ep p now
+    else if p.mp-type == mqtt-t-pubcomp then mqtt-ep-on-pubcomp ep p
+    else if p.mp-type == mqtt-t-pubrel then mqtt-ep-on-pubrel ep p
+    else if p.mp-type == mqtt-t-publish then mqtt-ep-on-publish ep p
+    else mqtt-ep-idle ep
+
+ A non-zero CONNACK reason is the broker refusing, and the session is
+ failed rather than quietly left half-open. Reason 135 is "not
+ authorized", which is what an unauthenticated client gets from a broker
+ that requires credentials -- the case the dead username field made
+ unreachable.
+
+  mqtt-ep-on-connack : MqttEp, MqttPacket -> MqttEpStep
+  mqtt-ep-on-connack (ep) (p) =
+    let reason = mqtt-connack-reason p
+    in let ep2 = __record-set ep "me-connack" reason
+    in mqtt-ep-idle (__record-set ep2 "me-state" (if reason == 0 then mqtt-st-ready else mqtt-st-failed))
+
+ A SUBACK is matched by packet identifier. One that names a subscription
+ we did not send is not our confirmation and is dropped -- without the
+ check, any SUBACK at all would confirm any subscription.
+
+  mqtt-ep-on-suback : MqttEp, MqttPacket -> MqttEpStep
+  mqtt-ep-on-suback (ep) (p) =
+    if mqtt-suback-id p /= ep.me-sub-id then mqtt-ep-idle ep
+    else mqtt-ep-idle (__record-set ep "me-suback" (mqtt-suback-reason p))
+
+ A PUBACK clears the outstanding publish, and only if the identifier
+ matches. A stale acknowledgement from an earlier message must not retire
+ the current one.
+
+  mqtt-ep-on-puback : MqttEp, MqttPacket -> MqttEpStep
+  mqtt-ep-on-puback (ep) (p) =
+    if ep.me-phase /= mqtt-ph-puback then mqtt-ep-idle ep
+    else if mqtt-ack-id p /= ep.me-pending-id then mqtt-ep-idle ep
+    else mqtt-ep-idle (mqtt-ep-retire ep)
+
+  mqtt-ep-retire : MqttEp -> MqttEp
+  mqtt-ep-retire (ep) =
+    let r1 = __record-set ep "me-acked" True
+    in let r2 = __record-set r1 "me-pending-id" (-1)
+    in let r3 = __record-set r2 "me-pending-packet" []
+    in __record-set r3 "me-phase" mqtt-ph-none
+
+ QoS 2, publishing half. PUBREC says the broker has taken delivery and is
+ holding it; PUBREL releases it and PUBCOMP retires the exchange. The
+ pending packet becomes the PUBREL, because that is now the message whose
+ loss must be recovered from -- keeping the PUBLISH there is what makes a
+ timeout redeliver something the broker already has.
+
+  mqtt-ep-on-pubrec : MqttEp, MqttPacket, Integer -> MqttEpStep
+  mqtt-ep-on-pubrec (ep) (p) (now) =
+    if ep.me-phase /= mqtt-ph-pubrec then mqtt-ep-idle ep
+    else if mqtt-ack-id p /= ep.me-pending-id then mqtt-ep-idle ep
+    else let rel = mqtt-build-pubrel (ep.me-pending-id)
+    in let q1 = __record-set ep "me-pending-packet" rel
+    in let q2 = __record-set q1 "me-phase" mqtt-ph-pubcomp
+    in let q3 = __record-set q2 "me-pending-deadline" (now + mqtt-ack-timeout)
+    in let ep2 = __record-set q3 "me-retries" 0
+    in MqttEpStep { ms-ep = ep2, ms-out = [rel], ms-consumed = 0 }
+
+  mqtt-ep-on-pubcomp : MqttEp, MqttPacket -> MqttEpStep
+  mqtt-ep-on-pubcomp (ep) (p) =
+    if ep.me-phase /= mqtt-ph-pubcomp then mqtt-ep-idle ep
+    else if mqtt-ack-id p /= ep.me-pending-id then mqtt-ep-idle ep
+    else mqtt-ep-idle (mqtt-ep-retire ep)
+
+ QoS 2, receiving half. The broker releases a message it had held; we
+ answer PUBCOMP for the identifier we acknowledged with PUBREC. A PUBREL
+ naming an identifier we never recorded is answered anyway -- section
+ 4.3.3 requires it, because that is exactly what a PUBCOMP lost in
+ transit looks like from the other end, and refusing would strand the
+ broker retrying forever.
+
+  mqtt-ep-on-pubrel : MqttEp, MqttPacket -> MqttEpStep
+  mqtt-ep-on-pubrel (ep) (p) =
+    let id = mqtt-ack-id p
+    in MqttEpStep { ms-ep = __record-set ep "me-in-rec-id" (-1), ms-out = [mqtt-build-pubcomp id], ms-consumed = 0 }
+
+ An inbound PUBLISH is the delivery a subscription exists for. At QoS 1
+ it is acknowledged; unacknowledged, a broker redelivers it forever, which
+ is a livelock wearing the costume of reliability.
+
+  mqtt-ep-on-publish : MqttEp, MqttPacket -> MqttEpStep
+  mqtt-ep-on-publish (ep) (p) =
+    let b1 = __record-set ep "me-in-topic" (mqtt-publish-topic p)
+    in let b2 = __record-set b1 "me-in-payload" (mqtt-publish-payload p)
+    in let ep2 = __record-set b2 "me-in-count" ((ep.me-in-count) + 1)
+    in if mqtt-publish-qos p == 1
+    then MqttEpStep { ms-ep = ep2, ms-out = [mqtt-build-puback (mqtt-publish-id p)], ms-consumed = 0 }
+    else if mqtt-publish-qos p == 2
+    then MqttEpStep { ms-ep = __record-set ep2 "me-in-rec-id" (mqtt-publish-id p),
+                      ms-out = [mqtt-build-pubrec (mqtt-publish-id p)], ms-consumed = 0 }
+    else mqtt-ep-idle ep2
+
+Section: Retransmission and Keepalive
+
+ An unacknowledged QoS 1 PUBLISH past its deadline goes again with the
+ DUP flag set (bit 3 of the fixed header, section 3.3.1.1), which tells
+ the broker this is a redelivery and not a new message. After
+ MAX_RETRANSMIT attempts the session is failed: a client that retries
+ forever cannot tell a slow broker from a gone one.
+
+  mqtt-ep-tick : MqttEp, Integer -> MqttEpStep
+  mqtt-ep-tick (ep) (now) =
+    if ep.me-acked then mqtt-ep-idle ep
+    else if now < ep.me-pending-deadline then mqtt-ep-idle ep
+    else if ep.me-retries >= mqtt-max-retransmit then mqtt-ep-idle (__record-set ep "me-state" mqtt-st-failed)
+    else let again = if ep.me-phase == mqtt-ph-pubcomp then ep.me-pending-packet else mqtt-set-dup (ep.me-pending-packet)
+    in let ep2 = __record-set (__record-set ep "me-retries" ((ep.me-retries) + 1)) "me-pending-deadline" (now + mqtt-ack-timeout)
+    in MqttEpStep { ms-ep = ep2, ms-out = [again], ms-consumed = 0 }
+
+  mqtt-set-dup : List Integer -> List Integer
+  mqtt-set-dup (pkt) =
+    if list-length pkt == 0 then pkt
+    else list-set-at (mqtt-slice pkt 0 (list-length pkt)) 0 (bit-or (list-at pkt 0) 8)
+
+  mqtt-ep-ping : MqttEp -> MqttEpStep
+  mqtt-ep-ping (ep) = MqttEpStep { ms-ep = ep, ms-out = [mqtt-build-pingreq], ms-consumed = 0 }
+
+Section: Accessors
+
+  mqtt-ep-state : MqttEp -> Integer
+  mqtt-ep-state (ep) = ep.me-state
+
+  mqtt-ep-ready : MqttEp -> Boolean
+  mqtt-ep-ready (ep) = ep.me-state == mqtt-st-ready
+
+  mqtt-ep-failed : MqttEp -> Boolean
+  mqtt-ep-failed (ep) = ep.me-state == mqtt-st-failed
+
+  mqtt-ep-connack : MqttEp -> Integer
+  mqtt-ep-connack (ep) = ep.me-connack
+
+  mqtt-ep-suback : MqttEp -> Integer
+  mqtt-ep-suback (ep) = ep.me-suback
+
+  mqtt-ep-published : MqttEp -> Boolean
+  mqtt-ep-published (ep) = ep.me-acked
+
+  mqtt-ep-retries : MqttEp -> Integer
+  mqtt-ep-retries (ep) = ep.me-retries
+
+  mqtt-ep-in-count : MqttEp -> Integer
+  mqtt-ep-in-count (ep) = ep.me-in-count
+
+  mqtt-ep-in-topic : MqttEp -> List Integer
+  mqtt-ep-in-topic (ep) = ep.me-in-topic
+
+  mqtt-ep-in-payload : MqttEp -> List Integer
+  mqtt-ep-in-payload (ep) = ep.me-in-payload

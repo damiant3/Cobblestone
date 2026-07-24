@@ -76,12 +76,14 @@ Section: Entry Point
           ca-compose-cursor = 0,
           ca-source = IsDirect
         }
-    in print-line "Codex Collab v0.1"
-    in print-line ("  History: " & show (list-length history) & " calls")
-    in print-line "  Keys: 1=Home 2=Meetings 3=History 4=Contacts"
-    in print-line "  Ctrl+N=New Call  Ctrl+S=Screen Share  Ctrl+W=Whiteboard"
-    in print-line "  Ctrl+M=Mute  Ctrl+V=Video  Ctrl+H=Hand  Ctrl+R=Record"
-    in collab-event-loop state
+    in act
+      print-line "Codex Collab v0.1"
+      print-line ("  History: " & show (list-length history) & " calls")
+      print-line "  Keys: 1=Home 2=Meetings 3=History 4=Contacts"
+      print-line "  Ctrl+N=New Call  Ctrl+S=Screen Share  Ctrl+W=Whiteboard"
+      print-line "  Ctrl+M=Mute  Ctrl+V=Video  Ctrl+H=Hand  Ctrl+R=Record"
+      collab-event-loop state
+    end
   end
 
 Section: Event Loop
@@ -91,7 +93,7 @@ Section: Event Loop
     let scan = poll-key
     in let ev = if scan == 0
           then event-timer "tick" 0
-          else event-key-down scan 0 0
+          else event-key-down scan poll-mods 0
     in let handled = collab-handle-event state ev
     in collab-event-loop handled
   end
@@ -101,12 +103,12 @@ Section: Event Dispatch
   collab-handle-event : CollabAppState, Event -> CollabAppState
   collab-handle-event (state) (ev) =
     when ev.ev-kind
-      is EvKeyDown -> collab-handle-key state ev.ev-key ev.ev-modifiers
+      is EvKeyDown (k) (mods) -> collab-handle-key state k mods
       is otherwise -> state
 
   collab-handle-key : CollabAppState, Integer, Integer -> CollabAppState
   collab-handle-key (state) (k) (mods) =
-    let ctrl = int-mod (mods / 1) 2 == 1
+    let ctrl = bit-and mods mod-ctrl > 0
     in if ctrl then collab-ctrl-key state k
     else when state.ca-view
       is CvInCall -> collab-in-call-key state k
@@ -122,8 +124,9 @@ Section: Event Dispatch
     else state
 
   collab-ctrl-key : CollabAppState, Integer -> CollabAppState
-  collab-ctrl-key (state) (k) =
-    if k == 78 then collab-new-call state
+  collab-ctrl-key (state) (k0) =
+    let k = key-upper k0
+    in if k == 78 then collab-new-call state
     else if k == 77 then collab-toggle-mute state
     else if k == 86 then collab-toggle-video state
     else if k == 83 then collab-toggle-share state
@@ -140,10 +143,9 @@ Section: Call Management
     let c = call-new "call-1" CtVideo state.ca-user.cu-id "New Call" 0
     in let connected = call-connect c
     in let disk = app-log-info state.ca-disk "collab" "Call started" 0
-    in __record-set (__record-set (__record-set state
-      "ca-call" (Just connected))
-      "ca-view" CvInCall)
-      "ca-disk" disk
+    in let s1 = __record-set state "ca-call" (Just connected)
+    in let s2 = __record-set s1 "ca-view" CvInCall
+    in __record-set s2 "ca-disk" disk
 
   collab-end-call : CollabAppState -> CollabAppState
   collab-end-call (state) =
@@ -151,7 +153,7 @@ Section: Call Management
       is None -> state
       is Just (c) ->
         let ended = call-end c 0
-        in let record = CallRecord {
+        in let entry = CallRecord {
               cr-id = c.call-id,
               cr-title = c.call-title,
               cr-type = c.call-type,
@@ -161,12 +163,11 @@ Section: Call Management
               cr-duration-sec = 0,
               cr-has-recording = c.call-recording
             }
-        in let disk = collab-save-history state.ca-disk (list-push state.ca-history record)
-        in __record-set (__record-set (__record-set (__record-set state
-          "ca-call" None)
-          "ca-view" CvHome)
-          "ca-history" (list-push state.ca-history record))
-          "ca-disk" disk
+        in let disk = collab-save-history state.ca-disk (list-push state.ca-history entry)
+        in let s1 = __record-set state "ca-call" None
+        in let s2 = __record-set s1 "ca-view" CvHome
+        in let s3 = __record-set s2 "ca-history" (list-push state.ca-history entry)
+        in __record-set s3 "ca-disk" disk
 
 Section: In-Call Controls
 
@@ -237,7 +238,6 @@ Section: In-Call Key Handling
   collab-send-chat (state) =
     if text-length state.ca-compose == 0 then state
     else let chat = cc-send state.ca-chat state.ca-user.cu-name state.ca-compose 0
-    in __record-set (__record-set (__record-set state
-      "ca-chat" chat)
-      "ca-compose" "")
-      "ca-compose-cursor" 0
+    in let s1 = __record-set state "ca-chat" chat
+    in let s2 = __record-set s1 "ca-compose" ""
+    in __record-set s2 "ca-compose-cursor" 0

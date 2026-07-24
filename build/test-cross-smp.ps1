@@ -76,7 +76,13 @@ $compileScript = Join-Path $Repo "codex\plugs\$plugName\compile-$plugName.ps1"
 $compileLog = Join-Path $testOutDir 'compile.log'
 Write-Host -NoNewline "  compile ... "
 $prev = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
-& pwsh -NoProfile -File $compileScript -Src $testFile.FullName -Out $elfOut 2>&1 | Out-File -FilePath $compileLog -Encoding UTF8
+# ARM64 secondaries are held in PSCI, so this is the one path that asks the
+# plug for the CPU_ON sequence. Every other ARM64 compile must NOT get it:
+# HVC is undefined on boards without PSCI and parks the guest.
+# RISC-V harts auto-enter __start, so its plug needs no such flag.
+$compileArgs = @('-NoProfile','-File',$compileScript,'-Src',$testFile.FullName,'-Out',$elfOut)
+if ($Arch -eq 'arm64') { $compileArgs += '-Smp' }
+& pwsh @compileArgs 2>&1 | Out-File -FilePath $compileLog -Encoding UTF8
 $compileExit = $LASTEXITCODE
 $ErrorActionPreference = $prev
 if ($compileExit -ne 0) { Write-Host "FAIL (compile, exit=$compileExit)" -ForegroundColor Red; exit 1 }

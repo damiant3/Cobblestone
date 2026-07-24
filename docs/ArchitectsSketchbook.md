@@ -73,11 +73,18 @@ Fixed addresses for runtime state. Defined in
 | 34592 | nic-tx-buf-addr | 1536 | NIC transmit buffer |
 | 36128 | try-fail-flag-addr | 8 | Try/fail exception flag |
 | 36200 | **ap-dispatch-count-addr** | 8 | Processes claimed by a core whose id is not zero. Only `__idle_dispatch` writes it, and the BSP's id is always zero, so a value above zero is evidence an application processor took a process out of the table and ran it. Read by `codex/test/smp-dispatch.codex` |
+| 36240 | **devint-count-addr** | 8 | Interrupts taken on a vector that is neither the PIT's (32) nor the local timer's (48). `__interrupt_common` answers those two specially and used to return from every other vector without leaving a mark, so a delivered device interrupt and a dropped one were indistinguishable from inside the guest. Incremented with a locked add; the timer vectors branch away before reaching it, so the periodic tick cannot appear here |
+| 36248 | **devint-last-vec-addr** | 8 | The vector of the most recent such interrupt. A test programs a line, then demands that line answered rather than merely that something arrived. Read with 36240 by `codex/test/hpet-interrupt.codex` |
+| 36256 | **ap-id-next-addr** | 8 | The next core id to hand out. An application processor no longer arrives with its id in a register the host set -- it starts in real mode knowing nothing -- so the last act of its trampoline is a locked exchange-add here. The boot processor seeds it with 1 before the start-up IPI and keeps 0 for itself. A dense counter rather than the LAPIC id: the value indexes four arrays of `smp-max-cores` entries, and a LAPIC id is an identifier, not an index |
 
 **Do not claim a cell in this band without grepping `tools/codex-vm.c`
 first.** 36152 is a permanent booby trap (a legacy codex-vm output-ring
 write position), and 36160 / 36168 / 36176 are codex-vm's blit cells —
-the host writes them. 36200 was the first free slot above them.
+the host writes them. 36200 was the first free slot above them, and the
+band has since grown upward through 36208 (uefi-systab), 36216
+(ap-preempt-count), 36224 (spawn-affinity), 36232 (fs-elevated),
+36240 / 36248 (the device-interrupt evidence above) and 36256
+(the AP core-id counter).
 
 ### Derived Constants
 
@@ -236,20 +243,128 @@ dead decks are reclaimed at phase boundaries:
   first, bounded LOWER scratch above it, `rewrite-ir-chapter`
   deep-copies survivors into the reservation.
 
-| Phase | Floor | Selfhost used (2026-07-07) | Pattern |
-|-------|-------|---------------------------|---------|
-| LEX | 96 MB | 21.4 MB | standard deck+compact |
-| PARSE keep | 64 MB | 9.1 MB | reservation-copy |
-| PARSE scratch | 192 MB | 32.6 MB | reclaimed at keep boundary |
-| DESUGAR | 64 MB | 16.3 MB | reclaimed at frontend keep boundary |
-| SCOPE | 96 MB | — | standard |
-| CHECK | 640 MB | 156.2 MB | standard |
-| CHECK keep | 96 MB | — | reservation-copy |
-| Frontend keep | 192 MB | — | reservation-copy |
-| LOWER | 320 MB | 115.5 MB | reservation-copy |
-| RESOLVE | 192 MB (CDX only) | — | standard |
-| LIFT | 96 MB (CDX only) | — | standard |
-| EMIT | per-func | — | streaming (CL 3793) |
+Measured 2026-07-18 on a **2.53 MB** selfhost source with
+`build/compile.ps1 -Measure`, which prints one `DECK-<n>:phase=<NAME> ...`
+line per phase. Re-measure with that switch; do not quote this table.
+
+Re-measured 2026-07-21 on a **2.81 MB** selfhost source, post CL 10026
+(the cite-fallback allocation fix) and the write-path
+guards (SCOPE/CHECK/LOWER floors up by their 8 MB guard bands).
+
+**What the SCOPE deck actually holds** (deck-pos probes at each phase
+step, 2026-07-21): `scope-adefs-ll` 0.3 MB, the cite bags 3.0 MB, and
+`resolve-chapter` 53.3 MB -- resolve-expr's pattern path wraps its
+per-pattern-variable results in `deck-record`, and the wrapper makes
+every scope/seen skiplist insert deck-resident. That 53 MB is per-def
+scratch retained to the phase compact; if SCOPE's floor ever tightens,
+moving those PatResult wrappers off the deck is the lever.
+
+| Phase | Floor | Used (2026-07-21) | x source | Headroom | Pattern |
+|-------|-------|------------------:|---------:|---------:|---------|
+| LEX | 96 MB | 27.4 MB | 10.2x | 3.51x | standard deck+compact |
+| PARSE scratch | 384 MB | 12.0 MB | 4.5x | 31.9x | reclaimed at keep boundary |
+| PARSE keep | 384 MB | 11.5 MB | 4.3x | 33.3x | reservation-copy |
+| DESUGAR | 72 MB | 41.0 MB | 15.3x | 1.76x | reclaimed at frontend keep boundary |
+| SCOPE | 104 MB | 56.4 MB | 21.0x | 1.85x | standard |
+| CHECK | 648 MB | 200.2 MB | 74.6x | 3.24x | standard |
+| CHECK keep | 96 MB | not reported | — | — | reservation-copy |
+| Frontend keep | 192 MB | not reported | — | — | reservation-copy |
+| LOWER | 328 MB | 158.6 MB | 58.9x | 2.07x | reservation-copy |
+| RESOLVE | 200 MB (CDX only) | 19.4 MB | 7.2x | 10.3x | standard |
+| LIFT | 104 MB (CDX only) | 37.0 MB | 13.8x | 2.8x | standard |
+| EMIT | per-func | — | — | — | streaming (CL 3793) |
+
+**PARSE keep was 241 MB and is now 11.1 MB.** This row said 95.4x source and
+1.59x headroom, and it was measuring a defect rather than a workload:
+`copy-sx-text` rematerialized every text unconditionally while its siblings
+`copy-sx-token` and `copy-sx-span` shared anything below the reservation base.
+Giving it the same `address-of t < b` guard took the deck from 254 MB to
+11.6 MB on the same input. A survivor-copy that expands 21x over the scratch
+it reads was never plausible; the tell was that the ratio GREW with input
+size (0.09x on a 2.9 KB source, 21x on this one), which is duplication of
+something shared, not structure.
+
+**LOWER was the tightest deck at 1.20x and tightening with every source
+byte, and the reason was a bug, not the workload.** 45 per cent of the
+LOWER deck was `slug-has-suffix` allocating a substring per assignment
+scanned in the bare-name cite fallback -- per citation whose composed key
+misses, per slug transition, in every defs walk, and LOWER retains its
+walk because `lower-chapter` is deck-wrapped (CL 2968). An intra-compiler
+`cites Codex chapter X` always takes that fallback (the concat prefixes
+chapters by directory, so `Codex--X` never matches), and 25 such cites
+stood in the unit at ~5.4 MB each. Fixed in CL 10026 (in-place compare):
+LOWER fell 266.7 to 158.1 MB and its cost is no longer superlinear in
+citations. The tight rows are now DESUGAR (1.76x MEASURE, ~1.5x in CDX
+mode, where it is the binding phase: `-Decks 65` refuses naming DESUGAR
+and 70 compiles) and SCOPE (1.71x). Those are the rows to watch.
+
+**The row that was wrong for a year is PARSE.** This table recorded
+"PARSE scratch 32.6 MB, 23x" and the register recorded "PARSE scratch runs
+at roughly 96x". Both described the wrong deck, and neither could be
+checked because MEASURE emitted a positional list with no phase names. The
+95x deck is **PARSE keep** -- the reservation the copy walk fills -- and the
+scratch it is copied out of is **4.6x**, sitting under a 384 MB floor it
+uses 3 per cent of. The scratch floor was raised to 384 MB on the strength
+of a number that belonged to its neighbour.
+
+**LOWER was the tightest deck at that measurement (1.26x), and nothing was
+watching it.** The attention was all on PARSE. An under-reserved floor does
+not raise CDX9002 -- it dies in a `#GP` with no diagnostic,
+so the phase closest to its floor is the one most worth a pre-flight bound.
+
+**RESOLVE and LIFT are no longer "not reported".** Both rows above were
+measured 2026-07-21 by an in-loop `__deck-pos` probe rather than through the
+metrics list, which is a cheaper instrument than fixing the list-push problem
+below and answers the question the floors actually pose. RESOLVE decomposes as
+`build-type-def-map` 161,112 bytes, `sort-bindings` 180,504, and
+`rewrite-ir-defs` 20,029,096 -- so 98.3 per cent of the phase is one walk, and
+that is where its guard went. LIFT is `lift-lambdas` and nothing else.
+
+The same probe settled something larger: **`__deck-pos` does not move inside a
+phase-wide `deck-record` extent.** `__deck-enter` copies the cell into R10 and
+only the outermost `__deck-exit` writes it back, so a guard loop inside such an
+extent reads the deck's base on every iteration. The probe printed one constant
+through 19.1 MB of writing. Guards in that position must read R10
+(`deck-bound-short-of`); guards outside one, or in a phase that writes through
+many small extents like SCOPE, read the cell (`deck-short-of`).
+
+Settled 2026-07-21 for every guard in the compiler. Inside their extents and
+reading R10: RESOLVE, LIFT, LOWER, and the PARSE-KEEP copy. Outside, reading the
+cell: SCOPE (many small extents) and CHECK. **CHECK is the one you cannot infer
+from the phase's shape** -- `check-chapter` issues a bare `__deck-exit` three
+lines before `check-all-defs` and a `__deck-enter` after it, so the walk between
+them is bivy-bound. Read the code for that pair before choosing a predicate.
+Guessing from the phase name is wrong for exactly that one, and wrong there is a
+compiler that type-checks one definition and emits nothing.
+
+**Every phase that reserves a deck now stops on the write path.** LEX, PARSE
+scratch, PARSE-KEEP, DESUGAR, the frontend keep copy, SCOPE, CHECK, LOWER,
+RESOLVE and LIFT. Two shapes recur and both were learned by shipping the
+wrong one first: a phase whose deck is written by SEVERAL walks needs all of
+them guarded (the PARSE scratch takes three, the frontend keep copy four
+lists plus a skip on every remaining field), and a saturating walk must
+return an EMPTY result rather than a truncated or shared one, because the
+wind-down that assembles a partial result allocates in proportion to what it
+collected, onto the deck that just refused to grow.
+
+**How to tell a guard that holds from a guard that does nothing.** Key the
+phase's report on the post-hoc `ov` flag ALONE and re-run the starved compile:
+if `CDX9002` still fires, the deck overflowed and the guard did not hold,
+however cleanly it reported. Keyed the shipping way (`ov | sat`) the two print
+the identical line, and so does an *unguarded* run at a mildly starved floor,
+because the post-hoc check catches a survivable overrun. Three guards passed
+that reading and held nothing. Starve until the unguarded run actually crashes
+before trusting a negative control: above that floor the overrun survives, and
+below it writers outside the guarded walk crash anyway, so only the band
+between them tells you anything.
+
+**A keep deck's usage is only visible where it is pushed into the metrics
+list.** PARSE-KEEP is; DESUGAR-KEEP, CHECK-KEEP, the frontend keep, RESOLVE
+and LIFT are not, so their rows read "not reported" rather than a number
+nobody measured. Pushing them in is not a one-line change: `list-push`
+writes in place under capacity and returns the same list, so pushing onto a
+list the caller still holds corrupts the entries after it -- tried
+2026-07-18, and it silently zeroed every phase after DESUGAR. Copy first.
 
 A phase that exceeds its floor halts with CDX9002 (DeckOverflow, now
 "deck floor exceeded") — retained as a hard guard, though the selfhost
@@ -320,6 +435,36 @@ base     Reservation-copy pattern means dead decks are reclaimed.
           │  ~1 MB typical usage for selfhost    │
           └──────────────────────────────────────┘
 ```
+
+### The per-function reclaim in emit-all-defs, and what it is worth
+
+`emit-all-defs` brackets every definition in `__heap-save`/`__heap-restore`
+(three such sites exist in the emitter, not one). It was an open question
+whether that within-phase reclaim should give way to phase-boundary
+discipline. **Measured 2026-07-18, and the answer is that it does not move
+peak memory at all.** A compiler built with the restore removed
+self-compiles fine -- 10.4 s, 2.42 MB output, no `CDX9002`, no fault -- and
+the two binaries have the *same* minimum RAM to the resolution tested:
+
+| `-mem` | with reclaim | without |
+|--------|--------------|---------|
+| 1536 | OK | OK |
+| 1472 | OK | OK |
+| 1408 | FAIL | FAIL |
+| 1280 | FAIL | FAIL |
+
+Peak is set by the phase decks -- CHECK 190 MB, PARSE-KEEP 241 MB, LOWER
+253 MB -- not by per-function emit scratch, so removing the reclaim is
+invisible against them.
+
+**Keep it anyway, and know why.** It is a working-set optimisation that
+costs nothing, and the `accum-at-capacity` guard is written against it: a
+push past capacity reallocates into exactly the per-function bivy this loop
+reclaims, which is what makes an over-capacity accumulator point at freed
+memory. Code depends on the reclaim happening even though peak memory does
+not. What the measurement settles is only that this bracketing is not what
+the phase-boundary work is about; that work is the precise
+escape roots for CHECK and LOWER.
 
 ### Emit Phase Detail
 
@@ -605,22 +750,56 @@ multiple virtual processors. The core count is written to GPA 0xFF8
 before boot; the boot code reads it to decide whether to send
 INIT/SIPI to start application processors.
 
-**Bring-up.** `emit-smp-init` (`X86_64Boot.codex`) publishes the AP entry
-point at GPA 0x1000 and the stack table at GPA 0xF00, then writes the
+**Bring-up.** `emit-smp-init` (`X86_64Boot.codex`) copies a real-mode
+trampoline into the page at GPA 0x1000, seeds the core-id counter (cell
+36256) with 1, publishes the stack table at GPA 0xF00, then writes the
 LAPIC ICR: an INIT IPI, then two start-up IPIs, destination shorthand
-"all excluding self". The ICR write is what starts the cores. Each AP
-takes its stack from the table by core index, adds one to the ready
-count (cell 4080) with a locked add, and then goes to `__idle_dispatch`
-to look for work. The BSP spins on that count — on `pause`, not `hlt`:
-nothing sends the BSP an interrupt when an AP checks in, so a halted BSP
-would never wake. The spin is fuel capped, so a core that never answers
-costs a delay and not the boot.
+"all excluding self", **start-up vector 1**. The ICR write is what starts
+the cores. Each AP comes up in real mode at 0x1000, climbs to long mode,
+takes a core id with a locked exchange-add on cell 36256, takes its stack
+from the table by that index, loads the runtime GDT and IDT and its own
+task register, adds one to the ready count (cell 4080) with a locked add,
+and then goes to `__idle_dispatch` to look for work. The BSP spins on
+that count — on `pause`, not `hlt`: nothing sends the BSP an interrupt
+when an AP checks in, so a halted BSP would never wake. The spin is fuel
+capped, so a core that never answers costs a delay and not the boot.
 
-The start-up IPI's vector field is zero. On real silicon that field names
-the 4 KB page an AP begins executing in, which caps the entry below 1 MB
-and requires a real-mode trampoline; codex-vm takes the full 64-bit entry
-from GPA 0x1000 instead. Physical multi-core needs that trampoline
-written (BACKLOG 4.2).
+**The start-up IPI's vector field is a page number, and it is now the
+only channel there is.** On silicon that field names the 4 KB page an AP
+begins executing in, which caps the entry below 1 MB and requires a
+real-mode trampoline. codex-vm used to sidestep the mechanism entirely --
+it read a full 64-bit entry address out of GPA 0x1000 and dropped the AP
+straight into long mode with CR3, EFER, a GDT and its core id in RDI all
+supplied by the host -- so SMP worked under the emulator and could not
+have worked on metal, and the trampoline that metal needs was untestable
+because nothing would ever have run it. Both ends are honest now: codex-vm
+starts an AP at `vector<<12` in real mode with reset control registers and
+nothing in RDI, and `ap-tramp-blob` is 177 bytes of 16-bit, 32-bit and
+64-bit code that carries a core the rest of the way. Every SMP test
+exercises it.
+
+Three things in that blob are load-bearing and each was found by breaking
+it. **Its GDT is ordered null, 64-bit code, data, 32-bit code**, so the
+selectors a core still holds when it leaves mean the same things in the
+runtime GDT it then loads: put the 32-bit descriptor at selector 8, as
+reading order suggests, and the core runs until its first timer tick and
+then general-protection-faults on the way back out, because selector 24 in
+the runtime table is a TSS and a TSS is not a code segment. **CR4 must
+carry OSFXSR**, or the first packed instruction in the first process the
+core resumes is an invalid opcode. And **the AP entry must `lidt`**: the
+host used to point each AP's IDTR at the real IDT, so nothing in the guest
+ever did, and without it the first tick after `sti` dispatches through the
+real-mode interrupt vector table. That last one presents as cores that
+check in and then never claim a process, which looks nothing like a
+missing IDT.
+
+The core id is a dense counter and deliberately not the local APIC id. It
+indexes the AP stack table, the per-core idle stacks, the per-core TSS
+descriptors and the IST stacks, all arrays of `smp-max-cores` entries; a
+LAPIC id is an identifier, not an index, and on a machine that numbers its
+cores sparsely it would run off the end of every one of them. Nothing in
+the tree needs a core's hardware identity, only a distinct small number,
+so the trampoline reads no MMIO at all.
 
 **Per-core TSS and emergency stacks.** A double fault is delivered on the
 stack named by IST1 in the TSS the task register points at. The task
@@ -674,20 +853,24 @@ end in `jmp __idle_dispatch` for exactly this reason.
 **Per-core identity: a core asks the process it is standing in.** There is
 no MSR, no LAPIC read and no GS base involved. `proc-core-offset` (process
 entry offset 8) records the core that claimed the slot, stamped by
-whichever core won the CMPXCHG; an AP seeds its own id from R15 at
-bring-up. A core recovers its identity by reading that field out of the
+whichever core won the CMPXCHG; an AP seeds its own id from the counter
+its trampoline drew from at bring-up. A core recovers its identity by reading that field out of the
 process it is currently running, and from the id it computes its idle
 stack: `ap-stacks-base + (core + 1) * ap-stack-size`. AP idle stacks are
 handed out from index 1, so region slot 0 was free and is the BSP's.
 
 **Per-core heap: there isn't one, and none is needed.** `CoreHeap`
-(`codex/os/sched/CoreHeap.codex`) is a **pure model — nothing calls it**,
-and no AP has ever set R10 from it. It is not
+(`codex/os/sched/CoreHeap.codex`) is **effectively a model**: every function in
+it (`compute-heap-layout`, `build-arenas`, the `arena-*` and `layout-*` family)
+has no caller outside `codex/test/apps/core-heap-test.codex`, and no AP has ever
+set R10 from it. Only the constant `single-core-heap-base` is consumed, by
+`core-activate` in `OsScheduler.codex`, so "nothing calls it" is very slightly
+too strong. It is not
 needed on the critical path either: a spawned process carries its own
 slot-indexed heap region *and its own R10* in its saved context, so a core
 running one gets the right allocator by resuming it. Whether the
 *compiler's* bivy should be split per core is a separate and open
-question — see `docs/PM/BACKLOG.md` 4.11.
+question.
 
 **Every core has a clock.** The PIT's IRQ reaches the boot processor
 alone, so an AP used to run whatever it was given until that process
@@ -712,9 +895,42 @@ core increments it now; a plain load-add-store loses ticks.
 
 Evidence lives at cell **36216** (`ap-preempt-count-addr`): every timer
 interrupt taken on a core whose id is not zero bumps it, and the BSP's id
-is always zero. `codex/test/smp-preempt.codex` reads it. What is still
-open is BACKLOG 4.11: no work stealing, no affinity, an idle core
-pause-spins rather than halting, and proc-0 migration is unproven.
+is always zero. `codex/test/smp-preempt.codex` reads it.
+
+**Three things this paragraph used to list as missing are now built**, and it
+said otherwise for long enough to be worth naming. An idle core **halts**
+(`st-append-code s15 hlt` in `__idle_dispatch`, `X86_64ProcessHelpers.codex`);
+the timer lands on its idle stack and the handler drops ticks whose SP is in
+that band, which is what makes halting safe. **Affinity** is real and on the
+bare-metal path: `proc-affinity-offset` (process entry offset 16) is compared
+against the core id in `__idle_dispatch`, `-1` meaning any core, set at spawn
+and honoured on the yield path. **Work stealing** exists in the OS scheduler
+model (`core-steal` / `core-longest-other`, `codex/os/sched/CoreState.codex`),
+though the bare-metal dispatcher scans a shared process table rather than
+per-core queues, so there it is not-applicable rather than missing. Tests:
+`codex/test/smp-halt.codex`, `codex/test/smp-affinity.codex`.
+
+**Proc 0 does not migrate, and this document used to say the opposite.** It
+recorded proc-0 migration as permitted-by-design but unproven, on the strength
+of the affinity field, which held `-1` -- "any core" everywhere else in the
+table. The scheduler forbade it in three separate places the whole time.
+`__idle_dispatch` starts each core's scan at its own id and wraps to 1, so an
+application processor never reaches slot 0; and both preemption scans skip slot
+0 outright when the claiming core is not the boot processor, each with its own
+written account of the corruption that guard prevents. Slot 0 owns the boot
+stack and the main heap. The field now reads `0`, which is what the machine
+does; on the boot processor the affinity test compares 0 against core 0 and
+passes exactly as the wildcard did, and on every other core slot 0 was already
+unreachable.
+
+`codex/test/smp-proc0-pinned.codex` pins it. It reads slot 0's core stamp after
+a four-core run and requires it to still be the boot processor, with three
+further readings establishing that the machine was genuinely busy while it was:
+an application processor claimed and ran a process (cell 36200), one was
+preempted (cell 36216), and the largest core stamp across the other fifteen
+slots is above zero -- the same field, proven able to hold a value other than
+the one slot 0 is required to hold. Without those three, zero is also the
+initial value and the test would pass on one core.
 
 **Atomics.** Six builtins: `atomic-load`, `atomic-store`,
 `atomic-cas`, `atomic-add`, `atomic-exchange`, `memory-fence`.
@@ -772,9 +988,20 @@ breakdown: `docs/Reference/CodegenAnalysis.md`.
 | sum      | 7     | 20    | 23    | 9      | 4      |
 | ack      | 23    | --    | --    | --     | --     |
 | tak      | 37    | --    | --    | --     | --     |
-| collatz  | 13    | --    | --    | --     | --     |
+| collatz  | 13*   | --    | --    | --     | --     |
 | locals   | 18    | --    | --    | --     | --     |
 | regright | 14    | --    | --    | --     | --     |
+
+\* `collatz` moved when the bounded-division fix landed and the count above predates
+it -- **re-measure before quoting.** Its `n` is an unbounded `Integer`, so
+`n / 2` and `int-mod n 2` can no longer take the one-instruction
+shift/mask: those are correct only for a dividend proven non-negative,
+and for any other they now lower to `idiv`, which is what truncation
+actually is. The binary grew 16 bytes; the other eight benches are
+byte-identical. The shortcut is recoverable at the source rather than in
+the emitter -- declaring `n : Integer between 1 and ...` proves the
+bound and buys the shift back, which is the type system doing the job it
+exists for.
 
 Codex now beats C /O2 on fact (13 vs 15), gcd (10 vs 14), and sum (7 vs
 23, a 70 percent reduction); fib is +2 over /O2. Against the JITs, gcd
@@ -795,11 +1022,35 @@ mov+pop+mov+op for tree-recursive add/mul).
 
 sum-to-N beats C at both optimization levels. The remaining gap to the
 JITs is the registers they win through full linear-scan allocation of
-named bindings. The LIR selector now carries a Wimmer linear-scan
-allocator and is live in the default pipeline (BACKLOG 3.8), but it is
-instruction-neutral against the tree emitter today -- so beating the tree
-on named-binding allocation, and widening the class of functions the
-selector handles, is the next frontier.
+named bindings. The LIR selector carries a Wimmer linear-scan allocator and is
+live in the default pipeline. Measured 2026-07-19
+(`docs/Designs/Active/Compiler/LIR.md`), it takes **all nine** `bench/codex`
+functions and against the tree emitter is **neutral on seven and one instruction
+ahead on `ack` and `collatz`**. This paragraph called it flatly
+"instruction-neutral" for a while, which was both out of date and easy to
+misread as the selector declining functions -- it declines none of them.
+
+**Beating the tree by more than a margin of one is NOT the next frontier, and
+this paragraph said it was until 2026-07-23.** It was measured and it is not
+available: `docs/Designs/Active/Compiler/LIR.md` section 12 is the closing note.
+The short version is two independent negatives. The spills that remain are the
+register file rather than the allocator -- one program (`bench/codex/regstress`)
+under three register-file descriptors and one unchanged allocator spills 13, 6
+and 0 slots at 2, 4 and 10 callee-saved registers, and its peak simultaneous
+call-crossers is 6 against x86-64's pool of 4, so at least two values must live
+in memory whatever the allocator does. And there are no live-range holes to
+sharpen, because v1's LIR is a loop-free DAG with single-def-per-path vregs, so
+every interval is contiguous by construction; holes appear only with v2 TCO
+back-edges, where the one built and measured made `gcd` worse (158 to 159).
+What stays open is coverage and verification, not quality: the prologue's
+callee-saved pushes, stack guard and frame adjust are emitted outside the
+LIR so no verifier sees them; `list-map` stopped lowering and the cause is
+not established; and both verifiers' rejection paths run under no harness.
+
+Two apparent gaps in the table above are **not** codegen gaps, and LIR.md is the
+place that settles it: `fib`'s +2 over C /O2 is a source-shape difference, and
+`tak`'s spill is genuinely required, because adding R15 to the pool is unsound
+(`X86_64Builtins.codex` writes it unsaved at closure-call sites).
 
 ### RISC-V RV64 Codegen Quality (CL 6287)
 

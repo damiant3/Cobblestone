@@ -1,0 +1,70 @@
+Chapter: FramelessLeafProbe
+
+ Reduction for BACKLOG 3.2 (ARM64 frame elision for plain leaves).
+
+ Every leaf below is call-free by the gate's own analysis: bit-and,
+ bit-or, bit-xor, bit-shl and bit-shru are on a64-is-known-inline, so
+ a64-body-has-non-tail-call answers False for these bodies. But the
+ ARM64 runtime records functions NAMED bit-and, bit-or, bit-xor,
+ bit-shl and bit-shru (Arm64Runtime.codex, a64-record-func), and
+ a64-emit-direct-call prefers a recorded function over the inline arm
+ for any known builtin, so each of these "inline" operations is in
+ fact emitted as a BL to the two-instruction runtime helper. Framed,
+ that BL is harmless. Frameless there is no saved LR, so the first BL
+ destroys x30 and the leaf's RET can never leave the function again.
+
+ Under the current gate (a64-can-be-frameless requires a64-should-tco)
+ all five leaves are emitted FRAMED and this probe passes. Under the
+ reverted widened gate (plain call-free leaves admitted) flp-add32,
+ flp-rotl32 and flp-gmul2 go frameless with a BL inside; flp-plusk
+ goes frameless with a BL to the zero-arg constant flp-mask (the bare
+ IrName arm of a64-emit-name is also a call the analysis cannot see).
+ flp-block is the control: a pure compare-and-literal chain with no
+ bit ops and no named constants, deep enough to walk the frameless
+ local file into x19 if the nested-if result locals overflow.
+
+Section: Leaves
+
+  flp-add32 : Integer, Integer -> Integer
+  flp-add32 (a) (b) = bit-and (a + b) 4294967295
+
+  flp-rotl32 : Integer, Integer -> Integer
+  flp-rotl32 (val) (n) =
+    let masked = bit-and val 4294967295
+    in bit-and (bit-or (bit-shl masked n) (bit-shru masked (32 - n))) 4294967295
+
+  flp-gmul2 : Integer -> Integer
+  flp-gmul2 (a) =
+    if a >= 128 then bit-xor (bit-and (bit-shl a 1) 255) 27
+    else bit-and (bit-shl a 1) 255
+
+  flp-block : Integer -> Integer
+  flp-block (cp) =
+    let v = cp - 128
+    in if v < 256 then 0
+    else if v < 384 then 1
+    else if v < 512 then 2
+    else if v < 640 then 3
+    else if v < 768 then 4
+    else if v < 896 then 5
+    else if v < 1024 then 6
+    else if v < 1152 then 7
+    else if v < 1664 then 8
+    else if v < 1920 then 9
+    else if v < 2048 then 10
+    else 0 - 1
+
+  flp-mask : Integer = 4294967295
+
+  flp-plusk : Integer -> Integer
+  flp-plusk (x) = x + flp-mask
+
+Section: Entry
+
+  opening : [Console] Nothing = act
+    print-line-uni ("add32=" & show (flp-add32 1634760805 2036477234))
+    print-line-uni ("rotl32=" & show (flp-rotl32 1634760805 7))
+    print-line-uni ("gmul2=" & show (flp-gmul2 202))
+    print-line-uni ("block=" & show (flp-block 628))
+    print-line-uni ("plusk=" & show (flp-plusk 7))
+  end

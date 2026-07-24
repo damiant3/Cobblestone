@@ -135,11 +135,12 @@ Section: Type Definition Emission
   js-emit-type-def : ATypeDef -> Text
   js-emit-type-def (td) =
    when td
-    is ARecordTypeDef (name) (tparams) (fields) (s) ->
+    is ARecordTypeDef (name) (tparams) (fields) (recmut) (s) ->
      js-emit-record-type (name.value) fields 0
     is AVariantTypeDef (name) (tparams) (ctors) (s) ->
      if is-tup-type (name.value) then ""
      else js-emit-variant-type ctors 0
+    is AUnitTypeDef (name) (unitbase) (s) -> ""
 
   js-emit-record-type : Text , List ARecordFieldDef , Integer -> Text
   js-emit-record-type (name) (fields) (i) =
@@ -196,7 +197,7 @@ Section: Expression Emission
     is IrCharLit (n) (sp) -> integer-to-text n & "n"
     is IrName (n) (ty) (sp) -> js-emit-name n ty arities
     is IrBinary (op) (l) (r) (ty) (sp) -> js-emit-binary op l r arities
-    is IrNegate (operand) (sp) -> "(-" & js-emit-expr-at operand arities (depth + 1) & ")"
+    is IrNegate (operand) (nty) (sp) -> "(-" & js-emit-expr-at operand arities (depth + 1) & ")"
     is IrIf (c) (t) (el) (ty) (sp) -> "(" & js-emit-expr-at c arities (depth + 1) & " ? " & js-emit-expr-at t arities (depth + 1) & " : " & js-emit-expr-at el arities (depth + 1) & ")"
     is IrLet (name) (ty) (val) (body) (sp) -> js-emit-let name val body arities
     is IrApply (f) (a) (ty) (sp) -> js-emit-apply e arities
@@ -236,7 +237,7 @@ Section: Expression Emission
   js-emit-name-upper : Text , CodexType , List ArityEntry -> Text
   js-emit-name-upper (n) (ty) (arities) =
    when ty
-    is FunTy (p) (r) -> js-sanitize n
+    is FunTy (p) (fnrow) (r) -> js-sanitize n
     is otherwise -> js-sanitize n & "()"
 
   js-emit-partial-params : Integer , Integer -> Text
@@ -456,7 +457,7 @@ Section: Expression Emission
    else if n == "open-file" then "require('fs').readFileSync(" & js-emit-expr (list-at args 0) arities & ")"
    else if n == "read-all" then js-emit-expr (list-at args 0) arities & ".toString()"
    else if n == "close-file" then "undefined"
-   else if n == "read-file" then "require('fs').readFileSync(" & js-emit-expr (list-at args 0) arities & ", 'utf8')"
+   else if n == "read-text" then "require('fs').readFileSync(" & js-emit-expr (list-at args 0) arities & ", 'utf8')"
    else if n == "write-file" & list-length args == 2 then "require('fs').writeFileSync(" & js-emit-expr (list-at args 0) arities & ", " & js-emit-expr (list-at args 1) arities & ")"
    else if n == "file-exists" & list-length args == 1 then "require('fs').existsSync(" & js-emit-expr (list-at args 0) arities & ")"
    else if n == "char-at" & list-length args == 2 then "BigInt(" & js-emit-expr (list-at args 0) arities & ".charCodeAt(Number(" & js-emit-expr (list-at args 1) arities & ")))"
@@ -624,8 +625,11 @@ Section: Definition Emission
     is EffectfulTy (effs) (sc) (inner) -> True
     is otherwise -> False
    else when ty
-    is FunTy (p) (r) -> js-is-effectful-from-params r (n - 1)
+    is FunTy (p) (fnrow) (r) -> js-is-effectful-from-params r (n - 1)
     is ForAllTy (id) (body) -> js-is-effectful-from-params body n
+    is ForAllEff (id) (body) -> js-is-effectful-from-params body n
+    is LinearTy (body) -> js-is-effectful-from-params body n
+    is TypeApply (body) (tyarg) -> js-is-effectful-from-params body n
     is otherwise -> False
 
   js-emit-def : IRDef , List ArityEntry -> Text
@@ -746,8 +750,11 @@ Section: Chapter Emission
   js-strip-fun-args : CodexType -> CodexType
   js-strip-fun-args (ty) =
    when ty
-    is FunTy (p) (r) -> js-strip-fun-args r
+    is FunTy (p) (fnrow) (r) -> js-strip-fun-args r
     is ForAllTy (id) (body) -> js-strip-fun-args body
+    is ForAllEff (id) (body) -> js-strip-fun-args body
+    is LinearTy (body) -> js-strip-fun-args body
+    is TypeApply (body) (tyarg) -> js-strip-fun-args body
     is otherwise -> ty
 
   js-opening-return-type : List IRDef -> CodexType
@@ -764,6 +771,8 @@ Section: Chapter Emission
   js-emit-entry (ret-ty) = when ret-ty
     is EffectfulTy (effs) (sc) (inner) -> js-sanitize "opening" & "();\n"
     is NothingTy -> js-sanitize "opening" & "();\n"
+    is ProofTy -> js-sanitize "opening" & "();\n"
+    is PropEqTy (pl) (pr) -> js-sanitize "opening" & "();\n"
     is VoidTy -> js-sanitize "opening" & "();\n"
     is UnitTy (n) (inner) -> js-sanitize "opening" & "();\n"
     is otherwise -> "console.log(" & js-sanitize "opening" & "());\n"

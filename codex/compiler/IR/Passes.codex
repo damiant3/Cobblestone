@@ -73,6 +73,29 @@ Section: Pass Registry
  compile log, before any allocator consumes it. NOT in
  `default-ir-pipeline`.
 
+ `inline-single-caller` is phase 2 of inlining (`IR/Lowering.codex`).
+ It inlines a definition referenced exactly once in the chapter, which
+ costs no duplication and lets emit-time dead-code elimination drop the
+ original, so it admits a wider body shape than `inline-leaf-calls`
+ does. It IS in `default-ir-pipeline`, and unlike `simplify` it did not
+ wait behind a flag.
+
+ It shipped opt-in for exactly one changelist while the measurements were
+ taken, and they came back with nothing to weigh against it. Same
+ compiler, pass off then on: the selfhost binary went 2,514,844 to
+ 2,504,887 bytes and its compile 10.1 s to 9.8 s; across nine other real
+ programs six shrank, three were unchanged and none grew; every one of the
+ ten produced byte-identical output; and the LOWER deck -- the tightest in
+ the compiler, and the reason for the caution -- read 286,227,712 both
+ ways, so the substituted bodies cost it nothing measurable.
+
+ The argument for leaving it off was that it does nothing for the
+ compiler. That was a misreading of one metric: the deck does not move,
+ but ten kilobytes come off the binary. A capability behind a flag is a
+ capability the next person does not know to ask for, and finding it
+ switched off years later with no reason recorded is worse than either
+ shipping it or deleting it.
+
  Unlike the other passes, `lir-dump` does NOT execute inside this
  pipeline: the constructor-pattern increment needs its scrutinee's
  resolved `SumTy`, and this pipeline runs before the RESOLVE phase. So the
@@ -81,13 +104,27 @@ Section: Pass Registry
  `cdx-chapter` the emitter consumes. The pipeline name is still the
  trigger; only the execution site moved.
 
+ `inline-cost-based` (`IR/Lowering.codex`) inlines a body of at most
+ `inline-cost-ceiling` operation nodes at every saturated call site,
+ whatever its reference count -- the first pass that duplicates on
+ purpose. It is opt-in (`passes=+inline-cost-based`) and deliberately
+ NOT in `default-ir-pipeline`, and unlike `simplify` the reason is a
+ measurement, recorded at the ceiling constant in
+ `Core/BuildSettings.codex`: on the selfhost every ceiling grew the
+ binary and none made the compiled compiler faster. Building it also
+ surfaced the template-reuse hazard `subst-once`'s record arm now
+ guards against, which phase 2 could reach through nothing but a
+ census miss; that account is at `subst-once`.
+
   default-ir-pipeline : List Text
-  default-ir-pipeline = ["fold-constants", "inline-leaf-calls"]
+  default-ir-pipeline = ["fold-constants", "inline-leaf-calls", "inline-single-caller"]
 
   run-ir-pass : Text, IRChapter -> IRPassResult
   run-ir-pass (name) (ch) =
    if name == "fold-constants" then IRPassResult { chapter = fold-constants-in-chapter ch, violations = [], infos = [] }
    else if name == "inline-leaf-calls" then IRPassResult { chapter = inline-leaf-calls-in-chapter ch, violations = [], infos = [] }
+   else if name == "inline-single-caller" then IRPassResult { chapter = inline-single-caller-in-chapter ch, violations = [], infos = [] }
+   else if name == "inline-cost-based" then IRPassResult { chapter = inline-cost-based-in-chapter ch, violations = [], infos = [] }
    else if name == "ir-check" then IRPassResult { chapter = ch, violations = ir-check ch, infos = [] }
    else if name == "occ-report" then IRPassResult { chapter = ch, violations = [], infos = occ-report-chapter ch }
    else if name == "simplify" then let o = simplify-run ch in IRPassResult { chapter = o.chapter, violations = [], infos = o.infos }
@@ -107,9 +144,28 @@ Section: Pipeline
  made it. A pass that reports nothing costs nothing here: the tagging
  loop sees an empty list and returns.
 
+ The run reports the pipeline it actually ran, as its first info, so the
+ compile log names its own passes. This is not decoration: `passes=` on the
+ mode line REPLACES the default rather than adding to it, and a caller that
+ wanted a reporter and wrote `passes=lir-dump` silently loses
+ `fold-constants` and `inline-leaf-calls`. That is not a hypothetical --
+ `build/lir-dump-test.ps1` did it for its whole existence and pinned IR
+ nobody compiles, and the only symptom was a dump that disagreed with the
+ emitted binary in a way nobody could explain from the artifact.
+
+ An empty pipeline says so in words rather than printing nothing, because
+ "no passes ran" and "the report did not run" look identical otherwise.
+
+  pipeline-names-text : List Text, Integer, Integer, Text -> Text
+  pipeline-names-text (names) (i) (n) (acc) =
+   if i >= n then acc
+   else pipeline-names-text names (i + 1) n (if acc == "" then list-at names i else acc & "," & list-at names i)
+
   run-ir-pipeline : List Text, IRChapter -> IRPassResult
   run-ir-pipeline (names) (ch) =
-   run-ir-pipeline-loop names 0 (list-length names) ch [] []
+   let n = list-length names
+   in let line = "PIPELINE " & (if n == 0 then "(empty)" else pipeline-names-text names 0 n "")
+   in run-ir-pipeline-loop names 0 n ch [] [line]
 
   run-ir-pipeline-loop : List Text, Integer, Integer, IRChapter, List Text, List Text -> IRPassResult
   run-ir-pipeline-loop (names) (i) (len) (ch) (vs) (infos) =

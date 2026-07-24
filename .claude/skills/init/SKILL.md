@@ -40,19 +40,41 @@ Read these directly as well (parallel with Step 2 is fine):
 - `docs/PM/Stories/Vision/IntelligenceLayer.txt`
 - `docs/PM/Stories/Vision/CodexIoTPlan.md`
 
+Then read **everything in `docs/PM/Active/`**, recursively, with the Read
+tool. In full. Not via an agent, not a bounded prefix, not a catalog.
+
+This is where the stories live: `docs/PM/Active/Stories/` holds seventeen
+accounts of how agents on this project actually failed -- `ValPostMortem.md`,
+`REFLECTIONS.md`, `TheSilentKeyboard.md`, `IGiveUp.md`, `IQuit.md`. They sat
+in `Done/` and went unread, and the failures kept repeating. They are not
+history, they are the failure modes you are about to reproduce.
+`AgentCommunication.md` is the current one: reek's own autopsy of writing
+walls of text and stopping one step short of a finished item, written
+2026-07-19 because Damian refused to read a status message.
+
+**Cost, so nobody deletes this line as an optimisation:** about 180 KB, most
+of it the stories. That is real context spent before you start. It is spent
+deliberately. Reading them at a `limit` to save room defeats the point -- the
+lesson in a post-mortem is in the middle of it, not the title.
+
 Then launch THREE parallel agents (use the Agent tool, model: haiku)
 to read the rest. Each agent reads its assigned files and returns a
 short summary. All three must run concurrently:
 
 **Agent A — PM docs (the open work):**
 - `docs/PM/CurrentPlan.md` — the shape and priority order
-- `docs/PM/BACKLOG.md` — **the register of every open capability**
 
 Agent A must return the open work, not a summary of the project's
-health. Specifically: the top gaps from CurrentPlan in priority order,
-and from BACKLOG the items that are actionable now and (a) in this
-agent's lane, or (b) unowned. Name them concretely. "The project is
-in good shape" is a failed report.
+health: the top gaps from CurrentPlan in priority order, named
+concretely, with a word on which are unowned. "The project is in good
+shape" is a failed report.
+
+**There is no platform-wide register any more.** `docs/PM/BACKLOG.md`
+was deleted 2026-07-23 (main CL 10446) because it had become prose that
+nothing checked, and stale rows were being quoted as fact. Do not go
+looking for it and do not recreate it. Application-domain registers
+(`apps/<app>/<app>-backlog.md`, `codex/<quire>/<quire>-backlog.md`) are
+unaffected; read the one for whatever app you are standing in.
 
 **Skip every entry marked `Deferred`.** The decision to wait has already
 been made and re-reporting it each session wastes the reader's time. Do
@@ -136,15 +158,15 @@ After ALL steps complete, report to the user:
 - **Perforce state:** pending CLs, shelved CLs, opened files,
   merge-down/copy-up status (one line each)
 - **Handoff notes:** anything relevant from memory
-- **Open work:** the top 3-5 items from `docs/PM/BACKLOG.md` and
-  `docs/PM/CurrentPlan.md` that are **actionable now and in your lane**,
-  named concretely, with a word on which are unowned. **Omit every entry
-  marked `Deferred`** — those are known, decided, and not this session's
-  work. **This section is not optional and must not be replaced by a
-  battery count** — a green battery is not the absence of work, it is the
-  reason the work is visible.
+- **Open work:** the top 3-5 items from `docs/PM/CurrentPlan.md` that are
+  **actionable now and in your lane**, named concretely, with a word on
+  which are unowned. **Omit every entry marked `Deferred`** — those are
+  known, decided, and not this session's work. **This section is not
+  optional and must not be replaced by a battery count** — a green
+  battery is not the absence of work, it is the reason the work is
+  visible.
 
-  Keep it to what the reader does not already know. The register is read
+  Keep it to what the reader does not already know. CurrentPlan is read
   every session by every agent; reciting the same standing gaps back to
   the person who wrote them is noise, not diligence.
 - End with: "Ready for instructions."

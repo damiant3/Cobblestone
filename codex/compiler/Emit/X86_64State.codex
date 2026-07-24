@@ -63,6 +63,23 @@ Section: Record Types
    saved-next-temp : Integer between 0 and 65535
   }
 
+ One let binding's proven integer range, for the emit-boundary prover.
+
+ The prover that decides whether a bounds check can be elided is handed
+ an expression, not a scope -- `value-fits-field` gets a record field's
+ VALUE and nothing around it. So a `let` outside that value was invisible
+ to it, and every bound proved at a binding was lost at its use. The
+ checker's twin (`aexpr-proven-range`) never had this problem because it
+ walks with an environment. `range-env` on CodegenState is that
+ environment: `emit-let` binds the name while the body is emitted and
+ puts the previous environment back afterwards, so the prover sees the
+ bindings actually in scope at the point it is asked.
+
+  RangeBind = record {
+   rb-name : Text,
+   rb-ty : CodexType
+  }
+
   CodegenState = record {
    workspace : EmitWorkspace,
    code-len : Integer between 0 and 4294967295,
@@ -85,9 +102,11 @@ Section: Record Types
    peak-local : Integer between 0 and 65535,
    peak-spill : Integer between 0 and 65535,
    load-local-toggle : Integer between 0 and 4294967295,
+   last-jmp-end : Integer between 0 and 4294967295,
    tco : TcoState,
    type-defs : List TypeBinding,
    builtin-names : SkipListText,
+   builtin-emitters : List BuiltinX86Emitter,
    emit-work : Integer between 0 and 4294967295,
    exit-mode : X86_64ExitMode,
    watchdog-mode : X86_64WatchdogMode,
@@ -108,7 +127,8 @@ Section: Record Types
    noalias-slots : List Integer,
    field-cache : List FieldCacheEntry,
    fresh-slots : List Integer,
-   stype-sites : List Integer
+   stype-sites : List Integer,
+   range-env : List RangeBind
   }
 
   EffectOpAddr = record {
@@ -216,29 +236,25 @@ Section: Constants
 
   bare-metal-total-pd-count : Integer = bare-metal-pd-count + 1
 
-Section: CCE Table (inlined from Foreword CCE to avoid duplicate-definition conflict during self-compilation)
-  cce-to-unicode-table : List Integer
-  cce-to-unicode-table = [
-   0, 10, 32,
-   48, 49, 50, 51, 52, 53, 54, 55, 56, 57,
-   101, 116, 97, 111, 105, 110, 115, 104, 114, 100,
-   108, 99, 117, 109, 119, 102, 103, 121, 112, 98,
-   118, 107, 106, 120, 113, 122,
-   69, 84, 65, 79, 73, 78, 83, 72, 82, 68,
-   76, 67, 85, 77, 87, 70, 71, 89, 80, 66,
-   86, 75, 74, 88, 81, 90,
-   46, 44, 33, 63, 58, 59, 39, 34, 45, 40, 41,
-   43, 61, 42, 60, 62,
-   47, 64, 35, 38, 95, 92, 124, 91, 93, 123, 125, 126, 96,
-   94,
-   36, 37,
-   233, 232, 234, 235, 225, 224, 226, 228,
-   243, 244, 246, 250, 252, 241, 231, 237,
-   1072, 1086, 1077, 1080, 1085, 1090, 1089, 1088,
-   1074, 1083, 1082, 1084, 1076, 1087, 1091
-  ]
-
 Section: Rodata Tables
+
+ The rodata tables below read `cce-to-unicode-table` from `Foreword
+ chapter CCE`. This chapter used to carry its own 128-entry copy under
+ a heading that said it was "inlined from Foreword CCE to avoid
+ duplicate-definition conflict during self-compilation" -- which had it
+ backwards, because copying the table is what produced the conflict.
+ The two were byte-identical when the copy was removed, so nothing an
+ emitted binary contains changes; what changes is that the encoding the
+ whole compiler rests on now has one definition instead of two that
+ nothing compared.
+
+ No `cites` line is needed and none is added: foreword names are
+ globally in scope, and `Foreword--CCE` is already in the compiler's
+ own compilation unit -- that co-presence is precisely what made the
+ duplicate a live CDX3006 rather than a theoretical one. With one
+ definition left there is nothing for a mention to be ambiguous
+ between.
+
   cce-to-unicode-byte-table : List Integer
   cce-to-unicode-byte-table = for x in cce-to-unicode-table -> int-mod x 256
 
@@ -569,6 +585,7 @@ Section: State Helpers
    next-local = 0,
    spill-count = 0,
    load-local-toggle = 0,
+   last-jmp-end = 0,
    tco = TcoState {
     active = False,
     in-tail-pos = False,
@@ -581,6 +598,7 @@ Section: State Helpers
    },
    type-defs = [],
    builtin-names = sorted-builtin-names,
+   builtin-emitters = x86-builtin-emitters,
    emit-work = 0,
    exit-mode = ExitRepl,
    watchdog-mode = WatchdogProgress,
@@ -603,7 +621,8 @@ Section: State Helpers
    noalias-slots = [],
    field-cache = [],
    fresh-slots = [],
-   stype-sites = []
+   stype-sites = [],
+   range-env = []
   }
 
   fc-flush : CodegenState -> CodegenState
@@ -695,10 +714,57 @@ Section: State Helpers
   emit-fuel-error (st) =
    st-add-error st cdx-resource-exhausted ("compiler resource exhausted in x86-64-emitter.emit-expr (budget " & integer-to-text max-emit-work & ")") synthetic-span
 
+ __buf-write-bytes takes a buffer and an offset and no capacity, so it
+ cannot bounds-check, and a function that outgrew the code buffer wrote
+ straight past it -- 155 KB past it, measured, on a 256 KB buffer asked
+ for 418 KB of code. This stops the write and still advances code-len, so
+ offsets stay what they would have been and finalize sees the real length.
+
+ Whether this changes what the author is told depends entirely on how far
+ the overrun reaches, and the first control run here was too gentle to
+ show it. A 256 KB code buffer asked for 418 KB overruns by 155 KB, which
+ lands INSIDE the adjacent 2 MB data buffer: guarded and unguarded both
+ report CDX9001 and both emit no binary, because the finalize check is
+ arithmetic on code-len and never reads the buffer. Read alone, that run
+ says the guard is free hygiene.
+
+ It is not. Shrink the data buffer to 4 KB so the same overrun runs past
+ both buffers into live deck data, and the unguarded compiler dies in a
+ general protection fault inside __list_snoc -- a register dump, no
+ diagnostic, no source location. The guarded one still answers CDX9001.
+ That is the whole point of the guard, and it only appears once the
+ overrun is bigger than whatever happens to sit next door.
+
+ Whether the code just emitted ended in an unconditional jump is a fact
+ the emitter needs (emit-jmp-end and emit-if-to-local both skip a join
+ jump when the branch before it already transferred control) and it used
+ to be GUESSED, by reading the byte five back from code-len and asking
+ whether it was 0xE9. That byte is only the jump's opcode when the last
+ instruction happens to be a five-byte `jmp rel32`; it is otherwise
+ whatever an unrelated encoding put there. `add rcx, r13` assembles to
+ `4c 01 e9`, so a then-branch ending in that add followed by a four-byte
+ store put an 0xE9 exactly five back, the guess said "already jumped",
+ the join jump was omitted, and the then-branch fell straight through
+ into the else -- which then overwrote the result. Silent wrong
+ arithmetic, and it depended on the byte layout, so it appeared and
+ vanished with the parameter count.
+
+ So the fact is recorded instead of read back. A jump is five bytes and
+ 0xE9 is unambiguously `jmp rel32` in 64-bit mode, so an append of
+ exactly that shape IS one; anything else leaves last-jmp-end where it
+ was and the predicate answers no. A jump emitted inside a longer byte
+ list is missed, which costs a dead five-byte jump and never a wrong
+ branch -- the only direction this may err in.
+
   st-append-code : CodegenState, List Integer -> CodegenState
   st-append-code (st) (bytes) =
-   let new-len = __buf-write-bytes (st.workspace.code-buffer) (st.code-len) bytes
-   in __record-set st "code-len" new-len
+   let past = st.code-len + list-length bytes
+   in if past > st.workspace.code-capacity then __record-set st "code-len" past
+   else let new-len = __buf-write-bytes (st.workspace.code-buffer) (st.code-len) bytes
+   in let st1 = __record-set st "code-len" new-len
+   in if list-length bytes == 5 & list-at bytes 0 == 233
+      then __record-set st1 "last-jmp-end" new-len
+      else st1
 
 
   record-func-offset : CodegenState, Text -> CodegenState
@@ -735,9 +801,11 @@ Section: State Helpers
     peak-local = 0,
     peak-spill = 0,
     load-local-toggle = 0,
+    last-jmp-end = 0,
     tco = default-tco-state,
     type-defs = st.type-defs,
     builtin-names = st.builtin-names,
+    builtin-emitters = st.builtin-emitters,
     emit-work = new-emit-work,
     exit-mode = st.exit-mode,
     watchdog-mode = st.watchdog-mode,
@@ -758,7 +826,8 @@ Section: State Helpers
     noalias-slots = [],
     field-cache = [],
     fresh-slots = [],
-    stype-sites = st.stype-sites
+    stype-sites = st.stype-sites,
+    range-env = []
    }
 
  A function's scratch is everything the emitter rebuilds per definition:
@@ -779,7 +848,8 @@ Section: State Helpers
    in let st5a = __record-set st5q "func-local-regs" []
    in let st5b = __record-set st5a "noalias-slots" []
    in let st5c = __record-set st5b "field-cache" []
-   in let st5d = __record-set st5c "fresh-slots" []
+   in let st5d0 = __record-set st5c "fresh-slots" []
+   in let st5d = __record-set st5d0 "range-env" []
    in let st6 = __record-set st5d "load-local-toggle" 0
    in __record-set st6 "tco" (TcoState {
     active = False,

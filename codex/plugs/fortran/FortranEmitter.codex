@@ -101,30 +101,40 @@ Section: Type Emission
     is CharTy -> "integer(8)"
     is VoidTy -> "integer(8)"
     is NothingTy -> "integer(8)"
+    is ProofTy -> "integer(8)"
+    is PropEqTy (pl) (pr) -> "integer(8)"
     is UnitTy (n) (inner) -> "integer(8)"
     is ErrorTy -> "integer(8)"
-    is FunTy (p) (r) -> "integer(8)"
+    is FunTy (p) (fnrow) (r) -> "integer(8)"
     is ListTy (elem) -> "integer(8)"
     is LinkedListTy (elem) -> "integer(8)"
     is TypeVar (id) -> "integer(8)"
     is ForAllTy (id) (body) -> fort-type body
+    is ForAllEff (id) (body) -> fort-type body
+    is LinearTy (body) -> fort-type body
+    is TypeApply (body) (tyarg) -> fort-type body
     is SumTy (name) (ty-args) (ctors) -> "type(" & fort-sanitize (name.value) & ")"
     is RecordTy (name) (ty-args) (fields) -> "type(" & fort-sanitize (name.value) & ")"
     is ConstructedTy (name) (args) -> "type(" & fort-sanitize (name.value) & ")"
+    is TypeCon (name) -> "type(" & fort-sanitize (name.value) & ")"
     is VectorTy (vn) (vt) -> "integer(8)"
+    is VectorMaskTy (vn) -> "integer(8)"
     is EffectfulTy (effects) (sc) (ret) -> fort-type ret
 
   fort-return-type : CodexType, Integer -> CodexType
   fort-return-type (ty) (n) =
    if n == 0 then fort-strip-forall ty
    else when fort-strip-forall ty
-    is FunTy (p) (r) -> fort-return-type r (n - 1)
+    is FunTy (p) (fnrow) (r) -> fort-return-type r (n - 1)
     is otherwise -> ty
 
   fort-strip-forall : CodexType -> CodexType
   fort-strip-forall (ty) =
    when ty
     is ForAllTy (id) (body) -> fort-strip-forall body
+    is ForAllEff (id) (body) -> fort-strip-forall body
+    is LinearTy (body) -> fort-strip-forall body
+    is TypeApply (body) (tyarg) -> fort-strip-forall body
     is otherwise -> ty
 
 Section: Type Definition Emission
@@ -137,10 +147,11 @@ Section: Type Definition Emission
   emit-fort-type-def : ATypeDef -> Text
   emit-fort-type-def (td) =
    when td
-    is ARecordTypeDef (name) (tparams) (fields) (s) ->
+    is ARecordTypeDef (name) (tparams) (fields) (recmut) (s) ->
      "  type :: " & fort-sanitize (name.value) & "\n" & emit-fort-record-fields fields 0 & "  end type " & fort-sanitize (name.value) & "\n"
     is AVariantTypeDef (name) (tparams) (ctors) (s) ->
      emit-fort-variant-tags ctors 0 1 & "  type :: " & fort-sanitize (name.value) & "\n    integer :: tag\n" & emit-fort-variant-fields ctors 0 0 & "  end type " & fort-sanitize (name.value) & "\n"
+    is AUnitTypeDef (name) (unitbase) (s) -> ""
 
   emit-fort-record-fields : List ARecordFieldDef, Integer -> Text
   emit-fort-record-fields (fields) (i) =
@@ -187,7 +198,7 @@ Section: Expression Emission
     is IrCharLit (n) (sp) -> integer-to-text n & "_8"
     is IrName (n) (ty) (sp) -> fort-emit-name n ty arities
     is IrBinary (op) (l) (r) (ty) (sp) -> fort-emit-binary op l r arities depth
-    is IrNegate (operand) (sp) -> "(-" & fort-emit-expr-at operand arities (depth + 1) & ")"
+    is IrNegate (operand) (nty) (sp) -> "(-" & fort-emit-expr-at operand arities (depth + 1) & ")"
     is IrIf (c) (t) (el) (ty) (sp) -> "merge(" & fort-emit-expr-at t arities (depth + 1) & ", " & fort-emit-expr-at el arities (depth + 1) & ", " & fort-emit-expr-at c arities (depth + 1) & ")"
     is IrLet (name) (ty) (val) (body) (sp) -> fort-emit-expr-at body arities (depth + 1)
     is IrApply (f) (a) (ty) (sp) -> fort-emit-apply e arities
@@ -316,7 +327,7 @@ Section: Expression Emission
    "is-letter", "is-whitespace", "list-at", "list-insert-at",
    "list-length", "list-set-at", "list-snoc", "max", "min", "negate",
    "open-file", "print-error-uni", "print-line-uni", "process-exit",
-   "read-file", "show", "substring", "text-compare", "text-concat-list",
+   "read-text", "show", "substring", "text-compare", "text-concat-list",
    "text-contains", "text-length", "text-replace", "text-split",
    "text-starts-with", "text-to-integer", "write-file"]
 
@@ -353,7 +364,7 @@ Section: Expression Emission
    else if idx == 13 then fort-emit-expr (list-at args 0) arities
    else if idx == 14 then "fort_file_exists(" & fort-emit-expr (list-at args 0) arities & ")"
    else if idx == 15 then fort-emit-expr (list-at args 0) arities
-   else if idx == 16 then "mod(" & fort-emit-expr (list-at args 0) arities & ", " & fort-emit-expr (list-at args 1) arities & ")"
+   else if idx == 16 then "modulo(" & fort-emit-expr (list-at args 0) arities & ", abs(" & fort-emit-expr (list-at args 1) arities & "))"
    else if idx == 17 then "fort_integer_to_text(" & fort-emit-expr (list-at args 0) arities & ")"
    else if idx == 18 then fort-emit-bi-is-digit args arities
    else if idx == 19 then fort-emit-bi-is-letter args arities
@@ -525,6 +536,9 @@ Section: Definition Emission
    when ty
     is EffectfulTy (effs) (sc) (ret) -> True
     is ForAllTy (id) (body) -> fort-is-effectful body
+    is ForAllEff (id) (body) -> fort-is-effectful body
+    is LinearTy (body) -> fort-is-effectful body
+    is TypeApply (body) (tyarg) -> fort-is-effectful body
     is otherwise -> False
 
   fort-emit-subroutine : IRDef, Text, List ArityEntry -> Text

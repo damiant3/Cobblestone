@@ -270,4 +270,4 @@ must stream the log rather than `buf-read-bytes` it into lists.
 5. **Durable forensic persistence** (gap noted twice above) — the
    audit-trail claims for CRA (2)(k) and 8259A state-awareness are
    capped at MECHANISM(partial) until the forensic chain persists
-   across power loss. Feeds the OS backlog.
+   across power loss.

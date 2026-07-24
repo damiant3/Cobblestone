@@ -1,6 +1,6 @@
 ---
 name: release
-description: Prove the build and publish a release to the public GitHub and GitLab mirrors. The full release gate -- battery, poison build, seed + map + img refresh, README digests, GitHubUpdate rotation, and the mirror push. Run ONLY when Damian calls for a public release, never on a routine copy-up.
+description: Prove the build and publish a release to the public GitHub and GitLab mirrors. The full release gate -- battery, app sweep, poison build, seed + map + img refresh, README digests, GitHubUpdate rotation, and the mirror push. Run ONLY when Damian calls for a public release, never on a routine copy-up.
 shell: powershell
 ---
 
@@ -28,13 +28,38 @@ never-run-the-battery rule, and the battery's approval gate is what a
 release provides. Zero failures. Record the tally. A skipped or failing
 test is a release blocker, not a footnote.
 
-## Step 2 -- Poison build (uninitialized-field safety)
+## Step 2 -- The app sweep (breadth over the front end)
+
+```powershell
+pwsh build/sweep-app-classes.ps1 -Check -Jobs 3
+```
+
+Must exit 0. The apps are the extended pin on the compiler -- 265 diverse
+programs, far more front-end surface than the battery covers -- so a unit
+that stops compiling is a compiler or foreword regression until proven
+otherwise. It fails against `build/app-sweep-baseline.txt`, which names the
+units known not to compile and why; anything else dirty is the regression.
+
+Roughly four minutes at `-Jobs 3`. Do not raise `-Jobs` for a release run:
+high parallelism on a loaded box produces units that fail with no
+diagnostics at all, which is contention rather than a real failure. The
+check re-runs those alone before believing them, but a quieter run is a
+cleaner proof.
+
+Know what this does NOT prove. It proves the apps COMPILE and nothing more.
+It cannot see a miscompile: the literal-pattern defect fixed in CL 9649 had
+`apps/browser` evaluating every conditional as its then-branch and
+`apps/cvmm` treating every operator as plus, and both were clean units the
+whole time. Breadth here, depth in the battery; neither substitutes for the
+other.
+
+## Step 3 -- Poison build (uninitialized-field safety)
 Per `OperatorsManual.md` "Poison-Alloc Diagnostic Build": build a 0xCD-fill
 seed and run the battery against it. Any failure is an uninitialized-field
 read (`CR2=0xCDCD...`); fix it before release. This is the gate that proves
 the zero-fill is a safety net, not a crutch holding something together.
 
-## Step 3 -- Seed, map, and img
+## Step 4 -- Seed, map, and img
 - **Seed:** if a rebuild is due, follow the Developer's Guide seed
   procedure; verify the DEPOT digest after submit (PerforceProcess.md).
 - **Map:** refresh `seed/Codex.map`. The `-Repl` seed build never emits the
@@ -44,22 +69,24 @@ the zero-fill is a safety net, not a crutch holding something together.
   separate distribution artifact that drifts and is NOT part of a seed
   rebuild. A release ships a current img.
 
-## Step 4 -- README and the GitHubUpdate report
+## Step 5 -- README and the GitHubUpdate report
 - Update `README.md`: the seed digest and any capability claims that moved.
 - Top off and rotate the update report: fill in the current
   `docs/PM/Active/GitHubUpdates/GitHubUpdateN.md` with this release's
   themes, then start the next `N+1` for the following cycle. The report
   ships IN the same commit as the release.
 
-## Step 5 -- Push
+## Step 6 -- Push
 Follow `docs/Agents/PublicPush.md` exactly: sync main, `git add -u` plus
 explicit new paths (never `git add -A`), secret scan (the signing key and
 `apps/games/magic/` never ship), one Update-N commit, push github master and
 gitlab master:main, no force.
 
 ## Rules
-- The battery and the poison build are the two proofs a release cannot
-  skip. Everything else is polish; these two are correctness.
+- The battery, the app sweep and the poison build are the three proofs a
+  release cannot skip. Everything else is polish; these three are
+  correctness. They prove different things: the battery is depth, the sweep
+  is breadth over the front end, the poison build is memory hygiene.
 - Never force-push; never publish the signing key or `apps/games/magic/`.
 - If any step is red, STOP and report. A release is the one thing that must
   never ship broken, because the public inherits it directly.

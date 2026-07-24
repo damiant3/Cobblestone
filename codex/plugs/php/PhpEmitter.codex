@@ -99,10 +99,11 @@ Section: Type Definition Emission
   emit-php-type-def : ATypeDef -> Text
   emit-php-type-def (td) =
    when td
-    is ARecordTypeDef (name) (tparams) (fields) (s) ->
+    is ARecordTypeDef (name) (tparams) (fields) (recmut) (s) ->
      emit-php-record-type (name.value) fields
     is AVariantTypeDef (name) (tparams) (ctors) (s) ->
      emit-php-sum-type ctors
+    is AUnitTypeDef (name) (unitbase) (s) -> ""
 
   emit-php-sum-type : List AVariantCtorDef -> Text
   emit-php-sum-type (ctors) =
@@ -153,7 +154,7 @@ Section: Expression Emission
     is IrCharLit (n) (sp) -> integer-to-text n
     is IrName (n) (ty) (sp) -> emit-php-name n ty arities
     is IrBinary (op) (l) (r) (ty) (sp) -> emit-php-binary op l r arities
-    is IrNegate (operand) (sp) -> "(-" & emit-php-expr-at operand arities (depth + 1) & ")"
+    is IrNegate (operand) (nty) (sp) -> "(-" & emit-php-expr-at operand arities (depth + 1) & ")"
     is IrIf (c) (t) (el) (ty) (sp) -> "(" & emit-php-expr-at c arities (depth + 1) & " ? " & emit-php-expr-at t arities (depth + 1) & " : " & emit-php-expr-at el arities (depth + 1) & ")"
     is IrLet (name) (ty) (val) (body) (sp) -> "(function() use (&$" & php-sanitize name & ") { $" & php-sanitize name & " = " & emit-php-expr-at val arities (depth + 1) & "; return " & emit-php-expr-at body arities (depth + 1) & "; })()"
     is IrApply (f) (a) (ty) (sp) -> emit-php-apply e arities
@@ -298,7 +299,7 @@ Section: Builtin Emitters
    PhpBuiltinEmitter { name = "char-at", emit = \args arities -> emit-php-expr (list-at args 0) arities & "[" & emit-php-expr (list-at args 1) arities & "]" },
    PhpBuiltinEmitter { name = "char-code-at", emit = \args arities -> "ord(" & emit-php-expr (list-at args 0) arities & "[" & emit-php-expr (list-at args 1) arities & "])" },
    PhpBuiltinEmitter { name = "file-exists", emit = \args arities -> "file_exists(" & emit-php-expr (list-at args 0) arities & ")" },
-   PhpBuiltinEmitter { name = "int-mod", emit = \args arities -> "(" & emit-php-expr (list-at args 0) arities & " % " & emit-php-expr (list-at args 1) arities & ")" },
+   PhpBuiltinEmitter { name = "int-mod", emit = \args arities -> "((function($_a, $_b) { $_m = abs($_b); $_r = $_a % $_m; return $_r < 0 ? $_r + $_m : $_r; })(" & emit-php-expr (list-at args 0) arities & ", " & emit-php-expr (list-at args 1) arities & "))" },
    PhpBuiltinEmitter { name = "integer-to-text", emit = \args arities -> "strval(" & emit-php-expr (list-at args 0) arities & ")" },
    PhpBuiltinEmitter { name = "list-at", emit = \args arities -> emit-php-expr (list-at args 0) arities & "[" & emit-php-expr (list-at args 1) arities & "]" },
    PhpBuiltinEmitter { name = "list-length", emit = \args arities -> "count(" & emit-php-expr (list-at args 0) arities & ")" },
@@ -308,7 +309,7 @@ Section: Builtin Emitters
    PhpBuiltinEmitter { name = "negate", emit = \args arities -> "(-(" & emit-php-expr (list-at args 0) arities & "))" },
    PhpBuiltinEmitter { name = "print-error-uni", emit = \args arities -> "fwrite(STDERR, " & emit-php-expr (list-at args 0) arities & " . \"\\n\")" },
    PhpBuiltinEmitter { name = "print-line-uni", emit = \args arities -> "echo " & emit-php-expr (list-at args 0) arities & " . \"\\n\"" },
-   PhpBuiltinEmitter { name = "read-file", emit = \args arities -> "file_get_contents(" & emit-php-expr (list-at args 0) arities & ")" },
+   PhpBuiltinEmitter { name = "read-text", emit = \args arities -> "file_get_contents(" & emit-php-expr (list-at args 0) arities & ")" },
    PhpBuiltinEmitter { name = "read-line", emit = \args arities -> "trim(fgets(STDIN))" },
    PhpBuiltinEmitter { name = "show", emit = \args arities -> "strval(" & emit-php-expr (list-at args 0) arities & ")" },
    PhpBuiltinEmitter { name = "substring", emit = \args arities -> "substr(" & emit-php-expr (list-at args 0) arities & ", " & emit-php-expr (list-at args 1) arities & ", " & emit-php-expr (list-at args 2) arities & ")" },

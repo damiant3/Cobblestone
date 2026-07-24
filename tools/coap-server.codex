@@ -1,0 +1,113 @@
+Chapter: CoapServer
+  cites Encode chapter Coap
+  cites Net chapter UdpIO
+  cites Foreword chapter Console
+  cites Foreword chapter Maybe
+
+ A CoAP server on a real socket, so that the device role an IoT product
+ actually plays is exercised rather than assumed.
+
+ `tools/coap-client.codex` proves Codex can ASK a CoAP server for
+ something. This proves it can BE one, which is the more common shape:
+ an LwM2M client is a CoAP server that a management peer pokes, and a
+ sensor node answers rather than asks. It is driven by aiocoap's client,
+ through `codex-vm -portfwd udp:<host>:5683`.
+
+ IT ANSWERS ITS PEER, NOT ITS CONFIGURED PEER. A datagram carries no
+ connection, so the sender's port arrives with the datagram
+ (`ur-src-port`) and the answer goes back to it. codex-vm gives each host
+ client its own synthetic gateway port, so replying to the port the
+ request came from is what routes the answer to the right client.
+
+ TWO ANSWERS, and the second matters as much as the first: a request for
+ the resource it serves is answered 2.05 Content, and a request for
+ anything else is answered 4.04 Not Found. A server that answered
+ everything the same way would satisfy a test that only ever asked for
+ something that exists.
+
+Section: Configuration
+
+  srv-local-mac : List Integer = [82, 84, 0, 18, 52, 86]
+  srv-local-ip : List Integer = [10, 0, 2, 15]
+  srv-gateway-ip : List Integer = [10, 0, 2, 2]
+  srv-port : Integer = 5683
+
+  srv-resource : Text = "codex"
+  srv-payload : List Integer = [111, 110, 45, 100, 101, 118, 105, 99, 101]
+
+  srv-poll-fuel : Integer = 4000000
+  srv-requests : Integer = 2
+
+Section: Reading The Request
+
+ The Uri-Path is an option, so finding it is a walk over the option list
+ rather than a field read. A request with no Uri-Path is a request for
+ the root, which this server does not serve.
+
+  srv-path-bytes : List CoapOption, Integer -> List Integer
+  srv-path-bytes (opts) (i) =
+    if i >= list-length opts then []
+    else let o = list-at opts i
+    in if o.number == coap-opt-uri-path then o.value
+    else srv-path-bytes opts (i + 1)
+
+  srv-wanted : List Integer = coap-text-to-bytes srv-resource
+
+  srv-bytes-eq : List Integer, List Integer, Integer -> Boolean
+  srv-bytes-eq (a) (b) (i) =
+    if list-length a /= list-length b then False
+    else if i >= list-length a then True
+    else if list-at a i /= list-at b i then False
+    else srv-bytes-eq a b (i + 1)
+
+Section: Answering
+
+ The response is a piggybacked one: an Acknowledgement carrying the
+ answer, matched to the request by message id and token. That is the
+ common case in RFC 7252 and the one a constrained server should prefer,
+ because it costs one datagram rather than three.
+
+  srv-response : CoapMessage -> List Integer
+  srv-response (m) =
+    if srv-bytes-eq (srv-path-bytes (m.cm-options) 0) srv-wanted 0
+    then coap-build-response CoapAcknowledgement coap-205-content (m.cm-msg-id) (m.cm-token) [] srv-payload
+    else coap-build-response CoapAcknowledgement coap-404-not-found (m.cm-msg-id) (m.cm-token) [] []
+
+Section: The Loop
+
+ Bounded, and it says how many it will serve. A server that looped
+ forever would have to be killed by the harness, and a killed process
+ does not flush the output the harness reads.
+
+  srv-serve : UdpSocket, Integer -> [Network.Read, Network.Write, Console.Write] Integer
+  srv-serve (sk) (remaining) =
+    if remaining <= 0 then 0
+    else act
+      r <- udp-io-recv sk srv-poll-fuel
+      if r.ur-got == False then act
+        (print-line-uni "coap-server: no request before the poll budget ran out")
+        0
+      end
+      else when coap-parse (r.ur-data)
+        is None -> act
+          print-line-uni "coap-server: a datagram that is not CoAP"
+          srv-serve sk (remaining - 1)
+        end
+        is Just (m) -> act
+          sent <- udp-io-reply sk (r.ur-src-port) (srv-response m)
+          print-line-uni ("coap-server: answered mid=" & show (m.cm-msg-id) & " path=" & show (list-length (srv-path-bytes (m.cm-options) 0)) & " bytes=" & show sent)
+          rest <- srv-serve sk (remaining - 1)
+          rest + 1
+        end
+    end
+
+Section: Entry
+
+  opening : [Network.Read, Network.Write, Console.Write] Nothing = act
+    let sk = udp-io-open srv-local-mac srv-local-ip srv-port srv-gateway-ip srv-port
+    in act
+      print-line-uni ("coap-server: listening on guest udp " & show srv-port)
+      served <- srv-serve sk srv-requests
+      print-line-uni ("coap-server: served " & show served)
+    end
+  end

@@ -1,0 +1,246 @@
+Chapter: CdxRegistry
+  cites Foreword chapter Maybe
+  cites Foreword chapter Console
+  cites Foreword chapter TextSearch
+  cites Trust chapter AgentProtocol
+  cites Trust chapter TrustTransport
+  cites Net chapter NetIO
+  cites Net chapter TcpTransport
+  cites Net chapter NetworkStack
+  cites Net chapter MessageFraming
+
+ The registry tier of peer discovery. `cdx-serve` answers "give me the work with
+ hash X"; this answers "who has it", which is the question an asker holding only
+ a digest actually has. Until now a peer had to be NAMED -- `compile.ps1 -Peer
+ host:port` -- so a work could only be fetched between two parties already
+ introduced. This is the introduction.
+
+ THIS BINARY NEVER OPENS AN OUTBOUND CONNECTION. It only ever accepts. That is
+ the load-bearing property and it is why the design is announcement-driven
+ rather than probe-driven.
+
+ An earlier cut of this chapter probed: asked each known peer, on demand,
+ whether it held the digest. It cannot work, and the reason is worth keeping.
+ Answering a locate that way means opening an outbound connection while the
+ inbound one is still open, and a guest cannot do that -- the reply to the
+ inbound connection is emitted (codex-vm logs the frame leaving) and is never
+ delivered to the host. Measured three ways: a locate answered without dialling
+ out arrives; a locate answered after a SUCCESSFUL probe does not; a locate
+ answered after a probe to a DEAD PORT, with no exchange and no close, also does
+ not. So the damage is done by opening the connection, not by the conversation.
+
+ Announcing inverts it. The peer dials the registry at BOOT, when it has nothing
+ inbound open, so nothing nests at either end. The registry answers every locate
+ out of memory. The nesting is not avoided by careful sequencing; it is
+ unreachable.
+
+ WHAT AN ANNOUNCEMENT IS WORTH. Nothing verifies it, and nothing needs to. It
+ says an address claims a digest, which is a rumour exactly like a locate reply,
+ and the asker still fetches by hash and still checks what comes back against
+ the digest it asked for. A peer that announces works it does not hold costs a
+ wasted round trip and cannot cause a wrong work to be accepted.
+
+ IT GOES STALE, AND THAT IS AFFORDABLE. A peer can die or drop a work while the
+ registry still names it. "Peer P holds digest D" is nearly monotonic -- a
+ digest is immutable, so the claim stays true until P goes away -- and the fetch
+ path already walks the candidates in turn and tolerates a miss, so a stale
+ entry costs one round trip. Nothing here expires anything, deliberately: a
+ timeout would be a number nobody has measured, and the client already handles
+ the case the timeout would exist to prevent.
+
+ The registry takes NO configuration. It learns its peers by being told.
+
+ We say:
+
+Section: Identity
+
+ The reply carries a `from` and it is empty, which is the honest value. Nothing
+ checks it -- a signed rumour is still a rumour, and the check that protects the
+ asker happens after the fetch, against the content. `cdx-serve` fills its own
+ in because it answers with content; there is nothing here for a key to attest.
+
+  reg-id : AgentIdentity
+  reg-id = AgentIdentity { public-key = [] }
+
+Section: What A Peer Told Us
+
+  Announcement = record {
+    ann-address : Text,
+    ann-hashes : Text
+  }
+
+ A digest is matched by splitting the announced list and comparing whole tokens,
+ not by substring. Every digest is the same 64 characters, so a substring test
+ would happen to be right today and would stop being right the moment anything
+ announces a shorter identifier beside them.
+
+  hashes-contain : Text, Text -> Boolean
+  hashes-contain (hashes) (hash) =
+    token-match (text-split hashes " ") 0 hash
+
+  token-match : List Text, Integer, Text -> Boolean
+  token-match (toks) (i) (hash) =
+    if i >= list-length toks then False
+    else if text-trim (list-at toks i) == hash then True
+    else token-match toks (i + 1) hash
+
+ No holders is an empty field, which is the honest representation and needs no
+ sentinel. An earlier draft carried one, on the strength of a measurement that
+ said an empty trailing field was never delivered. That measurement was an
+ artifact of the test harness, not a property of the transport: PowerShell
+ unrolls an empty array on return, so `Invoke-WorkLocate` answering "nobody"
+ collapsed to `$null` at the call site and read as "the server never replied".
+ The transport was fine the whole time.
+
+  holders-of : List Announcement, Integer, Text, Text -> Text
+  holders-of (anns) (i) (hash) (acc) =
+    if i >= list-length anns then acc
+    else let a = list-at anns i
+    in let next = if hashes-contain (a.ann-hashes) hash then join-peer acc (a.ann-address) else acc
+    in holders-of anns (i + 1) hash next
+
+  join-peer : Text, Text -> Text
+  join-peer (acc) (peer) = if text-length acc == 0 then peer else acc & " " & peer
+
+ An address that announces twice REPLACES its earlier entry rather than adding a
+ second. A peer re-announcing is restating what it holds now, not adding to what
+ it held before, and appending would leave a peer that dropped a work still
+ named for it by its own older announcement.
+
+  without-address : List Announcement, Integer, Text, List Announcement -> List Announcement
+  without-address (anns) (i) (addr) (acc) =
+    if i >= list-length anns then acc
+    else let a = list-at anns i
+    in without-address anns (i + 1) addr (if a.ann-address == addr then acc else list-push acc a)
+
+  record-announcement : List Announcement, Text, Text -> List Announcement
+  record-announcement (anns) (addr) (hashes) =
+    list-push (without-address anns 0 addr []) (Announcement { ann-address = addr, ann-hashes = hashes })
+
+  count-hashes : Text -> Integer
+  count-hashes (hashes) = list-length (text-split (text-trim hashes) " ")
+
+Section: The Socket
+
+ A different guest port from `cdx-serve`'s 9300, so a registry and a peer can be
+ forwarded from one host without the two listeners colliding.
+
+  registry-port : Integer = 9301
+
+ codex-vm's NAT constants, spelled here for the reason `cdx-serve` spells them:
+ they belong in `NetworkStack` with the NIC's own addresses and they are not
+ there yet.
+
+  local-mac : List Integer = [82, 84, 0, 18, 52, 86]
+  local-ip : List Integer = [10, 0, 2, 15]
+  gateway-ip : List Integer = [10, 0, 2, 2]
+
+  nat-gw-mac : List Integer = [82, 85, 10, 0, 2, 2]
+
+  listen-transport : Integer -> TcpTransportState
+  listen-transport (x) =
+    let sess = net-session-new local-mac local-ip gateway-ip registry-port 0 gateway-ip 1000
+    in let sess2 = set-arp sess (arp-cache-add (sess.arp) gateway-ip nat-gw-mac)
+    in transport-new sess2
+
+Section: Answering
+
+  ServeResult = record {
+    sr-anns : List Announcement,
+    sr-diag : Text
+  }
+
+  answer-locate : List Announcement, TcpTransportState, LocateRequestMsg -> [Network.Read, Network.Write, Console.Write] ServeResult
+  answer-locate (anns) (ts) (req) = act
+    ts1 <- net-io-send ts tag-locate-reply (encode-locate-reply-body (LocateReplyMsg { from = reg-id, hash = req.hash, peers = holders-of anns 0 (req.hash) "" }))
+    ts2 <- net-io-close ts1
+    let who = holders-of anns 0 (req.hash) ""
+    in ServeResult { sr-anns = anns, sr-diag = "locate " & req.hash & " -> " & (if text-length who == 0 then "none" else who) }
+  end
+
+  answer-announce : List Announcement, TcpTransportState, AnnounceRequestMsg -> [Network.Read, Network.Write, Console.Write] ServeResult
+  answer-announce (anns) (ts) (req) = act
+    ts1 <- net-io-send ts tag-announce-reply (encode-announce-reply-body (AnnounceReplyMsg { from = reg-id, accepted = count-hashes (req.hashes) }))
+    ts2 <- net-io-close ts1
+    let updated = record-announcement anns (req.address) (req.hashes)
+    in ServeResult { sr-anns = updated, sr-diag = "announce " & req.address & " " & show (count-hashes (req.hashes)) & " works" }
+  end
+
+ A tag that is neither a locate nor an announcement is dropped rather than
+ answered. This is not a peer and does not serve works, so a work-request
+ arriving here gets nothing back and the connection closes.
+
+ A CONNECTION THAT SAYS NOTHING IS ABANDONED, and a server that does not do this
+ deadlocks permanently. `net-io-recv-loop` counts UP to a fifty-million-try fuel
+ cap, so starting at zero means waiting effectively forever; passing a high
+ start bounds the wait to the remainder.
+
+ It has to be bounded because codex-vm injects a forwarded connection's SYN
+ exactly once and never retransmits it. A SYN that arrives while this server is
+ busy on another connection is dropped and never comes back. So a server that
+ blocks forever on one silent connection never returns to accept, every later
+ SYN is dropped, and it is dead to all future callers -- observed here as a
+ client retrying sixty times into a registry that had served exactly one
+ request and would never serve another.
+
+ The margin is a WINDOW and both edges have been measured. Too long and this
+ server stays blocked on a silent connection while the caller that matters is
+ dropped for want of an accept; too short and it abandons a live client before
+ its request arrives.
+
+ The lower edge is not merely "the client is slow". codex-vm cannot forward a
+ forwarded connection's data until the handshake reaches state 2, so the request
+ sits in the host socket while this server is already counting down. Measured:
+ 500,000 tries fails outright, 5,000,000 has both served requests and missed
+ them run to run, which is a race sitting on the boundary rather than a working
+ value. 10,000,000 is the first setting with margin over that delay.
+
+ That reasoning stood while the transport lost frames, and it no longer holds.
+ The standing theory was that a single-threaded server here is racy by
+ construction and that only a per-session inbox would fix it. Measured
+ otherwise: the registry's own accept loop was correct throughout and needed
+ no functional change. What was wrong sat in the host. A forwarded connection
+ whose socket errored was never freed, so it polled forever and wedged the
+ whole port forward; and the guest's serial log was written only at exit, which
+ is why the server could not be read while it ran. Both are fixed in codex-vm,
+ the host-facing half of a port forward now retransmits an un-ACKed SYN or data
+ frame rather than injecting it once, and discovery passes end to end with its
+ negative controls.
+
+ So this constant is a timeout and not a race tuner. It is still worth keeping
+ generous: the lower edge above is real, and a server that gives up early
+ returns to accept before the request it was owed arrives.
+
+  recv-give-up : Integer = 40000000
+
+  handle-conn : List Announcement, TcpTransportState -> [Network.Read, Network.Write, Console.Write] ServeResult
+  handle-conn (anns) (ts) = act
+    r <- net-io-recv-loop ts recv-give-up
+    if r.has-message == False then ServeResult { sr-anns = anns, sr-diag = "no-message" }
+    else if r.tag == tag-locate-request then answer-locate anns (r.transport) (decode-locate-request-body (r.body))
+    else if r.tag == tag-announce-request then answer-announce anns (r.transport) (decode-announce-request-body (r.body))
+    else ServeResult { sr-anns = anns, sr-diag = "unknown-tag " & show (r.tag) }
+  end
+
+  serve-one : List Announcement -> [Network.Read, Network.Write, Console.Write] ServeResult
+  serve-one (anns) = act
+    ts <- net-io-accept (net-io-listen (listen-transport 0)) 0
+    when (ts.session).conn.state
+      is TcpEstablished -> handle-conn anns ts
+      is otherwise -> ServeResult { sr-anns = anns, sr-diag = "no-conn" }
+  end
+
+  serve-loop : List Announcement, Integer -> [Network.Read, Network.Write, Console.Write] Integer
+  serve-loop (anns) (count) = act
+    r <- serve-one anns
+    print-line-uni ("registry " & show count & " " & r.sr-diag)
+    serve-loop (r.sr-anns) (count + 1)
+  end
+
+Section: Entry
+
+  opening : [Network.Read, Network.Write, Console.Write] Nothing = act
+    print-line-uni ("cdx-registry: listening on guest port " & show registry-port)
+    served <- serve-loop [] 0
+    print-line-uni ("cdx-registry closed after " & show served)
+  end

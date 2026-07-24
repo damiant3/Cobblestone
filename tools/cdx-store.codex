@@ -22,16 +22,32 @@ Chapter: CdxStore
  whole of the hashing rule: hashing is not an I/O function, so a work is
  addressed by its internal CCE bytes, and a tool that stored the UTF-8 off
  the wire would file the work under an address the compiler -- which reads
- and hashes in CCE -- could never look it up by. So the body is converted
- code point by code point through from-unicode before it is stored, the same
- crossing the compiler makes on its own source. This handles the ASCII and
- single-byte range that source code lives in; a multi-byte UTF-8 sequence
- would need real decoding first, which this tool does not yet do.
+ and hashes in CCE -- could never look it up by. So the body is decoded from
+ UTF-8 and converted through from-unicode before it is stored, the same
+ crossing the compiler makes on its own source.
+
+ The decoding is real now: utf8-bytes-to-text (Foreword chapter CCE) walks
+ lead bytes and continuation bytes rather than treating each byte as its own
+ code point. That earlier shortcut was accurate only over the single-byte
+ range, and it failed silently rather than loudly above it -- a continuation
+ byte lands in 128..191, which from-unicode answers for as Latin Extended, so
+ a two-byte character became two wrong characters and the work was filed under
+ the address of text nobody wrote.
 
  The signing identity is a fixed tool key here. A deployment signs with the
  box's own identity; that this key is well-known does not weaken the
  demonstration -- the signature is real and the gate checks it against
  whatever manifest the reader trusts.
+
+ The store is opened with disk-load and not disk-init, so a work is APPENDED
+ to whatever is already on the disk. disk-init builds an empty store, and
+ since this tool stores one work per boot, initialising meant every run
+ replaced the log the previous run wrote: a disk given three works held only
+ the third. Nothing caught that, because the only harness storing anything
+ stored exactly one work into a blank disk, and one is the case where
+ replacing and appending agree. disk-load reads the superblock when there is
+ one and falls back to disk-init when there is not, so a blank disk still
+ works and a populated one accumulates.
 
 Section: Identity
 
@@ -53,16 +69,22 @@ Section: Entry
  carriage return, so a CRLF file and an LF file are the same text once they
  are inside.
 
-  to-cce : Text, Integer, Integer, Text -> Text
-  to-cce (raw) (i) (len) (acc) =
+ The serial reader hands back one wire byte per character, so the body is
+ gathered into a byte list and handed to the decoder whole -- a UTF-8 sequence
+ cannot be decoded a character at a time, which is the entire point.
+
+  raw-to-bytes : Text, Integer, Integer, List Integer -> List Integer
+  raw-to-bytes (raw) (i) (len) (acc) =
     if i >= len then acc
-    else let c = from-unicode (char-code (char-at raw i))
-    in if c < 0 then to-cce raw (i + 1) len acc
-       else to-cce raw (i + 1) len (acc & char-to-text (code-to-char c))
+    else raw-to-bytes raw (i + 1) len (list-push acc (char-code (char-at raw i)))
+
+  to-cce : Text -> Text
+  to-cce (raw) =
+    utf8-bytes-to-text (raw-to-bytes raw 0 (text-length raw) [])
 
   store-body : Text, Text -> [Device.Block, Console] Nothing
   store-body (header) (raw) = act
-    let body = to-cce raw 0 (text-length raw) ""
+    let body = to-cce raw
     in let parts = text-split header "|"
     in if list-length parts < 3
        then print-line-uni "cdx-store: header must be path|quire|chapter"
@@ -77,7 +99,7 @@ Section: Entry
       sd-author = "codex-store", sd-timestamp = 1, sd-content = body
     }
     in let signed = sign-definition press def 1
-    in let s0 = disk-init
+    in let s0 = disk-load
     in let s1 = repo-persist-save-definition s0 signed 1
     in print-line-uni ("stored " & signed.sd-hash & " " & signed.sd-path)
   end

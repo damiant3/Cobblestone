@@ -2,136 +2,384 @@ Chapter: GpuBridge
   cites AI chapter GpuProxy
   cites AI chapter Tensor
   cites Foreword chapter Maybe
+  cites Foreword chapter CCE
   grounds Device.Port
 
- Guest-side GPU compute bridge via serial port. Sends command
- buffer over COM3, host proxy executes on CUDA, returns result.
- Uses port I/O at 0x3E8 (COM3). Fixed-point scale 1000.
+ Guest-side GPU compute bridge. A command is built in guest memory and
+ the host is told where it is; the host computes and writes the reply
+ back into guest memory. Fixed-point scale 1000.
+
+ This chapter used to drive a polled serial line at COM3, one byte at a
+ time. That cost TWO VM exits per byte in each direction -- one to poll
+ the line status register, one to move the byte -- so what a dispatch
+ cost was a multiple of the OPERAND SIZE rather than of the work. It was
+ measured before it was replaced: a 2x2 matmul was 160 exits, its relu
+ 112, and a single 32x32 matmul 24,640. Through the buffers below each of
+ those is four, because only the two addresses and the ring cross the
+ boundary. The serial path is deleted rather than kept beside this one; a
+ second transport that nothing uses is a second thing to keep correct,
+ and it would be exercised by nothing.
+
+ Handing the host a guest address is this machine's existing idiom. The
+ triangle rasterizer takes its command buffer that way and so does the
+ asset loader.
 
  We say:
 
-Section: Constants
-  gpu-com3-port : Integer = 1000
-  gpu-com3-lsr : Integer = 1005
+Section: Buffers
+
+ One slab below the rasterizer's own command buffer (#BE000000), inside
+ the band above the heap and below the stack that is present from boot.
+ Fixed rather than allocated because there is no buffer-allocator
+ builtin, and fixed HERE because this region already belongs to the
+ graphics path and so cannot collide with the bump allocator.
+
+ The command region is 6 MB (#BD000000 to #BD600000) and the reply region
+ is the 10 MB below the rasterizer buffer (#BD600000 to #BE000000). Both
+ are sized for the largest matmul the host's operand cap admits, a 512x512
+ square: its two operands are 2 MB and its result is 1 MB. The reply used
+ to sit only 256 KB above the command, which held a square matmul to
+ 90x90 -- too small for a device dispatch to ever pay back its one-time
+ context and JIT cost, which is why that cost is the whole of what
+ BACKLOG 4.17 was about.
+
+  gpu-cmd-buf : Integer = #BD000000
+  gpu-reply-buf : Integer = #BD600000
+
+  gpu-port-cmd-addr : Integer = 1056
+  gpu-port-reply-addr : Integer = 1057
+  gpu-port-doorbell : Integer = 1058
+  gpu-port-reply-len : Integer = 1059
 
 Section: State
+
   GpuBridge = record {
-    bridge-port : Integer,
     bridge-ready : Boolean
   }
 
 Section: Initialization
   gpu-bridge-init : GpuBridge
-  gpu-bridge-init = GpuBridge { bridge-port = gpu-com3-port, bridge-ready = True }
+  gpu-bridge-init = GpuBridge { bridge-ready = True }
 
-Section: Serial I/O
-  gpu-serial-send-byte : Integer, Integer -> Integer
-  gpu-serial-send-byte (port) (val) =
-    let ready = gpu-wait-tx-ready port 10000
-    in ready + port-out-byte port val
+Section: Command Buffer
 
-  gpu-wait-tx-ready : Integer, Integer -> Integer
-  gpu-wait-tx-ready (port) (fuel) =
-    if fuel <= 0 then 0
-    else let lsr = port-in-byte (port + 5)
-    in if bit-and lsr 32 > 0 then 0
-    else gpu-wait-tx-ready port (fuel - 1)
+  gpu-put-f32 : Integer, Integer, Integer -> Integer
+  gpu-put-f32 (base) (off) (fixed) =
+    let bs = gpu-fixed-to-f32 fixed
+    in let w0 = poke-byte base off (list-at bs 0)
+    in let w1 = poke-byte base (off + 1) (list-at bs 1)
+    in let w2 = poke-byte base (off + 2) (list-at bs 2)
+    in poke-byte base (off + 3) (list-at bs 3)
 
-  gpu-recv-byte : Integer, Integer -> Integer
-  gpu-recv-byte (port) (fuel) =
-    if fuel <= 0 then 0 - 1
-    else let lsr = port-in-byte (port + 5)
-    in if bit-and lsr 1 > 0 then port-in-byte port
-    else gpu-recv-byte port (fuel - 1)
-
-Section: Buffer Write
-  gpu-send-u32 : Integer, Integer -> Integer
-  gpu-send-u32 (port) (val) =
-    let w0 = gpu-serial-send-byte port (bit-and val 255)
-    in let w1 = gpu-serial-send-byte port (bit-and (bit-shru val 8) 255)
-    in let w2 = gpu-serial-send-byte port (bit-and (bit-shru val 16) 255)
-    in let w3 = gpu-serial-send-byte port (bit-and (bit-shru val 24) 255)
-    in w0 + w1 + w2 + w3
-
-  gpu-recv-u32 : Integer -> Integer
-  gpu-recv-u32 (port) =
-    let b0 = gpu-recv-byte port 10000000
-    in let b1 = gpu-recv-byte port 10000000
-    in let b2 = gpu-recv-byte port 10000000
-    in let b3 = gpu-recv-byte port 10000000
-    in if b0 < 0 then 0 - 1
-    else bit-or b0 (bit-or (bit-shl b1 8) (bit-or (bit-shl b2 16) (bit-shl b3 24)))
-
-Section: F32 Conversion
-  gpu-send-f32 : Integer, Integer -> Integer
-  gpu-send-f32 (port) (fixed-val) =
-    let bytes = gpu-fixed-to-f32 fixed-val
-    in let w0 = gpu-serial-send-byte port (list-at bytes 0)
-    in let w1 = gpu-serial-send-byte port (list-at bytes 1)
-    in let w2 = gpu-serial-send-byte port (list-at bytes 2)
-    in let w3 = gpu-serial-send-byte port (list-at bytes 3)
-    in w0 + w1 + w2 + w3
-
-  gpu-recv-f32 : Integer -> Integer
-  gpu-recv-f32 (port) =
-    let raw = gpu-recv-u32 port
-    in if raw < 0 then 0
-    else gpu-f32-raw-to-fixed raw
-
-Section: Tensor Send/Recv
-  gpu-send-tensor-data : Integer, Tensor, Integer, Integer -> Integer
-  gpu-send-tensor-data (port) (t) (i) (len) =
+  gpu-put-tensor : Integer, Integer, Tensor, Integer, Integer -> Integer
+  gpu-put-tensor (base) (off) (t) (i) (len) =
     if i >= len then 0
-    else let w = gpu-send-f32 port (list-at (t.data) i)
-    in w + gpu-send-tensor-data port t (i + 1) len
+    else let w = gpu-put-f32 base (off + i * 4) (list-at (t.data) i)
+    in gpu-put-tensor base off t (i + 1) len
 
-  gpu-recv-tensor-data : Integer, Integer, Integer -> List Integer
-  gpu-recv-tensor-data (port) (count) (i) =
-    if i >= count then []
-    else let val = gpu-recv-f32 port
-    in [val] & gpu-recv-tensor-data port count (i + 1)
+  gpu-get-tensor : Integer, Integer, Integer, Integer, List Integer -> List Integer
+  gpu-get-tensor (base) (off) (n) (i) (acc) =
+    if i >= n then acc
+    else let v = gpu-f32-raw-to-fixed (peek-32 base (off + i * 4))
+    in gpu-get-tensor base off n (i + 1) (list-push acc v)
+
+  gpu-header : Integer, Integer, Integer, Integer -> Integer
+  gpu-header (op) (ra) (ca) (cb) =
+    let h0 = poke-32 gpu-cmd-buf 0 gpu-status-pending
+    in let h1 = poke-32 gpu-cmd-buf 4 op
+    in let h2 = poke-32 gpu-cmd-buf 8 ra
+    in let h3 = poke-32 gpu-cmd-buf 12 ca
+    in poke-32 gpu-cmd-buf 16 cb
+
+Section: Dispatch
+
+ The doorbell write is last, so both buffer addresses are in place before
+ the host is told to look. The reply length answers zero when the host
+ refused the dispatch, which is what separates a refusal from a reply
+ that happens to decode to zeros -- a distinction the caller cannot make
+ from the reply bytes alone.
+
+  gpu-ring : Integer -> Integer
+  gpu-ring (cmd-bytes) =
+    let p1 = port-out-32 gpu-port-cmd-addr gpu-cmd-buf
+    in let p2 = port-out-32 gpu-port-reply-addr gpu-reply-buf
+    in let p3 = port-out-32 gpu-port-doorbell cmd-bytes
+    in port-in-32 gpu-port-reply-len
 
 Section: High-Level Operations
+
   gpu-bridge-matmul : GpuBridge, Tensor, Tensor -> Maybe Tensor
   gpu-bridge-matmul (bridge) (a) (b) =
-    let port = bridge.bridge-port
-    in let cmd = gpu-cmd-matmul (a.rows) (a.cols) (b.cols)
-    in let wh = gpu-send-u32 port gpu-status-pending
-    in let w1 = gpu-send-u32 port (cmd.gpu-op)
-    in let w2 = gpu-send-u32 port (cmd.gpu-rows-a)
-    in let w3 = gpu-send-u32 port (cmd.gpu-cols-a)
-    in let w4 = gpu-send-u32 port (cmd.gpu-cols-b)
-    in let wa = gpu-send-tensor-data port a 0 (list-length (a.data))
-    in let wb = gpu-send-tensor-data port b 0 (list-length (b.data))
-    in let status = gpu-recv-u32 port
-    in if status == gpu-status-complete then
-      let result-rows = gpu-recv-u32 port
-      in let result-cols = gpu-recv-u32 port
-      in let result-data = gpu-recv-tensor-data port (result-rows * result-cols) 0
-      in Just (Tensor { data = result-data, rows = result-rows, cols = result-cols })
-    else None
+    let cmd = gpu-cmd-matmul (a.rows) (a.cols) (b.cols)
+    in let na = list-length (a.data)
+    in let nb = list-length (b.data)
+    in let hh = gpu-header (cmd.gpu-op) (a.rows) (a.cols) (b.cols)
+    in let wa = gpu-put-tensor gpu-cmd-buf 20 a 0 na
+    in let wb = gpu-put-tensor gpu-cmd-buf (20 + na * 4) b 0 nb
+    in let rlen = gpu-ring (20 + (na + nb) * 4)
+    in if rlen <= 0 then None
+    else if peek-32 gpu-reply-buf 0 /= gpu-status-complete then None
+    else let rr = peek-32 gpu-reply-buf 4
+    in let rc = peek-32 gpu-reply-buf 8
+    in Just (Tensor { data = gpu-get-tensor gpu-reply-buf 12 (rr * rc) 0 [], rows = rr, cols = rc })
 
   gpu-bridge-relu : GpuBridge, Tensor -> Maybe Tensor
   gpu-bridge-relu (bridge) (t) =
-    let port = bridge.bridge-port
-    in let cmd = gpu-cmd-relu (t.rows) (t.cols)
-    in let wh = gpu-send-u32 port gpu-status-pending
-    in let w1 = gpu-send-u32 port (cmd.gpu-op)
-    in let w2 = gpu-send-u32 port (cmd.gpu-rows-a)
-    in let w3 = gpu-send-u32 port (cmd.gpu-cols-a)
-    in let w4 = gpu-send-u32 port 0
-    in let wt = gpu-send-tensor-data port t 0 (list-length (t.data))
-    in let status = gpu-recv-u32 port
-    in if status == gpu-status-complete then
-      let n = t.rows * t.cols
-      in let result-data = gpu-recv-tensor-data port n 0
-      in Just (Tensor { data = result-data, rows = t.rows, cols = t.cols })
-    else None
+    let cmd = gpu-cmd-relu (t.rows) (t.cols)
+    in let n = list-length (t.data)
+    in let hh = gpu-header (cmd.gpu-op) (t.rows) (t.cols) 0
+    in let wt = gpu-put-tensor gpu-cmd-buf 20 t 0 n
+    in let rlen = gpu-ring (20 + n * 4)
+    in if rlen <= 0 then None
+    else if peek-32 gpu-reply-buf 0 /= gpu-status-complete then None
+    else Just (Tensor { data = gpu-get-tensor gpu-reply-buf 4 n 0 [], rows = t.rows, cols = t.cols })
+
+Section: The Rest of the Operations
+
+ GpuProxy names seventeen arithmetic operations and one launch. All
+ seventeen are reachable through this chapter; conv2d is the last one and
+ needed a header of its own, described where its entry point is defined.
+
+ The shape below is one dispatch expressed twice: an op that reads one
+ tensor and answers one of a known size, and an op that reads two. Every
+ public operation is one line on top of those, which is what makes adding
+ the next one cheap rather than another copy of the protocol.
+
+ THE REPLY CARRIES ELEMENTS AND NOT DIMENSIONS for every op but matmul,
+ so the caller supplies the result shape it expects. That is safe because
+ the caller also chose the operation: a transpose of an ra x ca is ca x
+ ra by definition, and an upsample of c x h x w is c x 2h x 2w.
+
+  gpu-run1 : Integer, Integer, Integer, Integer, Tensor, Integer, Integer -> Maybe Tensor
+  gpu-run1 (op) (ra) (ca) (cb) (t) (out-rows) (out-cols) =
+    let n = list-length (t.data)
+    in let hh = gpu-header op ra ca cb
+    in let wt = gpu-put-tensor gpu-cmd-buf 20 t 0 n
+    in let rlen = gpu-ring (20 + n * 4)
+    in if rlen <= 0 then None
+    else if peek-32 gpu-reply-buf 0 /= gpu-status-complete then None
+    else Just (Tensor { data = gpu-get-tensor gpu-reply-buf 4 (out-rows * out-cols) 0 [], rows = out-rows, cols = out-cols })
+
+  gpu-run2 : Integer, Integer, Integer, Integer, Tensor, Tensor, Integer, Integer -> Maybe Tensor
+  gpu-run2 (op) (ra) (ca) (cb) (x) (y) (out-rows) (out-cols) =
+    let nx = list-length (x.data)
+    in let ny = list-length (y.data)
+    in let hh = gpu-header op ra ca cb
+    in let wx = gpu-put-tensor gpu-cmd-buf 20 x 0 nx
+    in let wy = gpu-put-tensor gpu-cmd-buf (20 + nx * 4) y 0 ny
+    in let rlen = gpu-ring (20 + (nx + ny) * 4)
+    in if rlen <= 0 then None
+    else if peek-32 gpu-reply-buf 0 /= gpu-status-complete then None
+    else Just (Tensor { data = gpu-get-tensor gpu-reply-buf 4 (out-rows * out-cols) 0 [], rows = out-rows, cols = out-cols })
+
+ Elementwise and shape-preserving. Softmax is a reduction over the whole
+ tensor rather than per row, which is what its constructor's rows-a by 1
+ shape already says.
+
+  gpu-bridge-softmax : GpuBridge, Tensor -> Maybe Tensor
+  gpu-bridge-softmax (bridge) (t) =
+    gpu-run1 gpu-op-softmax (t.rows) (t.cols) 0 t (t.rows) (t.cols)
+
+  gpu-bridge-gelu : GpuBridge, Tensor -> Maybe Tensor
+  gpu-bridge-gelu (bridge) (t) =
+    gpu-run1 gpu-op-gelu (t.rows) (t.cols) 0 t (t.rows) (t.cols)
+
+  gpu-bridge-silu : GpuBridge, Tensor -> Maybe Tensor
+  gpu-bridge-silu (bridge) (t) =
+    gpu-run1 gpu-op-silu (t.rows) (t.cols) 0 t (t.rows) (t.cols)
+
+  gpu-bridge-layer-norm : GpuBridge, Tensor -> Maybe Tensor
+  gpu-bridge-layer-norm (bridge) (t) =
+    gpu-run1 gpu-op-layer-norm (t.rows) (t.cols) 0 t (t.rows) (t.cols)
+
+  gpu-bridge-elemwise-add : GpuBridge, Tensor, Tensor -> Maybe Tensor
+  gpu-bridge-elemwise-add (bridge) (x) (y) =
+    gpu-run2 gpu-op-elemwise-add (x.rows) (x.cols) 0 x y (x.rows) (x.cols)
+
+  gpu-bridge-elemwise-mul : GpuBridge, Tensor, Tensor -> Maybe Tensor
+  gpu-bridge-elemwise-mul (bridge) (x) (y) =
+    gpu-run2 gpu-op-elemwise-mul (x.rows) (x.cols) 0 x y (x.rows) (x.cols)
+
+ Transpose keeps its elements and swaps its shape, so the caller names
+ the result the other way round.
+
+  gpu-bridge-transpose : GpuBridge, Tensor -> Maybe Tensor
+  gpu-bridge-transpose (bridge) (t) =
+    gpu-run1 gpu-op-transpose (t.rows) (t.cols) 0 t (t.cols) (t.rows)
+
+ Scale carries its factor as a one-element second operand, which is where
+ the command's offset-b already pointed.
+
+  gpu-bridge-scale : GpuBridge, Tensor, Integer -> Maybe Tensor
+  gpu-bridge-scale (bridge) (t) (factor) =
+    let k = Tensor { data = [factor], rows = 1, cols = 1 }
+    in gpu-run2 gpu-op-scale (t.rows) (t.cols) 0 t k (t.rows) (t.cols)
+
+ Group norm is the one operation whose dimension fields do not mean what
+ its neighbours' mean: the LENGTH goes in rows-a and the GROUP COUNT in
+ cols-a, so it is passed that way rather than as a shape. A length that
+ does not divide into whole groups is refused by the host.
+
+  gpu-bridge-group-norm : GpuBridge, Tensor, Integer -> Maybe Tensor
+  gpu-bridge-group-norm (bridge) (t) (groups) =
+    let n = list-length (t.data)
+    in gpu-run1 gpu-op-group-norm n groups 0 t (t.rows) (t.cols)
+
+ Upsample doubles both spatial dimensions, NEAREST NEIGHBOUR. The other
+ reading is bilinear, and the two agree only on a constant input, so the
+ choice is written down rather than left to be discovered from an answer.
+
+  gpu-bridge-upsample2x : GpuBridge, Tensor, Integer, Integer, Integer -> Maybe Tensor
+  gpu-bridge-upsample2x (bridge) (t) (channels) (h) (w) =
+    gpu-run1 gpu-op-upsample2x channels h w t (channels * h * 2) (w * 2)
+
+ Conv1d is the valid 1D cross-correlation an ML layer computes: the
+ kernel is not flipped, and there is no padding, so a caller wanting a
+ padded convolution pads the input itself. The input length, the kernel
+ length and the stride are the three dimension fields; the input and the
+ kernel are the two operands. The output length is (L - K) / stride + 1.
+
+  gpu-bridge-conv1d : GpuBridge, Tensor, Tensor, Integer -> Maybe Tensor
+  gpu-bridge-conv1d (bridge) (input) (kernel) (stride) =
+    let el = list-length (input.data)
+    in let k = list-length (kernel.data)
+    in let out = (el - k) / stride + 1
+    in gpu-run2 gpu-op-conv1d el k stride input kernel 1 out
+
+ Max-pool is the valid 1D pooling that matches: the length, the window
+ and the stride are the three dimension fields, and the output length is
+ the same (L - window) / stride + 1.
+
+  gpu-bridge-max-pool : GpuBridge, Tensor, Integer, Integer -> Maybe Tensor
+  gpu-bridge-max-pool (bridge) (t) (window) (stride) =
+    let el = list-length (t.data)
+    in let out = (el - window) / stride + 1
+    in gpu-run1 gpu-op-max-pool el window stride t 1 out
+
+ Clamp carries its two bounds as a second operand, the way scale carries
+ its one factor, so the command needs no field the header does not have.
+ Every value below lo becomes lo and every value above hi becomes hi.
+
+  gpu-bridge-clamp : GpuBridge, Tensor, Integer, Integer -> Maybe Tensor
+  gpu-bridge-clamp (bridge) (t) (lo) (hi) =
+    let bounds = Tensor { data = [lo, hi], rows = 1, cols = 2 }
+    in gpu-run2 gpu-op-clamp (t.rows) (t.cols) 0 t bounds (t.rows) (t.cols)
+
+ Conv2d needs eight shape fields, not the three the shape header carries:
+ input and output channels, spatial height and width, kernel height and
+ width, stride and padding. So it brings a header of its own the way the
+ PTX launch does -- ten u32 rather than five -- and the host routes it to
+ its own servicer. It is the valid (zero-padded) 2D cross-correlation, no
+ kernel flip, matching conv1d above. The input is cin x h x w and the
+ kernel cout x cin x kh x kw, both flat; the output is cout rows of
+ oh x ow, where oh is (h + 2*pad - kh) / stride + 1 and ow likewise.
+
+  gpu-conv2d-header : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  gpu-conv2d-header (cin) (h) (w) (cout) (kh) (kw) (stride) (pad) =
+    let a0 = poke-32 gpu-cmd-buf 0 gpu-status-pending
+    in let a1 = poke-32 gpu-cmd-buf 4 gpu-op-conv2d
+    in let a2 = poke-32 gpu-cmd-buf 8 cin
+    in let a3 = poke-32 gpu-cmd-buf 12 h
+    in let a4 = poke-32 gpu-cmd-buf 16 w
+    in let a5 = poke-32 gpu-cmd-buf 20 cout
+    in let a6 = poke-32 gpu-cmd-buf 24 kh
+    in let a7 = poke-32 gpu-cmd-buf 28 kw
+    in let a8 = poke-32 gpu-cmd-buf 32 stride
+    in poke-32 gpu-cmd-buf 36 pad
+
+  gpu-bridge-conv2d : GpuBridge, Tensor, Tensor, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Maybe Tensor
+  gpu-bridge-conv2d (bridge) (input) (kernel) (cin) (h) (w) (cout) (kh) (kw) (stride) (pad) =
+    let ni = list-length (input.data)
+    in let nk = list-length (kernel.data)
+    in let oh = (h + 2 * pad - kh) / stride + 1
+    in let ow = (w + 2 * pad - kw) / stride + 1
+    in let hh = gpu-conv2d-header cin h w cout kh kw stride pad
+    in let wi = gpu-put-tensor gpu-cmd-buf 40 input 0 ni
+    in let wk = gpu-put-tensor gpu-cmd-buf (40 + ni * 4) kernel 0 nk
+    in let rlen = gpu-ring (40 + (ni + nk) * 4)
+    in if rlen <= 0 then None
+    else if peek-32 gpu-reply-buf 0 /= gpu-status-complete then None
+    else Just (Tensor { data = gpu-get-tensor gpu-reply-buf 4 (cout * oh * ow) 0 [], rows = cout, cols = oh * ow })
+
+Section: A Kernel On The Actual Device
+
+ Everything above computes on the HOST CPU, in scalar C, inside the
+ emulator. That was honest as a transport and dishonest as a GPU: a
+ caller reaching for this bridge to go faster got a slower CPU with a
+ round trip in front of it, while GpuProxy's prose advertised dispatch to
+ CUDA. `gpu-op-launch-ptx` was defined, had a constructor, and reached
+ nothing at all.
+
+ It reaches the device now. The command carries a PTX module and the name
+ of an entry point in it; the host JITs that module through the CUDA
+ driver and launches the kernel on the graphics processor. PTX rather
+ than a binary because PTX is the portable form -- the driver compiles it
+ for whatever card is present, so a module built for one generation runs
+ on the next.
+
+ THE KERNEL ABI IS FIXED AND IT IS WRITTEN DOWN IN BOTH HALVES, because a
+ calling convention cannot be recovered by looking at an answer. A kernel
+ takes exactly three parameters in this order: a pointer to the operand
+ floats, a pointer to the result floats, and a u32 giving the number of
+ RESULTS. The grid covers the results, so a kernel guards on that count
+ and writes one element per thread. A general argument scheme would need
+ a descriptor nobody has designed, which is the same wall the four
+ operations above stand behind; one stated convention is worth more here
+ than a flexible one that has to be guessed at.
+
+ THE PTX GOES OUT AS ASCII AND THAT IS NOT AUTOMATIC. Codex text is CCE
+ internally, so `char-code` answers a CCE code point and not the byte any
+ assembler means; the module would arrive as plausible bytes that the
+ driver rejects. `to-unicode` at the boundary is what makes it PTX. This
+ is the same conversion a wire protocol needs and the same one a TLS
+ hostname went out without.
+
+ A LAUNCH ON A BOX WITH NO NVIDIA GPU IS REFUSED, NOT QUIETLY COMPUTED ON
+ THE CPU. The host answers None, and the caller can therefore tell a
+ kernel that ran on a device from one that did not run at all. Falling
+ back to the scalar path would reproduce exactly the lie this section
+ exists to remove.
+
+  gpu-put-text : Integer, Integer, Text, Integer, Integer -> Integer
+  gpu-put-text (base) (off) (s) (i) (n) =
+    if i >= n then 0
+    else let w = poke-byte base (off + i) (to-unicode (char-code (char-at s i)))
+    in gpu-put-text base off s (i + 1) n
+
+ The launch header is its own: eight fields rather than five, because a
+ program has a length that no shape implies.
+
+  gpu-ptx-header : Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  gpu-ptx-header (n-in) (grid) (block) (ptx-len) (name-len) (n-out) =
+    let h0 = poke-32 gpu-cmd-buf 0 gpu-status-pending
+    in let h1 = poke-32 gpu-cmd-buf 4 gpu-op-launch-ptx
+    in let h2 = poke-32 gpu-cmd-buf 8 n-in
+    in let h3 = poke-32 gpu-cmd-buf 12 grid
+    in let h4 = poke-32 gpu-cmd-buf 16 block
+    in let h5 = poke-32 gpu-cmd-buf 20 ptx-len
+    in let h6 = poke-32 gpu-cmd-buf 24 name-len
+    in poke-32 gpu-cmd-buf 28 n-out
+
+  gpu-bridge-launch-ptx : GpuBridge, Text, Text, Tensor, Integer, Integer, Integer -> Maybe Tensor
+  gpu-bridge-launch-ptx (bridge) (ptx) (name) (t) (out-rows) (out-cols) (block) =
+    let n = list-length (t.data)
+    in let ptx-len = text-length ptx
+    in let name-len = text-length name
+    in let n-out = out-rows * out-cols
+    in let grid = (n-out + block - 1) / block
+    in let hh = gpu-ptx-header n grid block ptx-len name-len n-out
+    in let wp = gpu-put-text gpu-cmd-buf 32 ptx 0 ptx-len
+    in let wn = gpu-put-text gpu-cmd-buf (32 + ptx-len) name 0 name-len
+    in let wt = gpu-put-tensor gpu-cmd-buf (32 + ptx-len + name-len) t 0 n
+    in let rlen = gpu-ring (32 + ptx-len + name-len + n * 4)
+    in if rlen <= 0 then None
+    else if peek-32 gpu-reply-buf 0 /= gpu-status-complete then None
+    else Just (Tensor { data = gpu-get-tensor gpu-reply-buf 4 n-out 0 [], rows = out-rows, cols = out-cols })
 
 Section: Formatting
   format-gpu-bridge : GpuBridge -> Text
   format-gpu-bridge (bridge) =
-    if bridge.bridge-ready then "gpu-bridge: serial on COM3"
+    if bridge.bridge-ready then "gpu-bridge: doorbell on guest memory"
     else "gpu-bridge: not available"
 
 Page 1

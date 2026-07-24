@@ -155,7 +155,6 @@ those types not existing on the self-host side.
 |---|-------|--------|-------|
 | D1 | LinearTypeExpr preservation | **Gap (deferred)** | Ref preserves `LinearTypeExpr` wrapper (`src/Codex.Ast/Desugarer.cs:321–323`); self-host strips and recurses into the inner (`Codex.Codex/Ast/Desugarer.codex:168`). Linear-type information is dropped. Unused until linearity enters type-checker. |
 | D2 | DependentTypeExpr / IntegerLiteralTypeExpr / BinaryTypeExpr / ProofConstraintExpr | **Gap (deferred)** | Ref has all four (`src/Codex.Ast/Desugarer.cs:324–341`); self-host parser doesn't produce these nodes, desugarer has no arm. Ties to Unifier U7–U9. |
-| D3 | InterpolatedString desugaring | **Gap (deferred)** | Ref lowers `"x=${v}"` to `"x=" ++ show(v)` chain (`src/Codex.Ast/Desugarer.cs:221–258`). Self-host parser doesn't produce `InterpolatedStringNode`. User code using string interp won't compile on self-host. |
 | D4 | Claim / Proof / ProofExpr desugaring | **Gap (deferred)** | Ref has `DesugarClaim`, `DesugarProof`, `DesugarProofExpr` with all proof constructors (refl, sym, trans, cong, induction, apply) (`src/Codex.Ast/Desugarer.cs:411–467`). Self-host: no proof system. V3+ feature. |
 | D5 | ProseByFile / multi-file prose metadata | ⏭️ Deliberately diverged | Ref builds `Dictionary<string, ChapterProse>` indexed by filename (`src/Codex.Ast/Desugarer.cs:61–65`). Self-host is single-chapter; section-titles stored flat on AChapter. |
 | D6 | Fuel sentinel span | **Nitpick** | Ref threads `node.Span` through the diagnostic. Self-host uses `synthetic-span` for the sentinel AST node, losing source location. Cheap fix: extract a span from the node's AST discriminant. |
@@ -172,7 +171,6 @@ No bug-parity.
 | # | Topic | Status | Notes |
 |---|-------|--------|-------|
 | X1 | Indent / Dedent tokens | ⏭️ Deliberately diverged | Ref emits `Indent`/`Dedent` via an indent stack and a two-phase `NextToken`. Self-host has no indent stack; parser handles columns directly. Both work; ref is easier to reason about, self-host is simpler to implement. |
-| X2 | Interpolated string literals (`"x=#{v}"`) | **Gap (deferred)** | Ref produces `InterpolatedStart`, `TextFragment`, `InterpolatedExprStart`, `InterpolatedExprEnd`, `InterpolatedEnd` tokens (`src/Codex.Syntax/Lexer.cs:300–376`). Self-host has no `scan-interpolated-string` path. User code using interp won't compile on self-host. |
 | X3 | CCE-invalid escape diagnostics | ✅ Matched | Self-host emits `cdx-invalid-tab-escape` (CDX5) / `cdx-invalid-carriage-return-escape` (CDX6) from `process-escapes` (text literal) and `scan-char-literal` (char literal). `LexState` carries an error accumulator; `tokenize` returns `TokenizeResult { tokens, errors }` which `compile-frontend` merges into the pre-emit bag. Translation behavior preserved. |
 | X4 | Numeric underscores | ⏭️ Deliberately diverged | Ref accepts `1_000_000` and cleans via `.Replace("_", "")` before parse. Self-host's `scan-digits-end` also consumes `_` but numeric parse is deferred. Same effect. |
 | X5 | Pre-parsed `LiteralValue` on tokens | ⏭️ Deliberately diverged | Ref tokens carry a parsed `LiteralValue` (long / double / string / bool). Self-host tokens carry only raw text; parse happens in desugar/lowering. Same downstream result. |
@@ -189,7 +187,6 @@ No bug-parity. X3 is actionable; others are architectural or scoped to unsupport
 | # | Topic | Status | Notes |
 |---|-------|--------|-------|
 | P1 | Claim / Proof / Qed parsing | **Gap (deferred)** | Ref has `TryParseClaim` / `TryParseProof` / full proof-expression parser (`src/Codex.Syntax/Parser.Proofs.cs`). Self-host reserves the `ClaimKeyword`/`ProofKeyword`/`QedKeyword` tokens but has no `parse-claim` / `parse-proof` paths. A chapter starting with `claim …` would fall through to "expected a definition". |
-| P2 | Interpolated string expressions | **Gap (deferred)** | Ties to X2. Ref builds `InterpolatedStringNode` from the Interpolated* token stream. Self-host has no such AST node. |
 | P3 | Dependent type syntax | **Gap (deferred)** | Ref has `ParseDependentType` for `(x : T) -> U` form. Self-host's type parser has no dependent-type arm. |
 | P4 | Where-clause / suchthat clause on definitions | 🟡 Partial | Ref has `WhereKeyword`-scoped helpers. Self-host reserves `WhereKeyword`/`SuchThatKeyword` but inlining unclear — call sites exist in parse-top-level for effect bodies only. Worth a deeper pass if/when where-clauses get used. |
 | P5 | Type-level expressions (Integer literals, binary ops in type position) | **Gap (deferred)** | Ref has `IntegerTypeNode` / `BinaryTypeNode` / `ProofConstraintNode`. Self-host's type parser has no arms for these. |
@@ -264,7 +261,6 @@ No bug-parity identified.
 | L1 | LinearType / DependentFunctionType / TypeLevel* / Proof* lowering | **Gap (deferred)** | Ref handles all advanced types in IR lowering. Self-host doesn't (the types don't exist in its CodexType). Consistent with Desugarer D1–D4 and Unifier U6–U9. |
 | L2 | Effect row preservation through lowering | **Gap** | Ref keeps effect information on IR nodes (IrAct, IrHandle carry effect metadata). Self-host IR drops row info; only the effect name list survives. Downstream emitters that need to know which effects a block requires can't query them. |
 | L3 | `handle` / `with …` lowering with explicit handler binding | 🟡 Partial | Ref `LowerHandle` produces IR with handler-per-clause binding. Self-host `lower-handle` (IR/Lowering.codex equivalent) is similar but doesn't lower the resume continuation fully. Worth a detailed pass; not blocking self-host's own compile. |
-| L4 | Interpolated string lowering | **Gap (deferred)** | Ties to D3, X2. |
 | L5 | Match-exhaustiveness hint | 🟡 Partial | Ref records per-match hint of whether all ctors covered (for downstream codegen optimizations). Self-host does not. Minor. |
 
 No bug-parity.
@@ -292,7 +288,6 @@ Scope note: C# emitter is a retiring backend (MM4 goal is to drop the C# path). 
 
 | # | Topic | Status | Notes |
 |---|-------|--------|-------|
-| S1 | Interpolated string emission | **Gap (deferred)** | Ties to D3, X2, L4. |
 | S2 | Linearity-aware emission | **Gap (deferred)** | Ref has `linear T` → `Span<T>` or similar; self-host doesn't. |
 | S3 | Effect handler emission | 🟡 Partial | Ref emits effect handlers with stack-threaded `_eff` parameter. Self-host emits `Handle` as a plain expression using fork/await machinery. If handler semantics matter to the runtime, this is a gap. |
 | S4 | Arity map construction | ✅ Matched | Both build a per-chapter arity map for partial application. |
@@ -329,7 +324,7 @@ Prioritised, excludes deferred-advanced-types set:
 2. **T3, L2, CX4, E6, E8** — Effect-row handling: self-host drops effect information at type-check, lowering, emit, and has no effect-polymorphic builtin signatures. Feature-sized.
 
 Deferred (full feature not in self-host):
-- D1–D4, X2, P1, P2, P3, P5, P6, L1, L4, S1, S2, C5, T1, T2 — proof system, dependent types, linear types, type-level values, interpolated strings. Re-audit when any of these features enters the self-host.
+- D1, D2, D4, P1, P3, P5, P6, L1, S2, C5, T1, T2 — proof system, dependent types, linear types, type-level values. Re-audit when any of these features enters the self-host.
 
 No bug-parity on any audited pair. The self-host's gaps are self-host-only; the reference is consistent with itself throughout.
 

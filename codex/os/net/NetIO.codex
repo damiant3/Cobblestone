@@ -1,11 +1,13 @@
 Chapter: NetIO
-  cites Kernel chapter Ne2k
+  cites Net chapter NetDriver
   cites Net chapter NetworkStack
   cites Net chapter TcpTransport
   cites Net chapter MessageFraming
+  cites Foreword chapter CCE
 
- I/O loop binding: flushes outbox frames to the NE2000 NIC and
- polls for inbound frames.
+ I/O loop binding: flushes outbox frames to the NIC and polls for
+ inbound frames. Which NIC is Net chapter NetDriver's question, not
+ this one's -- this chapter names no card.
 
  This is the layer where the frames stop being data and start being
  traffic, so this is the layer that declares Network.Read and
@@ -19,7 +21,7 @@ Chapter: NetIO
  The __heap-save / __heap-restore pairs are load-bearing and are why
  the effectful binds sit INSIDE an act while the save stays a pure let
  OUTSIDE it. Each of these loops polls up to fifty million times, and
- ne2k-recv-frame allocates a list on every miss. Without the restore
+ net-driver-recv-frame allocates a list on every miss. Without the restore
  the bump allocator would walk the whole arena in a single accept.
  Each recursive call is also still a SELF tail call for the same
  reason: splitting one of these loops into a mutually-recursive helper
@@ -32,7 +34,7 @@ Section: Flush Outbox
    if i >= count then 0
    else let frame = net-outbox-frame sess i
    in act
-    sent <- ne2k-send-frame frame
+    sent <- net-driver-send-frame frame
     rest <- flush-outbox-loop sess (i + 1) count
     sent + rest
    end
@@ -58,7 +60,7 @@ Section: Listen and Accept
    if tries > 50000000 then ts
    else let hp = __heap-save
    in act
-    frame <- ne2k-recv-frame
+    frame <- net-driver-recv-frame
     if list-length frame == 0 then let restored = __heap-restore hp
       in net-io-accept ts (tries + 1)
     else let r = transport-process-frame ts frame
@@ -85,7 +87,7 @@ Section: Connect and Wait
    if tries > 10000 then ts
    else let hp = __heap-save
    in act
-    frame <- ne2k-recv-frame
+    frame <- net-driver-recv-frame
     if list-length frame == 0 then let restored = __heap-restore hp
       in net-io-wait-established ts (tries + 1)
     else let r = transport-process-frame ts frame
@@ -136,21 +138,89 @@ Section: Send
   net-io-send-raw : TcpTransportState, List Integer -> [Network.Write] TcpTransportState
   net-io-send-raw (ts) (data) = net-io-send-chunk ts data 0 (list-length data)
 
+Section: Sending Text
+
+ A plug answers in target-language source, which is Text, and this is the
+ send it wants. It was missing here, so all 41 transpiler plugs carried
+ their own byte-identical `send-text-loop` -- shadowing the transport
+ rather than a missing cite, since every one of them already cites this
+ chapter. Each copy also re-spelled `TcpTransportState`'s
+ seven-field literal, which is how one incomplete literal became 46 bugs
+ and how `net-io-send-chunk` above came to drop three fields and write
+ inbound frames to physical address zero.
+
+ The conversion is the I/O boundary, so it goes through `to-unicode`:
+ Codex Text is CCE internally and `char-code` answers the CCE point, not
+ the ASCII one. Sending the CCE bytes does not error -- the far end simply
+ reads something else -- which is the failure this project has already paid
+ for twice (a TLS SNI hostname and every key-schedule label).
+
+  text-to-bytes-chunk : Text, Integer, Integer, List Integer -> List Integer
+  text-to-bytes-chunk (s) (i) (stop) (acc) =
+   if i >= stop then acc
+   else text-to-bytes-chunk s (i + 1) stop (list-push acc (to-unicode (char-code (char-at s i))))
+
+ Only the send half moves here. The receive half (`bytes-to-text-chunk`)
+ stays in the plugs, because it is NOT the same function in all of them:
+ 40 accumulate into a `Text`, and `CSharpPlug` accumulates into a
+ `List Text`. Same name, two types, and hoisting one of them would have
+ quietly given the other a different function -- which is the
+ duplicate-name hazard, met here in miniature.
+
+  net-io-send-text-loop : TcpTransportState, Text, Integer, Integer -> [Network.Write] TcpTransportState
+  net-io-send-text-loop (ts) (t) (off) (len) =
+   if off >= len then ts
+   else let stop = if off + net-mss > len then len else off + net-mss
+   in let chunk = text-to-bytes-chunk t off stop []
+   in net-io-send-text-loop (net-io-send-chunk ts chunk 0 (list-length chunk)) t stop len
+
+  net-io-send-text : TcpTransportState, Text -> [Network.Write] TcpTransportState
+  net-io-send-text (ts) (t) = net-io-send-text-loop ts t 0 (text-length t)
+
 Section: Receive
+
+ A MESSAGE ALREADY IN THE BUFFER IS ANSWERED WITHOUT WAITING FOR A FRAME, and
+ without this the message is simply lost. `transport-process-frame` feeds a
+ segment's payload into the receive buffer and tries to take a message out of
+ it, so a complete message can be sitting there before anyone asks. The wait
+ loop below blocks on `net-driver-recv-frame` first, so it would sit waiting
+ for a frame that has already been and gone.
+
+ It happens on the ordinary path, not a rare one. A client's final handshake ACK
+ usually carries its first request piggybacked (PSH+ACK), so ONE frame both
+ establishes the connection and delivers the request. `net-io-accept` returns
+ the moment the connection is established and looks at nothing else, so the
+ request rides in on the frame that ends the handshake and is buffered; the
+ server then calls this and waits forever for a request it is already holding.
+
+ Measured on `tools/cdx-registry`: it served its first request, went back to
+ accept, took the second connection, and sat in this loop with the second
+ request already buffered.
+
+ The check is at ENTRY and not inside the wait, deliberately. `transport-try-recv`
+ scans the buffer, and the wait below runs to a fifty-million-try fuel cap;
+ rescanning per iteration would put a buffer walk inside the hottest loop in the
+ stack for no gain, because nothing new can arrive except through a frame.
 
   net-io-recv-loop : TcpTransportState, Integer -> [Network.Read, Network.Write] TransportRecvResult
   net-io-recv-loop (ts) (tries) =
+   let pending = transport-try-recv ts
+   in if pending.has-message then pending
+   else net-io-recv-wait (pending.transport) tries
+
+  net-io-recv-wait : TcpTransportState, Integer -> [Network.Read, Network.Write] TransportRecvResult
+  net-io-recv-wait (ts) (tries) =
    if tries > 50000000 then TransportRecvResult { transport = ts, tag = 0, body = [], has-message = False }
    else let hp = __heap-save
    in act
-    frame <- ne2k-recv-frame
+    frame <- net-driver-recv-frame
     if list-length frame == 0 then let restored = __heap-restore hp
-      in net-io-recv-loop ts (tries + 1)
+      in net-io-recv-wait ts (tries + 1)
     else let r = transport-process-frame ts frame
     in act
       ts1 <- flush-transport-outbox (r.transport)
       if r.has-message then TransportRecvResult { transport = ts1, tag = r.tag, body = r.body, has-message = True }
-      else net-io-recv-loop ts1 (tries + 1)
+      else net-io-recv-wait ts1 (tries + 1)
     end
    end
 
@@ -167,7 +237,7 @@ Section: Receive Raw (no framing)
    if tries > 50000000 then RawRecvResult { transport = ts, data = [], has-data = False }
    else let hp = __heap-save
    in act
-    frame <- ne2k-recv-frame
+    frame <- net-driver-recv-frame
     if list-length frame == 0 then let restored = __heap-restore hp
       in net-io-recv-raw ts (tries + 1)
     else let r = net-process-frame (ts.session) frame
@@ -184,7 +254,7 @@ Section: Poll One
   net-io-poll-one (ts) (tries) =
    if tries > 5000000 then []
    else act
-    frame <- ne2k-recv-frame
+    frame <- net-driver-recv-frame
     if list-length frame > 0 then frame
     else net-io-poll-one ts (tries + 1)
    end

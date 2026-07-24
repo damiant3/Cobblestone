@@ -101,7 +101,7 @@ work: `docs/PM/CurrentPlan.md` gap 7, "Editor and debugger maturity"
 (syntax highlighting in GUI mode, F5 compile-and-run, watch
 expressions, real debug info in the CDX). A Codex-native language
 server is the missing piece for the VS Code half. New work items land
-in `docs/PM/BACKLOG.md`. The capability is wanted; it has not been
+beside the work it belongs to. The capability is wanted; it has not been
 rebuilt yet.
 
 ### Troubleshooting

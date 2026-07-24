@@ -58,65 +58,73 @@ Section: Queries
 
  All employees, sorted by salary descending.
 
+ These were written with a `|>` pipeline operator, which Codex does not
+ have -- the lexer reads it as `|` followed by `>`. They were also
+ written as though each RelOp constructor took its arguments first and
+ the piped relation last, where every one of them takes the source
+ relation FIRST (`RelFilter (RelOp) (Predicate)`). So the plans read
+ bottom-up as let chains, which is the same shape the pipeline was
+ reaching for and needs no operator.
+
   all-by-salary : Catalog -> QueryResult
   all-by-salary (cat) =
-    RelScan "employees"
-      |> RelSort [SortSpec { sort-col = "salary", sort-dir = SortDesc }]
-      |> query cat
+    let scan = RelScan "employees"
+    in let sorted = RelSort scan [SortSpec { sort-col = "salary", sort-dir = SortDesc }]
+    in query cat sorted
 
  Engineering team only, projected to name and salary.
 
   engineering-roster : Catalog -> QueryResult
   engineering-roster (cat) =
-    RelScan "employees"
-      |> RelFilter (PredColCmp "department" CmpEq (ValText "Engineering"))
-      |> RelProject (proj-columns ["name", "salary"])
-      |> RelSort [SortSpec { sort-col = "salary", sort-dir = SortDesc }]
-      |> query cat
+    let scan = RelScan "employees"
+    in let filtered = RelFilter scan (PredColCmp "department" CmpEq (ValText "Engineering"))
+    in let projected = RelProject filtered (proj-columns ["name", "salary"])
+    in let sorted = RelSort projected [SortSpec { sort-col = "salary", sort-dir = SortDesc }]
+    in query cat sorted
 
  Top 3 earners across the company.
 
   top-earners : Catalog -> QueryResult
   top-earners (cat) =
-    RelScan "employees"
-      |> RelSort [SortSpec { sort-col = "salary", sort-dir = SortDesc }]
-      |> RelLimit 3
-      |> RelProject (proj-columns ["name", "department", "salary"])
-      |> query cat
+    let scan = RelScan "employees"
+    in let sorted = RelSort scan [SortSpec { sort-col = "salary", sort-dir = SortDesc }]
+    in let limited = RelLimit sorted 3
+    in let projected = RelProject limited (proj-columns ["name", "department", "salary"])
+    in query cat projected
 
  Headcount and total salary by department.
 
   department-summary : Catalog -> QueryResult
   department-summary (cat) =
-    RelScan "employees"
-      |> RelGroup ["department"] [
+    let scan = RelScan "employees"
+    in let grouped = RelGroup scan ["department"] [
         AggSpec { agg-func = AggCount, agg-alias = "headcount" },
         AggSpec { agg-func = AggSum "salary", agg-alias = "total-salary" },
         AggSpec { agg-func = AggAvg "salary", agg-alias = "avg-salary" }
       ]
-      |> RelSort [SortSpec { sort-col = "total-salary", sort-dir = SortDesc }]
-      |> query cat
+    in let sorted = RelSort grouped [SortSpec { sort-col = "total-salary", sort-dir = SortDesc }]
+    in query cat sorted
 
  Recent hires (2024 or later).
 
   recent-hires : Catalog -> QueryResult
   recent-hires (cat) =
-    RelScan "employees"
-      |> RelFilter (PredColCmp "hire-year" CmpGe (ValInteger 2024))
-      |> RelProject (proj-columns ["name", "department", "hire-year"])
-      |> RelSort [SortSpec { sort-col = "hire-year", sort-dir = SortAsc }]
-      |> query cat
+    let scan = RelScan "employees"
+    in let filtered = RelFilter scan (PredColCmp "hire-year" CmpGe (ValInteger 2024))
+    in let projected = RelProject filtered (proj-columns ["name", "department", "hire-year"])
+    in let sorted = RelSort projected [SortSpec { sort-col = "hire-year", sort-dir = SortAsc }]
+    in query cat sorted
 
  High earners in Research (salary > 100000).
 
   research-stars : Catalog -> QueryResult
   research-stars (cat) =
-    RelScan "employees"
-      |> RelFilter (PredAnd
+    let scan = RelScan "employees"
+    in let filtered = RelFilter scan (PredAnd
         (PredColCmp "department" CmpEq (ValText "Research"))
         (PredColCmp "salary" CmpGt (ValInteger 100000)))
-      |> RelProject (proj-columns ["name", "salary"])
-      |> query cat
+    in let projected = RelProject filtered (proj-columns ["name", "salary"])
+    in query cat projected
 
 Section: Display
 
@@ -146,18 +154,20 @@ Section: Display
 
 Section: Body
 
-  opening : [Console] None = act
+  opening : [Console] Nothing = act
     let cat0 = catalog-new
     in let cr1 = catalog-create-table cat0 employees-table
     in let cat = seed-employees (cr1.cat)
-    in print-line-uni "=== Codex DB Example ==="
-    in print-line-uni ""
-    in print-line-uni (format-result "All by Salary" (all-by-salary cat))
-    in print-line-uni (format-result "Engineering Roster" (engineering-roster cat))
-    in print-line-uni (format-result "Top 3 Earners" (top-earners cat))
-    in print-line-uni (format-result "Department Summary" (department-summary cat))
-    in print-line-uni (format-result "Recent Hires" (recent-hires cat))
-    in print-line-uni (format-result "Research Stars" (research-stars cat))
+    in act
+      print-line-uni "=== Codex DB Example ==="
+      print-line-uni ""
+      print-line-uni (format-result "All by Salary" (all-by-salary cat))
+      print-line-uni (format-result "Engineering Roster" (engineering-roster cat))
+      print-line-uni (format-result "Top 3 Earners" (top-earners cat))
+      print-line-uni (format-result "Department Summary" (department-summary cat))
+      print-line-uni (format-result "Recent Hires" (recent-hires cat))
+      print-line-uni (format-result "Research Stars" (research-stars cat))
+    end
   end
 
 Page 1

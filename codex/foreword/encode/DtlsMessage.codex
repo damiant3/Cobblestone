@@ -17,7 +17,7 @@ Chapter: DtlsMessage
  message_seq, fragment_offset, and fragment_length values. So a DTLS
  handshake message goes on the wire with a 12-byte header and into the
  transcript with a 4-byte one. Two shapes of the same message, and an
- implementation that hashes what it sent is wrong. dtls-msg-transcript
+ implementation that hashes what it sent is wrong. tls13-msg-transcript
  is the only correct way to feed a message to the hash; the wire form
  must never reach it.
 
@@ -36,7 +36,7 @@ Chapter: DtlsMessage
  reads them, but this chapter emits only unfragmented messages and does
  not reassemble a fragmented peer flight. A handshake message larger
  than the path MTU will therefore fail against a peer that fragments.
- That is a real gap, it is in BACKLOG 5.3, and it must not be described
+ That is a real gap, it is on the register, and it must not be described
  as working.
 
  Nor is there any peer authentication. A Finished that verifies proves
@@ -46,11 +46,12 @@ Chapter: DtlsMessage
  To dtls-msg-encode gives List Integer,
    framing one handshake message with the 12-byte DTLS header, unfragmented.
 
- To dtls-msg-transcript gives List Integer,
-   rendering a message in the TLS 1.3 form the transcript hash must see.
+ To dtls-msg-to-transcript gives List Integer,
+   stripping the DTLS header fields off a received message so the TLS 1.3
+   transcript form is what reaches the hash.
 
- To dtls-verify-data gives List Integer,
-   computing the Finished verify_data from a base secret and a transcript hash.
+ To dtls-finished-msg gives List Integer,
+   framing a Finished as a DTLS handshake message with its message_seq.
 
  To dtls-ack-encode gives List Integer,
    encoding an ACK over the record numbers that arrived.
@@ -104,18 +105,13 @@ Section: Framing
     in [msg-type] & dtls-be24 n & dtls-be16 message-seq & dtls-be24 0 & dtls-be24 n & body
 
  The transcript form. RFC 9147 section 5.2: no message_seq, no
- fragment_offset, no fragment_length. This is the ONLY thing that may be
- fed to the handshake hash.
-
-  dtls-msg-transcript : Integer, List Integer -> List Integer
-  dtls-msg-transcript (msg-type) (body) =
-    [msg-type] & dtls-be24 (list-length body) & body
-
- And the same rule applied to a message that arrived: strip the DTLS
+ fragment_offset, no fragment_length. What is left is exactly the TLS 1.3
+ shape, so the function that builds it is tls13-msg-transcript in
+ Foreword chapter Tls and this chapter's job is only to strip the DTLS
  fields back off before hashing what the peer sent.
 
   dtls-msg-to-transcript : DtlsMsg -> List Integer
-  dtls-msg-to-transcript (m) = dtls-msg-transcript (m.dm-type) (m.dm-body)
+  dtls-msg-to-transcript (m) = tls13-msg-transcript (m.dm-type) (m.dm-body)
 
   dtls-msg-parse : List Integer -> Maybe DtlsMsg
   dtls-msg-parse (bs) =
@@ -133,90 +129,15 @@ Section: Framing
 
 Section: Finished
 
- RFC 8446 section 4.4.4, which DTLS 1.3 inherits unchanged.
-
-   finished_key = HKDF-Expand-Label(BaseKey, "finished", "", Hash.length)
-   verify_data  = HMAC(finished_key, Transcript-Hash(...))
-
- The context on the finished key is EMPTY. The transcript hash is the
- HMAC message, not the key's context. Transposing them yields 32 bytes
- that look exactly as much like a key, and a peer that rejects them
- tells you nothing about which of the two you got wrong. The gate on
- this is RFC 8448's published finished_key.
-
-  dtls-finished-key : List Integer -> List Integer
-  dtls-finished-key (base-secret) = tls13-expand-label base-secret "finished" [] 32
-
-  dtls-verify-data : List Integer, List Integer -> List Integer
-  dtls-verify-data (base-secret) (transcript-hash) =
-    hkdf-words-to-bytes (hmac-sha256 (dtls-finished-key base-secret) transcript-hash)
-
- The Finished as a framed handshake message, ready for the record layer.
+ The Finished itself is RFC 8446 section 4.4.4, which DTLS 1.3 inherits
+ unchanged, so the key, the verify data and the constant-time check are
+ tls13-finished-key, tls13-verify-data and tls13-finished-ok in Foreword
+ chapter Tls. What is DTLS here is only the framing: a Finished has to go
+ out as a DTLS handshake message, with a message_seq.
 
   dtls-finished-msg : List Integer, List Integer, Integer -> List Integer
   dtls-finished-msg (base-secret) (transcript-hash) (message-seq) =
-    dtls-msg-encode dtls-hs-finished message-seq (dtls-verify-data base-secret transcript-hash)
-
- Verification is constant-time. A Finished check that returns on the
- first differing byte leaks how much of a forgery was right.
-
-  dtls-finished-ok : List Integer, List Integer, List Integer -> Boolean
-  dtls-finished-ok (base-secret) (transcript-hash) (offered) =
-    dtls-ct-equal (dtls-verify-data base-secret transcript-hash) offered
-
-  dtls-ct-equal : List Integer, List Integer -> Boolean
-  dtls-ct-equal (a) (b) =
-    if list-length a /= list-length b then False
-    else dtls-ct-loop a b 0 (list-length a) 0
-
-  dtls-ct-loop : List Integer, List Integer, Integer, Integer, Integer -> Boolean
-  dtls-ct-loop (a) (b) (i) (n) (diff) =
-    if i >= n then diff == 0
-    else dtls-ct-loop a b (i + 1) n (bit-or diff (bit-xor (list-at a i) (list-at b i)))
-
-Section: The Transcript Hash
-
- Messages accumulate into the hash in transcript form. The accumulator is
- the running concatenation, hashed on demand -- SHA-256 here has no
- incremental interface, so the handshake transcript is held whole. It is
- a few kilobytes for a real handshake, and it is the one multi-KB
- transient in the whole DTLS stack.
-
-  dtls-transcript-add : List Integer, Integer, List Integer -> List Integer
-  dtls-transcript-add (acc) (msg-type) (body) = acc & dtls-msg-transcript msg-type body
-
-  dtls-transcript-hash : List Integer -> List Integer
-  dtls-transcript-hash (acc) = hkdf-words-to-bytes (sha256 acc)
-
- THE HELLORETRYREQUEST TRANSCRIPT. RFC 8446 section 4.4.1, and it is the
- third of this stack's silent-interop traps. When a HelloRetryRequest
- happens, ClientHello1 does NOT stay in the transcript. It is REPLACED by
- a synthetic message: handshake type 254 (message_hash), a uint24 length
- of 32, and the hash of ClientHello1. The transcript then continues with
- the HelloRetryRequest and the second ClientHello.
-
- Miss this and the Finished computes correctly on the no-cookie path and
- wrongly on the cookie path -- so a test that never exercises a
- HelloRetryRequest passes, ships, and then fails against every server
- that does a cookie exchange, which per RFC 9147 is every server that
- cares about denial of service. The bug hides exactly where the security
- feature lives.
-
-  dtls-msg-message-hash : Integer = 254
-
-  dtls-transcript-after-hrr : List Integer -> List Integer
-  dtls-transcript-after-hrr (ch1-transcript) =
-    dtls-transcript-after-hrr-hash (dtls-transcript-hash ch1-transcript)
-
- A stateless server does not HAVE ClientHello1 by the time it needs this
- -- keeping it is precisely the state the cookie exists to avoid. RFC 8446
- section 4.2.2 gives the answer: the server puts the ClientHello1 hash
- INSIDE the cookie and gets it back with the second ClientHello. So the
- hash, not the message, is the thing this takes.
-
-  dtls-transcript-after-hrr-hash : List Integer -> List Integer
-  dtls-transcript-after-hrr-hash (ch1-hash) =
-    [dtls-msg-message-hash] & dtls-be24 32 & ch1-hash
+    dtls-msg-encode dtls-hs-finished message-seq (tls13-verify-data base-secret transcript-hash)
 
 Section: ACK
 
@@ -264,10 +185,10 @@ Section: Helpers
     in bit-or a (bit-or b (list-at bs (off + 2)))
 
   dtls-slice-at : List Integer, Integer, Integer -> List Integer
-  dtls-slice-at (bs) (off) (n) = dtls-slice-loop bs off n 0 []
+  dtls-slice-at (bs) (off) (n) = dtlsm-slice-loop bs off n 0 []
 
-  dtls-slice-loop : List Integer, Integer, Integer, Integer, List Integer -> List Integer
-  dtls-slice-loop (bs) (off) (n) (i) (acc) =
+  dtlsm-slice-loop : List Integer, Integer, Integer, Integer, List Integer -> List Integer
+  dtlsm-slice-loop (bs) (off) (n) (i) (acc) =
     if i >= n then acc
     else if off + i >= list-length bs then acc
-    else dtls-slice-loop bs off n (i + 1) (list-push acc (list-at bs (off + i)))
+    else dtlsm-slice-loop bs off n (i + 1) (list-push acc (list-at bs (off + i)))

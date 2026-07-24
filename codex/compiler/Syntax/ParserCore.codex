@@ -16,6 +16,14 @@ Section: Parser State
  only ever move one way, and answering that the parser is stuck is not a
  decision any earlier state relies on.
 
+ deck-ceiling is the top of the PARSE scratch reservation, carried here
+ rather than threaded as a parameter because the walk that spends it is
+ parse-top-level, whose twenty recursion sites would each have to pass
+ it. Zero means unbounded, which is what a caller with no reservation of
+ its own gets; compile-parse sets the real ceiling through parse-document.
+ It is only ever read, so it leaks across a backtrack harmlessly, exactly
+ as fuel and stall do.
+
   ParseState = record {
    tokens : List Token,
    pos : Integer between 0 and 4294967295,
@@ -23,7 +31,8 @@ Section: Parser State
    paren-depth : Integer between 0 and 65535,
    fuel : Integer,
    stall-pos : Integer,
-   stall : Integer
+   stall : Integer,
+   deck-ceiling : Integer
   }
 
   make-parse-state : List Token, Text -> ParseState
@@ -35,7 +44,8 @@ Section: Parser State
     paren-depth = 0,
     fuel = max-parse-fuel,
     stall-pos = 0 - 1,
-    stall = 0
+    stall = 0,
+    deck-ceiling = 0
    }
 
   current : ParseState -> Token
@@ -55,7 +65,8 @@ Section: Parser State
     paren-depth = st.paren-depth,
     fuel = st.fuel,
     stall-pos = st.stall-pos,
-    stall = st.stall
+    stall = st.stall,
+    deck-ceiling = st.deck-ceiling
    }
 
  Every arm that can spin consumes fuel, so this is the one place both

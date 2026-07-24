@@ -7,11 +7,12 @@ developer can compile, test, and deploy Codex programs from bare metal
 without any host tooling. PowerShell remains as a thin VM orchestration
 layer on the host; all computation moves into Codex.
 
-## Current State (verified against the tree, 2026-07-13)
+## Current State (verified against the tree, 2026-07-19)
 
-The migration is roughly two-thirds done. Disk-compile mode works; the
-on-device test runner and pingpong do not exist yet; and two FileSystem
-builtins are still stubs that quietly lie.
+The migration is roughly two-thirds done. Disk-compile mode works and now
+finds its volume from the disk's GPT rather than assuming LBA 2048. The
+FileSystem builtins are real. The on-device test runner and pingpong do
+not exist yet.
 
 ### What exists in Codex
 
@@ -19,7 +20,7 @@ builtins are still stubs that quietly lie.
 |---|---|---|
 | Cite resolution (serial) | `codex/compiler/opening.codex` — `load-cited-foreword` | **Live.** Called on the serial path. (An older revision of this doc called it dead code. It is not.) |
 | Cite resolution (disk) | `codex/compiler/opening.codex` — `disk-resolve-forewords`, `disk-load-cite`, `disk-extract-cites` | **Live.** Resolves `cites` transitively from the FAT16 volume, deduplicating by a seen-set. |
-| DISK compile mode | `codex/compiler/opening.codex` — `emit-from-disk`, dispatched at `if cmd == "DISK"` | **Shipped.** Reads a path from stdin, mounts FAT16 at sector 2048, reads the source, resolves cites from disk, compiles. |
+| DISK compile mode | `codex/compiler/opening.codex` — `emit-from-disk`, dispatched at `if cmd == "DISK"` | **Shipped.** Reads a path from stdin, mounts the FAT16 volume found from the disk's GPT (`fat16-boot-volume`), reads the source, resolves cites from disk, compiles. |
 | Quire-to-path mapping | `codex/compiler/opening.codex` — `quire-to-dir` | Works. |
 | FAT16 reader | `codex/foreword/core/Fat16.codex` | `fat16-init`, `fat16-read-file`, `fat16-file-exists`, `fat16-list-dir`, `fat16-read-text`. |
 | FAT32 | `codex/foreword/core/Fat32.codex` | Exists. |
@@ -30,23 +31,23 @@ builtins are still stubs that quietly lie.
 | CDX signing | `codex/compiler/opening.codex` | Ed25519 sign via inline program. |
 | Container formats | `codex/plugs/{pe,elf,img}/` | PE, ELF, and GPT/FAT disk images are produced by **plug CDX binaries**, not by the compiler. The old `codex/Emit/PeWriter.codex` and `Fat32Writer.codex` no longer exist. |
 
-### The two stubs that still lie
+### The two stubs that lied: both gone (verified 2026-07-19)
 
-These are the sharpest edges in this design, and they are easy to miss
-because the disk path works *around* them rather than through them.
-`emit-from-disk` calls `fat16-read-text` directly; it never goes through
-the generic FileSystem builtins. So DISK mode works while these remain
-broken:
+An earlier revision of this doc named `read-file` and `file-exists` as
+stubs that lie: `read-file` reading serial instead of disk, and
+`file-exists` emitting `li rd, 1` so it answered `True` for every path.
+Both are fixed, and the fix went further than this section asked for.
 
-| Builtin | Emitter | What it actually does |
-|---|---|---|
-| `read-file` | `emit-read-serial-cce-builtin` (`codex/compiler/Emit/X86_64Builtins.codex`) | **Reads from serial, not from disk.** A program calling `read-file` on bare metal does not touch the filesystem. |
-| `file-exists` | `emit-file-exists-builtin` (same file, ~line 562) | **Emits `li rd, 1`. It unconditionally returns `True`** — for every path, existing or not. |
+| Name | Where it is now |
+|---|---|
+| `file-exists` | A real FAT16 lookup in Foreword chapter `Fat16`. The emitter is deleted; `X86_64Builtins.codex` records why. |
+| `read-file` | The builtin is **deleted** (blu, CL 9092). It read serial and discarded its path argument. 25 transpiler emitters were retargeted to `read-text`. |
+| `list-files`, `list-directories` | Real, in `Fat16`. Gone from `builtin-names` and the type environment, so a chapter that does not cite `Fat16` gets CDX3002 rather than a lie. |
+| `write-file`, `write-binary-file` | Real, in `Fat16`. FAT16 is no longer read-only: it allocates a cluster, chains it, writes the bytes and commits a directory entry, in Codex over `block-write-sector`. |
 
-A `[FileSystem]`-effected program therefore compiles, type-checks, and
-runs while its two most basic operations do something other than what
-they say. Wiring these to FAT16 is the highest-value item left in this
-design, and it is a correctness issue, not just a migration chore.
+The general rule those changes settled: a name the compiler cannot keep
+does not belong in the emitter. `write-file` used to print its content to
+the console and report success, which is silent data loss.
 
 ### What still exists only in PS1
 
@@ -57,7 +58,7 @@ design, and it is a correctness issue, not just a migration chore.
 | `build/test.ps1` | Parallel test runner | On-disk test runner (Phase 4 below — not started). |
 | `build/build.ps1` | Fixed-point verification (text + CDX pingpong) | On-disk self-compile + byte-compare (Phase 5 below — not started). |
 | `build/build-record.ps1` | Hash + JSON provenance | Sha256 + Json forewords exist. |
-| `build/gpu-dispatch` bridge | Serial-to-GPU dispatch | See `docs/PM/BACKLOG.md` §4.6 — the polled serial bridge should become a virtqueue device. |
+| `build/gpu-dispatch` bridge | Serial-to-GPU dispatch | The polled serial bridge should become a virtqueue device. |
 
 ### What stays as PS1 forever
 
@@ -112,17 +113,52 @@ Shell: compile path.codex -> compiler reads disk -> binary -> disk
 
 ## Remaining Plan
 
-### Phase A: Wire the FileSystem builtins to FAT16 — NOT STARTED
+### Phase A: Wire the FileSystem builtins to FAT16 -- DONE (2026-07-19)
 
-Replace the two stubs above so `read-file` and `file-exists` mean what
-they say. The compiler needs the partition offset; `emit-from-disk`
-hardcodes `disk-partition-start = 2048`, which is the value to
-generalize.
+The builtins are real (table above). The last piece was the partition
+offset, and it is closed.
+
+**The volume start was hardcoded 2048 in three places** -- the compiler's
+`disk-partition-start`, `Fat16`'s `fat16-boot-partition-start`, and
+`DevConsoleBoot`'s `uefi-partition-start`. That constant is only ever
+right for an image our own `GptWriter` laid down: it puts its single ESP
+at LBA 2048 and nothing else does. A stick partitioned elsewhere, a
+vendor ESP, or our own dual-boot install (`DriveManager` places its Codex
+partition after the last existing one, at a computed offset) all put the
+volume somewhere else, and every read landed on the wrong sectors and
+parsed garbage as a boot record.
+
+`fat16-boot-volume` now resolves it from the disk's own GPT. **The
+partition is chosen by whether it parses, not by its type GUID** -- a
+dual-boot disk carries a FAT32 vendor ESP and a FAT16 Codex partition and
+both are "the boot partition" by some reading, so the volume is asked
+rather than guessed. `fat16-init` is total and `fat16-vol-is-usable` is
+the existing judgement, so the walk takes the first partition that answers
+yes. It cannot pick a partition it then fails to read.
+
+2048 survives as `fat16-fallback-partition-start`, for a disk with no
+readable GPT at all. Measured: with no disk, `gpt-read` answers `None`
+and the fallback gives exactly the old behaviour; with a disk, the real
+LBA. Our own images are unchanged, because their one ESP is at 2048 and
+it parses.
+
+**A divide-by-zero in `Gpt.codex` was found by wiring this up.**
+`gpt-read-entries` computes entries-per-sector as `512 / entry-size` with
+`entry-size` read straight off the disk. A header claiming zero faults
+the machine with `!EXC=00`; one claiming more than 512 makes that
+quotient zero and the next division faults the same way. `gpt-read-after-hdr`
+now refuses the header instead, which is the rule `fat16-parse-bpb`
+already applied to bytes-per-sector.
+
+Still hardcoded: `DevConsoleBoot`'s `uefi-partition-start`, used by
+`DriveManager` for the **source** volume in a dual-boot copy. That is a
+different question (which disk you are copying *from*) and is not part of
+this phase.
 
 Decision on record: **dual-path FileSystem.** Serial-feed for VM
 compilation, disk for on-device, selected by the mode header or by
-detecting a disk. That decision stands; it is the implementation that is
-missing.
+detecting a disk. That decision stands and is now implemented on the disk
+side.
 
 ### Phase B: On-disk test runner — NOT STARTED
 
@@ -158,9 +194,7 @@ gap 7.
 
 ## Priority Order
 
-1. **Wire the FileSystem builtins** — a correctness bug, not just
-   migration debt. Everything on-device depends on reading files
-   honestly.
+1. ~~Wire the FileSystem builtins~~ -- done 2026-07-19, Phase A above.
 2. **On-disk test runner.**
 3. **Text pingpong on device.**
 4. **Editor and shell as the default on-image path.**

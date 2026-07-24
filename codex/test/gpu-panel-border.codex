@@ -1,0 +1,76 @@
+Chapter: GpuPanelBorder
+
+  cites Foreword chapter Console
+  cites UI chapter Theme
+  cites UI chapter Widget
+  cites UI chapter Layout
+  cites UI chapter BoxModel
+  cites UI chapter GpuRender
+
+ A panel must have a visible extent, and on the GPU backend it had none.
+
+ Every built-in theme gives its panel style a background equal to the page
+ background and a one-pixel border, so the border is the only thing that
+ delineates a panel at all. The CPU renderer draws it -- render-panel calls
+ render-border, and so do the gauge, button and input paths. The GPU
+ renderer emitted the fill and dropped the border, so on the backend every
+ bare-metal app actually uses, a panel painted its parent's colour onto its
+ parent and disappeared. That is why the GuiOS sidebar and taskbar had no
+ extent while the depth rule was correct and the triangle count was healthy:
+ the geometry was submitted, it was in front, and it was the same colour as
+ what it covered.
+
+ Neither the triangle count nor gpu-depth-tree can see this. Both backends
+ agreed on the fill, so a rect was always emitted; what differed was one the
+ theme asked for and only one backend drew. The instrument has to read
+ pixels and it has to look for the border colour specifically.
+
+ The probe tree carries no separator, which is the whole reason it is shaped
+ this way: a separator paints pal-border too, so its presence would make this
+ count non-zero whatever the panel does. With it absent, pal-border in the
+ framebuffer can only have come from a panel border. Run against a renderer
+ without the fix the count is zero.
+
+ The scan strides eight columns and every row. A border is one pixel wide, so
+ a column stride crosses the vertical edges and a row stride could step over
+ the horizontal ones. Counting rather than sampling a computed coordinate
+ keeps the test honest when layout moves.
+
+Section: Body
+
+  fb-base : Integer = #BF000000
+  fb-w : Integer = 640
+  fb-h : Integer = 480
+
+  scan-row : Integer, Integer, Integer, Integer -> Integer
+  scan-row (y) (x) (target) (acc) =
+    if x >= fb-w then acc
+    else scan-row y (x + 8) target (acc + (if peek-32 fb-base ((y * fb-w + x) * 4) == target then 1 else 0))
+
+  scan-fb : Integer, Integer, Integer -> Integer
+  scan-fb (y) (target) (acc) =
+    if y >= fb-h then acc
+    else scan-fb (y + 1) target (acc + scan-row y 0 target 0)
+
+  probe-tree : WidgetNode
+  probe-tree =
+    widget-panel "root" DirColumn 4 [
+      widget-set-min (widget-panel "inner" DirColumn 0 [
+        widget-label "text" "panel"
+      ]) 0 60
+    ]
+
+  opening : [Gpu, Console] Nothing =
+    act
+      let th = theme-terminal
+      in let pal = th.th-palette
+      in let laid = widget-layout probe-tree th (layout-rect 0 0 fb-w fb-h)
+      in act
+        c1 <- gr-clear (pal.pal-bg)
+        c2 <- gr-clear-depth
+        n <- gr-flush ((gr-render-tree (gf-new 4096) laid th gr-depth-scene).gf-idx)
+        print-line-uni ("panel-border: " & show (if scan-fb 0 (pal.pal-border) 0 > 0 then 1 else 0))
+      end
+    end
+
+Page 1

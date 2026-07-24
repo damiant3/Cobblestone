@@ -110,16 +110,22 @@ Section: Delegate Wrapping
   fun-arity : CodexType -> Integer
   fun-arity (ty) =
    when ty
-    is FunTy (p) (r) -> 1 + fun-arity r
+    is FunTy (p) (fnrow) (r) -> 1 + fun-arity r
     is ForAllTy (id) (body) -> fun-arity body
+    is ForAllEff (id) (body) -> fun-arity body
+    is LinearTy (body) -> fun-arity body
+    is TypeApply (body) (tyarg) -> fun-arity body
     is EffectfulTy (effs) (sc) (ret) -> 0
     is otherwise -> 0
 
   is-fun-type : CodexType -> Boolean
   is-fun-type (ty) =
    when ty
-    is FunTy (p) (r) -> True
+    is FunTy (p) (fnrow) (r) -> True
     is ForAllTy (id) (body) -> is-fun-type body
+    is ForAllEff (id) (body) -> is-fun-type body
+    is LinearTy (body) -> is-fun-type body
+    is TypeApply (body) (tyarg) -> is-fun-type body
     is otherwise -> False
 
   func-type-str : Integer -> Text
@@ -156,7 +162,7 @@ Section: Expression Emission
     is IrCharLit (n) (sp) -> "((char)" & show n & ")"
     is IrName (n) (ty) (sp) -> let sn = maui-sanitize n in let ar = lookup-arity arities n 0 in if ar == 0 then sn & "()" else sn
     is IrBinary (op) (l) (r) (ty) (sp) -> emit-maui-binary op l r arities indent
-    is IrNegate (x) (sp) -> "(-(" & emit-maui-expr x arities indent & "))"
+    is IrNegate (x) (nty) (sp) -> "(-(" & emit-maui-expr x arities indent & "))"
     is IrIf (c) (t) (el) (ty) (sp) -> "(" & emit-maui-expr c arities indent & " ? " & emit-maui-expr t arities indent & " : " & emit-maui-expr el arities indent & ")"
     is IrLet (name) (ty) (val) (body) (sp) -> "((Func<dynamic>)(() => { dynamic " & maui-sanitize name & " = " & emit-maui-expr val arities indent & "; return " & emit-maui-expr body arities indent & "; }))()"
     is IrApply (f) (a) (ty) (sp) -> emit-maui-apply e arities indent
@@ -302,6 +308,7 @@ Section: Type Definitions
    when td
     is ARecordTypeDef (name) (tparams) (fields) (is-mut) (s) -> ""
     is AVariantTypeDef (name) (tparams) (ctors) (s) -> emit-maui-var-ctors ctors 0
+    is AUnitTypeDef (name) (unitbase) (s) -> ""
 
   emit-maui-var-ctors : List AVariantCtorDef, Integer -> Text
   emit-maui-var-ctors (ctors) (i) =

@@ -1,0 +1,108 @@
+Chapter: EdAliasTest
+
+ ge-add and ge-double are the only Ed25519 operations that fail on the
+ cross lanes, and the thing they do that fe-mul does not is rely on
+ fe-add and fe-sub writing into their first argument and returning it.
+ That contract has two halves: list-set-at writes in place and returns
+ the same list, and arguments evaluate left to right. This file states
+ both halves as answers a person can check.
+
+ The expected values are the semantics the Developer's Guide records,
+ not numbers read back off a backend.
+
+Section: Mutating helpers
+
+ The fe-add shape: write into the first argument, return it.
+
+  add-into : List Integer, List Integer -> List Integer
+  add-into (a) (b) = add-loop a b 0
+
+  add-loop : List Integer, List Integer, Integer -> List Integer
+  add-loop (a) (b) (i) =
+    if i == 4 then a
+    else let v = list-set-at a i (list-at a i + list-at b i)
+    in add-loop v b (i + 1)
+
+  copy4 : List Integer -> List Integer
+  copy4 (a) = copy-loop a 0 [0, 0, 0, 0]
+
+  copy-loop : List Integer, Integer, List Integer -> List Integer
+  copy-loop (a) (i) (out) =
+    if i == 4 then out
+    else copy-loop a (i + 1) (list-set-at out i (list-at a i))
+
+  sum4 : List Integer -> Integer
+  sum4 (xs) = list-at xs 0 + list-at xs 1 + list-at xs 2 + list-at xs 3
+
+ Appends its tag to a shared log and advances the log's cursor, which
+ lives in slot 0. Two of these in one call record the order the two
+ argument positions were evaluated in.
+
+  bump : List Integer, Integer -> Integer
+  bump (log) (tag) =
+    let cur = list-at log 0
+    in let l2 = list-set-at log (cur + 1) tag
+    in let l3 = list-set-at l2 0 (cur + 1)
+    in tag
+
+  pair : Integer, Integer -> Integer
+  pair (a) (b) = a * 0 + b * 0
+
+Section: Reports
+
+ list-set-at writes in place and hands back the same list, so the
+ original binding sees the write. 1+2+3+4 becomes 11+2+3+4.
+
+  r1 : Text =
+    "inplace=" & show (let xs = copy4 [1, 2, 3, 4]
+                       in let ys = list-set-at xs 0 11
+                       in sum4 xs)
+
+ And the returned list is the same object, not a copy, so both names
+ report the same total.
+
+  r2 : Text =
+    "same-object=" & show (let xs = copy4 [1, 2, 3, 4]
+                           in let ys = list-set-at xs 0 11
+                           in sum4 ys - sum4 xs)
+
+ The fe-add contract: adding a copy of a list to itself doubles it and
+ leaves the source alone. 1+2+3+4 = 10, doubled is 20, source still 10.
+
+  r3 : Text =
+    "add-into-sum=" & show (let src = copy4 [1, 2, 3, 4]
+                            in sum4 (add-into (copy4 src) src))
+
+  r4 : Text =
+    "src-untouched=" & show (let src = copy4 [1, 2, 3, 4]
+                             in let d = add-into (copy4 src) src
+                             in sum4 src)
+
+ Without the copy, add-into mutates its first argument while reading
+ its second, which is the same list. Each limb is read after the
+ earlier limbs were written, so this is the aliased shape ge-double
+ relies on being left to right.
+
+  r5 : Text =
+    "aliased=" & show (let src = copy4 [1, 2, 3, 4]
+                       in sum4 (add-into src src))
+
+ Argument order, in one call with two mutating argument positions.
+ Left to right records 7 then 9 and answers 79; right to left answers
+ 97. fe-add and fe-sub depend on the former.
+
+  r6 : Text =
+    "argorder=" & show (let log = copy4 [0, 0, 0, 0]
+                        in let z = pair (bump log 7) (bump log 9)
+                        in list-at log 1 * 10 + list-at log 2)
+
+Section: Entry
+
+  opening : [Console] Nothing = act
+    print-line-uni r1
+    print-line-uni r2
+    print-line-uni r3
+    print-line-uni r4
+    print-line-uni r5
+    print-line-uni r6
+  end

@@ -1,0 +1,243 @@
+Chapter: CoapEndpoint
+  cites Encode chapter Coap
+  cites Foreword chapter Maybe
+
+ The CoAP client endpoint (RFC 7252): the binding that turns the Coap codec
+ -- which only ever built and parsed packets -- into a request/response
+ interaction with reliability. A constrained device asks a server for a
+ resource and hears the answer, and if the datagram is lost it asks again.
+
+ It is PURE, in the style of DtlsEndpoint and tcp-step: datagrams in,
+ datagrams out, no socket and no clock. The transport `now` is a
+ caller-supplied tick that drives retransmission, exactly the way the DTLS
+ endpoint takes one. A thin os/net layer that carries the emitted datagrams
+ over UDP (Udp + the NIC) is a separate wrapper; the reliability and
+ correlation logic that was the actual missing piece lives here and is
+ exercised by a loopback.
+
+ ONE INTERACTION AT A TIME. RFC 7252 section 4.7 sets NSTART to 1 by
+ default, and a constrained device is exactly the caller that wants no
+ more: a single outstanding request, retransmitted until answered or given
+ up on. A second request while one is in flight is refused rather than
+ queued -- queuing is a larger endpoint's concern and this one says so by
+ not pretending to.
+
+ THE THREE WAYS AN ANSWER ARRIVES, all matched so a stray datagram cannot
+ complete an interaction:
+
+   - Piggybacked: an Acknowledgement carrying the response, matched by
+     message id. The common case, and the whole interaction in one round
+     trip.
+   - Separate: an empty Acknowledgement (the server needs time), then later
+     a Confirmable or Non-confirmable response carrying the answer, matched
+     by TOKEN because its message id is the server's own and fresh. A
+     Confirmable response is itself acknowledged.
+   - Reset: the peer rejects the message id. The interaction fails.
+
+ A response whose token does not match the request is not this interaction's
+ answer and is dropped -- the token is what stops one server's reply, or an
+ attacker's guess, from being taken for another request's response.
+
+ To coap-ep-get gives CoapEpStep, starting a confirmable GET.
+ To coap-ep-recv gives CoapEpStep, feeding one datagram in.
+ To coap-ep-tick gives CoapEpStep, advancing the retransmission clock.
+
+ We say:
+
+Section: Constants
+
+ RFC 7252 section 4.8. The timeout is in the same unit as the caller's
+ transport `now`; ACK_RANDOM_FACTOR is dropped deliberately so the
+ retransmission schedule is deterministic and testable -- a real deployment
+ that wants the jitter adds it at the `now` it passes.
+
+  coap-ack-timeout : Integer = 2000
+  coap-max-retransmit : Integer = 4
+
+  coap-type-con : Integer = 0
+  coap-type-non : Integer = 1
+  coap-type-ack : Integer = 2
+  coap-type-rst : Integer = 3
+  coap-code-empty : Integer = 0
+
+  coap-st-idle : Integer = 0
+  coap-st-waiting : Integer = 1
+  coap-st-done : Integer = 2
+  coap-st-failed : Integer = 3
+
+Section: Types
+
+  CoapEp = record {
+    ce-next-mid : Integer,
+    ce-token-ctr : Integer,
+    ce-state : Integer,
+    ce-mid : Integer,
+    ce-token : List Integer,
+    ce-datagram : List Integer,
+    ce-retries : Integer,
+    ce-timeout : Integer,
+    ce-deadline : Integer,
+    ce-acked : Boolean,
+    ce-resp-code : Integer,
+    ce-resp-payload : List Integer
+  }
+
+  CoapEpStep = record {
+    cs-ep : CoapEp,
+    cs-out : List (List Integer)
+  }
+
+Section: Construction
+
+  coap-ep-new : CoapEp
+  coap-ep-new =
+    CoapEp { ce-next-mid = 1, ce-token-ctr = 1, ce-state = coap-st-idle, ce-mid = 0,
+             ce-token = [], ce-datagram = [], ce-retries = 0, ce-timeout = coap-ack-timeout,
+             ce-deadline = 0, ce-acked = False, ce-resp-code = 0, ce-resp-payload = [] }
+
+ The token is the interaction's name. Two bytes off a counter are enough to
+ tell this device's outstanding request from the last one; a real device
+ draws them from entropy, and this never invents entropy it was not given.
+
+  coap-ep-token : Integer -> List Integer
+  coap-ep-token (n) = [bit-and (bit-shru n 8) 255, bit-and n 255]
+
+  coap-mid-inc : Integer -> Integer
+  coap-mid-inc (m) = if m >= 65535 then 1 else m + 1
+
+  coap-ep-idle : CoapEp -> CoapEpStep
+  coap-ep-idle (ep) = CoapEpStep { cs-ep = ep, cs-out = [] }
+
+Section: Requests
+
+ A confirmable GET or POST. Refused with no output if an interaction is
+ already in flight (NSTART = 1). The message id and token are assigned here
+ and the datagram is kept, because a datagram that cannot be retransmitted
+ is a request with no reliability at all.
+
+  coap-ep-get : CoapEp, Text, Integer -> CoapEpStep
+  coap-ep-get (ep) (path) (now) =
+    if ep.ce-state == coap-st-waiting then coap-ep-idle ep
+    else let mid = ep.ce-next-mid
+    in let token = coap-ep-token (ep.ce-token-ctr)
+    in coap-ep-start ep mid token (coap-get mid token path) now
+
+  coap-ep-post : CoapEp, Text, List Integer, Integer -> CoapEpStep
+  coap-ep-post (ep) (path) (payload) (now) =
+    if ep.ce-state == coap-st-waiting then coap-ep-idle ep
+    else let mid = ep.ce-next-mid
+    in let token = coap-ep-token (ep.ce-token-ctr)
+    in coap-ep-start ep mid token (coap-post mid token path payload) now
+
+  coap-ep-start : CoapEp, Integer, List Integer, List Integer, Integer -> CoapEpStep
+  coap-ep-start (ep) (mid) (token) (dgram) (now) =
+    let ep2 = CoapEp { ce-next-mid = coap-mid-inc mid, ce-token-ctr = (ep.ce-token-ctr) + 1,
+                       ce-state = coap-st-waiting, ce-mid = mid, ce-token = token, ce-datagram = dgram,
+                       ce-retries = 0, ce-timeout = coap-ack-timeout, ce-deadline = now + coap-ack-timeout,
+                       ce-acked = False, ce-resp-code = 0, ce-resp-payload = [] }
+    in CoapEpStep { cs-ep = ep2, cs-out = [dgram] }
+
+Section: Receive
+
+  coap-ep-recv : CoapEp, List Integer, Integer -> CoapEpStep
+  coap-ep-recv (ep) (dgram) (now) =
+    when coap-parse dgram
+      is None -> coap-ep-idle ep
+      is Just (m) -> coap-ep-on-msg ep m
+
+  coap-ep-on-msg : CoapEp, CoapMessage -> CoapEpStep
+  coap-ep-on-msg (ep) (m) =
+    if ep.ce-state /= coap-st-waiting then coap-ep-idle ep
+    else if m.cm-type == coap-type-ack then coap-ep-on-ack ep m
+    else if m.cm-type == coap-type-rst then coap-ep-on-rst ep m
+    else coap-ep-on-response ep m
+
+ An Acknowledgement is matched by message id. An empty ACK confirms the
+ request was received and stops the retransmission clock, and the answer is
+ still to come as a separate message. A non-empty ACK is the piggybacked
+ response and completes the interaction in one round trip.
+
+  coap-ep-on-ack : CoapEp, CoapMessage -> CoapEpStep
+  coap-ep-on-ack (ep) (m) =
+    if m.cm-msg-id /= ep.ce-mid then coap-ep-idle ep
+    else if m.cm-code == coap-code-empty then coap-ep-idle (coap-set-acked ep)
+    else if coap-bytes-eq (m.cm-token) (ep.ce-token) == False then coap-ep-idle ep
+    else coap-ep-idle (coap-deliver-state ep m)
+
+ A separate response is its own Confirmable or Non-confirmable message with
+ a fresh id, matched by token. A Confirmable response is acknowledged; a
+ Non-confirmable one is not.
+
+  coap-ep-on-response : CoapEp, CoapMessage -> CoapEpStep
+  coap-ep-on-response (ep) (m) =
+    if coap-bytes-eq (m.cm-token) (ep.ce-token) == False then coap-ep-idle ep
+    else if m.cm-type == coap-type-con
+    then CoapEpStep { cs-ep = coap-deliver-state ep m, cs-out = [coap-ack (m.cm-msg-id)] }
+    else coap-ep-idle (coap-deliver-state ep m)
+
+  coap-ep-on-rst : CoapEp, CoapMessage -> CoapEpStep
+  coap-ep-on-rst (ep) (m) =
+    if m.cm-msg-id /= ep.ce-mid then coap-ep-idle ep
+    else coap-ep-idle (__record-set ep "ce-state" coap-st-failed)
+
+  coap-deliver-state : CoapEp, CoapMessage -> CoapEp
+  coap-deliver-state (ep) (m) =
+    __record-set (__record-set (__record-set (__record-set ep "ce-state" coap-st-done) "ce-acked" True) "ce-resp-code" (m.cm-code)) "ce-resp-payload" (m.cm-payload)
+
+  coap-set-acked : CoapEp -> CoapEp
+  coap-set-acked (ep) = __record-set ep "ce-acked" True
+
+Section: Retransmission
+
+ RFC 7252 section 4.2. A confirmable request unanswered by its deadline is
+ retransmitted with the timeout doubled, up to MAX_RETRANSMIT times; after
+ that the interaction fails. An already-acked request awaiting a separate
+ response is NOT retransmitted -- the empty ACK stopped that clock, and
+ resending would ask twice for an answer already promised.
+
+  coap-ep-tick : CoapEp, Integer -> CoapEpStep
+  coap-ep-tick (ep) (now) =
+    if ep.ce-state /= coap-st-waiting then coap-ep-idle ep
+    else if ep.ce-acked then coap-ep-idle ep
+    else if now < ep.ce-deadline then coap-ep-idle ep
+    else if ep.ce-retries >= coap-max-retransmit then coap-ep-idle (__record-set ep "ce-state" coap-st-failed)
+    else coap-ep-retransmit ep now
+
+  coap-ep-retransmit : CoapEp, Integer -> CoapEpStep
+  coap-ep-retransmit (ep) (now) =
+    let t2 = (ep.ce-timeout) * 2
+    in let ep2 = __record-set (__record-set (__record-set ep "ce-retries" ((ep.ce-retries) + 1)) "ce-timeout" t2) "ce-deadline" (now + t2)
+    in CoapEpStep { cs-ep = ep2, cs-out = [ep.ce-datagram] }
+
+Section: Accessors
+
+  coap-ep-state : CoapEp -> Integer
+  coap-ep-state (ep) = ep.ce-state
+
+  coap-ep-done : CoapEp -> Boolean
+  coap-ep-done (ep) = ep.ce-state == coap-st-done
+
+  coap-ep-failed : CoapEp -> Boolean
+  coap-ep-failed (ep) = ep.ce-state == coap-st-failed
+
+  coap-ep-response-code : CoapEp -> Integer
+  coap-ep-response-code (ep) = ep.ce-resp-code
+
+  coap-ep-response-payload : CoapEp -> List Integer
+  coap-ep-response-payload (ep) = ep.ce-resp-payload
+
+  coap-ep-retries : CoapEp -> Integer
+  coap-ep-retries (ep) = ep.ce-retries
+
+Section: Helpers
+
+  coap-bytes-eq : List Integer, List Integer -> Boolean
+  coap-bytes-eq (a) (b) =
+    if list-length a /= list-length b then False
+    else coap-bytes-eq-loop a b 0 (list-length a)
+
+  coap-bytes-eq-loop : List Integer, List Integer, Integer, Integer -> Boolean
+  coap-bytes-eq-loop (a) (b) (i) (n) =
+    if i >= n then True
+    else if list-at a i /= list-at b i then False
+    else coap-bytes-eq-loop a b (i + 1) n

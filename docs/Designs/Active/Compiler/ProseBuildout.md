@@ -153,6 +153,16 @@ Cost is proportional to annotation count, which the author controls.
 **Files**: `codex/Syntax/Parser.codex`, `codex/Syntax/SyntaxNodes.codex`,
 `codex/Ast/AstNodes.codex`
 
+**Where the records are declared changed in CL 10176.** `ProseBlock`,
+`AnnotationNode`, `ProseTransition` and `ProseTemplate` moved from
+`Syntax/SyntaxNodes.codex` to `IR/IRChapter.codex`, beside the `IRTextMeta`
+that carries them to emission. The parser that BUILDS them is unmoved; the
+compiler is one compilation unit, so no citation changed. The reason is the
+plug bundle: it takes `IRChapter`'s declarations and deliberately not
+`SyntaxNodes`', so a plug could not name `ProseBlock` and therefore could not
+read the `pblocks` form off the IR text wire. Both forms now
+round-trip.
+
 ### Step 6: Prose-notation consistency checking
 
 Post-parse validation: function template names match definition names,

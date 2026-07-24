@@ -91,8 +91,13 @@ Section: PIC Clause and Type Helpers
     is CharTy -> "PIC S9(18)"
     is VoidTy -> "PIC S9(18)"
     is NothingTy -> "PIC S9(18)"
+    is ProofTy -> "PIC S9(18)"
+    is PropEqTy (pl) (pr) -> "PIC S9(18)"
     is UnitTy (n) (inner) -> "PIC S9(18)"
     is ForAllTy (id) (body) -> cobol-pic body
+    is ForAllEff (id) (body) -> cobol-pic body
+    is LinearTy (body) -> cobol-pic body
+    is TypeApply (body) (tyarg) -> cobol-pic body
     is EffectfulTy (effs) (sc) (ret) -> cobol-pic ret
     is otherwise -> "PIC S9(18)"
 
@@ -156,11 +161,12 @@ Section: Type Definition Emission
   emit-cobol-type-def : ATypeDef -> Text
   emit-cobol-type-def (td) =
    when td
-    is ARecordTypeDef (name) (tparams) (fields) (s) ->
+    is ARecordTypeDef (name) (tparams) (fields) (recmut) (s) ->
      let n = cobol-name (name.value)
      in "       01 WS-" & n & ".\n" & emit-cobol-rec-fields n fields 0
     is AVariantTypeDef (name) (tparams) (ctors) (s) ->
      emit-cobol-sum-type (name.value) ctors
+    is AUnitTypeDef (name) (unitbase) (s) -> ""
 
   emit-cobol-rec-fields : Text, List ARecordFieldDef, Integer -> Text
   emit-cobol-rec-fields (parent) (fields) (i) =
@@ -176,8 +182,12 @@ Section: Type Definition Emission
     is ANamedType (name) (s) -> cobol-when-pic-name (name.value)
     is AFunType (p) (r) (s) -> "PIC S9(18)"
     is AAppType (base) (args) (s) -> emit-cobol-atype-pic base
-    is AEffectType (effs) (scopes) (r) (s) -> emit-cobol-atype-pic r
+    is AEffectType (effs) (scopes) (efftail) (r) (s) -> emit-cobol-atype-pic r
     is ABoundedIntType (b) (lo) (hi) (mode) (s) -> emit-cobol-atype-pic b
+    is ALinearType (b) (s) -> emit-cobol-atype-pic b
+    is AConstrainedType (ctcls) (ctparam) (b) (s) -> emit-cobol-atype-pic b
+    is AForallType (fav) (favt) (b) (s) -> emit-cobol-atype-pic b
+    is APropEqType (b) (peright) (s) -> emit-cobol-atype-pic b
 
   cobol-when-pic-name : Text -> Text
   cobol-when-pic-name (n) =
@@ -234,7 +244,7 @@ Section: Expression Emission
     is IrCharLit (n) (sp) -> CobolExprResult { var-name = integer-to-text n, code = "", state = st }
     is IrName (n) (ty) (sp) -> emit-cobol-name-var n st
     is IrBinary (op) (l) (r) (ty) (sp) -> emit-cobol-binary-var op l r arities st
-    is IrNegate (operand) (sp) -> emit-cobol-negate-var operand arities st
+    is IrNegate (operand) (nty) (sp) -> emit-cobol-negate-var operand arities st
     is IrIf (c) (t) (el) (ty) (sp) -> emit-cobol-if-var c t el arities st
     is IrLet (name) (ty) (val) (body) (sp) -> emit-cobol-let-var name ty val body arities st
     is IrApply (f) (a) (ty) (sp) -> emit-cobol-apply-var e arities st
@@ -420,7 +430,7 @@ Section: Expression Emission
   cobol-builtin-names : List Text
   cobol-builtin-names = ["abs", "bit-and", "bit-or", "bit-xor", "char-at",
    "int-mod", "integer-to-text", "is-digit", "is-letter", "max", "min",
-   "negate", "print-line-uni", "process-exit", "read-file", "show",
+   "negate", "print-line-uni", "process-exit", "read-text", "show",
    "substring", "text-length", "text-to-integer", "write-file"]
 
   cobol-bsearch-builtin : List Text, Text, Integer, Integer -> Integer
@@ -577,7 +587,7 @@ Section: Expression Emission
    in let st2 = cobol-add-ws (alloc.state) ("       01 " & alloc.name & "       PIC S9(18).")
    in CobolExprResult {
     var-name = alloc.name,
-    code = a-r.code & b-r.code & "           COMPUTE " & alloc.name & " = FUNCTION MOD(" & a-r.var-name & " " & b-r.var-name & ")\n",
+    code = a-r.code & b-r.code & "           COMPUTE " & alloc.name & " = FUNCTION MOD(" & a-r.var-name & " FUNCTION ABS(" & b-r.var-name & "))\n",
     state = st2
    }
 
@@ -931,7 +941,7 @@ Section: Tail Call Optimization
        "           GO TO " & name & "-END\n",
       state = st
      }
-    is IrNegate (operand) (sp) ->
+    is IrNegate (operand) (nty) (sp) ->
      let res = emit-cobol-expr-to-var e arities st
      in CobolMoveResult {
       code = res.code & "           MOVE " & res.var-name & " TO WS-" & name & "-RET\n" &
@@ -1054,13 +1064,16 @@ Section: Definition Emission
   cobol-get-return-type (ty) (n) =
    if n == 0 then cobol-strip-forall ty
    else when cobol-strip-forall ty
-    is FunTy (p) (r) -> cobol-get-return-type r (n - 1)
+    is FunTy (p) (fnrow) (r) -> cobol-get-return-type r (n - 1)
     is otherwise -> ty
 
   cobol-strip-forall : CodexType -> CodexType
   cobol-strip-forall (ty) =
    when ty
     is ForAllTy (id) (body) -> cobol-strip-forall body
+    is ForAllEff (id) (body) -> cobol-strip-forall body
+    is LinearTy (body) -> cobol-strip-forall body
+    is TypeApply (body) (tyarg) -> cobol-strip-forall body
     is otherwise -> ty
 
   emit-cobol-param-storage : List IRParam, Text, Integer -> Text
@@ -1133,8 +1146,11 @@ Section: Chapter Emission
   cobol-is-effectful (ty) =
    when ty
     is EffectfulTy (effs) (sc) (ret) -> True
-    is FunTy (p) (r) -> cobol-is-effectful r
+    is FunTy (p) (fnrow) (r) -> cobol-is-effectful r
     is ForAllTy (id) (body) -> cobol-is-effectful body
+    is ForAllEff (id) (body) -> cobol-is-effectful body
+    is LinearTy (body) -> cobol-is-effectful body
+    is TypeApply (body) (tyarg) -> cobol-is-effectful body
     is otherwise -> False
 
   emit-cobol-entry : List IRDef, Integer, List ArityEntry, CobolState -> CobolDefResult

@@ -1,0 +1,82 @@
+Chapter: LirCallCross
+
+ The call construct on the ARM64 LIR selector (LirRetarget step 4f), pinned by
+ answers that change when the argument order changes.
+
+ Every helper here carries an `if` so that `inline-leaf-calls` will not eat it:
+ that pass takes a body of pure integer arithmetic over the callee's own
+ parameters and nothing else, so `hdiff a b = a - b` would vanish into its
+ callers and this file would test nothing. Each helper also has at least two
+ callers, because `inline-single-caller` takes the ones that have exactly one.
+ Both facts were read off `IR/Lowering.codex` rather than guessed; a test whose
+ subject is optimised away still passes.
+
+ The shapes, and what each is here to move:
+
+  - callplain:  a call with its arguments already in place
+  - callswap:   the arguments crossed, so the two moves form a CYCLE and the
+                planner has to stage one through the scratch register
+  - callimm-l / callimm-r: an immediate argument on each side
+  - callres:    the result feeds arithmetic, so it is read out of x0
+  - callchain:  a value live ACROSS a call, which the crossing analysis must
+                place in the callee-saved pool or lose
+  - callcond:   a call in each arm of a returning `if`
+  - callthree / callthree2: three arguments, rotated two different ways
+
+ `hdiff` is `a - b` written so it cannot be inlined, and it is asymmetric on
+ purpose: a symmetric helper answers the same thing whichever way its arguments
+ are placed, so `callswap` would agree with `callplain` however wrong the
+ placement was. The same reasoning picks `htri`, whose three arguments land in
+ different decimal places.
+
+Section: Helpers
+
+  hdiff : Integer, Integer -> Integer
+  hdiff (a) (b) = if a >= b then a - b else 0 - (b - a)
+
+  htri : Integer, Integer, Integer -> Integer
+  htri (a) (b) (c) = if a > 0 then a * 100 + b * 10 + c else b * 10 + c
+
+Section: Callers
+
+  callplain : Integer, Integer -> Integer
+  callplain (x) (y) = hdiff x y
+
+  callswap : Integer, Integer -> Integer
+  callswap (x) (y) = hdiff y x
+
+  callimm-l : Integer -> Integer
+  callimm-l (x) = hdiff 7 x
+
+  callimm-r : Integer -> Integer
+  callimm-r (x) = hdiff x 7
+
+  callres : Integer, Integer -> Integer
+  callres (x) (y) = hdiff x y + 1
+
+  callchain : Integer, Integer -> Integer
+  callchain (x) (y) = hdiff (hdiff x y) (hdiff y x)
+
+  callcond : Integer, Integer -> Integer
+  callcond (x) (y) = if x > 0 then hdiff x y else hdiff y x
+
+  callthree : Integer, Integer, Integer -> Integer
+  callthree (a) (b) (c) = htri c a b
+
+  callthree2 : Integer, Integer, Integer -> Integer
+  callthree2 (a) (b) (c) = htri b c a
+
+Section: Entry
+
+  opening : [Console] Nothing = act
+   print-line-uni (show (callplain 9 4))
+   print-line-uni (show (callswap 9 4))
+   print-line-uni (show (callimm-l 10))
+   print-line-uni (show (callimm-r 10))
+   print-line-uni (show (callres 9 4))
+   print-line-uni (show (callchain 9 4))
+   print-line-uni (show (callcond 9 4))
+   print-line-uni (show (callcond (-9) 4))
+   print-line-uni (show (callthree 1 2 3))
+   print-line-uni (show (callthree2 1 2 3))
+  end

@@ -1,0 +1,57 @@
+Chapter: UsbKbdConnect
+  cites Works chapter GopUsbKbd
+  cites Works chapter GopXhci
+  cites Foreword chapter Maybe
+
+ The transport half of the USB keyboard, driven for the first time.
+
+ `GopHid` -- the decoder that turns an 8-byte boot report into
+ scancodes -- has a test (`hid-decode`). `GopUsbKbd`, which is the code
+ that actually has to get that report off an interrupt endpoint, has
+ never been run by anything: not by a battery, not under the emulator.
+ It is the half that fails on real hardware, and it is the half nobody
+ could see.
+
+ codex-vm presents a HID boot keyboard on root port 2 whose descriptors
+ are the ones this driver looks for: interface class 3, subclass 1,
+ protocol 1, and an interrupt IN endpoint 0x81 at 8 bytes with bInterval
+ 10. Endpoint 1 IN is device context index 3 -- the same dci the real
+ machine reported before going silent. So this asks the driver the
+ question the hardware asks it, on a controller we can actually inspect.
+
+ What each line proves. `connect` says the port walk, the descriptor
+ walk, SET_CONFIGURATION, SET_PROTOCOL, SET_IDLE and Configure Endpoint
+ all completed -- the driver got as far on the emulator as it did on the
+ metal. `dci` says which endpoint it settled on. `armed` and `code` say
+ whether a transfer was queued and whether a completion came back, which
+ is precisely where the real machine produced nothing at all.
+
+Section: Test
+
+  connect-line : UsbKbd -> Text
+  connect-line (k) =
+    "connect: ok=" & (if k.uk-ok then "1" else "0")
+      & " dci=" & show (k.uk-dci)
+      & " speed=" & show ((k.uk-dev).ud-speed)
+      & " slot=" & show ((k.uk-dev).ud-slot)
+
+ Pump once to arm a transfer, then once more to check for a completion.
+ The phase cell after each call says which branch the pump took, so a
+ driver that never leaves idle is distinguishable from one that arms and
+ hears nothing back -- two different failures that look identical from
+ the outside.
+
+  phase-of : UsbKbd -> Integer
+  phase-of (k) = peek-32 (k.uk-state) 0
+
+  opening : [Console, Device.Port, Device.Mmio] Nothing = act
+    k <- kbd-connect
+    print-line-uni (connect-line k)
+    if k.uk-ok then act
+      let p0 = kbd-pump k
+      in print-line-uni ("after-arm: phase=" & show (phase-of k))
+      let p1 = kbd-pump k
+      in print-line-uni ("after-check: phase=" & show (phase-of k))
+    end
+    else print-line-uni "after-arm: SKIPPED (no keyboard)"
+  end

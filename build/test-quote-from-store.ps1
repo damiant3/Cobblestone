@@ -1,6 +1,6 @@
 # Compile a program whose quotation is resolved out of the fact store.
 #
-# BACKLOG 6.1 -- "Codex stores its own source" -- reaches the compiler here.
+# "Codex stores its own source" reaches the compiler here.
 # Until now a quoted work travelled beside the source in a %%QUOTED-WORKS%%
 # text blob, because the one place that resolves quotations -- the compiler's
 # import gate -- could not read the disk that holds the works. This is the

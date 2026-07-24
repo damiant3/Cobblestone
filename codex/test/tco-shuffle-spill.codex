@@ -1,0 +1,59 @@
+Chapter: TcoShuffleSpill
+
+ A self tail-recursive loop with five parameters. The fifth parameter
+ has no local register left and lives in a spill slot, so its argument
+ is not a direct tail argument and the emitter evaluates it before the
+ direct moves and holds the result while they run. Three of the direct
+ arguments are themselves spilled locals, and loading a spilled local
+ takes a scratch register from a rotation of three, so the third such
+ load hands back the register the held value is sitting in.
+
+ When that happens the fifth parameter receives the fourth argument's
+ value instead of its own: active-player is assigned next-turn, the
+ alternation stops, and the turn counter never advances again. This is
+ the shape that made hexwar-loop appear to hang, which is why the
+ reproducer keeps the record parameter, the list parameter and the
+ five-argument call -- remove any one of them and the register
+ pressure changes and the fault disappears.
+
+ The loop is bounded on the generator rather than on the turn counter
+ so that the miscompile answers wrongly and quickly rather than
+ running forever. Correct is four; the fault answers zero.
+
+Section: Fixture
+
+  Cfg = record {
+   width : Integer,
+   nplayers : Integer,
+   limit : Integer,
+   data : List Integer
+  }
+
+  Rng = record {
+   state : Integer
+  }
+
+  rng-bump : Rng -> Rng
+  rng-bump (r) = Rng { state = r.state + 1 }
+
+  md : Integer, Integer -> Integer
+  md (a) (b) = int-mod a b
+
+  turn5 : List Integer, List Integer, Integer, Integer, Rng -> List Integer
+  turn5 (units) (data) (active) (w) (r) = units
+
+  loop5 : Cfg, Rng, List Integer, Integer, Integer -> Integer
+  loop5 (cfg) (r) (units) (turn) (active) =
+   if r.state >= 8 then turn
+   else let r2 = rng-bump r
+   in let units2 = turn5 units cfg.data active cfg.width r2
+   in let next-player = md (active + 1) cfg.nplayers
+   in let next-turn = if next-player == 0 then turn + 1 else turn
+   in loop5 cfg r2 units2 next-turn next-player
+
+Section: Entry
+
+  opening : [Console] Nothing
+  opening = act
+   print-line-uni ("turns=" & show (loop5 (Cfg { width = 4, nplayers = 2, limit = 3, data = [1, 2] }) (Rng { state = 0 }) [7, 8] 0 0))
+  end

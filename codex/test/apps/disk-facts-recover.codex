@@ -1,28 +1,97 @@
 Chapter: DiskFactsRecover
-  cites Foreword chapter Console
+  cites Kernel chapter DiskFacts
   cites Foreword chapter FactStore
+  cites Foreword chapter Hamt
   cites Foreword chapter Maybe
+  cites Foreword chapter Sha256
+  cites Foreword chapter Console
+
+ The superblock is written twice, alternating between sector 0 and
+ sector 1 on the parity of its generation number, and boot picks
+ whichever copy is valid and newest. That layout exists for one reason:
+ a machine that loses power partway through a superblock write must
+ still find an intact older copy and come up on it. Nothing tested that
+ the fallback works, and a double-buffered superblock whose second copy
+ is never actually read is one copy with extra steps.
+
+ The old body wrote nothing to disk. It built a FactStore in memory,
+ stored five facts, loaded three back and printed the count -- a
+ chapter named for disk recovery that never touched a sector.
+
+ The corrupt-entry and multi-sector cases in the log itself are already
+ pinned by disk-facts-multi-load; this is the other half, the
+ superblock.
+
+Section: Damage
+
+ A superblock is recognised by its magic at offset 0. Overwriting one
+ byte of it is what a torn write looks like from the reader's side: the
+ sector is present and readable, and it is not a superblock.
+
+  wreck-superblock : Integer -> [Device.Block] Integer
+  wreck-superblock (sector) = act
+    buf <- block-read-sector sector
+    let old = peek-byte buf 0
+    in let w = poke-byte buf 0 (if old == 88 then 89 else 88)
+    in block-write-sector sector buf
+  end
+
+Section: Reporting
+
+  found : Maybe Fact, Text -> Text
+  found (m) (want) =
+   when m
+    is Just (f) -> if f.content == want then "ok" else "CORRUPTED"
+    is None -> "lost"
+
+  survey : DiskFactStore -> Text
+  survey (store) =
+   let a = found (disk-read-fact store (fact-content-hash "alpha")) "alpha"
+   in let b = found (disk-read-fact store (fact-content-hash "bravo")) "bravo"
+   in let c = found (disk-read-fact store (fact-content-hash "charlie")) "charlie"
+   in let d = found (disk-read-fact store (fact-content-hash "delta")) "delta"
+   in a & " " & b & " " & c & " " & d
 
 Section: Entry
 
-  opening : [Console] Nothing =
-    let fs0 = fact-store-empty
-    in let f1 = fact-create DefinitionFact "first" "sys" 10
-    in let f2 = fact-create DefinitionFact "second" "sys" 20
-    in let f3 = fact-create DefinitionFact "third" "sys" 30
-    in let fs1 = fact-store fs0 f1
-    in let fs2 = fact-store fs1 f2
-    in let fs3 = fact-store fs2 f3
-    in let fs4 = fact-store fs3 f1
-    in let fs5 = fact-store fs4 f2
-    in let r1 = fact-load fs5 (f1.hash)
-    in let r2 = fact-load fs5 (f2.hash)
-    in let r3 = fact-load fs5 (f3.hash)
-    in let c1 = when r1 is Just (f) -> f.content is None -> "?"
-    in let c2 = when r2 is Just (f) -> f.content is None -> "?"
-    in let c3 = when r3 is Just (f) -> f.content is None -> "?"
-    in act
-      print-line-uni (show (fact-count fs5) & " " & c1 & " " & c2 & " " & c3)
-    end
+ Two checkpoints, so both superblock slots hold a real generation and
+ they disagree about how far the log runs. Then the newer slot is torn.
 
-Page 1
+ The fallback answer is deliberately NOT "all four facts". Charlie and
+ delta are on the disk, intact and hash-verifiable, and the recovered
+ store must not report them: the only record that the log extended that
+ far went down with the torn superblock, and a reader that walked past
+ its own log-head would be trusting sectors nothing vouches for. Losing
+ the tail of an uncheckpointed log is the correct outcome. Reading it
+ back anyway would look like a better result and would mean the
+ log-head is not load-bearing.
+
+  opening : [Device.Block, Console.Write] Nothing = act
+    let s0 = disk-init
+    in let s1 = disk-write-fact s0 DefinitionFact "alpha" 1
+    in let s2 = disk-write-fact s1 DefinitionFact "bravo" 2
+    in let cp1 = disk-checkpoint s2
+    in let s3 = disk-write-fact cp1 DefinitionFact "charlie" 3
+    in let s4 = disk-write-fact s3 DefinitionFact "delta" 4
+    in let cp2 = disk-checkpoint s4
+    in act
+      print-line-uni ("written=" & show (disk-fact-count cp2))
+      let fresh = disk-load
+      in act
+        print-line-uni ("boot-count=" & show (disk-fact-count fresh))
+        print-line-uni ("boot-facts=" & survey fresh)
+      end
+      torn <- wreck-superblock 1
+      let fallback = disk-load
+      in act
+        print-line-uni ("fallback-count=" & show (disk-fact-count fallback))
+        print-line-uni ("fallback-facts=" & survey fallback)
+      end
+      gone <- wreck-superblock 0
+      let bare = disk-load
+      in act
+        print-line-uni ("bare-count=" & show (disk-fact-count bare))
+        print-line-uni ("bare-facts=" & survey bare)
+      end
+    end
+  end

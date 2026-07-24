@@ -151,7 +151,47 @@ Section: Results
   test-authenticated : Text = "auth client-authenticated=" & show (dtls-ep-authenticated (st8.es-ep))
 
   test-agree : Text =
-    "auth agree=" & show (dtls-ct-equal ((st8.es-ep).ep-s-hs) ((st9.es-ep).ep-s-hs))
+    "auth agree=" & show (tls13-ct-equal ((st8.es-ep).ep-s-hs) ((st9.es-ep).ep-s-hs))
+
+Section: A Client That Does Not Check
+
+ The same certificate-presenting server, and a client with NO anchors. It
+ does not require authentication and cannot verify the chain, so it keeps
+ no peer key and ends unauthenticated -- but it must COMPLETE, because
+ completing is a property of the transcript and the key schedule.
+
+ This is the configuration the anonymous loopback cannot reach (an
+ anonymous server sends no Certificate at all) and it is the ordinary one
+ on the open internet. It could not complete until the Certificate and
+ CertificateVerify messages folded into the transcript unconditionally:
+ an unfolded message left this client's transcript one short of the
+ server's and the server Finished failed to verify.
+
+  na0 : DtlsEp = dtls-ep-new False c-priv c-random [] []
+
+  na1 : DtlsEpStep = dtls-ep-client na0 0
+  na-d1 : List Integer = list-at (na1.es-out) 0
+
+  na2 : DtlsEpStep = dtls-ep-recv s0 na-d1 10
+  na-d2 : List Integer = list-at (na2.es-out) 0
+
+  na3 : DtlsEpStep = dtls-ep-recv (na1.es-ep) na-d2 20
+  na-d3 : List Integer = list-at (na3.es-out) 0
+
+  na4 : DtlsEpStep = dtls-ep-recv (na2.es-ep) na-d3 30
+  na-sh : List Integer = list-at (na4.es-out) 0
+  na-cert : List Integer = list-at (na4.es-out) 1
+  na-cv : List Integer = list-at (na4.es-out) 2
+  na-fin : List Integer = list-at (na4.es-out) 3
+
+  na5 : DtlsEpStep = dtls-ep-recv (na3.es-ep) na-sh 40
+  na6 : DtlsEpStep = dtls-ep-recv (na5.es-ep) na-cert 41
+  na7 : DtlsEpStep = dtls-ep-recv (na6.es-ep) na-cv 42
+  na8 : DtlsEpStep = dtls-ep-recv (na7.es-ep) na-fin 43
+
+  test-noauth : Text =
+    "auth noanchor client-done=" & show (dtls-ep-done (na8.es-ep))
+      & " authenticated=" & show (dtls-ep-authenticated (na8.es-ep))
 
 Section: The Man In The Middle
 
@@ -259,6 +299,7 @@ Section: Entry
     print-line-uni test-server-done
     print-line-uni test-authenticated
     print-line-uni test-agree
+    print-line-uni test-noauth
     print-line-uni test-mitm
     print-line-uni test-downgrade
     print-line-uni test-expect-ok

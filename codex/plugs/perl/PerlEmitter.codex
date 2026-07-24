@@ -91,10 +91,11 @@ Section: Type Definition Emission
   emit-pl-type-def : ATypeDef -> Text
   emit-pl-type-def (td) =
    when td
-    is ARecordTypeDef (name) (tparams) (fields) (s) ->
+    is ARecordTypeDef (name) (tparams) (fields) (recmut) (s) ->
      "sub new_" & pl-sanitize (name.value) & " { my %h = @_; return \\%h; }\n"
     is AVariantTypeDef (name) (tparams) (ctors) (s) ->
      emit-pl-ctors ctors 0
+    is AUnitTypeDef (name) (unitbase) (s) -> ""
 
   emit-pl-ctors : List AVariantCtorDef, Integer -> Text
   emit-pl-ctors (ctors) (i) =
@@ -118,7 +119,7 @@ Section: Expression Emission
     is IrCharLit (n) (sp) -> integer-to-text n
     is IrName (n) (ty) (sp) -> emit-pl-name n arities
     is IrBinary (op) (l) (r) (ty) (sp) -> emit-pl-binary op l r arities
-    is IrNegate (operand) (sp) -> "(-" & emit-pl-expr-at operand arities (depth + 1) & ")"
+    is IrNegate (operand) (nty) (sp) -> "(-" & emit-pl-expr-at operand arities (depth + 1) & ")"
     is IrIf (c) (t) (el) (ty) (sp) -> "(" & emit-pl-expr-at c arities (depth + 1) & " ? " & emit-pl-expr-at t arities (depth + 1) & " : " & emit-pl-expr-at el arities (depth + 1) & ")"
     is IrLet (name) (ty) (val) (body) (sp) -> "(sub { my $" & pl-sanitize name & " = " & emit-pl-expr-at val arities (depth + 1) & "; " & emit-pl-expr-at body arities (depth + 1) & " })->()"
     is IrApply (f) (a) (ty) (sp) -> emit-pl-apply e arities
@@ -159,7 +160,7 @@ Section: Expression Emission
     is IrOr -> "(" & emit-pl-expr l arities & " || " & emit-pl-expr r arities & ")"
     is IrPowInt -> "(" & emit-pl-expr l arities & " ** " & emit-pl-expr r arities & ")"
     is IrDivInt -> "int(" & emit-pl-expr l arities & " / " & emit-pl-expr r arities & ")"
-    is IrRemInt -> "(" & emit-pl-expr l arities & " % " & emit-pl-expr r arities & ")"
+    is IrRemInt -> "((sub { my ($_ra, $_rb) = @_; my $_rr = abs($_ra) % abs($_rb); $_ra < 0 ? -$_rr : $_rr })->(" & emit-pl-expr l arities & ", " & emit-pl-expr r arities & "))"
     is IrAddVec -> "[map { " & emit-pl-expr l arities & "->[$_] + " & emit-pl-expr r arities & "->[$_] } 0..$#{" & emit-pl-expr l arities & "}]"
     is IrSubVec -> "[map { " & emit-pl-expr l arities & "->[$_] - " & emit-pl-expr r arities & "->[$_] } 0..$#{" & emit-pl-expr l arities & "}]"
     is IrMulVec -> "[map { " & emit-pl-expr l arities & "->[$_] * " & emit-pl-expr r arities & "->[$_] } 0..$#{" & emit-pl-expr l arities & "}]"
@@ -291,14 +292,14 @@ Section: Apply Emission
    PlBuiltinEmitter { name = "char-at", emit = \args arities -> "ord(substr(" & emit-pl-expr (list-at args 0) arities & ", " & emit-pl-expr (list-at args 1) arities & ", 1))" },
    PlBuiltinEmitter { name = "char-code", emit = \args arities -> emit-pl-expr (list-at args 0) arities },
    PlBuiltinEmitter { name = "char-to-text", emit = \args arities -> "chr(" & emit-pl-expr (list-at args 0) arities & ")" },
-   PlBuiltinEmitter { name = "int-mod", emit = \args arities -> "(" & emit-pl-expr (list-at args 0) arities & " % " & emit-pl-expr (list-at args 1) arities & ")" },
+   PlBuiltinEmitter { name = "int-mod", emit = \args arities -> "(" & emit-pl-expr (list-at args 0) arities & " % abs(" & emit-pl-expr (list-at args 1) arities & "))" },
    PlBuiltinEmitter { name = "integer-to-text", emit = \args arities -> "\"\" . " & emit-pl-expr (list-at args 0) arities },
    PlBuiltinEmitter { name = "list-at", emit = \args arities -> emit-pl-expr (list-at args 0) arities & "->[" & emit-pl-expr (list-at args 1) arities & "]" },
    PlBuiltinEmitter { name = "list-length", emit = \args arities -> "scalar(@{" & emit-pl-expr (list-at args 0) arities & "})" },
    PlBuiltinEmitter { name = "negate", emit = \args arities -> "(-" & emit-pl-expr (list-at args 0) arities & ")" },
    PlBuiltinEmitter { name = "print-line-uni", emit = \args arities -> "say " & emit-pl-expr (list-at args 0) arities },
    PlBuiltinEmitter { name = "process-exit", emit = \args arities -> "exit(" & emit-pl-expr (list-at args 0) arities & ")" },
-   PlBuiltinEmitter { name = "read-file", emit = \args arities -> "(sub { local $/; open my $fh, '<', " & emit-pl-expr (list-at args 0) arities & "; <$fh> })->()" },
+   PlBuiltinEmitter { name = "read-text", emit = \args arities -> "(sub { local $/; open my $fh, '<', " & emit-pl-expr (list-at args 0) arities & "; <$fh> })->()" },
    PlBuiltinEmitter { name = "show", emit = \args arities -> "\"\" . " & emit-pl-expr (list-at args 0) arities },
    PlBuiltinEmitter { name = "substring", emit = \args arities -> "substr(" & emit-pl-expr (list-at args 0) arities & ", " & emit-pl-expr (list-at args 1) arities & ", " & emit-pl-expr (list-at args 2) arities & ")" },
    PlBuiltinEmitter { name = "text-contains", emit = \args arities -> "(index(" & emit-pl-expr (list-at args 0) arities & ", " & emit-pl-expr (list-at args 1) arities & ") >= 0)" },

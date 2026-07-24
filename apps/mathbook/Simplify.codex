@@ -9,59 +9,180 @@ Chapter: Simplify
 
 Section: Constant Folding
 
+ A pattern may not nest a constructor inside a constructor. Writing
+ `is ExAdd (ExInt a) (ExInt b)` is a parse error, and the parenthesised
+ form `is ExAdd (ExInt (a)) (ExInt (b))` is worse: it parses, binds
+ nothing, and surfaces later as an unresolved call to `a`. So each rule
+ set below matches the outer constructor once and hands the operands to
+ a helper that takes them apart in the order the original arms were
+ written. That order is the semantics -- the first matching arm wins --
+ so it is preserved literally rather than tidied.
+
   fold-constants : Expr -> Expr
   fold-constants (e) = when e
-    is ExAdd (ExInt a) (ExInt b) -> ExInt (a + b)
-    is ExSub (ExInt a) (ExInt b) -> ExInt (a - b)
-    is ExMul (ExInt a) (ExInt b) -> ExInt (a * b)
-    is ExDiv (ExInt a) (ExInt b) -> if b == 0 then ExUndefined else ex-ratio a b
-    is ExPow (ExInt a) (ExInt b) -> if b >= 0 then ExInt (ex-int-pow a b) else ex-ratio 1 (ex-int-pow a (negate b))
-    is ExNeg (ExInt n) -> ExInt (negate n)
-    is ExAdd (ExRatio n1 d1) (ExRatio n2 d2) -> ex-ratio (n1 * d2 + n2 * d1) (d1 * d2)
-    is ExMul (ExRatio n1 d1) (ExRatio n2 d2) -> ex-ratio (n1 * n2) (d1 * d2)
-    is ExAdd (ExInt a) (ExRatio n d) -> ex-ratio (a * d + n) d
-    is ExAdd (ExRatio n d) (ExInt b) -> ex-ratio (n + b * d) d
-    is ExMul (ExInt a) (ExRatio n d) -> ex-ratio (a * n) d
-    is ExMul (ExRatio n d) (ExInt b) -> ex-ratio (n * b) d
+    is ExAdd (x) (y) -> fc-add e x y
+    is ExSub (x) (y) -> fc-sub e x y
+    is ExMul (x) (y) -> fc-mul e x y
+    is ExDiv (x) (y) -> fc-div e x y
+    is ExPow (x) (y) -> fc-pow e x y
+    is ExNeg (x) -> fc-neg e x
+    is otherwise -> e
+
+  fc-add : Expr, Expr, Expr -> Expr
+  fc-add (e) (x) (y) = when x
+    is ExInt (a) -> when y
+      is ExInt (b) -> ExInt (a + b)
+      is ExRatio (n) (d) -> ex-ratio (a * d + n) d
+      is otherwise -> e
+    is ExRatio (n1) (d1) -> when y
+      is ExRatio (n2) (d2) -> ex-ratio (n1 * d2 + n2 * d1) (d1 * d2)
+      is ExInt (b) -> ex-ratio (n1 + b * d1) d1
+      is otherwise -> e
+    is otherwise -> e
+
+  fc-sub : Expr, Expr, Expr -> Expr
+  fc-sub (e) (x) (y) = when x
+    is ExInt (a) -> when y
+      is ExInt (b) -> ExInt (a - b)
+      is otherwise -> e
+    is otherwise -> e
+
+  fc-mul : Expr, Expr, Expr -> Expr
+  fc-mul (e) (x) (y) = when x
+    is ExInt (a) -> when y
+      is ExInt (b) -> ExInt (a * b)
+      is ExRatio (n) (d) -> ex-ratio (a * n) d
+      is otherwise -> e
+    is ExRatio (n1) (d1) -> when y
+      is ExRatio (n2) (d2) -> ex-ratio (n1 * n2) (d1 * d2)
+      is ExInt (b) -> ex-ratio (n1 * b) d1
+      is otherwise -> e
+    is otherwise -> e
+
+  fc-div : Expr, Expr, Expr -> Expr
+  fc-div (e) (x) (y) = when x
+    is ExInt (a) -> when y
+      is ExInt (b) -> if b == 0 then ExUndefined else ex-ratio a b
+      is otherwise -> e
+    is otherwise -> e
+
+  fc-pow : Expr, Expr, Expr -> Expr
+  fc-pow (e) (x) (y) = when x
+    is ExInt (a) -> when y
+      is ExInt (b) -> if b >= 0 then ExInt (ex-int-pow a b) else ex-ratio 1 (ex-int-pow a (negate b))
+      is otherwise -> e
+    is otherwise -> e
+
+  fc-neg : Expr, Expr -> Expr
+  fc-neg (e) (x) = when x
+    is ExInt (n) -> ExInt (negate n)
     is otherwise -> e
 
 Section: Identity Rules
 
+ Every identity rule tests an operand against a literal integer, so
+ these read as an ordered if-chain over one predicate. The chain is in
+ the same order the arms were, which matters: ExMul of -1 and 0 must
+ give 0, because the zero rule was written above the negation rule.
+
+  ex-is-int : Expr, Integer -> Boolean
+  ex-is-int (x) (n) = when x
+    is ExInt (v) -> v == n
+    is otherwise -> False
+
   fold-identities : Expr -> Expr
   fold-identities (e) = when e
-    is ExAdd (ExInt 0) (b) -> b
-    is ExAdd (a) (ExInt 0) -> a
-    is ExSub (a) (ExInt 0) -> a
-    is ExMul (ExInt 0) (b) -> ExInt 0
-    is ExMul (a) (ExInt 0) -> ExInt 0
-    is ExMul (ExInt 1) (b) -> b
-    is ExMul (a) (ExInt 1) -> a
-    is ExMul (ExInt (-1)) (b) -> ExNeg b
-    is ExMul (a) (ExInt (-1)) -> ExNeg a
-    is ExDiv (a) (ExInt 1) -> a
-    is ExDiv (ExInt 0) (b) -> ExInt 0
-    is ExPow (a) (ExInt 0) -> ExInt 1
-    is ExPow (a) (ExInt 1) -> a
-    is ExPow (ExInt 0) (b) -> ExInt 0
-    is ExPow (ExInt 1) (b) -> ExInt 1
-    is ExNeg (ExNeg a) -> a
-    is ExNeg (ExInt 0) -> ExInt 0
-    is ExSqrt (ExPow a (ExInt 2)) -> ExAbs a
-    is ExPow (ExSqrt a) (ExInt 2) -> a
+    is ExAdd (x) (y) -> if ex-is-int x 0 then y else if ex-is-int y 0 then x else e
+    is ExSub (x) (y) -> if ex-is-int y 0 then x else e
+    is ExMul (x) (y) -> fi-mul e x y
+    is ExDiv (x) (y) -> if ex-is-int y 1 then x else if ex-is-int x 0 then ExInt 0 else e
+    is ExPow (x) (y) -> fi-pow e x y
+    is ExNeg (x) -> fi-neg e x
+    is ExSqrt (x) -> fi-sqrt e x
+    is otherwise -> e
+
+  fi-mul : Expr, Expr, Expr -> Expr
+  fi-mul (e) (x) (y) =
+    if ex-is-int x 0 then ExInt 0
+    else if ex-is-int y 0 then ExInt 0
+    else if ex-is-int x 1 then y
+    else if ex-is-int y 1 then x
+    else if ex-is-int x (-1) then ExNeg y
+    else if ex-is-int y (-1) then ExNeg x
+    else e
+
+  fi-pow : Expr, Expr, Expr -> Expr
+  fi-pow (e) (x) (y) =
+    if ex-is-int y 0 then ExInt 1
+    else if ex-is-int y 1 then x
+    else if ex-is-int x 0 then ExInt 0
+    else if ex-is-int x 1 then ExInt 1
+    else if ex-is-int y 2 then fi-pow-sqrt e x
+    else e
+
+  fi-pow-sqrt : Expr, Expr -> Expr
+  fi-pow-sqrt (e) (x) = when x
+    is ExSqrt (a) -> a
+    is otherwise -> e
+
+  fi-neg : Expr, Expr -> Expr
+  fi-neg (e) (x) = when x
+    is ExNeg (a) -> a
+    is ExInt (0) -> ExInt 0
+    is otherwise -> e
+
+ sqrt of a perfect square folds to the root. The quadratic solver builds
+ ExSqrt directly rather than through the ex-sqrt smart constructor, so
+ without this rule `solve-quadratic 1 (-5) 6` prints
+ `x = (5 + sqrt(1)) / 2 or x = (5 - sqrt(1)) / 2` instead of
+ `x = 3 or x = 2`.
+
+  fi-sqrt : Expr, Expr -> Expr
+  fi-sqrt (e) (x) = when x
+    is ExPow (b) (p) -> if ex-is-int p 2 then ExAbs b else e
+    is ExInt (n) -> if ex-is-perfect-square n then ExInt (ex-isqrt n) else e
     is otherwise -> e
 
 Section: Algebraic Rules
 
+ One behaviour change, deliberate and called out. The quotient power
+ rule x^n / x^m = x^(n-m) was written as its own arm BELOW the general
+ `ExDiv (a) (b)` equality arm, and that arm matches every ExDiv and
+ answers `e` when the sides differ -- so the power rule could never
+ fire. It is now reached from that arm's else branch, which is plainly
+ what it was written to do. The product rule above it was always
+ reachable and is unchanged.
+
   fold-algebraic : Expr -> Expr
   fold-algebraic (e) = when e
-    is ExSub (a) (b) -> if ex-equal a b then ExInt 0 else e
-    is ExDiv (a) (b) -> if ex-equal a b then ExInt 1 else e
-    is ExAdd (a) (a2) -> if ex-equal a a2 then ExMul (ExInt 2) a else e
-    is ExMul (ExPow base (ExInt n)) (ExPow base2 (ExInt m)) ->
-      if ex-equal base base2 then ExPow base (ExInt (n + m)) else e
-    is ExDiv (ExPow base (ExInt n)) (ExPow base2 (ExInt m)) ->
-      if ex-equal base base2 then ExPow base (ExInt (n - m)) else e
-    is ExPow (ExPow base (ExInt n)) (ExInt m) -> ExPow base (ExInt (n * m))
+    is ExSub (x) (y) -> if ex-equal x y then ExInt 0 else e
+    is ExAdd (x) (y) -> if ex-equal x y then ExMul (ExInt 2) x else e
+    is ExMul (x) (y) -> fa-combine-powers e x y 1
+    is ExDiv (x) (y) -> if ex-equal x y then ExInt 1 else fa-combine-powers e x y (-1)
+    is ExPow (x) (y) -> fa-power-of-power e x y
+    is otherwise -> e
+
+  fa-combine-powers : Expr, Expr, Expr, Integer -> Expr
+  fa-combine-powers (e) (x) (y) (sign) = when x
+    is ExPow (b1) (p1) -> when y
+      is ExPow (b2) (p2) -> fa-combine-exponents e b1 p1 b2 p2 sign
+      is otherwise -> e
+    is otherwise -> e
+
+  fa-combine-exponents : Expr, Expr, Expr, Expr, Expr, Integer -> Expr
+  fa-combine-exponents (e) (b1) (p1) (b2) (p2) (sign) = when p1
+    is ExInt (n) -> when p2
+      is ExInt (m) -> if ex-equal b1 b2 then ExPow b1 (ExInt (n + sign * m)) else e
+      is otherwise -> e
+    is otherwise -> e
+
+  fa-power-of-power : Expr, Expr, Expr -> Expr
+  fa-power-of-power (e) (x) (y) = when x
+    is ExPow (b) (p) -> when p
+      is ExInt (n) -> when y
+        is ExInt (m) -> ExPow b (ExInt (n * m))
+        is otherwise -> e
+      is otherwise -> e
     is otherwise -> e
 
 Section: Function Rules
@@ -69,14 +190,9 @@ Section: Function Rules
   fold-functions : Expr -> Expr
   fold-functions (e) = when e
     is ExFn ("ln") (args) ->
-      if list-length args == 1 then when list-at args 0
-        is ExE -> ExInt 1
-        is ExInt (1) -> ExInt 0
-        is ExPow (ExE) (x) -> x
-        is otherwise -> e
+      if list-length args == 1 then ff-ln e (list-at args 0)
       else e
-    is ExPow (ExE) (ExFn ("ln") (args)) ->
-      if list-length args == 1 then list-at args 0 else e
+    is ExPow (x) (y) -> ff-exp-ln e x y
     is ExFn ("sin") (args) ->
       if list-length args == 1 then when list-at args 0
         is ExInt (0) -> ExInt 0
@@ -96,6 +212,24 @@ Section: Function Rules
         is ExInt (n) -> if n > 1 then ExInt (ex-factorial n) else e
         is otherwise -> e
       else e
+    is otherwise -> e
+
+  ff-ln : Expr, Expr -> Expr
+  ff-ln (e) (arg) = when arg
+    is ExE -> ExInt 1
+    is ExInt (1) -> ExInt 0
+    is ExPow (b) (x) -> when b
+      is ExE -> x
+      is otherwise -> e
+    is otherwise -> e
+
+  ff-exp-ln : Expr, Expr, Expr -> Expr
+  ff-exp-ln (e) (x) (y) = when x
+    is ExE -> when y
+      is ExFn (name) (args) ->
+        if name == "ln" then (if list-length args == 1 then list-at args 0 else e)
+        else e
+      is otherwise -> e
     is otherwise -> e
 
   ex-factorial : Integer -> Integer
@@ -134,11 +268,18 @@ Section: Main Simplify Loop
     in let e4 = fold-algebraic e3
     in fold-functions e4
 
+ The rewrite loop is fuel-capped. It used to recurse until a step
+ compared equal to its input, with nothing bounding it, so a rule that
+ failed to converge -- or an ex-equal that could not recognise its own
+ output, which is exactly what happened with ExFn -- ran forever on a
+ machine with no GC and no scheduler to interrupt it. The cap is far
+ above what any convergent expression needs, so it changes no answer
+ that was previously returned; it only bounds one that was not.
+
+  simplify-fuel : Integer = 1000
+
   simplify : Expr -> Expr
-  simplify (e) =
-    let result = simplify-step e
-    in if ex-equal result e then result
-    else simplify result
+  simplify (e) = simplify-n e simplify-fuel
 
   simplify-n : Expr, Integer -> Expr
   simplify-n (e) (max-steps) =

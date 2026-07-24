@@ -14,28 +14,43 @@ Chapter: Constraint
 
 Section: Types
 
-  Vec2 = record {
+ Named for this chapter, because `Math chapter Geometry` defines a
+ `Vec2` too and the two are not the same vector. Geometry's carries
+ `Real` components in fields `v2x`/`v2y`; this one carries fixed-point
+ `Integer` at scale 1000 in `vx`/`vy`, which is the arithmetic the whole
+ sim quire works in. Sharing the name meant two records and five
+ same-named operations differing in both representation and units, and
+ a unit reaching both got whichever the glob order found first --
+ except that a colliding TYPE is worse than a colliding definition: it
+ is a hard CDX3001 rather than a silent pick.
+
+ The `Con` prefix follows the quire, which already names types for
+ their chapter: `PhysBody`, `SteerAgent`, `KinChain`, `ShInsertResult`.
+ Fixed-point is not the discriminator here because Collision and
+ Kinematics are scale-1000 as well.
+
+  ConVec2 = record {
     vx : Integer,
     vy : Integer
   }
 
-  vec2 : Integer, Integer -> Vec2
-  vec2 (x) (y) = Vec2 { vx = x, vy = y }
+  con-vec2 : Integer, Integer -> ConVec2
+  con-vec2 (x) (y) = ConVec2 { vx = x, vy = y }
 
-  vec2-add : Vec2, Vec2 -> Vec2
-  vec2-add (a) (b) = Vec2 { vx = a.vx + b.vx, vy = a.vy + b.vy }
+  con-vec2-add : ConVec2, ConVec2 -> ConVec2
+  con-vec2-add (a) (b) = ConVec2 { vx = a.vx + b.vx, vy = a.vy + b.vy }
 
-  vec2-sub : Vec2, Vec2 -> Vec2
-  vec2-sub (a) (b) = Vec2 { vx = a.vx - b.vx, vy = a.vy - b.vy }
+  con-vec2-sub : ConVec2, ConVec2 -> ConVec2
+  con-vec2-sub (a) (b) = ConVec2 { vx = a.vx - b.vx, vy = a.vy - b.vy }
 
-  vec2-scale : Vec2, Integer -> Vec2
-  vec2-scale (v) (s) = Vec2 { vx = v.vx * s / 1000, vy = v.vy * s / 1000 }
+  con-vec2-scale : ConVec2, Integer -> ConVec2
+  con-vec2-scale (v) (s) = ConVec2 { vx = v.vx * s / 1000, vy = v.vy * s / 1000 }
 
-  vec2-length-sq : Vec2 -> Integer
-  vec2-length-sq (v) = v.vx * v.vx / 1000 + v.vy * v.vy / 1000
+  con-vec2-length-sq : ConVec2 -> Integer
+  con-vec2-length-sq (v) = v.vx * v.vx / 1000 + v.vy * v.vy / 1000
 
-  vec2-length : Vec2 -> Integer
-  vec2-length (v) = isqrt (vec2-length-sq v * 1000)
+  con-vec2-length : ConVec2 -> Integer
+  con-vec2-length (v) = isqrt (con-vec2-length-sq v * 1000)
 
   isqrt : Integer -> Integer
   isqrt (n) =
@@ -53,7 +68,7 @@ Section: Constraints
   ConstraintKind =
     | CkDistance (Integer)
     | CkSpring (Integer) (Integer)
-    | CkPin (Vec2)
+    | CkPin (ConVec2)
 
   Constraint = record {
     c-kind : ConstraintKind,
@@ -78,7 +93,7 @@ Section: Constraints
     c-stiffness = stiffness
   }
 
-  constraint-pin : Integer, Vec2 -> Constraint
+  constraint-pin : Integer, ConVec2 -> Constraint
   constraint-pin (idx) (pos) = Constraint {
     c-kind = CkPin pos,
     c-idx-a = idx,
@@ -88,56 +103,56 @@ Section: Constraints
 
 Section: Solver
 
-  constraint-solve : List Vec2, List Constraint -> List Vec2
+  constraint-solve : List ConVec2, List Constraint -> List ConVec2
   constraint-solve (points) (constraints) =
     cs-solve-loop points constraints 0 (list-length constraints)
 
-  cs-solve-loop : List Vec2, List Constraint, Integer, Integer -> List Vec2
+  cs-solve-loop : List ConVec2, List Constraint, Integer, Integer -> List ConVec2
   cs-solve-loop (pts) (cs) (i) (len) =
     if i >= len then pts
     else let c = list-at cs i
     in cs-solve-loop (cs-apply-one pts c) cs (i + 1) len
 
-  cs-apply-one : List Vec2, Constraint -> List Vec2
+  cs-apply-one : List ConVec2, Constraint -> List ConVec2
   cs-apply-one (pts) (c) = when c.c-kind
     is CkDistance (rest) -> cs-apply-distance pts c rest
     is CkSpring (rest) (k) -> cs-apply-spring pts c rest k
     is CkPin (target) -> list-set-at pts (c.c-idx-a) target
 
-  cs-apply-distance : List Vec2, Constraint, Integer -> List Vec2
+  cs-apply-distance : List ConVec2, Constraint, Integer -> List ConVec2
   cs-apply-distance (pts) (c) (rest) =
     let a = list-at pts (c.c-idx-a)
     in let b = list-at pts (c.c-idx-b)
-    in let delta = vec2-sub b a
-    in let dist = vec2-length delta
+    in let delta = con-vec2-sub b a
+    in let dist = con-vec2-length delta
     in if dist == 0 then pts
     else let diff = (dist - rest) * 1000 / dist
-    in let correction = vec2-scale delta (diff / 2)
-    in let a2 = vec2-add a correction
-    in let b2 = vec2-sub b correction
+    in let correction = con-vec2-scale delta (diff / 2)
+    in let a2 = con-vec2-add a correction
+    in let b2 = con-vec2-sub b correction
     in list-set-at (list-set-at pts (c.c-idx-a) a2) (c.c-idx-b) b2
 
-  cs-apply-spring : List Vec2, Constraint, Integer, Integer -> List Vec2
+  cs-apply-spring : List ConVec2, Constraint, Integer, Integer -> List ConVec2
   cs-apply-spring (pts) (c) (rest) (k) =
     let a = list-at pts (c.c-idx-a)
     in let b = list-at pts (c.c-idx-b)
-    in let delta = vec2-sub b a
-    in let dist = vec2-length delta
+    in let delta = con-vec2-sub b a
+    in let dist = con-vec2-length delta
     in if dist == 0 then pts
     else let displacement = dist - rest
     in let force = k * displacement / 1000
-    in let correction = vec2-scale delta (force * 500 / dist)
-    in let a2 = vec2-add a correction
-    in let b2 = vec2-sub b correction
+    in let correction = con-vec2-scale delta (force * 500 / dist)
+    in let a2 = con-vec2-add a correction
+    in let b2 = con-vec2-sub b correction
     in list-set-at (list-set-at pts (c.c-idx-a) a2) (c.c-idx-b) b2
 
 Section: Multi-Iteration
 
-  constraint-solve-n : List Vec2, List Constraint, Integer -> List Vec2
+  constraint-solve-n : List ConVec2, List Constraint, Integer -> List ConVec2
   constraint-solve-n (points) (constraints) (iterations) =
     cs-solve-n-loop points constraints iterations 0
 
-  cs-solve-n-loop : List Vec2, List Constraint, Integer, Integer -> List Vec2
+  cs-solve-n-loop : List ConVec2, List Constraint, Integer, Integer -> List ConVec2
   cs-solve-n-loop (pts) (cs) (n) (i) =
     if i >= n then pts
     else cs-solve-n-loop (constraint-solve pts cs) cs n (i + 1)

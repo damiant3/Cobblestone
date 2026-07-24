@@ -284,25 +284,32 @@ Section: Compound Expression Parsing
    in if is-comma (current-kind st2) then parse-record-expr-fields type-name (__linked-list-push acc field) (skip-newlines (advance st2))
       else parse-record-expr-fields type-name (__linked-list-push acc field) st2
 
+ The literal's span is the opening bracket's, taken before it is consumed
+ and threaded through both loops. Without it the desugarer had nothing to
+ give AListExpr but synthetic-span, so a diagnostic about the literal
+ AS A WHOLE -- CDX9004, a literal past max-list-literal-elems -- had to
+ borrow the first element's span and point at the wrong thing.
+
   parse-list-expr : ParseState -> ParseExprResult
   parse-list-expr (st) =
-   let st2 = advance st
+   let sp = token-to-span (current st)
+   in let st2 = advance st
    in let st3 = skip-newlines st2
-   in parse-list-elements [] st3
+   in parse-list-elements [] sp st3
 
-  parse-list-elements : LinkedList Expr, ParseState -> ParseExprResult
-  parse-list-elements (acc) (st) =
-   if is-right-bracket (current-kind st) then ExprOk (deck-record (ListExpr (deck-record (__linked-list-to-list acc)))) (advance st)
-   else if is-done st then ExprOk (deck-record (ListExpr (deck-record (__linked-list-to-list acc)))) (__record-set st "bag" (bag-add (st.bag) (make-error cdx-list-no-close "Unclosed list literal: expected ']' before end of input" (token-to-span (current st)))))
+  parse-list-elements : LinkedList Expr, SourceSpan, ParseState -> ParseExprResult
+  parse-list-elements (acc) (sp) (st) =
+   if is-right-bracket (current-kind st) then ExprOk (deck-record (ListExpr (deck-record (__linked-list-to-list acc)) sp)) (advance st)
+   else if is-done st then ExprOk (deck-record (ListExpr (deck-record (__linked-list-to-list acc)) sp)) (__record-set st "bag" (bag-add (st.bag) (make-error cdx-list-no-close "Unclosed list literal: expected ']' before end of input" (token-to-span (current st)))))
    else let elem = parse-expr st
-   in unwrap-expr-ok elem (finish-list-element acc)
+   in unwrap-expr-ok elem (finish-list-element acc sp)
 
-  finish-list-element : LinkedList Expr, Expr, ParseState -> ParseExprResult
-  finish-list-element (acc) (e) (st) =
+  finish-list-element : LinkedList Expr, SourceSpan, Expr, ParseState -> ParseExprResult
+  finish-list-element (acc) (sp) (e) (st) =
    let st2 = skip-newlines st
-   in if is-comma (current-kind st2) then parse-list-elements (__linked-list-push acc e) (skip-newlines (advance st2))
-      else if is-right-bracket (current-kind st2) then parse-list-elements (__linked-list-push acc e) st2
-      else ExprOk (deck-record (ListExpr (deck-record (__linked-list-to-list (__linked-list-push acc e))))) (__record-set st2 "bag" (bag-add (st2.bag) (make-error cdx-list-no-close "Unclosed list literal: expected ',' or ']'" (token-to-span (current st2)))))
+   in if is-comma (current-kind st2) then parse-list-elements (__linked-list-push acc e) sp (skip-newlines (advance st2))
+      else if is-right-bracket (current-kind st2) then parse-list-elements (__linked-list-push acc e) sp st2
+      else ExprOk (deck-record (ListExpr (deck-record (__linked-list-to-list (__linked-list-push acc e))) sp)) (__record-set st2 "bag" (bag-add (st2.bag) (make-error cdx-list-no-close "Unclosed list literal: expected ',' or ']'" (token-to-span (current st2)))))
 
   parse-if-expr : ParseState -> ParseExprResult
   parse-if-expr (st) =
@@ -472,7 +479,7 @@ Section: Compound Expression Parsing
  before it, or at the column the arms are aligned on. `ln` therefore
  means THE LINE OF THE ARM WE ARE CONTINUING FROM, and every accepted arm
  becomes the new `ln` -- which is why `tok.line` is passed on below and
- not the `ln` we were called with (BACKLOG 2.25).
+ not the `ln` we were called with.
 
  It used to pass `ln` straight through, so `ln` stayed pinned to the line
  the match STARTED on and `tok.line == ln` could never hold again once
@@ -880,8 +887,8 @@ Section: Compound Expression Parsing
  the caller believed a statement had been parsed, looped, met the same
  dot, and called back here forever. Every turn allocated an ErrExpr and a
  statement node, so the heap climbed while the stack sank, and the compile
- double-faulted with no diagnostic rather than reporting anything
- (BACKLOG 2.26). Any arm that reports ExprOk without moving the position
+ double-faulted with no diagnostic rather than reporting anything.
+ Any arm that reports ExprOk without moving the position
  is that bug again — a parser must consume a token or say why.
 
  The trigger is ordinary prose. An unterminated act block makes the

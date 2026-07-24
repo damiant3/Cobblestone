@@ -116,10 +116,27 @@ Section: Smart Constructors
     is ExNeg (inner) -> inner
     is otherwise -> ExNeg e
 
+ Newton, not a scan: the guess halves the error each step, so this is
+ logarithmic in n rather than linear. A discriminant can be large and a
+ simplifier has no business walking to it one integer at a time.
+
+  ex-isqrt : Integer -> Integer
+  ex-isqrt (n) = if n < 2 then n else ex-isqrt-loop n (n / 2)
+
+  ex-isqrt-loop : Integer, Integer -> Integer
+  ex-isqrt-loop (n) (g) =
+    let g2 = (g + n / g) / 2
+    in if g2 >= g then g else ex-isqrt-loop n g2
+
+  ex-is-perfect-square : Integer -> Boolean
+  ex-is-perfect-square (n) =
+    if n < 0 then False
+    else let r = ex-isqrt n
+    in r * r == n
+
   ex-sqrt : Expr -> Expr
   ex-sqrt (e) = when e
-    is ExInt (0) -> ExInt 0
-    is ExInt (1) -> ExInt 1
+    is ExInt (n) -> if ex-is-perfect-square n then ExInt (ex-isqrt n) else ExSqrt e
     is otherwise -> ExSqrt e
 
   ex-fn : Text, List Expr -> Expr
@@ -338,7 +355,7 @@ Section: Structural Equality
   ex-equal (a) (b) = when a
     is ExInt (n) -> when b is ExInt (m) -> n == m is otherwise -> False
     is ExVar (na) -> when b is ExVar (nb) -> na == nb is otherwise -> False
-    is ExRatio (n1) (d1) -> when b is ExRatio (n2) (d2) -> n1 == n2 then d1 == d2 else False is otherwise -> False
+    is ExRatio (n1) (d1) -> when b is ExRatio (n2) (d2) -> if n1 == n2 then d1 == d2 else False is otherwise -> False
     is ExAdd (a1) (a2) -> when b is ExAdd (b1) (b2) -> if ex-equal a1 b1 then ex-equal a2 b2 else False is otherwise -> False
     is ExSub (a1) (a2) -> when b is ExSub (b1) (b2) -> if ex-equal a1 b1 then ex-equal a2 b2 else False is otherwise -> False
     is ExMul (a1) (a2) -> when b is ExMul (b1) (b2) -> if ex-equal a1 b1 then ex-equal a2 b2 else False is otherwise -> False
@@ -349,7 +366,32 @@ Section: Structural Equality
     is ExE -> when b is ExE -> True is otherwise -> False
     is ExInfinity -> when b is ExInfinity -> True is otherwise -> False
     is ExUndefined -> when b is ExUndefined -> True is otherwise -> False
+    is ExAbs (a1) -> when b is ExAbs (b1) -> ex-equal a1 b1 is otherwise -> False
+    is ExSqrt (a1) -> when b is ExSqrt (b1) -> ex-equal a1 b1 is otherwise -> False
+    is ExFn (na) (aa) -> ex-equal-fn b na aa
     is otherwise -> False
+
+ ExFn had no arm here, so two function applications always compared
+ unequal -- and `simplify` below recurses until a step compares equal to
+ its input, with no fuel. Any expression containing a function therefore
+ never reached a fixed point and never returned. The chapter had never
+ compiled, so this had never run.
+
+  ex-equal-fn : Expr, Text, List Expr -> Boolean
+  ex-equal-fn (b) (na) (aa) = when b
+    is ExFn (nb) (ab) ->
+      if na == nb then
+        (if list-length aa == list-length ab
+         then ex-equal-list aa ab 0 (list-length aa)
+         else False)
+      else False
+    is otherwise -> False
+
+  ex-equal-list : List Expr, List Expr, Integer, Integer -> Boolean
+  ex-equal-list (xs) (ys) (i) (n) =
+    if i >= n then True
+    else if ex-equal (list-at xs i) (list-at ys i) then ex-equal-list xs ys (i + 1) n
+    else False
 
 Section: Tree Size
 

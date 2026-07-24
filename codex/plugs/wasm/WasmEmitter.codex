@@ -115,7 +115,7 @@ Section: String Table
     is IrCharLit (n) (sp) -> acc
     is IrName (n) (ty) (sp) -> acc
     is IrBinary (op) (l) (r) (ty) (sp) -> collect-strings-expr r (collect-strings-expr l acc)
-    is IrNegate (operand) (sp) -> collect-strings-expr operand acc
+    is IrNegate (operand) (nty) (sp) -> collect-strings-expr operand acc
     is IrIf (c) (t) (el) (ty) (sp) -> collect-strings-expr el (collect-strings-expr t (collect-strings-expr c acc))
     is IrLet (name) (ty) (val) (body) (sp) -> collect-strings-expr body (collect-strings-expr val acc)
     is IrApply (f) (a) (ty) (sp) -> collect-strings-expr a (collect-strings-expr f acc)
@@ -235,7 +235,7 @@ Section: Type Lookups
   resolve-record-fields (tds) (name) (i) =
    if i >= list-length tds then []
    else when list-at tds i
-    is ARecordTypeDef (n) (tp) (fds) (sp) ->
+    is ARecordTypeDef (n) (tp) (fds) (recmut) (sp) ->
      if n.value == name then afields-to-rfields fds 0 []
      else resolve-record-fields tds name (i + 1)
     is otherwise -> resolve-record-fields tds name (i + 1)
@@ -251,6 +251,7 @@ Section: Type Lookups
    when ty
     is RecordTy (name) (args) (fields) -> find-record-field-index fields field-name 0
     is ConstructedTy (name) (args) -> find-record-field-index (resolve-record-fields (ctx.type-defs) (name.value) 0) field-name 0
+    is TypeCon (name) -> find-record-field-index (resolve-record-fields (ctx.type-defs) (name.value) 0) field-name 0
     is otherwise -> 0
 
   field-count-from-type : CodexType, Text -> Integer
@@ -263,8 +264,9 @@ Section: Type Lookups
   find-typedef-by-name (tds) (name) (i) =
    if i >= list-length tds then -1
    else when list-at tds i
-    is ARecordTypeDef (n) (tp) (fs) (sp) -> if n.value == name then i else find-typedef-by-name tds name (i + 1)
+    is ARecordTypeDef (n) (tp) (fs) (recmut) (sp) -> if n.value == name then i else find-typedef-by-name tds name (i + 1)
     is AVariantTypeDef (n) (tp) (cs) (sp) -> if n.value == name then i else find-typedef-by-name tds name (i + 1)
+    is AUnitTypeDef (n) (unitbase) (sp) -> if n.value == name then i else find-typedef-by-name tds name (i + 1)
 
   find-ctor-tag : List AVariantCtorDef, Text, Integer -> Integer
   find-ctor-tag (ctors) (name) (i) =
@@ -325,7 +327,7 @@ Section: Local Collection
     is IrCharLit (n) (sp) -> acc
     is IrName (n) (ty) (sp) -> acc
     is IrBinary (op) (l) (r) (ty) (sp) -> collect-locals-expr r (collect-locals-expr l acc)
-    is IrNegate (operand) (sp) -> collect-locals-expr operand acc
+    is IrNegate (operand) (nty) (sp) -> collect-locals-expr operand acc
     is IrIf (c) (t) (el) (ty) (sp) -> collect-locals-expr el (collect-locals-expr t (collect-locals-expr c acc))
     is IrLet (name) (ty) (val) (body) (sp) -> collect-locals-expr body (collect-locals-expr val (locals-add acc (wat-sanitize name)))
     is IrApply (f) (a) (ty) (sp) -> collect-locals-expr a (collect-locals-expr f (locals-add (locals-add acc "_rp") "_tv"))
@@ -419,10 +421,11 @@ Section: Type Definition Emission
   emit-wat-type-def : ATypeDef -> Text
   emit-wat-type-def (td) =
    when td
-    is ARecordTypeDef (name) (tparams) (fields) (s) ->
+    is ARecordTypeDef (name) (tparams) (fields) (recmut) (s) ->
      "  ;; record " & name.value & ": " & integer-to-text (list-length fields) & " fields at 8 bytes each\n"
     is AVariantTypeDef (name) (tparams) (ctors) (s) ->
      "  ;; variant " & name.value & ": tag i64 + max " & integer-to-text (wat-variant-max-fields ctors 0 0) & " fields\n"
+    is AUnitTypeDef (name) (unitbase) (s) -> ""
 
   wat-variant-max-fields : List AVariantCtorDef, Integer, Integer -> Integer
   wat-variant-max-fields (ctors) (i) (mx) =
@@ -446,7 +449,7 @@ Section: Expression Emission
     is IrCharLit (n) (sp) -> "(i64.const " & integer-to-text n & ")"
     is IrName (n) (ty) (sp) -> emit-wat-name ctx n
     is IrBinary (op) (l) (r) (ty) (sp) -> emit-wat-binary ctx op l r depth
-    is IrNegate (operand) (sp) -> "(i64.sub (i64.const 0) " & emit-wat-expr-at ctx operand (depth + 1) & ")"
+    is IrNegate (operand) (nty) (sp) -> "(i64.sub (i64.const 0) " & emit-wat-expr-at ctx operand (depth + 1) & ")"
     is IrIf (c) (t) (el) (ty) (sp) -> "(if (result i64) (i32.wrap_i64 " & emit-wat-expr-at ctx c (depth + 1) & ") (then " & emit-wat-expr-at ctx t (depth + 1) & ") (else " & emit-wat-expr-at ctx el (depth + 1) & "))"
     is IrLet (name) (ty) (val) (body) (sp) -> "(local.set $" & wat-sanitize name & " " & emit-wat-expr-at ctx val (depth + 1) & ") " & emit-wat-expr-at ctx body (depth + 1)
     is IrApply (f) (a) (ty) (sp) -> emit-wat-apply ctx e
@@ -484,7 +487,7 @@ Section: Expression Emission
   find-field-in-typedefs (tds) (field-name) (i) =
    if i >= list-length tds then 0
    else when list-at tds i
-    is ARecordTypeDef (n) (tp) (fds) (sp) ->
+    is ARecordTypeDef (n) (tp) (fds) (recmut) (sp) ->
      let idx = find-afield-index fds field-name 0
      in if idx >= 0 then idx else find-field-in-typedefs tds field-name (i + 1)
     is otherwise -> find-field-in-typedefs tds field-name (i + 1)
@@ -736,7 +739,7 @@ Section: Apply Emission
    else if n == "char-code" then emit-wat-expr ctx (list-at args 0)
    else if n == "code-to-char" then emit-wat-expr ctx (list-at args 0)
    else if n == "negate" then "(i64.sub (i64.const 0) " & emit-wat-expr ctx (list-at args 0) & ")"
-   else if n == "int-mod" then "(i64.rem_s " & emit-wat-expr ctx (list-at args 0) & " " & emit-wat-expr ctx (list-at args 1) & ")"
+   else if n == "int-mod" then "(call $codex_mod " & emit-wat-expr ctx (list-at args 0) & " " & emit-wat-expr ctx (list-at args 1) & ")"
    else if n == "bit-and" then "(i64.and " & emit-wat-expr ctx (list-at args 0) & " " & emit-wat-expr ctx (list-at args 1) & ")"
    else if n == "bit-or" then "(i64.or " & emit-wat-expr ctx (list-at args 0) & " " & emit-wat-expr ctx (list-at args 1) & ")"
    else if n == "bit-xor" then "(i64.xor " & emit-wat-expr ctx (list-at args 0) & " " & emit-wat-expr ctx (list-at args 1) & ")"
@@ -871,7 +874,11 @@ Section: WASI Runtime Helpers
    "  (global $heap_ptr (mut i32) (i32.const " & integer-to-text heap-start & "))\n" &
    "  (global $heap_start i32 (i32.const " & integer-to-text heap-start & "))\n" &
    "  (func $__heap_reset (global.set $heap_ptr (global.get $heap_start)))\n" &
-   "  (export \"__heap_reset\" (func $__heap_reset))\n\n"
+   "  (export \"__heap_reset\" (func $__heap_reset))\n" &
+   "  (func $codex_mod (param $a i64) (param $b i64) (result i64) (local $m i64) (local $r i64)\n" &
+   "    (local.set $m (select (i64.sub (i64.const 0) (local.get $b)) (local.get $b) (i64.lt_s (local.get $b) (i64.const 0))))\n" &
+   "    (local.set $r (i64.rem_s (local.get $a) (local.get $m)))\n" &
+   "    (select (i64.add (local.get $r) (local.get $m)) (local.get $r) (i64.lt_s (local.get $r) (i64.const 0))))\n\n"
 
   wat-rt-bump-alloc : Text =
    "  (func $bump_alloc (param $size i32) (result i32)\n" &
@@ -1123,6 +1130,8 @@ Section: Chapter Emission
      in let print-fn = if wat-is-text-type ret-type then "$wasi_print_text" else "$wasi_print_i64"
      in let is-void = when ret-type
           is NothingTy -> True
+          is ProofTy -> True
+          is PropEqTy (pl) (pr) -> True
           is VoidTy -> True
           is UnitTy (n) (inner) -> True
           is EffectfulTy (effs) (scopes) (r) -> when r is NothingTy -> True is VoidTy -> True is UnitTy (n2) (inner2) -> True is otherwise -> False

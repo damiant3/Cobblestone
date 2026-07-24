@@ -91,6 +91,26 @@ Section: Transform
     if i < 0 then acc
     else str-rev-loop s (i - 1) (acc & char-to-text (char-at s i))
 
+ The case pair delegates to CCE rather than deriving the rule again,
+ and that is the whole point of it. TextSearch defined this pair too,
+ and its versions were written as ASCII: `to-upper` tested
+ `cd >= 97 & cd <= 122` and subtracted 32. CCE is not ASCII --
+ lowercase is 13..38, uppercase is 39..64, and the offset is 26 -- so
+ the test never matched a letter and both functions returned every
+ letter unchanged. What 97..122 actually holds is the accented and
+ Cyrillic band, which the subtraction mapped into punctuation, so the
+ one input they did affect they corrupted.
+
+ Nothing caught it because a no-op looks like working code from every
+ angle except an assertion on the result: it does not crash, the type
+ is right, and the text comes back. These definitions were always
+ correct, so the same call gave two answers depending on which chapter
+ the caller cited. That is the duplicate-name hazard as a live defect
+ rather than a warning, and it is why the rule is that CCE conversion
+ happens at the I/O boundary and nowhere else. The duplicate is gone
+ now and this chapter owns the pair; the account is kept here because
+ the surviving implementation is the one it is about.
+
   text-to-upper : Text -> Text
   text-to-upper (s) = str-case-loop s to-upper 0 (text-length s) ""
 
@@ -103,25 +123,31 @@ Section: Transform
     else str-case-loop s f (i + 1) len (acc & char-to-text (f (char-at s i)))
 
 Section: Padding
+
+ These pad until the width is reached. They used to repeat the fill
+ once per missing CHARACTER, which is the same thing only when the fill
+ is one character long and wildly different otherwise: padding "a" to 5
+ with "xy" returned "xyxyxyxya", nine characters, because the deficit
+ was four and the fill was appended four times. The prose two dozen
+ lines above has always said "padded to the given width", so the body
+ disagreed with its own chapter.
+
+ It was never wrong in the tree -- every call site passes a
+ single-character fill -- and it was invisible for the same reason. It
+ surfaced only when this pair was run against the TextSearch pair it
+ collided with, which had the pad-to-width behaviour, on a fill longer
+ than one character. Same name, same signature, two different
+ functions.
+
   text-pad-left : Text, Integer, Text -> Text
   text-pad-left (s) (width) (fill) =
-    let deficit = width - text-length s
-    in if deficit <= 0 then s
-    else str-repeat fill deficit & s
+    if text-length s >= width then s
+    else text-pad-left (fill & s) width fill
 
   text-pad-right : Text, Integer, Text -> Text
   text-pad-right (s) (width) (fill) =
-    let deficit = width - text-length s
-    in if deficit <= 0 then s
-    else s & str-repeat fill deficit
-
-  str-repeat : Text, Integer -> Text
-  str-repeat (s) (n) = str-repeat-loop s n ""
-
-  str-repeat-loop : Text, Integer, Text -> Text
-  str-repeat-loop (s) (n) (acc) =
-    if n <= 0 then acc
-    else str-repeat-loop s (n - 1) (acc & s)
+    if text-length s >= width then s
+    else text-pad-right (s & fill) width fill
 
 Section: Substring
   text-substring : Text, Integer, Integer -> Text

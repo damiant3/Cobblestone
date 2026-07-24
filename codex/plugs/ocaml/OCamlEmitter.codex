@@ -97,10 +97,11 @@ Section: Type Definition Emission
   emit-ml-type-def : ATypeDef -> Text
   emit-ml-type-def (td) =
    when td
-    is ARecordTypeDef (name) (tparams) (fields) (s) ->
+    is ARecordTypeDef (name) (tparams) (fields) (recmut) (s) ->
      emit-ml-record-type (name.value) fields
     is AVariantTypeDef (name) (tparams) (ctors) (s) ->
      emit-ml-sum-type (name.value) ctors
+    is AUnitTypeDef (name) (unitbase) (s) -> ""
 
   emit-ml-sum-type : Text, List AVariantCtorDef -> Text
   emit-ml-sum-type (name) (ctors) =
@@ -153,7 +154,7 @@ Section: Expression Emission
     is IrCharLit (n) (sp) -> integer-to-text n
     is IrName (n) (ty) (sp) -> emit-ml-name n ty arities
     is IrBinary (op) (l) (r) (ty) (sp) -> emit-ml-binary op l r arities
-    is IrNegate (operand) (sp) -> "(- " & emit-ml-expr-at operand arities (depth + 1) & ")"
+    is IrNegate (operand) (nty) (sp) -> "(- " & emit-ml-expr-at operand arities (depth + 1) & ")"
     is IrIf (c) (t) (el) (ty) (sp) -> "(if " & emit-ml-expr-at c arities (depth + 1) & " then " & emit-ml-expr-at t arities (depth + 1) & " else " & emit-ml-expr-at el arities (depth + 1) & ")"
     is IrLet (name) (ty) (val) (body) (sp) -> "(let " & ml-sanitize name & " = " & emit-ml-expr-at val arities (depth + 1) & " in " & emit-ml-expr-at body arities (depth + 1) & ")"
     is IrApply (f) (a) (ty) (sp) -> emit-ml-apply e arities
@@ -308,7 +309,7 @@ Section: Builtin Emitter
     OcBuiltinEmitter { name = "char-at", emit = \args arities -> "(String.make 1 (String.get " & emit-ml-expr (list-at args 0) arities & " " & emit-ml-expr (list-at args 1) arities & "))" },
     OcBuiltinEmitter { name = "char-code-at", emit = \args arities -> "(Char.code (String.get " & emit-ml-expr (list-at args 0) arities & " " & emit-ml-expr (list-at args 1) arities & "))" },
     OcBuiltinEmitter { name = "file-exists", emit = \args arities -> "(Sys.file_exists " & emit-ml-expr (list-at args 0) arities & ")" },
-    OcBuiltinEmitter { name = "int-mod", emit = \args arities -> "(" & emit-ml-expr (list-at args 0) arities & " mod " & emit-ml-expr (list-at args 1) arities & ")" },
+    OcBuiltinEmitter { name = "int-mod", emit = \args arities -> "((fun _a _b -> let _m = abs _b in let _r = _a mod _m in if _r < 0 then _r + _m else _r) (" & emit-ml-expr (list-at args 0) arities & ") (" & emit-ml-expr (list-at args 1) arities & "))" },
     OcBuiltinEmitter { name = "integer-to-text", emit = \args arities -> "(string_of_int " & emit-ml-expr (list-at args 0) arities & ")" },
     OcBuiltinEmitter { name = "list-at", emit = \args arities -> "(List.nth " & emit-ml-expr (list-at args 0) arities & " " & emit-ml-expr (list-at args 1) arities & ")" },
     OcBuiltinEmitter { name = "list-length", emit = \args arities -> "(List.length " & emit-ml-expr (list-at args 0) arities & ")" },
@@ -318,7 +319,7 @@ Section: Builtin Emitter
     OcBuiltinEmitter { name = "negate", emit = \args arities -> "(- " & emit-ml-expr (list-at args 0) arities & ")" },
     OcBuiltinEmitter { name = "print-error-uni", emit = \args arities -> "(Printf.eprintf \"%s\\n\" " & emit-ml-expr (list-at args 0) arities & ")" },
     OcBuiltinEmitter { name = "print-line-uni", emit = \args arities -> "(Printf.printf \"%s\\n\" " & emit-ml-expr (list-at args 0) arities & ")" },
-    OcBuiltinEmitter { name = "read-file", emit = \args arities -> "(let _ic = open_in " & emit-ml-expr (list-at args 0) arities & " in let _n = in_channel_length _ic in let _s = really_input_string _ic _n in close_in _ic; _s)" },
+    OcBuiltinEmitter { name = "read-text", emit = \args arities -> "(let _ic = open_in " & emit-ml-expr (list-at args 0) arities & " in let _n = in_channel_length _ic in let _s = really_input_string _ic _n in close_in _ic; _s)" },
     OcBuiltinEmitter { name = "read-line", emit = \args arities -> "(read_line ())" },
     OcBuiltinEmitter { name = "show", emit = \args arities -> "(string_of_int " & emit-ml-expr (list-at args 0) arities & ")" },
     OcBuiltinEmitter { name = "substring", emit = \args arities -> "(String.sub " & emit-ml-expr (list-at args 0) arities & " " & emit-ml-expr (list-at args 1) arities & " " & emit-ml-expr (list-at args 2) arities & ")" },

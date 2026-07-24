@@ -21,9 +21,9 @@ Section: Types
   TextEncoderConfig = record {
     te-vocab-size : Integer,
     te-max-seq-len : Integer,
-    te-d-model : Integer,
-    te-num-heads : Integer,
-    te-d-ff : Integer,
+    te-d-model : Integer between 1 and 65536,
+    te-num-heads : Integer between 1 and 128,
+    te-d-ff : Integer between 1 and 65536,
     te-num-layers : Integer
   }
 
@@ -63,7 +63,7 @@ Section: Special Tokens
   clip-pad-token : Integer = 49407
 
 Section: Tokenization
-  te-tokenize : Text, BpeTokenizer, Integer -> List Integer
+  te-tokenize : Text, BpeVocab, Integer -> List Integer
   te-tokenize (text) (tokenizer) (max-len) =
     let tokens = bpe-tokenize tokenizer text
     in let with-bos = [clip-bos-token] & tokens
@@ -127,7 +127,7 @@ Section: Forward Pass
         tf-d-model = cfg.te-d-model,
         tf-num-heads = cfg.te-num-heads,
         tf-d-ff = cfg.te-d-ff,
-        tf-seq-len = list-length tokens,
+        tf-seq-len = te-clamp-seq-len (list-length tokens),
         tf-dropout = 0
       }
     in let encoded = te-run-layers embedded (state.tes-layers) tf-cfg 0 (cfg.te-num-layers)
@@ -140,8 +140,11 @@ Section: Forward Pass
     in let output = transformer-encoder-layer hidden w cfg
     in te-run-layers output layers cfg (i + 1) n
 
+  te-clamp-seq-len : Integer -> Integer between 1 and 8192
+  te-clamp-seq-len (n) = if n < 1 then 1 else if n > 8192 then 8192 else n
+
 Section: Full Encode (text string to hidden states)
-  te-encode : Text, BpeTokenizer, TextEncoderState -> List Integer
+  te-encode : Text, BpeVocab, TextEncoderState -> List Integer
   te-encode (text) (tokenizer) (state) =
     let tokens = te-tokenize text tokenizer (state.tes-config.te-max-seq-len)
     in te-forward tokens state

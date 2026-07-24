@@ -373,10 +373,36 @@ Section: Function Emission
    in let st-d = emit-direct-tail-moves st-c args param-locals order 0
    in copy-complex-temps st-d args (ensured.alloc-locals) param-locals 0 0
 
+ The one complex argument is evaluated before any parameter is
+ written, so its value has to survive the direct moves that follow.
+ Two things can destroy it. It can sit in a register that IS one of
+ the parameters, which tco-result-conflicts answers. Or it can sit in
+ a load-local scratch register -- and every direct argument that
+ reads a spilled local takes one, from a rotation of three, so the
+ third such load hands the register straight back while the value is
+ still live.
+
+ That second case is what miscompiled hexwar-loop. Five parameters
+ leave the fifth in a spill slot, which makes its argument the
+ complex one; three of the remaining arguments were spilled locals;
+ the third of those loads reclaimed the register holding the fifth
+ argument, and the parameter was assigned the fourth argument's value
+ instead of its own. The counter it drove then stopped advancing.
+ Pinned by codex/test/tco-shuffle-spill.
+
+ A value in a temp register is still safe -- the direct shapes write
+ only their target parameter and a scratch -- so the staging store
+ and reload is paid only where it is load-bearing.
+
+  tco-result-is-scratch : Integer -> Boolean
+  tco-result-is-scratch (r) =
+   r == reg-r8 | r == reg-r9 | r == reg-r15
+
   emit-tail-single-complex : CodegenState, List IRExpr, List Integer, List Integer, Integer -> CodegenState
   emit-tail-single-complex (st) (args) (param-locals) (order) (ci) =
    let er = emit-expr (st-set-tail-pos st False) (list-at args ci)
-   in if tco-result-conflicts (er.reg) param-locals 0 then emit-tail-single-conflict st er args param-locals order ci
+   in if tco-result-conflicts (er.reg) param-locals 0 | tco-result-is-scratch (er.reg)
+      then emit-tail-single-conflict st er args param-locals order ci
    else emit-tail-single-safe st er args param-locals order ci
 
   leaf-tail-args-direct : List IRExpr, List Text, List Text, Integer -> Boolean
@@ -408,7 +434,7 @@ Section: Function Emission
    else when e
     is IrIntLit (v) (sp) | IrNumLit (v) (sp) | IrBoolLit (v) (sp) | IrCharLit (v) (sp) -> lets
     is IrName (n) (ty) (sp) -> if leaf-name-index binders n 0 >= 0 then lets else 0 - 1
-    is IrNegate (x) (sp) -> leaf-walk st x False False binders fname pnames lets
+    is IrNegate (x) (ty) (sp) -> leaf-walk st x False False binders fname pnames lets
     is IrBinary (op) (l) (r) (ty) (sp) ->
      (when op
       is IrAddInt | IrSubInt | IrMulInt | IrDivInt | IrRemInt | IrLt | IrGt | IrLtEq | IrGtEq ->
@@ -519,7 +545,7 @@ Section: Function Emission
       if is-self-call e fname then leaf-args-have-call (flatten-tail-args e []) fname 0
       else True
      else True
-    is IrNegate (x) (sp) -> leaf-has-call x False fname
+    is IrNegate (x) (ty) (sp) -> leaf-has-call x False fname
     is IrBinary (op) (l) (r) (ty) (sp) -> if leaf-has-call l False fname then True else leaf-has-call r False fname
     is IrIf (c) (t) (el) (ty) (sp) -> if leaf-has-call c False fname then True else if leaf-has-call t tail fname then True else leaf-has-call el tail fname
     is IrLet (n) (ty) (v) (b) (sp) -> if leaf-has-call v False fname then True else leaf-has-call b tail fname
@@ -755,7 +781,7 @@ Section: Function Emission
    else st-add-deferred-patch st7 (make-i32-patch (frame-patch-pos + 3) frame-size)
    in nop-unused-pushes st8 func-start used (st7.omit-frame-pointer)
 
- Bounded signatures, stage B (BoundedSignatures.md section 7). A
+ Bounded signatures, stage B. A
  bounded parameter is a refined position enforced Eiffel-style at the
  callee entry: each bounded parameter is range-checked in the
  prologue, on the register it arrives in, before the body runs. An
@@ -808,7 +834,7 @@ Section: Function Emission
      when mode
       is OvError ->
        if lo <= i64-min & hi >= i64-max then st
-       else if value-fits-field (def.body) (deck-record (IntegerTy lo hi mode))
+       else if value-fits-field (st.range-env) (def.body) (deck-record (IntegerTy lo hi mode))
             then st-add-info st cdx-bounds-proven "bounds proven: return check elided" (def.span)
             else emit-range-trap st reg-rax lo hi
       is otherwise -> st
@@ -872,6 +898,38 @@ Section: Function Emission
     is FunTy (p) (row) (r) -> is-proof-return r
     is otherwise -> False
 
+ A proof erases, and CDX4020 says so on the way past it below. That was
+ fine while every definition reached the emitter, and whole-program dead
+ code elimination ended it: a proof is not reachable from `opening`, so
+ the prune drops it, the emitter never sees it, and the diagnostic went
+ silent. Nothing unsound got through and nothing about the checking
+ changed, but five tests stopped seeing the code they pin.
+
+ The proof definitions are therefore put BACK into the pruned chapter,
+ here, on the way to the emitter. Rooting them in the prune instead would
+ have been wrong: the flood would follow what a proof body references and
+ resurrect all of it, growing every binary that carries a proof. This
+ restores the definitions without reaching anything through them, and
+ emit-all-defs still writes no code for one.
+
+ The proof list is collected from the WHOLE chapter and it must be
+ collected BEFORE the prune runs, which is why this is two functions and
+ the caller holds the intermediate. Reading the whole chapter afterwards
+ gets the pruned defs back instead: the prune sets the field with
+ __record-set, so the chapter the caller still has a name for is the
+ pruned one, and the proofs are already gone from it.
+
+  keep-proof-defs : List IRDef, List IRDef, Integer -> List IRDef
+  keep-proof-defs (acc) (all) (i) =
+   if i == list-length all then acc
+   else let d = list-at all i
+   in if is-proof-def d then keep-proof-defs (list-push acc d) all (i + 1)
+   else keep-proof-defs acc all (i + 1)
+
+  ir-chapter-with-proofs : IRChapter, List IRDef -> IRChapter
+  ir-chapter-with-proofs (pruned) (proofs) =
+   __record-set pruned "defs" ((pruned.defs) & proofs)
+
   emit-all-defs : CodegenState, List IRDef, Integer -> CodegenState
   emit-all-defs (st) (defs) (i) =
    if i == list-length defs then st
@@ -931,8 +989,8 @@ Section: Local Variable Management
  the front, leaving one drops them again. Nothing popped before, so a
  binding introduced inside a let body or a match arm kept shadowing the
  outer binding of the same name for the rest of the function, and the
- stale slot still held the inner value - a silent miscompile (BACKLOG
- 2.22). restore-locals reverts only the locals field: code, next-local,
+ stale slot still held the inner value - a silent miscompile.
+ restore-locals reverts only the locals field: code, next-local,
  peak-local, spill-count and the patch tables are threaded forward, as
  they must be.
 
@@ -963,7 +1021,7 @@ Section: Expression Emission
     is IrBoolLit (value) (sp) -> emit-int-lit st (if value then 1 else 0)
     is IrCharLit (value) (sp) -> emit-int-lit st value
     is IrTextLit (value) (sp) -> emit-text-lit st value
-    is IrNegate (operand) (sp) -> emit-negate st operand
+    is IrNegate (operand) (ty) (sp) -> emit-negate st operand
     is IrError (msg) (ty) (sp) -> emit-int-lit (st-add-error st cdx-ir-error msg sp) 0
     is IrName (name) (ty) (sp) -> emit-name st name ty
     is IrLet (name) (ty) (value) (body) (sp) -> emit-let st name value body
@@ -1199,7 +1257,7 @@ Section: Expression Emission
    in emit-handle-clauses st1 clauses (i + 1)
 
  The clause body is a binding region and restores the locals prefix it
- started from (BACKLOG 2.23). The two binders here are NOT the same and
+ started from. The two binders here are NOT the same and
  must not be treated the same.
 
  `resume-name` belongs to the clause body alone. It leaked into the next
@@ -1310,7 +1368,7 @@ Section: Expression Emission
       else emit-try-body-stmts st1 stmts (i + 1) len body-failed-pos
 
  Each of the three regions is a binding region and restores the locals
- prefix it started from (BACKLOG 2.23). A `x <- e` in the body used to
+ prefix it started from. A `x <- e` in the body used to
  stay bound in the fallback, in the on-failure block, and after the end
  -- and the type checker never agreed, because `infer-act` is handed the
  untouched env per region. So a fallback naming the same word as an outer
@@ -1387,7 +1445,7 @@ Section: Expression Emission
  `f (r.field) ("some literal") (n) (list-length r.field)` compiled the last
  argument into a read of the LITERAL's length word, so `list-length [7, 8, 9]`
  returned 9 -- the character count of "read-text". Pinned by
- codex/test/field-cache-text-lit. It surfaced as BACKLOG 2.28, where the bogus
+ codex/test/field-cache-text-lit. It first surfaced where the bogus
  length sent find-effect-op-addr walking off the end of a 2-element list into a
  non-canonical pointer; the crash only appeared when the heap layout happened to
  put something unreadable there, and every other program simply got the wrong
@@ -1665,10 +1723,14 @@ Section: Expression Emission
      let r = emit-expr (st-set-tail-pos st in-tail) expr
      in store-local (r.state) target (r.reg)
 
+ Did the code emitted so far end in an unconditional jump? st-append-code
+ records where the last one ended; see the note there for why this cannot
+ be read back out of the buffer.
+
   last-was-jmp : CodegenState -> Boolean
   last-was-jmp (st) =
    if st.code-len < 5 then False
-   else list-at (__buf-read-bytes (st.workspace.code-buffer) (st.code-len - 5) 1) 0 == 233
+   else st.last-jmp-end == st.code-len
 
   tail-is-join : IRExpr -> Boolean
   tail-is-join (e) =
@@ -1682,7 +1744,7 @@ Section: Expression Emission
     is IrBoolLit (bv) (sp) -> False
     is IrCharLit (cv) (sp) -> False
     is IrBinary (op) (l) (r) (ty) (sp) -> False
-    is IrNegate (o) (sp) -> False
+    is IrNegate (o) (ty) (sp) -> False
     is IrFieldAccess (r) (f) (ty) (sp) -> False
     is IrRecord (rn) (fs) (ty) (sp) -> False
     is IrList (es) (ty) (sp) -> False
@@ -1895,19 +1957,30 @@ Section: Expression Emission
     is IrList (es) (t) (s) -> True
     is otherwise -> False
 
+ The range environment is saved and restored exactly like the locals
+ beside it, and for the same reason: the binding is in scope for the body
+ and for nothing after it. The value's range is proved in the OUTER
+ environment (`saved-range`), because that is where the value is
+ evaluated -- binding first and then proving would let a shadowing let see
+ itself. This is what carries a bound from where it is proved to where it
+ is used, so a narrow-store or a return guard inside the body can elide a
+ check the checker had already discharged.
+
   emit-let : CodegenState, Text, IRExpr, IRExpr -> EmitResult
   emit-let (st) (name) (value) (body) =
    let saved-tail = st.tco.in-tail-pos
    in let saved-locals = st.locals
+   in let saved-range = st.range-env
    in let loc = alloc-local st
    in let keep = (loc.state).next-local
    in let st1 = emit-to-local (loc.state) value (loc.reg) False
    in let st1r = __record-set st1 "next-local" keep
    in let st2 = add-local st1r name (loc.reg)
    in let st3 = if value-is-fresh-alloc value then fs-add st2 (loc.reg) else st2
-   in let r = emit-expr (st-set-tail-pos st3 saved-tail) body
+   in let st3r = __record-set st3 "range-env" (range-env-bind saved-range name (ir-expr-proven-range saved-range value))
+   in let r = emit-expr (st-set-tail-pos st3r saved-tail) body
    in EmitResult {
-    state = restore-locals (r.state) saved-locals,
+    state = __record-set (restore-locals (r.state) saved-locals) "range-env" saved-range,
     reg = r.reg
    }
 
@@ -2021,9 +2094,9 @@ Section: Expression Emission
        is IrAddInt -> emit-binary-add-imm st left v
        is IrSubInt -> emit-binary-sub-imm st left v
        is IrMulInt -> emit-binary-mul-imm st left v
-       is IrDivInt -> if v > 0 & bit-and v (v - 1) == 0 then emit-binary-div-pow2 st left v
+       is IrDivInt -> if v > 0 & bit-and v (v - 1) == 0 & pow2-dividend-nonneg (st.range-env) left then emit-binary-div-pow2 st left v
         else emit-binary-or-standard st op left right
-       is IrRemInt -> if v > 0 & bit-and v (v - 1) == 0 then emit-binary-rem-pow2 st left v
+       is IrRemInt -> if v > 0 & bit-and v (v - 1) == 0 & pow2-dividend-nonneg (st.range-env) left then emit-binary-rem-pow2 st left v
         else emit-binary-or-standard st op left right
        is otherwise -> if is-fusable-int-comparison st op left then emit-binary-cmp-imm st op left v
         else emit-binary-or-standard st op left right

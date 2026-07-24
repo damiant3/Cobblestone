@@ -89,10 +89,11 @@ Section: Type Definition Emission
   emit-pas-type-def : ATypeDef -> Text
   emit-pas-type-def (td) =
    when td
-    is ARecordTypeDef (name) (tparams) (fields) (s) ->
+    is ARecordTypeDef (name) (tparams) (fields) (recmut) (s) ->
      "  " & pas-sanitize (name.value) & " = record\n" & emit-pas-record-fields fields 0 & "  end;\n\n"
     is AVariantTypeDef (name) (tparams) (ctors) (s) ->
      "  " & pas-sanitize (name.value) & " = record\n    tag: string;\n" & emit-pas-variant-fields ctors 0 0 & "  end;\n\n"
+    is AUnitTypeDef (name) (unitbase) (s) -> ""
 
   emit-pas-record-fields : List ARecordFieldDef, Integer -> Text
   emit-pas-record-fields (fields) (i) =
@@ -132,7 +133,7 @@ Section: Expression Emission
     is IrCharLit (n) (sp) -> integer-to-text n
     is IrName (n) (ty) (sp) -> emit-pas-name n arities
     is IrBinary (op) (l) (r) (ty) (sp) -> emit-pas-binary op l r arities
-    is IrNegate (operand) (sp) -> "(-" & emit-pas-expr-at operand arities (depth + 1) & ")"
+    is IrNegate (operand) (nty) (sp) -> "(-" & emit-pas-expr-at operand arities (depth + 1) & ")"
     is IrIf (c) (t) (el) (ty) (sp) -> "IfThen(" & emit-pas-expr-at c arities (depth + 1) & ", " & emit-pas-expr-at t arities (depth + 1) & ", " & emit-pas-expr-at el arities (depth + 1) & ")"
     is IrLet (name) (ty) (val) (body) (sp) -> emit-pas-expr-at body arities (depth + 1)
     is IrApply (f) (a) (ty) (sp) -> emit-pas-apply e arities
@@ -280,7 +281,7 @@ Section: Apply Emission
    else if idx == 1 then "Ord(" & emit-pas-expr (list-at args 0) arities & "[" & emit-pas-expr (list-at args 1) arities & " + 1])"
    else if idx == 2 then emit-pas-expr (list-at args 0) arities
    else if idx == 3 then "Chr(" & emit-pas-expr (list-at args 0) arities & ")"
-   else if idx == 4 then "(" & emit-pas-expr (list-at args 0) arities & " mod " & emit-pas-expr (list-at args 1) arities & ")"
+   else if idx == 4 then "codex_mod(" & emit-pas-expr (list-at args 0) arities & ", " & emit-pas-expr (list-at args 1) arities & ")"
    else if idx == 5 then "IntToStr(" & emit-pas-expr (list-at args 0) arities & ")"
    else if idx == 6 then emit-pas-expr (list-at args 0) arities & "[" & emit-pas-expr (list-at args 1) arities & " + 1]"
    else if idx == 7 then "Length(" & emit-pas-expr (list-at args 0) arities & ")"
@@ -325,7 +326,16 @@ Section: Chapter Emission
    in let types-text = emit-pas-type-defs type-defs 0
    in let defs-text = emit-pas-defs (m.defs) 0 arities
    in let entry = pas-emit-entry (m.defs)
-   in header & types-text & "\n" & defs-text & "begin\n  " & entry & "end.\n"
+   in header & types-text & "\n" & pas-runtime-helpers & defs-text & "begin\n  " & entry & "end.\n"
+
+ Pascal has no closures and its `mod` truncates, so int-mod cannot be an
+ expression here without evaluating an operand twice. The helper is
+ declared once, after the type block and before the program's own
+ definitions, which is where Pascal wants a function.
+
+  pas-runtime-helpers : Text
+  pas-runtime-helpers =
+   "function codex_mod(a, b: Int64): Int64;\nvar m: Int64;\nbegin\n  m := Abs(b);\n  Result := a mod m;\n  if Result < 0 then Result := Result + m;\nend;\n\n"
 
   pas-emit-entry : List IRDef -> Text
   pas-emit-entry (defs) = pas-emit-entry-loop defs 0

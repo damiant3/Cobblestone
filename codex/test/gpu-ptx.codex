@@ -1,0 +1,141 @@
+Chapter: GpuPtx
+
+  cites Kernel chapter GpuBridge
+  cites AI chapter GpuProxy
+  cites AI chapter Tensor
+  cites Foreword chapter Maybe
+
+ A kernel written in PTX runs on the actual graphics processor.
+
+ Every other operation the compute bridge serves is computed by the
+ emulator on the host CPU, in scalar C. This one is not: the module below
+ is handed to the CUDA driver, compiled for whatever card is present, and
+ launched. That is the difference between a bridge that dispatches and a
+ bridge that pretends to.
+
+ THE ARITHMETIC IS CHOSEN SO THAT NOTHING ELSE COULD HAVE PRODUCED IT.
+ The kernel computes ten times the input plus five, which no operation in
+ the host's scalar table computes, over an input whose values are 1, 2, 3
+ and 4. The answers are 15, 25, 35 and 45: four distinct numbers, none of
+ them an input, none of them a permutation of the inputs, and none
+ reachable by echoing the operand buffer back.
+
+ TWO CONTROLS, AND THEY ARE THE POINT. A test that only ever sees the
+ kernel succeed cannot tell a driver that compiled and ran the module
+ from a host that answered a canned reply.
+
+   The KERNEL NAME control asks the same good module for an entry point
+   that is not in it. It must be refused. That is what proves the host
+   resolves a function rather than launching whatever it has.
+
+   The PTX control hands over text that is not a module at all. It must
+   be refused. That is what proves an assembler actually read the bytes,
+   which in turn is what proves the text survived the CCE boundary as
+   ASCII rather than arriving as plausible-looking code points.
+
+ A box with no NVIDIA GPU refuses all three, and this test then FAILS
+ rather than skipping. That is deliberate: a skip reads as coverage, and
+ the claim being made here is about hardware. A failure that names the
+ missing device is the honest answer on a machine that does not have one.
+
+ We say:
+
+Section: The Module
+
+ PTX is the portable form, so the target below is an old architecture on
+ purpose: the driver compiles it forward for whatever card is present.
+ The kernel takes the three parameters the bridge's ABI fixes -- operand
+ pointer, result pointer, result count -- and guards on the count, so a
+ grid rounded up to a whole block writes nothing past the end.
+
+  ptx-head : Text
+  ptx-head = ".version 6.0\n.target sm_50\n.address_size 64\n\n"
+
+  ptx-entry : Text
+  ptx-entry = ".visible .entry tenx5(\n.param .u64 p_in,\n.param .u64 p_out,\n.param .u32 p_n\n)\n{\n"
+
+  ptx-regs : Text
+  ptx-regs = ".reg .pred %p<2>;\n.reg .f32 %f<4>;\n.reg .b32 %r<6>;\n.reg .b64 %rd<8>;\n"
+
+  ptx-index : Text
+  ptx-index = "ld.param.u64 %rd1, [p_in];\nld.param.u64 %rd2, [p_out];\nld.param.u32 %r2, [p_n];\nmov.u32 %r3, %ctaid.x;\nmov.u32 %r4, %ntid.x;\nmov.u32 %r5, %tid.x;\nmad.lo.s32 %r1, %r3, %r4, %r5;\n"
+
+  ptx-guard : Text
+  ptx-guard = "setp.ge.s32 %p1, %r1, %r2;\n@%p1 bra DONE;\n"
+
+  ptx-body : Text
+  ptx-body = "cvta.to.global.u64 %rd3, %rd1;\nmul.wide.s32 %rd4, %r1, 4;\nadd.s64 %rd5, %rd3, %rd4;\nld.global.f32 %f1, [%rd5];\nmul.f32 %f2, %f1, 0f41200000;\nadd.f32 %f3, %f2, 0f40A00000;\n"
+
+  ptx-store : Text
+  ptx-store = "cvta.to.global.u64 %rd6, %rd2;\nadd.s64 %rd7, %rd6, %rd4;\nst.global.f32 [%rd7], %f3;\nDONE:\nret;\n}\n"
+
+  ptx-tenx5 : Text
+  ptx-tenx5 =
+    let a = ptx-head & ptx-entry
+    in let b = ptx-regs & ptx-index
+    in let c = ptx-guard & ptx-body
+    in a & b & c & ptx-store
+
+ Not a module. The driver must reject it.
+
+  ptx-rubbish : Text
+  ptx-rubbish = "this is not ptx and never was\n"
+
+Section: Operands
+
+  bridge : GpuBridge
+  bridge = gpu-bridge-init
+
+  quad : Tensor
+  quad = Tensor { data = [1000, 2000, 3000, 4000], rows = 2, cols = 2 }
+
+Section: Tolerance
+
+ The guest decoder divides the mantissa down to scale 1000 before it
+ applies the exponent, so it loses low bits on any value above 1.0. These
+ assertions allow one part in a hundred, which is nowhere near the 10000
+ units that separate two neighbouring answers here.
+
+  near : Integer, Integer -> Boolean
+  near (got) (want) =
+    let diff = if got > want then got - want else want - got
+    in let slack = if want > 0 then want / 100 else 100
+    in diff <= slack
+
+Section: Reports
+
+  launch-report : Maybe Tensor -> Text
+  launch-report (m) =
+    when m
+     is None -> "NO GPU OR REFUSED"
+     is Just (t) -> launch-values t
+
+  launch-values : Tensor -> Text
+  launch-values (t) =
+    if list-length (t.data) /= 4 then "count " & show (list-length (t.data))
+    else if near (list-at (t.data) 0) 15000
+     & near (list-at (t.data) 1) 25000
+     & near (list-at (t.data) 2) 35000
+     & near (list-at (t.data) 3) 45000
+    then "ok"
+    else "wrong " & show (list-at (t.data) 0) & " " & show (list-at (t.data) 1) & " "
+       & show (list-at (t.data) 2) & " " & show (list-at (t.data) 3)
+
+ A refusal is the wanted answer for both controls, so it is reported as
+ such rather than as a failure.
+
+  refusal-report : Maybe Tensor -> Text
+  refusal-report (m) =
+    when m
+     is None -> "refused"
+     is Just (t) -> "SERVED " & show (list-length (t.data))
+
+Section: Entry
+
+  opening : [Console] Integer
+  opening = act
+    print-line-uni ("launch: " & launch-report (gpu-bridge-launch-ptx bridge ptx-tenx5 "tenx5" quad 2 2 64))
+    print-line-uni ("wrong-name: " & refusal-report (gpu-bridge-launch-ptx bridge ptx-tenx5 "nosuchkernel" quad 2 2 64))
+    print-line-uni ("bad-ptx: " & refusal-report (gpu-bridge-launch-ptx bridge ptx-rubbish "tenx5" quad 2 2 64))
+    let r = 0 in r
+  end

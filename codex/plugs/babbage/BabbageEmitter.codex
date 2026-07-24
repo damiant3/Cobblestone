@@ -132,8 +132,9 @@ Section: Type Definition Emission
   bab-type-def-name : ATypeDef -> Text
   bab-type-def-name (td) =
    when td
-    is ARecordTypeDef (name) (tparams) (fields) (s) -> name.value
+    is ARecordTypeDef (name) (tparams) (fields) (recmut) (s) -> name.value
     is AVariantTypeDef (name) (tparams) (ctors) (s) -> name.value
+    is AUnitTypeDef (name) (unitbase) (s) -> name.value
 
 Section: Expression Emission
 
@@ -167,7 +168,7 @@ Section: Expression Emission
     }
     is IrName (n) (ty) (sp) -> bab-emit-name-to-store n target st
     is IrBinary (op) (l) (r) (ty) (sp) -> bab-emit-binary-to-store op l r target st arities
-    is IrNegate (operand) (sp) -> bab-emit-negate-to-store operand target st arities
+    is IrNegate (operand) (nty) (sp) -> bab-emit-negate-to-store operand target st arities
     is IrIf (c) (t) (el) (ty) (sp) -> bab-emit-if-to-store c t el target st arities
     is IrLet (name) (ty) (val) (body) (sp) -> bab-emit-let-to-store name val body target st arities
     is IrApply (f) (a) (ty) (sp) -> bab-emit-apply-to-store e target st arities
@@ -315,7 +316,7 @@ Section: Expression Emission
     is IrBoolLit (v) (sp) -> bab-emit-to-store (chain.root) target st arities
     is IrCharLit (v) (sp) -> bab-emit-to-store (chain.root) target st arities
     is IrBinary (op) (l) (r) (ty) (sp) -> bab-emit-to-store (chain.root) target st arities
-    is IrNegate (x) (sp) -> bab-emit-to-store (chain.root) target st arities
+    is IrNegate (x) (nty) (sp) -> bab-emit-to-store (chain.root) target st arities
     is IrIf (c) (t) (el) (ty) (sp) -> bab-emit-to-store (chain.root) target st arities
     is IrLet (name) (ty) (val) (body) (sp) -> bab-emit-to-store (chain.root) target st arities
     is IrApply (f) (a) (ty) (sp) -> bab-emit-to-store (chain.root) target st arities
@@ -476,6 +477,25 @@ Section: Expression Emission
    }
 
   bab-emit-builtin-mod : IRExpr, IRExpr, Integer, BabState, List ArityEntry -> BabEmitResult
+ This is the TRUNCATING remainder -- a - (a / b) * b -- and int-mod's
+ contract is the Euclidean one, which is never negative. Every other
+ plug was corrected to Euclidean on 2026-07-22; this one was not, and
+ the reason is a property of the target rather than an oversight.
+
+ The correction needs "if the remainder came back negative, add the
+ divisor's magnitude", and this emitter cannot express that test.
+ `bab-bin-op-card` maps IrEq, IrNotEq, IrLt, IrGt, IrLtEq and IrGtEq
+ ALL to the single `-` card, so a comparison here is a subtraction and
+ nothing distinguishes "is negative" from "is zero". Writing the branch
+ anyway would mean inventing a polarity for `CF` that no card in this
+ file establishes, in a deck no machine executes.
+
+ So the divergence is confined and written down: int-mod on this target
+ answers the sign of the dividend, and is correct only where the
+ dividend is non-negative. Giving the Analytical Engine real relational
+ operators is the prerequisite, and it would fix every `if` in every
+ emitted deck, not only this one.
+
   bab-emit-builtin-mod (a) (b) (target) (st) (arities) =
    let la = bab-alloc st "_mod_a"
    in let ra = bab-alloc (la.state) "_mod_b"
@@ -647,7 +667,7 @@ Section: Tail Call Optimization
     is IrBoolLit (v) (sp) -> False
     is IrCharLit (v) (sp) -> False
     is IrBinary (op) (l) (r) (ty) (sp) -> False
-    is IrNegate (x) (sp) -> False
+    is IrNegate (x) (nty) (sp) -> False
     is IrIf (c) (t) (el) (ty) (sp) -> False
     is IrLet (n) (ty) (v) (b) (sp) -> False
     is IrApply (f) (a) (ty) (sp) -> False
@@ -678,7 +698,7 @@ Section: Tail Call Optimization
     is IrCharLit (v) (sp) -> False
     is IrName (n) (ty) (sp) -> False
     is IrBinary (op) (l) (r) (ty) (sp) -> False
-    is IrNegate (x) (sp) -> False
+    is IrNegate (x) (nty) (sp) -> False
     is IrLambda (ps) (body) (ty) (sp) -> False
     is IrList (es) (ty) (sp) -> False
     is IrAct (ss) (ty) (sp) -> False
@@ -751,7 +771,7 @@ Section: Tail Call Optimization
     is IrCharLit (v) (sp) -> bab-emit-to-store e result-col st arities
     is IrName (n) (ty) (sp) -> bab-emit-to-store e result-col st arities
     is IrBinary (op) (l) (r) (ty) (sp) -> bab-emit-to-store e result-col st arities
-    is IrNegate (x) (sp) -> bab-emit-to-store e result-col st arities
+    is IrNegate (x) (nty) (sp) -> bab-emit-to-store e result-col st arities
     is IrLambda (ps) (body) (ty) (sp) -> bab-emit-to-store e result-col st arities
     is IrList (es) (ty) (sp) -> bab-emit-to-store e result-col st arities
     is IrAct (ss) (ty) (sp) -> bab-emit-to-store e result-col st arities
@@ -896,7 +916,7 @@ Section: Chapter Emission
     is IrCharLit (v) (sp) -> bab-emit-to-store e target st arities
     is IrName (n) (ty) (sp) -> bab-emit-to-store e target st arities
     is IrBinary (op) (l) (r) (ty) (sp) -> bab-emit-to-store e target st arities
-    is IrNegate (x) (sp) -> bab-emit-to-store e target st arities
+    is IrNegate (x) (nty) (sp) -> bab-emit-to-store e target st arities
     is IrIf (c) (t) (el) (ty) (sp) -> bab-emit-to-store e target st arities
     is IrLet (name) (ty) (val) (body) (sp) -> bab-emit-to-store e target st arities
     is IrApply (f) (a) (ty) (sp) -> bab-emit-to-store e target st arities

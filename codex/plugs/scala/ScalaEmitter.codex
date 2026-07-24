@@ -102,7 +102,7 @@ Section: Builtin Dispatch
    ScBuiltinEmitter { name = "char-at", emit = \args arities -> emit-sc-expr (list-at args 0) arities & ".asInstanceOf[String].charAt(" & emit-sc-expr (list-at args 1) arities & ".asInstanceOf[Int])" },
    ScBuiltinEmitter { name = "char-code-at", emit = \args arities -> emit-sc-expr (list-at args 0) arities & ".asInstanceOf[String].charAt(" & emit-sc-expr (list-at args 1) arities & ".asInstanceOf[Int]).toInt" },
    ScBuiltinEmitter { name = "file-exists", emit = \args arities -> "java.io.File(" & emit-sc-expr (list-at args 0) arities & ".asInstanceOf[String]).exists()" },
-   ScBuiltinEmitter { name = "int-mod", emit = \args arities -> "(" & emit-sc-expr (list-at args 0) arities & ".asInstanceOf[Int] % " & emit-sc-expr (list-at args 1) arities & ".asInstanceOf[Int])" },
+   ScBuiltinEmitter { name = "int-mod", emit = \args arities -> "Math.floorMod(" & emit-sc-expr (list-at args 0) arities & ".asInstanceOf[Int], Math.abs(" & emit-sc-expr (list-at args 1) arities & ".asInstanceOf[Int]))" },
    ScBuiltinEmitter { name = "integer-to-text", emit = \args arities -> emit-sc-expr (list-at args 0) arities & ".toString" },
    ScBuiltinEmitter { name = "list-at", emit = \args arities -> emit-sc-expr (list-at args 0) arities & ".asInstanceOf[List[Any]](" & emit-sc-expr (list-at args 1) arities & ".asInstanceOf[Int])" },
    ScBuiltinEmitter { name = "list-length", emit = \args arities -> emit-sc-expr (list-at args 0) arities & ".asInstanceOf[List[Any]].length" },
@@ -112,7 +112,7 @@ Section: Builtin Dispatch
    ScBuiltinEmitter { name = "negate", emit = \args arities -> "(-(" & emit-sc-expr (list-at args 0) arities & ".asInstanceOf[Int]))" },
    ScBuiltinEmitter { name = "print-error-uni", emit = \args arities -> "System.err.println(" & emit-sc-expr (list-at args 0) arities & ")" },
    ScBuiltinEmitter { name = "print-line-uni", emit = \args arities -> "println(" & emit-sc-expr (list-at args 0) arities & ")" },
-   ScBuiltinEmitter { name = "read-file", emit = \args arities -> "scala.io.Source.fromFile(" & emit-sc-expr (list-at args 0) arities & ".asInstanceOf[String]).mkString" },
+   ScBuiltinEmitter { name = "read-text", emit = \args arities -> "scala.io.Source.fromFile(" & emit-sc-expr (list-at args 0) arities & ".asInstanceOf[String]).mkString" },
    ScBuiltinEmitter { name = "read-line", emit = \args arities -> "scala.io.StdIn.readLine()" },
    ScBuiltinEmitter { name = "show", emit = \args arities -> emit-sc-expr (list-at args 0) arities & ".toString" },
    ScBuiltinEmitter { name = "substring", emit = \args arities -> emit-sc-expr (list-at args 0) arities & ".asInstanceOf[String].substring(" & emit-sc-expr (list-at args 1) arities & ".asInstanceOf[Int], " & emit-sc-expr (list-at args 1) arities & ".asInstanceOf[Int] + " & emit-sc-expr (list-at args 2) arities & ".asInstanceOf[Int])" },
@@ -159,11 +159,12 @@ Section: Type Definition Emission
   emit-sc-type-def : ATypeDef -> Text
   emit-sc-type-def (td) =
    when td
-    is ARecordTypeDef (name) (tparams) (fields) (s) ->
+    is ARecordTypeDef (name) (tparams) (fields) (recmut) (s) ->
      emit-sc-record-type (name.value) fields
     is AVariantTypeDef (name) (tparams) (ctors) (s) ->
      if is-tup-type (name.value) then ""
      else emit-sc-sum-type (name.value) ctors
+    is AUnitTypeDef (name) (unitbase) (s) -> ""
 
   emit-sc-sum-type : Text, List AVariantCtorDef -> Text
   emit-sc-sum-type (name) (ctors) =
@@ -216,7 +217,7 @@ Section: Expression Emission
     is IrCharLit (n) (sp) -> integer-to-text n
     is IrName (n) (ty) (sp) -> emit-sc-name n ty arities
     is IrBinary (op) (l) (r) (ty) (sp) -> emit-sc-binary op l r arities
-    is IrNegate (operand) (sp) -> "(-" & emit-sc-expr-at operand arities (depth + 1) & ")"
+    is IrNegate (operand) (nty) (sp) -> "(-" & emit-sc-expr-at operand arities (depth + 1) & ")"
     is IrIf (c) (t) (el) (ty) (sp) -> "(if " & emit-sc-expr-at c arities (depth + 1) & " then " & emit-sc-expr-at t arities (depth + 1) & " else " & emit-sc-expr-at el arities (depth + 1) & ")"
     is IrLet (name) (ty) (val) (body) (sp) -> "{ val " & sc-sanitize name & " = " & emit-sc-expr-at val arities (depth + 1) & "; " & emit-sc-expr-at body arities (depth + 1) & " }"
     is IrApply (f) (a) (ty) (sp) -> emit-sc-apply e arities

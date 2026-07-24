@@ -20,8 +20,8 @@ Chapter: ExplorerServer
 
 Section: Table -> JSON
 
-  db-buf : Integer
-  db-buf = es-disk-load 160
+  db-buf : Integer -> [Device.Block] Integer
+  db-buf (x) = es-disk-load 160
 
   fields-json : List Text, Integer, Integer, Text -> Text
   fields-json (fs) (i) (n) (acc) =
@@ -36,10 +36,12 @@ Section: Table -> JSON
     in let sep = if i == 0 then "" else ","
     in rows-json rows (i + 1) n (acc & sep & "[" & fields-json r 0 (list-length r) "" & "]")
 
-  table-json : Text -> Text
-  table-json (name) =
-    let rows = es-read-table db-buf name
+  table-json : Text -> [Device.Block] Text
+  table-json (name) = act
+    buf <- db-buf 0
+    let rows = es-read-table buf name
     in "[" & rows-json rows 0 (list-length rows) "" & "]"
+  end
 
 Section: URL decoding
 
@@ -83,19 +85,21 @@ Section: Per-user creations
   cr-cap : Text, Integer -> Text
   cr-cap (s) (n) = if text-length s <= n then s else substring s 0 n
 
-  creations-read : Integer -> List (List Text)
-  creations-read (x) =
-    let buf = es-disk-load-at cr-start cr-sectors
-    in let n = es-r-u16 buf 0
+  creations-read : Integer -> [Device.Block] List (List Text)
+  creations-read (x) = act
+    buf <- es-disk-load-at cr-start cr-sectors
+    let n = es-r-u16 buf 0
     in if n > cr-max then [] else es-page-rows buf 2 0 n []
+  end
 
-  creation-save : Integer, Text, Text, Text -> Integer
-  creation-save (owner) (kind) (name) (data) =
-    let rows = creations-read 0
-    in if list-length rows >= cr-max then 0 - 1
+  creation-save : Integer, Text, Text, Text -> [Device.Block] Integer
+  creation-save (owner) (kind) (name) (data) = act
+    rows <- creations-read 0
+    if list-length rows >= cr-max then 0 - 1
     else let all = list-push rows [show owner, cr-cap kind 20, cr-cap name 60, cr-cap data 200]
     in let buf = es-build-page-sized all (cr-sectors * 512)
     in es-disk-save buf cr-start cr-sectors
+  end
 
   cr-row-json : List Text -> Text
   cr-row-json (r) =
@@ -110,10 +114,12 @@ Section: Per-user creations
             in mine-loop rows owner (i + 1) n (cnt + 1) (acc & sep & cr-row-json r)
        else mine-loop rows owner (i + 1) n cnt acc
 
-  mine-json : Integer -> Text
-  mine-json (owner) =
-    let rows = creations-read 0
-    in "[" & mine-loop rows (show owner) 0 (list-length rows) 0 "" & "]"
+  mine-json : Integer -> [Device.Block] Text
+  mine-json (owner) = act
+    rows <- creations-read 0
+    let body = "[" & mine-loop rows (show owner) 0 (list-length rows) 0 "" & "]"
+    in body
+  end
 
   handle-for : List Account, Integer, Integer, Text -> Text
   handle-for (accts) (i) (n) (oid) =
@@ -129,11 +135,13 @@ Section: Per-user creations
     in let h = handle-for accts 0 (list-length accts) (list-at r 0)
     in gallery-loop rows accts (i + 1) n (acc & sep & "{\"by\":" & jstr h & ",\"kind\":" & jstr (list-at r 1) & ",\"name\":" & jstr (list-at r 2) & ",\"data\":" & jstr (list-at r 3) & "}")
 
-  gallery-json : Integer -> Text
-  gallery-json (x) =
-    let rows = creations-read 0
-    in let accts = (accounts-load 0).accounts
+  gallery-json : Integer -> [Device.Block] Text
+  gallery-json (x) = act
+    rows <- creations-read 0
+    loaded <- accounts-load 0
+    let accts = loaded.accounts
     in "[" & gallery-loop rows accts 0 (list-length rows) "" & "]"
+  end
 
   remix-find : List (List Text), List Account, Text, Text, Integer, Integer -> List Text
   remix-find (rows) (accts) (by) (nm) (i) (n) =
@@ -142,13 +150,15 @@ Section: Per-user creations
     in if (handle-for accts 0 (list-length accts) (list-at r 0) == by) & (list-at r 2 == nm)
        then r else remix-find rows accts by nm (i + 1) n
 
-  creation-remix : Integer, Text, Text -> Integer
-  creation-remix (owner) (by) (nm) =
-    let rows = creations-read 0
-    in let accts = (accounts-load 0).accounts
+  creation-remix : Integer, Text, Text -> [Device.Block] Integer
+  creation-remix (owner) (by) (nm) = act
+    rows <- creations-read 0
+    loaded <- accounts-load 0
+    let accts = loaded.accounts
     in let src = remix-find rows accts by nm 0 (list-length rows)
     in if list-length src < 4 then 0 - 1
     else creation-save owner (list-at src 1) (list-at src 2 & " (remix)") (list-at src 3)
+  end
 
   md-rows : List (List Text), Text, Text, Integer, Integer, Text -> Text
   md-rows (rows) (owner) (kind) (i) (n) (acc) =
@@ -158,13 +168,14 @@ Section: Per-user creations
        then md-rows rows owner kind (i + 1) n (acc & "### " & list-at r 2 & "\n" & list-at r 3 & "\n\n")
        else md-rows rows owner kind (i + 1) n acc
 
-  export-md : Integer, Text -> Text
-  export-md (owner) (handle) =
-    let rows = creations-read 0
-    in let o = show owner
+  export-md : Integer, Text -> [Device.Block] Text
+  export-md (owner) (handle) = act
+    rows <- creations-read 0
+    let o = show owner
     in "# " & handle & "'s World Codex\n\n## Settings\n\n" & md-rows rows o "setting" 0 (list-length rows) ""
        & "## Characters\n\n" & md-rows rows o "character" 0 (list-length rows) ""
        & "## Items\n\n" & md-rows rows o "item" 0 (list-length rows) ""
+  end
 
   del-loop : List (List Text), Text, Text, Integer, Integer, List (List Text) -> List (List Text)
   del-loop (rows) (owner) (name) (i) (n) (acc) =
@@ -174,12 +185,13 @@ Section: Per-user creations
        then del-loop rows owner name (i + 1) n acc
        else del-loop rows owner name (i + 1) n (list-push acc r)
 
-  creation-delete : Integer, Text -> Integer
-  creation-delete (owner) (name) =
-    let rows = creations-read 0
-    in let kept = del-loop rows (show owner) name 0 (list-length rows) []
+  creation-delete : Integer, Text -> [Device.Block] Integer
+  creation-delete (owner) (name) = act
+    rows <- creations-read 0
+    let kept = del-loop rows (show owner) name 0 (list-length rows) []
     in let buf = es-build-page-sized kept (cr-sectors * 512)
     in es-disk-save buf cr-start cr-sectors
+  end
 
 Section: Integer Parse Helper
 
@@ -195,16 +207,17 @@ Section: Routes
     let parts = text-split path "/"
     in list-at parts (list-length parts - 1)
 
-  my-route : Maybe Account, Text -> Text
+  my-route : Maybe Account, Text -> [Device.Block] Text
   my-route (acct) (path) =
     let base = path-base path
     in if base == "/api/gallery" then gallery-json 0
        else if base == "/api/save"
        then when acct
          is None -> err-json "login required"
-         is Just (a) ->
-           let rc = creation-save (a.acc-id) (url-decode (qp path "kind")) (url-decode (qp path "name")) (url-decode (qp path "data"))
-           in if rc < 0 then err-json "store full" else "{\"ok\":true}"
+         is Just (a) -> act
+           rc <- creation-save (a.acc-id) (url-decode (qp path "kind")) (url-decode (qp path "name")) (url-decode (qp path "data"))
+           if rc < 0 then err-json "store full" else "{\"ok\":true}"
+         end
        else if base == "/api/mine"
        then when acct
          is None -> err-json "login required"
@@ -212,15 +225,18 @@ Section: Routes
        else if base == "/api/delete"
        then when acct
          is None -> err-json "login required"
-         is Just (a) ->
-           let rc = creation-delete (a.acc-id) (url-decode (qp path "name"))
-           in "{\"ok\":true}"
+         is Just (a) -> act
+           rc <- creation-delete (a.acc-id) (url-decode (qp path "name"))
+           let ok = "{\"ok\":true}"
+           in ok
+         end
        else if base == "/api/remix"
        then when acct
          is None -> err-json "login required"
-         is Just (a) ->
-           let rc = creation-remix (a.acc-id) (url-decode (qp path "by")) (url-decode (qp path "name"))
-           in if rc < 0 then err-json "not found or store full" else "{\"ok\":true}"
+         is Just (a) -> act
+           rc <- creation-remix (a.acc-id) (url-decode (qp path "by")) (url-decode (qp path "name"))
+           if rc < 0 then err-json "not found or store full" else "{\"ok\":true}"
+         end
        else if base == "/api/export"
        then when acct
          is None -> err-json "login required"
@@ -250,7 +266,7 @@ Section: Routes
 
 Section: Entry
 
-  opening : [Console] None = act
+  opening : [Console, Device.Block, Network.Read, Network.Write] Nothing = act
     r <- auth-serve (my-route)
     print-line-uni "SHUTDOWN"
   end

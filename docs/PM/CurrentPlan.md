@@ -7,8 +7,11 @@ in what order we intend to close it. It does not archive completed work
 — the authoritative record of a closure is its changelist in Perforce
 (`p4 changes -m 100 //Codex/main/...`).
 
-Every open capability lives in `docs/PM/BACKLOG.md`. This file is the
-shape of the thing; the backlog is the list.
+This file is the shape of the thing and the priority order. There is no
+itemized register beneath it any more: `docs/PM/BACKLOG.md` was deleted
+2026-07-23 (main CL 10446) because it had become prose nothing checked,
+and stale rows were being quoted as fact. The gaps below are what
+survives, stated here rather than delegated to a list.
 
 ## The Vision
 
@@ -76,33 +79,36 @@ path prefix, a network authority, a console channel). The GPU compute bit
   compile-time-complete and needs no cell. What is left under 1.5 is
   narrow: the compiler-emitted manifest scope is verified by inspection,
   not by a battery test, and the boot/loader grants still disagree about
-  *direction* (BACKLOG 1.12). (BACKLOG 1.5.)
+  *direction*.
 - **`cap-gpu-memory` is granted and read by nobody.** The compute half is
   gated on the port window; the memory half has no window to hang on.
   Either device buffers get a real kernel allocation syscall, or
-  `KingsAndCourts.md` stops implying the bit is enforced. (BACKLOG 1.6.)
+  `KingsAndCourts.md` stops implying the bit is enforced.
 - **The `Network` effect is implemented, but only over HTTP.** `fetch`,
   `post` and `resolve-dns` are real in `Net chapter HttpFetch` (not the
   foreword — an implementation needs `NetIO`, which is `codex.os`), over
   the NE2K → NetIO → TCP stack, with the correct `[Network.Read,
   Network.Write]` rows and network-scope checked at compile time
   (CDX4002). `codex/test/network-effect` compiles clean (no CDX2040) and
-  passes headless. What is left: an `https` URL is **refused**, because
-  there is no TLS on the transport (BACKLOG 1.9); and the live wire path
+  passes headless. What is left: bare `fetch` **refuses** an `https` URL
+  rather than sending it in the clear. The stated reason for
+  that refusal used to be "there is no TLS on the transport", and that is
+  no longer true: `TlsEndpoint` and the explicit `fetch-tls` do put a real
+  TLS 1.3 handshake on the wire, proven on loopback and not yet against a
+  real server. What is missing is not TLS; it is `fetch` reaching for it.
+  And the live wire path
   (a real GET/POST and a name resolved on the wire) is exercised by hand,
   not by any gated test — `network-effect` is not in the BVT, so a
-  regression in `HttpFetch` is caught by nothing at `build.ps1`. (BACKLOG
-  1.7 is closed; the successor is 1.9.)
+  regression in `HttpFetch` is caught by nothing at `build.ps1`.
 - **The kernel quires are exempt from effect checking entirely.**
   `Kernel`, `Dev`, `Os` and `Net` are on `quire-effect-exempt`, so a
   driver there touches ports and MMIO while typed pure. `Boards` came off
   that list; the kernel has not, and nobody has decided whether it should.
   Until then, "effects are explicit" has a hole the size of `codex/os/`.
-  (BACKLOG 1.8.)
 - **Effect-row subtyping is incomplete.** Subset-checking at application,
   not a real effect system: a generic parameter carries no effect
   constraint, so an effectful function passed to a `map`-style `(a -> b)`
-  is not caught. (BACKLOG 1.3.)
+  is not caught.
 
 Detail: `docs/Designs/Active/Language/CAPABILITY-REFINEMENT.md`.
 
@@ -131,8 +137,7 @@ must work without leaving the system.
 **Still the largest unrealized piece of the founding vision, but the
 store layer is now built.** The vision document opens by proposing to
 delete GitHub. We have not yet deleted Perforce — but the content-addressed
-store beneath the cutover is real and dogfoodable (BACKLOG 6.1, val,
-2026-07-15).
+store beneath the cutover is real and dogfoodable (val, 2026-07-15).
 
 The parts exist — `RepoProtocol`, `KeyManager`, `Annotation*`,
 `BuildRecord`, `Historian`, `SignedAnnotation`, `Discussion` are all
@@ -140,10 +145,10 @@ built in `apps/works/`. The store itself now works end to end:
 
 - **Source-as-facts — DONE.** A `.codex` file round-trips through
   `DiskFacts` as a content-addressed, Ed25519-signed fact, and a real
-  tool (`tools/cdx-store`) writes one in. (BACKLOG 6.1.)
+  tool (`tools/cdx-store`) writes one in.
 - **Import-by-hash and the trust gate on import — DONE.** The compiler
   resolves a `quotes` by digest out of the store through the four
-  guards, blob or no blob. (BACKLOG 6.1b.)
+  guards, blob or no blob.
 - **History walking for definitions — DONE.** `repo-index-from-disk`
   gives a tree, lookup-by-path, and lookup-by-hash; every superseded
   edition stays addressable forever; the index persists as a kind-40
@@ -217,13 +222,14 @@ whether compile-on-stick succeeds on a lower-RAM board.
 ### 9. Spark WebGPU Studio
 
 Spark is an 89-module creative suite compiled to WASM — the first Codex
-application a non-Codex user would ever see. It is blocked one step from
-running:
+application a non-Codex user would ever see.
 
-- `wat2wasm` rejects the emitted WAT: `undefined function variable
-  "$AbsorbedDose"`. A unit type from the punctual foreword is referenced
-  but never emitted by the WASM plug — most likely missing from the
-  plug's function export table. Nobody has looked at it.
+The `wat2wasm` rejection (`undefined function variable "$AbsorbedDose"`)
+is **fixed**: a unit-type constructor has no function def and is identity
+at codegen, so `emit-wat-apply` now emits its single argument when the
+arity lookup misses, rather than a call to a function that does not exist
+(`codex/plugs/wasm/WasmEmitter.codex:661`). What remains:
+
 - Mesh CSG booleans exist in Codex but are not wired through the UI.
 - ~1,100 lines of JS in the HTML harness should be emitted from Codex.
 
@@ -241,10 +247,9 @@ is exactly what happened to `[Console] None`, which was found in
 `apps/works`, fixed there, and left standing in **seven other app entry
 points**.
 
-So we fix what we see, and when we see it we lift the whole class. The
-classes are enumerated in BACKLOG **7.16**. Two of them cost nothing to
-find — they are pure grep, no compile and no battery — and between them
-they unbreak seven entry points:
+So we fix what we see, and when we see it we lift the whole class. Two
+of the classes cost nothing to find — they are pure grep, no compile and
+no battery — and between them they unbreak seven entry points:
 
 - **`None` used as a type** (it is a `Maybe` value constructor; the type
   is `Nothing`) — 8 files.
@@ -252,9 +257,29 @@ they unbreak seven entry points:
 
 The rest (undeclared effect rows, bounded-signature violations,
 multi-line applications) need a compile to enumerate, which is a
-**type-check sweep on demand** — no boot, no run, no hour. BACKLOG 7.11
-keeps the *gate* on the register as a wanted capability, because we do
-not walk one back; it is simply not what we are buying today.
+**type-check sweep on demand** — no boot, no run, no hour. Making that
+sweep a *gate* remains a wanted capability, because we do not walk one
+back; it is simply not what we are buying today.
+
+### 11. A file read on the cross-architecture lanes
+
+**Route:** `docs/Designs/Active/Compiler/CrossLaneFilesystem.md`.
+
+arm64 and riscv cannot read a file, and the gap is four layers deep
+rather than the one-line builtin-table entry it used to be filed as.
+Measured 2026-07-21: no servicer, no block builtins, and no raw load or
+store at all on either lane, so no driver of any kind can currently be
+written for them. FAT16 is already portable Codex and costs nothing once
+the primitives exist; the work is virtio-blk over MMIO under QEMU virt,
+because the committed Renode boards have no block device.
+
+**This is listed last on purpose, and it may be right not to build it.**
+The cross lanes are a codegen parity check, not a platform, and the only
+callers are the filesystem tests, which exist to test the filesystem
+rather than the backends. If that is the settled view, the correct close
+is the design's step 0 alone -- an unresolved call in a plug becomes a
+diagnostic instead of a silently broken branch -- and the
+remaining steps are never built. That step is worth doing either way.
 
 ## A Note on the Fleet
 
@@ -267,7 +292,6 @@ it four and five times in a single session. Expect it to move under you.
 
 ## Cross-References
 
-- `docs/PM/BACKLOG.md` — every open capability, itemized.
 - `docs/VisionAndVirtues.md` — the founding vision behind this gap list.
   Read it before redesigning anything in gap 4.
 - `docs/Designs/Active/Compiler/PHASE-ARCHITECTURE.md` — gap 8.

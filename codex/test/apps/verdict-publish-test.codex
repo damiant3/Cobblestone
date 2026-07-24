@@ -1,14 +1,78 @@
 Chapter: VerdictPublishTest
 
   cites Foreword chapter Console
+  cites Works chapter KeyManager
   cites Works chapter RepoProtocol
+
+ Publishing a verdict signs it, registers it against its proposal, and
+ queues it on the verdict outbox. The old body published no verdict at
+ all: it printed the size of an empty outbox, a zero that no change to
+ publish-verdict could ever move.
+
+ Two verdicts go in, an accept and a reject, so the outbox is measured
+ at three different sizes and the kinds are read back in order. A queue
+ that dropped, reordered or overwrote entries reads differently at every
+ one of those points.
+
+ The signature is checked twice against the SAME verdict: once with the
+ author's key in the keyring, once against an empty one. Only the pair
+ is evidence. A verify that answered True unconditionally passes the
+ first check, and a verify that answered False unconditionally passes
+ the second; nothing passes both but a verify that actually looks.
+
+Section: Fixtures
+
+  vpt-keypair : Keypair
+  vpt-keypair = generate-keypair (text-to-bytes "verdict-publish-test-seed")
+
+  vpt-proposal-id : Text
+  vpt-proposal-id = "proposal-0001"
+
+Section: Helpers
+
+  vpt-kind-at : RepoState, Integer -> Text
+  vpt-kind-at (repo) (i) =
+    if i >= list-length (repo.verdict-outbox) then "(none)"
+    else verdict-kind-name ((list-at (repo.verdict-outbox) i).kind)
+
+  vpt-yes : Boolean -> Text
+  vpt-yes (b) = if b then "yes" else "no"
 
 Section: Body
 
+ Every measurement is bound as a VALUE at the moment it is true, before
+ the next publish runs. RepoState is threaded through `__record-set`,
+ which stores into the record and returns the SAME one, so `r0`, `r1`
+ and `r2` are three names for one object. Printing after the chain is
+ built reports the final state three times, which reads as publish doing
+ nothing. This is the trap publish-proposal-test fell into first.
+
   opening : [Console] Nothing =
-    let repo = repo-empty
-    in let ob = integer-to-text (outbox-size repo)
+    let trusted = keyring-add keyring-empty "fester" (vpt-keypair.public-key) 100
+    in let r0 = repo-empty
+    in let size0 = verdict-outbox-size r0
+    in let r1 = publish-verdict-accept r0 vpt-keypair vpt-proposal-id "it builds" 100
+    in let size1 = verdict-outbox-size r1
+    in let kind1 = vpt-kind-at r1 0
+    in let v = list-at (r1.verdict-outbox) 0
+    in let sig-trusted = vpt-yes (verify-verdict-signature trusted v)
+    in let sig-untrusted = vpt-yes (verify-verdict-signature keyring-empty v)
+    in let author = v.author-fingerprint
+    in let r2 = publish-verdict-reject r1 vpt-keypair vpt-proposal-id "it does not" 200
+    in let size2 = verdict-outbox-size r2
+    in let kind2a = vpt-kind-at r2 0
+    in let kind2b = vpt-kind-at r2 1
+    in let r3 = drain-verdict-outbox r2
+    in let size3 = verdict-outbox-size r3
     in act
-      print-line-uni ("outbox=" & ob)
-      print-line-uni "ok"
+      print-line-uni ("size0=" & show size0)
+      print-line-uni ("size1=" & show size1)
+      print-line-uni ("kind1=" & kind1)
+      print-line-uni ("author-matches=" & vpt-yes (author == vpt-keypair.fingerprint))
+      print-line-uni ("sig-trusted=" & sig-trusted)
+      print-line-uni ("sig-untrusted=" & sig-untrusted)
+      print-line-uni ("size2=" & show size2)
+      print-line-uni ("kind2a=" & kind2a)
+      print-line-uni ("kind2b=" & kind2b)
+      print-line-uni ("size3=" & show size3)
     end

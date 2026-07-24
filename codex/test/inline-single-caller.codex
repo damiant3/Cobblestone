@@ -1,0 +1,61 @@
+Chapter: InlineSingleCaller
+
+ Four shapes the single-caller inliner must get
+ right, run with the pass switched on by the `.flags` sidecar.
+
+ What this test can and cannot see is worth stating, because it decides
+ what it is for. A correct optimizer does not change any answer, so
+ nothing below can tell whether a definition was inlined -- run it with
+ the pass off and every line is identical. It is not a firing test and
+ must not be read as one; that evidence is the emitted symbol map, where
+ an inlined definition is absent and a declined one is present.
+
+ What it pins is that the pass does not MISCOMPILE these four shapes,
+ and the third and fourth are the pair that earns it:
+
+   wide     a body with an `if`, which leaf inlining refuses outright, at
+            a single call site.
+   arity4   four parameters. Leaf inlining caps at three because it pays
+            for the body at every site; a single site has nothing to
+            duplicate, so the cap does not apply here.
+   free     a body naming a global, inlined into a caller with no local
+            of that name. Must still answer 101.
+   shadowed the SAME body naming the SAME global, at a site where a local
+            of that name is in scope. Splicing it there would rebind the
+            global to the caller's 7 and answer 8. It must answer 101.
+
+ `free` and `shadowed` need separate helpers with identical bodies, and
+ that is not duplication for its own sake: one helper called from both
+ sites would have two references, both sites would be declined for that
+ reason alone, and the capture guard would never be reached. Each has to
+ be a single-caller definition to put the guard under load.
+
+ A wrong answer here is 8 on the last line. That is the capture bug this
+ pass is most likely to grow, and it is the reason the pair exists.
+
+Section: Helpers
+
+  isc-g : Integer
+  isc-g = 100
+
+  isc-add-g : Integer -> Integer
+  isc-add-g (x) = x + isc-g
+
+  isc-add-h : Integer -> Integer
+  isc-add-h (x) = x + isc-g
+
+  isc-pick : Integer, Integer -> Integer
+  isc-pick (a) (b) = if a > b then a - b else b - a
+
+  isc-four : Integer, Integer, Integer, Integer -> Integer
+  isc-four (a) (b) (c) (d) = a + b + c + d
+
+Section: Entry
+
+  opening : [Console] Nothing
+  opening = act
+    print-line-uni ("wide " & show (isc-pick 9 4))
+    print-line-uni ("arity4 " & show (isc-four 1 2 3 4))
+    print-line-uni ("free " & show (isc-add-g 1))
+    print-line-uni ("shadowed " & show (let isc-g = 7 in isc-add-h 1))
+  end

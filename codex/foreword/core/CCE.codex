@@ -328,17 +328,23 @@ Section: Unicode Conversion
 
   from-unicode : Integer -> Integer
   from-unicode (u) =
-    let t0 = from-unicode-tier0 u 0 128
+    let t0 = from-unicode-tier0 cce-to-unicode-table u 0 128
     in if t0 >= 0 then t0
     else let t1 = from-unicode-tier1 u 0
     in if t1 >= 0 then t1
     else from-unicode-tier2 u 0
 
-  from-unicode-tier0 : Integer, Integer, Integer -> Integer
-  from-unicode-tier0 (u) (i) (len) =
+ The table is threaded as a parameter rather than named inside the loop. A list
+ constant is a definition, not storage: every mention re-materialises all 128
+ elements, so naming it at the recursion site rebuilt the whole table once per
+ comparison, and this search is the reverse map every character crossing the
+ I/O boundary goes through.
+
+  from-unicode-tier0 : List Integer, Integer, Integer, Integer -> Integer
+  from-unicode-tier0 (tbl) (u) (i) (len) =
     if i >= len then -1
-    else if list-at cce-to-unicode-table i == u then i
-    else from-unicode-tier0 u (i + 1) len
+    else if list-at tbl i == u then i
+    else from-unicode-tier0 tbl u (i + 1) len
 
   from-unicode-tier1 : Integer, Integer -> Integer
   from-unicode-tier1 (u) (block) =
@@ -367,5 +373,143 @@ Section: Unicode Conversion
       if u < base + size then cce-tier2-cce-base block + (u - base)
       else from-unicode-tier2 u (block + 1)
     else from-unicode-tier2 u (block + 1)
+
+Section: UTF-8 Boundary
+
+ UTF-8 is what arrives from outside: a file read off a disk, a byte off a socket.
+ It is never an internal representation. A sequence is decoded to a Unicode code
+ point here, at the edge, and from-unicode carries that code point the rest of the
+ way in. Nothing above this section sees a UTF-8 byte.
+
+ Handing each byte of a multi-byte sequence to from-unicode separately is the
+ mistake this section exists to stop, and it is worse than an error. Every
+ continuation byte lies in 128..191, which is a range from-unicode answers for as
+ though it were Latin Extended -- so a two-byte sequence does not fail to convert,
+ it converts into two different characters. The text is not rejected; it is
+ quietly replaced. That is why tools/cdx-store could only ever be honest about the
+ single-byte range.
+
+ A lead byte names the length of the sequence it starts. A byte that is a
+ continuation, or announces more than four bytes, starts nothing.
+
+  utf8-decode-length : Integer -> Integer
+  utf8-decode-length (b) =
+    if b < 128 then 1
+    else if b < 192 then 0
+    else if b < 224 then 2
+    else if b < 240 then 3
+    else if b < 248 then 4
+    else 0
+
+  utf8-cont : List Integer, Integer -> Integer
+  utf8-cont (bytes) (i) =
+    if i >= list-length bytes then -1
+    else let b = list-at bytes i
+    in if b < 128 then -1
+    else if b >= 192 then -1
+    else bit-and b 63
+
+  utf8-assemble-loop : List Integer, Integer, Integer, Integer -> Integer
+  utf8-assemble-loop (bytes) (i) (stop) (acc) =
+    if i >= stop then acc
+    else let c = utf8-cont bytes i
+    in if c < 0 then -1
+    else utf8-assemble-loop bytes (i + 1) stop (bit-or (bit-shl acc 6) c)
+
+  utf8-assemble : List Integer, Integer, Integer, Integer -> Integer
+  utf8-assemble (bytes) (i) (mask) (n) =
+    if i + n > list-length bytes then -1
+    else utf8-assemble-loop bytes (i + 1) (i + n) (bit-and (list-at bytes i) mask)
+
+ A truncated sequence at the end of the buffer answers negative one rather than
+ reading past it, so a file cut mid-character is a dropped character and not a
+ fault.
+
+  utf8-code-point-at : List Integer, Integer -> Integer
+  utf8-code-point-at (bytes) (i) =
+    if i >= list-length bytes then -1
+    else let n = utf8-decode-length (list-at bytes i)
+    in if n == 1 then list-at bytes i
+    else if n == 2 then utf8-assemble bytes i 31 2
+    else if n == 3 then utf8-assemble bytes i 15 3
+    else if n == 4 then utf8-assemble bytes i 7 4
+    else -1
+
+ A code point CCE does not carry is dropped, which is the same answer the
+ compiler's own boundary gives a carriage return. A byte that decodes to nothing
+ advances by one so a malformed run cannot stall the walk.
+
+ A CCE code point above 127 is appended through cce-encode, one byte at a time,
+ and NOT through code-to-char. code-to-char keeps only the low byte: the CJK
+ code point 1325 comes back as 45, a hyphen, with no error anywhere. Text is a
+ byte sequence and char-at indexes bytes, so a multi-byte character is built by
+ appending its encoding and read back by cce-decode-at, never by char-code.
+
+ The walk gathers CCE bytes into a list and joins them once at the end, rather
+ than growing a Text one byte at a time. Text append allocates a fresh value of
+ the combined length, so folding left over n bytes allocates n squared over two
+ -- 840 MB for a 40 KB file, which is what made this conversion the ceiling on
+ how much source the store could ingest. Append is associative, so the order of
+ the joins is free and only the shape of the tree costs anything: joining the
+ halves recursively allocates each byte once per level, n log n in total, and
+ the same bytes come out in the same order. The two differ by a factor of about
+ thirteen hundred at 40 KB and the result is identical.
+
+  cce-join-bytes : List Integer, Integer, Integer -> Text
+  cce-join-bytes (bytes) (lo) (hi) =
+    if hi <= lo then ""
+    else if hi - lo == 1 then char-to-text (code-to-char (list-at bytes lo))
+    else let mid = lo + (hi - lo) / 2
+    in cce-join-bytes bytes lo mid & cce-join-bytes bytes mid hi
+
+  cce-push-encoded : List Integer, List Integer, Integer, Integer -> List Integer
+  cce-push-encoded (acc) (bs) (i) (n) =
+    if i >= n then acc
+    else cce-push-encoded (list-push acc (list-at bs i)) bs (i + 1) n
+
+  utf8-to-text-loop : List Integer, Integer, Integer, List Integer -> List Integer
+  utf8-to-text-loop (bytes) (i) (len) (acc) =
+    if i >= len then acc
+    else let n = utf8-decode-length (list-at bytes i)
+    in if n == 0 then utf8-to-text-loop bytes (i + 1) len acc
+    else let u = utf8-code-point-at bytes i
+    in if u < 0 then utf8-to-text-loop bytes (i + 1) len acc
+    else let c = from-unicode u
+    in if c < 0 then utf8-to-text-loop bytes (i + n) len acc
+    else let e = cce-encode c
+    in utf8-to-text-loop bytes (i + n) len (cce-push-encoded acc e 0 (list-length e))
+
+  utf8-bytes-to-text : List Integer -> Text
+  utf8-bytes-to-text (bytes) =
+    let out = utf8-to-text-loop bytes 0 (list-length bytes) []
+    in cce-join-bytes out 0 (list-length out)
+
+ The encoder is here so the boundary can be crossed in both directions and so a
+ round-trip can be asserted. It takes a Unicode code point, not a CCE one.
+
+  utf8-encode-cp : Integer -> List Integer
+  utf8-encode-cp (u) =
+    if u < 0 then []
+    else if u < 128 then [u]
+    else if u < 2048 then
+      [bit-or 192 (bit-shru u 6), bit-or 128 (bit-and u 63)]
+    else if u < 65536 then
+      [bit-or 224 (bit-shru u 12), bit-or 128 (bit-and (bit-shru u 6) 63), bit-or 128 (bit-and u 63)]
+    else
+      [bit-or 240 (bit-shru u 18), bit-or 128 (bit-and (bit-shru u 12) 63), bit-or 128 (bit-and (bit-shru u 6) 63), bit-or 128 (bit-and u 63)]
+
+ text-length is a byte count, so the walk steps by the CCE character's own
+ width rather than by one.
+
+  utf8-from-text-loop : Text, Integer, Integer, List Integer -> List Integer
+  utf8-from-text-loop (t) (i) (len) (acc) =
+    if i >= len then acc
+    else let n = cce-decode-length (char-code (char-at t i))
+    in let u = to-unicode (cce-decode-at t i)
+    in utf8-from-text-loop t (i + n) len (acc & utf8-encode-cp u)
+
+  text-to-utf8-bytes : Text -> List Integer
+  text-to-utf8-bytes (t) =
+    utf8-from-text-loop t 0 (text-length t) []
 
 Page 1

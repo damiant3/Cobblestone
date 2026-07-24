@@ -15,7 +15,7 @@ Section: Expressions
    | IfExpr (Expr) (Expr) (Expr)
    | LetExpr (List LetBind) (Expr)
    | MatchExpr (Expr) (List MatchArm)
-   | ListExpr (List Expr)
+   | ListExpr (List Expr) (SourceSpan)
    | RecordExpr (Token) (List RecordFieldExpr)
    | FieldExpr (Expr) (Token)
    | ParenExpr (Expr)
@@ -159,34 +159,12 @@ Section: Definitions
 
 Section: Prose Classification
 
-  ProseTransition =
-   | PtNone
-   | PtWeSay
-   | PtThisIsWritten
-
-  ProseTemplate =
-   | PtNoTemplate
-   | PtRecordTemplate (Text)
-   | PtVariantTemplate (Text)
-   | PtFunctionTemplate (Text)
-   | PtConstraintTemplate
-   | PtProofTemplate
-   | PtProcedureTemplate
-   | PtQuantifiedTemplate
-
-  ProseBlock = record {
-   text : Text,
-   transition : ProseTransition,
-   template : ProseTemplate
-  }
-
-Section: Annotations
-
-  AnnotationNode = record {
-   kind : Text,
-   target : Text,
-   body : Text
-  }
+ ProseTransition, ProseTemplate, ProseBlock and AnnotationNode are
+ declared beside IRTextMeta in IR chapter IRChapter, which is the
+ record that carries them to emission. They were here, and a plug
+ could not read the pblocks and anns forms off the wire because the
+ plug bundle takes IRChapter's declarations and deliberately leaves
+ this chapter's 66 CST declarations behind.
 
 Section: Document
  A chapter header carries three kinds of declaration — a citation, a
@@ -276,8 +254,36 @@ Section: Deck Copies
  scratch -- substring copies bytes, so the rebuilt text does not
  point into the reclaimed region.
 
+ That last sentence described the intent and not the code until
+ 2026-07-19. `copy-sx-text` had no durability test: it rematerialized
+ EVERY text unconditionally, and its `b` parameter was threaded through
+ all 36 copiers and never read. Its two siblings, `copy-sx-token` and
+ `copy-sx-span`, both carried the `address-of x < b` guard, so the
+ omission read as deliberate asymmetry rather than a gap.
+
+ It cost most of the PARSE-KEEP deck. Measured on the 2.66 MB compiler
+ source: the keep deck used **254 MB**, against 12.2 MB of parse scratch
+ it was copying out of -- a 21x expansion in a walk that only rebuilds
+ survivors and should shrink. With the guard it uses **11.6 MB**, very
+ slightly less than the scratch, which is the shape a survivor-copy is
+ supposed to have. Headroom under the 384 MB floor went from 1.59x to
+ about 33x.
+
+ The tell was that the ratio was not a constant. A 2.9 KB source put
+ 26 KB in the keep deck against 297 KB of scratch -- 0.09x, copying
+ correctly -- while the big source ran at 21x. A structural copy whose
+ expansion GROWS with input size is not copying structure; it is
+ duplicating something shared, and the only shared thing here is text.
+
+ Sharing is sound for exactly the reason it is sound for tokens and
+ spans: a text below `b` lives in the LEX deck or lower, and
+ `phase-compact` rewinds to a deck position at or above `b`, so it
+ survives. Above `b` is scratch and must still be copied by bytes.
+
   copy-sx-text : Integer, Text -> Text
-  copy-sx-text (b) (t) = substring t 0 (text-length t)
+  copy-sx-text (b) (t) =
+   if address-of t < b then t
+   else substring t 0 (text-length t)
 
   copy-sx-texts : Integer, List Text -> List Text
   copy-sx-texts (b) (ts) = for t in ts -> copy-sx-text b t
@@ -482,7 +488,7 @@ Section: Deck Copies
     is IfExpr (c) (t) (f) -> IfExpr (copy-sx-expr b c) (copy-sx-expr b t) (copy-sx-expr b f)
     is LetExpr (binds) (body) -> LetExpr (for lb in binds -> copy-sx-letbind b lb) (copy-sx-expr b body)
     is MatchExpr (scrut) (arms) -> MatchExpr (copy-sx-expr b scrut) (for a in arms -> copy-sx-matcharm b a)
-    is ListExpr (els) -> ListExpr (for el in els -> copy-sx-expr b el)
+    is ListExpr (els) (sp) -> ListExpr (for el in els -> copy-sx-expr b el) (copy-sx-span b sp)
     is RecordExpr (name) (fields) -> RecordExpr (copy-sx-token b name) (for f in fields -> copy-sx-fieldexpr b f)
     is FieldExpr (rec) (field) -> FieldExpr (copy-sx-expr b rec) (copy-sx-token b field)
     is ParenExpr (inner) -> ParenExpr (copy-sx-expr b inner)
@@ -592,7 +598,9 @@ Section: Deck Copies
   copy-sx-proseblock (b) (p) = ProseBlock {
    text = copy-sx-text b (p.text),
    transition = copy-sx-ptrans (p.transition),
-   template = copy-sx-ptemplate b (p.template)
+   template = copy-sx-ptemplate b (p.template),
+   anchor = copy-sx-text b (p.anchor),
+   offset = p.offset
   }
 
   copy-sx-annotation : Integer, AnnotationNode -> AnnotationNode
@@ -617,6 +625,73 @@ Section: Deck Copies
    error-count = bag.error-count,
    truncated = bag.truncated
   }
+
+ The guarded form of the document copy. The keep reservation sits BELOW
+ the scratch this copy reads, so a copy that outgrows the floor writes
+ into its own source and dereferences the overwrite -- the shape that
+ dies in a #GP with no diagnostic. The def and type-def
+ loops, which carry the volume, check the live allocation frontier
+ against the floor per element and STOP rather than cross it; a guard
+ band above the reservation absorbs what the coarser-grained remainder
+ of the copy allocates past the check.
+
+ The frontier is __heap-save (R10) and not __deck-pos, because this
+ copy runs inside a phase-wide deck-record extent: __deck-exit writes
+ the deck-pos cell back only when the nesting counter returns to zero,
+ so inside such an extent the cell is FROZEN at the deck's base and
+ every allocation moves R10 instead. Read the cell here and the test
+ reduces to "is the floor below its own base", which is never true, so
+ the guard never fires however far the copy runs. Measured 2026-07-21
+ on LOWER, which had the identical defect: with the cell read, a
+ 16 MB floor reported `used=-5307132` -- the phase had overrun so far
+ it destroyed the record measuring it -- and with R10 read it stops at
+ 8,487,976, one guard band short.
+
+ On saturation the ORIGINAL document is
+ returned shared and sat is 1 -- the caller must raise CDX9002 for the
+ phase, which halts the compile before the shared scratch is compacted
+ out from under it, exactly the CHECK-KEEP mc-sat contract.
+
+  GuardedDocCopy = record {
+   doc : Document,
+   sat : Integer
+  }
+
+  copy-sx-defs-guarded : Integer, Integer, List Def, Integer, Integer, List Def -> List Def
+  copy-sx-defs-guarded (b) (ceiling) (ds) (i) (len) (acc) =
+   if i == len then acc
+   else if __heap-save >= ceiling then acc
+   else copy-sx-defs-guarded b ceiling ds (i + 1) len (list-push acc (copy-sx-def b (list-at ds i)))
+
+  copy-sx-typedefs-guarded : Integer, Integer, List TypeDef, Integer, Integer, List TypeDef -> List TypeDef
+  copy-sx-typedefs-guarded (b) (ceiling) (ts) (i) (len) (acc) =
+   if i == len then acc
+   else if __heap-save >= ceiling then acc
+   else copy-sx-typedefs-guarded b ceiling ts (i + 1) len (list-push acc (copy-sx-typedef b (list-at ts i)))
+
+  copy-sx-document-guarded : Integer, Integer, Document -> GuardedDocCopy
+  copy-sx-document-guarded (b) (ceiling) (d) =
+   let defs2 = copy-sx-defs-guarded b ceiling (d.defs) 0 (list-length (d.defs)) []
+   in let tds2 = copy-sx-typedefs-guarded b ceiling (d.type-defs) 0 (list-length (d.type-defs)) []
+   in if __heap-save >= ceiling
+      then GuardedDocCopy { doc = d, sat = 1 }
+      else GuardedDocCopy { doc = Document {
+       defs = defs2,
+       type-defs = tds2,
+       effect-defs = for e in (d.effect-defs) -> copy-sx-effectdef b e,
+       class-defs = for c in (d.class-defs) -> copy-sx-classdef b c,
+       instance-defs = for i in (d.instance-defs) -> copy-sx-instancedef b i,
+       citations = for c in (d.citations) -> copy-sx-citesdecl b c,
+       quotations = for q in (d.quotations) -> copy-sx-citesdecl b q,
+       trust-keys = for k in (d.trust-keys) -> copy-sx-citesdecl b k,
+       ground-effects = copy-sx-texts b (d.ground-effects),
+       chapter-title = copy-sx-text b (d.chapter-title),
+       section-titles = copy-sx-texts b (d.section-titles),
+       prose = copy-sx-text b (d.prose),
+       prose-blocks = for p in (d.prose-blocks) -> copy-sx-proseblock b p,
+       annotations = for a in (d.annotations) -> copy-sx-annotation b a,
+       parse-bag = copy-sx-bag b (d.parse-bag)
+      }, sat = 0 }
 
   copy-sx-document : Integer, Document -> Document
   copy-sx-document (b) (d) = Document {
@@ -659,7 +734,8 @@ Section: Definition Headers (for streaming)
    def-headers : List DefHeader,
    citations : List CitesDecl,
    chapter-title : Text,
-   section-titles : List Text
+   section-titles : List Text,
+   chapter-names : List Text
   }
 
 Page 1

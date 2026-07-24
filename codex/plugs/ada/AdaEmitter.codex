@@ -115,15 +115,22 @@ Section: Type Emission
     is CharTy -> "Long_Long_Integer"
     is VoidTy -> "Boolean"
     is NothingTy -> "Boolean"
+    is ProofTy -> "Boolean"
+    is PropEqTy (pl) (pr) -> "Boolean"
     is ErrorTy -> "Long_Long_Integer"
-    is FunTy (p) (r) -> "Long_Long_Integer"
+    is FunTy (p) (fnrow) (r) -> "Long_Long_Integer"
     is ListTy (elem) -> "Long_Long_Integer"
     is TypeVar (id) -> "Long_Long_Integer"
     is ForAllTy (id) (body) -> ada-type body
+    is ForAllEff (id) (body) -> ada-type body
+    is LinearTy (body) -> ada-type body
+    is TypeApply (body) (tyarg) -> ada-type body
     is SumTy (name) (ty-args) (ctors) -> ada-cap-sanitize (name.value)
     is RecordTy (name) (ty-args) (fields) -> ada-cap-sanitize (name.value)
     is ConstructedTy (name) (args) -> ada-cap-sanitize (name.value)
+    is TypeCon (name) -> ada-cap-sanitize (name.value)
     is VectorTy (vn) (vt) -> "Long_Long_Integer"
+    is VectorMaskTy (vn) -> "Long_Long_Integer"
     is EffectfulTy (effects) (sc) (ret) -> ada-type ret
     is LinkedListTy (elem) -> "Long_Long_Integer"
     is RealApproxTy -> "Long_Float"
@@ -141,11 +148,12 @@ Section: Type Definition Emission
   emit-ada-type-def : ATypeDef -> Text
   emit-ada-type-def (td) =
    when td
-    is ARecordTypeDef (name) (tparams) (fields) (s) ->
+    is ARecordTypeDef (name) (tparams) (fields) (recmut) (s) ->
      let n = ada-cap-sanitize (name.value)
      in "   type " & n & " is record\n" & emit-ada-record-fields fields 0 & "   end record;\n\n"
     is AVariantTypeDef (name) (tparams) (ctors) (s) ->
      emit-ada-sum-type (name.value) ctors
+    is AUnitTypeDef (name) (unitbase) (s) -> ""
 
   emit-ada-record-fields : List ARecordFieldDef, Integer -> Text
   emit-ada-record-fields (fields) (i) =
@@ -159,8 +167,12 @@ Section: Type Definition Emission
     is ANamedType (name) (s) -> ada-when-type-name (name.value)
     is AFunType (p) (r) (s) -> "Long_Long_Integer"
     is AAppType (base) (args) (s) -> emit-ada-atype-expr base
-    is AEffectType (effs) (scopes) (r) (s) -> emit-ada-atype-expr r
+    is AEffectType (effs) (scopes) (efftail) (r) (s) -> emit-ada-atype-expr r
     is ABoundedIntType (b) (lo) (hi) (mode) (s) -> emit-ada-atype-expr b
+    is ALinearType (b) (s) -> emit-ada-atype-expr b
+    is AConstrainedType (ctcls) (ctparam) (b) (s) -> emit-ada-atype-expr b
+    is AForallType (fav) (favt) (b) (s) -> emit-ada-atype-expr b
+    is APropEqType (b) (peright) (s) -> emit-ada-atype-expr b
 
   ada-when-type-name : Text -> Text
   ada-when-type-name (n) =
@@ -215,7 +227,7 @@ Section: Expression Emission
     is IrCharLit (n) (sp) -> integer-to-text n
     is IrName (n) (ty) (sp) -> emit-ada-name n ty arities
     is IrBinary (op) (l) (r) (ty) (sp) -> emit-ada-binary op l r arities
-    is IrNegate (operand) (sp) -> "(-" & emit-ada-expr-at operand arities (depth + 1) & ")"
+    is IrNegate (operand) (nty) (sp) -> "(-" & emit-ada-expr-at operand arities (depth + 1) & ")"
     is IrIf (c) (t) (el) (ty) (sp) -> "(if " & emit-ada-expr-at c arities (depth + 1) & " then " & emit-ada-expr-at t arities (depth + 1) & " else " & emit-ada-expr-at el arities (depth + 1) & ")"
     is IrLet (name) (ty) (val) (body) (sp) -> "(declare " & ada-cap-sanitize name & " : constant " & ada-type ty & " := " & emit-ada-expr-at val arities (depth + 1) & " begin " & emit-ada-expr-at body arities (depth + 1) & ")"
     is IrApply (f) (a) (ty) (sp) -> emit-ada-apply e arities
@@ -267,7 +279,7 @@ Section: Expression Emission
     is IrSubInt | IrSubNum | IrSubVec | IrSubRealApprox | IrSubRealTrapping | IrSubRealSaturating -> "-"
     is IrMulInt | IrMulNum | IrMulVec | IrMulRealApprox | IrMulRealTrapping | IrMulRealSaturating -> "*"
     is IrDivInt | IrDivNum | IrDivVec | IrDivRealApprox | IrDivRealTrapping | IrDivRealSaturating -> "/"
-    is IrRemInt -> "mod"
+    is IrRemInt -> "rem"
     is IrEq -> "="
     is IrNotEq -> "/="
     is IrLt | IrLtVec -> "<"
@@ -295,7 +307,7 @@ Section: Expression Emission
    "get-args", "get-state", "int-mod", "integer-to-text", "is-digit",
    "is-letter", "is-whitespace", "list-at", "list-insert-at",
    "list-length", "list-set-at", "list-snoc", "max", "min", "negate",
-   "print-error-uni", "print-line-uni", "process-exit", "read-file",
+   "print-error-uni", "print-line-uni", "process-exit", "read-text",
    "run-state", "set-state", "show", "substring", "text-compare",
    "text-concat-list", "text-contains", "text-replace", "text-split",
    "text-starts-with", "text-to-integer", "write-file"]
@@ -335,7 +347,7 @@ Section: Expression Emission
    else if idx == 13 then "Ada.Directories.Exists(To_String(" & emit-ada-expr (list-at args 0) arities & "))"
    else if idx == 14 then "Ada.Command_Line.Argument_Count"
    else if idx == 15 then "State_Value"
-   else if idx == 16 then "(" & emit-ada-expr (list-at args 0) arities & " mod " & emit-ada-expr (list-at args 1) arities & ")"
+   else if idx == 16 then "(" & emit-ada-expr (list-at args 0) arities & " mod abs (" & emit-ada-expr (list-at args 1) arities & "))"
    else if idx == 17 then "To_Unbounded_String(Long_Long_Integer'Image(" & emit-ada-expr (list-at args 0) arities & "))"
    else if idx == 18 then "Ada.Characters.Handling.Is_Digit(Character'Val(Integer(" & emit-ada-expr (list-at args 0) arities & ")))"
    else if idx == 19 then "Ada.Characters.Handling.Is_Letter(Character'Val(Integer(" & emit-ada-expr (list-at args 0) arities & ")))"
@@ -510,21 +522,27 @@ Section: Definition Emission
   ada-is-effectful (ty) =
    when ty
     is EffectfulTy (effs) (sc) (ret) -> True
-    is FunTy (p) (r) -> ada-is-effectful r
+    is FunTy (p) (fnrow) (r) -> ada-is-effectful r
     is ForAllTy (id) (body) -> ada-is-effectful body
+    is ForAllEff (id) (body) -> ada-is-effectful body
+    is LinearTy (body) -> ada-is-effectful body
+    is TypeApply (body) (tyarg) -> ada-is-effectful body
     is otherwise -> False
 
   ada-get-return-type : CodexType, Integer -> CodexType
   ada-get-return-type (ty) (n) =
    if n == 0 then ada-strip-forall ty
    else when ada-strip-forall ty
-    is FunTy (p) (r) -> ada-get-return-type r (n - 1)
+    is FunTy (p) (fnrow) (r) -> ada-get-return-type r (n - 1)
     is otherwise -> ty
 
   ada-strip-forall : CodexType -> CodexType
   ada-strip-forall (ty) =
    when ty
     is ForAllTy (id) (body) -> ada-strip-forall body
+    is ForAllEff (id) (body) -> ada-strip-forall body
+    is LinearTy (body) -> ada-strip-forall body
+    is TypeApply (body) (tyarg) -> ada-strip-forall body
     is otherwise -> ty
 
   emit-ada-procedure : IRDef, List ArityEntry -> Text

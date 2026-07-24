@@ -12,7 +12,14 @@
 param(
     [Parameter(Mandatory=$true)] [string]$Src,
     [Parameter(Mandatory=$true)] [string]$Out,
-    [int]$MemMB = 3072
+    [int]$MemMB = 3072,
+    # Where the intermediate IR, its log, and the wire bytes are written. The
+    # default keeps them as build-output/last-compile.* because that is the
+    # file you reach for when one compile misbehaves. They are the only shared
+    # paths in this pipeline (compile.ps1 and run.ps1 use GetTempFileName
+    # throughout), so a caller running several compiles at once must give each
+    # its own directory or they overwrite each other's IR.
+    [string]$WorkDir = ''
 )
 
 Set-StrictMode -Version Latest
@@ -22,7 +29,7 @@ $ErrorActionPreference = 'Stop'
 
 $Repo     = (Resolve-Path (Join-Path $PSScriptRoot '..' '..' '..')).Path
 $PlugDir  = (Resolve-Path $PSScriptRoot).Path
-$OutDir   = Join-Path $PlugDir 'build-output'
+$OutDir   = if ($WorkDir) { $WorkDir } else { Join-Path $PlugDir 'build-output' }
 New-Item -ItemType Directory -Force -Path $OutDir | Out-Null
 
 # Phase 1: compile to IR
@@ -118,6 +125,12 @@ $textEnd = $textStart + $codeLen
 $rodataStart = [int](($textEnd + 7) -band 0xFFFFFFF8)
 [uint64]$entry = $loadAddr + [uint64]$textStart + [uint64]$entryOffset
 $segFilesz = $rodataStart + $dataLen - $textStart
+# The 240 MB heap reservation looks like the reason the run phase is slow --
+# every renode.log says "Loading block of 251669168 bytes" -- and it is not.
+# Measured on the ARM64 twin of this line, 2026-07-21: the quarter-gigabyte
+# zero-fill costs about 130 ms per test, one per cent, and dropping it does
+# not make eight Renode slots stop flaking either. A test is 12.6s because
+# RenoTimeout is a flat 10s sleep plus ~2.6s of Renode start and teardown.
 $segMemsz = $segFilesz + 0x0F000000
 
 $elf = [System.IO.MemoryStream]::new()

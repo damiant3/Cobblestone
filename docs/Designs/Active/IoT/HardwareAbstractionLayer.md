@@ -9,7 +9,7 @@ itself and for `Flash`, and still absent from the nine board drivers.
 `[Device.Mmio]`, and `Board.codex` carries linear handles for UART, SPI
 and (2026-07-16) `Flash` — the last being the only peripheral with a
 capability of its own. What the board chapters still do not do is thread
-those handles or declare per-peripheral effects (BACKLOG 5.5). See "What
+those handles or declare per-peripheral effects. See "What
 Is Actually Built" below.
 **Upstream**: `docs/PM/IoT/AGENT-PROMPT.md` deliverable 2 (target boards)
 
@@ -48,7 +48,7 @@ syntax and an honest effect row.
 The remaining work is therefore not "build a HAL". It is: take the
 effect and handle-type surface specified below — now demonstrated end to
 end by `Flash` — and put it on the boards that already exist
-(BACKLOG 5.5).
+.
 
 **`Flash` shipped 2026-07-16 (blu)** — it was the highest-value single
 piece of this design, and it is the first peripheral to get the full
@@ -76,7 +76,7 @@ effect row). What flash does **not** yet have is a board chapter that
 implements it against a real controller — the HAL carries the STM32F4/L4
 register shape on a generic base, exactly the reach the UART and SPI
 handles beside it have. That is the same remaining work the rest of this
-document describes, and BACKLOG 5.5 tracks it.
+document describes.
 
 ## The Problem
 
@@ -250,7 +250,7 @@ the Power phase.
   staging write now has a typed path to the bank. What is still unbuilt
   is the wiring: `ota-step` signals `ActionWriteBlock data offset` and
   nothing yet calls `flash-write-page` with it. Unblocked is not done
-  (BACKLOG 5.2).
+  .
 - `[HardRealtime]`-annotated sensor reads and
   motor control loops use `[Gpio]`, `[Clock]`, `[Adc]` effects —
   the effect restrictions (§Effect Integration) are designed to

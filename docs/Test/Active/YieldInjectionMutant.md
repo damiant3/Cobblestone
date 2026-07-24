@@ -7,7 +7,7 @@ to exploit it are effectively nil. You cannot reproduce such a race by
 running the program a million times; you reproduce it by *forcing* the
 interleaving.
 
-This is the technique that proved BACKLOG 4.11(g) — the channel-block
+This is the technique that proved the channel-block
 lost-wakeup — was real and that the fix closes it. It is a general tool for
 any "commit-then-someone-runs" TOCTOU in the scheduler.
 

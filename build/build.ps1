@@ -171,47 +171,62 @@ if (Test-Path $chkConst) {
 }
 
 # The boot cap-bit table (compiler) and the verified-load cap-bit table (OS
-# loader) are two hand-written expansions of one name->bit map; a drift grants
-# a binary different authority by which door it entered. Hard-fail on drift --
-# the in-compiler guard (check-cap-vocab-coherent) cannot reach across the
-# quire boundary. BACKLOG 1.12.
-$chkCaps = Join-Path $PSScriptRoot 'check-cap-tables.ps1'
-if (Test-Path $chkCaps) {
-    & pwsh -NoProfile -File $chkCaps 2>&1 | ForEach-Object { Write-Host "  $_" }
-    if ($LASTEXITCODE -ne 0) {
-        Write-Host 'FAIL: capability bit-tables disagree (boot grant vs verified load) -- BACKLOG 1.12'
-        exit 1
-    }
-}
+# loader) were two hand-written expansions of one name->bit map, and a drift
+# granted a binary different authority by which door it entered. They are one
+# table now -- codex/foreword/core/Capability.codex, cited by both quires --
+# so check-cap-tables.ps1 had nothing left to compare and is deleted with the
+# in-compiler guard (check-cap-vocab-coherent) that had the same fate.
 
-# The third capability list -- the foreword `effect <Name> where` declarations
-# -- is hand-kept and nothing in a compile cross-checks it against
-# capability-vocabulary (an arbitrary user compile does not include all the
-# foreword effect modules, so the in-compiler guard cannot see them all). A new
-# foreword effect with no capability, or a capability with no effect, drifts in
-# silence. This is that guard; the intended asymmetry is listed in the script.
-# BACKLOG 1.13.
+# The foreword `effect <Name> where` declarations are the one part of the
+# capability model that cannot be derived from the shared table: a declaration
+# is a syntax form, not data, and no table can emit one. So this guard is
+# permanent, not interim. Nothing in a compile can do its job either -- an
+# arbitrary user compile does not include all the foreword effect modules, so
+# an in-compiler check cannot see them all. The intended asymmetry is listed
+# in the script.
 $chkEffVocab = Join-Path $PSScriptRoot 'check-effect-vocab.ps1'
 if (Test-Path $chkEffVocab) {
     & pwsh -NoProfile -File $chkEffVocab 2>&1 | ForEach-Object { Write-Host "  $_" }
     if ($LASTEXITCODE -ne 0) {
-        Write-Host 'FAIL: foreword effects and capability vocabulary have drifted -- BACKLOG 1.13'
+        Write-Host 'FAIL: foreword effects and capability vocabulary have drifted -- add the counterpart or record the exception in check-effect-vocab.ps1'
         exit 1
     }
 }
 
-# A builtin name lives in three hand-maintained lists across two quires:
-# NameResolver makes it resolve, sorted-builtin-names routes it to the
-# emitter, x86-builtin-emitters says how to emit it. A name in one and not
-# the others fails at a distance from whatever asked for it -- write-file
-# resolved nowhere and took the entire repository-protocol surface dark with
-# it. No single compile sees all three as tables, so the build checks them.
-# BACKLOG 2.14.
-$chkBuiltins = Join-Path $PSScriptRoot 'check-builtin-tables.ps1'
-if (Test-Path $chkBuiltins) {
-    & pwsh -NoProfile -File $chkBuiltins 2>&1 | ForEach-Object { Write-Host "  $_" }
+# A builtin name used to live in three hand-maintained lists across two
+# quires, and check-builtin-tables.ps1 reconciled them here. It carries one
+# row now (codex/compiler/Types/Builtins.codex: name, type, emitter), and
+# resolve / route / emit are all projections of it, so there is nothing left
+# for a build-time guard to compare. Script and check are both deleted.
+
+# The gate compiles what is ON DISK, so the workspace has to be what the
+# agent thinks it is before any of the rest of this means anything.
+#
+# Two failures put a wrong workspace under a green gate, both of them
+# documented in the agent Perforce process notes since 2026-07-13, and both of
+# them hit again on 2026-07-21 by an agent who had read neither. That is the
+# point: this check does not exist because the traps are subtle, it exists
+# because DOCUMENTING them did not stop them. `p4 unshelve` leaves files at the
+# revision they were shelved at and does not schedule the resolve, so `p4
+# resolve -n` says "nothing to resolve" and means it while your copy is missing
+# every revision submitted since; and an add whose file is already on disk is
+# refused with "Can't clobber writable file" and silently dropped from the
+# changelist, which is how four tests were lost while they were named as
+# pinned.
+#
+# Neither is a conflict, a stale revision the eye can see, or an unresolved
+# file, so nothing in the normal flow reports either one. Running the check by
+# hand was the plan and the plan failed twice; the gate runs it now.
+#
+# Skipped without Perforce (fresh clone, public mirror) -- there is no
+# workspace to be wrong.
+$chkP4 = Join-Path $PSScriptRoot 'p4-stale-check.ps1'
+if ((Test-Path $chkP4) -and (Get-Command p4 -ErrorAction SilentlyContinue) -and
+    (Test-Path (Join-Path $Repo '.p4config'))) {
+    & pwsh -NoProfile -File $chkP4 2>&1 | ForEach-Object { Write-Host "  $_" }
     if ($LASTEXITCODE -ne 0) {
-        Write-Host 'FAIL: builtin tables disagree (resolve / route / emit) -- BACKLOG 2.14'
+        Write-Host 'FAIL: the workspace does not match the depot -- the gate would compile the wrong source'
+        Write-Host '      Fix it with the two commands the check printed. Do not resolve with -ay.'
         exit 1
     }
 }
@@ -227,6 +242,36 @@ if (Test-Path $chkSidecars) {
     & pwsh -NoProfile -File $chkSidecars 2>&1 | ForEach-Object { Write-Host "  $_" }
     if ($LASTEXITCODE -ne 0) {
         Write-Host 'FAIL: a test sidecar names no test'
+        exit 1
+    }
+}
+
+# The diagnostic catalogue (CdxCodes.codex) is read by nobody in the compiler
+# -- cdx-lookup has no caller and whole-program DCE prunes the whole table --
+# so a code raised with no row, or a row whose Name drifted from its constant,
+# is invisible by construction. This reads the catalogue and the raise sites
+# and fails the build when they disagree. It found 13 undocumented codes on
+# its first run.
+$chkCdx = Join-Path $PSScriptRoot 'check-cdx-registry.ps1'
+if (Test-Path $chkCdx) {
+    & pwsh -NoProfile -File $chkCdx 2>&1 | ForEach-Object { Write-Host "  $_" }
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host 'FAIL: the diagnostic catalogue disagrees with the code that raises it'
+        exit 1
+    }
+}
+
+# IRTextParser calls itself the inverse of IRTextEmitter and is not: the
+# emitter can write forms the parser reads as a plausible DEFAULT rather than
+# an error. x86-64 never crosses this wire, so no x86 test and no fixed point
+# can fail on a divergence -- ir-expr-type on IrNegate answered -(-2.5) as 1.7
+# on ARM64 and RISC-V for exactly that reason. Three known holes are recorded
+# in build/plug-wire-baseline.txt; this fails the build on a fourth.
+$chkWire = Join-Path $PSScriptRoot 'check-plug-types.ps1'
+if (Test-Path $chkWire) {
+    & pwsh -NoProfile -File $chkWire 2>&1 | ForEach-Object { Write-Host "  $_" }
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host 'FAIL: the IR text wire lost a form between emitter and plug parser'
         exit 1
     }
 }
@@ -473,6 +518,24 @@ Measure-Phase 'plug-binary' {
             if (Test-Path $blog) { Get-Content $blog | Select-String 'error CDX|CODEGEN-ERRORS' | Select-Object -First 3 | ForEach-Object { Write-Host "  ${bp}: $($_.Line.Trim())" } }
         }
         exit 1
+    }
+}
+
+# -- cross-arch execution: the binary leg above proves the arm64 and riscv
+# plugs BUILD, and nothing ran a byte of what they emit. That is how CL 8221
+# put a PSCI call in every ARM64 program's __start, killed the whole ARM64
+# lane on the committed Renode board, and stayed green here for weeks while
+# 238 tests failed silently. One program per architecture,
+# booted for real. Not the battery -- build/test-cross-batch.ps1 is that, and
+# it stays out-of-band.
+Measure-Phase 'cross-smoke' {
+    $chkCross = Join-Path $PSScriptRoot 'check-cross-smoke.ps1'
+    if (Test-Path $chkCross) {
+        & pwsh -NoProfile -File $chkCross 2>&1 | ForEach-Object { Write-Host "  $_" }
+        if ($LASTEXITCODE -ne 0) {
+            Write-Host 'FAIL: a cross-arch backend stopped executing correctly'
+            exit 1
+        }
     }
 }
 

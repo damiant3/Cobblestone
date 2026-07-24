@@ -10,12 +10,22 @@ Section: Builtin Detection
  raised CDX2042 at a distance from whoever asked for it. An emitter with no
  name here was unreachable, because is-builtin would never say yes.
 
- Neither drift is expressible now. This list is DERIVED from the emitter
- table, so being routed IS having an emitter, which is what routing was
- always supposed to mean. build/check-builtin-tables.ps1 checked both of
- those directions and now checks neither, because neither has anywhere left
- to live. The third list, NameResolver's builtin-names, is still separate
- and still maintained by hand; that is the rest of BACKLOG 2.14.
+ No drift is expressible now, and there is no longer a second literal for
+ one to open up against. This list is DERIVED from the emitter table, so
+ being routed IS having an emitter, which is what routing was always
+ supposed to mean; and the emitter table is itself derived from the one
+ table in Types chapter Builtins, whose rows carry the name, the type and
+ the emitter together. build/check-builtin-tables.ps1 checked the last of
+ these relations and is deleted, because a relation between two columns of
+ one row is not a relation any more.
+
+ The emitters live over there and are named from here, which is the reverse
+ of the usual direction and worth saying plainly: Emit sorts before Types in
+ the concatenated unit, so `builtins` is a forward reference from this
+ chapter. That already worked before this change, and still does in both
+ directions: capability-vocabulary in Types is a projection of a foreword
+ table, and boot-cap-mask-for in the X86-64 Chapter reads the same one --
+ so nothing here depends on a new property of the unit.
 
  Names are kept in a SkipListText, sorted by the same text-compare that
  skip-list-text-has uses. They arrive already ordered, since
@@ -116,6 +126,12 @@ Section: Builtin Emission
    reg = tmp.reg
   }
 
+ list-at is view-aware: the capacity cell at [p-8] is negative for a
+ tail view, whose [p+8] holds a phantom base shaped exactly like a
+ plain list pointer (see Section: List Views in the list helpers).
+ Both paths finish with the same +8-displacement load, therefore the
+ branch only selects which base the scaled index is added to.
+
   emit-list-at-builtin : CodegenState, List IRExpr -> EmitResult
   emit-list-at-builtin (st) (args) =
     let r0 = emit-expr (st-set-tail-pos st False) (list-at args 0)
@@ -126,10 +142,64 @@ Section: Builtin Emission
    in let addr = alloc-temp (list-loaded.state)
    in let st2 = st-append-code (addr.state) (mov-rr (addr.reg) (r1.reg))
    in let st3 = st-append-code st2 (shl-ri (addr.reg) 3)
-   in let st4 = st-append-code st3 (add-rr (addr.reg) (list-loaded.reg))
-   in let rd = alloc-temp st4
+   in let cap = alloc-temp st3
+   in let st4 = st-append-code (cap.state) (mov-load (cap.reg) (list-loaded.reg) (-8))
+   in let st5 = st-append-code st4 (cmp-ri (cap.reg) 0)
+   in let plain-pos = st5.code-len
+   in let st6 = st-append-code st5 (jcc cc-ge 0)
+   in let st7 = st-append-code st6 (mov-load (cap.reg) (list-loaded.reg) 8)
+   in let st8 = st-append-code st7 (add-rr (addr.reg) (cap.reg))
+   in let over-pos = st8.code-len
+   in let st9 = st-append-code st8 (jmp 0)
+   in let st10 = patch-jcc-at st9 plain-pos (st9.code-len)
+   in let st11 = st-append-code st10 (add-rr (addr.reg) (list-loaded.reg))
+   in let st12 = patch-jmp-at st11 over-pos (st11.code-len)
+   in let rd = alloc-temp st12
    in EmitResult {
    state = st-append-code (rd.state) (mov-load (rd.reg) (addr.reg) 8),
+   reg = rd.reg
+  }
+
+ tag-equal reads the constructor tag word at [p+0] of both variant
+ values -- the same cell every IrCtorPat test loads -- and answers
+ their equality without touching a field. One comparison on bare
+ metal, which is the whole reason the builtin exists; the arguments
+ must be variant values, which the ForAll type in the registry cannot
+ say, and the row's prose there says it instead.
+
+  emit-tag-equal-builtin : CodegenState, List IRExpr -> EmitResult
+  emit-tag-equal-builtin (st) (args) =
+   let a-r = emit-expr (st-set-tail-pos st False) (list-at args 0)
+   in let a-loc = alloc-local (a-r.state)
+   in let st1 = store-local (a-loc.state) (a-loc.reg) (a-r.reg)
+   in let b-r = emit-expr st1 (list-at args 1)
+   in let b-tag = alloc-temp (b-r.state)
+   in let st2 = st-append-code (b-tag.state) (mov-load (b-tag.reg) (b-r.reg) 0)
+   in let a-load = load-local st2 (a-loc.reg)
+   in let a-tag = alloc-temp (a-load.state)
+   in let st3 = st-append-code (a-tag.state) (mov-load (a-tag.reg) (a-load.reg) 0)
+   in let st4 = st-append-code st3 (cmp-rr (a-tag.reg) (b-tag.reg))
+   in let rd = alloc-temp st4
+   in EmitResult {
+    state = st-append-code (st-append-code (rd.state) (setcc cc-e (rd.reg))) (movzx-byte-self (rd.reg)),
+    reg = rd.reg
+   }
+
+  emit-list-head-builtin : CodegenState, List IRExpr -> EmitResult
+  emit-list-head-builtin (st) (args) =
+    let r = emit-expr (st-set-tail-pos st False) (list-at args 0)
+   in let eff = alloc-temp (r.state)
+   in let st1 = st-append-code (eff.state) (mov-rr (eff.reg) (r.reg))
+   in let cap = alloc-temp st1
+   in let st2 = st-append-code (cap.state) (mov-load (cap.reg) (r.reg) (-8))
+   in let st3 = st-append-code st2 (cmp-ri (cap.reg) 0)
+   in let plain-pos = st3.code-len
+   in let st4 = st-append-code st3 (jcc cc-ge 0)
+   in let st5 = st-append-code st4 (mov-load (eff.reg) (r.reg) 8)
+   in let st6 = patch-jcc-at st5 plain-pos (st5.code-len)
+   in let rd = alloc-temp st6
+   in EmitResult {
+   state = st-append-code (rd.state) (mov-load (rd.reg) (eff.reg) 8),
    reg = rd.reg
   }
 
@@ -402,6 +472,78 @@ Section: Builtin Emission
     reg = rd.reg
    }
 
+ int-rem is int-mod without the correction. idiv leaves the truncated
+ remainder in RDX already -- sign of the dividend, magnitude below the
+ divisor's -- and that is exactly what int-rem answers, so these two
+ functions are their int-mod siblings stopped at the mov out of RDX.
+ The branch the siblings continue into is what makes int-mod Euclidean:
+ it adds the divisor's absolute value when the remainder came back
+ negative. Deleting that branch is the whole difference between the two
+ builtins, and it is why int-rem pairs with `/` where int-mod does not.
+
+ Keep the pair together. If the register discipline around idiv changes
+ in one of these, it changes in both -- the clobber is RAX and RDX
+ either way, and the reg-locals fast path exists for the same reason in
+ each.
+
+ These are NOT the path a saturated `int-rem a b` takes. That call is
+ rewritten at lowering into `IrBinary IrRemInt` (`lower-int-rem-apply`),
+ which is what lets the node reach the plugs and what gets it the
+ power-of-two strength reduction and the LIR selector for free. What is
+ left here is the call that lowering does not rewrite, which is the
+ partial application `int-rem x`: the rewrite fires only on the
+ two-argument apply. Both forms were measured against
+ `codex/test/int-rem` -- these functions carried the whole pin before
+ the lowering rewrite existed, which is why they are known good rather
+ than merely plausible.
+
+  emit-int-rem-reg-locals : CodegenState, Integer, Integer -> EmitResult
+  emit-int-rem-reg-locals (st) (a-reg) (b-reg) =
+   let st1 = st-append-code st (mov-rr reg-rax a-reg)
+   in let st2 = st-append-code st1 cqo
+   in let st3 = st-append-code st2 (idiv-r b-reg)
+   in let rd = alloc-temp st3
+   in let st4 = st-append-code (rd.state) (mov-rr (rd.reg) reg-rdx)
+   in EmitResult {
+    state = st4,
+    reg = rd.reg
+   }
+
+  emit-int-rem-builtin : CodegenState, List IRExpr -> EmitResult
+  emit-int-rem-builtin (st) (args) =
+   let a = list-at args 0
+   in let b = list-at args 1
+   in when a
+    is IrName (an) (at) (asp) ->
+     let a-slot = lookup-local (st.locals) an
+     in when b
+      is IrName (bn) (bt) (bsp) ->
+       let b-slot = lookup-local (st.locals) bn
+       in if a-slot >= 0 & a-slot < spill-base & b-slot >= 0 & b-slot < spill-base then emit-int-rem-reg-locals st a-slot b-slot
+       else emit-int-rem-standard st args
+      is otherwise -> emit-int-rem-standard st args
+    is otherwise -> emit-int-rem-standard st args
+
+  emit-int-rem-standard : CodegenState, List IRExpr -> EmitResult
+  emit-int-rem-standard (st) (args) =
+    let r0 = emit-expr (st-set-tail-pos st False) (list-at args 0)
+   in let loc0 = alloc-local (r0.state)
+   in let st1 = store-local (loc0.state) (loc0.reg) (r0.reg)
+   in let r1 = emit-expr st1 (list-at args 1)
+   in let loc1 = alloc-local (r1.state)
+   in let st2 = store-local (loc1.state) (loc1.reg) (r1.reg)
+   in let ld0 = load-local st2 (loc0.reg)
+   in let st3 = st-append-code (ld0.state) (mov-rr reg-rax (ld0.reg))
+   in let st4 = st-append-code st3 cqo
+   in let ld1 = load-local st4 (loc1.reg)
+   in let st5 = st-append-code (ld1.state) (idiv-r (ld1.reg))
+   in let rd = alloc-temp st5
+   in let st6 = st-append-code (rd.state) (mov-rr (rd.reg) reg-rdx)
+   in EmitResult {
+    state = st6,
+    reg = rd.reg
+   }
+
   emit-get-args-builtin : CodegenState -> EmitResult
   emit-get-args-builtin (st) =
     let rd = alloc-temp st
@@ -612,16 +754,17 @@ Section: Builtin Emission
  None of the three had a single call site in the tree; cons and append
  reach __list_cons and __list_append through the :: and & operators
  (IrConsList / IrAppendList in X86_64.codex), which is why nothing ever
- noticed. All three are gone now (fester, 2026-07-16, BACKLOG 2.14).
+ noticed. All three are gone now (fester, 2026-07-16).
 
- A ghost is cheap to leave and expensive to find, so this is checked by
- the build rather than by the next reader: build/check-builtin-tables.ps1
- walks these two lists and NameResolver's, and fails the build on a name
- that is routed with no emitter, or routed and unresolvable, or emitted
- and unrouted. The compiler cannot make that check itself -- the three
- lists live in two quires and are ordinary data, so no single compile sees
- them all as tables -- which is the same reason check-cap-tables.ps1 sits
- in the build and not in the compiler.
+ A ghost is cheap to leave and expensive to find, and for a while this was
+ checked by the build rather than by the next reader:
+ build/check-builtin-tables.ps1 walked these lists and failed on a name
+ that was routed with no emitter, or routed and unresolvable, or emitted
+ and unrouted. A ghost of any of those shapes is now unrepresentable --
+ one row carries the name, the type and the emitter, and routing is a
+ projection of the emitter column -- so the script is deleted. So is
+ check-cap-tables.ps1, which sat in the build for the same reason and
+ lost it the same way when the capability table moved to the foreword.
 
  create-directory is gone too, and the sentence that used to sit here is the
  reason: it said the name stayed "because there is still nothing honest to
@@ -636,7 +779,7 @@ Section: Builtin Emission
  is the state build/check-builtin-tables.ps1 now holds it in.
 
  emit-no-target-impl stood here and is gone with them. It raised CDX2043 for
- a builtin the target could not perform, and nothing called it — once the
+ a builtin the target could not perform, and nothing called it -- once the
  last phantom left this file there was no name to point it at, so the code
  refused a case that could no longer arise. A diagnostic no program can
  provoke is the same promise-that-is-not-kept the paragraph above forbids,
@@ -1549,153 +1692,37 @@ Section: Builtin Registry
   sort-x86-emitters : List BuiltinX86Emitter -> List BuiltinX86Emitter
   sort-x86-emitters (xs) = sort-by xs (\a b -> text-compare (a.name) (b.name))
 
+ char-code, code-to-char and address-of are reinterpretations and not
+ conversions: the operand is already the value the result wants, so all
+ three emit the first argument and nothing else. They shared one inline
+ lambda until the table moved to Types chapter Builtins, and that move is
+ why this function exists rather than the lambda.
+
+ emit-expr is defined twice in the unit -- here in the X86-64 emitter as
+ CodegenState, IRExpr -> EmitResult, and in the Codex Emitter as IRExpr,
+ List Text, Integer -> Text -- so which one a mention resolves to depends on
+ the chapter the mention sits in. Written inline in the table it resolved to
+ the text emitter and would not type-check. Written here it resolves to this
+ one. The name is bound at the call site, so an emitter body is only
+ portable between chapters if every name in it is unique across the unit;
+ this is the single name in the whole table for which that is false. That is
+ the collision, met head-on. A helper with an unambiguous name is the fix
+ that does not depend on the collision either way.
+
+  emit-identity-builtin : CodegenState, List IRExpr -> EmitResult
+  emit-identity-builtin (st) (args) =
+   emit-expr (st-set-tail-pos st False) (list-at args 0)
+
+  emitters-from-builtins : List BuiltinSpec, Integer, Integer, List BuiltinX86Emitter -> List BuiltinX86Emitter
+  emitters-from-builtins (bs) (i) (len) (acc) =
+   if i >= len then acc
+   else let b = list-at bs i
+   in when b.bs-emit
+    is Just (f) -> emitters-from-builtins bs (i + 1) len (list-push acc (BuiltinX86Emitter { name = b.bs-name, emit = f }))
+    is otherwise -> emitters-from-builtins bs (i + 1) len acc
+
   x86-builtin-emitters : List BuiltinX86Emitter
-  x86-builtin-emitters = sort-x86-emitters ([
-   BuiltinX86Emitter { name = "print-line", emit = \s a -> emit-print-line-raw-builtin s a },
-   BuiltinX86Emitter { name = "print-line-raw", emit = \s a -> emit-print-line-raw-builtin s a },
-   BuiltinX86Emitter { name = "print-line-uni", emit = \s a -> emit-print-line-builtin s a },
-   BuiltinX86Emitter { name = "print-uni", emit = \s a -> emit-print-no-newline-builtin s a },
-   BuiltinX86Emitter { name = "print-error", emit = \s a -> emit-print-line-raw-builtin s a },
-   BuiltinX86Emitter { name = "print-error-uni", emit = \s a -> emit-print-line-builtin s a },
-   BuiltinX86Emitter { name = "read-file", emit = \s a -> emit-read-serial-cce-builtin s a },
-   BuiltinX86Emitter { name = "read-file-raw", emit = \s a -> emit-read-file-raw-builtin s a },
-   BuiltinX86Emitter { name = "read-file-uni", emit = \s a -> emit-read-file-builtin s a },
-   BuiltinX86Emitter { name = "read-serial-cce", emit = \s a -> emit-read-serial-cce-builtin s a },
-   BuiltinX86Emitter { name = "read-line", emit = \s a -> emit-read-line-builtin s },
-   BuiltinX86Emitter { name = "read-line-cce", emit = \s a -> emit-read-line-cce-builtin s },
-   BuiltinX86Emitter { name = "write-binary", emit = \s a -> emit-write-binary-builtin s a },
-   BuiltinX86Emitter { name = "write-binary-buf", emit = \s a -> emit-helper-call-3 s a "__write_binary_buf" },
-   BuiltinX86Emitter { name = "text-length", emit = \s a -> emit-text-length-builtin s a },
-   BuiltinX86Emitter { name = "integer-to-text", emit = \s a -> emit-helper-call-1 s a "__itoa" },
-   BuiltinX86Emitter { name = "show", emit = \s a -> emit-show-builtin s a },
-   BuiltinX86Emitter { name = "text-to-integer", emit = \s a -> emit-helper-call-1 s a "__text_to_int" },
-   BuiltinX86Emitter { name = "text-to-double-bits", emit = \s a -> emit-helper-call-1 s a "__text_to_double" },
-   BuiltinX86Emitter { name = "text-replace", emit = \s a -> emit-helper-call-3 s a "__str_replace" },
-   BuiltinX86Emitter { name = "text-contains", emit = \s a -> emit-helper-call-2 s a "__text_contains" },
-   BuiltinX86Emitter { name = "text-starts-with", emit = \s a -> emit-helper-call-2 s a "__text_starts_with" },
-   BuiltinX86Emitter { name = "text-compare", emit = \s a -> emit-helper-call-2 s a "__text_compare" },
-   BuiltinX86Emitter { name = "text-concat-list", emit = \s a -> emit-helper-call-1 s a "__text_concat_list" },
-   BuiltinX86Emitter { name = "text-split", emit = \s a -> emit-helper-call-2 s a "__text_split" },
-   BuiltinX86Emitter { name = "text-to-unicode-bytes", emit = \s a -> emit-helper-call-1 s a "__text_to_unicode_bytes" },
-   BuiltinX86Emitter { name = "unicode-bytes-to-text", emit = \s a -> emit-helper-call-1 s a "__unicode_bytes_to_text" },
-   BuiltinX86Emitter { name = "raw-bytes-to-text", emit = \s a -> emit-helper-call-1 s a "__raw_bytes_to_text" },
-   BuiltinX86Emitter { name = "substring", emit = \s a -> emit-substring-builtin s a },
-   BuiltinX86Emitter { name = "list-length", emit = \s a -> emit-list-length-builtin s a },
-   BuiltinX86Emitter { name = "list-at", emit = \s a -> emit-list-at-builtin s a },
-   BuiltinX86Emitter { name = "list-snoc", emit = \s a -> emit-helper-call-2 s a "__list_snoc" },
-   BuiltinX86Emitter { name = "list-push", emit = \s a -> emit-helper-call-2 s a "__list_snoc" },
-   BuiltinX86Emitter { name = "list-insert-at", emit = \s a -> emit-helper-call-3 s a "__list_insert_at" },
-   BuiltinX86Emitter { name = "list-set-at", emit = \s a -> emit-helper-call-3 s a "__list_set_at" },
-   BuiltinX86Emitter { name = "char-at", emit = \s a -> emit-char-at-builtin s a },
-   BuiltinX86Emitter { name = "char-code-at", emit = \s a -> emit-char-code-at-builtin s a },
-   BuiltinX86Emitter { name = "char-code", emit = \s a -> emit-expr (st-set-tail-pos s False) (list-at a 0) },
-   BuiltinX86Emitter { name = "code-to-char", emit = \s a -> emit-expr (st-set-tail-pos s False) (list-at a 0) },
-   BuiltinX86Emitter { name = "char-to-text", emit = \s a -> emit-char-to-text-builtin s a },
-   BuiltinX86Emitter { name = "is-letter", emit = \s a -> emit-is-letter-builtin s a },
-   BuiltinX86Emitter { name = "is-digit", emit = \s a -> emit-is-digit-builtin s a },
-   BuiltinX86Emitter { name = "is-whitespace", emit = \s a -> emit-is-whitespace-builtin s a },
-   BuiltinX86Emitter { name = "negate", emit = \s a -> emit-negate-builtin s a }
-  ] & [
-   BuiltinX86Emitter { name = "abs", emit = \s a -> emit-abs-builtin s a },
-   BuiltinX86Emitter { name = "gpu-in", emit = \s a -> emit-helper-call-1 s a "port-in-32" },
-   BuiltinX86Emitter { name = "gpu-out", emit = \s a -> emit-helper-call-2 s a "port-out-32" },
-   BuiltinX86Emitter { name = "gpu-mem-read", emit = \s a -> emit-helper-call-2 s a "peek-32" },
-   BuiltinX86Emitter { name = "gpu-mem-write", emit = \s a -> emit-helper-call-3 s a "poke-32" },
-   BuiltinX86Emitter { name = "min", emit = \s a -> emit-min-builtin s a },
-   BuiltinX86Emitter { name = "max", emit = \s a -> emit-max-builtin s a },
-   BuiltinX86Emitter { name = "__narrow", emit = \s a -> emit-narrow-builtin s a },
-   BuiltinX86Emitter { name = "fail", emit = \s a -> emit-fail-builtin s a },
-   BuiltinX86Emitter { name = "int-mod", emit = \s a -> emit-int-mod-builtin s a },
-   BuiltinX86Emitter { name = "get-args", emit = \s a -> emit-get-args-builtin s },
-   BuiltinX86Emitter { name = "current-dir", emit = \s a -> emit-current-dir-builtin s },
-   BuiltinX86Emitter { name = "__record-set", emit = \s a -> emit-record-set-builtin s a },
-   BuiltinX86Emitter { name = "__linked-list-empty", emit = \s a -> emit-linked-list-empty-builtin s a },
-   BuiltinX86Emitter { name = "__linked-list-push", emit = \s a -> emit-linked-list-push-builtin s a },
-   BuiltinX86Emitter { name = "__linked-list-to-list", emit = \s a -> emit-linked-list-to-list-builtin s a },
-   BuiltinX86Emitter { name = "__heap-save", emit = \s a -> emit-heap-save-builtin s },
-   BuiltinX86Emitter { name = "address-of", emit = \s a -> emit-expr (st-set-tail-pos s False) (list-at a 0) },
-   BuiltinX86Emitter { name = "__self-type-defs", emit = \s a -> emit-self-type-defs-builtin s },
-   BuiltinX86Emitter { name = "__heap-restore", emit = \s a -> emit-heap-restore-builtin s a },
-   BuiltinX86Emitter { name = "__heap-advance", emit = \s a -> emit-heap-advance-builtin s a },
-   BuiltinX86Emitter { name = "__memset", emit = \s a -> emit-memset-builtin s a },
-   BuiltinX86Emitter { name = "__deck-pos", emit = \s a -> emit-deck-pos-builtin s },
-   BuiltinX86Emitter { name = "__deck-set", emit = \s a -> emit-deck-set-builtin s a },
-   BuiltinX86Emitter { name = "__deck-alloc", emit = \s a -> emit-deck-alloc-builtin s a },
-   BuiltinX86Emitter { name = "__deck-enter", emit = \s a -> emit-deck-enter-builtin s },
-   BuiltinX86Emitter { name = "__deck-exit", emit = \s a -> emit-deck-exit-builtin s },
-   BuiltinX86Emitter { name = "__list-with-capacity", emit = \s a -> emit-list-with-capacity-builtin s a },
-   BuiltinX86Emitter { name = "__buf-write-byte", emit = \s a -> emit-buf-write-byte-builtin s a },
-   BuiltinX86Emitter { name = "__buf-write-bytes", emit = \s a -> emit-buf-write-bytes-builtin s a },
-   BuiltinX86Emitter { name = "__buf-read-bytes", emit = \s a -> emit-buf-read-bytes-builtin s a },
-   BuiltinX86Emitter { name = "chan-text-send", emit = \s a -> emit-helper-call-2 s a "chan-text-send" },
-   BuiltinX86Emitter { name = "chan-text-recv", emit = \s a -> emit-helper-call-1 s a "chan-text-recv" },
-   BuiltinX86Emitter { name = "bit-and", emit = \s a -> emit-bit-op-2 s a and-rr },
-   BuiltinX86Emitter { name = "bit-or", emit = \s a -> emit-bit-op-2 s a or-rr },
-   BuiltinX86Emitter { name = "bit-xor", emit = \s a -> emit-bit-op-2 s a xor-rr64 },
-   BuiltinX86Emitter { name = "bit-shl", emit = \s a -> emit-bit-shift s a shl-cl },
-   BuiltinX86Emitter { name = "bit-shr", emit = \s a -> emit-bit-shift s a sar-cl },
-   BuiltinX86Emitter { name = "bit-shru", emit = \s a -> emit-bit-shift s a shr-cl },
-   BuiltinX86Emitter { name = "bit-not", emit = \s a -> emit-bit-not s a },
-   BuiltinX86Emitter { name = "force", emit = \s a -> emit-force-builtin s a },
-   BuiltinX86Emitter { name = "run-state", emit = \s a -> emit-run-state-builtin s a },
-   BuiltinX86Emitter { name = "set-state", emit = \s a -> emit-set-state-builtin s a },
-   BuiltinX86Emitter { name = "uefi-read-file", emit = \s a -> emit-helper-call-1 s a "__uefi_read_file" },
-   BuiltinX86Emitter { name = "prof-dump", emit = \s a -> emit-helper-call-0 s a "__prof_dump" },
-   BuiltinX86Emitter { name = "prof-start", emit = \s a -> emit-helper-call-0 s a "__prof_start" },
-   BuiltinX86Emitter { name = "Refl", emit = \s a -> emit-proof-builtin s a },
-   BuiltinX86Emitter { name = "assume", emit = \s a -> emit-proof-builtin s a },
-   BuiltinX86Emitter { name = "sym", emit = \s a -> emit-proof-builtin s a },
-   BuiltinX86Emitter { name = "trans", emit = \s a -> emit-proof-builtin s a },
-   BuiltinX86Emitter { name = "cong", emit = \s a -> emit-proof-builtin s a },
-   BuiltinX86Emitter { name = "app-cong", emit = \s a -> emit-proof-builtin s a },
-   BuiltinX86Emitter { name = "vec-splat", emit = \s a -> emit-vec-splat-builtin s a },
-   BuiltinX86Emitter { name = "vec-extract", emit = \s a -> emit-vec-extract-builtin s a },
-   BuiltinX86Emitter { name = "vec-add", emit = \s a -> emit-vec-add-builtin s a },
-   BuiltinX86Emitter { name = "vec-sub", emit = \s a -> emit-vec-sub-builtin s a },
-   BuiltinX86Emitter { name = "vec-mul", emit = \s a -> emit-vec-mul-builtin s a },
-   BuiltinX86Emitter { name = "vec-div", emit = \s a -> emit-vec-div-builtin s a },
-   BuiltinX86Emitter { name = "vec-reduce-add", emit = \s a -> emit-vec-reduce-add-builtin s a },
-   BuiltinX86Emitter { name = "vec-select", emit = \s a -> emit-vec-select-builtin s a },
-   BuiltinX86Emitter { name = "vec-load-at", emit = \s a -> emit-vec-load-at-builtin s a },
-   BuiltinX86Emitter { name = "vec-store-at", emit = \s a -> emit-vec-store-at-builtin s a },
-   BuiltinX86Emitter { name = "mask-any", emit = \s a -> emit-mask-any-builtin s a },
-   BuiltinX86Emitter { name = "mask-all", emit = \s a -> emit-mask-all-builtin s a },
-   BuiltinX86Emitter { name = "mask-none", emit = \s a -> emit-mask-none-builtin s a },
-   BuiltinX86Emitter { name = "mask-count", emit = \s a -> emit-mask-count-builtin s a },
-   BuiltinX86Emitter { name = "to-real-approx", emit = \s a -> emit-to-real-approx-builtin s a },
-   BuiltinX86Emitter { name = "from-real-approx", emit = \s a -> emit-from-real-approx-builtin s a },
-   BuiltinX86Emitter { name = "to-real-trapping", emit = \s a -> emit-to-real-trapping-builtin s a },
-   BuiltinX86Emitter { name = "from-real-trapping", emit = \s a -> emit-from-real-trapping-builtin s a },
-   BuiltinX86Emitter { name = "to-real-saturating", emit = \s a -> emit-to-real-saturating-builtin s a },
-   BuiltinX86Emitter { name = "from-real-saturating", emit = \s a -> emit-from-real-saturating-builtin s a },
-   BuiltinX86Emitter { name = "real-from-int", emit = \s a -> emit-real-from-int-builtin s a },
-   BuiltinX86Emitter { name = "real-to-int", emit = \s a -> emit-real-to-int-builtin s a },
-   BuiltinX86Emitter { name = "real-approx-from-int", emit = \s a -> emit-real-approx-from-int-builtin s a },
-   BuiltinX86Emitter { name = "real-approx-to-int", emit = \s a -> emit-real-approx-to-int-builtin s a },
-   BuiltinX86Emitter { name = "real-to-bits", emit = \s a -> emit-real-to-bits-builtin s a },
-   BuiltinX86Emitter { name = "bits-to-real", emit = \s a -> emit-bits-to-real-builtin s a },
-   BuiltinX86Emitter { name = "real-approx-to-bits", emit = \s a -> emit-real-approx-to-bits-builtin s a },
-   BuiltinX86Emitter { name = "bits-to-real-approx", emit = \s a -> emit-bits-to-real-approx-builtin s a },
-   BuiltinX86Emitter { name = "vec4-splat", emit = \s a -> emit-vec4-splat-builtin s a },
-   BuiltinX86Emitter { name = "vec4-extract", emit = \s a -> emit-vec4-extract-builtin s a },
-   BuiltinX86Emitter { name = "suggested-vector-width", emit = \s a -> emit-suggested-vector-width-builtin s a },
-   BuiltinX86Emitter { name = "atomic-load", emit = \s a -> emit-atomic-load-builtin s a },
-   BuiltinX86Emitter { name = "atomic-store", emit = \s a -> emit-atomic-store-builtin s a },
-   BuiltinX86Emitter { name = "atomic-cas", emit = \s a -> emit-atomic-cas-builtin s a },
-   BuiltinX86Emitter { name = "atomic-add", emit = \s a -> emit-atomic-add-builtin s a },
-   BuiltinX86Emitter { name = "atomic-exchange", emit = \s a -> emit-atomic-exchange-builtin s a },
-   BuiltinX86Emitter { name = "memory-fence", emit = \s a -> emit-memory-fence-builtin s a },
-   BuiltinX86Emitter { name = "vec-cons", emit = \s a -> emit-helper-call-2 s a "__list_snoc" },
-   BuiltinX86Emitter { name = "vec-empty", emit = \s a -> emit-vec-empty-builtin s a },
-   BuiltinX86Emitter { name = "vec-head", emit = \s a -> emit-vec-head-builtin s a },
-   BuiltinX86Emitter { name = "vec-length", emit = \s a -> emit-list-length-builtin s a },
-   BuiltinX86Emitter { name = "vec-singleton", emit = \s a -> emit-helper-call-1 s a "__list_cons" },
-   BuiltinX86Emitter { name = "s-close", emit = \s a -> emit-helper-call-1 s a "chan-kern-close" },
-   BuiltinX86Emitter { name = "s-new", emit = \s a -> emit-helper-call-0 s a "chan-kern-create" },
-   BuiltinX86Emitter { name = "s-recv", emit = \s a -> emit-helper-call-1 s a "chan-kern-recv-block" },
-   BuiltinX86Emitter { name = "s-recv-value", emit = \s a -> emit-helper-call-1 s a "chan-kern-recv-block" },
-   BuiltinX86Emitter { name = "s-send", emit = \s a -> emit-helper-call-2 s a "chan-kern-send-block" }
-  ])
+  x86-builtin-emitters = sort-x86-emitters (emitters-from-builtins builtins 0 (list-length builtins) [])
 
  This is the miss path, and it can no longer be reached from the routing
  list: sorted-builtin-names is derived from this very table, so a routed
@@ -1724,15 +1751,24 @@ Section: Builtin Registry
     reg = rd.reg
    }
 
- The table is bound once. x86-builtin-emitters is a zero-parameter
- definition, and a mention of one is emitted as a call, not read from a
- slot -- so the three mentions this function used to make built and sorted
- all 143 entries three times over, on every builtin emission in the
- program. The binding is the whole fix; the search below is unchanged.
+ The table is read out of the state, and that is load-bearing rather than
+ tidy. x86-builtin-emitters is a zero-parameter definition, and a mention of
+ one is emitted as a call, not read from a slot: this function once made
+ three mentions and so built and sorted all 143 entries three times over on
+ every builtin emission in the program. Binding it to a local cut that to
+ one, which was the whole fix at the time.
+
+ One per emission is now too many. The emitters are a projection of the
+ builtins table, so building them means building all 244 rows and every
+ type expression they carry, and doing that per emission would be far worse
+ than the three-fold waste this paragraph used to describe. So it is built
+ where sorted-builtin-names is built -- once, where a CodegenState is
+ constructed -- and carried forward from function to function as a pointer.
+ The search below is unchanged.
 
   emit-builtin : CodegenState, Text, List IRExpr -> EmitResult
   emit-builtin (st) (name) (args) =
-   let es = x86-builtin-emitters
+   let es = st.builtin-emitters
    in let len = list-length es
    in let pos = bsearch-x86-emitter-pos es name 0 len
    in if pos >= len then emit-unknown-builtin st name

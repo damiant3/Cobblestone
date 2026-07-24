@@ -85,10 +85,11 @@ Section: Type Definition Emission
   emit-scm-type-def : ATypeDef -> Text
   emit-scm-type-def (td) =
    when td
-    is ARecordTypeDef (name) (tparams) (fields) (s) ->
+    is ARecordTypeDef (name) (tparams) (fields) (recmut) (s) ->
      "(define (make-" & scm-sanitize (name.value) & " . args) (cons '" & scm-sanitize (name.value) & " args))\n" & emit-scm-record-accessors (name.value) fields 0 & "\n"
     is AVariantTypeDef (name) (tparams) (ctors) (s) ->
      emit-scm-ctors ctors 0
+    is AUnitTypeDef (name) (unitbase) (s) -> ""
 
   emit-scm-record-accessors : Text, List ARecordFieldDef, Integer -> Text
   emit-scm-record-accessors (rname) (fields) (i) =
@@ -118,7 +119,7 @@ Section: Expression Emission
     is IrCharLit (n) (sp) -> integer-to-text n
     is IrName (n) (ty) (sp) -> emit-scm-name n arities
     is IrBinary (op) (l) (r) (ty) (sp) -> emit-scm-binary op l r arities
-    is IrNegate (operand) (sp) -> "(- " & emit-scm-expr-at operand arities (depth + 1) & ")"
+    is IrNegate (operand) (nty) (sp) -> "(- " & emit-scm-expr-at operand arities (depth + 1) & ")"
     is IrIf (c) (t) (el) (ty) (sp) -> "(if " & emit-scm-expr-at c arities (depth + 1) & " " & emit-scm-expr-at t arities (depth + 1) & " " & emit-scm-expr-at el arities (depth + 1) & ")"
     is IrLet (name) (ty) (val) (body) (sp) -> "(let ((" & scm-sanitize name & " " & emit-scm-expr-at val arities (depth + 1) & ")) " & emit-scm-expr-at body arities (depth + 1) & ")"
     is IrApply (f) (a) (ty) (sp) -> emit-scm-apply e arities
@@ -286,7 +287,7 @@ Section: Apply Emission
     ScmBuiltinEntry { bname = "negate",            tag = 11 },
     ScmBuiltinEntry { bname = "print-line-uni",    tag = 12 },
     ScmBuiltinEntry { bname = "process-exit",      tag = 13 },
-    ScmBuiltinEntry { bname = "read-file",         tag = 14 },
+    ScmBuiltinEntry { bname = "read-text",         tag = 14 },
     ScmBuiltinEntry { bname = "show",              tag = 15 },
     ScmBuiltinEntry { bname = "substring",         tag = 16 },
     ScmBuiltinEntry { bname = "text-compare",      tag = 17 },
@@ -315,7 +316,7 @@ Section: Apply Emission
    else if tag == 2 then "(char->integer (string-ref " & emit-scm-expr (list-at args 0) arities & " " & emit-scm-expr (list-at args 1) arities & "))"
    else if tag == 3 then emit-scm-expr (list-at args 0) arities
    else if tag == 4 then "(string (integer->char " & emit-scm-expr (list-at args 0) arities & "))"
-   else if tag == 5 then "(modulo " & emit-scm-expr (list-at args 0) arities & " " & emit-scm-expr (list-at args 1) arities & ")"
+   else if tag == 5 then "(modulo " & emit-scm-expr (list-at args 0) arities & " (abs " & emit-scm-expr (list-at args 1) arities & "))"
    else if tag == 6 then "(number->string " & emit-scm-expr (list-at args 0) arities & ")"
    else if tag == 7 then "(list-ref " & emit-scm-expr (list-at args 0) arities & " " & emit-scm-expr (list-at args 1) arities & ")"
    else if tag == 8 then "(length " & emit-scm-expr (list-at args 0) arities & ")"

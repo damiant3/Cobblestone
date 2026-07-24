@@ -1,5 +1,6 @@
 Chapter: MediaPlayer
   cites UI chapter Widget
+  cites UI chapter KeyInput
   cites Foreword chapter Maybe
   cites Foreword chapter Console
   cites UI chapter Layout
@@ -127,12 +128,11 @@ Section: Construction
   player-with-info : MediaInfo -> PlayerState
   player-with-info (info) =
     let ps = player-new
-    in __record-set (__record-set (__record-set (__record-set (__record-set ps
-      "ps-media-info" (Just info))
-      "ps-duration-ms" info.mi-duration-ms)
-      "ps-video-width" info.mi-width)
-      "ps-video-height" info.mi-height)
-      "ps-audio-out" (audio-init (audio-output-new))
+    in let ps1 = __record-set ps "ps-media-info" (Just info)
+    in let ps2 = __record-set ps1 "ps-duration-ms" info.mi-duration-ms
+    in let ps3 = __record-set ps2 "ps-video-width" info.mi-width
+    in let ps4 = __record-set ps3 "ps-video-height" info.mi-height
+    in __record-set ps4 "ps-audio-out" (audio-init (audio-output-new))
 
 Section: Playback Control
 
@@ -146,9 +146,8 @@ Section: Playback Control
         __record-set ps "ps-position-ms" (clamp-pos pos ps.ps-duration-ms)
       is MediaSetVolume (vol) ->
         let clamped = clamp-vol vol
-        in __record-set (__record-set ps
-          "ps-volume" clamped)
-          "ps-audio-out" (audio-set-volume ps.ps-audio-out clamped)
+        in let ps1 = __record-set ps "ps-volume" clamped
+        in __record-set ps1 "ps-audio-out" (audio-set-volume ps1.ps-audio-out clamped)
       is MediaVolumeUp ->
         player-handle-event ps (MediaSetVolume (ps.ps-volume + 5))
       is MediaVolumeDown ->
@@ -180,12 +179,10 @@ Section: Playback Control
 
   player-stop : PlayerState -> PlayerState
   player-stop (ps) =
-    let stopped = __record-set (__record-set ps
-          "ps-playback" Stopped)
-          "ps-position-ms" 0
-    in __record-set (__record-set stopped
-      "ps-audio-out" (audio-stop ps.ps-audio-out))
-      "ps-prev-pixels" []
+    let ps1 = __record-set ps "ps-playback" Stopped
+    in let stopped = __record-set ps1 "ps-position-ms" 0
+    in let ps2 = __record-set stopped "ps-audio-out" (audio-stop stopped.ps-audio-out)
+    in __record-set ps2 "ps-prev-pixels" []
 
   player-toggle-play : PlayerState -> PlayerState
   player-toggle-play (ps) =
@@ -213,14 +210,14 @@ Section: Video Frame Reception
     let parsed = parse-video-packet packet-data
     in when parsed
       is None -> __record-set ps "ps-dropped" (ps.ps-dropped + 1)
-      is Just (frame-type, payload) ->
-        let decoded-pixels = decode-video-payload frame-type payload ps.ps-prev-pixels ps.ps-video-width ps.ps-video-height
-        in let fb = pixels-to-framebuf decoded-pixels ps.ps-video-width ps.ps-video-height
-        in __record-set (__record-set (__record-set (__record-set ps
-          "ps-video-frame" (Just fb))
-          "ps-prev-pixels" decoded-pixels)
-          "ps-position-ms" timestamp)
-          "ps-frame-count" (ps.ps-frame-count + 1)
+      is Just (parsed-video) -> when parsed-video
+        is (frame-type, payload) ->
+          let decoded-pixels = decode-video-payload frame-type payload ps.ps-prev-pixels ps.ps-video-width ps.ps-video-height
+          in let fb = pixels-to-framebuf decoded-pixels ps.ps-video-width ps.ps-video-height
+          in let ps1 = __record-set ps "ps-video-frame" (Just fb)
+          in let ps2 = __record-set ps1 "ps-prev-pixels" decoded-pixels
+          in let ps3 = __record-set ps2 "ps-position-ms" timestamp
+          in __record-set ps3 "ps-frame-count" (ps3.ps-frame-count + 1)
 
   decode-video-payload : Integer, List Integer, List Integer, Integer, Integer -> List Integer
   decode-video-payload (frame-type) (payload) (prev-pixels) (w) (h) =
@@ -254,11 +251,11 @@ Section: Audio Packet Reception
     let parsed = parse-audio-packet packet-data
     in when parsed
       is None -> ps
-      is Just (codec-tag, payload) ->
-        let pcm = decode-audio-payload codec-tag payload
-        in __record-set (__record-set ps
-          "ps-audio-buffer" (ps.ps-audio-buffer & pcm))
-          "ps-buffered-ms" timestamp
+      is Just (parsed-audio) -> when parsed-audio
+        is (codec-tag, payload) ->
+          let pcm = decode-audio-payload codec-tag payload
+          in let ps1 = __record-set ps "ps-audio-buffer" (ps.ps-audio-buffer & pcm)
+          in __record-set ps1 "ps-buffered-ms" timestamp
 
   decode-audio-payload : Integer, List Integer -> List Integer
   decode-audio-payload (codec-tag) (payload) =
@@ -371,9 +368,8 @@ Section: Audio Flush
     then __record-set ps "ps-audio-buffer" []
     else let scaled = scale-audio ps.ps-audio-buffer ps.ps-volume
       in let ao = audio-write-pcm ps.ps-audio-out scaled
-      in __record-set (__record-set ps
-        "ps-audio-buffer" [])
-        "ps-audio-out" ao
+      in let ps1 = __record-set ps "ps-audio-buffer" []
+      in __record-set ps1 "ps-audio-out" ao
 
   scale-audio : List Integer, Integer -> List Integer
   scale-audio (samples) (volume) =
@@ -413,8 +409,7 @@ Section: Tick Processing
   player-tick (ps) (elapsed-ms) =
     when ps.ps-playback
       is Playing ->
-        let advanced = __record-set ps
-              "ps-position-ms" (ps.ps-position-ms + elapsed-ms)
+        let advanced = __record-set ps "ps-position-ms" (ps.ps-position-ms + elapsed-ms)
         in let flushed = player-flush-audio advanced
         in if flushed.ps-duration-ms > 0
           then if flushed.ps-position-ms >= flushed.ps-duration-ms
@@ -452,15 +447,13 @@ Section: Player UI Widget
     in let stop-btn = widget-button "media-stop" "[]"
     in let skip-back = widget-button "media-back" "<<"
     in let skip-fwd = widget-button "media-fwd" ">>"
-    in let progress = widget-progress "media-progress"
-          ps.ps-position-ms
-          (if ps.ps-duration-ms > 0 then ps.ps-duration-ms else 100)
+    in let progress = (widget-progress "media-progress" ps.ps-position-ms (if ps.ps-duration-ms > 0 then ps.ps-duration-ms else 100))
     in let position = widget-label "media-pos" (format-time ps.ps-position-ms)
     in let slash = widget-label "media-slash" " / "
     in let duration = widget-label "media-dur" (format-time ps.ps-duration-ms)
     in let vol-down = widget-button "media-vol-down" "-"
-    in let vol-label = widget-label "media-vol"
-          (if ps.ps-muted then "MUTE" else "V:" & show ps.ps-volume)
+    in let vol-text = if ps.ps-muted then "MUTE" else "V:" & show ps.ps-volume
+    in let vol-label = widget-label "media-vol" vol-text
     in let vol-up = widget-button "media-vol-up" "+"
     in let mute-btn = widget-button "media-mute" (if ps.ps-muted then "X" else "M")
     in let fs-btn = widget-button "media-fs" (if ps.ps-fullscreen then "><" else "[ ]")
@@ -489,8 +482,9 @@ Section: Player UI Widget
 Section: Media Keyboard Shortcuts
 
   map-media-key : Integer -> Maybe MediaEvent
-  map-media-key (key-code) =
-    if key-code == 32 then Just MediaPlay
+  map-media-key (key-code0) =
+    let key-code = key-upper key-code0
+    in if key-code == 32 then Just MediaPlay
     else if key-code == 37 then Just MediaSkipBack
     else if key-code == 39 then Just MediaSkipForward
     else if key-code == 38 then Just MediaVolumeUp
@@ -527,7 +521,7 @@ Section: Channel Integration
         in let parsed = parse-video-packet head
         in let updated = when parsed
               is None -> ps
-              is Just (frame-type, payload) ->
+              is Just (parsed-video) ->
                 player-receive-video ps 0 head
         in process-video-packets updated (list-drop packets 1)
 

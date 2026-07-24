@@ -1,0 +1,55 @@
+Chapter: InlineCostBased
+
+ The opt-in cost-based inliner (`passes=+inline-cost-based`, via the
+ `.flags` sidecar) over the exact shape that found its template-reuse
+ defect. `make-pbox` is a record-building candidate with two call
+ sites; `subst-once`'s record arm used to `__record-set` the
+ candidate's body template in place, so the first site's argument
+ replaced the field value for every later site, splicing the first
+ caller's locals into a function that does not bind them (CDX2040
+ `Unresolved call` at emit, or silently the wrong record). The
+ assertion that matters is the SECOND caller's record carrying the
+ SECOND caller's values. `pick2` rides along as the branchy
+ arithmetic shape the leaf pass refuses (it has an `if`) and the
+ cost pass takes.
+
+Section: Candidates
+
+  PBox = record {
+   first : Integer,
+   second : Integer,
+   tag : Integer
+  }
+
+  make-pbox : Integer, Integer -> PBox
+  make-pbox (a) (b) = PBox { first = a, second = b, tag = 7 }
+
+  pick2 : Integer, Integer -> Integer
+  pick2 (a) (b) = if a > b then a else b
+
+Section: Callers
+
+  caller-one : Integer
+  caller-one =
+   let x = 11
+   in let y = 22
+   in let bx = make-pbox x y
+   in bx.first * 100 + bx.second
+
+  caller-two : Integer
+  caller-two =
+   let p = 33
+   in let q = 44
+   in let bx = make-pbox p q
+   in bx.first * 100 + bx.second + bx.tag
+
+Section: Main
+
+  opening : [Console] Nothing
+  opening = act
+   let a = caller-one
+   in let b = caller-two
+   in let c = pick2 5 9
+   in let d = pick2 40 2
+   in print-line-uni ("inline-cost-based: " & show a & " " & show b & " " & show c & " " & show d)
+  end

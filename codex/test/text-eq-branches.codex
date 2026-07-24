@@ -1,0 +1,96 @@
+Chapter: TextEqBranches
+
+ Equality on Text must answer the same thing whatever the branches around it
+ are made of.
+
+ The LIR selector fuses a comparison in condition position into a machine
+ compare-and-branch. `==` on Text is a call to `__str_eq`, not a compare of
+ the two values, so fusing it compared the two POINTERS: two equal strings at
+ different addresses took the else arm. The tree emitter always guarded this
+ in `is-fusable-int-comparison`; `lir-cmp-whitelisted` did not, so the bug
+ appeared only where the LIR selector took the function.
+
+ That is why the shape matters here rather than the comparison. `eq-int` and
+ `eq-txt` compare the same two values with the same operator and differ only
+ in what the arms return, and before the fix `eq-int` answered 0 while
+ `eq-txt` answered "equal". Integer-typed arms made the function LIR-eligible;
+ Text-typed arms did not.
+
+ Every case below is built at runtime by `mk` rather than written as a
+ literal, so a constant fold cannot answer for the emitter. The negative
+ controls are what keep this honest: an implementation that always returns
+ the else arm passes the equal cases only if the unequal ones fail with it.
+
+ We say:
+
+Section: Builders
+
+  mk : Integer -> Text
+  mk (n) = "x" & show n
+
+Section: The shape that regressed -- Integer arms
+
+  eq-int : Text, Text -> Integer
+  eq-int (n) (p) = if n == p then 1 else 0
+
+  ne-int : Text, Text -> Integer
+  ne-int (n) (p) = if n /= p then 1 else 0
+
+Section: The same comparison with other arm types
+
+  eq-txt : Text, Text -> Text
+  eq-txt (n) (p) = if n == p then "equal" else "differs"
+
+  eq-bool : Text, Text -> Boolean
+  eq-bool (n) (p) = n == p
+
+Section: Integer operands in the identical shape, as the control
+
+  eq-int-int : Integer, Integer -> Integer
+  eq-int-int (a) (b) = if a == b then 1 else 0
+
+Section: Cases
+
+  yn : Boolean -> Text
+  yn (b) = if b then "yes" else "no"
+
+  c1 : Text
+  c1 = "eq-int same    " & show (eq-int (mk 5) (mk 5))
+
+  c2 : Text
+  c2 = "eq-int differ  " & show (eq-int (mk 5) (mk 6))
+
+  c3 : Text
+  c3 = "ne-int same    " & show (ne-int (mk 5) (mk 5))
+
+  c4 : Text
+  c4 = "ne-int differ  " & show (ne-int (mk 5) (mk 6))
+
+  c5 : Text
+  c5 = "eq-txt same    " & eq-txt (mk 5) (mk 5)
+
+  c6 : Text
+  c6 = "eq-txt differ  " & eq-txt (mk 5) (mk 6)
+
+  c7 : Text
+  c7 = "eq-bool same   " & yn (eq-bool (mk 5) (mk 5))
+
+  c8 : Text
+  c8 = "eq-bool differ " & yn (eq-bool (mk 5) (mk 6))
+
+  c9 : Text
+  c9 = "control int    " & show (eq-int-int 5 5) & show (eq-int-int 5 6)
+
+Section: Entry
+
+  opening : [Console] Nothing = act
+    print-line-uni c1
+    print-line-uni c2
+    print-line-uni c3
+    print-line-uni c4
+    print-line-uni c5
+    print-line-uni c6
+    print-line-uni c7
+    print-line-uni c8
+    print-line-uni c9
+  end

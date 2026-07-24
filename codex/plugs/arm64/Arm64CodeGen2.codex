@@ -2,16 +2,24 @@ Chapter: Arm64 Code Generator
 
 Section: Control Flow
 
-  a64-emit-negate : A64State, IRExpr -> A64EmitResult
-  a64-emit-negate (st) (operand) =
-   let or = a64-emit-expr st operand
-   in let is-real = when ir-expr-type operand
+ Negating a Real is not negating its bits. Both emission paths have to ask
+ this, so it is asked in one place: the targeted path used to assume integer
+ and two's-complemented the operand register, which turned 2.5 into
+ 0xBFFC000000000000, or -1.75. real-negate is the guard.
+
+  a64-negate-is-real : IRExpr -> Boolean
+  a64-negate-is-real (operand) =
+   when ir-expr-type operand
     is RealTy -> True
     is RealApproxTy -> True
     is RealTrappingTy -> True
     is RealSaturatingTy -> True
     is otherwise -> False
-   in if is-real then
+
+  a64-emit-negate : A64State, IRExpr -> A64EmitResult
+  a64-emit-negate (st) (operand) =
+   let or = a64-emit-expr st operand
+   in if a64-negate-is-real operand then
     let tr = a64-alloc-temp (or.state)
     in let zero-r = a64-alloc-temp (tr.state)
     in let st1 = a64-emit-li (zero-r.state) (zero-r.reg) 0
@@ -176,10 +184,6 @@ Section: Control Flow
     is IrApproxEqExact -> 1
     is otherwise -> 1
 
-  arm64-cmp-imm : Integer, Integer -> List Integer
-  arm64-cmp-imm (rn) (imm12) =
-   arm64-encode (bit-or (bit-or #F100001F (bit-shl imm12 10)) (bit-shl rn 5))
-
   a64-emit-if-cmp : A64State, Boolean, IRBinaryOp, IRExpr, IRExpr, IRExpr, IRExpr -> A64EmitResult
   a64-emit-if-cmp (st) (saved-tail) (op) (left) (right) (th) (el) =
    let imm-val = a64-small-imm right
@@ -203,7 +207,7 @@ Section: Control Flow
      else a64-emit (er.state) (arm64-mov (tr.reg) (er.reg))
     in let end-index = st-unified.insn-count
     in let st5 = a64-patch-insn st-unified cond-index (arm64-b-cond (a64-invert-cmp op) ((else-start - cond-index) * 4))
-    in let st6 = if a64-prev-is-uncond-branch st5 jmp-end-index then st5
+    in let st6 = if a64-can-elide-jmp-end st5 jmp-end-index th then st5
      else a64-patch-insn st5 jmp-end-index (arm64-b ((end-index - jmp-end-index) * 4))
     in A64EmitResult { state = st6, reg = tr.reg }
    else let result-loc = a64-alloc-local st3
@@ -298,7 +302,7 @@ Section: Control Flow
    in let branch = if use-cbnz then arm64-cbnz (vr.reg) ((else-start - cbz-index) * 4)
     else arm64-cbz (vr.reg) ((else-start - cbz-index) * 4)
    in let st3 = a64-patch-insn st-unified cbz-index branch
-   in let st4 = if a64-prev-is-uncond-branch st3 jmp-end-index then st3
+   in let st4 = if a64-can-elide-jmp-end st3 jmp-end-index th then st3
     else a64-patch-insn st3 jmp-end-index (arm64-b ((end-index - jmp-end-index) * 4))
    in A64EmitResult { state = st4, reg = tr.reg }
 
@@ -444,7 +448,7 @@ Section: Control Flow
    in let er = a64-emit-expr-to (a64-set-tail-pos st2 saved-tail) el a64-x0
    in let end-index = er.insn-count
    in let st3 = a64-patch-insn er tbz-index (arm64-tbz (vr.reg) bit ((else-start - tbz-index) * 4))
-   in let st4 = if a64-prev-is-uncond-branch st3 jmp-end-index then st3
+   in let st4 = if a64-can-elide-jmp-end st3 jmp-end-index th then st3
     else a64-patch-insn st3 jmp-end-index (arm64-b ((end-index - jmp-end-index) * 4))
    in A64EmitResult { state = st4, reg = a64-x0 }
 
@@ -461,7 +465,7 @@ Section: Control Flow
    in let er = a64-emit-expr-to (a64-set-tail-pos st2 saved-tail) el a64-x0
    in let end-index = er.insn-count
    in let st3 = a64-patch-insn er tbnz-index (arm64-tbnz (vr.reg) bit ((else-start - tbnz-index) * 4))
-   in let st4 = if a64-prev-is-uncond-branch st3 jmp-end-index then st3
+   in let st4 = if a64-can-elide-jmp-end st3 jmp-end-index th then st3
     else a64-patch-insn st3 jmp-end-index (arm64-b ((end-index - jmp-end-index) * 4))
    in A64EmitResult { state = st4, reg = a64-x0 }
 
@@ -469,11 +473,20 @@ Section: Control Flow
   a64-let-value-is-simple (e) =
    when e
     is IrBinary (op) (l) (r) (t) (s) -> a64-is-simple-arith op
-    is IrNegate (x) (s) -> True
+    is IrNegate (x) (nty) (s) -> True
     is otherwise -> False
 
   a64-emit-let : A64State, Text, IRExpr, IRExpr -> A64EmitResult
   a64-emit-let (st) (name) (value) (body) =
+   let saved-len = list-length (st.locals)
+   in let br = a64-emit-let-bound st name value body
+   in A64EmitResult {
+    state = a64-restore-locals (br.state) saved-len,
+    reg = br.reg
+   }
+
+  a64-emit-let-bound : A64State, Text, IRExpr, IRExpr -> A64EmitResult
+  a64-emit-let-bound (st) (name) (value) (body) =
    let saved-tail = st.tco.in-tail-pos
    in if a64-let-value-is-simple value then
     let loc = a64-alloc-local (a64-set-tail-pos st False)
@@ -527,8 +540,12 @@ Section: Targeted Expression Emission
      else let er = a64-emit-expr st expr
      in if er.reg == target then er.state
      else a64-emit (er.state) (arm64-mov target (er.reg))
-    is IrNegate (operand) (s) ->
-     let or = a64-emit-expr st operand
+    is IrNegate (operand) (nty) (s) ->
+     if a64-negate-is-real operand then
+      let nr = a64-emit-negate st operand
+      in if nr.reg == target then nr.state
+      else a64-emit (nr.state) (arm64-mov target (nr.reg))
+     else let or = a64-emit-expr st operand
      in a64-emit (or.state) (arm64-sub target a64-xzr (or.reg))
     is IrIf (cond) (th) (el) (ty) (s) ->
      a64-emit-if-targeted st cond th el target
@@ -612,6 +629,11 @@ Section: Targeted Expression Emission
 
   a64-emit-let-targeted : A64State, Text, IRExpr, IRExpr, Integer -> A64State
   a64-emit-let-targeted (st) (name) (value) (body) (target) =
+   let saved-len = list-length (st.locals)
+   in a64-restore-locals (a64-emit-let-targeted-bound st name value body target) saved-len
+
+  a64-emit-let-targeted-bound : A64State, Text, IRExpr, IRExpr, Integer -> A64State
+  a64-emit-let-targeted-bound (st) (name) (value) (body) (target) =
    let saved-tail = st.tco.in-tail-pos
    in let st0 = a64-set-tail-pos st False
    in if a64-result-is-stable value then
@@ -661,7 +683,7 @@ Section: Targeted Expression Emission
    in let st6 = a64-emit-expr-to (a64-set-tail-pos st5 saved-tail) el target
    in let end-index = st6.insn-count
    in let st7 = a64-patch-insn (__record-set st6 "next-local" branch-base) cond-index (arm64-b-cond (a64-invert-cmp op) ((else-start - cond-index) * 4))
-   in if a64-prev-is-uncond-branch st7 jmp-end-index then st7
+   in if a64-can-elide-jmp-end st7 jmp-end-index th then st7
    else a64-patch-insn st7 jmp-end-index (arm64-b ((end-index - jmp-end-index) * 4))
 
   a64-emit-if-cmp-reg-targeted : A64State, Boolean, IRBinaryOp, IRExpr, IRExpr, IRExpr, IRExpr, Integer -> A64State
@@ -684,7 +706,7 @@ Section: Targeted Expression Emission
    in let st6 = a64-emit-expr-to (a64-set-tail-pos st5 saved-tail) el target
    in let end-index = st6.insn-count
    in let st7 = a64-patch-insn (__record-set st6 "next-local" branch-base) cond-index (arm64-b-cond (a64-invert-cmp op) ((else-start - cond-index) * 4))
-   in if a64-prev-is-uncond-branch st7 jmp-end-index then st7
+   in if a64-can-elide-jmp-end st7 jmp-end-index th then st7
    else a64-patch-insn st7 jmp-end-index (arm64-b ((end-index - jmp-end-index) * 4))
 
   a64-emit-if-cbz-targeted : A64State, Boolean, IRExpr, Boolean, IRExpr, IRExpr, Integer -> A64State
@@ -703,7 +725,7 @@ Section: Targeted Expression Emission
    in let branch = if use-cbnz then arm64-cbnz (vr.reg) ((else-start - cbz-index) * 4)
     else arm64-cbz (vr.reg) ((else-start - cbz-index) * 4)
    in let st5 = a64-patch-insn (__record-set st4 "next-local" branch-base) cbz-index branch
-   in if a64-prev-is-uncond-branch st5 jmp-end-index then st5
+   in if a64-can-elide-jmp-end st5 jmp-end-index th then st5
    else a64-patch-insn st5 jmp-end-index (arm64-b ((end-index - jmp-end-index) * 4))
 
   a64-emit-if-val-targeted : A64State, Boolean, IRExpr, IRExpr, IRExpr, Integer -> A64State
@@ -719,7 +741,7 @@ Section: Targeted Expression Emission
    in let st4 = a64-emit-expr-to (a64-set-tail-pos st3 saved-tail) el target
    in let end-index = st4.insn-count
    in let st5 = a64-patch-insn (__record-set st4 "next-local" branch-base) cbz-index (arm64-cbz (cr.reg) ((else-start - cbz-index) * 4))
-   in if a64-prev-is-uncond-branch st5 jmp-end-index then st5
+   in if a64-can-elide-jmp-end st5 jmp-end-index th then st5
    else a64-patch-insn st5 jmp-end-index (arm64-b ((end-index - jmp-end-index) * 4))
 
   a64-emit-if-tbnz-targeted : A64State, Boolean, IRExpr, Integer, IRExpr, IRExpr, Integer -> A64State
@@ -736,7 +758,7 @@ Section: Targeted Expression Emission
    in let st4 = a64-emit-expr-to (a64-set-tail-pos st3 saved-tail) el target
    in let end-index = st4.insn-count
    in let st5 = a64-patch-insn (__record-set st4 "next-local" branch-base) tbnz-index (arm64-tbnz (vr.reg) bit ((else-start - tbnz-index) * 4))
-   in if a64-prev-is-uncond-branch st5 jmp-end-index then st5
+   in if a64-can-elide-jmp-end st5 jmp-end-index th then st5
    else a64-patch-insn st5 jmp-end-index (arm64-b ((end-index - jmp-end-index) * 4))
 
   a64-emit-if-tbz-targeted : A64State, Boolean, IRExpr, Integer, IRExpr, IRExpr, Integer -> A64State
@@ -753,7 +775,7 @@ Section: Targeted Expression Emission
    in let st4 = a64-emit-expr-to (a64-set-tail-pos st3 saved-tail) el target
    in let end-index = st4.insn-count
    in let st5 = a64-patch-insn (__record-set st4 "next-local" branch-base) tbz-index (arm64-tbz (vr.reg) bit ((else-start - tbz-index) * 4))
-   in if a64-prev-is-uncond-branch st5 jmp-end-index then st5
+   in if a64-can-elide-jmp-end st5 jmp-end-index th then st5
    else a64-patch-insn st5 jmp-end-index (arm64-b ((end-index - jmp-end-index) * 4))
 
   a64-emit-act : A64State, List IRActStmt -> A64EmitResult
@@ -955,7 +977,7 @@ Section: Apply
         in if tag >= 0 then if list-length args == 0 then a64-emit-nullary-ctor st-nt tag
           else a64-emit-sum-ctor st-nt args tag
         else a64-emit-direct-call st-nt name args
-       is FunTy (pt) (rt) -> a64-emit-partial-application st-nt name args (list-length args + 1 + a64-type-arity rt)
+       is FunTy (pt) (fnrow) (rt) -> a64-emit-partial-application st-nt name args (list-length args + 1 + a64-type-arity rt)
        is otherwise ->
         let eoa = a64-find-effect-op-addr ((st-nt.extra).effect-op-addrs) name 0
         in let handler-name = "__handler_" & name
@@ -1253,6 +1275,16 @@ Section: Apply
    else if name == "prof-dump" then 1
    else if name == "__self-type-defs" then 1
    else if name == "uefi-read-file" then 1
+   else if name == "port-in-byte" then 1
+   else if name == "port-out-byte" then 1
+   else if name == "port-in-16" then 1
+   else if name == "port-out-16" then 1
+   else if name == "port-in-32" then 1
+   else if name == "port-out-32" then 1
+   else if name == "gpu-in" then 1
+   else if name == "gpu-out" then 1
+   else if name == "gpu-mem-read" then 1
+   else if name == "gpu-mem-write" then 1
    else if name == "text-replace" then 3
    else if name == "text-split" then 2
    else if name == "__buf-write-byte" then 3
@@ -1280,6 +1312,40 @@ Section: Apply
   a64-add-shadow-warning (st) (msg) =
    __record-set st "extra" (__record-set (st.extra) "wcet-reports" (list-push ((st.extra).wcet-reports) msg))
 
+ A read of a file on a target that has no filesystem. There is no block
+ driver behind these calls on arm64, so the honest answer is to refuse
+ the compile and say which call cannot be served. Answering the empty
+ string instead is what this reports: the caller named a path, got "",
+ and could not tell that apart from an empty file. `run.ps1` fails the
+ build on the tag, so the refusal is a compile error and not a warning
+ somebody reads later.
+
+ The write path is deliberately NOT here. `write-file` answers 0, which
+ the callers already read as failure -- `fs-layer` prints "<write failed>"
+ on this lane and is telling the truth. Only the reads lie.
+
+  a64-emit-unsupported-read : A64State, Text -> A64EmitResult
+  a64-emit-unsupported-read (st) (name) =
+   let msg = "[UNSUPPORTED] " & name & ": arm64 has no filesystem, and a read cannot be served"
+   in a64-emit-empty-text (a64-add-shadow-warning st msg)
+
+ Port I/O is the same refusal for a different reason. The port builtins
+ are the x86 IN and OUT instructions, and gpu-in / gpu-out /
+ gpu-mem-read / gpu-mem-write are the codex-vm GPU behind them; a
+ Renode board has neither the instruction nor the device, and neither
+ is wanted here (decided 2026-07-23). Before this arm
+ existed these calls fell through to the unresolved-call hole: a port
+ write silently did nothing and a port read answered whatever was in
+ the result register, which is how cap-block-denied printed a heap
+ address where a refusal sentinel belongs. The arms match on the name
+ alone, no arity gate, so a partial application refuses too.
+ codex/test/cross-port-refused pins that the refusal fires.
+
+  a64-emit-unsupported-port : A64State, Text -> A64EmitResult
+  a64-emit-unsupported-port (st) (name) =
+   let msg = "[UNSUPPORTED] " & name & ": x86 port I/O and the codex-vm gpu do not exist on this target (refused by design)"
+   in a64-emit-int-lit (a64-add-shadow-warning st msg) 0
+
   a64-check-builtin-collisions : A64State, List Text, Integer -> A64State
   a64-check-builtin-collisions (st) (names) (i) =
    if i >= list-length names then st
@@ -1303,7 +1369,7 @@ Section: Apply
   a64-emit-direct-call : A64State, Text, List IRExpr -> A64EmitResult
   a64-emit-direct-call (st) (name) (args) =
    let has-user-fn = a64-find-func-offset (st.func-names) (st.func-offsets) name 0
-   in if has-user-fn >= 0 & a64-is-known-builtin name == 1 then a64-emit-user-fn-call st name args
+   in if has-user-fn >= 0 & a64-is-known-builtin name == 1 & a64-is-inline-here name (list-length args) == False then a64-emit-user-fn-call st name args
    else if name == "__narrow" & list-length args == 1 then a64-emit-expr st (list-at args 0)
    else if name == "address-of" & list-length args == 1 then a64-emit-address-of st (list-at args 0)
    else if name == "__record-set" & list-length args == 3 then a64-emit-record-set-builtin st args
@@ -1357,6 +1423,12 @@ Section: Apply
    else if name == "from-real-saturating" & list-length args == 1 then a64-emit-expr st (list-at args 0)
    else if name == "text-to-double-bits" & list-length args == 1 then a64-emit-single-arg-call st "__text_to_double" (list-at args 0)
    else if name == "suggested-vector-width" & list-length args == 1 then a64-emit-suggested-vector-width st (list-at args 0)
+   else if name == "vec-add" & list-length args == 2 then a64-emit-vec-arith st args 0
+   else if name == "vec-sub" & list-length args == 2 then a64-emit-vec-arith st args 1
+   else if name == "vec-mul" & list-length args == 2 then a64-emit-vec-arith st args 2
+   else if name == "vec-div" & list-length args == 2 then a64-emit-vec-arith st args 3
+   else if name == "vec-load-at" & list-length args == 1 then a64-emit-vec-load-at st (list-at args 0)
+   else if name == "vec-store-at" & list-length args == 2 then a64-emit-vec-store-at st (list-at args 0) (list-at args 1)
    else if name == "vec-extract" & list-length args == 2 then a64-emit-vec-extract st (list-at args 0) (list-at args 1)
    else if name == "vec-reduce-add" & list-length args == 1 then a64-emit-vec-reduce-add st (list-at args 0)
    else if name == "vec-select" & list-length args == 3 then a64-emit-vec-select st (list-at args 0) (list-at args 1) (list-at args 2) (VectorTy 2 RealTy)
@@ -1390,16 +1462,26 @@ Section: Apply
    else if name == "vec-singleton" & list-length args == 1 then a64-emit-single-arg-call st "list-cons" (list-at args 0)
    else if name == "write-file" & list-length args == 2 then a64-emit-int-lit st 0
    else if name == "write-binary" & list-length args == 1 then a64-emit-int-lit st 0
-   else if name == "read-line" then a64-emit-empty-text st
-   else if name == "read-line-cce" then a64-emit-empty-text st
-   else if name == "read-file" & list-length args == 1 then a64-emit-empty-text st
-   else if name == "read-file-raw" & list-length args == 1 then a64-emit-empty-text st
-   else if name == "read-file-uni" & list-length args == 1 then a64-emit-empty-text st
+   else if name == "read-line" then a64-emit-maybe-none st
+   else if name == "read-line-cce" then a64-emit-maybe-none st
+   else if name == "read-file" & list-length args == 1 then a64-emit-unsupported-read st "read-file"
+   else if name == "read-file-raw" & list-length args == 1 then a64-emit-unsupported-read st "read-file-raw"
+   else if name == "read-file-uni" & list-length args == 1 then a64-emit-unsupported-read st "read-file-uni"
    else if name == "read-serial-cce" & list-length args == 1 then a64-emit-empty-text st
    else if name == "prof-start" then a64-emit-int-lit st 0
    else if name == "prof-dump" then a64-emit-int-lit st 0
    else if name == "__self-type-defs" then a64-emit-int-lit st 0
-   else if name == "uefi-read-file" & list-length args == 1 then a64-emit-empty-text st
+   else if name == "uefi-read-file" & list-length args == 1 then a64-emit-unsupported-read st "uefi-read-file"
+   else if name == "port-in-byte" then a64-emit-unsupported-port st "port-in-byte"
+   else if name == "port-out-byte" then a64-emit-unsupported-port st "port-out-byte"
+   else if name == "port-in-16" then a64-emit-unsupported-port st "port-in-16"
+   else if name == "port-out-16" then a64-emit-unsupported-port st "port-out-16"
+   else if name == "port-in-32" then a64-emit-unsupported-port st "port-in-32"
+   else if name == "port-out-32" then a64-emit-unsupported-port st "port-out-32"
+   else if name == "gpu-in" then a64-emit-unsupported-port st "gpu-in"
+   else if name == "gpu-out" then a64-emit-unsupported-port st "gpu-out"
+   else if name == "gpu-mem-read" then a64-emit-unsupported-port st "gpu-mem-read"
+   else if name == "gpu-mem-write" then a64-emit-unsupported-port st "gpu-mem-write"
    else if name == "text-replace" & list-length args == 3 then a64-emit-three-arg-call st "text-replace" args
    else if name == "text-split" & list-length args == 2 then a64-emit-three-arg-call st "text-split" args
    else if name == "__buf-write-byte" & list-length args == 3 then a64-emit-three-arg-call st "__buf-write-byte" args
@@ -1774,13 +1856,14 @@ Section: Field Layout
    when ty
     is RecordTy (rn) (tvars) (fields) -> fields
     is ConstructedTy (tname) (args) -> a64-find-record-fields-in-defs ((st.extra).type-defs) (tname.value) 0
+    is TypeCon (tname) -> a64-find-record-fields-in-defs ((st.extra).type-defs) (tname.value) 0
     is otherwise -> []
 
   a64-find-record-fields-in-defs : List ATypeDef, Text, Integer -> List RecordField
   a64-find-record-fields-in-defs (defs) (name) (i) =
    if i >= list-length defs then []
    else when list-at defs i
-    is ARecordTypeDef (dn) (tparams) (afields) (sp) ->
+    is ARecordTypeDef (dn) (tparams) (afields) (recmut) (sp) ->
      if dn.value == name then a64-afields-to-rfields afields 0
      else a64-find-record-fields-in-defs defs name (i + 1)
     is otherwise -> a64-find-record-fields-in-defs defs name (i + 1)

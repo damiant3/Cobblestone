@@ -106,7 +106,7 @@ Section: Builtin Dispatch
    KtBuiltinEmitter { name = "char-at", emit = \args arities -> emit-kt-expr (list-at args 0) arities & "[" & emit-kt-expr (list-at args 1) arities & " as Int]" },
    KtBuiltinEmitter { name = "char-code-at", emit = \args arities -> emit-kt-expr (list-at args 0) arities & "[" & emit-kt-expr (list-at args 1) arities & " as Int].code" },
    KtBuiltinEmitter { name = "file-exists", emit = \args arities -> "java.io.File(" & emit-kt-expr (list-at args 0) arities & " as String).exists()" },
-   KtBuiltinEmitter { name = "int-mod", emit = \args arities -> "((" & emit-kt-expr (list-at args 0) arities & " as Int) % (" & emit-kt-expr (list-at args 1) arities & " as Int))" },
+   KtBuiltinEmitter { name = "int-mod", emit = \args arities -> "Math.floorMod(" & emit-kt-expr (list-at args 0) arities & " as Int, Math.abs(" & emit-kt-expr (list-at args 1) arities & " as Int))" },
    KtBuiltinEmitter { name = "integer-to-text", emit = \args arities -> "(" & emit-kt-expr (list-at args 0) arities & ").toString()" },
    KtBuiltinEmitter { name = "list-at", emit = \args arities -> "(" & emit-kt-expr (list-at args 0) arities & " as List<*>)[" & emit-kt-expr (list-at args 1) arities & " as Int]" },
    KtBuiltinEmitter { name = "list-length", emit = \args arities -> "(" & emit-kt-expr (list-at args 0) arities & " as List<*>).size" },
@@ -116,7 +116,7 @@ Section: Builtin Dispatch
    KtBuiltinEmitter { name = "negate", emit = \args arities -> "(-(" & emit-kt-expr (list-at args 0) arities & " as Int))" },
    KtBuiltinEmitter { name = "print-error-uni", emit = \args arities -> "System.err.println(" & emit-kt-expr (list-at args 0) arities & ")" },
    KtBuiltinEmitter { name = "print-line-uni", emit = \args arities -> "println(" & emit-kt-expr (list-at args 0) arities & ")" },
-   KtBuiltinEmitter { name = "read-file", emit = \args arities -> "java.io.File(" & emit-kt-expr (list-at args 0) arities & " as String).readText()" },
+   KtBuiltinEmitter { name = "read-text", emit = \args arities -> "java.io.File(" & emit-kt-expr (list-at args 0) arities & " as String).readText()" },
    KtBuiltinEmitter { name = "read-line", emit = \args arities -> "readLine()!!" },
    KtBuiltinEmitter { name = "show", emit = \args arities -> "(" & emit-kt-expr (list-at args 0) arities & ").toString()" },
    KtBuiltinEmitter { name = "substring", emit = \args arities -> "(" & emit-kt-expr (list-at args 0) arities & " as String).substring(" & emit-kt-expr (list-at args 1) arities & " as Int, (" & emit-kt-expr (list-at args 1) arities & " as Int) + (" & emit-kt-expr (list-at args 2) arities & " as Int))" },
@@ -163,11 +163,12 @@ Section: Type Definition Emission
   emit-kt-type-def : ATypeDef -> Text
   emit-kt-type-def (td) =
    when td
-    is ARecordTypeDef (name) (tparams) (fields) (s) ->
+    is ARecordTypeDef (name) (tparams) (fields) (recmut) (s) ->
      emit-kt-record-type (name.value) fields
     is AVariantTypeDef (name) (tparams) (ctors) (s) ->
      if is-tup-type (name.value) then ""
      else emit-kt-sum-type (name.value) ctors
+    is AUnitTypeDef (name) (unitbase) (s) -> ""
 
   emit-kt-sum-type : Text, List AVariantCtorDef -> Text
   emit-kt-sum-type (name) (ctors) =
@@ -222,7 +223,7 @@ Section: Expression Emission
     is IrCharLit (n) (sp) -> integer-to-text n
     is IrName (n) (ty) (sp) -> emit-kt-name n ty arities
     is IrBinary (op) (l) (r) (ty) (sp) -> emit-kt-binary op l r arities
-    is IrNegate (operand) (sp) -> "(-" & emit-kt-expr-at operand arities (depth + 1) & ")"
+    is IrNegate (operand) (nty) (sp) -> "(-" & emit-kt-expr-at operand arities (depth + 1) & ")"
     is IrIf (c) (t) (el) (ty) (sp) -> "(if (" & emit-kt-expr-at c arities (depth + 1) & ") " & emit-kt-expr-at t arities (depth + 1) & " else " & emit-kt-expr-at el arities (depth + 1) & ")"
     is IrLet (name) (ty) (val) (body) (sp) -> "run { val " & kt-sanitize name & " = " & emit-kt-expr-at val arities (depth + 1) & "; " & emit-kt-expr-at body arities (depth + 1) & " }"
     is IrApply (f) (a) (ty) (sp) -> emit-kt-apply e arities

@@ -31,22 +31,20 @@ Section: Types
     | PageSizeDenied (Integer)
 
   PageSource =
-    | SourceInline (Integer) (Integer -> WidgetNode) (Text)
+    | SourceInline (Integer, Integer -> WidgetNode) (Text)
     | SourceBytes (List Integer) (Boolean)
     | SourceAddress (Text) (Text)
 
 Section: Address Resolution and Loading
 
-  resolve-and-load : Text, SandboxConfig, TrustStore, ContentCacheState, Integer, Integer
-    -> PageLoadResult
+  resolve-and-load : Text, SandboxConfig, TrustStore, ContentCacheState, Integer, Integer -> [Network.Read, Network.Write] PageLoadResult
   resolve-and-load (address) (config) (trust) (cache) (vw) (vh) =
     let parsed = parse-codex-address address
     in when parsed
       is None -> PageFetchError ("Invalid address: " & address)
       is Just (addr) -> load-by-address addr config trust cache vw vh
 
-  load-by-address : CodexAddress, SandboxConfig, TrustStore, ContentCacheState, Integer, Integer
-    -> PageLoadResult
+  load-by-address : CodexAddress, SandboxConfig, TrustStore, ContentCacheState, Integer, Integer -> [Network.Read, Network.Write] PageLoadResult
   load-by-address (addr) (config) (trust) (cache) (vw) (vh) =
     when addr
       is LocalAddress (name) ->
@@ -85,11 +83,10 @@ Section: Local Page Loading
 
 Section: Remote Page Loading
 
-  load-remote-page : Text, Text, SandboxConfig, TrustStore, Integer, Integer
-    -> PageLoadResult
-  load-remote-page (host) (path) (config) (trust) (vw) (vh) =
-    let result = fetch-page-tcp host path fetch-defaults
-    in when result
+  load-remote-page : Text, Text, SandboxConfig, TrustStore, Integer, Integer -> [Network.Read, Network.Write] PageLoadResult
+  load-remote-page (host) (path) (config) (trust) (vw) (vh) = act
+    result <- fetch-page-tcp host path fetch-defaults
+    when result
       is FetchOk (page) ->
         load-fetched-page page config trust vw vh
       is FetchNetworkError (msg) ->
@@ -100,9 +97,9 @@ Section: Remote Page Loading
         PageFetchError ("Page not found: " & host & "/" & path)
       is FetchTimeout ->
         PageFetchError ("Fetch timed out: " & host & "/" & path)
+  end
 
-  load-fetched-page : FetchedPage, SandboxConfig, TrustStore, Integer, Integer
-    -> PageLoadResult
+  load-fetched-page : FetchedPage, SandboxConfig, TrustStore, Integer, Integer -> PageLoadResult
   load-fetched-page (page) (config) (trust) (vw) (vh) =
     let size-ok = page.fp-size <= config.sb-max-source-bytes
     in if size-ok == False
@@ -117,8 +114,8 @@ Section: Media Demo Page
   page-media-demo : Integer, Integer -> WidgetNode
   page-media-demo (w) (h) =
     let heading = widget-label "title" "Codex Media Player"
-    in let desc = widget-label "desc"
-          "Multimedia playback — no plugins, no HTML5, no codec downloads."
+    in let desc-text = "Multimedia playback -- no plugins, no HTML5, no codec downloads."
+    in let desc = widget-label "desc" desc-text
     in let sep1 = widget-separator "sep1"
     in let video-area = widget-custom "mock-video" "" w 300
     in let play-btn = widget-button "media-play" ">"
@@ -145,8 +142,7 @@ Section: Media Demo Page
 
 Section: Cache Loading
 
-  load-from-cache : ContentCacheState, ContentHash, SandboxConfig, TrustStore, Integer, Integer
-    -> PageLoadResult
+  load-from-cache : ContentCacheState, ContentHash, SandboxConfig, TrustStore, Integer, Integer -> PageLoadResult
   load-from-cache (cache) (hash) (config) (trust) (vw) (vh) =
     let cached = cache-lookup cache hash
     in when cached
@@ -185,8 +181,8 @@ Section: New Tab Page
           widget-button "link-settings" "Settings — codex://local/settings",
           widget-button "link-media" "Media Player — codex://local/media"
         ]
-    in let info = widget-label "info"
-          "Type an address above or click a link to get started."
+    in let info-text = "Type an address above or click a link to get started."
+    in let info = widget-label "info" info-text
     in widget-panel "newtab" DirColumn spacing-lg [
       heading, subtitle, sep, quick-heading, links, info
     ]
@@ -196,26 +192,26 @@ Section: Hello Page
   page-hello : Integer, Integer -> WidgetNode
   page-hello (w) (h) =
     let heading = widget-label "title" "Hello, Codex"
-    in let p1 = widget-label "p1"
-          "This is the first page rendered by the Codex Browser."
-    in let p2 = widget-label "p2"
-          "No HTML was parsed. No CSS was applied. No JavaScript was interpreted."
-    in let p3 = widget-label "p3"
-          "This page is a compiled Codex function that returns a widget tree."
-    in let p4 = widget-label "p4"
-          "Its capability profile is [Display] — it can paint pixels and nothing else."
+    in let p1-text = "This is the first page rendered by the Codex Browser."
+    in let p1 = widget-label "p1" p1-text
+    in let p2-text = "No HTML was parsed. No CSS was applied. No JavaScript was interpreted."
+    in let p2 = widget-label "p2" p2-text
+    in let p3-text = "This page is a compiled Codex function that returns a widget tree."
+    in let p3 = widget-label "p3" p3-text
+    in let p4-text = "Its capability profile is [Display] -- it can paint pixels and nothing else."
+    in let p4 = widget-label "p4" p4-text
     in let sep = widget-separator "sep"
     in let detail-heading = widget-label "detail-title" "How It Works"
-    in let d1 = widget-label "d1"
-          "1. The browser resolves codex://local/hello to a built-in page function."
-    in let d2 = widget-label "d2"
-          "2. The function receives the viewport dimensions and returns a WidgetNode tree."
-    in let d3 = widget-label "d3"
-          "3. The layout engine computes flex positions for each widget."
-    in let d4 = widget-label "d4"
-          "4. The renderer paints the widget tree to a framebuffer."
-    in let d5 = widget-label "d5"
-          "5. The compositor blends the page surface with the browser chrome."
+    in let d1-text = "1. The browser resolves codex://local/hello to a built-in page function."
+    in let d1 = widget-label "d1" d1-text
+    in let d2-text = "2. The function receives the viewport dimensions and returns a WidgetNode tree."
+    in let d2 = widget-label "d2" d2-text
+    in let d3-text = "3. The layout engine computes flex positions for each widget."
+    in let d3 = widget-label "d3" d3-text
+    in let d4-text = "4. The renderer paints the widget tree to a framebuffer."
+    in let d4 = widget-label "d4" d4-text
+    in let d5-text = "5. The compositor blends the page surface with the browser chrome."
+    in let d5 = widget-label "d5" d5-text
     in widget-panel "hello" DirColumn spacing-md [
       heading, p1, p2, p3, p4, sep, detail-heading, d1, d2, d3, d4, d5
     ]
@@ -225,8 +221,8 @@ Section: About Page
   page-about : Integer, Integer -> WidgetNode
   page-about (w) (h) =
     let heading = widget-label "title" "Codex Browser v0.1"
-    in let version = widget-label "version"
-          "Built on the Codex self-sustaining compiler (fixed point of itself)"
+    in let version-text = "Built on the Codex self-sustaining compiler (fixed point of itself)"
+    in let version = widget-label "version" version-text
     in let sep1 = widget-separator "sep1"
     in let cap-title = widget-label "cap-title" "Capability Tiers"
     in let tiers = widget-panel "tiers" DirColumn spacing-sm [
@@ -308,8 +304,8 @@ Section: Trust Info Page
   page-trust-info : Integer, Integer -> WidgetNode
   page-trust-info (w) (h) =
     let heading = widget-label "title" "Trust Model"
-    in let intro = widget-label "intro"
-          "The Codex Browser uses compile-time capability verification instead of runtime sandboxing."
+    in let intro-text = "The Codex Browser uses compile-time capability verification instead of runtime sandboxing."
+    in let intro = widget-label "intro" intro-text
     in let sep1 = widget-separator "sep1"
     in let how-title = widget-label "how-title" "How It Works"
     in let how = widget-panel "how" DirColumn spacing-sm [

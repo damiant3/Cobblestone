@@ -1,0 +1,37 @@
+Chapter: ProcessExitStatus
+
+ The unary process-exit means something on bare metal. A
+ child that calls process-exit N and a child that returns N both leave
+ N in the slot's exit-status cell -- the unary helper stores its
+ argument, and __proc_entry stores the closure's return value before
+ joining the exit path. The exit wake loop delivers the status into a
+ blocked waiter's saved RAX, and process-wait's already-dead path reads
+ the cell directly, so process-wait answers the child's status
+ whichever side of the exit race the waiter lands on. The two children
+ use different constants so a wait that answers the wrong child's
+ status, or a stale zero, cannot pass.
+
+Section: Children
+
+  ret-child : Integer -> Integer
+  ret-child (x) = 40 + x
+
+  exit-child : Integer -> [Process] Integer
+  exit-child (x) = act
+    process-exit (60 + x)
+    let unreached = 0
+    in unreached
+  end
+
+Section: Entry
+
+  opening : [Console, Concurrent, Process] Nothing = act
+    p1 <- process-spawn (\x -> ret-child x)
+    let w1 = process-wait p1
+    in act
+      print-line-uni ("ret-status: " & show w1)
+      p2 <- process-spawn (\x -> exit-child x)
+      let w2 = process-wait p2
+      in print-line-uni ("exit-status: " & show w2)
+    end
+  end

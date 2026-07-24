@@ -1,0 +1,238 @@
+Chapter: Capability
+
+ The capability table, once. A capability used to be written out five
+ times: the vocabulary the type checker admits, the identifier the CDX
+ manifest carries, the kernel bits the boot grant expands, the kernel
+ bits the verified loader expands, and the bit numbers themselves, which
+ existed twice under two names. Four of those live in the compiler and
+ the fifth lives in the operating system, and no single compile ever saw
+ more than one quire at a time -- so the agreement between them was
+ checked by a build script rather than held by the language.
+
+ Measured before this chapter existed: the compiler's `cap-*` constants
+ and the loader's `kern-cap-*` constants were identical in all 23 names
+ AND all 23 values. That is not a coincidence anyone maintained on
+ purpose; it is a coincidence `build/check-cap-tables.ps1` defended, and
+ the source called that "not a fix, only a truce".
+
+ This is where the truce ends. The table is here because the foreword is
+ the only quire both sides may cite: Library Rule 2 fixes the order
+ `codex.foreword -> codex -> codex.os`, so the compiler and the loader
+ can each cite this and neither has to cite the other. A binary now gets
+ the same authority whichever door it came in through, by construction
+ rather than by a script that noticed when it did not.
+
+ What this chapter deliberately does NOT do is derive the foreword
+ `effect <Name> where` declarations. An effect declaration is a syntax
+ form carrying its own operation signatures, and no table can produce
+ one; `build/check-effect-vocab.ps1` guards that list and is the only
+ instrument that ever could. That guard stays.
+
+Section: Kernel Capability Bits
+
+ The bit positions the kernel grants authority in. These were the
+ compiler's `cap-*` family and the loader's `kern-cap-*` family; the
+ names here are the compiler's, because it had 55 uses across six files
+ against the loader's 17 in one, so keeping this spelling left the
+ larger side untouched.
+
+ The gaps are real. Bits 1, 2 and 13 are unassigned, and FileSystem and
+ Network have no base bit at all -- they are read/write only, so a bare
+ grant is the union of the two and never a third thing.
+
+  cap-console : Integer = 0
+  cap-concurrent : Integer = 3
+  cap-console-read : Integer = 4
+  cap-console-write : Integer = 5
+  cap-filesystem-read : Integer = 6
+  cap-filesystem-write : Integer = 7
+  cap-network-read : Integer = 8
+  cap-network-write : Integer = 9
+  cap-block-device : Integer = 10
+  cap-ipc : Integer = 11
+  cap-process-create : Integer = 12
+  cap-capability-admin : Integer = 14
+  cap-identity : Integer = 15
+  cap-device : Integer = 16
+  cap-gpu-compute : Integer = 17
+  cap-gpu-memory : Integer = 18
+  cap-camera : Integer = 19
+  cap-microphone : Integer = 20
+  cap-location : Integer = 21
+  cap-sensors : Integer = 22
+  cap-display : Integer = 23
+  cap-flash : Integer = 24
+  cap-audio : Integer = 25
+  cap-process : Integer = 26
+
+Section: Directions
+
+ A grant is read, write, or both. The compiler wrote these as
+ `manifest-dir-*` and the CDX format wrote them as `cdx-dir-*`, with the
+ same three values; those spellings stay where they are because they
+ name positions in a file format and in an effect row respectively, but
+ both agree with these and this is what the expansion below reads.
+
+  cap-dir-read : Integer = 0
+  cap-dir-write : Integer = 1
+  cap-dir-readwrite : Integer = 2
+
+Section: The Table
+
+ One row per capability, keyed by the identifier the CDX manifest
+ carries. A row names its base bit, its read and write bits if the
+ family has a direction, and any further bits the family implies.
+ Negative one means the row has no such bit, which is a statement and
+ not a placeholder: FileSystem has no base bit, and Concurrent has no
+ direction.
+
+ There are 18 rows and the type checker's vocabulary has 24 entries.
+ The difference is not drift. Console, FileSystem and Network each admit
+ a dotted refinement in an effect row (`[FileSystem.Read]`), and those
+ six names are DERIVED below rather than stored, because a refinement is
+ a direction on a capability and not a capability of its own.
+
+ Process is the newest row and the reason it was missing is worth
+ keeping. `[Process]` guards `get-args`, `get-env`, `current-dir`,
+ `run-process`, `run-process-full` and `process-exit` -- host authority,
+ and `run-process` in particular is arbitrary command execution, which
+ is why it takes a bit of its own rather than borrowing Concurrent's
+ `cap-process-create`. That bit is the bare-metal spawn authority and a
+ different thing. Until this row existed the whole family was dead on
+ arrival: every one of those builtins resolved and type-checked, and no
+ program could declare the row needed to call any of them, because
+ CDX4001 refused a name the vocabulary did not carry. Nothing in
+ `codex/test` or `codex/os` declares `[Process]`, which is why an entire
+ effect family being uncallable went unnoticed.
+
+ Like Concurrent and Capability, Process has no `effect Process where`
+ declaration in the foreword -- its operations are compiler builtins,
+ typed in `Types/Builtins.codex` rather than by a declaration. That
+ asymmetry is deliberate and `build/check-effect-vocab.ps1` carries it in
+ its `capsWithoutEffect` list, so it is a recorded decision and not a
+ silence.
+
+  CapSpec = record {
+   cs-name : Text,
+   cs-id : Integer,
+   cs-base-bit : Integer,
+   cs-read-bit : Integer,
+   cs-write-bit : Integer,
+   cs-extra-bits : List Integer
+  }
+
+  capability-table : List CapSpec
+  capability-table = [
+   CapSpec { cs-name = "Console", cs-id = 0, cs-base-bit = cap-console, cs-read-bit = cap-console-read, cs-write-bit = cap-console-write, cs-extra-bits = [] },
+   CapSpec { cs-name = "FileSystem", cs-id = 1, cs-base-bit = 0 - 1, cs-read-bit = cap-filesystem-read, cs-write-bit = cap-filesystem-write, cs-extra-bits = [] },
+   CapSpec { cs-name = "Network", cs-id = 2, cs-base-bit = 0 - 1, cs-read-bit = cap-network-read, cs-write-bit = cap-network-write, cs-extra-bits = [] },
+   CapSpec { cs-name = "Concurrent", cs-id = 3, cs-base-bit = cap-concurrent, cs-read-bit = 0 - 1, cs-write-bit = 0 - 1, cs-extra-bits = [cap-ipc, cap-process-create] },
+   CapSpec { cs-name = "Device", cs-id = 4, cs-base-bit = cap-block-device, cs-read-bit = 0 - 1, cs-write-bit = 0 - 1, cs-extra-bits = [cap-device] },
+   CapSpec { cs-name = "Gpu.Compute", cs-id = 5, cs-base-bit = cap-gpu-compute, cs-read-bit = 0 - 1, cs-write-bit = 0 - 1, cs-extra-bits = [] },
+   CapSpec { cs-name = "Gpu.Memory", cs-id = 6, cs-base-bit = cap-gpu-memory, cs-read-bit = 0 - 1, cs-write-bit = 0 - 1, cs-extra-bits = [] },
+   CapSpec { cs-name = "Identity", cs-id = 7, cs-base-bit = cap-identity, cs-read-bit = 0 - 1, cs-write-bit = 0 - 1, cs-extra-bits = [] },
+   CapSpec { cs-name = "Capability", cs-id = 8, cs-base-bit = cap-capability-admin, cs-read-bit = 0 - 1, cs-write-bit = 0 - 1, cs-extra-bits = [] },
+   CapSpec { cs-name = "Gpu", cs-id = 9, cs-base-bit = 0 - 1, cs-read-bit = 0 - 1, cs-write-bit = 0 - 1, cs-extra-bits = [cap-gpu-compute, cap-gpu-memory] },
+   CapSpec { cs-name = "Camera", cs-id = 10, cs-base-bit = cap-camera, cs-read-bit = 0 - 1, cs-write-bit = 0 - 1, cs-extra-bits = [] },
+   CapSpec { cs-name = "Microphone", cs-id = 11, cs-base-bit = cap-microphone, cs-read-bit = 0 - 1, cs-write-bit = 0 - 1, cs-extra-bits = [] },
+   CapSpec { cs-name = "Location", cs-id = 12, cs-base-bit = cap-location, cs-read-bit = 0 - 1, cs-write-bit = 0 - 1, cs-extra-bits = [] },
+   CapSpec { cs-name = "Sensors", cs-id = 13, cs-base-bit = cap-sensors, cs-read-bit = 0 - 1, cs-write-bit = 0 - 1, cs-extra-bits = [] },
+   CapSpec { cs-name = "Display", cs-id = 14, cs-base-bit = cap-display, cs-read-bit = 0 - 1, cs-write-bit = 0 - 1, cs-extra-bits = [] },
+   CapSpec { cs-name = "Flash", cs-id = 15, cs-base-bit = cap-flash, cs-read-bit = 0 - 1, cs-write-bit = 0 - 1, cs-extra-bits = [] },
+   CapSpec { cs-name = "Audio", cs-id = 16, cs-base-bit = cap-audio, cs-read-bit = 0 - 1, cs-write-bit = 0 - 1, cs-extra-bits = [] },
+   CapSpec { cs-name = "Process", cs-id = 17, cs-base-bit = cap-process, cs-read-bit = 0 - 1, cs-write-bit = 0 - 1, cs-extra-bits = [] }
+  ]
+
+Section: The Expansion
+
+ One expansion, read by the boot grant and by the verified loader. A
+ family with no direction takes readwrite when it is asked for one,
+ which is what both hand-written expansions did: withholding a bit the
+ family does not model would deny an authority the program correctly
+ declared.
+
+  cap-or-bits : List Integer, Integer, Integer, Integer -> Integer
+  cap-or-bits (bs) (i) (len) (acc) =
+   if i >= len then acc
+   else cap-or-bits bs (i + 1) len (bit-or acc (bit-shl 1 (list-at bs i)))
+
+  cap-dir-bits : Integer, Integer, Integer -> Integer
+  cap-dir-bits (dir) (read-bit) (write-bit) =
+   if dir == cap-dir-read then bit-shl 1 read-bit
+   else if dir == cap-dir-write then bit-shl 1 write-bit
+   else bit-or (bit-shl 1 read-bit) (bit-shl 1 write-bit)
+
+  cap-bits-for-spec : CapSpec, Integer -> Integer
+  cap-bits-for-spec (spec) (dir) =
+   let base = if spec.cs-base-bit >= 0 then bit-shl 1 (spec.cs-base-bit) else 0
+   in let dirb = if spec.cs-read-bit >= 0 then cap-dir-bits dir (spec.cs-read-bit) (spec.cs-write-bit) else 0
+   in let extra = cap-or-bits (spec.cs-extra-bits) 0 (list-length (spec.cs-extra-bits)) 0
+   in bit-or base (bit-or dirb extra)
+
+Section: Lookups
+
+ A miss answers negative one for an identifier and zero for a bit mask.
+ Zero is the honest answer for an unknown capability: no authority. Both
+ hand-written expansions ended in exactly that and this keeps it.
+
+  cap-find-by-name : List CapSpec, Text, Integer, Integer -> Integer
+  cap-find-by-name (ts) (n) (i) (len) =
+   if i >= len then 0 - 1
+   else if (list-at ts i).cs-name == n then i
+   else cap-find-by-name ts n (i + 1) len
+
+  cap-find-by-id : List CapSpec, Integer, Integer, Integer -> Integer
+  cap-find-by-id (ts) (id) (i) (len) =
+   if i >= len then 0 - 1
+   else if (list-at ts i).cs-id == id then i
+   else cap-find-by-id ts id (i + 1) len
+
+  cap-id-for-name : Text -> Integer
+  cap-id-for-name (n) =
+   let ts = capability-table
+   in let i = cap-find-by-name ts n 0 (list-length ts)
+   in if i < 0 then 0 - 1 else (list-at ts i).cs-id
+
+  cap-bits-for-name : Text, Integer -> Integer
+  cap-bits-for-name (n) (dir) =
+   let ts = capability-table
+   in let i = cap-find-by-name ts n 0 (list-length ts)
+   in if i < 0 then 0 else cap-bits-for-spec (list-at ts i) dir
+
+  cap-bits-for-id : Integer, Integer -> Integer
+  cap-bits-for-id (id) (dir) =
+   let ts = capability-table
+   in let i = cap-find-by-id ts id 0 (list-length ts)
+   in if i < 0 then 0 else cap-bits-for-spec (list-at ts i) dir
+
+Section: The Vocabulary
+
+ The names the type checker admits in an effect row: every capability,
+ plus a dotted Read and Write for the three families that have a
+ direction. 18 rows give 24 names.
+
+ This is a membership test at every call site, so the order is not
+ load-bearing and this does not reproduce the order the hand-written
+ list happened to be in.
+
+ capability-table is a zero-parameter definition, so a mention of one is
+ a call that rebuilds the table. Every function above binds it to a
+ local exactly once for that reason. 18 rows is small enough that the
+ rebuild does not matter at the rate these are called, which is per
+ declared effect and not per emitted instruction -- but the shape is the
+ same one that made emit-builtin expensive, so bind it, do not mention
+ it twice.
+
+  cap-names-from : List CapSpec, Integer, Integer, List Text -> List Text
+  cap-names-from (ts) (i) (len) (acc) =
+   if i >= len then acc
+   else let s = list-at ts i
+   in let a1 = list-push acc (s.cs-name)
+   in if s.cs-read-bit >= 0
+      then cap-names-from ts (i + 1) len (list-push (list-push a1 (s.cs-name & ".Read")) (s.cs-name & ".Write"))
+      else cap-names-from ts (i + 1) len a1
+
+  capability-names : List Text
+  capability-names =
+   let ts = capability-table
+   in cap-names-from ts 0 (list-length ts) []

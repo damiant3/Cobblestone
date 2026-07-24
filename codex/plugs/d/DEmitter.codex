@@ -98,10 +98,11 @@ Section: Type Definition Emission
   emit-d-type-def : ATypeDef -> Text
   emit-d-type-def (td) =
    when td
-    is ARecordTypeDef (name) (tparams) (fields) (s) ->
+    is ARecordTypeDef (name) (tparams) (fields) (recmut) (s) ->
      "struct " & d-sanitize (name.value) & " {\n" & emit-d-record-fields fields 0 & "}\n\n"
     is AVariantTypeDef (name) (tparams) (ctors) (s) ->
      emit-d-ctors ctors 0
+    is AUnitTypeDef (name) (unitbase) (s) -> ""
 
   emit-d-record-fields : List ARecordFieldDef, Integer -> Text
   emit-d-record-fields (fields) (i) =
@@ -136,7 +137,7 @@ Section: Expression Emission
     is IrCharLit (n) (sp) -> integer-to-text n
     is IrName (n) (ty) (sp) -> emit-d-name n arities
     is IrBinary (op) (l) (r) (ty) (sp) -> emit-d-binary op l r arities
-    is IrNegate (operand) (sp) -> "(-" & emit-d-expr-at operand arities (depth + 1) & ")"
+    is IrNegate (operand) (nty) (sp) -> "(-" & emit-d-expr-at operand arities (depth + 1) & ")"
     is IrIf (c) (t) (el) (ty) (sp) -> "(" & emit-d-expr-at c arities (depth + 1) & " ? " & emit-d-expr-at t arities (depth + 1) & " : " & emit-d-expr-at el arities (depth + 1) & ")"
     is IrLet (name) (ty) (val) (body) (sp) -> "((() { auto " & d-sanitize name & " = " & emit-d-expr-at val arities (depth + 1) & "; return " & emit-d-expr-at body arities (depth + 1) & "; })()"
     is IrApply (f) (a) (ty) (sp) -> emit-d-apply e arities
@@ -294,14 +295,14 @@ Section: Apply Emission
    DBuiltinEmitter { name = "char-at", emit = \args arities -> "cast(long)" & emit-d-expr (list-at args 0) arities & "[cast(size_t)" & emit-d-expr (list-at args 1) arities & "]" },
    DBuiltinEmitter { name = "char-code", emit = \args arities -> emit-d-expr (list-at args 0) arities },
    DBuiltinEmitter { name = "char-to-text", emit = \args arities -> "to!string(cast(char)" & emit-d-expr (list-at args 0) arities & ")" },
-   DBuiltinEmitter { name = "int-mod", emit = \args arities -> "(" & emit-d-expr (list-at args 0) arities & " % " & emit-d-expr (list-at args 1) arities & ")" },
+   DBuiltinEmitter { name = "int-mod", emit = \args arities -> "((long _a, long _b){ long _m = _b < 0 ? -_b : _b; long _r = _a % _m; return _r < 0 ? _r + _m : _r; })(" & emit-d-expr (list-at args 0) arities & ", " & emit-d-expr (list-at args 1) arities & ")" },
    DBuiltinEmitter { name = "integer-to-text", emit = \args arities -> "to!string(" & emit-d-expr (list-at args 0) arities & ")" },
    DBuiltinEmitter { name = "list-at", emit = \args arities -> emit-d-expr (list-at args 0) arities & "[cast(size_t)" & emit-d-expr (list-at args 1) arities & "]" },
    DBuiltinEmitter { name = "list-length", emit = \args arities -> "cast(long)" & emit-d-expr (list-at args 0) arities & ".length" },
    DBuiltinEmitter { name = "negate", emit = \args arities -> "(-" & emit-d-expr (list-at args 0) arities & ")" },
    DBuiltinEmitter { name = "print-line-uni", emit = \args arities -> "writeln(" & emit-d-expr (list-at args 0) arities & ")" },
    DBuiltinEmitter { name = "process-exit", emit = \args arities -> "exit(cast(int)" & emit-d-expr (list-at args 0) arities & ")" },
-   DBuiltinEmitter { name = "read-file", emit = \args arities -> "readText(" & emit-d-expr (list-at args 0) arities & ")" },
+   DBuiltinEmitter { name = "read-text", emit = \args arities -> "readText(" & emit-d-expr (list-at args 0) arities & ")" },
    DBuiltinEmitter { name = "show", emit = \args arities -> "to!string(" & emit-d-expr (list-at args 0) arities & ")" },
    DBuiltinEmitter { name = "substring", emit = \args arities -> emit-d-expr (list-at args 0) arities & "[cast(size_t)" & emit-d-expr (list-at args 1) arities & " .. cast(size_t)(" & emit-d-expr (list-at args 1) arities & " + " & emit-d-expr (list-at args 2) arities & ")]" },
    DBuiltinEmitter { name = "text-contains", emit = \args arities -> "(" & emit-d-expr (list-at args 0) arities & ".canFind(" & emit-d-expr (list-at args 1) arities & "))" },

@@ -1,4 +1,5 @@
 Chapter: X86-64 Boot Infrastructure
+  cites Foreword chapter Capability
 
  Bare-metal boot sequence, interrupt handling, process management,
  syscall dispatch, and capability model.
@@ -92,7 +93,13 @@ Section: Memory Address Map
   trace-max-entries : Integer = 12000
   serial-ring-buf-addr : Integer = 5242880
 
-  ap-trampoline-addr : Integer = 4096
+ The page an application processor begins executing in. A start-up IPI's
+ vector field names a 4 KB page below 1 MB, and the processor enters it in
+ REAL MODE with CS:IP = vector:0000 -- so this is a page of 16-bit code, not
+ a cell holding a 64-bit address, which is what it used to be. See
+ ap-tramp-blob.
+
+  ap-trampoline-addr : Integer = ap-sipi-vector * 4096
   ap-core-count-addr : Integer = 4088
   ap-ready-count-addr : Integer = 4080
   ap-stack-table-addr : Integer = 3840
@@ -171,8 +178,8 @@ Section: Memory Address Map
  guest-only counters, and 36224 is spawn-affinity; nothing host-side
  touches 36232.
 
- fs-elevated is the kernel filesystem servicer's block-authority token
- (BACKLOG 1.14). It is non-zero for exactly the span in which the
+ fs-elevated is the kernel filesystem servicer's block-authority token.
+ It is non-zero for exactly the span in which the
  compiler-installed FileSystem default handler is discharging a
  verified read-text/write-file over fat16, and zero everywhere else.
  The block syscalls (10-13) proceed when the current process holds
@@ -184,6 +191,51 @@ Section: Memory Address Map
  capability bypass (elevate, then block-write-sector).
 
   fs-elevated-addr : Integer = 36232
+
+ Evidence that a device interrupt was taken. Until these existed nothing
+ a guest could read recorded the arrival of any vector except the two
+ timers: __interrupt_common answers the PIT and the local timer
+ specially and returns from every other vector without leaving a mark,
+ so an emulator could route a comparator match through an IOAPIC to a
+ vector, deliver it, and have the guest take it, with no observable
+ difference from having dropped it. That made interrupt delivery
+ untestable by construction rather than by omission -- the one class of
+ failure a battery could never see.
+
+ The count is incremented on every vector that is not a timer, and the
+ second cell holds the last such vector, so a test can name the line it
+ programmed and check that line answered. The timer vectors do not touch
+ either cell, which is what keeps the host's own periodic tick out of
+ the evidence.
+
+ Cells 36240 and 36248, the next free slots above fs-elevated. Grep
+ tools/codex-vm.c before claiming any cell in this band.
+
+  devint-count-addr : Integer = 36240
+  devint-last-vec-addr : Integer = 36248
+
+ The next core id to hand out. An application processor no longer arrives
+ with its id in a register put there by the host -- it starts in real mode
+ knowing nothing -- so it takes one for itself with a locked exchange-add
+ on this cell as the last act of the trampoline. The boot processor seeds
+ it with 1 before the start-up IPI, so ids run 1, 2, 3 ... and the boot
+ processor keeps 0.
+
+ A dense counter rather than the local APIC id, deliberately. The id is
+ used to index the AP stack table, the per-core idle stacks, the per-core
+ TSS descriptors and the IST stacks, all of which are arrays of
+ smp-max-cores entries; a LAPIC id is an identifier and not an index, and
+ on a machine that numbers its cores sparsely (or above 15) it would run
+ off the end of every one of them. Nothing in the tree needs a core's
+ hardware identity, only a distinct small number, so the trampoline reads
+ no MMIO at all -- which is one fewer thing that has to work before the
+ first application processor can speak.
+
+ Cell 36256, the next free slot above devint-last-vec. Grep
+ tools/codex-vm.c before claiming any cell in this band.
+
+  ap-id-next-addr : Integer = 36256
+
  Application-processor idle stacks live in low always-present memory,
  never in the demand-paged heap range: an AP takes its first interrupt
  on this stack, and the CPU cannot deliver a fault frame onto a
@@ -239,16 +291,20 @@ Section: Memory Address Map
  means "all excluding self", which is what lets one write reach every AP
  without addressing them one at a time.
 
- The startup vector field (bits 0-7) is zero. On real silicon that field
- names the 4 KB page an AP begins executing in, which caps the entry at
- 1 MB and demands a real-mode trampoline. codex-vm instead reads the
- full 64-bit entry address from ap-trampoline-addr, so the vector carries
- no information here. A physical machine will need the trampoline; that
- is a separate piece of work and it is written down as BACKLOG 4.2.
+ The startup vector field (bits 0-7) names the 4 KB page an application
+ processor begins executing in, and it is the page at ap-trampoline-addr.
+ The vector used to be zero, because codex-vm sidestepped the mechanism
+ entirely and read a full 64-bit entry address out of guest memory -- so
+ SMP worked under the emulator and could not have worked on a physical
+ machine, where the field is the only thing that tells an AP where to
+ begin. Both ends are honest now: the vector carries the page, the page
+ carries a real-mode trampoline, and codex-vm starts an AP the way silicon
+ does. Every SMP test therefore runs through the trampoline.
 
+  ap-sipi-vector : Integer = 1
   lapic-sivr-enable : Integer = 511
   icr-init-all-but-self : Integer = 804096
-  icr-sipi-all-but-self : Integer = 804352
+  icr-sipi-all-but-self : Integer = 804352 + ap-sipi-vector
   icr-wake-all-but-self : Integer = 802864
 
  How long the BSP waits for the APs to check in. The wait is bounded: a
@@ -348,9 +404,19 @@ Section: Process Table Layout
  URL's authority against. Console has no such cell on purpose -- a
  console channel is fixed at compile time by the builtin name and is
  never a runtime value, so there is nothing at runtime to check it
- against (BACKLOG 1.5).
+ against.
 
   proc-net-scope-offset : Integer = 24
+
+ The exit status. Written by the unary process-exit before it joins the
+ nullary exit path, and by __proc_entry from the closure's return value
+ when a child terminates by returning, so a dead slot always carries a
+ defined status; spawn initializes it to zero. Delivered to a waiter by
+ the exit wake loop (into the waiter's saved RAX) and read directly by
+ process-wait's already-dead and self-rescue paths. Offset 32 is the
+ next free slot in the reserved gap [24, 56).
+
+  proc-exit-status-offset : Integer = 32
   proc-cap-offset : Integer = 56
   proc-scope-offset : Integer = 64
   proc-saved-rsp-offset : Integer = 72
@@ -404,37 +470,11 @@ Section: Channel Table Layout
   chan-state-open : Integer = 1
   chan-state-closed : Integer = 2
 
-  cap-console : Integer = 0
-
-  cap-console-read : Integer = 4
-
-  cap-console-write : Integer = 5
-
-  cap-filesystem-read : Integer = 6
-
-  cap-filesystem-write : Integer = 7
-
-  cap-network-read : Integer = 8
-
-  cap-network-write : Integer = 9
-
-  cap-concurrent : Integer = 3
-
-  cap-block-device : Integer = 10
-  cap-ipc : Integer = 11
-  cap-process-create : Integer = 12
-  cap-capability-admin : Integer = 14
-  cap-identity : Integer = 15
-  cap-device : Integer = 16
-  cap-gpu-compute : Integer = 17
-  cap-gpu-memory : Integer = 18
-  cap-camera : Integer = 19
-  cap-microphone : Integer = 20
-  cap-location : Integer = 21
-  cap-sensors : Integer = 22
-  cap-display : Integer = 23
-  cap-flash : Integer = 24
-  cap-audio : Integer = 25
+ The kernel capability bits moved to Foreword chapter Capability, where
+ the verified loader can read the same ones. They were written out here
+ and again there as kern-cap-*, identical in all 23 names and all 23
+ values, and build/check-cap-tables.ps1 existed to notice when that
+ stopped being true.
 
 Section: PIT and PIC Initialization
   emit-pit-init : CodegenState -> CodegenState
@@ -974,7 +1014,7 @@ Section: Common Interrupt Handler
  FREE slot) and switches to a replacement, ABANDONING the wake loop. Any
  waiter it had not yet reached is never woken and blocks forever. This is a
  lost-wakeup deadlock that showed as a rare hang of a parent waiting on many
- children (BACKLOG 4.11(f)), and it is timing-sensitive enough that adding a
+ children, and it is timing-sensitive enough that adding a
  single host thread hid it. So: if the running slot is already FREE, the
  process is mid-exit and there is nothing to preempt -- acknowledge the clock
  and return, and let it finish its wake loop.
@@ -989,7 +1029,7 @@ Section: Common Interrupt Handler
  that is not its own. Both scans (priority-preference and starvation-relief)
  therefore skip slot 0 when the claiming core's id is not zero, so a
  non-zero core never selects proc 0 as a preemption target and proc 0 stays
- the boot processor's to schedule (BACKLOG 4.11(e)).
+ the boot processor's to schedule.
 
   emit-common-interrupt-handler : CodegenState -> CodegenState
   emit-common-interrupt-handler (st) =
@@ -1281,7 +1321,8 @@ Section: Common Interrupt Handler
    in let st17 = st-append-code st16 (pop-r reg-rax)
    in let st18 = st-append-code st17 iretq
    in let st19 = patch-jcc-at st18 not-timer (st18.code-len)
-   in let st20 = st-append-code st19 (cmp-ri reg-rax 33)
+   in let dv0 = emit-devint-record st19
+   in let st20 = st-append-code dv0 (cmp-ri reg-rax 33)
    in let not-keyboard = st20.code-len
    in let st21 = st-append-code st20 (jcc cc-ne 0)
    in let st22 = st-append-code st21 (li reg-rdx 96)
@@ -1811,6 +1852,30 @@ Section: SMP Initialization
  RCX already holds the address of the running process here. RAX and RDX are
  dead; RDI holds the slot index and the scan below still needs it.
 
+ Evidence that a device interrupt was taken, written at the point in
+ __interrupt_common where the vector has been established as neither the
+ PIT's nor the local timer's. RAX holds the vector and the comparisons
+ below still need it, so it is left alone; RCX, RDX, RSI and RDI were all
+ pushed on entry and are free scratch here.
+
+ The count is incremented with a locked add because more than one core
+ reaches this path. The last-vector store is a plain one: two device
+ interrupts racing to record different vectors is not a case worth a lock,
+ and a test that programs one line reads back that line.
+
+ This is the whole cost of the mechanism -- five instructions on a path
+ that runs only for device interrupts. The timer vectors branch away
+ before reaching it, so the tick, which is the only frequent interrupt
+ here, pays nothing.
+
+  emit-devint-record : CodegenState -> CodegenState
+  emit-devint-record (st) =
+   let st1 = st-append-code st (li reg-rdi devint-last-vec-addr)
+   in let st2 = st-append-code st1 (mov-store reg-rdi reg-rax 0)
+   in let st3 = st-append-code st2 (li reg-rdi devint-count-addr)
+   in let st4 = st-append-code st3 (li reg-rsi 1)
+   in st-append-code st4 (lock-xadd-mem reg-rsi reg-rdi 0)
+
   emit-ap-preempt-count : CodegenState -> CodegenState
   emit-ap-preempt-count (st) =
    let st1 = st-append-code st (mov-load reg-rdx reg-rcx proc-core-offset)
@@ -1824,7 +1889,7 @@ Section: SMP Initialization
 
  An application processor arms its own scheduling clock. Until it does, it
  is running with interrupts disabled and no timer, so a process that never
- yields owns the core until it exits -- which is what BACKLOG 4.11 called
+ yields owns the core until it exits -- which is what was once called
  "an AP is never preempted".
 
  The order matters. The local APIC is enabled first (the MSR bit, which is
@@ -1850,6 +1915,117 @@ Section: SMP Initialization
    in let st3 = st-append-code st2 (sub-ri reg-rcx 1)
    in st-append-code st3 (jcc cc-ne (loop-top - (st3.code-len + 6)))
 
+ The trampoline an application processor wakes up inside.
+
+ A start-up IPI does not hand a core an address. It hands it a page
+ number, and the core begins executing at the first byte of that page in
+ REAL MODE -- 16-bit, no paging, no long mode, segment bases in hardware
+ registers, and a GDT it has never heard of. Everything the boot processor
+ spent its own startup arranging has to be arranged again, by the core
+ itself, out of bytes that were copied into the low megabyte before the
+ IPI was sent. That is what this is: one hundred and seventy-seven bytes
+ that carry a core from reset state to the 64-bit AP entry.
+
+ It is laid out with its data first so the offsets that matter are
+ literals rather than the sum of however many instructions happen to
+ precede them. Offset 0 is a two-byte jump over the data to the 16-bit
+ code at 40; offset 2 is the GDT pseudo-descriptor lgdt reads, limit then
+ base; offset 8 is the GDT itself, null then 32-bit code then data then
+ 64-bit code; offset 40 is the 16-bit code, which loads the GDT, sets
+ CR0.PE and far jumps to 32-bit; offset 68 is the 32-bit code, which sets
+ PAE, CR3, EFER.LME and CR0.PG and far jumps to 64-bit; and offset 134 is
+ the 64-bit code, which takes a core id and jumps to the AP entry.
+
+ It carries its OWN GDT rather than borrowing the runtime one, because the
+ runtime GDT has no 32-bit code descriptor -- it has a 64-bit code
+ descriptor, a data descriptor, and sixteen TSS descriptors, and the
+ protected-mode step needs a segment the runtime never has any use for.
+ The AP entry reloads the runtime GDT for itself a few instructions later;
+ the descriptor caches carry the trampoline's flat code and data across
+ that lgdt untouched, because nothing reloads a segment register between
+ the two.
+
+ EFER gets NXE as well as LME, and forgetting it is a page fault rather
+ than a missing feature: the runtime page tables set bit 63 on every entry
+ above the code boundary, and with NXE clear bit 63 is a RESERVED bit, so
+ the first instruction after paging comes on faults on a reserved-bit
+ violation. The boot processor is given NXE by the firmware path; an
+ application processor has to ask for it.
+
+ The two far jumps are the only reason the layout is fixed: their targets
+ are absolute addresses, computed here from ap-trampoline-addr, and they
+ are wrong by exactly as much as any byte count above them is wrong.
+
+ Offsets 0..39. A two-byte jump over the data (rel8 38, measured from the
+ byte after it, so 2 + 38 = 40), then the six-byte pseudo-descriptor lgdt
+ reads, then four descriptors: null, 64-bit code, data, 32-bit code. The
+ GDT base is ap-trampoline-addr + 8, so selector 8 is the 64-bit code
+ segment, 16 the data segment and 24 the 32-bit code segment.
+
+ That ordering is not cosmetic and it is the one thing here that will bite
+ anyone who rearranges this table. The selectors an application processor
+ is still holding when it leaves the trampoline have to mean the same
+ things in the RUNTIME GDT it is about to load, because a segment register
+ is only reloaded from a descriptor table when something reloads it -- and
+ the first thing that does is the iretq at the end of the first interrupt
+ the core takes, which restores CS and SS from the frame the CPU pushed.
+ The runtime GDT is null, 64-bit code, data, then sixteen TSS descriptors.
+ Put the 32-bit code segment at selector 8, as the natural reading order
+ suggests, and the core runs perfectly until its first timer tick and then
+ general-protection-faults on the way back out, because selector 24 in the
+ runtime table is a TSS and a TSS is not a code segment. The 32-bit
+ descriptor goes last precisely because it is the one that is dead by
+ then.
+
+  ap-tramp-data : List Integer
+  ap-tramp-data = [235, 38] & write-i16 31 & write-i32 (ap-trampoline-addr + 8) & write-i64 0 & write-i64 #00AF9A000000FFFF & write-i64 #00CF92000000FFFF & write-i64 #00CF9A000000FFFF
+
+ Offsets 40..67, sixteen-bit. cli; xor ax, ax; mov ds, ax so the absolute
+ lgdt operand below is measured from linear zero; lgdt [ap-trampoline-addr
+ + 2]; mov eax, cr0; or eax, 1 (the 0x66 prefix is what makes that a
+ 32-bit operand in a 16-bit segment); mov cr0, eax; and a 32-bit far jump
+ to selector 24, the 32-bit code segment, at offset 68.
+
+  ap-tramp-code16 : List Integer
+  ap-tramp-code16 = [250, 49, 192, 142, 216, 15, 1, 22] & write-i16 (ap-trampoline-addr + 2) & [15, 32, 192, 102, 131, 200, 1, 15, 34, 192, 102, 234] & write-i32 (ap-trampoline-addr + 68) & write-i16 24
+
+ Offsets 68..133, thirty-two-bit. Load the data selector into every
+ segment register; set CR4 to PAE, OSFXSR and OSXMMEXCPT (0x620); point
+ CR3 at the runtime PML4 at 0x8000, which the boot processor built before
+ it sent the IPI; read EFER and set LME and NXE (0x900); set CR0.PG and
+ CR0.MP, which activates long mode with a 32-bit code segment still
+ selected; and far jump to selector 8 at offset 134, which is the step
+ that actually enters 64-bit mode.
+
+ Every one of those constants is the boot processor's, taken from
+ tramp-enable-long-mode in X86_64IO, and the two that look like padding
+ are not. OSFXSR is what makes SSE legal: without it the first packed
+ instruction in the first process an application processor resumes is an
+ invalid-opcode fault, which is what this omission actually produced --
+ the cores checked in, armed their timers, and then died one at a time on
+ real work while the check-in count still read three. NXE is what makes
+ bit 63 of a page-table entry mean "no execute" instead of "reserved", and
+ the runtime tables set it above the code boundary, so without NXE the
+ first instruction executed after paging comes on is a reserved-bit page
+ fault.
+
+  ap-tramp-code32 : List Integer
+  ap-tramp-code32 = [184] & write-i32 16 & [142, 216, 142, 192, 142, 208, 142, 224, 142, 232, 15, 32, 224, 13] & write-i32 1568 & [15, 34, 224, 184] & write-i32 32768 & [15, 34, 216, 185] & write-i32 3221225600 & [15, 50, 13] & write-i32 2304 & [15, 48, 15, 32, 192, 13] & write-i32 2147483650 & [15, 34, 192, 234] & write-i32 (ap-trampoline-addr + 134) & write-i16 8
+
+ Offsets 134..176, sixty-four-bit. Reload the segment registers under the
+ new mode; take a core id with a locked exchange-add on ap-id-next-addr,
+ which leaves the old value in EAX and is the whole of this core's
+ identity; move it to EDI, where the AP entry expects it; and jump to that
+ entry, whose absolute address was known when this blob was assembled.
+
+  ap-tramp-code64 : Integer -> List Integer
+  ap-tramp-code64 (entry) = [184] & write-i32 16 & [142, 216, 142, 192, 142, 208, 142, 224, 142, 232, 184] & write-i32 1 & [240, 15, 193, 4, 37] & write-i32 ap-id-next-addr & [137, 199, 72, 184] & write-i64 entry & [255, 224]
+
+  ap-tramp-blob : Integer -> List Integer
+  ap-tramp-blob (entry) = ap-tramp-data & ap-tramp-code16 & ap-tramp-code32 & ap-tramp-code64 entry
+
+  ap-tramp-size : Integer = list-length (ap-tramp-blob 0)
+
   emit-smp-write-stacks : CodegenState, Integer -> CodegenState
   emit-smp-write-stacks (st) (i) =
    if i >= smp-max-cores then st
@@ -1859,13 +2035,27 @@ Section: SMP Initialization
    in let st3 = st-append-code st2 (mov-store reg-rdi reg-rax 0)
    in emit-smp-write-stacks st3 (i + 1)
 
- The boot processor publishes the AP entry point and the per-core stack
- table, sends INIT and two start-up IPIs, and then waits for every
- application processor to count itself in. Each AP claims its stack from
- the table by core index, loads the runtime GDT and its own task register
- -- the hypervisor starts it on the boot GDT, which carries no TSS, and a
- core with no task register cannot be handed a fault -- adds itself to the
- ready count with a locked add, and goes to look for work.
+ The boot processor copies the real-mode trampoline into the page the
+ start-up vector names, seeds the core-id counter, publishes the per-core
+ stack table, sends INIT and two start-up IPIs, and then waits for every
+ application processor to count itself in. Each AP comes up in real mode
+ inside the trampoline, climbs to long mode, takes a core id, claims its
+ stack from the table by that index, loads the runtime GDT, the runtime
+ IDT and its own task register -- it starts on a GDT of the trampoline's
+ own making, which carries no TSS, and a core with no task register cannot
+ be handed a fault -- adds itself to the ready count with a locked add,
+ and goes to look for work.
+
+ The IDT load is new and it was missing for as long as the host was
+ configuring these cores by hand: codex-vm used to point each AP's IDTR at
+ the real IDT itself, so nothing in the guest ever had to. A core coming
+ out of reset has the real-mode interrupt vector table and nothing else,
+ and the very next thing this routine does is arm a periodic timer and
+ raise IF. Without the lidt the first tick on each application processor
+ dispatched through sixteen bits of garbage. The shape it produced is
+ worth recognising, because it looks nothing like a missing IDT: the cores
+ checked in, the ready count read three, and then no application processor
+ ever claimed a process, because each was dead by the time work appeared.
 
  It goes to __idle_dispatch -- the same place the boot processor goes when
  it runs out of work -- with its core id already in R15, which is where
@@ -1917,7 +2107,8 @@ Section: SMP Initialization
    in let tr5 = st-append-code tr4 (mov-rr reg-rdi reg-rsp)
    in let tr6 = st-append-code tr5 [15, 1, 23]
    in let tr7 = st-append-code tr6 (add-ri reg-rsp 16)
-   in let tr8 = st-append-code tr7 (mov-rr reg-rax reg-r15)
+   in let tr7i = emit-load-idt tr7
+   in let tr8 = st-append-code tr7i (mov-rr reg-rax reg-r15)
    in let tr9 = st-append-code tr8 (shl-ri reg-rax 4)
    in let tr10 = st-append-code tr9 (add-ri reg-rax gdt-tss-sel-base)
    in let tr11 = st-append-code tr10 [15, 0, 216]
@@ -1934,10 +2125,20 @@ Section: SMP Initialization
    in let ap12 = emit-ap-timer-init ap11
    in let ap13 = emit-jmp-to ap12 "__idle_dispatch"
    in let st5b = patch-jmp-at ap13 bsp-skip-pos (ap13.code-len)
-   in let st6 = st-append-code st5b (li reg-rax (bare-metal-load-addr + ap-entry-pos))
-   in let st7 = st-append-code st6 (li reg-rdi ap-trampoline-addr)
-   in let st8 = st-append-code st7 (mov-store reg-rdi reg-rax 0)
-   in let ipi0 = emit-lapic-enable st8
+   in let blob-skip-pos = st5b.code-len
+   in let sb0 = st-append-code st5b (jmp 0)
+   in let tramp-pos = sb0.code-len
+   in let sb1 = st-append-code sb0 (ap-tramp-blob (bare-metal-load-addr + ap-entry-pos))
+   in let sb2 = patch-jmp-at sb1 blob-skip-pos (sb1.code-len)
+   in let id0 = st-append-code sb2 (li reg-rdi ap-id-next-addr)
+   in let id1 = st-append-code id0 (li reg-rax 1)
+   in let id2 = st-append-code id1 (mov-store reg-rdi reg-rax 0)
+   in let cp0 = st-append-code id2 (li reg-rsi (bare-metal-load-addr + tramp-pos))
+   in let cp1 = st-append-code cp0 (li reg-rdi ap-trampoline-addr)
+   in let cp2 = st-append-code cp1 (li reg-rcx ap-tramp-size)
+   in let cp3 = st-append-code cp2 cld
+   in let cp4 = st-append-code cp3 rep-movsb
+   in let ipi0 = emit-lapic-enable cp4
    in let ipi1 = emit-lapic-write ipi0 lapic-sivr-reg lapic-sivr-enable
    in let ipi2 = emit-lapic-write ipi1 lapic-icr-hi-reg 0
    in let ipi3 = emit-lapic-write ipi2 lapic-icr-lo-reg icr-init-all-but-self
@@ -2074,6 +2275,30 @@ Section: Process Management
 
  Pinned by codex/test/proc-state-running.codex.
 
+ Proc 0's affinity is the boot processor, and the field used to say the
+ opposite. It held -1, which in every other slot means "any core", while
+ three separate guards elsewhere made sure no other core could ever have
+ it: __idle_dispatch starts each core's scan at its own id and wraps to 1,
+ so an application processor never reaches slot 0; and both preemption
+ scans skip slot 0 outright when the claiming core is not the boot
+ processor. So the declared policy and the enforced policy disagreed, and
+ the register recorded the declaration -- proc-0 migration was written
+ down as permitted-but-unproven when it was in fact forbidden in three
+ places and could not happen.
+
+ It is forbidden for a reason, and the reason is the boot stack. Slot 0
+ owns the stack the machine booted on and the main heap; the guards were
+ added deliberately, each with its own account of the corruption it
+ prevents. The field now says what the machine does, which costs nothing
+ -- on the boot processor the affinity test compares 0 against core 0 and
+ passes exactly as the -1 wildcard did, and on every other core slot 0 was
+ already unreachable -- and it removes a value that reads as a licence
+ nothing honours.
+
+ Pinned by codex/test/smp-proc0-pinned.codex, which reads the core stamp
+ out of slot 0 after a multi-core run and requires it to still be the boot
+ processor, with the application processors demonstrably busy at the time.
+
   emit-process-setup : CodegenState -> CodegenState
   emit-process-setup (st) =
    let st1 = emit-zero-region st proc-table-base (16 * proc-entry-size / 8)
@@ -2088,7 +2313,13 @@ Section: Process Management
    in let app0 = st-append-code apd2 (li reg-rdi ap-preempt-count-addr)
    in let app1 = st-append-code app0 (li reg-rax 0)
    in let app2 = st-append-code app1 (mov-store reg-rdi reg-rax 0)
-   in let saff0 = st-append-code app2 (li reg-rdi spawn-affinity-addr)
+   in let dvc0 = st-append-code app2 (li reg-rdi devint-count-addr)
+   in let dvc1 = st-append-code dvc0 (li reg-rax 0)
+   in let dvc2 = st-append-code dvc1 (mov-store reg-rdi reg-rax 0)
+   in let dvv0 = st-append-code dvc2 (li reg-rdi devint-last-vec-addr)
+   in let dvv1 = st-append-code dvv0 (li reg-rax 0)
+   in let dvv2 = st-append-code dvv1 (mov-store reg-rdi reg-rax 0)
+   in let saff0 = st-append-code dvv2 (li reg-rdi spawn-affinity-addr)
    in let saff1 = st-append-code saff0 (li reg-rax (-1))
    in let saff2 = st-append-code saff1 (mov-store reg-rdi reg-rax 0)
    in let slt0 = st-append-code saff2 (li reg-rdi slice-table-addr)
@@ -2104,7 +2335,7 @@ Section: Process Management
    in let st5u = emit-demand-unmap st5
    in let st6 = emit-create-process st5u 0 proc-state-running 32768 6291456
    in let p0aff0 = st-append-code st6 (li reg-rdi (proc-table-base + proc-affinity-offset))
-   in let p0aff1 = st-append-code p0aff0 (li reg-rax (-1))
+   in let p0aff1 = st-append-code p0aff0 (li reg-rax 0)
    in let p0aff2 = st-append-code p0aff1 (mov-store reg-rdi reg-rax 0)
    in let st7 = st-append-code p0aff2 (li reg-rax 32768)
    in let st8 = st-append-code st7 [15, 34, 216]
@@ -2491,7 +2722,7 @@ Section: MSR and Syscall
  The block-authority gate widens the plain cap-block-device test so that a
  syscall also proceeds when the fs-elevated cell is non-zero -- the
  filesystem servicer driving the disk for a process that carries only
- FileSystem.Read (BACKLOG 1.14). The returned deny-offset is the jcc the
+ FileSystem.Read. The returned deny-offset is the jcc the
  caller patches to its shared no-cap exit; it fires only when BOTH the bit
  is clear AND fs-elevated is zero. rax is free here (it held the syscall
  number, overwritten by the disk code below), and emit-check-capability

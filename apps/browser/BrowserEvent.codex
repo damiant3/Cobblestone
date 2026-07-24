@@ -33,14 +33,14 @@ Section: Types
 
 Section: Modifier Constants
 
+  mod-shift : Integer
+  mod-shift = 1
+
   mod-ctrl : Integer
-  mod-ctrl = 1
+  mod-ctrl = 2
 
   mod-alt : Integer
-  mod-alt = 2
-
-  mod-shift : Integer
-  mod-shift = 4
+  mod-alt = 4
 
 Section: Key Code Constants
 
@@ -102,21 +102,23 @@ Section: Key Mapping
 
   map-key-event : Event -> BrowserAction
   map-key-event (ev) =
-    let k = ev.ev-key
-    in let mods = ev.ev-modifiers
-    in if has-mod mods mod-ctrl
-      then map-ctrl-key k mods
-      else if has-mod mods mod-alt
-      then map-alt-key k
-      else map-plain-key k
+    when ev.ev-kind
+      is EvKeyDown (k) (mods) ->
+        if has-mod mods mod-ctrl
+        then map-ctrl-key k mods
+        else if has-mod mods mod-alt
+        then map-alt-key k
+        else map-plain-key k
+      is otherwise -> ActionNone
 
   has-mod : Integer, Integer -> Boolean
   has-mod (mods) (flag) =
     int-mod (mods / flag) 2 == 1
 
   map-ctrl-key : Integer, Integer -> BrowserAction
-  map-ctrl-key (k) (mods) =
-    if k == key-t then ActionNewTab
+  map-ctrl-key (k0) (mods) =
+    let k = key-upper k0
+    in if k == key-t then ActionNewTab
     else if k == key-w then ActionCloseTab
     else if k == key-l then ActionFocusAddress
     else if k == key-r then ActionReload
@@ -149,9 +151,11 @@ Section: Event Polling
  In the bare-metal environment, events come from the keyboard
  service (poll-key) and the kernel mouse module. poll-key
  returns a canonical key code as an Integer, or 0 if no key is
- pending. Letters map to uppercase ASCII, digits to ASCII, and
- special keys to DOM key codes -- exactly what the handlers
- below compare against, so the value is used unchanged.
+ pending, and `poll-mods` the held shift/ctrl/alt at that moment
+ (the same bit values `mod-shift`/`mod-ctrl`/`mod-alt` above use).
+ A letter is case-sensitive, so `map-ctrl-key` folds it through
+ `key-upper` before matching a shortcut; the nav and function keys
+ are DOM key codes used unchanged.
 
  For the MVP, we poll the keyboard. Mouse support requires the
  kernel Mouse module (PS/2 or USB HID).
@@ -160,8 +164,8 @@ Section: Event Polling
   browser-poll-event = act
     let key-code = poll-key
     in if key-code == 0
-      then pure (event-timer "tick" 0)
-      else pure (event-key-down key-code 0 0)
+      then event-timer "tick" 0
+      else event-key-down key-code poll-mods 0
   end
 
 Section: Event Classification

@@ -105,7 +105,7 @@ Section: Builtin Dispatch
    RbBuiltinEmitter { name = "char-at", emit = \args arities -> emit-rb-expr (list-at args 0) arities & "[" & emit-rb-expr (list-at args 1) arities & "]" },
    RbBuiltinEmitter { name = "char-code-at", emit = \args arities -> emit-rb-expr (list-at args 0) arities & "[" & emit-rb-expr (list-at args 1) arities & "].ord" },
    RbBuiltinEmitter { name = "file-exists", emit = \args arities -> "File.exist?(" & emit-rb-expr (list-at args 0) arities & ")" },
-   RbBuiltinEmitter { name = "int-mod", emit = \args arities -> "(" & emit-rb-expr (list-at args 0) arities & " % " & emit-rb-expr (list-at args 1) arities & ")" },
+   RbBuiltinEmitter { name = "int-mod", emit = \args arities -> "(" & emit-rb-expr (list-at args 0) arities & " % (" & emit-rb-expr (list-at args 1) arities & ").abs)" },
    RbBuiltinEmitter { name = "integer-to-text", emit = \args arities -> "(" & emit-rb-expr (list-at args 0) arities & ").to_s" },
    RbBuiltinEmitter { name = "list-at", emit = \args arities -> emit-rb-expr (list-at args 0) arities & "[" & emit-rb-expr (list-at args 1) arities & "]" },
    RbBuiltinEmitter { name = "list-length", emit = \args arities -> emit-rb-expr (list-at args 0) arities & ".length" },
@@ -115,7 +115,7 @@ Section: Builtin Dispatch
    RbBuiltinEmitter { name = "negate", emit = \args arities -> "(-(" & emit-rb-expr (list-at args 0) arities & "))" },
    RbBuiltinEmitter { name = "print-error-uni", emit = \args arities -> "$stderr.puts(" & emit-rb-expr (list-at args 0) arities & ")" },
    RbBuiltinEmitter { name = "print-line-uni", emit = \args arities -> "puts " & emit-rb-expr (list-at args 0) arities },
-   RbBuiltinEmitter { name = "read-file", emit = \args arities -> "File.read(" & emit-rb-expr (list-at args 0) arities & ")" },
+   RbBuiltinEmitter { name = "read-text", emit = \args arities -> "File.read(" & emit-rb-expr (list-at args 0) arities & ")" },
    RbBuiltinEmitter { name = "read-line", emit = \args arities -> "gets.chomp" },
    RbBuiltinEmitter { name = "show", emit = \args arities -> "(" & emit-rb-expr (list-at args 0) arities & ").to_s" },
    RbBuiltinEmitter { name = "substring", emit = \args arities -> emit-rb-expr (list-at args 0) arities & "[" & emit-rb-expr (list-at args 1) arities & ", " & emit-rb-expr (list-at args 2) arities & "]" },
@@ -162,11 +162,12 @@ Section: Type Definition Emission
   emit-rb-type-def : ATypeDef -> Text
   emit-rb-type-def (td) =
    when td
-    is ARecordTypeDef (name) (tparams) (fields) (s) ->
+    is ARecordTypeDef (name) (tparams) (fields) (recmut) (s) ->
      emit-rb-record-type (name.value) fields
     is AVariantTypeDef (name) (tparams) (ctors) (s) ->
      if is-tup-type (name.value) then ""
      else emit-rb-sum-type ctors
+    is AUnitTypeDef (name) (unitbase) (s) -> ""
 
   emit-rb-sum-type : List AVariantCtorDef -> Text
   emit-rb-sum-type (ctors) =
@@ -218,7 +219,7 @@ Section: Expression Emission
     is IrCharLit (n) (sp) -> integer-to-text n
     is IrName (n) (ty) (sp) -> emit-rb-name n ty arities
     is IrBinary (op) (l) (r) (ty) (sp) -> emit-rb-binary op l r arities
-    is IrNegate (operand) (sp) -> "(-" & emit-rb-expr-at operand arities (depth + 1) & ")"
+    is IrNegate (operand) (nty) (sp) -> "(-" & emit-rb-expr-at operand arities (depth + 1) & ")"
     is IrIf (c) (t) (el) (ty) (sp) -> "(" & emit-rb-expr-at c arities (depth + 1) & " ? " & emit-rb-expr-at t arities (depth + 1) & " : " & emit-rb-expr-at el arities (depth + 1) & ")"
     is IrLet (name) (ty) (val) (body) (sp) -> "(lambda { |" & rb-sanitize name & "| " & emit-rb-expr-at body arities (depth + 1) & " }.call(" & emit-rb-expr-at val arities (depth + 1) & "))"
     is IrApply (f) (a) (ty) (sp) -> emit-rb-apply e arities
@@ -253,8 +254,8 @@ Section: Expression Emission
     is IrAppendText -> "(" & emit-rb-expr l arities & " + " & emit-rb-expr r arities & ")"
     is IrAppendList -> "(" & emit-rb-expr l arities & " + " & emit-rb-expr r arities & ")"
     is IrConsList -> "[" & emit-rb-expr l arities & "] + " & emit-rb-expr r arities
-    is IrDivInt -> "(" & emit-rb-expr l arities & " / " & emit-rb-expr r arities & ")"
-    is IrRemInt -> "(" & emit-rb-expr l arities & " % " & emit-rb-expr r arities & ")"
+    is IrDivInt -> "(->(_a, _b) { (_a.abs / _b.abs) * (((_a < 0) == (_b < 0)) ? 1 : -1) }.call(" & emit-rb-expr l arities & ", " & emit-rb-expr r arities & "))"
+    is IrRemInt -> "((" & emit-rb-expr l arities & ").remainder(" & emit-rb-expr r arities & "))"
     is IrPowInt -> "(" & emit-rb-expr l arities & " ** " & emit-rb-expr r arities & ")"
     is IrAnd -> "(" & emit-rb-expr l arities & " && " & emit-rb-expr r arities & ")"
     is IrOr -> "(" & emit-rb-expr l arities & " || " & emit-rb-expr r arities & ")"

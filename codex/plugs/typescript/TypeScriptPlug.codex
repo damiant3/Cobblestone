@@ -10,10 +10,7 @@ Chapter: TypeScriptPlug
 
 Section: Helpers
 
-  text-to-bytes-chunk : Text, Integer, Integer, List Integer -> List Integer
-  text-to-bytes-chunk (s) (i) (stop) (acc) =
-   if i >= stop then acc
-   else text-to-bytes-chunk s (i + 1) stop (list-push acc (to-unicode (char-code (char-at s i))))
+
 
   bytes-to-text-chunk : List Integer, Integer, Integer, Text -> Text
   bytes-to-text-chunk (bs) (i) (stop) (acc) =
@@ -31,23 +28,6 @@ Section: Helpers
   local-ip : List Integer = [10, 0, 2, 15]
   gateway-ip : List Integer = [10, 0, 2, 2]
   host-ip : List Integer = [127, 0, 0, 1]
-
-Section: Streaming Send
-
-  send-text-loop : TcpTransportState, Text, Integer, Integer -> [Network.Write] TcpTransportState
-  send-text-loop (ts) (t) (off) (len) =
-   if off >= len then ts
-   else let stop = if off + 1400 > len then len else off + 1400
-   in let chunk = text-to-bytes-chunk t off stop []
-   in let r = net-send (ts.session) chunk
-   in let ts1 = TcpTransportState { session = r.session, recv-buf = ts.recv-buf, recv-base = ts.recv-base, recv-len = ts.recv-len, recv-cap = ts.recv-cap, messages-sent = ts.messages-sent, messages-received = ts.messages-received }
-   in act
-    ts2 <- flush-transport-outbox ts1
-    send-text-loop ts2 t stop len
-   end
-
-  send-text : TcpTransportState, Text -> [Network.Write] TcpTransportState
-  send-text (ts) (t) = send-text-loop ts t 0 (text-length t)
 
 Section: Drain
 
@@ -73,7 +53,7 @@ Section: Body
      in let parsed = parse-ir-chapter ir-text
      in let output = emit-typescript-chapter (parsed.chapter) (parsed.type-defs)
      in act
-      ts2 <- send-text (recv.transport) output
+      ts2 <- net-io-send-text (recv.transport) output
       ts3 <- net-io-close ts2
       drained <- drain-wait ts3 0
       print-line-uni ("OK defs=" & show (list-length ((parsed.chapter).defs) + drained - drained))

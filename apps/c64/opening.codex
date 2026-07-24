@@ -1,6 +1,13 @@
 Chapter: C64
   cites Foreword chapter List
   cites Foreword chapter Console
+  cites C64 chapter Memory
+  cites C64 chapter VicII
+  cites C64 chapter Cpu6502
+  cites C64 chapter Cia
+  cites C64 chapter RomData
+  cites C64 chapter Sid
+  cites Kernel chapter HdaAudio
 
  Commodore 64 emulator on bare metal. Loads BASIC, KERNAL, and
  CHARGEN ROMs from IDE disk, boots the 6502 at the KERNAL reset
@@ -156,8 +163,19 @@ Section: Main Emulation Loop
     in let s1 = run-cycles s 63
     in run-frame-with-raster s1 (line + 1)
 
-  emulation-loop : CpuState, Integer -> CpuState
-  emulation-loop (s) (frames) =
+ One frame is 16 ms of wall clock (the sleep on port #E0), which at 48
+ kHz is 768 output samples. After the CPU has run the frame -- and with
+ it whatever the program POKEd into the SID registers at $D400, which
+ Memory routes to sid-state -- render exactly those 768 samples from the
+ current register state and stream them to the HDA output. The oscillator
+ phases, envelopes and filter live in sidrt across frames, so the sound
+ is continuous; sidrt and audiobuf are allocated once by opening and
+ reused every frame, never per-frame, so the loop's heap stays flat.
+
+  audio-samples-per-frame : Integer = 768
+
+  emulation-loop : CpuState, Integer, Integer, Integer -> [Gpu.Compute, Device.Port, Audio] CpuState
+  emulation-loop (s) (frames) (sidrt) (audiobuf) =
     if frames >= 36000 then s
     else if s.cpu-halted /= 0 then s
     else let d0 = kbd-poll 0
@@ -165,9 +183,13 @@ Section: Main Emulation Loop
     in let d-cia = poke-byte cia-state 29 (bit-or (peek-byte cia-state 29) #81)
     in let s2 = cpu-irq s1
     in let d1 = render-frame 0
-    in let d2 = gpu-flush 0
-    in let d3 = port-out-byte #E0 16
-    in emulation-loop s2 (frames + 1)
+    in let da = sid-render-stream sid-state sidrt audiobuf audio-samples-per-frame
+    in act
+      d2 <- gpu-flush 0
+      ap <- hda-play-pcm audiobuf (audio-samples-per-frame * 4)
+      d3 <- port-out-byte #E0 16
+      emulation-loop s2 (frames + 1) sidrt audiobuf
+    end
 
 Section: Screen Diagnostics
 
@@ -185,13 +207,16 @@ Section: Screen Diagnostics
 
 Section: Diagnostic Render
 
-  diag-render-loop : Integer -> Integer
+  diag-render-loop : Integer -> [Gpu.Compute, Device.Port] Integer
   diag-render-loop (frame) =
     if frame >= 120 then 0
     else let d = render-frame 0
-    in let d2 = gpu-flush 0
-    in let d3 = port-out-byte #E0 16
-    in d + d2 + d3 + diag-render-loop (frame + 1)
+    in act
+      d2 <- gpu-flush 0
+      d3 <- port-out-byte #E0 16
+      rest <- diag-render-loop (frame + 1)
+      d + d2 + d3 + rest
+    end
 
 Section: CPU Tests
 
@@ -241,12 +266,17 @@ Section: Entry Point
     in let d5 = poke-byte vic-state #21 6
     in d0 + d1 + d2 + d3 + d4 + d5
 
-  opening : [Console] Nothing = act
+  opening : [Console, Gpu.Compute, Device.Port, Audio] Nothing = act
     let d0 = init-c64-ram 0
     in let d1 = cia-init 0
     in let d2 = init-vic 0
     in let d3 = init-all-roms 0
     in let cpu = boot-c64 cpu-new
-    in let final = emulation-loop cpu 0
-    in print-line "done"
+    in let sidrt = alloc-bytes 64
+    in let zrt = sid-rt-reset sidrt
+    in let audiobuf = alloc-bytes (audio-samples-per-frame * 4)
+    in act
+      final <- emulation-loop cpu 0 sidrt audiobuf
+      print-line "done"
+    end
   end

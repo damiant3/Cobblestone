@@ -71,9 +71,41 @@ Section: Architecture Profile
 
 Section: Codegen State
 
+ A local's `reg` is one of two things: a physical register number below
+ `a64-spill-base`, or a spill slot encoded as `a64-spill-base + slot`. The bound
+ has to cover the second, and at 255 it did not.
+
+ **It was 255, and a function needing its 192nd spill slot killed the plug.**
+ `a64-bind-local` narrows into this field, a failed `__narrow` is a `ud2`, and a
+ `ud2` inside the plug is `!EXC=06` with no diagnostic and no wire output -- the
+ harness then reads the register dump as a wire header and reports a .NET array
+ exception. `codex/test/gop-text-field` is the case: it wants slot 197, so the
+ narrow was handed 261 and trapped. That value is visible in the dump itself
+ (R13 = R15 = 0x105 = 261), which is what identified this without a bisection.
+
+ This is x86-64's bug 20 with a better ending. There `AllocLocal` returned a
+ `byte` and slot 224 WRAPPED to RAX, silently miscompiling; here the bounded
+ integer refused. The lesson that transfers is the one that story already drew:
+ the register file is small, the SLOT file is not, and a type sized for the
+ first is wrong for the second.
+
+ **562 is not a round number, it is the ceiling the rest of the pipeline can
+ actually encode.** The binding constraint is the prologue: `a64-compute-frame-size`
+ is `96 + spill-count * 8` rounded to 16, `a64-patch-frame-at` patches it with
+ `arm64-sub-imm`, and that MASKS an immediate above 4095 rather than refusing it.
+ Spill 498 gives a 4080-byte frame and fits; spill 499 gives 4096 and does not.
+ So `a64-spill-base + 498` is the last slot the frame can address, and bounding
+ the field there means anything past it TRAPS rather than silently running on a
+ stack pointer that is 4 KB wrong. The spill access itself is not the limit --
+ `(reg - 64) * 8 + 96` stays inside the scaled 12-bit offset until slot 4083.
+
+ The frame cliff above 498 is a real and separate defect: the prologue has one
+ instruction slot, so lifting it needs the shifted `LSL #12` form (and the
+ matching add in the epilogue) rather than a wider bound here.
+
   A64Local = record {
    name : Text,
-   reg : Integer between 0 and 255
+   reg : Integer between 0 and 562
   }
 
   A64TcoState = record {
@@ -99,7 +131,9 @@ Section: Codegen State
    type-defs : List ATypeDef,
    learned-fields : List A64LearnedField,
    wcet-reports : List Text,
-   state-local : Integer
+   state-local : Integer,
+   smp-boot : Boolean,
+   runtime-funcs : Integer
   }
 
   A64State = record {
@@ -175,20 +209,6 @@ Section: State Constructors
 
   a64-code-buf-size : Integer = 16777216
 
-  mutable A64EffectCell = record {
-   eff-cell-addrs : List A64EffectOpAddr
-  }
-
-  a64-effect-cell : A64EffectCell = A64EffectCell { eff-cell-addrs = [] }
-
-  a64-store-effect-addrs : List A64EffectOpAddr -> List A64EffectOpAddr
-  a64-store-effect-addrs (addrs) =
-   let stored = a64-effect-cell.eff-cell-addrs = addrs
-   in addrs
-
-  a64-load-effect-addrs : List A64EffectOpAddr
-  a64-load-effect-addrs = a64-effect-cell.eff-cell-addrs
-
   make-a64-state : A64State
   make-a64-state =
    let buf = alloc-bytes a64-code-buf-size
@@ -215,7 +235,9 @@ Section: State Constructors
      type-defs = [],
      learned-fields = [],
      wcet-reports = [],
-     state-local = 0 - 1
+     state-local = 0 - 1,
+     smp-boot = False,
+     runtime-funcs = 0
     },
     current-func = "",
     tco = default-a64-tco,
@@ -250,6 +272,14 @@ Section: Emit Helpers
    let st1 = __record-set st "func-names" (list-push (st.func-names) name)
    in let st2 = __record-set st1 "func-offsets" (list-push (st.func-offsets) (st.insn-count))
    in __record-set st2 "func-arities" (list-push (st2.func-arities) arity)
+
+ Arity resolution stays FIRST-match even though offset resolution is
+ last-match (`a64-find-func-offset`): runtime helpers are recorded with
+ arity zero on purpose, and the partial-application dispatch is
+ calibrated to that answer for every double-registered name. Resolving
+ the arity to the later, real-arity registration changed call protocol
+ for those names and broke `handler-smoke` and `dtls-hello`; measured
+ both ways 2026-07-23.
 
   a64-find-func-arity : List Text, List Integer, Text, Integer -> Integer
   a64-find-func-arity (names) (arities) (target) (i) =
@@ -418,6 +448,42 @@ Section: NOP Compaction
    in let raw = bit-or (bit-or (bit-or b0 (bit-shl b1 8)) (bit-shl b2 16)) (bit-shl (bit-and b3 3) 24)
    in raw >= #2000000
 
+ An if's jump-to-end may be dropped only when nothing can arrive at the slot.
+ a64-prev-is-uncond-branch answers a weaker question -- whether the preceding
+ instruction is a backward branch -- and those two questions come apart when
+ the then-branch is itself a join. A nested if whose else is a tail self-call
+ leaves that backward branch immediately before the slot while its own then
+ path branches forward onto it, so the slot is live and eliding the jump drops
+ the arm into the enclosing else. tco-nested-if guards this; CL 6430 is the
+ same defect on x86, and a64-tail-is-join is that fix mirrored. A shape only
+ answers False here when it is straight-line and cannot merge control flow.
+
+  a64-tail-is-join : IRExpr -> Boolean
+  a64-tail-is-join (e) =
+   when e
+    is IrLet (n) (lty) (v) (body) (sp) -> a64-tail-is-join body
+    is IrApply (f) (a) (ty) (sp) -> False
+    is IrName (nm) (ty) (sp) -> False
+    is IrIntLit (iv) (sp) -> False
+    is IrNumLit (nv) (sp) -> False
+    is IrTextLit (tv) (sp) -> False
+    is IrBoolLit (bv) (sp) -> False
+    is IrCharLit (cv) (sp) -> False
+    is IrBinary (op) (l) (r) (ty) (sp) -> False
+    is IrNegate (o) (nty) (sp) -> False
+    is IrFieldAccess (r) (f) (ty) (sp) -> False
+    is IrRecord (rn) (fs) (ty) (sp) -> False
+    is IrList (es) (ty) (sp) -> False
+    is IrLambda (ps) (b) (ty) (sp) -> False
+    is IrFieldStore (r) (f) (sv) (ty) (sp) -> False
+    is IrError (m) (ty) (sp) -> False
+    is otherwise -> True
+
+  a64-can-elide-jmp-end : A64State, Integer, IRExpr -> Boolean
+  a64-can-elide-jmp-end (st) (idx) (th) =
+   if a64-tail-is-join th then False
+   else a64-prev-is-uncond-branch st idx
+
   a64-is-pc-rel-branch : Integer -> Boolean
   a64-is-pc-rel-branch (b3) =
    if bit-and b3 #FC == #14 then True
@@ -578,6 +644,19 @@ Section: NOP Compaction
     reg = tr.reg
    }
 
+ a64-alloc-local answers a REGISTER while one is free and a SPILL SLOT ID once
+ they are gone, and only a64-store-local / a64-load-local know the difference.
+ A caller that wants to WRITE a value into a fresh local needs a register to
+ write into first: a64-local-base gives it the local itself when the local is
+ a register, and a scratch temp when the local is a spill slot. Park the value
+ with a64-store-local afterwards, which is a no-op in the register case, so
+ the emitted bytes are unchanged whenever nothing has spilled.
+
+  a64-local-base : A64State, Integer -> A64EmitResult
+  a64-local-base (st) (local) =
+   if local < a64-spill-base then A64EmitResult { state = st, reg = local }
+   else a64-alloc-temp st
+
   a64-is-stable-reg : Integer -> Boolean
   a64-is-stable-reg (r) = if r >= 19 then r < 28 else False
 
@@ -595,6 +674,24 @@ Section: NOP Compaction
   a64-bind-local : A64State, Text, Integer -> A64State
   a64-bind-local (st) (name) (reg) =
    __record-set st "locals" (list-push (st.locals) (A64Local { name = name, reg = __narrow reg }))
+
+ a64-bind-local appends and a64-lookup-local reads the last match, so a scope is
+ a suffix of st.locals: entering one adds bindings at the end, leaving one has
+ to drop them again. What is saved is the LENGTH, not the list. __list_push
+ writes into the same buffer and hands back the same pointer whenever capacity
+ allows, so holding the old field value and putting it back changes nothing --
+ it only ever appeared to work when a bind hit the grow path and got a fresh
+ buffer. act-let-scope is the guard.
+
+  a64-locals-take : List A64Local, Integer, Integer, List A64Local -> List A64Local
+  a64-locals-take (locals) (n) (i) (acc) =
+   if i >= n then acc
+   else a64-locals-take locals n (i + 1) (list-push acc (list-at locals i))
+
+  a64-restore-locals : A64State, Integer -> A64State
+  a64-restore-locals (st) (saved-len) =
+   if list-length (st.locals) <= saved-len then st
+   else __record-set st "locals" (a64-locals-take (st.locals) saved-len 0 [])
 
   a64-lookup-local : List A64Local, Text, Integer -> Integer
   a64-lookup-local (locals) (name) (i) =
@@ -638,7 +735,7 @@ Section: Function Emission
     is IrCharLit (v) (s) -> 0
     is IrNumLit (v) (s) -> 0
     is IrName (n) (t) (s) -> 0
-    is IrNegate (x) (s) -> a64-count-ir-locals x fname
+    is IrNegate (x) (nty) (s) -> a64-count-ir-locals x fname
     is IrBinary (op) (l) (r) (t) (s) ->
      let left-save = if a64-result-is-stable l then 0 else 1
      in let use-imm = if a64-is-imm-eligible op then a64-small-imm r > 0 else False
@@ -798,7 +895,7 @@ Section: Expression Emission
     is IrTextLit (value) (s) -> a64-emit-text-lit st value
     is IrName (name) (ty) (s) -> a64-emit-name st name ty
     is IrBinary (op) (left) (right) (ty) (s) -> a64-emit-binary st op left right ty
-    is IrNegate (operand) (s) -> a64-emit-negate st operand
+    is IrNegate (operand) (nty) (s) -> a64-emit-negate st operand
     is IrIf (cond) (th) (el) (ty) (s) -> a64-emit-if st cond th el
     is IrLet (name) (ty) (value) (body) (s) -> a64-emit-let st name value body
     is IrApply (func) (arg) (ty) (s) -> a64-emit-apply st expr ty
@@ -890,12 +987,26 @@ Section: Expression Emission
 
 Section: Name Emission
 
+ A zero-argument effect operation goes through the handler table ONLY
+ when a handler was installed. The table's slots sit below the load
+ segment and an unwritten one reads zero, so routing an unhandled op
+ through it is a `blr 0` -- `console-readline-cite` died there before
+ its first print, 2026-07-23. The argument path (`a64-emit-expr`'s
+ apply arm) has always carried this `__handler_` guard; this is the
+ same guard on the bare-name path. An unhandled `read-line` answers
+ the None cell, which is what x86-64's `__read_line` answers at EOF
+ and the honest answer on a lane with no stdin pump.
+
   a64-emit-name : A64State, Text, CodexType -> A64EmitResult
   a64-emit-name (st) (name) (ty) =
    let local-reg = a64-lookup-local (st.locals) name 0
    in if local-reg >= 0 then a64-load-local st local-reg
    else let eoa = a64-find-effect-op-addr ((st.extra).effect-op-addrs) name 0
-   in if eoa >= 0 then a64-emit-effect-op-call st eoa []
+   in let is-rl = if name == "read-line" then True else name == "read-line-cce"
+   in let has-handler = if is-rl then a64-find-func-offset (st.func-names) (st.func-offsets) ("__handler_" & name) 0 else 0 - 1
+   in if eoa >= 0 & (is-rl == False) then a64-emit-effect-op-call st eoa []
+   else if eoa >= 0 & has-handler >= 0 then a64-emit-effect-op-call st eoa []
+   else if is-rl then a64-emit-maybe-none st
    else when ty
     is SumTy (sname) (targs) (ctors) ->
      let tag = a64-resolve-ctor-tag st ty name
@@ -915,7 +1026,7 @@ Section: Name Emission
       state = a64-emit st1 (arm64-mov (tr.reg) a64-x0),
       reg = tr.reg
      }
-    is FunTy (pt) (rt) -> a64-emit-partial-application st name [] (1 + a64-type-arity rt)
+    is FunTy (pt) (fnrow) (rt) -> a64-emit-partial-application st name [] (1 + a64-type-arity rt)
     is otherwise ->
      let tr = a64-alloc-temp st
      in let st1 = a64-emit-call-to (tr.state) name
@@ -1007,6 +1118,7 @@ Section: Binary Emission
    when ty
     is SumTy (n) (ta) (cs) -> a64-sum-max-fields cs 0 0
     is ConstructedTy (tname) (args) -> a64-max-fields-from-defs defs (tname.value) 0
+    is TypeCon (tname) -> a64-max-fields-from-defs defs (tname.value) 0
     is otherwise -> 2
 
   a64-max-fields-from-defs : List ATypeDef, Text, Integer -> Integer
@@ -1090,21 +1202,54 @@ Section: Binary Emission
    when ty
     is SumTy (n) (ta) (cs) -> True
     is ConstructedTy (n) (ta) -> True
+    is TypeCon (n) -> True
     is otherwise -> False
 
-  a64-right-is-simple : IRExpr -> Boolean
-  a64-right-is-simple (e) =
+ Simple means the right operand can be emitted without disturbing the left,
+ so the left needs no save. A bare name is only that when it names STORAGE.
+ A name that resolves to no local is a zero-argument definition or an effect
+ operation, and both are a call: the effect operation reaches its handler
+ through a BLR, which lands its answer in x0 and destroys whatever the left
+ operand left there. Disassembled from `with A (with B (get-a + get-b))`:
+ `BLR X9` for get-a, `BLR X9` for get-b, then `ADD X21, X0, X0` -- 20 + 20
+ where 22 + 20 was meant. Answering True for every IrName is the same
+ predicate defect CL 9566 fixed on RISC-V, and it is why the lookup is here.
+
+  a64-right-is-simple : A64State, IRExpr -> Boolean
+  a64-right-is-simple (st) (e) =
    when e
-    is IrName (n) (t) (s) -> True
+    is IrName (n) (t) (s) -> a64-lookup-local (st.locals) n 0 >= 0
     is IrIntLit (v) (s) -> True
     is IrBoolLit (v) (s) -> True
     is IrCharLit (v) (s) -> True
     is otherwise -> False
 
+ A vector operation allocates a LOCAL to hold its result, and its operands
+ are pointers that may themselves be sitting in locals. Recycling the local
+ counter around such an operation hands that result local a register one of
+ the operands still occupies, and the operation then reads the buffer it is
+ about to write. Disassembled: the saved left operand in x20, then
+ `mov x20, x28` for the output, then `ldr x14, [x20]`. Discriminate on the
+ OPERATOR, not on the expression type -- a call's IR type is not reliably a
+ VectorTy at this point, so a type test silently never fires.
+
+  a64-is-vec-binop-op : IRBinaryOp -> Boolean
+  a64-is-vec-binop-op (op) =
+   when op
+    is IrAddVec -> True
+    is IrSubVec -> True
+    is IrMulVec -> True
+    is IrDivVec -> True
+    is IrLtVec -> True
+    is IrGtVec -> True
+    is IrLtEqVec -> True
+    is IrGtEqVec -> True
+    is otherwise -> False
+
   a64-emit-binary-reg : A64State, IRBinaryOp, IRExpr, IRExpr, CodexType -> A64EmitResult
   a64-emit-binary-reg (st) (op) (left) (right) (ty) =
    let lr = a64-emit-expr st left
-   in if a64-right-is-simple right then
+   in if a64-right-is-simple (lr.state) right then
     let rr = a64-emit-expr (lr.state) right
     in let rd-r = a64-alloc-temp (rr.state)
     in let st2 = rd-r.state
@@ -1116,7 +1261,8 @@ Section: Binary Emission
    in let saved = a64-save-if-needed (lr.state) (lr.reg)
    in let rr = a64-emit-expr (saved.state) right
    in let ll = a64-reload-if-needed (rr.state) (saved.reg)
-   in let st-recycled = __record-set (ll.state) "next-local" pre-save-nl
+   in let st-recycled = if a64-is-vec-binop-op op then ll.state
+    else __record-set (ll.state) "next-local" pre-save-nl
    in let rd-r = a64-alloc-temp st-recycled
    in let st2 = rd-r.state
    in let left-reg = ll.reg
@@ -1393,19 +1539,59 @@ Section: Real Arithmetic
   a64-is-vec-type (ty) =
    when ty
     is VectorTy (n) (et) -> True
+    is VectorMaskTy (n) -> True
     is otherwise -> False
 
   a64-vec-lane-count : CodexType -> Integer
   a64-vec-lane-count (ty) =
    when ty
     is VectorTy (n) (et) -> n
+    is VectorMaskTy (n) -> n
     is otherwise -> 2
 
   a64-type-arity : CodexType -> Integer
   a64-type-arity (ty) =
    when ty
-    is FunTy (pt) (rt) -> 1 + a64-type-arity rt
+    is FunTy (pt) (fnrow) (rt) -> 1 + a64-type-arity rt
     is otherwise -> 0
+
+  a64-emit-vec-arith : A64State, List IRExpr, Integer -> A64EmitResult
+  a64-emit-vec-arith (st) (args) (opcode) =
+   let lr = a64-emit-expr st (list-at args 0)
+   in let saved = a64-save-if-needed (lr.state) (lr.reg)
+   in let rr = a64-emit-expr (saved.state) (list-at args 1)
+   in let ll = a64-reload-if-needed (rr.state) (saved.reg)
+   in a64-emit-vec-binop (ll.state) (ll.reg) (rr.reg) opcode (VectorTy 2 RealTy)
+
+  a64-emit-vec-load-at : A64State, IRExpr -> A64EmitResult
+  a64-emit-vec-load-at (st) (addr-expr) =
+   let ar = a64-emit-expr st addr-expr
+   in let out-loc = a64-alloc-local (ar.state)
+   in let base = a64-local-base (out-loc.state) (out-loc.reg)
+   in let st1 = a64-emit (base.state) (arm64-mov (base.reg) a64-heap-reg)
+   in let st1a = a64-store-local st1 (out-loc.reg) (base.reg)
+   in let st2 = a64-emit st1a (arm64-add-imm a64-heap-reg a64-heap-reg 16)
+   in let t = a64-alloc-temp st2
+   in let st3 = a64-emit (t.state) (arm64-ldr (t.reg) (ar.reg) 0)
+   in let ob = a64-load-local st3 (out-loc.reg)
+   in let st4 = a64-emit (ob.state) (arm64-str (t.reg) (ob.reg) 0)
+   in let st5 = a64-emit st4 (arm64-ldr (t.reg) (ar.reg) 8)
+   in let ob2 = a64-load-local st5 (out-loc.reg)
+   in let st6 = a64-emit (ob2.state) (arm64-str (t.reg) (ob2.reg) 8)
+   in a64-load-local st6 (out-loc.reg)
+
+  a64-emit-vec-store-at : A64State, IRExpr, IRExpr -> A64EmitResult
+  a64-emit-vec-store-at (st) (addr-expr) (vec-expr) =
+   let ar = a64-emit-expr st addr-expr
+   in let saved = a64-save-if-needed (ar.state) (ar.reg)
+   in let vr = a64-emit-expr (saved.state) vec-expr
+   in let aa = a64-reload-if-needed (vr.state) (saved.reg)
+   in let t = a64-alloc-temp (aa.state)
+   in let st1 = a64-emit (t.state) (arm64-ldr (t.reg) (vr.reg) 0)
+   in let st2 = a64-emit st1 (arm64-str (t.reg) (aa.reg) 0)
+   in let st3 = a64-emit st2 (arm64-ldr (t.reg) (vr.reg) 8)
+   in let st4 = a64-emit st3 (arm64-str (t.reg) (aa.reg) 8)
+   in A64EmitResult { state = st4, reg = aa.reg }
 
   a64-emit-vec-extract : A64State, IRExpr, IRExpr -> A64EmitResult
   a64-emit-vec-extract (st) (vec-expr) (idx-expr) =
@@ -1449,8 +1635,9 @@ Section: Real Arithmetic
    in let br = a64-emit-expr (as1.state) b-expr
    in let bs = a64-save-if-needed (br.state) (br.reg)
    in let ptr-r = a64-alloc-local (bs.state)
-   in let st1 = a64-emit (ptr-r.state) (arm64-mov (ptr-r.reg) a64-heap-reg)
-   in let st1a = a64-store-local st1 (ptr-r.reg) (ptr-r.reg)
+   in let pbase = a64-local-base (ptr-r.state) (ptr-r.reg)
+   in let st1 = a64-emit (pbase.state) (arm64-mov (pbase.reg) a64-heap-reg)
+   in let st1a = a64-store-local st1 (ptr-r.reg) (pbase.reg)
    in let st2 = a64-emit st1a (arm64-add-imm a64-heap-reg a64-heap-reg (lanes * 8))
    in let ml = a64-reload-if-needed st2 (ms.reg)
    in let al = a64-reload-if-needed (ml.state) (as1.reg)
@@ -1505,13 +1692,15 @@ Section: Real Arithmetic
    let lanes = a64-vec-lane-count ty
    in let is-f32 = a64-vec-is-f32 ty
    in let out-loc = a64-alloc-local st
-   in let st1 = a64-emit (out-loc.state) (arm64-mov (out-loc.reg) a64-heap-reg)
-   in let st2 = a64-emit st1 (arm64-add-imm a64-heap-reg a64-heap-reg (lanes * 8))
+   in let base = a64-local-base (out-loc.state) (out-loc.reg)
+   in let st1 = a64-emit (base.state) (arm64-mov (base.reg) a64-heap-reg)
+   in let st1a = a64-store-local st1 (out-loc.reg) (base.reg)
+   in let st2 = a64-emit st1a (arm64-add-imm a64-heap-reg a64-heap-reg (lanes * 8))
    in a64-emit-vec-binop-lanes st2 l-ptr r-ptr (out-loc.reg) opcode 0 lanes is-f32
 
   a64-emit-vec-binop-lanes : A64State, Integer, Integer, Integer, Integer, Integer, Integer, Boolean -> A64EmitResult
   a64-emit-vec-binop-lanes (st) (l-ptr) (r-ptr) (out-ptr) (opcode) (i) (n) (is-f32) =
-   if i >= n then A64EmitResult { state = st, reg = out-ptr }
+   if i >= n then a64-load-local st out-ptr
    else let t1 = a64-alloc-temp st
    in let st1 = a64-emit (t1.state) (arm64-ldr (t1.reg) l-ptr (i * 8))
    in let t2 = a64-alloc-temp st1
@@ -1521,13 +1710,15 @@ Section: Real Arithmetic
     in let st4 = a64-emit st3 (arm64-fmov-to-fp-s 1 (t2.reg))
     in let st5 = a64-emit st4 (a64-fp-op-insn-s opcode 0 0 1)
     in let st6 = a64-emit st5 (arm64-fmov-from-fp-s (t1.reg) 0)
-    in let st7 = a64-emit st6 (arm64-str (t1.reg) out-ptr (i * 8))
+    in let ob = a64-load-local st6 out-ptr
+    in let st7 = a64-emit (ob.state) (arm64-str (t1.reg) (ob.reg) (i * 8))
     in a64-emit-vec-binop-lanes st7 l-ptr r-ptr out-ptr opcode (i + 1) n is-f32
    else let st3 = a64-emit st2 (arm64-fmov-to-fp 0 (t1.reg))
    in let st4 = a64-emit st3 (arm64-fmov-to-fp 1 (t2.reg))
    in let st5 = a64-emit st4 (a64-fp-op-insn opcode 0 0 1)
    in let st6 = a64-emit st5 (arm64-fmov-from-fp (t1.reg) 0)
-   in let st7 = a64-emit st6 (arm64-str (t1.reg) out-ptr (i * 8))
+   in let ob2 = a64-load-local st6 out-ptr
+   in let st7 = a64-emit (ob2.state) (arm64-str (t1.reg) (ob2.reg) (i * 8))
    in a64-emit-vec-binop-lanes st7 l-ptr r-ptr out-ptr opcode (i + 1) n is-f32
 
   a64-emit-vec-cmp : A64State, Integer, Integer, Integer, CodexType -> A64EmitResult
@@ -1538,18 +1729,21 @@ Section: Real Arithmetic
    in let rl = a64-alloc-local st0a
    in let st0b = a64-store-local (rl.state) (rl.reg) r-ptr
    in let result-loc = a64-alloc-local st0b
-   in let st0c = a64-emit-li (result-loc.state) (result-loc.reg) 0
-   in let st1 = a64-store-local st0c (result-loc.reg) (result-loc.reg)
+   in let rbase = a64-local-base (result-loc.state) (result-loc.reg)
+   in let st0c = a64-emit-li (rbase.state) (rbase.reg) 0
+   in let st1 = a64-store-local st0c (result-loc.reg) (rbase.reg)
    in let is-f32 = a64-vec-is-f32 ty
    in a64-emit-vec-cmp-lanes st1 (ll.reg) (rl.reg) (result-loc.reg) cond 0 lanes is-f32
 
   a64-emit-vec-cmp-lanes : A64State, Integer, Integer, Integer, Integer, Integer, Integer, Boolean -> A64EmitResult
   a64-emit-vec-cmp-lanes (st) (l-ptr) (r-ptr) (result-reg) (cond) (i) (n) (is-f32) =
-   if i >= n then A64EmitResult { state = st, reg = result-reg }
-   else let t1 = a64-alloc-temp st
-   in let st1 = a64-emit (t1.state) (arm64-ldr (t1.reg) l-ptr (i * 8))
-   in let t2 = a64-alloc-temp st1
-   in let st2 = a64-emit (t2.state) (arm64-ldr (t2.reg) r-ptr (i * 8))
+   if i >= n then a64-load-local st result-reg
+   else let lb = a64-load-local st l-ptr
+   in let t1 = a64-alloc-temp (lb.state)
+   in let st1 = a64-emit (t1.state) (arm64-ldr (t1.reg) (lb.reg) (i * 8))
+   in let rb = a64-load-local st1 r-ptr
+   in let t2 = a64-alloc-temp (rb.state)
+   in let st2 = a64-emit (t2.state) (arm64-ldr (t2.reg) (rb.reg) (i * 8))
    in let st3 = if is-f32 then a64-emit st2 (arm64-fmov-to-fp-s 0 (t1.reg))
      else a64-emit st2 (arm64-fmov-to-fp 0 (t1.reg))
    in let st4 = if is-f32 then a64-emit st3 (arm64-fmov-to-fp-s 1 (t2.reg))
@@ -1559,8 +1753,10 @@ Section: Real Arithmetic
    in let bit-r = a64-alloc-temp st5
    in let st6 = a64-emit (bit-r.state) (arm64-csinc (bit-r.reg) a64-xzr a64-xzr cond)
    in let st7 = a64-emit st6 (arm64-lsl-imm (bit-r.reg) (bit-r.reg) i)
-   in let st8 = a64-emit st7 (arm64-or result-reg result-reg (bit-r.reg))
-   in a64-emit-vec-cmp-lanes st8 l-ptr r-ptr result-reg cond (i + 1) n is-f32
+   in let rr = a64-load-local st7 result-reg
+   in let st8 = a64-emit (rr.state) (arm64-or (rr.reg) (rr.reg) (bit-r.reg))
+   in let st8a = a64-store-local st8 result-reg (rr.reg)
+   in a64-emit-vec-cmp-lanes st8a l-ptr r-ptr result-reg cond (i + 1) n is-f32
 
   a64-emit-mask-any : A64State, IRExpr -> A64EmitResult
   a64-emit-mask-any (st) (arg) =
@@ -1622,9 +1818,9 @@ Section: Real Arithmetic
   a64-fork-body-is-fun : IRExpr -> Boolean
   a64-fork-body-is-fun (expr) =
    when ir-expr-type expr
-    is FunTy (p) (r) -> True
+    is FunTy (p) (fnrow) (r) -> True
     is EffectfulTy (effs) (scopes) (ret) -> when ret
-     is FunTy (p2) (r2) -> True
+     is FunTy (p2) (fnrow) (r2) -> True
      is otherwise -> False
     is otherwise -> False
 
@@ -1736,6 +1932,28 @@ Section: Real Arithmetic
    in let st3 = a64-emit st2 (arm64-cbnz (ws.reg) ((loop-idx - st2.insn-count) * 4))
    in A64EmitResult { state = st3, reg = rd }
 
+ sdiv leaves the remainder carrying the sign of the dividend, and int-mod
+ answers the NON-NEGATIVE residue: x86-64's emit-int-mod-reg-locals adds the
+ divisor's magnitude whenever idiv's remainder comes back negative. Without
+ this, int-mod (-7) 3 is -1 here and 2 there, which is the whole of
+ interval-exhaustive's 62086 failures, every one of them in mod, because
+ iv-mod's transfer function is written for a non-negative result. Branchless
+ so there are no offsets to get wrong. The a64-rt-int-mod runtime helper needs
+ the same correction and carries its own copy: this inline path is what a
+ direct two-argument call reaches, and the helper is what a first-class or
+ partially-applied int-mod reaches, so neither covers the other.
+
+  a64-emit-mod-correction : A64State, Integer, Integer -> A64EmitResult
+  a64-emit-mod-correction (st) (rem-reg) (divisor-reg) =
+   let t = a64-alloc-temp st
+   in let st1 = a64-emit (t.state) (arm64-neg (t.reg) divisor-reg)
+   in let st2 = a64-emit st1 (arm64-cmp-imm divisor-reg 0)
+   in let st3 = a64-emit st2 (arm64-csel (t.reg) divisor-reg (t.reg) arm64-cond-ge)
+   in let st4 = a64-emit st3 (arm64-add (t.reg) rem-reg (t.reg))
+   in let st5 = a64-emit st4 (arm64-cmp-imm rem-reg 0)
+   in let st6 = a64-emit st5 (arm64-csel rem-reg rem-reg (t.reg) arm64-cond-ge)
+   in A64EmitResult { state = st6, reg = rem-reg }
+
   a64-emit-int-mod : A64State, IRExpr, IRExpr -> A64EmitResult
   a64-emit-int-mod (st) (dividend) (divisor) =
    let lr = a64-emit-expr st dividend
@@ -1745,7 +1963,7 @@ Section: Real Arithmetic
    in let rd = a64-alloc-temp (ll.state)
    in let st1 = a64-emit (rd.state) (arm64-sdiv (rd.reg) (ll.reg) (rr.reg))
    in let st2 = a64-emit st1 (arm64-msub (rd.reg) (rd.reg) (rr.reg) (ll.reg))
-   in A64EmitResult { state = st2, reg = rd.reg }
+   in a64-emit-mod-correction st2 (rd.reg) (rr.reg)
 
 
 Page 1 of 3

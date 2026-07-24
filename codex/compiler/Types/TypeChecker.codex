@@ -1,5 +1,6 @@
 Chapter: Type Checker
-  cites Codex chapter Build Settings (substitution-capacity, expr-type-capacity)
+  cites Codex chapter Build Settings (substitution-capacity, expr-type-capacity, demand-check-guard-band)
+  cites Codex chapter Phase Allocator (deck-short-of)
   cites Foreword chapter Tuple
 
  Bidirectional type checker for Codex.
@@ -7,10 +8,10 @@ Chapter: Type Checker
 Section: Resolve Type Expression
 
  A declared effect bracket on an arrow's result lands ON THE ARROW
- as its row — concrete labels and tail together (stage 3b migration,
- EffectRows.md §12). Only the standalone effectful-VALUE form (an
+ as its row -- concrete labels and tail together (stage 3b
+ migration). Only the standalone effectful-VALUE form (an
  AEffectType that is not an arrow's result, e.g. `read-line :
- [Console] (Maybe Text)`) still resolves to EffectfulTy (§4).
+ [Console] (Maybe Text)`) still resolves to EffectfulTy.
 
   resolve-type-expr : List TypeBinding, ATypeExpr -> CodexType
   resolve-type-expr (tdm) (texpr) =
@@ -202,13 +203,201 @@ Section: Proof Normalizer
      normalize-aterm defs (subst-expr (letbinds-to-subst binds 0 (list-length binds) []) body) (fuel - 1)
     is otherwise -> e
 
+ Arithmetic in a proposition folds here. The parser gives `1 + 1` the
+ shape of an application whose head is the operator, so it arrives as
+ an ordinary two-argument spine and needs no node of its own. Both
+ operands are normalized first, which is what lets `2 * 3 === 6` and a
+ nested `1 + 2 + 3` reduce rather than sit stuck.
+
+ Two cases deliberately do NOT fold, and each stays a spine so the
+ claim is reported unproven rather than silently admitted. A division
+ by zero, because folding it would trap the compiler on a program that
+ only stated a false proposition. And a non-integer operand, because
+ the literal shape is the only one this can evaluate.
+
+ A negative result used to be a third refusal. It no longer is: the
+ type grammar reads `-2` as a single atom now, so a folded negative
+ names a literal that can actually be written on the other side of the
+ `===`. While it could not, folding one would have manufactured a term
+ nothing could match, which is worse than leaving the claim unproven.
+ The refusal and the grammar gap were one fact, not two.
+
+  is-arith-op-name : Text -> Boolean
+  is-arith-op-name (t) = t == "+" | t == "-" | t == "*" | t == "/"
+
+  all-digits-from : Text, Integer, Integer -> Boolean
+  all-digits-from (t) (i) (len) =
+   if i == len then True
+   else if is-digit (char-at t i) then all-digits-from t (i + 1) len
+   else False
+
+  is-int-literal-text : Text -> Boolean
+  is-int-literal-text (t) =
+   if text-length t == 0 then False
+   else if char-at t 0 == '-' then if text-length t == 1 then False else all-digits-from t 1 (text-length t)
+   else all-digits-from t 0 (text-length t)
+
+  aterm-name-text : AExpr -> Text
+  aterm-name-text (e) =
+   when e
+    is ANameExpr (n) (s) -> n.value
+    is otherwise -> ""
+
+  arith-fold-value : Text, Integer, Integer -> Integer
+  arith-fold-value (op) (x) (y) =
+   if op == "+" then x + y
+   else if op == "-" then x - y
+   else if op == "*" then x * y
+   else x / y
+
+  normalize-arith : List ADef, Text, AExpr, List AExpr, Integer -> AExpr
+  normalize-arith (defs) (op) (head) (args) (fuel) =
+   let a = normalize-aterm defs (list-at args 0) fuel
+   in let b = normalize-aterm defs (list-at args 1) fuel
+   in let at = aterm-name-text a
+   in let bt = aterm-name-text b
+   in if is-int-literal-text at & is-int-literal-text bt
+    then let y = text-to-integer bt
+     in if op == "/" & y == 0 then build-app-spine head [a, b] 0 2
+      else deck-record (ANameExpr (make-name (integer-to-text (arith-fold-value op (text-to-integer at) y))) synthetic-span)
+    else build-app-spine head [a, b] 0 2
+
+ The builtin list primitives reduce here, over the same Nil/Cons spines
+ the induction checker substitutes for a `List`-typed variable. The
+ primitives are builtins, not defs, so without these rules every
+ proposition naming one is stuck on its first step and no claim about
+ the builtin List could ever normalize. Each rule is the primitive's
+ defining equation read left to right: length of Nil is 0 and length of
+ Cons is one more than the tail's; push onto Nil is a one-element list
+ and push onto Cons pushes onto the tail (list-push appends at the END,
+ which is what makes the Cons case recurse); at 0 of a Cons is the head
+ and at n is at n-1 of the tail, for a literal n only. Anything else --
+ a symbolic index, a stuck scrutinee -- rebuilds the spine, so the claim
+ is reported unproven rather than admitted.
+
+  is-list-prim-name : Text -> Boolean
+  is-list-prim-name (t) = t == "list-length" | t == "list-push" | t == "list-snoc" | t == "list-at" | t == "list-set-at" | t == "list-insert-at" | t == "&"
+
+  aterm-ctor-name : AExpr -> Text
+  aterm-ctor-name (e) = aterm-name-text (app-head e)
+
+  list-prim-nil : AExpr -> Boolean
+  list-prim-nil (e) = aterm-ctor-name e == "Nil" & list-length (app-args e) == 0
+
+  list-prim-cons : AExpr -> Boolean
+  list-prim-cons (e) = aterm-ctor-name e == "Cons" & list-length (app-args e) == 2
+
+  cons-head-of : AExpr -> AExpr
+  cons-head-of (e) = list-at (app-args e) 0
+
+  cons-tail-of : AExpr -> AExpr
+  cons-tail-of (e) = list-at (app-args e) 1
+
+  int-name-term : Integer -> AExpr
+  int-name-term (n) = deck-record (ANameExpr (make-name (integer-to-text n)) synthetic-span)
+
+  normalize-list-prim : List ADef, Text, AExpr, List AExpr, Integer -> AExpr
+  normalize-list-prim (defs) (op) (head) (args) (fuel) =
+   if op == "list-length" & list-length args == 1 then normalize-list-length defs head args fuel
+   else if (op == "list-push" | op == "list-snoc") & list-length args == 2 then normalize-list-push defs head args fuel
+   else if op == "list-at" & list-length args == 2 then normalize-list-at defs head args fuel
+   else if op == "list-set-at" & list-length args == 3 then normalize-list-set-at defs head args fuel
+   else if op == "list-insert-at" & list-length args == 3 then normalize-list-insert-at defs head args fuel
+   else if op == "&" & list-length args == 2 then normalize-list-append defs head args fuel
+   else rebuild-app defs head args fuel
+
+  cons-term : AExpr, AExpr -> AExpr
+  cons-term (h) (t) = build-app-spine (deck-record (ANameExpr (make-name "Cons") synthetic-span)) [h, t] 0 2
+
+  normalize-list-length : List ADef, AExpr, List AExpr, Integer -> AExpr
+  normalize-list-length (defs) (head) (args) (fuel) =
+   let a = normalize-aterm defs (list-at args 0) fuel
+   in if list-prim-nil a then int-name-term 0
+   else if list-prim-cons a
+    then normalize-aterm defs (build-app-spine (deck-record (ANameExpr (make-name "+") synthetic-span)) [int-name-term 1, build-app-spine head [cons-tail-of a] 0 1] 0 2) (fuel - 1)
+   else build-app-spine head [a] 0 1
+
+  normalize-list-push : List ADef, AExpr, List AExpr, Integer -> AExpr
+  normalize-list-push (defs) (head) (args) (fuel) =
+   let a = normalize-aterm defs (list-at args 0) fuel
+   in let x = normalize-aterm defs (list-at args 1) fuel
+   in if list-prim-nil a
+    then build-app-spine (deck-record (ANameExpr (make-name "Cons") synthetic-span)) [x, deck-record (ANameExpr (make-name "Nil") synthetic-span)] 0 2
+   else if list-prim-cons a
+    then build-app-spine (deck-record (ANameExpr (make-name "Cons") synthetic-span)) [cons-head-of a, normalize-aterm defs (build-app-spine head [cons-tail-of a, x] 0 2) (fuel - 1)] 0 2
+   else build-app-spine head [a, x] 0 2
+
+  normalize-list-at : List ADef, AExpr, List AExpr, Integer -> AExpr
+  normalize-list-at (defs) (head) (args) (fuel) =
+   let a = normalize-aterm defs (list-at args 0) fuel
+   in let ix = normalize-aterm defs (list-at args 1) fuel
+   in let it = aterm-name-text ix
+   in if list-prim-cons a & is-int-literal-text it
+    then let n = text-to-integer it
+     in if n == 0 then cons-head-of a
+        else if n > 0 then normalize-aterm defs (build-app-spine head [cons-tail-of a, int-name-term (n - 1)] 0 2) (fuel - 1)
+        else build-app-spine head [a, ix] 0 2
+   else build-app-spine head [a, ix] 0 2
+
+ The three rules below are the rest of the primitives, carried out of
+ 2.5 as 2.36. They are read off the same defining equations and gated
+ the same way. Setting at 0 of a Cons replaces the head; at a literal n
+ it keeps the head and recurses on the tail, so an index past the end
+ walks down to a stuck `list-set-at Nil` and the claim is reported
+ unproven rather than folded to a value the runtime never produces --
+ which is why there is deliberately no Nil rule for either indexed
+ primitive. Inserting at 0 of a spine conses onto it; at a literal n it
+ recurses like set. Append is the only total one: Nil on the left is
+ the right operand, Cons on the left conses onto the appended tail. The
+ left operand must already be a Nil/Cons spine, which is also what
+ keeps `&` on Text out of these rules.
+
+  normalize-list-set-at : List ADef, AExpr, List AExpr, Integer -> AExpr
+  normalize-list-set-at (defs) (head) (args) (fuel) =
+   let a = normalize-aterm defs (list-at args 0) fuel
+   in let ix = normalize-aterm defs (list-at args 1) fuel
+   in let v = normalize-aterm defs (list-at args 2) fuel
+   in let it = aterm-name-text ix
+   in if list-prim-cons a & is-int-literal-text it
+    then let n = text-to-integer it
+     in if n == 0 then cons-term v (cons-tail-of a)
+        else if n > 0 then cons-term (cons-head-of a) (normalize-aterm defs (build-app-spine head [cons-tail-of a, int-name-term (n - 1), v] 0 3) (fuel - 1))
+        else build-app-spine head [a, ix, v] 0 3
+   else build-app-spine head [a, ix, v] 0 3
+
+  normalize-list-insert-at : List ADef, AExpr, List AExpr, Integer -> AExpr
+  normalize-list-insert-at (defs) (head) (args) (fuel) =
+   let a = normalize-aterm defs (list-at args 0) fuel
+   in let ix = normalize-aterm defs (list-at args 1) fuel
+   in let v = normalize-aterm defs (list-at args 2) fuel
+   in let it = aterm-name-text ix
+   in if (list-prim-nil a | list-prim-cons a) & is-int-literal-text it
+    then let n = text-to-integer it
+     in if n == 0 then cons-term v a
+        else if n > 0 & list-prim-cons a then cons-term (cons-head-of a) (normalize-aterm defs (build-app-spine head [cons-tail-of a, int-name-term (n - 1), v] 0 3) (fuel - 1))
+        else build-app-spine head [a, ix, v] 0 3
+   else build-app-spine head [a, ix, v] 0 3
+
+  normalize-list-append : List ADef, AExpr, List AExpr, Integer -> AExpr
+  normalize-list-append (defs) (head) (args) (fuel) =
+   let a = normalize-aterm defs (list-at args 0) fuel
+   in let b = normalize-aterm defs (list-at args 1) fuel
+   in if list-prim-nil a then b
+   else if list-prim-cons a
+    then cons-term (cons-head-of a) (normalize-aterm defs (build-app-spine head [cons-tail-of a, b] 0 2) (fuel - 1))
+   else build-app-spine head [a, b] 0 2
+
   normalize-app : List ADef, AExpr, Integer -> AExpr
   normalize-app (defs) (e) (fuel) =
    let head = app-head e
    in let args = app-args e
    in when head
     is ANameExpr (n) (s) ->
-     let idx = find-def-index defs (n.value) 0 (list-length defs)
+     if is-arith-op-name (n.value) & list-length args == 2
+     then normalize-arith defs (n.value) head args fuel
+     else if is-list-prim-name (n.value)
+     then normalize-list-prim defs (n.value) head args fuel
+     else let idx = find-def-index defs (n.value) 0 (list-length defs)
      in if idx >= 0
         then let d = list-at defs idx
           in if list-length (d.params) == list-length args
@@ -752,13 +941,13 @@ Section: Check Definition
         else add-unify-error st cdx-body-fixes-declared-var ("the body of '" & name & "' decides a type its own signature leaves to the caller: a declared type variable is fixed by the body to " & type-desc settled & ". A signature variable is the caller's to choose, so the body must answer every choice; if the body only ever answers " & type-desc settled & ", declare that.") span
    in check-declared-rigidity st2 ids (i + 1) len name span
 
- A bounded return is a refined position (the postcondition of
- BoundedSignatures.md section 3): the body's result must inhabit the
+ A bounded return is a refined position (the bounded-signature
+ postcondition): the body's result must inhabit the
  declared bound. When the declared return resolves to a bounded
  Integer, run the same hybrid lint the parameter and field positions
  use, on the body expression against the return's bound. Range
  propagation to callers is deferred to stage B behind the runtime
- postcondition guard (section 4).
+ postcondition guard.
 
   lint-return-narrowing : UnificationState, TypeEnv, AExpr, CodexType, CodexType, SourceSpan -> UnificationState
   lint-return-narrowing (st) (env) (body) (body-ty) (ret-ty) (span) =
@@ -1178,7 +1367,7 @@ Section: Capability Scope
       is otherwise -> st
     is otherwise -> add-unify-error st cdx-scope-violation ("'" & fname & "' is given a computed resource, so the compiler cannot prove it stays inside the scope this signature grants for " & eff & ". Pass a literal, or widen the declared scope.") span
 
- Capability effect exemption (CapabilityProbe.md section 7). The
+ Capability effect exemption. The
  hardware intrinsics carry Device.* effect rows so that application
  and library code doing raw I/O must declare it. But at a hardware
  boundary the declaration is theater -- a driver is expected to do
@@ -1239,7 +1428,7 @@ Section: Capability Scope
  "slug\n" is an exact slug match, never a prefix collision between a slug
  and a longer one. The result is a List Name so it drops straight into
  check-effect-row-subset's allowed set beside the declared labels, where
- the dotted sub-effect lattice covers it. This is BACKLOG 1.8: a chapter
+ the dotted sub-effect lattice covers it. The grounds rule: a chapter
  grounds the hardware effects it is the source of, and its bodies may
  perform exactly those without declaring them.
 
@@ -1333,8 +1522,8 @@ Section: Capability Scope
    in bind-def-params fr-st env2 params remaining (i + 1) len
 
  A bounded parameter's declared range is a sound fact inside the body
- because stage B's entry guard enforces it at runtime
- (BoundedSignatures.md section 4). Recording it into local-ranges lets
+ because stage B's entry guard enforces it at
+ runtime. Recording it into local-ranges lets
  the narrowing lint prove a store of the parameter into an
  equal-or-wider bounded field. Only OvError bounds narrower than the
  full i64 range are recorded; a plain Integer parameter adds nothing.
@@ -1450,7 +1639,7 @@ Section: Check Chapter
 
   is-rt-safe-builtin : Text -> Boolean
   is-rt-safe-builtin (n) =
-   n == "list-at" | n == "list-length" | n == "text-length" | n == "text-at" | n == "array-at" | n == "array-length" | n == "bit-and" | n == "bit-or" | n == "bit-xor" | n == "bit-shl" | n == "bit-shr" | n == "bit-shru" | n == "bit-not" | n == "int-mod" | n == "abs" | n == "min" | n == "max"
+   n == "list-at" | n == "list-length" | n == "text-length" | n == "text-at" | n == "array-at" | n == "array-length" | n == "bit-and" | n == "bit-or" | n == "bit-xor" | n == "bit-shl" | n == "bit-shr" | n == "bit-shru" | n == "bit-not" | n == "int-mod" | n == "int-rem" | n == "abs" | n == "min" | n == "max"
 
   check-rt-calls : UnificationState, AExpr, Text, List Text -> UnificationState
   check-rt-calls (st) (expr) (fn) (rt-names) =
@@ -1759,7 +1948,7 @@ Section: Proof Acyclicity
  mentions itself - directly, mutually, through a recursive
  proof-returning helper, or by citing the claim under proof as a
  lemma inside an induction arm - type-checks trivially and erasure
- hides the divergence forever (ProofTotalityProbe.md). The check:
+ hides the divergence forever. The check:
  a definition is proof-relevant when its deep-resolved checked type
  mentions ProofTy or PropEqTy anywhere (resolved, not declared, so
  an undeclared intermediary def whose inferred type unifies to a
@@ -1853,7 +2042,7 @@ Section: Proof Acyclicity
  terms. Any other expression form -- an if, a when, an act block, a
  lambda, arithmetic -- that produces a proposition is rejected, because
  such a form can launder a proof of a false proposition past the
- acyclicity check above (ProofTotalityProbe.md, Stage 2). The check is
+ acyclicity check above. The check is
  type-directed: a subexpression is constrained only when its checked type
  is a proposition, so the value arguments that instantiate a for-all
  (append-assoc (reverse ys) ...) are left alone while the proof arguments
@@ -1919,8 +2108,8 @@ Section: Proof Acyclicity
        in check-proof-grammar-loop sorted-st defs names (i + 1) len (add-diagnostics-to-state st errs 0 (list-length errs))
       else check-proof-grammar-loop sorted-st defs names (i + 1) len st
 
-  check-chapter : AChapter, List RenameEntry, SkipListText, List ChapterAssignment -> ChapterResult
-  check-chapter (mod) (renames) (colliding) (assignments) =
+  check-chapter : AChapter, List RenameEntry, SkipListText, List ChapterAssignment, Integer -> ChapterResult
+  check-chapter (mod) (renames) (colliding) (assignments) (ceiling) =
    let tdm = build-type-def-map (mod.type-defs) 0 (list-length (mod.type-defs)) []
    in let arity-errors = check-all-type-arities tdm mod
    in let tenv = register-type-defs empty-unification-state builtin-type-env tdm (mod.type-defs) 0 (list-length (mod.type-defs))
@@ -1943,9 +2132,9 @@ Section: Proof Acyclicity
     chapter-grounds = mod.ground-effects
    })
    in let acc0 = deck-record (__list-with-capacity def-count)
-   in let slug-cache = for a in assignments -> slugify (a.chapter-slug)
+   in let slug-cache = for a in assignments -> cite-key (a.chapter-slug)
    in let exit = __deck-exit
-   in let result = check-all-defs pre-st sorted-env (mod.defs) 0 def-count acc0 renames colliding assignments (mod.citations) slug-cache "" [] (mod.rt-names) tdm
+   in let result = check-all-defs pre-st sorted-env (mod.defs) 0 def-count acc0 renames colliding assignments (mod.citations) slug-cache "" [] (mod.rt-names) tdm ceiling
    in let enter = __deck-enter
    in let cycle-st = check-rt-cycles (mod.defs) (mod.rt-names) (result.state)
    in let proof-st = check-proof-cycles (mod.defs) (result.types) cycle-st
@@ -1987,7 +2176,7 @@ Section: Proof Acyclicity
  with a known value; its [n, n] range is recorded in the env's
  const-range table for the narrowing lint. The registered TYPE stays
  the declared one — refining it would make two distinct constants
- disjoint under unification (BoundsProverReach.md).
+ disjoint under unification.
 
   register-const-range : TypeEnv, Text, ADef -> TypeEnv
   register-const-range (env) (name) (def) =
@@ -2078,9 +2267,32 @@ Section: Proof Acyclicity
   empty-type-bindings : List TypeBinding
   empty-type-bindings = []
 
-  check-all-defs : UnificationState, TypeEnv, List ADef, Integer, Integer, List TypeBinding, List RenameEntry, SkipListText, List ChapterAssignment, List ACitesDecl, List Text, Text, List RenameEntry, List Text, List TypeBinding -> ChapterResult
-  check-all-defs (st) (env) (defs) (i) (len) (acc) (renames) (colliding) (assignments) (citations) (slug-cache) (cur-slug) (cur-chapter-rn) (rt-names) (tdm) =
-   if i == len then let final-st = deck-record (UnificationState {
+ The ceiling is the CHECK deck reservation's top, checked per definition
+ because this loop is where the phase writes the deck in bulk -- one
+ def's inferred types, substitutions and expr-types per turn.
+
+ This one reads the deck-pos cell (deck-short-of) and that is correct,
+ which makes CHECK the exception worth naming: check-chapter issues a
+ __deck-exit immediately before this walk and a __deck-enter after it,
+ so the walk runs OUTSIDE the phase-wide extent. The cell is therefore
+ live -- each per-definition `deck-record` inside the loop enters and
+ exits on its own and writes the frontier back -- where in LOWER and
+ the PARSE-KEEP copy, which stay inside their extents, the same
+ predicate is frozen at the deck's base and never fires. Swapping this
+ one to deck-bound-short-of reads the BIVY pointer, which is above
+ every deck ceiling, and truncates the walk on its first definition:
+ measured 2026-07-21, that compiles `codex/test/db-test.codex` to no
+ binary at all, with 40-odd CDX2000 emit errors naming types the
+ truncated walk never inferred. Stopping
+ short is treated exactly like finishing: the accumulated result is
+ assembled and returned, and compile-type-check tests the deck position
+ afterwards to raise CDX9002. Reaching the ceiling with
+ definitions left over means the types are incomplete, so the caller
+ halts on the diagnostic rather than trusting them.
+
+  check-all-defs-done : UnificationState, TypeEnv, List TypeBinding -> ChapterResult
+  check-all-defs-done (st) (env) (acc) =
+   let final-st = deck-record (UnificationState {
     substitutions = copy-list-with-headroom (st.substitutions) 0,
     row-substitutions = copy-list-with-headroom (st.row-substitutions) 0,
     next-id = st.next-id,
@@ -2096,6 +2308,11 @@ Section: Proof Acyclicity
     env = env,
     state = final-st
    })
+
+  check-all-defs : UnificationState, TypeEnv, List ADef, Integer, Integer, List TypeBinding, List RenameEntry, SkipListText, List ChapterAssignment, List ACitesDecl, List Text, Text, List RenameEntry, List Text, List TypeBinding, Integer -> ChapterResult
+  check-all-defs (st) (env) (defs) (i) (len) (acc) (renames) (colliding) (assignments) (citations) (slug-cache) (cur-slug) (cur-chapter-rn) (rt-names) (tdm) (ceiling) =
+   if i == len then check-all-defs-done st env acc
+   else if deck-short-of ceiling demand-check-guard-band then check-all-defs-done st env acc
    else let def = list-at defs i
    in let chapter-rn = if def.chapter-slug == cur-slug then cur-chapter-rn
       else apply-cite-overrides (build-chapter-rename-map colliding assignments (def.chapter-slug)) citations colliding assignments slug-cache (def.chapter-slug) 0
@@ -2111,7 +2328,7 @@ Section: Proof Acyclicity
     name = resolve-def-name renames (def.name.value) (def.chapter-slug),
     bound-type = resolved
    })
-   in check-all-defs rt-st env defs (i + 1) len (list-push acc entry) renames colliding assignments citations slug-cache (def.chapter-slug) chapter-rn rt-names tdm
+   in check-all-defs rt-st env defs (i + 1) len (list-push acc entry) renames colliding assignments citations slug-cache (def.chapter-slug) chapter-rn rt-names tdm ceiling
 
 Section: Induction Checking
 
@@ -2192,7 +2409,23 @@ Section: Induction Checking
    when ty
     is SumTy (n) (a) (c) -> ty
     is ConstructedTy (n) (args) -> lookup-type-def tdm (n.value)
+    is ListTy (elem) | LinkedListTy (elem) -> builtin-list-sumty elem
     is otherwise -> ty
+
+ The builtin List is not a variant, but its inductive shape is fixed --
+ empty, or an element before a shorter list -- so induction over
+ `xs : List a` is checked against a synthesized view: `Nil` with no
+ fields and `Cons (a) (List a)`. The view exists only here, for Stage 5;
+ nothing at runtime changes, and `is Cons (h) (t)` in ordinary code
+ remains CDX2001. The tail field is ListTy, so ctype-head-name must
+ answer the view's own type name for it or no inductive hypothesis
+ would ever bind.
+
+  builtin-list-sumty : CodexType -> CodexType
+  builtin-list-sumty (elem) =
+   deck-record (SumTy (make-name "List") [elem] [
+    deck-record (SumCtor { name = make-name "Nil", fields = [], return-type = [] }),
+    deck-record (SumCtor { name = make-name "Cons", fields = [elem, deck-record (ListTy elem)], return-type = [] })])
 
   check-induction-ctors : UnificationState, TypeEnv, List ADef, List TypeBinding, Text, Text, CodexType, CodexType, List SumCtor, List AMatchArm, SourceSpan, Integer, Integer -> CheckResult
   check-induction-ctors (st) (env) (defs) (tdm) (nName) (tname) (lhsTy) (rhsTy) (ctors) (arms) (sp) (i) (len) =
@@ -2267,6 +2500,7 @@ Section: Induction Checking
     is ConstructedTy (n) (args) -> n.value
     is SumTy (n) (a) (c) -> n.value
     is RecordTy (n) (a) (f) -> n.value
+    is ListTy (e) | LinkedListTy (e) -> "List"
     is otherwise -> ""
 
   ctorpat-var-names : APat -> List Text
@@ -2396,8 +2630,8 @@ Section: Linearity Checking
  the new name (which inherits the exactly-once obligation), and any
  residual mention of the old name is a use-after-move, tallied in
  the `dead` field. Tracking ownership through argument boundaries,
- returns, captures, and containers is later work (stages 3 and 4 of
- LinearOwnership.md).
+ returns, captures, and containers is later work (ownership stages
+ 3 and 4).
 
   LinResult = record {
    count : Integer,
@@ -3033,6 +3267,58 @@ Section: Minted Linear Owners
      else False
     is otherwise -> False
 
+ The mutable twin of the mint above. A local bound from
+ a call whose registered return type is a mutable record owns that
+ record: sb-new hands over the only reference exactly as a declared
+ mutable parameter arrives owned. Before this walk the checker tracked
+ declared parameters only, so `let base = sb-new in let a = sb-append
+ base x in let b = sb-append base y` compiled clean and aliased
+ silently, while the identical body with base as a parameter was
+ refused -- the Developer's Guide promised the wider guarantee. The
+ detector answers the mutable type's NAME (empty text for none) so the
+ same consume-of discipline a declared parameter receives can be
+ rooted at the binding, borrow-vs-consume inference included.
+
+  mutable-name-of : TypeEnv, Name -> Text
+  mutable-name-of (env) (n) =
+   if env-has env ("__mutable-" & (n.value)) then n.value
+   else let rn = rename-lookup (env.chapter-renames) (n.value)
+   in if env-has env ("__mutable-" & rn) then rn else ""
+
+  return-mutable-name-after : TypeEnv, CodexType, Integer -> Text
+  return-mutable-name-after (env) (ty) (k) =
+   when ty
+    is ForAllTy (id) (body) -> return-mutable-name-after env body k
+    is ForAllEff (id) (body) -> return-mutable-name-after env body k
+    is FunTy (p) (row) (r) -> if k <= 0 then "" else return-mutable-name-after env r (k - 1)
+    is EffectfulTy (effs) (sc) (ret) -> if k == 0 then return-mutable-name-after env ret 0 else ""
+    is RecordTy (n) (args) (fields) -> if k == 0 then mutable-name-of env n else ""
+    is ConstructedTy (n) (args) -> if k == 0 then mutable-name-of env n else ""
+    is otherwise -> ""
+
+  expr-mut-mint-name : TypeEnv, AExpr -> Text
+  expr-mut-mint-name (env) (e) =
+   when e
+    is AApplyExpr (f) (a) (s) ->
+     let head = apply-head-name e
+     in if head == "" then ""
+     else let resolved = rename-lookup (env.chapter-renames) head
+     in if env-has env resolved then return-mutable-name-after env (env-lookup env resolved) (apply-arg-count e)
+     else ""
+    is ANameExpr (n) (s) ->
+     let resolved = rename-lookup (env.chapter-renames) (n.value)
+     in if env-has env resolved then return-mutable-name-after env (env-lookup env resolved) 0
+     else ""
+    is otherwise -> ""
+
+  report-minted-mutable : ADef, Text, SourceSpan, LinResult, UnificationState -> UnificationState
+  report-minted-mutable (def) (v) (sp) (r) (st) =
+   if (r.dead) > 0
+    then add-unify-error st cdx-mutable-alias ("In '" & (def.name.value) & "', mutable record '" & v & "', minted by a call, was moved to a new owner by a let binding and then mentioned again; after a move the original name is dead") sp
+    else if (r.count) > 1
+    then add-unify-error st cdx-mutable-alias ("In '" & (def.name.value) & "', mutable record '" & v & "', minted by a call, is consumed " & integer-to-text (r.count) & " times on a single path; a mutable record may be handed to a new owner at most once") sp
+    else st
+
   report-minted-owner : ADef, Text, SourceSpan, LinResult, UnificationState -> UnificationState
   report-minted-owner (def) (v) (sp) (r) (st) =
    let bad-ret = if r.ret then (if linear-return-sanctioned def then False else True) else False
@@ -3080,7 +3366,10 @@ Section: Minted Linear Owners
    in let st1 = check-mints def env False (b.value) st
    in let st2 = if expr-is-mint env (b.value)
        then report-minted-owner def (b.name.value) (b.span) (lin-let env (b.name.value) tail binds body (i + 1) len) st1
-       else st1
+       else let mtn = expr-mut-mint-name env (b.value)
+       in if mtn /= ""
+          then report-minted-mutable def (b.name.value) (b.span) (consume-let env mtn (b.name.value) binds body (i + 1) len) st1
+          else st1
    in check-mints-binds def env tail binds body (i + 1) len st2
 
   check-mints-stmts : ADef, TypeEnv, List AActStmt, Integer, Integer, UnificationState -> UnificationState
@@ -3092,7 +3381,10 @@ Section: Minted Linear Owners
      let st1 = check-mints def env False e st
      in let st2 = if expr-is-mint env e
          then report-minted-owner def (n.value) s (lin-stmts env (n.value) stmts (i + 1) len) st1
-         else st1
+         else let mtn = expr-mut-mint-name env e
+         in if mtn /= ""
+            then report-minted-mutable def (n.value) s (consume-stmts env mtn (n.value) stmts (i + 1) len) st1
+            else st1
      in check-mints-stmts def env stmts (i + 1) len st2
 
   check-mints-arms : ADef, TypeEnv, Boolean, List AMatchArm, Integer, Integer, UnificationState -> UnificationState
@@ -3615,11 +3907,20 @@ Section: Capability Checker
  (VerifiedLoader). The old name `granted-capabilities` read like a
  grant-all list; it never granted anything.
 
- Keep in step with manifest-cap-id (X86_64Chapter) — a name here
- with no cap id declares an effect the manifest silently drops.
+ This was a hand-written list of 23 names that had to be kept in step
+ with manifest-cap-id (X86_64Chapter) by inspection, and a build-time
+ guard existed because a name here with no cap id declares an effect the
+ manifest silently drops. It is a projection of Foreword chapter
+ Capability now: the 17 capabilities, plus a dotted Read and Write for
+ each of the three families that carry a direction. Both readings come
+ from one table, so the guard has no state left to catch and is deleted
+ with it.
+
+ The order differs from the list this replaced. Nothing reads it in
+ order -- every call site is a membership test through cap-name-covered.
 
   capability-vocabulary : List Text
-  capability-vocabulary = ["Console", "Console.Read", "Console.Write", "FileSystem", "FileSystem.Read", "FileSystem.Write", "Network", "Network.Read", "Network.Write", "Concurrent", "Device", "Gpu", "Gpu.Compute", "Gpu.Memory", "Identity", "Capability", "Camera", "Microphone", "Location", "Sensors", "Display", "Audio", "Flash"]
+  capability-vocabulary = capability-names
 
   check-opening-capabilities : List TypeBinding -> List Diagnostic
   check-opening-capabilities (types) =

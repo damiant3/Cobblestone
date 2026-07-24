@@ -11,7 +11,7 @@ $QuireDirs = @{
     # Wflow, not Workflow: 'Workflow' is apps\workflow, a different quire. The
     # cites have always said Wflow; what was missing was this line, so every
     # chapter they name was silently left out of the unit and the author got
-    # CDX3002 at the use sites instead. BACKLOG 2.24.
+    # CDX3002 at the use sites instead.
     'Wflow' = 'codex\workflow'; 'Tracker' = 'codex\tracker'
     'Observe' = 'codex\os\observe'; 'Game' = 'codex\foreword\game'
     'Signal' = 'codex\foreword\signal'; 'Compress' = 'codex\foreword\compress'
@@ -71,7 +71,13 @@ $QuireDirs = @{
     'Lens' = 'apps\lens'
     'Boards' = 'codex\boards'
     'Guios' = 'apps\guios'
+    'C64' = 'apps\c64'
     'Ideas' = 'apps\ideas'
+    # 'Circuits' is the Core sub-quire. The chapters at the circuits ROOT
+    # (CanvasModel, CircuitsTheme, CircuitsUI, ViewState, ...) are the app
+    # shell and had no quire at all, so opening.codex could not cite them
+    # and every name they define reported CDX3002 at the use site.
+    'CircuitsApp' = 'apps\circuits'
     'Circuits' = 'apps\circuits\Core'
     'CircuitsSch' = 'apps\circuits\SchematicEditor'
     'CircuitsSym' = 'apps\circuits\SymbolEditor'
@@ -92,10 +98,15 @@ function New-CitePattern {
     # what $StrictCitePat below exists to stop, and it is what Resolve-CiteOrder
     # now uses by default.
     #
-    # This lenient pattern is kept because two other bundlers carry their own
-    # copies of it (concat-codex-self.ps1, plug-build-lib.ps1) and match its
-    # shape. Pass it explicitly if you want the old blind-to-unregistered
-    # behaviour; nothing in the tree should want it.
+    # The two bundlers this was kept for no longer carry their own copies:
+    # concat-codex-self.ps1 and plug-build-lib.ps1 both take $StrictCitePat
+    # and $QuireDirs from here, so NOTHING in the tree calls
+    # this any more. It is kept only as the explicit way to ask for the old
+    # blind-to-unregistered behaviour, and there is no good reason to.
+    # Where a bundler must admit fewer quires than the registry holds, that
+    # is policy and belongs at its own call site as a filter over these keys
+    # -- concat-codex-self's $libQuireNames is the worked example -- not as a
+    # second pattern that reads the same text a different way.
     param([string[]]$ExtraQuires = @())
     $names = @($QuireDirs.Keys) + $ExtraQuires
     $alt = ($names | Sort-Object -Descending { $_.Length }) -join '|'
@@ -217,10 +228,82 @@ function Resolve-CiteOrder {
         $visited[$key] = $true
         $ordered.Add(@{ Quire = $quire; Name = $name; Path = $path; Lines = $chLines })
     }
+    # The sugars' own dependencies, walked whether or not the source cites
+    # them. `for x in xs -> ...` desugars to a call to `map-list`
+    # (Foreword ListUtils) and a tuple literal or pattern to `MkTup<N>`
+    # (Foreword Tuple). Both are names the DESUGARER writes, not the author,
+    # so requiring the author to cite them made the language's own syntax
+    # conditional on a line nobody could know to write: `for` without the
+    # cite failed with `CDX3002: Undefined name: map-list`, and a tuple with
+    # `CDX2002: Unknown name: MkTup2`.
+    #
+    # Unconditional rather than "only if the source uses the sugar" because
+    # detecting use means parsing sugar with a regex, and getting that wrong
+    # fails the same way this did. The two chapters are 141 lines and cite
+    # nothing, so there is no cascade -- the cost is a fixed 5 KB per unit.
+    #
+    # A chapter that defines its own `map-list` still wins inside itself:
+    # ChapterScoper mangles both sides of a collision per chapter, so a
+    # mention resolves to its own chapter's. That is the same rule the register
+    # 2.15 settled for builtins, and it is why this is safe to do for every
+    # unit rather than only for units that would otherwise fail. It does
+    # raise CDX3006 (a warning) where a unit now carries two definitions of
+    # a name; `$present` and `$excluded` are both honoured, so a unit that
+    # already bundles these chapters, or excludes the Foreword quire, is
+    # untouched.
+    foreach ($impl in @(@('Foreword','ListUtils'), @('Foreword','Tuple'))) {
+        & $walk $impl[0] $impl[1]
+    }
     foreach ($l in $RootLines) {
         if ($l -match $Pattern) { & $walk $matches[1] $matches[2] }
     }
     return ,$ordered
+}
+
+function Get-DiagRegions {
+    # Maps a unit line number back to the file it came from.
+    #
+    # The compiler numbers diagnostics against the assembled UNIT -- every
+    # cited chapter, then the source -- so a source line is reported at
+    # (prelude + its own line). Every position a user sees in a file that
+    # cites anything is wrong by however many lines its dependencies run to;
+    # a cite-less file was right only by accident, because its unit was
+    # itself. Measured: an error on line 11 of a file citing one foreword
+    # chapter reported as 214:5.
+    #
+    # Both assemblers must map back or only one of them tells the truth --
+    # compile.ps1 for a single compile and test-compile-batch.ps1 for the
+    # battery, which builds its own unit and writes its own build.log. That
+    # is why this lives here rather than in either of them.
+    #
+    # Format-CiteChapters replaces a chapter's `Chapter:` line one-for-one
+    # and appends two blank lines, so an entry occupies Lines.Count + 2.
+    param([Parameter(Mandatory=$true)] $Ordered, [Parameter(Mandatory=$true)] [string]$SrcPath)
+    $regions = [System.Collections.Generic.List[hashtable]]::new()
+    $cum = 0
+    foreach ($entry in $Ordered) {
+        $n = $entry.Lines.Count + 2
+        [void]$regions.Add(@{ Start = $cum + 1; End = $cum + $n; File = $entry.Path })
+        $cum += $n
+    }
+    [void]$regions.Add(@{ Start = $cum + 1; End = [int]::MaxValue; File = $SrcPath })
+    return ,$regions
+}
+
+function Convert-DiagLine {
+    # `<unit-line>:<col>: ...` becomes `<file>:<file-line>:<col>: ...`.
+    # Anything without a position prefix passes through untouched, so
+    # protocol lines (SIZE:, HEAP:, !EXC, MAP:) are unaffected.
+    param([string]$Line, $Regions)
+    if ($Regions -and $Line -match '^(\d+):(\d+):(.*)$') {
+        $ul = [int]$matches[1]; $col = $matches[2]; $rest = $matches[3]
+        foreach ($r in $Regions) {
+            if ($ul -ge $r.Start -and $ul -le $r.End) {
+                return "$($r.File):$($ul - $r.Start + 1):${col}:$rest"
+            }
+        }
+    }
+    return $Line
 }
 
 function Format-CiteChapters {

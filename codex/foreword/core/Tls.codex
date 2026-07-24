@@ -92,6 +92,14 @@ Section: Constants
   tls-ext-supported-versions : Integer = 43
   tls-ext-key-share : Integer = 51
   tls-ext-supported-groups : Integer = 10
+  tls-ext-signature-algorithms : Integer = 13
+
+ The one signature scheme this stack can verify. The X.509 chain walker
+ is Ed25519-only, so advertising anything else would invite a server to
+ present a certificate we would then refuse -- the extension says what we
+ can actually check.
+
+  tls-sig-ed25519 : Integer = 2055
 
   tls-group-x25519 : Integer = 29
 
@@ -157,8 +165,9 @@ Section: Client Hello
     let sni = tls-ext-sni (hello.tch-server-name)
     in let versions = tls-ext-versions
     in let groups = tls-ext-groups
+    in let sigalgs = tls-ext-sig-algs
     in let ks = tls-ext-key-share-client (hello.tch-key-share)
-    in let ext-data = sni & versions & groups & ks
+    in let ext-data = sni & versions & groups & sigalgs & ks
     in tls-be16 (list-length ext-data) & ext-data
 
 Section: Extensions
@@ -179,6 +188,24 @@ Section: Extensions
   tls-ext-groups =
     let data = tls-be16 2 & tls-be16 tls-group-x25519
     in tls-be16 tls-ext-supported-groups & tls-be16 (list-length data) & data
+
+ SIGNATURE_ALGORITHMS IS MANDATORY IN A CLIENTHELLO. RFC 8446 section 9.2
+ requires it of any client that offers certificate authentication, and a
+ conforming server MUST abort the handshake without it. This extension was
+ absent until 2026-07-23 and no test could see that: our own server does
+ not inspect it, so a loopback handshake completed perfectly, and the only
+ interop harness in the tree drove our SERVER with openssl's client. Our
+ CLIENT had never met a conforming server.
+
+ mosquitto's OpenSSL says what it is: `missing sigalgs extension`, then
+ `disconnected: protocol error`. Nothing came back on the wire -- an
+ abort with no alert -- which from the client's seat is indistinguishable
+ from a server that simply never answered.
+
+  tls-ext-sig-algs : List Integer
+  tls-ext-sig-algs =
+    let list-data = tls-be16 2 & tls-be16 tls-sig-ed25519
+    in tls-be16 tls-ext-signature-algorithms & tls-be16 (list-length list-data) & list-data
 
   tls-ext-key-share-client : List Integer -> List Integer
   tls-ext-key-share-client (public-key) =
@@ -360,6 +387,101 @@ Section: TLS 1.3 Key Schedule
     in let c = tls13-client-hs-traffic hs transcript-hash
     in let s = tls13-server-hs-traffic hs transcript-hash
     in TlsKeyMaterial { tkm-client-key = tls13-traffic-key c, tkm-server-key = tls13-traffic-key s, tkm-handshake-secret = hs }
+
+Section: TLS 1.3 Transcript And Finished
+
+ RFC 8446 sections 4.4.4 and 4.4.1. These lived in Encode chapter
+ DtlsMessage under dtls- names because DTLS is where a handshake was
+ first driven to completion, and DTLS 1.3 inherits both of them from TLS
+ 1.3 unchanged. Nothing here is about datagrams: TlsEndpoint, which
+ speaks TLS over TCP, was reaching into a DTLS chapter to hash a
+ transcript. They belong here, beside the key schedule they are derived
+ from.
+
+ The transcript form is the TLS 1.3 one -- a type byte, a uint24 length
+ and the body. DTLS carries a message_seq and fragment fields on the
+ wire and RFC 9147 section 5.2 is explicit that none of them may be fed
+ to the handshake hash, so a DTLS message is stripped back to THIS shape
+ before hashing. That is why the DTLS chapter's own transcript function
+ was already producing the TLS form.
+
+  tls13-msg-transcript : Integer, List Integer -> List Integer
+  tls13-msg-transcript (msg-type) (body) =
+    [msg-type] & tls-be24 (list-length body) & body
+
+ Messages accumulate as a running concatenation, hashed on demand:
+ SHA-256 here has no incremental interface, so the transcript is held
+ whole. It is a few kilobytes for a real handshake and it is the one
+ multi-KB transient in the stack.
+
+  tls13-transcript-add : List Integer, Integer, List Integer -> List Integer
+  tls13-transcript-add (acc) (msg-type) (body) = acc & tls13-msg-transcript msg-type body
+
+  tls13-transcript-hash : List Integer -> List Integer
+  tls13-transcript-hash (acc) = hkdf-words-to-bytes (sha256 acc)
+
+ THE HELLORETRYREQUEST TRANSCRIPT, RFC 8446 section 4.4.1. When a
+ HelloRetryRequest happens, ClientHello1 does NOT stay in the transcript.
+ It is REPLACED by a synthetic message: handshake type 254
+ (message_hash), a uint24 length of 32, and the hash of ClientHello1. The
+ transcript then continues with the HelloRetryRequest and the second
+ ClientHello.
+
+ Miss this and the Finished computes correctly on the no-retry path and
+ wrongly on the retry path, so a test that never exercises a
+ HelloRetryRequest passes and then fails against every server that asks
+ for one. The bug hides exactly where the feature lives.
+
+  tls13-msg-message-hash : Integer = 254
+
+  tls13-transcript-after-hrr : List Integer -> List Integer
+  tls13-transcript-after-hrr (ch1-transcript) =
+    tls13-transcript-after-hrr-hash (tls13-transcript-hash ch1-transcript)
+
+ A stateless server does not HAVE ClientHello1 by the time it needs this
+ -- keeping it is precisely the state a cookie exists to avoid. RFC 8446
+ section 4.2.2 gives the answer: the server puts the ClientHello1 hash
+ inside the cookie and gets it back with the second ClientHello. So the
+ hash, not the message, is what this takes.
+
+  tls13-transcript-after-hrr-hash : List Integer -> List Integer
+  tls13-transcript-after-hrr-hash (ch1-hash) =
+    [tls13-msg-message-hash] & tls-be24 32 & ch1-hash
+
+ The Finished, RFC 8446 section 4.4.4:
+
+   finished_key = HKDF-Expand-Label(BaseKey, "finished", "", Hash.length)
+   verify_data  = HMAC(finished_key, Transcript-Hash(...))
+
+ The context on the finished key is EMPTY. The transcript hash is the
+ HMAC message, not the key's context. Transposing them yields 32 bytes
+ that look exactly as much like a key, and a peer that rejects them tells
+ you nothing about which of the two you got wrong. The gate on this is
+ RFC 8448's published finished_key.
+
+  tls13-finished-key : List Integer -> List Integer
+  tls13-finished-key (base-secret) = tls13-expand-label base-secret "finished" [] 32
+
+  tls13-verify-data : List Integer, List Integer -> List Integer
+  tls13-verify-data (base-secret) (transcript-hash) =
+    hkdf-words-to-bytes (hmac-sha256 (tls13-finished-key base-secret) transcript-hash)
+
+ Verification is constant-time. A Finished check that returns on the
+ first differing byte leaks how much of a forgery was right.
+
+  tls13-finished-ok : List Integer, List Integer, List Integer -> Boolean
+  tls13-finished-ok (base-secret) (transcript-hash) (offered) =
+    tls13-ct-equal (tls13-verify-data base-secret transcript-hash) offered
+
+  tls13-ct-equal : List Integer, List Integer -> Boolean
+  tls13-ct-equal (a) (b) =
+    if list-length a /= list-length b then False
+    else tls13-ct-loop a b 0 (list-length a) 0
+
+  tls13-ct-loop : List Integer, List Integer, Integer, Integer, Integer -> Boolean
+  tls13-ct-loop (a) (b) (i) (n) (diff) =
+    if i >= n then diff == 0
+    else tls13-ct-loop a b (i + 1) n (bit-or diff (bit-xor (list-at a i) (list-at b i)))
 
 Section: TLS 1.3 Application Secrets
 

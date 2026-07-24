@@ -64,8 +64,8 @@ Section: Capability Entry
  no capability at all: manifest-cap-id did not know the name, the
  manifest dropped it in silence, and the process was then refused at the
  port guard and the window guard it had every right to pass. It compiled
- clean and died at runtime saying nothing. That is BACKLOG 1.13, pinned
- by codex/test/cap-gpu-family.
+ clean and died at runtime saying nothing. That is the name-in-one-table
+ hazard, pinned by codex/test/cap-gpu-family.
 
   cdx-cap-gpu : Integer between 0 and 255 = 9
 
@@ -73,11 +73,12 @@ Section: Capability Entry
  capabilities in their own right: a program declaring the effect earns
  the bit at boot and at verified load, the same as Gpu or Identity. The
  effect operations themselves are declared in the foreword but not yet
- performable (they die at emit with CDX2040) -- BACKLOG 2.21 / 1.10 -- so
+ performable (they die at emit with CDX2040), which is open work -- so
  the capability is honest about authority and silent about behaviour. The
  point of carrying it now is that the manifest, the boot grant and the
- loader agree on the name, so closing 2.21 later does not have to relive
- BACKLOG 1.13 (a name in one table and missing from another).
+ loader agree on the name, so making those operations performable later
+ does not have to relive a name being in one table and missing from
+ another.
 
   cdx-cap-camera : Integer between 0 and 255 = 10
 
@@ -153,7 +154,7 @@ Section: Binary Builder
     let h = cdx-magic
     in let h1 = h & le16 cdx-format-version
     in let h2 = h1 & le16 (parts.flags)
-    in let h3 = h2 & hash-words-to-bytes hash
+    in let h3 = h2 & cdxb-hash-words-to-bytes hash
     in let h4 = h3 & cdx-zero-bytes 32
     in let h5 = h4 & cdx-zero-bytes 64
     in let h6 = h5 & le64 cap-off & le64 cap-sz
@@ -180,7 +181,7 @@ Section: Binary Builder
     in let rodata-offset = text-offset + text-size
     in let content-bytes = cap-bytes & eff-bytes & (parts.text-bytes) & (parts.rodata-bytes)
     in let content-hash = sha256 content-bytes
-    in let content-hash-bytes = hash-words-to-bytes content-hash
+    in let content-hash-bytes = cdxb-hash-words-to-bytes content-hash
     in let sig = ed25519-sign private-key public-key content-hash-bytes
     in let header = encode-signed-header parts content-hash public-key sig cap-offset cap-size eff-offset eff-size text-offset text-size rodata-offset rodata-size
     in header & content-bytes
@@ -190,7 +191,7 @@ Section: Binary Builder
     let h = cdx-magic
     in let h1 = h & le16 cdx-format-version
     in let h2 = h1 & le16 (parts.flags)
-    in let h3 = h2 & hash-words-to-bytes hash
+    in let h3 = h2 & cdxb-hash-words-to-bytes hash
     in let h4 = h3 & pub-key
     in let h5 = h4 & sig
     in let h6 = h5 & le64 cap-off & le64 cap-sz
@@ -289,8 +290,8 @@ Section: Helpers
     if n <= 0 then acc
     else cdx-zero-bytes-loop (n - 1) (list-push acc 0)
 
-  hash-words-to-bytes : List Integer -> List Integer
-  hash-words-to-bytes (ws) = hash-words-loop ws 0 (list-length ws) []
+  cdxb-hash-words-to-bytes : List Integer -> List Integer
+  cdxb-hash-words-to-bytes (ws) = hash-words-loop ws 0 (list-length ws) []
 
   hash-words-loop : List Integer, Integer, Integer, List Integer -> List Integer
   hash-words-loop (ws) (i) (len) (acc) =
@@ -331,7 +332,7 @@ Section: Verification
     in let content-end = if e1 > e2 then e1 else e2
     in let content = list-slice bytes cdx-header-fixed-size content-end
     in let computed = sha256 content
-    in let computed-bytes = hash-words-to-bytes computed
+    in let computed-bytes = cdxb-hash-words-to-bytes computed
     in bytes-equal stored-hash computed-bytes 0 32
 
   read-le64 : List Integer, Integer -> Integer
@@ -414,7 +415,7 @@ Section: Proof Encoding
     in let rodata-offset = text-offset + text-size
     in let content-bytes = cap-bytes & eff-bytes & (parts.text-bytes) & (parts.rodata-bytes) & proof-bytes
     in let content-hash = sha256 content-bytes
-    in let content-hash-bytes = hash-words-to-bytes content-hash
+    in let content-hash-bytes = cdxb-hash-words-to-bytes content-hash
     in let sig = ed25519-sign private-key public-key content-hash-bytes
     in let proofed-parts = CdxBinaryParts {
       flags = __narrow (bit-or (parts.flags) cdx-flag-has-proofs),

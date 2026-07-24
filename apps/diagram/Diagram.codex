@@ -58,7 +58,7 @@ Section: Initialization
       da-diagram = diagram-new "Untitled" Flowchart,
       da-canvas = canvas-new canvas-w canvas-h,
       da-toolbar = toolbar-new Flowchart,
-      da-selection = selection-empty,
+      da-selection = dsel-empty,
       da-history = command-stack-new 50,
       da-width = w,
       da-height = h,
@@ -73,33 +73,32 @@ Section: Event Handling
   diagram-handle-event : DiagramAppState, Event -> DiagramAppState
   diagram-handle-event (state) (ev) =
     when ev.ev-kind
-      is EvKeyDown -> diagram-handle-key state ev
-      is EvMouseDown -> diagram-handle-mouse-down state ev.ev-x ev.ev-y ev.ev-modifiers
-      is EvMouseUp -> diagram-handle-mouse-up state ev.ev-x ev.ev-y
-      is EvMouseMove -> diagram-handle-mouse-move state ev.ev-x ev.ev-y
-      is EvScroll -> diagram-handle-scroll state ev.ev-dy
+      is EvKeyDown (k) (mods) -> diagram-handle-key state k mods
+      is EvMouseDown (x) (y) (btn) -> diagram-handle-mouse-down state x y btn
+      is EvMouseUp (x) (y) (btn) -> diagram-handle-mouse-up state x y
+      is EvMouseMove (x) (y) -> diagram-handle-mouse-move state x y
+      is EvScroll (dx) (dy) (mods) -> diagram-handle-scroll state dy
       is otherwise -> state
 
 Section: Key Handling
 
-  diagram-handle-key : DiagramAppState, Event -> DiagramAppState
-  diagram-handle-key (state) (ev) =
+  diagram-handle-key : DiagramAppState, Integer, Integer -> DiagramAppState
+  diagram-handle-key (state) (k) (mods) =
     when state.da-editing
-      is Just (ed) -> diagram-handle-edit-key state ed ev
-      is None -> diagram-handle-normal-key state ev
+      is Just (ed) -> diagram-handle-edit-key state ed k
+      is None -> diagram-handle-normal-key state k mods
 
-  diagram-handle-normal-key : DiagramAppState, Event -> DiagramAppState
-  diagram-handle-normal-key (state) (ev) =
-    let k = ev.ev-key
-    in let mods = ev.ev-modifiers
-    in let ctrl = int-mod (mods / 1) 2 == 1
+  diagram-handle-normal-key : DiagramAppState, Integer, Integer -> DiagramAppState
+  diagram-handle-normal-key (state) (k) (mods) =
+    let ctrl = bit-and mods mod-ctrl > 0
     in if ctrl
       then diagram-handle-ctrl-key state k
       else diagram-handle-plain-key state k
 
   diagram-handle-ctrl-key : DiagramAppState, Integer -> DiagramAppState
-  diagram-handle-ctrl-key (state) (k) =
-    if k == 90 then diagram-undo state
+  diagram-handle-ctrl-key (state) (k0) =
+    let k = key-upper k0
+    in if k == 90 then diagram-undo state
     else if k == 89 then diagram-redo state
     else if k == 65 then diagram-select-all state
     else if k == 83 then diagram-save state
@@ -107,8 +106,9 @@ Section: Key Handling
     else state
 
   diagram-handle-plain-key : DiagramAppState, Integer -> DiagramAppState
-  diagram-handle-plain-key (state) (k) =
-    if k == 127 then diagram-delete-selected state
+  diagram-handle-plain-key (state) (k0) =
+    let k = key-upper k0
+    in if k == 127 then diagram-delete-selected state
     else if k == 8 then diagram-delete-selected state
     else if k == 27 then diagram-escape state
     else if k == 71 then diagram-toggle-grid state
@@ -202,7 +202,7 @@ Section: Selection
 
   diagram-select-all : DiagramAppState -> DiagramAppState
   diagram-select-all (state) =
-    let r1 = __record-set state "da-selection" (selection-select-all state.da-selection state.da-diagram)
+    let r1 = __record-set state "da-selection" (dsel-select-all state.da-selection state.da-diagram)
     in __record-set r1 "da-dirty" True
 
   diagram-escape : DiagramAppState -> DiagramAppState
@@ -301,10 +301,9 @@ Section: Text Editing
           ed-cursor = text-length n.dn-label
         }))
 
-  diagram-handle-edit-key : DiagramAppState, EditState, Event -> DiagramAppState
-  diagram-handle-edit-key (state) (ed) (ev) =
-    let k = ev.ev-key
-    in if k == 13
+  diagram-handle-edit-key : DiagramAppState, EditState, Integer -> DiagramAppState
+  diagram-handle-edit-key (state) (ed) (k) =
+    if k == 13
       then let saved = command-push state.da-history state.da-diagram
         in let dg = diagram-set-label state.da-diagram ed.ed-node-id ed.ed-text
         in let r1 = __record-set state "da-diagram" dg
@@ -330,7 +329,7 @@ Section: Delete
 
   diagram-delete-selected : DiagramAppState -> DiagramAppState
   diagram-delete-selected (state) =
-    if selection-is-empty state.da-selection then state
+    if dsel-is-empty state.da-selection then state
     else let saved = command-push state.da-history state.da-diagram
     in let dg = delete-ids state.da-diagram state.da-selection.sel-ids
     in let r1 = __record-set state "da-diagram" dg
@@ -370,7 +369,7 @@ Section: Nudge
 
   diagram-nudge : DiagramAppState, Integer, Integer -> DiagramAppState
   diagram-nudge (state) (dx) (dy) =
-    if selection-is-empty state.da-selection then state
+    if dsel-is-empty state.da-selection then state
     else let grid = state.da-diagram.dg-grid
     in let step-x = if state.da-diagram.dg-snap then dx * grid else dx
     in let step-y = if state.da-diagram.dg-snap then dy * grid else dy
@@ -464,5 +463,5 @@ Section: Main Loop
     let scan = poll-key
     in if scan == 0
       then event-timer "tick" 0
-      else event-key-down scan 0 0
+      else event-key-down scan poll-mods 0
   end

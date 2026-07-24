@@ -1,6 +1,6 @@
 Chapter: Name Resolution
-  cites Codex chapter Phase Allocator (deck-record)
-  cites Codex chapter Build Settings (max-recursion-depth)
+  cites Codex chapter Phase Allocator (deck-record, deck-short-of)
+  cites Codex chapter Build Settings (max-recursion-depth, demand-scope-guard-band)
 
  Checks that every name used in an expression resolves to a definition,
  builtin, constructor, type, or local binding.
@@ -36,7 +36,7 @@ Section: Scope
  additions leaking into the next would resolve a misspelled name against
  the previous sibling's bindings.
 
- A let body and an act block are regions too, and until BACKLOG 2.22 they
+ A let body and an act block are regions too, and they formerly
  did not fork: a `let` inside an `if` arm left its binder bound after the
  arm, so an out-of-scope read still RESOLVED and the error surfaced far
  downstream as the emitter's CDX2040 (a call to a name nobody wrote). The
@@ -46,8 +46,8 @@ Section: Scope
  `resolve-act-let` now says the do-notation deliberately; every other
  region forks.
 
- `ATryExpr`'s three regions each fork (BACKLOG 2.23). The decision the
- entry asked for: a fallback runs precisely when the body did NOT finish,
+ `ATryExpr`'s three regions each fork. The decision that
+ required: a fallback runs precisely when the body did NOT finish,
  so a body binding is possibly-unwritten when the fallback reads it, and
  the body re-runs from the top on every attempt, so the slot holds one
  partial attempt rather than one value. The regions do not share.
@@ -466,9 +466,25 @@ Section: Resolve Act Statements
      in resolve-act-stmts sc stmts (i + 1) len seen (errs & bind-errs & body-errs)
 
 Section: Resolve All Definitions
-  resolve-all-defs : Scope, List ADef, Integer, Integer, List Diagnostic, SkipListText, List ChapterAssignment, List ACitesDecl, List Text, Text, List RenameEntry -> List Diagnostic
-  resolve-all-defs (sc) (defs) (i) (len) (errs) (colliding) (assignments) (citations) (slug-cache) (cur-slug) (cur-chapter-rn) =
+
+ The ceiling is the SCOPE deck reservation's top, and this loop checks it
+ because it is the phase's bulk deck writer -- not through its own records
+ but through resolve-expr's pattern path, whose per-pattern-variable
+ deck-record wraps the scope and seen skiplist inserts, so every insert
+ node lands on the deck: measured 2026-07-21, 53.3 MB of the SCOPE deck's
+ 56.3 is written under this walk, against 0.3 MB for scope-adefs-ll.
+ Guarding only scope-adefs-ll left this walk free to grow through a
+ starved reservation into the bivy that holds the scope's own skiplists,
+ and the compile died in a divide error inside advance-while-less instead
+ of raising CDX9002. A def's resolve writes kilobytes, so a per-definition
+ check against an 8 MB band cannot be outrun. The stop returns the
+ diagnostics collected so far; compile-desugar-and-scope reads
+ deck-short-of again after the walk and raises CDX9002 from there.
+
+  resolve-all-defs : Scope, List ADef, Integer, Integer, List Diagnostic, SkipListText, List ChapterAssignment, List ACitesDecl, List Text, Text, List RenameEntry, Integer -> List Diagnostic
+  resolve-all-defs (sc) (defs) (i) (len) (errs) (colliding) (assignments) (citations) (slug-cache) (cur-slug) (cur-chapter-rn) (ceiling) =
    if i == len then errs
+   else if deck-short-of ceiling demand-scope-guard-band then errs
    else let def = list-at defs i
    in let chapter-rn = if def.chapter-slug == cur-slug then cur-chapter-rn
       else apply-cite-overrides (build-chapter-rename-map colliding assignments (def.chapter-slug)) citations colliding assignments slug-cache (def.chapter-slug) 0
@@ -476,7 +492,7 @@ Section: Resolve All Definitions
    in let param-result = add-def-params fresh-scope (def.params) 0 (list-length (def.params)) []
    in let body-scope = add-forall-binders (param-result.scope) def
    in let errs2 = resolve-expr body-scope (def.body)
-   in resolve-all-defs sc defs (i + 1) len (errs & param-result.errors & errs2) colliding assignments citations slug-cache (def.chapter-slug) chapter-rn
+   in resolve-all-defs sc defs (i + 1) len (errs & param-result.errors & errs2) colliding assignments citations slug-cache (def.chapter-slug) chapter-rn ceiling
 
   add-forall-binders : Scope, ADef -> Scope
   add-forall-binders (sc) (def) =
@@ -499,12 +515,12 @@ Section: Resolve All Definitions
       else add-def-params (scope-add-local sc name) params (i + 1) len errs
 
 Section: Resolve Chapter
-  resolve-chapter : AChapter, SkipListText, List ChapterAssignment -> ResolveResult
-  resolve-chapter (mod) (colliding) (assignments) =
-   resolve-chapter-with-citations mod [] colliding assignments
+  resolve-chapter : AChapter, SkipListText, List ChapterAssignment, Integer -> ResolveResult
+  resolve-chapter (mod) (colliding) (assignments) (ceiling) =
+   resolve-chapter-with-citations mod [] colliding assignments ceiling
 
-  resolve-chapter-with-citations : AChapter, List ResolveResult, SkipListText, List ChapterAssignment -> ResolveResult
-  resolve-chapter-with-citations (mod) (imported) (colliding) (assignments) =
+  resolve-chapter-with-citations : AChapter, List ResolveResult, SkipListText, List ChapterAssignment, Integer -> ResolveResult
+  resolve-chapter-with-citations (mod) (imported) (colliding) (assignments) (ceiling) =
    let top = collect-top-level-names (mod.defs) 0 (list-length (mod.defs)) skip-list-text-empty []
    in let ctors = collect-ctor-names (mod.type-defs) 0 (list-length (mod.type-defs)) skip-list-text-empty skip-list-text-empty []
    in let effect-ops = collect-effect-op-names (mod.effect-defs) (top.names) (ctors.ctor-names) 0 (list-length (mod.effect-defs)) skip-list-text-empty []
@@ -513,8 +529,8 @@ Section: Resolve Chapter
    in let dict-placeholder-names = collect-dict-placeholder-names-nr (mod.class-defs) (mod.instance-defs) 0 (list-length (mod.class-defs)) skip-list-text-empty
    in let all-top = skip-list-text-union (skip-list-text-union (skip-list-text-union (skip-list-text-union (skip-list-text-clone (top.names)) (effect-ops.op-names)) cited-names) class-method-names) dict-placeholder-names
    in let sc = build-all-names-scope all-top (ctors.ctor-names) builtin-names
-   in let slug-cache = for a in assignments -> slugify (a.chapter-slug)
-   in let expr-errs = resolve-all-defs sc (mod.defs) 0 (list-length (mod.defs)) [] colliding assignments (mod.citations) slug-cache "" []
+   in let slug-cache = for a in assignments -> cite-key (a.chapter-slug)
+   in let expr-errs = resolve-all-defs sc (mod.defs) 0 (list-length (mod.defs)) [] colliding assignments (mod.citations) slug-cache "" [] ceiling
    in let ctor-list = deck-record (skip-list-text-to-list (ctors.ctor-names))
    in deck-record (ResolveResult {
      bag = deck-record (bag-from-list (top.errors & ctors.errors & effect-ops.errors & expr-errs)),

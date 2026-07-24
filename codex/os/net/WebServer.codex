@@ -2,6 +2,9 @@ Chapter: WebServer
   cites Net chapter NetIO
   cites Net chapter NetworkStack
   cites Net chapter TcpTransport
+  cites Net chapter Tcp
+  cites Net chapter Ethernet
+  cites Kernel chapter Ne2k
   cites Works chapter Http
   cites Foreword chapter Maybe
   cites Foreword chapter CCE
@@ -58,10 +61,10 @@ Section: Byte Codec (Unicode wire <-> CCE)
   gateway-ip : List Integer = [10, 0, 2, 2]
   host-ip : List Integer = [127, 0, 0, 1]
 
-  text-to-bytes : Text, Integer, Integer, List Integer -> List Integer
-  text-to-bytes (s) (i) (stop) (acc) =
+  ws-text-to-bytes : Text, Integer, Integer, List Integer -> List Integer
+  ws-text-to-bytes (s) (i) (stop) (acc) =
     if i >= stop then acc
-    else text-to-bytes s (i + 1) stop (list-push acc (to-unicode (char-code (char-at s i))))
+    else ws-text-to-bytes s (i + 1) stop (list-push acc (to-unicode (char-code (char-at s i))))
 
   bytes-to-text : List Integer, Integer, Integer, Text -> Text
   bytes-to-text (bs) (off) (total) (acc) =
@@ -86,74 +89,323 @@ Section: HTTP JSON Response
 
 Section: HTTP Serve Loop
 
-  web-send-http : TcpTransportState, HttpResponse -> TcpTransportState
+  web-send-http : TcpTransportState, HttpResponse -> [Network.Write] TcpTransportState
   web-send-http (ts) (resp) =
     let response-bytes = http-encode resp
     in net-io-send-raw ts response-bytes
 
   WebLoop = record { server : WebState, transport : TcpTransportState }
 
-  web-handle-http : (HttpRequest -> HttpResponse), WebLoop, List Integer -> WebLoop
+  web-handle-http : (HttpRequest -> HttpResponse), WebLoop, List Integer -> [Network.Write] WebLoop
   web-handle-http (route) (ls) (raw-bytes) =
     let req = http-parse-request raw-bytes
-    in if req.valid == False then
-      let err-resp = http-error "Bad request"
-      in let ts2 = web-send-http (ls.transport) err-resp
-      in WebLoop { server = ls.server, transport = ts2 }
+    in if req.valid == False then act
+      ts2 <- web-send-http (ls.transport) (http-error "Bad request")
+      WebLoop { server = ls.server, transport = ts2 }
+    end
     else let ns = WebState { request-count = (ls.server).request-count + 1 }
     in let response = web-dispatch route ns req
-    in let ts2 = web-send-http (ls.transport) response
-    in WebLoop { server = ns, transport = ts2 }
+    in act
+      ts2 <- web-send-http (ls.transport) response
+      WebLoop { server = ns, transport = ts2 }
+    end
 
-  web-loop-http : (HttpRequest -> HttpResponse), WebLoop -> [Console] Integer
+  web-loop-http : (HttpRequest -> HttpResponse), WebLoop -> [Console, Network.Read, Network.Write] Integer
   web-loop-http (route) (ls) = act
-    let recv = net-io-recv-raw (ls.transport) 0
-    in if recv.has-data then act
-      let next = web-handle-http route ls (recv.data)
-      in web-loop-http route next
+    recv <- net-io-recv-raw (ls.transport) 0
+    if recv.has-data then act
+      next <- web-handle-http route ls (recv.data)
+      web-loop-http route next
     end
     else act
       0
     end
   end
 
-  web-serve : (HttpRequest -> HttpResponse) -> [Console] Integer
+  web-serve : (HttpRequest -> HttpResponse) -> [Console, Network.Read, Network.Write] Integer
   web-serve (route) =
     let sess = net-session-new local-mac local-ip gateway-ip 49152 9200 host-ip 1000
     in let ts = transport-new sess
-    in let ts1 = net-io-connect ts
     in act
+      ts1 <- net-io-connect ts
       web-loop-http route (WebLoop { server = web-new, transport = ts1 })
     end
 
+Section: Concurrent Event Loop
+
+ A single loop that holds many client connections at once and never serves one
+ to completion before looking at the next. It polls the NIC once per turn and
+ dispatches the frame to the connection that owns it -- by (local port, remote
+ port), the same demultiplex the stack uses. Because the NE2K RX ring buffers
+ inbound frames and this one loop is the only reader of every connection, a
+ request for connection B that arrives while A is mid-flight waits in the ring
+ and is delivered to B when the loop next polls; it is never read by the wrong
+ connection's loop and dropped. That is the concurrency guarantee -- a server
+ holds more than one connection without losing requests -- and it needs no
+ per-session parking, because there is exactly one reader.
+
+ The listener has `remote-port = 0` and accepts any SYN to the serve port. When
+ it takes a SYN it learns its peer and becomes that peer's connection; it is
+ moved into `conns` and a fresh listener replaces it, the ordinary accept()
+ shape. A frame is offered to the connected conns FIRST (specific remote) and
+ only falls through to the listener (remote 0) if none owns it, so a client's
+ own ACK is never mistaken for a new connection.
+
+ Each connection accumulates its incoming bytes until a full HTTP request is
+ present -- headers terminated by a blank line, plus any Content-Length body --
+ and only then parses and answers it, draining pipelined requests in one pass and
+ keeping any partial tail for the next frame. So a request split across frames, a
+ header set larger than one segment, or a POST body all arrive whole. The client's
+ GET usually rides in on the ACK that completes the handshake (PSH+ACK); the TCP
+ SYN_RECEIVED path delivers that payload rather than dropping it, so no
+ retransmit is needed.
+
+ A connection is kept open across requests, so a client can send more than one
+ (HTTP keep-alive). When the client closes -- the responses carry
+ `Connection: close`, so a client does so after reading one -- its FIN moves the
+ connection to CLOSE_WAIT; the server then sends its own FIN and reaps the
+ connection out of `conns`, so the live set does not grow without bound and the
+ close is a real two-sided handshake rather than a half-open left dangling. A
+ client that reads its response and never closes is aged out by an idle sweep:
+ every connection carries an `idle` count reset to zero on any frame it owns and
+ bumped once per `web-sweep-interval` empty polls, and `web-mux-sweep` closes
+ (sends its own FIN) and reaps any connection that reaches `web-idle-max` sweeps
+ without traffic. The sweep counter does not reset on other connections' activity,
+ so an idle connection ages out even while its neighbours are busy -- the
+ slowloris bound. The sweep runs outside the empty-poll `__heap-restore` window so
+ its reaping survives.
+
+  nat-gw-mac : List Integer = [82, 85, 10, 0, 2, 2]
+
+  WebConn = record { transport : TcpTransportState, server : WebState, pending : List Integer, idle : Integer }
+
+  WebMux = record {
+    listen : TcpTransportState,
+    conns : List WebConn,
+    served : Integer
+  }
+
+  frame-tcp : List Integer -> Boolean
+  frame-tcp (frame) =
+    if eth-ethertype frame /= eth-type-ipv4 then False
+    else ip-proto (eth-payload frame) == ip-proto-tcp
+
+  frame-seg : List Integer -> TcpSegment
+  frame-seg (frame) = tcp-parse (ip-payload (eth-payload frame))
+
+  fresh-listen-transport : Integer -> TcpTransportState
+  fresh-listen-transport (port) =
+    let sess = net-session-new local-mac local-ip gateway-ip port 0 gateway-ip 1000
+    in let sess2 = set-arp sess (arp-cache-add (sess.arp) gateway-ip nat-gw-mac)
+    in transport-new sess2
+
+  web-mux-owner : List WebConn, TcpSegment, Integer -> Integer
+  web-mux-owner (conns) (seg) (i) =
+    if i >= list-length conns then -1
+    else let c = list-at conns i
+    in if net-session-owns-segment ((c.transport).session) seg then i
+    else web-mux-owner conns seg (i + 1)
+
+  cl-pattern : List Integer = [99, 111, 110, 116, 101, 110, 116, 45, 108, 101, 110, 103, 116, 104, 58]
+
+  wb-lower : Integer -> Integer
+  wb-lower (b) = if b >= 65 then (if b <= 90 then b + 32 else b) else b
+
+  wb-match-ci : List Integer, Integer, List Integer, Integer, Integer -> Boolean
+  wb-match-ci (bs) (at) (pat) (j) (plen) =
+    if j >= plen then True
+    else if wb-lower (list-at bs (at + j)) == list-at pat j then wb-match-ci bs at pat (j + 1) plen
+    else False
+
+  wb-find-ci : List Integer, Integer, List Integer, Integer, Integer -> Integer
+  wb-find-ci (bs) (len) (pat) (plen) (i) =
+    if i + plen > len then -1
+    else if wb-match-ci bs i pat 0 plen then i
+    else wb-find-ci bs len pat plen (i + 1)
+
+  wb-skip-spaces : List Integer, Integer, Integer -> Integer
+  wb-skip-spaces (bs) (i) (len) =
+    if i >= len then i
+    else if list-at bs i == 32 then wb-skip-spaces bs (i + 1) len
+    else i
+
+  wb-parse-num : List Integer, Integer, Integer, Integer -> Integer
+  wb-parse-num (bs) (i) (len) (acc) =
+    if i >= len then acc
+    else let b = list-at bs i
+    in if b >= 48 then (if b <= 57 then wb-parse-num bs (i + 1) len (acc * 10 + (b - 48)) else acc) else acc
+
+  wb-headers-end : List Integer, Integer, Integer -> Integer
+  wb-headers-end (bs) (i) (len) =
+    if i + 4 > len then -1
+    else if list-at bs i == 13 then
+      if list-at bs (i + 1) == 10 then
+        if list-at bs (i + 2) == 13 then
+          if list-at bs (i + 3) == 10 then i + 4
+          else wb-headers-end bs (i + 1) len
+        else wb-headers-end bs (i + 1) len
+      else wb-headers-end bs (i + 1) len
+    else wb-headers-end bs (i + 1) len
+
+  wb-content-length : List Integer, Integer -> Integer
+  wb-content-length (bs) (hdr-end) =
+    let h = wb-find-ci bs hdr-end cl-pattern (list-length cl-pattern) 0
+    in if h < 0 then 0
+    else wb-parse-num bs (wb-skip-spaces bs (h + list-length cl-pattern) hdr-end) hdr-end 0
+
+  wb-request-total : List Integer, Integer -> Integer
+  wb-request-total (bs) (len) =
+    let hdr-end = wb-headers-end bs 0 len
+    in if hdr-end < 0 then -1
+    else let total = hdr-end + wb-content-length bs hdr-end
+    in if len >= total then total else -1
+
+  wb-slice : List Integer, Integer, Integer, List Integer -> List Integer
+  wb-slice (bs) (i) (stop) (acc) =
+    if i >= stop then acc
+    else wb-slice bs (i + 1) stop (list-push acc (list-at bs i))
+
+  web-conn-closing : TcpTransportState -> Boolean
+  web-conn-closing (ts) = when ((ts.session).conn.state)
+    is TcpCloseWait -> True
+    is TcpLastAck -> True
+    is TcpClosed -> True
+    is TcpTimeWait -> True
+    is otherwise -> False
+
+  web-mux-remove : List WebConn, Integer, Integer, List WebConn -> List WebConn
+  web-mux-remove (conns) (idx) (i) (acc) =
+    if i >= list-length conns then acc
+    else if i == idx then web-mux-remove conns idx (i + 1) acc
+    else web-mux-remove conns idx (i + 1) (list-push acc (list-at conns i))
+
+  web-idle-max : Integer = 5
+  web-sweep-interval : Integer = 1000000
+
+  web-mux-sweep : WebMux, Integer -> [Network.Write] WebMux
+  web-mux-sweep (m) (i) =
+    if i >= list-length (m.conns) then m
+    else let c = list-at (m.conns) i
+    in act
+      t1 <- flush-transport-outbox (transport-tick (c.transport))
+      if web-conn-closing t1 then act
+        t2 <- flush-transport-outbox (transport-close t1)
+        web-mux-sweep (WebMux { listen = m.listen, conns = web-mux-remove (m.conns) i 0 [], served = m.served }) i
+      end
+      else if c.idle + 1 >= web-idle-max then act
+        reaped <- flush-transport-outbox (transport-close t1)
+        web-mux-sweep (WebMux { listen = m.listen, conns = web-mux-remove (m.conns) i 0 [], served = m.served }) i
+      end
+      else web-mux-sweep (WebMux { listen = m.listen, conns = list-set-at (m.conns) i (WebConn { transport = t1, server = c.server, pending = c.pending, idle = c.idle + 1 }), served = m.served }) (i + 1)
+    end
+
+  web-mux-serve-conn : (HttpRequest -> HttpResponse), WebMux, Integer, List Integer -> [Network.Write] WebMux
+  web-mux-serve-conn (route) (m) (idx) (frame) =
+    let c = list-at (m.conns) idx
+    in let r = net-process-frame ((c.transport).session) frame
+    in let ts1 = transport-set-session (c.transport) (r.session)
+    in act
+      ts2 <- flush-transport-outbox ts1
+      if web-conn-closing ts2 then act
+        ts3 <- flush-transport-outbox (transport-close ts2)
+        WebMux { listen = m.listen, conns = web-mux-remove (m.conns) idx 0 [], served = m.served }
+      end
+      else web-mux-drain route m idx ts2 (c.server) ((c.pending) & (r.data))
+    end
+
+  web-mux-drain : (HttpRequest -> HttpResponse), WebMux, Integer, TcpTransportState, WebState, List Integer -> [Network.Write] WebMux
+  web-mux-drain (route) (m) (idx) (ts) (srv) (pending) =
+    let plen = list-length pending
+    in let total = wb-request-total pending plen
+    in if total < 0 then
+      WebMux { listen = m.listen, conns = list-set-at (m.conns) idx (WebConn { transport = ts, server = srv, pending = pending, idle = 0 }), served = m.served }
+    else let req = http-parse-request (wb-slice pending 0 total [])
+    in let ns = WebState { request-count = srv.request-count + 1 }
+    in let resp = web-dispatch route ns req
+    in act
+      ts2 <- web-send-http ts resp
+      web-mux-drain route (WebMux { listen = m.listen, conns = m.conns, served = m.served + 1 }) idx ts2 ns (wb-slice pending total plen [])
+    end
+
+  web-mux-accept : WebMux, List Integer, Integer -> [Network.Write] WebMux
+  web-mux-accept (m) (frame) (port) =
+    let r = net-process-frame ((m.listen).session) frame
+    in let listen1 = transport-set-session (m.listen) (r.session)
+    in act
+      listen2 <- flush-transport-outbox listen1
+      WebMux { listen = net-io-listen (fresh-listen-transport port), conns = list-push (m.conns) (WebConn { transport = listen2, server = web-new, pending = [], idle = 0 }), served = m.served }
+    end
+
+  web-mux-feed : (HttpRequest -> HttpResponse), WebMux, List Integer, Integer -> [Network.Write] WebMux
+  web-mux-feed (route) (m) (frame) (port) =
+    if frame-tcp frame == False then m
+    else let seg = frame-seg frame
+    in let owner = web-mux-owner (m.conns) seg 0
+    in if owner >= 0 then web-mux-serve-conn route m owner frame
+    else if (seg.dst-port == port) then
+      if tcp-has-flag seg tcp-flag-syn then web-mux-accept m frame port
+      else m
+    else m
+
+  web-mux-loop : (HttpRequest -> HttpResponse), WebMux, Integer, Integer, Integer -> [Console, Network.Read, Network.Write] Integer
+  web-mux-loop (route) (m) (port) (tries) (since) =
+    if tries > 50000000 then m.served
+    else if since >= web-sweep-interval then act
+      m1 <- web-mux-sweep m 0
+      web-mux-loop route m1 port (tries + 1) 0
+    end
+    else let hp = __heap-save
+    in act
+      frame <- ne2k-recv-frame
+      if list-length frame == 0 then let restored = __heap-restore hp
+        in web-mux-loop route m port (tries + 1) (since + 1)
+      else act
+        m1 <- web-mux-feed route m frame port
+        web-mux-loop route m1 port 0 (since + 1)
+      end
+    end
+
+  web-serve-concurrent : (HttpRequest -> HttpResponse), Integer -> [Console, Network.Read, Network.Write] Integer
+  web-serve-concurrent (route) (port) =
+    let m0 = WebMux { listen = net-io-listen (fresh-listen-transport port), conns = [], served = 0 }
+    in web-mux-loop route m0 port 0 0
+
 Section: Legacy Framed Serve (for backward compat)
 
-  web-serve-framed : (Text -> Text) -> [Console] Integer
+  web-serve-framed : (Text -> Text) -> [Console, Network.Read, Network.Write] Integer
   web-serve-framed (route) =
     let sess = net-session-new local-mac local-ip gateway-ip 49152 9100 host-ip 1000
     in let ts = transport-new sess
-    in let ts1 = net-io-connect ts
     in act
+      ts1 <- net-io-connect ts
       web-loop-framed route (WebLoop { server = web-new, transport = ts1 })
     end
 
-  web-loop-framed : (Text -> Text), WebLoop -> [Console] Integer
+  web-loop-framed : (Text -> Text), WebLoop -> [Console, Network.Read, Network.Write] Integer
   web-loop-framed (route) (ls) = act
-    let recv = net-io-recv-loop (ls.transport) 0
-    in if recv.has-message then act
+    recv <- net-io-recv-loop (ls.transport) 0
+    if recv.has-message then act
       let request-text = bytes-to-text (recv.body) 0 (list-length (recv.body)) ""
       in let ns = WebState { request-count = (ls.server).request-count + 1 }
       in let path = extract-web-path request-text
       in let response = route path
       in let body = "200 application/json " & response
-      in let body-bytes = text-to-bytes body 0 (text-length body) []
-      in let ts2 = net-io-send (ls.transport) 1 body-bytes
-      in web-loop-framed route (WebLoop { server = ns, transport = ts2 })
+      in let body-bytes = ws-text-to-bytes body 0 (text-length body) []
+      in act
+        ts2 <- net-io-send (ls.transport) 1 body-bytes
+        web-loop-framed route (WebLoop { server = ns, transport = ts2 })
+      end
     end
     else act
       0
     end
   end
+
+  web-send : TcpTransportState, Text -> [Network.Write] TcpTransportState
+  web-send (ts) (response) =
+    let body = "200 application/json " & response
+    in let body-bytes = ws-text-to-bytes body 0 (text-length body) []
+    in net-io-send ts 1 body-bytes
 
   extract-web-path : Text -> Text
   extract-web-path (line) =

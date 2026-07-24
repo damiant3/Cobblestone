@@ -1,0 +1,66 @@
+Chapter: Fat16Overwrite
+  cites Foreword chapter Fat16
+
+ Writing a file twice replaces it.
+
+ It used to commit a SECOND directory entry under the same name.
+ fat16-find-free-slot answers the first free slot and knows nothing about
+ names, so the second write claimed a fresh cluster chain and wrote a
+ second entry; readers take whichever they meet first, which is the older
+ one sitting in the lower slot. The write answered True, the clusters
+ were really spent, and the file still read back its previous contents.
+ fat16-create-directory has guarded against exactly this since it was
+ written; files never got the same guard.
+
+ The read-back after the second write is the whole test, and the reason
+ is that the obvious assertion is the one that cannot fail. A test that
+ wrote twice and checked the write ANSWERED True passed before this fix
+ and after it. A test that checked the file still held its first contents
+ passed before the fix for the bug's reason and after it for no reason at
+ all. Only demanding the NEW contents separates them, and before the fix
+ this line read "first".
+
+ The root and a subdirectory are both exercised because they reach the
+ disk through different slot finders -- fat16-find-free-slot for the root
+ and fat16-find-or-grow-slot-in-dir for a chain -- and the defect was in
+ both. Fixing one and shipping it as fixed is the shape of failure this
+ battery is supposed to make hard.
+
+ The listing counts are the leak half, and they are what the read-back
+ alone cannot see. A replacement that wrote the new bytes but still added
+ an entry would return the right contents from the newer entry and grow
+ the directory every time it was written. One name written three times
+ must leave exactly one entry behind it.
+
+Section: Entry
+
+  opening : [Console, Device.Block] Nothing
+  opening = act
+    vol <- fat16-init 2048
+
+    a <- fat16-write-file "OW.TXT" "first"
+    b <- fat16-write-file "OW.TXT" "second"
+    print-line-uni ("writes " & show a & " " & show b)
+
+    back <- fat16-read-text vol "OW.TXT"
+    print-line-uni ("root reads " & ow-text back)
+
+    c <- fat16-write-file "OW.TXT" "third"
+    names <- fat16-list-root vol
+    print-line-uni ("root entries " & show (list-length names))
+
+    d <- fat16-create-directory vol "SUB"
+    e <- fat16-write-file "SUB/IN.TXT" "one"
+    f <- fat16-write-file "SUB/IN.TXT" "two"
+    print-line-uni ("subdir writes " & show e & " " & show f)
+
+    deep <- fat16-read-text vol "SUB/IN.TXT"
+    print-line-uni ("subdir reads " & ow-text deep)
+  end
+
+Section: Reporting
+
+  ow-text : Maybe Text -> Text
+  ow-text (m) = when m
+    is Just (t) -> t
+    is None -> "<none>"

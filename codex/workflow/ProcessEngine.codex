@@ -6,6 +6,7 @@ Chapter: ProcessEngine
   cites Foreword chapter Logger
   cites Foreword chapter Maybe
   cites Foreword chapter Hamt
+  cites Foreword chapter CCE (is-digit, digit-value)
 
  State machine engine for workflow execution. Evaluates transitions,
  advances steps, enforces document gates, checks SLAs, and records
@@ -108,14 +109,14 @@ Section: DB Schema
 
   wf-create-table : DbServer, Text, List ColumnDef -> DbServer
   wf-create-table (srv) (name) (cols) =
-    let tdef = TableDef { tbl-name = name, tbl-columns = cols, tbl-primary-key = [], tbl-indexes = [], tbl-constraints = [] }
-    in when catalog-create-table (srv.db-catalog) tdef
-      is Just (cat2) -> DbServer {
-        db-catalog = cat2, db-txn-mgr = srv.db-txn-mgr,
-        db-lock-table = srv.db-lock-table, db-sessions = srv.db-sessions,
-        db-next-session = srv.db-next-session, db-name = srv.db-name
-      }
-      is None -> srv
+    let tdef = table-def name cols
+    in let cr = catalog-create-table (srv.db-catalog) tdef
+    in if cr.cat-ok == False then srv
+    else DbServer {
+      db-catalog = cr.cat, db-txn-mgr = srv.db-txn-mgr,
+      db-lock-table = srv.db-lock-table, db-sessions = srv.db-sessions,
+      db-next-session = srv.db-next-session, db-name = srv.db-name
+    }
 
 Section: Process Definition Versioning
 
@@ -279,12 +280,17 @@ Section: Transition Evaluation
   parse-int : Text -> Integer
   parse-int (s) = if text-length s == 0 then 0 else parse-int-loop s 0 (text-length s) 0
 
+ This read ASCII digit codes (48..57, minus 48) and so returned 0 for
+ every number. CCE digits are 3..12, which is what is-digit and
+ digit-value already know, so ask them rather than writing the range out
+ a third time. The two callers are the GreaterThan and LessThan gate
+ conditions, and both were comparing 0 against their threshold.
+
   parse-int-loop : Text, Integer, Integer, Integer -> Integer
   parse-int-loop (s) (i) (len) (acc) =
     if i >= len then acc
-    else let c = char-code (char-at s i)
-    in if c >= 48 then if c <= 57 then parse-int-loop s (i + 1) len (acc * 10 + c - 48)
-      else acc
+    else let c = char-at s i
+    in if is-digit c then parse-int-loop s (i + 1) len (acc * 10 + digit-value c)
     else acc
 
 Section: Document Gate Checking

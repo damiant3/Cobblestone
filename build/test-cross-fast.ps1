@@ -61,6 +61,7 @@ foreach ($tf in $allTests) {
     elseif (Test-Path "$dir\$name.slow")    { $skipReason = "slow" }
     elseif (Test-Path "$dir\$name.fatal")   { $skipReason = "fatal" }
     elseif (Test-Path "$dir\$name.failing") { $skipReason = "error test" }
+    elseif (Test-Path "$dir\$name.no-cross") { $skipReason = "no-cross: " + (Get-Content -TotalCount 1 "$dir\$name.no-cross") }
     if ($skipReason) { $skipCount++; continue }
     $eligible.Add(@{ File = $tf; Name = $name; Dir = $dir })
 }

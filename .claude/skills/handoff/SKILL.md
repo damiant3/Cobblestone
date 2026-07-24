@@ -29,7 +29,7 @@ Gather, with tools (do not answer from memory):
 ## Step 2 — Decide
 
 Size the NEXT natural unit of work (one campaign stage, one CL, one
-investigation — not the whole backlog). Estimate its context need
+investigation — not the whole remaining scope). Estimate its context need
 including gates and their outputs, then apply the rule:
 
     continue only if: (estimated need x 1.5) + 40k wrap reserve < free

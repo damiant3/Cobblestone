@@ -103,10 +103,11 @@ Section: Type Definition Emission
   emit-nim-type-def : ATypeDef -> Text
   emit-nim-type-def (td) =
    when td
-    is ARecordTypeDef (name) (tparams) (fields) (s) ->
+    is ARecordTypeDef (name) (tparams) (fields) (recmut) (s) ->
      emit-nim-record-type (name.value) fields
     is AVariantTypeDef (name) (tparams) (ctors) (s) ->
      emit-nim-sum-type (name.value) ctors
+    is AUnitTypeDef (name) (unitbase) (s) -> ""
 
   emit-nim-sum-type : Text, List AVariantCtorDef -> Text
   emit-nim-sum-type (name) (ctors) =
@@ -147,7 +148,7 @@ Section: Expression Emission
     is IrCharLit (n) (sp) -> integer-to-text n
     is IrName (n) (ty) (sp) -> emit-nim-name n ty arities
     is IrBinary (op) (l) (r) (ty) (sp) -> emit-nim-binary op l r arities
-    is IrNegate (operand) (sp) -> "(-" & emit-nim-expr-at operand arities (depth + 1) & ")"
+    is IrNegate (operand) (nty) (sp) -> "(-" & emit-nim-expr-at operand arities (depth + 1) & ")"
     is IrIf (c) (t) (el) (ty) (sp) -> "(if " & emit-nim-expr-at c arities (depth + 1) & ": " & emit-nim-expr-at t arities (depth + 1) & " else: " & emit-nim-expr-at el arities (depth + 1) & ")"
     is IrLet (name) (ty) (val) (body) (sp) -> "(block: (let " & nim-sanitize name & " = " & emit-nim-expr-at val arities (depth + 1) & "; " & emit-nim-expr-at body arities (depth + 1) & "))"
     is IrApply (f) (a) (ty) (sp) -> emit-nim-apply e arities
@@ -265,7 +266,7 @@ Section: Builtin Table
   nim-builtin-names = ["abs", "char-at", "char-code-at", "file-exists",
    "int-mod", "integer-to-text", "list-at", "list-length", "list-snoc",
    "max", "min", "negate", "print-error-uni", "print-line-uni",
-   "read-file", "read-line", "show", "substring", "text-compare",
+   "read-text", "read-line", "show", "substring", "text-compare",
    "text-contains", "text-length", "text-replace", "text-split",
    "text-starts-with", "text-to-integer", "write-file"]
 
@@ -284,7 +285,7 @@ Section: Builtin Table
    else if idx == 1 then "ord(" & emit-nim-expr (list-at args 0) arities & "[" & emit-nim-expr (list-at args 1) arities & "])"
    else if idx == 2 then "ord(" & emit-nim-expr (list-at args 0) arities & "[" & emit-nim-expr (list-at args 1) arities & "])"
    else if idx == 3 then "fileExists(" & emit-nim-expr (list-at args 0) arities & ")"
-   else if idx == 4 then "(" & emit-nim-expr (list-at args 0) arities & " mod " & emit-nim-expr (list-at args 1) arities & ")"
+   else if idx == 4 then "floorMod(" & emit-nim-expr (list-at args 0) arities & ", abs(" & emit-nim-expr (list-at args 1) arities & "))"
    else if idx == 5 then "$(" & emit-nim-expr (list-at args 0) arities & ")"
    else if idx == 6 then emit-nim-expr (list-at args 0) arities & "[" & emit-nim-expr (list-at args 1) arities & "]"
    else if idx == 7 then "len(" & emit-nim-expr (list-at args 0) arities & ")"
@@ -362,7 +363,7 @@ Section: Chapter Emission
   emit-nim-chapter : IRChapter, List ATypeDef -> Text
   emit-nim-chapter (m) (type-defs) =
    let arities = build-arity-map (m.defs) 0 []
-   in let header = "import tables\n\n"
+   in let header = "import tables, math\n\n"
    in let types-text = emit-nim-type-defs type-defs 0
    in let defs-text = emit-nim-defs (m.defs) 0 arities
    in header & types-text & defs-text & nim-sanitize opening-entry-point & "()\n"

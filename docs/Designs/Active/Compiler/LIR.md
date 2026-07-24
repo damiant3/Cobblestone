@@ -1,12 +1,17 @@
 # The Flat LIR and Linear-Scan Register Allocation
 
-**Status:** Active — implementation in progress. LIR-1..7 shipped (representation,
+**Status:** The codegen-quality campaign is **closed** -- see §12 for the closing
+note and the measurement that closes it. LIR-1..7 shipped (representation,
 lowering through constructor-pattern match, structural + allocation verifiers,
-liveness, and the linear-scan allocator; §10). The x86 selector (§8) is the next
-and first codegen-changing step. Satisfies entry criterion **E3**
+liveness, and the linear-scan allocator; §10), and **the x86 selector is live in
+the default pipeline** and verified on every compile. This header said the
+selector was "the next and first codegen-changing step" until 2026-07-23, which
+had been false for weeks. The design remains Active because §12 closes the
+*quality* frontier and not the three open coverage and verification items it
+names. Satisfies entry criterion **E3**
 of the middle-end campaign (`docs/Designs/Active/Compiler/MiddleEnd.md` §Decision):
 the LIR design doc that Damian reviews before step-5 implementation begins.
-**Filed:** 2026-07-15 (reek). **BACKLOG:** 3.8 (this campaign, step 5); **3.1
+**Filed:** 2026-07-15 (reek). **Scope:** this campaign, step 5; **the ARM64 allocator
 closes into this workstream** (the ARM64 allocator is a register-file table
 entry here, not a separate build).
 **Literature base:** `docs/Reference/MiddleEndLiterature.md` §3 (register
@@ -111,7 +116,7 @@ LirFunc  = record { name : Text, params : List VReg, blocks : List LirBlock,
 
 Placement: a chapter in the compiler's **`IR/` quire** (`codex/compiler/IR/
 Lir.codex` or similar), NOT under `Emit/`. This is the decision that closes
-BACKLOG 3.1 rather than leaving it: the plug wire format is the tree IR as
+the ARM64 allocator rather than leaving it: the plug wire format is the tree IR as
 S-expressions (`codex/plugs/common/IRTextParser.codex`), plugs already cite
 compiler chapters, and if the LIR and its allocator live in `IR/` the ARM64 and
 RISC-V plugs can lower tree→LIR plug-side and reuse the same allocator over a
@@ -293,11 +298,26 @@ ablation harness.
   the LIR (and with it, the widening/fixpoint machinery the tree range analysis
   correctly did *not* need). v1 keeps TCO in the emitter.
 - **Interval splitting** — gated on measured spill counts in the 21KB lifted
-  lambdas; whole-interval spill until the data demands it.
+  lambdas; whole-interval spill until the data demands it. **It was argued on
+  2026-07-19 that the data demanded it early, for a reason other than spills.
+  Measurement said no**, and the argument is recorded here rather than in the
+  a register because what came out of it is a decision not to do something, which
+  is a design note and not an open capability. The argument was that intervals having
+  no *holes* blocks `gcd`: a loop-carried value spans the whole body, so
+  `lir-scan-avail` masks `diva`/`divb` out of it even where the value is dead
+  across the division. That much is true, and the local hole was built and
+  works -- `v0` moves into RAX and the allocation verifier accepts it. It buys
+  nothing: nine benches byte-identical, and `my-gcd` measured with
+  `codex-vm -wcet` goes **158 dynamic instructions to 159**. The dividend is a
+  *parameter*, so placing it in RAX costs an entry move and displaces the other
+  parameter into a second one, buying back exactly what the division and the
+  return saved. **What binds here is the entry moves, not the interval model.**
+  Two attempts from the interval side were reverted after measurement; a third
+  should start somewhere else.
 - **Stack-slot coloring** (spill-slot recycling) — returns only as a
   checker-validated pass.
 - **Rematerialization** of cheap constants.
-- **Instruction scheduling** — only if an in-order target (Thumb-2, BACKLOG 3.5)
+- **Instruction scheduling** — only if an in-order target (Thumb-2)
   ever demands it; x86-64's out-of-order core schedules in hardware, so building
   a scheduler for it is `MiddleEnd.md`'s explicit "what not to build."
 
@@ -374,7 +394,7 @@ dump; the whitelist's live sets are recorded in `codex/test/lir-check.lir-expect
 (e.g. `if-operand` keeps `v0` live across both arms into the join, exactly
 the interference the allocator must see) -- **recorded, not pinned: no
 harness reads that file, so nothing fails when the dump changes.** See
-BACKLOG 7.18. **LIR-6 shipped @8172**: the
+That gap is closed by `build/lir-dump-test.ps1`. **LIR-6 shipped @8172**: the
 **allocation verifier** (§4), the checker that stands before the allocator so
 the allocator is validated from its first line. Given each vreg an assigned
 `Location` (physical register or spill slot -- slots first-class from the
@@ -417,15 +437,19 @@ match to the real `-Passes lir-dump` run at the time it was written --
 register reuse (`sl-mix v2->r0`, `sl-nest v4->r0`, ...) and, for `sl-wide`
 (five parameters over four registers), spill slots (`v3->s1 v4->s0`, both an
 eviction-spill and a self-spill), every function `[alloc-check: ok]`. **That
-was a measurement, not a guarantee. Nothing re-runs it** (BACKLOG 7.18), so
-read the file as a record of one past run and re-derive it before trusting
-it. Determinism is enforced as the design requires (intervals
+was a measurement, not a guarantee, and for a long time nothing re-ran it.**
+`build/lir-dump-test.ps1` does now, and `build/lir-a64-test.ps1` runs the same
+corpus under two non-x86 register files. Neither is in `build.ps1`, so both are
+diagnostics rather than gates: read a divergence, do not reflexively re-record.
+Determinism is enforced as the design requires (intervals
 sorted by start then vreg, lowest-free register, furthest-then-highest-vreg
 victim). Still opt-in `lir-dump`, byte-identical default, ONE-PASS (no `Emit/`
-file touched). Next: the x86 selector behind the per-function dispatch (§8), the
-first codegen-changing, two-pass, gated step -- where fixed intervals (reserved
-R10/R15/RBP/RSP, call-clobbers, R8/R9 staging) and physical register mapping
-turn `lir-alloc-nregs` into a real register-file table.
+file touched). **The x86 selector then shipped behind the per-function dispatch
+(§8)** -- fixed intervals (reserved R10/R15/RBP/RSP, call-clobbers, R8/R9
+staging) and physical register mapping turned `lir-alloc-nregs` into a real
+register-file table, and the selector is live in the default pipeline with both
+verifiers standing on the emission path. That was the last step of the campaign;
+§12 is where it ends.
 
 ---
 
@@ -435,11 +459,29 @@ turn `lir-alloc-nregs` into a real register-file table.
   back-edge (v2), every "no fixpoint" claim here is void and the loop machinery
   the tree analysis skipped becomes real. This doc's simplicity is *bought* by
   the loop-free property and does not survive without it.
-- **The register file is x86-64-shaped first.** The claim that ARM64 is "a table
-  entry" is a design intent, not a proven fact until the retarget is done; the
-  first implementation may surface x86 assumptions baked below the table
-  (flag-setting comparisons, two-operand forms) that the table abstraction has
-  to grow to cover.
+- **The register file is x86-64-shaped first.** *Half-answered 2026-07-19
+  (`LirRetarget.md` steps 1-2, CLs 9234, 9246).* The file is data now, and the
+  allocator and both verifiers have been run over the `lir-check` corpus under
+  two deliberately non-x86 descriptors -- a wide ARM64 shape and a narrow one,
+  neither with a division-fixed pair -- clean on all 28 definitions. For the
+  allocator and the verifiers, "a table entry" is measured. **The suspects
+  named here are not:** flag-setting comparisons and two-operand forms are
+  emitted by the *selector*, which that probe never runs, so they remain open
+  and land in step 4. Read the green as scoped to allocation, not to codegen.
+  One caution the probe earned: a wider register file exercises *less* of the
+  allocator than x86-64's nine, because nothing spills -- a narrow descriptor
+  is what reaches the crossing arm, eviction and the spill path.
+- **The selector's coverage and its margin, measured 2026-07-19.** It takes
+  **all nine** `bench/codex` functions -- "instruction-neutral" does not mean it
+  declines them -- and against the tree emitter it is neutral on seven and one
+  instruction ahead on `ack` and `collatz`. Two apparent gaps in the
+  `ArchitectsSketchbook.md` table are **not codegen gaps**: `fib`'s +2 over
+  C /O2 is a source-shape difference (`if (n<=1) return n` is one compare; the
+  Codex source tests `n == 0` then `n == 1`, so it is a different program), and
+  `tak`'s spill is genuinely required -- five values each cross a call against a
+  callee pool of four. Adding R15 to that pool is **unsound**, not merely
+  unattempted: `X86_64Builtins.codex:281` writes it unsaved (`mov r15, r11`) at
+  closure-call sites, so it is not preserved across a call.
 - **~10 allocatable integer registers is the hard case for linear scan** (HiPE's
   x86 caveat). Belady eviction is the mitigation, but this design does not
   *prove* it reaches coloring quality at this register count — that is an
@@ -450,3 +492,119 @@ turn `lir-alloc-nregs` into a real register-file table.
   point and the tests, not by the verifier — the verifier assumes the selected
   instructions are the program and checks only that vregs live where uses read
   them.
+
+---
+
+## 12. Closing note: the campaign ends here, and why
+
+*Written 2026-07-23 (reek), so that nobody re-runs this.*
+
+§1 opened this document with a specific claim: the benchmark gap is register
+allocation of named bindings, and a global allocator is what closes it. The
+allocator was built, it is live, and it is verified on every compile. **The
+remaining gap it was supposed to close does not exist to be closed.** That is a
+negative result, it was reached in a bounded investigation rather than a grind,
+and it has two independent legs.
+
+### 12.1 The spills that remain are the register file, not the allocator
+
+`bench/codex/regstress.codex` is the register-pressure shape, and on x86-64 it
+spills. The question the campaign has to answer is whether that is the allocator
+being weak or the machine being small. It is the machine.
+
+The evidence is one program, one allocator, one lowering, three register-file
+descriptors, measured 2026-07-23 on the additive pipeline
+(`-Passes +lir-dump` / `+lir-dump-a64`; all three runs report 39 vregs, so they
+are the same program):
+
+| descriptor | callee-saved (`ncallee`) | allocatable (`nregs`) | spill slots |
+|---|---:|---:|---:|
+| narrow probe | 2 | 5 | **13** |
+| **x86-64** | **4** | **9** | **6** |
+| a64 shape | 10 | 19 | **0** |
+
+Nothing varies across those rows except the table. The spill count is a monotone
+function of the callee-saved count and of nothing else the campaign could
+improve.
+
+The mechanism is exact rather than statistical. A value live across a call
+cannot sit in a caller-saved register, so it is restricted to the callee-saved
+pool. Reading the LIR dump for `regstress`, **peak simultaneous call-crossers is
+6** -- at the last `mix4`, `v8`/`v17`/`v26` (the earlier results, consumed only at
+the end) plus `v28`/`v30`/`v32` (the staged arguments) are all live across
+`v34 = call step v33`. x86-64 in Codex's convention has **4** callee-saved
+registers (RBX/R12/R13/R14; R10 is the bump allocator and R15 the closure
+environment, and §11 records that adding R15 is *unsound*, not merely
+unattempted). Six values need a pool of four, so at least two must live in
+memory at that instant regardless of how good the allocator is. At `ncallee` 10
+the same six fit, and the spill count is zero -- which is what the table shows.
+
+**No allocator can remove a spill the register file genuinely requires.**
+
+### 12.2 There are no holes to exploit in v1 anyway
+
+The standing hypothesis for a further win was holed live intervals: `lir-build-
+intervals` computes one conservative `[start, fin]` per vreg (§10), which
+over-states liveness, so a value that is dead in the middle of its range still
+occupies its register there. Sharpening that looks like free precision.
+
+It is not available, and the reason is structural rather than empirical. Holes
+require a value that is live, then dead, then live again. v1's LIR is a
+**loop-free DAG with destination-driven, single-def-per-path vregs** (§3) -- the
+whole simplification this design is built on. Every interval is therefore
+contiguous `[def, last-use]` by construction. **The conservative interval is not
+conservative here; it is exact.**
+
+Holes only appear once TCO self-calls become LIR back-edges, which is v2 (§9) --
+and §9 already records that the one v2-shaped hole was built, measured, and made
+`my-gcd` **worse**, 158 dynamic instructions to 159, because what binds there is
+the entry moves and not the interval model. Two attempts from the interval side
+were reverted after measurement. This is the third reading of the same result
+and it agrees: the lever is not here.
+
+### 12.3 What this closes, and what it explicitly does not
+
+**Closed: the middle-end codegen-quality frontier.** The selector takes all nine
+`bench/codex` functions, beats C /O2 on `fact`, `gcd` and `sum`, matches the C#
+JIT on `gcd`, and is neutral-to-ahead of the tree emitter (§11). The residual
+gap to the F# JIT on `gcd`/`sum` is entry-move and prologue cost entangled with
+TCO loops -- that is v2, which §9 files as unproven and which has now been
+reverted twice on measurement. Chasing it is an unscoped grind, and the scoping
+lesson of this project is that a campaign without a done-line does not get one
+later.
+
+**Not closed, and not to be read as closed by this note.** A closing note that
+quietly absorbed open gaps would be the one unrecoverable mistake in doc work:
+
+- **The rest of the prologue** (`lir-push-saved`,
+  `lir-stack-guard`, the frame adjust) is raw x86 emitted outside the LIR, so no
+  verifier sees it. The `col-hue` miscompile survived ten sessions of green
+  benches behind exactly that kind of blind spot.
+- **`list-map` used to lower and no longer does.** That is
+  **coverage loss in the selector**, it is pre-existing rather than fallout from
+  this campaign, and **its cause is still not established.** A definition
+  dropping out of the whitelist is invisible to every instrument except the pin,
+  because the answer stays right.
+- **Both LIR verifiers are pinned only in the affirmative;** the
+  rejection paths run under no harness, blocked on compiler chapters having no
+  quire.
+
+None of the three is a codegen-quality item, which is why the frontier can close
+while they stay open. All three are honest gaps and stay in the register until
+someone closes them by fixing them.
+
+### 12.4 The instrument that settled it
+
+Worth keeping, because it is reusable and because it nearly went wrong here.
+`bench/` is the only instrument that can see a change which keeps a program
+correct and makes it worse; a correctness battery is blind to a redundant
+instruction by construction. The three-descriptor sweep above is `bench/` used as
+an *ablation over the machine model* rather than over the code, and it converts
+"is the allocator good enough" from a matter of opinion into one table.
+
+The trap it walked into first, recorded because the register already warned about
+it and the warning still had to be re-learned: **a bare `-Passes lir-dump`
+REPLACES the default pass list**, so the first x86 run was measuring un-inlined
+IR and was not comparable to the a64 run that used the additive `+` form. The
+`PIPELINE ...` line in the compile log is what tells you which one you ran. Read
+it before you compare two dumps.

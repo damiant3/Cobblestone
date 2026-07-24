@@ -184,6 +184,56 @@ Section: Insert Row
               cir-msg = "inserted 1 row"
             }
 
+ Update and delete by RowId. The catalog had neither, which is why
+ IssueStore called a catalog-delete-row that has never existed: a
+ field update was written as delete-then-insert because there was no
+ way to say update.
+
+ Both go through heap-delete and then hand the row to
+ catalog-insert-row rather than to heap-insert, so validation and index
+ maintenance stay in one place instead of being repeated here.
+
+ What they do NOT do is retract the old row's index entries.
+ catalog-update-indexes only ever adds, and nothing in this chapter
+ removes an index key, so an index still points at the RowId the row
+ used to occupy. That gap predates these two functions -- there was no
+ delete of any kind before them -- and it is why they are honest about
+ being row-store operations with index maintenance that only grows.
+ Fixing it means an index-delete path, which is its own change.
+
+  catalog-update-row : Catalog, Text, RowId, RowData -> CatalogInsertResult
+  catalog-update-row (cat) (table-name) (rid) (row) =
+    let maybe-entry = hamt-get (cat.tables) table-name
+    in when maybe-entry
+      is None -> CatalogInsertResult { cir-cat = cat, cir-ok = False, cir-msg = "table not found: " & table-name }
+      is Just (entry) -> catalog-insert-row (catalog-with-heap cat table-name entry (heap-delete (entry.cat-heap) rid)) table-name row
+
+  catalog-delete-row : Catalog, Text, RowId -> CatalogInsertResult
+  catalog-delete-row (cat) (table-name) (rid) =
+    let maybe-entry = hamt-get (cat.tables) table-name
+    in when maybe-entry
+      is None -> CatalogInsertResult { cir-cat = cat, cir-ok = False, cir-msg = "table not found: " & table-name }
+      is Just (entry) -> CatalogInsertResult {
+        cir-cat = catalog-with-heap cat table-name entry (heap-delete (entry.cat-heap) rid),
+        cir-ok = True,
+        cir-msg = "deleted 1 row"
+      }
+
+  catalog-with-heap : Catalog, Text, CatalogTable, HeapFile -> Catalog
+  catalog-with-heap (cat) (table-name) (entry) (hf) =
+    Catalog {
+      tables = hamt-set (cat.tables) table-name (CatalogTable {
+        cat-table-id = entry.cat-table-id,
+        cat-table-name = entry.cat-table-name,
+        cat-table-def = entry.cat-table-def,
+        cat-heap = hf,
+        cat-indexes = entry.cat-indexes
+      }),
+      table-count = cat.table-count,
+      next-table-id = cat.next-table-id,
+      next-index-id = cat.next-index-id
+    }
+
   catalog-update-indexes : List CatalogIndex, RowData, RowId, TableDef, Integer, Integer -> List CatalogIndex
   catalog-update-indexes (indexes) (row) (rid) (tdef) (i) (len) =
     if i >= len then indexes

@@ -1,0 +1,73 @@
+# GuiOS dashboard (F1): the view the chrome test deliberately does not cover.
+#
+# What this adds over desktop-chrome is the gauge. The memory gauge is one of
+# the widgets the GuiOS chrome work was about -- it never showed a value at all,
+# because gr-render-gauge drew its fill at the track's own depth and the
+# rasterizer discards a rect at a depth it has already written. So the track's
+# extent, its border and its position are worth a golden even though the FILL
+# WIDTH is not comparable.
+#
+# The mask covers the three fields that are not a function of the program:
+#
+#   Uptime: <ticks/18>s     host-driven; at an 11s deadline it divides within
+#                           one tick of a boundary and flips 10/11 under load
+#   Memory: <heap>MB        allocator high-water at capture time
+#   the gauge FILL edge     driven by that same heap figure
+#
+# The rect is MEASURED, not eyeballed: the same frame captured at an 11000 ms
+# and a 20000 ms deadline with the clock frozen differs by 829 pixels, whose
+# bounding box is x=268..349, y=88..139. Re-derive it the same way if the
+# layout moves -- and it DID move: this read x=203..268 over 278 pixels until
+# GuiOS stopped synthesizing a font and started drawing with the one packaged
+# into the OS, which changed every text metric on the frame.
+#
+# The mask is that box with a few pixels of margin, and the margin is not
+# padding-for-comfort: the heap figure can change digit COUNT between runs
+# (1 MB against 100 MB is a wider string), and a mask sized to one run's
+# digits would then let the extra digit fail the comparison. The cost of the
+# margin is that it also clips the tail of the words `Uptime:` and `Memory:`,
+# so a regression that garbled those two labels inside the box would not be
+# caught. That is the trade, stated rather than hidden; the labels are also
+# spelled out in the static text above, which IS compared.
+#
+# Everything else in the frame is compared, including the gauge track, its
+# border, both separators, the whole keyboard-shortcuts block, the frozen
+# clock line, the sidebar and the taskbar. The harness prints the masked area
+# on every run so the hole stays visible: 4560 pixels, 0.58% of the frame.
+#
+# Controls, both run rather than assumed. Positive: this frame captured at a
+# 20000 ms deadline -- a different uptime -- compares clean against a golden
+# recorded at 11000 ms, which is what proves the mask covers the volatile
+# region. Negative: the same run with the mask line removed differs by 278
+# pixels, which is what proves the mask is load-bearing and not decoration.
+
+# The mask hides the VALUE; expect-ink keeps the area from being wholly
+# unchecked. It counts lit pixels rather than reading the text, so it is a
+# heuristic and nothing more -- but before it, a regression that blanked the
+# uptime and memory lines entirely, or filled them with garbage, passed this
+# golden silently, because the only thing covering that rect was the mask.
+#
+# The range is measured, not chosen: the field reads 271 lit pixels at the
+# 11000 ms deadline and 816 at 20000, rising steeply because the heap gauge's
+# fill edge is inside the rect and grows with the heap. 150..1400 covers the
+# retry span (which reaches 18500 ms) with room.
+#
+# Be clear about which end of that range does the work. The LOWER bound is the
+# real check: a field that stopped drawing reads near zero and fails. The upper
+# bound is loose on purpose, because the quantity inside the rect legitimately
+# triples over the span the retries can reach, and a tight ceiling would fail
+# on a slow host rather than on a defect. This is a heuristic and that is what
+# a heuristic looks like when it is described honestly.
+#
+# Reading the VALUE is now possible in principle and was not before: GuiOS drew
+# through a synthesized font that rendered 's', 't' and 'b' as one identical
+# bitmap. It now uses the font packaged with the OS -- an 8x16 bitmap, 128
+# glyphs, fixed 9-pixel advance -- so a glyph atlas is tractable and an
+# expect-text worth building. This stays as the cheap check until it is.
+
+vmargs -rtc 2026-07-21T09:41:07
+mask 264 84 92 60
+expect-ink 264 84 92 60 150 1400
+
+boot 9000
+settle 2000

@@ -72,6 +72,25 @@ Section: RTC Clock
   end
 
 Section: Font Loading
+
+ When there is no font disk, the shell uses the font PACKAGED WITH THE OS and
+ does not synthesize one. `gop-buf-put-text-role` already dispatches that way:
+ with `fonts-loaded` at zero it draws through `Kernel chapter BitmapFont`, an
+ 8x16 bitmap of 128 glyphs indexed by CCE that is compiled into the binary and
+ needs no disk, no FAT32 and no rasterizer.
+
+ It used to claim otherwise. `gui-load-fallback` rasterized `px-pixel-font`
+ into all three roles and then set `fonts-loaded` to one, so the dispatch
+ preferred the synthesized font over the embedded one -- and that font is not
+ legible. Measured off a captured frame 2026-07-21: `s`, `t` and `b` render as
+ ONE identical bitmap, and so do `d`/`o`, `O`/`0` and `5`/`9`; `W` is a 3x6
+ solid stem. Every GuiOS screenshot in the tree was drawn that way, which is
+ why the text in them reads as a styling choice rather than as a defect. It
+ also defeats reading a value back out of a frame, which is how it was found.
+
+ The disk path is untouched: when a volume carries the fonts, `fl-load-defaults`
+ loads them and the roles work as before. What changed is only what happens
+ when it cannot.
   gui-try-load-fonts : MutWheel -> [Device.Block] Integer
   gui-try-load-fonts (w) = act
     d0 <- block-select 0
@@ -83,11 +102,7 @@ Section: Font Loading
   end
 
   gui-load-fallback : MutWheel -> Integer
-  gui-load-fallback (w) =
-    let d1 = fl-load-block-font w 1
-    in let d2 = fl-load-block-font w 2
-    in let d3 = fl-load-block-font w 3
-    in mw-set-fonts-loaded w 1
+  gui-load-fallback (w) = mw-set-fonts-loaded w 0
 
   fat32-try-init : Integer -> [Device.Block] Fat32Volume
   fat32-try-init (part-start) = act
@@ -162,6 +177,18 @@ Section: Main Loop
   end
 
 Section: Composite Render
+
+ The shell walks the tree twice on purpose and does NOT call
+ gr-render-tree. The GPU pass draws geometry only; the text pass draws
+ WkLabel and WkButton through the fonts FontLoad pulled off the disk,
+ which is why the desktop reads in a real typeface rather than the 5x7
+ bitmap the library emits as triangles. Citing the library dispatch here
+ would render every label twice, in two fonts, at two positions.
+
+ What the two walks MUST share is the depth rule: a child renders one step
+ in front of its parent, because the rasterizer discards a rect at a depth
+ it has already written. See the Widget Rendering prose in UI GpuRender.
+
   shell-composite-render : ShellState -> [Device.Port, Gpu.Compute, Gpu.Memory] Integer
   shell-composite-render (ss) = act
     let root = ((ss.ss-app).ba-state).app-root
@@ -181,7 +208,7 @@ Section: Composite Render
   composite-gpu-children : GpuFrame, List WidgetNode, Theme, Integer, Integer, Integer -> [Gpu.Memory] GpuFrame
   composite-gpu-children (gf) (children) (th) (depth) (i) (n) =
     if i >= n then gf
-    else composite-gpu-children (composite-walk-gpu gf (list-at children i) th depth) children th depth (i + 1) n
+    else composite-gpu-children (composite-walk-gpu gf (list-at children i) th (depth - 1)) children th depth (i + 1) n
 
   composite-gpu-node : GpuFrame, WidgetNode, Theme, Integer -> [Gpu.Memory] GpuFrame
   composite-gpu-node (gf) (node) (th) (depth) =
@@ -306,6 +333,21 @@ Section: Widget Tree
  The builders are pure: the clock text arrives as data, sampled once
  per frame by the loop.
 
+ Fixed chrome must declare flex ZERO, and the sidebar and the taskbar did
+ not. widget-panel defaults wn-flex to 1, so every panel asks for a share of
+ its parent's slack unless it is told otherwise, and flex-row-place takes a
+ flex item's minimum as a FLOOR rather than a cap: the width is
+ box-max min (flex * avail / total-flex). So sidebar-w of 160 never capped
+ anything. The sidebar and the content pane each held a flex of one and
+ split the desktop down the middle at 496 pixels apiece, and the same
+ arithmetic one level down gave the 24-pixel taskbar half the vertical space
+ of the right-hand column. The measurement is not subtle once the panels are
+ visible; before the GPU renderer drew their borders there was nothing on
+ the glass whose extent could be read.
+
+ apps/cvmm/GuiOpening.codex already builds its sidebar this way. That is
+ what the idiom looks like when it is right.
+
   shell-build-root : Integer, Integer, Text, Text -> WidgetNode
   shell-build-root (view) (active) (dt) (tm) =
     let sidebar = shell-build-sidebar view active
@@ -319,7 +361,7 @@ Section: Sidebar
   shell-build-sidebar (view) (active) =
     let logo = widget-set-min (widget-label "logo" "CODEX OS") sidebar-w 20
     in let sep = widget-separator "nav-sep"
-    in widget-set-min (widget-panel "sidebar" DirColumn 1 [
+    in widget-set-min (widget-set-flex (widget-panel "sidebar" DirColumn 1 [
       logo, sep,
       shell-nav-btn "Notes" 0 active view,
       shell-nav-btn "Calendar" 1 active view,
@@ -342,7 +384,7 @@ Section: Sidebar
       shell-nav-btn "Helm" 18 active view,
       shell-nav-btn "Diffusion" 19 active view,
       shell-nav-btn "Fonts" 20 active view
-    ]) sidebar-w 0
+    ]) 0) sidebar-w 0
 
   shell-nav-btn : Text, Integer, Integer, Integer -> WidgetNode
   shell-nav-btn (label) (idx) (active) (view) =
@@ -360,7 +402,7 @@ Section: Taskbar
     in let apps = widget-label "tb-apps" (if view == 4 then "[Apps]" else " Apps ")
     in let spacer = widget-set-flex (widget-label "tb-space" "") 1
     in let clock = widget-label "tb-clock" (dt & " " & tm)
-    in widget-set-min (widget-panel "taskbar" DirRow 4 [codex-lbl, sys, mon, hw, info, apps, spacer, clock]) 0 taskbar-h
+    in widget-set-min (widget-set-flex (widget-panel "taskbar" DirRow 4 [codex-lbl, sys, mon, hw, info, apps, spacer, clock]) 0) 0 taskbar-h
 
 Section: Content Dispatch
   shell-build-content : Integer, Text, Text -> WidgetNode
@@ -406,7 +448,7 @@ Section: Dashboard (F1)
       widget-label "d-clock" (dt & "  " & tm),
       widget-label "d-uptime" ("Uptime: " & show (ticks / 18) & "s"),
       widget-label "d-heap" ("Memory: " & show heap-mb & " MB used / 3072 MB"),
-      widget-gauge "d-hbar" heap-mb 3072,
+      widget-set-flex (widget-gauge "d-hbar" heap-mb 3072) 0,
       widget-separator "d-sep1",
       widget-label "d-ktitle" "Keyboard Shortcuts",
       widget-label "d-k1" "F1 Dashboard  F2 Monitor  F3 Hardware",
@@ -432,7 +474,7 @@ Section: Monitor (F2)
       widget-label "m-uptime" ("Uptime: " & show (ticks / 18) & "s"),
       widget-separator "m-sep1b",
       widget-label "m-heap" ("Heap: " & show heap-mb & " MB / 3072 MB"),
-      widget-gauge "m-hbar" heap-mb 3072,
+      widget-set-flex (widget-gauge "m-hbar" heap-mb 3072) 0,
       widget-separator "m-sep2",
       widget-label "m-proc" "Processes:",
       widget-label "m-p1" "  kernel     running    PID 0",
@@ -609,7 +651,7 @@ Section: Productivity Apps
       widget-label "pm-title" "Pomodoro Timer",
       widget-separator "pm-sep",
       widget-label "pm-time" "25:00",
-      widget-gauge "pm-bar" 25 25,
+      widget-set-flex (widget-gauge "pm-bar" 25 25) 0,
       widget-separator "pm-sep2",
       widget-label "pm-status" "Ready  |  Sessions: 0  |  Goal: 4"
     ]
@@ -631,7 +673,7 @@ Section: Media Apps
       widget-label "bm-title" "Boombox",
       widget-separator "bm-sep",
       widget-label "bm-np" "Now Playing: --",
-      widget-gauge "bm-prog" 0 100,
+      widget-set-flex (widget-gauge "bm-prog" 0 100) 0,
       widget-separator "bm-sep2",
       widget-label "bm-t1" "1. Track One         3:42",
       widget-label "bm-t2" "2. Track Two         4:15",
@@ -716,7 +758,7 @@ Section: AI Apps
       widget-separator "df-sep",
       widget-label "df-prompt" "Prompt: A crystal sword in morning light",
       widget-label "df-model" "Model: SDXL  |  Steps: 30  |  CFG: 7",
-      widget-gauge "df-prog" 0 30,
+      widget-set-flex (widget-gauge "df-prog" 0 30) 0,
       widget-separator "df-sep2",
       widget-label "df-status" "Ready  |  512x512  |  Seed: random"
     ]

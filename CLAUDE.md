@@ -56,19 +56,25 @@ you do not need to read them manually if you ran `/init`.
 - `docs/UsersHandbook.md`
 - `docs/VisionAndVirtues.md`
 
+**Read in full, directly (not via an agent):**
+- `docs/PM/Active/` -- everything in it, recursively. The stories live in
+  `docs/PM/Active/Stories/`: seventeen accounts of how agents on this
+  project actually failed. They were in `Done/` and went unread, and the
+  failures kept repeating. About 180 KB, spent deliberately.
+
 **Via parallel agents:**
 - `docs/PM/CurrentPlan.md` -- current plan
-- `docs/PM/BACKLOG.md` -- outstanding work items
 - `docs/Agents/PerforceProcess.md` -- shelve/revert/sync protocol
 - `docs/Designs/Active/` -- ALL active designs (skip `docs/Designs/Done/`, the archive)
 - `docs/PM/Stories/Vision/` -- founding prompts
 - `docs/PM/Stories/Vision/` -- founding prompts (read directly, not via agent)
 
-## Where The Open Work Is
+## Document Lifecycle
 
-**`docs/PM/BACKLOG.md` is the register of every open capability.** If a
-gap is real and it is not in there, put it there. If you close one, take
-it out -- the changelist is the record, not the backlog.
+There is no platform-wide register of open work. `docs/PM/BACKLOG.md`
+was deleted 2026-07-23. **Do not recreate it.** Application-domain
+registers (`apps/<app>/<app>-backlog.md`,
+`codex/<quire>/<quire>-backlog.md`) are unaffected.
 
 `docs/PM/CurrentPlan.md` is the shape and the priority order.
 `docs/Designs/Active/` means **live work only**. `docs/Designs/Done/` is
@@ -80,16 +86,9 @@ is **not read at init either**. Lifecycle docs use one top-level
 has no such state. If you find a finished campaign sitting in `Active/`,
 move it to `Done/`.
 
-**The standing rule: a capability we want is never walked back.** When
-you discover a doc claims something shipped and it did not, the entry
-gets *louder* -- restated as open work -- never deleted. An empty backlog
-would mean we stopped being honest, not that we finished. Deleting a
-true gap is the one unrecoverable mistake in doc work.
-
-Corollary, learned the hard way: **verify every "this doc is wrong"
-finding against the source before acting on it.** Two true gaps were
-nearly deleted during the 2026-07-13 reconciliation because they were
-confidently reported as false claims. They were real.
+**Verify every "this doc is wrong" finding against the source before
+acting on it.** A claim is cheap to check and cheap to get wrong in
+either direction.
 
 **Never carry a count forward. Re-measure it.** Test counts, module
 counts, line counts, and plug counts in these docs have all been wrong.
@@ -101,8 +100,9 @@ compiles itself end-to-end on bare metal (codex-vm x86-64, no OS, no
 libc), and the output of that self-compile compiled by itself is
 byte-identical to itself. No C# anywhere in the chain.
 
-A green battery does not mean there is no work. It means the work is in
-`BACKLOG.md`. Read it before you decide the project is finished.
+A green battery does not mean there is no work. For whichever
+application you are standing in, the work is in that app's own
+`*-backlog.md`. Read it before you decide the project is finished.
 
 The canonical artifact is `seed/Codex.cdx` -- a ~2.1 MB
 self-sustaining CDX binary, bootable via codex-vm (or QEMU multiboot).
@@ -309,10 +309,11 @@ goes for the en-dash outside a numeric range.
 
 It is not house style and it never was. It is a model tic: agents arrive
 mistrained to like it, and it has been spreading through the tree ever
-since one of them started writing docs. Measured 2026-07-17: `BACKLOG.md`
-held 163, `OperatorsManual.md` 62, `ExaminersAssay.md` 42, and this file
-34. Every one of them is work for whoever cleans it up, and blu has had
-to run a campaign doing exactly that.
+since one of them started writing docs. Measured 2026-07-17:
+`OperatorsManual.md` held 62, `ExaminersAssay.md` 42, and this file 34
+(the register held 163 before it was deleted). Every one of them is work
+for whoever cleans it up, and blu has had to run a campaign doing
+exactly that.
 
 It is not free technically either. An em-dash is a non-ASCII byte, and a
 non-ASCII byte is what made source files land as `text` or `utf8` or

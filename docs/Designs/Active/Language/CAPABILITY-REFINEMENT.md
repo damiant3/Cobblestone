@@ -364,7 +364,7 @@ One lattice. Three layers.
 | ~~1~~ | ~~Direction markers in effect syntax~~ | **DONE** — dotted names parse and type-check |
 | ~~2~~ | ~~Direction-aware capability checker~~ | **DONE** — `capability-vocabulary` + `effect-covered-by`, CDX2031 |
 | ~~3~~ | ~~Split bare metal CAP bits (Read/Write)~~ | **DONE** — the vocabulary maps to cap ids via `manifest-cap-id` |
-| 4 | Compile-time scope checking (CDX4002) | **RING 1 SHIPPED 2026-07-13.** Direct calls, computed paths, and callee narrowing are enforced. The indirect route through an unscoped helper is open and blocked on the builtins carrying honest effect rows (BACKLOG 1.7). |
+| 4 | Compile-time scope checking (CDX4002) | **RING 1 SHIPPED 2026-07-13.** Direct calls, computed paths, and callee narrowing are enforced. The indirect route through an unscoped helper is open and blocked on the builtins carrying honest effect rows. |
 | ~~5~~ | ~~Scope in EffectfulType~~ | **DONE (carried, not checked)** — `EffectfulTy effs scopes inner`, `EffectLabel.scope`. The slot is there; step 4 is what reads it. |
 | **6** | **Runtime scope enforcement** | Open. Depends on step 4. Not blocking — compile-time first. |
 | ~~7~~ | ~~`with-timeout` syntax + semantics~~ | **DONE** — `AWithTimeoutExpr` across 7 compiler files |

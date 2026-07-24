@@ -25,19 +25,35 @@ Section: Differentiation
     is ExSub (a) (b) -> ExSub (diff-raw a var) (diff-raw b var)
     is ExMul (a) (b) -> ExAdd (ExMul (diff-raw a var) b) (ExMul a (diff-raw b var))
     is ExDiv (a) (b) -> ExDiv (ExSub (ExMul (diff-raw a var) b) (ExMul a (diff-raw b var))) (ExPow b (ExInt 2))
-    is ExPow (base) (ExInt n) -> ExMul (ExInt n) (ExMul (ExPow base (ExInt (n - 1))) (diff-raw base var))
-    is ExPow (ExE) (exp) -> ExMul (ExPow ExE exp) (diff-raw exp var)
-    is ExPow (base) (exp) ->
-      if ex-contains-var base var then
-        if ex-contains-var exp var then
-          ExMul (ExPow base exp) (ExAdd (ExMul (diff-raw exp var) (ExFn "ln" [base])) (ExMul exp (ExDiv (diff-raw base var) base)))
-        else ExMul exp (ExMul (ExPow base (ExSub exp (ExInt 1))) (diff-raw base var))
-      else ExMul (ExMul (ExPow base exp) (ExFn "ln" [base])) (diff-raw exp var)
+    is ExPow (b) (p) -> diff-pow b p var
     is ExNeg (a) -> ExNeg (diff-raw a var)
     is ExSqrt (a) -> ExDiv (diff-raw a var) (ExMul (ExInt 2) (ExSqrt a))
     is ExAbs (a) -> ExMul (ExDiv a (ExAbs a)) (diff-raw a var)
     is ExFn (name) (args) -> diff-fn name args var
     is otherwise -> ExInt 0
+
+ The three power arms were written in this order, and the order is the
+ rule: an integer exponent takes the power rule even when the base is
+ e, so that test comes first. A constructor cannot be nested inside a
+ pattern, so each step is its own function.
+
+  diff-pow : Expr, Expr, Text -> Expr
+  diff-pow (base) (exp) (var) = when exp
+    is ExInt (n) -> ExMul (ExInt n) (ExMul (ExPow base (ExInt (n - 1))) (diff-raw base var))
+    is otherwise -> diff-pow-base base exp var
+
+  diff-pow-base : Expr, Expr, Text -> Expr
+  diff-pow-base (base) (exp) (var) = when base
+    is ExE -> ExMul (ExPow ExE exp) (diff-raw exp var)
+    is otherwise -> diff-pow-general base exp var
+
+  diff-pow-general : Expr, Expr, Text -> Expr
+  diff-pow-general (base) (exp) (var) =
+    if ex-contains-var base var then
+      if ex-contains-var exp var then
+        ExMul (ExPow base exp) (ExAdd (ExMul (diff-raw exp var) (ExFn "ln" [base])) (ExMul exp (ExDiv (diff-raw base var) base)))
+      else ExMul exp (ExMul (ExPow base (ExSub exp (ExInt 1))) (diff-raw base var))
+    else ExMul (ExMul (ExPow base exp) (ExFn "ln" [base])) (diff-raw exp var)
 
   diff-fn : Text, List Expr, Text -> Expr
   diff-fn (name) (args) (var) =
@@ -74,18 +90,37 @@ Section: Integration (basic rules)
     is ExVar (name) -> if name == var then ExDiv (ExPow (ExVar var) (ExInt 2)) (ExInt 2) else ExMul e (ExVar var)
     is ExAdd (a) (b) -> ExAdd (int-raw a var) (int-raw b var)
     is ExSub (a) (b) -> ExSub (int-raw a var) (int-raw b var)
-    is ExMul (ExInt n) (b) -> ExMul (ExInt n) (int-raw b var)
-    is ExMul (a) (ExInt n) -> ExMul (ExInt n) (int-raw a var)
-    is ExPow (ExVar name) (ExInt n) ->
-      if name == var then
-        if n == (-1) then ExFn "ln" [ExAbs (ExVar var)]
-        else ExDiv (ExPow (ExVar var) (ExInt (n + 1))) (ExInt (n + 1))
-      else ExMul e (ExVar var)
-    is ExPow (ExE) (ExVar name) ->
-      if name == var then ExPow ExE (ExVar var)
-      else ExMul e (ExVar var)
+    is ExMul (x) (y) -> int-mul e x y var
+    is ExPow (x) (y) -> int-pow e x y var
     is ExFn (name) (args) -> int-fn name args var
     is ExNeg (a) -> ExNeg (int-raw a var)
+    is otherwise -> ExIntegral e var
+
+ An ExMul or ExPow that matches none of the shapes below fell through
+ every arm of int-raw to its `is otherwise`, so these return
+ ExIntegral e var to keep that.
+
+  int-mul : Expr, Expr, Expr, Text -> Expr
+  int-mul (e) (x) (y) (var) = when x
+    is ExInt (n) -> ExMul (ExInt n) (int-raw y var)
+    is otherwise -> when y
+      is ExInt (n) -> ExMul (ExInt n) (int-raw x var)
+      is otherwise -> ExIntegral e var
+
+  int-pow : Expr, Expr, Expr, Text -> Expr
+  int-pow (e) (x) (y) (var) = when x
+    is ExVar (name) -> when y
+      is ExInt (n) ->
+        if name == var then
+          (if n == (-1) then ExFn "ln" [ExAbs (ExVar var)]
+           else ExDiv (ExPow (ExVar var) (ExInt (n + 1))) (ExInt (n + 1)))
+        else ExMul e (ExVar var)
+      is otherwise -> ExIntegral e var
+    is ExE -> when y
+      is ExVar (name) ->
+        if name == var then ExPow ExE (ExVar var)
+        else ExMul e (ExVar var)
+      is otherwise -> ExIntegral e var
     is otherwise -> ExIntegral e var
 
   int-fn : Text, List Expr, Text -> Expr
