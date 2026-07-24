@@ -91,11 +91,12 @@ Section: Type Definition Emission
   emit-lua-type-def : ATypeDef -> Text
   emit-lua-type-def (td) =
    when td
-    is ARecordTypeDef (name) (tparams) (fields) (s) ->
+    is ARecordTypeDef (name) (tparams) (fields) (recmut) (s) ->
      emit-lua-record-type (name.value) fields
     is AVariantTypeDef (name) (tparams) (ctors) (s) ->
      if is-tup-type (name.value) then ""
      else emit-lua-sum-type ctors
+    is AUnitTypeDef (name) (unitbase) (s) -> ""
 
   emit-lua-sum-type : List AVariantCtorDef -> Text
   emit-lua-sum-type (ctors) =
@@ -160,7 +161,7 @@ Section: Expression Emission
     is IrCharLit (n) (sp) -> integer-to-text n
     is IrName (n) (ty) (sp) -> emit-lua-name n ty arities
     is IrBinary (op) (l) (r) (ty) (sp) -> emit-lua-binary op l r arities
-    is IrNegate (operand) (sp) -> "(-" & emit-lua-expr-at operand arities (depth + 1) & ")"
+    is IrNegate (operand) (nty) (sp) -> "(-" & emit-lua-expr-at operand arities (depth + 1) & ")"
     is IrIf (c) (t) (el) (ty) (sp) -> "(" & emit-lua-expr-at c arities (depth + 1) & " and " & emit-lua-expr-at t arities (depth + 1) & " or " & emit-lua-expr-at el arities (depth + 1) & ")"
     is IrLet (name) (ty) (val) (body) (sp) -> "(function() local " & lua-sanitize name & " = " & emit-lua-expr-at val arities (depth + 1) & "; return " & emit-lua-expr-at body arities (depth + 1) & " end)()"
     is IrApply (f) (a) (ty) (sp) -> emit-lua-apply e arities
@@ -193,8 +194,8 @@ Section: Expression Emission
     is IrAppendText -> "(" & emit-lua-expr l arities & " .. " & emit-lua-expr r arities & ")"
     is IrAppendList -> "(function() local _a = " & emit-lua-expr l arities & "; local _b = " & emit-lua-expr r arities & "; for _,v in ipairs(_b) do _a[#_a+1]=v end; return _a end)()"
     is IrConsList -> "(function() local _t = " & emit-lua-expr r arities & "; table.insert(_t, 1, " & emit-lua-expr l arities & "); return _t end)()"
-    is IrDivInt -> "math.floor(" & emit-lua-expr l arities & " / " & emit-lua-expr r arities & ")"
-    is IrRemInt -> "(" & emit-lua-expr l arities & " % " & emit-lua-expr r arities & ")"
+    is IrDivInt -> "((function(_a, _b) local _q = math.abs(_a) // math.abs(_b) if (_a < 0) ~= (_b < 0) then return -_q end return _q end)(" & emit-lua-expr l arities & ", " & emit-lua-expr r arities & "))"
+    is IrRemInt -> "((function(_a, _b) local _r = math.abs(_a) % math.abs(_b) if _a < 0 then return -_r end return _r end)(" & emit-lua-expr l arities & ", " & emit-lua-expr r arities & "))"
     is IrPowInt -> "(" & emit-lua-expr l arities & " ^ " & emit-lua-expr r arities & ")"
     is IrAnd -> "(" & emit-lua-expr l arities & " and " & emit-lua-expr r arities & ")"
     is IrOr -> "(" & emit-lua-expr l arities & " or " & emit-lua-expr r arities & ")"
@@ -306,7 +307,7 @@ Section: Builtin Emitters
    LuaBuiltinEmitter { name = "char-at", emit = \args arities -> "string.sub(" & emit-lua-expr (list-at args 0) arities & ", " & emit-lua-expr (list-at args 1) arities & " + 1, " & emit-lua-expr (list-at args 1) arities & " + 1)" },
    LuaBuiltinEmitter { name = "char-code-at", emit = \args arities -> "string.byte(" & emit-lua-expr (list-at args 0) arities & ", " & emit-lua-expr (list-at args 1) arities & " + 1)" },
    LuaBuiltinEmitter { name = "file-exists", emit = \args arities -> "(function() local f = io.open(" & emit-lua-expr (list-at args 0) arities & ", \"r\"); if f then f:close(); return true else return false end end)()" },
-   LuaBuiltinEmitter { name = "int-mod", emit = \args arities -> "(" & emit-lua-expr (list-at args 0) arities & " % " & emit-lua-expr (list-at args 1) arities & ")" },
+   LuaBuiltinEmitter { name = "int-mod", emit = \args arities -> "(" & emit-lua-expr (list-at args 0) arities & " % math.abs(" & emit-lua-expr (list-at args 1) arities & "))" },
    LuaBuiltinEmitter { name = "integer-to-text", emit = \args arities -> "tostring(" & emit-lua-expr (list-at args 0) arities & ")" },
    LuaBuiltinEmitter { name = "list-at", emit = \args arities -> emit-lua-expr (list-at args 0) arities & "[" & emit-lua-expr (list-at args 1) arities & " + 1]" },
    LuaBuiltinEmitter { name = "list-length", emit = \args arities -> "#" & emit-lua-expr (list-at args 0) arities },
@@ -316,7 +317,7 @@ Section: Builtin Emitters
    LuaBuiltinEmitter { name = "negate", emit = \args arities -> "(-(" & emit-lua-expr (list-at args 0) arities & "))" },
    LuaBuiltinEmitter { name = "print-error-uni", emit = \args arities -> "io.stderr:write(tostring(" & emit-lua-expr (list-at args 0) arities & ") .. \"\\n\")" },
    LuaBuiltinEmitter { name = "print-line-uni", emit = \args arities -> "print(" & emit-lua-expr (list-at args 0) arities & ")" },
-   LuaBuiltinEmitter { name = "read-file", emit = \args arities -> "(function() local f = io.open(" & emit-lua-expr (list-at args 0) arities & ", \"r\"); local c = f:read(\"*a\"); f:close(); return c end)()" },
+   LuaBuiltinEmitter { name = "read-text", emit = \args arities -> "(function() local f = io.open(" & emit-lua-expr (list-at args 0) arities & ", \"r\"); local c = f:read(\"*a\"); f:close(); return c end)()" },
    LuaBuiltinEmitter { name = "read-line", emit = \args arities -> "io.read()" },
    LuaBuiltinEmitter { name = "show", emit = \args arities -> "tostring(" & emit-lua-expr (list-at args 0) arities & ")" },
    LuaBuiltinEmitter { name = "substring", emit = \args arities -> "string.sub(" & emit-lua-expr (list-at args 0) arities & ", " & emit-lua-expr (list-at args 1) arities & " + 1, " & emit-lua-expr (list-at args 1) arities & " + " & emit-lua-expr (list-at args 2) arities & ")" },

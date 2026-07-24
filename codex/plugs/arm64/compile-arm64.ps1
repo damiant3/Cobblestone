@@ -12,7 +12,17 @@
 param(
     [Parameter(Mandatory=$true)] [string]$Src,
     [Parameter(Mandatory=$true)] [string]$Out,
-    [int]$MemMB = 3072
+    [int]$MemMB = 3072,
+    # Where the intermediate IR, its log, and the wire bytes are written. The
+    # default keeps them as build-output/last-compile.* because that is the
+    # file you reach for when one compile misbehaves. They are the only shared
+    # paths in this pipeline (compile.ps1 and run.ps1 use GetTempFileName
+    # throughout), so a caller running several compiles at once must give each
+    # its own directory or they overwrite each other's IR.
+    [string]$WorkDir = '',
+    # Emit the PSCI CPU_ON sequence in __start (multi-core programs only).
+    # Undefined on boards without PSCI -- see run.ps1.
+    [switch]$Smp
 )
 
 Set-StrictMode -Version Latest
@@ -22,7 +32,7 @@ $ErrorActionPreference = 'Stop'
 
 $Repo     = (Resolve-Path (Join-Path $PSScriptRoot '..' '..' '..')).Path
 $PlugDir  = (Resolve-Path $PSScriptRoot).Path
-$OutDir   = Join-Path $PlugDir 'build-output'
+$OutDir   = if ($WorkDir) { $WorkDir } else { Join-Path $PlugDir 'build-output' }
 New-Item -ItemType Directory -Force -Path $OutDir | Out-Null
 
 # Phase 1: compile to IR
@@ -40,7 +50,9 @@ if ($LASTEXITCODE -ne 0) {
 $WireFile = Join-Path $OutDir 'last-compile.arm64.bin'
 $RunScript = Join-Path $PlugDir 'run.ps1'
 Write-Host "[arm64-compile] Running ARM64 codegen plug..."
-& pwsh -NoProfile -File $RunScript -IrInput $IrFile -Out $WireFile
+$runArgs = @('-NoProfile','-File',$RunScript,'-IrInput',$IrFile,'-Out',$WireFile)
+if ($Smp) { $runArgs += '-Smp' }
+& pwsh @runArgs
 if ($LASTEXITCODE -ne 0) {
     [Console]::Error.WriteLine("FAIL: ARM64 codegen plug exited $LASTEXITCODE")
     exit 4
@@ -107,6 +119,16 @@ $textEnd = $textStart + $codeLen
 $rodataStart = [int](($textEnd + 7) -band 0xFFFFFFF8)
 [uint64]$entry = $loadAddr + [uint64]$textStart + [uint64]$entryOffset
 $segFilesz = $rodataStart + $dataLen - $textStart
+# The 240 MB heap reservation looks like the reason the run phase is slow --
+# every renode.log says "Loading block of 251669168 bytes" -- and it is not.
+# Measured 2026-07-21, same ELF, same board, only this field changed: three
+# runs at 12.54/12.55/12.61s against three at 12.69/12.76/12.65s. The
+# quarter-gigabyte zero-fill costs about 130 ms, one per cent, and dropping it
+# does not make eight Renode slots stop flaking either. A test is 12.6s
+# because RenoTimeout is a flat 10s sleep plus ~2.6s of Renode start and
+# teardown; that sleep is the whole cost. Left as it was: this is a program
+# header on every ELF for both architectures, a loader other than Renode may
+# rightly rely on the zero-fill, and one per cent does not buy that risk.
 $segMemsz = $segFilesz + 0x0F000000  # 240MB heap
 
 $elf = [System.IO.MemoryStream]::new()

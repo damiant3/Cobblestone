@@ -1,0 +1,74 @@
+Chapter: WebMuxReassembly
+  cites Net chapter WebServer
+  cites Net chapter NetIO
+  cites Net chapter Tcp
+  cites Net chapter Ethernet
+  cites Works chapter Http
+  cites Foreword chapter Console
+
+ A real webserver: a request larger than one frame is reassembled, a
+ Content-Length body is awaited, and the GET that rides in on the handshake ACK
+ is delivered rather than dropped.
+
+ Client A sends a GET split across two data frames, with NO bare ACK first: the
+ first data frame arrives in SYN_RECEIVED, so this also proves that path delivers
+ its payload. After the partial frame the request has no blank-line terminator,
+ so it must NOT be served (served stays 0); after the rest, it completes
+ (served 1). If the SYN_RECEIVED payload were dropped, or a partial request were
+ parsed eagerly, the count would be wrong.
+
+ Client B sends a POST whose headers declare Content-Length: 5 and whose body
+ arrives in a later frame. After the header frame the body is absent, so it must
+ wait (served unchanged); after the body frame it completes.
+
+ We say:
+
+Section: Wire Fixtures
+  srv-mac : List Integer = [82, 84, 0, 18, 52, 86]
+  cli-mac : List Integer = [82, 85, 10, 0, 2, 2]
+  srv-ip : List Integer = [10, 0, 2, 15]
+  a-ip : List Integer = [10, 0, 2, 100]
+  b-ip : List Integer = [10, 0, 2, 101]
+
+  get-partial : List Integer = [71, 69, 84, 32, 47, 32, 72, 84, 84, 80, 47, 49, 46, 49, 13, 10, 72, 111, 115, 116, 58, 32, 120, 13, 10]
+  get-rest : List Integer = [13, 10]
+  post-hdr : List Integer = [80, 79, 83, 84, 32, 47, 120, 32, 72, 84, 84, 80, 47, 49, 46, 49, 13, 10, 67, 111, 110, 116, 101, 110, 116, 45, 76, 101, 110, 103, 116, 104, 58, 32, 53, 13, 10, 13, 10]
+  post-body : List Integer = [104, 101, 108, 108, 111]
+
+  psh : Integer = bit-or tcp-flag-psh tcp-flag-ack
+
+  mk : Integer, List Integer, Integer, Integer, List Integer -> List Integer
+  mk (src-port) (src-ip) (seq) (flags) (payload) =
+    let seg = tcp-build-segment src-port 80 seq 5000 flags 8192 payload
+    in let ip = ip-build-packet src-ip srv-ip ip-proto-tcp seg
+    in eth-build-frame srv-mac cli-mac eth-type-ipv4 ip
+
+  a-syn : List Integer = mk 50000 a-ip 1000 tcp-flag-syn []
+  a-partial : List Integer = mk 50000 a-ip 1001 psh get-partial
+  a-rest : List Integer = mk 50000 a-ip 1030 psh get-rest
+
+  b-syn : List Integer = mk 50001 b-ip 2000 tcp-flag-syn []
+  b-posthdr : List Integer = mk 50001 b-ip 2001 psh post-hdr
+  b-body : List Integer = mk 50001 b-ip 2050 psh post-body
+
+Section: Route
+  test-route : HttpRequest -> HttpResponse
+  test-route (req) = http-json "{\"ok\":true}"
+
+Section: Entry
+  opening : [Console, Network.Write] Nothing = act
+    let m0 = WebMux { listen = net-io-listen (fresh-listen-transport 80), conns = [], served = 0 }
+    in act
+      m1 <- web-mux-feed test-route m0 a-syn 80
+      m2 <- web-mux-feed test-route m1 a-partial 80
+      print-line-uni ("afterPartial=" & show (m2.served))
+      m3 <- web-mux-feed test-route m2 a-rest 80
+      print-line-uni ("afterRest=" & show (m3.served))
+      m4 <- web-mux-feed test-route m3 b-syn 80
+      m5 <- web-mux-feed test-route m4 b-posthdr 80
+      print-line-uni ("afterPostHdr=" & show (m5.served))
+      m6 <- web-mux-feed test-route m5 b-body 80
+      print-line-uni ("afterBody=" & show (m6.served))
+      print-line-uni ("conns=" & show (list-length (m6.conns)))
+    end
+  end

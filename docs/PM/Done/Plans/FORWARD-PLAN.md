@@ -277,9 +277,6 @@ These were open questions. Damian answered them; decisions are recorded in
 3. **Type classes / traits** → **No explicit type classes.** Polymorphism is
    the compiler's problem. Prose handles subtyping naturally. Design work needed.
 
-4. **String interpolation** → **No.** `++` and named functions only.
-   See [DECISIONS.md](DECISIONS.md): "No String Interpolation Syntax."
-
 5. **Tail call optimization** → **✅ Done.** All 11 backends convert
    self-recursive tail calls to loops. See [DECISIONS.md](DECISIONS.md):
    "Tail Call Optimization via Loop Conversion."

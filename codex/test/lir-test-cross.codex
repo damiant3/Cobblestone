@@ -1,0 +1,88 @@
+Chapter: LirTestCross
+  cites Foreword chapter MathLib
+
+ The power-of-two remainder fusion, pinned by answers on both lanes.
+
+ On x86-64 the compiler fuses a power-of-two remainder compared against zero
+ into a single flag-setting AND: `if math-mod n 2 == 0` lowers to
+ `test v0 #1` and a branch on `eq`, with no division and no remainder anywhere.
+
+ **The plug lanes see the inlined body too, and this file is where that was
+ measured both ways.** Until BACKLOG 3.23 closed they did not: `compile-frontend`
+ emitted the IR wire straight out of `lower-chapter` without ever calling
+ `run-ir-pipeline`, which only `compile-frontend-cdx` did, so the wire still read
+ `(apply (name "math-mod") ...)` and the plug emitted a real call and a compare
+ against zero. Disassembled on ARM64 at the time: `MOVZ X1,#2; BL math-mod;
+ CMP X9,#0`. Passing `-Passes +inline-leaf-calls` changed nothing, which is what
+ ruled out a flag problem and pinned it on the path. The IR emitters now go
+ through `compile-frontend-ir`, which runs the pipeline; the TEXT emitters do
+ not, because an inlined body is not the definition semantic equivalence
+ compares against. `math-mod` no longer appears in the ARM64 binary's symbol map
+ for this file at all -- inlined, then dropped by dead-code elimination.
+
+ **This file still pins ANSWERS and not a shape, and that is not a leftover.**
+ The lanes reach these answers by different instructions -- x86 fuses to a single
+ `test`, and the ARM64 plug lowers the inlined remainder through its own
+ selector -- so a shape pin here would be a pin on whichever lane wrote it. The
+ answers are what has to agree.
+
+ **`math-mod` is the one that can fuse and `int-mod` is not.** `int-mod` is a
+ builtin call, so it never reaches the fusion; `math-mod` is an ordinary
+ Foreword definition whose body is `a - (a / b) * b`, pure integer arithmetic
+ over its own parameters, which is exactly what `leaf-body-ok` admits.
+
+ The fusion carries two guards and both are pinned here by shapes that must NOT
+ fuse:
+
+  - `lt-mod3` divides by three, which is not a power of two
+  - `lt-modone` compares against one rather than zero
+
+ Both are chosen so that a guard which wrongly let them fuse changes an ANSWER
+ and not merely a shape: `lt-mod3 6` is 1 and a mask-2 fusion would say 0.
+
+ **The negative arguments are the point of the pair at the end.** A mask and a
+ remainder do not agree in general -- they differ in sign and in value for a
+ negative dividend, because the remainder follows the quotient's rounding and
+ the mask does not. They agree on zero-ness alone, which is exactly and only
+ what the fusion claims. -4 is even and -5 is odd, and the fused form has to
+ say so.
+
+Section: Shapes
+
+  lt-even : Integer -> Integer
+  lt-even (n) = if math-mod n 2 == 0 then 1 else 0
+
+  lt-odd : Integer -> Integer
+  lt-odd (n) = if math-mod n 2 /= 0 then 1 else 0
+
+  lt-mod4 : Integer -> Integer
+  lt-mod4 (n) = if math-mod n 4 == 0 then 1 else 0
+
+  lt-mod8 : Integer -> Integer
+  lt-mod8 (n) = if math-mod n 8 == 0 then 100 else 200
+
+  lt-mod3 : Integer -> Integer
+  lt-mod3 (n) = if math-mod n 3 == 0 then 1 else 0
+
+  lt-modone : Integer -> Integer
+  lt-modone (n) = if math-mod n 2 == 1 then 1 else 0
+
+Section: Entry
+
+  opening : [Console] Nothing = act
+   print-line-uni (show (lt-even 4))
+   print-line-uni (show (lt-even 7))
+   print-line-uni (show (lt-odd 7))
+   print-line-uni (show (lt-odd 4))
+   print-line-uni (show (lt-mod4 8))
+   print-line-uni (show (lt-mod4 6))
+   print-line-uni (show (lt-mod8 16))
+   print-line-uni (show (lt-mod8 12))
+   print-line-uni (show (lt-mod3 6))
+   print-line-uni (show (lt-mod3 7))
+   print-line-uni (show (lt-modone 7))
+   print-line-uni (show (lt-modone 4))
+   print-line-uni (show (lt-even (-4)))
+   print-line-uni (show (lt-even (-5)))
+   print-line-uni (show (lt-odd (-5)))
+  end

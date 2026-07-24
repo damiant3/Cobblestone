@@ -1,0 +1,90 @@
+Chapter: FsDenyRuntime
+  cites Foreword chapter FileSystem
+
+ The filesystem denial branch has a negative test.
+
+ The direction bit is checked at runtime by the compiler's default
+ FileSystem servicer (emit-fs-write-servicer-helper, X86_64Helpers): it
+ tests cap-filesystem-write before it elevates, and jumps past the whole
+ elevate-call-lower sequence when the bit is clear. Until now that jump
+ was inspection-verified only. codex/test/fs-servicer exercises the pass
+ path and nothing exercised the refusal, because the obvious way to reach
+ it cannot be written: a program declaring [FileSystem.Read] that calls
+ write-file is rejected at compile time, so the source that would reach
+ the branch never becomes a binary.
+
+ The way in is to hold the row and lose the bit. This program declares
+ both directions, so it compiles and boots with both granted -- and then
+ drops cap-filesystem-write out of its own process-table entry with
+ process-restrict-cap, which is what [Capability] is for. The second
+ write is made by the same code, against the same disk, one bit apart
+ from the first.
+
+ Reporting both writes is the discipline this battery already runs on. A
+ test that showed only the refusal would print the same thing whether the
+ bit was honoured or writes were broken outright, and a failure for the
+ wrong reason reads exactly like a pass:
+
+   granted write True  / denied write False   the bit was honoured. The
+                       only passing shape, and it needs both halves.
+   granted write False                        writes do not work here at
+                       all; the refusal below proves nothing.
+   denied write True   the branch is not taken and a program writes with
+                       an authority it no longer holds. This is what the
+                       test exists to catch.
+
+ The last line is the one that makes the refusal real rather than merely
+ reported. A servicer that returned False and elevated anyway would print
+ the same "denied write False" and leave the bytes on the disk. Only
+ reading back distinguishes a write that was refused from a write that
+ landed and lied about it.
+
+ That read is of a SECOND file, and the reason is a trap this test fell
+ into first. The denied write originally overwrote OK.TXT and the check
+ was that it still said "hello". It does -- but it says "hello" with the
+ write bit intact as well, because fat16-write-file answers True to a
+ rewrite of an existing name without changing its contents. The check
+ could not fail and would have shipped reading as proof. Writing OK2.TXT
+ makes absence the evidence: a refused write leaves nothing to read, and
+ an admitted one leaves "second" behind. Both are in scope under the "OK"
+ prefix, so the grant is not what separates them.
+
+ The read after the drop is the second control: the restrict has to be
+ surgical. FileSystem.Read is a separate bit and was never dropped, so a
+ machine that answers the read is attenuating the grant, and one that
+ refuses it revoked the family. Denying what was legitimately asked for
+ is not enforcement.
+
+ No Device.Block anywhere, on purpose. The servicer's elevation is what
+ reaches the disk, so this also holds the fs-servicer guarantee steady
+ across the drop: the elevation is gated by the direction bit and not a
+ door beside it.
+
+Section: Bits
+
+  fsd-cap-bit : Integer, Integer -> Integer
+  fsd-cap-bit (word) (n) = if bit-and word (bit-shl 1 n) /= 0 then 1 else 0
+
+Section: Entry
+
+  opening : [Console, Capability, FileSystem.Read "OK", FileSystem.Write "OK"] Nothing
+  opening = act
+    first <- write-file "OK.TXT" "hello"
+    print-line-uni ("granted write " & show first)
+
+    back <- read-text "OK.TXT"
+    print-line-uni ("granted read " & back)
+
+    print-line-uni ("write bit " & show (fsd-cap-bit (process-get-cap (process-get-pid)) 7))
+
+    dropped <- process-restrict-cap (process-get-pid) 7
+    print-line-uni ("restrict " & show dropped)
+
+    print-line-uni ("write bit " & show (fsd-cap-bit (process-get-cap (process-get-pid)) 7))
+
+    second <- write-file "OK2.TXT" "second"
+    print-line-uni ("denied write " & show second)
+
+    after <- read-text "OK2.TXT"
+    print-line-uni ("read after [" & after & "]")
+  end

@@ -75,13 +75,17 @@ Section: Type Mapping
     is CharTy -> "u32"
     is VoidTy -> "void"
     is NothingTy -> "void"
+    is ProofTy -> "void"
+    is PropEqTy (pl) (pr) -> "void"
     is UnitTy (n) (inner) -> "void"
     is ListTy (elem) -> "[]" & emit-zig-type elem
     is VectorTy (vn) (vt) -> "@Vector(" & show vn & ", " & emit-zig-type vt & ")"
-    is FunTy (p) (r) -> "*const fn (" & emit-zig-type p & ") " & emit-zig-type r
+    is VectorMaskTy (vn) -> "@Vector(" & show vn & ", bool)"
+    is FunTy (p) (fnrow) (r) -> "*const fn (" & emit-zig-type p & ") " & emit-zig-type r
     is RecordTy (n) (a) (f) -> zig-sanitize (n.value)
     is SumTy (n) (a) (c) -> zig-sanitize (n.value)
     is ConstructedTy (n) (a) -> zig-sanitize (n.value)
+    is TypeCon (n) -> zig-sanitize (n.value)
     is otherwise -> "anyopaque"
 
 Section: Arity Map
@@ -248,10 +252,11 @@ Section: Type Definition Emission
   emit-zig-type-def : ATypeDef -> Text
   emit-zig-type-def (td) =
    when td
-    is ARecordTypeDef (name) (tparams) (fields) (s) ->
+    is ARecordTypeDef (name) (tparams) (fields) (recmut) (s) ->
      emit-zig-record-type (name.value) fields
     is AVariantTypeDef (name) (tparams) (ctors) (s) ->
      emit-zig-sum-type (name.value) ctors
+    is AUnitTypeDef (name) (unitbase) (s) -> ""
 
   emit-zig-sum-type : Text, List AVariantCtorDef -> Text
   emit-zig-sum-type (name) (ctors) =
@@ -291,7 +296,7 @@ Section: Expression Emission
     is IrCharLit (n) (sp) -> integer-to-text n
     is IrName (n) (ty) (sp) -> emit-zig-name n ty arities
     is IrBinary (op) (l) (r) (ty) (sp) -> emit-zig-binary op l r arities
-    is IrNegate (operand) (sp) -> "(-" & emit-zig-expr-at operand arities (depth + 1) & ")"
+    is IrNegate (operand) (nty) (sp) -> "(-" & emit-zig-expr-at operand arities (depth + 1) & ")"
     is IrIf (c) (t) (el) (ty) (sp) -> "(if (" & emit-zig-expr-at c arities (depth + 1) & ") " & emit-zig-expr-at t arities (depth + 1) & " else " & emit-zig-expr-at el arities (depth + 1) & ")"
     is IrLet (name) (ty) (val) (body) (sp) -> "blk: { const " & zig-sanitize name & " = " & emit-zig-expr-at val arities (depth + 1) & "; break :blk " & emit-zig-expr-at body arities (depth + 1) & "; }"
     is IrApply (f) (a) (ty) (sp) -> emit-zig-apply e arities

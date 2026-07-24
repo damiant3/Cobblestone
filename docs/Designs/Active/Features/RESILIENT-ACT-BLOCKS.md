@@ -4,7 +4,7 @@
 **Author**: Cam (Opus 4.6, agent)
 **Status**: Partially shipped -- the inline trying / falling-back-to / on-failure form (IrTry) is live end-to-end (lexer, lowering, lift, scoper, x86 emit). Pending: the strategy / resolve / resolve-with / Criticality machinery.
 
-**Scoping of the three regions** (decided 2026-07-16, BACKLOG 2.23):
+**Scoping of the three regions** (decided 2026-07-16):
 `body`, `falling back to` and `on failure` are each their own binding
 region over the scope the `trying` was written in. A binding made in one
 is not visible in the others and does not survive the `end`. The reason

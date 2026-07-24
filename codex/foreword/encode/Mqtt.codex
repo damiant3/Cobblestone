@@ -15,6 +15,9 @@ Section: Packet Types
     | MqttConnack
     | MqttPublish
     | MqttPuback
+    | MqttPubrec
+    | MqttPubrel
+    | MqttPubcomp
     | MqttSubscribe
     | MqttSuback
     | MqttUnsubscribe
@@ -30,6 +33,9 @@ Section: Packet Types
     is MqttConnack -> 2
     is MqttPublish -> 3
     is MqttPuback -> 4
+    is MqttPubrec -> 5
+    is MqttPubrel -> 6
+    is MqttPubcomp -> 7
     is MqttSubscribe -> 8
     is MqttSuback -> 9
     is MqttUnsubscribe -> 10
@@ -98,6 +104,14 @@ Section: CONNECT Packet
    password = None
   }
 
+ THE CREDENTIALS WERE DEAD FIELDS. `MqttConnectConfig` has carried
+ `username` and `password` since it was written, `mqtt-connect-flags`
+ returned only the clean-start bit, and the payload was the client id and
+ nothing else -- so a broker requiring authentication refused every
+ connection this chapter could build, and the config said otherwise. They
+ are emitted now, in the order MQTT v5 section 3.1.3 fixes: client id,
+ then username if its flag is set, then password.
+
   mqtt-build-connect : MqttConnectConfig -> List Integer
   mqtt-build-connect (cfg) =
    let proto-name = mqtt-encode-utf8 "MQTT"
@@ -106,7 +120,9 @@ Section: CONNECT Packet
    in let keep-alive = [(bit-shru (cfg.keep-alive) 8), bit-and (cfg.keep-alive) 255]
    in let properties = [0]
    in let client-id = mqtt-encode-utf8 (cfg.client-id)
-   in let payload = client-id
+   in let user-part = when cfg.username is Just (u) -> mqtt-encode-utf8 u is None -> []
+   in let pass-part = when cfg.password is Just (p) -> mqtt-encode-utf8 p is None -> []
+   in let payload = client-id & user-part & pass-part
    in let var-header = proto-name & proto-level & [flags] & keep-alive & properties
    in let remaining = var-header & payload
    in let header = [bit-shl 1 4] & mqtt-encode-remaining-length (list-length remaining)
@@ -115,19 +131,72 @@ Section: CONNECT Packet
   mqtt-connect-flags : MqttConnectConfig -> Integer
   mqtt-connect-flags (cfg) =
    let clean = if cfg.clean-start then 2 else 0
-   in clean
+   in let user = when cfg.username is Just (u) -> 128 is None -> 0
+   in let pass = when cfg.password is Just (p) -> 64 is None -> 0
+   in bit-or clean (bit-or user pass)
 
 Section: PUBLISH Packet
 
-  mqtt-build-publish : Text, List Integer, MqttQos, Boolean -> List Integer
-  mqtt-build-publish (topic) (payload) (qos) (retain) =
+ A PUBLISH AT QoS 1 OR 2 CARRIES A PACKET IDENTIFIER, immediately after
+ the topic and before the properties (MQTT v5 section 3.3.2.2). This
+ builder had no packet-id parameter at all, so at any QoS above zero it
+ produced a packet whose property length was read as the high byte of an
+ identifier and whose payload was off by two -- a malformed packet a
+ broker closes the connection on. Nothing caught it because every caller
+ in the tree publishes at QoS 0, where the field is absent and the old
+ code was accidentally right.
+ The identifier is ignored at QoS 0, where the protocol forbids it.
+
+  mqtt-build-publish : Text, List Integer, MqttQos, Boolean, Integer -> List Integer
+  mqtt-build-publish (topic) (payload) (qos) (retain) (packet-id) =
    let flags = bit-or (bit-shl (mqtt-qos-value qos) 1) (if retain then 1 else 0)
    in let header-byte = bit-or (bit-shl 3 4) flags
    in let topic-bytes = mqtt-encode-utf8 topic
+   in let pid = if mqtt-qos-value qos > 0 then [bit-and (bit-shru packet-id 8) 255, bit-and packet-id 255] else []
    in let properties = [0]
-   in let var-header = topic-bytes & properties
+   in let var-header = topic-bytes & pid & properties
    in let remaining = var-header & payload
    in [header-byte] & mqtt-encode-remaining-length (list-length remaining) & remaining
+
+Section: PUBACK Packet
+
+ The acknowledgement a QoS 1 PUBLISH is answered with, and the one a
+ subscriber must send for a QoS 1 delivery it receives. Neither direction
+ could be expressed before: the packet type was in the enumeration and no
+ builder produced it, so a client that subscribed at QoS 1 took delivery
+ and never acknowledged, and the broker redelivered forever.
+
+  mqtt-build-puback : Integer -> List Integer
+  mqtt-build-puback (packet-id) =
+   [bit-shl 4 4, 2, bit-and (bit-shru packet-id 8) 255, bit-and packet-id 255]
+
+Section: QoS 2 Packets
+
+ The four-step exchange "exactly once" is made of, and the reason
+ `QosExactlyOnce` was a constructor with no delivery guarantee behind it
+ until 2026-07-23. A publisher sends PUBLISH and hears PUBREC; it answers
+ PUBREL and hears PUBCOMP. A subscriber does the mirror. Two round trips
+ buy what one cannot: the receiver may record the identifier before
+ acknowledging, so a redelivery after a lost acknowledgement is
+ recognised as the same message rather than delivered twice.
+
+ PUBREL CARRIES FIXED-HEADER FLAGS 0010, not zero. It is the only one of
+ the three that does, it is reserved and a broker MUST close the
+ connection on any other value (section 3.6.1), and a builder that writes
+ zero there produces a packet mosquitto disconnects on rather than
+ answers -- which reads as a network fault.
+
+  mqtt-build-pubrec : Integer -> List Integer
+  mqtt-build-pubrec (packet-id) =
+   [bit-shl 5 4, 2, bit-and (bit-shru packet-id 8) 255, bit-and packet-id 255]
+
+  mqtt-build-pubrel : Integer -> List Integer
+  mqtt-build-pubrel (packet-id) =
+   [bit-or (bit-shl 6 4) 2, 2, bit-and (bit-shru packet-id 8) 255, bit-and packet-id 255]
+
+  mqtt-build-pubcomp : Integer -> List Integer
+  mqtt-build-pubcomp (packet-id) =
+   [bit-shl 7 4, 2, bit-and (bit-shru packet-id 8) 255, bit-and packet-id 255]
 
 Section: SUBSCRIBE Packet
 
@@ -150,5 +219,142 @@ Section: DISCONNECT Packet
 
   mqtt-build-disconnect : List Integer
   mqtt-build-disconnect = [bit-shl 14 4, 0]
+
+Section: Decoding
+
+ THIS CHAPTER COULD ONLY SPEAK. Every function above builds a packet and
+ there was no parser at all, so CONNACK could not be read, a subscription
+ could not be confirmed, and an inbound PUBLISH -- the entire point of
+ subscribing -- was unreachable. A client built on this could send into a
+ broker and never learn anything back, which is not a client.
+
+ The decoders below are the reading half. They are deliberately tolerant
+ of the v5 property block: every one of these packet bodies carries a
+ variable-byte property length that a v3 parser would run straight past,
+ and mosquitto populates it.
+
+  MqttVbi = record {
+    mv-value : Integer,
+    mv-len : Integer,
+    mv-ok : Boolean
+  }
+
+  mqtt-decode-vbi : List Integer, Integer -> MqttVbi
+  mqtt-decode-vbi (bs) (at) = mqtt-decode-vbi-loop bs at 0 0 0
+
+  mqtt-decode-vbi-loop : List Integer, Integer, Integer, Integer, Integer -> MqttVbi
+  mqtt-decode-vbi-loop (bs) (at) (i) (acc) (shift) =
+   if i >= 4 then MqttVbi { mv-value = 0, mv-len = 0, mv-ok = False }
+   else if at + i >= list-length bs then MqttVbi { mv-value = 0, mv-len = 0, mv-ok = False }
+   else let b = list-at bs (at + i)
+   in let acc2 = acc + bit-shl (bit-and b 127) shift
+   in if bit-and b 128 == 0 then MqttVbi { mv-value = acc2, mv-len = i + 1, mv-ok = True }
+   else mqtt-decode-vbi-loop bs at (i + 1) acc2 (shift + 7)
+
+  mqtt-slice : List Integer, Integer, Integer -> List Integer
+  mqtt-slice (bs) (from) (stop) = mqtt-slice-loop bs from stop []
+
+  mqtt-slice-loop : List Integer, Integer, Integer, List Integer -> List Integer
+  mqtt-slice-loop (bs) (i) (stop) (acc) =
+   if i >= stop then acc
+   else if i >= list-length bs then acc
+   else mqtt-slice-loop bs (i + 1) stop (list-push acc (list-at bs i))
+
+ A packet, split into its fixed header and everything after it. `mp-total`
+ is what the caller must drop from its buffer -- TCP delivers a byte
+ stream and a segment can carry half a packet or three, so a reader that
+ does not know how much it consumed cannot find the next one.
+
+  MqttPacket = record {
+    mp-type : Integer,
+    mp-flags : Integer,
+    mp-total : Integer,
+    mp-body : List Integer
+  }
+
+  mqtt-parse : List Integer -> Maybe MqttPacket
+  mqtt-parse (bs) =
+   if list-length bs < 2 then None
+   else let b0 = list-at bs 0
+   in let vbi = mqtt-decode-vbi bs 1
+   in if vbi.mv-ok == False then None
+   else let head = 1 + vbi.mv-len
+   in let total = head + vbi.mv-value
+   in if list-length bs < total then None
+   else Just (MqttPacket {
+     mp-type = bit-shru b0 4,
+     mp-flags = bit-and b0 15,
+     mp-total = total,
+     mp-body = mqtt-slice bs head total
+   })
+
+ CONNACK: acknowledge flags, then the reason code. Zero is success and
+ anything else is the broker refusing, with 135 "not authorized" and 133
+ "client identifier not valid" the ones a caller most wants to tell apart.
+
+  mqtt-connack-reason : MqttPacket -> Integer
+  mqtt-connack-reason (p) =
+   if list-length (p.mp-body) < 2 then 255 else list-at (p.mp-body) 1
+
+ SUBACK: the packet identifier, then a property block, then one reason
+ code per topic filter the SUBSCRIBE carried. A reason below 128 is the
+ granted QoS; 128 and above is a refusal.
+
+  mqtt-suback-id : MqttPacket -> Integer
+  mqtt-suback-id (p) =
+   if list-length (p.mp-body) < 2 then (-1)
+   else list-at (p.mp-body) 0 * 256 + list-at (p.mp-body) 1
+
+  mqtt-suback-reason : MqttPacket -> Integer
+  mqtt-suback-reason (p) =
+   let props = mqtt-decode-vbi (p.mp-body) 2
+   in if props.mv-ok == False then 255
+   else let at = 2 + props.mv-len + props.mv-value
+   in if at >= list-length (p.mp-body) then 255
+   else list-at (p.mp-body) at
+
+  mqtt-puback-id : MqttPacket -> Integer
+  mqtt-puback-id (p) =
+   if list-length (p.mp-body) < 2 then (-1)
+   else list-at (p.mp-body) 0 * 256 + list-at (p.mp-body) 1
+
+ PUBACK, PUBREC, PUBREL and PUBCOMP all carry the same body -- a packet
+ identifier and an optional reason -- so one reader serves all four. The
+ neutral name exists because a caller reading a PUBCOMP through something
+ called `puback-id` is a sentence that invites the wrong packet.
+
+  mqtt-ack-id : MqttPacket -> Integer
+  mqtt-ack-id (p) = mqtt-puback-id p
+
+ An inbound PUBLISH. The QoS is in the FIXED HEADER flags, not the body,
+ and it decides whether a packet identifier sits between the topic and
+ the properties -- so the payload offset depends on a field three bytes
+ earlier, which is the shape that makes a hand-written reader wrong.
+
+  mqtt-publish-qos : MqttPacket -> Integer
+  mqtt-publish-qos (p) = bit-and (bit-shru (p.mp-flags) 1) 3
+
+  mqtt-publish-topic : MqttPacket -> List Integer
+  mqtt-publish-topic (p) =
+   if list-length (p.mp-body) < 2 then []
+   else let n = list-at (p.mp-body) 0 * 256 + list-at (p.mp-body) 1
+   in mqtt-slice (p.mp-body) 2 (2 + n)
+
+  mqtt-publish-id : MqttPacket -> Integer
+  mqtt-publish-id (p) =
+   if mqtt-publish-qos p == 0 then (-1)
+   else if list-length (p.mp-body) < 2 then (-1)
+   else let n = list-at (p.mp-body) 0 * 256 + list-at (p.mp-body) 1
+   in if 2 + n + 1 >= list-length (p.mp-body) then (-1)
+   else list-at (p.mp-body) (2 + n) * 256 + list-at (p.mp-body) (2 + n + 1)
+
+  mqtt-publish-payload : MqttPacket -> List Integer
+  mqtt-publish-payload (p) =
+   if list-length (p.mp-body) < 2 then []
+   else let n = list-at (p.mp-body) 0 * 256 + list-at (p.mp-body) 1
+   in let after-topic = 2 + n + (if mqtt-publish-qos p > 0 then 2 else 0)
+   in let props = mqtt-decode-vbi (p.mp-body) after-topic
+   in if props.mv-ok == False then []
+   else mqtt-slice (p.mp-body) (after-topic + props.mv-len + props.mv-value) (list-length (p.mp-body))
 
 Page 1

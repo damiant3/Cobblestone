@@ -1,0 +1,64 @@
+Chapter: UsbKbdHub
+  cites Works chapter GopUsb
+  cites Works chapter GopUsbKbd
+  cites Works chapter GopXhci
+  cites Foreword chapter Maybe
+
+ A keyboard behind a hub, driven for the first time.
+
+ `usb-kbd-connect` drives `kbd-connect`, which walks the ROOT ports and
+ nothing else. That is not the code the boot payload runs: `GopBoot`
+ calls `usb-attach`, and `usb-attach` walks hubs. So the hub walk --
+ `usb-open-hub`, `hub-walk`, `hub-attach-port`, and the transaction
+ translator arithmetic in them -- had never been executed by anything,
+ on any emulator, in any battery. It is the code that runs on the
+ machine the campaign exists for, and it was the code nobody could see.
+
+ codex-vm presents a high-speed hub on root port 4 with a FULL-SPEED
+ boot keyboard on its one downstream port. That is the topology the
+ hypothesis is about: a full-speed device below a high-speed hub reaches
+ the bus only through that hub's transaction translator, and the
+ controller learns which one from the TT Hub Slot ID and TT Port Number
+ in the slot context. The model refuses to service a periodic endpoint
+ whose slot names no translator, exactly as silicon does -- so a driver
+ that leaves those fields zero enumerates perfectly and then hears
+ nothing, which is the reported shape of the failure on the ASUS.
+
+ The root keyboard is unplugged for this test (`-xhci-no-root-kbd`),
+ because the walk takes the first keyboard it finds and root port 2
+ comes first. Same guest binary, different bus.
+
+ `usb-kbd-hub2` is the same question one tier deeper, where the hub the
+ keyboard is plugged into is not the hub that translates for it.
+
+ What each line proves. `route` non-zero says the keyboard was reached
+ THROUGH the hub rather than off a root port -- without it every line
+ below would be the root-attached case wearing this test's name.
+ `speed=1` says it is full speed, so a translator is genuinely required.
+ `code` is the completion, and it is the whole question: it can only be
+ non-negative if the slot context named a transaction translator, because
+ the controller declines to schedule the endpoint otherwise.
+
+Section: Test
+
+  found-line : UsbKbd -> Text
+  found-line (k) =
+    "kbd: ok=" & (if k.uk-ok then "1" else "0")
+      & " dci=" & show (k.uk-dci)
+      & " speed=" & show ((k.uk-dev).ud-speed)
+      & " route=" & show ((k.uk-dev).ud-route)
+
+  phase-of : UsbKbd -> Integer
+  phase-of (k) = peek-32 (k.uk-state) 0
+
+  opening : [Console, Device.Port, Device.Mmio] Nothing = act
+    att <- usb-attach
+    print-line-uni (found-line (att.ua-kbd))
+    if (att.ua-kbd).uk-ok then act
+      let p0 = kbd-pump (att.ua-kbd)
+      in print-line-uni ("after-arm: phase=" & show (phase-of (att.ua-kbd)))
+      let p1 = kbd-pump (att.ua-kbd)
+      in print-line-uni ("after-check: phase=" & show (phase-of (att.ua-kbd)))
+    end
+    else print-line-uni "after-arm: SKIPPED (no keyboard)"
+  end

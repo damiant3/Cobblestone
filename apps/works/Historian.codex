@@ -49,14 +49,34 @@ Section: Walking the Chain
 
   max-chain-depth : Integer = 64
 
+ The loop guard is the set of hashes already walked. Without it a
+ supersession cycle is bounded only by max-chain-depth, so A superseded by
+ B superseded by A does not terminate at the cycle -- it runs all 64 hops
+ and reports 64 steps over two annotations, each listed thirty-two times.
+ The prose above has always promised this guard; it is kept in a Hamt
+ keyed by hash, which is how the repo itself keys annotations, so it
+ admits exactly the hashes the walk can encounter.
+
   walk-history : RepoState, Text -> History
   walk-history (repo) (start) =
-    walk-history-loop repo start 0 (empty-history start)
+    walk-history-loop repo start 0 hamt-empty (empty-history start)
 
-  walk-history-loop : RepoState, Text, Integer, History -> History
-  walk-history-loop (repo) (current) (depth) (acc) =
+  walk-history-loop : RepoState, Text, Integer, HamtMap Integer, History -> History
+  walk-history-loop (repo) (current) (depth) (seen) (acc) =
     if depth >= max-chain-depth then finalize-history acc current
-    else let step-result = build-step repo current
+    else if hash-seen seen current then finalize-history acc current
+    else walk-history-step repo current depth seen acc
+
+  hash-seen : HamtMap Integer, Text -> Boolean
+  hash-seen (seen) (h) =
+    when hamt-get seen h
+      is Just (x) -> True
+      is None -> False
+
+  walk-history-step : RepoState, Text, Integer, HamtMap Integer, History -> History
+  walk-history-step (repo) (current) (depth) (seen) (acc) =
+    let seen2 = hamt-set seen current 1
+    in let step-result = build-step repo current
     in let acc2 = History {
       initial-hash = acc.initial-hash,
       steps = list-snoc (acc.steps) step-result,
@@ -64,7 +84,7 @@ Section: Walking the Chain
       terminated-at = current
     }
     in if step-result.has-successor == False then acc2
-    else walk-history-loop repo (step-result.superseded-by) (depth + 1) acc2
+    else walk-history-loop repo (step-result.superseded-by) (depth + 1) seen2 acc2
 
   finalize-history : History, Text -> History
   finalize-history (h) (final) = History {

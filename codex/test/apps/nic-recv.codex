@@ -1,0 +1,77 @@
+Chapter: NicRecv
+  cites Kernel chapter Ne2k
+
+ Receive a frame through the driver, not by hand.
+
+ nic-ping covers the neighbouring ground and cannot cover this: it drives
+ the NE2000 data port a byte at a time with port-in-byte, so it never
+ issues a string operation and never reaches net-recv-raw. That left the
+ driver's own receive path -- ne2k-recv-frame, net-recv-raw, and the
+ REP INSW the emitter writes for it -- exercised by no test in the
+ battery, which is how a change to the host's handling of that
+ instruction came to be made against no coverage at all.
+
+ This sends one ARP request through ne2k-send-frame and drains the reply
+ through ne2k-recv-frame. codex-vm's NAT answers ARP for the gateway, the
+ same reply nic-ping already depends on.
+
+Section: Frame
+
+  arp-for : Integer, Integer, Integer, Integer, Integer, Integer -> List Integer
+  arp-for (m0) (m1) (m2) (m3) (m4) (m5) =
+   [255, 255, 255, 255, 255, 255,
+    m0, m1, m2, m3, m4, m5,
+    8, 6,
+    0, 1, 8, 0, 6, 4, 0, 1,
+    m0, m1, m2, m3, m4, m5,
+    10, 0, 2, 15,
+    0, 0, 0, 0, 0, 0,
+    10, 0, 2, 2]
+
+Section: Drain
+
+ The fuel cap is the failure and not the success. A probe that gave up
+ early would report nothing received and read exactly like a working NIC
+ with nothing to say, so running out of fuel has to be visible in the
+ output rather than indistinguishable from a quiet wire.
+
+  drain : Integer -> [Network.Read] List Integer
+  drain (fuel) = act
+    if fuel <= 0 then []
+    else act
+      f <- ne2k-recv-frame
+      if list-length f > 0 then f
+      else drain (fuel - 1)
+    end
+  end
+
+Section: Body
+
+ The length alone would not test the transfer. net-recv-raw takes it from
+ the four header bytes it reads with ordinary port reads, so a receive
+ that moved the body as garbage -- or moved none of it -- still answers a
+ plausible length and still looks like an arriving frame. What separates
+ those is the CONTENT, so this reads back three fields the gateway's
+ reply is obliged to carry: the ARP ethertype at 12, the reply opcode at
+ 20, and the gateway's own address at 28.
+
+  at : List Integer, Integer -> Integer
+  at (f) (i) = if i >= list-length f then 0 - 1 else list-at f i
+
+  opening : [Console, Network.Read, Network.Write] Nothing = act
+    m0 <- net-get-hwaddr 0
+    m1 <- net-get-hwaddr 1
+    m2 <- net-get-hwaddr 2
+    m3 <- net-get-hwaddr 3
+    m4 <- net-get-hwaddr 4
+    m5 <- net-get-hwaddr 5
+    sent <- ne2k-send-frame (arp-for m0 m1 m2 m3 m4 m5)
+    f <- drain 200000
+    print-line-uni ("sent=" & show sent)
+    print-line-uni ("len=" & show (list-length f))
+    print-line-uni ("ethertype=" & show (at f 12) & " " & show (at f 13))
+    print-line-uni ("op=" & show (at f 20) & " " & show (at f 21))
+    print-line-uni ("sender-ip=" & show (at f 28) & " " & show (at f 29) & " " & show (at f 30) & " " & show (at f 31))
+  end
+
+Page 1

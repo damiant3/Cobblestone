@@ -189,13 +189,31 @@ Section: Read GPT
       gpt-read-after-hdr hdr-buf
     end
 
+ THE ENTRY SIZE IS A DIVISOR AND IT COMES OFF THE DISK. gpt-read-entries
+ computes entries-per-sector as 512 / entry-size, so a header claiming zero
+ takes the machine out with !EXC=00; and one claiming more than 512 makes
+ that quotient zero, so the very next division by it faults the same way.
+ Neither is hypothetical -- a signature check can pass on a sector this
+ reader never wrote, and with no disk attached the buffer is whatever the
+ block layer hands back.
+
+ So refuse the header rather than divide by what it says. This is the same
+ rule fat16-parse-bpb already applies to bytes-per-sector, and for the same
+ reason: a value that is about to be a divisor is checked before the
+ arithmetic, not after it.
+
+  gpt-entry-size-max : Integer = 512
+
   gpt-read-after-hdr : Integer -> [Device.Block] Maybe GptDisk
   gpt-read-after-hdr (hdr-buf) =
     if gpt-check-signature hdr-buf == False then None
+    else let entry-size = gpt-read-u32 hdr-buf 84
+    in if entry-size <= 0 then None
+    else if entry-size > gpt-entry-size-max then None
     else let disk-guid = gpt-read-guid hdr-buf 56
     in let total-sectors = gpt-read-u64 hdr-buf 32 + 1
     in act
-      parts <- gpt-read-entries (gpt-read-u64 hdr-buf 72) (gpt-read-u32 hdr-buf 84) (gpt-read-u32 hdr-buf 80) 0 []
+      parts <- gpt-read-entries (gpt-read-u64 hdr-buf 72) entry-size (gpt-read-u32 hdr-buf 80) 0 []
       gpt-make-disk disk-guid total-sectors parts
     end
 

@@ -93,10 +93,12 @@ byte-for-byte against the expected output.
 | `foo.skip` | Skipped entirely (first line = reason) |
 | `foo.slow` | Skipped unless `-Slow` (first line = reason) |
 | `foo.fatal` | Skipped unless `-Fatal` (kills VM at runtime) |
+| `foo.flags` | First line appended to the compile mode line: `prose`, `passes=+name`, `decks=N`. Read by the batch harness only. See `docs/ExaminersAssay.md` |
 | `foo.stdin` | Pumped to VM serial after boot (runtime input) |
 | `foo.keys` | Scancode timeline (`t:scancode` per line, t = ms since boot) passed as `-keys-file`. This is the **keyboard**; `.stdin` is the **serial ring**. A keyboard read (`uefi-read-key` / `poll-key`) reads the PS/2 key cell and no `.stdin` reaches it — pick by what the code reads. See `docs/ExaminersAssay.md` |
 | `foo.disk` | Attached as IDE disk image |
 | `foo.smp` | Core count; the test boots with `-smp N` |
+| `foo.vmargs` | Extra codex-vm flags (whitespace-separated, `#` comments). For tests whose subject is the machine: a bus topology, an absent device. See `docs/ExaminersAssay.md` |
 
 ### Test Results
 
@@ -124,6 +126,26 @@ All scripts use `build/vm-config.ps1` for shared VM setup.
 `tools/codex-vm.exe` — a ~8000-line C program using Windows Hypervisor
 Platform (WHP). Build with `tools/build-vm.ps1`.
 
+**Never kill codex-vm by process name.** Several agents run this box at once,
+each booting VMs out of its own `D:\Projects\NewRepository-<agent>\`, so
+`Get-Process codex-vm | Stop-Process -Force` takes out **every agent's** VMs and
+not just yours. A gate or a battery that dies for no reason someone can explain
+is what that looks like from the other end. Filter on the executable's path:
+
+```powershell
+Get-CimInstance Win32_Process -Filter "Name='codex-vm.exe'" |
+  Where-Object { $_.ExecutablePath -like 'D:\Projects\NewRepository-<agent>\*' } |
+  ForEach-Object { Stop-Process -Id $_.ProcessId -Force }
+```
+
+The same caution applies to reading a stray VM as evidence: a codex-vm you did
+not start is usually another agent working, not a leak of yours. Check
+`ExecutablePath` before concluding anything about it, and before killing it.
+
+Build note: the linker fails with `LNK1104` if a codex-vm is holding
+`tools/codex-vm.exe` open, so stop **your own** VMs (as above) before
+`tools/build-vm.ps1`.
+
 #### CLI Flags
 
 ```
@@ -139,12 +161,14 @@ codex-vm -kernel file.cdx [options]
 | `-disk <file>` | — | Attach IDE disk image (read/write, flushed to host) |
 | `-headless` | off | Suppress VGA/GOP display window |
 | `-board-mmio` | off | Commit and map host RAM at the three board register windows that sit above the RAM ceiling: RP2040 SIO (0xD0000000), Cortex-M PPB/SCB (0xE0000000), BCM2711 peripherals (0xFE000000, 9 MB). A board driver's register access then reads back what it wrote — the same fidelity the six sub-3GB boards get from falling inside guest RAM. **Opt-in, because it shadows the HDA and xHCI BARs**: audio and USB are dead while it is on, which a board test does not care about. Required by the pi4 / rp2040 / stm32l4 driver tests; `build/boards-test.ps1` passes it. |
+| `-xhci-no-root-kbd` | off | Unplug the HID keyboard on xHCI root port 2, leaving the high-speed hub on root port 4 as the only route to a keyboard. The bus walk takes the first keyboard it finds and the root port comes first, so this is what lets a test drive the hub path with an unmodified guest binary. |
+| `-xhci-hub-tiers <N>` | 1 | How many hubs to stack on xHCI root port 4. `1` is a high-speed hub with a full-speed keyboard below it. `2` inserts a full-speed hub in between, which is what tells apart a driver that reads the transaction translator off the immediate parent from one that carries the nearest high-speed ancestor's down the walk -- a full-speed hub has no translator of its own, so the keyboard below it is still served by the high-speed hub two tiers up. Route strings run to two nibbles (`0x11`). A monitor hub in front of a keyboard hub is this topology. |
 | `-uefi` | off | UEFI firmware mode (ConOut/ConIn, GOP, Block I/O, memory map, runtime services, auto-extract PE from GPT images) |
 | `-gop` | off | Activate GOP framebuffer (default 640x480) |
 | `-gop-width <N>` | 640 | GOP framebuffer width (implies `-gop`) |
 | `-gop-height <N>` | 480 | GOP framebuffer height (implies `-gop`) |
 | `-smp [N]` | 1 | Enable multi-core: N virtual processors (1-16, default 4 if N omitted). Creates WHP VPs, LAPIC, MADT with per-core entries. Core count written to GPA 0xFF8; boot code reads it to decide whether to send INIT/SIPI. |
-| `-portfwd <host:guest>` | — | TCP port forwarding from host to guest NIC (repeatable, max 16). Example: `-portfwd 8080:80` |
+| `-portfwd [udp:]<host:guest>` | — | Port forwarding from host to guest NIC (repeatable, max 8). TCP by default; `udp:` forwards datagrams instead, giving each host client a synthetic gateway source port so the guest's replies route back. Examples: `-portfwd 8080:80`, `-portfwd udp:15683:5683` |
 | `-debug` | off | Interactive debugger shell on breakpoints and single-step |
 | `-break <name>` | — | Patch INT3 at named function entry (implies `-debug`, repeatable) |
 | `-map <file>` | auto | Symbol map file for address resolution. Auto-probed: `<kernel>.map`, then `seed/Codex.map` |
@@ -154,6 +178,7 @@ codex-vm -kernel file.cdx [options]
 | `-mouse <script>` | — | Scripted pointer: `t:x,y,btn` events separated by `;` (t = ms from boot, btn bit 0 left / 1 right / 2 middle). Injected straight into the guest, so no host cursor moves and no window takes focus. Works headless. |
 | `-mouse-file <file>` | — | Same, read from a file (one event per line, `#` comments). Use for drags, which run to dozens of samples. |
 | `-keys-file <file>` | — | Timeline keyboard: `t:scancode` per line, on the same clock as `-mouse`. Lets a script interleave typing with clicks (the older `-keys` fires on a fixed start+interval). |
+| `-rtc <stamp>` | host clock | Freeze the emulated CMOS RTC at `YYYY-MM-DDTHH:MM:SS` (the `T` may be a space). Day-of-week is computed from the date, not accepted. **This is what makes a guest that paints the time comparable against a recorded frame** -- without it the clock is host state the test cannot twist, which is why GuiOS was believed to be un-goldenable. It also turns the update-in-progress simulation OFF (a frozen clock cannot express UIP), so it is for frames and never for testing the RTC itself: anything asserting on clock behaviour must run without it. |
 | `-screenshot <file>` | — | Save GOP framebuffer as BMP on exit |
 | `-screenshot-delay <ms>` | 0 | Delay before screenshot capture |
 | `-args <string>` | — | Boot arguments string (accessible to guest) |
@@ -166,15 +191,29 @@ Environment: `CODEX_VM_NO_TIMER=1` disables PIT timer interrupts.
 **CPU and SMP.** WHP-accelerated x86-64 (long mode, full hardware
 virtualization). Shadow register file works around WHP GPR corruption.
 Multi-core via `-smp N`: each AP gets its own WHP virtual processor
-and host thread. INIT/SIPI startup sequence: the guest writes the AP
-entry address to GPA 0x1000 and the per-core stack addresses to a stack
-table at GPA 0xF00, then writes the LAPIC ICR — an INIT IPI followed by
-two start-up IPIs, delivered to all cores excluding self. That ICR write
-is what launches the APs. They start in 64-bit long mode with their
-LAPIC ID in R15, claim a stack by core index, add themselves to the
-ready count at cell 4080 with a locked add, and then go looking for
-work; the BSP spins on that count (bounded — it gives up and continues
-single-core rather than hanging) before carrying on.
+and host thread. INIT/SIPI startup sequence: the guest copies a real-mode
+trampoline into the page at GPA 0x1000, seeds the core-id counter at cell
+36256, writes the per-core stack addresses to a stack table at GPA 0xF00,
+then writes the LAPIC ICR — an INIT IPI followed by two start-up IPIs
+carrying **vector 1**, delivered to all cores excluding self. That ICR
+write is what launches the APs.
+
+**An AP starts the way silicon starts one**, at `vector<<12` in real mode
+with reset control registers, an empty GDT and nothing in RDI. Everything
+after that is the guest's trampoline: protected mode, PAE, CR3, EFER, long
+mode, a core id taken with a locked exchange-add on cell 36256, a stack
+claimed from the table by that index, the runtime GDT and IDT, its own task
+register, and one added to the ready count at cell 4080. The BSP spins on
+that count (bounded — it gives up and continues single-core rather than
+hanging) before carrying on.
+
+This used to be a shortcut, and the shortcut hid the whole problem: codex-vm
+read a 64-bit entry address out of GPA 0x1000 and configured each AP's CR3,
+CR4, EFER, GDTR, IDTR and core id from the host. SMP worked here and could
+not have worked on a physical machine, where the vector field is the only
+thing an AP is told. Nothing changed about the guest when this was fixed
+except that it now does the work; three real defects in the guest surfaced
+the moment it had to (see `docs/ArchitectsSketchbook.md`).
 
 **An AP runs processes.** It goes to `__idle_dispatch`, the same routine
 the boot processor goes to when it runs out of work, claims a READY slot
@@ -205,8 +244,23 @@ AP that runs its child to completion undisturbed has still never been
 preempted. The claim is about who can be interrupted, so the evidence is
 about who *was* interrupted.
 
-An idle core still spins on `pause` rather than halting, and there is no
-work stealing and no affinity (BACKLOG 4.11).
+An idle core **halts** rather than spinning on `pause`, and **affinity** is
+honoured: `__idle_dispatch` skips a process whose affinity field names a
+different core, `-1` meaning any. `codex/test/smp-halt.codex` and
+`codex/test/smp-affinity.codex` pin the two. Work stealing exists in the OS
+scheduler model but not in the bare-metal dispatcher, which scans a shared
+process table rather than per-core queues.
+
+**Proc 0 does not migrate**, and this line used to say it was permitted by
+design and merely unproven. Three guards forbid it: `__idle_dispatch` starts
+each core's scan at its own id so an AP never reaches slot 0, and both
+preemption scans skip slot 0 when the claiming core is not the boot
+processor. Its affinity field says `0` to match; it said `-1`, "any core",
+which is what the old claim was read off. `codex/test/smp-proc0-pinned.codex`
+pins it, and pins it in the only way that means anything: slot 0's core stamp
+must still be the boot processor's after a run in which an AP demonstrably
+claimed a process, an AP was demonstrably preempted, and some other slot's
+stamp is demonstrably above zero.
 
 **An SMP test must assert that an AP executed guest code, not that the
 work finished** — one core can finish the work. `smp-cores.codex` reads
@@ -296,9 +350,9 @@ EOT or VM exit.
 
 **NE2K NIC.** NE2000-compatible ISA NIC at I/O base 0x300. User-mode
 NAT stack with IP 10.0.2.15, gateway 10.0.2.2, DNS 10.0.2.3. Handles
-ARP (responds for gateway), DHCP (offers 10.0.2.15/24), DNS, and TCP
-forwarding. Port forwarding via `-portfwd` for host-to-guest TCP
-connections.
+ARP (responds for gateway), DHCP (offers 10.0.2.15/24), DNS, TCP
+forwarding, and UDP forwarding (see below). Port forwarding via
+`-portfwd` for host-to-guest TCP connections.
 
 **DNS is answered, and until 2026-07-14 it was not.** This entry used
 to say the NAT handled "DNS (forwards to host)" and "TCP/UDP
@@ -306,8 +360,7 @@ forwarding". Neither was true of UDP: the UDP branch of
 `nat_handle_tx` was an empty block whose entire body was the comment
 `/* UDP — minimal DNS forwarding could go here */`, so every DNS query
 any guest ever sent was silently dropped and every lookup timed out.
-Nothing noticed, because nothing in the tree could make a network call
-(`docs/PM/BACKLOG.md` 1.7).
+Nothing noticed, because nothing in the tree could make a network call.
 
 A query to port 53 is now answered by `nat_handle_dns`: it walks the
 QNAME, resolves it with `getaddrinfo` — the **host's own resolver**, so
@@ -316,9 +369,36 @@ uses all apply, and no packet leaves the process — and dresses the
 answer as a DNS response the guest's resolver parses. Only QTYPE=A/IN
 is answered; anything else returns NXDOMAIN rather than a lie.
 
-**UDP to any port other than 53 is still dropped**, and now logs
-`NAT UDP: dropped (only port 53 is served)` instead of failing in
-silence. General UDP forwarding is not implemented.
+**General UDP forwarding is implemented** (2026-07-23). This entry said
+the opposite until then: every UDP datagram to a port other than 53 was
+dropped, which is why CoAP could not reach a server, NTP could not reach
+a time source, and no datagram protocol in the tree was testable. A
+guest-originated datagram now opens a **UDP flow** -- a host socket
+remembered by (guest port, destination port, destination address) -- and
+its replies are framed back to the port the guest sent from. A flow is
+not a connection: there is no handshake and nothing to retransmit, so it
+is reaped on 30 seconds of idleness rather than on any close, and 32 of
+them are live at once.
+
+**The gateway address is the host.** `10.0.2.2` is translated to
+`127.0.0.1` when a host socket is opened, for TCP as well as UDP. This is
+the convention every user-mode NAT uses and the one this emulator already
+advertised in DHCP and answered ARP for -- but nothing translated it, so
+a guest addressing the gateway had its packet handed to the host stack as
+a literal destination and it went nowhere. A service running on the box
+codex-vm runs on is reached at `10.0.2.2` from inside the guest.
+`build/mqtt-interop-test.ps1` and `build/coap-interop-test.ps1` are the
+worked examples, against mosquitto and aiocoap.
+
+**Inbound UDP is forwarded too**, via `-portfwd udp:<host>:<guest>` (the
+prefix is optional and the default stays TCP, so every existing invocation
+means what it always did). A datagram from a host client is put in front of
+the guest from a **synthetic gateway port** that names which client it came
+from; the guest answers that port as it would any peer, and the reply is
+routed back by it. Without the synthetic port there is nothing in the
+guest's reply that says which of several host clients it is for.
+`build/coap-serve-test.ps1` is the worked example: aiocoap's client against
+a CoAP server running in the guest.
 
 **IDE Disk.** PIO-mode IDE controller at ports 0x1F0-0x1F7, 0x3F6.
 Supports IDENTIFY, READ SECTORS, WRITE SECTORS, and FLUSH CACHE.
@@ -328,7 +408,42 @@ Writes are flushed to the host image file (durable disk writes).
 transfer ring processing. Three device slots:
 - Slot 1: Mass storage (bulk IN/OUT, SCSI READ/WRITE to RAM disk)
 - Slot 2: HID keyboard (interrupt IN, generates scan codes)
-- Slot 3: UVC camera (isochronous transfers, MJPEG frames)
+- Slot 3: UVC camera (isochronous transfers). Delivers a 160x120 YUYV
+  colour-bar test pattern: eight vertical bars 20 px wide, luma
+  alternating 16 and 235 by bar. An isochronous TRB that sets IOC now
+  gets a transfer event (Short Packet when the frame is smaller than the
+  buffer); it used to copy the data and post nothing, so a driver waiting
+  on the completion waited forever while its buffer filled.
+- Root port 4: a **high-speed hub** with a **full-speed keyboard** behind
+  its one downstream port (hub class descriptor, GET_PORT_STATUS,
+  SET/CLEAR_PORT_FEATURE). Device personality keys off the root port AND
+  the route string, because with a hub on the bus two devices share a root
+  port and only the route tells them apart. Under `-xhci-hub-tiers 2` a
+  **full-speed hub** is inserted between the two, so the keyboard sits at
+  route `0x11` and is served by a translator that its immediate parent does
+  not own.
+
+**A full- or low-speed device below a high-speed hub is serviced only if
+its slot context names a TRANSACTION TRANSLATOR.** Real silicon reaches
+such a device through the hub's TT, and is told which one by the TT Hub
+Slot ID / TT Port Number in the slot context; leave them zero and there is
+no split schedule to place the endpoint in. codex-vm refuses to service
+that endpoint and says so, rather than delivering anyway. The failure this
+models is asymmetric and worth recognising: **control transfers to endpoint
+zero keep working, because the hub handles those itself, while the periodic
+endpoint is silent forever** — a keyboard that enumerates perfectly and
+then never sends a keystroke. That is the reported shape of the failure on
+real Intel xHCI, and it is reproducible here
+with no hardware.
+
+**Which** translator is the part that is easy to get wrong, and
+`-xhci-hub-tiers 2` is what makes the difference observable. A translator
+lives in a high-speed hub; a full-speed hub has none, so everything below a
+full-speed hub is served by whichever high-speed hub sits further up. A
+walk that reads the translator off the device's immediate parent is right
+for one tier and writes zero for two. `codex/test/apps/usb-kbd-hub` and
+`usb-kbd-hub2` are the two cases, and they differ by nothing but the
+topology the emulator presents.
 
 **Intel HDA Audio.** CORB/RIRB command interface, output stream DMA.
 48 kHz 16-bit stereo PCM. Host-side playback via Windows waveOut API.
@@ -534,8 +649,16 @@ CDX binary, bootable via codex-vm or QEMU multiboot.
 
 **Pre-conditions:**
 - All source changes are submitted
-- The change justifies a rebuild (codegen change, new builtin, foreword
-  change that affects compilation)
+- The change justifies a rebuild. **The test is whether the compiler REACHES
+  the code you changed, not which chapter you edited** -- whole-program DCE
+  prunes definitions the compiler never calls, so a new function in a cited
+  chapter can cost the binary nothing while a new `cites` line, a live
+  registry arm, or the body of a definition the compiler calls all change it.
+  Do not predict which case you are in: compare the hash of
+  `build/output/Sut.cdx` against `seed/Codex.cdx` after the gate. Equal means
+  no seed is needed. `build.ps1` proves the SUT is a fixed point of itself and
+  never checks it against the depot seed. Full table and the two measured
+  cases: `docs/DevelopersGuide.md`, Seed Rebuild Procedure.
 
 **Steps:**
 1. Run the full build: `build/build.ps1`. All phases must PASS.
@@ -837,9 +960,24 @@ build/compile.ps1 -Src foo.codex -Out foo.cdx -Log foo.log `
 Log output:
 ```
 DBG:frontend src=1204413
+PH:LEX
+PH:PARSE
+PH:DESUGAR
+PH:SCOPE
+PH:CHECK
+PH:LOWER
+PH:FRONTEND
 DBG:emit defs=412
 SIZE:2176384
 ```
+
+**A `PH:` line means that phase COMPLETED**, so a crash names the phase
+after the last line printed. This is the only thing that identifies the
+phase when a starved deck corrupts the heap: the crash site is a shared
+runtime helper (`__linked_list_to_list`, `copy-sx-text`) that half the
+frontend calls, and four `-Decks` values that all die in DESUGAR name
+three different helpers between them. Reach for this before theorising
+about which phase ran out of room.
 
 ### Workflow: Investigating a Crash
 
@@ -931,7 +1069,7 @@ framebuffer and silence. Worse, the obvious workaround (write the findings
 to a file on the boot stick) routes the telemetry through USB mass
 storage, which on the machines this matters for is *itself* one of the
 broken subsystems. That mistake cost a week; the accident report is
-`docs/PM/Done/Stories/TheSilentKeyboard.md`, and its first recommendation is
+`docs/PM/Active/Stories/TheSilentKeyboard.md`, and its first recommendation is
 that no hardware campaign may launch without an output channel that does
 not depend on the subsystem under test.
 

@@ -1,14 +1,41 @@
-# Run a single plug CDX. Boots the plug in a VM with NE2K NIC,
-# listens on TCP 9100, sends the input, receives the output.
-# Usage: build/run-plug.ps1 -Plug <plug.cdx> -Input <file> -Output <file>
+# Run a single plug CDX. Boots the plug in a VM with NE2K NIC, listens on
+# TCP 9100, sends the input as ONE FRAMED MESSAGE, and writes the framed
+# reply's body to -Output.
+#
+# Usage: build/run-plug.ps1 -Plug <plug.cdx> -InFile <ir.cce> -Output <file>
+#
+# The input is expected to be CCE bytes, which is what
+# `build/compile.ps1 -IrCce` writes. THE WIRE IS CCE AND IT DOES NOT TELL
+# YOU: hand a plug ASCII and it parses garbage rather than complaining.
+#
+# Two things here were wrong for as long as this script existed, and
+# neither announced itself:
+#
+#   1. The parameter was named `Input`. `$Input` is a PowerShell AUTOMATIC
+#      variable and it wins inside the script body, so the parameter never
+#      arrived and every invocation died on "MISSING input:" before
+#      booting anything. Nothing in the tree called this script, which is
+#      why that went unnoticed.
+#
+#   2. It sent raw bytes and half-closed the socket. The plugs speak the
+#      framed protocol from `codex/os/net`: `net-io-recv-loop` waits for a
+#      length-prefixed message and answers with one. A raw send leaves the
+#      plug waiting, and it eventually prints FAIL and exits having
+#      emitted nothing -- which reads exactly like a plug that crashed,
+#      and cost a debugging round here.
+#
+# Frame format, matching `frame-encode` and `build/work-wire.ps1`:
+#     le32(1 + length of body) ++ [tag] ++ body
+# The plugs do not inspect the tag.
 [CmdletBinding()]
 param(
     [Parameter(Mandatory=$true)] [string]$Plug,
-    [Parameter(Mandatory=$true)] [string]$Input,
+    [Parameter(Mandatory=$true)] [string]$InFile,
     [Parameter(Mandatory=$true)] [string]$Output,
     [int]$MemMB = 4096,
     [int]$TimeoutSec = 120,
-    [int]$Port = 9100
+    [int]$Port = 9100,
+    [byte]$Tag = 1
 )
 
 Set-StrictMode -Version Latest
@@ -20,11 +47,11 @@ $Repo = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 if (-not (Test-Path -PathType Leaf $Plug)) {
     [Console]::Error.WriteLine("MISSING plug: $Plug"); exit 2
 }
-if (-not (Test-Path -PathType Leaf $Input)) {
-    [Console]::Error.WriteLine("MISSING input: $Input"); exit 2
+if (-not (Test-Path -PathType Leaf $InFile)) {
+    [Console]::Error.WriteLine("MISSING input: $InFile"); exit 2
 }
 
-$inputBytes = [System.IO.File]::ReadAllBytes($Input)
+$inputBytes = [System.IO.File]::ReadAllBytes($InFile)
 Write-Host "[plug] Input: $($inputBytes.Length) bytes"
 Write-Host "[plug] Plug: $Plug"
 
@@ -60,12 +87,20 @@ try {
     $listener.Stop()
     Write-Host "[plug] Connected"
 
-    # Send input (raw bytes, no framing — plug reads until connection closes)
-    $stream.Write($inputBytes, 0, $inputBytes.Length)
+    # Send the input as one frame. Do NOT half-close: the plug replies on
+    # this same connection and closes it itself.
+    $frame = [System.Collections.Generic.List[byte]]::new()
+    $flen = 1 + $inputBytes.Length
+    $frame.Add([byte]($flen -band 0xFF))
+    $frame.Add([byte](($flen -shr 8) -band 0xFF))
+    $frame.Add([byte](($flen -shr 16) -band 0xFF))
+    $frame.Add([byte](($flen -shr 24) -band 0xFF))
+    $frame.Add($Tag)
+    $frame.AddRange($inputBytes)
+    $frameBytes = $frame.ToArray()
+    $stream.Write($frameBytes, 0, $frameBytes.Length)
     $stream.Flush()
-    # Half-close: signal we're done sending
-    $client.Client.Shutdown([System.Net.Sockets.SocketShutdown]::Send)
-    Write-Host "[plug] Sent $($inputBytes.Length) bytes, waiting for output..."
+    Write-Host "[plug] Sent one frame of $($frameBytes.Length) bytes (tag $Tag), waiting for the reply..."
 
     # Receive output
     $stream.ReadTimeout = $TimeoutSec * 1000
@@ -91,8 +126,29 @@ try {
         exit 6
     }
 
-    [System.IO.File]::WriteAllBytes($Output, $allBytes.ToArray())
-    Write-Host "[plug] OK: $Output ($($allBytes.Count) bytes)"
+    # THE REPLY IS NOT FRAMED, THOUGH THE REQUEST MUST BE. The plugs read
+    # with `net-io-recv-loop`, which requires a length prefix, and answer
+    # with `net-io-send-text`, which does not add one. Stripping five
+    # bytes unconditionally therefore eats the first five characters of
+    # the emitted source -- `from ` off a Python file, which still greps
+    # and still looks plausible line by line. Only strip a header that is
+    # actually there, and prove it is there by its own length field.
+    $raw = $allBytes.ToArray()
+    $payload = $raw
+    if ($raw.Length -ge 5) {
+        # Cast to [int] BEFORE shifting: `-shl` on a [byte] keeps the left
+        # operand's width, so the bits shift off the end and the length
+        # silently reads back as (n -band 0xFF).
+        $bodyLen = ([int]$raw[0]) -bor (([int]$raw[1]) -shl 8) -bor (([int]$raw[2]) -shl 16) -bor (([int]$raw[3]) -shl 24)
+        if ($bodyLen -eq ($raw.Length - 4)) {
+            $payload = [byte[]]::new($raw.Length - 5)
+            [Array]::Copy($raw, 5, $payload, 0, $payload.Length)
+            Write-Host "[plug] Reply was framed (tag $($raw[4]))"
+        }
+    }
+
+    [System.IO.File]::WriteAllBytes($Output, $payload)
+    Write-Host "[plug] OK: $Output ($($payload.Length) bytes)"
 
 } finally {
     if (-not $proc.HasExited) {

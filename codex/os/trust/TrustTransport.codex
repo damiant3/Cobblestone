@@ -115,6 +115,10 @@ Section: Agent Message Serialization
     is MsgSyncReply (s) -> tag-sync-reply
     is MsgWorkRequest (w) -> tag-work-request
     is MsgWorkReply (w) -> tag-work-reply
+    is MsgLocateRequest (l) -> tag-locate-request
+    is MsgLocateReply (l) -> tag-locate-reply
+    is MsgAnnounceRequest (a) -> tag-announce-request
+    is MsgAnnounceReply (a) -> tag-announce-reply
 
   encode-agent-msg-body : AgentMessage -> List Integer
   encode-agent-msg-body (m) = when m
@@ -131,6 +135,10 @@ Section: Agent Message Serialization
     is MsgSyncReply (s) -> encode-sync-reply-body s
     is MsgWorkRequest (w) -> encode-work-request-body w
     is MsgWorkReply (w) -> encode-work-reply-body w
+    is MsgLocateRequest (l) -> encode-locate-request-body l
+    is MsgLocateReply (l) -> encode-locate-reply-body l
+    is MsgAnnounceRequest (a) -> encode-announce-request-body a
+    is MsgAnnounceReply (a) -> encode-announce-reply-body a
 
   encode-propose-body : ProposeMsg -> List Integer
   encode-propose-body (p) =
@@ -188,6 +196,28 @@ Section: Agent Message Serialization
   encode-work-reply-body (w) =
     frame-encode-bytes (w.from.public-key) & frame-encode-text (w.hash) & frame-encode-text (w.payload)
 
+ Locate rides the same three-field shape as the work pair, and deliberately so:
+ the bodies are wire-identical, so a reader that can take a work reply can take
+ a locate reply by changing nothing but the tag it dispatches on. What differs
+ is only what the third field means, and that difference is the whole point --
+ `payload` is content and is checked, `peers` is a hint and is used.
+
+  encode-locate-request-body : LocateRequestMsg -> List Integer
+  encode-locate-request-body (l) =
+    frame-encode-bytes (l.from.public-key) & frame-encode-text (l.hash)
+
+  encode-locate-reply-body : LocateReplyMsg -> List Integer
+  encode-locate-reply-body (l) =
+    frame-encode-bytes (l.from.public-key) & frame-encode-text (l.hash) & frame-encode-text (l.peers)
+
+  encode-announce-request-body : AnnounceRequestMsg -> List Integer
+  encode-announce-request-body (a) =
+    frame-encode-bytes (a.from.public-key) & frame-encode-text (a.address) & frame-encode-text (a.hashes)
+
+  encode-announce-reply-body : AnnounceReplyMsg -> List Integer
+  encode-announce-reply-body (a) =
+    frame-encode-bytes (a.from.public-key) & frame-le32 (a.accepted)
+
 Section: Sub-Encoders
   encode-capability : Capability -> List Integer
   encode-capability (c) = frame-encode-text (c.name) & [c.direction] & frame-encode-text (c.scope)
@@ -239,6 +269,10 @@ Section: Agent Message Deserialization
     else if tag == tag-sync-offer then MsgSyncOffer (decode-sync-offer-body body)
     else if tag == tag-sync-reply then MsgSyncReply (decode-sync-reply-body body)
     else if tag == tag-work-request then MsgWorkRequest (decode-work-request-body body)
+    else if tag == tag-locate-request then MsgLocateRequest (decode-locate-request-body body)
+    else if tag == tag-locate-reply then MsgLocateReply (decode-locate-reply-body body)
+    else if tag == tag-announce-request then MsgAnnounceRequest (decode-announce-request-body body)
+    else if tag == tag-announce-reply then MsgAnnounceReply (decode-announce-reply-body body)
     else MsgWorkReply (decode-work-reply-body body)
 
   decode-propose-body : List Integer -> ProposeMsg
@@ -354,6 +388,31 @@ Section: Agent Message Deserialization
     in let hr = frame-decode-text bs (r1.next-offset)
     in let pr = frame-decode-text bs (hr.next-offset)
     in WorkReplyMsg { from = AgentIdentity { public-key = r1.value }, hash = hr.value, payload = pr.value }
+
+  decode-locate-request-body : List Integer -> LocateRequestMsg
+  decode-locate-request-body (bs) =
+    let r1 = frame-decode-bytes bs 0
+    in let hr = frame-decode-text bs (r1.next-offset)
+    in LocateRequestMsg { from = AgentIdentity { public-key = r1.value }, hash = hr.value }
+
+  decode-locate-reply-body : List Integer -> LocateReplyMsg
+  decode-locate-reply-body (bs) =
+    let r1 = frame-decode-bytes bs 0
+    in let hr = frame-decode-text bs (r1.next-offset)
+    in let pr = frame-decode-text bs (hr.next-offset)
+    in LocateReplyMsg { from = AgentIdentity { public-key = r1.value }, hash = hr.value, peers = pr.value }
+
+  decode-announce-request-body : List Integer -> AnnounceRequestMsg
+  decode-announce-request-body (bs) =
+    let r1 = frame-decode-bytes bs 0
+    in let ar = frame-decode-text bs (r1.next-offset)
+    in let hr = frame-decode-text bs (ar.next-offset)
+    in AnnounceRequestMsg { from = AgentIdentity { public-key = r1.value }, address = ar.value, hashes = hr.value }
+
+  decode-announce-reply-body : List Integer -> AnnounceReplyMsg
+  decode-announce-reply-body (bs) =
+    let r1 = frame-decode-bytes bs 0
+    in AnnounceReplyMsg { from = AgentIdentity { public-key = r1.value }, accepted = frame-read-le32 bs (r1.next-offset) }
 
 Section: Sub-Decoders
   CapDecodeResult = record {

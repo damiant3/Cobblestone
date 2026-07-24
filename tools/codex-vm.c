@@ -15,6 +15,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <math.h>
 
 #pragma comment(lib, "WinHvPlatform.lib")
 #pragma comment(lib, "ws2_32.lib")
@@ -212,10 +213,18 @@ static const unsigned char GUID_GOP[16]          = {0xDE,0xA9,0x42,0x90, 0xDC,0x
 /* ══ PCI Configuration Space ══ */
 #define PCI_MAX_DEVICES 8
 static unsigned int pci_config_addr = 0;
+/* bar_size is the window the device actually decodes; bar_probe records that
+   the guest wrote all-ones to size the BAR and has not yet written a base
+   back. Sizing used to be destructive and a lie in the same breath: the
+   all-ones write REPLACED the base with 0xFFFF0000, so a driver that sized a
+   BAR lost the address it had just read, and every device claimed 64 KB
+   whatever it really decoded. Probing is a mode now, not a mutation. */
 static struct {
     unsigned short vendor, device;
     unsigned char class_code, subclass, progif, header_type;
     unsigned int bar[6];
+    unsigned int bar_size[6];
+    unsigned char bar_probe[6];
     unsigned char irq_line;
     unsigned short command;
 } pci_devices[PCI_MAX_DEVICES];
@@ -234,6 +243,10 @@ static int pci_add_device(unsigned short vendor, unsigned short device,
     pci_devices[i].progif = progif;
     pci_devices[i].header_type = 0;
     pci_devices[i].bar[0] = bar0;
+    /* Default decode window. xHCI overrides this with its real register
+       space right after registration; a BAR that decodes nothing keeps 0
+       and sizes as absent rather than claiming 64 KB it does not have. */
+    pci_devices[i].bar_size[0] = bar0 ? 0x10000 : 0;
     pci_devices[i].irq_line = irq;
     pci_devices[i].command = 0x0003; /* IO + MMIO enabled */
     return i;
@@ -248,12 +261,16 @@ static unsigned int pci_read_config(int dev, int func, int offset) {
                       ((unsigned int)pci_devices[dev].subclass << 16) |
                       ((unsigned int)pci_devices[dev].progif << 8);
     case 0x0C: return (unsigned int)pci_devices[dev].header_type << 16;
-    case 0x10: return pci_devices[dev].bar[0];
-    case 0x14: return pci_devices[dev].bar[1];
-    case 0x18: return pci_devices[dev].bar[2];
-    case 0x1C: return pci_devices[dev].bar[3];
-    case 0x20: return pci_devices[dev].bar[4];
-    case 0x24: return pci_devices[dev].bar[5];
+    case 0x10: case 0x14: case 0x18: case 0x1C: case 0x20: case 0x24: {
+        int bi = ((offset & 0xFC) - 0x10) / 4;
+        if (!pci_devices[dev].bar_probe[bi]) return pci_devices[dev].bar[bi];
+        /* Sizing read: all-ones in the address field, zeros below the
+           window, and the low type bits preserved -- that is how a driver
+           computes the length (~mask + 1). A device with no BAR reads 0. */
+        unsigned int size = pci_devices[dev].bar_size[bi];
+        if (size == 0) return 0;
+        return (~(size - 1)) | (pci_devices[dev].bar[bi] & 0x0F);
+    }
     case 0x3C: return pci_devices[dev].irq_line;
     default: return 0;
     }
@@ -264,10 +281,12 @@ static void pci_write_config(int dev, int func, int offset, unsigned int val) {
     if ((offset & 0xFC) == 0x04) pci_devices[dev].command = (unsigned short)(val & 0xFFFF);
     else if ((offset & 0xFC) >= 0x10 && (offset & 0xFC) <= 0x24) {
         int bar_idx = ((offset & 0xFC) - 0x10) / 4;
-        if (val == 0xFFFFFFFF)
-            pci_devices[dev].bar[bar_idx] = 0xFFFF0000; /* report 64KB size */
-        else
+        if (val == 0xFFFFFFFF) {
+            pci_devices[dev].bar_probe[bar_idx] = 1;  /* size query; base kept */
+        } else {
+            pci_devices[dev].bar_probe[bar_idx] = 0;
             pci_devices[dev].bar[bar_idx] = val;
+        }
     }
 }
 
@@ -286,12 +305,57 @@ static int speaker_freq_latch = 0; /* 0=expecting low byte, 1=expecting high byt
 static unsigned char pit_mode[3] = {0}; /* mode register per channel */
 static unsigned char pit_access[3] = {0}; /* access mode per channel */
 
+/* The programmed reload divisor per channel, and the half-written state
+   of a two-byte load. These were missing entirely: channel-data writes
+   were discarded and every counter read answered 0, so a guest could
+   program a frequency and then watch a counter that never moved. A
+   divisor of 0 means "not yet programmed"; the hardware reads 0 as
+   65536, which is what pit_divisor() returns for it. */
+static unsigned short pit_reload[3] = {0};
+static unsigned char pit_load_hi[3] = {0};  /* 1 = low byte seen, high byte next */
+static unsigned char pit_read_hi[3] = {0};  /* same latch on the read side */
+/* The counter-latch command (0x43 with an access field of 00) freezes a
+   channel's count so the two halves a guest reads belong to the same
+   instant. Without it a 16-bit read straddles a decrement and can produce
+   a value the counter never held -- which is the whole reason the command
+   exists, and it was not modelled at all. */
+static unsigned short pit_latched[3] = {0};
+static unsigned char pit_latch_valid[3] = {0};
+#define PIT_HZ 1193182.0
+
+static unsigned int pit_divisor(int ch) {
+    return pit_reload[ch] ? (unsigned int)pit_reload[ch] : 65536u;
+}
+
+static double now_ms_for_timer(void);   /* defined with the LAPIC timer */
+
+/* Where the counter stands right now. Mode 3, the square-wave generator,
+   decrements by two and reloads at half the divisor -- so it never shows an
+   odd count, and modelling it as a plain countdown reports values that
+   channel could not produce. Every other mode counts down by one. */
+static unsigned int pit_current_count(int ch) {
+    unsigned int div = pit_divisor(ch);
+    unsigned long long elapsed =
+        (unsigned long long)(now_ms_for_timer() * PIT_HZ / 1000.0);
+    if (pit_mode[ch] == 3) {
+        unsigned int half = div / 2;
+        if (half == 0) return 0;
+        return div - 2u * (unsigned int)(elapsed % half);
+    }
+    return div - (unsigned int)(elapsed % div);
+}
+
 /* ══ xHCI Controller Emulation ══ */
 #define XHCI_BAR       0xFE800000ULL
 #define XHCI_BAR_SIZE  0x4000       /* 16 KB register space */
 #define XHCI_CAP_LEN   32           /* capability registers: 32 bytes */
+/* Extended capabilities live at BAR+0x80. HCCPARAMS carries the offset in
+   DWORDS, which is why this is 0x20 and the byte offset is 0x80. */
+#define XHCI_XECP_DWORDS 0x20
+#define XHCI_XECP_OFF    (XHCI_XECP_DWORDS * 4)
 #define XHCI_MAX_SLOTS 32
 #define XHCI_MAX_PORTS 4
+#define XHCI_HUB_TIERS 2
 
 static struct {
     unsigned int usbcmd;
@@ -320,9 +384,49 @@ static struct {
        UVC) keys off the PORT, as on real hardware — not the slot number,
        which is just allocation order. */
     int slot_port[XHCI_MAX_SLOTS + 1];
+    /* The rest of the slot context's identity fields, latched from the same
+       ADDRESS_DEVICE input context. Root port alone stops being enough the
+       moment a hub is on the bus: two devices then share a root port and are
+       told apart only by the route string. Speed and the transaction
+       translator are latched for the periodic-schedule check further down --
+       a full-speed device behind a high-speed hub is exactly the case that
+       needs a TT, and a model that does not know the speed cannot notice. */
+    int slot_route[XHCI_MAX_SLOTS + 1];
+    int slot_speed[XHCI_MAX_SLOTS + 1];
+    int slot_tt_hub[XHCI_MAX_SLOTS + 1];
+    int slot_tt_port[XHCI_MAX_SLOTS + 1];
+    /* Downstream port state of the modelled hubs on root port 4, one entry
+       per tier. One downstream port each, because one is all it takes: tier
+       0 is the high-speed hub that owns the transaction translator, and
+       tier 1 (present only under -xhci-hub-tiers 2) is a full-speed hub
+       that owns none and must pass tier 0's along to what hangs below it. */
+    int hub_powered[XHCI_HUB_TIERS];
+    int hub_enabled[XHCI_HUB_TIERS];
+    int hub_c_reset[XHCI_HUB_TIERS];
+    int hub_c_connection[XHCI_HUB_TIERS];
+    /* USB Legacy Support ownership. Firmware owns the controller at reset;
+       a driver claims it by setting the OS-owned bit and waiting for the
+       BIOS-owned bit to clear. Modelling both halves is what makes the
+       handoff observable instead of a constant. */
+    int legacy_bios_owned;
+    int legacy_os_owned;
 } xhci;
 
 static int xhci_next_slot = 1;
+
+/* -xhci-no-root-kbd: unplug the root-port HID keyboard, leaving the hub as
+   the only route to one. The bus walk takes the first keyboard it finds and
+   the root port comes first, so this is what lets a test drive the hub path
+   with an unmodified guest binary -- the topology is the variable. */
+static int xhci_no_root_kbd = 0;
+
+/* -xhci-hub-tiers N: how many hubs to stack on root port 4. One is a
+   high-speed hub with a full-speed keyboard below it. Two puts a
+   full-speed hub in between, which is the topology that tells apart a
+   driver reading the translator off the immediate parent from one
+   carrying the nearest high-speed ancestor's down the walk. A laptop
+   with a monitor hub in front of a keyboard hub is this shape. */
+static int xhci_hub_tiers = 1;
 
 /* BOT (Bulk-Only Transport) state for the slot-1 mass-storage device.
    The CBW and any write data arrive on the bulk OUT ring (even DCI);
@@ -425,6 +529,77 @@ static const unsigned char usb_hid_cfg_desc[] = {
     3,          /* bmAttributes = Interrupt */
     8, 0,       /* wMaxPacketSize = 8 */
     10          /* bInterval = 10ms */
+};
+
+/* USB 2.0 high-speed hub, single transaction translator.
+   bDeviceProtocol = 1 is single-TT; that is the field a host controller
+   driver reads to decide whether devices below this hub need TT fields
+   filled in their slot contexts. */
+static const unsigned char usb_hub_dev_desc[] = {
+    18, 1,      /* bLength, bDescriptorType=DEVICE */
+    0x00, 0x02, /* bcdUSB = 2.00 */
+    9,          /* bDeviceClass = HUB */
+    0,          /* bDeviceSubClass */
+    1,          /* bDeviceProtocol = single TT */
+    64,         /* bMaxPacketSize0 */
+    0x09, 0x05, /* idVendor */
+    0x00, 0x20, /* idProduct */
+    0x00, 0x01, /* bcdDevice */
+    0, 0, 0,    /* iManufacturer, iProduct, iSerialNumber */
+    1           /* bNumConfigurations */
+};
+
+/* The same hub one tier down, at full speed. A full-speed hub has no
+   transaction translator at all, which is why bDeviceProtocol is 0 here and
+   why anything below it must be served by the high-speed hub above. */
+static const unsigned char usb_hub_fs_dev_desc[] = {
+    18, 1,      /* bLength, bDescriptorType=DEVICE */
+    0x10, 0x01, /* bcdUSB = 1.10 */
+    9,          /* bDeviceClass = HUB */
+    0,          /* bDeviceSubClass */
+    0,          /* bDeviceProtocol = full speed, no TT */
+    64,         /* bMaxPacketSize0 */
+    0x09, 0x05, /* idVendor */
+    0x01, 0x20, /* idProduct */
+    0x00, 0x01, /* bcdDevice */
+    0, 0, 0,    /* iManufacturer, iProduct, iSerialNumber */
+    1           /* bNumConfigurations */
+};
+
+static const unsigned char usb_hub_cfg_desc[] = {
+    9, 2,       /* bLength, bDescriptorType=CONFIGURATION */
+    25, 0,      /* wTotalLength = 9 + 9 + 7 */
+    1,          /* bNumInterfaces */
+    1,          /* bConfigurationValue */
+    0,          /* iConfiguration */
+    0xE0,       /* bmAttributes = self-powered */
+    50,         /* bMaxPower */
+    /* Hub interface */
+    9, 4,       /* bLength, bDescriptorType=INTERFACE */
+    0, 0,       /* bInterfaceNumber, bAlternateSetting */
+    1,          /* bNumEndpoints */
+    9,          /* bInterfaceClass = HUB */
+    0, 0,       /* bInterfaceSubClass, bInterfaceProtocol */
+    0,          /* iInterface */
+    /* Status-change interrupt IN endpoint */
+    7, 5,       /* bLength, bDescriptorType=ENDPOINT */
+    0x81,       /* bEndpointAddress = EP1 IN */
+    3,          /* bmAttributes = Interrupt */
+    1, 0,       /* wMaxPacketSize = 1 */
+    12          /* bInterval */
+};
+
+/* Hub class descriptor (type 0x29), USB 2.0 11.23.2.1. One downstream
+   port, individual power switching, per-port overcurrent reporting. */
+static const unsigned char usb_hub_class_desc[] = {
+    9,          /* bDescLength */
+    0x29,       /* bDescriptorType = HUB */
+    1,          /* bNbrPorts */
+    0x09, 0x00, /* wHubCharacteristics: individual power + individual OC */
+    50,         /* bPwrOn2PwrGood (x2 ms) */
+    100,        /* bHubContrCurrent */
+    0x00,       /* DeviceRemovable */
+    0xFF        /* PortPwrCtrlMask */
 };
 
 /* Standard HID boot keyboard report descriptor (63 bytes) */
@@ -597,6 +772,81 @@ static unsigned long long xhci_next_trb(unsigned long long addr, int *ccs) {
     return addr;
 }
 
+/* Copy the contexts an input context offers into the slot's output device
+   context, honouring the Add Context flags (A0 = slot context, An = DCI n).
+   This is the controller's job on real hardware: the driver owns the input
+   context and never writes the output one. It is also what makes an
+   endpoint reachable at all, because the transfer doorbell reads its TR
+   dequeue pointer out of the DEVICE context -- so a slot whose contexts
+   were never copied answers every doorbell with a dequeue pointer of zero
+   and moves no bytes, while ADDRESS_DEVICE still reports success.
+
+   32-byte contexts (we advertise CSZ = 0). Input: control context at +0,
+   slot context at +32, DCI n at +(n+1)*32. Output: slot context at +0,
+   DCI n at +n*32. So add-flag bit i copies input+(i+1)*32 to device+i*32. */
+static void xhci_copy_input_ctx(unsigned long long ictx, int slot) {
+    if (xhci.dcbaap == 0 || ictx == 0) return;
+    unsigned long long ent = xhci.dcbaap + (unsigned long long)slot * 8;
+    if (ent + 8 > guest_mem_size) return;
+    unsigned long long dctx =
+        *(unsigned long long *)((unsigned char *)guest_mem + ent) & ~0x3FULL;
+    if (dctx == 0) return;
+    if (ictx + 8 > guest_mem_size) return;
+    unsigned int add = *(unsigned int *)((unsigned char *)guest_mem + ictx + 4);
+    for (int ci = 0; ci < 32; ci++) {
+        if (!(add & (1u << ci))) continue;
+        unsigned long long src = ictx + (unsigned long long)(ci + 1) * 32;
+        unsigned long long dst = dctx + (unsigned long long)ci * 32;
+        if (src + 32 > guest_mem_size || dst + 32 > guest_mem_size) continue;
+        memcpy((unsigned char *)guest_mem + dst,
+               (unsigned char *)guest_mem + src, 32);
+    }
+}
+
+static int bot_db_trace = -1;
+/* Device personality for a slot. Root port picks the device, except on the
+   hub's root port, where the route string picks between the hub itself
+   (route 0) and what hangs off its downstream port (route non-zero).
+   Slots addressed before the port latch existed fall back to the historical
+   slot-number binding. */
+#define XHCI_KIND_MSC     1
+#define XHCI_KIND_HID     2
+#define XHCI_KIND_UVC     3
+#define XHCI_KIND_HUB     4
+#define XHCI_KIND_HUB_HID 5
+
+/* Which tier of the hub stack a slot is, or -1 for anything that is not a
+   hub. A hub is identified by the route string that reached it: tier 0 was
+   addressed at route 0 (straight off root port 4), tier 1 at route 0x1 (down
+   tier 0's port 1). Anything deeper is the keyboard. */
+static int xhci_hub_tier(int slot) {
+    if (xhci.slot_port[slot] != 4) return -1;
+    if (xhci.slot_route[slot] == 0) return 0;
+    if (xhci_hub_tiers >= 2 && xhci.slot_route[slot] == 0x1) return 1;
+    return -1;
+}
+
+static int xhci_slot_kind(int slot) {
+    int port = xhci.slot_port[slot];
+    if (port == 4) return xhci_hub_tier(slot) >= 0 ? XHCI_KIND_HUB : XHCI_KIND_HUB_HID;
+    return port > 0 ? port : slot;
+}
+
+/* A hub's downstream port status, as one little-endian dword: status word
+   low, change word high (USB 2.0 11.24.2.7). Whatever is behind it -- the
+   next hub down or the keyboard -- is full speed, so neither the low-speed
+   nor the high-speed bit is ever set, which is what makes everything below
+   tier 0 need its transaction translator. */
+static unsigned int xhci_hub_port_status(int tier) {
+    unsigned int status = 0, change = 0;
+    if (tier < 0 || tier >= XHCI_HUB_TIERS) return 0;
+    if (xhci.hub_powered[tier]) status |= (1u << 0) | (1u << 8);  /* CONNECTION, POWER */
+    if (xhci.hub_enabled[tier]) status |= (1u << 1);              /* ENABLE */
+    if (xhci.hub_c_connection[tier]) change |= (1u << 0);         /* C_CONNECTION */
+    if (xhci.hub_c_reset[tier]) change |= (1u << 4);              /* C_RESET */
+    return status | (change << 16);
+}
+
 static void xhci_handle_doorbell(int db, unsigned int val) {
     if (db == 0) {
         /* Command ring doorbell — consume TRBs while their cycle bit
@@ -627,14 +877,29 @@ static void xhci_handle_doorbell(int db, unsigned int val) {
                    succeed, echoing the slot the command named. Address
                    Device also latches the root port from the input
                    context's slot context (dword 1 bits 23:16), which is
-                   what binds a slot to a device personality. */
+                   what binds a slot to a device personality, and copies
+                   the offered contexts into the output device context --
+                   without which the slot is addressed but no endpoint of
+                   it can carry a byte. CONFIGURE_ENDPOINT copies too, by
+                   the same Add-flag rule, which is what populates a bulk
+                   endpoint's context, and EVALUATE_CONTEXT by the same rule
+                   again -- it is how a driver corrects endpoint zero's max
+                   packet size once it has read the device descriptor and
+                   knows what the device actually wanted. */
                 int slot = (control >> 24) & 0xFF;
-                if (trb_type == 11 && slot >= 1 && slot <= XHCI_MAX_SLOTS) {
+                if ((trb_type == 11 || trb_type == 12 || trb_type == 13) && slot >= 1 && slot <= XHCI_MAX_SLOTS) {
                     unsigned long long ictx = *(unsigned long long *)trb & ~0xFULL;
-                    if (ictx && ictx + 64 <= guest_mem_size) {
+                    if (trb_type == 11 && ictx && ictx + 64 <= guest_mem_size) {
+                        unsigned int sd0 = *(unsigned int *)((unsigned char *)guest_mem + ictx + 32);
                         unsigned int sd1 = *(unsigned int *)((unsigned char *)guest_mem + ictx + 36);
-                        xhci.slot_port[slot] = (sd1 >> 16) & 0xFF;
+                        unsigned int sd2 = *(unsigned int *)((unsigned char *)guest_mem + ictx + 40);
+                        xhci.slot_port[slot]    = (sd1 >> 16) & 0xFF;
+                        xhci.slot_route[slot]   = sd0 & 0xFFFFF;
+                        xhci.slot_speed[slot]   = (sd0 >> 20) & 0xF;
+                        xhci.slot_tt_hub[slot]  = sd2 & 0xFF;
+                        xhci.slot_tt_port[slot] = (sd2 >> 8) & 0xFF;
                     }
+                    xhci_copy_input_ctx(ictx, slot);
                 }
                 xhci_post_event(33, slot, 1, ring_addr);
             } else if (trb_type == 23) { /* NOOP */
@@ -663,13 +928,18 @@ static void xhci_handle_doorbell(int db, unsigned int val) {
         unsigned long long dq_raw = *(unsigned long long *)(ep_ctx + 8);
         unsigned long long tr_dequeue = dq_raw & ~0xFULL;
         int ccs = (int)(dq_raw & 1);
+        if (bot_db_trace < 0) bot_db_trace = getenv("CODEX_VM_BOT_TRACE") ? 1 : 0;
+        if (bot_db_trace)
+            fprintf(stderr, "DB: slot=%d dci=%d ctx=0x%llx dq=0x%llx ccs=%d\n",
+                    db, ep_idx, (unsigned long long)slot_ctx_addr,
+                    (unsigned long long)tr_dequeue, ccs);
         if (tr_dequeue == 0 || tr_dequeue + 16 > guest_mem_size) return;
 
         /* Device personality by the ROOT PORT the slot was addressed
            against: port 1 = mass storage, port 2 = HID keyboard, port 3 =
-           UVC camera (matching portsc[] order). Slots that predate the
-           port latch fall back to the historical slot-number binding. */
-        int kind = (xhci.slot_port[db] > 0) ? xhci.slot_port[db] : db;
+           UVC camera, port 4 = hub (matching portsc[] order), with the
+           route string separating the hub from the device below it. */
+        int kind = xhci_slot_kind(db);
 
         /* Walk the transfer ring cycle-aware: consume while the TRB cycle
            bit matches the consumer state, follow link TRBs (toggling on
@@ -692,8 +962,31 @@ static void xhci_handle_doorbell(int db, unsigned int val) {
                 int bmRequestType = setup[0];
                 int bRequest = setup[1];
                 int wValue = setup[2] | (setup[3] << 8);
+                int wIndex = setup[4] | (setup[5] << 8);
                 int wLength = setup[6] | (setup[7] << 8);
-                (void)bmRequestType;
+
+                /* Hub class requests carry no data stage for SET_FEATURE /
+                   CLEAR_FEATURE, so they are acted on here rather than in
+                   the data-stage block below. A hub that accepts
+                   PORT_POWER and PORT_RESET without changing its port
+                   status is a hub whose walk always finds nothing -- the
+                   stub-that-agrees-with-itself shape. */
+                int tier = xhci_hub_tier(db);
+                if (kind == XHCI_KIND_HUB && tier >= 0 &&
+                    bmRequestType == 0x23 && wIndex == 1) {
+                    if (bRequest == 3) {  /* SET_FEATURE */
+                        if (wValue == 8) {          /* PORT_POWER */
+                            if (!xhci.hub_powered[tier]) xhci.hub_c_connection[tier] = 1;
+                            xhci.hub_powered[tier] = 1;
+                        } else if (wValue == 4) {   /* PORT_RESET */
+                            xhci.hub_enabled[tier] = 1;
+                            xhci.hub_c_reset[tier] = 1;
+                        }
+                    } else if (bRequest == 1) {  /* CLEAR_FEATURE */
+                        if (wValue == 20) xhci.hub_c_reset[tier] = 0;       /* C_PORT_RESET */
+                        else if (wValue == 16) xhci.hub_c_connection[tier] = 0; /* C_PORT_CONNECTION */
+                    }
+                }
 
                 /* Optional DATA stage, then the STATUS stage. Both
                    advances follow links — a TD may straddle the wrap. */
@@ -712,18 +1005,27 @@ static void xhci_handle_doorbell(int db, unsigned int val) {
                         int dev_d_sz = (int)sizeof(usb_dev_desc);
                         const unsigned char *cfg_d = usb_cfg_desc;
                         int cfg_d_sz = (int)sizeof(usb_cfg_desc);
-                        if (kind == 2) { dev_d = usb_hid_dev_desc; dev_d_sz = (int)sizeof(usb_hid_dev_desc); cfg_d = usb_hid_cfg_desc; cfg_d_sz = (int)sizeof(usb_hid_cfg_desc); }
-                        if (kind == 3) { dev_d = usb_uvc_dev_desc; dev_d_sz = (int)sizeof(usb_uvc_dev_desc); cfg_d = usb_uvc_cfg_desc; cfg_d_sz = (int)sizeof(usb_uvc_cfg_desc); }
+                        if (kind == XHCI_KIND_HID || kind == XHCI_KIND_HUB_HID) { dev_d = usb_hid_dev_desc; dev_d_sz = (int)sizeof(usb_hid_dev_desc); cfg_d = usb_hid_cfg_desc; cfg_d_sz = (int)sizeof(usb_hid_cfg_desc); }
+                        if (kind == XHCI_KIND_UVC) { dev_d = usb_uvc_dev_desc; dev_d_sz = (int)sizeof(usb_uvc_dev_desc); cfg_d = usb_uvc_cfg_desc; cfg_d_sz = (int)sizeof(usb_uvc_cfg_desc); }
+                        if (kind == XHCI_KIND_HUB) { dev_d = tier == 0 ? usb_hub_dev_desc : usb_hub_fs_dev_desc; dev_d_sz = 18; cfg_d = usb_hub_cfg_desc; cfg_d_sz = (int)sizeof(usb_hub_cfg_desc); }
                         if (desc_type == 1) { /* DEVICE */
                             int n = data_len < dev_d_sz ? data_len : dev_d_sz;
                             memcpy((unsigned char *)guest_mem + data_buf, dev_d, n);
                         } else if (desc_type == 2) { /* CONFIG */
                             int n = data_len < cfg_d_sz ? data_len : cfg_d_sz;
                             memcpy((unsigned char *)guest_mem + data_buf, cfg_d, n);
-                        } else if (desc_type == 0x22 && kind == 2) { /* HID REPORT */
+                        } else if (desc_type == 0x22 && (kind == XHCI_KIND_HID || kind == XHCI_KIND_HUB_HID)) { /* HID REPORT */
                             int n = data_len < (int)sizeof(usb_hid_report_desc) ? data_len : (int)sizeof(usb_hid_report_desc);
                             memcpy((unsigned char *)guest_mem + data_buf, usb_hid_report_desc, n);
+                        } else if (desc_type == 0x29 && kind == XHCI_KIND_HUB) { /* HUB class */
+                            int n = data_len < (int)sizeof(usb_hub_class_desc) ? data_len : (int)sizeof(usb_hub_class_desc);
+                            memcpy((unsigned char *)guest_mem + data_buf, usb_hub_class_desc, n);
                         }
+                    } else if (bRequest == 0 && bmRequestType == 0xA3 &&
+                               kind == XHCI_KIND_HUB && wIndex == 1 && data_len >= 4) {
+                        /* GET_PORT_STATUS */
+                        unsigned int st = xhci_hub_port_status(xhci_hub_tier(db));
+                        memcpy((unsigned char *)guest_mem + data_buf, &st, 4);
                     }
                 }
                 if (data_tt == 3) tr_dequeue = xhci_next_trb(tr_dequeue, &ccs);
@@ -743,11 +1045,63 @@ static void xhci_handle_doorbell(int db, unsigned int val) {
                 unsigned long long buf_addr = *(unsigned long long *)trb & ~0xFULL;
                 int buf_len = *(unsigned int *)(trb + 8) & 0x1FFFF;
 
+                /* A periodic endpoint has to be SCHEDULABLE, not merely
+                   present. Real silicon places an interrupt endpoint in a
+                   periodic schedule computed from its Interval and Max ESIT
+                   Payload; leave either at zero and the endpoint is
+                   configured, reports success, and is never serviced -- the
+                   exact shape of a keyboard that enumerates and then goes
+                   silent forever. This model used to deliver regardless,
+                   which meant a driver could be wrong here and pass every
+                   emulated test. Refuse, and say why: silence that explains
+                   itself is worth more than silence that does not. */
+                {
+                    int ep_type = (*(unsigned int *)(ep_ctx + 4) >> 3) & 7;
+                    if (ep_type == 3 || ep_type == 7) {  /* interrupt OUT / IN */
+                        int interval = (*(unsigned int *)ep_ctx >> 16) & 0xFF;
+                        int esit = (*(unsigned int *)(ep_ctx + 16) >> 16) & 0xFFFF;
+                        if (interval == 0 || esit == 0) {
+                            fprintf(stderr,
+                                "xHCI: slot %d dci %d is an interrupt endpoint that "
+                                "cannot be scheduled (Interval=%d, MaxESITPayload=%d); "
+                                "not servicing it. Real hardware is silent here.\n",
+                                db, ep_idx, interval, esit);
+                            break;
+                        }
+                        /* A full- or low-speed device below a high-speed hub
+                           reaches the bus only through that hub's TRANSACTION
+                           TRANSLATOR, and the controller is told which one by
+                           the TT Hub Slot ID / TT Port Number in the slot
+                           context. Leave them zero and there is no split
+                           schedule to put the endpoint in: control transfers
+                           to endpoint zero still work, because the hub
+                           handles those itself, while the periodic endpoint
+                           is never serviced. That asymmetry -- enumerates
+                           perfectly, then silent forever -- is precisely the
+                           reported shape of the keyboard on the ASUS. This
+                           model used to deliver anyway, so the one hypothesis
+                           left standing was the one it could not test. */
+                        if ((xhci.slot_speed[db] == 1 || xhci.slot_speed[db] == 2) &&
+                            xhci.slot_route[db] != 0 && xhci.slot_tt_hub[db] == 0) {
+                            fprintf(stderr,
+                                "xHCI: slot %d dci %d is a periodic endpoint on a "
+                                "%s-speed device at route 0x%X with no transaction "
+                                "translator (TT Hub Slot ID=0); not servicing it. "
+                                "Real hardware is silent here.\n",
+                                db, ep_idx,
+                                xhci.slot_speed[db] == 1 ? "full" : "low",
+                                xhci.slot_route[db]);
+                            break;
+                        }
+                    }
+                }
+
                 /* HID keyboard interrupt IN — return 8-byte boot report.
                    Real controllers raise a transfer event for any TRB that
                    asks (IOC); a driver awaiting the event instead of
                    re-reading the buffer must not hang here. */
-                if (kind == 2 && buf_addr > 0 && buf_addr + 8 <= guest_mem_size) {
+                if ((kind == XHCI_KIND_HID || kind == XHCI_KIND_HUB_HID) &&
+                    buf_addr > 0 && buf_addr + 8 <= guest_mem_size) {
                     unsigned char report[8];
                     build_hid_keyboard_report(report);
                     int n = buf_len < 8 ? buf_len : 8;
@@ -757,6 +1111,17 @@ static void xhci_handle_doorbell(int db, unsigned int val) {
                     continue;
                 }
 
+                /* CODEX_VM_BOT_TRACE=1 narrates the Bulk-Only Transport path.
+                   A driver whose command block is rejected looks identical to
+                   one whose endpoint was never configured -- both are silence
+                   -- and this is what tells them apart. Sampled once, so the
+                   trace costs a branch per transfer and not a getenv. */
+                static int bot_trace = -1;
+                if (bot_trace < 0) bot_trace = getenv("CODEX_VM_BOT_TRACE") ? 1 : 0;
+                if (bot_trace)
+                    fprintf(stderr, "BOT: slot=%d dci=%d kind=%d disk=%d buf=0x%llx len=%d active=%d\n",
+                            db, ep_idx, kind, ide.data ? 1 : 0,
+                            (unsigned long long)buf_addr, buf_len, bot.active);
                 if (kind == 1 && ide.data && buf_addr > 0 &&
                     buf_addr + (unsigned long long)buf_len <= guest_mem_size) {
                     unsigned char *buf = (unsigned char *)guest_mem + buf_addr;
@@ -857,8 +1222,9 @@ static void xhci_handle_doorbell(int db, unsigned int val) {
             } else if (tt == 5) { /* ISOCH (isochronous transfer) */
                 unsigned long long buf_addr = *(unsigned long long *)trb & ~0xFULL;
                 int buf_len = *(unsigned int *)(trb + 8) & 0x1FFFF;
+                int copied = 0;
                 /* UVC camera: write test pattern frame data */
-                if (kind == 3 && buf_addr > 0 && buf_addr + buf_len <= guest_mem_size) {
+                if (kind == XHCI_KIND_UVC && buf_addr > 0 && buf_addr + buf_len <= guest_mem_size) {
                     static unsigned char uvc_frame[UVC_FRAME_SIZE];
                     static int uvc_frame_ready = 0;
                     if (!uvc_frame_ready) {
@@ -867,6 +1233,19 @@ static void xhci_handle_doorbell(int db, unsigned int val) {
                     }
                     int n = buf_len < UVC_FRAME_SIZE ? buf_len : UVC_FRAME_SIZE;
                     memcpy((unsigned char *)guest_mem + buf_addr, uvc_frame, n);
+                    copied = n;
+                }
+                /* An isochronous TRB that asks for an event gets one, exactly
+                   as bulk and interrupt do. Without this the data lands and
+                   nothing says so, and a driver that waits for its completion
+                   waits forever -- the stub-that-agrees-with-itself shape,
+                   which is why no isochronous driver could be written against
+                   this model. Short packets report the residual in the event,
+                   so a frame smaller than the buffer is distinguishable from
+                   a full one. */
+                if (ctrl & 0x20) {
+                    int residual = buf_len - copied;
+                    xhci_post_event(32, db, residual > 0 ? 13 : 1, tr_dequeue);
                 }
                 tr_dequeue += 16;
             } else {
@@ -884,9 +1263,33 @@ static void xhci_init(void) {
     memset(&bot, 0, sizeof(bot));
     xhci.usbsts = 1;  /* HCH (halted) */
     xhci.portsc[0] = 1 | (4 << 10); /* CCS=1 (connected), speed=4 (SuperSpeed) — mass storage */
-    xhci.portsc[1] = 1 | (3 << 10); /* CCS=1 (connected), speed=3 (HighSpeed) — HID keyboard */
+    /* The HID keyboard is FULL SPEED, because that is what a real boot
+       keyboard is and what the machine this driver failed on reported.
+       It was HighSpeed here for no reason but convenience, and that is
+       exactly the difference that let a driver pass in emulation and go
+       silent on metal: full speed selects a different endpoint Interval
+       encoding and, behind a high-speed hub, needs a transaction
+       translator the driver never names. */
+    xhci.portsc[1] = 1 | (1 << 10); /* CCS=1 (connected), speed=1 (FullSpeed) — HID keyboard */
     xhci.portsc[2] = 1 | (3 << 10); /* CCS=1 (connected), speed=3 (HighSpeed) — UVC camera */
+    /* A HIGH-SPEED HUB, with a FULL-SPEED keyboard behind it. This is the
+       topology the driver has never been run against: everything else on
+       this controller is root-attached, so the hub walk in
+       apps/works/GopUsb.codex -- the code the real boot payload actually
+       runs, unlike the root-only walk in GopUsbKbd -- had no model to
+       execute against at all. A device here is reachable only through a
+       route string, and being full speed under a high-speed parent, only
+       through that hub's transaction translator. */
+    xhci.portsc[3] = 1 | (3 << 10); /* CCS=1 (connected), speed=3 (HighSpeed) — hub */
+    /* The bus walk takes the first keyboard it finds, and root port 2 comes
+       before the hub on port 4 -- so with both present the hub-attached
+       keyboard is never reached. Unplugging the root one makes the hub the
+       only route to a keyboard, which is what lets one test drive the hub
+       path with the SAME guest binary. The topology is the variable. */
+    if (xhci_no_root_kbd) xhci.portsc[1] = 0;
     xhci_next_slot = 1;
+    xhci.legacy_bios_owned = 1;   /* firmware owns it until a driver claims it */
+    xhci.legacy_os_owned = 0;
 }
 
 static unsigned int xhci_read(unsigned long long offset) {
@@ -896,7 +1299,14 @@ static unsigned int xhci_read(unsigned long long offset) {
         case 4:  return (XHCI_MAX_PORTS << 24) | XHCI_MAX_SLOTS;  /* HCSPARAMS1 */
         case 8:  return 0x0F;   /* HCSPARAMS2 */
         case 12: return 0;      /* HCSPARAMS3 */
-        case 16: return 0x20;   /* HCCPARAMS1: 64-bit addressing */
+        /* HCCPARAMS1. AC64 (bit 0) is now set and honest: every pointer this
+           model reads out of a context or a TRB is taken as 64-bit already,
+           so advertising 32-bit-only was a claim the code did not honour.
+           Bits 31:16 are xECP, the extended-capability offset in DWORDS from
+           the BAR base; zero used to say "no extended capabilities", which is
+           what stops a driver from ever finding USB Legacy Support and taking
+           ownership from firmware. It points at BAR+0x80 now. */
+        case 16: return (XHCI_XECP_DWORDS << 16) | 0x21;
         case 20: return 0x800;  /* DBOFF: doorbell array at offset 2048 */
         case 24: return 0x1000; /* RTSOFF: runtime regs at offset 4096 —
                                    clear of the port array at op+0x400,
@@ -905,6 +1315,16 @@ static unsigned int xhci_read(unsigned long long offset) {
                                    interrupter registers entirely */
         default: return 0;
         }
+    }
+    /* Extended capabilities, decoded before the operational block because
+       they sit inside its address range. */
+    if (offset >= XHCI_XECP_OFF && offset < XHCI_XECP_OFF + 8) {
+        if (offset == XHCI_XECP_OFF)
+            return 1                                        /* cap ID: USB Legacy Support */
+                 | (0 << 8)                                 /* next pointer: end of list */
+                 | ((xhci.legacy_bios_owned ? 1u : 0u) << 16)
+                 | ((xhci.legacy_os_owned ? 1u : 0u) << 24);
+        return 0;  /* USBLEGCTLSTS: no SMI sources modelled */
     }
     unsigned long long op_off = offset - XHCI_CAP_LEN;
     if (op_off < 0x400) {
@@ -944,6 +1364,16 @@ static unsigned int xhci_read(unsigned long long offset) {
 
 static void xhci_write(unsigned long long offset, unsigned int val) {
     if (offset < XHCI_CAP_LEN) return;
+    /* The legacy-support handoff: a driver sets the OS-owned bit, and
+       firmware answers by dropping its own. Both bits are real state, so a
+       driver that polls for the release sees it happen. */
+    if (offset >= XHCI_XECP_OFF && offset < XHCI_XECP_OFF + 8) {
+        if (offset == XHCI_XECP_OFF && (val & (1u << 24))) {
+            xhci.legacy_os_owned = 1;
+            xhci.legacy_bios_owned = 0;
+        }
+        return;
+    }
     unsigned long long op_off = offset - XHCI_CAP_LEN;
     if (op_off < 0x400) {
         switch ((int)op_off) {
@@ -1105,6 +1535,12 @@ static void hda_process_corb(void) {
     }
 }
 
+/* Cumulative count of PCM buffers handed to the DAC, readable by the guest at
+   HDA BAR offset 0x180. A headless test cannot hear the stream, so it plays a
+   known number of buffers and asserts this counter -- evidence the guest's PCM
+   reached the drain, independent of whether the host has a working speaker. */
+static unsigned int hda_drain_count = 0;
+
 static unsigned int hda_read(unsigned long long offset) {
     switch ((int)offset) {
     case 0x00: return 0x1101;  /* GCAP: OSS=1, ISS=1, 64OK -- matches SD0 output + SD1 mic */
@@ -1146,12 +1582,19 @@ static unsigned int hda_read(unsigned long long offset) {
     case 0xB2: return hda.sd1fmt;
     case 0xB8: return hda.sd1bdpl;
     case 0xBC: return hda.sd1bdpu;
+
+    case 0x180: return hda_drain_count;  /* buffers drained to the DAC (streaming evidence) */
     default: return 0;
     }
 }
 
 /* ══ Audio Output (waveOut) ══ */
-#define AUDIO_BUFS 4
+/* Eight ring buffers give a streaming guest (the C64 SID, one ~16 ms PCM
+   buffer per emulated frame) enough queued audio to ride out a frame that
+   renders slower than real time without an underrun click. audio_write blocks
+   only when all eight are in flight, which is what paces the guest to the
+   speaker. */
+#define AUDIO_BUFS 8
 #define AUDIO_BUF_SIZE 4096
 static HWAVEOUT wave_out = NULL;
 static WAVEHDR wave_hdrs[AUDIO_BUFS];
@@ -1217,6 +1660,7 @@ static void hda_drain_stream(void) {
         if (buf_addr > 0 && buf_addr + buf_len <= guest_mem_size && buf_len > 0) {
             audio_write((unsigned char *)guest_mem + buf_addr, buf_len);
             hda.sd0lpib += buf_len;
+            hda_drain_count++;   /* evidence: a buffer reached the DAC */
         }
         unsigned int ioc = *(unsigned int *)(entry + 12);
         if (ioc & 1) hda.sd0sts |= 4; /* IOC flag set — raise BCIS */
@@ -1379,12 +1823,54 @@ static void hda_write(unsigned long long offset, unsigned int val) {
 #define HPET_BAR_SIZE 0x1000
 
 static struct {
-    unsigned long long main_counter;
     unsigned int config;       /* general config: bit 0 = enable */
     unsigned int int_status;
     unsigned long long t0_config;
     unsigned long long t0_comparator;
+    int t0_armed;              /* comparator has been written since it last fired */
+    unsigned long long frozen; /* counter value carried across a stop */
 } hpet;
+
+/* The point the running counter measures from. Rolled forward every time
+   the counter is restarted, so a stop costs the guest no elapsed ticks. */
+static LARGE_INTEGER hpet_epoch;
+
+/* The main counter must advance at the rate the capability register
+   advertises. It used to return the raw QueryPerformanceCounter value
+   while GCAP claimed a 69841279 fs period, so every elapsed-time
+   calculation a guest did was wrong by the QPC/14.318MHz ratio -- on a
+   10 MHz QPC that is a clock running 30% slow, which reads as a machine
+   that is merely sluggish rather than as a broken timer.
+
+   The counter is measured from VM start so it begins near zero, and the
+   scaling is split into whole and fractional parts because delta *
+   HPET_HZ overflows 64 bits on a long run. */
+#define HPET_HZ 14318180ULL
+
+/* Raw elapsed count since the epoch below, in HPET ticks. */
+static unsigned long long hpet_raw(void) {
+    static LARGE_INTEGER freq;
+    LARGE_INTEGER pc;
+    unsigned long long delta;
+    if (!freq.QuadPart) QueryPerformanceFrequency(&freq);
+    QueryPerformanceCounter(&pc);
+    delta = (unsigned long long)(pc.QuadPart - hpet_epoch.QuadPart);
+    return (delta / (unsigned long long)freq.QuadPart) * HPET_HZ
+         + ((delta % (unsigned long long)freq.QuadPart) * HPET_HZ)
+           / (unsigned long long)freq.QuadPart;
+}
+
+/* ENABLE_CNF (general configuration bit 0) halts the main counter, and the
+   counter must hold its value across the stop rather than resuming as if
+   time had passed -- a guest that disables the HPET to read a consistent
+   64-bit value off a 32-bit bus, which is the ordinary reason to do it,
+   otherwise gets a counter that jumped while it was supposedly stopped.
+   `frozen` is the value at the moment of the stop; the epoch is rolled
+   forward on restart so the count continues from there. */
+static unsigned long long hpet_now(void) {
+    if (!(hpet.config & 1)) return hpet.frozen;
+    return hpet.frozen + hpet_raw();
+}
 
 static unsigned int hpet_read(unsigned long long offset) {
     switch ((int)offset) {
@@ -1392,16 +1878,8 @@ static unsigned int hpet_read(unsigned long long offset) {
     case 0x04: return 0x0429B17F;  /* period = 69841279 femtoseconds (~14.318 MHz) */
     case 0x10: return hpet.config;
     case 0x20: return hpet.int_status;
-    case 0xF0: { /* main counter low */
-        LARGE_INTEGER pc;
-        QueryPerformanceCounter(&pc);
-        return (unsigned int)(pc.QuadPart & 0xFFFFFFFF);
-    }
-    case 0xF4: {
-        LARGE_INTEGER pc;
-        QueryPerformanceCounter(&pc);
-        return (unsigned int)(pc.QuadPart >> 32);
-    }
+    case 0xF0: return (unsigned int)(hpet_now() & 0xFFFFFFFF);
+    case 0xF4: return (unsigned int)(hpet_now() >> 32);
     case 0x100: return (unsigned int)(hpet.t0_config & 0xFFFFFFFF);
     case 0x104: return (unsigned int)(hpet.t0_config >> 32);
     case 0x108: return (unsigned int)(hpet.t0_comparator & 0xFFFFFFFF);
@@ -1412,12 +1890,23 @@ static unsigned int hpet_read(unsigned long long offset) {
 
 static void hpet_write(unsigned long long offset, unsigned int val) {
     switch ((int)offset) {
-    case 0x10: hpet.config = val; break;
+    case 0x10: {
+        int was = hpet.config & 1, now = val & 1;
+        if (was && !now) {
+            hpet.frozen = hpet.frozen + hpet_raw();   /* stopping: bank it */
+        } else if (!was && now) {
+            QueryPerformanceCounter(&hpet_epoch);     /* starting: new epoch */
+        }
+        hpet.config = val;
+        break;
+    }
     case 0x20: hpet.int_status &= ~val; break; /* W1C */
     case 0x100: hpet.t0_config = (hpet.t0_config & 0xFFFFFFFF00000000ULL) | val; break;
     case 0x104: hpet.t0_config = (hpet.t0_config & 0xFFFFFFFFULL) | ((unsigned long long)val << 32); break;
-    case 0x108: hpet.t0_comparator = (hpet.t0_comparator & 0xFFFFFFFF00000000ULL) | val; break;
-    case 0x10C: hpet.t0_comparator = (hpet.t0_comparator & 0xFFFFFFFFULL) | ((unsigned long long)val << 32); break;
+    case 0x108: hpet.t0_comparator = (hpet.t0_comparator & 0xFFFFFFFF00000000ULL) | val;
+                hpet.t0_armed = 1; break;
+    case 0x10C: hpet.t0_comparator = (hpet.t0_comparator & 0xFFFFFFFFULL) | ((unsigned long long)val << 32);
+                hpet.t0_armed = 1; break;
     }
 }
 
@@ -1460,6 +1949,83 @@ static void ioapic_write(unsigned long long offset, unsigned int val) {
             if (hi) ioapic.redir[entry] = (ioapic.redir[entry] & 0xFFFFFFFFULL) | ((unsigned long long)val << 32);
             else ioapic.redir[entry] = (ioapic.redir[entry] & 0xFFFFFFFF00000000ULL) | val;
         }
+    }
+}
+
+/* ── Device interrupt queue ────────────────────────────────────────────
+
+   The redirection table used to be write-only storage: entries went in
+   and nothing ever walked them, so a device that raised a line had no
+   route to a vector and a guest that programmed the IOAPIC and waited
+   got nothing back.
+
+   A raised line resolves through its redirection entry to a vector,
+   which lands here rather than being injected on the spot. The BSP run
+   loop already owns one interrupt slot and the IF/interrupt-window
+   dance around it; injecting from a device poll would race that and drop
+   whichever vector lost. This queue lets the existing slot drain them in
+   order, one per lap, so the PIT tick and a device line no longer
+   overwrite each other. */
+#define DEVIRQ_QUEUE 16
+static struct {
+    int vec[DEVIRQ_QUEUE];
+    int head, tail;
+} devirq;
+
+static void devirq_push(int vector) {
+    int next = (devirq.tail + 1) % DEVIRQ_QUEUE;
+    if (next == devirq.head) return;   /* full: drop rather than wrap over unread */
+    devirq.vec[devirq.tail] = vector;
+    devirq.tail = next;
+}
+
+static int devirq_pop(void) {
+    int v;
+    if (devirq.head == devirq.tail) return -1;
+    v = devirq.vec[devirq.head];
+    devirq.head = (devirq.head + 1) % DEVIRQ_QUEUE;
+    return v;
+}
+
+/* Raise an IOAPIC line. Masked entries (bit 16) and entries whose vector
+   was never programmed are dropped -- a vector below 32 is a CPU
+   exception number and delivering one would fake a fault. */
+static void ioapic_raise(int irq) {
+    unsigned long long e;
+    int vector;
+    if (irq < 0 || irq >= IOAPIC_MAX_REDIR) return;
+    e = ioapic.redir[irq];
+    if (e & (1ULL << 16)) return;              /* masked */
+    vector = (int)(e & 0xFF);
+    if (vector < 32) return;
+    devirq_push(vector);
+}
+
+/* Comparator match. Called from the same poll the other devices use.
+   Level of modelling: timer 0 only (GCAP advertises one), TN_INT_ENB_CNF
+   (bit 2) gates delivery, TN_TYPE_CNF (bit 3) selects periodic, and
+   TN_INT_ROUTE_CNF (bits 9-13) picks the IOAPIC line. A one-shot fires
+   once per comparator write, which is what t0_armed tracks. */
+static void hpet_poll(void) {
+    int route, periodic;
+    if (!(hpet.config & 1)) return;            /* ENABLE_CNF clear: counter halted */
+    if (!hpet.t0_armed) return;
+    if (hpet_now() < hpet.t0_comparator) return;
+
+    hpet.int_status |= 1;
+    periodic = (hpet.t0_config >> 3) & 1;
+    route = (int)((hpet.t0_config >> 9) & 0x1F);
+    if ((hpet.t0_config >> 2) & 1) ioapic_raise(route);
+
+    if (periodic) {
+        /* Re-arm one period on from the deadline that just passed. The
+           period is the comparator's own value in periodic mode. */
+        unsigned long long now = hpet_now();
+        unsigned long long step = hpet.t0_comparator;
+        if (!step) { hpet.t0_armed = 0; return; }
+        while (hpet.t0_comparator <= now) hpet.t0_comparator += step;
+    } else {
+        hpet.t0_armed = 0;
     }
 }
 
@@ -1509,7 +2075,47 @@ static volatile LONG ap_wake_pending[SMP_MAX_CORES];
    interrupt, not a faithful bus-clock model. One tick per PIT period gives
    an AP the same preemption cadence the boot processor already has, which
    is the property the scheduler actually depends on. */
+/* The timer period used to be this constant whatever the guest programmed,
+   so Initial Count and the divide configuration were decoration: two guests
+   asking for periods an order of magnitude apart got the same one. The
+   period is derived now, and this survives only as the fallback for a timer
+   armed before its count is known, and as the scale the Current Count
+   register reads against. */
 #define LAPIC_TIMER_PERIOD_MS 55.0
+
+/* A modelled input frequency. Nothing here has a real bus clock to divide,
+   so one has to be chosen and stated: 100 MHz is the APIC bus frequency on
+   the hardware this layout imitates. It is a modelling choice, not a
+   measurement -- what the guest can rely on is that DOUBLING the initial
+   count doubles the period, which is what was untrue before. */
+#define LAPIC_INPUT_HZ 100000000.0
+
+/* A period is clamped into a range a VM can actually service. Below the
+   floor a guest could ask for a tick faster than the host can deliver and
+   spend the whole run in interrupt entry; above the ceiling a mistaken
+   count would park preemption for minutes and read as a hang. */
+#define LAPIC_PERIOD_MIN_MS 1.0
+#define LAPIC_PERIOD_MAX_MS 5000.0
+
+static double now_ms_for_timer(void);   /* defined below; Current Count needs it */
+
+/* SDM: the divide configuration is bits [3,1:0], and the encoding is not
+   sequential -- 0b1011 is divide-by-1, which sorts after 128. */
+static unsigned int lapic_divisor(unsigned int dcr) {
+    static const unsigned int tbl[8] = { 2, 4, 8, 16, 32, 64, 128, 1 };
+    return tbl[(((dcr & 0x8) >> 1) | (dcr & 0x3)) & 7];
+}
+
+static double lapic_period_ms(int cpu) {
+    double p;
+    if (!lapic_timers[cpu].init_count) return LAPIC_TIMER_PERIOD_MS;
+    p = (double)lapic_timers[cpu].init_count
+      * (double)lapic_divisor(lapic_timers[cpu].div_cfg)
+      * 1000.0 / LAPIC_INPUT_HZ;
+    if (p < LAPIC_PERIOD_MIN_MS) p = LAPIC_PERIOD_MIN_MS;
+    if (p > LAPIC_PERIOD_MAX_MS) p = LAPIC_PERIOD_MAX_MS;
+    return p;
+}
 
 static unsigned int lapic_read_cpu(int cpu, unsigned long long offset) {
     if (offset == 0x20) return (unsigned int)cpu << 24;
@@ -1520,7 +2126,21 @@ static unsigned int lapic_read_cpu(int cpu, unsigned long long offset) {
     if (cpu >= 0 && cpu < SMP_MAX_CORES) {
         if (offset == 0x320) return lapic_timers[cpu].lvt_timer;
         if (offset == 0x380) return lapic_timers[cpu].init_count;
-        if (offset == 0x390) return lapic_timers[cpu].init_count;
+        /* Current Count. This returned the Initial Count verbatim, so it
+           never fell: a guest spinning on it to wait out a period spun
+           forever, and one sampling deltas to calibrate measured zero
+           elapsed every time. Scale the remaining fraction of the period
+           the timer is actually pacing against. */
+        if (offset == 0x390) {
+            double rem;
+            if (!lapic_timers[cpu].init_count) return 0;
+            double period = lapic_period_ms(cpu);
+            rem = lapic_timers[cpu].next_fire_ms - now_ms_for_timer();
+            if (rem < 0.0) rem = 0.0;
+            if (rem > period) rem = period;
+            return (unsigned int)((double)lapic_timers[cpu].init_count
+                                  * rem / period);
+        }
         if (offset == 0x3E0) return lapic_timers[cpu].div_cfg;
     }
     return 0;
@@ -1575,13 +2195,26 @@ static void lapic_write_cpu(int cpu, unsigned long long offset, unsigned int val
         if (offset == 0x380) {
             lapic_timers[cpu].init_count = val;
             /* Arming the timer starts its first period from now. A zero
-               count disarms it, and must not leave a fire time behind. */
+               count disarms it, and must not leave a fire time behind.
+               The period comes from the count just written and the divide
+               configuration, so it must be computed after the store. */
             lapic_timers[cpu].next_fire_ms = val
-                ? now_ms_for_timer() + LAPIC_TIMER_PERIOD_MS : 0.0;
+                ? now_ms_for_timer() + lapic_period_ms(cpu) : 0.0;
             return;
         }
     }
     lapic_write(offset, val);
+}
+
+/* The boot processor's own LAPIC writes have to take the same route its
+   reads already do (lapic_read delegates to lapic_read_cpu(0)). They went
+   straight to lapic_write instead, which knows nothing about the timer
+   registers -- so arming the timer from the BSP set no initial count, and
+   the whole per-core timer register file was reachable only from an
+   application processor. Non-timer offsets still fall through to
+   lapic_write, so EOI, SIVR and the SIPI path are unchanged. */
+static void lapic_write_bsp(unsigned long long offset, unsigned int val) {
+    lapic_write_cpu(0, offset, val);
 }
 
 /* Is this core's LAPIC timer armed and unmasked? Bit 16 of the LVT is the
@@ -1600,7 +2233,7 @@ static int lapic_timer_due(int cpu, double now_ms) {
     if (!lapic_timer_armed(cpu)) return -1;
     if (now_ms < lapic_timers[cpu].next_fire_ms) return -1;
     if (lapic_timers[cpu].lvt_timer & (1u << 17))
-        lapic_timers[cpu].next_fire_ms = now_ms + LAPIC_TIMER_PERIOD_MS;
+        lapic_timers[cpu].next_fire_ms = now_ms + lapic_period_ms(cpu);
     else
         lapic_timers[cpu].init_count = 0;
     return (int)(lapic_timers[cpu].lvt_timer & 0xFF);
@@ -1616,13 +2249,24 @@ static void lapic_write(unsigned long long offset, unsigned int val) {
         int dest = (val >> 18) & 3;
         int vector = val & 0xFF;
         if (deliv == 6 && dest == 3) {
-            unsigned long long *entry_ptr = (unsigned long long *)((unsigned char *)guest_mem + 0x1000);
-            unsigned long long ap_entry = *entry_ptr;
-            unsigned long long *stack_table = (unsigned long long *)((unsigned char *)guest_mem + 0xF00);
-            if (ap_entry == 0) {
-                fprintf(stderr, "SMP: SIPI but no AP entry at 0x1000, ignoring\n");
-                return;
-            }
+            /* A start-up IPI carries a PAGE NUMBER, and the core it starts
+               begins executing at the first byte of that page IN REAL MODE,
+               with CS.selector = vector<<8, CS.base = vector<<12 and IP = 0.
+               Nothing else is handed over: no stack, no page tables, no
+               long mode, and no identity.
+
+               This used to read a full 64-bit entry address out of guest
+               memory at 0x1000 and drop the AP straight into long mode with
+               CR3, EFER, a GDT and its core id in RDI all supplied by the
+               host. That made SMP work here and guaranteed it could not work
+               on a physical machine, because on silicon the vector field is
+               the only channel there is. It also made the guest's own
+               trampoline untestable, which is why there wasn't one.
+
+               The guest now copies a real-mode trampoline into that page
+               before it sends this IPI, so every SMP test exercises the code
+               a physical machine would run. */
+            unsigned long long tramp = (unsigned long long)vector << 12;
             for (int i = 1; i < SMP_MAX_CORES && i <= lapic_state.ap_count; i++) {
                 if (lapic_state.ap_running[i]) continue;
                 lapic_state.ap_running[i] = 1;
@@ -1632,49 +2276,48 @@ static void lapic_write(unsigned long long offset, unsigned int val) {
                     lapic_state.ap_running[i] = 0;
                     continue;
                 }
-                unsigned long long ap_stack = stack_table[i];
-                if (ap_stack == 0) ap_stack = 0xC0000000ULL - (unsigned long long)i * 0x10000;
-                /* Ds,Es,Ss,Fs,Gs are indices 4..8. This loop used to run to 9,
-                   which is Cr0: it wrote a segment descriptor into Cr0's slot
-                   (Reg64 aliases Segment.Base, which is 0, so CR0 came out 0 --
-                   real mode, paging off) and pushed every control register one
-                   slot late, leaving EFER unset. An AP configured that way
-                   triple faults on its first instruction. */
+                /* Reset state, per the SDM's "Processor State After Reset"
+                   with the start-up vector applied to CS. Real mode means
+                   CR0.PE = 0, so no CR3, no CR4.PAE, no EFER and no GDT --
+                   the trampoline installs every one of them itself. RDI is
+                   NOT set: a core that is told its identity by the host is a
+                   core whose identity mechanism has never been tested, and
+                   the trampoline takes an id from a guest cell instead. */
                 WHV_REGISTER_NAME ap_names[] = {
                     WHvX64RegisterRip, WHvX64RegisterRsp, WHvX64RegisterRflags,
                     WHvX64RegisterCs, WHvX64RegisterDs, WHvX64RegisterEs,
                     WHvX64RegisterSs, WHvX64RegisterFs, WHvX64RegisterGs,
                     WHvX64RegisterCr0, WHvX64RegisterCr3, WHvX64RegisterCr4,
-                    WHvX64RegisterEfer, WHvX64RegisterGdtr, WHvX64RegisterIdtr,
-                    WHvX64RegisterRdi
+                    WHvX64RegisterEfer, WHvX64RegisterGdtr, WHvX64RegisterIdtr
                 };
-                WHV_REGISTER_VALUE ap_vals[16];
+                WHV_REGISTER_VALUE ap_vals[15];
                 memset(ap_vals, 0, sizeof(ap_vals));
-                ap_vals[0].Reg64 = ap_entry;
-                ap_vals[1].Reg64 = ap_stack;
+                ap_vals[0].Reg64 = 0;
+                ap_vals[1].Reg64 = 0;
                 ap_vals[2].Reg64 = 2;
-                ap_vals[3].Segment.Selector = 0x08;
-                ap_vals[3].Segment.Base = 0;
-                ap_vals[3].Segment.Limit = 0xFFFFFFFF;
-                ap_vals[3].Segment.Attributes = 0xA09B;
+                ap_vals[3].Segment.Selector = (unsigned short)(vector << 8);
+                ap_vals[3].Segment.Base = tramp;
+                ap_vals[3].Segment.Limit = 0xFFFF;
+                ap_vals[3].Segment.Attributes = 0x009B; /* 16-bit code, present */
                 for (int s = 4; s <= 8; s++) {
-                    ap_vals[s].Segment.Selector = 0x10;
+                    ap_vals[s].Segment.Selector = 0;
                     ap_vals[s].Segment.Base = 0;
-                    ap_vals[s].Segment.Limit = 0xFFFFFFFF;
-                    ap_vals[s].Segment.Attributes = 0xC093;
+                    ap_vals[s].Segment.Limit = 0xFFFF;
+                    ap_vals[s].Segment.Attributes = 0x0093; /* 16-bit data */
                 }
-                ap_vals[9].Reg64  = 0x80000011;  /* CR0:  PG | ET | PE           */
-                ap_vals[10].Reg64 = 0x8000;      /* CR3:  runtime PML4           */
-                ap_vals[11].Reg64 = 0x620;       /* CR4:  PAE|OSFXSR|OSXMMEXCPT  */
-                ap_vals[12].Reg64 = 0xD01;       /* EFER: SCE|LME|LMA|NXE        */
-                ap_vals[13].Table.Base = 0x100000 + 232;
-                ap_vals[13].Table.Limit = 23;
-                ap_vals[14].Table.Base = 0x6000; /* IDT, the same one the BSP uses */
-                ap_vals[14].Table.Limit = 4095;
-                ap_vals[15].Reg64 = (unsigned long long)i;
-                WHvSetVirtualProcessorRegisters(partition, i, ap_names, 16, ap_vals);
-                fprintf(stderr, "SMP: AP %d started, entry=0x%llx stack=0x%llx\n",
-                    i, ap_entry, ap_stack);
+                ap_vals[9].Reg64  = 0x10;        /* CR0:  ET only -- PE and PG clear */
+                ap_vals[10].Reg64 = 0;           /* CR3                              */
+                ap_vals[11].Reg64 = 0;           /* CR4                              */
+                ap_vals[12].Reg64 = 0;           /* EFER                             */
+                ap_vals[13].Table.Base = 0;      /* GDTR: the trampoline loads one   */
+                ap_vals[13].Table.Limit = 0xFFFF;
+                ap_vals[14].Table.Base = 0;      /* IDTR: real-mode IVT              */
+                ap_vals[14].Table.Limit = 0xFFFF;
+                HRESULT shr = WHvSetVirtualProcessorRegisters(partition, i, ap_names, 15, ap_vals);
+                if (FAILED(shr))
+                    fprintf(stderr, "SMP: AP %d real-mode SetRegs failed: 0x%lx\n", i, (unsigned long)shr);
+                fprintf(stderr, "SMP: AP %d started in real mode at %04x:0000 (0x%llx)\n",
+                    i, (unsigned int)(vector << 8), tramp);
                 lapic_state.ap_threads[i] = CreateThread(NULL, 0,
                     (LPTHREAD_START_ROUTINE)ap_thread_func,
                     (void*)(intptr_t)i, 0, NULL);
@@ -2201,15 +2844,15 @@ static int mmio_insn_len(const unsigned char *b, int n) {
 static int handle_device_mmio(WHV_RUN_VP_EXIT_CONTEXT *ctx) {
     unsigned long long gpa = ctx->MemoryAccess.Gpa;
     int access_type = ctx->MemoryAccess.AccessInfo.AccessType;
-    mmio_insn_t insn = mmio_decode(ctx->MemoryAccess.InstructionBytes,
-                                   ctx->MemoryAccess.InstructionByteCount);
-    int ilen = insn.len;
-    if (ilen == 0) {
-        fprintf(stderr, "MMIO: cannot size instruction at RIP=0x%llx (gpa=0x%llx), "
-                        "not stepping\n",
-            (unsigned long long)ctx->VpContext.Rip, gpa);
-        return 0;
-    }
+
+    /* Resolve the device BEFORE decoding. Most memory-access exits are not
+       device accesses at all: the guest heap is demand-paged, so the first
+       touch of every 2 MB page arrives here on its way to the demand-commit
+       in the run loop. Decoding first meant each of those printed a
+       cannot-size complaint naming a device fault that never happened -- one
+       line per page, thousands over a long compile, and reading exactly like
+       a livelock to anyone diagnosing a hang. A gpa outside every BAR is not
+       this function's business, so leave before spending the decode on it. */
 
     unsigned long long offset = 0;
     unsigned int (*read_fn)(unsigned long long) = NULL;
@@ -2229,10 +2872,19 @@ static int handle_device_mmio(WHV_RUN_VP_EXIT_CONTEXT *ctx) {
         read_fn = ioapic_read; write_fn = ioapic_write;
     } else if (gpa >= LAPIC_BAR && gpa < LAPIC_BAR + LAPIC_BAR_SIZE) {
         offset = gpa - LAPIC_BAR;
-        read_fn = lapic_read; write_fn = lapic_write;
+        read_fn = lapic_read; write_fn = lapic_write_bsp;
     }
 
     if (read_fn) {
+        mmio_insn_t insn = mmio_decode(ctx->MemoryAccess.InstructionBytes,
+                                       ctx->MemoryAccess.InstructionByteCount);
+        int ilen = insn.len;
+        if (ilen == 0) {
+            fprintf(stderr, "MMIO: cannot size instruction at RIP=0x%llx (gpa=0x%llx), "
+                            "not stepping\n",
+                (unsigned long long)ctx->VpContext.Rip, gpa);
+            return 0;
+        }
         /* A load must name a destination register; only a store can carry an
            immediate. RIP is fetched rather than taken from the exit context,
            and it is always the last name so the step below does not care
@@ -2314,6 +2966,46 @@ static unsigned long long uefi_image_size = 0; /* loaded PE size (BootServicesCo
 static int cmos_index = 0;        /* CMOS register selected via port 0x70 */
 static int rtc_lenient = 0;       /* -rtc-lenient: the old always-valid RTC */
 static unsigned int rtc_noise = 0x1234567u;
+static int rtc_fixed = 0;         /* -rtc <stamp>: the clock stands still */
+static SYSTEMTIME rtc_fixed_st;
+
+/* A guest that displays the time cannot be compared against a recorded frame,
+   because the frame carries the host's clock and the host's clock never
+   repeats. That is not a property of the guest -- it is machine state we
+   decline to control, and it was the stated reason GuiOS could have no golden.
+   -rtc takes it back: the emulated MC146818 answers a time the caller chose,
+   so a frame is a function of the program and the flags and nothing else.
+
+   The stamp is YYYY-MM-DDTHH:MM:SS (the T may be a space). Day-of-week is
+   COMPUTED from the date rather than accepted, because register 6 is readable
+   and a machine that answers a Tuesday for a Sunday is lying about something
+   nobody asked it to invent.
+
+   While it is set the update-in-progress simulation is OFF, and that is a real
+   loss, not an oversight: UIP is what makes an unguarded RTC read fail here
+   the way it fails on metal, and a frozen clock cannot express it. So -rtc is
+   for frames, never for testing the RTC itself -- anything asserting on clock
+   behaviour must run without it. */
+static int rtc_day_of_week(int y, int m, int d) {
+    /* Sakamoto. Valid for the Gregorian calendar; 0 = Sunday. */
+    static const int t[] = { 0, 3, 2, 5, 0, 3, 5, 1, 4, 6, 2, 4 };
+    if (m < 3) y -= 1;
+    return (y + y / 4 - y / 100 + y / 400 + t[m - 1] + d) % 7;
+}
+static int rtc_parse_fixed(const char *s) {
+    int y, mo, d, h, mi, se;
+    if (sscanf(s, "%d-%d-%dT%d:%d:%d", &y, &mo, &d, &h, &mi, &se) != 6 &&
+        sscanf(s, "%d-%d-%d %d:%d:%d", &y, &mo, &d, &h, &mi, &se) != 6) return 0;
+    if (mo < 1 || mo > 12 || d < 1 || d > 31) return 0;
+    if (h < 0 || h > 23 || mi < 0 || mi > 59 || se < 0 || se > 59) return 0;
+    memset(&rtc_fixed_st, 0, sizeof(rtc_fixed_st));
+    rtc_fixed_st.wYear = (WORD)y;   rtc_fixed_st.wMonth  = (WORD)mo;
+    rtc_fixed_st.wDay  = (WORD)d;   rtc_fixed_st.wHour   = (WORD)h;
+    rtc_fixed_st.wMinute = (WORD)mi; rtc_fixed_st.wSecond = (WORD)se;
+    rtc_fixed_st.wMilliseconds = 500;   /* mid-second: never update-in-progress */
+    rtc_fixed_st.wDayOfWeek = (WORD)rtc_day_of_week(y, mo, d);
+    return 1;
+}
 
 /* The MC146818 spends part of every second updating its time registers. For
    that window it raises Update-In-Progress (Status A bit 7) and the time
@@ -3628,8 +4320,11 @@ static int ne2k_handle_in(int port, int io_size) {
 
 /* Port forwarding: host listens, guest accepts */
 #define PORTFWD_MAX 8
+#define PF_TCP 0
+#define PF_UDP 1
 typedef struct {
     int active;
+    int proto;              /* PF_TCP or PF_UDP */
     SOCKET listen_sock;
     unsigned short host_port;
     unsigned short guest_port;
@@ -3656,12 +4351,63 @@ typedef struct {
     unsigned char dst_ip[4];
     unsigned short guest_port;
     unsigned short dst_port;
-    unsigned long seq_offset;  /* guest seq → host stream offset */
-    unsigned long ack_offset;
-    int state;  /* 0=unused, 1=connecting, 2=established, 3=fin_wait, 4=half-closed */
+    /* One convention, both directions: seq_offset lives in the GUEST's
+       sequence space and ack_offset in OURS. nat_poll_rx is the shared
+       emitter for every connection kind and has always read them that
+       way -- it sends ack_offset as its seq and seq_offset + 1 as its
+       ack. The port-forward path used to assign them the other way
+       round, so an inbound connection's data frames carried a sequence
+       number drawn from the guest's own space. It worked only because
+       the guest's stack does not validate the receive window. */
+    unsigned long seq_offset;  /* guest sequence space */
+    unsigned long ack_offset;  /* our sequence space */
+    int state;  /* 0=unused, 1=connecting, 2=established, 3=guest sent FIN, 4=host sent FIN */
     int forwarded; /* 1 = inbound port-forwarded connection */
     unsigned long guest_ack;  /* last ACK from guest (for forwarded conns) */
+    unsigned long guest_isn;  /* guest's SYN sequence, for the deferred SYN-ACK */
+    /* Bytes the guest handed us that the host socket has not taken yet:
+       either the connect has not completed or send() said WOULDBLOCK.
+       Dropping these is what made an outbound request vanish against any
+       peer that was not instantaneous. */
+    unsigned char *txbuf;
+    int txlen;
+    int txcap;
+    /* Proper TCP toward the guest (the direction codex-vm is the SENDER
+       for): a forwarded SYN and every injected data byte are held until
+       the guest ACKs them, and retransmitted on a timer if it does not.
+       Without this the injection was one-shot -- a SYN that arrived while
+       a single-threaded guest server was busy on another connection, or a
+       data frame the guest was not yet in a recv loop to read, was dropped
+       and never resent, so the request never arrived. rtxbuf holds the
+       un-ACKed host->guest bytes starting at our-sequence rtx_base;
+       rtx_acked is the highest of our sequence space the guest has
+       acknowledged; last_tx_ms and rtx_count drive and bound the timer. */
+    unsigned char *rtxbuf;
+    int rtxlen;
+    int rtxcap;
+    unsigned long rtx_base;
+    unsigned long rtx_acked;
+    double last_tx_ms;
+    int rtx_count;
+    /* When this connection became half-closed. Freeing on the closing
+       handshake alone is not enough: whichever side closes SECOND may
+       simply never be heard from -- a host client that disconnects
+       leaves the connection in state 4 waiting on a guest FIN that a
+       server with nothing more to say has no reason to send. A real
+       stack does not wait forever either; it times the state out. */
+    double closed_at_ms;
 } NatConn;
+
+/* Idle time, not total time: activity on a half-closed connection pushes
+   the deadline out (see the ACK path), so this only reaps silence. */
+#define NAT_HALF_CLOSED_TIMEOUT_MS 5000.0
+
+/* Retransmit interval and cap for host->guest SYN/data. The guest polls
+   its NIC fast, so a short interval delivers within its wait; the cap
+   bounds a connection whose guest never answers (it is freed and the host
+   client, which has its own timeout, retries). */
+#define NAT_RTO_MS 50.0
+#define NAT_MAX_RTX 240
 
 static NatConn nat_conns[NAT_MAX_CONN];
 static void portfwd_handle_synack(NatConn *c, unsigned long seq, unsigned long ack);
@@ -3675,10 +4421,114 @@ static NatConn *nat_find(unsigned short guest_port, unsigned short dst_port, uns
     return NULL;
 }
 
+static void nat_conn_free(NatConn *c);
+
 static NatConn *nat_alloc(void) {
+    int oldest = -1;
     for (int i = 0; i < NAT_MAX_CONN; i++)
-        if (!nat_conns[i].active) { memset(&nat_conns[i], 0, sizeof(NatConn)); return &nat_conns[i]; }
+        if (!nat_conns[i].active) {
+            /* The slot may still own a buffer from its previous tenant --
+               memset alone would leak it and hand the next connection a
+               dangling pointer. */
+            if (nat_conns[i].txbuf) free(nat_conns[i].txbuf);
+            if (nat_conns[i].rtxbuf) free(nat_conns[i].rtxbuf);
+            memset(&nat_conns[i], 0, sizeof(NatConn));
+            return &nat_conns[i];
+        }
+    /* Nothing free. Rather than refuse the connection in silence, take
+       the longest-standing half-closed slot: it is a connection one side
+       has already finished with, and holding it is worth less than
+       serving the one being asked for now. */
+    for (int i = 0; i < NAT_MAX_CONN; i++) {
+        if (nat_conns[i].state != 3 && nat_conns[i].state != 4) continue;
+        if (oldest < 0 || nat_conns[i].closed_at_ms < nat_conns[oldest].closed_at_ms)
+            oldest = i;
+    }
+    if (oldest >= 0) {
+        nat_conn_free(&nat_conns[oldest]);
+        memset(&nat_conns[oldest], 0, sizeof(NatConn));
+        return &nat_conns[oldest];
+    }
+    fprintf(stderr, "NAT: connection table full (%d live) -- dropping\n", NAT_MAX_CONN);
     return NULL;
+}
+
+/* Release a connection: close the socket, drop any unsent bytes, and make
+   the slot reusable. Nothing did this for a connection the guest had
+   closed -- the slot stayed active with its socket open, so 64 ordinary
+   closes exhausted the table and every connection after that was dropped
+   in silence. */
+static void nat_conn_free(NatConn *c) {
+    if (c->sock != INVALID_SOCKET && c->sock != 0) closesocket(c->sock);
+    c->sock = INVALID_SOCKET;
+    if (c->txbuf) { free(c->txbuf); c->txbuf = NULL; }
+    c->txlen = 0;
+    c->txcap = 0;
+    if (c->rtxbuf) { free(c->rtxbuf); c->rtxbuf = NULL; }
+    c->rtxlen = 0;
+    c->rtxcap = 0;
+    c->active = 0;
+    c->state = 0;
+}
+
+/* Append host->guest bytes to the retransmit buffer, tagged with the
+   our-sequence of the first byte, so they can be resent until the guest
+   ACKs them. Bytes are contiguous, so rtx_base marks the first un-ACKed
+   byte and the buffer grows behind it. */
+static void nat_rtx_append(NatConn *c, unsigned long seq, const unsigned char *p, int n) {
+    if (n <= 0) return;
+    if (c->rtxlen == 0) c->rtx_base = seq;
+    if (c->rtxlen + n > c->rtxcap) {
+        int cap = c->rtxcap ? c->rtxcap : 4096;
+        while (cap < c->rtxlen + n) cap *= 2;
+        unsigned char *nb = (unsigned char *)realloc(c->rtxbuf, cap);
+        if (!nb) return;
+        c->rtxbuf = nb;
+        c->rtxcap = cap;
+    }
+    memcpy(c->rtxbuf + c->rtxlen, p, n);
+    c->rtxlen += n;
+}
+
+/* The guest ACKed up to `ack` in our sequence space: drop everything the
+   buffer holds below it. */
+static void nat_rtx_ack(NatConn *c, unsigned long ack) {
+    if ((long)(ack - c->rtx_acked) > 0) c->rtx_acked = ack;
+    if (c->rtxlen <= 0) return;
+    long drop = (long)(ack - c->rtx_base);
+    if (drop <= 0) return;
+    if (drop >= c->rtxlen) { c->rtxlen = 0; return; }
+    memmove(c->rtxbuf, c->rtxbuf + drop, (size_t)(c->rtxlen - drop));
+    c->rtxlen -= drop;
+    c->rtx_base = ack;
+}
+
+/* Queue bytes the host socket could not take yet. */
+static void nat_tx_queue(NatConn *c, const unsigned char *p, int n) {
+    if (n <= 0) return;
+    if (c->txlen + n > c->txcap) {
+        int cap = c->txcap ? c->txcap : 4096;
+        unsigned char *nb;
+        while (cap < c->txlen + n) cap *= 2;
+        nb = (unsigned char *)realloc(c->txbuf, (size_t)cap);
+        if (!nb) return;            /* out of memory: drop, but do not corrupt */
+        c->txbuf = nb;
+        c->txcap = cap;
+    }
+    memcpy(c->txbuf + c->txlen, p, (size_t)n);
+    c->txlen += n;
+}
+
+/* Push as much of the pending buffer as the socket will take. A partial
+   send or WSAEWOULDBLOCK leaves the remainder queued for the next poll
+   rather than discarding it, which is what used to happen. */
+static void nat_tx_flush(NatConn *c) {
+    int sent;
+    if (c->txlen <= 0) return;
+    sent = send(c->sock, (const char *)c->txbuf, c->txlen, 0);
+    if (sent <= 0) return;          /* WOULDBLOCK or error: keep it all */
+    if (sent < c->txlen) memmove(c->txbuf, c->txbuf + sent, (size_t)(c->txlen - sent));
+    c->txlen -= sent;
 }
 
 /* Pending RX frames for the guest */
@@ -3923,6 +4773,221 @@ static void nat_handle_dns(unsigned char *q, int qlen, unsigned short guest_port
     nat_build_udp_frame(ne2k.par, dns_ip, guest_ip, 53, guest_port, resp, n);
 }
 
+/* ------------------------------------------------------------------ */
+/* General UDP forwarding.                                             */
+/*                                                                     */
+/* Until this existed the guest's UDP was answered for destination     */
+/* port 53 and dropped for every other port, with a printed reason. So */
+/* CoAP could not reach a server, NTP could not reach a time source,   */
+/* and any datagram protocol at all was untestable under this          */
+/* emulator -- which is a property of the emulator being read as a     */
+/* property of the guest.                                              */
+/*                                                                     */
+/* A UDP flow is not a connection and is not modelled as one. There is */
+/* no handshake, no sequence space and nothing to retransmit: a flow   */
+/* is a host socket remembered long enough for a reply to come back to */
+/* the port the guest sent from. It is keyed the same way a NatConn is */
+/* -- guest port, destination port, destination address -- and reaped  */
+/* on idleness rather than on any close, because a datagram peer never */
+/* says goodbye.                                                       */
+/* ------------------------------------------------------------------ */
+#define UDP_MAX_FLOW 32
+#define UDP_FLOW_IDLE_MS 30000.0
+
+typedef struct {
+    int active;
+    SOCKET sock;
+    unsigned char dst_ip[4];
+    unsigned short guest_port;
+    unsigned short dst_port;
+    double last_ms;
+} UdpFlow;
+
+static UdpFlow udp_flows[UDP_MAX_FLOW];
+
+/* The gateway address IS the host, which is the convention every
+   user-mode NAT uses and the one this emulator advertises in DHCP and
+   answers ARP for -- but nothing ever translated it, so a guest that
+   addressed 10.0.2.2 had its packet handed to the host's own stack as a
+   literal destination and it went nowhere. A service running on the
+   machine codex-vm is running on is reachable at 127.0.0.1 from here,
+   so that is what the gateway address means when a host socket is
+   opened. Every other address is passed through untouched. */
+static void nat_host_addr(unsigned char *dst_ip, struct sockaddr_in *addr) {
+    memset(addr, 0, sizeof(*addr));
+    addr->sin_family = AF_INET;
+    if (dst_ip[0] == NAT_GW_IP0 && dst_ip[1] == NAT_GW_IP1 &&
+        dst_ip[2] == NAT_GW_IP2 && dst_ip[3] == NAT_GW_IP3) {
+        unsigned char loopback[4] = {127, 0, 0, 1};
+        memcpy(&addr->sin_addr, loopback, 4);
+    } else {
+        memcpy(&addr->sin_addr, dst_ip, 4);
+    }
+}
+
+static void udp_flow_free(UdpFlow *f) {
+    if (!f->active) return;
+    if (f->sock != INVALID_SOCKET) closesocket(f->sock);
+    memset(f, 0, sizeof(UdpFlow));
+}
+
+static UdpFlow *udp_flow_find(unsigned short guest_port, unsigned short dst_port, unsigned char *dst_ip) {
+    for (int i = 0; i < UDP_MAX_FLOW; i++) {
+        UdpFlow *f = &udp_flows[i];
+        if (f->active && f->guest_port == guest_port && f->dst_port == dst_port &&
+            memcmp(f->dst_ip, dst_ip, 4) == 0) return f;
+    }
+    return NULL;
+}
+
+/* No free slot means the oldest one goes. A flow is cheap and silent;
+   refusing the new datagram instead would make the failure look like
+   packet loss, which is exactly the thing a UDP caller is least able to
+   tell from a bug. */
+static UdpFlow *udp_flow_alloc(void) {
+    int oldest = -1;
+    for (int i = 0; i < UDP_MAX_FLOW; i++)
+        if (!udp_flows[i].active) { memset(&udp_flows[i], 0, sizeof(UdpFlow)); return &udp_flows[i]; }
+    for (int i = 0; i < UDP_MAX_FLOW; i++)
+        if (oldest < 0 || udp_flows[i].last_ms < udp_flows[oldest].last_ms) oldest = i;
+    udp_flow_free(&udp_flows[oldest]);
+    return &udp_flows[oldest];
+}
+
+/* ------------------------------------------------------------------ */
+/* Inbound UDP: a host client, a guest server.                         */
+/*                                                                     */
+/* The outbound direction above makes the guest a datagram CLIENT. This */
+/* makes it a SERVER, which is the role an IoT device actually plays -- */
+/* a CoAP endpoint and an LwM2M client are both servers that a          */
+/* management peer pokes.                                              */
+/*                                                                     */
+/* The guest must be able to answer, and a datagram carries no          */
+/* connection to answer along, so each distinct host client is given a  */
+/* SYNTHETIC source port on the gateway. The guest replies to that port */
+/* the way it would reply to any peer, and the reply is matched back to */
+/* the client by it. Without the synthetic port there is nothing in the */
+/* guest's reply that names which of several host clients it is for.   */
+/* ------------------------------------------------------------------ */
+#define UDP_IN_MAX 16
+#define UDP_IN_PORT_BASE 40000
+
+typedef struct {
+    int active;
+    SOCKET sock;                /* the forward's listening socket, replied on */
+    struct sockaddr_in client;  /* the host peer */
+    unsigned short synth_port;  /* our source port toward the guest */
+    unsigned short guest_port;
+    double last_ms;
+} UdpInFlow;
+
+static UdpInFlow udp_in_flows[UDP_IN_MAX];
+static unsigned short udp_in_next_port = UDP_IN_PORT_BASE;
+
+static UdpInFlow *udp_in_find_client(struct sockaddr_in *c, unsigned short guest_port) {
+    for (int i = 0; i < UDP_IN_MAX; i++) {
+        UdpInFlow *f = &udp_in_flows[i];
+        if (f->active && f->guest_port == guest_port &&
+            f->client.sin_addr.s_addr == c->sin_addr.s_addr &&
+            f->client.sin_port == c->sin_port) return f;
+    }
+    return NULL;
+}
+
+/* The guest is answering: find the client whose synthetic port it used. */
+static UdpInFlow *udp_in_find_synth(unsigned short synth_port) {
+    for (int i = 0; i < UDP_IN_MAX; i++) {
+        UdpInFlow *f = &udp_in_flows[i];
+        if (f->active && f->synth_port == synth_port) return f;
+    }
+    return NULL;
+}
+
+static UdpInFlow *udp_in_alloc(void) {
+    int oldest = -1;
+    for (int i = 0; i < UDP_IN_MAX; i++)
+        if (!udp_in_flows[i].active) { memset(&udp_in_flows[i], 0, sizeof(UdpInFlow)); return &udp_in_flows[i]; }
+    for (int i = 0; i < UDP_IN_MAX; i++)
+        if (oldest < 0 || udp_in_flows[i].last_ms < udp_in_flows[oldest].last_ms) oldest = i;
+    memset(&udp_in_flows[oldest], 0, sizeof(UdpInFlow));
+    return &udp_in_flows[oldest];
+}
+
+/* Guest -> host. The socket is left unconnected, so a server that
+   answers from a different source port still reaches us; the reply is
+   matched to the flow by the socket it arrives on and not by the peer's
+   address. */
+static void nat_handle_udp_tx(unsigned short sport, unsigned short dport,
+                              unsigned char *dst_ip, unsigned char *payload, int payload_len) {
+    /* A datagram addressed to a synthetic port is the guest ANSWERING a
+       host client, not opening a flow of its own. Checked first, because
+       treating it as outbound would open a host socket toward a port
+       nothing is listening on and drop the reply. */
+    UdpInFlow *in = udp_in_find_synth(dport);
+    if (in) {
+        in->last_ms = now_ms_for_timer();
+        int sent = sendto(in->sock, (const char*)payload, payload_len, 0,
+                          (struct sockaddr*)&in->client, sizeof(in->client));
+        if (sent < 0)
+            fprintf(stderr, "PORTFWD UDP: reply sendto failed err=%d (guest:%d)\n",
+                    WSAGetLastError(), sport);
+        return;
+    }
+
+    UdpFlow *f = udp_flow_find(sport, dport, dst_ip);
+    if (!f) {
+        f = udp_flow_alloc();
+        f->sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+        if (f->sock == INVALID_SOCKET) {
+            fprintf(stderr, "NAT UDP: socket failed for guest:%d -> %d\n", sport, dport);
+            memset(f, 0, sizeof(UdpFlow));
+            return;
+        }
+        u_long nb = 1;
+        ioctlsocket(f->sock, FIONBIO, &nb);
+        f->active = 1;
+        f->guest_port = sport;
+        f->dst_port = dport;
+        memcpy(f->dst_ip, dst_ip, 4);
+        fprintf(stderr, "NAT UDP: flow guest:%d -> %d.%d.%d.%d:%d\n",
+                sport, dst_ip[0], dst_ip[1], dst_ip[2], dst_ip[3], dport);
+    }
+    f->last_ms = now_ms_for_timer();
+
+    struct sockaddr_in addr;
+    nat_host_addr(dst_ip, &addr);
+    addr.sin_port = htons(dport);
+    int sent = sendto(f->sock, (const char*)payload, payload_len, 0,
+                      (struct sockaddr*)&addr, sizeof(addr));
+    if (sent < 0)
+        fprintf(stderr, "NAT UDP: sendto failed err=%d (guest:%d -> %d)\n",
+                WSAGetLastError(), sport, dport);
+}
+
+/* Host -> guest. One datagram per poll per flow keeps a chatty peer from
+   starving the others and keeps the rx queue bounded. */
+static void udp_poll_rx(void) {
+    unsigned char guest_ip[4] = {NAT_GUEST_IP0, NAT_GUEST_IP1, NAT_GUEST_IP2, NAT_GUEST_IP3};
+    double now = now_ms_for_timer();
+    for (int i = 0; i < UDP_MAX_FLOW; i++) {
+        UdpFlow *f = &udp_flows[i];
+        if (!f->active) continue;
+        if (now - f->last_ms > UDP_FLOW_IDLE_MS) { udp_flow_free(f); continue; }
+        if (rx_queue_count >= RX_QUEUE_SIZE - 1) continue;
+        unsigned char buf[1472];
+        struct sockaddr_in from;
+        int fromlen = sizeof(from);
+        int n = recvfrom(f->sock, (char*)buf, sizeof(buf), 0, (struct sockaddr*)&from, &fromlen);
+        if (n <= 0) continue;
+        f->last_ms = now;
+        /* The datagram is presented as coming from the address the guest
+           addressed, not from wherever the host socket heard it. The
+           guest asked 10.0.2.2 and must hear 10.0.2.2 back or its own
+           demux will not match. */
+        nat_build_udp_frame(ne2k.par, f->dst_ip, guest_ip, f->dst_port, f->guest_port, buf, n);
+    }
+}
+
 /* Handle a TX frame from the guest */
 static void nat_handle_tx(unsigned char *frame, int len) {
     if (len < 14) return;
@@ -3945,6 +5010,29 @@ static void nat_handle_tx(unsigned char *frame, int len) {
     unsigned char *src_ip = ip + 12;
     unsigned char *dst_ip = ip + 16;
 
+    /* THE IP TOTAL LENGTH IS AUTHORITATIVE, NOT THE FRAME LENGTH.
+     *
+     * A payload length derived from `len` counts every byte the wire
+     * happened to carry, and the wire pads: Ethernet has a 60-byte minimum
+     * frame, and an NE2000's transmit byte count is a 16-bit DMA count that
+     * a driver may round up. Either way the padding lands past the real
+     * payload and is delivered to the peer as data.
+     *
+     * It was invisible for as long as everything here spoke a
+     * length-prefixed framed protocol: the reader takes the count it was
+     * given and never notices trailing bytes. TLS is a byte STREAM, so a
+     * phantom byte after one record is the first byte of the next record
+     * header, and the connection desynchronises exactly one record in.
+     * Found by openssl, which read `00 17 03 03 00` as a record header and
+     * answered `bad record type`; the guest's own record was 127 bytes, an
+     * odd number, and arrived as 128.
+     *
+     * Clamp to what actually arrived so a truncated or lying header cannot
+     * walk us off the end of the buffer. */
+    int ip_total_len = (ip[2] << 8) | ip[3];
+    if (ip_total_len < ip_hdr_len) ip_total_len = ip_hdr_len;
+    if (ip_total_len > len - 14) ip_total_len = len - 14;
+
     if (ip_proto == 6 && len >= 14 + ip_hdr_len + 20) {
         /* TCP */
         unsigned char *tcp = ip + ip_hdr_len;
@@ -3954,7 +5042,8 @@ static void nat_handle_tx(unsigned char *frame, int len) {
         unsigned long ack = ((unsigned long)tcp[8] << 24) | (tcp[9] << 16) | (tcp[10] << 8) | tcp[11];
         int tcp_hdr_len = ((tcp[12] >> 4) & 0xF) * 4;
         int flags = tcp[13];
-        int payload_len = len - 14 - ip_hdr_len - tcp_hdr_len;
+        int payload_len = ip_total_len - ip_hdr_len - tcp_hdr_len;
+        if (payload_len < 0) payload_len = 0;
         unsigned char *payload = tcp + tcp_hdr_len;
 
         unsigned char guest_ip[4] = {NAT_GUEST_IP0, NAT_GUEST_IP1, NAT_GUEST_IP2, NAT_GUEST_IP3};
@@ -3978,8 +5067,9 @@ static void nat_handle_tx(unsigned char *frame, int len) {
             c->guest_port = sport;
             c->dst_port = dport;
             memcpy(c->dst_ip, dst_ip, 4);
-            c->seq_offset = seq;
-            c->ack_offset = 1000000;
+            c->seq_offset = seq;        /* guest sequence space */
+            c->ack_offset = 1000000;    /* our sequence space */
+            c->guest_isn = seq;
             c->state = 1;
             c->forwarded = 0;
 
@@ -3989,19 +5079,20 @@ static void nat_handle_tx(unsigned char *frame, int len) {
             u_long nb = 1;
             ioctlsocket(c->sock, FIONBIO, &nb);
             struct sockaddr_in addr;
-            memset(&addr, 0, sizeof(addr));
-            addr.sin_family = AF_INET;
+            /* Same gateway-is-the-host translation the UDP path uses, so
+               a guest reaches a service on this machine at the address
+               this NAT tells it the gateway is. */
+            nat_host_addr(dst_ip, &addr);
             addr.sin_port = htons(dport);
-            memcpy(&addr.sin_addr, dst_ip, 4);
             connect(c->sock, (struct sockaddr*)&addr, sizeof(addr));
 
-            /* Send SYN-ACK back to guest */
-            nat_build_tcp_frame(ne2k.par, dst_ip, guest_ip,
-                                dport, sport,
-                                c->ack_offset, seq + 1,
-                                0x12, /* SYN+ACK */
-                                NULL, 0);
-            c->state = 2;
+            /* The SYN-ACK used to go out here, before the non-blocking
+               connect had completed -- so the guest believed it had a
+               connection to a socket that might still be resolving, sent
+               its first request into it, and lost the request. The
+               handshake is finished in nat_poll_connect once the socket
+               is actually writable; the guest simply waits, which is
+               what a real network makes it do anyway. */
         }
         else if ((flags & 0x01) && !(flags & 0x02)) {
             /* FIN — guest is done sending. Gracefully half-close the host
@@ -4014,35 +5105,59 @@ static void nat_handle_tx(unsigned char *frame, int len) {
                                     ack, seq + 1,
                                     0x11, /* FIN+ACK */
                                     NULL, 0);
+                /* Anything still queued belongs to the peer before the
+                   send side goes down. */
+                nat_tx_flush(c);
                 shutdown(c->sock, SD_SEND);
-                if (c->state == 4) { closesocket(c->sock); c->active = 0; }
-                else c->state = 3;
+                if (c->state == 4) nat_conn_free(c);
+                else { c->state = 3; c->closed_at_ms = now_ms_for_timer(); }
             }
         }
         else if (flags & 0x10) {
             /* ACK (possibly with data) */
             NatConn *c = nat_find(sport, dport, dst_ip);
-            if (c && payload_len > 0 && (c->state == 2 || c->state == 4)) {
-                /* Forward data to host */
-                send(c->sock, (char*)payload, payload_len, 0);
-                /* ACK the data */
-                nat_build_tcp_frame(ne2k.par, dst_ip, guest_ip,
-                                    dport, sport,
-                                    ack, seq + payload_len,
-                                    0x10, /* ACK */
-                                    NULL, 0);
+            if (c) {
+                /* The guest acknowledging our host->guest data: release
+                   what it has taken from the retransmit buffer so we stop
+                   resending it. A bare ACK (no payload) is the common case
+                   here -- the guest ACKing a request we injected -- which
+                   is why this sits outside the payload branch. */
+                if (c->forwarded) nat_rtx_ack(c, ack);
+                if (payload_len > 0 &&
+                    (c->state == 1 || c->state == 2 || c->state == 4)) {
+                    /* Queue, then push what the socket will take. The return
+                       value of send() used to be discarded, so a blocked or
+                       partial write was reported to the guest as delivered.
+                       Data that arrives while the connect is still in flight
+                       (state 1) is held rather than sent into a socket that
+                       is not connected yet. */
+                    nat_tx_queue(c, payload, payload_len);
+                    if (c->state != 1) nat_tx_flush(c);
+                    /* A half-closed connection the guest is still writing to
+                       is not idle, and the reaper must not cut it off
+                       mid-send. Activity pushes the deadline out, so what
+                       times out is silence rather than duration. */
+                    if (c->state == 4) c->closed_at_ms = now_ms_for_timer();
+                    /* ACK the data: we have taken responsibility for it. */
+                    nat_build_tcp_frame(ne2k.par, dst_ip, guest_ip,
+                                        dport, sport,
+                                        ack, seq + payload_len,
+                                        0x10, /* ACK */
+                                        NULL, 0);
+                }
             }
         }
 
         if (flags & 0x04) {
             /* RST */
             NatConn *c = nat_find(sport, dport, dst_ip);
-            if (c) { closesocket(c->sock); c->active = 0; }
+            if (c) nat_conn_free(c);
         }
     }
     else if (ip_proto == 17 && len >= 14 + ip_hdr_len + 8) {
-        /* UDP. DNS is answered; anything else is still dropped, and this
-           says so rather than leaving an empty block that reads as done. */
+        /* UDP. Port 53 is answered locally by the resolver stub; every
+           other port is forwarded to a host socket. Both halves are real
+           now -- this branch used to serve DNS and drop the rest. */
         unsigned char *udp = ip + ip_hdr_len;
         unsigned short sport = (udp[0] << 8) | udp[1];
         unsigned short dport = (udp[2] << 8) | udp[3];
@@ -4050,13 +5165,51 @@ static void nat_handle_tx(unsigned char *frame, int len) {
         int payload_len = udp_len - 8;
         int avail = len - 14 - ip_hdr_len - 8;
         if (payload_len > avail) payload_len = avail;
+        if (payload_len < 0) payload_len = 0;
 
         if (dport == 53 && payload_len > 0) {
             nat_handle_dns(udp + 8, payload_len, sport, dst_ip);
         } else {
-            fprintf(stderr, "NAT UDP: dropped (only port 53 is served) dport=%d len=%d\n",
-                    dport, payload_len);
+            nat_handle_udp_tx(sport, dport, dst_ip, udp + 8, payload_len);
         }
+    }
+}
+
+/* Finish the handshake for outbound connections whose host socket has
+   now connected, and push anything the guest sent in the meantime. A
+   socket that failed to connect is reset toward the guest rather than
+   left to look established forever. */
+static void nat_poll_connect(void) {
+    unsigned char guest_ip[4] = {NAT_GUEST_IP0, NAT_GUEST_IP1, NAT_GUEST_IP2, NAT_GUEST_IP3};
+    for (int i = 0; i < NAT_MAX_CONN; i++) {
+        NatConn *c = &nat_conns[i];
+        fd_set wr, ex;
+        struct timeval tv;
+        if (!c->active || c->state != 1 || c->forwarded) continue;
+
+        FD_ZERO(&wr); FD_ZERO(&ex);
+        FD_SET(c->sock, &wr); FD_SET(c->sock, &ex);
+        tv.tv_sec = 0; tv.tv_usec = 0;
+        if (select(0, NULL, &wr, &ex, &tv) <= 0) continue;
+
+        if (FD_ISSET(c->sock, &ex)) {
+            nat_build_tcp_frame(ne2k.par, c->dst_ip, guest_ip,
+                                c->dst_port, c->guest_port,
+                                c->ack_offset, c->seq_offset + 1,
+                                0x04, /* RST */
+                                NULL, 0);
+            fprintf(stderr, "NAT: connect failed for guest port %d\n", c->guest_port);
+            nat_conn_free(c);
+            continue;
+        }
+        /* Writable: the connect completed. Now the guest may be told. */
+        nat_build_tcp_frame(ne2k.par, c->dst_ip, guest_ip,
+                            c->dst_port, c->guest_port,
+                            c->ack_offset, c->guest_isn + 1,
+                            0x12, /* SYN+ACK */
+                            NULL, 0);
+        c->state = 2;
+        nat_tx_flush(c);
     }
 }
 
@@ -4065,35 +5218,175 @@ static void nat_poll_rx(void) {
     unsigned char guest_ip[4] = {NAT_GUEST_IP0, NAT_GUEST_IP1, NAT_GUEST_IP2, NAT_GUEST_IP3};
     for (int i = 0; i < NAT_MAX_CONN; i++) {
         NatConn *c = &nat_conns[i];
-        if (!c->active || (c->state != 2 && c->state != 4)) continue;
+        if (!c->active) continue;
+        /* A half-closed connection whose other side never spoke again is
+           reaped here. Without this the slot is held for the life of the
+           VM by a peer that has simply gone away, which is the ordinary
+           case for a client that disconnects after one request. */
+        if ((c->state == 3 || c->state == 4) &&
+            now_ms_for_timer() - c->closed_at_ms > NAT_HALF_CLOSED_TIMEOUT_MS) {
+            nat_conn_free(c);
+            continue;
+        }
+        /* Retry anything the socket would not take last time. */
+        if (c->state == 2 || c->state == 4) nat_tx_flush(c);
+        /* State 3 is the guest having sent FIN. It can still RECEIVE, and
+           it is also the state that used to be skipped here -- which is
+           why such a connection was never read again, never closed, and
+           never gave its slot back. State 4 means the host already sent
+           its FIN, so there is nothing left to read. */
+        if (c->state != 2 && c->state != 3) continue;
         if (rx_queue_count >= RX_QUEUE_SIZE - 1) { continue; }
         unsigned char buf[1400];
         int n = recv(c->sock, (char*)buf, sizeof(buf), 0);
+        /* Forwarded connections are the ones whose delivery has been in
+           question, so say plainly what recv answered on them rather than
+           leaving it to be inferred from which frames appeared. Bounded so
+           a busy run does not drown in it. */
+        if (c->forwarded) {
+            static int fwd_rx_dbg = 0;
+            if (fwd_rx_dbg++ < 40)
+                fprintf(stderr, "PORTFWD recv: n=%d err=%d state=%d gport=%d dport=%d\n",
+                        n, (n < 0 ? WSAGetLastError() : 0), c->state, c->guest_port, c->dst_port);
+        }
         if (n < 0) {
+            int werr = WSAGetLastError();
             static int neg_count = 0;
-            if (neg_count++ < 5) fprintf(stderr, "NAT recv: n=%d err=%d state=%d sock=%lld\n", n, WSAGetLastError(), c->state, (long long)c->sock);
+            if (neg_count++ < 5) fprintf(stderr, "NAT recv: n=%d err=%d state=%d sock=%lld\n", n, werr, c->state, (long long)c->sock);
+            /* WSAEWOULDBLOCK is the ordinary "nothing to read right now" and
+               must not close anything. ANY OTHER error means the socket is
+               dead -- overwhelmingly WSAECONNRESET from a host client that
+               gave up waiting.
+
+               Until this existed, that case was printed and then ignored: the
+               connection stayed active in the table, was polled forever, and
+               never gave back its slot or its guest port. On a port-forward
+               that wedges the whole forward, because a later host client is
+               accepted onto a forward whose guest side is still owned by the
+               dead connection and is therefore never read. Measured on the 6.2
+               registry harness: six host clients accepted, exactly ONE ever
+               serviced, and 23 consecutive polls of the reset socket. That is
+               the "the first request works and the second never does" symptom
+               that has been blamed on the guest for a long time.
+
+               FIN+ACK rather than RST deliberately: it is the same teardown
+               the n==0 path uses, so it travels a route the guest's TCP is
+               known to handle, and the goal here is to release the slot rather
+               than to model reset semantics faithfully. */
+            if (werr != WSAEWOULDBLOCK) {
+                nat_build_tcp_frame(ne2k.par, c->dst_ip, guest_ip,
+                                    c->dst_port, c->guest_port,
+                                    c->ack_offset + 1, c->seq_offset + 1,
+                                    0x11, /* FIN+ACK */
+                                    NULL, 0);
+                nat_conn_free(c);
+                continue;
+            }
         }
         if (n > 0) {
             static int nat_rx_total = 0;
             nat_rx_total += n;
             if (nat_rx_total % 100000 < n) fprintf(stderr, "NAT RX: total=%d chunk=%d q=%d\n", nat_rx_total, n, rx_queue_count);
             c->ack_offset++;
+            unsigned long data_seq = c->ack_offset;
             nat_build_tcp_frame(ne2k.par, c->dst_ip, guest_ip,
                                 c->dst_port, c->guest_port,
-                                c->ack_offset, c->seq_offset + 1,
+                                data_seq, c->seq_offset + 1,
                                 0x10, /* ACK with data */
                                 buf, n);
             c->ack_offset += n - 1;
+            /* Hold it for retransmission until the guest ACKs. */
+            if (c->forwarded) {
+                nat_rtx_append(c, data_seq, buf, n);
+                c->last_tx_ms = now_ms_for_timer();
+                c->rtx_count = 0;
+            }
         } else if (n == 0) {
-            /* Remote half-closed (sent FIN). Deliver FIN to guest.
-               Move to state 4: stop reading but keep forwarding
-               guest TX data back to the host socket. */
+            if (c->state == 3) {
+                /* Both sides have now closed: the guest sent its FIN
+                   earlier and the peer has just sent its own. This is the
+                   ordinary end of a connection and the point at which the
+                   slot and the socket go back. */
+                nat_build_tcp_frame(ne2k.par, c->dst_ip, guest_ip,
+                                    c->dst_port, c->guest_port,
+                                    c->ack_offset + 1, c->seq_offset + 1,
+                                    0x11, /* FIN+ACK */
+                                    NULL, 0);
+                nat_conn_free(c);
+            } else {
+                /* Remote half-closed (sent FIN). Deliver FIN to guest.
+                   Move to state 4: stop reading but keep forwarding
+                   guest TX data back to the host socket. */
+                nat_build_tcp_frame(ne2k.par, c->dst_ip, guest_ip,
+                                    c->dst_port, c->guest_port,
+                                    c->ack_offset + 1, c->seq_offset + 1,
+                                    0x11, /* FIN+ACK */
+                                    NULL, 0);
+                c->state = 4;
+                c->closed_at_ms = now_ms_for_timer();
+            }
+        }
+    }
+}
+
+/* Retransmit un-ACKed host->guest SYN and data for forwarded connections.
+   codex-vm is the sender in this direction, so a frame the guest was not
+   ready for -- a SYN arriving while a single-threaded server is busy on
+   another connection, or data injected before the guest is in a recv loop
+   -- is simply gone unless it is resent. This is the guest-facing half of
+   proper TCP; the host-facing half (retrying send() on WOULDBLOCK) already
+   lives in nat_tx_flush. A duplicate the guest already has is dropped by
+   its receive-window check and re-ACKed, which trims the buffer here, so
+   this converges rather than looping. */
+static void nat_poll_retransmit(void) {
+    unsigned char guest_ip[4] = {NAT_GUEST_IP0, NAT_GUEST_IP1, NAT_GUEST_IP2, NAT_GUEST_IP3};
+    unsigned char gw_ip[4] = {NAT_GW_IP0, NAT_GW_IP1, NAT_GW_IP2, NAT_GW_IP3};
+    double now = now_ms_for_timer();
+    for (int i = 0; i < NAT_MAX_CONN; i++) {
+        NatConn *c = &nat_conns[i];
+        if (!c->active || !c->forwarded) continue;
+
+        if (c->state == 1) {
+            /* A host client that connected and then gave up before the
+               guest accepted leaves a socket closed with nothing buffered.
+               Free it so its SYN stops being resent into the guest's accept
+               loop -- an unbounded resend of dead SYNs was starving that
+               loop. MSG_PEEK does not consume: 0 is an orderly close with no
+               data, -1 (WOULDBLOCK) is open-but-quiet, >0 is a request still
+               waiting to be delivered, so only the first frees. */
+            char pk;
+            int pr = recv(c->sock, &pk, 1, MSG_PEEK);
+            if (pr == 0) { nat_conn_free(c); continue; }
+        }
+        if (rx_queue_count >= RX_QUEUE_SIZE - 1) continue;
+
+        if (c->state == 1) {
+            /* SYN not yet answered by the guest's SYN-ACK. Retransmit with
+               exponential backoff (~200ms, doubling, capped), the pacing a
+               real stack uses -- a flat 50ms floods a busy single-threaded
+               server with hundreds of duplicate SYNs. */
+            int shift = c->rtx_count < 4 ? c->rtx_count : 4;
+            double rto = 200.0 * (double)(1 << shift);
+            if (now - c->last_tx_ms < rto) continue;
+            if (c->rtx_count++ >= NAT_MAX_RTX) { nat_conn_free(c); continue; }
+            nat_build_tcp_frame(ne2k.par, gw_ip, guest_ip,
+                                c->dst_port, c->guest_port,
+                                c->ack_offset, 0,
+                                0x02, /* SYN */
+                                NULL, 0);
+            c->last_tx_ms = now;
+        } else if (c->state == 2 && c->rtxlen > 0) {
+            /* Un-ACKed data, resent from the first un-ACKed byte. Data on an
+               established connection is delivered fast, so no backoff. */
+            if (now - c->last_tx_ms < NAT_RTO_MS) continue;
+            if (c->rtx_count++ >= NAT_MAX_RTX) { nat_conn_free(c); continue; }
+            int n = c->rtxlen > 1400 ? 1400 : c->rtxlen;
             nat_build_tcp_frame(ne2k.par, c->dst_ip, guest_ip,
                                 c->dst_port, c->guest_port,
-                                c->ack_offset + 1, c->seq_offset + 1,
-                                0x11, /* FIN+ACK */
-                                NULL, 0);
-            c->state = 4;
+                                c->rtx_base, c->seq_offset + 1,
+                                0x10, /* ACK with data */
+                                c->rtxbuf, n);
+            c->last_tx_ms = now;
         }
     }
 }
@@ -4102,7 +5395,9 @@ static void nat_poll_rx(void) {
 static void portfwd_init(void) {
     for (int i = 0; i < portfwd_count; i++) {
         PortFwd *pf = &portfwds[i];
-        pf->listen_sock = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+        pf->listen_sock = (pf->proto == PF_UDP)
+            ? socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP)
+            : socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
         if (pf->listen_sock == INVALID_SOCKET) {
             fprintf(stderr, "portfwd: socket failed for host:%d\n", pf->host_port);
             pf->active = 0; continue;
@@ -4118,11 +5413,12 @@ static void portfwd_init(void) {
             fprintf(stderr, "portfwd: bind failed for host:%d\n", pf->host_port);
             closesocket(pf->listen_sock); pf->active = 0; continue;
         }
-        listen(pf->listen_sock, 4);
+        if (pf->proto == PF_TCP) listen(pf->listen_sock, 4);
         u_long nb = 1;
         ioctlsocket(pf->listen_sock, FIONBIO, &nb);
         pf->active = 1;
-        fprintf(stderr, "portfwd: host:%d -> guest:%d\n", pf->host_port, pf->guest_port);
+        fprintf(stderr, "portfwd: %s host:%d -> guest:%d\n",
+                pf->proto == PF_UDP ? "udp" : "tcp", pf->host_port, pf->guest_port);
     }
 }
 
@@ -4138,6 +5434,33 @@ static void portfwd_poll(void) {
         if (!pf->active) continue;
         struct sockaddr_in client_addr;
         int addrlen = sizeof(client_addr);
+
+        if (pf->proto == PF_UDP) {
+            /* No accept and no handshake: a datagram arrives and is put in
+               front of the guest as-is, from a synthetic gateway port that
+               names the client it came from. */
+            if (rx_queue_count >= RX_QUEUE_SIZE - 1) continue;
+            unsigned char buf[1472];
+            int n = recvfrom(pf->listen_sock, (char*)buf, sizeof(buf), 0,
+                             (struct sockaddr*)&client_addr, &addrlen);
+            if (n <= 0) continue;
+            UdpInFlow *f = udp_in_find_client(&client_addr, pf->guest_port);
+            if (!f) {
+                f = udp_in_alloc();
+                f->active = 1;
+                f->sock = pf->listen_sock;
+                f->client = client_addr;
+                f->guest_port = pf->guest_port;
+                f->synth_port = udp_in_next_port++;
+                if (udp_in_next_port < UDP_IN_PORT_BASE) udp_in_next_port = UDP_IN_PORT_BASE;
+                fprintf(stderr, "portfwd udp: host client -> guest:%d as gw:%d\n",
+                        pf->guest_port, f->synth_port);
+            }
+            f->last_ms = now_ms_for_timer();
+            nat_build_udp_frame(ne2k.par, gw_ip, guest_ip, f->synth_port, pf->guest_port, buf, n);
+            continue;
+        }
+
         SOCKET client = accept(pf->listen_sock, (struct sockaddr*)&client_addr, &addrlen);
         if (client == INVALID_SOCKET) continue;
         u_long nb = 1;
@@ -4149,8 +5472,11 @@ static void portfwd_poll(void) {
         c->guest_port = pf->guest_port;
         c->dst_port = ntohs(client_addr.sin_port);
         memcpy(c->dst_ip, gw_ip, 4);
-        c->seq_offset = 100000;
-        c->ack_offset = 0;
+        /* ack_offset is OUR sequence space -- see the NatConn comment.
+           These two were assigned the other way round, which put every
+           later data frame's sequence number in the guest's space. */
+        c->ack_offset = 100000;
+        c->seq_offset = 0;
         c->state = 1;
         c->forwarded = 1;
         c->guest_ack = 0;
@@ -4158,9 +5484,11 @@ static void portfwd_poll(void) {
             pf->host_port, pf->guest_port);
         nat_build_tcp_frame(ne2k.par, gw_ip, guest_ip,
                             c->dst_port, pf->guest_port,
-                            c->seq_offset, 0,
+                            c->ack_offset, 0,
                             0x02, /* SYN */
                             NULL, 0);
+        c->last_tx_ms = now_ms_for_timer();
+        c->rtx_count = 0;
     }
 }
 
@@ -4168,13 +5496,17 @@ static void portfwd_poll(void) {
 static void portfwd_handle_synack(NatConn *c, unsigned long seq, unsigned long ack) {
     unsigned char guest_ip[4] = {NAT_GUEST_IP0, NAT_GUEST_IP1, NAT_GUEST_IP2, NAT_GUEST_IP3};
     unsigned char gw_ip[4] = {NAT_GW_IP0, NAT_GW_IP1, NAT_GW_IP2, NAT_GW_IP3};
-    c->ack_offset = seq + 1;
-    c->seq_offset = ack;
+    /* seq is the guest's own SYN-ACK sequence, so it belongs in
+       seq_offset; ack is what the guest acknowledged of ours. Written the
+       other way round, the very next frame nat_poll_rx built for this
+       connection swapped both fields. */
+    c->seq_offset = seq;
+    c->ack_offset = ack;
     c->state = 2;
     c->guest_ack = seq + 1;
     nat_build_tcp_frame(ne2k.par, gw_ip, guest_ip,
                         c->dst_port, c->guest_port,
-                        c->seq_offset, c->ack_offset,
+                        c->ack_offset, c->seq_offset + 1,
                         0x10, /* ACK */
                         NULL, 0);
     fprintf(stderr, "portfwd: connection established (guest port %d)\n", c->guest_port);
@@ -5196,6 +6528,33 @@ static void output_buf_write(unsigned char b) {
     }
 }
 
+/* Write the serial capture to -output WHILE THE GUEST IS STILL RUNNING.
+   dump_output_file below is called once, at exit, which is fine for a program
+   that terminates and useless for a server: its -output stayed empty however
+   healthy it was, and the only way to flush it was to stop the VM, which for a
+   server means killing it -- and a killed codex-vm never reaches the exit dump,
+   so the diagnostics were lost precisely when they were wanted. Debugging a
+   Codex server through its own log was therefore impossible, and it has cost
+   more than one session.
+
+   Cheap enough to be unconditional: a full rewrite of a few KB, at most twice a
+   second, and only when the buffer has actually grown. Takes output_lock
+   because APs append to output_buf from their own host threads. */
+static void poll_output_dump(void) {
+    static double last_ms = 0;
+    static size_t last_len = 0;
+    if (!output_file || !output_buf) return;
+    double now = now_ms_for_timer();
+    if (now - last_ms < 500.0) return;
+    last_ms = now;
+    if (output_len == last_len || output_len == 0) return;
+    if (output_lock_ready) EnterCriticalSection(&output_lock);
+    FILE *f = fopen(output_file, "wb");
+    if (f) { fwrite(output_buf, 1, output_len, f); fclose(f); }
+    last_len = output_len;
+    if (output_lock_ready) LeaveCriticalSection(&output_lock);
+}
+
 static void dump_output_file(const char *path) {
     if (!path || !output_buf || output_len == 0) return;
     FILE *f = fopen(path, "wb");
@@ -5651,6 +7010,27 @@ static void create_vm(size_t mem_mb) {
             memset((unsigned char *)guest_mem + gpu_region_start, 0, gpu_region_size);
         }
         fprintf(stderr, "GOP: %dx%d framebuffer at 0x%llx\n", gop_width, gop_height, (unsigned long long)GOP_FB_ADDR);
+    }
+
+    /* The GPU compute bridge (COM3 doorbell) puts its command and reply
+       buffers in the 16MB slab at 0xBD000000..0xBE000000, just below the
+       rasterizer's own buffer. Unlike ordinary heap the host writes the
+       reply there DIRECTLY, so it cannot rely on the guest having touched
+       the page first to demand-commit it -- the guest only reads the reply
+       AFTER the host writes it. Commit and map the whole slab up front, so
+       it is genuinely present from boot as the bridge assumes. */
+    {
+        size_t com3_start = 0xBD000000ULL;
+        size_t com3_end   = 0xBE000000ULL;
+        if (com3_end <= guest_mem_size) {
+            if (!VirtualAlloc((unsigned char *)guest_mem + com3_start,
+                              com3_end - com3_start, MEM_COMMIT, PAGE_READWRITE))
+                die("VirtualAlloc(commit COM3 region)");
+            hr = WHvMapGpaRange(partition, (unsigned char *)guest_mem + com3_start,
+                com3_start, com3_end - com3_start,
+                WHvMapGpaRangeFlagRead | WHvMapGpaRangeFlagWrite | WHvMapGpaRangeFlagExecute);
+            if (FAILED(hr)) fprintf(stderr, "WARNING: WHvMapGpaRange(COM3 region): 0x%lx\n", hr);
+        }
     }
 
     if (board_mmio) {
@@ -6204,6 +7584,1037 @@ static void gpu_rasterize_band(unsigned int *fb, unsigned int *db, unsigned char
                                 int w, int h, int count, int band_y0, int band_y1);
 static void gpu_atmosphere_glow(void);
 
+/* ── COM3 GPU compute bridge (0x3E8) ───────────────────────────────────
+
+   codex/os/kernel/GpuBridge.codex drives a compute bridge over COM3 and
+   until now had nothing on the other end: no handler existed for 0x3E8,
+   so OUT bytes were discarded and an LSR read returned the 0xFF
+   initializer -- which reads as "transmitter ready, receiver ready" -- so
+   gpu-recv-u32 answered 0xFFFFFFFF, every gpu-bridge-matmul/relu returned
+   None, and format-gpu-bridge reported bridge-ready = True the whole time.
+
+   The wire format is the guest driver's, read off GpuBridge.codex: a
+   command is little-endian u32s -- status, op, rows-a, cols-a, cols-b --
+   followed by the operands as IEEE-754 f32. The reply is a status u32,
+   then for matmul the result dims, then the result elements. relu does
+   NOT echo dims; the guest reuses the operand's. That asymmetry is the
+   driver's, not a simplification here.
+
+   The header is self-delimiting: operand count follows from the dims, so
+   a command completes without a length prefix or a terminator. That holds
+   for every op except the PTX launch, which carries a program instead of
+   a shape and so brings a header and a length of its own.
+
+   All seventeen arithmetic ops are computed here now. Fifteen fit the
+   shape header, reading their sizes from the three dimension fields:
+   conv1d and max-pool take a length, a window/kernel and a stride, and
+   clamp carries its lo/hi as two scalars after the data the way scale
+   carries its factor. conv2d is the one whose descriptor -- in and out
+   channels, spatial H and W, kernel H and W, stride and padding -- does
+   not fit three fields, so like the PTX launch it brings a header of its
+   own and is routed to com3_conv2d around com3_shape. An op with no
+   branch at all consumes what its dims imply and answers gpu-status-error
+   rather than a plausible-looking wrong answer. */
+
+#define COM3_MAX_ELEMS  524288      /* per operand and per result; a 512x512
+                                       square matmul (2*512^2 operand floats)
+                                       is the largest that fits, chosen so a
+                                       device dispatch can outrun the scalar
+                                       loop's one-time context+JIT cost. */
+#define COM3_HDR_BYTES  20          /* 5 u32: status, op, rows-a, cols-a, cols-b */
+#define COM3_STATUS_COMPLETE 2
+#define COM3_STATUS_ERROR    3
+
+/* op 32 carries a program rather than a shape, so it has a header of its
+   own: eight u32 instead of five, then the PTX text, then the kernel
+   name, then the operand floats. See com3_launch_ptx below. */
+#define COM3_PTX_HDR_BYTES 32
+#define COM3_PTX_MAX       65536
+#define COM3_PTX_NAME_MAX  256
+#define COM3_OP_LAUNCH_PTX 32
+
+/* conv2d (op 12) also carries more than three dimension fields -- in and
+   out channels, spatial H and W, kernel H and W, stride and padding -- so
+   it brings a header of its own the way the PTX launch does: ten u32
+   (status, op, then the eight), then the input floats, then the kernel
+   floats. See com3_conv2d below. */
+#define COM3_CONV2D_HDR_BYTES 40
+#define COM3_OP_CONV2D        12
+
+static struct {
+    unsigned char cmd[COM3_PTX_HDR_BYTES + COM3_PTX_MAX + COM3_PTX_NAME_MAX
+                      + 2 * COM3_MAX_ELEMS * 4];
+    unsigned char reply[12 + COM3_MAX_ELEMS * 4];
+    int reply_len;
+} com3;
+
+/* Every guest access to the COM3 window is one VM exit. Counting them is
+   the only honest measure of what this transport costs, because the
+   per-byte serial protocol makes the count a function of the OPERAND SIZE
+   rather than of the dispatch. Opt-in: set CODEX_VM_COM3_STAT.
+   Test the CONTENT and not the pointer -- an empty-string env var is
+   still a non-NULL getenv, which is how a toggle comes to read as set on
+   both legs of a measurement. */
+static unsigned long long com3_io_exits = 0;
+
+static void com3_stat(const char *phase) {
+    const char *p = getenv("CODEX_VM_COM3_STAT");
+    if (!(p && p[0])) return;
+    fprintf(stderr, "COM3-EXITS: %s %llu\n", phase, com3_io_exits);
+}
+
+static unsigned int com3_get_u32(const unsigned char *p) {
+    return (unsigned int)p[0] | ((unsigned int)p[1] << 8)
+         | ((unsigned int)p[2] << 16) | ((unsigned int)p[3] << 24);
+}
+
+static void com3_put_u32(unsigned int v) {
+    if (com3.reply_len + 4 > (int)sizeof(com3.reply)) return;
+    com3.reply[com3.reply_len++] = (unsigned char)(v & 0xFF);
+    com3.reply[com3.reply_len++] = (unsigned char)((v >> 8) & 0xFF);
+    com3.reply[com3.reply_len++] = (unsigned char)((v >> 16) & 0xFF);
+    com3.reply[com3.reply_len++] = (unsigned char)((v >> 24) & 0xFF);
+}
+
+static float com3_get_f32(const unsigned char *p) {
+    unsigned int raw = com3_get_u32(p);
+    float f;
+    memcpy(&f, &raw, sizeof(f));
+    return f;
+}
+
+static void com3_put_f32(float f) {
+    unsigned int raw;
+    memcpy(&raw, &f, sizeof(raw));
+    com3_put_u32(raw);
+}
+
+/* Operand and result element counts for a header. Answers 0 when the dims
+   cannot be served (overflow, or larger than the bridge buffers) so the
+   caller answers error instead of running off the end of cmd[]. The
+   products are formed in double first, because ra*ca in unsigned int
+   wraps silently and a wrapped count would pass a size check. */
+static int com3_shape(unsigned int op, unsigned int ra, unsigned int ca,
+                      unsigned int cb, int *operand_elems, int *result_elems) {
+    double a_sz = (double)ra * (double)ca;
+    double b_sz = (double)ca * (double)cb;
+    double r_sz = (double)ra * (double)cb;
+
+    if (op == 0) {                               /* matmul */
+        if (a_sz + b_sz > COM3_MAX_ELEMS || r_sz > COM3_MAX_ELEMS) return 0;
+        *operand_elems = (int)(a_sz + b_sz);
+        *result_elems  = (int)r_sz;
+        return 1;
+    }
+    /* Elementwise unary over ra*ca: relu, softmax, layer-norm, gelu, silu.
+       Softmax is a reduction and the rest are pointwise, but they agree on
+       shape, which is all this function decides. */
+    if (op == 2 || op == 3 || op == 8 || op == 10 || op == 14) {
+        if (a_sz > COM3_MAX_ELEMS) return 0;
+        *operand_elems = (int)a_sz;
+        *result_elems  = (int)a_sz;
+        return 1;
+    }
+    /* Elementwise binary: two operands of the same length, one result. */
+    if (op == 5 || op == 6) {
+        if (a_sz * 2 > COM3_MAX_ELEMS) return 0;
+        *operand_elems = (int)(a_sz * 2);
+        *result_elems  = (int)a_sz;
+        return 1;
+    }
+    /* Transpose keeps the element count and swaps the shape. */
+    if (op == 7) {
+        if (a_sz > COM3_MAX_ELEMS) return 0;
+        *operand_elems = (int)a_sz;
+        *result_elems  = (int)a_sz;
+        return 1;
+    }
+    /* Scale: the vector, then ONE scalar after it. */
+    if (op == 11) {
+        if (a_sz + 1 > COM3_MAX_ELEMS) return 0;
+        *operand_elems = (int)a_sz + 1;
+        *result_elems  = (int)a_sz;
+        return 1;
+    }
+    /* Group norm reads its dimensions differently from every neighbour
+       here: gpu-cmd-group-norm puts the LENGTH in rows-a and the GROUP
+       COUNT in cols-a, so ra*ca is not the element count. A length that
+       does not divide into whole groups is refused rather than rounded. */
+    if (op == 13) {
+        if (ra > COM3_MAX_ELEMS || ca == 0 || (ra % ca) != 0) return 0;
+        *operand_elems = (int)ra;
+        *result_elems  = (int)ra;
+        return 1;
+    }
+    /* Upsample 2x: channels x h x w in, channels x 2h x 2w out. */
+    if (op == 15) {
+        double n = (double)ra * (double)ca * (double)cb;
+        if (n > COM3_MAX_ELEMS || n * 4 > COM3_MAX_ELEMS) return 0;
+        *operand_elems = (int)n;
+        *result_elems  = (int)(n * 4);
+        return 1;
+    }
+    /* conv1d (op 4), valid 1D cross-correlation: ra is the input length,
+       ca the kernel length, cb the stride. Two operands -- input then
+       kernel -- so the operand count is ra + ca, not a product. */
+    if (op == 4) {
+        double total = (double)ra + (double)ca;
+        if (ca == 0 || cb == 0 || ra < ca || total > COM3_MAX_ELEMS) return 0;
+        *operand_elems = (int)total;
+        *result_elems  = (int)((ra - ca) / cb + 1);
+        return 1;
+    }
+    /* max-pool (op 9), valid 1D: ra is the input length, ca the window,
+       cb the stride. One operand of ra floats. */
+    if (op == 9) {
+        if (ca == 0 || cb == 0 || ra < ca || ra > COM3_MAX_ELEMS) return 0;
+        *operand_elems = (int)ra;
+        *result_elems  = (int)((ra - ca) / cb + 1);
+        return 1;
+    }
+    /* clamp (op 16): ra*ca values, then TWO scalars lo and hi after them,
+       the way scale carries its one factor. */
+    if (op == 16) {
+        if (a_sz + 2 > COM3_MAX_ELEMS) return 0;
+        *operand_elems = (int)a_sz + 2;
+        *result_elems  = (int)a_sz;
+        return 1;
+    }
+    /* Unserved op: consume what its dims imply so the byte stream stays
+       in step, then answer error. */
+    if (a_sz + b_sz > COM3_MAX_ELEMS) return 0;
+    *operand_elems = (int)(a_sz + (cb ? b_sz : 0));
+    *result_elems  = 0;
+    return 1;
+}
+
+/* ── The GPU, actually ─────────────────────────────────────────────────
+
+   Everything else in this file computes the bridge's arithmetic on the
+   host CPU in scalar C. That was honest as a transport exercise and
+   dishonest as a GPU: a caller reaching for the bridge to go faster got
+   a slower CPU with a round trip in front of it.
+
+   This is the other half. `gpu-op-launch-ptx` hands over a PTX module
+   and a kernel name, and the kernel is JITted and launched on the real
+   device through the CUDA DRIVER API. The driver API is chosen over the
+   runtime API deliberately: `nvcuda.dll` ships with every NVIDIA display
+   driver, so there is no CUDA toolkit to install and nothing to link
+   against. It is loaded with LoadLibrary at first use and its absence is
+   an answer rather than a crash -- a box with no NVIDIA GPU still builds
+   and boots this emulator, and a launch on it is REFUSED rather than
+   quietly served on the CPU. That distinction is the whole point: a
+   caller must be able to tell a GPU that ran its kernel from a CPU
+   pretending to.
+
+   THE KERNEL ABI IS FIXED AND IT IS STATED IN BOTH HALVES, because a
+   caller cannot recover a calling convention by looking at an answer.
+   A launched kernel takes exactly three parameters, in this order:
+
+       .param .u64 in     -- the operand buffer, n_in floats
+       .param .u64 out    -- the result buffer, n_out floats
+       .param .u32 n      -- n_out, the number of RESULTS
+
+   The bound is the output count and not the input count, and the grid is
+   sized to cover it, because a kernel's job is to fill `out`. For a
+   mapping kernel the two are equal and the choice does not show; for a
+   kernel that writes fewer results than it reads it is the difference
+   between a guarded kernel and one that walks off the end.
+
+   A general argument-passing scheme would be a protocol with a
+   descriptor nobody has designed, which is the same wall the four
+   unserved ops stand behind. One stated convention is worth more here
+   than a flexible one that has to be guessed at. */
+
+typedef int CUresult_t;
+typedef int CUdevice_t;
+typedef void *CUcontext_t;
+typedef void *CUmodule_t;
+typedef void *CUfunction_t;
+typedef unsigned long long CUdeviceptr_t;
+
+typedef CUresult_t (*pfn_cuInit)(unsigned int);
+typedef CUresult_t (*pfn_cuDeviceGet)(CUdevice_t *, int);
+typedef CUresult_t (*pfn_cuDeviceGetName)(char *, int, CUdevice_t);
+typedef CUresult_t (*pfn_cuCtxCreate)(CUcontext_t *, unsigned int, CUdevice_t);
+typedef CUresult_t (*pfn_cuModuleLoadData)(CUmodule_t *, const void *);
+typedef CUresult_t (*pfn_cuModuleGetFunction)(CUfunction_t *, CUmodule_t, const char *);
+typedef CUresult_t (*pfn_cuModuleUnload)(CUmodule_t);
+typedef CUresult_t (*pfn_cuMemAlloc)(CUdeviceptr_t *, size_t);
+typedef CUresult_t (*pfn_cuMemFree)(CUdeviceptr_t);
+typedef CUresult_t (*pfn_cuMemcpyHtoD)(CUdeviceptr_t, const void *, size_t);
+typedef CUresult_t (*pfn_cuMemcpyDtoH)(void *, CUdeviceptr_t, size_t);
+typedef CUresult_t (*pfn_cuLaunchKernel)(CUfunction_t, unsigned, unsigned, unsigned,
+                                         unsigned, unsigned, unsigned,
+                                         unsigned, void *, void **, void **);
+typedef CUresult_t (*pfn_cuCtxSynchronize)(void);
+typedef CUresult_t (*pfn_cuGetErrorString)(CUresult_t, const char **);
+
+static struct {
+    int state;                      /* 0 untried, 1 ready, -1 unavailable */
+    HMODULE lib;
+    CUcontext_t ctx;
+    char device_name[128];
+    pfn_cuInit init;
+    pfn_cuDeviceGet device_get;
+    pfn_cuDeviceGetName device_get_name;
+    pfn_cuCtxCreate ctx_create;
+    pfn_cuModuleLoadData module_load;
+    pfn_cuModuleGetFunction module_get_fn;
+    pfn_cuModuleUnload module_unload;
+    pfn_cuMemAlloc mem_alloc;
+    pfn_cuMemFree mem_free;
+    pfn_cuMemcpyHtoD memcpy_htod;
+    pfn_cuMemcpyDtoH memcpy_dtoh;
+    pfn_cuLaunchKernel launch;
+    pfn_cuCtxSynchronize sync;
+    pfn_cuGetErrorString err_string;
+    /* One-module cache. A JIT of a small kernel is milliseconds, which is
+       a thousand times the dispatch this bridge exists to make cheap, so
+       relaunching the same kernel must not pay for it twice. Keyed on the
+       PTX bytes and the kernel name together, because the same text can
+       be asked for a different entry point. */
+    unsigned char *cached_ptx;
+    unsigned int cached_ptx_len;
+    char cached_name[COM3_PTX_NAME_MAX];
+    CUmodule_t cached_module;
+    CUfunction_t cached_fn;
+} cuda;
+
+static const char *cuda_err(CUresult_t r) {
+    const char *s = 0;
+    if (cuda.err_string && cuda.err_string(r, &s) == 0 && s) return s;
+    return "(no description)";
+}
+
+/* Answers 1 when a real device is behind this and 0 when there is not.
+   Reports the reason exactly once, because a guest that keeps asking
+   should not fill the log with the same absence. */
+static int cuda_ready(void) {
+    CUresult_t r;
+    CUdevice_t dev = 0;
+
+    if (cuda.state) return cuda.state == 1;
+    cuda.state = -1;
+
+    cuda.lib = LoadLibraryA("nvcuda.dll");
+    if (!cuda.lib) {
+        fprintf(stderr, "CUDA: nvcuda.dll not present -- no GPU on this box, "
+                        "PTX launches will be refused\n");
+        return 0;
+    }
+
+#define CUDA_SYM(field, name)                                                  \
+    do {                                                                       \
+        cuda.field = (void *)GetProcAddress(cuda.lib, name);                   \
+        if (!cuda.field) {                                                     \
+            fprintf(stderr, "CUDA: nvcuda.dll has no %s\n", name);             \
+            return 0;                                                          \
+        }                                                                      \
+    } while (0)
+
+    CUDA_SYM(init,            "cuInit");
+    CUDA_SYM(device_get,      "cuDeviceGet");
+    CUDA_SYM(device_get_name, "cuDeviceGetName");
+    CUDA_SYM(ctx_create,      "cuCtxCreate_v2");
+    CUDA_SYM(module_load,     "cuModuleLoadData");
+    CUDA_SYM(module_get_fn,   "cuModuleGetFunction");
+    CUDA_SYM(module_unload,   "cuModuleUnload");
+    CUDA_SYM(mem_alloc,       "cuMemAlloc_v2");
+    CUDA_SYM(mem_free,        "cuMemFree_v2");
+    CUDA_SYM(memcpy_htod,     "cuMemcpyHtoD_v2");
+    CUDA_SYM(memcpy_dtoh,     "cuMemcpyDtoH_v2");
+    CUDA_SYM(launch,          "cuLaunchKernel");
+    CUDA_SYM(sync,            "cuCtxSynchronize");
+#undef CUDA_SYM
+    /* Optional: only used to make an error message readable. */
+    cuda.err_string = (pfn_cuGetErrorString)(void *)GetProcAddress(cuda.lib, "cuGetErrorString");
+
+    if ((r = cuda.init(0)) != 0) {
+        fprintf(stderr, "CUDA: cuInit failed: %s\n", cuda_err(r));
+        return 0;
+    }
+    if ((r = cuda.device_get(&dev, 0)) != 0) {
+        fprintf(stderr, "CUDA: no device 0: %s\n", cuda_err(r));
+        return 0;
+    }
+    if ((r = cuda.ctx_create(&cuda.ctx, 0, dev)) != 0) {
+        fprintf(stderr, "CUDA: cuCtxCreate failed: %s\n", cuda_err(r));
+        return 0;
+    }
+    cuda.device_name[0] = 0;
+    cuda.device_get_name(cuda.device_name, (int)sizeof(cuda.device_name), dev);
+    fprintf(stderr, "CUDA: %s\n", cuda.device_name[0] ? cuda.device_name : "device 0");
+    cuda.state = 1;
+    return 1;
+}
+
+/* Resolve the kernel, reusing the cached module when the same PTX and the
+   same entry point are asked for again. Answers 0 on success. */
+static int cuda_get_function(const unsigned char *ptx, unsigned int ptx_len,
+                             const char *name, CUfunction_t *out_fn) {
+    CUresult_t r;
+    CUmodule_t mod = 0;
+    CUfunction_t fn = 0;
+
+    if (cuda.cached_module && cuda.cached_ptx_len == ptx_len &&
+        memcmp(cuda.cached_ptx, ptx, ptx_len) == 0 &&
+        strcmp(cuda.cached_name, name) == 0) {
+        *out_fn = cuda.cached_fn;
+        return 0;
+    }
+
+    if ((r = cuda.module_load(&mod, ptx)) != 0) {
+        fprintf(stderr, "CUDA: PTX would not load: %s\n", cuda_err(r));
+        return 1;
+    }
+    if ((r = cuda.module_get_fn(&fn, mod, name)) != 0) {
+        fprintf(stderr, "CUDA: module has no kernel '%s': %s\n", name, cuda_err(r));
+        cuda.module_unload(mod);
+        return 1;
+    }
+
+    if (cuda.cached_module) cuda.module_unload(cuda.cached_module);
+    free(cuda.cached_ptx);
+    cuda.cached_ptx = (unsigned char *)malloc(ptx_len ? ptx_len : 1);
+    if (!cuda.cached_ptx) {          /* keep going uncached rather than fail */
+        cuda.cached_module = 0;
+        cuda.cached_ptx_len = 0;
+        cuda.cached_name[0] = 0;
+    } else {
+        memcpy(cuda.cached_ptx, ptx, ptx_len);
+        cuda.cached_ptx_len = ptx_len;
+        strncpy(cuda.cached_name, name, sizeof(cuda.cached_name) - 1);
+        cuda.cached_name[sizeof(cuda.cached_name) - 1] = 0;
+        cuda.cached_module = mod;
+        cuda.cached_fn = fn;
+    }
+    *out_fn = fn;
+    return 0;
+}
+
+/* ── The arithmetic, on the device ─────────────────────────────────────
+
+   op 32 lets a caller bring its own kernel. This is the other direction:
+   the operations the bridge already serves, run on the card instead of
+   in the scalar C below.
+
+   MATMUL FIRST BECAUSE IT IS THE ONLY ONE WHOSE WORK GROWS FASTER THAN
+   ITS OPERAND. It is O(ra*ca*cb) over O(ra*ca + ca*cb) bytes, so it is
+   the one op where a launch and two copies can be repaid. Every other
+   operation the bridge serves is elementwise or a single reduction --
+   O(n) work over O(n) bytes -- and for those the transfer IS the
+   computation, so moving them to the device would spend a launch to save
+   nothing. They are deliberately left on the CPU rather than moved for
+   symmetry, and this paragraph is here so the next person does not
+   "finish the job" by moving them.
+
+   THE SCALAR LOOP IS NOT DELETED, AND THAT IS THE POINT. When the serial
+   transport went, the doorbell test lost its control: running every case
+   two ways on identical operands was what would catch an implementation
+   that computed WRONGLY rather than not at all. A second implementation
+   of the arithmetic gives that control back, and it is a better one,
+   because the two paths here share no code at all -- one is C on the
+   host, the other is PTX on a graphics processor. CODEX_VM_GPU_MATMUL
+   selects: unset is automatic, "0" forces the scalar path, "1" forces
+   the device. The content is tested and not the pointer, because an
+   empty-string environment variable is still a non-NULL getenv and that
+   is how a toggle comes to read as set on both legs of a measurement.
+
+   The kernel is naive on purpose: one thread per output element, a
+   running sum over k. A tiled kernel with shared memory is the standard
+   next step and it is not written, because the honest thing to establish
+   first is whether the round trip pays at all at the sizes this bridge
+   can carry (COM3_MAX_ELEMS caps an operand at 16384 floats, so the
+   largest square matmul is 128x128). Optimising the kernel before that
+   is measured would be optimising a path that might not be worth taking. */
+
+static const char *CUDA_PTX_MATMUL =
+".version 6.0\n"
+".target sm_50\n"
+".address_size 64\n"
+"\n"
+".visible .entry mm(\n"
+".param .u64 p_in,\n"
+".param .u64 p_out,\n"
+".param .u32 p_ra,\n"
+".param .u32 p_ca,\n"
+".param .u32 p_cb\n"
+")\n"
+"{\n"
+".reg .pred %p<4>;\n"
+".reg .f32 %f<6>;\n"
+".reg .b32 %r<24>;\n"
+".reg .b64 %rd<20>;\n"
+"ld.param.u64 %rd1, [p_in];\n"
+"ld.param.u64 %rd2, [p_out];\n"
+"ld.param.u32 %r1, [p_ra];\n"
+"ld.param.u32 %r2, [p_ca];\n"
+"ld.param.u32 %r3, [p_cb];\n"
+"mov.u32 %r4, %ctaid.x;\n"
+"mov.u32 %r5, %ntid.x;\n"
+"mov.u32 %r6, %tid.x;\n"
+"mad.lo.s32 %r7, %r4, %r5, %r6;\n"          /* i = global thread index */
+"mul.lo.s32 %r8, %r1, %r3;\n"               /* n_out = ra * cb */
+"setp.ge.u32 %p1, %r7, %r8;\n"
+"@%p1 bra DONE;\n"
+"div.u32 %r9, %r7, %r3;\n"                  /* row = i / cb */
+"rem.u32 %r10, %r7, %r3;\n"                 /* col = i % cb */
+"mul.lo.s32 %r11, %r9, %r2;\n"              /* row * ca */
+"mul.lo.s32 %r12, %r1, %r2;\n"              /* base of B = ra * ca */
+"cvta.to.global.u64 %rd3, %rd1;\n"
+"cvta.to.global.u64 %rd4, %rd2;\n"
+"mov.f32 %f1, 0f00000000;\n"                /* acc = 0.0 */
+"mov.u32 %r13, 0;\n"                        /* k = 0 */
+"LOOP:\n"
+"setp.ge.u32 %p2, %r13, %r2;\n"
+"@%p2 bra STORE;\n"
+"add.s32 %r14, %r11, %r13;\n"               /* a index = row*ca + k */
+"mul.wide.u32 %rd5, %r14, 4;\n"
+"add.s64 %rd6, %rd3, %rd5;\n"
+"ld.global.f32 %f2, [%rd6];\n"
+"mad.lo.s32 %r15, %r13, %r3, %r10;\n"       /* k*cb + col */
+"add.s32 %r16, %r12, %r15;\n"               /* + base of B */
+"mul.wide.u32 %rd7, %r16, 4;\n"
+"add.s64 %rd8, %rd3, %rd7;\n"
+"ld.global.f32 %f3, [%rd8];\n"
+"fma.rn.f32 %f1, %f2, %f3, %f1;\n"
+"add.s32 %r13, %r13, 1;\n"
+"bra LOOP;\n"
+"STORE:\n"
+"mul.wide.u32 %rd9, %r7, 4;\n"
+"add.s64 %rd10, %rd4, %rd9;\n"
+"st.global.f32 [%rd10], %f1;\n"
+"DONE:\n"
+"ret;\n"
+"}\n";
+
+/* Which path op 0 takes. The device is chosen automatically when the
+   matmul is large enough that it pays, and the threshold is MEASURED.
+
+   The device's cost is dominated by a one-time ~85 ms context creation
+   and PTX JIT, paid once per process; its per-dispatch compute after that
+   is small. The scalar loop costs O(N^3). So the device wins on a single
+   dispatch only once the scalar loop would cost more than ~85 ms, which on
+   an RTX 4060 Ti (a naive one-thread-per-output kernel against a scalar
+   loop that reads every element through a 4-byte memcpy) measured out at
+   about a 400x400x400 square:
+
+       N     scalar    device (incl. JIT)
+       256   23.0 ms   95.1 ms      scalar wins
+       384   80.0 ms   72.9 ms      device wins
+       512  198.1 ms   88.5 ms      device wins 2.2x
+
+   Below the threshold the CPU is faster, so a small matmul -- every matmul
+   the tests do, and every one a short program does -- stays scalar and is
+   not slowed. At or above it the device is picked. COM3_MAX_ELEMS caps a
+   square at 512x512, which is well past the break-even, and a caller that
+   needs bigger ships its own kernel through the PTX launch (op 32). The
+   env var forces a path either way (1 device, 0 scalar) so the doorbell
+   test keeps its two-implementation control on a small matmul. */
+#define COM3_DEVICE_MATMUL_FLOPS 64000000ULL   /* ~400^3, the measured break-even */
+
+static int cuda_matmul_wanted(unsigned int ra, unsigned int ca, unsigned int cb) {
+    const char *p = getenv("CODEX_VM_GPU_MATMUL");
+    if (p && p[0] == '1') return cuda_ready();
+    if (p && p[0] == '0') return 0;
+    if ((double)ra * (double)ca * (double)cb < (double)COM3_DEVICE_MATMUL_FLOPS)
+        return 0;
+    return cuda_ready();
+}
+
+/* Answers 0 when the device produced the result. Any non-zero answer
+   means the caller must fall back to the scalar loop -- a matmul is a
+   matmul, and a caller that asked for one is owed the answer rather than
+   a refusal. That is the opposite of op 32's contract, where the caller
+   asked for a GPU specifically and a silent CPU answer would be a lie. */
+static int cuda_matmul(const float *in, float *out,
+                       unsigned int ra, unsigned int ca, unsigned int cb) {
+    CUfunction_t fn = 0;
+    CUdeviceptr_t d_in = 0, d_out = 0;
+    CUresult_t r;
+    unsigned int n_in = ra * ca + ca * cb;
+    unsigned int n_out = ra * cb;
+    unsigned int block = 256;
+    unsigned int grid = (n_out + block - 1) / block;
+    void *args[5];
+
+    if (cuda_get_function((const unsigned char *)CUDA_PTX_MATMUL,
+                          (unsigned int)strlen(CUDA_PTX_MATMUL), "mm", &fn)) return 1;
+    if ((r = cuda.mem_alloc(&d_in, n_in * sizeof(float))) != 0) return 1;
+    if ((r = cuda.mem_alloc(&d_out, n_out * sizeof(float))) != 0) { cuda.mem_free(d_in); return 1; }
+    if ((r = cuda.memcpy_htod(d_in, in, n_in * sizeof(float))) != 0) goto fail;
+
+    args[0] = &d_in; args[1] = &d_out;
+    args[2] = &ra;   args[3] = &ca;   args[4] = &cb;
+    if ((r = cuda.launch(fn, grid, 1, 1, block, 1, 1, 0, 0, args, 0)) != 0) goto fail;
+    if ((r = cuda.sync()) != 0) goto fail;
+    if ((r = cuda.memcpy_dtoh(out, d_out, n_out * sizeof(float))) != 0) goto fail;
+
+    cuda.mem_free(d_in);
+    cuda.mem_free(d_out);
+    return 0;
+fail:
+    fprintf(stderr, "CUDA: matmul failed: %s -- falling back to the scalar loop\n", cuda_err(r));
+    cuda.mem_free(d_in);
+    cuda.mem_free(d_out);
+    return 1;
+}
+
+/* op 32. The command's own header, in u32:
+
+     0 status      4 op (32)     8 n_in       12 grid_x
+    16 block_x    20 ptx_len    24 name_len   28 n_out
+
+   then ptx_len bytes of PTX, then name_len bytes of kernel name, then
+   n_in floats. The reply is a status u32 followed by n_out floats, which
+   is the layout every op but matmul already answers in.
+
+   Every refusal answers STATUS_ERROR. A launch that cannot happen must
+   look different from one that happened and produced zeros. */
+static void com3_launch_ptx(unsigned int cmd_bytes) {
+    unsigned int n_in    = com3_get_u32(com3.cmd + 8);
+    unsigned int grid_x  = com3_get_u32(com3.cmd + 12);
+    unsigned int block_x = com3_get_u32(com3.cmd + 16);
+    unsigned int ptx_len = com3_get_u32(com3.cmd + 20);
+    unsigned int name_len= com3_get_u32(com3.cmd + 24);
+    unsigned int n_out   = com3_get_u32(com3.cmd + 28);
+    unsigned int want;
+    static char ptx_text[COM3_PTX_MAX + 1];
+    static char kernel_name[COM3_PTX_NAME_MAX + 1];
+    static float host_in[COM3_MAX_ELEMS];
+    static float host_out[COM3_MAX_ELEMS];
+    CUfunction_t fn = 0;
+    CUdeviceptr_t d_in = 0, d_out = 0;
+    CUresult_t r;
+    void *args[3];
+    int n_arg;
+    unsigned int i;
+
+    if (ptx_len == 0 || ptx_len > COM3_PTX_MAX ||
+        name_len == 0 || name_len > COM3_PTX_NAME_MAX ||
+        n_in > COM3_MAX_ELEMS || n_out == 0 || n_out > COM3_MAX_ELEMS ||
+        grid_x == 0 || block_x == 0) {
+        fprintf(stderr, "COM3: ptx launch dims refused "
+                        "(ptx %u name %u in %u out %u grid %u block %u)\n",
+                ptx_len, name_len, n_in, n_out, grid_x, block_x);
+        com3_put_u32(COM3_STATUS_ERROR);
+        return;
+    }
+    want = COM3_PTX_HDR_BYTES + ptx_len + name_len + n_in * 4;
+    if (cmd_bytes != want) {
+        fprintf(stderr, "COM3: ptx launch length %u, expected %u\n", cmd_bytes, want);
+        com3_put_u32(COM3_STATUS_ERROR);
+        return;
+    }
+    if (!cuda_ready()) {
+        com3_put_u32(COM3_STATUS_ERROR);
+        return;
+    }
+
+    memcpy(ptx_text, com3.cmd + COM3_PTX_HDR_BYTES, ptx_len);
+    ptx_text[ptx_len] = 0;                      /* cuModuleLoadData wants a C string */
+    memcpy(kernel_name, com3.cmd + COM3_PTX_HDR_BYTES + ptx_len, name_len);
+    kernel_name[name_len] = 0;
+    for (i = 0; i < n_in; i++)
+        host_in[i] = com3_get_f32(com3.cmd + COM3_PTX_HDR_BYTES + ptx_len + name_len + i * 4);
+
+    if (cuda_get_function((const unsigned char *)ptx_text, ptx_len, kernel_name, &fn)) {
+        com3_put_u32(COM3_STATUS_ERROR);
+        return;
+    }
+
+    /* The device allocations are per launch. They could be pooled, and
+       the reason not to yet is that the sizes are the guest's and a pool
+       keyed on them is a cache with an eviction policy nobody has needed
+       to choose. A cuMemAlloc is microseconds against a JIT's
+       milliseconds, and the JIT is what the cache above removes. */
+    if ((r = cuda.mem_alloc(&d_in, (n_in ? n_in : 1) * sizeof(float))) != 0) {
+        fprintf(stderr, "CUDA: input alloc failed: %s\n", cuda_err(r));
+        com3_put_u32(COM3_STATUS_ERROR);
+        return;
+    }
+    if ((r = cuda.mem_alloc(&d_out, n_out * sizeof(float))) != 0) {
+        fprintf(stderr, "CUDA: output alloc failed: %s\n", cuda_err(r));
+        cuda.mem_free(d_in);
+        com3_put_u32(COM3_STATUS_ERROR);
+        return;
+    }
+    if (n_in && (r = cuda.memcpy_htod(d_in, host_in, n_in * sizeof(float))) != 0) {
+        fprintf(stderr, "CUDA: upload failed: %s\n", cuda_err(r));
+        cuda.mem_free(d_in); cuda.mem_free(d_out);
+        com3_put_u32(COM3_STATUS_ERROR);
+        return;
+    }
+
+    args[0] = &d_in;
+    args[1] = &d_out;
+    args[2] = &n_out;
+    n_arg = 3;
+    (void)n_arg;
+    r = cuda.launch(fn, grid_x, 1, 1, block_x, 1, 1, 0, 0, args, 0);
+    if (r == 0) r = cuda.sync();
+    if (r != 0) {
+        fprintf(stderr, "CUDA: launch of '%s' failed: %s\n", kernel_name, cuda_err(r));
+        cuda.mem_free(d_in); cuda.mem_free(d_out);
+        com3_put_u32(COM3_STATUS_ERROR);
+        return;
+    }
+    if ((r = cuda.memcpy_dtoh(host_out, d_out, n_out * sizeof(float))) != 0) {
+        fprintf(stderr, "CUDA: download failed: %s\n", cuda_err(r));
+        cuda.mem_free(d_in); cuda.mem_free(d_out);
+        com3_put_u32(COM3_STATUS_ERROR);
+        return;
+    }
+    cuda.mem_free(d_in);
+    cuda.mem_free(d_out);
+
+    com3_put_u32(COM3_STATUS_COMPLETE);
+    for (i = 0; i < n_out; i++) com3_put_f32(host_out[i]);
+}
+
+static void com3_execute(void) {
+    unsigned int op = com3_get_u32(com3.cmd + 4);
+    unsigned int ra = com3_get_u32(com3.cmd + 8);
+    unsigned int ca = com3_get_u32(com3.cmd + 12);
+    unsigned int cb = com3_get_u32(com3.cmd + 16);
+    const unsigned char *data = com3.cmd + COM3_HDR_BYTES;
+
+    com3.reply_len = 0;
+
+
+    if (op == 0) {
+        /* The device first when there is one, the scalar loop otherwise
+           and whenever the device refuses. Both must agree, and the
+           doorbell test is what holds them to it. */
+        static float mm_in[2 * COM3_MAX_ELEMS];
+        static float mm_out[COM3_MAX_ELEMS];
+        unsigned int n_in = ra * ca + ca * cb;
+        unsigned int n_out = ra * cb;
+        int on_device = 0;
+        const char *stat = getenv("CODEX_VM_COM3_STAT");
+        LARGE_INTEGER t0, t1, freq;
+        QueryPerformanceFrequency(&freq);
+        QueryPerformanceCounter(&t0);
+
+        if (cuda_matmul_wanted(ra, ca, cb) && n_in <= 2 * COM3_MAX_ELEMS && n_out <= COM3_MAX_ELEMS) {
+            unsigned int e;
+            for (e = 0; e < n_in; e++) mm_in[e] = com3_get_f32(data + e * 4);
+            on_device = (cuda_matmul(mm_in, mm_out, ra, ca, cb) == 0);
+        }
+
+        com3_put_u32(COM3_STATUS_COMPLETE);
+        com3_put_u32(ra);
+        com3_put_u32(cb);
+        if (on_device) {
+            unsigned int e;
+            for (e = 0; e < n_out; e++) com3_put_f32(mm_out[e]);
+        } else {
+            for (unsigned int i = 0; i < ra; i++) {
+                for (unsigned int j = 0; j < cb; j++) {
+                    float acc = 0.0f;
+                    for (unsigned int k = 0; k < ca; k++) {
+                        acc += com3_get_f32(data + (i * ca + k) * 4)
+                             * com3_get_f32(data + (ra * ca + k * cb + j) * 4);
+                    }
+                    com3_put_f32(acc);
+                }
+            }
+        }
+        QueryPerformanceCounter(&t1);
+        if (stat && stat[0])
+            fprintf(stderr, "COM3-MATMUL: %s %ux%ux%u %.1f us\n",
+                    on_device ? "device" : "scalar", ra, ca, cb,
+                    (double)(t1.QuadPart - t0.QuadPart) * 1e6 / (double)freq.QuadPart);
+    } else if (op == 2 || op == 3 || op == 8 || op == 10 || op == 14) {
+        /* Elementwise unary and the two reductions that share its shape.
+
+           WHERE A CONVENTION HAD TO BE CHOSEN IT IS NAMED HERE, because a
+           caller cannot tell one convention from the other by looking at
+           an answer. GELU is the tanh approximation, not the exact erf
+           form. LAYER NORM uses epsilon 1e-5. Both are the usual choices
+           in this corner and both are stated in GpuBridge's prose too. */
+        unsigned int n = ra * ca;
+        unsigned int i;
+        com3_put_u32(COM3_STATUS_COMPLETE);
+        if (op == 3) {                            /* softmax */
+            float mx = -3.402823e38f, sum = 0.0f;
+            for (i = 0; i < n; i++) { float v = com3_get_f32(data + i * 4); if (v > mx) mx = v; }
+            for (i = 0; i < n; i++) sum += expf(com3_get_f32(data + i * 4) - mx);
+            for (i = 0; i < n; i++)
+                com3_put_f32(sum > 0.0f ? expf(com3_get_f32(data + i * 4) - mx) / sum : 0.0f);
+        } else if (op == 8) {                     /* layer norm */
+            float mean = 0.0f, var = 0.0f;
+            for (i = 0; i < n; i++) mean += com3_get_f32(data + i * 4);
+            if (n) mean /= (float)n;
+            for (i = 0; i < n; i++) { float d = com3_get_f32(data + i * 4) - mean; var += d * d; }
+            if (n) var /= (float)n;
+            {
+                float inv = 1.0f / sqrtf(var + 1e-5f);
+                for (i = 0; i < n; i++)
+                    com3_put_f32((com3_get_f32(data + i * 4) - mean) * inv);
+            }
+        } else {
+            for (i = 0; i < n; i++) {
+                float v = com3_get_f32(data + i * 4);
+                if (op == 2) com3_put_f32(v > 0.0f ? v : 0.0f);
+                else if (op == 10) {
+                    float c = 0.7978845608f * (v + 0.044715f * v * v * v);
+                    com3_put_f32(0.5f * v * (1.0f + tanhf(c)));
+                } else com3_put_f32(v / (1.0f + expf(-v)));   /* silu */
+            }
+        }
+    } else if (op == 5 || op == 6) {
+        /* Elementwise binary: the second operand follows the first. */
+        unsigned int n = ra * ca, i;
+        com3_put_u32(COM3_STATUS_COMPLETE);
+        for (i = 0; i < n; i++) {
+            float x = com3_get_f32(data + i * 4);
+            float y = com3_get_f32(data + (n + i) * 4);
+            com3_put_f32(op == 5 ? x + y : x * y);
+        }
+    } else if (op == 7) {
+        /* Transpose. The reply carries elements only, like every other op
+           but matmul: the caller sent the shape and can swap it itself, so
+           echoing dimensions back would buy a second reply layout for
+           nothing. */
+        unsigned int i, j;
+        com3_put_u32(COM3_STATUS_COMPLETE);
+        for (i = 0; i < ca; i++)
+            for (j = 0; j < ra; j++)
+                com3_put_f32(com3_get_f32(data + (j * ca + i) * 4));
+    } else if (op == 11) {
+        /* Scale by the single scalar sitting after the vector. */
+        unsigned int n = ra * ca, i;
+        float k = com3_get_f32(data + n * 4);
+        com3_put_u32(COM3_STATUS_COMPLETE);
+        for (i = 0; i < n; i++) com3_put_f32(com3_get_f32(data + i * 4) * k);
+    } else if (op == 13) {
+        /* Group norm: ra is the length, ca the group count, and each group
+           is normalised against its own mean and variance. */
+        unsigned int n = ra, groups = ca, per = ra / ca, g, i;
+        com3_put_u32(COM3_STATUS_COMPLETE);
+        for (g = 0; g < groups; g++) {
+            const unsigned char *p = data + g * per * 4;
+            float mean = 0.0f, var = 0.0f, inv;
+            for (i = 0; i < per; i++) mean += com3_get_f32(p + i * 4);
+            if (per) mean /= (float)per;
+            for (i = 0; i < per; i++) { float d = com3_get_f32(p + i * 4) - mean; var += d * d; }
+            if (per) var /= (float)per;
+            inv = 1.0f / sqrtf(var + 1e-5f);
+            for (i = 0; i < per; i++) com3_put_f32((com3_get_f32(p + i * 4) - mean) * inv);
+        }
+        (void)n;
+    } else if (op == 15) {
+        /* Upsample 2x, NEAREST NEIGHBOUR. The other reading of this op is
+           bilinear and the two disagree everywhere except on a constant
+           input, so the choice is named rather than left to be inferred. */
+        unsigned int c = ra, h = ca, w = cb, ch, y, x;
+        com3_put_u32(COM3_STATUS_COMPLETE);
+        for (ch = 0; ch < c; ch++)
+            for (y = 0; y < h * 2; y++)
+                for (x = 0; x < w * 2; x++)
+                    com3_put_f32(com3_get_f32(data + (ch * h * w + (y / 2) * w + (x / 2)) * 4));
+    } else if (op == 4) {
+        /* conv1d, valid 1D cross-correlation: input is data[0..ra), kernel
+           is data[ra..ra+ca), stride is cb. out[o] = sum_k input[o*cb + k]
+           * kernel[k]. The kernel is NOT flipped -- this is the correlation
+           an ML conv layer computes -- and padding is the caller's to add
+           to the input, so the op is the valid (unpadded) convolution. */
+        unsigned int L = ra, K = ca, S = cb, out = (ra - ca) / cb + 1, o, k;
+        com3_put_u32(COM3_STATUS_COMPLETE);
+        for (o = 0; o < out; o++) {
+            float acc = 0.0f;
+            for (k = 0; k < K; k++)
+                acc += com3_get_f32(data + (o * S + k) * 4)
+                     * com3_get_f32(data + (L + k) * 4);
+            com3_put_f32(acc);
+        }
+    } else if (op == 9) {
+        /* max-pool, valid 1D: out[o] = max over the window [o*cb, o*cb+ca). */
+        unsigned int S = cb, out = (ra - ca) / cb + 1, o, k;
+        com3_put_u32(COM3_STATUS_COMPLETE);
+        for (o = 0; o < out; o++) {
+            float m = com3_get_f32(data + (o * S) * 4);
+            for (k = 1; k < ca; k++) {
+                float v = com3_get_f32(data + (o * S + k) * 4);
+                if (v > m) m = v;
+            }
+            com3_put_f32(m);
+        }
+    } else if (op == 16) {
+        /* clamp each of the ra*ca values to [lo, hi], the two scalars that
+           follow the data the way scale's single factor does. */
+        unsigned int n = ra * ca, i;
+        float lo = com3_get_f32(data + n * 4);
+        float hi = com3_get_f32(data + (n + 1) * 4);
+        com3_put_u32(COM3_STATUS_COMPLETE);
+        for (i = 0; i < n; i++) {
+            float v = com3_get_f32(data + i * 4);
+            com3_put_f32(v < lo ? lo : (v > hi ? hi : v));
+        }
+    } else {
+        fprintf(stderr, "COM3: op %u not served -- answering error\n", op);
+        com3_put_u32(COM3_STATUS_ERROR);
+    }
+}
+
+/* conv2d: valid 2D cross-correlation, zero-padded by `pad`, no kernel flip
+   -- the correlation an ML conv layer computes. Input is cin x h x w,
+   kernel is cout x cin x kh x kw, output is cout x oh x ow with
+   oh = (h + 2*pad - kh)/stride + 1 and ow likewise. Routed here from the
+   doorbell around com3_shape because its eight shape fields do not fit the
+   three the shape header carries; it validates its own length instead. */
+static void com3_conv2d(unsigned int cmd_bytes) {
+    unsigned int cin  = com3_get_u32(com3.cmd + 8);
+    unsigned int h    = com3_get_u32(com3.cmd + 12);
+    unsigned int w    = com3_get_u32(com3.cmd + 16);
+    unsigned int cout = com3_get_u32(com3.cmd + 20);
+    unsigned int kh   = com3_get_u32(com3.cmd + 24);
+    unsigned int kw   = com3_get_u32(com3.cmd + 28);
+    unsigned int s    = com3_get_u32(com3.cmd + 32);
+    unsigned int pad  = com3_get_u32(com3.cmd + 36);
+    unsigned int oh, ow, oc, y, x, ic, ky, kx, in_n, ker_n;
+    double in_sz, ker_sz, out_sz;
+    const unsigned char *in, *ker;
+
+    com3.reply_len = 0;
+
+    if (s == 0 || kh == 0 || kw == 0 || h + 2 * pad < kh || w + 2 * pad < kw) {
+        fprintf(stderr, "COM3: conv2d bad shape %ux%ux%u k%ux%u s%u p%u\n",
+                cin, h, w, kh, kw, s, pad);
+        com3_put_u32(COM3_STATUS_ERROR);
+        return;
+    }
+    oh = (h + 2 * pad - kh) / s + 1;
+    ow = (w + 2 * pad - kw) / s + 1;
+    in_sz  = (double)cin * (double)h * (double)w;
+    ker_sz = (double)cout * (double)cin * (double)kh * (double)kw;
+    out_sz = (double)cout * (double)oh * (double)ow;
+    if (in_sz + ker_sz > COM3_MAX_ELEMS || out_sz > COM3_MAX_ELEMS) {
+        fprintf(stderr, "COM3: conv2d operands too large\n");
+        com3_put_u32(COM3_STATUS_ERROR);
+        return;
+    }
+    in_n  = (unsigned int)in_sz;
+    ker_n = (unsigned int)ker_sz;
+    if (cmd_bytes != COM3_CONV2D_HDR_BYTES + (in_n + ker_n) * 4) {
+        fprintf(stderr, "COM3: conv2d len %u vs expected %u\n",
+                cmd_bytes, COM3_CONV2D_HDR_BYTES + (in_n + ker_n) * 4);
+        com3_put_u32(COM3_STATUS_ERROR);
+        return;
+    }
+    in  = com3.cmd + COM3_CONV2D_HDR_BYTES;
+    ker = in + in_n * 4;
+    com3_put_u32(COM3_STATUS_COMPLETE);
+    for (oc = 0; oc < cout; oc++) {
+        for (y = 0; y < oh; y++) {
+            for (x = 0; x < ow; x++) {
+                float acc = 0.0f;
+                for (ic = 0; ic < cin; ic++) {
+                    for (ky = 0; ky < kh; ky++) {
+                        for (kx = 0; kx < kw; kx++) {
+                            int iy = (int)(y * s + ky) - (int)pad;
+                            int ix = (int)(x * s + kx) - (int)pad;
+                            if (iy >= 0 && iy < (int)h && ix >= 0 && ix < (int)w) {
+                                float iv = com3_get_f32(in  + ((ic * h + (unsigned int)iy) * w + (unsigned int)ix) * 4);
+                                float kv = com3_get_f32(ker + (((oc * cin + ic) * kh + ky) * kw + kx) * 4);
+                                acc += iv * kv;
+                            }
+                        }
+                    }
+                }
+                com3_put_f32(acc);
+            }
+        }
+    }
+}
+
+/* ── GPU compute doorbell (0x420-0x423) ────────────────────────────────
+
+   The serial bridge above costs TWO VM exits per byte -- one LSR poll and
+   one transfer -- in each direction, so its cost is a function of the
+   operand size rather than of the dispatch. Measured with
+   CODEX_VM_COM3_STAT: a 2x2 matmul plus a 2x2 relu is 272 exits, and one
+   32x32 matmul is 24,640.
+
+   The doorbell moves the same command through guest RAM instead. The
+   guest builds the command with ordinary memory writes, which are not
+   exits at all, then names the buffer and rings: three OUTs and one IN,
+   four exits, whatever the operand size. Handing the host a guest address
+   is already this emulator's idiom -- the triangle rasterizer takes its
+   command buffer that way (0x400) and so does the asset loader
+   (0x40C/0x40D).
+
+   The command format is unchanged for the arithmetic ops, and
+   com3_execute is the same function the serial path called. Only the
+   transport was new, which is what kept the two paths from disagreeing
+   about arithmetic. The PTX launch (op 32) is the one command with a
+   header of its own; it arrives through this same doorbell and is routed
+   to com3_launch_ptx before the shape check, because its length follows
+   from its program and not from three dimension fields. */
+
+#define COM3_PORT_CMD_ADDR    0x420
+#define COM3_PORT_REPLY_ADDR  0x421
+#define COM3_PORT_DOORBELL    0x422
+#define COM3_PORT_REPLY_LEN   0x423
+
+static unsigned int com3_cmd_addr = 0;
+static unsigned int com3_reply_addr = 0;
+
+static void com3_doorbell(unsigned int cmd_bytes) {
+    unsigned char *g = (unsigned char *)guest_mem;
+    unsigned int op, ra, ca, cb;
+    int operand_elems = 0, result_elems = 0;
+
+    com3.reply_len = 0;
+
+
+    if (!g) return;
+
+    /* Every refusal below still answers STATUS_ERROR rather than leaving
+       the reply empty: a guest that cannot tell "refused" from "nothing
+       happened" has to time out to learn anything. */
+    if (cmd_bytes < (unsigned int)COM3_HDR_BYTES || cmd_bytes > sizeof(com3.cmd) ||
+        (size_t)com3_cmd_addr + cmd_bytes > guest_mem_size) {
+        fprintf(stderr, "COM3: doorbell cmd addr 0x%x len %u out of range\n",
+                com3_cmd_addr, cmd_bytes);
+        com3_put_u32(COM3_STATUS_ERROR);
+    } else {
+        memcpy(com3.cmd, g + com3_cmd_addr, cmd_bytes);
+        op = com3_get_u32(com3.cmd + 4);
+        ra = com3_get_u32(com3.cmd + 8);
+        ca = com3_get_u32(com3.cmd + 12);
+        cb = com3_get_u32(com3.cmd + 16);
+        /* A PTX launch carries a program, not a shape, so its length
+           cannot be derived from three dimension fields. It validates
+           its own header and is routed around com3_shape rather than
+           given a fake shape there. */
+        if (op == COM3_OP_LAUNCH_PTX) {
+            com3_launch_ptx(cmd_bytes);
+        } else if (op == COM3_OP_CONV2D) {
+            /* conv2d carries eight shape fields, not three, so it validates
+               its own length in com3_conv2d rather than through com3_shape. */
+            com3_conv2d(cmd_bytes);
+        } else if (!com3_shape(op, ra, ca, cb, &operand_elems, &result_elems) ||
+            cmd_bytes != (unsigned int)COM3_HDR_BYTES + (unsigned int)operand_elems * 4) {
+            fprintf(stderr, "COM3: doorbell dims %u x %u x %u vs len %u -- answering error\n",
+                    ra, ca, cb, cmd_bytes);
+            com3_put_u32(COM3_STATUS_ERROR);
+        } else {
+            com3_execute();
+        }
+    }
+
+    if ((size_t)com3_reply_addr + (size_t)com3.reply_len > guest_mem_size) {
+        fprintf(stderr, "COM3: doorbell reply addr 0x%x len %d out of range\n",
+                com3_reply_addr, com3.reply_len);
+        com3.reply_len = 0;
+        return;
+    }
+    memcpy(g + com3_reply_addr, com3.reply, (size_t)com3.reply_len);
+}
+
 /* ── I/O dispatch ──────────────────────────────────────────────────── */
 
 static void handle_io(WHV_RUN_VP_EXIT_CONTEXT *ctx) {
@@ -6310,6 +8721,23 @@ static void handle_io(WHV_RUN_VP_EXIT_CONTEXT *ctx) {
                 }
             }
         }
+        /* COM3 OUT: the GPU compute bridge consumes command bytes. */
+        else if (port >= 0x3E8 && port <= 0x3EF) {
+            /* COM3 is no longer a compute transport; the guest rings the
+               doorbell below instead. Writes here are accepted and dropped
+               rather than faulting, because this is an ordinary UART
+               window and something may yet be wired to it. */
+        }
+        /* GPU compute doorbell: the command is read out of guest RAM */
+        else if (port >= COM3_PORT_CMD_ADDR && port <= COM3_PORT_REPLY_LEN) {
+            com3_io_exits++;
+            if (port == COM3_PORT_CMD_ADDR) com3_cmd_addr = (unsigned int)val;
+            else if (port == COM3_PORT_REPLY_ADDR) com3_reply_addr = (unsigned int)val;
+            else if (port == COM3_PORT_DOORBELL) {
+                com3_doorbell((unsigned int)val);
+                com3_stat("doorbell");
+            }
+        }
         /* COM2 OUT: detect HEAP: for clean exit (old-seed compat) */
         else if (port >= 0x2F8 && port <= 0x2FF) {
             if (port == 0x2F8) {
@@ -6343,14 +8771,51 @@ static void handle_io(WHV_RUN_VP_EXIT_CONTEXT *ctx) {
         /* PIT */
         else if (port == 0x43) {
             int channel = (val >> 6) & 3;
+            int access = (val >> 4) & 3;
             if (channel < 3) {
-                pit_access[channel] = (val >> 4) & 3;
-                pit_mode[channel] = (val >> 1) & 7;
-                if (channel == 2) speaker_freq_latch = 0; /* reset latch on mode write */
+                if (access == 0) {
+                    /* Counter-latch command: freeze the count for reading.
+                       It carries no mode or access field, so overwriting
+                       either from these bits would corrupt the channel's
+                       configuration on every latch. */
+                    pit_latched[channel] = (unsigned short)pit_current_count(channel);
+                    pit_latch_valid[channel] = 1;
+                    pit_read_hi[channel] = 0;
+                } else {
+                    pit_access[channel] = access;
+                    pit_mode[channel] = (val >> 1) & 7;
+                    pit_latch_valid[channel] = 0;
+                    pit_load_hi[channel] = 0;
+                    pit_read_hi[channel] = 0;
+                    if (channel == 2) speaker_freq_latch = 0; /* reset latch on mode write */
+                }
             }
         }
+        /* PIT channel data. Access mode 3 (lobyte/hibyte) loads in two
+           writes; modes 1 and 2 load a single byte. Channel 2 also drives
+           the speaker, and its latch used to live in a later branch of
+           this same chain that this one already matched -- so it was
+           unreachable and speaker_freq was never loaded from a guest
+           write at all. Both are updated here. */
         else if (port >= 0x40 && port <= 0x42) {
-            /* Channel data writes — channel 2 handled by speaker */
+            int ch = port - 0x40;
+            if (pit_access[ch] == 3) {
+                if (!pit_load_hi[ch]) {
+                    pit_reload[ch] = (unsigned short)((pit_reload[ch] & 0xFF00) | (val & 0xFF));
+                    pit_load_hi[ch] = 1;
+                } else {
+                    pit_reload[ch] = (unsigned short)((pit_reload[ch] & 0x00FF) | ((val & 0xFF) << 8));
+                    pit_load_hi[ch] = 0;
+                }
+            } else if (pit_access[ch] == 2) {
+                pit_reload[ch] = (unsigned short)((pit_reload[ch] & 0x00FF) | ((val & 0xFF) << 8));
+            } else {
+                pit_reload[ch] = (unsigned short)((pit_reload[ch] & 0xFF00) | (val & 0xFF));
+            }
+            if (ch == 2) {
+                speaker_freq = pit_reload[2];
+                speaker_freq_latch = 0;
+            }
         }
         /* IDE */
         else if ((port >= 0x1F0 && port <= 0x1F7) || port == 0x3F6) {
@@ -6599,6 +9064,46 @@ static void handle_io(WHV_RUN_VP_EXIT_CONTEXT *ctx) {
         }
         /* LAPIC disable via MSR is handled in handle_msr; ignore port 0xFEE00xx */
     } else {
+        /* REP INSB/INSW from the NE2K data port: batch the whole remaining
+           count in one exit, the mirror of the REP OUTSW batch above. The
+           generic string-op IN path below moves ONE element and re-executes
+           the instruction, so draining an RX ring cost one VM exit per word.
+
+           Semantics are those of the generic path repeated, deliberately: the
+           NIC is asked for each element in turn (rbcr runs out inside
+           ne2k_handle_in exactly as it would across separate exits), and a
+           destination outside guest memory SKIPS the store while still
+           advancing RDI/RCX. Skipping rather than breaking is what keeps the
+           REP terminating -- a break at done == 0 would re-execute into the
+           same out-of-bounds address forever. A hostile RCX is capped per
+           exit; the instruction simply re-executes for the remainder. */
+        if (ctx->IoPortAccess.AccessInfo.StringOp && port == NE2K_BASE + 0x10) {
+            unsigned long long gpa = ctx->IoPortAccess.Rdi;
+            unsigned long long cnt = ctx->IoPortAccess.Rcx;
+            unsigned long long done = 0;
+            unsigned char *gmem = (unsigned char *)guest_mem;
+            if (cnt > (1ULL << 20)) cnt = (1ULL << 20);
+            for (; done < cnt; done++) {
+                unsigned long long p = gpa + done * (unsigned long long)size;
+                int rval = ne2k_handle_in(port, size);
+                if (p + (unsigned long long)size > guest_mem_size) continue;
+                if (size == 1) gmem[p] = rval & 0xFF;
+                else if (size == 2) { gmem[p] = rval & 0xFF; gmem[p + 1] = (rval >> 8) & 0xFF; }
+                else *(unsigned int *)(gmem + p) = (unsigned int)rval;
+            }
+            WHV_REGISTER_NAME sn[] = { WHvX64RegisterRdi, WHvX64RegisterRcx };
+            WHV_REGISTER_VALUE sv[2];
+            sv[0].Reg64 = ctx->IoPortAccess.Rdi + done * (unsigned long long)size;
+            sv[1].Reg64 = ctx->IoPortAccess.Rcx - done;
+            WHvSetVirtualProcessorRegisters(partition, 0, sn, 2, sv);
+            if (ctx->IoPortAccess.Rcx - done == 0) {
+                WHV_REGISTER_NAME rn = WHvX64RegisterRip;
+                WHV_REGISTER_VALUE rv;
+                rv.Reg64 = ctx->VpContext.Rip + ctx->VpContext.InstructionLength;
+                WHvSetVirtualProcessorRegisters(partition, 0, &rn, 1, &rv);
+            }
+            return;
+        }
         int result = 0xFF;
         /* COM1 IN: serve input data to guest via UART emulation.
            Initial load goes into ring buffer directly; overflow bytes
@@ -6622,6 +9127,23 @@ static void handle_io(WHV_RUN_VP_EXIT_CONTEXT *ctx) {
                 result = 0;
             }
             else result = 0;
+        }
+        /* COM3 IN: the GPU compute bridge serves its reply.
+           LSR bit 5 is transmitter-ready (always -- the bridge consumes a
+           byte per OUT); bit 0 is receiver-ready, and it is set only while
+           a reply is actually pending. The old 0xFF default asserted both
+           unconditionally, which is why the guest read 0xFFFFFFFF out of an
+           empty bridge instead of waiting for one. */
+        else if (port >= 0x3E8 && port <= 0x3EF) {
+            /* An idle UART: transmitter ready, nothing to receive. The
+               compute reply is collected through the doorbell's length
+               port, not read back a byte at a time. */
+            result = (port == 0x3ED) ? 0x20 : 0;
+        }
+        /* Doorbell reply length: 0 means the dispatch was refused. */
+        else if (port >= COM3_PORT_CMD_ADDR && port <= COM3_PORT_REPLY_LEN) {
+            com3_io_exits++;
+            result = (port == COM3_PORT_REPLY_LEN) ? com3.reply_len : 0;
         }
         /* COM2 IN: signal EOF when guest has consumed all input */
         else if (port >= 0x2F8 && port <= 0x2FF) {
@@ -6650,9 +9172,39 @@ static void handle_io(WHV_RUN_VP_EXIT_CONTEXT *ctx) {
         else if (port == 0xA0 || port == 0xA1) {
             result = pic_handle_in(&pic_slave, port == 0xA1);
         }
-        /* PIT */
+        /* PIT counter reads. A real counter counts DOWN from the reload
+           value at 1.193182 MHz and wraps, and a guest calibrating a
+           delay reads it twice and subtracts. It used to answer 0 every
+           time, which is indistinguishable from a stopped clock -- and,
+           being constant, is exactly the shape a test cannot catch.
+           Access mode 3 returns low byte then high byte on successive
+           reads, which is the same latch the write path uses. */
         else if (port >= 0x40 && port <= 0x43) {
-            result = 0;
+            if (port == 0x43) {
+                result = 0;   /* the command register is write-only */
+            } else {
+                int ch = port - 0x40;
+                /* A latched channel answers the frozen value until the
+                   guest has taken all of it; the latch then lifts and
+                   reads go back to the live counter. */
+                unsigned int count = pit_latch_valid[ch]
+                                   ? (unsigned int)pit_latched[ch]
+                                   : pit_current_count(ch);
+                if (pit_access[ch] == 3) {
+                    if (!pit_read_hi[ch]) { result = count & 0xFF; pit_read_hi[ch] = 1; }
+                    else {
+                        result = (count >> 8) & 0xFF;
+                        pit_read_hi[ch] = 0;
+                        pit_latch_valid[ch] = 0;
+                    }
+                } else if (pit_access[ch] == 2) {
+                    result = (count >> 8) & 0xFF;
+                    pit_latch_valid[ch] = 0;
+                } else {
+                    result = count & 0xFF;
+                    pit_latch_valid[ch] = 0;
+                }
+            }
         }
         /* IDE */
         else if ((port >= 0x1F0 && port <= 0x1F7) || port == 0x3F6) {
@@ -6675,8 +9227,8 @@ static void handle_io(WHV_RUN_VP_EXIT_CONTEXT *ctx) {
         else if (port == 0x71) {
             SYSTEMTIME st;
             int uip;
-            GetLocalTime(&st);
-            uip = rtc_updating(&st);
+            if (rtc_fixed) { st = rtc_fixed_st; uip = 0; }
+            else { GetLocalTime(&st); uip = rtc_updating(&st); }
             switch (cmos_index) {
             /* Time registers are UNDEFINED while an update is in progress.
                A guest must wait for Status A bit 7 to clear before reading
@@ -7742,6 +10294,13 @@ int main(int argc, char **argv) {
         else if (!strcmp(argv[i], "-map") && i+1 < argc) map_file_path = argv[++i];
         else if (!strcmp(argv[i], "-headless")) vga_headless = 1;
         else if (!strcmp(argv[i], "-rtc-lenient")) rtc_lenient = 1;
+        else if (!strcmp(argv[i], "-rtc") && i+1 < argc) {
+            if (!rtc_parse_fixed(argv[++i])) {
+                fprintf(stderr, "-rtc: expected YYYY-MM-DDTHH:MM:SS, got '%s'\n", argv[i]);
+                return 1;
+            }
+            rtc_fixed = 1;
+        }
         else if (!strcmp(argv[i], "-smp")) {
             if (i+1 < argc && argv[i+1][0] >= '0' && argv[i+1][0] <= '9') {
                 smp_cores = atoi(argv[++i]);
@@ -7799,6 +10358,12 @@ int main(int argc, char **argv) {
         else if (!strcmp(argv[i], "-keys-start") && i+1 < argc) inject_key_start_ms = atof(argv[++i]);
         else if (!strcmp(argv[i], "-keys-interval") && i+1 < argc) inject_key_interval_ms = atof(argv[++i]);
         else if (!strcmp(argv[i], "-board-mmio")) board_mmio = 1;
+        else if (!strcmp(argv[i], "-xhci-no-root-kbd")) xhci_no_root_kbd = 1;
+        else if (!strcmp(argv[i], "-xhci-hub-tiers") && i + 1 < argc) {
+            xhci_hub_tiers = atoi(argv[++i]);
+            if (xhci_hub_tiers < 1) xhci_hub_tiers = 1;
+            if (xhci_hub_tiers > XHCI_HUB_TIERS) xhci_hub_tiers = XHCI_HUB_TIERS;
+        }
         else if (!strcmp(argv[i], "-uefi")) uefi_mode = 1;
         else if (!strcmp(argv[i], "-uefi-strict")) { uefi_mode = 1; uefi_strict = 1; }
         else if (!strcmp(argv[i], "-gop")) { gop_active = 1; }
@@ -7809,12 +10374,19 @@ int main(int argc, char **argv) {
         else if (!strcmp(argv[i], "-portfwd") && i+1 < argc) {
             char *spec = argv[++i];
             int hp = 0, gp = 0;
-            if (sscanf(spec, "%d:%d", &hp, &gp) == 2 && portfwd_count < PORTFWD_MAX) {
+            /* An optional "udp:" prefix. The default stays TCP so every
+               existing invocation means what it always did. */
+            int proto = PF_TCP;
+            char *body = spec;
+            if (!strncmp(spec, "udp:", 4)) { proto = PF_UDP; body = spec + 4; }
+            else if (!strncmp(spec, "tcp:", 4)) { body = spec + 4; }
+            if (sscanf(body, "%d:%d", &hp, &gp) == 2 && portfwd_count < PORTFWD_MAX) {
                 portfwds[portfwd_count].host_port = (unsigned short)hp;
                 portfwds[portfwd_count].guest_port = (unsigned short)gp;
+                portfwds[portfwd_count].proto = proto;
                 portfwd_count++;
             } else {
-                fprintf(stderr, "Bad -portfwd spec: %s (expected host:guest)\n", spec);
+                fprintf(stderr, "Bad -portfwd spec: %s (expected [udp:]host:guest)\n", spec);
             }
         }
     }
@@ -7844,7 +10416,12 @@ int main(int argc, char **argv) {
 
     /* Register PCI devices */
     pci_add_device(0x1234, 0x1111, 0x03, 0x00, 0x00, 0xFD000000, 0);  /* slot 0: Bochs VGA (BAR at high MMIO, FB read from RAM at GOP_FB_ADDR) */
-    pci_add_device(0x1033, 0x0194, 0x0C, 0x03, 0x30, 0xFE800000, 10);  /* slot 1: xHCI (NEC/Renesas) */
+    {   /* slot 1: xHCI (NEC/Renesas). Its BAR decodes the register space it
+           actually serves, so sizing reports 16 KB and not the old blanket
+           64 KB. */
+        int xi = pci_add_device(0x1033, 0x0194, 0x0C, 0x03, 0x30, 0xFE800000, 10);
+        if (xi >= 0) pci_devices[xi].bar_size[0] = XHCI_BAR_SIZE;
+    }
     pci_add_device(0x8086, 0x2668, 0x04, 0x03, 0x00, 0xFE000000, 11);  /* slot 2: Intel HDA */
 
     create_vm(mem_mb);
@@ -8537,6 +11114,15 @@ int main(int argc, char **argv) {
            live. The guest sends a real SIPI now; none of it is needed. */
 
         /* ── Post-exit: decide what interrupt to queue ── */
+        /* A device line that resolved to a vector goes first. It is
+           already gated by its own mask in ioapic_raise, it is rarer than
+           the tick, and the tick recurs on its own -- so preferring the
+           device here costs at most one late tick and losing it would
+           strand a guest waiting on the only edge it asked for. */
+        if (pending_irq < 0) {
+            int dv = devirq_pop();
+            if (dv >= 0) pending_irq = dv;
+        }
         if (pending_irq < 0) {
             int vec = pic_master.vector_base ? pic_master.vector_base : 32;
             if (kbd_irq_pending && kbd_count > 0 && pic_master.vector_base && !(pic_master.mask & (1 << 1))) {
@@ -8589,7 +11175,16 @@ int main(int argc, char **argv) {
         }
 
         /* Poll NAT sockets for incoming data and inject into NE2000 ring buffer */
-        if (exits % 10 == 0) { nat_poll_rx(); if (portfwd_count > 0) portfwd_poll(); ne2k_inject_rx(); }
+        if (exits % 10 == 0) { nat_poll_connect(); nat_poll_rx(); udp_poll_rx(); if (portfwd_count > 0) { portfwd_poll(); nat_poll_retransmit(); } ne2k_inject_rx(); }
+
+
+        /* Comparator match is checked on the same cadence as the other
+           devices. It only queues a vector; the slot above delivers it. */
+        hpet_poll();
+
+        /* Make a running guest's serial output readable on disk. Rate-limited
+           inside; see poll_output_dump. */
+        if (exits % 10 == 0) poll_output_dump();
 
         /* Drip-feed input and set stdin-eof when fully consumed */
         if (guest_mem) {
@@ -8730,9 +11325,11 @@ done:
        drains normally. Active connections get a graceful half-close. */
     for (int i = 0; i < NAT_MAX_CONN; i++) {
         if (nat_conns[i].sock != INVALID_SOCKET && (nat_conns[i].active || nat_conns[i].state == 3)) {
-            if (nat_conns[i].state != 3) shutdown(nat_conns[i].sock, SD_SEND);
-            closesocket(nat_conns[i].sock);
-            nat_conns[i].active = 0;
+            if (nat_conns[i].state != 3) {
+                nat_tx_flush(&nat_conns[i]);
+                shutdown(nat_conns[i].sock, SD_SEND);
+            }
+            nat_conn_free(&nat_conns[i]);
         }
     }
     if (dumpmem_addr && guest_mem && dumpmem_addr + dumpmem_len <= guest_mem_size) {

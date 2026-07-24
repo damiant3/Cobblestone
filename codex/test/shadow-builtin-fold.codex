@@ -1,0 +1,44 @@
+Chapter: ShadowBuiltinFold
+
+ A definition beats a builtin. `emit-compound` has always implemented
+ that -- it checks `user-arity < 0` before routing a call to
+ `emit-builtin` -- but the constant folder decided the same question
+ separately and decided it the other way, so a shadowed name answered
+ TWO ways in one function depending on the shape of its argument.
+
+ `text-length "abc"` has a literal argument, so `fold-apply` rewrote it
+ to `3` at lowering time using the compiler's own `text-length`, and the
+ definition below never ran. `text-length (substring "abcde" 0 3)` has a
+ computed argument, no fold applies, and the definition answered 99. Same
+ name, same body, same function, two answers.
+
+ It was first recorded as per-BUILTIN -- `text-length` shadowed
+ and `abs` did not -- which is why it read as a property of how each
+ builtin lowers. It is per-CALL-SITE. `abs` looked well-behaved only
+ because nothing folds `abs`; give `text-length` a non-literal argument
+ and it was well-behaved too.
+
+ So the test needs BOTH call sites and it needs them in one program.
+ Either one alone passes against the broken compiler: the computed
+ argument was always right, and the literal one is right the moment the
+ fold declines. Only the pair shows that the two paths agree, which is
+ the actual claim.
+
+ `abs` is here as the control. It was never folded and never wrong, so
+ if it ever changes, the fix went too far and started displacing
+ builtins that nobody shadowed.
+
+Section: Entry
+
+  text-length : Text -> Integer
+  text-length (s) = 99
+
+  abs : Integer -> Integer
+  abs (n) = 77
+
+  opening : [Console] Nothing
+  opening = act
+    print-line-uni ("lit " & show (text-length "abc"))
+    print-line-uni ("var " & show (text-length (substring "abcde" 0 3)))
+    print-line-uni ("abs " & show (abs (0 - 5)))
+  end

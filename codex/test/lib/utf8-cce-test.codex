@@ -1,0 +1,86 @@
+Chapter: Utf8CceTest
+  cites Foreword chapter CCE
+
+ The UTF-8 boundary in Foreword chapter CCE. tools/cdx-store
+ converted a wire byte at a time through from-unicode, which is correct only
+ over the single-byte range and wrong without saying so above it.
+
+ It takes TWO kinds of assertion to catch the thing this replaces, and the
+ obvious one alone is blind. Measured against a replica of the old conversion:
+
+   three-byte CJK  old: 3 characters   new: 1 character
+   two-byte e-acute old: 1 character   new: 1 character
+                    old: code point 361  new: code point 233
+
+ So the character count catches the three- and four-byte cases and CANNOT catch
+ the two-byte one -- the old path drops one byte, maps the other, and lands on a
+ single character that is simply the wrong one. U+00E9 came out as U+0169: an
+ e-acute silently became a u-double-acute. That is why every case here asserts
+ the code point as well as the count. An assertion that cannot fail on the code
+ it replaces is not evidence, and the count alone was exactly that.
+
+Section: Helpers
+
+  u8-bytes-equal : List Integer, List Integer, Integer -> Boolean
+  u8-bytes-equal (a) (b) (i) =
+    if list-length a == list-length b then
+      if i >= list-length a then True
+      else if list-at a i == list-at b i then u8-bytes-equal a b (i + 1)
+      else False
+    else False
+
+  u8-check : Boolean, Text -> Text
+  u8-check (ok) (label) = label & "=" & if ok then "pass" else "fail"
+
+ A decoded character is read back out through to-unicode, so the test never
+ hardcodes a CCE code -- it asserts the Unicode code point that went in is the
+ one that comes out. It is read with cce-decode-at and not char-code, because
+ Text is a byte sequence: char-code would hand back the lead byte of a
+ multi-byte CCE character rather than the character.
+
+  u8-cp-of : List Integer -> Integer
+  u8-cp-of (bytes) =
+    let t = utf8-bytes-to-text bytes
+    in if text-length t == 0 then -1 else to-unicode (cce-decode-at t 0)
+
+ text-length counts bytes, so the count that means "one character" walks the
+ CCE framing. This is the assertion the byte-at-a-time conversion fails: it
+ turned one two-byte sequence into two characters.
+
+  u8-char-count : Text, Integer, Integer, Integer -> Integer
+  u8-char-count (t) (i) (len) (n) =
+    if i >= len then n
+    else u8-char-count t (i + cce-decode-length (char-code (char-at t i))) len (n + 1)
+
+  u8-chars-of : List Integer -> Integer
+  u8-chars-of (bytes) =
+    let t = utf8-bytes-to-text bytes
+    in u8-char-count t 0 (text-length t) 0
+
+  u8-len-of : List Integer -> Integer
+  u8-len-of (bytes) = text-length (utf8-bytes-to-text bytes)
+
+Section: Body
+
+  u8-ascii : List Integer = [72, 101, 108, 108, 111]
+  u8-e-acute : List Integer = [195, 169]
+  u8-cjk : List Integer = [228, 184, 173]
+  u8-emoji : List Integer = [240, 159, 152, 128]
+
+  opening : [Console] Nothing = act
+    print-line-uni (u8-check (u8-chars-of u8-ascii == 5) "utf8-ascii-len")
+    print-line-uni (u8-check (u8-cp-of u8-ascii == 72) "utf8-ascii-cp")
+    print-line-uni (u8-check (u8-chars-of u8-e-acute == 1) "utf8-2byte-one-char")
+    print-line-uni (u8-check (u8-cp-of u8-e-acute == 233) "utf8-2byte-cp")
+    print-line-uni (u8-check (u8-chars-of u8-cjk == 1) "utf8-3byte-one-char")
+    print-line-uni (u8-check (u8-cp-of u8-cjk == 20013) "utf8-3byte-cp")
+    print-line-uni (u8-check (u8-chars-of u8-emoji == 1) "utf8-4byte-one-char")
+    print-line-uni (u8-check (u8-cp-of u8-emoji == 128512) "utf8-4byte-cp")
+    print-line-uni (u8-check (utf8-decode-length 65 == 1) "utf8-lead-ascii")
+    print-line-uni (u8-check (utf8-decode-length 169 == 0) "utf8-lead-continuation")
+    print-line-uni (u8-check (u8-len-of [195] == 0) "utf8-truncated-dropped")
+    print-line-uni (u8-check (u8-len-of [169] == 0) "utf8-stray-cont-dropped")
+    print-line-uni (u8-check (u8-len-of u8-cjk == 2) "utf8-3byte-cce-bytes")
+    print-line-uni (u8-check (u8-bytes-equal (text-to-utf8-bytes (utf8-bytes-to-text u8-cjk)) u8-cjk 0) "utf8-roundtrip-3byte")
+    print-line-uni (u8-check (u8-bytes-equal (text-to-utf8-bytes (utf8-bytes-to-text u8-emoji)) u8-emoji 0) "utf8-roundtrip-4byte")
+  end

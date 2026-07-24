@@ -1,0 +1,144 @@
+Chapter: EdVectorTest
+  cites Foreword chapter Ed25519
+  cites Foreword chapter Sha512
+
+ Published vectors only. The SHA-512 digests are FIPS 180-4's, the key
+ and signature are RFC 8032 section 7.1 TEST 1. Nothing here is read
+ back off our own x86-64 output, so this file can tell a broken
+ backend from a backend that merely agrees with itself.
+
+ The two halves bisect deliberately. If sha512 is wrong the hash lines
+ fail and everything downstream is explained by them. If the hash
+ lines pass and pubkey fails, the defect is in the curve arithmetic
+ and not in the digest.
+
+Section: Vectors
+
+  v-abc : List Integer = [97, 98, 99]
+
+  v-seed : List Integer =
+    [157, 97, 177, 157, 239, 253, 90, 96, 186, 132, 74, 244, 146, 236,
+     44, 196, 68, 73, 197, 105, 123, 50, 105, 25, 112, 59, 172, 3, 28,
+     174, 127, 96]
+
+  v-pub : List Integer =
+    [215, 90, 152, 1, 130, 177, 10, 183, 213, 75, 254, 211, 201, 100,
+     7, 58, 14, 225, 114, 243, 218, 166, 35, 37, 175, 2, 26, 104, 247,
+     7, 81, 26]
+
+  v-sig : List Integer =
+    [229, 86, 67, 0, 195, 96, 172, 114,
+     144, 134, 226, 204, 128, 110, 130, 138,
+     132, 135, 127, 30, 184, 229, 217, 116,
+     216, 115, 224, 101, 34, 73, 1, 85,
+     95, 184, 130, 21, 144, 163, 59, 172,
+     198, 30, 57, 112, 28, 249, 180, 107,
+     210, 91, 245, 240, 89, 91, 190, 36,
+     101, 81, 65, 67, 142, 122, 16, 11]
+
+  v-empty : List Integer = []
+
+ RFC 8032 section 7.1 TEST 2: a one-byte message, so the empty-list
+ question cannot confound the curve result.
+
+  v2-pub : List Integer =
+    [61, 64, 23, 195, 232, 67, 137, 90, 146, 183, 10, 167, 77, 27, 126,
+     188, 156, 152, 44, 207, 46, 196, 150, 140, 192, 205, 85, 241, 42,
+     244, 102, 12]
+
+  v2-msg : List Integer = [114]
+
+  v2-sig : List Integer =
+    [146, 160, 9, 169, 240, 212, 202, 184, 114, 14, 130, 11, 95, 100,
+     37, 64, 162, 178, 123, 84, 22, 80, 63, 143, 179, 118, 34, 35, 235,
+     219, 105, 218, 8, 90, 193, 228, 62, 21, 153, 110, 69, 143, 54, 19,
+     208, 241, 29, 140, 56, 123, 46, 174, 180, 48, 42, 238, 176, 13,
+     41, 22, 18, 187, 12, 0]
+
+Section: Helpers
+
+  yn : Boolean -> Text
+  yn (b) = if b then "True" else "False"
+
+  bytes-eq : List Integer, List Integer -> Boolean
+  bytes-eq (a) (b) =
+    if list-length a /= list-length b then False
+    else be-loop a b 0 (list-length a)
+
+  be-loop : List Integer, List Integer, Integer, Integer -> Boolean
+  be-loop (a) (b) (i) (n) =
+    if i >= n then True
+    else if list-at a i /= list-at b i then False
+    else be-loop a b (i + 1) n
+
+Section: Reports
+
+ FIPS 180-4: SHA-512 of "abc" begins ddaf35a1, and of the empty
+ message begins cf83e135. Only the first eight bytes are compared,
+ which is enough to tell a working compressor from a broken one.
+
+  r-sha-abc : Text =
+    "sha512-abc=" & bytes-to-hex (ed-list-take (sha512-words-to-byte-list (sha512 v-abc)) 8)
+
+  r-sha-empty : Text =
+    "sha512-empty=" & bytes-to-hex (ed-list-take (sha512-words-to-byte-list (sha512 v-empty)) 8)
+
+ RFC 8032 TEST 1: the seed above derives exactly the public key above.
+ This is base-point scalar multiplication and point encoding, and it
+ does not touch verification at all.
+
+  r-pub : Text =
+    "ed-pubkey=" & yn (bytes-eq (ed25519-public-key v-seed) v-pub)
+
+  r-pub-hex : Text =
+    "ed-pubkey-first8=" & bytes-to-hex (ed-list-take (ed25519-public-key v-seed) 8)
+
+ The published signature must verify, and a signature with one byte
+ disturbed must not. A verifier that always answers True looks
+ exactly like one that works, so the tampered line is what gives the
+ passing line its meaning.
+
+ TEST 1 signs an EMPTY message, which is its own edge and worth
+ keeping for that alone. Our signer must reproduce the published
+ signature byte for byte, and the verifier must accept it.
+
+ A caution, earned twice while writing this file. Two different
+ hand-written versions of this signature were wrong -- one with a
+ nibble inserted at byte 39 that shifted the whole tail, one with a
+ tail belonging to another vector entirely -- and each time the
+ verifier rejected the bad signature and the rejection was briefly
+ read as a defect in the verifier. Converting hex by machine does not
+ help when the hex itself is misremembered.
+
+ What settles it is that verification IS the oracle here: a signature
+ that verifies under a given public key and message is, barring a
+ forgery, the genuine one, and a signature off by a single nibble does
+ not verify. So the pair of lines below is self-checking in the way
+ that matters, and the outside anchors elsewhere in this file -- the
+ FIPS digests, the base-point encoding, TEST 2's published signature
+ -- are what keep the whole from being agreement with ourselves.
+
+  r-sign : Text =
+    "sig-matches-published=" & yn (bytes-eq (ed25519-sign v-seed v-pub v-empty) v-sig)
+
+  r-verify : Text =
+    "ed-verify-empty=" & yn (ed25519-verify v-pub v-empty v-sig)
+
+  r2-verify : Text =
+    "ed2-verify=" & yn (ed25519-verify v2-pub v2-msg v2-sig)
+
+  r2-verify-bad : Text =
+    "ed2-verify-tampered=" & yn (ed25519-verify v2-pub v2-msg (ed-list-set-at v2-sig 0 145))
+
+Section: Entry
+
+  opening : [Console] Nothing = act
+    print-line-uni r-sha-abc
+    print-line-uni r-sha-empty
+    print-line-uni r-pub
+    print-line-uni r-pub-hex
+    print-line-uni r-sign
+    print-line-uni r-verify
+    print-line-uni r2-verify
+    print-line-uni r2-verify-bad
+  end

@@ -23,7 +23,7 @@ $BundleScript = Join-Path $Repo 'build\bundle-app.ps1'
 $HtmlRunScript = Join-Path $Repo 'codex\plugs\html\run.ps1'
 $PlugCdx = Join-Path $Repo 'codex\plugs\html\build-output\html-plug.cdx'
 
-# Known-bad apps excluded from the build (see docs/Test/Active/KNOWN-CONDITIONS.md)
+# Known-bad apps excluded from the build
 $Skip = @{}
 
 # -- Discover apps from web artifacts ---------------------------------

@@ -19,11 +19,11 @@ Section: Types
   }
 
 Section: Entry Point
-  lift-lambdas : IRChapter -> IRChapter
-  lift-lambdas (chapter) =
+  lift-lambdas : IRChapter, Integer -> IRChapter
+  lift-lambdas (chapter) (ceiling) =
    let reserved = collect-reserved-names (chapter.defs) 0 (list-length (chapter.defs)) skip-list-text-empty
    in let ctx0 = LiftCtx { reserved = reserved, counter = 0, lifted = [] }
-   in let (ctx, defs) = lift-defs ctx0 (chapter.defs) 0 (list-length (chapter.defs)) []
+   in let (ctx, defs) = lift-defs ctx0 (chapter.defs) 0 (list-length (chapter.defs)) [] ceiling
    in __record-set chapter "defs" (defs & (ctx.lifted))
 
   collect-reserved-names : List IRDef, Integer, Integer, SkipListText -> SkipListText
@@ -38,9 +38,20 @@ Section: Entry Point
    else let p = list-at params i
    in params-to-names params (i + 1) len (skip-list-text-insert acc (p.name))
 
-  lift-defs : LiftCtx, List IRDef, Integer, Integer, List IRDef -> (LiftCtx, List IRDef)
-  lift-defs (ctx) (defs) (i) (len) (acc) =
+ The ceiling is the LIFT deck reservation's top, checked per definition
+ because this loop is the phase's only bulk deck writer -- lift-lambdas
+ is the whole of LIFT, and it writes 38,846,816 bytes on the 2.81 MB
+ selfhost (measured 2026-07-21 with deck-pos probes). A definition's
+ lift writes kilobytes against an 8 MB band. The stop returns the
+ definitions lifted so far together with the lambdas lifted out of
+ them, so the concat in lift-lambdas stays proportional to what was
+ collected; compile-frontend-cdx reads deck-short-of again afterwards
+ and raises CDX9002 from there.
+
+  lift-defs : LiftCtx, List IRDef, Integer, Integer, List IRDef, Integer -> (LiftCtx, List IRDef)
+  lift-defs (ctx) (defs) (i) (len) (acc) (ceiling) =
    if i >= len then (ctx, acc)
+   else if deck-bound-short-of ceiling demand-lift-guard-band then (ctx, acc)
    else let d = list-at defs i
    in let absorbed = absorb-outer-lambdas d
    in let enclosing = params-to-names (absorbed.params) 0 (list-length (absorbed.params)) skip-list-text-empty
@@ -56,7 +67,7 @@ Section: Entry Point
     unique-params = absorbed.unique-params,
     span = absorbed.span
    })
-   in lift-defs ctx1 defs (i + 1) len (list-push acc new-def)
+   in lift-defs ctx1 defs (i + 1) len (list-push acc new-def) ceiling
 
   absorb-outer-lambdas : IRDef -> IRDef
   absorb-outer-lambdas (d) =
@@ -87,9 +98,9 @@ Section: Expression Walker
      let (ctx1, l-expr) = lift-expr ctx enclosing l
      in let (ctx2, r-expr) = lift-expr ctx1 enclosing r
      in (ctx2, deck-record (IrBinary op l-expr r-expr t s))
-    is IrNegate (x) (s) ->
+    is IrNegate (x) (t) (s) ->
      let (ctx1, x-expr) = lift-expr ctx enclosing x
-     in (ctx1, deck-record (IrNegate x-expr s))
+     in (ctx1, deck-record (IrNegate x-expr t s))
     is IrIf (c) (th) (el) (t) (s) ->
      let (ctx1, c-expr) = lift-expr ctx enclosing c
      in let (ctx2, th-expr) = lift-expr ctx1 enclosing th
@@ -154,7 +165,7 @@ Section: Expression Walker
   lift-branches (ctx) (enclosing) (bs) (i) (len) (acc) =
    if i >= len then (ctx, acc)
    else let b = list-at bs i
-   in let branch-enclosing = collect-pattern-names (b.pattern) enclosing
+   in let branch-enclosing = lift-collect-pattern-names (b.pattern) enclosing
    in let (ctx1, body-expr) = lift-expr ctx branch-enclosing (b.body)
    in let (ctx2, guard-expr) = lift-expr ctx1 branch-enclosing (b.guard)
    in let new-b = deck-record (IRBranch {
@@ -219,8 +230,8 @@ Section: Expression Walker
    in add-clause-names-loop cs (i + 1) len enc2
 
 Section: Pattern Variables
-  collect-pattern-names : IRPat, SkipListText -> SkipListText
-  collect-pattern-names (p) (acc) =
+  lift-collect-pattern-names : IRPat, SkipListText -> SkipListText
+  lift-collect-pattern-names (p) (acc) =
    when p
     is IrVarPat (n) (t) (s) -> skip-list-text-insert acc n
     is IrLitPat (v) (t) (s) | IrWildPat (s) -> acc
@@ -230,7 +241,7 @@ Section: Pattern Variables
   collect-pattern-name-list : List IRPat, Integer, Integer, SkipListText -> SkipListText
   collect-pattern-name-list (ps) (i) (len) (acc) =
    if i >= len then acc
-   else collect-pattern-name-list ps (i + 1) len (collect-pattern-names (list-at ps i) acc)
+   else collect-pattern-name-list ps (i + 1) len (lift-collect-pattern-names (list-at ps i) acc)
 
 Section: Lift Single Lambda
   lift-one-lambda : LiftCtx, SkipListText, List IRParam, IRExpr, CodexType, SourceSpan -> (LiftCtx, IRExpr)
@@ -335,7 +346,7 @@ Section: Free Variable Collection
     is IrBinary (op) (l) (r) (t) (s) ->
      let acc1 = collect-free-vars l local-bound capturable acc
      in collect-free-vars r local-bound capturable acc1
-    is IrNegate (x) (s) -> collect-free-vars x local-bound capturable acc
+    is IrNegate (x) (t) (s) -> collect-free-vars x local-bound capturable acc
     is IrIf (c) (th) (el) (t) (s) ->
      let acc1 = collect-free-vars c local-bound capturable acc
      in let acc2 = collect-free-vars th local-bound capturable acc1
@@ -388,7 +399,7 @@ Section: Free Variable Collection
   collect-free-vars-branches (bs) (local-bound) (capturable) (i) (len) (acc) =
    if i >= len then acc
    else let b = list-at bs i
-   in let branch-bound = collect-pattern-names (b.pattern) local-bound
+   in let branch-bound = lift-collect-pattern-names (b.pattern) local-bound
    in let acc1 = collect-free-vars (b.body) branch-bound capturable acc
    in let acc2 = collect-free-vars (b.guard) branch-bound capturable acc1
    in collect-free-vars-branches bs local-bound capturable (i + 1) len acc2

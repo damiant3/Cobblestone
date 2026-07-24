@@ -266,8 +266,18 @@ Section: Hub Walk
  Reset settles a connected port and reveals the device's speed; the
  change bits are acknowledged so the next observer sees a quiet
  port. The downstream device is then addressed at the extended route,
- through the hub's transaction translator when the speeds demand one,
- and inspected like any other -- including as a further hub.
+ through a transaction translator when the speeds demand one, and
+ inspected like any other -- including as a further hub.
+
+ Which translator is not always this hub's. A translator lives in a
+ high-speed hub; a full-speed hub has none, and everything below it
+ is served by whichever high-speed hub sits further up. So the choice
+ is by the hub's own speed, not by the child's: a high-speed hub
+ translates for its full-speed child at the port that child occupies,
+ and a hub that is not high-speed hands down the translator that
+ already serves it. Reading only the immediate parent leaves a device
+ two tiers down with no translator at all, which enumerates perfectly
+ and then never delivers an interrupt transfer.
 
   hub-attach-port : XhciHost, UsbDev, Integer, Integer, Integer, Integer, UsbFound -> UsbFound
   hub-attach-port (xh) (hub) (buf) (port) (route) (depth) (found) =
@@ -281,8 +291,8 @@ Section: Hub Walk
     in let a1 = hub-clear-feature xh hub port hub-feat-c-connection
     in if bit-and st 2 == 0 then found
     else let speed = hub-speed st
-    in let ttslot = if speed /= 3 then (if hub.ud-speed == 3 then hub.ud-slot else 0) else 0
-    in let ttport = if ttslot /= 0 then port else 0
+    in let ttslot = if speed == 3 then 0 else if hub.ud-speed == 3 then hub.ud-slot else hub.ud-tt-slot
+    in let ttport = if speed == 3 then 0 else if hub.ud-speed == 3 then port else hub.ud-tt-port
     in let croute = bit-or route (bit-shl port (depth * 4))
     in let dev = xhci-open-device-at xh croute (hub.ud-port) speed ttslot ttport
     in if dev.ud-ok == False then found

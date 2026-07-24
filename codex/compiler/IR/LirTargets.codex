@@ -1,0 +1,92 @@
+Chapter: LirTargets
+  cites Codex chapter Lir (LirTarget)
+
+ Register-file descriptors that belong to no selector.
+
+ The shipping descriptor, `lir-target-x86`, deliberately does not live
+ here: it sits beside `lir-phys` in `Emit/X86_64Lir.codex` because
+ `nregs` is the length of that mapping, and two files cannot be trusted
+ to keep that true. A descriptor with a physical mapping belongs next to
+ its mapping.
+
+ A descriptor with NO mapping has nowhere else to go, and that is what
+ this chapter is for. `IR/Lir.codex` states that it names no machine and
+ the allocator should keep that property, so the probe cannot go there
+ either.
+
+Section: The ARM64-Shaped Probe
+
+ The register file is "x86-64-shaped first", and ARM64 being a table
+ entry is a design intent, not a proven fact until the retarget is
+ done. The retarget's first step made the file data; this is the
+ second, which is the cheapest available test of whether that
+ was enough.
+
+ It is a SHAPE, not a machine. There is no `lir-phys` for it, nothing
+ emits from it, and no ARM64 instruction is selected anywhere on its
+ path. Naming it `a64-shape` rather than `a64` is deliberate: a real
+ ARM64 descriptor arrives in a later retarget step with a mapping
+ beside it, and the two must not be confused for one another.
+
+ What it varies, and why each one is the interesting axis:
+
+ **More registers.** Ten callee-saved against x86's four and eight
+ argument registers against four, so the file is 19 wide where x86 is 9.
+ x86-64 sits at the register count that is linear scan's
+ hard case; a wider file exercises the arithmetic in the other
+ direction, where the free-set walks and the occupant array are longer
+ than anything the shipping target has ever handed them.
+
+ **A different callee/arg split.** The pools are not merely bigger, they
+ are cut in a different place. `[0, ncallee)` is callee-saved,
+ `ncallee` alone is the scratch return register, and `[nargregs, nregs)`
+ is the argument file -- so a helper that happened to be right because
+ `nargregs` was `ncallee + 1` at four and five is right here for the
+ same reason at ten and eleven, and one that had folded the two
+ together is not.
+
+ **No division-fixed pair.** This is the axis with a known trap behind
+ it. ARM64 `sdiv` and RISC-V `div` are three-operand and fix nothing, so
+ both indices are -1, and every consumer of the pair has to mean it: a
+ bare `list-set-at occ (0 - 1)` is an out-of-range write, so a target
+ with no fixed pair would corrupt the verifier's occupant map rather
+ than exclude nothing. `Lir.codex` claims each of those sites is
+ guarded. This descriptor is what asks.
+
+  lir-target-a64-shape : LirTarget = LirTarget {
+   ncallee = 10,
+   nargregs = 11,
+   nregs = 19,
+   diva = 0 - 1,
+   divb = 0 - 1,
+   budget = 24
+  }
+
+Section: The Narrow Probe
+
+ A wide file tests LESS than a narrow one, and the first run of the
+ descriptor above is what showed it: with nineteen registers not one
+ definition in the `lir-check` corpus spilled, so the crossing arm, the
+ Belady eviction and the whole spill path never ran. The corpus was built
+ to reach x86-64's pressure points at nine registers, and at nineteen it
+ is all slack. A green from the wide probe alone would have been a green
+ over paths nothing executed.
+
+ So the second descriptor keeps the character that matters -- no
+ division-fixed pair, a split that is not x86's -- and makes the file
+ narrow enough to force the allocator into the corners: two callee-saved
+ registers, one scratch return, two argument registers.
+
+ This is the combination x86-64 can never present, and it is the one
+ worth asking about: every spill and eviction the shipping target has
+ ever taken was taken with a division-fixed pair to mask. Here the mask
+ is empty and the file is full at the same time.
+
+  lir-target-narrow-shape : LirTarget = LirTarget {
+   ncallee = 2,
+   nargregs = 3,
+   nregs = 5,
+   diva = 0 - 1,
+   divb = 0 - 1,
+   budget = 8
+  }

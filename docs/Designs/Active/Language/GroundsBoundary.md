@@ -7,7 +7,7 @@ pinned by `grounds-port` and `errors/grounds-scope`). The legacy
 `quire-effect-exempt` list is retained as a blanket fallback. What remains
 is the migration campaign below -- moving `codex/os/` onto explicit
 `grounds` and de-exempting the higher-order OS chapters -- which is what
-actually closes the `codex/os/` hole in BACKLOG 1.8.
+actually closes the `codex/os/` effect-exemption hole.
 
 Implementation note (learned the hard way): the field could NOT be named
 `grounds`, because `grounds` is now a keyword and the compiler's own
@@ -16,7 +16,7 @@ that let the old seed build a new compiler which then could not compile
 its own source. The field is `ground-effects`; only the keyword is
 `grounds`.
 
-## The problem (BACKLOG 1.8)
+## The problem
 
 `quire-effect-exempt` (`TypeChecker.codex`) turns effect checking OFF for
 whole quires -- originally `Kernel`, `Dev`, `Net`, `Sched`, `Trust`,

@@ -7,7 +7,8 @@
 #
 # Usage: compile.ps1 -Src <source.codex> -Out <out.cdx> -Log <log.out>
 #        compile.ps1 ... -Kernel seed\Codex.cdx     # boot a specific compiler
-#        compile.ps1 ... -Peer 127.0.0.1:19300      # fetch quoted works from a peer
+#        compile.ps1 ... -Peer 127.0.0.1:19300      # fetch quoted works from a NAMED peer
+#        compile.ps1 ... -Registry 127.0.0.1:19301  # ask a registry WHICH peer holds them
 #
 # The compiler booted is build-output\bare-metal\Codex.cdx unless -Kernel says
 # otherwise. That is NOT the seed. See the note above $Stage0 before you trust
@@ -25,6 +26,11 @@ param(
     [switch]$IrUni,
     [switch]$IrCce,
     [switch]$Text,
+    # Phase metrics instead of a binary: one DECK-<n> line per phase with
+    # origin, end, used and bivy high-water mark. This is how a deck floor
+    # gets re-measured rather than quoted: recorded deck ratios have gone
+    # stale before.
+    [switch]$Measure,
     [switch]$Prose,
     [switch]$Repl,
     [switch]$Poison,
@@ -37,11 +43,13 @@ param(
     [switch]$Pet,
     [string]$Break,
     [ValidateRange(1, 10000)] [int]$Decks = 100,
+    [string]$RawFlags = '',
     [string]$Passes = '',
     [string]$Survey = '',
     [string]$Kernel = '',
     [string]$DiskFile = '',
-    [string]$Peer = ''
+    [string]$Peer = '',
+    [string]$Registry = ''
 )
 
 Set-StrictMode -Version Latest
@@ -157,16 +165,24 @@ try {
     # the bundle signals a genuine gap in the bundle. For a standalone test
     # compile SeedSeen is empty and every cited chapter is legitimately
     # resolved and prepended below (line ~115); warning there is stale noise.
-    if ($ordered.Count -gt 0 -and $seedSeen.Count -gt 0) {
-        [Console]::Error.WriteLine("WARNING: compile.ps1 resolved $($ordered.Count) chapter(s) not in bundled source:")
-        foreach ($extra in $ordered) {
+    # The sugar chapters are excluded from the count and the list. They are
+    # walked unconditionally (Resolve-CiteOrder), not because the bundle cited
+    # them, so reporting them here told every bundled build to "add them to the
+    # build script or remove the cites" about cites that do not exist. That was
+    # a false warning this script started printing the moment the implicit
+    # roots landed.
+    $implicitNames = @('ListUtils', 'Tuple')
+    $unbundled = @($ordered | Where-Object { -not ($_.Quire -eq 'Foreword' -and $implicitNames -contains $_.Name) })
+    if ($unbundled.Count -gt 0 -and $seedSeen.Count -gt 0) {
+        [Console]::Error.WriteLine("WARNING: compile.ps1 resolved $($unbundled.Count) chapter(s) not in bundled source:")
+        foreach ($extra in $unbundled) {
             [Console]::Error.WriteLine("  $($extra.Quire)::$($extra.Name) ($($extra.Path))")
         }
         [Console]::Error.WriteLine("These chapters are cited by bundled code but missing from the app build script.")
         [Console]::Error.WriteLine("Add them to the build script's chapter list, or remove the cites.")
     }
     # Mode header (base flags).
-    $baseMode = if ($Text) { "TEXT" } elseif ($IrUni) { "IR-UNI" } elseif ($IrCce) { "IR-CCE" } else { "CDX" }
+    $baseMode = if ($Measure) { "MEASURE" } elseif ($Text) { "TEXT" } elseif ($IrUni) { "IR-UNI" } elseif ($IrCce) { "IR-CCE" } else { "CDX" }
     if ($Prose) { $baseMode = "$baseMode prose" }
     if ($Repl) { $baseMode = "$baseMode repl" }
     # Symbol map is opt-in per request ('map' flag). One-shot CDX compiles
@@ -186,6 +202,12 @@ try {
     # or 'none' for the empty pipeline. Absent = the kernel's default pipeline.
     # This is the ablation knob: it exists so a pass can be switched off and measured.
     if ($Passes) { $baseMode = "$baseMode passes=$Passes" }
+    # A .flags sidecar, verbatim. test.ps1's retry path needs to reproduce
+    # whatever the batch session sent, and the batch sends the sidecar's line
+    # straight through; translating it into switches here would be a second
+    # table free to drift from the first. Every flag the compiler learns works
+    # through this without touching either script.
+    if ($RawFlags) { $baseMode = "$baseMode $RawFlags" }
     if ($Trace) { $baseMode = "$baseMode trace" }
     if ($EscapeCheck) { $baseMode = "$baseMode escape-check" }
     if ($Uefi) { $baseMode = "$baseMode uefi" }
@@ -205,15 +227,34 @@ try {
     }
 
     # A quotation the source does not carry beside it can be fetched from a peer
-    # and prepended to the %%QUOTED-WORKS%% blob (BACKLOG 6.2). This is the whole
+    # and prepended to the %%QUOTED-WORKS%% blob. This is the whole
     # of peer resolution and it lives here rather than in the compiler on
     # purpose: Library Rule 2 bars the compiler from citing the net stack, and it
     # does not need to -- it hashes the content, checks the signature, checks the
     # pinned key and checks the floor itself, so an untrusted messenger is safe.
     # The works go in; the trust stays in the source's `trusting` declarations.
+    #
+    # -Registry differs only in where the ADDRESS comes from. The work still
+    # arrives over the same untrusted transport and is still checked the same
+    # four ways, so being pointed at a peer by a registry buys the peer no
+    # standing it would not otherwise have.
     if ($Peer) { $srcLines = Add-PeerWorks -Lines $srcLines -Peer $Peer }
+    elseif ($Registry) { $srcLines = Add-PeerWorks -Lines $srcLines -Registry $Registry }
 
     # Body: cited chapters + source + EOT. Constant across attempts.
+    #
+    # The compiler numbers diagnostics against the assembled UNIT, and the
+    # unit is every cited chapter followed by the source -- so a source line
+    # is reported at (prelude + its own line) and every position a user sees
+    # in a file that cites anything is wrong by however many lines its
+    # dependencies happen to run to. A cite-less file was right only by
+    # accident, because its unit was itself. This table is what the log
+    # rewrite below maps positions back through.
+    #
+    # Format-CiteChapters replaces a chapter's `Chapter:` line one-for-one
+    # and appends two blank lines, so an entry occupies Lines.Count + 2.
+    $script:DiagRegions = Get-DiagRegions -Ordered $ordered -SrcPath $Src
+
     $bodyBuilder = [System.Text.StringBuilder]::new(524288)
     foreach ($l in (Format-CiteChapters -Ordered $ordered)) { [void]$bodyBuilder.Append($l + "`n") }
     foreach ($line in $srcLines) { [void]$bodyBuilder.Append($line + "`n") }
@@ -258,6 +299,13 @@ try {
     $outText = [System.Text.Encoding]::UTF8.GetString($outBytes)
     $outLines = $outText -split "`n"
 
+    # Positions arrive numbered against the assembled unit; map them back to
+    # the file the reader can open. Convert-DiagLine and the region table are
+    # in quire-map.ps1 because the battery assembles its own unit and writes
+    # its own log, and only one of the two telling the truth is worse than
+    # neither.
+    function Remap-Diag([string]$l) { return (Convert-DiagLine -Line $l -Regions $script:DiagRegions) }
+
     Set-Content -Path $Log -Value '' -Encoding UTF8
     $binSize = 0; $binStart = -1
     $hitExc = $false
@@ -276,7 +324,7 @@ try {
                     [void]$errLines.Add($el)
                 }
             }
-            foreach ($el in $errLines) { Add-Content -Path $Log -Value $el -Encoding UTF8 }
+            foreach ($el in $errLines) { Add-Content -Path $Log -Value (Remap-Diag $el) -Encoding UTF8 }
             exit 4
         }
         if ($line.StartsWith('!EXC')) {
@@ -302,7 +350,7 @@ try {
             }
             exit 4
         }
-        if ($line -and -not $line.StartsWith('WD:')) { Add-Content -Path $Log -Value $line -Encoding UTF8 }
+        if ($line -and -not $line.StartsWith('WD:')) { Add-Content -Path $Log -Value (Remap-Diag $line) -Encoding UTF8 }
     }
 
     if ($binStart -ge 0) {

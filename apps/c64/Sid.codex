@@ -1,0 +1,292 @@
+Chapter: Sid
+
+ The MOS 6581/8580 SID: three independent voices, each with a 24-bit
+ phase-accumulator oscillator (sawtooth, triangle, variable-width pulse,
+ and a 23-bit LFSR noise source), an ADSR envelope, ring modulation and
+ hard sync between adjacent voices, a master volume, and the chip's
+ resonant multimode filter. The three voices are summed, optionally
+ routed through the filter, scaled by the master volume, clamped, and
+ written as 48 kHz 16-bit signed stereo PCM -- the format codex-vm's HDA
+ output expects (Kernel chapter HdaAudio). A caller renders a buffer with
+ sid-render and either reads it back (the silent frequency test) or hands
+ it to hda-play-pcm to be heard.
+
+ The three voices are rendered together, one output sample at a time,
+ because ring modulation and hard sync couple a voice to its neighbour:
+ voice 0 is modulated by voice 2, voice 1 by voice 0, voice 2 by voice 1.
+ All per-voice runtime state -- phase accumulator, packed envelope, noise
+ LFSR -- plus the two filter integrators live in a 44-byte state block
+ (sid-rt), threaded through the sample loop by mutation. sid-render
+ allocates and resets a fresh block for a self-contained one-shot tone;
+ sid-render-stream takes a caller-owned block so an emulator can keep the
+ oscillators and envelopes running continuously across frame boundaries.
+
+ Combined waveforms are approximated by the bitwise AND the chip roughly
+ performs. The envelope rates are derived from the published SID rate
+ table but quantised to whole output samples rather than the chip's
+ 15-bit prescaler, so a rate is accurate to within one 48 kHz sample. The
+ filter is a fixed-point state-variable (Chamberlin) filter: its cutoff
+ and resonance map the 11-bit FC and 4-bit RES registers onto stable
+ coefficients rather than reproducing the 6581's exact analogue curve.
+
+ We say:
+
+Section: Constants
+
+  sid-clk : Integer = 985248
+  sid-sample-rate : Integer = 48000
+  sid-clocks-per-sample : Integer = 20
+
+Section: State Block Layout
+
+ sid-rt is 44 bytes of persistent runtime state, read and written as
+ eleven 32-bit slots: voice phase accumulators at 0/4/8, packed envelopes
+ at 12/16/20, noise LFSRs at 24/28/32, and the filter's low and band
+ integrators (signed) at 36/40. sid-rt-reset seeds a fresh block: phases
+ and envelopes and filter zeroed, each noise LFSR seeded non-zero (a zero
+ LFSR is stuck at zero).
+
+  sid-rt-reset : Integer -> Integer
+  sid-rt-reset (rt) =
+    let a0 = poke-32 rt 0 0
+    in let a1 = poke-32 rt 4 0
+    in let a2 = poke-32 rt 8 0
+    in let e0 = poke-32 rt 12 0
+    in let e1 = poke-32 rt 16 0
+    in let e2 = poke-32 rt 20 0
+    in let n0 = poke-32 rt 24 12345
+    in let n1 = poke-32 rt 28 12345
+    in let n2 = poke-32 rt 32 12345
+    in let f0 = poke-32 rt 36 0
+    in let f1 = poke-32 rt 40 0
+    in a0 + a1 + a2 + e0 + e1 + e2 + n0 + n1 + n2 + f0 + f1
+
+  sid-peek-s32 : Integer, Integer -> Integer
+  sid-peek-s32 (base) (off) =
+    let raw = peek-32 base off
+    in if raw >= #80000000 then raw - #100000000 else raw
+
+Section: Envelope Rate Table
+
+ One envelope step takes this many SID clocks for the attack phase, per
+ the 4-bit rate value. Decay and release use the same table times three.
+
+  sid-rate-period : Integer -> Integer
+  sid-rate-period (r) =
+    when bit-and r 15
+      is 0 -> 9
+      is 1 -> 32
+      is 2 -> 63
+      is 3 -> 95
+      is 4 -> 149
+      is 5 -> 220
+      is 6 -> 267
+      is 7 -> 313
+      is 8 -> 392
+      is 9 -> 977
+      is 10 -> 1954
+      is 11 -> 3126
+      is 12 -> 3907
+      is 13 -> 11720
+      is 14 -> 19532
+      is 15 -> 31251
+      is otherwise -> 9
+
+Section: Oscillator
+
+ Waveform value in 0..4095 from the 24-bit phase, the control byte's
+ waveform bits (triangle #10, sawtooth #20, pulse #40, noise #80), the
+ 12-bit pulse width, the current noise LFSR, and a ring-modulation bit.
+ Selected waveforms are combined by AND; no waveform bit selected is
+ silence. Ring modulation replaces the triangle's fold sign (the phase's
+ top bit) with that bit XOR the modulator voice's top bit, so a voice
+ with the ring bit set folds under the control of its neighbour.
+
+  sid-waveform : Integer, Integer, Integer, Integer, Integer -> Integer
+  sid-waveform (phase) (control) (pw) (noise) (modmsb) =
+    let tri-on = bit-and control #10
+    in let saw-on = bit-and control #20
+    in let pul-on = bit-and control #40
+    in let nz-on = bit-and control #80
+    in if tri-on + saw-on + pul-on + nz-on == 0 then 0
+    else
+      let saw = bit-shru phase 12
+      in let foldbit = bit-xor (bit-and (bit-shru phase 23) 1) modmsb
+      in let folded = if foldbit /= 0
+        then bit-xor (bit-shru phase 11) #FFFFFF
+        else bit-shru phase 11
+      in let tri = bit-and folded #FFF
+      in let pul = if bit-shru phase 12 >= pw then #FFF else 0
+      in let nz = bit-and (bit-shru noise 4) #FFF
+      in let a1 = if tri-on /= 0 then bit-and #FFF tri else #FFF
+      in let a2 = if saw-on /= 0 then bit-and a1 saw else a1
+      in let a3 = if pul-on /= 0 then bit-and a2 pul else a2
+      in let a4 = if nz-on /= 0 then bit-and a3 nz else a3
+      in a4
+
+  sid-noise-step : Integer -> Integer
+  sid-noise-step (n) =
+    let tap = bit-and (bit-xor (bit-shru n 22) (bit-shru n 17)) 1
+    in bit-and (bit-or (bit-shl n 1) tap) #7FFFFF
+
+ Advance one oscillator by pinc, returning the new 24-bit phase in the
+ low bits with an overflow flag (the oscillator wrapped this sample) in
+ bit 24. Hard sync watches this flag on the modulator voice.
+
+  sid-osc-advance : Integer, Integer -> Integer
+  sid-osc-advance (phase) (pinc) =
+    let raw = phase + pinc
+    in if raw >= #1000000 then (bit-and raw #FFFFFF) + #1000000
+       else raw
+
+Section: Envelope
+
+ The envelope value (0..255), its ADSR state (0 = off/release, 1 =
+ attack, 2 = decay-sustain), and its rate counter are packed into one
+ integer: env in the low byte, state at *256, rate counter at *1024.
+
+  sid-env-advance : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  sid-env-advance (env) (state) (ratectr) (gate) (att) (dec) (sus) (rel) =
+    let st = if gate == 0 then 0 else if state == 0 then 1 else state
+    in let rate = if st == 1 then att else if st == 2 then dec else rel
+    in let period = if st == 1 then sid-rate-period rate else sid-rate-period rate * 3
+    in let sps = let p = period / sid-clocks-per-sample in if p < 1 then 1 else p
+    in let rc1 = ratectr + 1
+    in if rc1 < sps then env + st * 256 + rc1 * 1024
+    else
+      let target = if st == 1 then 255 else if st == 2 then sus * 17 else 0
+      in let env1 = if env < target then env + 1 else if env > target then env - 1 else env
+      in let st1 = if st == 1 then (if env1 >= 255 then 2 else 1) else st
+      in env1 + st1 * 256
+
+Section: Sample
+
+ Render one output sample. The three oscillators advance together so
+ that hard sync and ring modulation can read each other's phase, then
+ each voice's waveform is scaled by its envelope, the routed voices are
+ summed into the state-variable filter, and the filtered and unfiltered
+ sums are scaled by the master volume, clamped, and written as one
+ 16-bit stereo frame. Every mutation lands in the sid-rt state block, so
+ the next sample resumes exactly where this one left off.
+
+  sid-sample : Integer, Integer, Integer, Integer -> Integer
+  sid-sample (regbase) (rt) (buf) (i) =
+    let c0 = peek-byte regbase 4
+    in let c1 = peek-byte regbase 11
+    in let c2 = peek-byte regbase 18
+    in let f0 = peek-byte regbase 0 + peek-byte regbase 1 * 256
+    in let f1 = peek-byte regbase 7 + peek-byte regbase 8 * 256
+    in let f2 = peek-byte regbase 14 + peek-byte regbase 15 * 256
+    in let pinc0 = f0 * sid-clk / sid-sample-rate
+    in let pinc1 = f1 * sid-clk / sid-sample-rate
+    in let pinc2 = f2 * sid-clk / sid-sample-rate
+    in let pk0 = sid-osc-advance (peek-32 rt 0) pinc0
+    in let pk1 = sid-osc-advance (peek-32 rt 4) pinc1
+    in let pk2 = sid-osc-advance (peek-32 rt 8) pinc2
+    in let np0 = bit-and pk0 #FFFFFF
+    in let np1 = bit-and pk1 #FFFFFF
+    in let np2 = bit-and pk2 #FFFFFF
+    in let w0 = bit-shru pk0 24
+    in let w1 = bit-shru pk1 24
+    in let w2 = bit-shru pk2 24
+    in let fp0 = if bit-and c0 2 /= 0 then (if w2 /= 0 then 0 else np0) else np0
+    in let fp1 = if bit-and c1 2 /= 0 then (if w0 /= 0 then 0 else np1) else np1
+    in let fp2 = if bit-and c2 2 /= 0 then (if w1 /= 0 then 0 else np2) else np2
+    in let rm0 = if bit-and c0 4 /= 0 then bit-and (bit-shru np2 23) 1 else 0
+    in let rm1 = if bit-and c1 4 /= 0 then bit-and (bit-shru np0 23) 1 else 0
+    in let rm2 = if bit-and c2 4 /= 0 then bit-and (bit-shru np1 23) 1 else 0
+    in let pw0 = peek-byte regbase 2 + bit-and (peek-byte regbase 3) #F * 256
+    in let pw1 = peek-byte regbase 9 + bit-and (peek-byte regbase 10) #F * 256
+    in let pw2 = peek-byte regbase 16 + bit-and (peek-byte regbase 17) #F * 256
+    in let nz0 = sid-noise-step (peek-32 rt 24)
+    in let nz1 = sid-noise-step (peek-32 rt 28)
+    in let nz2 = sid-noise-step (peek-32 rt 32)
+    in let wv0 = sid-waveform fp0 c0 pw0 nz0 rm0
+    in let wv1 = sid-waveform fp1 c1 pw1 nz1 rm1
+    in let wv2 = sid-waveform fp2 c2 pw2 nz2 rm2
+    in let ep0 = peek-32 rt 12
+    in let ep1 = peek-32 rt 16
+    in let ep2 = peek-32 rt 20
+    in let ne0 = sid-env-advance (int-mod ep0 256) (int-mod (ep0 / 256) 4) (ep0 / 1024) (bit-and c0 1) (bit-shru (peek-byte regbase 5) 4) (bit-and (peek-byte regbase 5) #F) (bit-shru (peek-byte regbase 6) 4) (bit-and (peek-byte regbase 6) #F)
+    in let ne1 = sid-env-advance (int-mod ep1 256) (int-mod (ep1 / 256) 4) (ep1 / 1024) (bit-and c1 1) (bit-shru (peek-byte regbase 12) 4) (bit-and (peek-byte regbase 12) #F) (bit-shru (peek-byte regbase 13) 4) (bit-and (peek-byte regbase 13) #F)
+    in let ne2 = sid-env-advance (int-mod ep2 256) (int-mod (ep2 / 256) 4) (ep2 / 1024) (bit-and c2 1) (bit-shru (peek-byte regbase 19) 4) (bit-and (peek-byte regbase 19) #F) (bit-shru (peek-byte regbase 20) 4) (bit-and (peek-byte regbase 20) #F)
+    in let env0 = int-mod ne0 256
+    in let env1 = int-mod ne1 256
+    in let env2 = int-mod ne2 256
+    in let vo0 = (wv0 - 2048) * 8 * env0 / 256
+    in let vo1 = (wv1 - 2048) * 8 * env1 / 256
+    in let vo2 = (wv2 - 2048) * 8 * env2 / 256
+    in let resreg = peek-byte regbase 23
+    in let modereg = peek-byte regbase 24
+    in let threeoff = bit-and modereg #80
+    in let dry0 = if bit-and resreg 1 /= 0 then 0 else vo0
+    in let dry1 = if bit-and resreg 2 /= 0 then 0 else vo1
+    in let dry2 = if bit-and resreg 4 /= 0 then 0 else (if threeoff /= 0 then 0 else vo2)
+    in let dry = dry0 + dry1 + dry2
+    in let fin0 = if bit-and resreg 1 /= 0 then vo0 else 0
+    in let fin1 = if bit-and resreg 2 /= 0 then vo1 else 0
+    in let fin2 = if bit-and resreg 4 /= 0 then vo2 else 0
+    in let fin = fin0 + fin1 + fin2
+    in let cutoff = (bit-and (peek-byte regbase 21) 7) + (bit-shl (peek-byte regbase 22) 3)
+    in let fc0 = 4 + cutoff * 196 / 2047
+    in let fc = if fc0 > 200 then 200 else fc0
+    in let res = bit-shru resreg 4
+    in let dmp = 256 - res * 12
+    in let flow = sid-peek-s32 rt 36
+    in let fband = sid-peek-s32 rt 40
+    in let fhigh = fin - flow - dmp * fband / 256
+    in let nband = fband + fc * fhigh / 256
+    in let nlow = flow + fc * nband / 256
+    in let flp = if bit-and modereg #10 /= 0 then nlow else 0
+    in let fbp = if bit-and modereg #20 /= 0 then nband else 0
+    in let fhp = if bit-and modereg #40 /= 0 then fhigh else 0
+    in let fout = flp + fbp + fhp
+    in let total = dry + fout
+    in let master = bit-and modereg #F
+    in let scaled = total * master / 15
+    in let cl = if scaled > 32767 then 32767 else if scaled < (0 - 32768) then (0 - 32768) else scaled
+    in let s = bit-and cl #FFFF
+    in let lo = bit-and s #FF
+    in let hi = bit-and (bit-shru s 8) #FF
+    in let b0 = poke-byte buf (i * 4) lo
+    in let b1 = poke-byte buf (i * 4 + 1) hi
+    in let b2 = poke-byte buf (i * 4 + 2) lo
+    in let b3 = poke-byte buf (i * 4 + 3) hi
+    in let s0 = poke-32 rt 0 fp0
+    in let s1 = poke-32 rt 4 fp1
+    in let s2 = poke-32 rt 8 fp2
+    in let se0 = poke-32 rt 12 ne0
+    in let se1 = poke-32 rt 16 ne1
+    in let se2 = poke-32 rt 20 ne2
+    in let sn0 = poke-32 rt 24 nz0
+    in let sn1 = poke-32 rt 28 nz1
+    in let sn2 = poke-32 rt 32 nz2
+    in let sf0 = poke-32 rt 36 nlow
+    in let sf1 = poke-32 rt 40 nband
+    in 0
+
+Section: Render
+
+ Render nsamples of 48 kHz 16-bit stereo PCM from the 32 SID register
+ bytes at regbase into buf (which must hold nsamples * 4 bytes).
+ sid-render is a self-contained one-shot: it allocates and resets a fresh
+ state block, so each call starts silent. sid-render-stream renders into
+ a caller-owned state block and leaves it running, so successive calls
+ continue the same oscillators, envelopes and filter without a click.
+
+  sid-loop : Integer, Integer, Integer, Integer, Integer -> Integer
+  sid-loop (regbase) (rt) (buf) (nsamples) (i) =
+    if i >= nsamples then 0
+    else
+      let d = sid-sample regbase rt buf i
+      in sid-loop regbase rt buf nsamples (i + 1)
+
+  sid-render-stream : Integer, Integer, Integer, Integer -> Integer
+  sid-render-stream (regbase) (rt) (buf) (nsamples) =
+    sid-loop regbase rt buf nsamples 0
+
+  sid-render : Integer, Integer, Integer -> Integer
+  sid-render (regbase) (buf) (nsamples) =
+    let rt = alloc-bytes 64
+    in let z = sid-rt-reset rt
+    in sid-loop regbase rt buf nsamples 0

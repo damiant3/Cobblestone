@@ -1,0 +1,186 @@
+Chapter: VaultCryptoTest
+  cites Secrets chapter VaultCrypto
+  cites Secrets chapter SecretEntry
+  cites Foreword chapter Console
+  cites Foreword chapter Hkdf
+  cites Foreword chapter Sha256
+  cites Foreword chapter Maybe
+  cites Foreword chapter ListUtils
+
+ The secrets vault crypto, exercised end to end.
+
+ This chapter never compiled until 2026-07-20, so none of it had ever
+ run: encrypt-payload called aesgcm-encrypt with three arguments where
+ it takes four, decrypt-payload passed the tag where the AAD goes, and
+ create-team-share threw the authentication tag away because
+ TeamKeyShare had no field to hold one.
+
+ A round-trip alone cannot see any of that -- two halves that share a
+ mistake agree with each other perfectly. So the assertions that carry
+ weight here are the ones that must FAIL to pass: a tampered
+ ciphertext, a tampered tag, and a wrong derivation must each come back
+ None. Before the tag field existed, the tampered-tag case could not
+ even be written down.
+
+ The key derivation is checked against hkdf called directly, which is
+ the same primitive by a different route: it pins that derive-vault-key
+ passes the salt and the info string it claims to, which is exactly
+ what was wrong.
+
+Section: Fixtures
+
+ A master key built by hand rather than through derive-master-key,
+ which runs 100000 PBKDF iterations and would dominate the test.
+
+  test-key-bytes : List Integer
+  test-key-bytes = hkdf-words-to-bytes (sha256 (text-to-bytes "vault-crypto-test-key"))
+
+  test-salt-bytes : List Integer
+  test-salt-bytes = hkdf-words-to-bytes (sha256 (text-to-bytes "vault-crypto-test-salt"))
+
+  test-master : MasterKey
+  test-master = MasterKey {
+    mk-key = test-key-bytes,
+    mk-salt = test-salt-bytes,
+    mk-hash = sha256 test-key-bytes
+  }
+
+  test-payload : SecretPayload
+  test-payload = payload-new "correct horse battery staple"
+
+Section: Helpers
+
+  vct-report : Text, Boolean -> [Console] Nothing
+  vct-report (name) (ok) =
+    print-line-uni (name & ": " & (if ok then "ok" else "FAIL"))
+
+  vct-is-none : Maybe SecretPayload -> Boolean
+  vct-is-none (m) = when m
+    is None -> True
+    is otherwise -> False
+
+  vct-password-of : Maybe SecretPayload -> Text
+  vct-password-of (m) = when m
+    is Just (p) -> p.sp-password
+    is otherwise -> ""
+
+  vct-flip-first : List Integer -> List Integer
+  vct-flip-first (bs) =
+    if list-length bs == 0 then bs
+    else list-set-at (vct-copy bs) 0 (bit-xor (list-at bs 0) 255)
+
+ list-set-at writes in place and hands back the same list, so a
+ tampered copy has to be built first or the original is tampered too.
+
+  vct-copy : List Integer -> List Integer
+  vct-copy (bs) = vct-copy-loop bs 0 (list-length bs) []
+
+  vct-copy-loop : List Integer, Integer, Integer, List Integer -> List Integer
+  vct-copy-loop (bs) (i) (n) (acc) =
+    if i >= n then acc
+    else vct-copy-loop bs (i + 1) n (list-push acc (list-at bs i))
+
+Section: Derivation
+
+ derive-vault-key must hand hkdf the master salt and the vault-scoped
+ info string. Computing the same thing here through hkdf directly is
+ what makes a dropped salt visible; a round-trip would not notice,
+ because encrypt and decrypt would both drop it.
+
+  vct-derivation-matches : Boolean
+  vct-derivation-matches =
+    let vk = derive-vault-key test-master "vault-one"
+    in let expected = hkdf test-salt-bytes test-key-bytes (text-to-bytes "vault-encryption:vault-one") key-length
+    in bytes-equal (vk.vk-key) expected
+
+ Two secrets in one vault must not share a key.
+
+  vct-secrets-are-separated : Boolean
+  vct-secrets-are-separated =
+    let vk = derive-vault-key test-master "vault-one"
+    in let k1 = derive-secret-key vk 1
+    in let k2 = derive-secret-key vk 2
+    in if bytes-equal k1 k2 then False else True
+
+ The nonce is twelve bytes, not the eight words sha256 actually
+ returns. This is the assertion that catches the words-for-bytes
+ confusion the DevelopersGuide warns about.
+
+  vct-nonce-length-right : Boolean
+  vct-nonce-length-right =
+    let vk = derive-vault-key test-master "vault-one"
+    in let r = encrypt-payload vk 1 test-payload 99
+    in list-length (r.er-nonce) == nonce-length
+
+Section: Payload Round Trip
+
+  vct-encrypted : EncryptedSecret
+  vct-encrypted =
+    let vk = derive-vault-key test-master "vault-one"
+    in let r = encrypt-payload vk 1 test-payload 99
+    in EncryptedSecret {
+      es-id = 1,
+      es-metadata = secret-new 1 SecretPassword "test" "" "" 0,
+      es-nonce = r.er-nonce,
+      es-cipher = r.er-ciphertext,
+      es-tag = r.er-tag
+    }
+
+  vct-round-trip : Boolean
+  vct-round-trip =
+    let vk = derive-vault-key test-master "vault-one"
+    in let back = decrypt-payload vk 1 vct-encrypted
+    in vct-password-of back == "correct horse battery staple"
+
+ Negative controls. Each of these must come back None, and a
+ compressor-style "agrees with itself" implementation cannot satisfy
+ them.
+
+  vct-rejects-tampered-cipher : Boolean
+  vct-rejects-tampered-cipher =
+    let vk = derive-vault-key test-master "vault-one"
+    in let bad = __record-set (vct-encrypted-copy) "es-cipher" (vct-flip-first (vct-encrypted.es-cipher))
+    in vct-is-none (decrypt-payload vk 1 bad)
+
+  vct-rejects-tampered-tag : Boolean
+  vct-rejects-tampered-tag =
+    let vk = derive-vault-key test-master "vault-one"
+    in let bad = __record-set (vct-encrypted-copy) "es-tag" (vct-flip-first (vct-encrypted.es-tag))
+    in vct-is-none (decrypt-payload vk 1 bad)
+
+  vct-rejects-wrong-secret : Boolean
+  vct-rejects-wrong-secret =
+    let vk = derive-vault-key test-master "vault-one"
+    in vct-is-none (decrypt-payload vk 2 vct-encrypted)
+
+  vct-rejects-wrong-vault : Boolean
+  vct-rejects-wrong-vault =
+    let other = derive-vault-key test-master "vault-two"
+    in vct-is-none (decrypt-payload other 1 vct-encrypted)
+
+ __record-set stores into the record and returns the same one, so a
+ tampered variant needs its own EncryptedSecret rather than a mutation
+ of the shared fixture.
+
+  vct-encrypted-copy : EncryptedSecret
+  vct-encrypted-copy = EncryptedSecret {
+    es-id = vct-encrypted.es-id,
+    es-metadata = vct-encrypted.es-metadata,
+    es-nonce = vct-encrypted.es-nonce,
+    es-cipher = vct-encrypted.es-cipher,
+    es-tag = vct-encrypted.es-tag
+  }
+
+Section: Entry
+
+  opening : [Console] Nothing = act
+    print-line-uni "vault-crypto"
+    vct-report "derivation-matches-hkdf" vct-derivation-matches
+    vct-report "secrets-separated" vct-secrets-are-separated
+    vct-report "nonce-length" vct-nonce-length-right
+    vct-report "round-trip" vct-round-trip
+    vct-report "rejects-tampered-cipher" vct-rejects-tampered-cipher
+    vct-report "rejects-tampered-tag" vct-rejects-tampered-tag
+    vct-report "rejects-wrong-secret" vct-rejects-wrong-secret
+    vct-report "rejects-wrong-vault" vct-rejects-wrong-vault
+  end

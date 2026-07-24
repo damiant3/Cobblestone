@@ -37,8 +37,8 @@ $ErrorActionPreference = 'Stop'
 Set-Location (Join-Path $PSScriptRoot '..')
 . (Join-Path $PSScriptRoot 'vm-config.ps1')
 # The wire this test spoke privately now has one home, because compile.ps1 asks
-# the same question for BACKLOG 6.2's client half and a second hand-rolled copy
-# is how a transport ends up with 41 of them (BACKLOG 2.3).
+# the same question for the quotation client half, and a second hand-rolled copy
+# is how a transport ends up with 41 of them.
 . (Join-Path $PSScriptRoot 'work-wire.ps1')
 
 if ($HostPort -eq 0) { $HostPort = 19300 + (Get-Random -Min 0 -Max 400) }

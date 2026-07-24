@@ -390,7 +390,7 @@ Section: IRExpr Emission
     is IrCharLit (c) (sp) -> "(char-lit " & integer-to-text c & ")"
     is IrName (n) (ty) (sp) -> "(name " & ir-quote n & " " & ir-emit-type ty & ")"
     is IrBinary (op) (l) (r) (ty) (sp) -> "(binary " & bin-op-atom op & " " & ir-emit-expr l & " " & ir-emit-expr r & " " & ir-emit-type ty & ")"
-    is IrNegate (x) (sp) -> "(negate " & ir-emit-expr x & ")"
+    is IrNegate (x) (ty) (sp) -> "(negate " & ir-emit-expr x & " " & ir-emit-type ty & ")"
     is IrIf (c) (t) (el) (ty) (sp) -> "(if " & ir-emit-expr c & " " & ir-emit-expr t & " " & ir-emit-expr el & " " & ir-emit-type ty & ")"
     is IrLet (n) (ty) (v) (b) (sp) -> ir-cat (ir-emit-let-chain e [] 0)
     is IrApply (f) (a) (ty) (sp) -> "(apply " & ir-emit-expr f & " " & ir-emit-expr a & " " & ir-emit-type ty & ")"
@@ -415,7 +415,7 @@ Section: IRExpr Emission
  giving O(depth^2) copies. Flatten the chain instead: collect each
  level's "(let name ty val " prefix into one list, emit the innermost
  body, then append one ")" per level, and join once. Byte-identical
- output, O(total). Mirrors emit-let-chain in the Codex text emitter.
+ output, O(total). Mirrors codex-emit-let-chain in the Codex text emitter.
 
   ir-emit-let-chain : IRExpr, List Text, Integer -> List Text
   ir-emit-let-chain (e) (acc) (depth) =
@@ -532,41 +532,75 @@ Section: IR Dead Code Elimination
    if i == list-length xs then acc
    else ir-dce-append-list xs (i + 1) (list-push acc (list-at xs i))
 
+ What counts as a reference to a definition, and what does not.
+
+ This walk collects the names a definition REACHES. It used to collect
+ every name-shaped thing it passed -- text literals, let names, param
+ names, field names, pattern variables, error messages -- on the reasoning
+ that over-collecting only ever keeps too much. That is true of soundness
+ and false of usefulness: a compiler writes its own function names as text
+ literals (runtime helper names, builtin names, diagnostics), and a field
+ or a parameter routinely shares a name with some definition somewhere. On
+ the compiler's own source the walk retained essentially everything and
+ the prune was inert -- measured, before this change: zero definitions
+ dropped out of 5167.
+
+ So the walk now collects REFERENCES only:
+
+   IrName            a use of a definition -- the reference
+   IrRecord          the constructor being applied
+   IrCtorPat         the constructor being matched
+   handler op-name   the effect operation a clause discharges
+   handler resume    the continuation the clause may invoke
+   IrHandle eff      the effect being handled
+   IrWithTimeout     the effects and scopes it names
+
+ and ignores BINDING occurrences (a let name, a parameter, a pattern
+ variable, a clause parameter) because a binding introduces a name rather
+ than reaching one, FIELD names because a field is selected from a record
+ rather than called, and TEXT (literals, literal patterns, error messages)
+ because Codex has no dispatch from a runtime string: there is no
+ call-by-name, so a definition cannot be reached by spelling it.
+
+ The one place a name in a string does reach a definition is the emitter
+ calling a worker through a hardcoded string of its own -- the fat16
+ servicers. That is not something this walk can see from the IR, and it is
+ handled where it belongs, as an explicit root (cdx-emit-roots, opening).
+
+ If this list is ever wrong, the build says so and names the definition:
+ every call, address-of and effect-op slot is checked at finalize and an
+ unresolved one raises CDX2040 and refuses the binary.
+
   ir-dce-collect-expr : IRExpr, List Text -> List Text
   ir-dce-collect-expr (e) (acc) =
    when e
     is IrIntLit (n) (sp) | IrNumLit (n) (sp) -> acc
-    is IrTextLit (s) (sp) -> list-push acc s
+    is IrTextLit (s) (sp) -> acc
     is IrBoolLit (b) (sp) | IrCharLit (c) (sp) -> acc
     is IrName (n) (ty) (sp) -> list-push acc n
     is IrBinary (op) (l) (r) (ty) (sp) -> ir-dce-collect-expr r (ir-dce-collect-expr l acc)
-    is IrNegate (x) (sp) -> ir-dce-collect-expr x acc
+    is IrNegate (x) (ty) (sp) -> ir-dce-collect-expr x acc
     is IrIf (c) (t) (el) (ty) (sp) -> ir-dce-collect-expr el (ir-dce-collect-expr t (ir-dce-collect-expr c acc))
-    is IrLet (n) (ty) (v) (b) (sp) -> ir-dce-collect-expr b (ir-dce-collect-expr v (list-push acc n))
+    is IrLet (n) (ty) (v) (b) (sp) -> ir-dce-collect-expr b (ir-dce-collect-expr v acc)
     is IrApply (f) (a) (ty) (sp) -> ir-dce-collect-expr a (ir-dce-collect-expr f acc)
-    is IrLambda (ps) (body) (ty) (sp) -> ir-dce-collect-expr body (ir-dce-collect-params ps 0 acc)
+    is IrLambda (ps) (body) (ty) (sp) -> ir-dce-collect-expr body acc
     is IrList (es) (ty) (sp) -> ir-dce-collect-expr-list es 0 acc
     is IrMatch (sc) (bs) (ty) (sp) -> ir-dce-collect-branches bs 0 (ir-dce-collect-expr sc acc)
     is IrAct (ss) (ty) (sp) -> ir-dce-collect-stmts ss 0 acc
     is IrHandle (eff) (h) (cs) (ty) (sp) -> ir-dce-collect-clauses cs 0 (ir-dce-collect-expr h (list-push acc eff))
     is IrWithTimeout (secs) (effs) (scopes) (body) (ty) (sp) -> ir-dce-collect-expr body (ir-dce-append-list scopes 0 (ir-dce-append-list effs 0 acc))
     is IrRecord (n) (fs) (ty) (sp) -> ir-dce-collect-fields fs 0 (list-push acc n)
-    is IrFieldAccess (r) (f) (ty) (sp) -> ir-dce-collect-expr r (list-push acc f)
-    is IrFieldStore (r) (f) (v) (ty) (sp) -> ir-dce-collect-expr v (ir-dce-collect-expr r (list-push acc f))
+    is IrFieldAccess (r) (f) (ty) (sp) -> ir-dce-collect-expr r acc
+    is IrFieldStore (r) (f) (v) (ty) (sp) -> ir-dce-collect-expr v (ir-dce-collect-expr r acc)
     is IrTry (max) (body) (fb) (fail) (ty) (sp) -> ir-dce-collect-stmts fail 0 (ir-dce-collect-stmts fb 0 (ir-dce-collect-stmts body 0 acc))
     is IrFork (b) (ty) (sp) -> ir-dce-collect-expr b acc
     is IrAwait (t) (ty) (sp) -> ir-dce-collect-expr t acc
-    is IrError (m) (ty) (sp) -> list-push acc m
+    is IrError (m) (ty) (sp) -> acc
 
   ir-dce-collect-expr-list : List IRExpr, Integer, List Text -> List Text
   ir-dce-collect-expr-list (xs) (i) (acc) =
    if i == list-length xs then acc
    else ir-dce-collect-expr-list xs (i + 1) (ir-dce-collect-expr (list-at xs i) acc)
-
-  ir-dce-collect-params : List IRParam, Integer, List Text -> List Text
-  ir-dce-collect-params (xs) (i) (acc) =
-   if i == list-length xs then acc
-   else ir-dce-collect-params xs (i + 1) (list-push acc ((list-at xs i).name))
 
   ir-dce-collect-branches : List IRBranch, Integer, List Text -> List Text
   ir-dce-collect-branches (xs) (i) (acc) =
@@ -577,8 +611,8 @@ Section: IR Dead Code Elimination
   ir-dce-collect-pat : IRPat, List Text -> List Text
   ir-dce-collect-pat (p) (acc) =
    when p
-    is IrVarPat (name) (ty) (sp) -> list-push acc name
-    is IrLitPat (text) (ty) (sp) -> list-push acc text
+    is IrVarPat (name) (ty) (sp) -> acc
+    is IrLitPat (text) (ty) (sp) -> acc
     is IrCtorPat (name) (subs) (ty) (sp) -> ir-dce-collect-pat-list subs 0 (list-push acc name)
     is IrWildPat (sp) -> acc
     is IrVecPat (subs) (ty) (sp) -> ir-dce-collect-pat-list subs 0 acc
@@ -596,20 +630,20 @@ Section: IR Dead Code Elimination
   ir-dce-collect-stmt : IRActStmt, List Text -> List Text
   ir-dce-collect-stmt (s) (acc) =
    when s
-    is IrDoBind (n) (ty) (v) (sp) -> ir-dce-collect-expr v (list-push acc n)
+    is IrDoBind (n) (ty) (v) (sp) -> ir-dce-collect-expr v acc
     is IrDoExec (e) (sp) -> ir-dce-collect-expr e acc
 
   ir-dce-collect-clauses : List IRHandleClause, Integer, List Text -> List Text
   ir-dce-collect-clauses (xs) (i) (acc) =
    if i == list-length xs then acc
    else let c = list-at xs i
-   in ir-dce-collect-clauses xs (i + 1) (ir-dce-collect-expr (c.body) (ir-dce-append-list (c.params) 0 (list-push (list-push acc (c.op-name)) (c.resume-name))))
+   in ir-dce-collect-clauses xs (i + 1) (ir-dce-collect-expr (c.body) (list-push (list-push acc (c.op-name)) (c.resume-name)))
 
   ir-dce-collect-fields : List IRFieldVal, Integer, List Text -> List Text
   ir-dce-collect-fields (xs) (i) (acc) =
    if i == list-length xs then acc
    else let f = list-at xs i
-   in ir-dce-collect-fields xs (i + 1) (ir-dce-collect-expr (f.value) (list-push acc (f.name)))
+   in ir-dce-collect-fields xs (i + 1) (ir-dce-collect-expr (f.value) acc)
 
   ir-dce-build-index : List IRDef, Integer, Integer, OffsetTable -> OffsetTable
   ir-dce-build-index (defs) (i) (len) (tbl) =
@@ -647,15 +681,33 @@ Section: IR Dead Code Elimination
    else ir-dce-filter defs visited (i + 1) len acc
 
   ir-prune-unreachable : IRChapter, Text -> IRChapter
-  ir-prune-unreachable (m) (root) =
+  ir-prune-unreachable (m) (root) = ir-prune-unreachable-roots m [root]
+
+ The multi-root form. A root naming no definition is skipped rather than
+ refused -- ir-dce-add-name already answers -1 for a name the index does
+ not hold -- so a caller may offer a root that only some programs carry.
+ The FIRST root is different: if it is absent the chapter comes back
+ whole, because a chapter with no entry point is one we cannot reason
+ about and must not prune. That is the rule the single-root form has
+ always had, and the IR-text callers depend on it.
+
+  ir-prune-unreachable-roots : IRChapter, List Text -> IRChapter
+  ir-prune-unreachable-roots (m) (roots) =
+   if list-length roots == 0 then m
+   else ir-prune-roots-indexed m roots (ir-dce-build-index (m.defs) 0 (list-length (m.defs)) offset-table-empty)
+
+  ir-prune-roots-indexed : IRChapter, List Text, OffsetTable -> IRChapter
+  ir-prune-roots-indexed (m) (roots) (tbl) =
+   if offset-table-get tbl (list-at roots 0) < 0 then m
+   else ir-prune-roots-flood m roots tbl
+
+  ir-prune-roots-flood : IRChapter, List Text, OffsetTable -> IRChapter
+  ir-prune-roots-flood (m) (roots) (tbl) =
    let defs = m.defs
    in let n = list-length defs
-   in let tbl = ir-dce-build-index defs 0 n offset-table-empty
-   in let root-idx = offset-table-get tbl root
-   in if root-idx < 0 then m
-      else let visited0 = list-set-at (ir-dce-falses n 0 (__list-with-capacity n)) root-idx True
-      in let w = ir-dce-flood defs tbl 0 (DceWork { visited = visited0, frontier = [root-idx] })
-      in __record-set m "defs" (ir-dce-filter defs (w.visited) 0 n [])
+   in let w0 = DceWork { visited = ir-dce-falses n 0 (__list-with-capacity n), frontier = [] }
+   in let w = ir-dce-flood defs tbl 0 (ir-dce-add-names roots 0 (list-length roots) tbl w0)
+   in __record-set m "defs" (ir-dce-filter defs (w.visited) 0 n [])
 
 Section: IRDef Emission
 
@@ -686,6 +738,33 @@ Section: IRChapter Emission
   ir-emit-name-strs (xs) (i) =
    ir-cat (ir-names-quoted xs i [])
 
+ Prose blocks and annotations ride the chapter header so that per-def
+ prose survives the wire. A block prints as its anchor and its text;
+ the classification is re-derivable from the text and is not sent. An
+ annotation prints as kind, target, body. Plug parsers walk the header
+ by form name and skip forms they do not ask for, therefore both forms
+ are additive.
+
+  ir-pblocks-quoted : List ProseBlock, Integer, List Text -> List Text
+  ir-pblocks-quoted (xs) (i) (acc) =
+   if i == list-length xs then acc
+   else let p = list-at xs i
+   in ir-pblocks-quoted xs (i + 1) (list-push acc (" (pb " & ir-quote (p.anchor) & " " & ir-quote (p.text) & ")"))
+
+  ir-emit-prose-blocks : List ProseBlock, Integer -> Text
+  ir-emit-prose-blocks (xs) (i) =
+   ir-cat (ir-pblocks-quoted xs i [])
+
+  ir-anns-quoted : List AnnotationNode, Integer, List Text -> List Text
+  ir-anns-quoted (xs) (i) (acc) =
+   if i == list-length xs then acc
+   else let a = list-at xs i
+   in ir-anns-quoted xs (i + 1) (list-push acc (" (ann " & ir-quote (a.kind) & " " & ir-quote (a.target) & " " & ir-quote (a.body) & ")"))
+
+  ir-emit-annotations : List AnnotationNode, Integer -> Text
+  ir-emit-annotations (xs) (i) =
+   ir-cat (ir-anns-quoted xs i [])
+
   emit-ir-chapter : IRChapter, IRTextMeta, List ATypeDef -> Text
   emit-ir-chapter (m) (meta) (type-defs) =
    emit-ir-chapter-prefix m meta type-defs & ir-emit-defs (m.defs) 0 & "))\n"
@@ -702,6 +781,8 @@ Section: IRChapter Emission
     & ir-quote (m.name.value) & "\n  "
     & "(title " & ir-quote (meta.chapter-title) & ")\n  "
     & "(prose " & ir-quote (meta.prose) & ")\n  "
+    & "(pblocks" & ir-emit-prose-blocks (meta.prose-blocks) 0 & ")\n  "
+    & "(anns" & ir-emit-annotations (meta.annotations) 0 & ")\n  "
     & "(sections" & ir-emit-text-strs (meta.section-titles) 0 & ")\n  "
     & "(ctors" & ir-emit-text-strs (meta.ctor-names) 0 & ")\n  "
     & "(eff-ops" & ir-emit-text-strs (m.effect-op-names) 0 & ")\n  "

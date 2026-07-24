@@ -1,5 +1,5 @@
 Chapter: Type Checker
-  cites Codex chapter Build Settings (max-recursion-depth)
+  cites Codex chapter Build Settings (max-recursion-depth, max-list-literal-elems)
   cites Foreword chapter Tuple
   cites Math chapter Interval
 
@@ -7,7 +7,7 @@ Chapter: Type Checker
 
 Section: Check Result
 
- The judgment is Γ ⊢ e : τ | ε (EffectRows.md §12 stage 3, ruled
+ The judgment is Γ ⊢ e : τ | ε (ruled
  2026-07-02): effect-row is the expression's AMBIENT row — what
  evaluating it performs. The effects of a function VALUE the
  expression produces live on that value's arrow, never in the
@@ -682,7 +682,7 @@ Section: Infer Application
  something Console-ish, and Console.Write is something Console-ish. The
  def boundary has always understood this — a [Console] def may perform
  Console.Write — but the argument boundary compared rows for EQUALITY
- and turned the same program away (CDX2090). That was BACKLOG 1.3.
+ and turned the same program away (CDX2090).
 
  The lattice does NOT move into unify-row, and this is the point:
  unification is symmetric, and a symmetric relation that accepted
@@ -861,7 +861,7 @@ Section: Infer Application
  is one of its sum type's own constructors (FabledTreasureMap entry
  11), a bounded parameter otherwise. Range PROPAGATION from the bound
  into the body is done at bind-def-params, not here, and only behind
- the stage-B runtime guard (BoundedSignatures.md section 4).
+ the stage-B runtime guard on bounded signatures.
 
   lint-arg-narrowing : UnificationState, TypeEnv, AExpr, CodexType, AExpr, CodexType, SourceSpan -> UnificationState
   lint-arg-narrowing (st) (env) (func) (func-ty) (arg) (arg-ty) (span) =
@@ -985,7 +985,7 @@ Section: Lint value-expression range analysis
  defined as a literal keeps its declared plain-Integer TYPE (refining
  it would make two distinct constants disjoint under unification),
  but its value is known exactly, so the lint can see the store is
- safe and elide the warning (BoundsProverReach.md). Unknown shapes
+ safe and elide the warning. Unknown shapes
  return the full i64 range, which never fits a real bound: the
  analysis can only silence true positives, never invent one.
 
@@ -1012,7 +1012,7 @@ Section: Lint value-expression range analysis
  this very env when inference walked the same def, because
  `env-add-local-range` reached the caller's record. That made every
  bounded return over a let read a range the prover had not derived.
- BACKLOG 2.22 cut the delivery, so the arm now derives it: same proofs,
+ Cutting that delivery left the arm to derive it: same proofs,
  obtained rather than inherited. `codex/compiler/Core/PhaseAllocator.
  pitch` is the site that proved the difference.
 
@@ -1138,8 +1138,8 @@ Section: Lint value-expression range analysis
  argument's range through, mirroring the emit prover. Otherwise the
  head name is tried against the builtin return facts, and finally
  against the head's DECLARED bounded return - the stage-B
- postcondition guard enforces a declared bounded return at runtime
- (BoundedSignatures.md section 4), so the declared range is a sound
+ postcondition guard enforces a declared bounded return at
+ runtime, so the declared range is a sound
  fact at every call. Both lookups are guarded by env-is-local so a
  binding that shadows a global name never borrows its fact. A
  partial application walks past its remaining arrows to a range the
@@ -1148,15 +1148,48 @@ Section: Lint value-expression range analysis
  runtime narrow-store check is emitted regardless, so program
  soundness never rests on this table.
 
+ `int-mod` cannot be a `builtin-return-range` row, and that is why the
+ checker used to refuse a bounded return the EMITTER proves. That table
+ holds one constant interval per builtin name; `int-mod x n` is bounded by
+ `[0, n - 1]`, which depends on an argument and so has no constant row to
+ sit in. The emit-side prover reads the divisor (`proven-mod-shallow`,
+ X86_64Compound), the checker did not, and the two disagreed about the
+ same expression -- `ret (n) = int-mod n 200` declared `0..255` was
+ rejected with CDX2051 quoting the full i64 interval.
+
+ The divisor is matched STRUCTURALLY rather than by head name: only an
+ apply whose own function is the bare name is a genuine two-argument call,
+ so a partial application (`int-mod x`, whose argument is the DIVIDEND)
+ cannot be mistaken for one and read its dividend as a divisor. The guard
+ `lo > 0` is the same one the emitter uses, and it is doing real work: a
+ divisor whose range admits zero or negatives proves nothing here, because
+ `math-mod` takes the sign of neither operand in a way this interval could
+ describe.
+
   apply-proven-range : TypeEnv, AExpr, AExpr -> (Integer, Integer)
   apply-proven-range (env) (func) (arg) =
    let head = apply-head-name func
    in if text-length head == 0 then (i64-min, i64-max)
    else if head == "__narrow" then aexpr-proven-range env arg
    else if env-is-local env head then (i64-min, i64-max)
+   else if is-two-arg-call func "int-mod" then mod-proven-range env arg
    else let (b-lo, b-hi) = builtin-return-range head
    in if b-lo > i64-min | b-hi < i64-max then (b-lo, b-hi)
    else declared-return-range env (rename-lookup (env.chapter-renames) head)
+
+  is-two-arg-call : AExpr, Text -> Boolean
+  is-two-arg-call (func) (name) =
+   when func
+    is AApplyExpr (inner) (a) (s) ->
+     when inner
+      is ANameExpr (n) (s2) -> n.value == name
+      is otherwise -> False
+    is otherwise -> False
+
+  mod-proven-range : TypeEnv, AExpr -> (Integer, Integer)
+  mod-proven-range (env) (divisor) =
+   let (lo, hi) = aexpr-proven-range env divisor
+   in if lo > 0 then (0, hi - 1) else (i64-min, i64-max)
 
   declared-return-range : TypeEnv, Text -> (Integer, Integer)
   declared-return-range (env) (name) =
@@ -1191,7 +1224,7 @@ Section: Lint value-expression range analysis
   proven-range-union : (Integer, Integer), (Integer, Integer) -> (Integer, Integer)
   proven-range-union (a) (b) = interval-range (iv-union (range-interval a) (range-interval b))
 
- Branch refinement (MiddleEnd.md workstream A1): when an if's
+ Branch refinement: when an if's
  condition compares a bare local against an expression with a
  provable range, each arm is analyzed with the local's recorded range
  intersected with what the comparison being true (then) or false
@@ -1204,6 +1237,38 @@ Section: Lint value-expression range analysis
  cannot execute, so the if proves as the surviving arm alone (SCCP
  feasibility); an infeasible arm is otherwise walked with the
  unrefined env, which can only widen, never invent.
+
+ A field assignment writes into the record the receiver evaluates to. That
+ is only useful when the receiver names a BINDING -- a parameter or a let
+ -- because then the caller holds the same record and sees the write. When
+ the receiver names a top-level DEFINITION instead, the definition is a
+ function of no arguments: every mention of the name evaluates its body
+ again and builds a fresh record, so the write lands in a value nothing
+ else holds and is discarded on return.
+
+ This type-checks perfectly and is silent at runtime, which is what makes
+ it worth a diagnostic. `a64-effect-cell` (`codex/plugs/arm64`) was written
+ on every module emit for as long as it existed and never read back
+ anything but its initial value; its loader had no callers, so nothing
+ noticed. The same idiom was reached for again in CL 9208 to carry a flag
+ and silently answered False.
+
+ A receiver that is anything other than a bare name -- a field of another
+ record, a subscript, a call result -- is left alone here. Those have their
+ own ownership questions and none of them is the flat always-discarded
+ write this catches.
+
+  field-assign-observable : TypeEnv, AExpr -> Boolean
+  field-assign-observable (env) (rec) =
+   when rec
+    is ANameExpr (n) (s) -> env-is-local env (n.value)
+    is otherwise -> True
+
+  field-assign-receiver-name : AExpr -> Text
+  field-assign-receiver-name (rec) =
+   when rec
+    is ANameExpr (n) (s) -> n.value
+    is otherwise -> "the receiver"
 
   CondRefine = record {
    target : Text,
@@ -1399,7 +1464,7 @@ Section: Lint value-expression range analysis
  parameter, or function return — draws the same hybrid check. The
  `descriptor` is the full noun phrase naming the position (e.g.
  "field 'code'", "bounded parameter", "bounded return") so one
- mechanism serves every site (BoundedSignatures.md).
+ mechanism serves every bounded-signature site.
 
   lint-narrowing-check : UnificationState, TypeEnv, AExpr, CodexType, CodexType, SourceSpan, Text -> UnificationState
   lint-narrowing-check (st) (env) (value-arg) (value-ty) (field-ty) (span) (descriptor) =
@@ -1437,7 +1502,7 @@ Section: Lint value-expression range analysis
  (~96% of CDX2053s on a self-compile were single-point constants).
  The elision itself is unchanged in both cases — only the info line
  is gated. An unproven flow is the CDX2051 error — the campaign
- endgame (BoundedSignatures.md): a bound is a contract, so a value
+ endgame: a bound is a contract, so a value
  that cannot be shown to honour it does not compile. The author
  either strengthens the source (a bounded field, parameter, return,
  or constant the prover can see) or takes responsibility with
@@ -1489,8 +1554,11 @@ Section: Lint value-expression range analysis
 
 Section: Infer List
   infer-list : UnificationState, TypeEnv, List AExpr, SourceSpan, Integer -> CheckResult
-  infer-list (st) (env) (elems) (span) (depth) =
-   if list-length elems == 0
+  infer-list (st0) (env) (elems) (span) (depth) =
+   let st = if list-length elems > max-list-literal-elems
+      then __record-set st0 "bag" (bag-add (st0.bag) (make-error cdx-list-literal-too-large ("List literal has " & integer-to-text (list-length elems) & " elements; at most " & integer-to-text max-list-literal-elems & " are accepted. Split it across several definitions and join them.") span))
+      else st0
+   in if list-length elems == 0
     then
      let (fr-ty, fr-st) = fresh-and-advance st
      in CheckResult {
@@ -1556,9 +1624,36 @@ Section: Infer Match
    else let arm = list-at arms i
    in if is-gadt then infer-gadt-arm st env scrut-ty result-ty arm arms (i + 1) len acc-row depth else infer-plain-arm st env scrut-ty result-ty arm arms (i + 1) len is-gadt acc-row depth
 
+ A guard on a Nil or Cons arm is refused: the lowering desugar chains
+ arms as nested ifs, and a failed guard would need the rest of the
+ chain duplicated under the arm's bindings. The parser writes a True
+ literal where the source carries no guard, therefore that literal is
+ the shape a guardless arm presents here.
+
+  is-trivial-guard : AExpr -> Boolean
+  is-trivial-guard (g) =
+   when g
+    is ALitExpr (t) (k) (s) -> t == "True"
+    is otherwise -> False
+
+  check-list-arm-guard : UnificationState, CodexType, AMatchArm -> UnificationState
+  check-list-arm-guard (st) (scrut-ty) (arm) =
+   let rty = deep-resolve st scrut-ty
+   in when rty
+    is ListTy (e) ->
+     (when (arm.pattern)
+      is ACtorPat (cn) (subs) (s) ->
+       if is-builtin-list-ctor (cn.value)
+       then if is-trivial-guard (arm.guard) then st
+        else list-pattern-shape-error st "a guard on a Nil or Cons arm; test inside the arm body" s
+       else st
+      is otherwise -> st)
+    is otherwise -> st
+
   infer-plain-arm : UnificationState, TypeEnv, CodexType, CodexType, AMatchArm, List AMatchArm, Integer, Integer, Boolean, EffectRow, Integer -> (EffectRow, UnificationState)
   infer-plain-arm (st) (env) (scrut-ty) (result-ty) (arm) (arms) (next) (len) (is-gadt) (acc-row) (depth) =
-   let pr = bind-pattern st env (arm.pattern) scrut-ty
+   let st-g = check-list-arm-guard st scrut-ty arm
+   in let pr = bind-pattern st-g env (arm.pattern) scrut-ty
    in let gr = infer-expr-at (pr.state) (pr.env) (arm.guard) (depth + 1)
    in let (_, gu-st) = unify (gr.state) (gr.inferred-type) BooleanTy (aexpr-span (arm.guard))
    in let br = infer-expr-at gu-st (pr.env) (arm.body) (depth + 1)
@@ -1582,7 +1677,10 @@ Section: Infer Match
 
   check-match-exhaustiveness : UnificationState, CodexType, List AMatchArm, SourceSpan -> UnificationState
   check-match-exhaustiveness (st) (scrut-ty) (arms) (span) =
-   let resolved = deep-resolve st scrut-ty
+   let resolved0 = deep-resolve st scrut-ty
+   in let resolved = when resolved0
+      is ListTy (le) -> builtin-list-sumty le
+      is otherwise -> resolved0
    in when resolved
     is SumTy (name) (args) (ctors) ->
      if match-has-catchall arms 0 (list-length arms) then st
@@ -1649,14 +1747,60 @@ Section: Infer Match
      let elem-ty = when ty is VectorTy (n) (t) -> t is otherwise -> ErrorTy
      in bind-vec-sub-patterns st env sub-pats elem-ty 0 (list-length sub-pats)
     is ACtorPat (ctor-name) (sub-pats) (s) ->
-     if env-has env (ctor-name.value) == False
-     then let err-st = __record-set st "bag" (bag-add (st.bag) (make-error cdx-unknown-pattern-ctor ("Pattern constructor '" & ctor-name.value & "' is not in scope; this arm could never match. Check the constructor names of the scrutinee's type.") s))
-      in bind-ctor-sub-patterns err-st env sub-pats ErrorTy 0 (list-length sub-pats)
-     else
-      let (ctor-ty, ctor-st) = instantiate-type st (env-lookup env (ctor-name.value))
-      in let ctor-ret = strip-fun-args ctor-ty
-      in let (ok, unified-st) = unify ctor-st ctor-ret ty s
-      in bind-ctor-sub-patterns unified-st env sub-pats ctor-ty 0 (list-length sub-pats)
+     let rty = deep-resolve st ty
+     in when rty
+      is ListTy (elem) ->
+       if is-builtin-list-ctor (ctor-name.value)
+       then bind-list-ctor-pattern st env (ctor-name.value) sub-pats elem s
+       else bind-ctor-pattern-generic st env ctor-name sub-pats ty s
+      is otherwise -> bind-ctor-pattern-generic st env ctor-name sub-pats ty s
+
+  bind-ctor-pattern-generic : UnificationState, TypeEnv, Name, List APat, CodexType, SourceSpan -> PatBindResult
+  bind-ctor-pattern-generic (st) (env) (ctor-name) (sub-pats) (ty) (s) =
+   if env-has env (ctor-name.value) == False
+   then let err-st = __record-set st "bag" (bag-add (st.bag) (make-error cdx-unknown-pattern-ctor ("Pattern constructor '" & ctor-name.value & "' is not in scope; this arm could never match. Check the constructor names of the scrutinee's type.") s))
+    in bind-ctor-sub-patterns err-st env sub-pats ErrorTy 0 (list-length sub-pats)
+   else
+    let (ctor-ty, ctor-st) = instantiate-type st (env-lookup env (ctor-name.value))
+    in let ctor-ret = strip-fun-args ctor-ty
+    in let (ok, unified-st) = unify ctor-st ctor-ret ty s
+    in bind-ctor-sub-patterns unified-st env sub-pats ctor-ty 0 (list-length sub-pats)
+
+ The builtin List has no declared constructors, therefore Nil and Cons
+ on a List scrutinee bind against the same synthesized view Stage 5
+ induction already checks against: Nil takes nothing, Cons takes the
+ element and a tail of the same List type. Only name and wildcard
+ fields are accepted -- a nested pattern in a Cons field would force
+ the lowering desugar to duplicate the rest of the match per nesting
+ level, therefore the checker refuses the shape here, where the
+ message can say what to write instead. LinkedList scrutinees are
+ excluded: the linked representation has no view runtime.
+
+  is-builtin-list-ctor : Text -> Boolean
+  is-builtin-list-ctor (n) = if n == "Cons" then True else n == "Nil"
+
+  list-subpat-simple : APat -> Boolean
+  list-subpat-simple (p) =
+   when p
+    is AVarPat (n) (sp) -> True
+    is AWildPat (sp) -> True
+    is otherwise -> False
+
+  list-pattern-shape-error : UnificationState, Text, SourceSpan -> UnificationState
+  list-pattern-shape-error (st) (msg) (s) =
+   __record-set st "bag" (bag-add (st.bag) (make-error cdx-list-pattern-shape ("List pattern not supported yet: " & msg) s))
+
+  bind-list-ctor-pattern : UnificationState, TypeEnv, Text, List APat, CodexType, SourceSpan -> PatBindResult
+  bind-list-ctor-pattern (st) (env) (cn) (sub-pats) (elem) (s) =
+   if cn == "Nil"
+   then if list-length sub-pats == 0 then PatBindResult { state = st, env = env }
+    else PatBindResult { state = list-pattern-shape-error st "Nil takes no fields" s, env = env }
+   else if list-length sub-pats /= 2
+    then PatBindResult { state = list-pattern-shape-error st "Cons over the builtin List takes exactly two fields, the head and the tail" s, env = env }
+   else if list-subpat-simple (list-at sub-pats 0) & list-subpat-simple (list-at sub-pats 1)
+    then let pr0 = bind-pattern st env (list-at sub-pats 0) elem
+     in bind-pattern (pr0.state) (pr0.env) (list-at sub-pats 1) (deck-record (ListTy elem))
+    else PatBindResult { state = list-pattern-shape-error st "a Cons field over the builtin List must be a name or _; bind the tail and match it in a nested when" s, env = env }
 
   bind-ctor-sub-patterns : UnificationState, TypeEnv, List APat, CodexType, Integer, Integer -> PatBindResult
   bind-ctor-sub-patterns (st) (env) (sub-pats) (ctor-ty) (i) (len) =
@@ -1726,7 +1870,7 @@ Section: Infer Act
  it by threading the extended env into both the let's body AND the
  statements that follow.
 
- Until BACKLOG 2.22 the checker did not thread it at all — the binding
+ The checker once did not thread it at all -- the binding
  reached the following statements only because `env-bind-local` aliased
  the caller's locals list, so the sibling statements read a binding
  that had merely never been removed. That made the act-block case work
@@ -1765,7 +1909,7 @@ Section: Infer Expression (dispatch)
  inference walked the stack a gigabyte down into the demand-paged range
  and double-faulted, where the CPU cannot deliver a page fault onto the
  faulting stack: the compiler died silently instead of reporting
- exhaustion (BACKLOG 2.26).
+ exhaustion.
 
   infer-expr : UnificationState, TypeEnv, AExpr -> CheckResult
   infer-expr (st) (env) (expr) = infer-expr-at st env expr 0
@@ -1900,6 +2044,8 @@ Section: Infer Expression (dispatch)
      in let mut-ok = env-has env marker-name
      in let st-mut = if mut-ok then vr.state
       else add-unify-error (vr.state) cdx-field-assign-immutable ("Field assignment requires a mutable record; '" & type-name & "' is immutable") s
+     in let st-obs = if field-assign-observable env rec then st-mut
+      else add-unify-error st-mut cdx-field-assign-unobservable ("Field assignment to '" & (field-assign-receiver-name rec) & "' cannot be observed: it names a definition, not a binding, so each mention builds a new '" & type-name & "' and this write is discarded. Bind the record with a let and thread it, or make the definition take the record as a parameter") s
      in let field-ty = when resolved
       is RecordTy (rname) (rargs) (rfields) -> lookup-record-field rfields (field.value)
       is ConstructedTy (cname) (cargs) ->
@@ -1911,8 +2057,8 @@ Section: Infer Expression (dispatch)
         is otherwise -> ErrorTy
       is otherwise -> ErrorTy
      in let st2 = when field-ty
-      is ErrorTy -> add-unify-error st-mut cdx-unknown-record-field ("Record type has no field '" & field.value & "'") s
-      is otherwise -> let (_, u-st) = unify st-mut (vr.inferred-type) field-ty s in u-st
+      is ErrorTy -> add-unify-error st-obs cdx-unknown-record-field ("Record type has no field '" & field.value & "'") s
+      is otherwise -> let (_, u-st) = unify st-obs (vr.inferred-type) field-ty s in u-st
      in let (amb, amb-st) = row-union st2 (rr.effect-row) (vr.effect-row)
      in CheckResult {
       inferred-type = rr.inferred-type,
@@ -1965,7 +2111,7 @@ Section: Infer Expression (dispatch)
      in if aexpr-mentions-record-set (b.value) then True
      else aexpr-list-mentions-record-set-binds binds (i + 1) len
 
- The handler rule (EffectRows.md §7). Discharge is by the dotted
+ The handler rule. Discharge is by the dotted
  sub-effect lattice, not by exact name: `with FileSystem` handles a
  body that performs FileSystem.Read and FileSystem.Write, because
  effect-covered-by is the same relation the def boundary already uses

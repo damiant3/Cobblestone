@@ -2,8 +2,8 @@ Chapter: Simplify
   cites Codex chapter Build Settings (max-recursion-depth)
 
  The simplifier: one traversal that applies every local rewrite it
- knows at once, iterated to a fixpoint (MiddleEndLiterature.md section
- 2 — GHC Core's one-Simplifier-pass architecture, the closest
+ knows at once, iterated to a fixpoint (GHC Core's
+ one-Simplifier-pass architecture, the closest
  production analogue to this IR). This is WS-D3, slices 1 through 3. It
  carries a substitution environment down the tree and a rewrite count
  up it. It stays deliberately narrow — no renaming, so every rewrite is
@@ -61,10 +61,10 @@ Chapter: Simplify
  carried one: the clauses of an `IrHandle` and the three statement lists
  of an `IrTry`. A handle clause's operation and resume binders, and the
  way a try body's binds are visible in its fallback blocks, are exactly
- the unscoped-binder edges filed as BACKLOG 2.24. Propagating an outer
+ the unscoped-binder edges that remain unscoped. Propagating an outer
  literal across those boundaries could replace one of those leaked names.
  Refusing to carry the substitution in costs only the rare cross-boundary
- constant and keeps the slice sound without depending on 2.24 being
+ constant and keeps the slice sound without depending on those being
  closed first. The sub-expressions inside are still folded and
  propagated on their own.
 
@@ -263,11 +263,32 @@ Section: Folding
  `IrApply`. An out-of-range index is left as a call, to trap at runtime
  exactly as it would unfolded.
 
-  simp-fold-apply : IRExpr, IRExpr, CodexType, SourceSpan -> FoldRes
-  simp-fold-apply (f) (a) (ty) (sp) =
+ These three rules fold a name, so they must first ask whether the chapter
+ DEFINES that name -- a chapter is allowed to define its own
+ `text-length`. Folding one that does gave two answers in one function:
+ the fold caught the literal argument and answered the builtin's way,
+ while every other call site reached `emit-compound`, which checks
+ `user-arity < 0` before routing to `emit-builtin` and answered the
+ definition's way. `fold-constants` (Lowering,
+ Section: Constant Folding) had the identical defect.
+
+ Both are fixed the same way and the set is the same set: `dn`, a
+ `SkipListText` of the chapter's own def names, built once per chapter at
+ `simplify-chapter` / `simplify-run` and threaded down the walk. A name in
+ it is never folded.
+
+ `dn` is threaded rather than rebuilt per definition because the walk is
+ iterated to a fixpoint -- `simplify-iter` runs the whole traversal again
+ for each rewrite round, and rebuilding a skip list of every def name on
+ each round would put a chapter-sized structure inside the fixpoint loop.
+ It is chapter-scoped data and it is built where the chapter is.
+
+  simp-fold-apply : SkipListText, IRExpr, IRExpr, CodexType, SourceSpan -> FoldRes
+  simp-fold-apply (dn) (f) (a) (ty) (sp) =
    when f
     is IrName (n) (fty) (ns) ->
-     if n == "text-length" then (when a
+     if skip-list-text-has dn n then fold-none (deck-record (IrApply f a ty sp))
+     else if n == "text-length" then (when a
       is IrTextLit (s) (as) -> fold-some (deck-record (IrIntLit (text-length s) sp))
       is otherwise -> fold-none (deck-record (IrApply f a ty sp)))
      else if n == "char-code" then (when a
@@ -277,7 +298,8 @@ Section: Folding
     is IrApply (inner-f) (inner-a) (fty) (fs) ->
      (when inner-f
       is IrName (n) (nty) (nsp) ->
-       if n == "char-code-at" then simp-fold-char-code-at f inner-a a ty sp
+       if n == "char-code-at" then (if skip-list-text-has dn n then fold-none (deck-record (IrApply f a ty sp))
+        else simp-fold-char-code-at f inner-a a ty sp)
        else fold-none (deck-record (IrApply f a ty sp))
       is otherwise -> fold-none (deck-record (IrApply f a ty sp)))
     is otherwise -> fold-none (deck-record (IrApply f a ty sp))
@@ -329,7 +351,7 @@ Section: Purity and Deadness
    else when e
     is IrIntLit (v) (s) | IrNumLit (v) (s) | IrTextLit (v) (s) | IrBoolLit (v) (s) | IrCharLit (v) (s) -> True
     is IrName (nm) (t) (s) -> True
-    is IrNegate (x) (s) -> simp-pure-trapfree x (depth + 1)
+    is IrNegate (x) (t) (s) -> simp-pure-trapfree x (depth + 1)
     is IrBinary (op) (l) (r) (t) (s) ->
      if simp-op-trapfree op then (if simp-pure-trapfree l (depth + 1) then simp-pure-trapfree r (depth + 1) else False) else False
     is IrIf (c) (th) (el) (t) (s) ->
@@ -423,7 +445,7 @@ Section: Inlining
     is IrIntLit (v) (s) | IrNumLit (v) (s) | IrTextLit (v) (s) | IrBoolLit (v) (s) | IrCharLit (v) (s) -> False
     is IrName (n) (t) (s) -> False
     is IrError (m) (t) (s) -> False
-    is IrNegate (x) (s) -> simp-binds-any x names (depth + 1)
+    is IrNegate (x) (t) (s) -> simp-binds-any x names (depth + 1)
     is IrBinary (op) (l) (r) (t) (s) -> if simp-binds-any l names (depth + 1) then True else simp-binds-any r names (depth + 1)
     is IrIf (c) (th) (el) (t) (s) -> if simp-binds-any c names (depth + 1) then True else if simp-binds-any th names (depth + 1) then True else simp-binds-any el names (depth + 1)
     is IrLet (n) (t) (v) (b) (s) -> if simp-name-in names n then True else if simp-binds-any v names (depth + 1) then True else simp-binds-any b names (depth + 1)
@@ -532,8 +554,8 @@ Section: Expression Walk
  A node past the depth budget is returned untouched — sound, because
  leaving a subtree unsimplified never changes its meaning.
 
-  simplify-expr : List SubstEntry, IRExpr, Integer -> SimpRes
-  simplify-expr (env) (e) (depth) =
+  simplify-expr : SkipListText, List SubstEntry, IRExpr, Integer -> SimpRes
+  simplify-expr (dn) (env) (e) (depth) =
    if depth >= max-recursion-depth then SimpRes { expr = e, ticks = 0 }
    else when e
     is IrIntLit (v) (s) | IrNumLit (v) (s) | IrTextLit (v) (s) | IrBoolLit (v) (s) | IrCharLit (v) (s) -> SimpRes { expr = e, ticks = 0 }
@@ -541,83 +563,83 @@ Section: Expression Walk
      let i = subst-find env n 0 (list-length env)
      in if i < 0 then SimpRes { expr = e, ticks = 0 }
         else SimpRes { expr = (list-at env i).val, ticks = 1 }
-    is IrNegate (x) (s) ->
-     let rx = simplify-expr env x (depth + 1)
+    is IrNegate (x) (t) (s) ->
+     let rx = simplify-expr dn env x (depth + 1)
      in (when rx.expr
       is IrIntLit (v) (ls) -> SimpRes { expr = deck-record (IrIntLit (-v) s), ticks = rx.ticks + 1 }
-      is otherwise -> SimpRes { expr = deck-record (IrNegate (rx.expr) s), ticks = rx.ticks })
+      is otherwise -> SimpRes { expr = deck-record (IrNegate (rx.expr) t s), ticks = rx.ticks })
     is IrBinary (op) (l) (r) (t) (s) ->
-     let rl = simplify-expr env l (depth + 1)
-     in let rr = simplify-expr env r (depth + 1)
+     let rl = simplify-expr dn env l (depth + 1)
+     in let rr = simplify-expr dn env r (depth + 1)
      in let fr = simp-fold-binary op (rl.expr) (rr.expr) t s
      in SimpRes { expr = fr.expr, ticks = rl.ticks + rr.ticks + (if fr.folded then 1 else 0) }
     is IrIf (c) (th) (el) (t) (s) ->
-     let rc = simplify-expr env c (depth + 1)
+     let rc = simplify-expr dn env c (depth + 1)
      in (when rc.expr
       is IrBoolLit (b) (cs) ->
-       let rt = simplify-expr env (if b then th else el) (depth + 1)
+       let rt = simplify-expr dn env (if b then th else el) (depth + 1)
        in SimpRes { expr = rt.expr, ticks = rc.ticks + rt.ticks + 1 }
       is otherwise ->
-       let rt = simplify-expr env th (depth + 1)
-       in let re = simplify-expr env el (depth + 1)
+       let rt = simplify-expr dn env th (depth + 1)
+       in let re = simplify-expr dn env el (depth + 1)
        in SimpRes { expr = deck-record (IrIf (rc.expr) (rt.expr) (re.expr) t s), ticks = rc.ticks + rt.ticks + re.ticks })
     is IrLet (n) (t) (v) (b) (s) ->
-     let rv = simplify-expr env v (depth + 1)
+     let rv = simplify-expr dn env v (depth + 1)
      in if simp-is-literal (rv.expr)
-        then let rb = simplify-expr (subst-add env n (rv.expr)) b (depth + 1)
+        then let rb = simplify-expr (dn) (subst-add env n (rv.expr)) b (depth + 1)
              in SimpRes { expr = rb.expr, ticks = rv.ticks + rb.ticks + 1 }
         else if simp-inline-ok n (rv.expr) b
-        then let rb = simplify-expr (subst-add env n (rv.expr)) b (depth + 1)
+        then let rb = simplify-expr (dn) (subst-add env n (rv.expr)) b (depth + 1)
              in SimpRes { expr = rb.expr, ticks = rv.ticks + rb.ticks + 1 }
-        else let rb = simplify-expr (subst-remove env n) b (depth + 1)
+        else let rb = simplify-expr (dn) (subst-remove env n) b (depth + 1)
              in if simp-pure-trapfree (rv.expr) 0 & simp-is-dead n (rb.expr)
                 then SimpRes { expr = rb.expr, ticks = rv.ticks + rb.ticks + 1 }
                 else SimpRes { expr = deck-record (IrLet n t (rv.expr) (rb.expr) s), ticks = rv.ticks + rb.ticks }
     is IrApply (f) (a) (t) (s) ->
-     let rf = simplify-expr env f (depth + 1)
-     in let ra = simplify-expr env a (depth + 1)
-     in let fr = simp-fold-apply (rf.expr) (ra.expr) t s
+     let rf = simplify-expr dn env f (depth + 1)
+     in let ra = simplify-expr dn env a (depth + 1)
+     in let fr = simp-fold-apply dn (rf.expr) (ra.expr) t s
      in SimpRes { expr = fr.expr, ticks = rf.ticks + ra.ticks + (if fr.folded then 1 else 0) }
     is IrLambda (ps) (b) (t) (s) ->
-     let rb = simplify-expr (subst-remove-names env ps 0 (list-length ps)) b (depth + 1)
+     let rb = simplify-expr (dn) (subst-remove-names env ps 0 (list-length ps)) b (depth + 1)
      in SimpRes { expr = deck-record (IrLambda ps (rb.expr) t s), ticks = rb.ticks }
     is IrList (es) (t) (s) ->
-     let r = simplify-exprs env es (depth + 1) 0 (list-length es) [] 0
+     let r = simplify-exprs dn env es (depth + 1) 0 (list-length es) [] 0
      in SimpRes { expr = deck-record (IrList (r.stmts-as-exprs) t s), ticks = r.ticks }
     is IrMatch (sc) (bs) (t) (s) ->
-     let rsc = simplify-expr env sc (depth + 1)
-     in let rb = simplify-branches env bs (depth + 1) 0 (list-length bs) [] 0
+     let rsc = simplify-expr dn env sc (depth + 1)
+     in let rb = simplify-branches dn env bs (depth + 1) 0 (list-length bs) [] 0
      in SimpRes { expr = deck-record (IrMatch (rsc.expr) (rb.branches) t s), ticks = rsc.ticks + rb.ticks }
     is IrAct (ss) (t) (s) ->
-     let r = simplify-stmts env ss (depth + 1) 0 (list-length ss) [] 0
+     let r = simplify-stmts dn env ss (depth + 1) 0 (list-length ss) [] 0
      in SimpRes { expr = deck-record (IrAct (r.stmts) t s), ticks = r.ticks }
     is IrHandle (eff) (h) (cs) (t) (s) ->
-     let rh = simplify-expr env h (depth + 1)
-     in let rc = simplify-clauses cs (depth + 1) 0 (list-length cs) [] 0
+     let rh = simplify-expr dn env h (depth + 1)
+     in let rc = simplify-clauses dn cs (depth + 1) 0 (list-length cs) [] 0
      in SimpRes { expr = deck-record (IrHandle eff (rh.expr) (rc.clauses) t s), ticks = rh.ticks + rc.ticks }
     is IrWithTimeout (secs) (effs) (scopes) (body) (t) (s) ->
-     let rb = simplify-expr env body (depth + 1)
+     let rb = simplify-expr dn env body (depth + 1)
      in SimpRes { expr = deck-record (IrWithTimeout secs effs scopes (rb.expr) t s), ticks = rb.ticks }
     is IrRecord (n) (fs) (t) (s) ->
-     let r = simplify-fields env fs (depth + 1) 0 (list-length fs) [] 0
+     let r = simplify-fields dn env fs (depth + 1) 0 (list-length fs) [] 0
      in SimpRes { expr = deck-record (IrRecord n (r.fields) t s), ticks = r.ticks }
     is IrFieldAccess (r) (f) (t) (s) ->
-     let rr = simplify-expr env r (depth + 1)
+     let rr = simplify-expr dn env r (depth + 1)
      in SimpRes { expr = deck-record (IrFieldAccess (rr.expr) f t s), ticks = rr.ticks }
     is IrFork (b) (t) (s) ->
-     let rb = simplify-expr env b (depth + 1)
+     let rb = simplify-expr dn env b (depth + 1)
      in SimpRes { expr = deck-record (IrFork (rb.expr) t s), ticks = rb.ticks }
     is IrAwait (tk) (t) (s) ->
-     let rt = simplify-expr env tk (depth + 1)
+     let rt = simplify-expr dn env tk (depth + 1)
      in SimpRes { expr = deck-record (IrAwait (rt.expr) t s), ticks = rt.ticks }
     is IrTry (mx) (body) (fb) (fail) (t) (s) ->
-     let r1 = simplify-stmts [] body (depth + 1) 0 (list-length body) [] 0
-     in let r2 = simplify-stmts [] fb (depth + 1) 0 (list-length fb) [] 0
-     in let r3 = simplify-stmts [] fail (depth + 1) 0 (list-length fail) [] 0
+     let r1 = simplify-stmts dn [] body (depth + 1) 0 (list-length body) [] 0
+     in let r2 = simplify-stmts dn [] fb (depth + 1) 0 (list-length fb) [] 0
+     in let r3 = simplify-stmts dn [] fail (depth + 1) 0 (list-length fail) [] 0
      in SimpRes { expr = deck-record (IrTry mx (r1.stmts) (r2.stmts) (r3.stmts) t s), ticks = r1.ticks + r2.ticks + r3.ticks }
     is IrFieldStore (r) (f) (v) (t) (s) ->
-     let rr = simplify-expr env r (depth + 1)
-     in let rv = simplify-expr env v (depth + 1)
+     let rr = simplify-expr dn env r (depth + 1)
+     in let rv = simplify-expr dn env v (depth + 1)
      in SimpRes { expr = deck-record (IrFieldStore (rr.expr) f (rv.expr) t s), ticks = rr.ticks + rv.ticks }
     is IrError (m) (t) (s) -> SimpRes { expr = e, ticks = 0 }
 
@@ -641,23 +663,23 @@ Section: List and Field Walks
    ticks : Integer
   }
 
-  simplify-exprs : List SubstEntry, List IRExpr, Integer, Integer, Integer, List IRExpr, Integer -> SimpExprsRes
-  simplify-exprs (env) (es) (depth) (i) (len) (acc) (ticks) =
+  simplify-exprs : SkipListText, List SubstEntry, List IRExpr, Integer, Integer, Integer, List IRExpr, Integer -> SimpExprsRes
+  simplify-exprs (dn) (env) (es) (depth) (i) (len) (acc) (ticks) =
    if i >= len then SimpExprsRes { stmts-as-exprs = acc, ticks = ticks }
-   else let r = simplify-expr env (list-at es i) depth
-   in simplify-exprs env es depth (i + 1) len (list-push acc (r.expr)) (ticks + r.ticks)
+   else let r = simplify-expr dn env (list-at es i) depth
+   in simplify-exprs dn env es depth (i + 1) len (list-push acc (r.expr)) (ticks + r.ticks)
 
   SimpFieldsRes = record {
    fields : List IRFieldVal,
    ticks : Integer
   }
 
-  simplify-fields : List SubstEntry, List IRFieldVal, Integer, Integer, Integer, List IRFieldVal, Integer -> SimpFieldsRes
-  simplify-fields (env) (fs) (depth) (i) (len) (acc) (ticks) =
+  simplify-fields : SkipListText, List SubstEntry, List IRFieldVal, Integer, Integer, Integer, List IRFieldVal, Integer -> SimpFieldsRes
+  simplify-fields (dn) (env) (fs) (depth) (i) (len) (acc) (ticks) =
    if i >= len then SimpFieldsRes { fields = acc, ticks = ticks }
    else let f = list-at fs i
-   in let r = simplify-expr env (f.value) depth
-   in simplify-fields env fs depth (i + 1) len (list-push acc (deck-record (__record-set f "value" (r.expr)))) (ticks + r.ticks)
+   in let r = simplify-expr dn env (f.value) depth
+   in simplify-fields dn env fs depth (i + 1) len (list-push acc (deck-record (__record-set f "value" (r.expr)))) (ticks + r.ticks)
 
 Section: Statement, Branch, and Clause Walks
 
@@ -667,17 +689,17 @@ Section: Statement, Branch, and Clause Walks
  The bind's own value is simplified under the substitution as it stands,
  because the value is evaluated in the scope before the bind.
 
-  simplify-stmts : List SubstEntry, List IRActStmt, Integer, Integer, Integer, List IRActStmt, Integer -> SimpStmtsRes
-  simplify-stmts (env) (ss) (depth) (i) (len) (acc) (ticks) =
+  simplify-stmts : SkipListText, List SubstEntry, List IRActStmt, Integer, Integer, Integer, List IRActStmt, Integer -> SimpStmtsRes
+  simplify-stmts (dn) (env) (ss) (depth) (i) (len) (acc) (ticks) =
    if i >= len then SimpStmtsRes { stmts = acc, ticks = ticks }
    else let s = list-at ss i
    in when s
     is IrDoExec (v) (sp) ->
-     let rv = simplify-expr env v depth
-     in simplify-stmts env ss depth (i + 1) len (list-push acc (deck-record (IrDoExec (rv.expr) sp))) (ticks + rv.ticks)
+     let rv = simplify-expr dn env v depth
+     in simplify-stmts dn env ss depth (i + 1) len (list-push acc (deck-record (IrDoExec (rv.expr) sp))) (ticks + rv.ticks)
     is IrDoBind (n) (t) (v) (sp) ->
-     let rv = simplify-expr env v depth
-     in simplify-stmts (subst-remove env n) ss depth (i + 1) len (list-push acc (deck-record (IrDoBind n t (rv.expr) sp))) (ticks + rv.ticks)
+     let rv = simplify-expr dn env v depth
+     in simplify-stmts dn (subst-remove env n) ss depth (i + 1) len (list-push acc (deck-record (IrDoBind n t (rv.expr) sp))) (ticks + rv.ticks)
 
  A branch pattern binds over its guard and body only. The pattern
  variables are stripped from the substitution before the branch is
@@ -688,14 +710,14 @@ Section: Statement, Branch, and Clause Walks
    ticks : Integer
   }
 
-  simplify-branches : List SubstEntry, List IRBranch, Integer, Integer, Integer, List IRBranch, Integer -> SimpBranchesRes
-  simplify-branches (env) (bs) (depth) (i) (len) (acc) (ticks) =
+  simplify-branches : SkipListText, List SubstEntry, List IRBranch, Integer, Integer, Integer, List IRBranch, Integer -> SimpBranchesRes
+  simplify-branches (dn) (env) (bs) (depth) (i) (len) (acc) (ticks) =
    if i >= len then SimpBranchesRes { branches = acc, ticks = ticks }
    else let b = list-at bs i
    in let benv = subst-remove-pat env (b.pattern) depth
-   in let rg = simplify-expr benv (b.guard) depth
-   in let rbody = simplify-expr benv (b.body) depth
-   in simplify-branches env bs depth (i + 1) len (list-push acc (deck-record (IRBranch { pattern = b.pattern, body = rbody.expr, guard = rg.expr, span = b.span, alt-group = b.alt-group }))) (ticks + rg.ticks + rbody.ticks)
+   in let rg = simplify-expr dn benv (b.guard) depth
+   in let rbody = simplify-expr dn benv (b.body) depth
+   in simplify-branches dn env bs depth (i + 1) len (list-push acc (deck-record (IRBranch { pattern = b.pattern, body = rbody.expr, guard = rg.expr, span = b.span, alt-group = b.alt-group }))) (ticks + rg.ticks + rbody.ticks)
 
   subst-remove-pat : List SubstEntry, IRPat, Integer -> List SubstEntry
   subst-remove-pat (env) (p) (depth) =
@@ -713,19 +735,19 @@ Section: Statement, Branch, and Clause Walks
 
  Handle clauses are walked under an empty substitution — see the chapter
  prose for why the operation, resume, and leaked try binders make
- carrying the outer substitution in unsound until BACKLOG 2.24 is closed.
+ carrying the outer substitution in unsound until those are scoped.
 
   SimpClausesRes = record {
    clauses : List IRHandleClause,
    ticks : Integer
   }
 
-  simplify-clauses : List IRHandleClause, Integer, Integer, Integer, List IRHandleClause, Integer -> SimpClausesRes
-  simplify-clauses (cs) (depth) (i) (len) (acc) (ticks) =
+  simplify-clauses : SkipListText, List IRHandleClause, Integer, Integer, Integer, List IRHandleClause, Integer -> SimpClausesRes
+  simplify-clauses (dn) (cs) (depth) (i) (len) (acc) (ticks) =
    if i >= len then SimpClausesRes { clauses = acc, ticks = ticks }
    else let c = list-at cs i
-   in let rb = simplify-expr [] (c.body) depth
-   in simplify-clauses cs depth (i + 1) len (list-push acc (deck-record (__record-set c "body" (rb.expr)))) (ticks + rb.ticks)
+   in let rb = simplify-expr dn [] (c.body) depth
+   in simplify-clauses dn cs depth (i + 1) len (list-push acc (deck-record (__record-set c "body" (rb.expr)))) (ticks + rb.ticks)
 
 Section: Definition and Chapter
 
@@ -734,38 +756,40 @@ Section: Definition and Chapter
  starts empty at the definition boundary — a parameter is not a literal,
  so nothing propagates in from the signature.
 
-  simplify-def : IRDef -> SimpDefRes
-  simplify-def (d) =
-   let r = simplify-iter (d.body) 0 0
+  simplify-def : SkipListText, IRDef -> SimpDefRes
+  simplify-def (dn) (d) =
+   let r = simplify-iter dn (d.body) 0 0
    in let d2 = __record-set d "body" (r.expr)
    in SimpDefRes { def = deck-record d2, ticks = r.ticks }
 
-  simplify-iter : IRExpr, Integer, Integer -> SimpRes
-  simplify-iter (body) (iter) (acc) =
-   let r = simplify-expr [] body 0
+  simplify-iter : SkipListText, IRExpr, Integer, Integer -> SimpRes
+  simplify-iter (dn) (body) (iter) (acc) =
+   let r = simplify-expr dn [] body 0
    in if r.ticks == 0 then SimpRes { expr = r.expr, ticks = acc }
       else if (iter + 1) >= simplify-max-iters then SimpRes { expr = r.expr, ticks = acc + r.ticks }
-      else simplify-iter (r.expr) (iter + 1) (acc + r.ticks)
+      else simplify-iter dn (r.expr) (iter + 1) (acc + r.ticks)
 
-  simplify-defs : List IRDef, Integer, Integer, List IRDef, Integer -> SimpDefsRes
-  simplify-defs (defs) (i) (len) (acc) (ticks) =
+  simplify-defs : SkipListText, List IRDef, Integer, Integer, List IRDef, Integer -> SimpDefsRes
+  simplify-defs (dn) (defs) (i) (len) (acc) (ticks) =
    if i >= len then SimpDefsRes { defs = acc, ticks = ticks }
-   else let r = simplify-def (list-at defs i)
-   in simplify-defs defs (i + 1) len (list-push acc (r.def)) (ticks + r.ticks)
+   else let r = simplify-def dn (list-at defs i)
+   in simplify-defs dn defs (i + 1) len (list-push acc (r.def)) (ticks + r.ticks)
 
  The pure rewrite, for the day the simplifier replaces `fold-constants`
  in the default pipeline: chapter in, chapter out, no report.
 
   simplify-chapter : IRChapter -> IRChapter
   simplify-chapter (ch) =
-   __record-set ch "defs" ((simplify-defs (ch.defs) 0 (list-length (ch.defs)) [] 0).defs)
+   let dn = deck-record (skip-list-text-from-list (for d in (ch.defs) -> d.name))
+   in __record-set ch "defs" ((simplify-defs dn (ch.defs) 0 (list-length (ch.defs)) [] 0).defs)
 
  The opt-in pass: the same rewrite, plus one info line carrying the
  rewrite count for the compile log and the ablation harness.
 
   simplify-run : IRChapter -> SimplifyOutcome
   simplify-run (ch) =
-   let r = simplify-defs (ch.defs) 0 (list-length (ch.defs)) [] 0
+   let dn = deck-record (skip-list-text-from-list (for d in (ch.defs) -> d.name))
+   in let r = simplify-defs dn (ch.defs) 0 (list-length (ch.defs)) [] 0
    in let ch2 = __record-set ch "defs" (r.defs)
    in SimplifyOutcome {
     chapter = ch2,

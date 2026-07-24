@@ -88,7 +88,7 @@ A flat list of `Token` values, each with:
 
 **No trivia tracking**: The current lexer does not preserve whitespace or comments as trivia. Tokens carry spans but not leading/trailing trivia. Round-trip fidelity relies on the source text, not the token stream.
 
-> **Original design** envisioned explicit `LeadingTrivia`/`TrailingTrivia` on tokens, a mode stack (`ProseMode`, `NotationMode`, `StringMode`, `InterpolationMode`), and `Indent`/`Dedent` tokens. The implementation uses a simpler approach: `Newline` tokens for line breaks, space-skipping in the lexer, and indentation handled by the prose parser. The simpler design proved sufficient for the bootstrap.
+> **Original design** envisioned explicit `LeadingTrivia`/`TrailingTrivia` on tokens, a mode stack (`ProseMode`, `NotationMode`, `StringMode`), and `Indent`/`Dedent` tokens. The implementation uses a simpler approach: `Newline` tokens for line breaks, space-skipping in the lexer, and indentation handled by the prose parser. The simpler design proved sufficient for the bootstrap.
 
 ### Implementation
 

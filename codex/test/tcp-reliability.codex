@@ -1,0 +1,91 @@
+Chapter: TcpReliability
+  cites Net chapter NetworkStack
+  cites Net chapter Tcp
+  cites Net chapter Ethernet
+  cites Foreword chapter Console
+
+ The guest TCP stack survives a lossy or slow peer. This drives the pure
+ NetworkStack -- no NIC, no emulator NAT -- so it tests the guest stack itself.
+
+ A server session is brought to ESTABLISHED by a handshake (SYN, then a GET that
+ rides in on the establishing ACK). Each test below starts from that same
+ established session (referencing `established` re-runs the handshake, so the
+ tests do not alias one shared session).
+
+ RETRANSMISSION. The server sends a two-byte response, which arms the retransmit
+ timer. With the outbox flushed and no ACK arriving, one tick leaves the outbox
+ empty (rexmit1=0) and the third tick re-queues the response (rexmit3=1). A stack
+ with no retransmission would show 0 at both -- the frame the peer missed would be
+ gone. The control is the next test: an ACK that covers the response clears the
+ stash, so three ticks re-queue nothing (acked3=0).
+
+ RECEIVE WINDOW. A duplicate of already-delivered data (a lossy peer resending
+ after losing our ACK) is dropped (dupdata=0), and so is a segment starting beyond
+ the advertised window (windata=0); an in-order segment at recv-next is accepted
+ (indata=1). Without the window check the duplicate and the out-of-window segment
+ would both be delivered and corrupt the byte stream.
+
+ TIME_WAIT. An active close reaches TIME_WAIT (twstate=TIME_WAIT); four ticks age
+ it to CLOSED (afterwait=CLOSED) rather than leaving it for an external idle
+ reclaim. Without aging it would sit in TIME_WAIT forever.
+
+ We say:
+
+Section: Wire Fixtures
+  srv-mac : List Integer = [82, 84, 0, 18, 52, 86]
+  cli-mac : List Integer = [82, 85, 10, 0, 2, 2]
+  srv-ip : List Integer = [10, 0, 2, 15]
+  cli-ip : List Integer = [10, 0, 2, 100]
+  gw-ip : List Integer = [10, 0, 2, 2]
+
+  get-bytes : List Integer = [71, 69, 84, 32, 47, 32, 72, 84, 84, 80, 47, 49, 46, 49, 13, 10, 13, 10]
+  resp-bytes : List Integer = [72, 73]
+
+  psh : Integer = bit-or tcp-flag-psh tcp-flag-ack
+  finack : Integer = bit-or tcp-flag-fin tcp-flag-ack
+
+  mkc : Integer, Integer, Integer, List Integer -> List Integer
+  mkc (seq) (ack) (flags) (payload) =
+    let seg = tcp-build-segment 50000 80 seq ack flags 8192 payload
+    in let ip = ip-build-packet cli-ip srv-ip ip-proto-tcp seg
+    in eth-build-frame srv-mac cli-mac eth-type-ipv4 ip
+
+  c-syn : List Integer = mkc 1000 0 tcp-flag-syn []
+  c-getack : List Integer = mkc 1001 5001 psh get-bytes
+
+Section: Server Session
+  srv0 : NetSession = net-session-new srv-mac srv-ip gw-ip 80 0 cli-ip 5000
+  listening : NetSession = (net-listen srv0).session
+  established : NetSession =
+    let s1 = (net-process-frame listening c-syn).session
+    in (net-process-frame s1 c-getack).session
+
+Section: Entry
+  opening : [Console] Nothing = act
+    let sa0 = set-outbox ((net-send established resp-bytes).session) []
+    in let sa1 = (net-tick sa0).session
+    in let sa3 = (net-tick (net-tick sa1).session).session
+    in act
+      print-line-uni ("rexmit1=" & show (list-length (sa1.outbox)))
+      print-line-uni ("rexmit3=" & show (list-length (sa3.outbox)))
+      let sb0 = set-outbox ((net-process-frame ((net-send established resp-bytes).session) (mkc 1019 5003 tcp-flag-ack [])).session) []
+      in let sb3 = (net-tick (net-tick (net-tick sb0).session).session).session
+      in print-line-uni ("acked3=" & show (list-length (sb3.outbox)))
+      let dup = net-process-frame established (mkc 1001 5001 psh [88])
+      in let bw = net-process-frame established (mkc 10019 5001 psh [88])
+      in let ino = net-process-frame established (mkc 1019 5001 psh [89])
+      in act
+        print-line-uni ("dupdata=" & show (list-length (dup.data)))
+        print-line-uni ("windata=" & show (list-length (bw.data)))
+        print-line-uni ("indata=" & show (list-length (ino.data)))
+      end
+      let stw = (net-process-frame ((net-close established).session) (mkc 1019 5002 finack [])).session
+      in let tw-conn = stw.conn
+      in let sd4 = (net-tick (net-tick (net-tick (net-tick stw).session).session).session).session
+      in let done-conn = sd4.conn
+      in act
+        print-line-uni ("twstate=" & tcp-state-name (tw-conn.state))
+        print-line-uni ("afterwait=" & tcp-state-name (done-conn.state))
+      end
+    end
+  end

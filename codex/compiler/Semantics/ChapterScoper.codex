@@ -1,5 +1,7 @@
 Chapter: Chapter Scoper
   cites Foreword chapter Sort
+  cites Codex chapter Build Settings (demand-scope-guard-band)
+  cites Codex chapter Phase Allocator (deck-short-of)
 
  Resolves name collisions across chapters by prefixing duplicate
  definition names with their chapter slug. Only colliding names
@@ -54,6 +56,116 @@ Section: Collision Detection
    if count-openings assignments 0 (list-length assignments) 0 >= 2
    then [make-error cdx-duplicate-definition "'opening' is defined in multiple chapters. A program has exactly one entry point." synthetic-span]
    else []
+
+Section: Builtin Shadowing
+
+ Emit resolves a user definition ahead of a builtin and says nothing:
+ X86_64Compound's dispatch reads `if user-arity < 0 & is-builtin ...`,
+ so where a call reaches that dispatch, a definition of the same name
+ wins for EVERY call site in the compilation unit, including the
+ compiler's own if the chapter is cited into it. Nothing anywhere
+ reported that, and nothing does yet.
+
+ It does not win everywhere, and that is the sharper half. Measured
+ 2026-07-18 by shadowing five builtins in one chapter and printing what
+ each call returned: abs, int-mod, text-contains and is-digit took the
+ definition; text-length took the BUILTIN and ignored the definition
+ entirely. A builtin lowered to its own IR node never reaches the
+ dispatch a definition could displace. So the same shadowing pattern
+ resolves two different ways depending on which builtin it names, and
+ the source says nothing about which -- you would have to know how that
+ particular builtin is lowered. Inconsistent is worse than either
+ answer consistently, and it is the reason to say something at the
+ definition rather than leave it to be reasoned out at each call.
+
+ A warning, not an error, and deliberately so. Most shadows are benign
+ and a few are load-bearing: CCE defines is-digit / is-letter /
+ is-whitespace over CCE code points rather than ASCII, and StringUtils
+ defines text-contains / text-replace / text-starts-with, and those are
+ the definitions their callers want. An error would break them, and an
+ error nobody can act on is a build everyone learns to bypass.
+
+ What the warning buys is that the dangerous case stops being silent.
+ The danger is not a different ANSWER, it is a different COST: `Hamt`
+ defined list-insert-at -- a builtin that is in-place and amortised
+ O(1) -- with a pure O(n) body, and citing Hamt into the compiler sent
+ TypeEnv, ChapterScoper, TypeChecker and LambdaLifting quadratic until
+ R10 walked into the stack. That shadow was correct by every test and
+ wrong by every clock.
+
+ Measured against the compiler's own unit when this shipped: 7 sites.
+
+ The name set is built once by the caller. builtin-names is a
+ zero-parameter definition, so a mention of one is a call that rebuilds
+ the whole list -- the same shape that made emit-builtin expensive
+ before the table moved into CodegenState.
+
+  check-shadowed-builtins : List DefHeader, SkipListText, Integer, Integer, List Diagnostic -> List Diagnostic
+  check-shadowed-builtins (headers) (bset) (i) (len) (acc) =
+   if i >= len then acc
+   else let h = list-at headers i
+   in let n = token-text (h.name)
+   in if skip-list-text-has bset n
+      then check-shadowed-builtins headers bset (i + 1) len (list-push acc (make-warning cdx-shadows-builtin ("Definition '" & n & "' has the same name as a builtin. Whether a call site gets this definition or the builtin depends on how that builtin is lowered, and the source does not say which -- so if this is deliberate, it is deliberate about something you cannot read here. If it is not, rename it. Check the COST as well as the answer: a shadow that computes the same result more slowly is the failure mode that has actually cost time here. This chapter's shadow applies to the whole compilation unit, and to any unit that cites it.") (token-span (h.name))))
+      else check-shadowed-builtins headers bset (i + 1) len acc
+
+Section: Colliding Across Chapters
+
+ The mangling below is what makes a collision survivable: two chapters
+ may each define a name and each keeps its own. What it does not do is
+ say so. A mention resolves by the chapter it sits in, and in a chapter
+ that defines neither the winner is the first assignment in concat
+ order, which is the directory glob and not anything written in the
+ source. So the same body means different things in different files,
+ and moving one is silent.
+
+ It has been paid for once already. CL 8955 moved three builtin emitter
+ bodies from the Emit quire into Types, where emit-expr resolved to the
+ text emitter instead of the x86 one. That was caught, but only because
+ the two signatures were far enough apart to raise CDX2001. Two
+ colliding definitions with compatible types compile clean and emit the
+ wrong code, and nothing looks wrong anywhere.
+
+ A warning at each definition site, not an error: a collision is legal
+ and sometimes deliberate, and both halves of a parallel API are
+ legitimate code. What it costs is bounded by the collision count,
+ because only a name in the colliding set pays for the scan that names
+ the other chapter.
+
+ This paragraph used to end "the compiler's own unit carries none as of
+ the CL that shipped this, so it is silent where it should be silent."
+ That was false when it was written and stayed false: measured
+ 2026-07-19 by compiling the compiler source and counting, the unit
+ carried two. `cce-to-unicode-table` sat in both this quire's x86-64
+ emitter and `Foreword--CCE`, two 128-entry tables that were
+ byte-identical and that nothing compared. `find-def-index` sat in both
+ `Syntax--Parser` and `Types--Type Checker`, which is the other shape
+ entirely: two different functions over two different trees that had
+ merely been given one name.
+
+ Both are gone -- the table by deletion in favour of the foreword's, the
+ lookup by taking a chapter-specific prefix -- so the claim is true now.
+ It is restated as history rather than removed because a doc that
+ asserted its own cleanliness, and was believed, is the thing that let
+ the count sit at two while a backlog entry recorded one.
+
+  colliding-other-chapter : List ChapterAssignment, Text, Text, Integer, Integer -> Text
+  colliding-other-chapter (assignments) (name) (own-slug) (i) (len) =
+   if i >= len then ""
+   else let a = list-at assignments i
+   in if a.def-name == name then if a.chapter-slug /= own-slug then a.chapter-slug
+      else colliding-other-chapter assignments name own-slug (i + 1) len
+      else colliding-other-chapter assignments name own-slug (i + 1) len
+
+  check-cross-chapter-collisions : List DefHeader, SkipListText, List ChapterAssignment, Integer, Integer, List Diagnostic -> List Diagnostic
+  check-cross-chapter-collisions (headers) (colliding) (assignments) (i) (len) (acc) =
+   if i >= len then acc
+   else let h = list-at headers i
+   in let n = token-text (h.name)
+   in if skip-list-text-has colliding n
+      then let other = colliding-other-chapter assignments n (h.chapter-slug) 0 (list-length assignments)
+   in check-cross-chapter-collisions headers colliding assignments (i + 1) len (list-push acc (make-warning cdx-collides-across-chapters ("Definition '" & n & "' is also defined in chapter '" & other & "'. Both are kept and each chapter sees its own, so this compiles and runs -- but which definition a mention gets depends on the chapter the mention sits in, and in a chapter that defines neither it depends on the order the build globs files. Move this body to the other chapter and it silently means the other thing. Give one of them a chapter-specific prefix, or cite the one you mean instead of defining it twice.") (token-span (h.name))))
+      else check-cross-chapter-collisions headers colliding assignments (i + 1) len acc
 
 Section: Name Mangling
   mangle-name : Text, Text -> Text
@@ -152,7 +264,7 @@ Section: IR Expression Renaming
     is IrIntLit (v) (sp) | IrNumLit (v) (sp) | IrTextLit (v) (sp) | IrBoolLit (v) (sp) | IrCharLit (v) (sp) | IrError (msg) (ty) (sp) -> e
     is IrFork (x) (ty) (sp) -> IrFork (rename-ir-expr rn x) ty sp
     is IrAwait (x) (ty) (sp) -> IrAwait (rename-ir-expr rn x) ty sp
-    is IrNegate (x) (sp) -> IrNegate (rename-ir-expr rn x) sp
+    is IrNegate (x) (t) (sp) -> IrNegate (rename-ir-expr rn x) t sp
     is IrName (n) (ty) (sp) -> IrName (rename-lookup rn n) ty sp
     is IrBinary (op) (l) (r) (ty) (sp) -> IrBinary op (rename-ir-expr rn l) (rename-ir-expr rn r) ty sp
     is IrApply (f) (a) (ty) (sp) -> IrApply (rename-ir-expr rn f) (rename-ir-expr rn a) ty sp
@@ -361,11 +473,135 @@ Section: Duplicate Cite Detection
   check-duplicate-cites (citations) =
    check-duplicate-cites-loop citations 0 (list-length citations) empty-bag
 
+ A cite that names no chapter in the unit was silent: it type-checked,
+ compiled and ran with no diagnostic, and the guarantee lived entirely in
+ the build resolver's PowerShell. A second front end would not inherit it.
+
+ It is an ERROR (CDX3007) since 2026-07-20, and both the warning period
+ and the flip were decided by measurement rather than by taste. It began
+ as a warning because as an error it would have halted the sign tool and
+ three sibling tools -- all citing Foreword chapter Console, all
+ assembled without Console.codex, a class the presence check could not
+ see while it asked only the per-definition assignments (Console
+ declares only effect operations). The header-presence fix
+ resolved that whole class, and the warning then measured ZERO
+ firings across every population anyone could assemble: all 265 app
+ entry units, all 1,154 test units compiled standalone, the selfhost,
+ the sign tool, the canary and the plug bundles. A cite that names no
+ chapter in the unit is a broken unit, the host resolver already
+ refuses the same fact as CDX3010, and with the false-positive class
+ gone there is nothing left for a warning to measure.
+
+ Two normalizations have to be right here, and getting either wrong makes
+ the check reject correct code. Both were measured against the real tree
+ before this was written, not reasoned about.
+
+ FIRST: match on the BARE chapter name, not on <Quire>--<Chapter>. The
+ concat prefixes each header with its DIRECTORY, and a quire is not a
+ directory -- everything under codex/compiler is the Codex quire but sits in
+ Core, Emit, Types and the rest. So `cites Codex chapter Build Settings`
+ has to match the chapter the concat named `Core--Build Settings`. Composing
+ the quire into the key misses 21 of the compiler's own 73 cites; the bare
+ key misses none.
+
+ SECOND: the key DROPS spaces, it does not turn them into hyphens, so
+ slugify is the wrong function to reach for. A cite may name the FILE while
+ the header names the chapter: `cites Common chapter ByteHelpers` is
+ satisfied by `ByteHelpers.codex`, whose header reads `Chapter: Byte
+ Helpers`. Neither form is wrong and no key built on one finds the other
+ unless the spaces come out. This is the build resolver's Get-CiteKey rule
+ (`build/quire-map.ps1`), and it is deliberately the same rule -- a second
+ notion of matching is how the two ends drift apart. Using slugify here
+ rejected both of the pe writers' correct cites.
+
+ find-slug-for-cite-name used to compose the key the first way and so
+ answered "" for those same 21 cites, dropping their cite overrides. It
+ now tries the composed key first and falls back to the bare name, which
+ is why both spellings keep working.
+
+ The consequence of that "" was sharper than a dropped override, and
+ codex/test/cite-override-quire.codex pins it: if the cited name is
+ CONTESTED, both definitions are mangled, the citing chapter gets no
+ rename entry, and the mention resolves to nothing -- CDX3002, no binary.
+ So the old key did not quietly choose the wrong definition, it made a
+ whole construct uncompilable. It went unnoticed because every cite
+ written the quire way happens to name an uncontested definition.
+
+ The fallback REFUSES rather than guesses. A bare name can be ambiguous
+ where <Quire>--<Chapter> was not: ten of them are, measured over the real
+ source -- Console lives in both core and kernel, Opening in both compiler
+ and test, and Markdown in both encode and ui. Matching bare and taking the
+ first hit would mangle a name to whichever chapter the concat happened to
+ emit first, which is a wrong answer that compiles. So when the bare name
+ matches more than one chapter in the unit the answer is "" -- exactly what
+ the broken key gave, no worse than before, and never a guess. Note this is
+ not the same question the presence check asks: a duplicate bare name is
+ still PRESENT, so it warrants no CDX3007.
+
+ This walks the citations ONCE. apply-cite-overrides-loop runs per chapter
+ and would report every miss as many times as there are chapters.
+
+  chapter-slug-dashes : Text, Integer, Integer -> Integer
+  chapter-slug-dashes (s) (i) (len) =
+   if i + 1 >= len then -1
+   else if char-code-at s i == char-code-at "-" 0 then if char-code-at s (i + 1) == char-code-at "-" 0 then i
+     else chapter-slug-dashes s (i + 1) len
+     else chapter-slug-dashes s (i + 1) len
+
+  chapter-bare-name : Text -> Text
+  chapter-bare-name (s) =
+   let p = chapter-slug-dashes s 0 (text-length s)
+   in if p < 0 then s else substring s (p + 2) (text-length s - p - 2)
+
+  cite-key-loop : Text, Integer, Integer, List Text -> List Text
+  cite-key-loop (s) (i) (len) (acc) =
+   if i == len then acc
+   else let c = char-code-at s i
+   in if c == char-code-at " " 0 then cite-key-loop s (i + 1) len acc
+      else if c >= cc-first-upper then if c <= cc-upper-z then cite-key-loop s (i + 1) len (list-push acc (char-to-text (code-to-char (c - 26))))
+      else cite-key-loop s (i + 1) len (list-push acc (char-to-text (code-to-char c)))
+      else cite-key-loop s (i + 1) len (list-push acc (char-to-text (code-to-char c)))
+
+  cite-key : Text -> Text
+  cite-key (s) = text-concat-list (cite-key-loop s 0 (text-length s) [])
+
+  add-missing-cite-error : DiagnosticBag, ACitesDecl -> DiagnosticBag
+  add-missing-cite-error (bag) (cite) =
+   bag-add bag (make-error cdx-cite-not-in-unit ("Cited chapter '" & (cite.chapter-name.value) & "' of quire '" & (cite.quire.value) & "' is not present in this compilation unit") (cite.span))
+
+  bare-name-present : List Text, Text, Integer, Integer -> Boolean
+  bare-name-present (bare-cache) (target) (i) (len) =
+   if i == len then False
+   else if list-at bare-cache i == target then True
+   else bare-name-present bare-cache target (i + 1) len
+
+  check-cites-resolve-loop : List ACitesDecl, List Text, Integer, Integer, DiagnosticBag -> DiagnosticBag
+  check-cites-resolve-loop (citations) (bare-cache) (i) (len) (bag) =
+   if i == len then bag
+   else let cite = list-at citations i
+   in if bare-name-present bare-cache (cite-key (cite.chapter-name.value)) 0 (list-length bare-cache)
+      then check-cites-resolve-loop citations bare-cache (i + 1) len bag
+      else check-cites-resolve-loop citations bare-cache (i + 1) len (add-missing-cite-error bag cite)
+
+ Presence is asked of the chapter headers the scan passed, not only of
+ the chapters that own a definition. ChapterAssignment is built per
+ definition, so a chapter declaring only an effect or a type contributed
+ no assignment and read as absent though it sat in the unit. Both
+ sources feed the cache: the assignments still answer for a bundled
+ chapter renamed Quire--Name, whose header the scan records under the
+ prefixed form and whose bare name chapter-bare-name recovers.
+
+  check-cites-resolve : List ACitesDecl, List ChapterAssignment, List Text -> DiagnosticBag
+  check-cites-resolve (citations) (assignments) (chapter-names) =
+   let from-defs = for a in assignments -> cite-key (chapter-bare-name (a.chapter-slug))
+   in let from-headers = for n in chapter-names -> cite-key (chapter-bare-name n)
+   in check-cites-resolve-loop citations (deck-record (from-defs & from-headers)) 0 (list-length citations) empty-bag
+
 Section: AST-Level Chapter Scoping
-  scope-achapter : AChapter, SkipListText, List ChapterAssignment -> AChapter
-  scope-achapter (ast) (colliding) (assignments) =
-   let slug-cache = for a in assignments -> slugify (a.chapter-slug)
-   in let raw-defs = scope-adefs-ll (ast.defs) colliding assignments (ast.citations) slug-cache "" [] 0 []
+  scope-achapter : AChapter, SkipListText, List ChapterAssignment, Integer -> AChapter
+  scope-achapter (ast) (colliding) (assignments) (ceiling) =
+   let slug-cache = for a in assignments -> cite-key (a.chapter-slug)
+   in let raw-defs = scope-adefs-ll (ast.defs) colliding assignments (ast.citations) slug-cache "" [] 0 [] ceiling
    in deck-record (AChapter {
     name = ast.name,
     defs = deck-record (__linked-list-to-list raw-defs),
@@ -377,6 +613,8 @@ Section: AST-Level Chapter Scoping
     ground-effects = ast.ground-effects,
     chapter-title = ast.chapter-title,
     prose = ast.prose,
+    prose-blocks = ast.prose-blocks,
+    annotations = ast.annotations,
     section-titles = ast.section-titles,
     rt-names = ast.rt-names,
     rt-budgets = ast.rt-budgets,
@@ -384,9 +622,17 @@ Section: AST-Level Chapter Scoping
     span = ast.span
    })
 
-  scope-adefs-ll : List ADef, SkipListText, List ChapterAssignment, List ACitesDecl, List Text, Text, List RenameEntry, Integer, LinkedList ADef -> LinkedList ADef
-  scope-adefs-ll (defs) (colliding) (assignments) (citations) (slug-cache) (cur-slug) (cur-rn) (i) (acc) =
+ The ceiling is the SCOPE deck reservation's top, and it is checked here
+ because this loop is the only place the phase writes the deck in bulk:
+ one renamed ADef per definition. Past the ceiling the deck grows into
+ the bivy and the phase reads its own overwrite. A phase
+ that stops here leaves the deck short of its ceiling, which is what
+ compile-desugar-and-scope tests to raise CDX9002.
+
+  scope-adefs-ll : List ADef, SkipListText, List ChapterAssignment, List ACitesDecl, List Text, Text, List RenameEntry, Integer, LinkedList ADef, Integer -> LinkedList ADef
+  scope-adefs-ll (defs) (colliding) (assignments) (citations) (slug-cache) (cur-slug) (cur-rn) (i) (acc) (ceiling) =
    if i == list-length defs then acc
+   else if deck-short-of ceiling demand-scope-guard-band then acc
    else let d = list-at defs i
    in let rn = if d.chapter-slug == cur-slug then cur-rn
       else apply-cite-overrides (build-chapter-rename-map colliding assignments (d.chapter-slug)) citations colliding assignments slug-cache (d.chapter-slug) 0
@@ -398,7 +644,7 @@ Section: AST-Level Chapter Scoping
     body = d.body,
     chapter-slug = d.chapter-slug,
     span = d.span
-   })))
+   }))) ceiling
 
   apply-cite-overrides : List RenameEntry, List ACitesDecl, SkipListText, List ChapterAssignment, List Text, Text, Integer -> List RenameEntry
   apply-cite-overrides (rn) (citations) (colliding) (assignments) (slug-cache) (cur-slug) (i) =
@@ -408,14 +654,57 @@ Section: AST-Level Chapter Scoping
   apply-cite-overrides-loop (rn) (citations) (colliding) (assignments) (slug-cache) (cur-slug) (i) =
    if i == list-length citations then rn
    else let cite = list-at citations i
-   in let full-cite-name = (cite.quire.value) & "--" & (cite.chapter-name.value)
-   in let cite-slug = find-slug-for-cite-name full-cite-name assignments slug-cache
+   in let cite-slug = find-slug-for-cite-name (cite.quire.value) (cite.chapter-name.value) assignments slug-cache
    in let rn2 = apply-cite-selected rn (cite.selected-names) cite-slug colliding assignments cur-slug 0
    in apply-cite-overrides-loop rn2 citations colliding assignments slug-cache cur-slug (i + 1)
 
-  find-slug-for-cite-name : Text, List ChapterAssignment, List Text -> Text
-  find-slug-for-cite-name (cite-name) (assignments) (slug-cache) =
-   find-slug-for-cite-name-loop (slugify cite-name) assignments slug-cache 0 (list-length assignments)
+ The suffix test compares characters in place. It runs per assignment,
+ per citation that misses the composed key, per slug transition of the
+ defs walk -- and the walk runs in all four passes, one of which (LOWER)
+ retains every byte it allocates until the phase compact. Written with
+ `substring`, this one comparison put 5.4 MB per bare-name citation on
+ the LOWER deck, about 135 MB of the selfhost's 302.
+
+  slug-has-suffix : Text, Text -> Boolean
+  slug-has-suffix (s) (suf) =
+   let sl = text-length s
+   in let fl = text-length suf
+   in if fl > sl then False else slug-suffix-eq s suf (sl - fl) 0 fl
+
+  slug-suffix-eq : Text, Text, Integer, Integer, Integer -> Boolean
+  slug-suffix-eq (s) (suf) (base) (j) (fl) =
+   if j == fl then True
+   else if char-code-at s (base + j) == char-code-at suf j then slug-suffix-eq s suf base (j + 1) fl
+   else False
+
+  slug-matches-bare : Text, Text, Text -> Boolean
+  slug-matches-bare (s) (bare) (suf) =
+   if s == bare then True else slug-has-suffix s suf
+
+  count-bare-matches : Text, Text, List Text, Integer, Integer, Integer -> Integer
+  count-bare-matches (bare) (suf) (slug-cache) (i) (len) (n) =
+   if i == len then n
+   else if slug-matches-bare (list-at slug-cache i) bare suf then count-bare-matches bare suf slug-cache (i + 1) len (n + 1)
+      else count-bare-matches bare suf slug-cache (i + 1) len n
+
+  find-slug-bare-loop : Text, Text, List ChapterAssignment, List Text, Integer, Integer -> Text
+  find-slug-bare-loop (bare) (suf) (assignments) (slug-cache) (i) (len) =
+   if i == len then ""
+   else if slug-matches-bare (list-at slug-cache i) bare suf then (list-at assignments i).chapter-slug
+      else find-slug-bare-loop bare suf assignments slug-cache (i + 1) len
+
+  find-slug-by-bare-name : Text, List ChapterAssignment, List Text -> Text
+  find-slug-by-bare-name (bare) (assignments) (slug-cache) =
+   let suf = "--" & bare
+   in if count-bare-matches bare suf slug-cache 0 (list-length slug-cache) 0 == 1
+      then find-slug-bare-loop bare suf assignments slug-cache 0 (list-length assignments)
+      else ""
+
+  find-slug-for-cite-name : Text, Text, List ChapterAssignment, List Text -> Text
+  find-slug-for-cite-name (quire) (cite-name) (assignments) (slug-cache) =
+   let exact = find-slug-for-cite-name-loop (cite-key (quire & "--" & cite-name)) assignments slug-cache 0 (list-length assignments)
+   in if exact == "" then find-slug-by-bare-name (cite-key cite-name) assignments slug-cache
+      else exact
 
   find-slug-for-cite-name-loop : Text, List ChapterAssignment, List Text, Integer, Integer -> Text
   find-slug-for-cite-name-loop (slug-cite) (assignments) (slug-cache) (i) (len) =

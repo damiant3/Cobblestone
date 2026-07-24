@@ -78,6 +78,21 @@ Section: Config Space Reads
     let w = port-out-32 pci-config-addr addr
     in w + port-in-32 pci-config-data
 
+ Sizing a BAR is a write of all ones followed by a read: the device answers
+ with its address bits held high and everything below its window clear, so
+ the length is the complement of that mask plus one. The base must be
+ written back afterwards, because sizing is a question and not a move.
+ (pci-write-config is defined below, under PCI Config Write.)
+
+  pci-bar-size : Integer, Integer, Integer, Integer -> Integer
+  pci-bar-size (bus) (dev) (func) (bar-offset) =
+    let base = pci-read-config bus dev func bar-offset
+    in let q = pci-write-config bus dev func bar-offset (0 - 1)
+    in let mask = pci-read-config bus dev func bar-offset
+    in let r = pci-write-config bus dev func bar-offset base
+    in if mask == 0 then 0
+    else bit-and (0 - (bit-and mask (0 - 16))) 4294967295
+
   pci-read-vendor : Integer, Integer, Integer -> Integer
   pci-read-vendor (bus) (dev) (func) = bit-and (pci-read-config bus dev func 0) 65535
 
@@ -147,10 +162,24 @@ Section: PCI Config Write
     in let w = port-out-32 pci-config-addr addr
     in w + port-out-32 pci-config-data value
 
-  pci-enable-mmio : PciDevice -> Integer
-  pci-enable-mmio (d) =
+ Bringing a device up is three bits in the command register and not one:
+ I/O space (1), memory space (2), and BUS MASTER (4). The third is what
+ lets the device read and write host memory on its own initiative, which
+ is how every card worth driving moves data -- a descriptor-ring NIC
+ fetches its own descriptors and DMAs frame bodies, and with bus master
+ clear it is enabled, addressable, silent, and gives no indication why.
+
+ This used to be pci-enable-mmio and set memory space alone. It also had
+ no callers anywhere in the tree, so nothing had yet been mis-enabled by
+ it; the name is retired rather than kept beside a correct one, because
+ two functions here would only invite the wrong one. arm64-pci-enable-device
+ has set all three since it was written and VirtioPci calls it -- this is
+ that function, on the CAM side of the same question.
+
+  pci-enable-device : PciDevice -> Integer
+  pci-enable-device (d) =
     let cmd = pci-read-config (d.pci-bus) (d.pci-dev) (d.pci-func) 4
-    in let new-cmd = bit-or cmd 2
+    in let new-cmd = bit-or cmd 7
     in pci-write-config (d.pci-bus) (d.pci-dev) (d.pci-func) 4 new-cmd
 
 Section: Formatting

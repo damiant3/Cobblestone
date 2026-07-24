@@ -44,7 +44,11 @@ Section: Network Session
     gateway-ip : List Integer,
     conn : TcpConnection,
     arp : ArpCache,
-    outbox : List (List Integer)
+    outbox : List (List Integer),
+    rexmit-frame : List Integer,
+    rexmit-ack : Integer,
+    rexmit-rto : Integer,
+    close-timer : Integer
   }
 
   net-session-new : List Integer, List Integer, List Integer, Integer, Integer, List Integer, Integer -> NetSession
@@ -55,7 +59,11 @@ Section: Network Session
       gateway-ip = gateway-ip,
       conn = tcp-new-connection local-port local-ip remote-port remote-ip initial-seq,
       arp = arp-cache-empty,
-      outbox = []
+      outbox = [],
+      rexmit-frame = [],
+      rexmit-ack = 0,
+      rexmit-rto = 0,
+      close-timer = 0
     }
 
 Section: Frame Wrapping
@@ -91,13 +99,44 @@ Section: Session Operations
   }
 
   set-conn : NetSession, TcpConnection -> NetSession
-  set-conn (s) (c) = NetSession { local-mac = s.local-mac, local-ip = s.local-ip, gateway-ip = s.gateway-ip, conn = c, arp = s.arp, outbox = s.outbox }
+  set-conn (s) (c) = NetSession { local-mac = s.local-mac, local-ip = s.local-ip, gateway-ip = s.gateway-ip, conn = c, arp = s.arp, outbox = s.outbox, rexmit-frame = s.rexmit-frame, rexmit-ack = s.rexmit-ack, rexmit-rto = s.rexmit-rto, close-timer = s.close-timer }
 
   set-arp : NetSession, ArpCache -> NetSession
-  set-arp (s) (a) = NetSession { local-mac = s.local-mac, local-ip = s.local-ip, gateway-ip = s.gateway-ip, conn = s.conn, arp = a, outbox = s.outbox }
+  set-arp (s) (a) = NetSession { local-mac = s.local-mac, local-ip = s.local-ip, gateway-ip = s.gateway-ip, conn = s.conn, arp = a, outbox = s.outbox, rexmit-frame = s.rexmit-frame, rexmit-ack = s.rexmit-ack, rexmit-rto = s.rexmit-rto, close-timer = s.close-timer }
 
   set-outbox : NetSession, List (List Integer) -> NetSession
-  set-outbox (s) (o) = NetSession { local-mac = s.local-mac, local-ip = s.local-ip, gateway-ip = s.gateway-ip, conn = s.conn, arp = s.arp, outbox = o }
+  set-outbox (s) (o) = NetSession { local-mac = s.local-mac, local-ip = s.local-ip, gateway-ip = s.gateway-ip, conn = s.conn, arp = s.arp, outbox = o, rexmit-frame = s.rexmit-frame, rexmit-ack = s.rexmit-ack, rexmit-rto = s.rexmit-rto, close-timer = s.close-timer }
+
+Section: Reliability Timers
+
+ A lossy or slow peer means a sent segment can vanish and an inbound one can
+ arrive out of order or twice. Three mechanisms make the guest stack survive it,
+ all driven by `net-tick` on the caller's poll cadence (there is no wall clock):
+
+ RETRANSMISSION. `net-send` stashes the data frame it just sent as `rexmit-frame`
+ and the sequence the peer must acknowledge as `rexmit-ack`, arming `rexmit-rto`.
+ An inbound ACK that reaches `rexmit-ack` clears the stash; if `rexmit-rto` counts
+ down to zero first, `net-tick` re-queues the same frame and re-arms. One segment
+ is outstanding at a time -- this stack sends a response, then waits for it.
+
+ TIME_WAIT and LAST_ACK are modelled, not reclaimed by an external idle timeout.
+ On reaching either, `close-timer` is armed; `net-tick` counts it down and drops
+ the connection to CLOSED at zero -- a bounded 2*MSL wait absorbing a lost final
+ ACK.
+
+ RECEIVE WINDOW. A data segment outside the advertised window -- a duplicate of
+ already-delivered bytes, or one starting beyond the window -- is dropped and
+ re-ACKed (`net-process-ip` via `net-seg-acceptable`), so a doubled or
+ out-of-range delivery cannot corrupt the byte stream.
+
+  net-rto-ticks : Integer = 3
+  net-timewait-ticks : Integer = 4
+
+  set-rexmit : NetSession, List Integer, Integer, Integer -> NetSession
+  set-rexmit (s) (f) (ack) (rto) = NetSession { local-mac = s.local-mac, local-ip = s.local-ip, gateway-ip = s.gateway-ip, conn = s.conn, arp = s.arp, outbox = s.outbox, rexmit-frame = f, rexmit-ack = ack, rexmit-rto = rto, close-timer = s.close-timer }
+
+  set-close-timer : NetSession, Integer -> NetSession
+  set-close-timer (s) (t) = NetSession { local-mac = s.local-mac, local-ip = s.local-ip, gateway-ip = s.gateway-ip, conn = s.conn, arp = s.arp, outbox = s.outbox, rexmit-frame = s.rexmit-frame, rexmit-ack = s.rexmit-ack, rexmit-rto = s.rexmit-rto, close-timer = t }
 
   net-listen : NetSession -> NetResult
   net-listen (sess) =
@@ -139,7 +178,9 @@ Section: Session Operations
       is ActEstablished -> "no action"
       is ActData (d) -> "no action"
       is ActClosed -> "no action"
-    in NetResult { session = set-outbox s1 frame, output = out-text, data = [] }
+    in let s2 = set-outbox s1 frame
+    in let s3 = if list-length payload > 0 & list-length frame > 0 then set-rexmit s2 (list-at frame 0) ((step.conn).send-next) net-rto-ticks else s2
+    in NetResult { session = s3, output = out-text, data = [] }
 
   net-receive-segment : NetSession, TcpSegment -> NetResult
   net-receive-segment (sess) (seg) =
@@ -169,7 +210,14 @@ Section: Session Operations
       is ActClosed -> "closed"
       is ActError (m) -> "error: " & m
       is ActNone -> "none"
-    in NetResult { session = set-outbox s1 frame, output = out-text, data = recv }
+    in let base = set-outbox s1 frame
+    in let acked = tcp-has-flag seg tcp-flag-ack & seg.ack-num >= sess.rexmit-ack & sess.rexmit-rto > 0
+    in let s2 = if acked then set-rexmit base [] 0 0 else base
+    in let s3 = when ((step.conn).state)
+      is TcpTimeWait -> set-close-timer s2 net-timewait-ticks
+      is TcpLastAck -> set-close-timer s2 net-timewait-ticks
+      is otherwise -> s2
+    in NetResult { session = s3, output = out-text, data = recv }
 
   net-close : NetSession -> NetResult
   net-close (sess) =
@@ -183,7 +231,11 @@ Section: Session Operations
       is ActData (d) -> []
       is ActClosed -> []
       is ActError (m) -> []
-    in NetResult { session = set-outbox s1 frame, output = "closing", data = [] }
+    in let base = set-outbox s1 frame
+    in let s2 = when ((step.conn).state)
+      is TcpLastAck -> set-close-timer base net-timewait-ticks
+      is otherwise -> base
+    in NetResult { session = s2, output = "closing", data = [] }
 
   net-outbox-count : NetSession -> Integer
   net-outbox-count (sess) = list-length (sess.outbox)
@@ -205,16 +257,116 @@ Section: Inbound Frame Processing
     in let new-arp = arp-cache-add (sess.arp) (pkt.sender-ip) (pkt.sender-mac)
     in NetResult { session = set-arp sess new-arp, output = "arp-learned", data = [] }
 
+ A segment is demultiplexed before it is stepped. It belongs to this session
+ only if it is addressed to this session's local port; anything else is another
+ connection's traffic and is dropped.
+
+ THIS CHECK WAS ABSENT UNTIL 2026-07-20 AND ITS ABSENCE WAS INVISIBLE, because
+ nothing in the tree had ever run two connections at once. `net-receive-segment`
+ fed every TCP frame straight into `tcp-step` on whatever session was looping,
+ so a session processed traffic addressed to a port it does not own.
+
+ One connection cannot see this. Two cannot avoid it: a guest that answers an
+ inbound request by opening an outbound one has both live at once, and every
+ frame for either is offered to whichever session happens to be looping.
+
+ WHAT THIS FIX IS NOT. It was written while chasing a `tools/cdx-registry`
+ failure and it did NOT fix it -- proven by neutralising this check and
+ reproducing the failure with it gone, and again by an announce-driven registry
+ that opens no outbound connection at all and fails the same way. An earlier
+ draft of this prose asserted the nesting as that failure's cause. It is not
+ established, and the sentence is removed rather than softened, because a
+ confident wrong cause in a comment is what the next reader will believe.
+
+ The defect this DOES fix stands on its own: a session must not step traffic
+ addressed to a port it does not own.
+
+ THE REMOTE PORT IS PART OF THE CHECK, and it has to be. Matching the local
+ port alone is not enough for a server that handles more than one connection in
+ a row: every one of them is accepted on the same local port, so a stale frame
+ from the connection just closed -- a retransmit, a lingering FIN -- is applied
+ to the FRESH session that replaced it. Measured: `tools/cdx-registry` served
+ its first request correctly, went back to accept, took the second connection,
+ and then sat in its receive loop forever with the second request already on the
+ wire.
+
+ A listener whose `remote-port` is still zero has not yet been claimed by a
+ peer, so it must take any SYN -- that is how it learns who it is talking to
+ (`tcp-step-listening` stores `seg.src-port`). Once claimed, anything from a
+ different source port belongs to somebody else.
+
+ STILL OPEN: a segment for another session is DROPPED rather than queued,
+ because there is no per-session inbox. A frame arriving for a connection that
+ is not the one currently looping is lost, and the sender has to retransmit --
+ which nothing in this stack does yet. Do not assume that away.
+
+  net-session-owns-segment : NetSession, TcpSegment -> Boolean
+  net-session-owns-segment (sess) (seg) =
+    if seg.dst-port /= (sess.conn).local-port then False
+    else if (sess.conn).remote-port == 0 then True
+    else seg.src-port == (sess.conn).remote-port
+
+  net-in-established : NetSession -> Boolean
+  net-in-established (sess) = when ((sess.conn).state)
+    is TcpEstablished -> True
+    is otherwise -> False
+
+ The RFC 793 acceptability test: a data segment is in the receive window unless it
+ is entirely old (every byte already delivered, so `seq + len <= recv-next` -- a
+ duplicate a lossy peer retransmitted after losing our ACK) or it starts beyond
+ the window we advertised (`seq >= recv-next + window`). Everything else overlaps
+ the window and is delivered; the byte stream is reassembled above by payload
+ order, so a forward seq gap within the window is not rejected here.
+
+  net-seg-acceptable : NetSession, TcpSegment -> Boolean
+  net-seg-acceptable (sess) (seg) =
+    let rn = (sess.conn).recv-next
+    in let win = (sess.conn).send-window
+    in let seg-end = seg.seq-num + list-length (seg.payload)
+    in if seg-end <= rn then False
+    else if seg.seq-num >= rn + win then False
+    else True
+
+  net-dup-ack : NetSession -> NetResult
+  net-dup-ack (sess) =
+    let c = sess.conn
+    in let ack = tcp-build-segment (c.local-port) (c.remote-port) (c.send-next) (c.recv-next) tcp-flag-ack (c.send-window) []
+    in let frame = [wrap-tcp-in-ip-eth sess ack (resolve-dst-mac sess)]
+    in NetResult { session = set-outbox sess frame, output = "out-of-window", data = [] }
+
   net-process-ip : NetSession, List Integer -> NetResult
   net-process-ip (sess) (ip-pkt) =
     let proto = ip-proto ip-pkt
     in if proto == ip-proto-tcp then
       let tcp-data = ip-payload ip-pkt
-      in let r = net-receive-segment sess (tcp-parse tcp-data)
+      in let seg = tcp-parse tcp-data
+      in if net-session-owns-segment sess seg == False
+        then NetResult { session = sess, output = "not-for-this-port", data = [] }
+      else if net-in-established sess & list-length (seg.payload) > 0 & net-seg-acceptable sess seg == False
+        then net-dup-ack sess
+      else let r = net-receive-segment sess seg
       in let updated = when (r.session).conn.state
         is TcpSynReceived -> NetResult { session = set-conn (r.session) (set-remote ((r.session).conn) ((r.session).conn.remote-port) (ip-src ip-pkt)), output = r.output, data = r.data }
         is otherwise -> r
       in updated
     else NetResult { session = sess, output = "unknown proto", data = [] }
+
+Section: Timer Tick
+
+ `net-tick` advances the reliability timers by one step. The caller drives it on
+ its poll cadence (the WebServer sweep does). It re-queues the outstanding data
+ frame into the outbox when the retransmit timer expires, and drops a connection
+ to CLOSED when its TIME_WAIT / LAST_ACK timer expires. A tick that does neither
+ leaves the outbox untouched, so it never drops frames a prior operation queued.
+
+  net-tick : NetSession -> NetResult
+  net-tick (sess) =
+    let r1 = if sess.rexmit-rto == 1 then set-rexmit (set-outbox sess [sess.rexmit-frame]) (sess.rexmit-frame) (sess.rexmit-ack) net-rto-ticks
+      else if sess.rexmit-rto > 1 then set-rexmit sess (sess.rexmit-frame) (sess.rexmit-ack) (sess.rexmit-rto - 1)
+      else sess
+    in let r2 = if r1.close-timer == 1 then set-close-timer (set-conn r1 (tcp-set-state (r1.conn) TcpClosed)) 0
+      else if r1.close-timer > 1 then set-close-timer r1 (r1.close-timer - 1)
+      else r1
+    in NetResult { session = r2, output = "tick", data = [] }
 
 Page 1

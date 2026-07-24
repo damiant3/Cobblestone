@@ -4,32 +4,40 @@ Chapter: HistorianTestFull
   cites Works chapter RepoProtocol
   cites Works chapter Annotation
 
+ Walks a supersession chain the fixture actually built. The starting hash
+ has to be one the fixture produced: this test used to walk from the
+ literal "hash-a", which matches no annotation in the repo, so the walk
+ returned a single placeholder step and the assertions below could not
+ have failed for any reason to do with walking.
+
+ The cycle case is the loop guard's only evidence. Two annotations that
+ supersede each other have no tip, so a walk with no revisit check is
+ bounded only by max-chain-depth and reports 64 steps; with the guard it
+ stops the moment it meets a hash it has already walked, at 2.
+
 Section: Helpers
 
   make-signed : Annotation -> SignedAnnotation
   make-signed (ann) = SignedAnnotation { annotation = ann, signature = [], signer-fingerprint = "", verified = False }
 
-  build-repo : RepoState
-  build-repo =
+Section: Body
+
+  opening : [Console] Nothing = act
     let target = make-target "Core" "eval"
     in let ann1 = create-annotation target Rationale "alice" "initial design" 1000
     in let ann2 = create-annotation target Rationale "bob" "revised design" 2000
     in let r1 = repo-add-annotation repo-empty (make-signed ann1)
     in let r2 = repo-add-annotation r1 (make-signed ann2)
-    in record-supersession r2 (ann1.hash) (ann2.hash)
-
-Section: Body
-
-  opening : [Console] Nothing = act
-    let h = empty-history "hash-a"
-    in print-line-uni ("empty-steps=" & show (h.step-count))
-    let repo = build-repo
-    in let history = walk-history repo "hash-a"
+    in let repo = record-supersession r2 (ann1.hash) (ann2.hash)
+    in let h = empty-history "hash-a"
+    in let history = walk-history repo (ann1.hash)
+    in let cyclic = record-supersession repo (ann2.hash) (ann1.hash)
+    in let looped = walk-history cyclic (ann1.hash)
     in act
+      print-line-uni ("empty-steps=" & show (h.step-count))
       print-line-uni ("walk-steps=" & show (history.step-count))
       print-line-uni ("tip-author=" & history-tip-author history)
       print-line-uni ("author-count=" & show (list-length (history-author-list history)))
+      print-line-uni ("cycle-steps=" & show (looped.step-count))
     end
   end
-
-Page 1

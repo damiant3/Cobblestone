@@ -1,0 +1,305 @@
+Chapter: RiscV LIR Register File
+
+ The RISC-V target descriptor, its physical mapping, and the dispatch that
+ routes a function through the LIR when `rv-lir-selects` admits every
+ construct in it; anything else falls back to `rv-emit-function`. The
+ allocator and both verifiers are the compiler's own, bundled by `-WithLir`
+ and not reimplemented here. Campaign staging and the ARM64 parallel live
+ in `docs/Designs/Active/Compiler/LirRetarget.md`.
+
+Section: The Register File
+
+ @invariant rv-lir-phys "s0/s1 are callee-saved but excluded: s1 is rv-heap-reg and s0 the memo base, both owned by the tree emitter for the same program. t3 (index ncallee) is the non-crosser pick, not a0, because a0 is both return and arg-zero and one register cannot hold two abstract indices; t0-t2 are the tree emitter's helper temps. a0-a7 sit in arg order so a leaf's entry moves elide."
+
+  rv-lir-phys : List Integer = [18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 10, 11, 12, 13, 14, 15, 16, 17]
+
+ @warning lir-target-rv "budget 26 > 19 allocatable regs on purpose: it sizes the verifier's occupant array, and slack is cheaper than an overflow. diva/divb -1 because rem/div are three-operand and fix no register."
+
+  lir-target-rv : LirTarget = LirTarget {
+   ncallee = 10,
+   nargregs = 11,
+   nregs = 19,
+   diva = 0 - 1,
+   divb = 0 - 1,
+   budget = 26
+  }
+
+ @invariant rv-lir-scratch-reg "t5/t6 are never allocated, consumed within one instruction's selection (t5 spilled dest or oversized imm, t6 second operand). Reusing the tree emitter's temp tail is safe: a function is emitted entirely by one path or the other."
+
+  rv-lir-scratch-reg : Integer = 30
+
+  rv-lir-scratch2 : Integer = 31
+
+  rv-lir-slot-off : Integer -> Integer
+  rv-lir-slot-off (k) = k * 8
+
+Section: The Construct Whitelist
+
+ @invariant rv-lir-result-ok "a zero-instruction function has every vreg a parameter, so a LvReg result is an arg-register index and must be < 8"
+ @warning rv-lir-selects "the >8-param decline is the ABI: a ninth parameter arrives on the caller's stack, not in a register"
+
+  rv-lir-zero-insn : LirFunc -> Boolean
+  rv-lir-zero-insn (f) =
+   if f.rets then False
+   else if list-length (f.blocks) /= 1 then False
+   else list-length ((list-at (f.blocks) 0).insns) == 0
+
+  rv-lir-result-ok : LirValue, Integer -> Boolean
+  rv-lir-result-ok (v) (nparams) =
+   when v
+    is LvImm (k) -> True
+    is LvReg (r) -> if r < nparams then r < 8 else False
+
+  rv-lir-op-ok : LirOp -> Boolean
+  rv-lir-op-ok (op) =
+   when op
+    is LoAdd -> True
+    is LoSub -> True
+    is LoMul -> True
+    is LoRem -> False
+    is LoDiv -> False
+
+  rv-lir-whitelisted : LirInsn -> Boolean
+  rv-lir-whitelisted (insn) =
+   when insn
+    is LiBin (op) (dst) (l) (r) -> rv-lir-op-ok op
+    is otherwise -> False
+
+  rv-lir-insns-ok : List LirInsn, Integer, Integer -> Boolean
+  rv-lir-insns-ok (insns) (i) (n) =
+   if i >= n then True
+   else if rv-lir-whitelisted (list-at insns i) then rv-lir-insns-ok insns (i + 1) n
+   else False
+
+  rv-lir-blocks-ok : List LirBlock, Integer, Integer -> Boolean
+  rv-lir-blocks-ok (blocks) (i) (n) =
+   if i >= n then True
+   else if rv-lir-insns-ok ((list-at blocks i).insns) 0 (list-length ((list-at blocks i).insns))
+        then rv-lir-blocks-ok blocks (i + 1) n
+        else False
+
+  rv-lir-selects : LirFunc -> Boolean
+  rv-lir-selects (f) =
+   if list-length (f.blocks) /= 1 then False
+   else if f.rets then False
+   else if (f.nparams) > 8 then False
+   else if list-length ((list-at (f.blocks) 0).insns) == 0
+        then rv-lir-result-ok (f.result) (f.nparams)
+        else rv-lir-blocks-ok (f.blocks) 0 1
+
+Section: Dispatch
+
+ @warning rv-lir-emit-try "opening is declined BY NAME: rv-emit-function-framed appends a print-result epilogue for it, a special case attached to a name that an instruction-shape whitelist cannot see. A selector claiming opening emits a correct function and a silent program."
+ @warning rv-lir-emit-try "a verifier violation DECLINES, not halts: the wire is the only output, there is no diagnostic channel, and the tree emitter is the fallback"
+
+  RvLirTry = record {
+   handled : Boolean,
+   state : RvState
+  }
+
+  rv-lir-not-handled : RvState -> RvLirTry
+  rv-lir-not-handled (st) = RvLirTry { handled = False, state = st }
+
+  rv-lir-emit-result-param : RvState, LirValue -> RvState
+  rv-lir-emit-result-param (st) (v) =
+   when v
+    is LvImm (k) -> rv-emit-li st rv-a0 k
+    is LvReg (r) -> if r == 0 then st else rv-emit st (rv-mv rv-a0 (rv-a0 + r))
+
+ @invariant rv-lir-phys-of "answers -1 for a slot: called only where the location is known to be a register, and -1 keeps a mislabelled slot visible rather than plausible"
+
+  rv-lir-phys-of : Location -> Integer
+  rv-lir-phys-of (loc) =
+   when loc
+    is LocReg (r) -> list-at rv-lir-phys r
+    is LocSlot (s) -> 0 - 1
+
+  RvLirSrc = record {
+   state : RvState,
+   reg : Integer
+  }
+
+  rv-lir-src : RvState, LirValue, List Location, Integer -> RvLirSrc
+  rv-lir-src (st) (v) (assign) (scratch) =
+   when v
+    is LvImm (k) -> RvLirSrc { state = rv-emit-li st scratch k, reg = scratch }
+    is LvReg (r) -> when (list-at assign r)
+     is LocReg (pr) -> RvLirSrc { state = st, reg = list-at rv-lir-phys pr }
+     is LocSlot (k) -> RvLirSrc { state = rv-emit st (rv-ld scratch rv-sp (rv-lir-slot-off k)), reg = scratch }
+
+ @warning rv-lir-emit-alu "LoRem/LoDiv emit NOTHING, not a substitute instruction: they cannot arrive (rv-lir-op-ok excludes them), and a missing instruction makes a whitelist slip visible where a plausible substitute would be a silent miscompile"
+
+  rv-lir-emit-alu : RvState, LirOp, Integer, Integer, Integer -> RvState
+  rv-lir-emit-alu (st) (op) (rd) (rs1) (rs2) =
+   when op
+    is LoAdd -> rv-emit st (rv-add rd rs1 rs2)
+    is LoSub -> rv-emit st (rv-sub rd rs1 rs2)
+    is LoMul -> rv-emit st (rv-mul rd rs1 rs2)
+    is LoRem -> st
+    is LoDiv -> st
+
+ @invariant rv-lir-emit-bin "a slot destination computes into t5 then stores; t5 may also hold the loaded left operand, safe because the three-operand ALU reads both sources before it writes"
+
+  rv-lir-dst-reg : Location -> Integer
+  rv-lir-dst-reg (loc) =
+   when loc
+    is LocReg (pr) -> list-at rv-lir-phys pr
+    is LocSlot (k) -> rv-lir-scratch-reg
+
+  rv-lir-store-dst : RvState, Location -> RvState
+  rv-lir-store-dst (st) (loc) =
+   when loc
+    is LocReg (pr) -> st
+    is LocSlot (k) -> rv-emit st (rv-sd rv-sp rv-lir-scratch-reg (rv-lir-slot-off k))
+
+  rv-lir-emit-bin : RvState, LirOp, Integer, LirValue, LirValue, List Location -> RvState
+  rv-lir-emit-bin (st) (op) (dst) (l) (r) (assign) =
+   let sl = rv-lir-src st l assign rv-lir-scratch-reg
+   in let sr = rv-lir-src (sl.state) r assign rv-lir-scratch2
+   in let d = list-at assign dst
+   in rv-lir-store-dst (rv-lir-emit-alu (sr.state) op (rv-lir-dst-reg d) (sl.reg) (sr.reg)) d
+
+  rv-lir-emit-insn : RvState, LirInsn, List Location -> RvState
+  rv-lir-emit-insn (st) (ins) (assign) =
+   when ins
+    is LiBin (op) (dst) (l) (r) -> rv-lir-emit-bin st op dst l r assign
+    is otherwise -> st
+
+  rv-lir-emit-insns : RvState, List LirInsn, Integer, Integer, List Location -> RvState
+  rv-lir-emit-insns (st) (insns) (i) (n) (assign) =
+   if i >= n then st
+   else rv-lir-emit-insns (rv-lir-emit-insn st (list-at insns i) assign) insns (i + 1) n assign
+
+  rv-lir-emit-result-alloc : RvState, LirValue, List Location -> RvState
+  rv-lir-emit-result-alloc (st) (v) (assign) =
+   when v
+    is LvImm (k) -> rv-emit-li st rv-a0 k
+    is LvReg (r) -> when (list-at assign r)
+     is LocReg (pr) ->
+      let p = list-at rv-lir-phys pr
+      in if p == rv-a0 then st else rv-emit st (rv-mv rv-a0 p)
+     is LocSlot (k) -> rv-emit st (rv-ld rv-a0 rv-sp (rv-lir-slot-off k))
+
+ @warning rv-lir-alloc-ok "frame capped at 2032: the largest 16-aligned size the signed-12 addi/ld/sd offset fields encode. A larger frame would encode wrong, not diagnose, so it is refused."
+ @invariant rv-lir-frame-of "slots at [0, nslots*8), used callee-saved above them; no ra cell, the whitelist admits no call"
+
+  RvLirFrame = record {
+   nslots : Integer,
+   nused : Integer
+  }
+
+  rv-lir-nused-callee : List Location, Integer, Integer, Integer -> Integer
+  rv-lir-nused-callee (assign) (i) (n) (acc) =
+   if i >= n then acc
+   else when list-at assign i
+    is LocReg (r) -> rv-lir-nused-callee assign (i + 1) n (if (r < (lir-target-rv.ncallee)) & ((r + 1) > acc) then r + 1 else acc)
+    is LocSlot (s) -> rv-lir-nused-callee assign (i + 1) n acc
+
+  rv-lir-nslots : List Location, Integer, Integer, Integer -> Integer
+  rv-lir-nslots (assign) (i) (n) (acc) =
+   if i >= n then acc
+   else when list-at assign i
+    is LocSlot (s) -> rv-lir-nslots assign (i + 1) n (if (s + 1) > acc then s + 1 else acc)
+    is LocReg (r) -> rv-lir-nslots assign (i + 1) n acc
+
+  rv-lir-frame-of : LirFunc, List Location -> RvLirFrame
+  rv-lir-frame-of (f) (assign) =
+   let na = list-length assign
+   in RvLirFrame {
+    nslots = rv-lir-nslots assign 0 na 0,
+    nused = rv-lir-nused-callee assign 0 na 0
+   }
+
+  rv-lir-frame-cells : RvLirFrame -> Integer
+  rv-lir-frame-cells (fr) = (fr.nslots) + (fr.nused)
+
+  rv-lir-frame-bytes : RvLirFrame -> Integer
+  rv-lir-frame-bytes (fr) = (((rv-lir-frame-cells fr * 8) + 15) / 16) * 16
+
+  rv-lir-save-off : Integer, Integer -> Integer
+  rv-lir-save-off (nslots) (i) = (nslots * 8) + (i * 8)
+
+ @invariant rv-lir-save-regs "the callee-saved pool is handed out lowest-free, so used indices are a prefix and saving [0, nused) saves exactly what the body writes"
+
+  rv-lir-save-regs : RvState, Integer, Integer, Integer -> RvState
+  rv-lir-save-regs (st) (i) (nused) (nslots) =
+   if i >= nused then st
+   else rv-lir-save-regs (rv-emit st (rv-sd rv-sp (list-at rv-lir-phys i) (rv-lir-save-off nslots i))) (i + 1) nused nslots
+
+  rv-lir-restore-regs : RvState, Integer, Integer, Integer -> RvState
+  rv-lir-restore-regs (st) (i) (nused) (nslots) =
+   if i >= nused then st
+   else rv-lir-restore-regs (rv-emit st (rv-ld (list-at rv-lir-phys i) rv-sp (rv-lir-save-off nslots i))) (i + 1) nused nslots
+
+  rv-lir-emit-prologue : RvState, RvLirFrame -> RvState
+  rv-lir-emit-prologue (st) (fr) =
+   let frame = rv-lir-frame-bytes fr
+   in if frame == 0 then st
+      else rv-lir-save-regs (rv-emit st (rv-addi rv-sp rv-sp (0 - frame))) 0 (fr.nused) (fr.nslots)
+
+  rv-lir-emit-epilogue : RvState, RvLirFrame -> RvState
+  rv-lir-emit-epilogue (st) (fr) =
+   let frame = rv-lir-frame-bytes fr
+   in if frame == 0 then st
+      else rv-emit (rv-lir-restore-regs st 0 (fr.nused) (fr.nslots)) (rv-addi rv-sp rv-sp frame)
+
+ @invariant rv-lir-emit-entry "the plan is the compiler's (lir-emv-for); this only maps abstract index to register. A cycle stages through nregs -> t5, safe because entry moves precede instruction selection. Runs AFTER the prologue: a slot store needs the frame, a callee-saved move must not precede its save."
+
+  rv-lir-emv-phys : Integer -> Integer
+  rv-lir-emv-phys (i) =
+   if i >= (lir-target-rv.nregs) then rv-lir-scratch-reg else list-at rv-lir-phys i
+
+  rv-lir-emit-emv : RvState, LirEmv -> RvState
+  rv-lir-emit-emv (st) (step) =
+   when step
+    is EmvMove (d) (s) ->
+     let pd = rv-lir-emv-phys d
+     in let ps = rv-lir-emv-phys s
+     in if pd == ps then st else rv-emit st (rv-mv pd ps)
+    is EmvStore (k) (s) -> rv-emit st (rv-sd rv-sp (rv-lir-emv-phys s) (rv-lir-slot-off k))
+
+  rv-lir-emit-emvs : RvState, List LirEmv, Integer, Integer -> RvState
+  rv-lir-emit-emvs (st) (plan) (i) (n) =
+   if i >= n then st
+   else rv-lir-emit-emvs (rv-lir-emit-emv st (list-at plan i)) plan (i + 1) n
+
+  rv-lir-emit-entry : RvState, LirFunc, List Location -> RvState
+  rv-lir-emit-entry (st) (f) (assign) =
+   let plan = lir-emv-for lir-target-rv f assign
+   in rv-lir-emit-emvs st plan 0 (list-length plan)
+
+  rv-lir-alloc-ok : LirFunc, List Location -> Boolean
+  rv-lir-alloc-ok (f) (assign) =
+   if rv-lir-zero-insn f then True
+   else rv-lir-frame-bytes (rv-lir-frame-of f assign) <= 2032
+
+ @invariant rv-lir-emit-func "the result is read into a0 BEFORE the epilogue: a callee-saved result must be copied out before the restore overwrites it, a slot result loaded before sp is popped past it"
+
+  rv-lir-emit-func : RvState, IRDef, LirFunc, List Location -> RvState
+  rv-lir-emit-func (st) (def) (f) (assign) =
+   let st1 = rv-set-last-arity (rv-reset-func-state st (def.name)) (list-length (def.params))
+   in if rv-lir-zero-insn f
+      then rv-emit (rv-lir-emit-result-param st1 (f.result)) rv-ret
+      else let fr = rv-lir-frame-of f assign
+      in let b = list-at (f.blocks) 0
+      in let ste = rv-lir-emit-entry (rv-lir-emit-prologue st1 fr) f assign
+      in let sti = rv-lir-emit-insns ste (b.insns) 0 (list-length (b.insns)) assign
+      in let str = rv-lir-emit-result-alloc sti (f.result) assign
+      in rv-emit (rv-lir-emit-epilogue str fr) rv-ret
+
+ @warning rv-lir-emit-try "emits [WCET] lir-handled per selected function: the only signal separating selector from tree output, which answer alike when both are correct"
+
+  rv-lir-emit-try : RvState, IRDef -> RvLirTry
+  rv-lir-emit-try (st) (def) =
+   if def.name == "opening" then rv-lir-not-handled st
+   else if list-length (def.params) > 8 then rv-lir-not-handled st
+   else let r = lower-def-to-lir def
+   in if r.ok == False then rv-lir-not-handled st
+      else if (r.func).nparams /= list-length (def.params) then rv-lir-not-handled st
+      else if rv-lir-selects (r.func) == False then rv-lir-not-handled st
+      else if list-length (lir-check-func (r.func)) > 0 then rv-lir-not-handled st
+      else let a = lir-alloc-linscan lir-target-rv (r.func)
+      in if list-length (lir-alloc-check lir-target-rv (r.func) (a.assign)) > 0 then rv-lir-not-handled st
+         else if rv-lir-alloc-ok (r.func) (a.assign) == False then rv-lir-not-handled st
+         else let sth = __record-set st "wcet-reports" (list-push (st.wcet-reports) ("[WCET] lir-handled " & (def.name)))
+         in RvLirTry { handled = True, state = rv-lir-emit-func sth def (r.func) (a.assign) }

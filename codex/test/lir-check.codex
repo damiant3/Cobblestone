@@ -44,21 +44,29 @@ Chapter: LirCheck
   - sw-three:   match, two literals + wildcard -> chained tests
   - sw-var:     match, literal + var catch-all -> the var binds the scrutinee
   - sw-ctor:    match on constructor patterns -> tag load, then field load per bind
-  - nl-call:    a call -> NOT lowered (outside the whitelist)
+  - nl-call:    a call the leaf inliner eats -> lowers as a plain add
   - if-even:    a power-of-two remainder against zero -> emits ONE `test`
   - if-odd:     the same fused, negated                -> `test`, inverted branch
   - if-mod4:    a wider power of two                   -> `test` against mask 3
   - if-mod3:    a remainder by three                   -> NOT fused (not a power of two)
   - if-mod-one: a remainder against one, not zero      -> NOT fused (not against zero)
 
- **These five are pinned by their VALUES, not by their dump lines, and the
- reason is a trap worth knowing.** The `lir-dump` pass prints the lowering,
- and the leaf inliner that turns `math-mod` into a remainder runs later, in
- the INLINE phase. So all five dump as `call math-mod` with an ordinary
- compare, and every one of them emits something else. The dump below is not a
- view of what these functions compile to, and reading it as one would say the
- fusion never fires when in fact it always does. What the dump is good for is
- the block structure; what these five are for is the answers.
+ **These five are pinned by their VALUES first, and by their dump lines as
+ well since 2026-07-19.** They were answers-only for a reason worth keeping
+ written down: `build/lir-dump-test.ps1` ran `-Passes lir-dump`, and `-Passes`
+ REPLACES the pipeline rather than adding to it, so the recording ran with
+ `fold-constants` and `inline-leaf-calls` switched off. All five dumped as
+ `call math-mod` with an ordinary compare while every one of them emitted
+ something else, and this prose concluded the inliner "runs later, in the
+ INLINE phase". It does not. It runs in the pass pipeline the flag was
+ silently emptying.
+
+ The harness now names the default passes alongside `lir-dump`, so the pin
+ records the program that actually ships: `if-even`, `if-odd` and `if-mod4`
+ dump as a single `test`, and -- this is the part that was unreachable before
+ -- `if-mod3` dumps as `rem` and `if-mod-one` keeps its `cmp v1 #1`, so both
+ guards on the fusion are now visible in the pin rather than resting on the
+ answers alone.
 
  The last two are the negative half and they are the point of the pair. The
  fusion is guarded on a power-of-two divisor and on a comparison against

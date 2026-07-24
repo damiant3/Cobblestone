@@ -1,0 +1,53 @@
+Chapter: C64SidStream
+  cites Foreword chapter Console
+  cites C64 chapter Sid
+  cites Kernel chapter HdaAudio
+
+ Streams several frames of SID PCM through the HDA output the way an
+ emulator's per-frame audio does: one short buffer rendered and played
+ each frame, with the oscillators and envelopes carried across frames in
+ a persistent state block (sid-render-stream, not the self-contained
+ sid-render). A test cannot hear the result, so codex-vm counts every
+ buffer it drains to the DAC and exposes the total at HDA #180; this test
+ plays a known number of buffers and asserts the count. That proves the
+ streaming plumbing -- persistent state, per-frame render, and the
+ re-run-each-frame HDA path -- delivers every buffer, independent of
+ whether the host has a speaker. The synthesis itself is checked by
+ c64-sid; here the point is that successive buffers all flow.
+
+ The registers are left silent on purpose: the drain counter increments
+ for every buffer regardless of its contents, so a silent stream proves
+ the plumbing without making the battery play a tone. c64-sid-beep is the
+ audible one, run by hand.
+
+Section: Body
+
+  frames : Integer = 8
+  samples-per-frame : Integer = 768
+
+  play-frame : Integer, Integer, Integer -> [Audio] Integer
+  play-frame (regbase) (rt) (buf) =
+    let r = sid-render-stream regbase rt buf samples-per-frame
+    in hda-play-pcm buf (samples-per-frame * 4)
+
+  stream-loop : Integer, Integer, Integer, Integer -> [Audio] Integer
+  stream-loop (regbase) (rt) (buf) (i) =
+    if i >= frames then 0
+    else act
+      p <- play-frame regbase rt buf
+      rest <- stream-loop regbase rt buf (i + 1)
+      p + rest
+    end
+
+  opening : [Console, Audio, Device.Mmio] Nothing = act
+    let regs = alloc-bytes 32
+    in let rt = alloc-bytes 64
+    in let z = sid-rt-reset rt
+    in let buf = alloc-bytes (samples-per-frame * 4)
+    in act
+      played <- stream-loop regs rt buf 0
+      count <- hda-drained-count
+      if count == frames then print-line-uni "PASS"
+      else print-line-uni ("FAIL: drained " & show count)
+    end
+  end

@@ -10,7 +10,7 @@ That hole is **CLOSED (2026-07-16)**. The trust manifest was read from the
 same untrusted blob the transport supplies, so a malicious transport minted
 its own key and passed all four guards. Trusted keys are now **pinned in the
 source** (`trusting <fp> <pub> <score>`), and a signer the author did not pin
-is CDX3023 (`codex/test/errors/quotes-unknown-signer`). BACKLOG 6.3 is closed
+is CDX3023 (`codex/test/errors/quotes-unknown-signer`). That entry is closed
 and deleted — do not cite it.
 Proposals, verdicts, the keyring with per-key trust, the wire codec,
 supersession and proposal resolution were already there. The "V1/V2 done"
@@ -116,7 +116,7 @@ third change fixed it properly. The claim was too strong, the review caught
 it, and the retraction is the part of the process that worked.
 
 Still true and much less urgent: a quotation resolves from the **local fact
-store only**. Peer and registry resolution do not exist (BACKLOG 6.2). Facts
+store only**. Peer and registry resolution do not exist. Facts
 can be exchanged by file copy, so that one is a reach, not a refusal gap.
 
 ### Why The Gate Lives In The Foreword
@@ -340,7 +340,7 @@ the foreword, and in the `reverse-reverse` proof. Inside a declaration
 that `quotes` has already opened, it needs no protection.
 | — | Proposal workflow | — | Built (`RepoProtocol.codex`) |
 | — | Wire codec / fact exchange | — | Built (`RepoProtocol.codex`) |
-| — | Peer / registry resolution, batch sync, gossip | Large | Open, not blocking — BACKLOG 6.2 |
+| — | Peer / registry resolution, batch sync, gossip | Large | Open, not blocking |
 
 Items 1 and 2 landed together: a trust gate with nothing to gate is
 untestable end-to-end, and an import path that verifies a hash and a

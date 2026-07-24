@@ -341,7 +341,7 @@ Section: Bare-Metal Start
    in let st2 = st-append-code st1 (li reg-rdi scope-addr)
    in st-append-code st2 (mov-store reg-rdi reg-rax 0)
 
- The default FileSystem handler install (BACKLOG 1.14). For an op that
+ The default FileSystem handler install. For an op that
  resolved to a handler-table slot -- which is exactly when the program
  cites FileSystem -- allocate an 8-byte closure at the heap frontier whose
  only word is the servicer stub's address, and store the closure pointer
@@ -634,6 +634,7 @@ Section: Finalize
    next-local = 0,
    spill-count = 0,
    load-local-toggle = 0,
+   last-jmp-end = 0,
    tco = TcoState {
     active = False,
     in-tail-pos = False,
@@ -646,6 +647,7 @@ Section: Finalize
    },
    type-defs = tdefs,
    builtin-names = sorted-builtin-names,
+   builtin-emitters = x86-builtin-emitters,
    emit-work = 0,
    exit-mode = ExitRepl,
    watchdog-mode = WatchdogProgress,
@@ -668,7 +670,8 @@ Section: Finalize
    noalias-slots = [],
    field-cache = [],
    fresh-slots = [],
-   stype-sites = __list-with-capacity accum-capacity
+   stype-sites = __list-with-capacity accum-capacity,
+   range-env = []
   }
 
   collect-direct-addr-patches : List Integer, List Integer, Integer, Integer, List PatchEntry -> List PatchEntry
@@ -747,7 +750,7 @@ Section: Capability Manifest
  The opening's scope for a given effect family, which the boot grant
  hands to proc 0 the same way emit-grant-cap-mask hands it its bits.
  The manifest pipeline is a List Text of NAMES and drops the scope on
- the floor (BACKLOG 1.5, the loader ring) — but the boot ring does not
+ the floor (the loader ring) -- but the boot ring does not
  need the manifest at all: the scope literal is right here in the row
  at emit time, so it is read straight off the label.
 
@@ -758,7 +761,7 @@ Section: Capability Manifest
  scope-admits knows about and is NOT carried — a channel is fixed at
  compile time by the builtin name and never becomes a runtime value,
  so there is nothing at runtime to check a stored channel against, and
- carrying it would be a promise the machine cannot keep (BACKLOG 1.5).
+ carrying it would be a promise the machine cannot keep.
 
  The EMPTY STRING is a real answer, not a missing one: an opening that
  names no scope for the family gets "", the cell holds a valid Text,
@@ -890,53 +893,24 @@ Section: Capability Manifest
    in if text-length base >= text-length n then ""
       else substring n (text-length base + 1) (text-length n - text-length base - 1)
 
+ The identifier the CDX capability section carries. It is a projection
+ of Foreword chapter Capability now, not a second copy of the table.
+
   manifest-cap-id : Text -> Integer
-  manifest-cap-id (n) =
-   if n == "Console" then 0
-   else if n == "FileSystem" then 1
-   else if n == "Network" then 2
-   else if n == "Concurrent" then 3
-   else if n == "Device" then 4
-   else if n == "Gpu.Compute" then 5
-   else if n == "Gpu.Memory" then 6
-   else if n == "Identity" then 7
-   else if n == "Capability" then 8
-   else if n == "Gpu" then 9
-   else if n == "Camera" then 10
-   else if n == "Microphone" then 11
-   else if n == "Location" then 12
-   else if n == "Sensors" then 13
-   else if n == "Display" then 14
-   else if n == "Flash" then 15
-   else if n == "Audio" then 16
-   else 0 - 1
+  manifest-cap-id (n) = cap-id-for-name n
 
- BACKLOG 1.13 -- the anti-drift guard. capability-vocabulary
- (TypeChecker) admits an effect at the type level; manifest-cap-id
- (here) gives it a slot in the CDX capability section. A name in the
- first with no id in the second admitted through the type checker and
- was then SILENTLY dropped by manifest-cap-names, so [Gpu] once
- compiled clean -- exit 0, no diagnostic at any severity -- and was
- denied at runtime the moment 1.6 armed the gpu-memory guard. This
- makes that drift a build error instead: every vocabulary name must
- resolve to a cap id, itself or its base for a dotted refinement
- (Console.Read answers to Console, exactly as manifest-cap-names
- covers it). It walks the vocabulary once per compile, so a drift
- halts the FIRST compile after it is introduced -- the self-compile
- and the BVT among them -- rather than shipping an effect the manifest
- cannot carry. The two hand-kept tables now agree by construction on
- every build, not by inspection.
+ The anti-drift guard that used to live here is gone, and its going is
+ the point. It walked capability-vocabulary and required
+ every name to resolve to a manifest cap id, because the two were
+ hand-kept lists that could disagree -- and had: [Gpu] once compiled
+ clean, exit 0 with no diagnostic at any severity, and was denied at
+ runtime the moment 1.6 armed the gpu-memory guard.
 
-  cap-vocab-drift-diags : List Text, Integer, Integer, List Diagnostic -> List Diagnostic
-  cap-vocab-drift-diags (vocab) (i) (len) (acc) =
-   if i >= len then acc
-   else let n = list-at-text vocab i
-   in let cover = if manifest-cap-id n >= 0 then n else manifest-effect-base n
-   in if manifest-cap-id cover >= 0 then cap-vocab-drift-diags vocab (i + 1) len acc
-      else cap-vocab-drift-diags vocab (i + 1) len (list-push acc (make-error cdx-capability-not-granted ("capability vocabulary name '" & n & "' has no manifest cap id -- capability-vocabulary (TypeChecker) and manifest-cap-id (X86_64Chapter) have drifted; every vocabulary name must map to a cap id (BACKLOG 1.13)") synthetic-span))
-
-  check-cap-vocab-coherent : List Diagnostic
-  check-cap-vocab-coherent = cap-vocab-drift-diags capability-vocabulary 0 (list-length capability-vocabulary) []
+ Both lists are now projections of one table, so a vocabulary name with
+ no cap id cannot be written. A guard whose condition can never hold is
+ not protection, it is furniture; the state it watched for is
+ unreachable, so the walk, the diagnostic and the once-per-compile cost
+ all go with it.
 
  The boot grant for proc 0 derives from the same manifest names the
  capability section records: each covered name contributes its kernel
@@ -947,48 +921,27 @@ Section: Capability Manifest
  rest: a program that declares Identity earns cap-identity at boot,
  which is what every identity builtin's kernel helper now tests.
 
- boot-cap-mask-for is the boot path's expansion of the same table
- cdx-cap-to-kern-bits expands for the verified-load path, and the two
- must not disagree -- a binary gets its authority from one of them and
- must not get a different answer depending on which door it came in
- through (BACKLOG 1.12). It used to ignore DIRECTION entirely, granting
- FileSystem read AND write to a program that declared only
- [FileSystem.Read], while the loader honoured the read-only grant. It
- takes the direction now, from the same derivation the manifest writes,
- so the two paths read one table the same way.
+ boot-cap-mask-for is the boot path's reading of the capability table,
+ and cdx-cap-to-kern-bits is the verified-load path's reading of the
+ same one. The two must not disagree -- a binary gets its authority from
+ one of them and must not get a different answer depending on which door
+ it came in through -- and they no longer can, because
+ there is one expansion and both call it. They were two hand-written
+ expansions until 2026-07-18, agreeing by inspection and by a build
+ script, which is how this one came to ignore DIRECTION entirely for a
+ while: it granted FileSystem read AND write to a program that declared
+ only [FileSystem.Read], while the loader honoured the read-only grant.
+ One expansion cannot drift from itself.
 
- boot-dir-bits is dir-bits (VerifiedLoader) written here rather than
- shared, because the compiler cannot cite the OS quire. That duplication
- is the bug this entry is about, and it is now duplicated CORRECTLY --
- which is not a fix, only a truce. The real fix is one function; see
- 1.12's note about deriving one expansion from the other.
-
-  boot-dir-bits : Integer, Integer, Integer -> Integer
-  boot-dir-bits (dir) (read-bit) (write-bit) =
-   if dir == manifest-dir-read then bit-shl 1 read-bit
-   else if dir == manifest-dir-write then bit-shl 1 write-bit
-   else bit-or (bit-shl 1 read-bit) (bit-shl 1 write-bit)
+ boot-dir-bits was dir-bits (VerifiedLoader) written out again here,
+ because the compiler could not cite the OS quire. Both are gone. The
+ expansion lives in Foreword chapter Capability, which both quires may
+ cite, and this is the boot path asking it the same question the
+ verified-load path asks. There is no second copy left to disagree with,
+ so build/check-cap-tables.ps1 is deleted too.
 
   boot-cap-mask-for : Text, Integer -> Integer
-  boot-cap-mask-for (n) (dir) =
-   if n == "Console" then bit-or (bit-shl 1 cap-console) (boot-dir-bits dir cap-console-read cap-console-write)
-   else if n == "FileSystem" then boot-dir-bits dir cap-filesystem-read cap-filesystem-write
-   else if n == "Network" then boot-dir-bits dir cap-network-read cap-network-write
-   else if n == "Concurrent" then bit-or (bit-shl 1 cap-concurrent) (bit-or (bit-shl 1 cap-ipc) (bit-shl 1 cap-process-create))
-   else if n == "Device" then bit-or (bit-shl 1 cap-block-device) (bit-shl 1 cap-device)
-   else if n == "Gpu.Compute" then bit-shl 1 cap-gpu-compute
-   else if n == "Gpu.Memory" then bit-shl 1 cap-gpu-memory
-   else if n == "Gpu" then bit-or (bit-shl 1 cap-gpu-compute) (bit-shl 1 cap-gpu-memory)
-   else if n == "Identity" then bit-shl 1 cap-identity
-   else if n == "Capability" then bit-shl 1 cap-capability-admin
-   else if n == "Camera" then bit-shl 1 cap-camera
-   else if n == "Microphone" then bit-shl 1 cap-microphone
-   else if n == "Location" then bit-shl 1 cap-location
-   else if n == "Sensors" then bit-shl 1 cap-sensors
-   else if n == "Display" then bit-shl 1 cap-display
-   else if n == "Flash" then bit-shl 1 cap-flash
-   else if n == "Audio" then bit-shl 1 cap-audio
-   else 0
+  boot-cap-mask-for (n) (dir) = cap-bits-for-name n dir
 
   boot-cap-mask : List Text, List Text, Integer, Integer, Integer -> Integer
   boot-cap-mask (caps) (effs) (i) (len) (acc) =

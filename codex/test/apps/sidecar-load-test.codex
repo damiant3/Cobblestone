@@ -1,18 +1,104 @@
 Chapter: SidecarLoadTest
 
   cites Foreword chapter Console
+  cites Foreword chapter Maybe
   cites Works chapter Annotation
+  cites Works chapter AnnotationStore
+  cites Works chapter AnnotationsSidecar
+
+ Loading a sidecar means parsing the on-disk JSON at
+ codex.annotations/<quire>/<chapter>.json, routing each entry to the
+ annotation store or the discussion store, and dropping the entries that
+ carry too little to be useful. The old body loaded no sidecar at all:
+ it built one Annotation by hand, added it to a store, and printed the
+ count it had just put there.
+
+ So this feeds one sidecar text holding every case at once -- two
+ well-formed annotations, one whose kind is not in the vocabulary, one
+ discussion entry, one missing its target and one missing its kind --
+ and reads back where each of them landed. Six entries in, three
+ annotations and one discussion out, two dropped.
+
+Section: Fixtures
+
+ Written as one literal rather than assembled, because the subject is
+ the parser and an assembled string would be this test agreeing with
+ itself about what JSON looks like.
+
+  slt-chapter : Text = "Narrator"
+
+  slt-sidecar : Text =
+    "[" &
+    "{\"target\":\"function:tell-story\",\"kind\":\"rationale\",\"author\":\"cam\",\"date\":\"2026-05-06\",\"body\":\"the prose is load-bearing\"}," &
+    "{\"target\":\"function:tell-story\",\"kind\":\"invariant\",\"author\":\"cam\",\"date\":\"2026-05-07\",\"body\":\"the block is never empty\"}," &
+    "{\"target\":\"function:fold\",\"kind\":\"banana\",\"author\":\"cam\",\"date\":\"2026/05/08\",\"body\":\"unknown kinds bucket to discovery\"}," &
+    "{\"target\":\"function:fold\",\"kind\":\"discussion\",\"author\":\"fester\",\"date\":\"2026-05-09\",\"body\":\"routed to the thread\",\"thread\":\"t1\"}," &
+    "{\"kind\":\"warning\",\"author\":\"cam\",\"date\":\"2026-05-10\",\"body\":\"no target, dropped\"}," &
+    "{\"target\":\"function:fold\",\"author\":\"cam\",\"date\":\"2026-05-11\",\"body\":\"no kind, dropped\"}" &
+    "]"
+
+Section: Helpers
+
+  slt-kinds : List Annotation, Integer, Integer, Text -> Text
+  slt-kinds (anns) (i) (n) (acc) =
+    if i >= n then acc
+    else let sep = if i > 0 then "," else ""
+    in let next = acc & sep & annotation-kind-name ((list-at anns i).kind)
+    in slt-kinds anns (i + 1) n next
+
+  slt-kinds-for : AnnotationFact, Text -> Text
+  slt-kinds-for (af) (path) =
+    let anns = af-annotations-for af (make-target slt-chapter path)
+    in slt-kinds anns 0 (list-length anns) ""
+
+  slt-has-thread : Maybe Thread -> Text
+  slt-has-thread (m) = when m
+    is Just (t) -> "yes"
+    is otherwise -> "no"
 
 Section: Body
 
+ The malformed-JSON case is the control. load-sidecar answers the base
+ fact unchanged when json-parse fails, and a loader that ignored its
+ input entirely would answer the base fact too -- so on its own that
+ case proves nothing. It carries weight only next to the good load,
+ where the same call on the same base fact must move the counts.
+
+ parse-sidecar and load-sidecar disagree on the same text, and the
+ disagreement is recorded rather than smoothed over: parse-sidecar
+ answers 4 where load-sidecar puts 3 in the store. Only load-sidecar
+ routes on kind, so parse-sidecar keeps the discussion entry and buckets
+ it to Discovery like any other unrecognised kind. A caller reaching for
+ parse-sidecar because it looks like the simpler one gets a discussion
+ filed as an annotation.
+
   opening : [Console] Nothing =
-    let store = annotation-store-empty
-    in let t = make-target "Sidecar" "load"
-    in let a = create-annotation t Discovery "loader" "found orphan" 200
-    in let store2 = annotation-store-add store a
-    in let c = integer-to-text (annotation-count store2)
-    in let hl = integer-to-text (text-length (a.hash))
+    let base = annotation-fact-empty
+    in let base-anns = af-annotation-count base
+    in let loaded = load-sidecar base slt-chapter slt-sidecar
+    in let n-anns = af-annotation-count loaded
+    in let n-disc = af-discussion-count loaded
+    in let story-kinds = slt-kinds-for loaded "function:tell-story"
+    in let fold-kinds = slt-kinds-for loaded "function:fold"
+    in let thread = slt-has-thread (af-discussion-for loaded (make-target slt-chapter "function:fold"))
+    in let garbage = load-sidecar annotation-fact-empty slt-chapter "not json at all"
+    in let n-garbage = af-annotation-count garbage
+    in let parsed = parse-sidecar slt-chapter slt-sidecar
+    in let n-parsed = when parsed
+      is Just (l) -> list-length l
+      is otherwise -> 0 - 1
+    in let path = sidecar-path-for "works" slt-chapter
     in act
-      print-line-uni ("loaded=" & c)
-      print-line-uni ("hash-len=" & hl)
+      print-line-uni ("base-annotations=" & show base-anns)
+      print-line-uni ("annotations=" & show n-anns)
+      print-line-uni ("discussions=" & show n-disc)
+      print-line-uni ("tell-story-kinds=" & story-kinds)
+      print-line-uni ("fold-kinds=" & fold-kinds)
+      print-line-uni ("fold-thread=" & thread)
+      print-line-uni ("garbage-annotations=" & show n-garbage)
+      print-line-uni ("parse-sidecar-count=" & show n-parsed)
+      print-line-uni ("date=" & show (parse-date "2026-05-06"))
+      print-line-uni ("slashed-date=" & show (parse-date "2026/05/08"))
+      print-line-uni ("bad-date=" & show (parse-date "not-a-date"))
+      print-line-uni ("path=" & path)
     end

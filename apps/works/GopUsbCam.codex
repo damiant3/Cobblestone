@@ -1,0 +1,166 @@
+Chapter: GopUsbCam
+  cites Works chapter GopXhci
+  cites Foreword chapter Maybe
+
+ A USB video camera, read one frame at a time.
+
+ This is the fourth endpoint type. Control carries setup packets, bulk
+ carries sectors, interrupt carries keystrokes, and isochronous carries
+ this: a stream with a deadline, where the controller reserves bus
+ bandwidth in advance and a packet that misses its slot is dropped
+ rather than retried. Nothing in the tree drove one before, which is
+ why the camera the emulator has always presented could not be read.
+
+ Isochronous differs from the others in ways this driver has to
+ respect. The endpoint type in the context is 5 (Isoch IN), not 7.
+ The interface is published at two alternate settings: alt 0 declares
+ no endpoints at all and exists so a host can park the camera and
+ reclaim its bandwidth, and alt 1 is the streaming one. A driver that
+ configures the interface without selecting alt 1 gets an interface
+ with nothing to read, which looks exactly like a broken camera.
+
+ We say:
+
+Section: The Camera
+
+  UsbCam = record {
+    uc-ok : Boolean,
+    uc-host : XhciHost,
+    uc-dev : UsbDev,
+    uc-dci : Integer,
+    uc-ring : Integer,
+    uc-frame : Integer,
+    uc-frame-size : Integer
+  }
+
+  cam-no-cam : UsbCam
+  cam-no-cam = UsbCam { uc-ok = False, uc-host = xhci-no-host, uc-dev = xhci-no-dev, uc-dci = 0, uc-ring = 0, uc-frame = 0, uc-frame-size = 0 }
+
+ A 160x120 YUYV frame is two bytes per pixel. The buffer is allocated
+ once at open and reused for every frame, because a per-frame
+ allocation on a machine with no collector is a leak with a camera
+ attached to it.
+
+  cam-frame-width : Integer = 160
+  cam-frame-height : Integer = 120
+  cam-frame-bytes : Integer = 38400
+
+Section: Configuration Descriptor Walk
+
+ The streaming interface is class 14 (video), subclass 2
+ (videostreaming). It appears twice: alt 0 with zero endpoints, alt 1
+ with the isochronous one. Requiring at least one endpoint is what
+ picks the alternate that can actually stream.
+
+  cam-cfg-total : Integer -> Integer
+  cam-cfg-total (cfg) = bit-or (peek-byte cfg 2) (bit-shl (peek-byte cfg 3) 8)
+
+  cam-find-stream-iface : Integer, Integer, Integer -> Integer
+  cam-find-stream-iface (cfg) (off) (total) =
+    if off >= total then -1
+    else let len = peek-byte cfg off
+    in if len == 0 then -1
+    else if peek-byte cfg (off + 1) /= 4 then cam-find-stream-iface cfg (off + len) total
+    else if peek-byte cfg (off + 5) /= 14 then cam-find-stream-iface cfg (off + len) total
+    else if peek-byte cfg (off + 6) /= 2 then cam-find-stream-iface cfg (off + len) total
+    else if peek-byte cfg (off + 4) == 0 then cam-find-stream-iface cfg (off + len) total
+    else off
+
+ An isochronous IN endpoint has transfer type 1 in the low two bits of
+ bmAttributes and the direction bit set in its address. The walk stops
+ at the next interface descriptor so it cannot wander into another
+ alternate setting's endpoints.
+
+  cam-find-isoch-in : Integer, Integer, Integer -> Integer
+  cam-find-isoch-in (cfg) (off) (total) =
+    if off >= total then -1
+    else let len = peek-byte cfg off
+    in if len == 0 then -1
+    else if peek-byte cfg (off + 1) == 4 then -1
+    else if peek-byte cfg (off + 1) /= 5 then cam-find-isoch-in cfg (off + len) total
+    else if bit-and (peek-byte cfg (off + 3)) 3 /= 1 then cam-find-isoch-in cfg (off + len) total
+    else if bit-and (peek-byte cfg (off + 2)) 128 == 0 then cam-find-isoch-in cfg (off + len) total
+    else off
+
+  cam-ep-maxpkt : Integer, Integer -> Integer
+  cam-ep-maxpkt (cfg) (ep) =
+    bit-or (peek-byte cfg (ep + 4)) (bit-shl (peek-byte cfg (ep + 5)) 8)
+
+Section: Alternate Setting
+
+ SET_INTERFACE is a standard request to the interface recipient:
+ bmRequestType 1, bRequest 11, wValue the alternate setting, wIndex
+ the interface number. Selecting alt 1 is what commits the bandwidth
+ the isochronous endpoint needs.
+
+  cam-set-interface : XhciHost, UsbDev, Integer, Integer -> Boolean
+  cam-set-interface (xh) (dev) (iface) (alt) =
+    xhci-ctrl-nodata xh dev 1 11 alt iface
+
+Section: Open
+
+  cam-open : XhciHost, UsbDev, Integer, Integer, Integer -> UsbCam
+  cam-open (xh) (dev) (cfg) (iface) (total) =
+    let ep = cam-find-isoch-in cfg (iface + peek-byte cfg iface) total
+    in if ep < 0 then cam-no-cam
+    else cam-open-endpoint xh dev (peek-byte cfg (iface + 2)) (peek-byte cfg (iface + 3)) (peek-byte cfg 5) (bit-and (peek-byte cfg (ep + 2)) 15) (cam-ep-maxpkt cfg ep) (peek-byte cfg (ep + 6))
+
+  cam-open-endpoint : XhciHost, UsbDev, Integer, Integer, Integer, Integer, Integer, Integer -> UsbCam
+  cam-open-endpoint (xh) (dev) (iface) (alt) (cfgv) (epnum) (maxpkt) (binterval) =
+    let sc = usb-set-configuration xh dev cfgv
+    in if sc == False then cam-no-cam
+    else let sa = cam-set-interface xh dev iface alt
+    in if sa == False then cam-no-cam
+    else let dci = epnum * 2 + 1
+    in let ring = xhci-ring-new
+    in let r0 = xhci-set-ep-ring (dev.ud-ctx) dci (xhci-ring-trbs ring) (xh.xh-ctxsz)
+    in let ictx = xhci-ictx-single dci 5 maxpkt (xhci-ring-trbs ring) (xhci-ep-interval (dev.ud-speed) binterval) (xh.xh-ctxsz) (dev.ud-ctx)
+    in let ce = xhci-configure-endpoint xh dev ictx
+    in if ce.xe-ok == False then cam-no-cam
+    else if ce.xe-code /= trb-cc-success then cam-no-cam
+    else UsbCam { uc-ok = True, uc-host = xh, uc-dev = dev, uc-dci = dci, uc-ring = ring, uc-frame = alloc-zeroed cam-frame-bytes 64, uc-frame-size = cam-frame-bytes }
+
+Section: Read A Frame
+
+ One isochronous TRB for the whole frame, then wait for its
+ completion. A short packet is not a failure here: a camera that sends
+ less than a full frame has still sent something, and the residual in
+ the event says how much is missing. Both codes are accepted; anything
+ else is not a frame.
+
+ Note what zero means on the way in and on the way out. `xhci-wait-xfer`
+ answers zero for NO EVENT -- it ran out of fuel and nothing arrived --
+ while this function answers zero for success. Passing one through as
+ the other would report a camera that never responded as a camera that
+ delivered a frame, and the buffer would be read as a picture when it
+ is whatever was in it before. A timeout is its own answer here.
+
+  cam-frame-fuel : Integer = 65536
+  cam-err-closed : Integer = 0 - 1
+  cam-err-timeout : Integer = 0 - 2
+
+  cam-read-frame : UsbCam -> Integer
+  cam-read-frame (c) =
+    if c.uc-ok == False then cam-err-closed
+    else let w = xhci-ring-push (c.uc-ring) (c.uc-frame) 0 (c.uc-frame-size) (bit-or (bit-shl trb-t-isoch 10) trb-flag-ioc)
+    in let db = xhci-ring-doorbell (c.uc-host) ((c.uc-dev).ud-slot) (c.uc-dci)
+    in let code = xhci-wait-xfer (c.uc-host) ((c.uc-dev).ud-slot) cam-frame-fuel
+    in if code == 0 then cam-err-timeout
+    else if code == trb-cc-success then 0
+    else if code == trb-cc-short then 0
+    else code
+
+ Pixel accessors, so a caller reads a frame rather than an address.
+ YUYV packs luma per pixel and chroma per pair; this driver exposes
+ the two bytes each pixel occupies and leaves colour conversion to
+ whoever wants a picture.
+
+  cam-luma : UsbCam, Integer, Integer -> Integer
+  cam-luma (c) (x) (y) =
+    if c.uc-ok == False then 0
+    else peek-byte (c.uc-frame) ((y * cam-frame-width + x) * 2)
+
+  cam-chroma : UsbCam, Integer, Integer -> Integer
+  cam-chroma (c) (x) (y) =
+    if c.uc-ok == False then 0
+    else peek-byte (c.uc-frame) ((y * cam-frame-width + x) * 2 + 1)

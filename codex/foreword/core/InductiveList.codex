@@ -1,0 +1,76 @@
+Chapter: InductiveList
+
+ A cons list that proofs can walk.
+
+ The foreword's ordinary `List` cannot be inducted over. Stage 5 checks
+ an induction by resolving the induction variable's type to a variant
+ and generating one subgoal per constructor; `List` is a builtin whose
+ elements are reached with `list-at` and `list-length` rather than a
+ sum with `Nil` and `Cons` arms, so the resolution fails and the proof
+ is accepted as an unproven axiom instead (CDX4022). That is honest --
+ the compiler says so -- but it means `for all (xs : List Integer),
+ 5 === 6` compiles, and no property of a foreword container has ever
+ been machine-checked. This chapter is the container that can be.
+
+ It is deliberately NOT a replacement for `List`. `List` is the working
+ collection: builtin, O(1) indexed, and what every other chapter takes
+ and returns. `IList` is the shape you reach for when you intend to
+ PROVE something, and `ilist-from-list` / `ilist-to-list` are the
+ crossing between them. Reaching for it as a general-purpose list would
+ trade an indexed structure for a linked one and gain nothing, because
+ the proofs are compile-time only -- Stage 5 erases them at emit.
+
+ Parametric rather than fixed to one element type, which was measured
+ rather than assumed: Stage 5 walks `IList a` and checks a real claim
+ over `IList Integer`, and a false one over the same type is a hard
+ CDX2001 rather than a warning. `codex/test/reverse-reverse` had to
+ declare its own `MyList` because no foreword container could be
+ inducted over; `codex/test/inductive-list` proves the same flagship
+ theorem over this one.
+
+ We say:
+
+Section: The Type
+
+  IList a =
+   | INil
+   | ICons (a) (IList a)
+
+Section: Construction
+
+  ilist-append : IList a, IList a -> IList a
+  ilist-append (xs) (ys) = when xs
+   is INil -> ys
+   is ICons (h) (t) -> ICons h (ilist-append t ys)
+
+  ilist-reverse : IList a -> IList a
+  ilist-reverse (xs) = when xs
+   is INil -> INil
+   is ICons (h) (t) -> ilist-append (ilist-reverse t) (ICons h INil)
+
+  ilist-length : IList a -> Integer
+  ilist-length (xs) = when xs
+   is INil -> 0
+   is ICons (h) (t) -> 1 + ilist-length t
+
+Section: Crossing To And From List
+
+ The bridge to the builtin collection. `ilist-from-list` walks the
+ indexed list backwards so the cons chain comes out in source order
+ without a second reversal.
+
+  ilist-from-list : List a -> IList a
+  ilist-from-list (xs) = ilist-from-list-loop xs (list-length xs - 1) INil
+
+  ilist-from-list-loop : List a, Integer, IList a -> IList a
+  ilist-from-list-loop (xs) (i) (acc) =
+   if i < 0 then acc
+   else ilist-from-list-loop xs (i - 1) (ICons (list-at xs i) acc)
+
+  ilist-to-list : IList a -> List a
+  ilist-to-list (xs) = ilist-to-list-loop xs []
+
+  ilist-to-list-loop : IList a, List a -> List a
+  ilist-to-list-loop (xs) (acc) = when xs
+   is INil -> acc
+   is ICons (h) (t) -> ilist-to-list-loop t (list-push acc h)

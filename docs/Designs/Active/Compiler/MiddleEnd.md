@@ -4,7 +4,7 @@
 **Filed:** 2026-07-14 (reek). Revised the same day, second session, after
 verifying every load-bearing claim against the code; the corrections are in
 §What the code actually says.
-**BACKLOG:** 3.8 (this campaign). 3.1 closes into step 5. 2.11 closes in step 1.
+**Scope:** this campaign. The ARM64 allocator closes into step 5; the CDX2051 sweep closes in step 1.
 **Evidence and full assessment:** `docs/Reference/AiComp/OPPORTUNITIES.md`.
 **Literature base (2026-07-14, three commissioned surveys):**
 `docs/Reference/MiddleEndLiterature.md` — the design specifics below cite it
@@ -42,7 +42,7 @@ The reasoning, stated so it can be attacked:
    find. Tree passes pay in seed density, deleted bounds checks, and the
    ability to measure. They will not move fib/fact/gcd/sum materially, and
    nobody should present them as codegen-quality progress. If we stop at
-   step 3, BACKLOG 3.8's headline finding stays exactly as open as today and
+   step 3, the headline finding stays exactly as open as today and
    someone re-files this campaign in a year.
 
 2. **"Stop at 3" is only coherent as "don't run the campaign."** The honest
@@ -58,7 +58,7 @@ The reasoning, stated so it can be attacked:
    verified in the code (§What the code actually says): the migration surface
    is ~5,900 lines, not 18,814; the LIR needs no SSA and no phi nodes because
    the IR has no loops; the fixed point is a correctness oracle no test suite
-   matches; and the same LIR + allocator, placed correctly, closes BACKLOG 3.1
+   matches; and the same LIR + allocator, placed correctly, closes the ARM64 allocator
    (the ARM64 allocator hole) instead of leaving a third hand-rolled
    allocation scheme to be built later.
 
@@ -121,7 +121,7 @@ wire format to all 53 plugs is the *tree* IR as S-expressions
 emits in IR mode"). So: (a) every tree-level pass runs *before* serialization
 and improves the input to **every plug and both native backends for free** —
 no plug changes, no wire change; (b) the LIR must **not** live inside
-`Emit/` — placed there it fixes x86 only and leaves BACKLOG 3.1 to hand-roll a
+`Emit/` — placed there it fixes x86 only and leaves the ARM64 allocator to hand-roll a
 third allocator. It belongs in the compiler's `IR/` quire as a citable chapter
 (plugs already cite compiler chapters — `IRTextParser` cites `Codex chapter
 Text`), parametrized over a register-class table, so the ARM64 and RISC-V
@@ -173,7 +173,7 @@ recorded local ranges. What it lacks: branch refinement (`AIfExpr` takes the
 plain union of arms — it cannot see `if i < n then …`), and depth in the
 transfer functions (the apply-doors are shallow). Add refinement on
 `<`/`<=`/`==` against known-range operands, deepen the doors. Closes
-**BACKLOG 2.11** (the CDX2051 false-positive sweep on the `-FW` surface).
+the CDX2051 false-positive sweep on the `-FW` surface.
 Failure mode is a loud wrong diagnostic, not a miscompile. No seed semantics.
 2–4 CLs.
 
@@ -266,7 +266,7 @@ each, through the gate with a memory/time verdict:
    (`IR/Occurrence.codex`, opt-in `occ-report` pass, driven and tested over
    real lowered IR): once-per-if-arm classifies **Many** (arms summed, so the
    inliner can never duplicate work into both arms), a shadowed name's inner
-   and outer bindings classify independently. Filed `BACKLOG 3.9` on the way
+   and outer bindings classify independently. Filed on the way
    out — CDX codegen has no dead-code elimination, so an unreachable helper is
    dead weight in the seed (the pruner exists but only for IR-text/plug output).
 3. **The simplifier** — ONE traversal carrying (substitution, in-scope set,
@@ -313,7 +313,7 @@ Design doc first, and the design constraints are already known:
   destination-driven** (correction 5). Flattening = number the values, resolve
   shadowed `Text` bindings to fresh vregs — trivial without back-edges.
 - **Placement:** a chapter in the compiler's `IR/` quire, citable by plugs;
-  register file as data (x86-64 first, ARM64 second — **BACKLOG 3.1 closes
+  register file as data (x86-64 first, ARM64 second — **the ARM64 allocator closes
   into this workstream**, not after it).
 - **Migration staging:** dual emitters behind a per-function dispatch. v1
   handles bodies within a construct whitelist (literals, names, binary, if,
@@ -354,12 +354,12 @@ Design doc first, and the design constraints are already known:
 - **v2, filed not built:** TCO self-calls as LIR back-edges (brings loop
   analysis in), interval splitting, stack-slot coloring, rematerialization of
   cheap constants, and instruction scheduling only if an in-order target
-  (Thumb-2, BACKLOG 3.5) ever demands it.
+  (Thumb-2) ever demands it.
 
 ### Step 6 — SLP (workstream E, after C)
 
 Larsen–Amarasinghe over LIR straight-line code. Only after step 5 — packs need
-a linear order and a DDG, and BACKLOG 3.3 (AVX/AVX2) only earns its keep once
+a linear order and a DDG, and AVX/AVX2 only earns its keep once
 something generates lanes. Not designed further here.
 
 ---

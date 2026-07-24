@@ -1,5 +1,6 @@
 Chapter: Lowering
-  cites Codex chapter Build Settings (max-recursion-depth)
+  cites Codex chapter Build Settings (max-recursion-depth, demand-lower-guard-band)
+  cites Codex chapter Phase Allocator (deck-bound-short-of)
 
  Transforms the typed AST into the intermediate representation.
  Every IR node inherits the SourceSpan of the AST node it was
@@ -34,7 +35,7 @@ Section: Expression Lowering
      let inner = lower-expr-at operand int-ty-default ctx (depth + 1)
      in when inner
       is IrIntLit (v) (ls) -> deck-record (IrIntLit (-v) s)
-      is otherwise -> deck-record (IrNegate inner s)
+      is otherwise -> deck-record (IrNegate inner (ir-expr-type inner) s)
     is AIfExpr (c) (t) (e2) (s) ->
      let resolved = deep-resolve (ctx.ust) ty
      in let then-ir-0 = lower-expr-at t resolved ctx (depth + 1)
@@ -324,6 +325,7 @@ Section: Expression Lowering
      when inner-f
       is ANameExpr (ifn) (ifns) ->
        if (ifn.value) == "compare" then lower-compare-apply inner-a a ty ctx sp
+       else if (ifn.value) == "int-rem" then lower-int-rem-apply inner-a a ty ctx sp
        else lower-apply-aa inner-f inner-a a f ty ctx sp
       is otherwise -> lower-apply-aa inner-f inner-a a f ty ctx sp
     is otherwise -> lower-apply-normal f a ty ctx sp
@@ -336,6 +338,10 @@ Section: Expression Lowering
      else if text-starts-with (pn.value) "__dderiv-" then lower-derived-apply inner-f (pn.value) a ty ctx sp
      else lower-apply-normal f a ty ctx sp
     is otherwise -> lower-apply-normal f a ty ctx sp
+
+  lower-int-rem-apply : AExpr, AExpr, CodexType, LowerCtx, SourceSpan -> IRExpr
+  lower-int-rem-apply (a1) (a2) (ty) (ctx) (sp) =
+   deck-record (IrBinary IrRemInt (lower-expr a1 int-ty-default ctx) (lower-expr a2 int-ty-default ctx) ty sp)
 
   lower-compare-apply : AExpr, AExpr, CodexType, LowerCtx, SourceSpan -> IRExpr
   lower-compare-apply (a1) (a2) (ty) (ctx) (sp) =
@@ -611,15 +617,143 @@ Section: Let and Lambda
     is otherwise -> ErrorTy
 
 Section: Match Lowering
+
+ A match over the builtin List with Nil or Cons arms does not become
+ an IrMatch: there is no tag word to dispatch on. It desugars here to
+ an IrLet binding the scrutinee once and an if-chain over the three
+ list intrinsics -- length against zero selects the arm, __list-head
+ and __list-tail bind the Cons fields (the tail is an O(1) view, CL
+ 9827). No new IR form exists, therefore the LIR, the wire, and the
+ plug parsers see only nodes they already carry. The checker has
+ already refused nested Cons fields and guards on list arms, so each
+ arm is exactly one test and the chain never duplicates its rest;
+ the terminal IrError is unreachable because exhaustiveness checked
+ against the synthesized Nil/Cons view. Alternation lowers one body
+ copy per alternative arm, the price of not having join points.
+
   lower-match : AExpr, List AMatchArm, CodexType, LowerCtx, SourceSpan -> IRExpr
   lower-match (scrut) (arms) (ty) (ctx) (sp) =
    let scrut-ir = lower-expr scrut ErrorTy ctx
    in let scrut-ty = ir-expr-type scrut-ir
-   in let branches = lower-match-arms-loop arms ty scrut-ty ctx 0 (list-length arms)
+   in let rty = deep-resolve (ctx.ust) scrut-ty
+   in if is-list-ctor-match rty arms then lower-list-match scrut-ir (list-elem-of rty) arms ty ctx sp
+   else let branches = lower-match-arms-loop arms ty scrut-ty ctx 0 (list-length arms)
    in let result-ty = when ty
       is ErrorTy -> infer-match-type branches 0 (list-length branches)
       is otherwise -> ty
    in deck-record (IrMatch scrut-ir branches result-ty sp)
+
+  list-elem-of : CodexType -> CodexType
+  list-elem-of (t) =
+   when t
+    is ListTy (e) -> e
+    is otherwise -> ErrorTy
+
+  pat-is-list-ctor : APat -> Boolean
+  pat-is-list-ctor (p) =
+   when p
+    is ACtorPat (n) (subs) (s) -> if (n.value) == "Cons" then True else (n.value) == "Nil"
+    is otherwise -> False
+
+  is-list-ctor-match : CodexType, List AMatchArm -> Boolean
+  is-list-ctor-match (rty) (arms) =
+   when rty
+    is ListTy (e) -> arms-use-list-ctors arms 0 (list-length arms)
+    is otherwise -> False
+
+  arms-use-list-ctors : List AMatchArm, Integer, Integer -> Boolean
+  arms-use-list-ctors (arms) (i) (len) =
+   if i >= len then False
+   else if pat-is-list-ctor ((list-at arms i).pattern) then True
+   else arms-use-list-ctors arms (i + 1) len
+
+  lower-ctx-bind-name : LowerCtx, Text, CodexType -> LowerCtx
+  lower-ctx-bind-name (ctx) (n) (t) =
+   LowerCtx {
+    overlay = OverlayCons (TypeBinding {
+     name = n,
+     bound-type = t
+    }) (ctx.overlay),
+    base = ctx.base,
+    ust = ctx.ust,
+    local-type-vars = ctx.local-type-vars,
+    chapter-renames = ctx.chapter-renames
+   }
+
+  list-len-call : IRExpr, CodexType, SourceSpan -> IRExpr
+  list-len-call (sref) (lty) (sp) =
+   deck-record (IrApply (deck-record (IrName "__list-len" (deck-record (FunTy lty empty-row int-ty-default)) sp)) sref int-ty-default sp)
+
+  list-arm-ty : CodexType, IRExpr -> CodexType
+  list-arm-ty (ty) (then-ir) =
+   when ty
+    is ErrorTy -> ir-expr-type then-ir
+    is otherwise -> ty
+
+  lower-list-match : IRExpr, CodexType, List AMatchArm, CodexType, LowerCtx, SourceSpan -> IRExpr
+  lower-list-match (scrut-ir) (elem) (arms) (ty) (ctx) (sp) =
+   let spos = sp.start
+   in let sname = "__lsc" & integer-to-text (spos.offset)
+   in let lty = deck-record (ListTy elem)
+   in let sref = deck-record (IrName sname lty sp)
+   in let chain = lower-list-arms arms 0 (list-length arms) sref elem lty ty ctx sp
+   in deck-record (IrLet sname lty scrut-ir chain sp)
+
+ The last arm lowers unconditionally: exhaustiveness has already
+ checked the arm set against the Nil/Cons view, therefore whatever
+ the earlier tests declined is the last arm's by construction, and
+ an if with no meaningful else would otherwise need an error
+ terminal that the emitter reports as a diagnostic just for
+ existing.
+
+  lower-list-arms : List AMatchArm, Integer, Integer, IRExpr, CodexType, CodexType, CodexType, LowerCtx, SourceSpan -> IRExpr
+  lower-list-arms (arms) (i) (len) (sref) (elem) (lty) (ty) (ctx) (sp) =
+   if i >= len then deck-record (IrError "non-exhaustive list match" ty sp)
+   else let arm = list-at arms i
+   in when (arm.pattern)
+    is AWildPat (s) -> lower-expr (arm.body) ty ctx
+    is AVarPat (n) (s) ->
+     let ctx2 = lower-ctx-bind-name ctx (n.value) lty
+     in deck-record (IrLet (n.value) lty sref (lower-expr (arm.body) ty ctx2) (arm.span))
+    is ACtorPat (cn) (subs) (s) ->
+     if (cn.value) == "Nil"
+     then if i == len - 1 then lower-expr (arm.body) ty ctx
+      else let cond = deck-record (IrBinary IrEq (list-len-call sref lty sp) (deck-record (IrIntLit 0 sp)) BooleanTy sp)
+       in let then-ir = lower-expr (arm.body) ty ctx
+       in deck-record (IrIf cond then-ir (lower-list-arms arms (i + 1) len sref elem lty ty ctx sp) (list-arm-ty ty then-ir) (arm.span))
+     else if (cn.value) == "Cons"
+     then lower-list-cons-arm arms i len sref elem lty ty ctx sp
+     else lower-list-arms arms (i + 1) len sref elem lty ty ctx sp
+    is otherwise -> lower-list-arms arms (i + 1) len sref elem lty ty ctx sp
+
+  lower-list-cons-arm : List AMatchArm, Integer, Integer, IRExpr, CodexType, CodexType, CodexType, LowerCtx, SourceSpan -> IRExpr
+  lower-list-cons-arm (arms) (i) (len) (sref) (elem) (lty) (ty) (ctx) (sp) =
+   let arm = list-at arms i
+   in let subs = list-ctor-subpats (arm.pattern)
+   in let h-pat = list-at subs 0
+   in let t-pat = list-at subs 1
+   in let ctx1 = when h-pat
+      is AVarPat (hn) (hs) -> lower-ctx-bind-name ctx (hn.value) elem
+      is otherwise -> ctx
+   in let ctx2 = when t-pat
+      is AVarPat (tn) (ts) -> lower-ctx-bind-name ctx1 (tn.value) lty
+      is otherwise -> ctx1
+   in let body-ir = lower-expr (arm.body) ty ctx2
+   in let with-t = when t-pat
+      is AVarPat (tn) (ts) -> deck-record (IrLet (tn.value) lty (deck-record (IrApply (deck-record (IrName "__list-tail" (deck-record (FunTy lty empty-row lty)) sp)) sref lty sp)) body-ir (arm.span))
+      is otherwise -> body-ir
+   in let with-h = when h-pat
+      is AVarPat (hn) (hs) -> deck-record (IrLet (hn.value) elem (deck-record (IrApply (deck-record (IrName "__list-head" (deck-record (FunTy lty empty-row elem)) sp)) sref elem sp)) with-t (arm.span))
+      is otherwise -> with-t
+   in if i == len - 1 then with-h
+   else let cond = deck-record (IrBinary IrGt (list-len-call sref lty sp) (deck-record (IrIntLit 0 sp)) BooleanTy sp)
+   in deck-record (IrIf cond with-h (lower-list-arms arms (i + 1) len sref elem lty ty ctx sp) (list-arm-ty ty with-h) (arm.span))
+
+  list-ctor-subpats : APat -> List APat
+  list-ctor-subpats (p) =
+   when p
+    is ACtorPat (n) (subs) (s) -> subs
+    is otherwise -> []
 
   infer-match-type : List IRBranch, Integer, Integer -> CodexType
   infer-match-type (branches) (i) (len) =
@@ -999,7 +1133,7 @@ Section: Collections and Act
  REST of the block, not merely over its own `in` body. Lowering it as a
  sibling IrDoExec left the following statements naming a binding from
  outside the let's body - ill-scoped IR that only ran because the
- emitter's locals table was flat per function (BACKLOG 2.22). So the let
+ emitter's locals table was flat per function. So the let
  becomes the LAST statement of the enclosing act, and its body becomes a
  nested IrAct of [the let's own body] ++ [the remaining statements].
  Execution order is unchanged. ir-expr-type of an IrLet is the type of
@@ -1174,25 +1308,25 @@ Section: Definition Lowering
     is FunTy (p) (row) (r) -> get-return-type-n r (n - 1)
     is otherwise -> ty
 
-  lower-chapter : AChapter, List TypeBinding, UnificationState, List Text, List RenameEntry, SkipListText, List ChapterAssignment -> IRChapter
-  lower-chapter (m) (all-types) (ust) (ctor-names) (renames) (colliding) (assignments) =
-   let slug-cache = for a in assignments -> slugify (a.chapter-slug)
+  lower-chapter : AChapter, List TypeBinding, UnificationState, List Text, List RenameEntry, SkipListText, List ChapterAssignment, Integer -> IRChapter
+  lower-chapter (m) (all-types) (ust) (ctor-names) (renames) (colliding) (assignments) (ceiling) =
+   let slug-cache = for a in assignments -> cite-key (a.chapter-slug)
    in deck-record (IRChapter {
     name = m.name,
-    defs = lower-defs (m.defs) all-types ust 0 renames colliding assignments (m.citations) slug-cache "" [] (m.rt-names) (m.rt-budgets),
-    effect-op-names = collect-effect-op-names (m.effect-defs) 0 (list-length (m.effect-defs)) [],
+    defs = lower-defs (m.defs) all-types ust 0 renames colliding assignments (m.citations) slug-cache "" [] (m.rt-names) (m.rt-budgets) ceiling,
+    effect-op-names = lower-collect-effect-op-names (m.effect-defs) 0 (list-length (m.effect-defs)) [],
     span = m.span
    })
 
-  collect-effect-op-names : List AEffectDef, Integer, Integer, List Text -> List Text
-  collect-effect-op-names (effs) (i) (len) (acc) =
+  lower-collect-effect-op-names : List AEffectDef, Integer, Integer, List Text -> List Text
+  lower-collect-effect-op-names (effs) (i) (len) (acc) =
    if i >= len then acc
    else let e = list-at effs i
-   in collect-effect-op-names effs (i + 1) len (acc & (for op in (e.ops) -> op.name.value))
+   in lower-collect-effect-op-names effs (i + 1) len (acc & (for op in (e.ops) -> op.name.value))
 
-  lower-defs : List ADef, List TypeBinding, UnificationState, Integer, List RenameEntry, SkipListText, List ChapterAssignment, List ACitesDecl, List Text, Text, List RenameEntry, List Text, List Integer -> List IRDef
-  lower-defs (defs) (types) (ust) (i) (renames) (colliding) (assignments) (citations) (slug-cache) (cur-slug) (cur-chapter-rn) (rt-names) (rt-budgets) =
-   lower-defs-acc defs types ust i [] renames colliding assignments citations slug-cache cur-slug cur-chapter-rn rt-names rt-budgets
+  lower-defs : List ADef, List TypeBinding, UnificationState, Integer, List RenameEntry, SkipListText, List ChapterAssignment, List ACitesDecl, List Text, Text, List RenameEntry, List Text, List Integer, Integer -> List IRDef
+  lower-defs (defs) (types) (ust) (i) (renames) (colliding) (assignments) (citations) (slug-cache) (cur-slug) (cur-chapter-rn) (rt-names) (rt-budgets) (ceiling) =
+   lower-defs-acc defs types ust i [] renames colliding assignments citations slug-cache cur-slug cur-chapter-rn rt-names rt-budgets ceiling
 
   is-in-rt-names : List Text, Text, Integer, Integer -> Boolean
   is-in-rt-names (names) (target) (i) (len) =
@@ -1206,48 +1340,89 @@ Section: Definition Lowering
    else if list-at names i == target then if i < list-length budgets then list-at budgets i else 0
    else find-rt-budget names budgets target (i + 1) len
 
-  lower-defs-acc : List ADef, List TypeBinding, UnificationState, Integer, List IRDef, List RenameEntry, SkipListText, List ChapterAssignment, List ACitesDecl, List Text, Text, List RenameEntry, List Text, List Integer -> List IRDef
-  lower-defs-acc (defs) (types) (ust) (i) (acc) (renames) (colliding) (assignments) (citations) (slug-cache) (cur-slug) (cur-chapter-rn) (rt-names) (rt-budgets) =
+ The ceiling is the LOWER deck reservation's top, checked per definition
+ because this loop is where the phase writes the deck in bulk: one IR
+ tree per definition. LOWER is the tightest deck in the compiler (1.06x
+ on the selfhost), so it is the one most likely to meet its floor in
+ ordinary growth rather than under a deliberately turned knob.
+
+ The predicate is deck-bound-short-of, which reads R10, and NOT
+ deck-short-of, which reads the deck-pos cell. lower-chapter is called
+ inside a phase-wide deck-record extent and the cell is written back
+ only when the nesting counter returns to zero, so inside the extent it
+ is frozen at the deck's base and deck-short-of reduces to a question
+ about the floor's width that never mentions the usage. This guard was
+ written with the cell and was therefore dead from the day it shipped.
+ Measured 2026-07-21 against a 16 MB floor: reading the cell, MEASURE
+ reported LOWER `used=-5307132` -- the phase overran far enough to
+ destroy the record measuring it -- and reading R10 it stops at
+ 8,487,976 bytes, exactly one guard band short of the floor.
+
+  lower-defs-acc : List ADef, List TypeBinding, UnificationState, Integer, List IRDef, List RenameEntry, SkipListText, List ChapterAssignment, List ACitesDecl, List Text, Text, List RenameEntry, List Text, List Integer, Integer -> List IRDef
+  lower-defs-acc (defs) (types) (ust) (i) (acc) (renames) (colliding) (assignments) (citations) (slug-cache) (cur-slug) (cur-chapter-rn) (rt-names) (rt-budgets) (ceiling) =
    if i == list-length defs then acc
+   else if deck-bound-short-of ceiling demand-lower-guard-band then acc
    else let d = list-at defs i
    in let chapter-rn = if d.chapter-slug == cur-slug then cur-chapter-rn
       else apply-cite-overrides (build-chapter-rename-map colliding assignments (d.chapter-slug)) citations colliding assignments slug-cache (d.chapter-slug) 0
    in let ir-def = lower-def d types ust renames chapter-rn
    in let tagged = if is-in-rt-names rt-names (d.name.value) 0 (list-length rt-names) then __record-set (__record-set ir-def "is-punctual" True) "wcet-budget" (find-rt-budget rt-names rt-budgets (d.name.value) 0 (list-length rt-names)) else ir-def
-   in lower-defs-acc defs types ust (i + 1) (list-push acc tagged) renames colliding assignments citations slug-cache (d.chapter-slug) chapter-rn rt-names rt-budgets
+   in lower-defs-acc defs types ust (i + 1) (list-push acc tagged) renames colliding assignments citations slug-cache (d.chapter-slug) chapter-rn rt-names rt-budgets ceiling
 
 Section: Constant Folding
 
+ The folder rewrites `text-length "abc"` to `3` by calling the compiler's
+ own `text-length`. That is only sound while the name at the call site
+ MEANS the builtin, and a chapter is allowed to define its own -- so the
+ fold is handed the set of names this chapter defines, and it declines any
+ name in that set.
+
+ Without the set, a shadow answered two ways in one function: the fold
+ caught `text-length "abc"` and gave the builtin's answer, while
+ `text-length (substring "abcde" 0 3)` reached `emit-compound`, which
+ checks `user-arity < 0` before routing to `emit-builtin` and so gave the
+ definition's. Same name, same body, different answers, decided by whether
+ the argument happened to be a literal. This was first recorded as a
+ per-builtin split -- `text-length` shadowed and `abs` not -- and it is
+ really a per-CALL-SITE split, which is why `abs` looked fine: nothing
+ folds `abs`.
+
+ The rule this settles is the one `emit-compound` already implemented: a
+ definition beats a builtin. The folder is now the only other place that
+ decided, and it decides the same way.
+
   fold-constants-in-chapter : IRChapter -> IRChapter
   fold-constants-in-chapter (ch) =
-   __record-set ch "defs" (for d in (ch.defs) -> let folded = __record-set d "body" (fold-expr (d.body)) in deck-record folded)
+   let defined = deck-record (skip-list-text-from-list (for d in (ch.defs) -> d.name))
+   in __record-set ch "defs" (for d in (ch.defs) -> let folded = __record-set d "body" (fold-expr (d.body) defined) in deck-record folded)
 
-  fold-expr : IRExpr -> IRExpr
-  fold-expr (e) =
+  fold-expr : IRExpr, SkipListText -> IRExpr
+  fold-expr (e) (dn) =
    when e
-    is IrApply (f) (a) (ty) (sp) -> fold-apply (fold-expr f) (fold-expr a) ty sp
-    is IrBinary (op) (l) (r) (ty) (sp) -> deck-record (IrBinary op (fold-expr l) (fold-expr r) ty sp)
-    is IrIf (c) (t) (el) (ty) (sp) -> deck-record (IrIf (fold-expr c) (fold-expr t) (fold-expr el) ty sp)
-    is IrLet (n) (ty) (v) (b) (sp) -> deck-record (IrLet n ty (fold-expr v) (fold-expr b) sp)
-    is IrLambda (ps) (b) (ty) (sp) -> deck-record (IrLambda ps (fold-expr b) ty sp)
-    is IrNegate (x) (sp) ->
-     let fx = fold-expr x
+    is IrApply (f) (a) (ty) (sp) -> fold-apply (fold-expr f dn) (fold-expr a dn) ty sp dn
+    is IrBinary (op) (l) (r) (ty) (sp) -> deck-record (IrBinary op (fold-expr l dn) (fold-expr r dn) ty sp)
+    is IrIf (c) (t) (el) (ty) (sp) -> deck-record (IrIf (fold-expr c dn) (fold-expr t dn) (fold-expr el dn) ty sp)
+    is IrLet (n) (ty) (v) (b) (sp) -> deck-record (IrLet n ty (fold-expr v dn) (fold-expr b dn) sp)
+    is IrLambda (ps) (b) (ty) (sp) -> deck-record (IrLambda ps (fold-expr b dn) ty sp)
+    is IrNegate (x) (t) (sp) ->
+     let fx = fold-expr x dn
      in when fx
       is IrIntLit (v) (ls) -> deck-record (IrIntLit (-v) sp)
-      is otherwise -> deck-record (IrNegate fx sp)
-    is IrMatch (sc) (bs) (ty) (sp) -> deck-record (IrMatch (fold-expr sc) (for b in bs -> deck-record (IRBranch { pattern = b.pattern, body = fold-expr (b.body), guard = fold-expr (b.guard), span = b.span, alt-group = b.alt-group })) ty sp)
-    is IrAct (ss) (ty) (sp) -> deck-record (IrAct (for stmt in ss -> when stmt is IrDoBind (n) (sty) (v) (ssp) -> deck-record (IrDoBind n sty (fold-expr v) ssp) is IrDoExec (ev) (esp) -> deck-record (IrDoExec (fold-expr ev) esp)) ty sp)
-    is IrRecord (n) (fs) (ty) (sp) -> deck-record (IrRecord n (for fv in fs -> deck-record (__record-set fv "value" (fold-expr (fv.value)))) ty sp)
-    is IrFieldAccess (r) (f) (ty) (sp) -> deck-record (IrFieldAccess (fold-expr r) f ty sp)
-    is IrFieldStore (r) (f) (v) (ty) (sp) -> deck-record (IrFieldStore (fold-expr r) f (fold-expr v) ty sp)
-    is IrList (es) (ty) (sp) -> deck-record (IrList (for x in es -> fold-expr x) ty sp)
+      is otherwise -> deck-record (IrNegate fx t sp)
+    is IrMatch (sc) (bs) (ty) (sp) -> deck-record (IrMatch (fold-expr sc dn) (for b in bs -> deck-record (IRBranch { pattern = b.pattern, body = fold-expr (b.body) dn, guard = fold-expr (b.guard) dn, span = b.span, alt-group = b.alt-group })) ty sp)
+    is IrAct (ss) (ty) (sp) -> deck-record (IrAct (for stmt in ss -> when stmt is IrDoBind (n) (sty) (v) (ssp) -> deck-record (IrDoBind n sty (fold-expr v dn) ssp) is IrDoExec (ev) (esp) -> deck-record (IrDoExec (fold-expr ev dn) esp)) ty sp)
+    is IrRecord (n) (fs) (ty) (sp) -> deck-record (IrRecord n (for fv in fs -> deck-record (__record-set fv "value" (fold-expr (fv.value) dn))) ty sp)
+    is IrFieldAccess (r) (f) (ty) (sp) -> deck-record (IrFieldAccess (fold-expr r dn) f ty sp)
+    is IrFieldStore (r) (f) (v) (ty) (sp) -> deck-record (IrFieldStore (fold-expr r dn) f (fold-expr v dn) ty sp)
+    is IrList (es) (ty) (sp) -> deck-record (IrList (for x in es -> fold-expr x dn) ty sp)
     is otherwise -> e
 
-  fold-apply : IRExpr, IRExpr, CodexType, SourceSpan -> IRExpr
-  fold-apply (f) (a) (ty) (sp) =
+  fold-apply : IRExpr, IRExpr, CodexType, SourceSpan, SkipListText -> IRExpr
+  fold-apply (f) (a) (ty) (sp) (dn) =
    when f
     is IrName (n) (fty) (ns) ->
-     if n == "text-length" then when a
+     if skip-list-text-has dn n then deck-record (IrApply f a ty sp)
+     else if n == "text-length" then when a
       is IrTextLit (s) (as) -> deck-record (IrIntLit (text-length s) sp)
       is otherwise -> deck-record (IrApply f a ty sp)
      else if n == "char-code" then when a
@@ -1257,7 +1432,8 @@ Section: Constant Folding
     is IrApply (inner-f) (inner-a) (fty) (fs) ->
      when inner-f
       is IrName (n) (nty) (nsp) ->
-       if n == "char-code-at" then fold-char-code-at f inner-a a ty sp
+       if n == "char-code-at" then (if skip-list-text-has dn n then deck-record (IrApply f a ty sp)
+        else fold-char-code-at f inner-a a ty sp)
        else deck-record (IrApply f a ty sp)
       is otherwise -> deck-record (IrApply f a ty sp)
     is otherwise -> deck-record (IrApply f a ty sp)
@@ -1342,9 +1518,10 @@ Section: Leaf Inlining
    else collect-leaf-defs defs (i + 1) acc
 
  A function with a bounded parameter or return is enforced by
- runtime guards at its callee entry and epilogue (BoundedSignatures.md
- stage B). Inlining would splice its body into the caller and bypass
- those guards, so a bounded-boundary function is never an inline
+ runtime guards at its callee entry and epilogue (bounded
+ signatures, stage B). Inlining would splice its body into the
+ caller and bypass those guards, so a bounded-boundary function is
+ never an inline
  candidate. The full-range bounds are read from int-ty-default so the
  check needs no i64 constants in this chapter.
 
@@ -1445,9 +1622,19 @@ Section: Leaf Inlining
  (math-mod's body is the canonical source), matches the multiply in
  either operand order, and requires the X and Y occurrences to be
  the same name or the same literal; the matched subtree has no
- binders, so equal names are equal values. CDX path only: the plug
- wire format and the text round-trip build from the TEXT frontend,
- which never inlines, so IrRemInt never reaches them.
+ binders, so equal names are equal values. This REWRITE is CDX-only,
+ because it fires on the inliner's output and only the CDX frontend
+ runs `run-ir-pipeline`.
+
+ IrRemInt itself is not CDX-only, and this prose said it was until
+ `int-rem` existed. A saturated `int-rem a b` lowers straight to
+ IrRemInt (`lower-int-rem-apply`, above) on every frontend, so the
+ node now crosses the plug wire. That is deliberate and it is what
+ makes the builtin free of the BACKLOG 3.22 hazard: 50 of the 53
+ plugs already carry an IrRemInt arm, and the three that do not --
+ elf, pe and img -- take CDX rather than IR and emit no expressions
+ at all. There is no plug in which the name can go unrecognised,
+ because the name never reaches a plug.
 
   ir-operand-same : IRExpr, IRExpr -> Boolean
   ir-operand-same (a) (b) =
@@ -1546,7 +1733,7 @@ Section: Leaf Inlining
     is IrIf (c) (t) (el) (ty) (sp) -> if has-leaf-call c cands then True else if has-leaf-call t cands then True else has-leaf-call el cands
     is IrLet (n) (ty) (v) (b) (sp) -> if has-leaf-call v cands then True else has-leaf-call b cands
     is IrLambda (ps) (b) (ty) (sp) -> has-leaf-call b cands
-    is IrNegate (x) (sp) -> has-leaf-call x cands
+    is IrNegate (x) (t) (sp) -> has-leaf-call x cands
     is IrMatch (sc) (bs) (ty) (sp) -> if has-leaf-call sc cands then True else has-leaf-call-branches bs cands 0
     is IrAct (ss) (ty) (sp) -> has-leaf-call-stmts ss cands 0
     is IrRecord (n) (fs) (ty) (sp) -> has-leaf-call-fields fs cands 0
@@ -1601,7 +1788,7 @@ Section: Leaf Inlining
     is IrIf (c) (t) (el) (ty) (sp) -> deck-record (IrIf (inline-expr c cands bound) (inline-expr t cands bound) (inline-expr el cands bound) ty sp)
     is IrLet (n) (ty) (v) (b) (sp) -> deck-record (IrLet n ty (inline-expr v cands bound) (inline-expr b cands (list-push bound n)) sp)
     is IrLambda (ps) (b) (ty) (sp) -> deck-record (IrLambda ps (inline-expr b cands (push-param-names bound ps 0)) ty sp)
-    is IrNegate (x) (sp) -> deck-record (IrNegate (inline-expr x cands bound) sp)
+    is IrNegate (x) (t) (sp) -> deck-record (IrNegate (inline-expr x cands bound) t sp)
     is IrMatch (sc) (bs) (ty) (sp) -> deck-record (IrMatch (inline-expr sc cands bound) (for b in bs -> deck-record (IRBranch { pattern = b.pattern, body = inline-expr (b.body) cands (push-pat-names bound (b.pattern)), guard = inline-expr (b.guard) cands (push-pat-names bound (b.pattern)), span = b.span, alt-group = b.alt-group })) ty sp)
     is IrAct (ss) (ty) (sp) -> deck-record (IrAct (inline-act-stmts ss cands bound 0 []) ty sp)
     is IrRecord (n) (fs) (ty) (sp) -> deck-record (IrRecord n (for fv in fs -> deck-record (__record-set fv "value" (inline-expr (fv.value) cands bound))) ty sp)
@@ -1615,5 +1802,445 @@ Section: Leaf Inlining
    let cands = collect-leaf-defs (ch.defs) 0 []
    in if list-length cands == 0 then ch
    else __record-set ch "defs" (for d in (ch.defs) -> if has-leaf-call (d.body) cands then deck-record (__record-set d "body" (inline-expr (d.body) cands (push-param-names [] (d.params) 0))) else d)
+
+Section: Single-Caller Inlining
+
+ Phase 2 of inlining. Leaf inlining above will only take a body of pure
+ integer arithmetic over the callee's own parameters, because it inlines
+ at EVERY call site and so pays for the body once per site. A definition
+ referenced exactly ONCE in the whole chapter does not have that problem:
+ substituting it duplicates nothing, and once the single reference is
+ gone the definition is unreachable and emit-time dead-code elimination
+ drops it. So the body vocabulary can widen where the caller count
+ cannot.
+
+ That the removal actually happens is measured, not assumed. A one-caller
+ arithmetic helper that phase 1 already inlines is absent from the
+ emitted symbol map, and a four-parameter one that phase 1 declines is
+ present in it at eleven bytes -- so the map can report both answers and
+ the disappearance means what it says.
+
+ What widens is the SHAPE of the body. What does not widen is any of the
+ four properties that make substitution sound, and each is enforced
+ separately:
+
+ Binder-free. `once-binder-free` is an ALLOW-list: literals, names,
+ arithmetic, `if`, application, lists, records and field access are
+ admitted, and every other constructor -- `IrLet`, `IrLambda`, `IrMatch`,
+ `IrAct`, `IrHandle`, `IrTry`, and anything added to `IRExpr` after this
+ was written -- is refused by the default arm. A body that binds no names
+ cannot capture an argument, which is what lets the substitution stay a
+ plain walk instead of a renaming one. The default arm is deliberately
+ the refusing one: a new binding constructor must be admitted on purpose,
+ not inherited by silence.
+
+ No free name captured by the caller. A widened body may mention globals
+ the callee resolved in its own scope. If the CALL SITE has a local of
+ that name in scope, splicing the body there rebinds it to the caller's
+ local and the meaning changes. `once-free-escapes` refuses that, reading
+ the same `bound` list the leaf pass already threads to every site. Phase
+ 1 never needed this check because its bodies mention nothing but their
+ own parameters.
+
+ Simple arguments. A parameter can appear more than once in the body, so
+ an argument is duplicated by substitution; `leaf-args-simple` keeps
+ arguments to names and integer literals, which are free to duplicate and
+ cannot carry an effect. This is phase 1's rule, kept.
+
+ Exactly one reference. `count-refs-chapter` counts every `IrName`
+ occurrence of a candidate across every definition body, including the
+ candidate's own. Counting its own body is what excludes recursion for
+ free: a self-recursive definition names itself and can never reach one.
+ A count of one does not promise the reference is a saturated call -- a
+ bare reference or a partial application also counts one -- but
+ `inline-apply-site`'s arity check declines those, and the definition
+ then simply stays.
+
+ `deck-record` and bounded-boundary definitions are excluded here for the
+ reasons the leaf pass gives above; both guards are the same call.
+
+ In `default-ir-pipeline`, after one changelist opt-in while the numbers
+ were taken. The worry was the LOWER deck: it is the tightest in the
+ compiler, roughly 1.19x against its 320 MB floor on a 2.70 MB
+ self-compile, this pass allocates every substituted body on it, and an
+ under-reserved floor does not raise `CDX9002` -- it dies in a `#GP` with
+ no diagnostic. So it was worth measuring before spending.
+
+ It spends nothing. Same compiler, pass off then on, LOWER read
+ 286,227,712 both ways. The binary is where the pass shows up: the
+ selfhost lost 9,957 bytes and compiled 0.3 s faster, nine other programs
+ lost 709 bytes between them with none growing, and all ten produced
+ byte-identical output.
+
+ Worth recording that the first reading of those numbers was wrong. Deck
+ unchanged was reported as "does nothing", which is one metric standing in
+ for a conclusion it cannot support -- the deck measures what the pass
+ ALLOCATES, and the point of the pass is what the emitter then does not
+ have to write.
+
+  once-binder-free : IRExpr -> Boolean
+  once-binder-free (e) =
+   when e
+    is IrIntLit (v) (sp) -> True
+    is IrNumLit (v) (sp) -> True
+    is IrTextLit (t) (sp) -> True
+    is IrBoolLit (b) (sp) -> True
+    is IrCharLit (c) (sp) -> True
+    is IrName (n) (ty) (sp) -> True
+    is IrNegate (x) (t) (sp) -> once-binder-free x
+    is IrBinary (op) (l) (r) (ty) (sp) -> if once-binder-free l then once-binder-free r else False
+    is IrIf (c) (t) (el) (ty) (sp) -> if once-binder-free c then (if once-binder-free t then once-binder-free el else False) else False
+    is IrApply (f) (a) (ty) (sp) -> if once-binder-free f then once-binder-free a else False
+    is IrFieldAccess (r) (f) (ty) (sp) -> once-binder-free r
+    is IrFieldStore (r) (f) (v) (ty) (sp) -> if once-binder-free r then once-binder-free v else False
+    is IrList (es) (ty) (sp) -> once-binder-free-list es 0
+    is IrRecord (n) (fs) (ty) (sp) -> once-binder-free-fields fs 0
+    is otherwise -> False
+
+  once-binder-free-list : List IRExpr, Integer -> Boolean
+  once-binder-free-list (es) (i) =
+   if i >= list-length es then True
+   else if once-binder-free (list-at es i) then once-binder-free-list es (i + 1)
+   else False
+
+  once-binder-free-fields : List IRFieldVal, Integer -> Boolean
+  once-binder-free-fields (fs) (i) =
+   if i >= list-length fs then True
+   else if once-binder-free ((list-at fs i).value) then once-binder-free-fields fs (i + 1)
+   else False
+
+ A name in the body that is not a parameter is a reference the callee
+ resolved globally. It is safe to move only while the call site has no
+ local of that name.
+
+  once-free-escapes : IRExpr, List Text, List Text -> Boolean
+  once-free-escapes (e) (params) (bound) =
+   when e
+    is IrName (n) (ty) (sp) -> if leaf-param-index params n 0 >= 0 then False else leaf-param-index bound n 0 >= 0
+    is IrNegate (x) (t) (sp) -> once-free-escapes x params bound
+    is IrBinary (op) (l) (r) (ty) (sp) -> if once-free-escapes l params bound then True else once-free-escapes r params bound
+    is IrIf (c) (t) (el) (ty) (sp) -> if once-free-escapes c params bound then True else if once-free-escapes t params bound then True else once-free-escapes el params bound
+    is IrApply (f) (a) (ty) (sp) -> if once-free-escapes f params bound then True else once-free-escapes a params bound
+    is IrFieldAccess (r) (f) (ty) (sp) -> once-free-escapes r params bound
+    is IrFieldStore (r) (f) (v) (ty) (sp) -> if once-free-escapes r params bound then True else once-free-escapes v params bound
+    is IrList (es) (ty) (sp) -> once-free-escapes-list es params bound 0
+    is IrRecord (n) (fs) (ty) (sp) -> once-free-escapes-fields fs params bound 0
+    is otherwise -> False
+
+  once-free-escapes-list : List IRExpr, List Text, List Text, Integer -> Boolean
+  once-free-escapes-list (es) (params) (bound) (i) =
+   if i >= list-length es then False
+   else if once-free-escapes (list-at es i) params bound then True
+   else once-free-escapes-list es params bound (i + 1)
+
+  once-free-escapes-fields : List IRFieldVal, List Text, List Text, Integer -> Boolean
+  once-free-escapes-fields (fs) (params) (bound) (i) =
+   if i >= list-length fs then False
+   else if once-free-escapes ((list-at fs i).value) params bound then True
+   else once-free-escapes-fields fs params bound (i + 1)
+
+ Substitution over exactly the admitted vocabulary. Every constructor
+ `once-binder-free` accepts is rebuilt here; anything else is returned
+ untouched, which is reachable only for the leaves that carry no
+ sub-expression. Widening one of these two lists without the other is
+ the way this pass would silently leave a parameter name loose in the
+ caller, so they are written to be read side by side.
+
+ The record arm builds a FRESH IRFieldVal rather than `__record-set`
+ on the one it was handed, and the reason is the cost-based pass: the
+ expression being substituted is the CANDIDATE'S BODY TEMPLATE, reused
+ at every call site, and `__record-set` writes into that template --
+ the first site's argument replaced the field value for every site
+ after it, splicing the first caller's local name into functions that
+ do not bind it (`Unresolved call to 'tokens'`, found via the selfhost).
+ Single-caller substitution never saw this because a one-caller
+ template is substituted exactly once; this is the `__record-set`
+ single-owner condition, violated by multi-site reuse.
+
+  subst-once : IRExpr, List Text, List IRExpr -> IRExpr
+  subst-once (e) (params) (args) =
+   when e
+    is IrName (n) (ty) (sp) ->
+     let idx = leaf-param-index params n 0
+     in if idx >= 0 then list-at args idx else e
+    is IrNegate (x) (t) (sp) -> deck-record (IrNegate (subst-once x params args) t sp)
+    is IrBinary (op) (l) (r) (ty) (sp) -> deck-record (IrBinary op (subst-once l params args) (subst-once r params args) ty sp)
+    is IrIf (c) (t) (el) (ty) (sp) -> deck-record (IrIf (subst-once c params args) (subst-once t params args) (subst-once el params args) ty sp)
+    is IrApply (f) (a) (ty) (sp) -> deck-record (IrApply (subst-once f params args) (subst-once a params args) ty sp)
+    is IrFieldAccess (r) (f) (ty) (sp) -> deck-record (IrFieldAccess (subst-once r params args) f ty sp)
+    is IrFieldStore (r) (f) (v) (ty) (sp) -> deck-record (IrFieldStore (subst-once r params args) f (subst-once v params args) ty sp)
+    is IrList (es) (ty) (sp) -> deck-record (IrList (for x in es -> subst-once x params args) ty sp)
+    is IrRecord (n) (fs) (ty) (sp) -> deck-record (IrRecord n (for fv in fs -> deck-record (IRFieldVal { name = fv.name, value = subst-once (fv.value) params args, span = fv.span })) ty sp)
+    is otherwise -> e
+
+ The reference census. This walk must reach every constructor that can
+ hold a sub-expression, because a reference this misses is a reference
+ that makes a two-caller definition look like a one-caller definition.
+ It therefore covers the handler, timeout, fork, await and try forms that
+ `has-leaf-call` above does not -- undercounting is the one direction
+ that is not conservative here.
+
+ `list-set-at` writes in place and answers the same list, so the counter
+ is threaded rather than rebuilt and the census costs no allocation per
+ name.
+
+  bump-ref : List Integer, Integer -> List Integer
+  bump-ref (counts) (i) =
+   if i < 0 then counts else list-set-at counts i ((list-at counts i) + 1)
+
+  count-refs-expr : IRExpr, List InlineLeaf, List Integer -> List Integer
+  count-refs-expr (e) (cands) (counts) =
+   when e
+    is IrName (n) (ty) (sp) -> bump-ref counts (find-leaf-def cands n 0)
+    is IrNegate (x) (t) (sp) -> count-refs-expr x cands counts
+    is IrBinary (op) (l) (r) (ty) (sp) -> count-refs-expr r cands (count-refs-expr l cands counts)
+    is IrIf (c) (t) (el) (ty) (sp) -> count-refs-expr el cands (count-refs-expr t cands (count-refs-expr c cands counts))
+    is IrApply (f) (a) (ty) (sp) -> count-refs-expr a cands (count-refs-expr f cands counts)
+    is IrLet (n) (ty) (v) (b) (sp) -> count-refs-expr b cands (count-refs-expr v cands counts)
+    is IrLambda (ps) (b) (ty) (sp) -> count-refs-expr b cands counts
+    is IrFieldAccess (r) (f) (ty) (sp) -> count-refs-expr r cands counts
+    is IrFieldStore (r) (f) (v) (ty) (sp) -> count-refs-expr v cands (count-refs-expr r cands counts)
+    is IrList (es) (ty) (sp) -> count-refs-list es cands counts 0
+    is IrRecord (n) (fs) (ty) (sp) -> count-refs-fields fs cands counts 0
+    is IrMatch (sc) (bs) (ty) (sp) -> count-refs-branches bs cands (count-refs-expr sc cands counts) 0
+    is IrAct (ss) (ty) (sp) -> count-refs-stmts ss cands counts 0
+    is IrHandle (n) (b) (cs) (ty) (sp) -> count-refs-clauses cs cands (count-refs-expr b cands counts) 0
+    is IrWithTimeout (ms) (a) (b) (body) (ty) (sp) -> count-refs-expr body cands counts
+    is IrFork (x) (ty) (sp) -> count-refs-expr x cands counts
+    is IrAwait (x) (ty) (sp) -> count-refs-expr x cands counts
+    is IrTry (i) (a) (b) (c) (ty) (sp) -> count-refs-stmts c cands (count-refs-stmts b cands (count-refs-stmts a cands counts 0) 0) 0
+    is otherwise -> counts
+
+  count-refs-list : List IRExpr, List InlineLeaf, List Integer, Integer -> List Integer
+  count-refs-list (es) (cands) (counts) (i) =
+   if i >= list-length es then counts
+   else count-refs-list es cands (count-refs-expr (list-at es i) cands counts) (i + 1)
+
+  count-refs-fields : List IRFieldVal, List InlineLeaf, List Integer, Integer -> List Integer
+  count-refs-fields (fs) (cands) (counts) (i) =
+   if i >= list-length fs then counts
+   else count-refs-fields fs cands (count-refs-expr ((list-at fs i).value) cands counts) (i + 1)
+
+  count-refs-branches : List IRBranch, List InlineLeaf, List Integer, Integer -> List Integer
+  count-refs-branches (bs) (cands) (counts) (i) =
+   if i >= list-length bs then counts
+   else let b = list-at bs i
+   in count-refs-branches bs cands (count-refs-expr (b.guard) cands (count-refs-expr (b.body) cands counts)) (i + 1)
+
+  count-refs-stmts : List IRActStmt, List InlineLeaf, List Integer, Integer -> List Integer
+  count-refs-stmts (ss) (cands) (counts) (i) =
+   if i >= list-length ss then counts
+   else count-refs-stmts ss cands (count-refs-expr (ir-act-stmt-expr (list-at ss i)) cands counts) (i + 1)
+
+  count-refs-clauses : List IRHandleClause, List InlineLeaf, List Integer, Integer -> List Integer
+  count-refs-clauses (cs) (cands) (counts) (i) =
+   if i >= list-length cs then counts
+   else count-refs-clauses cs cands (count-refs-expr ((list-at cs i).body) cands counts) (i + 1)
+
+  count-refs-chapter : List IRDef, List InlineLeaf, List Integer, Integer -> List Integer
+  count-refs-chapter (defs) (cands) (counts) (i) =
+   if i >= list-length defs then counts
+   else count-refs-chapter defs cands (count-refs-expr ((list-at defs i).body) cands counts) (i + 1)
+
+  zeros-for : Integer, List Integer -> List Integer
+  zeros-for (n) (acc) =
+   if n <= 0 then acc else zeros-for (n - 1) (list-push acc 0)
+
+ The locally eligible set, before any counting. Arity runs to four
+ because the leaf pass's cap of three is a duplication budget and there
+ is no duplication to budget for here.
+
+  collect-once-defs : List IRDef, Integer, List InlineLeaf -> List InlineLeaf
+  collect-once-defs (defs) (i) (acc) =
+   if i >= list-length defs then acc
+   else let d = list-at defs i
+   in let pnames = for p in (d.params) -> p.name
+   in let np = list-length pnames
+   in let ok = if d.name == "deck-record" then False
+      else if has-bounded-boundary d then False
+      else if np < 1 then False
+      else if np > 4 then False
+      else once-binder-free (d.body)
+   in if ok
+      then collect-once-defs defs (i + 1) (list-push acc (deck-record (InlineLeaf { il-name = d.name, il-params = pnames, il-body = d.body })))
+   else collect-once-defs defs (i + 1) acc
+
+  keep-single-caller : List InlineLeaf, List Integer, Integer, List InlineLeaf -> List InlineLeaf
+  keep-single-caller (cands) (counts) (i) (acc) =
+   if i >= list-length cands then acc
+   else if list-at counts i == 1 then keep-single-caller cands counts (i + 1) (list-push acc (list-at cands i))
+   else keep-single-caller cands counts (i + 1) acc
+
+  once-apply-site : IRExpr, List InlineLeaf, List Text -> IRExpr
+  once-apply-site (e) (cands) (bound) =
+   let root = inline-apply-root e
+   in if root == "" then e
+   else if leaf-param-index bound root 0 >= 0 then e
+   else let ci = find-leaf-def cands root 0
+   in if ci < 0 then e
+   else let cand = list-at cands ci
+   in let args = inline-apply-args e []
+   in if list-length args /= list-length (cand.il-params) then e
+   else if leaf-args-simple args 0 == False then e
+   else if once-free-escapes (cand.il-body) (cand.il-params) bound then e
+   else subst-once (cand.il-body) (cand.il-params) args
+
+  once-expr : IRExpr, List InlineLeaf, List Text -> IRExpr
+  once-expr (e) (cands) (bound) =
+   when e
+    is IrApply (f) (a) (ty) (sp) ->
+     let nf = once-expr f cands bound
+     in let na = once-expr a cands bound
+     in once-apply-site (deck-record (IrApply nf na ty sp)) cands bound
+    is IrBinary (op) (l) (r) (ty) (sp) -> deck-record (IrBinary op (once-expr l cands bound) (once-expr r cands bound) ty sp)
+    is IrIf (c) (t) (el) (ty) (sp) -> deck-record (IrIf (once-expr c cands bound) (once-expr t cands bound) (once-expr el cands bound) ty sp)
+    is IrLet (n) (ty) (v) (b) (sp) -> deck-record (IrLet n ty (once-expr v cands bound) (once-expr b cands (list-push bound n)) sp)
+    is IrLambda (ps) (b) (ty) (sp) -> deck-record (IrLambda ps (once-expr b cands (push-param-names bound ps 0)) ty sp)
+    is IrNegate (x) (t) (sp) -> deck-record (IrNegate (once-expr x cands bound) t sp)
+    is IrMatch (sc) (bs) (ty) (sp) -> deck-record (IrMatch (once-expr sc cands bound) (for b in bs -> deck-record (IRBranch { pattern = b.pattern, body = once-expr (b.body) cands (push-pat-names bound (b.pattern)), guard = once-expr (b.guard) cands (push-pat-names bound (b.pattern)), span = b.span, alt-group = b.alt-group })) ty sp)
+    is IrAct (ss) (ty) (sp) -> deck-record (IrAct (once-act-stmts ss cands bound 0 []) ty sp)
+    is IrRecord (n) (fs) (ty) (sp) -> deck-record (IrRecord n (for fv in fs -> deck-record (__record-set fv "value" (once-expr (fv.value) cands bound))) ty sp)
+    is IrFieldAccess (r) (f) (ty) (sp) -> deck-record (IrFieldAccess (once-expr r cands bound) f ty sp)
+    is IrFieldStore (r) (f) (v) (ty) (sp) -> deck-record (IrFieldStore (once-expr r cands bound) f (once-expr v cands bound) ty sp)
+    is IrList (es) (ty) (sp) -> deck-record (IrList (for x in es -> once-expr x cands bound) ty sp)
+    is otherwise -> e
+
+  once-act-stmts : List IRActStmt, List InlineLeaf, List Text, Integer, List IRActStmt -> List IRActStmt
+  once-act-stmts (ss) (cands) (bound) (i) (acc) =
+   if i >= list-length ss then acc
+   else let s = list-at ss i
+   in when s
+    is IrDoBind (n) (sty) (v) (ssp) -> once-act-stmts ss cands (list-push bound n) (i + 1) (list-push acc (deck-record (IrDoBind n sty (once-expr v cands bound) ssp)))
+    is IrDoExec (ev) (esp) -> once-act-stmts ss cands bound (i + 1) (list-push acc (deck-record (IrDoExec (once-expr ev cands bound) esp)))
+
+  inline-single-caller-in-chapter : IRChapter -> IRChapter
+  inline-single-caller-in-chapter (ch) =
+   let local = collect-once-defs (ch.defs) 0 []
+   in if list-length local == 0 then ch
+   else let counts = count-refs-chapter (ch.defs) local (zeros-for (list-length local) []) 0
+   in let cands = keep-single-caller local counts 0 []
+   in if list-length cands == 0 then ch
+   else __record-set ch "defs" (for d in (ch.defs) -> if has-leaf-call (d.body) cands then deck-record (__record-set d "body" (once-expr (d.body) cands (push-param-names [] (d.params) 0))) else d)
+
+Section: Cost-Based Inlining
+
+ The first of the three inlining passes that can make a program
+ bigger. The leaf pass never duplicates anything expensive and the
+ single-caller pass duplicates nothing at all; this one substitutes a
+ body at EVERY saturated call site, on purpose, trading size for the
+ calls it removes. What bounds the trade is a cost ceiling: a
+ candidate's body may hold at most `inline-cost-ceiling` operation
+ nodes (`Core/BuildSettings.codex`), so each site pays a known, small
+ price.
+
+ It is OPT-IN (`passes=+inline-cost-based`), not in the default
+ pipeline, because the trade was measured on the selfhost and lost at
+ every ceiling: the binary grows (1.1 to 19 per cent across ceilings 4
+ to 12) and the inlined compiler is not faster (timed with the pass
+ itself switched off, so the binary's own speed is what was measured).
+ The numbers are with the ceiling constant in BuildSettings. A
+ workload whose hot helpers are small and truly hot may still win;
+ the compiler is not that workload.
+
+ Everything else is the single-caller pass's machinery, reused rather
+ than restated: the same binder-free allow-list (`once-binder-free`),
+ the same arity band, the same census (`count-refs-chapter`), and the
+ same site admission (`once-apply-site`: saturated arity, simple
+ arguments, the shadowed-free-name capture guard). The only new
+ judgment is the cost function and who qualifies: a reference count of
+ TWO or more, because a count of one belongs to the single-caller pass
+ that ran just before and a count of zero is dead already. A candidate
+ whose sites all inline loses its last reference and emit-time
+ dead-code elimination drops the definition; one with a declining site
+ (a bare reference, a partial application) simply stays.
+
+ The cost function counts operation nodes over the admitted
+ vocabulary, an architecture-independent proxy for emitted
+ instructions: leaves are free, an operator or call or field access is
+ one, a branch is two, and a record or list pays one per slot plus the
+ allocation. The admitted vocabulary is closed (the allow-list refuses
+ everything with a binder), so the `otherwise` arm answering zero is
+ reachable only for leaves.
+
+  ir-cost-expr : IRExpr -> Integer
+  ir-cost-expr (e) =
+   when e
+    is IrNegate (x) (t) (sp) -> 1 + ir-cost-expr x
+    is IrBinary (op) (l) (r) (ty) (sp) -> 1 + ir-cost-expr l + ir-cost-expr r
+    is IrIf (c) (t) (el) (ty) (sp) -> 2 + ir-cost-expr c + ir-cost-expr t + ir-cost-expr el
+    is IrApply (f) (a) (ty) (sp) -> 1 + ir-cost-expr f + ir-cost-expr a
+    is IrFieldAccess (r) (f) (ty) (sp) -> 1 + ir-cost-expr r
+    is IrFieldStore (r) (f) (v) (ty) (sp) -> 1 + ir-cost-expr r + ir-cost-expr v
+    is IrList (es) (ty) (sp) -> 1 + ir-cost-list es 0 0
+    is IrRecord (n) (fs) (ty) (sp) -> 1 + ir-cost-fields fs 0 0
+    is otherwise -> 0
+
+  ir-cost-list : List IRExpr, Integer, Integer -> Integer
+  ir-cost-list (es) (i) (acc) =
+   if i >= list-length es then acc
+   else ir-cost-list es (i + 1) (acc + 1 + ir-cost-expr (list-at es i))
+
+  ir-cost-fields : List IRFieldVal, Integer, Integer -> Integer
+  ir-cost-fields (fs) (i) (acc) =
+   if i >= list-length fs then acc
+   else ir-cost-fields fs (i + 1) (acc + 1 + ir-cost-expr ((list-at fs i).value))
+
+  ir-body-mentions : IRExpr, Text -> Boolean
+  ir-body-mentions (e) (nm) =
+   when e
+    is IrName (n) (ty) (sp) -> n == nm
+    is IrNegate (x) (t) (sp) -> ir-body-mentions x nm
+    is IrBinary (op) (l) (r) (ty) (sp) -> if ir-body-mentions l nm then True else ir-body-mentions r nm
+    is IrIf (c) (t) (el) (ty) (sp) -> if ir-body-mentions c nm then True else if ir-body-mentions t nm then True else ir-body-mentions el nm
+    is IrApply (f) (a) (ty) (sp) -> if ir-body-mentions f nm then True else ir-body-mentions a nm
+    is IrFieldAccess (r) (f) (ty) (sp) -> ir-body-mentions r nm
+    is IrFieldStore (r) (f) (v) (ty) (sp) -> if ir-body-mentions r nm then True else ir-body-mentions v nm
+    is IrList (es) (ty) (sp) -> ir-body-mentions-list es nm 0
+    is IrRecord (n) (fs) (ty) (sp) -> ir-body-mentions-fields fs nm 0
+    is otherwise -> False
+
+  ir-body-mentions-list : List IRExpr, Text, Integer -> Boolean
+  ir-body-mentions-list (es) (nm) (i) =
+   if i >= list-length es then False
+   else if ir-body-mentions (list-at es i) nm then True
+   else ir-body-mentions-list es nm (i + 1)
+
+  ir-body-mentions-fields : List IRFieldVal, Text, Integer -> Boolean
+  ir-body-mentions-fields (fs) (nm) (i) =
+   if i >= list-length fs then False
+   else if ir-body-mentions ((list-at fs i).value) nm then True
+   else ir-body-mentions-fields fs nm (i + 1)
+
+  collect-cost-defs : List IRDef, Integer, List InlineLeaf -> List InlineLeaf
+  collect-cost-defs (defs) (i) (acc) =
+   if i >= list-length defs then acc
+   else let d = list-at defs i
+   in let pnames = for p in (d.params) -> p.name
+   in let np = list-length pnames
+   in let ok = if d.name == "deck-record" then False
+      else if has-bounded-boundary d then False
+      else if np < 1 then False
+      else if np > 4 then False
+      else if once-binder-free (d.body) == False then False
+      else if ir-body-mentions (d.body) (d.name) then False
+      else ir-cost-expr (d.body) <= inline-cost-ceiling
+   in if ok
+      then collect-cost-defs defs (i + 1) (list-push acc (deck-record (InlineLeaf { il-name = d.name, il-params = pnames, il-body = d.body })))
+   else collect-cost-defs defs (i + 1) acc
+
+  keep-multi-caller : List InlineLeaf, List Integer, Integer, List InlineLeaf -> List InlineLeaf
+  keep-multi-caller (cands) (counts) (i) (acc) =
+   if i >= list-length cands then acc
+   else if list-at counts i >= 2 then keep-multi-caller cands counts (i + 1) (list-push acc (list-at cands i))
+   else keep-multi-caller cands counts (i + 1) acc
+
+  inline-cost-based-in-chapter : IRChapter -> IRChapter
+  inline-cost-based-in-chapter (ch) =
+   let local = collect-cost-defs (ch.defs) 0 []
+   in if list-length local == 0 then ch
+   else let counts = count-refs-chapter (ch.defs) local (zeros-for (list-length local) []) 0
+   in let cands = keep-multi-caller local counts 0 []
+   in if list-length cands == 0 then ch
+   else __record-set ch "defs" (for d in (ch.defs) -> if has-leaf-call (d.body) cands then deck-record (__record-set d "body" (once-expr (d.body) cands (push-param-names [] (d.params) 0))) else d)
 
 Page 1 of 2

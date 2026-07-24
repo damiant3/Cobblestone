@@ -11,7 +11,7 @@ Chapter: FileSharePersist
 
  Persistent storage for file sharing. Content manifests are
  serialized as JSON (kind 25) and transfer metadata as
- tab-separated text (kind 25, one fact per transfer).
+ pipe-separated text (kind 25, one fact per transfer).
 
 Section: Kind Constants
 
@@ -35,7 +35,7 @@ Section: Transfer Serialization
 
   transfer-from-text : Text -> Maybe Transfer
   transfer-from-text (txt) =
-    let tab-pos = find-nth-tab txt 6 0 0
+    let tab-pos = find-nth-sep txt 6 0 0
     in if tab-pos == (-1) then None
     else let header = text-take txt tab-pos
     in let json = text-drop txt (tab-pos + 1)
@@ -61,13 +61,20 @@ Section: Transfer Serialization
           tf-started = parse-decimal-full (list-at parts 5)
         })
 
-  find-nth-tab : Text, Integer, Integer, Integer -> Integer
-  find-nth-tab (txt) (n) (pos) (count) =
+ The writer above joins the fields with '|', so this looks for that and
+ not for a tab. It compared against the integer 9 -- a tab code point,
+ and the wrong type besides, because char-at gives a Char. Neither half
+ had ever run.
+
+  fs-field-sep : Text = "|"
+
+  find-nth-sep : Text, Integer, Integer, Integer -> Integer
+  find-nth-sep (txt) (n) (pos) (count) =
     if pos >= text-length txt then (-1)
-    else if char-at txt pos == 9
+    else if char-at txt pos == char-at fs-field-sep 0
       then if count + 1 >= n then pos
-      else find-nth-tab txt n (pos + 1) (count + 1)
-    else find-nth-tab txt n (pos + 1) count
+      else find-nth-sep txt n (pos + 1) (count + 1)
+    else find-nth-sep txt n (pos + 1) count
 
 Section: State Serialization
 

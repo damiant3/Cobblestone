@@ -7,7 +7,7 @@
 #   <OutDir>\<name>.cs
 #     |
 #     v  generated <name>.csproj (the only barbarian-authored artifact,
-#     |  per apps/lens/DESIGN.md 4.4 -- and it is generated too)
+#     |  per the Lens platform seam -- and it is generated too)
 #     v  dotnet build -c Release
 #   <OutDir>\bin\Release\net9.0\<name>.exe
 #

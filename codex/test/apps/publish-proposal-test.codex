@@ -1,15 +1,76 @@
 Chapter: PublishProposalTest
 
   cites Foreword chapter Console
+  cites Foreword chapter Maybe
+  cites Works chapter Annotation
+  cites Works chapter SignedAnnotation
+  cites Works chapter KeyManager
   cites Works chapter RepoProtocol
+
+ Publishing a proposal puts a payload in the outbox, and draining takes
+ it out again. The old body published nothing: it printed the size of an
+ empty outbox and its head-sequence, both zero, which is an assertion
+ that cannot fail.
+
+ The measurements that carry weight here are the ones that must CHANGE.
+ An empty repo has an empty outbox and no head; after publishing it has
+ one payload carrying the annotation that went in; after draining it is
+ empty again. A publish that quietly did nothing would leave before and
+ after identical, which is exactly what the old body could not tell
+ apart.
+
+Section: Fixtures
+
+  ppt-keypair : Keypair
+  ppt-keypair = generate-keypair (text-to-bytes "publish-proposal-test-seed")
+
+  ppt-target : AnnotationTarget
+  ppt-target = make-target "RepoProtocol" "publish-proposal"
+
+  ppt-annotation : Annotation
+  ppt-annotation = create-annotation ppt-target Rationale "fester" "the outbox has to actually grow" 100
+
+Section: Helpers
+
+  ppt-head-author : Maybe ProposalPayload -> Text
+  ppt-head-author (m) = when m
+    is Just (p) -> p.annotation.annotation.author
+    is otherwise -> "(none)"
+
+  ppt-head-chapter : Maybe ProposalPayload -> Text
+  ppt-head-chapter (m) = when m
+    is Just (p) -> p.target-chapter
+    is otherwise -> "(none)"
 
 Section: Body
 
+ Every measurement is taken as a VALUE at the moment it is true, and
+ only then printed. A RepoState is threaded through `__record-set`,
+ which stores into the record and hands back the SAME one -- so `r0`,
+ `r1` and `r2` below are three names for one object. Building the chain
+ first and printing afterwards reports the final state three times: the
+ first draft of this test did exactly that, read `after-size=0`, and
+ looked like publish-proposal doing nothing. It was the drain, already
+ applied to the record all three names share.
+
   opening : [Console] Nothing =
-    let repo = repo-empty
-    in let ob = integer-to-text (outbox-size repo)
-    in let seq = integer-to-text (repo.head-sequence)
+    let signed = sign-annotation ppt-keypair ppt-annotation
+    in let r0 = repo-empty
+    in let before-size = outbox-size r0
+    in let before-head = ppt-head-author (peek-outbox-head r0)
+    in let r1 = publish-proposal r0 signed "add the rationale" 100
+    in let after-size = outbox-size r1
+    in let after-author = ppt-head-author (peek-outbox-head r1)
+    in let after-chapter = ppt-head-chapter (peek-outbox-head r1)
+    in let r2 = drain-outbox r1
+    in let drained-size = outbox-size r2
+    in let drained-head = ppt-head-author (peek-outbox-head r2)
     in act
-      print-line-uni ("outbox=" & ob & " seq=" & seq)
-      print-line-uni "ok"
+      print-line-uni ("before-size=" & show before-size)
+      print-line-uni ("before-head=" & before-head)
+      print-line-uni ("after-size=" & show after-size)
+      print-line-uni ("after-head-author=" & after-author)
+      print-line-uni ("after-head-chapter=" & after-chapter)
+      print-line-uni ("drained-size=" & show drained-size)
+      print-line-uni ("drained-head=" & drained-head)
     end

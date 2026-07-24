@@ -91,7 +91,8 @@ Section: Codegen State
    wcet-reports : List Text,
    wcet-pending : List RvWcetPending,
    state-local : Integer,
-   memo-next-slot : Integer
+   memo-next-slot : Integer,
+   runtime-funcs : Integer
   }
 
   RvLearnedField = record {
@@ -177,7 +178,8 @@ Section: State Constructors
    wcet-reports = [],
    wcet-pending = [],
    state-local = (-1),
-   memo-next-slot = 0
+   memo-next-slot = 0,
+   runtime-funcs = 0
   }
 
 Section: Emit Helpers
@@ -213,6 +215,11 @@ Section: Emit Helpers
    let idx = list-length (st.func-arities) - 1
    in if idx < 0 then st
    else __record-set st "func-arities" (list-set-at (st.func-arities) idx arity)
+
+ Arity resolution stays FIRST-match even though offset resolution is
+ last-match: runtime helpers are recorded with arity zero on purpose and
+ the dispatch is calibrated to that answer (the ARM64 chapter carries
+ the measurement).
 
   rv-find-func-arity : List Text, List Integer, Text, Integer -> Integer
   rv-find-func-arity (names) (arities) (target) (i) =
@@ -351,6 +358,24 @@ Section: Register Allocation
   rv-bind-local (st) (name) (reg) =
    __record-set st "locals" (list-push (st.locals) (RvLocal { name = name, reg = __narrow reg }))
 
+ rv-bind-local appends and rv-lookup-local reads the last match, so a scope is a
+ suffix of st.locals: entering one adds bindings at the end, leaving one has to
+ drop them again. What is saved is the LENGTH, not the list. __list_push writes
+ into the same buffer and hands back the same pointer whenever capacity allows,
+ so holding the old field value and putting it back changes nothing -- it only
+ ever appeared to work when a bind hit the grow path and got a fresh buffer.
+ act-let-scope is the guard.
+
+  rv-locals-take : List RvLocal, Integer, Integer, List RvLocal -> List RvLocal
+  rv-locals-take (locals) (n) (i) (acc) =
+   if i >= n then acc
+   else rv-locals-take locals n (i + 1) (list-push acc (list-at locals i))
+
+  rv-restore-locals : RvState, Integer -> RvState
+  rv-restore-locals (st) (saved-len) =
+   if list-length (st.locals) <= saved-len then st
+   else __record-set st "locals" (rv-locals-take (st.locals) saved-len 0 [])
+
   rv-lookup-local : List RvLocal, Text, Integer -> Integer
   rv-lookup-local (locals) (name) (i) =
    let len = list-length locals
@@ -394,7 +419,7 @@ Section: Function Emission
     is IrCharLit (v) (s) -> 0
     is IrNumLit (v) (s) -> 0
     is IrName (n) (t) (s) -> 0
-    is IrNegate (x) (s) -> rv-count-ir-locals x fname
+    is IrNegate (x) (nty) (s) -> rv-count-ir-locals x fname
     is IrBinary (op) (l) (r) (t) (s) ->
      let left-save = if rv-result-is-stable l then 0 else 1
      in let use-imm = if rv-is-imm-eligible op then rv-small-imm r > 0 else False
@@ -777,7 +802,7 @@ Section: Expression Emission
     is IrTextLit (value) (s) -> rv-emit-text-lit st value
     is IrName (name) (ty) (s) -> rv-emit-name st name ty
     is IrBinary (op) (left) (right) (ty) (s) -> rv-emit-binary st op left right ty
-    is IrNegate (operand) (s) -> rv-emit-negate st operand
+    is IrNegate (operand) (nty) (s) -> rv-emit-negate st operand
     is IrIf (cond) (th) (el) (ty) (s) -> rv-emit-if st cond th el
     is IrLet (name) (ty) (value) (body) (s) -> rv-emit-let st name value body
     is IrApply (func) (arg) (ty) (s) -> rv-emit-apply st expr ty
@@ -865,18 +890,27 @@ Section: Expression Emission
 
 Section: Name Emission
 
+ A zero-argument effect operation goes through the handler table ONLY
+ when a handler was installed: an unwritten slot reads zero and calling
+ through it dies before the first print, which is what
+ `console-readline-cite` did on this lane too (the ARM64 chapter carries
+ the account). An unhandled `read-line` answers the None cell.
+
   rv-emit-name : RvState, Text, CodexType -> RvEmitResult
   rv-emit-name (st) (name) (ty) =
    let local-reg = rv-lookup-local (st.locals) name 0
    in if local-reg >= 0 then rv-load-local st local-reg
    else let eoa = rv-find-effect-op-addr (st.effect-op-addrs) name 0
-   in if eoa >= 0 then
-    let runtime-known = rv-find-func-offset (st.func-names) (st.func-offsets) name 0
-    in if runtime-known >= 0 then
-     let tr = rv-alloc-temp st
-     in let st1 = rv-emit-call-to (tr.state) name
-     in RvEmitResult { state = rv-emit st1 (rv-mv (tr.reg) rv-a0), reg = tr.reg }
-    else rv-emit-load-handler st eoa
+   in let is-rl = if name == "read-line" then True else name == "read-line-cce"
+   in let runtime-known = rv-find-func-offset (st.func-names) (st.func-offsets) name 0
+   in let has-handler = if is-rl then rv-find-func-offset (st.func-names) (st.func-offsets) ("__handler_" & name) 0 else 0 - 1
+   in if eoa >= 0 & runtime-known >= 0 then
+    let tr = rv-alloc-temp st
+    in let st1 = rv-emit-call-to (tr.state) name
+    in RvEmitResult { state = rv-emit st1 (rv-mv (tr.reg) rv-a0), reg = tr.reg }
+   else if eoa >= 0 & (is-rl == False) then rv-emit-load-handler st eoa
+   else if eoa >= 0 & has-handler >= 0 then rv-emit-load-handler st eoa
+   else if is-rl then rv-emit-maybe-none st
    else when ty
     is SumTy (sname) (targs) (ctors) ->
      let tag = rv-resolve-ctor-tag st ty name
@@ -896,7 +930,7 @@ Section: Name Emission
       state = rv-emit st1 (rv-mv (tr.reg) rv-a0),
       reg = tr.reg
      }
-    is FunTy (pt) (rt) -> rv-emit-partial-application st name []
+    is FunTy (pt) (fnrow) (rt) -> rv-emit-partial-application st name []
     is otherwise ->
      let tr = rv-alloc-temp st
      in let st1 = rv-emit-call-to (tr.state) name
@@ -1045,6 +1079,7 @@ Section: Binary Emission
    when ty
     is SumTy (n) (ta) (cs) -> True
     is ConstructedTy (n) (ta) -> True
+    is TypeCon (n) -> True
     is otherwise -> False
 
   rv-emit-binary : RvState, IRBinaryOp, IRExpr, IRExpr, CodexType -> RvEmitResult
@@ -1081,10 +1116,27 @@ Section: Binary Emission
     else rv-emit-binary-reg st op left right ty
    else rv-emit-binary-reg st op left right ty
 
-  rv-right-is-simple : IRExpr -> Boolean
-  rv-right-is-simple (e) =
+ A simple expression is one whose evaluation cannot disturb a value already
+ staged in an argument register. Literals qualify because they lower to a
+ single load-immediate. A name qualifies only when it resolves to a local or
+ a parameter, which lives in a callee-saved register or a spill slot and is
+ reached with a load.
+
+ A name that resolves to nothing is a top-level definition, and a top-level
+ definition is a function. `three` and `seven` are not storage, they are a
+ `jal`, and a `jal` clobbers a0 and a1. Answering True for those is what let
+ `rv-emit-two-arg-call` stage a literal into a0 and then call straight over
+ it: `f-two 2 seven` put 2 in a0, called `seven`, and handed the callee 7 and
+ 7. The same predicate drives `skip-save` in `rv-emit-binary-reg`, so such a
+ name also cost the left operand of a binary expression.
+
+ Answering False when unsure is free: it buys a save and a reload. Answering
+ True when unsure returns a wrong number.
+
+  rv-right-is-simple : RvState, IRExpr -> Boolean
+  rv-right-is-simple (st) (e) =
    when e
-    is IrName (n) (t) (s) -> True
+    is IrName (n) (t) (s) -> rv-lookup-local (st.locals) n 0 >= 0
     is IrIntLit (v) (s) -> True
     is IrNumLit (v) (s) -> True
     is IrBoolLit (v) (s) -> True
@@ -1096,7 +1148,7 @@ Section: Binary Emission
    let dest = st.tco.result-dest
    in let st-nd = rv-set-result-dest st (0 - 1)
    in let lr = rv-emit-expr st-nd left
-   in let skip-save = rv-right-is-simple right
+   in let skip-save = rv-right-is-simple st right
    in let saved = if skip-save then RvEmitResult { state = lr.state, reg = lr.reg } else rv-save-if-needed (lr.state) (lr.reg)
    in let rr = rv-emit-expr (saved.state) right
    in let ll = if skip-save then RvEmitResult { state = rr.state, reg = lr.reg } else rv-reload-if-needed (rr.state) (saved.reg)
@@ -1367,6 +1419,7 @@ Section: Real Arithmetic
   rv-vec-lane-count (ty) =
    when ty
     is VectorTy (n) (et) -> n
+    is VectorMaskTy (n) -> n
     is otherwise -> 2
 
   rv-is-vec-real : CodexType -> Boolean
@@ -1554,6 +1607,44 @@ Section: Real Arithmetic
    in let st18 = rv-emit st17 (rv-sd (ptr-r.reg) (t0.reg) 8)
    in RvEmitResult { state = st18, reg = ptr-r.reg }
 
+  rv-emit-vec-arith : RvState, List IRExpr, Integer -> RvEmitResult
+  rv-emit-vec-arith (st) (args) (opcode) =
+   let lr = rv-emit-expr st (list-at args 0)
+   in let saved = rv-save-if-needed (lr.state) (lr.reg)
+   in let rr = rv-emit-expr (saved.state) (list-at args 1)
+   in let ll = rv-reload-if-needed (rr.state) (saved.reg)
+   in let rd = rv-alloc-temp (ll.state)
+   in if opcode == 0 then rv-emit-vec-fp-binop (rd.state) (ll.reg) (rr.reg) (rd.reg) rv-fadd-d
+   else if opcode == 1 then rv-emit-vec-fp-binop (rd.state) (ll.reg) (rr.reg) (rd.reg) rv-fsub-d
+   else if opcode == 2 then rv-emit-vec-fp-binop (rd.state) (ll.reg) (rr.reg) (rd.reg) rv-fmul-d
+   else rv-emit-vec-fp-binop (rd.state) (ll.reg) (rr.reg) (rd.reg) rv-fdiv-d
+
+  rv-emit-vec-load-at : RvState, IRExpr -> RvEmitResult
+  rv-emit-vec-load-at (st) (addr-expr) =
+   let ar = rv-emit-expr st addr-expr
+   in let ptr-r = rv-alloc-temp (ar.state)
+   in let st1 = rv-emit (ptr-r.state) (rv-mv (ptr-r.reg) rv-heap-reg)
+   in let st2 = rv-emit st1 (rv-addi rv-heap-reg rv-heap-reg 16)
+   in let t = rv-alloc-temp st2
+   in let st3 = rv-emit (t.state) (rv-ld (t.reg) (ar.reg) 0)
+   in let st4 = rv-emit st3 (rv-sd (ptr-r.reg) (t.reg) 0)
+   in let st5 = rv-emit st4 (rv-ld (t.reg) (ar.reg) 8)
+   in let st6 = rv-emit st5 (rv-sd (ptr-r.reg) (t.reg) 8)
+   in RvEmitResult { state = st6, reg = ptr-r.reg }
+
+  rv-emit-vec-store-at : RvState, IRExpr, IRExpr -> RvEmitResult
+  rv-emit-vec-store-at (st) (addr-expr) (vec-expr) =
+   let ar = rv-emit-expr st addr-expr
+   in let saved = rv-save-if-needed (ar.state) (ar.reg)
+   in let vr = rv-emit-expr (saved.state) vec-expr
+   in let aa = rv-reload-if-needed (vr.state) (saved.reg)
+   in let t = rv-alloc-temp (aa.state)
+   in let st1 = rv-emit (t.state) (rv-ld (t.reg) (vr.reg) 0)
+   in let st2 = rv-emit st1 (rv-sd (aa.reg) (t.reg) 0)
+   in let st3 = rv-emit st2 (rv-ld (t.reg) (vr.reg) 8)
+   in let st4 = rv-emit st3 (rv-sd (aa.reg) (t.reg) 8)
+   in RvEmitResult { state = st4, reg = aa.reg }
+
   rv-emit-vec-extract : RvState, IRExpr, IRExpr -> RvEmitResult
   rv-emit-vec-extract (st) (vec-expr) (idx-expr) =
    let vr = rv-emit-expr st vec-expr
@@ -1683,6 +1774,113 @@ Section: Real Arithmetic
    let tr = rv-emit-expr st task
    in let rd = rv-alloc-temp (tr.state)
    in RvEmitResult { state = rv-emit (rd.state) (rv-ld (rd.reg) (tr.reg) 0), reg = rd.reg }
+
+ rem keeps the sign of the dividend and int-mod answers the NON-NEGATIVE
+ residue, which is what x86-64's emit-int-mod-reg-locals produces by adding the
+ divisor's magnitude when idiv's remainder comes back negative. Without this,
+ int-mod (-7) 3 is -1 here and 2 there, which is the whole of
+ interval-exhaustive's failures, every one of them in mod, because iv-mod's
+ transfer function is written for a non-negative result. Branchless, since
+ RISC-V has no conditional select: |d| by sign-mask, then the corrected value
+ chosen by the remainder's own sign mask.
+
+ The power-of-two case needs no correction and must keep its shortcut:
+ rv-emit-rem-pow2 emits `andi rd, x, n-1`, which is already the non-negative
+ residue for a positive power of two.
+
+  rv-emit-mod-correction : RvState, Integer, Integer -> RvEmitResult
+  rv-emit-mod-correction (st) (rem-reg) (div-reg) =
+   let t0 = rv-alloc-temp st
+   in let t1 = rv-alloc-temp (t0.state)
+   in let st1 = rv-emit (t1.state) (rv-srai (t0.reg) div-reg 63)
+   in let st2 = rv-emit st1 (rv-xor (t1.reg) div-reg (t0.reg))
+   in let st3 = rv-emit st2 (rv-sub (t1.reg) (t1.reg) (t0.reg))
+   in let st4 = rv-emit st3 (rv-add (t1.reg) rem-reg (t1.reg))
+   in let st5 = rv-emit st4 (rv-srai (t0.reg) rem-reg 63)
+   in let st6 = rv-emit st5 (rv-xor (t1.reg) (t1.reg) rem-reg)
+   in let st7 = rv-emit st6 (rv-and (t1.reg) (t1.reg) (t0.reg))
+   in let st8 = rv-emit st7 (rv-xor rem-reg rem-reg (t1.reg))
+   in RvEmitResult { state = st8, reg = rem-reg }
+
+  rv-emit-int-mod : RvState, IRExpr, IRExpr -> RvEmitResult
+  rv-emit-int-mod (st) (left) (right) =
+   let p2 = rv-pow2-lit right
+   in if p2 > 1 then rv-emit-rem-pow2 st left p2
+   else let lr = rv-emit-expr st left
+   in let saved = rv-save-if-needed (lr.state) (lr.reg)
+   in let rr = rv-emit-expr (saved.state) right
+   in let ll = rv-reload-if-needed (rr.state) (saved.reg)
+   in let rd = rv-alloc-temp (ll.state)
+   in let st1 = rv-emit (rd.state) (rv-rem (rd.reg) (ll.reg) (rr.reg))
+   in rv-emit-mod-correction st1 (rd.reg) (rr.reg)
+
+ A bitwise builtin against a literal takes the I-type form and never
+ materialises the literal into a register at all.
+
+ That is a code-size win second and a CORRECTNESS fix first.
+ `rv-save-if-needed` above does NOTHING in frameless mode -- it returns
+ the register unsaved, because there is no frame to spill into -- so
+ `rv-emit-two-arg-binop`'s protection of its left operand is a no-op
+ there. `rv-alloc-temp` then cycles four registers with no liveness
+ information, and the right operand's emission can be handed back the
+ same register the left is sitting in. `let pf = ... in bit-shl pf 8`
+ emitted `sll rd, r, r` and computed `bit-shl 8 8`: 2048 where every
+ other lane answers 42496. Reduced from `j1939-encode` (`j1939-pgn`,
+ the PDU1 arm, 2277 for 65253) and pinned by
+ `codex/test/rv-frameless-imm`.
+
+ The immediate form removes the second register, so there is nothing
+ left to clobber, and `slli rd, rs1, shamt` is correct even when the
+ allocator returns rd == rs1.
+
+ **This is not the general fix and must not be read as one.** Two live
+ temporaries either side of a binop can still collide in frameless mode,
+ here and in `rv-emit-frameless-binop-reg`; what is fixed is the shape
+ that occurs, where one side is a literal. The general defect belongs to
+ BACKLOG 3.21.
+
+ The shift amount is bounded at 63 rather than trusted, because
+ `rv-slli` MASKS an oversized shamt with #3F instead of refusing it: an
+ unguarded 2047 would quietly shift by 63. Above 63 this declines and
+ the register form runs, which is what the emitter did before.
+
+  rv-bit-imm-ok : IRExpr, Boolean -> Integer
+  rv-bit-imm-ok (right) (is-shift) =
+   let v = rv-small-imm right
+   in if v <= 0 then 0 - 1
+      else if is-shift then if v - 1 <= 63 then v - 1 else 0 - 1
+      else v - 1
+
+  rv-bit-imm-apply : RvState, Integer, Integer, Text -> RvEmitResult
+  rv-bit-imm-apply (st) (lreg) (imm) (which) =
+   let rd = rv-alloc-temp st
+   in let ins = if which == "shl" then rv-slli (rd.reg) lreg imm
+      else if which == "shru" then rv-srli (rd.reg) lreg imm
+      else if which == "shr" then rv-srai (rd.reg) lreg imm
+      else if which == "and" then rv-andi (rd.reg) lreg imm
+      else if which == "or" then rv-ori (rd.reg) lreg imm
+      else rv-xori (rd.reg) lreg imm
+   in RvEmitResult { state = rv-emit (rd.state) ins, reg = rd.reg }
+
+  rv-bit-is-shift : Text -> Boolean
+  rv-bit-is-shift (which) =
+   if which == "shl" then True
+   else if which == "shru" then True
+   else if which == "shr" then True
+   else False
+
+  rv-emit-bit-binop : RvState, IRExpr, IRExpr, Text -> RvEmitResult
+  rv-emit-bit-binop (st) (left) (right) (which) =
+   let im = rv-bit-imm-ok right (rv-bit-is-shift which)
+   in if im >= 0
+      then let lr = rv-emit-expr st left
+           in rv-bit-imm-apply (lr.state) (lr.reg) im which
+      else if which == "shl" then rv-emit-two-arg-binop st left right rv-sll
+      else if which == "shru" then rv-emit-two-arg-binop st left right rv-srl
+      else if which == "shr" then rv-emit-two-arg-binop st left right rv-sra
+      else if which == "and" then rv-emit-two-arg-binop st left right rv-and
+      else if which == "or" then rv-emit-two-arg-binop st left right rv-or
+      else rv-emit-two-arg-binop st left right rv-xor
 
   rv-emit-two-arg-binop : RvState, IRExpr, IRExpr, (Integer, Integer, Integer -> List Integer) -> RvEmitResult
   rv-emit-two-arg-binop (st) (left) (right) (op) =

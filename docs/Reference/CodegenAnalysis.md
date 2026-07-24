@@ -557,7 +557,7 @@ CFG), and are portable to the IR we have today — simplify, CSE, DCE, load-elim
 range analysis. The sleeper is the range analysis: our bounds prover
 `aexpr-proven-range` (`Types/TypeCheckerInference.codex:742`) is a degenerate
 version of theirs, with no loop fixpoint, no widening, and no branch refinement.
-Filed as BACKLOG 3.8.
+Filed as the middle-end campaign.
 
 ## External Research (IRISA Harvest, 2026-06-23)
 

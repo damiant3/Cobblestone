@@ -1,6 +1,6 @@
 # Compile a program out of the fact store, and run it.
 #
-# BACKLOG 6.1 -- "Codex stores its own source" -- has been the largest
+# "Codex stores its own source" has been the largest
 # unrealized piece of the founding vision since day one. This script is the
 # first thing that makes the sentence literally true, end to end, with no
 # Perforce anywhere in the chain:

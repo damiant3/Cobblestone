@@ -78,14 +78,27 @@ if ($outputBytes.Length -ge 4) {
 [System.IO.File]::WriteAllBytes($Out, $outputBytes)
 Write-Host "[riscv-run] OK: $Out ($($outputBytes.Length) bytes)"
 
-# Show any WARN/WCET lines from serial
+# Show any WARN/WCET/UNSUPPORTED lines from serial. Match anywhere in the
+# line, not StartsWith: the first report line follows the binary wire with no
+# newline between them, so an anchored test silently drops it. That is why the
+# arm64 side already matches this way.
 $serialText = ""
+$unsupported = @()
 try { $serialText = [System.Text.Encoding]::UTF8.GetString($outputBytes) } catch {}
 foreach ($sl in ($serialText -split "`n")) {
-    $sl = $sl.TrimEnd("`r")
-    if ($sl.StartsWith('[WARN]') -or $sl.StartsWith('[WCET]')) {
-        Write-Host "[riscv-run] $sl" -ForegroundColor Yellow
+    $m = [regex]::Match($sl.TrimEnd("`r"), '\[(WARN|WCET|UNSUPPORTED)\].*$')
+    if ($m.Success) {
+        Write-Host "[riscv-run] $($m.Value)" -ForegroundColor Yellow
+        if ($m.Value.StartsWith('[UNSUPPORTED]')) { $unsupported += $m.Value }
     }
+}
+
+# An UNSUPPORTED report is a refusal, not a warning. See the arm64 run script.
+if ($unsupported.Count -gt 0) {
+    [Console]::Error.WriteLine("FAIL: $($unsupported.Count) call(s) this target cannot serve:")
+    foreach ($u in $unsupported) { [Console]::Error.WriteLine("  $u") }
+    Remove-Item -Force $inputFile, $outFile, $errFile -ErrorAction SilentlyContinue
+    exit 6
 }
 
 Remove-Item -Force $inputFile -ErrorAction SilentlyContinue

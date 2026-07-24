@@ -1,18 +1,111 @@
 Chapter: UefiConsoleTest
-  cites UI chapter Widget
-  cites UI chapter Layout
+
+  cites Foreword chapter Console
+  cites Foreword chapter Maybe
+  cites Works chapter UefiConsole
+
+ UefiConsole wraps the firmware's text-in and text-out protocols. Most
+ of it is decision rather than device: a key arrives as a scan code, a
+ character code and a shift mask, and the chapter's job is to say which
+ of forty-odd predicates that key satisfies. Attributes and pixels are
+ the same shape of work -- packing named colours into the bit layout the
+ firmware expects.
+
+ The old body touched none of it. It cited UI Widget and UI Layout, not
+ UefiConsole, built a menu of thirteen strings, and printed
+ `selected=0` from a `sel-idx` bound to the literal 0 two lines above --
+ an assertion whose answer was written in the assertion.
+
+ What is NOT covered here, deliberately: uefi-console-init reads the
+ SystemTable through peek-qword, and uefi-con-move and friends call into
+ ConOut. Those need firmware, and a test that pretended otherwise would
+ be reading whatever address zero happens to hold. This pins the half
+ that is arithmetic, and says so rather than implying the chapter is
+ covered.
+
+Section: Key Fixtures
+
+  uct-key : Integer, Integer, Integer -> UefiKey
+  uct-key (scan) (ch) (shift) =
+    UefiKey { scan-code = scan, char-code = ch, shift-state = shift }
+
+  uct-ctrl : Integer = 8
+  uct-alt : Integer = 32
+  uct-valid : Integer = 2147483648
+
+Section: Predicate Reporting
+
+ Each key is described by the NAMES of every predicate it satisfies, not
+ by a count. A count would pass if two predicates swapped which key they
+ answered to; the names would not.
+
+  uct-flag : Boolean, Text -> Text
+  uct-flag (b) (name) = if b then name & " " else ""
+
+  uct-describe : UefiKey -> Text
+  uct-describe (k) =
+    uct-flag (uefi-key-is-char k) "char"
+    & uct-flag (uefi-key-is-enter k) "enter"
+    & uct-flag (uefi-key-is-backspace k) "backspace"
+    & uct-flag (uefi-key-is-tab k) "tab"
+    & uct-flag (uefi-key-is-escape k) "escape"
+    & uct-flag (uefi-key-is-arrow-up k) "up"
+    & uct-flag (uefi-key-is-arrow-down k) "down"
+    & uct-flag (uefi-key-is-arrow-left k) "left"
+    & uct-flag (uefi-key-is-arrow-right k) "right"
+    & uct-flag (uefi-key-is-home k) "home"
+    & uct-flag (uefi-key-is-end k) "end"
+    & uct-flag (uefi-key-is-insert k) "insert"
+    & uct-flag (uefi-key-is-delete k) "delete"
+    & uct-flag (uefi-key-is-page-up k) "pgup"
+    & uct-flag (uefi-key-is-page-down k) "pgdn"
+    & uct-flag (uefi-key-has-shift k) "+shift"
+    & uct-flag (uefi-key-has-ctrl k) "+ctrl"
+    & uct-flag (uefi-key-has-alt k) "+alt"
+    & uct-flag (uefi-key-is-ctrl-c k) "ctrl-c"
+    & uct-flag (uefi-key-is-ctrl-s k) "ctrl-s"
+    & uct-flag (uefi-key-is-ctrl-alt-del k) "ctrl-alt-del"
+
+  uct-report : Text, UefiKey -> [Console] Nothing
+  uct-report (label) (k) = print-line-uni (label & "=" & uct-describe k)
 
 Section: Body
-  opening : [Console] Nothing =
-    let items = ["Boot Codex OS", "Boot Recovery", "Boot Diagnostics", "Firmware Setup", "Network Boot", "USB Boot", "Shell", "Power Off", "Restart", "Boot Manager", "Secure Boot", "UEFI Drivers", "About"]
-    in let menu = widget-menu "uefi-menu" items
-    in let count = menu.wn-child-count
-    in let tabs = widget-tabs "boot-tabs" ["General", "Advanced", "Security"] 0
-    in let sel-idx = 0
-    in act
-      print-line-uni ("menu-items=" & show count)
-      print-line-uni ("selected=" & show sel-idx)
-      print-line-uni "uefi-console:done"
-    end
 
-Page 1
+ The two ctrl-alt-delete lines are the point of the key half. They
+ differ in one bit: the second omits the shift-state-valid flag, which
+ the firmware sets to say the modifier bits mean anything at all. The
+ predicate must answer no to the second, and a reboot combo that fires
+ on an unset modifier field is exactly the failure worth pinning.
+
+  opening : [Console] Nothing =
+    act
+      uct-report "letter" (uct-key 0 97 0)
+      uct-report "enter" (uct-key 0 13 0)
+      uct-report "backspace" (uct-key 0 8 0)
+      uct-report "tab" (uct-key 0 9 0)
+      uct-report "escape" (uct-key uefi-scan-escape 0 0)
+      uct-report "up" (uct-key uefi-scan-up 0 0)
+      uct-report "down" (uct-key uefi-scan-down 0 0)
+      uct-report "left" (uct-key uefi-scan-left 0 0)
+      uct-report "right" (uct-key uefi-scan-right 0 0)
+      uct-report "home" (uct-key uefi-scan-home 0 0)
+      uct-report "end" (uct-key uefi-scan-end 0 0)
+      uct-report "insert" (uct-key uefi-scan-insert 0 0)
+      uct-report "delete" (uct-key uefi-scan-delete 0 0)
+      uct-report "pgup" (uct-key uefi-scan-page-up 0 0)
+      uct-report "pgdn" (uct-key uefi-scan-page-down 0 0)
+      uct-report "shift-A" (uct-key 0 65 uefi-left-shift)
+      uct-report "ctrl-c" (uct-key 0 3 uct-ctrl)
+      uct-report "ctrl-s" (uct-key 0 19 uct-ctrl)
+      uct-report "cad-valid" (uct-key uefi-scan-delete 0 (uct-valid + uct-ctrl + uct-alt))
+      uct-report "cad-unvalidated" (uct-key uefi-scan-delete 0 (uct-ctrl + uct-alt))
+      print-line-uni ("attr-yellow-on-blue=" & show (uefi-attr UefiYellow UefiBlue))
+      print-line-uni ("attr-black-on-black=" & show (uefi-attr UefiBlack UefiBlack))
+      print-line-uni ("attr-white-on-white=" & show (uefi-attr UefiWhite UefiWhite))
+      print-line-uni ("pixel=" & show (uefi-pixel-pack (uefi-pixel 255 128 64)))
+      print-line-uni ("pixel-black=" & show (uefi-pixel-pack (uefi-pixel 0 0 0)))
+      print-line-uni ("char-31=" & show (uefi-key-is-char (uct-key 0 31 0)))
+      print-line-uni ("char-32=" & show (uefi-key-is-char (uct-key 0 32 0)))
+      print-line-uni ("char-126=" & show (uefi-key-is-char (uct-key 0 126 0)))
+      print-line-uni ("char-127=" & show (uefi-key-is-char (uct-key 0 127 0)))
+    end

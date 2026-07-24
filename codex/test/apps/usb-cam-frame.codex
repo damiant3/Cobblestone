@@ -1,0 +1,70 @@
+Chapter: UsbCamFrame
+  cites Works chapter GopXhci
+  cites Works chapter GopUsbCam
+  cites Foreword chapter Maybe
+
+ The fourth endpoint type, driven for the first time.
+
+ Control, bulk and interrupt each carry bytes in this tree and each
+ have a test. Isochronous had neither: no TRB type, no endpoint type,
+ no frame read, in either xHCI driver. codex-vm has presented a UVC
+ camera on root port 3 the whole time, delivering a colour-bar test
+ pattern over isochronous transfers that nothing ever asked for. The
+ port argument here is the zero-based PORTSC index, which the slot
+ context turns into the one-based root port number, so the camera on
+ root port 3 is reached as index 2.
+
+ Two things had to be true for this to run, and only one of them was.
+ The emulator copied the frame into the guest buffer and then posted
+ no transfer event at all, so a driver that queued a TRB and waited
+ for its completion waited forever -- data arriving with nothing to
+ say it had arrived, which is the stub-that-agrees-with-itself shape
+ and is indistinguishable from a dead camera.
+
+ What each line proves. `open` says the streaming interface was found
+ at the alternate setting that HAS an endpoint: alt 0 declares none,
+ so a walk that took the first matching interface would configure a
+ camera that can never stream, and `dci=5` is endpoint 2 IN, the
+ isochronous one. `read=0` is the completion actually arriving.
+ The pixels are the payload: the pattern is eight vertical colour bars
+ twenty pixels wide, luma alternating 16 and 235 by bar, so reading
+ x=0, x=20 and x=40 samples three consecutive bars and pins both the
+ content and the stride. A frame of zeroes -- a buffer nobody wrote --
+ fails every one of them.
+
+ The `read` line and the pixel lines are not redundant, which the
+ negative control is what shows. Delete the emulator's event post and
+ the pixels still come out right, because the data lands whether or not
+ anything says it did; only `read` goes to -2. Delete the copy instead
+ and `read` stays 0 while the pixels go to zero. Each line fails alone
+ for a different reason, so neither can stand in for the other.
+
+Section: Test
+
+  probe : XhciHost, UsbDev, Integer -> Text
+  probe (xh) (dev) (cfg) =
+    let total = cam-cfg-total cfg
+    in let iface = cam-find-stream-iface cfg 0 total
+    in if iface < 0 then "open: no streaming interface"
+    else let cam = cam-open xh dev cfg iface total
+    in if cam.uc-ok == False then "open: failed"
+    else let r = cam-read-frame cam
+    in "open: ok=1 dci=" & show (cam.uc-dci) & " alt=" & show (peek-byte cfg (iface + 3))
+      & "\nread=" & show r
+      & "\nluma: " & show (cam-luma cam 0 0) & " " & show (cam-luma cam 20 0) & " " & show (cam-luma cam 40 0)
+      & "\nchroma: " & show (cam-chroma cam 0 0) & " " & show (cam-chroma cam 20 0) & " " & show (cam-chroma cam 40 0)
+      & "\nrow1: " & show (cam-luma cam 0 1) & " " & show (cam-luma cam 20 1)
+
+  opening : [Console, Device.Port, Device.Mmio] Nothing = act
+    xh <- xhci-connect
+    if xh.xh-ok == False then print-line-uni "no host"
+    else act
+      let speed = xhci-reset-port xh 2
+      in let dev = xhci-open-device xh 2 speed
+      in if dev.ud-ok == False then print-line-uni "no device on port index 2"
+      else let cfg = alloc-zeroed 256 64
+      in let g = usb-get-descriptor xh dev 2 0 cfg 255
+      in if g == False then print-line-uni "no config descriptor"
+      else print-line-uni (probe xh dev cfg)
+    end
+  end

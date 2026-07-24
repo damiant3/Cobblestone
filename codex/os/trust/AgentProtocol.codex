@@ -91,6 +91,10 @@ Section: Agent Message Types
     | MsgSyncReply (SyncReplyMsg)
     | MsgWorkRequest (WorkRequestMsg)
     | MsgWorkReply (WorkReplyMsg)
+    | MsgLocateRequest (LocateRequestMsg)
+    | MsgLocateReply (LocateReplyMsg)
+    | MsgAnnounceRequest (AnnounceRequestMsg)
+    | MsgAnnounceReply (AnnounceReplyMsg)
 
   ProposeMsg = record {
     id : List Integer,
@@ -226,6 +230,64 @@ Section: Agent Message Types
     payload : Text
   }
 
+ Ask who holds a work, rather than asking for the work. A quotation names a
+ digest and nothing else, so an asker that has not already been introduced to a
+ holder has no way to turn that digest into an address. This is the verb that
+ turns it into one.
+
+ The reply carries addresses and no content. That is the whole reason it is a
+ separate verb from WorkRequest: an address cannot be checked, so it is never
+ believed -- it is only used, by fetching from it and hashing what comes back.
+ The registry therefore does not need to hold, or ever have held, the work it
+ points at, and cannot be made responsible for the honesty of a peer it names.
+
+ `peers` is a space-separated list of `host:port`, empty when the registry
+ knows nobody who holds the digest. Empty is the ordinary answer and not an
+ error, exactly as an empty work payload is: a registry that has not been told
+ about a holder simply has not been told.
+
+ Neither message is signed, for the same reason the work pair is not. A signed
+ rumour is still a rumour, and the check that actually protects the asker
+ happens after the fetch, against the content.
+
+  LocateRequestMsg = record {
+    from : AgentIdentity,
+    hash : Text
+  }
+
+  LocateReplyMsg = record {
+    from : AgentIdentity,
+    hash : Text,
+    peers : Text
+  }
+
+ A peer announcing what it holds. `address` is where the peer can be reached
+ (`host:port`), and `hashes` is a space-separated list of the digests it is
+ offering at that address. The reply is an acknowledgement carrying the count
+ the registry recorded, so a peer can tell a registry that took its
+ announcement from one that never heard it.
+
+ The peer states its OWN address rather than the registry inferring it from the
+ connection, because the address a registry would infer is the one the peer
+ dialled from, and that is not the address anyone else reaches it on.
+
+ The scaling ceiling is real and is not solved here: a peer holding the whole
+ compiler announces thousands of digests in one message. When that bites, the
+ answer is a compact summary (`Foreword chapter BloomFilter` /
+ `ElasticBloom`) rather than a longer list, and a probabilistic summary is safe
+ precisely because the fetch path already tolerates a miss on a named peer.
+
+  AnnounceRequestMsg = record {
+    from : AgentIdentity,
+    address : Text,
+    hashes : Text
+  }
+
+  AnnounceReplyMsg = record {
+    from : AgentIdentity,
+    accepted : Integer
+  }
+
 Section: Message Accessors
 
   msg-id : AgentMessage -> List Integer
@@ -243,6 +305,10 @@ Section: Message Accessors
     is MsgSyncReply (s) -> []
     is MsgWorkRequest (w) -> []
     is MsgWorkReply (w) -> []
+    is MsgLocateRequest (l) -> []
+    is MsgLocateReply (l) -> []
+    is MsgAnnounceRequest (a) -> []
+    is MsgAnnounceReply (a) -> []
 
   msg-from : AgentMessage -> AgentIdentity
   msg-from (m) = when m
@@ -259,6 +325,10 @@ Section: Message Accessors
     is MsgSyncReply (s) -> s.from
     is MsgWorkRequest (w) -> w.from
     is MsgWorkReply (w) -> w.from
+    is MsgLocateRequest (l) -> l.from
+    is MsgLocateReply (l) -> l.from
+    is MsgAnnounceRequest (a) -> a.from
+    is MsgAnnounceReply (a) -> a.from
 
   msg-signature : AgentMessage -> List Integer
   msg-signature (m) = when m
@@ -275,6 +345,10 @@ Section: Message Accessors
     is MsgSyncReply (s) -> []
     is MsgWorkRequest (w) -> []
     is MsgWorkReply (w) -> []
+    is MsgLocateRequest (l) -> []
+    is MsgLocateReply (l) -> []
+    is MsgAnnounceRequest (a) -> []
+    is MsgAnnounceReply (a) -> []
 
   msg-type-name : AgentMessage -> Text
   msg-type-name (m) = when m
@@ -291,5 +365,9 @@ Section: Message Accessors
     is MsgSyncReply (s) -> "SyncReply"
     is MsgWorkRequest (w) -> "WorkRequest"
     is MsgWorkReply (w) -> "WorkReply"
+    is MsgLocateRequest (l) -> "LocateRequest"
+    is MsgLocateReply (l) -> "LocateReply"
+    is MsgAnnounceRequest (a) -> "AnnounceRequest"
+    is MsgAnnounceReply (a) -> "AnnounceReply"
 
 Page 1

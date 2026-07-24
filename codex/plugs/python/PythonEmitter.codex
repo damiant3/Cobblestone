@@ -99,11 +99,12 @@ Section: Type Definition Emission
   emit-py-type-def : ATypeDef -> Text
   emit-py-type-def (td) =
    when td
-    is ARecordTypeDef (name) (tparams) (fields) (s) ->
+    is ARecordTypeDef (name) (tparams) (fields) (recmut) (s) ->
      emit-py-record-type (name.value) fields
     is AVariantTypeDef (name) (tparams) (ctors) (s) ->
      if is-tup-type (name.value) then ""
      else emit-py-sum-type ctors
+    is AUnitTypeDef (name) (unitbase) (s) -> ""
 
   emit-py-sum-type : List AVariantCtorDef -> Text
   emit-py-sum-type (ctors) =
@@ -160,7 +161,7 @@ Section: Expression Emission
     is IrCharLit (n) (sp) -> "chr(" & integer-to-text n & ")"
     is IrName (n) (ty) (sp) -> emit-py-name n ty arities
     is IrBinary (op) (l) (r) (ty) (sp) -> emit-py-binary op l r arities
-    is IrNegate (operand) (sp) -> "(-" & emit-py-expr-at operand arities (depth + 1) & ")"
+    is IrNegate (operand) (nty) (sp) -> "(-" & emit-py-expr-at operand arities (depth + 1) & ")"
     is IrIf (c) (t) (el) (ty) (sp) -> "(" & emit-py-expr-at t arities (depth + 1) & " if " & emit-py-expr-at c arities (depth + 1) & " else " & emit-py-expr-at el arities (depth + 1) & ")"
     is IrLet (name) (ty) (val) (body) (sp) -> emit-py-let name val body arities
     is IrApply (f) (a) (ty) (sp) -> emit-py-apply e arities
@@ -202,8 +203,8 @@ Section: Expression Emission
     is IrAppendList -> "(" & emit-py-expr l arities & " + " & emit-py-expr r arities & ")"
     is IrConsList -> "[" & emit-py-expr l arities & "] + " & emit-py-expr r arities
     is IrPowInt -> "(" & emit-py-expr l arities & " ** " & emit-py-expr r arities & ")"
-    is IrDivInt -> "(" & emit-py-expr l arities & " // " & emit-py-expr r arities & ")"
-    is IrRemInt -> "(" & emit-py-expr l arities & " % " & emit-py-expr r arities & ")"
+    is IrDivInt -> "((lambda _a, _b: (abs(_a) // abs(_b)) * (1 if (_a >= 0) == (_b >= 0) else -1))(" & emit-py-expr l arities & ", " & emit-py-expr r arities & "))"
+    is IrRemInt -> "((lambda _a, _b: (abs(_a) % abs(_b)) * (1 if _a >= 0 else -1))(" & emit-py-expr l arities & ", " & emit-py-expr r arities & "))"
     is IrAnd -> "(" & emit-py-expr l arities & " and " & emit-py-expr r arities & ")"
     is IrOr -> "(" & emit-py-expr l arities & " or " & emit-py-expr r arities & ")"
     is IrAddVec -> "[a + b for a, b in zip(" & emit-py-expr l arities & ", " & emit-py-expr r arities & ")]"
@@ -453,7 +454,7 @@ Section: Builtin Dispatch
    PyBuiltinEmitter { name = "open-file", emit = \args arities -> "open(" & emit-py-expr (list-at args 0) arities & ", 'r')" },
    PyBuiltinEmitter { name = "read-all", emit = \args arities -> emit-py-expr (list-at args 0) arities & ".read()" },
    PyBuiltinEmitter { name = "close-file", emit = \args arities -> emit-py-expr (list-at args 0) arities & ".close()" },
-   PyBuiltinEmitter { name = "read-file", emit = \args arities -> "open(" & emit-py-expr (list-at args 0) arities & ", 'r').read()" },
+   PyBuiltinEmitter { name = "read-text", emit = \args arities -> "open(" & emit-py-expr (list-at args 0) arities & ", 'r').read()" },
    PyBuiltinEmitter { name = "write-file", emit = \args arities -> "open(" & emit-py-expr (list-at args 0) arities & ", 'w').write(" & emit-py-expr (list-at args 1) arities & ")" },
    PyBuiltinEmitter { name = "file-exists", emit = \args arities -> "__import__('os').path.exists(" & emit-py-expr (list-at args 0) arities & ")" },
    PyBuiltinEmitter { name = "list-files", emit = \args arities -> "__import__('glob').glob(__import__('os').path.join(" & emit-py-expr (list-at args 0) arities & ", " & emit-py-expr (list-at args 1) arities & "))" },
@@ -478,7 +479,7 @@ Section: Builtin Dispatch
    PyBuiltinEmitter { name = "bit-shl", emit = \args arities -> "(" & emit-py-expr (list-at args 0) arities & " << " & emit-py-expr (list-at args 1) arities & ")" },
    PyBuiltinEmitter { name = "bit-shr", emit = \args arities -> "(" & emit-py-expr (list-at args 0) arities & " >> " & emit-py-expr (list-at args 1) arities & ")" },
    PyBuiltinEmitter { name = "bit-not", emit = \args arities -> "(~" & emit-py-expr (list-at args 0) arities & ")" },
-   PyBuiltinEmitter { name = "int-mod", emit = \args arities -> "(" & emit-py-expr (list-at args 0) arities & " % " & emit-py-expr (list-at args 1) arities & ")" },
+   PyBuiltinEmitter { name = "int-mod", emit = \args arities -> "((lambda _a, _b: _a % abs(_b))(" & emit-py-expr (list-at args 0) arities & ", " & emit-py-expr (list-at args 1) arities & "))" },
    PyBuiltinEmitter { name = "min", emit = \args arities -> "min(" & emit-py-expr (list-at args 0) arities & ", " & emit-py-expr (list-at args 1) arities & ")" },
    PyBuiltinEmitter { name = "max", emit = \args arities -> "max(" & emit-py-expr (list-at args 0) arities & ", " & emit-py-expr (list-at args 1) arities & ")" },
    PyBuiltinEmitter { name = "abs", emit = \args arities -> "abs(" & emit-py-expr (list-at args 0) arities & ")" },
@@ -741,8 +742,11 @@ Section: Definition Emission
   is-effectful-type (ty) =
    when ty
     is EffectfulTy (effs) (sc) (ret) -> True
-    is FunTy (p) (r) -> is-effectful-type r
+    is FunTy (p) (fnrow) (r) -> is-effectful-type r
     is ForAllTy (id) (body) -> is-effectful-type body
+    is ForAllEff (id) (body) -> is-effectful-type body
+    is LinearTy (body) -> is-effectful-type body
+    is TypeApply (body) (tyarg) -> is-effectful-type body
     is otherwise -> False
 
   emit-py-statement : IRExpr, List ArityEntry, Integer -> Text
@@ -814,8 +818,11 @@ Section: Chapter Emission
   strip-fun-args : CodexType -> CodexType
   strip-fun-args (ty) =
    when ty
-    is FunTy (p) (r) -> strip-fun-args r
+    is FunTy (p) (fnrow) (r) -> strip-fun-args r
     is ForAllTy (id) (body) -> strip-fun-args body
+    is ForAllEff (id) (body) -> strip-fun-args body
+    is LinearTy (body) -> strip-fun-args body
+    is TypeApply (body) (tyarg) -> strip-fun-args body
     is otherwise -> ty
 
   peel-effectful-ty : CodexType -> CodexType
@@ -850,6 +857,8 @@ Section: Chapter Emission
    else when ret-ty
     is EffectfulTy (effs) (sc) (inner) -> py-sanitize opening-entry-point & "()\n"
     is NothingTy -> py-sanitize opening-entry-point & "()\n"
+    is ProofTy -> py-sanitize opening-entry-point & "()\n"
+    is PropEqTy (pl) (pr) -> py-sanitize opening-entry-point & "()\n"
     is VoidTy -> py-sanitize opening-entry-point & "()\n"
     is UnitTy (n) (inner) -> py-sanitize opening-entry-point & "()\n"
     is otherwise -> "print(" & py-sanitize opening-entry-point & "())\n"

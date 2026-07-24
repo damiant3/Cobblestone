@@ -1,14 +1,87 @@
 Chapter: X86-64 Code Generator
 
  List runtime helpers emitted into every x86-64-bare binary: cons,
- append, snoc, insert-at, set-at, and concat-many.
+ append, snoc, insert-at, set-at, tail, and concat-many.
+
+Section: List Views
+
+ A tail view is the O(1) answer to taking a flat list apart
+ structurally. A plain list is [capacity][length][e0][e1]... with the
+ pointer at the length cell; its tail cannot be a pointer into the
+ same block, because the cell before any element holds another
+ element, not a header. A view is a three-cell record
+ [capacity = -1][length][q] where q is a PHANTOM list pointer: the
+ backing block's element k-1 slot address, chosen so that q+8 is the
+ view's first element -- exactly the shape every element loop already
+ assumes of a plain list pointer. One selection therefore adapts any
+ reader: load the capacity cell at [p-8]; negative means view, and
+ the phantom base at [p+8] replaces p; everything downstream keeps
+ its +8 displacements unchanged.
+
+ The sentinel is sound because no plain list has negative capacity
+ (the empty literal has capacity zero, cons and snoc floor theirs at
+ four), and every in-place mutation path is unreachable for a view
+ by arithmetic: len >= -1 always routes snoc and insert-at to their
+ copy paths, cap - lenA >= lenB never holds for cap = -1, and the
+ frontier-extend test p + (cap+1)*8 == allocator-pos compares p
+ against a position strictly past the view's own three cells. A view
+ read back through any copying operation produces a plain list; a
+ write through list-set-at lands in the backing, which is the same
+ aliasing contract list-set-at already documents for plain lists.
+
+ emit-list-eff-base appends the four-instruction selection: preg is
+ the register holding the list pointer and is REPLACED by the
+ effective base (phantom q for a view, unchanged for a plain list);
+ scratch is clobbered. Call it only after every header read of preg
+ is done, because afterwards preg no longer points at a header.
+
+  emit-list-eff-base : CodegenState, Integer, Integer -> CodegenState
+  emit-list-eff-base (st) (preg) (scratch) =
+    let st1 = st-append-code st (mov-load scratch preg (-8))
+   in let st2 = st-append-code st1 (cmp-ri scratch 0)
+   in let plain-pos = st2.code-len
+   in let st3 = st-append-code st2 (jcc cc-ge 0)
+   in let st4 = st-append-code st3 (mov-load preg preg 8)
+   in patch-jcc-at st4 plain-pos (st4.code-len)
+
+Section: __list_tail
+
+ rdi = list. Returns a view whose length is one less (floored at
+ zero) and whose phantom base is the caller's effective base plus
+ eight, which skips exactly one element whether the input was plain
+ or itself a view. Allocates three cells from R10; inside a
+ deck-record extent R10 is the deck, the same rule every list
+ literal follows.
+
+  emit-list-tail : CodegenState -> CodegenState
+  emit-list-tail (st) =
+    let st0 = record-func-offset st "__list_tail"
+   in let st1 = st-append-code st0 (mov-load reg-rcx reg-rdi 0)
+   in let st2 = st-append-code st1 (sub-ri reg-rcx 1)
+   in let st3 = st-append-code st2 (cmp-ri reg-rcx 0)
+   in let len-ok-pos = st3.code-len
+   in let st4 = st-append-code st3 (jcc cc-ge 0)
+   in let st5 = st-append-code st4 (li reg-rcx 0)
+   in let st6 = patch-jcc-at st5 len-ok-pos (st5.code-len)
+   in let st7 = emit-list-eff-base st6 reg-rdi reg-rax
+   in let st8 = st-append-code st7 (add-ri reg-rdi 8)
+   in let st9 = st-append-code st8 (li reg-rax 0)
+   in let st10 = st-append-code st9 (sub-ri reg-rax 1)
+   in let st11 = st-append-code st10 (mov-store reg-r10 reg-rax 0)
+   in let st12 = st-append-code st11 (add-ri reg-r10 8)
+   in let st13 = st-append-code st12 (mov-rr reg-rax reg-r10)
+   in let st14 = st-append-code st13 (mov-store reg-rax reg-rcx 0)
+   in let st15 = st-append-code st14 (mov-store reg-rax reg-rdi 8)
+   in let st16 = st-append-code st15 (add-ri reg-r10 16)
+   in st-append-code st16 x86-ret
 
 Section: __list_cons
   emit-list-cons-alloc : CodegenState -> CodegenState
   emit-list-cons-alloc (st) =
     let st0 = record-func-offset st "__list_cons"
    in let st1 = st-append-code st0 (mov-load reg-rcx reg-rsi 0)
-   in let st2 = st-append-code st1 (mov-rr reg-rdx reg-rcx)
+   in let st1b = emit-list-eff-base st1 reg-rsi reg-rax
+   in let st2 = st-append-code st1b (mov-rr reg-rdx reg-rcx)
    in let st3 = st-append-code st2 (add-ri reg-rdx 1)
    in let st4 = st-append-code st3 (mov-rr reg-r11 reg-rdx)
    in let st5 = st-append-code st4 (shl-ri reg-r11 1)
@@ -70,7 +143,8 @@ Section: __list_append
    in let st1 = st-append-code st0 (shl-ri reg-rax 3)
    in let st2 = st-append-code st1 (add-rr reg-rax reg-rdi)
    in let st3 = st-append-code st2 (mov-rr reg-r11 reg-rsi)
-   in let st4 = st-append-code st3 (cmp-ri reg-rdx 0)
+   in let st3b = emit-list-eff-base st3 reg-r11 reg-rcx
+   in let st4 = st-append-code st3b (cmp-ri reg-rdx 0)
    in let skip-pos = st4.code-len
    in let st5 = st-append-code st4 (jcc cc-e 0)
    in let loop-pos = st5.code-len
@@ -118,7 +192,8 @@ Section: __list_append
 
   emit-list-append-path2-copy-a : CodegenState -> CodegenState
   emit-list-append-path2-copy-a (st) =
-    let st0 = st-append-code st (mov-rr reg-rax reg-rbx)
+    let st0a = st-append-code st (mov-rr reg-rax reg-rbx)
+   in let st0 = emit-list-eff-base st0a reg-rax reg-r11
    in let st1 = st-append-code st0 (mov-rr reg-rdi reg-rsi)
    in let st2 = st-append-code st1 (cmp-ri reg-rcx 0)
    in let skip-pos = st2.code-len
@@ -134,7 +209,8 @@ Section: __list_append
 
   emit-list-append-path2-copy-b : CodegenState -> CodegenState
   emit-list-append-path2-copy-b (st) =
-    let st0 = st-append-code st (mov-rr reg-rax reg-r12)
+    let st0a = st-append-code st (mov-rr reg-rax reg-r12)
+   in let st0 = emit-list-eff-base st0a reg-rax reg-r11
    in let st1 = st-append-code st0 (cmp-ri reg-rdx 0)
    in let skip-pos = st1.code-len
    in let st2 = st-append-code st1 (jcc cc-e 0)
@@ -276,7 +352,8 @@ Section: __list_snoc
    in let st1 = st-append-code st0 (mov-rr reg-rdx reg-rcx)
    in let st2 = st-append-code st1 (add-ri reg-rdx 1)
    in let st3 = st-append-code st2 (mov-store reg-rax reg-rdx 0)
-   in let st4 = st-append-code st3 (li reg-r11 0)
+   in let st3b = emit-list-eff-base st3 reg-rbx reg-rdx
+   in let st4 = st-append-code st3b (li reg-r11 0)
    in let copy-loop = st4.code-len
    in let st5 = st-append-code st4 (cmp-rr reg-r11 reg-rcx)
    in let copy-done-pos = st5.code-len
@@ -427,7 +504,8 @@ Section: __deck_list_snoc
    in let st1 = st-append-code st0 (mov-rr reg-rdx reg-rcx)
    in let st2 = st-append-code st1 (add-ri reg-rdx 1)
    in let st3 = st-append-code st2 (mov-store reg-rax reg-rdx 0)
-   in let st4 = st-append-code st3 (li reg-r11 0)
+   in let st3b = emit-list-eff-base st3 reg-rbx reg-rdx
+   in let st4 = st-append-code st3b (li reg-r11 0)
    in let copy-loop = st4.code-len
    in let st5 = st-append-code st4 (cmp-rr reg-r11 reg-rcx)
    in let copy-done-pos = st5.code-len
@@ -510,7 +588,8 @@ Section: __deck_list_append
 
   emit-deck-list-append-copy-a : CodegenState -> CodegenState
   emit-deck-list-append-copy-a (st) =
-    let st0 = st-append-code st (mov-rr reg-rax reg-rbx)
+    let st0a = st-append-code st (mov-rr reg-rax reg-rbx)
+   in let st0 = emit-list-eff-base st0a reg-rax reg-r11
    in let st1 = st-append-code st0 (mov-rr reg-rdi reg-rsi)
    in let st2 = st-append-code st1 (cmp-ri reg-rcx 0)
    in let skip-pos = st2.code-len
@@ -526,7 +605,8 @@ Section: __deck_list_append
 
   emit-deck-list-append-copy-b : CodegenState -> CodegenState
   emit-deck-list-append-copy-b (st) =
-    let st0 = st-append-code st (mov-rr reg-rax reg-r12)
+    let st0a = st-append-code st (mov-rr reg-rax reg-r12)
+   in let st0 = emit-list-eff-base st0a reg-rax reg-r11
    in let st1 = st-append-code st0 (cmp-ri reg-rdx 0)
    in let skip-pos = st1.code-len
    in let st2 = st-append-code st1 (jcc cc-e 0)
@@ -653,7 +733,8 @@ Section: __list_insert_at
 
   emit-list-insert-at-path3-pre : CodegenState -> CodegenState
   emit-list-insert-at-path3-pre (st) =
-    let st0 = st-append-code st (li reg-r11 0)
+    let stv = emit-list-eff-base st reg-rbx reg-r11
+   in let st0 = st-append-code stv (li reg-r11 0)
    in let pre-loop = st0.code-len
    in let st1 = st-append-code st0 (cmp-rr reg-r11 reg-r12)
    in let pre-done-pos = st1.code-len
@@ -719,11 +800,20 @@ Section: __list_insert_at
    in emit-list-insert-at-path3-epilogue st6
 
 Section: __list_set_at
+
+ The write goes through the effective base so a view stores into its
+ backing, and the function still returns the view it was handed --
+ the same in-place-and-return-receiver contract plain lists get. The
+ selection runs on a copy in rcx because rdi must survive to be the
+ return value.
+
   emit-list-set-at : CodegenState -> CodegenState
   emit-list-set-at (st) =
     let st0 = record-func-offset st "__list_set_at"
-   in let st1 = st-append-code st0 (shl-ri reg-rsi 3)
-   in let st2 = st-append-code st1 (add-rr reg-rsi reg-rdi)
+   in let st0a = st-append-code st0 (mov-rr reg-rcx reg-rdi)
+   in let st0b = emit-list-eff-base st0a reg-rcx reg-rax
+   in let st1 = st-append-code st0b (shl-ri reg-rsi 3)
+   in let st2 = st-append-code st1 (add-rr reg-rsi reg-rcx)
    in let st3 = st-append-code st2 (mov-store reg-rsi reg-rdx 8)
    in let st4 = st-append-code st3 (mov-rr reg-rax reg-rdi)
    in st-append-code st4 x86-ret
@@ -772,7 +862,8 @@ Section: List Concat Many
    in let st34 = st-append-code st33 (add-rr reg-rax reg-r12)
    in let st35 = st-append-code st34 (mov-load reg-rdi reg-rax 0)
    in let st36 = st-append-code st35 (mov-load reg-rsi reg-rdi 0)
-   in let st37 = st-append-code st36 (li reg-rdx 0)
+   in let st36b = emit-list-eff-base st36 reg-rdi reg-rax
+   in let st37 = st-append-code st36b (li reg-rdx 0)
    in let st38 = st-append-code st37 (cmp-rr reg-rdx reg-rsi)
    in let skip-inner = st38.code-len
    in let st39 = st-append-code st38 (jcc cc-ge 0)

@@ -12,8 +12,8 @@
 #
 # db-mini-test.skip was the same shape with no test at all behind it: the
 # only record of a real CDX2000 defect was a sidecar for a .codex that has
-# never existed in main. That gap now lives in docs/PM/BACKLOG.md, named by
-# the chapter it is actually in.
+# never existed in main. That gap is recorded in docs/ExaminersAssay.md,
+# named by the chapter it is actually in.
 #
 # Exit 1 on any sidecar whose .codex sibling is missing.
 [CmdletBinding()]
@@ -25,7 +25,8 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
 $exts = @('.skip', '.slow', '.fatal', '.expected', '.stdin', '.keys',
-          '.disk', '.failing', '.diag', '.smp')
+          '.disk', '.failing', '.diag', '.smp', '.vmargs', '.no-cross',
+          '.cross-refusal')
 
 $orphans = [System.Collections.Generic.List[string]]::new()
 $checked = 0
@@ -45,7 +46,7 @@ if ($orphans.Count -gt 0) {
     foreach ($o in $orphans) { Write-Host "  $o" }
     Write-Host 'A sidecar next to no test configures nothing and asserts something.'
     Write-Host 'Move it beside its .codex, or delete it -- but if it records a real'
-    Write-Host 'defect, put the defect in docs/PM/BACKLOG.md first.'
+    Write-Host 'defect, write the defect down beside the code it describes first.'
     exit 1
 }
 

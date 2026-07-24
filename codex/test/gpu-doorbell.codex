@@ -1,0 +1,258 @@
+Chapter: GpuDoorbell
+
+  cites Kernel chapter GpuBridge
+  cites AI chapter GpuProxy
+  cites AI chapter Tensor
+  cites Foreword chapter Maybe
+
+ The compute bridge answers real arithmetic, at a cost that does not
+ grow with the operand, and refuses what it cannot serve.
+
+ The bridge used to drive a polled serial line and spend two VM exits on
+ every byte in each direction, so a dispatch cost a multiple of the
+ operand size: 160 exits for the 2x2 matmul below, 112 for its relu, and
+ 24,640 for the 32x32. It now builds the command in guest memory and
+ rings a doorbell, which is four exits whatever the operand is. Measured
+ with CODEX_VM_COM3_STAT.
+
+ THE REFUSAL CASE IS THE CONTROL AND IT IS WHY IT IS HERE. Until the
+ serial path was deleted this file ran every case through both
+ transports, and the two answers beside each other were what would catch
+ a transport that carried the bytes wrongly rather than not at all. With
+ one transport left that comparison is gone, so the test has to be able
+ to fail some other way: the last case asks for a dispatch the host must
+ turn down and requires NONE. A bridge that answered everything, or one
+ that answered nothing, fails one half or the other -- which is the
+ property a test of a single transport most easily loses.
+
+ The values carry the rest. A*B is [[19,22],[43,50]], four distinct
+ numbers, none zero, none equal to an operand, and none producible by
+ echoing the input back. The 32x32 case multiplies ones, so every entry
+ of the product is 32.0 and no operand appears in the answer either.
+
+ We say:
+
+Section: Operands
+
+  bridge : GpuBridge
+  bridge = gpu-bridge-init
+
+  mat-a : Tensor
+  mat-a = Tensor { data = [1000, 2000, 3000, 4000], rows = 2, cols = 2 }
+
+  mat-b : Tensor
+  mat-b = Tensor { data = [5000, 6000, 7000, 8000], rows = 2, cols = 2 }
+
+  relu-in : Tensor
+  relu-in = Tensor { data = [0 - 2000, 3000, 0, 0 - 5000], rows = 2, cols = 2 }
+
+  fill : Integer, Integer, List Integer -> List Integer
+  fill (i) (n) (acc) = if i >= n then acc else fill (i + 1) n (list-push acc 1000)
+
+  side : Integer = 32
+
+  square : Tensor
+  square = Tensor { data = fill 0 (side * side) [], rows = side, cols = side }
+
+ A tensor whose declared shape and whose actual data disagree. The host
+ computes the operand count from the dimensions and checks it against the
+ length it was rung with, so this is refused at the boundary rather than
+ read off the end of the command buffer. It is also cheap: claiming
+ 200x200 costs four elements of storage, not forty thousand.
+
+  mis-shaped : Tensor
+  mis-shaped = Tensor { data = [1000, 1000, 1000, 1000], rows = 200, cols = 200 }
+
+Section: Tolerance
+
+ The guest decoder divides the mantissa down to scale 1000 before it
+ applies the exponent, so it loses low bits on any value above 1.0 --
+ 19.0 decodes to 18992, not 19000. That is the decoder's precision and
+ not the transport's, so these assertions allow one part in a hundred.
+ The smallest gap between two entries of the 2x2 product is 3000 in these
+ units, nowhere near wide enough to admit a wrong answer.
+
+  near : Integer, Integer -> Boolean
+  near (got) (want) =
+    let diff = if got > want then got - want else want - got
+    in let slack = if want > 0 then want / 100 else 100
+    in diff <= slack
+
+Section: Reports
+
+  mm-report : Maybe Tensor -> Text
+  mm-report (m) =
+    when m
+     is None -> "NONE"
+     is Just (t) -> mm-values t
+
+  mm-values : Tensor -> Text
+  mm-values (t) =
+    if list-length (t.data) /= 4 then "count " & show (list-length (t.data))
+    else if near (list-at (t.data) 0) 19000
+     & near (list-at (t.data) 1) 22000
+     & near (list-at (t.data) 2) 43000
+     & near (list-at (t.data) 3) 50000
+    then "ok"
+    else "wrong " & show (list-at (t.data) 0) & " " & show (list-at (t.data) 1) & " "
+       & show (list-at (t.data) 2) & " " & show (list-at (t.data) 3)
+
+  relu-report : Maybe Tensor -> Text
+  relu-report (m) =
+    when m
+     is None -> "NONE"
+     is Just (t) -> relu-values t
+
+  relu-values : Tensor -> Text
+  relu-values (t) =
+    if list-length (t.data) /= 4 then "count " & show (list-length (t.data))
+    else if near (list-at (t.data) 0) 0 & near (list-at (t.data) 1) 3000
+     & near (list-at (t.data) 2) 0 & near (list-at (t.data) 3) 0
+    then "ok"
+    else "wrong " & show (list-at (t.data) 0) & " " & show (list-at (t.data) 1)
+
+  big-report : Maybe Tensor -> Text
+  big-report (m) =
+    when m
+     is None -> "NONE"
+     is Just (t) -> big-values t
+
+  big-values : Tensor -> Text
+  big-values (t) =
+    if list-length (t.data) /= side * side then "count " & show (list-length (t.data))
+    else let v = list-at (t.data) 0
+    in if v > 31000 then if v < 33000 then "ok" else "high " & show v
+       else "low " & show v
+
+ A refusal is the wanted answer here, so it is reported as such rather
+ than as a failure.
+
+  refusal-report : Maybe Tensor -> Text
+  refusal-report (m) =
+    when m
+     is None -> "refused"
+     is Just (t) -> "SERVED " & show (list-length (t.data))
+
+Section: The Other Operations
+
+ These are dumped rather than asserted against named constants, and the
+ expected file is the assertion. Each line is hand-checkable, and the
+ numbers below are what exact arithmetic gives at scale 1000:
+
+   softmax over four equal values is four times 250, because a uniform
+     distribution over four outcomes is a quarter each. An identity
+     transport would answer the input instead, which is nothing like it.
+   add is [1,2,3,4] + [2,2,2,2] = [3,4,5,6].
+   mul is [1,2,3,4] * [2,2,2,2] = [2,4,6,8].
+   transpose of [[1,2],[3,4]] is [[1,3],[2,4]], so the middle two values
+     swap and an identity answers the input unchanged.
+   scale by 2.0 doubles.
+   layer norm over [1,2,3,4] has mean 2.5 and population sd 1.118, giving
+     -1.342, -0.447, 0.447, 1.342. It arrives a unit short at the ends
+     (-1341, 1341) because the decoder loses low bits above 1.0, which is
+     the same rounding the tolerance above exists for.
+   GROUP NORM OVER THE SAME INPUT WITH TWO GROUPS IS THE CONTROL FOR THE
+     GROUP COUNT: each pair normalises against its own mean, so every
+     value lands one sd away and the answer is plus or minus one, which
+     arrives as 999. An implementation that ignored the grouping would
+     return the layer norm numbers above instead, and the two are nowhere
+     near each other -- that is the whole point of running both on the
+     same input.
+   silu and gelu are both zero at zero and both near 10.0 at 10.0, which
+     is what pins them as S-shaped rather than linear or constant. They
+     are not identical there -- silu decodes to 9992 and gelu to 10000 --
+     so the two ops are also distinguishable from each other.
+   upsample doubles a 1x2 into a 2x4, so each value appears twice across
+     and the row appears twice down.
+
+  dump : Maybe Tensor -> Text
+  dump (m) =
+    when m
+     is None -> "NONE"
+     is Just (t) -> show (t.rows) & "x" & show (t.cols) & " " & vals (t.data) 0 (list-length (t.data)) ""
+
+  vals : List Integer, Integer, Integer, Text -> Text
+  vals (xs) (i) (n) (acc) =
+    if i >= n then acc
+    else let sep = if i > 0 then " " else ""
+    in vals xs (i + 1) n (acc & sep & show (list-at xs i))
+
+  quad : Tensor
+  quad = Tensor { data = [1000, 2000, 3000, 4000], rows = 2, cols = 2 }
+
+  twos : Tensor
+  twos = Tensor { data = [2000, 2000, 2000, 2000], rows = 2, cols = 2 }
+
+  zeros : Tensor
+  zeros = Tensor { data = [0, 0, 0, 0], rows = 2, cols = 2 }
+
+  extremes : Tensor
+  extremes = Tensor { data = [0, 10000], rows = 1, cols = 2 }
+
+  strip : Tensor
+  strip = Tensor { data = [1000, 2000], rows = 1, cols = 2 }
+
+ conv1d, max-pool and clamp fit the doorbell's shape header with no
+ protocol change, and each case is chosen so an identity or a wrong
+ parameter answers something the expected file does not hold:
+
+   conv1d slides kernel [1,2] over [1,2,3,4] at stride 1, valid, no flip,
+     so out[o] = in[o] + 2*in[o+1]: 1+4, 2+6, 3+8 = 5, 8, 11. None of
+     those is an input, and a flipped kernel or a wrong stride misses.
+   max-pool takes the max of each stride-2 window of width 2 over
+     [1,3,2,5,4,0]: max(1,3), max(2,5), max(4,0) = 3, 5, 4. An identity
+     answers the six inputs; a stride-1 pool answers five values.
+   clamp holds [1,4,5,9] to [3,7]: the ends move to the bounds and the
+     interior passes, giving 3, 4, 5, 7. An identity leaves 1 and 9; a
+     clamp that ignored its bounds would too.
+
+  conv-in : Tensor
+  conv-in = Tensor { data = [1000, 2000, 3000, 4000], rows = 1, cols = 4 }
+
+  conv-ker : Tensor
+  conv-ker = Tensor { data = [1000, 2000], rows = 1, cols = 2 }
+
+  pool-in : Tensor
+  pool-in = Tensor { data = [1000, 3000, 2000, 5000, 4000, 0], rows = 1, cols = 6 }
+
+  clamp-in : Tensor
+  clamp-in = Tensor { data = [1000, 4000, 5000, 9000], rows = 1, cols = 4 }
+
+ conv2d carries eight shape fields in a header of its own, so it also
+ tests that the alternate header reaches the host. A 2x2 all-ones kernel
+ over the 3x3 [[1,2,3],[4,5,6],[7,8,9]] at stride 1, valid, sums each
+ 2x2 window: 1+2+4+5, 2+3+5+6, 4+5+7+8, 5+6+8+9 = 12, 16, 24, 28. None of
+ those is an input value, so an identity or a dropped kernel term misses.
+
+  conv2d-in : Tensor
+  conv2d-in = Tensor { data = [1000, 2000, 3000, 4000, 5000, 6000, 7000, 8000, 9000], rows = 3, cols = 3 }
+
+  conv2d-ker : Tensor
+  conv2d-ker = Tensor { data = [1000, 1000, 1000, 1000], rows = 2, cols = 2 }
+
+Section: Entry
+
+  opening : [Console] Integer
+  opening = act
+    print-line-uni ("matmul: " & mm-report (gpu-bridge-matmul bridge mat-a mat-b))
+    print-line-uni ("relu: " & relu-report (gpu-bridge-relu bridge relu-in))
+    print-line-uni ("matmul-32x32: " & big-report (gpu-bridge-matmul bridge square square))
+    print-line-uni ("mis-shaped: " & refusal-report (gpu-bridge-matmul bridge mis-shaped mis-shaped))
+    print-line-uni ("softmax: " & dump (gpu-bridge-softmax bridge zeros))
+    print-line-uni ("add: " & dump (gpu-bridge-elemwise-add bridge quad twos))
+    print-line-uni ("mul: " & dump (gpu-bridge-elemwise-mul bridge quad twos))
+    print-line-uni ("transpose: " & dump (gpu-bridge-transpose bridge quad))
+    print-line-uni ("scale: " & dump (gpu-bridge-scale bridge quad 2000))
+    print-line-uni ("layer-norm: " & dump (gpu-bridge-layer-norm bridge quad))
+    print-line-uni ("group-norm: " & dump (gpu-bridge-group-norm bridge quad 2))
+    print-line-uni ("silu: " & dump (gpu-bridge-silu bridge extremes))
+    print-line-uni ("gelu: " & dump (gpu-bridge-gelu bridge extremes))
+    print-line-uni ("upsample: " & dump (gpu-bridge-upsample2x bridge strip 1 1 2))
+    print-line-uni ("conv1d: " & dump (gpu-bridge-conv1d bridge conv-in conv-ker 1))
+    print-line-uni ("max-pool: " & dump (gpu-bridge-max-pool bridge pool-in 2 2))
+    print-line-uni ("clamp: " & dump (gpu-bridge-clamp bridge clamp-in 3000 7000))
+    print-line-uni ("conv2d: " & dump (gpu-bridge-conv2d bridge conv2d-in conv2d-ker 1 3 3 1 2 2 1 0))
+    let r = 0 in r
+  end
+
+Page 1

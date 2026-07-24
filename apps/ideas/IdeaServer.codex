@@ -65,41 +65,49 @@ Section: Serve Loop
    diag : Text
   }
 
-  idea-serve-one : IdeaState -> ServeStep
+  idea-serve-one : IdeaState -> [Network.Read, Network.Write] ServeStep
   idea-serve-one (st) =
     let ts = net-io-listen (idea-fresh-transport 0)
-    in let ts2 = net-io-accept ts 0
-    in when (ts2.session).conn.state
-      is TcpEstablished -> idea-handle-request st ts2
-      is otherwise -> ServeStep { ideas = st, diag = "no-conn" }
+    in act
+      ts2 <- net-io-accept ts 0
+      when (ts2.session).conn.state
+        is TcpEstablished -> idea-handle-request st ts2
+        is otherwise -> ServeStep { ideas = st, diag = "no-conn" }
+    end
 
-  idea-handle-request : IdeaState, TcpTransportState -> ServeStep
-  idea-handle-request (st) (ts) =
-    let recv = net-io-recv-raw ts 0
-    in if recv.has-data then
+  idea-handle-request : IdeaState, TcpTransportState -> [Network.Read, Network.Write] ServeStep
+  idea-handle-request (st) (ts) = act
+    recv <- net-io-recv-raw ts 0
+    if recv.has-data then
       let req = http-parse-request (recv.data)
-      in if req.valid == False then
-        let ts1 = net-io-close (web-send-http (recv.transport) (http-error "Bad request"))
-        in ServeStep { ideas = st, diag = "bad-request" }
+      in if req.valid == False then act
+        sent <- web-send-http (recv.transport) (http-error "Bad request")
+        ts1 <- net-io-close sent
+        ServeStep { ideas = st, diag = "bad-request" }
+      end
       else let who = resolve-who (recv.data) (req.path)
       in let (st2, resp) = idea-route-at st who (current-day 0) req
-      in let ts1 = net-io-close (web-send-http (recv.transport) resp)
-      in ServeStep { ideas = st2, diag = req.path & " -> " & resp.status }
-    else let ts1 = net-io-close (recv.transport)
-    in ServeStep { ideas = st, diag = "no-data" }
-
-  idea-serve-loop : IdeaState, Integer -> [Console] Integer
-  idea-serve-loop (st) (count) = act
-    let r = idea-serve-one st
-    in act
-      print-line-uni ("serve " & show count & " " & r.diag)
-      idea-serve-loop (r.ideas) (count + 1)
+      in act
+        sent <- web-send-http (recv.transport) resp
+        ts1 <- net-io-close sent
+        ServeStep { ideas = st2, diag = req.path & " -> " & resp.status }
+      end
+    else act
+      ts1 <- net-io-close (recv.transport)
+      ServeStep { ideas = st, diag = "no-data" }
     end
+  end
+
+  idea-serve-loop : IdeaState, Integer -> [Console, Network.Read, Network.Write] Integer
+  idea-serve-loop (st) (count) = act
+    r <- idea-serve-one st
+    print-line-uni ("serve " & show count & " " & r.diag)
+    idea-serve-loop (r.ideas) (count + 1)
   end
 
 Section: Entry
 
-  opening : [Console] Nothing
+  opening : [Console, Network.Read, Network.Write] Nothing
   opening = act
     print-line-uni "idea-forge listening on guest port 9200 (boot with -portfwd <host>:9200)"
     served <- idea-serve-loop idea-state-new 0

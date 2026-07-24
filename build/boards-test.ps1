@@ -45,7 +45,7 @@ if (-not (Test-Path $Vm)) { throw "codex-vm not built: $Vm (run tools/build-vm.p
 # virt's is codex/test/qemu-virt-board.codex -- and the first revision of this
 # script assumed the convention, failed to find it, and reported the board as
 # having no smoke test at all. It has one, it is in the default battery, and it
-# returns 6. That false gap went as far as a BACKLOG entry before it was caught.
+# returns 6. That false gap was recorded before it was caught.
 # Do not infer a coverage gap from a filename.
 $boards = @(
     @{ Name = 'stm32f4';  Test = 'stm32f4-drivers';  Aperture = $null                       }

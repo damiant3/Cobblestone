@@ -31,11 +31,16 @@ Two consequences, both handled/planned:
   internal FAT ESP lacks it, so we decline rather than risk another disk.
 - **USB mass storage is the real next frontier (was B5.5, now load-bearing).**
   Post-EBS xHCI host driver + USB enumeration + BOT + SCSI READ/WRITE, wired
-  as a third path under `disk-read-into`/`disk-write-into`. The kernel has
-  `Xhci`/`Usb`/`UsbMassStorage` (host-side protocol logic to adapt), and
-  **codex-vm emulates an xHCI mass storage device**, so it is developable and
-  testable in the emulator before hardware -- same method as AHCI vs OVMF. It
-  pairs with B4.3 (xHCI HID keyboard): both live on the xHCI stack.
+  as a third path under `disk-read-into`/`disk-write-into`. **This is shipped
+  and the driver to read is `apps/works/GopXhci.codex` + `GopUsbMsc.codex`,
+  not the kernel.** The `codex/os/kernel` USB transport this paragraph used to
+  point at (`Xhci`, `UsbMassStorage`, `UsbVideo`) was a duplicate that nothing
+  outside its own tests ever cited, and it has been retired; only
+  `codex/os/kernel/Usb.codex` survives, for the descriptor structures `UsbHid`
+  needs. codex-vm emulates the mass storage device, the HID keyboard, a
+  two-tier hub and a UVC camera, so the whole stack is developable and testable
+  in the emulator before hardware -- same method as AHCI vs OVMF. It pairs with
+  B4.3 (xHCI HID keyboard): both live on the xHCI stack.
 
 ## Where we are
 

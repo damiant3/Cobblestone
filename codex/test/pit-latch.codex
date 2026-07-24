@@ -1,0 +1,199 @@
+Chapter: PitLatch
+  cites Foreword chapter Board
+  cites Foreword chapter Maybe
+
+  grounds Device.Port, Device.Mmio
+
+ The counter-latch command, pinned by the one property that distinguishes it
+ from its absence.
+
+ The obvious test -- latch, read both halves, check they agree -- passes
+ against a machine with no latch at all. The counter moves between the two
+ reads either way, and two bytes sampled a microsecond apart almost always
+ look like a coherent pair. A check that passes on a controller that does
+ nothing is not a check.
+
+ What a latch actually promises is that the value goes STALE: once frozen,
+ it must not follow the counter. So the test reads a coherent value, latches,
+ lets a lot of time pass, and then reads the latch. A working latch answers
+ the value from before the delay. A missing one answers the value from after
+ it -- which is exactly what the live counter says, and that is the tell.
+
+ Channel 2 is used rather than channel 0 because the boot code owns channel 0
+ and runs it in mode 3, where the count decrements by two and reloads at half
+ the divisor. Channel 2 is programmed here in mode 0 with a divisor of 65536,
+ so the count is a plain countdown and the arithmetic below is exact.
+
+Section: Ports
+
+  pit-command : Integer = 67
+  pit-ch2 : Integer = 66
+
+ Channel 2, access mode 3 (low byte then high byte), mode 0. The latch
+ command is the same channel with an access field of zero, and carries no
+ mode bits at all -- writing them would reconfigure the channel on every
+ latch.
+
+  pit-config-ch2 : Integer = 176
+  pit-latch-ch2 : Integer = 128
+
+Section: Reading
+
+  program-ch2 : [Device.Port] Integer
+  program-ch2 =
+    let c = port-out-byte pit-command pit-config-ch2
+    in let lo = port-out-byte pit-ch2 0
+    in let hi = port-out-byte pit-ch2 0
+    in c + lo + hi
+
+ A latched read takes the low byte then the high byte; taking both is what
+ lifts the latch.
+
+  read-latched : [Device.Port] Integer
+  read-latched =
+    let l = port-out-byte pit-command pit-latch-ch2
+    in let lo = port-in-byte pit-ch2
+    in let hi = port-in-byte pit-ch2
+    in bit-or lo (bit-shl hi 8)
+
+ Read the frozen value WITHOUT latching first, so the delay sits between the
+ latch and the read. This is the call whose answer the whole test turns on.
+
+  read-frozen : [Device.Port] Integer
+  read-frozen =
+    let lo = port-in-byte pit-ch2
+    in let hi = port-in-byte pit-ch2
+    in bit-or lo (bit-shl hi 8)
+
+  latch-only : [Device.Port] Integer
+  latch-only = port-out-byte pit-command pit-latch-ch2
+
+ The channel counts DOWN and wraps at the divisor, so ticks elapsed between
+ two samples is their difference modulo 65536, not their subtraction.
+
+  ticks-between : Integer, Integer -> Integer
+  ticks-between (earlier) (later) = int-mod (earlier - later + 65536) 65536
+
+ The delay is measured, not counted. A fixed spin of N iterations takes
+ whatever wall time the host happens to give it, which put the elapsed count
+ either side of the threshold depending on machine load -- a flaky test, and
+ a flaky test is worth less than none.
+
+ So channel 1 is the clock. Nothing else uses it, it is programmed in access
+ mode 2 so each read returns just the high byte of a live counter -- one byte,
+ no pairing problem, no latch involved -- and the high byte advances once per
+ 256 ticks. Waiting for it to advance a fixed number of steps is a delay in
+ TICKS rather than in instructions, so it is the same delay on any host.
+
+  pit-ch1 : Integer = 65
+  pit-config-ch1 : Integer = 96
+
+  program-ch1 : [Device.Port] Integer
+  program-ch1 =
+    let c = port-out-byte pit-command pit-config-ch1
+    in c + port-out-byte pit-ch1 0
+
+  ch1-high : [Device.Port] Integer
+  ch1-high = port-in-byte pit-ch1
+
+  steps-since : Integer, Integer -> Integer
+  steps-since (start) (now) = int-mod (start - now + 256) 256
+
+ Fuel-capped: a channel that never advances ends the wait instead of hanging
+ the machine, and the verdict then reports a delay that did not happen.
+
+  wait-steps : Integer, Integer, Integer -> Integer
+  wait-steps (start) (want) (fuel) =
+    if fuel <= 0 then 0
+    else if steps-since start ch1-high >= want then 1
+    else wait-steps start want (fuel - 1)
+
+Section: The LAPIC Input Clock
+
+ The local APIC timer divides an input frequency that nothing had ever
+ measured or advertised. A guest could rely on the period scaling with the
+ initial count and the divisor, and on nothing else -- so a guest calibrating
+ the LAPIC against the PIT had no way to know whether the two clocks agreed
+ about how fast a second is. This measures it: count LAPIC ticks against PIT
+ ticks and work back to the input frequency.
+
+ The timer is armed MASKED, so it counts without delivering an interrupt and
+ the boot processor's own PIT-driven scheduling is left alone.
+
+  lapic-base : Integer = #FEE00000
+  lapic-lvt-timer : Integer = #320
+  lapic-init-count : Integer = #380
+  lapic-current-count : Integer = #390
+  lapic-divide-cfg : Integer = #3E0
+
+  lapic-divide-by-1 : Integer = 11
+  lapic-masked-vector : Integer = #10030
+
+ Twenty milliseconds of period at the nominal rate, which is well clear of
+ the one-millisecond floor a period is clamped to.
+
+  lapic-arm-count : Integer = 2000000
+  lapic-measure-ticks : Integer = 1000000
+
+  pit-hz : Integer = 1193182
+
+  arm-lapic : [Device.Mmio] Integer
+  arm-lapic =
+    let d = mmio-write-32 (lapic-base + lapic-divide-cfg) lapic-divide-by-1
+    in let v = mmio-write-32 (lapic-base + lapic-lvt-timer) lapic-masked-vector
+    in let i = mmio-write-32 (lapic-base + lapic-init-count) lapic-arm-count
+    in d + v + i
+
+  lapic-now : [Device.Mmio] Integer
+  lapic-now = mmio-read-32 (lapic-base + lapic-current-count)
+
+  wait-lapic : Integer, Integer, Integer -> [Device.Mmio] Integer
+  wait-lapic (start) (want) (fuel) =
+    if fuel <= 0 then 0
+    else if start - lapic-now >= want then 1
+    else wait-lapic start want (fuel - 1)
+
+ Work the input frequency back out of the two counts. The PIT high byte
+ advances once per 256 ticks, so the elapsed PIT ticks are the steps times
+ 256, and the LAPIC input rate is its ticks over that same interval.
+
+  implied-hz : Integer, Integer -> Integer
+  implied-hz (lapic-ticks) (pit-steps) =
+    if pit-steps <= 0 then 0
+    else (lapic-ticks * pit-hz) / (pit-steps * 256)
+
+Section: Test
+
+  verdict : Integer, Integer -> Text
+  verdict (held) (moved) =
+    "latch: held=" & (if held < 3000 then "1" else "0")
+      & " moved=" & (if moved > 6000 then "1" else "0")
+
+ Ten percent either side of the nominal hundred megahertz. The point is that
+ the number is MEASURED against another clock and lands where the model says
+ it should, not that it is exact.
+
+  clock-verdict : Integer -> Text
+  clock-verdict (hz) =
+    "lapic: near-100mhz=" & (if hz > 90000000 then (if hz < 110000000 then "1" else "0") else "0")
+
+  opening : [Console, Device.Port, Device.Mmio] Nothing = act
+    let p1 = program-ch1
+    in let p = program-ch2
+    in let a = read-latched
+    in let l0 = latch-only
+    in let mark = ch1-high
+    in let waited = wait-steps mark 64 60000000
+    in let frozen = read-frozen
+    in let c = read-latched
+    in let armed = arm-lapic
+    in let l-start = lapic-now
+    in let p-start = ch1-high
+    in let lw = wait-lapic l-start lapic-measure-ticks 60000000
+    in let p-end = ch1-high
+    in let hz = implied-hz lapic-measure-ticks (steps-since p-start p-end)
+    in act
+      print-line-uni (verdict (ticks-between a frozen) (ticks-between frozen c))
+      print-line-uni (clock-verdict hz)
+    end
+  end

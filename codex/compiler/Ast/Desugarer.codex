@@ -1,5 +1,6 @@
 Chapter: Desugarer
-  cites Codex chapter Build Settings (max-recursion-depth)
+  cites Codex chapter Build Settings (max-recursion-depth, demand-desugar-guard-band)
+  cites Codex chapter Phase Allocator (deck-short-of)
 
  Transforms the concrete syntax tree into the abstract syntax tree.
  Tokens become Names, literal token text becomes literal values,
@@ -46,12 +47,12 @@ Section: Expression Desugaring
     is MatchExpr (scrut) (arms) ->
      let ds = desugar-expr-at scrut (depth + 1)
      in deck-record (AMatchExpr ds (map-list desugar-match-arm arms) (desugared-span (aexpr-span ds)))
-    is ListExpr (elems) -> deck-record (AListExpr (map-list desugar-expr elems) synthetic-span)
+    is ListExpr (elems) (sp) -> deck-record (AListExpr (map-list desugar-expr elems) sp)
     is RecordExpr (type-tok) (fields) -> deck-record (ARecordExpr (make-name (token-text type-tok)) (map-list desugar-field-expr fields) (token-span type-tok))
     is FieldExpr (rec) (field-tok) -> deck-record (AFieldAccess (desugar-expr-at rec (depth + 1)) (make-name (token-text field-tok)) (token-span field-tok))
     is ParenExpr (inner) -> desugar-expr-at inner (depth + 1)
     is TupleExpr (elems) -> apply-aexpr-args (deck-record (ANameExpr (make-name ("MkTup" & integer-to-text (list-length elems))) synthetic-span)) (map-list desugar-expr elems) 0 (list-length elems)
-    is ActExpr (stmts) -> deck-record (AActExpr (map-list desugar-act-stmt stmts) synthetic-span)
+    is ActExpr (stmts) -> let ds = map-list desugar-act-stmt stmts in deck-record (AActExpr ds (act-stmts-span ds))
     is HandleExpr (eff-tok) (body) (clauses) -> deck-record (AHandleExpr (make-name (token-text eff-tok)) (desugar-expr-at body (depth + 1)) (map-list desugar-handle-clause clauses) (token-span eff-tok))
     is WithTimeoutExpr (timeout-tok) (effs) (scopes) (body) -> deck-record (AWithTimeoutExpr (token-text timeout-tok) (map-list make-type-param-name effs) (map-list extract-scope-text scopes) (desugar-expr-at body (depth + 1)) (token-span timeout-tok))
     is LambdaExpr (params) (body) -> deck-record (ALambdaExpr (map-list desugar-lambda-param params) (desugar-expr-at body (depth + 1)) synthetic-span)
@@ -234,6 +235,27 @@ Section: Expression Desugaring
     is ActExprStmt (e) ->
      let de = desugar-expr e
      in deck-record (AActExprStmt de (aexpr-span de))
+
+ An act block took `synthetic-span`, which is 0,0, and the CST `ActExpr`
+ carries no token of its own to take a position from. That made it the
+ one AST node standing exactly where the most common effect error lands:
+ `check-def` reports CDX2031 against `aexpr-span (def.body)`, and for any
+ def whose body is an act block -- most effectful code in the language --
+ that span was 0,0 and the diagnostic printed with no line:column at all.
+ Not a wrong position, an absent one.
+
+ The statements inside DO carry spans (a bind takes its token's, an
+ expression statement its expression's), so the block takes its first
+ statement's. That is a real position inside the block rather than a
+ guess, and an empty block keeps `synthetic-span` because there is
+ nothing truthful to point at.
+
+  act-stmts-span : List AActStmt -> SourceSpan
+  act-stmts-span (ss) =
+   if list-length ss == 0 then synthetic-span
+   else when list-at ss 0
+    is AActBindStmt (n) (e) (sp) -> sp
+    is AActExprStmt (e) (sp) -> sp
 
   desugar-handle-clause : HandleClause -> AHandleClause
   desugar-handle-clause (c) =
@@ -427,15 +449,24 @@ Section: Definition Desugaring
    })
 
 Section: Document Desugaring
-  desugar-defs-ll : List Def, Integer, Integer, LinkedList ADef -> LinkedList ADef
-  desugar-defs-ll (src) (i) (len) (acc) =
-   if i >= len then acc
-   else desugar-defs-ll src (i + 1) len (__linked-list-push acc (desugar-def (list-at src i)))
+ These two are per-definition loops, and per-definition is the grain the
+ DESUGAR deck grows at: every definition's whole expression tree is
+ rebuilt on the deck. deck-room-left answers whether another definition
+ fits, and a loop that runs out stops where it is. The chapter it was
+ building is thrown away by desugar-document rather than returned
+ truncated -- see the note there.
 
-  desugar-type-defs-ll : List TypeDef, Integer, Integer, LinkedList ATypeDef -> LinkedList ATypeDef
-  desugar-type-defs-ll (src) (i) (len) (acc) =
+  desugar-defs-ll : List Def, Integer, Integer, LinkedList ADef, Integer -> LinkedList ADef
+  desugar-defs-ll (src) (i) (len) (acc) (ceiling) =
    if i >= len then acc
-   else desugar-type-defs-ll src (i + 1) len (__linked-list-push acc (desugar-type-def (list-at src i)))
+   else if deck-out-of-room ceiling then acc
+   else desugar-defs-ll src (i + 1) len (__linked-list-push acc (desugar-def (list-at src i))) ceiling
+
+  desugar-type-defs-ll : List TypeDef, Integer, Integer, LinkedList ATypeDef, Integer -> LinkedList ATypeDef
+  desugar-type-defs-ll (src) (i) (len) (acc) (ceiling) =
+   if i >= len then acc
+   else if deck-out-of-room ceiling then acc
+   else desugar-type-defs-ll src (i + 1) len (__linked-list-push acc (desugar-type-def (list-at src i))) ceiling
 
   desugar-effect-defs-ll : List EffectDef, Integer, Integer, LinkedList AEffectDef -> LinkedList AEffectDef
   desugar-effect-defs-ll (src) (i) (len) (acc) =
@@ -565,22 +596,75 @@ Section: Document Desugaring
     span = synthetic-span
    }))
 
-  desugar-document : Text, Document, Text -> AChapter
-  desugar-document (source) (doc) (chapter-name) =
-   let raw-defs0 = desugar-defs-ll (doc.defs) 0 (list-length (doc.defs)) []
+ The DESUGAR deck's ceiling, and what a phase does when it reaches it.
+
+ deck-out-of-room answers True once the deck is within a guard band of
+ its reservation's top. A ceiling of zero means unbounded, which is
+ what a caller with no reservation of its own passes -- the same
+ convention tokenize-collect uses.
+
+  deck-out-of-room : Integer -> Boolean
+  deck-out-of-room (ceiling) = deck-short-of ceiling demand-desugar-guard-band
+
+  DesugarResult = record {
+   dr-chapter : AChapter,
+   dr-sat : Integer
+  }
+
+  empty-achapter : Text -> AChapter
+  empty-achapter (chapter-name) =
+   deck-record (AChapter {
+    name = make-name chapter-name,
+    defs = [],
+    type-defs = [],
+    effect-defs = [],
+    class-defs = [],
+    instance-defs = [],
+    citations = [],
+    ground-effects = [],
+    chapter-title = "",
+    prose = "",
+    prose-blocks = [],
+    annotations = [],
+    section-titles = [],
+    rt-names = [],
+    rt-budgets = [],
+    conversions = [],
+    span = synthetic-span
+   })
+
+ The saturation test is taken AFTER the loops and BEFORE the chapter is
+ assembled, and the truncated work is then discarded rather than
+ returned. Both halves matter. Returning the partial chapter would
+ assemble a record whose lists cost eight bytes per surviving
+ definition on the very deck that just refused another definition,
+ which is how the LEX guard shipped with a hole: firing is not the job
+ if the wind-down walks through the ceiling anyway. Nothing downstream
+ wants this chapter -- the caller raises CDX9002 on dr-sat and the bag
+ carries an error from there on.
+
+  desugar-document : Text, Document, Text, Integer -> DesugarResult
+  desugar-document (source) (doc) (chapter-name) (ceiling) =
+   let raw-defs0 = desugar-defs-ll (doc.defs) 0 (list-length (doc.defs)) [] ceiling
    in let raw-defs-fam = synth-family-member-defs (doc.type-defs) 0 (list-length (doc.type-defs)) raw-defs0
    in let raw-defs-conv = synth-conversion-defs (doc.annotations) 0 (list-length (doc.annotations)) raw-defs-fam
    in let raw-defs = synth-derived-defs (doc.type-defs) 0 (list-length (doc.type-defs)) raw-defs-conv
-   in let raw-tds = desugar-type-defs-ll (doc.type-defs) 0 (list-length (doc.type-defs)) []
+   in let raw-tds = desugar-type-defs-ll (doc.type-defs) 0 (list-length (doc.type-defs)) [] ceiling
    in let raw-eds = desugar-effect-defs-ll (doc.effect-defs) 0 (list-length (doc.effect-defs)) []
    in let raw-cites = desugar-cites-ll (doc.citations) 0 (list-length (doc.citations)) []
    in let class-tds = synth-class-type-defs (doc.class-defs) (doc.instance-defs) 0 (list-length (doc.class-defs)) raw-tds
    in let inst-defs = synth-instance-defs (doc.class-defs) (doc.instance-defs) 0 (list-length (doc.instance-defs)) raw-defs
    in let all-defs = __linked-list-to-list inst-defs
-   in let rewritten = rewrite-constrained-defs all-defs (doc.class-defs) (doc.instance-defs) 0 (list-length all-defs) []
+   in let rewritten = rewrite-constrained-defs all-defs (doc.class-defs) (doc.instance-defs) 0 (list-length all-defs) [] ceiling
    in let constrained-info = collect-constrained-names all-defs (doc.class-defs) (doc.instance-defs) 0 (list-length all-defs) []
-   in let base-defs = insert-dicts-at-call-sites rewritten constrained-info 0 (list-length rewritten) []
-   in deck-record (AChapter {
+   in let base-defs = insert-dicts-at-call-sites rewritten constrained-info 0 (list-length rewritten) [] ceiling
+   in if deck-out-of-room ceiling
+      then deck-record (DesugarResult { dr-chapter = empty-achapter chapter-name, dr-sat = 1 })
+      else deck-record (DesugarResult { dr-chapter = desugar-assemble doc chapter-name base-defs all-defs class-tds raw-eds raw-cites, dr-sat = 0 })
+
+  desugar-assemble : Document, Text, List ADef, List ADef, LinkedList ATypeDef, LinkedList AEffectDef, LinkedList ACitesDecl -> AChapter
+  desugar-assemble (doc) (chapter-name) (base-defs) (all-defs) (class-tds) (raw-eds) (raw-cites) =
+   deck-record (AChapter {
     name = make-name chapter-name,
     defs = deck-record (prepend-prim-wrappers all-defs base-defs),
     type-defs = deck-record (__linked-list-to-list class-tds),
@@ -591,6 +675,8 @@ Section: Document Desugaring
     ground-effects = doc.ground-effects,
     chapter-title = doc.chapter-title,
     prose = doc.prose,
+    prose-blocks = doc.prose-blocks,
+    annotations = doc.annotations,
     section-titles = doc.section-titles,
     rt-names = collect-rt-names (doc.annotations) 0 (list-length (doc.annotations)) [],
     rt-budgets = collect-rt-budgets (doc.annotations) 0 (list-length (doc.annotations)) [],
@@ -933,12 +1019,13 @@ Section: Document Desugaring
    })
    in synth-class-fields ops (i + 1) len (list-push acc field)
 
-  rewrite-constrained-defs : List ADef, List ClassDef, List InstanceDef, Integer, Integer, List ADef -> List ADef
-  rewrite-constrained-defs (defs) (cds) (ids) (i) (len) (acc) =
+  rewrite-constrained-defs : List ADef, List ClassDef, List InstanceDef, Integer, Integer, List ADef, Integer -> List ADef
+  rewrite-constrained-defs (defs) (cds) (ids) (i) (len) (acc) (ceiling) =
    if i >= len then acc
+   else if deck-out-of-room ceiling then acc
    else let d = list-at defs i
    in let rewritten = rewrite-if-constrained d cds ids
-   in rewrite-constrained-defs defs cds ids (i + 1) len (list-push acc rewritten)
+   in rewrite-constrained-defs defs cds ids (i + 1) len (list-push acc rewritten) ceiling
 
   rewrite-if-constrained : ADef, List ClassDef, List InstanceDef -> ADef
   rewrite-if-constrained (d) (cds) (ids) =
@@ -1254,13 +1341,14 @@ Section: Document Desugaring
    in if token-text (id.class-name) == class-name then token-text (id.type-name)
    else find-single-instance-type ids class-name (i + 1) len
 
-  insert-dicts-at-call-sites : List ADef, List ConstrainedFnInfo, Integer, Integer, List ADef -> List ADef
-  insert-dicts-at-call-sites (defs) (info) (i) (len) (acc) =
+  insert-dicts-at-call-sites : List ADef, List ConstrainedFnInfo, Integer, Integer, List ADef, Integer -> List ADef
+  insert-dicts-at-call-sites (defs) (info) (i) (len) (acc) (ceiling) =
    if i >= len then acc
+   else if deck-out-of-room ceiling then acc
    else let d = list-at defs i
    in let new-body = insert-dict-refs (d.body) info
    in let new-d = deck-record (__record-set d "body" new-body)
-   in insert-dicts-at-call-sites defs info (i + 1) len (list-push acc new-d)
+   in insert-dicts-at-call-sites defs info (i + 1) len (list-push acc new-d) ceiling
 
   insert-dict-refs : AExpr, List ConstrainedFnInfo -> AExpr
   insert-dict-refs (expr) (info) =

@@ -1,4 +1,4 @@
-# The host half of BACKLOG 6.2: asking a peer for a work by hash, and turning
+# The host half of peer quotation: asking a peer for a work by hash, and turning
 # the answer into the %%QUOTED-WORKS%% blob the compiler already reads.
 #
 # WHY THE HOST AND NOT THE COMPILER. Library Rule 2 fixes the dependency order
@@ -18,7 +18,7 @@
 # It is dot-sourced, and it is dot-sourced by more than one caller ON PURPOSE.
 # cdx-serve-test.ps1 spoke this wire first and privately; a second hand-rolled
 # copy in compile.ps1 is how a transport ends up with 41 byte-identical
-# implementations (BACKLOG 2.3). One wire, one file, two callers.
+# implementations. One wire, one file, two callers.
 #
 # Requires vm-config.ps1 (the CCE tables) to be dot-sourced first.
 
@@ -68,7 +68,7 @@ function Read-Le32([byte[]]$Bytes, [int]$Offset) {
 # The public key is empty: the reply is answerable by its own content, so the
 # server has no use for who is asking and accept-reply ignores the reply's own
 # `from` in turn.
-function New-WorkRequestFrame([string]$Hash) {
+function New-HashAskFrame([string]$Hash, [byte]$Tag) {
     $hashCce = ConvertTo-CceBytes $Hash
     $body = @()
     $body += New-Le32 0
@@ -76,30 +76,60 @@ function New-WorkRequestFrame([string]$Hash) {
     $body += $hashCce
     $frame = @()
     $frame += New-Le32 (1 + $body.Length)
-    $frame += [byte]17          # tag-work-request
+    $frame += $Tag
     $frame += $body
     return [byte[]]$frame
+}
+
+# tag-work-request (17) and tag-locate-request (19) have byte-identical bodies,
+# and their replies (18 / 20) do too -- bytes(pubkey) ++ text(hash) ++ text(rest).
+# Only the meaning of the third field differs: a work reply's is CONTENT and is
+# checked against the hash, a locate reply's is a list of ADDRESSES and is
+# checked by nothing. One codec, two verbs.
+function New-WorkRequestFrame([string]$Hash) {
+    return New-HashAskFrame $Hash ([byte]17)
 }
 
 # Ask one peer for one work. Returns @{ Hash; Payload } -- an empty Payload is a
 # MISS, which is the ordinary case and not an error: a peer that does not hold a
 # work simply does not hold it. Returns $null only when the peer never answered.
-function Invoke-WorkAsk {
+function Invoke-HashAsk {
     param(
         [Parameter(Mandatory=$true)] [string]$HostName,
         [Parameter(Mandatory=$true)] [int]$Port,
         [Parameter(Mandatory=$true)] [string]$Hash,
-        [int]$TimeoutSec = 60
+        [Parameter(Mandatory=$true)] [byte]$Tag,
+        [Parameter(Mandatory=$true)] [byte]$ExpectTag,
+        [int]$TimeoutSec = 60,
+        # EVERY RETRY IS A CONNECTION THE SERVER MUST WADE THROUGH. codex-vm's
+        # port forward accepts and allocates a slot per attempt whether or not
+        # a guest is listening, and a single-threaded server then picks up the
+        # abandoned ones in turn, finds them silent, and burns its accept cycle
+        # on each. Unbounded retrying does not out-wait that -- it causes it.
+        [int]$MaxAttempts = 0,
+        # THE READ TIMEOUT MUST COVER THE WORK THE ANSWER COSTS, and for a
+        # locate that is not the same as for a fetch. A peer answers a
+        # work-request out of an index it built at boot; a registry answers a
+        # locate by probing every peer it knows, which is a guest-to-guest
+        # connect and receive EACH. At 30 s the host gave up first, and because
+        # every retry opens a new connection and triggers a fresh probe, the
+        # registry spent forever answering sockets nobody was holding any more.
+        # Measured: the registry completed the whole exchange and printed
+        # `answer-locate: reply sent` while the host had already moved on.
+        [int]$ReadTimeoutMs = 30000
     )
     $deadline = (Get-Date).AddSeconds($TimeoutSec)
+    $attempt = 0
     while ((Get-Date) -lt $deadline) {
+        if ($MaxAttempts -gt 0 -and $attempt -ge $MaxAttempts) { return $null }
+        $attempt++
         $c = $null
         try {
             $c = [System.Net.Sockets.TcpClient]::new()
             $c.Connect($HostName, $Port)
             $s = $c.GetStream()
-            $s.ReadTimeout = 30000
-            $req = New-WorkRequestFrame $Hash
+            $s.ReadTimeout = $ReadTimeoutMs
+            $req = New-HashAskFrame $Hash $Tag
             $s.Write($req, 0, $req.Length)
             $s.Flush()
 
@@ -108,7 +138,7 @@ function Invoke-WorkAsk {
             while ($n -lt 5) { $r = $s.Read($hdr, $n, 5 - $n); if ($r -le 0) { throw 'short header' }; $n += $r }
             $total = Read-Le32 $hdr 0
             $tag = $hdr[4]
-            if ($tag -ne 18) { throw "work-wire: expected tag-work-reply (18), got $tag" }
+            if ($tag -ne $ExpectTag) { throw "work-wire: expected tag $ExpectTag, got $tag" }
             $rest = New-Object byte[] ($total - 1)
             $n = 0
             while ($n -lt $rest.Length) { $r = $s.Read($rest, $n, $rest.Length - $n); if ($r -le 0) { throw 'short body' }; $n += $r }
@@ -124,10 +154,75 @@ function Invoke-WorkAsk {
             return @{ Hash = $rHash; Payload = $payload }
         } catch {
             if ($c) { $c.Dispose() }
-            Start-Sleep -Milliseconds 700
+            # DO NOT HAMMER. codex-vm's port forward accepts a host connection
+            # and allocates a NAT slot even when no guest is listening yet, and
+            # an abandoned slot stays live. Retrying every 700 ms through a
+            # ~20 s guest boot opened ~70 connections and exhausted the 64-slot
+            # table, after which every frame was dropped -- which reads as the
+            # server being broken when it is the client that broke it.
+            Start-Sleep -Milliseconds 3000
         }
     }
     return $null
+}
+
+function Invoke-WorkAsk {
+    param(
+        [Parameter(Mandatory=$true)] [string]$HostName,
+        [Parameter(Mandatory=$true)] [int]$Port,
+        [Parameter(Mandatory=$true)] [string]$Hash,
+        [int]$TimeoutSec = 60
+    )
+    return Invoke-HashAsk -HostName $HostName -Port $Port -Hash $Hash `
+        -Tag ([byte]17) -ExpectTag ([byte]18) -TimeoutSec $TimeoutSec
+}
+
+# Ask a registry who holds a digest. Returns an array of 'host:port' -- EMPTY is
+# the ordinary answer for "nobody I know of", not an error, exactly as an empty
+# work payload is. Returns $null only when the registry never answered.
+#
+# What comes back is a rumour and is treated as one. Nothing here checks that a
+# named peer exists, is honest, or holds anything; the addresses are only used,
+# by fetching from them and hashing what comes back. A registry that names a
+# hostile peer costs a round trip -- Add-PeerWorks still refuses any content
+# that does not address the hash it asked for.
+function Invoke-WorkLocate {
+    param(
+        [Parameter(Mandatory=$true)] [string]$HostName,
+        [Parameter(Mandatory=$true)] [int]$Port,
+        [Parameter(Mandatory=$true)] [string]$Hash,
+        [int]$TimeoutSec = 120
+    )
+    # THE READ TIMEOUT MUST BE WELL UNDER THE OUTER DEADLINE, or the retry loop
+    # cannot retry. codex-vm's port forward accepts the host connection long
+    # before the guest is behind it, so an early ask does not fail fast -- it
+    # blocks on a socket nobody is reading. With the read timeout longer than
+    # $TimeoutSec, that first block outlives the whole deadline and the loop
+    # exits having made exactly one attempt, reporting a healthy server as
+    # never having come up. It was 240000 against a 180 s deadline, which is
+    # why this passed against a single fast-booting VM and failed in the full
+    # harness where the registry boots behind three compiles.
+    $reply = Invoke-HashAsk -HostName $HostName -Port $Port -Hash $Hash `
+        -Tag ([byte]19) -ExpectTag ([byte]20) -TimeoutSec $TimeoutSec `
+        -ReadTimeoutMs 25000 -MaxAttempts 4
+    if ($null -eq $reply) { return $null }
+    if ($reply.Hash -ne $Hash) {
+        throw "work-wire: asked the registry at ${HostName}:$Port to locate $Hash and it answered for $($reply.Hash)"
+    }
+    # AN OBJECT, NOT A BARE ARRAY, and the reason is worth the extra field.
+    # PowerShell unrolls arrays on return, so `return @()` for "nobody holds it"
+    # arrives at the caller as $null -- indistinguishable from "the server never
+    # answered", which is how a working registry got reported as dead and sent
+    # this whole investigation after a transport bug that was never there. The
+    # `,@()` idiom that supposedly fixes it does not behave consistently either:
+    # a toy reproduction counted 0 and this same call counted 1. So the empty
+    # case is not encoded in the shape of the return value at all. `$null` means
+    # no answer; anything else is an answer, and `.Peers` is what it said.
+    $peers = @()
+    if ($reply.Payload.Length -gt 0) {
+        $peers = @($reply.Payload -split '\s+' | Where-Object { $_ -ne '' })
+    }
+    return [pscustomobject]@{ Peers = $peers; Count = $peers.Count }
 }
 
 # --- The stored form ---------------------------------------------------------
@@ -190,6 +285,13 @@ function ConvertTo-WorkBlock($Wire) {
     return $block
 }
 
+function Split-HostPort([string]$Value, [string]$What) {
+    if ($Value -notmatch '^([^:]+):(\d+)$') {
+        throw "work-wire: -$What wants <host>:<port>, got '$Value'"
+    }
+    return @{ HostName = $matches[1]; Port = [int]$matches[2] }
+}
+
 $script:QuotedWorksMarker = '%%QUOTED-WORKS%%'
 
 function Get-QuotedHashes([string[]]$Lines) {
@@ -220,12 +322,18 @@ function Add-PeerWorks {
         # AllowEmptyString, because a source has blank lines and a Mandatory
         # [string[]] rejects an array with an empty element out of hand.
         [Parameter(Mandatory=$true)] [AllowEmptyString()] [string[]]$Lines,
-        [Parameter(Mandatory=$true)] [string]$Peer,
+        [string]$Peer,
+        [string]$Registry,
         [int]$TimeoutSec = 60
     )
-    if ($Peer -notmatch '^([^:]+):(\d+)$') { throw "work-wire: -Peer wants <host>:<port>, got '$Peer'" }
-    $peerHost = $matches[1]
-    $peerPort = [int]$matches[2]
+    if (-not $Peer -and -not $Registry) {
+        throw 'work-wire: Add-PeerWorks wants -Peer <host:port> or -Registry <host:port>'
+    }
+    if ($Peer -and $Registry) {
+        throw 'work-wire: -Peer names a holder and -Registry finds one; pass one or the other'
+    }
+    if ($Peer) { [void](Split-HostPort $Peer 'Peer') }
+    $reg = if ($Registry) { Split-HostPort $Registry 'Registry' } else { $null }
 
     $offered = Get-OfferedHashes $Lines
     $wanted = @(Get-QuotedHashes $Lines | Where-Object { $offered -notcontains $_ } | Select-Object -Unique)
@@ -233,25 +341,57 @@ function Add-PeerWorks {
 
     $blocks = @()
     foreach ($h in $wanted) {
-        $reply = Invoke-WorkAsk -HostName $peerHost -Port $peerPort -Hash $h -TimeoutSec $TimeoutSec
-        if ($null -eq $reply) { throw "work-wire: the peer at $Peer never answered when asked for $h" }
-        if ($reply.Payload.Length -eq 0) {
-            # A miss is not an error. The work may still resolve from an
-            # attached store, and if it resolves from nowhere the gate says so.
-            [Console]::Error.WriteLine("work-wire: $Peer does not hold $h")
-            continue
+        # WHERE THE CANDIDATES COME FROM IS THE ONLY THING -Registry CHANGES.
+        # Everything below this is identical either way, and deliberately so: a
+        # located peer gets exactly the same scrutiny as a named one, because
+        # being named by a registry is not evidence of anything.
+        $candidates = @()
+        if ($Peer) {
+            $candidates = @($Peer)
+        } else {
+            $found = Invoke-WorkLocate -HostName $reg.HostName -Port $reg.Port -Hash $h -TimeoutSec $TimeoutSec
+            if ($null -eq $found) {
+                throw "work-wire: the registry at $Registry never answered when asked to locate $h"
+            }
+            if ($found.Count -eq 0) {
+                [Console]::Error.WriteLine("work-wire: the registry at $Registry knows nobody holding $h")
+                continue
+            }
+            $candidates = $found.Peers
         }
-        # accept-reply, on the host: a peer that answers a question nobody asked,
-        # or hands back something other than what it addresses, is caught here by
-        # arithmetic rather than by reputation. The gate checks this again -- the
-        # digest on a WORK line is only a claim -- but a lying peer should be
-        # named at the fetch, not survive as a confusing refusal downstream.
-        if ($reply.Hash -ne $h) { throw "work-wire: asked $Peer for $h and it answered $($reply.Hash)" }
-        $wire = ConvertFrom-SourceDefWire $reply.Payload
-        if ($null -eq $wire) { throw "work-wire: $Peer answered $h with something that is not a stored work" }
-        $actual = Get-CceContentHash $wire.Content
-        if ($actual -ne $h) { throw "work-wire: $Peer answered $h with content that addresses $actual" }
-        $blocks += ConvertTo-WorkBlock $wire
+
+        $block = $null
+        foreach ($cand in $candidates) {
+            $cp = Split-HostPort $cand 'peer'
+            $reply = Invoke-WorkAsk -HostName $cp.HostName -Port $cp.Port -Hash $h -TimeoutSec $TimeoutSec
+            if ($null -eq $reply) {
+                # A named peer that never answers is an error, because it is the
+                # only route offered. A LOCATED one is a bad rumour: try the next
+                # address the registry named before giving up on the digest.
+                if ($Peer) { throw "work-wire: the peer at $Peer never answered when asked for $h" }
+                [Console]::Error.WriteLine("work-wire: $cand was named for $h and never answered")
+                continue
+            }
+            if ($reply.Payload.Length -eq 0) {
+                # A miss is not an error. The work may still resolve from an
+                # attached store, and if it resolves from nowhere the gate says so.
+                [Console]::Error.WriteLine("work-wire: $cand does not hold $h")
+                continue
+            }
+            # accept-reply, on the host: a peer that answers a question nobody asked,
+            # or hands back something other than what it addresses, is caught here by
+            # arithmetic rather than by reputation. The gate checks this again -- the
+            # digest on a WORK line is only a claim -- but a lying peer should be
+            # named at the fetch, not survive as a confusing refusal downstream.
+            if ($reply.Hash -ne $h) { throw "work-wire: asked $cand for $h and it answered $($reply.Hash)" }
+            $wire = ConvertFrom-SourceDefWire $reply.Payload
+            if ($null -eq $wire) { throw "work-wire: $cand answered $h with something that is not a stored work" }
+            $actual = Get-CceContentHash $wire.Content
+            if ($actual -ne $h) { throw "work-wire: $cand answered $h with content that addresses $actual" }
+            $block = ConvertTo-WorkBlock $wire
+            break
+        }
+        if ($null -ne $block) { $blocks += $block }
     }
     if ($blocks.Count -eq 0) { return $Lines }
 

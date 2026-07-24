@@ -4,113 +4,113 @@ Chapter: Codex Emitter
  Emits Codex source code from the IR.
 
 Section: Type Definition Emission
-  emit-type-defs : List ATypeDef, Integer -> Text
-  emit-type-defs (tds) (i) =
-   text-concat-list (for td in tds -> emit-type-def td & "\n")
+  codex-emit-type-defs : List ATypeDef, Integer -> Text
+  codex-emit-type-defs (tds) (i) =
+   text-concat-list (for td in tds -> codex-emit-type-def td & "\n")
 
-  emit-type-def : ATypeDef -> Text
-  emit-type-def (td) =
+  codex-emit-type-def : ATypeDef -> Text
+  codex-emit-type-def (td) =
    when td
     is ARecordTypeDef (name) (tparams) (fields) (is-mut) (s) ->
      let mut-prefix = if is-mut then "mutable " else ""
-     in mut-prefix & name.value & emit-tparams tparams 0 & " = record {" & emit-record-field-defs fields 0 & "\n}\n"
+     in mut-prefix & name.value & codex-emit-tparams tparams 0 & " = record {" & codex-emit-record-field-defs fields 0 & "\n}\n"
     is AVariantTypeDef (name) (tparams) (ctors) (s) ->
-     name.value & emit-tparams tparams 0 & " =\n" & emit-variant-ctors ctors 0
+     name.value & codex-emit-tparams tparams 0 & " =\n" & codex-emit-variant-ctors ctors 0
     is AUnitTypeDef (name) (base) (s) ->
-     name.value & " = unit " & emit-type-expr base
+     name.value & " = unit " & codex-emit-type-expr base
 
-  emit-tparams : List Name, Integer -> Text
-  emit-tparams (tparams) (i) =
+  codex-emit-tparams : List Name, Integer -> Text
+  codex-emit-tparams (tparams) (i) =
    text-concat-list (for tp in tparams -> " (" & tp.value & ")")
 
-  emit-record-field-defs : List ARecordFieldDef, Integer -> Text
-  emit-record-field-defs (fields) (i) =
-   text-concat-list (emit-record-field-defs-acc fields i (list-length fields) [])
+  codex-emit-record-field-defs : List ARecordFieldDef, Integer -> Text
+  codex-emit-record-field-defs (fields) (i) =
+   text-concat-list (codex-emit-record-field-defs-acc fields i (list-length fields) [])
 
-  emit-record-field-defs-acc : List ARecordFieldDef, Integer, Integer, List Text -> List Text
-  emit-record-field-defs-acc (fields) (i) (len) (acc) =
+  codex-emit-record-field-defs-acc : List ARecordFieldDef, Integer, Integer, List Text -> List Text
+  codex-emit-record-field-defs-acc (fields) (i) (len) (acc) =
    if i == len then acc
    else let f = list-at fields i
    in let comma = if i > 0 then "," else ""
-   in emit-record-field-defs-acc fields (i + 1) len (list-push acc (comma & "\n  " & f.name.value & " : " & emit-type-expr (f.type-expr)))
+   in codex-emit-record-field-defs-acc fields (i + 1) len (list-push acc (comma & "\n  " & f.name.value & " : " & codex-emit-type-expr (f.type-expr)))
 
-  emit-variant-ctors : List AVariantCtorDef, Integer -> Text
-  emit-variant-ctors (ctors) (i) =
-   text-concat-list (emit-variant-ctors-acc ctors i (list-length ctors) [])
+  codex-emit-variant-ctors : List AVariantCtorDef, Integer -> Text
+  codex-emit-variant-ctors (ctors) (i) =
+   text-concat-list (codex-emit-variant-ctors-acc ctors i (list-length ctors) [])
 
-  emit-variant-ctors-acc : List AVariantCtorDef, Integer, Integer, List Text -> List Text
-  emit-variant-ctors-acc (ctors) (i) (len) (acc) =
+  codex-emit-variant-ctors-acc : List AVariantCtorDef, Integer, Integer, List Text -> List Text
+  codex-emit-variant-ctors-acc (ctors) (i) (len) (acc) =
    if i == len then acc
    else let c = list-at ctors i
-   in emit-variant-ctors-acc ctors (i + 1) len (list-push acc ("  | " & c.name.value & emit-ctor-fields (c.fields) 0 & "\n"))
+   in codex-emit-variant-ctors-acc ctors (i + 1) len (list-push acc ("  | " & c.name.value & codex-emit-ctor-fields (c.fields) 0 & "\n"))
 
-  emit-ctor-fields : List ATypeExpr, Integer -> Text
-  emit-ctor-fields (fields) (i) =
-   text-concat-list (for f in fields -> " (" & emit-type-expr f & ")")
+  codex-emit-ctor-fields : List ATypeExpr, Integer -> Text
+  codex-emit-ctor-fields (fields) (i) =
+   text-concat-list (for f in fields -> " (" & codex-emit-type-expr f & ")")
 
-  emit-type-expr : ATypeExpr -> Text
-  emit-type-expr (te) =
+  codex-emit-type-expr : ATypeExpr -> Text
+  codex-emit-type-expr (te) =
    when te
     is ANamedType (name) (s) -> name.value
-    is AFunType (p) (r) (s) -> emit-fun-param-chain p r
-    is AAppType (base) (args) (s) -> emit-type-expr base & " " & emit-type-expr-args args 0
+    is AFunType (p) (r) (s) -> codex-emit-fun-param-chain p r
+    is AAppType (base) (args) (s) -> codex-emit-type-expr base & " " & codex-emit-type-expr-args args 0
     is AEffectType (effs) (scopes) (tail) (ret) (s) ->
-     if list-length tail == 0 then "[" & emit-effect-names effs 0 & "] " & emit-type-expr ret
-     else if list-length effs == 0 then "[" & (list-at tail 0).value & "] " & emit-type-expr ret
-     else "[" & emit-effect-names effs 0 & ", " & (list-at tail 0).value & "] " & emit-type-expr ret
-    is ABoundedIntType (b) (lo) (hi) (mode) (s) -> emit-type-expr b & " between " & integer-to-text lo & " and " & integer-to-text hi & emit-overflow-mode mode
-    is ALinearType (inner) (s) -> "linear " & emit-type-expr inner
+     if list-length tail == 0 then "[" & codex-emit-effect-names effs 0 & "] " & codex-emit-type-expr ret
+     else if list-length effs == 0 then "[" & (list-at tail 0).value & "] " & codex-emit-type-expr ret
+     else "[" & codex-emit-effect-names effs 0 & ", " & (list-at tail 0).value & "] " & codex-emit-type-expr ret
+    is ABoundedIntType (b) (lo) (hi) (mode) (s) -> codex-emit-type-expr b & " between " & integer-to-text lo & " and " & integer-to-text hi & codex-emit-overflow-mode mode
+    is ALinearType (inner) (s) -> "linear " & codex-emit-type-expr inner
     is otherwise -> "Unknown"
 
-  emit-overflow-mode : OverflowMode -> Text
-  emit-overflow-mode (mode) =
+  codex-emit-overflow-mode : OverflowMode -> Text
+  codex-emit-overflow-mode (mode) =
    when mode
     is OvError -> ""
     is OvWrapping -> " wrapping"
     is OvClamping -> " clamping"
 
-  emit-integer-ty : Integer, Integer, OverflowMode -> Text
-  emit-integer-ty (lo) (hi) (mode) =
+  codex-emit-integer-ty : Integer, Integer, OverflowMode -> Text
+  codex-emit-integer-ty (lo) (hi) (mode) =
    if lo <= i64-min & hi >= i64-max then "Integer"
-   else "Integer between " & integer-to-text lo & " and " & integer-to-text hi & emit-overflow-mode mode
+   else "Integer between " & integer-to-text lo & " and " & integer-to-text hi & codex-emit-overflow-mode mode
 
-  emit-fun-param-chain : ATypeExpr, ATypeExpr -> Text
-  emit-fun-param-chain (p) (r) =
+  codex-emit-fun-param-chain : ATypeExpr, ATypeExpr -> Text
+  codex-emit-fun-param-chain (p) (r) =
    when r
-    is AFunType (p2) (r2) (s2) -> emit-fun-param p & ", " & emit-fun-param-chain p2 r2
-    is otherwise -> emit-fun-param p & " -> " & emit-type-expr r
+    is AFunType (p2) (r2) (s2) -> codex-emit-fun-param p & ", " & codex-emit-fun-param-chain p2 r2
+    is otherwise -> codex-emit-fun-param p & " -> " & codex-emit-type-expr r
 
-  emit-fun-param : ATypeExpr -> Text
-  emit-fun-param (te) =
+  codex-emit-fun-param : ATypeExpr -> Text
+  codex-emit-fun-param (te) =
    when te
-    is AFunType (p) (r) (s) -> "(" & emit-type-expr te & ")"
-    is otherwise -> emit-type-expr te
+    is AFunType (p) (r) (s) -> "(" & codex-emit-type-expr te & ")"
+    is otherwise -> codex-emit-type-expr te
 
-  emit-type-expr-args : List ATypeExpr, Integer -> Text
-  emit-type-expr-args (args) (i) =
-   text-concat-list (emit-type-expr-args-acc args i (list-length args) [])
+  codex-emit-type-expr-args : List ATypeExpr, Integer -> Text
+  codex-emit-type-expr-args (args) (i) =
+   text-concat-list (codex-emit-type-expr-args-acc args i (list-length args) [])
 
-  emit-type-expr-args-acc : List ATypeExpr, Integer, Integer, List Text -> List Text
-  emit-type-expr-args-acc (args) (i) (len) (acc) =
+  codex-emit-type-expr-args-acc : List ATypeExpr, Integer, Integer, List Text -> List Text
+  codex-emit-type-expr-args-acc (args) (i) (len) (acc) =
    if i == len then acc
    else let sep = if i > 0 then " " else ""
-   in emit-type-expr-args-acc args (i + 1) len (list-push acc (sep & emit-type-expr-wrapped (list-at args i)))
+   in codex-emit-type-expr-args-acc args (i + 1) len (list-push acc (sep & codex-emit-type-expr-wrapped (list-at args i)))
 
-  emit-type-expr-wrapped : ATypeExpr -> Text
-  emit-type-expr-wrapped (te) =
+  codex-emit-type-expr-wrapped : ATypeExpr -> Text
+  codex-emit-type-expr-wrapped (te) =
    when te
-    is AFunType (p) (r) (s) | AAppType (base) (args) (s) -> "(" & emit-type-expr te & ")"
-    is otherwise -> emit-type-expr te
+    is AFunType (p) (r) (s) | AAppType (base) (args) (s) -> "(" & codex-emit-type-expr te & ")"
+    is otherwise -> codex-emit-type-expr te
 
-  emit-effect-names : List Name, Integer -> Text
-  emit-effect-names (effs) (i) =
-   text-concat-list (emit-effect-names-acc effs i (list-length effs) [])
+  codex-emit-effect-names : List Name, Integer -> Text
+  codex-emit-effect-names (effs) (i) =
+   text-concat-list (codex-emit-effect-names-acc effs i (list-length effs) [])
 
-  emit-effect-names-acc : List Name, Integer, Integer, List Text -> List Text
-  emit-effect-names-acc (effs) (i) (len) (acc) =
+  codex-emit-effect-names-acc : List Name, Integer, Integer, List Text -> List Text
+  codex-emit-effect-names-acc (effs) (i) (len) (acc) =
    if i == len then acc
    else let sep = if i > 0 then ", " else ""
-   in emit-effect-names-acc effs (i + 1) len (list-push acc (sep & (list-at effs i).value))
+   in codex-emit-effect-names-acc effs (i + 1) len (list-push acc (sep & (list-at effs i).value))
 
 Section: TypeVar Normalization
   TypeVarMap = record {
@@ -182,10 +182,10 @@ Section: CodexType Emission
  into a build failure. Full-range prints bare Integer, so unbounded
  signatures round-trip byte-identically.
 
-  emit-type : CodexType -> Text
-  emit-type (ty) =
+  codex-emit-type : CodexType -> Text
+  codex-emit-type (ty) =
    when ty
-    is IntegerTy (lo) (hi) (mode) -> emit-integer-ty lo hi mode
+    is IntegerTy (lo) (hi) (mode) -> codex-emit-integer-ty lo hi mode
     is RealTy -> "Real"
     is RealApproxTy -> "Real approximate"
     is RealTrappingTy -> "Real trapping"
@@ -195,18 +195,18 @@ Section: CodexType Emission
     is CharTy -> "Char"
     is VoidTy | NothingTy -> "Nothing"
     is ErrorTy -> "Unknown"
-    is FunTy (p) (row) (r) -> emit-fun-params p row r
+    is FunTy (p) (row) (r) -> codex-emit-fun-params p row r
     is ListTy (elem) -> "List " & wrap-complex elem
     is LinkedListTy (elem) -> "LinkedList " & wrap-complex elem
     is TypeVar (id) -> "a" & integer-to-text id
-    is ForAllTy (id) (body) -> emit-type body
-    is ForAllEff (id) (body) -> emit-type body
+    is ForAllTy (id) (body) -> codex-emit-type body
+    is ForAllEff (id) (body) -> codex-emit-type body
     is SumTy (name) (ty-args) (ctors) | RecordTy (name) (args) (fields) -> name.value
     is ConstructedTy (name) (args) ->
-     if is-tup-type-name (name.value) (list-length args) then "(" & emit-tuple-type-elems args 0 (list-length args) & ")"
+     if is-tup-type-name (name.value) (list-length args) then "(" & codex-emit-tuple-type-elems args 0 (list-length args) & ")"
      else if list-length args == 0 then name.value
-     else name.value & emit-type-args args 0
-    is EffectfulTy (effs) (sc) (ret) -> "[" & emit-type-effect-names effs 0 & "] " & emit-type ret
+     else name.value & codex-emit-type-args args 0
+    is EffectfulTy (effs) (sc) (ret) -> "[" & codex-emit-type-effect-names effs 0 & "] " & codex-emit-type ret
     is UnitTy (name) (inner) -> name.value
     is VectorTy (n) (t) -> "Vector " & integer-to-text n & " " & wrap-complex t
     is VectorMaskTy (n) -> "VectorMask " & integer-to-text n
@@ -219,47 +219,47 @@ Section: CodexType Emission
  prints nothing, so pure signatures are byte-identical to the
  pre-row rendering — the text fixed point depends on this.
 
-  emit-fun-params : CodexType, EffectRow, CodexType -> Text
-  emit-fun-params (p) (row) (r) =
+  codex-emit-fun-params : CodexType, EffectRow, CodexType -> Text
+  codex-emit-fun-params (p) (row) (r) =
    when r
-    is FunTy (p2) (row2) (r2) -> wrap-fun-param p & ", " & emit-fun-params p2 row2 r2
-    is otherwise -> wrap-fun-param p & " -> " & emit-row-result row r
+    is FunTy (p2) (row2) (r2) -> wrap-fun-param p & ", " & codex-emit-fun-params p2 row2 r2
+    is otherwise -> wrap-fun-param p & " -> " & codex-emit-row-result row r
 
-  emit-row-result : EffectRow, CodexType -> Text
-  emit-row-result (row) (r) =
+  codex-emit-row-result : EffectRow, CodexType -> Text
+  codex-emit-row-result (row) (r) =
    let has-labels = list-length (row.labels) > 0
    in let has-tail = text-length (row.tail-name) > 0
-   in if has-labels == False & has-tail == False then emit-type r
+   in if has-labels == False & has-tail == False then codex-emit-type r
    else let tail-part = if has-tail then (if has-labels then ", " else "") & row.tail-name else ""
-   in "[" & emit-row-labels (row.labels) 0 & tail-part & "] " & emit-type r
+   in "[" & codex-emit-row-labels (row.labels) 0 & tail-part & "] " & codex-emit-type r
 
-  emit-row-labels : List EffectLabel, Integer -> Text
-  emit-row-labels (ls) (i) =
+  codex-emit-row-labels : List EffectLabel, Integer -> Text
+  codex-emit-row-labels (ls) (i) =
    if i == list-length ls then ""
    else let l = list-at ls i
    in let sep = if i > 0 then ", " else ""
    in let scope-part = if text-length (l.scope) > 0 then " \"" & (l.scope) & "\"" else ""
-   in sep & (l.name.value) & scope-part & emit-row-labels ls (i + 1)
+   in sep & (l.name.value) & scope-part & codex-emit-row-labels ls (i + 1)
 
   wrap-fun-param : CodexType -> Text
   wrap-fun-param (ty) =
    when ty
-    is FunTy (p) (row) (r) -> "(" & emit-type ty & ")"
-    is otherwise -> emit-type ty
+    is FunTy (p) (row) (r) -> "(" & codex-emit-type ty & ")"
+    is otherwise -> codex-emit-type ty
 
   wrap-complex : CodexType -> Text
   wrap-complex (ty) =
    when ty
-    is FunTy (p) (row) (r) | ListTy (elem) | LinkedListTy (elem) -> "(" & emit-type ty & ")"
+    is FunTy (p) (row) (r) | ListTy (elem) | LinkedListTy (elem) -> "(" & codex-emit-type ty & ")"
     is ConstructedTy (name) (args) ->
      if list-length args == 0 then name.value
-     else "(" & emit-type ty & ")"
-    is otherwise -> emit-type ty
+     else "(" & codex-emit-type ty & ")"
+    is otherwise -> codex-emit-type ty
 
-  emit-type-args : List CodexType, Integer -> Text
-  emit-type-args (args) (i) =
+  codex-emit-type-args : List CodexType, Integer -> Text
+  codex-emit-type-args (args) (i) =
    if i == list-length args then ""
-   else " " & wrap-complex (list-at args i) & emit-type-args args (i + 1)
+   else " " & wrap-complex (list-at args i) & codex-emit-type-args args (i + 1)
 
   is-tup-type-name : Text, Integer -> Boolean
   is-tup-type-name (n) (arity) =
@@ -267,25 +267,25 @@ Section: CodexType Emission
    else if arity > 5 then False
    else n == ("Tup" & integer-to-text arity)
 
-  emit-tuple-type-elems : List CodexType, Integer, Integer -> Text
-  emit-tuple-type-elems (args) (i) (len) =
+  codex-emit-tuple-type-elems : List CodexType, Integer, Integer -> Text
+  codex-emit-tuple-type-elems (args) (i) (len) =
    if i >= len then ""
    else let sep = if i > 0 then ", " else ""
-   in sep & emit-type (list-at args i) & emit-tuple-type-elems args (i + 1) len
+   in sep & codex-emit-type (list-at args i) & codex-emit-tuple-type-elems args (i + 1) len
 
-  emit-type-effect-names : List Name, Integer -> Text
-  emit-type-effect-names (effs) (i) =
+  codex-emit-type-effect-names : List Name, Integer -> Text
+  codex-emit-type-effect-names (effs) (i) =
    if i == list-length effs then ""
    else let sep = if i > 0 then ", " else ""
-   in sep & (list-at effs i).value & emit-type-effect-names effs (i + 1)
+   in sep & (list-at effs i).value & codex-emit-type-effect-names effs (i + 1)
 
 Section: Definition Emission
-  emit-def : IRDef, List Text, List RenameEntry -> Text
-  emit-def (d) (ctor-names) (renames) =
+  codex-emit-def : IRDef, List Text, List RenameEntry -> Text
+  codex-emit-def (d) (ctor-names) (renames) =
    if skip-def d ctor-names then ""
    else let norm-ty = normalize-type-vars (d.type-val)
-   in let sig = d.name & " : " & emit-type norm-ty & "\n" & d.name & emit-def-params (d.params) 0
-   in sig & " =\n  " & emit-expr (d.body) ctor-names 2 & "\n"
+   in let sig = d.name & " : " & codex-emit-type norm-ty & "\n" & d.name & codex-emit-def-params (d.params) 0
+   in sig & " =\n  " & codex-emit-expr (d.body) ctor-names 2 & "\n"
 
   skip-def : IRDef, List Text -> Boolean
   skip-def (d) (ctor-names) =
@@ -296,22 +296,22 @@ Section: Definition Emission
       else if first > 38 then True
       else False
 
-  emit-def-params : List IRParam, Integer -> Text
-  emit-def-params (params) (i) =
-   text-concat-list (emit-def-params-acc params i (list-length params) [])
+  codex-emit-def-params : List IRParam, Integer -> Text
+  codex-emit-def-params (params) (i) =
+   text-concat-list (codex-emit-def-params-acc params i (list-length params) [])
 
-  emit-def-params-acc : List IRParam, Integer, Integer, List Text -> List Text
-  emit-def-params-acc (params) (i) (len) (acc) =
+  codex-emit-def-params-acc : List IRParam, Integer, Integer, List Text -> List Text
+  codex-emit-def-params-acc (params) (i) (len) (acc) =
    if i == len then acc
    else let p = list-at params i
-   in emit-def-params-acc params (i + 1) len (list-push acc (" (" & p.name & ")"))
+   in codex-emit-def-params-acc params (i + 1) len (list-push acc (" (" & p.name & ")"))
 
 Section: Expression Emission
-  emit-expr : IRExpr, List Text, Integer -> Text
-  emit-expr (e) (ctors) (indent) = emit-expr-at e ctors indent 0
+  codex-emit-expr : IRExpr, List Text, Integer -> Text
+  codex-emit-expr (e) (ctors) (indent) = codex-emit-expr-at e ctors indent 0
 
-  emit-expr-at : IRExpr, List Text, Integer, Integer -> Text
-  emit-expr-at (e) (ctors) (indent) (depth) =
+  codex-emit-expr-at : IRExpr, List Text, Integer, Integer -> Text
+  codex-emit-expr-at (e) (ctors) (indent) (depth) =
    if depth >= max-recursion-depth then "?fuel-exhausted"
    else when e
     is IrIntLit (n) (sp) | IrNumLit (n) (sp) -> integer-to-text n
@@ -319,28 +319,28 @@ Section: Expression Emission
     is IrBoolLit (b) (sp) -> if b then "True" else "False"
     is IrCharLit (n) (sp) -> "'" & escape-char n & "'"
     is IrName (n) (ty) (sp) -> n
-    is IrBinary (op) (l) (r) (ty) (sp) -> emit-binary op l r ctors indent
-    is IrNegate (operand) (sp) -> "-(" & emit-expr-at operand ctors indent (depth + 1) & ")"
-    is IrIf (c) (t) (el) (ty) (sp) -> emit-if c t el ctors indent 0
-    is IrLet (name) (ty) (val) (body) (sp) -> emit-let name val body ctors indent
-    is IrApply (f) (a) (ty) (sp) -> emit-apply e ctors indent
-    is IrLambda (params) (body) (ty) (sp) -> emit-lambda params body ctors indent
-    is IrList (elems) (ty) (sp) -> emit-list elems ctors indent
-    is IrMatch (scrut) (branches) (ty) (sp) -> emit-match scrut branches ctors indent
-    is IrAct (stmts) (ty) (sp) -> emit-act stmts ctors indent
-    is IrRecord (name) (fields) (ty) (sp) -> emit-record name fields ctors indent
-    is IrFieldAccess (rec) (field) (ty) (sp) -> emit-field-access rec field ctors indent
-    is IrFieldStore (rec) (field) (val) (ty) (sp) -> emit-field-access rec field ctors indent & " = " & emit-expr val ctors indent
-    is IrFork (body) (ty) (sp) -> "fork (" & emit-expr-at body ctors indent (depth + 1) & ")"
-    is IrAwait (task) (ty) (sp) -> "await (" & emit-expr-at task ctors indent (depth + 1) & ")"
-    is IrHandle (eff) (body) (clauses) (ty) (sp) -> emit-handle eff body clauses ctors indent
-    is IrWithTimeout (secs) (effs) (scopes) (body) (ty) (sp) -> emit-with-timeout secs effs scopes body ctors indent
-    is IrTry (max) (body) (fb) (fail) (ty) (sp) -> emit-try max body fb fail ctors indent
+    is IrBinary (op) (l) (r) (ty) (sp) -> codex-emit-binary op l r ctors indent
+    is IrNegate (operand) (ty) (sp) -> "-(" & codex-emit-expr-at operand ctors indent (depth + 1) & ")"
+    is IrIf (c) (t) (el) (ty) (sp) -> codex-emit-if c t el ctors indent 0
+    is IrLet (name) (ty) (val) (body) (sp) -> codex-emit-let name val body ctors indent
+    is IrApply (f) (a) (ty) (sp) -> codex-emit-apply e ctors indent
+    is IrLambda (params) (body) (ty) (sp) -> codex-emit-lambda params body ctors indent
+    is IrList (elems) (ty) (sp) -> codex-emit-list elems ctors indent
+    is IrMatch (scrut) (branches) (ty) (sp) -> codex-emit-match scrut branches ctors indent
+    is IrAct (stmts) (ty) (sp) -> codex-emit-act stmts ctors indent
+    is IrRecord (name) (fields) (ty) (sp) -> codex-emit-record name fields ctors indent
+    is IrFieldAccess (rec) (field) (ty) (sp) -> codex-emit-field-access rec field ctors indent
+    is IrFieldStore (rec) (field) (val) (ty) (sp) -> codex-emit-field-access rec field ctors indent & " = " & codex-emit-expr val ctors indent
+    is IrFork (body) (ty) (sp) -> "fork (" & codex-emit-expr-at body ctors indent (depth + 1) & ")"
+    is IrAwait (task) (ty) (sp) -> "await (" & codex-emit-expr-at task ctors indent (depth + 1) & ")"
+    is IrHandle (eff) (body) (clauses) (ty) (sp) -> codex-emit-handle eff body clauses ctors indent
+    is IrWithTimeout (secs) (effs) (scopes) (body) (ty) (sp) -> codex-emit-with-timeout secs effs scopes body ctors indent
+    is IrTry (max) (body) (fb) (fail) (ty) (sp) -> codex-emit-try max body fb fail ctors indent
     is IrError (msg) (ty) (sp) -> "0"
 
 Section: Binary Operators
-  emit-binary : IRBinaryOp, IRExpr, IRExpr, List Text, Integer -> Text
-  emit-binary (op) (l) (r) (ctors) (indent) =
+  codex-emit-binary : IRBinaryOp, IRExpr, IRExpr, List Text, Integer -> Text
+  codex-emit-binary (op) (l) (r) (ctors) (indent) =
    wrap-binary-left op l ctors indent & " " & bin-op-text op & " " & wrap-binary-right op r ctors indent
 
  An application that prints as for-sugar must parenthesize as a
@@ -352,22 +352,22 @@ Section: Binary Operators
   wrap-binary-left : IRBinaryOp, IRExpr, List Text, Integer -> Text
   wrap-binary-left (parent-op) (e) (ctors) (indent) =
    when e
-    is IrBinary (child-op) (l2) (r2) (ty) (sp) -> if bin-op-prec child-op < bin-op-prec parent-op then "(" & emit-expr e ctors indent & ")"
-    else emit-expr e ctors indent
-    is IrIf (c) (t) (el) (ty) (sp) -> "(" & emit-expr e ctors indent & ")"
-    is IrApply (f2) (a2) (ty) (sp) -> if apply-prints-as-for e then "(" & emit-expr e ctors indent & ")"
-    else emit-expr e ctors indent
-    is otherwise -> emit-expr e ctors indent
+    is IrBinary (child-op) (l2) (r2) (ty) (sp) -> if bin-op-prec child-op < bin-op-prec parent-op then "(" & codex-emit-expr e ctors indent & ")"
+    else codex-emit-expr e ctors indent
+    is IrIf (c) (t) (el) (ty) (sp) -> "(" & codex-emit-expr e ctors indent & ")"
+    is IrApply (f2) (a2) (ty) (sp) -> if apply-prints-as-for e then "(" & codex-emit-expr e ctors indent & ")"
+    else codex-emit-expr e ctors indent
+    is otherwise -> codex-emit-expr e ctors indent
 
   wrap-binary-right : IRBinaryOp, IRExpr, List Text, Integer -> Text
   wrap-binary-right (parent-op) (e) (ctors) (indent) =
    when e
-    is IrBinary (child-op) (l2) (r2) (ty) (sp) -> if needs-right-wrap parent-op child-op then "(" & emit-expr e ctors indent & ")"
-    else emit-expr e ctors indent
-    is IrIf (c) (t) (el) (ty) (sp) -> "(" & emit-expr e ctors indent & ")"
-    is IrApply (f2) (a2) (ty) (sp) -> if apply-prints-as-for e then "(" & emit-expr e ctors indent & ")"
-    else emit-expr e ctors indent
-    is otherwise -> emit-expr e ctors indent
+    is IrBinary (child-op) (l2) (r2) (ty) (sp) -> if needs-right-wrap parent-op child-op then "(" & codex-emit-expr e ctors indent & ")"
+    else codex-emit-expr e ctors indent
+    is IrIf (c) (t) (el) (ty) (sp) -> "(" & codex-emit-expr e ctors indent & ")"
+    is IrApply (f2) (a2) (ty) (sp) -> if apply-prints-as-for e then "(" & codex-emit-expr e ctors indent & ")"
+    else codex-emit-expr e ctors indent
+    is otherwise -> codex-emit-expr e ctors indent
 
   apply-prints-as-for : IRExpr -> Boolean
   apply-prints-as-for (e) =
@@ -447,18 +447,18 @@ Section: Binary Operators
     is IrApproxEqExact -> "~0"
 
 Section: If/Then/Else
-  emit-if : IRExpr, IRExpr, IRExpr, List Text, Integer, Integer -> Text
-  emit-if (c) (t) (el) (ctors) (indent) (else-offset) =
-   text-concat-list (emit-if-chain c t el ctors indent else-offset [])
+  codex-emit-if : IRExpr, IRExpr, IRExpr, List Text, Integer, Integer -> Text
+  codex-emit-if (c) (t) (el) (ctors) (indent) (else-offset) =
+   text-concat-list (codex-emit-if-chain c t el ctors indent else-offset [])
 
-  emit-if-chain : IRExpr, IRExpr, IRExpr, List Text, Integer, Integer, List Text -> List Text
-  emit-if-chain (c) (t) (el) (ctors) (indent) (else-offset) (acc) =
-   let acc2 = list-push acc ("if " & emit-expr c ctors indent & " then " & emit-expr t ctors indent)
+  codex-emit-if-chain : IRExpr, IRExpr, IRExpr, List Text, Integer, Integer, List Text -> List Text
+  codex-emit-if-chain (c) (t) (el) (ctors) (indent) (else-offset) (acc) =
+   let acc2 = list-push acc ("if " & codex-emit-expr c ctors indent & " then " & codex-emit-expr t ctors indent)
    in when el
     is IrIf (c2) (t2) (el2) (ty) (sp) ->
-     emit-if-chain c2 t2 el2 ctors indent else-offset (list-push acc2 ("\n" & make-indent indent & pad-spaces else-offset & "else "))
+     codex-emit-if-chain c2 t2 el2 ctors indent else-offset (list-push acc2 ("\n" & make-indent indent & pad-spaces else-offset & "else "))
     is otherwise ->
-     list-push acc2 ("\n" & make-indent indent & pad-spaces else-offset & "else " & emit-expr el ctors indent)
+     list-push acc2 ("\n" & make-indent indent & pad-spaces else-offset & "else " & codex-emit-expr el ctors indent)
 
   pad-spaces : Integer -> Text
   pad-spaces (n) =
@@ -466,20 +466,20 @@ Section: If/Then/Else
    else " " & pad-spaces (n - 1)
 
 Section: Let
-  emit-let : Text, IRExpr, IRExpr, List Text, Integer -> Text
-  emit-let (name) (val) (body) (ctors) (indent) =
-   text-concat-list (emit-let-chain name val body ctors indent [])
+  codex-emit-let : Text, IRExpr, IRExpr, List Text, Integer -> Text
+  codex-emit-let (name) (val) (body) (ctors) (indent) =
+   text-concat-list (codex-emit-let-chain name val body ctors indent [])
 
-  emit-let-chain : Text, IRExpr, IRExpr, List Text, Integer, List Text -> List Text
-  emit-let-chain (name) (val) (body) (ctors) (indent) (acc) =
-   let acc2 = list-push acc ("let " & name & " = " & emit-expr val ctors (indent + 1))
+  codex-emit-let-chain : Text, IRExpr, IRExpr, List Text, Integer, List Text -> List Text
+  codex-emit-let-chain (name) (val) (body) (ctors) (indent) (acc) =
+   let acc2 = list-push acc ("let " & name & " = " & codex-emit-expr val ctors (indent + 1))
    in when body
     is IrLet (name2) (ty2) (val2) (body2) (sp2) ->
-     emit-let-chain name2 val2 body2 ctors indent (list-push acc2 ("\n" & make-indent indent & "in "))
+     codex-emit-let-chain name2 val2 body2 ctors indent (list-push acc2 ("\n" & make-indent indent & "in "))
     is IrIf (c) (t) (el) (ty) (sp) ->
-     list-push acc2 ("\n" & make-indent indent & "in " & emit-if c t el ctors indent 3)
+     list-push acc2 ("\n" & make-indent indent & "in " & codex-emit-if c t el ctors indent 3)
     is otherwise ->
-     list-push acc2 ("\n" & make-indent indent & "in " & emit-expr body ctors indent)
+     list-push acc2 ("\n" & make-indent indent & "in " & codex-emit-expr body ctors indent)
 
 Section: Apply Chain
   ApplyChain = record {
@@ -497,14 +497,14 @@ Section: Apply Chain
     }
 
 Section: Apply
-  emit-apply : IRExpr, List Text, Integer -> Text
-  emit-apply (e) (ctors) (indent) =
+  codex-emit-apply : IRExpr, List Text, Integer -> Text
+  codex-emit-apply (e) (ctors) (indent) =
    let chain = collect-apply-chain e []
    in let func = chain.root
    in let args = chain.args
-   in if is-tuple-ctor func (list-length args) then "(" & emit-tuple-expr-elems args ctors indent 0 (list-length args) & ")"
-   else if is-for-expr func args then emit-for-expr args ctors indent
-   else emit-expr func ctors indent & emit-apply-args args ctors indent 0 (list-length args) (is-ctor-name func ctors)
+   in if is-tuple-ctor func (list-length args) then "(" & codex-emit-tuple-expr-elems args ctors indent 0 (list-length args) & ")"
+   else if is-for-expr func args then codex-emit-for-expr args ctors indent
+   else codex-emit-expr func ctors indent & codex-emit-apply-args args ctors indent 0 (list-length args) (is-ctor-name func ctors)
 
   is-for-expr : IRExpr, List IRExpr -> Boolean
   is-for-expr (func) (args) =
@@ -516,12 +516,12 @@ Section: Apply
     is otherwise -> False
    else False
 
-  emit-for-expr : List IRExpr, List Text, Integer -> Text
-  emit-for-expr (args) (ctors) (indent) =
+  codex-emit-for-expr : List IRExpr, List Text, Integer -> Text
+  codex-emit-for-expr (args) (ctors) (indent) =
    when (list-at args 0)
     is IrLambda (ps) (body) (ty) (sp) ->
      let param-name = (list-at ps 0).name
-     in "for " & param-name & " in " & emit-expr (list-at args 1) ctors indent & " -> " & emit-expr body ctors (indent + 1)
+     in "for " & param-name & " in " & codex-emit-expr (list-at args 1) ctors indent & " -> " & codex-emit-expr body ctors (indent + 1)
     is otherwise -> "for _ in [] -> 0"
 
   is-tuple-ctor : IRExpr, Integer -> Boolean
@@ -532,22 +532,22 @@ Section: Apply
     is IrName (n) (ty) (sp) -> n == ("MkTup" & integer-to-text arity)
     is otherwise -> False
 
-  emit-tuple-expr-elems : List IRExpr, List Text, Integer, Integer, Integer -> Text
-  emit-tuple-expr-elems (args) (ctors) (indent) (i) (len) =
+  codex-emit-tuple-expr-elems : List IRExpr, List Text, Integer, Integer, Integer -> Text
+  codex-emit-tuple-expr-elems (args) (ctors) (indent) (i) (len) =
    if i >= len then ""
    else let sep = if i > 0 then ", " else ""
-   in sep & emit-expr (list-at args i) ctors indent & emit-tuple-expr-elems args ctors indent (i + 1) len
+   in sep & codex-emit-expr (list-at args i) ctors indent & codex-emit-tuple-expr-elems args ctors indent (i + 1) len
 
-  emit-apply-args : List IRExpr, List Text, Integer, Integer, Integer, Boolean -> Text
-  emit-apply-args (args) (ctors) (indent) (i) (len) (is-ctor) =
+  codex-emit-apply-args : List IRExpr, List Text, Integer, Integer, Integer, Boolean -> Text
+  codex-emit-apply-args (args) (ctors) (indent) (i) (len) (is-ctor) =
    if i == len then ""
    else let arg = list-at args i
-   in " " & wrap-arg arg ctors indent is-ctor & emit-apply-args args ctors indent (i + 1) len is-ctor
+   in " " & wrap-arg arg ctors indent is-ctor & codex-emit-apply-args args ctors indent (i + 1) len is-ctor
 
   wrap-arg : IRExpr, List Text, Integer, Boolean -> Text
   wrap-arg (e) (ctors) (indent) (is-ctor) =
-   if needs-parens e is-ctor then "(" & emit-expr e ctors indent & ")"
-   else emit-expr e ctors indent
+   if needs-parens e is-ctor then "(" & codex-emit-expr e ctors indent & ")"
+   else codex-emit-expr e ctors indent
 
   is-ctor-name : IRExpr, List Text -> Boolean
   is-ctor-name (e) (ctors) =
@@ -558,42 +558,42 @@ Section: Apply
   needs-parens : IRExpr, Boolean -> Boolean
   needs-parens (e) (is-ctor) =
    when e
-    is IrApply (f) (a) (ty) (sp) | IrBinary (op) (l) (r) (ty) (sp) | IrIf (c) (t) (el) (ty) (sp) | IrLet (name) (ty) (val) (body) (sp) | IrMatch (scrut) (branches) (ty) (sp) | IrNegate (operand) (sp) | IrLambda (params) (body) (ty) (sp) | IrFieldAccess (rec) (field) (ty) (sp) | IrFieldStore (rec) (field) (val) (ty) (sp) | IrRecord (name) (fields) (ty) (sp) -> True
+    is IrApply (f) (a) (ty) (sp) | IrBinary (op) (l) (r) (ty) (sp) | IrIf (c) (t) (el) (ty) (sp) | IrLet (name) (ty) (val) (body) (sp) | IrMatch (scrut) (branches) (ty) (sp) | IrNegate (operand) (nty) (sp) | IrLambda (params) (body) (ty) (sp) | IrFieldAccess (rec) (field) (ty) (sp) | IrFieldStore (rec) (field) (val) (ty) (sp) | IrRecord (name) (fields) (ty) (sp) -> True
     is IrIntLit (n) (sp) -> n < 0
     is otherwise -> False
 
 Section: Lambda
-  emit-lambda : List IRParam, IRExpr, List Text, Integer -> Text
-  emit-lambda (params) (body) (ctors) (indent) =
-   "\\" & emit-lambda-params params 0 & " -> " & emit-expr body ctors indent
+  codex-emit-lambda : List IRParam, IRExpr, List Text, Integer -> Text
+  codex-emit-lambda (params) (body) (ctors) (indent) =
+   "\\" & codex-emit-lambda-params params 0 & " -> " & codex-emit-expr body ctors indent
 
-  emit-lambda-params : List IRParam, Integer -> Text
-  emit-lambda-params (params) (i) =
+  codex-emit-lambda-params : List IRParam, Integer -> Text
+  codex-emit-lambda-params (params) (i) =
    if i == list-length params then ""
    else let p = list-at params i
    in let sep = if i > 0 then " " else ""
-   in sep & p.name & emit-lambda-params params (i + 1)
+   in sep & p.name & codex-emit-lambda-params params (i + 1)
 
 Section: List
-  emit-list : List IRExpr, List Text, Integer -> Text
-  emit-list (elems) (ctors) (indent) =
-   "[" & emit-list-elems elems ctors indent 0 & "]"
+  codex-emit-list : List IRExpr, List Text, Integer -> Text
+  codex-emit-list (elems) (ctors) (indent) =
+   "[" & codex-emit-list-elems elems ctors indent 0 & "]"
 
-  emit-list-elems : List IRExpr, List Text, Integer, Integer -> Text
-  emit-list-elems (elems) (ctors) (indent) (i) =
-   text-concat-list (emit-list-elems-acc elems ctors indent i (list-length elems) [])
+  codex-emit-list-elems : List IRExpr, List Text, Integer, Integer -> Text
+  codex-emit-list-elems (elems) (ctors) (indent) (i) =
+   text-concat-list (codex-emit-list-elems-acc elems ctors indent i (list-length elems) [])
 
-  emit-list-elems-acc : List IRExpr, List Text, Integer, Integer, Integer, List Text -> List Text
-  emit-list-elems-acc (elems) (ctors) (indent) (i) (len) (acc) =
+  codex-emit-list-elems-acc : List IRExpr, List Text, Integer, Integer, Integer, List Text -> List Text
+  codex-emit-list-elems-acc (elems) (ctors) (indent) (i) (len) (acc) =
    if i == len then acc
    else let sep = if i > 0 then ", " else ""
-   in emit-list-elems-acc elems ctors indent (i + 1) len (list-push acc (sep & emit-expr (list-at elems i) ctors indent))
+   in codex-emit-list-elems-acc elems ctors indent (i + 1) len (list-push acc (sep & codex-emit-expr (list-at elems i) ctors indent))
 
 Section: Match
-  emit-match : IRExpr, List IRBranch, List Text, Integer -> Text
-  emit-match (scrut) (branches) (ctors) (indent) =
-   if is-let-tuple-match branches then emit-let-tuple scrut (list-at branches 0) ctors indent
-   else "when " & emit-expr scrut ctors indent & emit-branches branches ctors indent 0
+  codex-emit-match : IRExpr, List IRBranch, List Text, Integer -> Text
+  codex-emit-match (scrut) (branches) (ctors) (indent) =
+   if is-let-tuple-match branches then codex-emit-let-tuple scrut (list-at branches 0) ctors indent
+   else "when " & codex-emit-expr scrut ctors indent & codex-emit-branches branches ctors indent 0
 
   is-let-tuple-match : List IRBranch -> Boolean
   is-let-tuple-match (branches) =
@@ -612,49 +612,49 @@ Section: Match
     is IrCtorPat (name) (subs) (ty) (sp) -> text-starts-with name "MkTup"
     is otherwise -> False
 
-  emit-let-tuple : IRExpr, IRBranch, List Text, Integer -> Text
-  emit-let-tuple (scrut) (b) (ctors) (indent) =
-   let pat-text = emit-tuple-pat-names (b.pattern) 0
-   in "let (" & pat-text & ") = " & emit-expr scrut ctors (indent + 1)
-   & "\n" & make-indent indent & "in " & emit-expr (b.body) ctors indent
+  codex-emit-let-tuple : IRExpr, IRBranch, List Text, Integer -> Text
+  codex-emit-let-tuple (scrut) (b) (ctors) (indent) =
+   let pat-text = codex-emit-tuple-pat-names (b.pattern) 0
+   in "let (" & pat-text & ") = " & codex-emit-expr scrut ctors (indent + 1)
+   & "\n" & make-indent indent & "in " & codex-emit-expr (b.body) ctors indent
 
-  emit-tuple-pat-names : IRPat, Integer -> Text
-  emit-tuple-pat-names (p) (i) =
+  codex-emit-tuple-pat-names : IRPat, Integer -> Text
+  codex-emit-tuple-pat-names (p) (i) =
    when p
-    is IrCtorPat (name) (subs) (ty) (sp) -> emit-tuple-pat-name-list subs 0 (list-length subs)
-    is otherwise -> emit-pattern p
+    is IrCtorPat (name) (subs) (ty) (sp) -> codex-emit-tuple-pat-name-list subs 0 (list-length subs)
+    is otherwise -> codex-emit-pattern p
 
-  emit-tuple-pat-name-list : List IRPat, Integer, Integer -> Text
-  emit-tuple-pat-name-list (subs) (i) (len) =
+  codex-emit-tuple-pat-name-list : List IRPat, Integer, Integer -> Text
+  codex-emit-tuple-pat-name-list (subs) (i) (len) =
    if i >= len then ""
    else let sep = if i > 0 then ", " else ""
-   in sep & emit-tuple-pat-elem (list-at subs i) & emit-tuple-pat-name-list subs (i + 1) len
+   in sep & codex-emit-tuple-pat-elem (list-at subs i) & codex-emit-tuple-pat-name-list subs (i + 1) len
 
-  emit-tuple-pat-elem : IRPat -> Text
-  emit-tuple-pat-elem (p) =
+  codex-emit-tuple-pat-elem : IRPat -> Text
+  codex-emit-tuple-pat-elem (p) =
    when p
     is IrWildPat (sp) -> "_"
-    is otherwise -> emit-pattern p
+    is otherwise -> codex-emit-pattern p
 
-  emit-branches : List IRBranch, List Text, Integer, Integer -> Text
-  emit-branches (branches) (ctors) (indent) (i) =
-   text-concat-list (emit-branches-acc branches ctors indent i (list-length branches) [])
+  codex-emit-branches : List IRBranch, List Text, Integer, Integer -> Text
+  codex-emit-branches (branches) (ctors) (indent) (i) =
+   text-concat-list (codex-emit-branches-acc branches ctors indent i (list-length branches) [])
 
-  emit-branches-acc : List IRBranch, List Text, Integer, Integer, Integer, List Text -> List Text
-  emit-branches-acc (branches) (ctors) (indent) (i) (len) (acc) =
+  codex-emit-branches-acc : List IRBranch, List Text, Integer, Integer, Integer, List Text -> List Text
+  codex-emit-branches-acc (branches) (ctors) (indent) (i) (len) (acc) =
    if i == len then acc
    else let b = list-at branches i
-   in let body-text = emit-expr (b.body) ctors (indent + 1)
-   in let guard-text = emit-guard-suffix (b.guard) ctors (indent + 1)
+   in let body-text = codex-emit-expr (b.body) ctors (indent + 1)
+   in let guard-text = codex-emit-guard-suffix (b.guard) ctors (indent + 1)
    in let group-end = find-group-end branches ctors indent body-text guard-text (b.alt-group) (i + 1) len
-   in let pat-text = emit-group-pats-tail branches (i + 1) group-end (emit-pattern (b.pattern))
-   in emit-branches-acc branches ctors indent group-end len (list-push acc ("\n" & make-indent (indent + 1) & "is " & pat-text & guard-text & " -> " & body-text))
+   in let pat-text = codex-emit-group-pats-tail branches (i + 1) group-end (codex-emit-pattern (b.pattern))
+   in codex-emit-branches-acc branches ctors indent group-end len (list-push acc ("\n" & make-indent (indent + 1) & "is " & pat-text & guard-text & " -> " & body-text))
 
-  emit-guard-suffix : IRExpr, List Text, Integer -> Text
-  emit-guard-suffix (guard) (ctors) (indent) =
+  codex-emit-guard-suffix : IRExpr, List Text, Integer -> Text
+  codex-emit-guard-suffix (guard) (ctors) (indent) =
    when guard
     is IrBoolLit (v) (sp) -> if v then "" else " when False"
-    is otherwise -> " when " & emit-expr guard ctors indent
+    is otherwise -> " when " & codex-emit-expr guard ctors indent
 
  A branch joins the group only when it carries the same non-negative
  alt-group as the group head: alternatives expanded from one source
@@ -668,115 +668,115 @@ Section: Match
    else if group < 0 then i
    else let b = list-at branches i
    in if b.alt-group /= group then i
-   else let next-body = emit-expr (b.body) ctors (indent + 1)
-   in let next-guard = emit-guard-suffix (b.guard) ctors (indent + 1)
+   else let next-body = codex-emit-expr (b.body) ctors (indent + 1)
+   in let next-guard = codex-emit-guard-suffix (b.guard) ctors (indent + 1)
    in if next-body == body-text & next-guard == guard-text
       then find-group-end branches ctors indent body-text guard-text group (i + 1) len
       else i
 
-  emit-group-pats-tail : List IRBranch, Integer, Integer, Text -> Text
-  emit-group-pats-tail (branches) (i) (stop) (acc) =
+  codex-emit-group-pats-tail : List IRBranch, Integer, Integer, Text -> Text
+  codex-emit-group-pats-tail (branches) (i) (stop) (acc) =
    if i >= stop then acc
    else let b = list-at branches i
-   in emit-group-pats-tail branches (i + 1) stop (acc & " | " & emit-pattern (b.pattern))
+   in codex-emit-group-pats-tail branches (i + 1) stop (acc & " | " & codex-emit-pattern (b.pattern))
 
-  emit-pattern : IRPat -> Text
-  emit-pattern (p) =
+  codex-emit-pattern : IRPat -> Text
+  codex-emit-pattern (p) =
    when p
     is IrVarPat (name) (ty) (sp) -> name
     is IrLitPat (text) (ty) (sp) -> text
-    is IrCtorPat (name) (subs) (ty) (sp) -> name & emit-sub-patterns subs 0
+    is IrCtorPat (name) (subs) (ty) (sp) -> name & codex-emit-sub-patterns subs 0
     is IrWildPat (sp) -> "otherwise"
-    is IrVecPat (subs) (ty) (sp) -> "Vector [" & emit-vec-pat-elems subs 0 (list-length subs) & "]"
+    is IrVecPat (subs) (ty) (sp) -> "Vector [" & codex-emit-vec-pat-elems subs 0 (list-length subs) & "]"
 
-  emit-vec-pat-elems : List IRPat, Integer, Integer -> Text
-  emit-vec-pat-elems (subs) (i) (len) =
+  codex-emit-vec-pat-elems : List IRPat, Integer, Integer -> Text
+  codex-emit-vec-pat-elems (subs) (i) (len) =
    if i >= len then ""
    else let sep = if i > 0 then ", " else ""
-   in sep & emit-pattern (list-at subs i) & emit-vec-pat-elems subs (i + 1) len
+   in sep & codex-emit-pattern (list-at subs i) & codex-emit-vec-pat-elems subs (i + 1) len
 
-  emit-sub-patterns : List IRPat, Integer -> Text
-  emit-sub-patterns (subs) (i) =
-   text-concat-list (for p in subs -> " (" & emit-pattern p & ")")
+  codex-emit-sub-patterns : List IRPat, Integer -> Text
+  codex-emit-sub-patterns (subs) (i) =
+   text-concat-list (for p in subs -> " (" & codex-emit-pattern p & ")")
 
 Section: Act Blocks
-  emit-act : List IRActStmt, List Text, Integer -> Text
-  emit-act (stmts) (ctors) (indent) =
-   "act" & emit-act-stmts stmts ctors indent 0 & "\n" & make-indent indent & "end"
+  codex-emit-act : List IRActStmt, List Text, Integer -> Text
+  codex-emit-act (stmts) (ctors) (indent) =
+   "act" & codex-emit-act-stmts stmts ctors indent 0 & "\n" & make-indent indent & "end"
 
-  emit-act-stmts : List IRActStmt, List Text, Integer, Integer -> Text
-  emit-act-stmts (stmts) (ctors) (indent) (i) =
-   text-concat-list (emit-act-stmts-acc stmts ctors indent i (list-length stmts) [])
+  codex-emit-act-stmts : List IRActStmt, List Text, Integer, Integer -> Text
+  codex-emit-act-stmts (stmts) (ctors) (indent) (i) =
+   text-concat-list (codex-emit-act-stmts-acc stmts ctors indent i (list-length stmts) [])
 
-  emit-act-stmts-acc : List IRActStmt, List Text, Integer, Integer, Integer, List Text -> List Text
-  emit-act-stmts-acc (stmts) (ctors) (indent) (i) (len) (acc) =
+  codex-emit-act-stmts-acc : List IRActStmt, List Text, Integer, Integer, Integer, List Text -> List Text
+  codex-emit-act-stmts-acc (stmts) (ctors) (indent) (i) (len) (acc) =
    if i == len then acc
    else let s = list-at stmts i
-   in emit-act-stmts-acc stmts ctors indent (i + 1) len (list-push acc ("\n" & make-indent (indent + 1) & emit-act-stmt s ctors (indent + 1)))
+   in codex-emit-act-stmts-acc stmts ctors indent (i + 1) len (list-push acc ("\n" & make-indent (indent + 1) & codex-emit-act-stmt s ctors (indent + 1)))
 
-  emit-act-stmt : IRActStmt, List Text, Integer -> Text
-  emit-act-stmt (s) (ctors) (indent) =
+  codex-emit-act-stmt : IRActStmt, List Text, Integer -> Text
+  codex-emit-act-stmt (s) (ctors) (indent) =
    when s
-    is IrDoBind (name) (ty) (val) (sp) -> name & " <- " & emit-expr val ctors indent
-    is IrDoExec (e) (sp) -> emit-expr e ctors indent
+    is IrDoBind (name) (ty) (val) (sp) -> name & " <- " & codex-emit-expr val ctors indent
+    is IrDoExec (e) (sp) -> codex-emit-expr e ctors indent
 
 Section: Records
-  emit-record : Text, List IRFieldVal, List Text, Integer -> Text
-  emit-record (name) (fields) (ctors) (indent) =
-   if list-length fields <= 1 then name & " {" & emit-record-fields-inline fields ctors indent 0 & " }"
-   else name & " {\n" & emit-record-fields-multi fields ctors indent 0 & make-indent indent & "}"
+  codex-emit-record : Text, List IRFieldVal, List Text, Integer -> Text
+  codex-emit-record (name) (fields) (ctors) (indent) =
+   if list-length fields <= 1 then name & " {" & codex-emit-record-fields-inline fields ctors indent 0 & " }"
+   else name & " {\n" & codex-emit-record-fields-multi fields ctors indent 0 & make-indent indent & "}"
 
-  emit-record-fields-inline : List IRFieldVal, List Text, Integer, Integer -> Text
-  emit-record-fields-inline (fields) (ctors) (indent) (i) =
-   text-concat-list (emit-record-fields-inline-acc fields ctors indent i (list-length fields) [])
+  codex-emit-record-fields-inline : List IRFieldVal, List Text, Integer, Integer -> Text
+  codex-emit-record-fields-inline (fields) (ctors) (indent) (i) =
+   text-concat-list (codex-emit-record-fields-inline-acc fields ctors indent i (list-length fields) [])
 
-  emit-record-fields-inline-acc : List IRFieldVal, List Text, Integer, Integer, Integer, List Text -> List Text
-  emit-record-fields-inline-acc (fields) (ctors) (indent) (i) (len) (acc) =
+  codex-emit-record-fields-inline-acc : List IRFieldVal, List Text, Integer, Integer, Integer, List Text -> List Text
+  codex-emit-record-fields-inline-acc (fields) (ctors) (indent) (i) (len) (acc) =
    if i == len then acc
    else let f = list-at fields i
    in let sep = if i > 0 then "," else ""
-   in emit-record-fields-inline-acc fields ctors indent (i + 1) len (list-push acc (sep & " " & f.name & " = " & emit-expr (f.value) ctors indent))
+   in codex-emit-record-fields-inline-acc fields ctors indent (i + 1) len (list-push acc (sep & " " & f.name & " = " & codex-emit-expr (f.value) ctors indent))
 
-  emit-record-fields-multi : List IRFieldVal, List Text, Integer, Integer -> Text
-  emit-record-fields-multi (fields) (ctors) (indent) (i) =
-   text-concat-list (emit-record-fields-multi-acc fields ctors indent i (list-length fields) [])
+  codex-emit-record-fields-multi : List IRFieldVal, List Text, Integer, Integer -> Text
+  codex-emit-record-fields-multi (fields) (ctors) (indent) (i) =
+   text-concat-list (codex-emit-record-fields-multi-acc fields ctors indent i (list-length fields) [])
 
-  emit-record-fields-multi-acc : List IRFieldVal, List Text, Integer, Integer, Integer, List Text -> List Text
-  emit-record-fields-multi-acc (fields) (ctors) (indent) (i) (len) (acc) =
+  codex-emit-record-fields-multi-acc : List IRFieldVal, List Text, Integer, Integer, Integer, List Text -> List Text
+  codex-emit-record-fields-multi-acc (fields) (ctors) (indent) (i) (len) (acc) =
    if i == len then acc
    else let f = list-at fields i
    in let comma = if i < len - 1 then "," else ""
-   in emit-record-fields-multi-acc fields ctors indent (i + 1) len (list-push acc (make-indent (indent + 1) & f.name & " = " & emit-expr (f.value) ctors (indent + 1) & comma & "\n"))
+   in codex-emit-record-fields-multi-acc fields ctors indent (i + 1) len (list-push acc (make-indent (indent + 1) & f.name & " = " & codex-emit-expr (f.value) ctors (indent + 1) & comma & "\n"))
 
 Section: Field Access
-  emit-field-access : IRExpr, Text, List Text, Integer -> Text
-  emit-field-access (rec) (field) (ctors) (indent) =
+  codex-emit-field-access : IRExpr, Text, List Text, Integer -> Text
+  codex-emit-field-access (rec) (field) (ctors) (indent) =
    when rec
     is IrName (n) (ty) (sp) -> n & "." & field
-    is IrFieldAccess (r) (f) (ty) (sp) -> emit-field-access r f ctors indent & "." & field
-    is otherwise -> "(" & emit-expr rec ctors indent & ")." & field
+    is IrFieldAccess (r) (f) (ty) (sp) -> codex-emit-field-access r f ctors indent & "." & field
+    is otherwise -> "(" & codex-emit-expr rec ctors indent & ")." & field
 
 Section: Handle
-  emit-handle : Text, IRExpr, List IRHandleClause, List Text, Integer -> Text
-  emit-handle (eff) (body) (clauses) (ctors) (indent) =
-   "handle " & emit-expr body ctors indent & " with" & emit-handle-clauses clauses ctors indent 0
+  codex-emit-handle : Text, IRExpr, List IRHandleClause, List Text, Integer -> Text
+  codex-emit-handle (eff) (body) (clauses) (ctors) (indent) =
+   "handle " & codex-emit-expr body ctors indent & " with" & codex-emit-handle-clauses clauses ctors indent 0
 
-  emit-handle-clauses : List IRHandleClause, List Text, Integer, Integer -> Text
-  emit-handle-clauses (clauses) (ctors) (indent) (i) =
-   text-concat-list (emit-handle-clauses-acc clauses ctors indent i (list-length clauses) [])
+  codex-emit-handle-clauses : List IRHandleClause, List Text, Integer, Integer -> Text
+  codex-emit-handle-clauses (clauses) (ctors) (indent) (i) =
+   text-concat-list (codex-emit-handle-clauses-acc clauses ctors indent i (list-length clauses) [])
 
-  emit-handle-clauses-acc : List IRHandleClause, List Text, Integer, Integer, Integer, List Text -> List Text
-  emit-handle-clauses-acc (clauses) (ctors) (indent) (i) (len) (acc) =
+  codex-emit-handle-clauses-acc : List IRHandleClause, List Text, Integer, Integer, Integer, List Text -> List Text
+  codex-emit-handle-clauses-acc (clauses) (ctors) (indent) (i) (len) (acc) =
    if i == len then acc
    else let c = list-at clauses i
-   in let param-text = emit-clause-params (c.params) 0 (list-length (c.params))
+   in let param-text = codex-emit-clause-params (c.params) 0 (list-length (c.params))
    in let body-to-emit = unwrap-clause-lambda (c.body) (list-length (c.params))
-   in emit-handle-clauses-acc clauses ctors indent (i + 1) len (list-push acc ("\n" & make-indent (indent + 1) & c.op-name & param-text & " (" & c.resume-name & ") -> " & emit-expr body-to-emit ctors (indent + 1)))
+   in codex-emit-handle-clauses-acc clauses ctors indent (i + 1) len (list-push acc ("\n" & make-indent (indent + 1) & c.op-name & param-text & " (" & c.resume-name & ") -> " & codex-emit-expr body-to-emit ctors (indent + 1)))
 
-  emit-clause-params : List Text, Integer, Integer -> Text
-  emit-clause-params (ps) (i) (len) =
+  codex-emit-clause-params : List Text, Integer, Integer -> Text
+  codex-emit-clause-params (ps) (i) (len) =
    if i >= len then ""
-   else " (" & list-at ps i & ")" & emit-clause-params ps (i + 1) len
+   else " (" & list-at ps i & ")" & codex-emit-clause-params ps (i + 1) len
 
   unwrap-clause-lambda : IRExpr, Integer -> IRExpr
   unwrap-clause-lambda (e) (n) =
@@ -786,22 +786,22 @@ Section: Handle
     is otherwise -> e
 
 Section: With-Timeout
-  emit-with-timeout : Integer, List Text, List Text, IRExpr, List Text, Integer -> Text
-  emit-with-timeout (secs) (effs) (scopes) (body) (ctors) (indent) =
-   "with-timeout " & integer-to-text secs & " [" & emit-effect-list effs 0 & "] " & emit-expr body ctors indent
+  codex-emit-with-timeout : Integer, List Text, List Text, IRExpr, List Text, Integer -> Text
+  codex-emit-with-timeout (secs) (effs) (scopes) (body) (ctors) (indent) =
+   "with-timeout " & integer-to-text secs & " [" & codex-emit-effect-list effs 0 & "] " & codex-emit-expr body ctors indent
 
-  emit-effect-list : List Text, Integer -> Text
-  emit-effect-list (effs) (i) =
+  codex-emit-effect-list : List Text, Integer -> Text
+  codex-emit-effect-list (effs) (i) =
    if i == list-length effs then ""
-   else if i > 0 then ", " & list-at effs i & emit-effect-list effs (i + 1)
-   else list-at effs i & emit-effect-list effs (i + 1)
+   else if i > 0 then ", " & list-at effs i & codex-emit-effect-list effs (i + 1)
+   else list-at effs i & codex-emit-effect-list effs (i + 1)
 
 Section: Trying
-  emit-try : Integer, List IRActStmt, List IRActStmt, List IRActStmt, List Text, Integer -> Text
-  emit-try (max) (body) (fb) (fail) (ctors) (indent) =
-   let body-text = emit-act-stmts body ctors indent 0
-   in let fb-text = if list-length fb > 0 then "\n" & make-indent indent & "falling back to" & emit-act-stmts fb ctors indent 0 else ""
-   in let fail-text = if list-length fail > 0 then "\n" & make-indent indent & "on failure" & emit-act-stmts fail ctors indent 0 else ""
+  codex-emit-try : Integer, List IRActStmt, List IRActStmt, List IRActStmt, List Text, Integer -> Text
+  codex-emit-try (max) (body) (fb) (fail) (ctors) (indent) =
+   let body-text = codex-emit-act-stmts body ctors indent 0
+   in let fb-text = if list-length fb > 0 then "\n" & make-indent indent & "falling back to" & codex-emit-act-stmts fb ctors indent 0 else ""
+   in let fail-text = if list-length fail > 0 then "\n" & make-indent indent & "on failure" & codex-emit-act-stmts fail ctors indent 0 else ""
    in "trying " & integer-to-text max & " times" & body-text & fb-text & fail-text & "\n" & make-indent indent & "end"
 
 Section: Utilities
@@ -835,16 +835,16 @@ Section: Utilities
    else char-to-text (code-to-char c)
 
 Section: Chapter Emission
-  emit-codex-text-chapter : IRChapter, IRTextMeta, List ATypeDef, List RenameEntry -> Text
-  emit-codex-text-chapter (m) (meta) (type-defs) (renames) =
+  codex-emit-text-chapter : IRChapter, IRTextMeta, List ATypeDef, List RenameEntry -> Text
+  codex-emit-text-chapter (m) (meta) (type-defs) (renames) =
    let header = if meta.chapter-title == "" then ""
       else "Chapter: " & meta.chapter-title & "\n\n"
         & if meta.prose == "" then "" else " " & meta.prose & "\n\n"
-   in header & emit-type-defs type-defs 0 & emit-all-defs (m.defs) (meta.ctor-names) 0 renames
+   in header & codex-emit-type-defs type-defs 0 & codex-emit-all-defs (m.defs) (meta.ctor-names) 0 renames
 
-  emit-all-defs : List IRDef, List Text, Integer, List RenameEntry -> Text
-  emit-all-defs (defs) (ctor-names) (i) (renames) =
-   text-concat-list (for d in defs -> emit-def d ctor-names renames & "\n")
+  codex-emit-all-defs : List IRDef, List Text, Integer, List RenameEntry -> Text
+  codex-emit-all-defs (defs) (ctor-names) (i) (renames) =
+   text-concat-list (for d in defs -> codex-emit-def d ctor-names renames & "\n")
 
 Page 1
 

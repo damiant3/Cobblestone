@@ -3,8 +3,21 @@
 ## Foreword Quire Catalog
 
 A foreword quire is a library package marked `"foreword": true` in its
-`codex.project.json`. Foreword modules compile before user code and
-make their types and functions automatically available.
+`codex.project.json`. Foreword modules compile before user code.
+
+**They are not automatically in scope, and this line said they were
+until 2026-07-19.** A foreword chapter contributes its names only when
+it is cited into the compilation unit; `cites Foreword chapter X` is
+what puts X's definitions within reach, exactly as for any other quire.
+What "foreword" buys is that the quire resolves without a path and its
+chapters compile first, not that every name in it is visible everywhere.
+
+The difference is invisible until a definition MOVES between foreword
+chapters, and then it is a `CDX3002: Undefined name` in every caller
+that cited the old home. Two tests failed that way during the 2.32 text
+cluster against the belief this sentence encouraged. When
+you relocate a foreword definition, budget a `cites` line for each
+caller of the old chapter.
 
 ### codex.foreword (119 modules) — Core
 
@@ -34,29 +47,36 @@ Sampling, KNearestNeighbor, DecisionTree, GeneticAlgorithm, Gguf,
 GpuProxy, Tokenizer, Reservoir, KvCache, DiffusionScheduler,
 Activation, SparseLattice
 
-### codex.foreword.compress (8 modules) — Compression
+### codex.foreword.compress (4 modules) -- Compression
 
-**All eight compress now, but two only shrink runs.** `Zstd` and `Brotli` were
-pass-through framing that returned MORE bytes than they were given until val 8844
-gave each RLE blocks: a run of four or more identical bytes costs one header plus
-one byte. They compress run-heavy input and are pinned by a size assertion
-(`codex/test/lib/zstd-test`, `brotli-test`), but neither has entropy coding yet,
-so general non-run data is stored and does not shrink. (`Deflate` and `Gzip` had
-the same pass-through problem until val 8646.) The remaining ratio work -- Zstd
-FSE/Huffman blocks, real Brotli, Deflate dynamic Huffman -- is BACKLOG 5.13.
+**The compression stack was DELETED on 2026-07-19.** `Brotli`, `BrotliDict`,
+`BrotliDictIndex`, `Deflate`, `Fse`, `Gzip` and `Zstd` are gone, with their
+tests, their generators and their format notes. Codex has no general-purpose
+compressor and no standard container format.
+
+The reason is in `docs/PM/Active/Stories/BrotliBeatsOpus.md` and it is worth reading
+before rebuilding any of it. The short version: the encoders were real and an
+independent decoder said so, but the DECODERS only ever read what our own
+encoders wrote, and that was reported as working for three days across five
+sessions. The harness asked whether .NET could read our output and never whether
+we could read .NET's. Handed four streams from a real encoder, Brotli returned
+zero bytes for all four.
+
+**If this is rebuilt, the oracle test comes FIRST and in both directions.** A
+round-trip through our own halves cannot tell a compressor from a pipe, and it
+cannot tell a decoder from a decoder that only reads itself.
+
+What survives are the four primitives, which stand alone and never depended on
+the deleted set.
 
 | Module | Compresses? | What it is |
 |---|---|---|
-| Deflate | **yes** | RFC 1951. `deflate-compress` emits fixed-Huffman (BTYPE=01); `deflate-compress-dynamic` emits data-derived dynamic Huffman (BTYPE=02, val 8853); `deflate-compress-stored` is the stored encoder. `deflate-compress` does not yet auto-pick the smallest block per input. |
-| Gzip | **yes** | RFC 1952 container over Deflate. Interoperates both ways with zlib. |
 | Lz4 | **yes** | LZ4 block format; hash-table match finding. |
-| Lz77 | **yes** | Match/literal tokens; Deflate's matcher. Own token format, not a standard. |
+| Lz77 | **yes** | Match/literal tokens. **A hash chain**: positions indexed by a 3-byte hash, candidates walked newest-first, window **32768** and matches to **258** (RFC 1951's limits). Bounded by a 128-candidate chain limit and a strictly-backwards check, both safe because every candidate is verified against the bytes -- the chain is a hint, so a wrong one costs ratio and never correctness. Lazy matching, and a literal-price estimate (from the distinct-byte count of the surrounding 4096 bytes) that declines matches costing more than the literals they replace. Own token format, not a standard. Deflate, Gzip and Brotli used to share it; all three are gone and it is now used only by its own tests. |
 | Huffman | **yes** | Frequency-built optimal prefix codes. Own format. |
 | Rle | **yes**, weakly | Run-length only. |
-| **Zstd** | **yes**, runs | RFC 8878 frame; RLE blocks (Block_Type 01) for runs, raw blocks otherwise. No FSE/Huffman compressed block yet. |
-| **Brotli** | **yes**, runs | RLE + stored meta-blocks. Real ratio on runs; still NOT RFC 7932 interoperable (internal format). |
 
-### codex.foreword.encode (71 modules) — Encoding and Codecs
+### codex.foreword.encode (74 modules, measured 2026-07-23) — Encoding and Codecs
 
 Data formats, image codecs, audio codecs, video codecs, protocols.
 
@@ -69,7 +89,7 @@ Data formats, image codecs, audio codecs, video codecs, protocols.
 | 3D/Font | Gltf, TrueType, TrueTypeWriter, FontGen |
 | Web/mail | WebSocket, Smtp |
 | Transport security | Dtls (record layer), DtlsHandshake (flights, retransmission, cookie), DtlsMessage (framing, transcript, Finished, ACK), DtlsHello (hello bodies, cookie ext) - RFC 9147 |
-| IoT / MQTT | Mqtt, MqttSn, Coap, Lwm2m, Sparkplug, Sntp |
+| IoT / MQTT | Mqtt (encode **and decode**), MqttEndpoint (client session: CONNACK, SUBACK, QoS 1 with DUP retransmit, inbound delivery), MqttSn, Coap, CoapEndpoint (RFC 7252 client), Lwm2m, Sparkplug, Sntp |
 | Industrial bus | Modbus, Dnp3, Bacnet, Knx, J1939, Canopen, Mbus, OpcUa, Iec104, Enip, S7comm, Melsec, Fins, Goose, Hart |
 | Wireless / mesh | Lorawan, Zigbee, Ieee802154, Sixlowpan, BleAtt |
 
@@ -159,10 +179,10 @@ The self-hosted compiler, in `codex/compiler/`. Subdirectories: Ast,
 Core, Emit, IR, Semantics, Syntax, Types. Do not modify without reading
 the code first and passing both gates (sample battery + pingpong).
 
-### codex.os (143 modules) — Operating System
+### codex.os (147 modules) — Operating System
 
-Split across sub-quires. Re-measured 2026-07-14; the previous total
-(140) was stale, and the row that read `codex.os | 4` was really
+Split across sub-quires. Re-measured 2026-07-23; the previous total
+(143) was stale, and the row that read `codex.os | 4` was really
 `codex.os.core`.
 
 | Sub-quire | Modules | Purpose |
@@ -170,7 +190,7 @@ Split across sub-quires. Re-measured 2026-07-14; the previous total
 | codex.os.core | 4 | Core OS abstractions |
 | codex.os.dev | 28 | Device management |
 | codex.os.kernel | 33 | Hardware drivers (PCI, xHCI, NE2K, VGA, IDE, HDA, USB HID, etc.) |
-| codex.os.net | 34 | Networking stack (incl. HttpFetch — the Network effect — and DtlsEndpoint) |
+| codex.os.net | 37 | Networking stack (incl. HttpFetch — the Network effect — DtlsEndpoint, and UdpIO, the datagram send/poll pair) |
 | codex.os.observe | 8 | Observability |
 | codex.os.replay | 3 | Deterministic replay |
 | codex.os.sched | 10 | Scheduling |
@@ -216,3 +236,10 @@ directory under `codex/plugs/` with a `build.ps1`; `common/` and
 7. **New foreword modules require a seed rebuild.** Adding or removing
    a module from a foreword quire changes what the compiler bakes in.
    Follow the seed rebuild procedure in the Developer's Guide.
+
+   Adding a *definition* to a module that already exists is a different
+   question, and the answer is reachability: whole-program dead-code
+   elimination drops what the compiler never calls, so a new function in a
+   cited chapter may leave the binary byte-identical. Measured both ways in
+   the Developer's Guide. Compare `build/output/Sut.cdx` against
+   `seed/Codex.cdx` after the gate rather than reasoning about it.

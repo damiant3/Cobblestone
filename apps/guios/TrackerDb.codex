@@ -18,7 +18,7 @@ Chapter: TrackerDb
 Section: Table Creation
   tk-create-table : DbServer, Text, List ColumnDef -> DbServer
   tk-create-table (srv) (name) (cols) =
-    let tdef = TableDef { tbl-name = name, tbl-columns = cols, tbl-primary-key = [], tbl-indexes = [], tbl-constraints = [] }
+    let tdef = table-def name cols
     in let result = catalog-create-table (srv.db-catalog) tdef
     in if result.cat-ok then __record-set srv "db-catalog" (result.cat)
     else srv
@@ -142,25 +142,41 @@ Section: Issue Queries
   tk-db-issue-count : DbServer -> Integer
   tk-db-issue-count (srv) = catalog-table-row-count (srv.db-catalog) "issues"
 
-Section: Row Helpers (wrappers over Data quire API)
-  row-get-value : RowData, Text -> ColumnValue
-  row-get-value (row) (col) = row-get-by-name row col
+Section: Row Helpers
 
-  row-set-value : RowData, Text, ColumnValue -> RowData
-  row-set-value (row) (col) (val) =
-    let idx = row-find-col (row.schema.col-names) col 0 (row.schema.col-count)
-    in if idx < 0 then row
-    else row-set row idx val
+ These were two local wrappers, row-get-value and row-set-value, over
+ the Data quire. The get was a pure rename of row-get-by-name and the
+ set was the by-name setter the Row chapter did not have. Row has both
+ now, so the wrappers are gone rather than shadowing under a second
+ name: IssueStore called row-set-value without defining it, which is a
+ name that resolves nowhere and a chapter that does not compile, and
+ two chapters keeping private copies of the same helper is what makes
+ that possible.
 
 Section: Issue Update
+
+ This queried for the row, set the field, and then INSERTED the result,
+ leaving the original in place: an update added a second row with the
+ same id rather than replacing the first. It compiled and it ran, which
+ is why it survived. A QueryResult carries no RowId, so there was
+ nothing to update in place with; catalog-scan carries one and
+ catalog-update-row takes it.
+
   tk-db-update-field : DbServer, Integer, Text, ColumnValue -> DbServer
   tk-db-update-field (srv) (id) (field) (val) =
-    let result = tk-db-query srv (RelFilter (RelScan "issues") (PredColCmp "id" CmpEq (ValInteger id)))
-    in if result.qr-count == 0 then srv
-    else let row = list-at (result.qr-rows) 0
-    in let updated = row-set-value row field val
-    in let cat2 = catalog-insert-row (srv.db-catalog) "issues" updated
-    in __record-set srv "db-catalog" (cat2.cir-cat)
+    let sr = catalog-scan (srv.db-catalog) "issues"
+    in let idx = tk-find-row-index sr id 0 (sr.scan-count)
+    in if idx < 0 then srv
+    else let updated = row-set-by-name (list-at (sr.rows) idx) field val
+    in let res = catalog-update-row (srv.db-catalog) "issues" (list-at (sr.row-ids) idx) updated
+    in if res.cir-ok == False then srv
+    else __record-set srv "db-catalog" (res.cir-cat)
+
+  tk-find-row-index : ScanResult, Integer, Integer, Integer -> Integer
+  tk-find-row-index (sr) (id) (i) (len) =
+    if i >= len then -1
+    else if tk-row-int (list-at (sr.rows) i) "id" == id then i
+    else tk-find-row-index sr id (i + 1) len
 
   tk-db-update-status : DbServer, Integer, Integer -> DbServer
   tk-db-update-status (srv) (id) (new-status) =
@@ -173,14 +189,14 @@ Section: Issue Update
 Section: Row Field Access
   tk-row-int : RowData, Text -> Integer
   tk-row-int (row) (col) =
-    let v = row-get-value row col
+    let v = row-get-by-name row col
     in when v
       is ValInteger (n) -> n
       is otherwise -> 0
 
   tk-row-text : RowData, Text -> Text
   tk-row-text (row) (col) =
-    let v = row-get-value row col
+    let v = row-get-by-name row col
     in when v
       is ValText (s) -> s
       is otherwise -> ""

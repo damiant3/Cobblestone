@@ -61,10 +61,10 @@ Section: Initialization
 
   iss-create-table : DbServer, Text, List ColumnDef -> DbServer
   iss-create-table (srv) (name) (cols) =
-    let tdef = TableDef { tbl-name = name, tbl-columns = cols, tbl-primary-key = [], tbl-indexes = [], tbl-constraints = [] }
-    in when catalog-create-table (srv.db-catalog) tdef
-      is Just (cat2) -> __record-set srv "db-catalog" cat2
-      is None -> srv
+    let tdef = table-def name cols
+    in let cr = catalog-create-table (srv.db-catalog) tdef
+    in if cr.cat-ok == False then srv
+    else __record-set srv "db-catalog" (cr.cat)
 
 Section: Issue CRUD
   iss-add-issue : IssueStoreState, Issue -> IssueStoreState
@@ -81,7 +81,7 @@ Section: Issue CRUD
     in let tbl = catalog-get-table cat table
     in when tbl
       is Just (ct) ->
-        let schema = ct.ct-schema
+        let schema = table-schema (ct.cat-table-def)
         in let row = row-new schema values
         in let result = catalog-insert-row cat table row
         in __record-set srv "db-catalog" (result.cir-cat)
@@ -102,15 +102,27 @@ Section: Issue CRUD
     let srv = iss-update-field (store.iss-db) id "assignee" (ValText assignee)
     in __record-set store "iss-db" srv
 
+ An update needs the RowId, and a QueryResult does not carry one -- it
+ has qr-rows and no row-ids. catalog-scan does, so the scan is what the
+ row is found through. This used to run a query, mutate the row it got
+ back, and then call a catalog-delete-row that does not exist, so the
+ chapter did not compile and none of this ran at all.
+
   iss-update-field : DbServer, Integer, Text, ColumnValue -> DbServer
   iss-update-field (srv) (id) (field) (val) =
-    let result = query (srv.db-catalog) (RelFilter (RelScan "issues") (PredColCmp "id" CmpEq (ValInteger id)))
-    in if result.qr-count == 0 then srv
-    else let row = list-at (result.qr-rows) 0
-    in let updated = row-set-value row field val
-    in let cat1 = catalog-delete-row (srv.db-catalog) "issues" id
-    in let cat2 = catalog-insert-row (cat1.cat) "issues" updated
-    in __record-set srv "db-catalog" (cat2.cir-cat)
+    let sr = catalog-scan (srv.db-catalog) "issues"
+    in let idx = iss-find-row-index sr id 0 (sr.scan-count)
+    in if idx < 0 then srv
+    else let updated = row-set-by-name (list-at (sr.rows) idx) field val
+    in let res = catalog-update-row (srv.db-catalog) "issues" (list-at (sr.row-ids) idx) updated
+    in if res.cir-ok == False then srv
+    else __record-set srv "db-catalog" (res.cir-cat)
+
+  iss-find-row-index : ScanResult, Integer, Integer, Integer -> Integer
+  iss-find-row-index (sr) (id) (i) (len) =
+    if i >= len then -1
+    else if iss-row-int (list-at (sr.rows) i) "id" == id then i
+    else iss-find-row-index sr id (i + 1) len
 
 Section: Issue Queries
   iss-all-issues : IssueStoreState -> QueryResult
@@ -165,14 +177,14 @@ Section: Row Helpers
 
   iss-row-int : RowData, Text -> Integer
   iss-row-int (row) (col) =
-    let v = row-get-value row col
+    let v = row-get-by-name row col
     in when v
       is ValInteger (n) -> n
       is otherwise -> 0
 
   iss-row-text : RowData, Text -> Text
   iss-row-text (row) (col) =
-    let v = row-get-value row col
+    let v = row-get-by-name row col
     in when v
       is ValText (s) -> s
       is otherwise -> ""

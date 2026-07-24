@@ -73,7 +73,7 @@ Section: Expression Emission
     is IrCharLit (n) (sp) -> "rune(" & show n & ")"
     is IrName (n) (ty) (sp) -> go-sanitize n
     is IrBinary (op) (l) (r) (ty) (sp) -> emit-go-binary op l r arities indent
-    is IrNegate (x) (sp) -> "(-(" & emit-go-expr x arities indent & "))"
+    is IrNegate (x) (nty) (sp) -> "(-(" & emit-go-expr x arities indent & "))"
     is IrIf (c) (t) (el) (ty) (sp) -> "func() interface{} { if " & emit-go-expr c arities indent & ".(bool) { return " & emit-go-expr t arities indent & " }; return " & emit-go-expr el arities indent & " }()"
     is IrLet (name) (ty) (val) (body) (sp) -> "func() interface{} { " & go-sanitize name & " := " & emit-go-expr val arities indent & "; return " & emit-go-expr body arities indent & " }()"
     is IrApply (f) (a) (ty) (sp) -> emit-go-apply e arities indent
@@ -159,7 +159,7 @@ Section: Builtin Emitter
     GoBuiltinEmitter { name = "file-exists", emit = \args arities indent ->
      "func() interface{} { _, _e := os.Stat(" & emit-go-expr (list-at args 0) arities indent & ".(string)); return _e == nil }()" },
     GoBuiltinEmitter { name = "int-mod", emit = \args arities indent ->
-     "(" & emit-go-expr (list-at args 0) arities indent & ".(int) % " & emit-go-expr (list-at args 1) arities indent & ".(int))" },
+     "func(_a int, _b int) int { _m := _b; if _m < 0 { _m = -_m }; _r := _a % _m; if _r < 0 { _r += _m }; return _r }(" & emit-go-expr (list-at args 0) arities indent & ".(int), " & emit-go-expr (list-at args 1) arities indent & ".(int))" },
     GoBuiltinEmitter { name = "integer-to-text", emit = \args arities indent ->
      "fmt.Sprintf(\"%v\", " & emit-go-expr (list-at args 0) arities indent & ")" },
     GoBuiltinEmitter { name = "list-at", emit = \args arities indent ->
@@ -178,7 +178,7 @@ Section: Builtin Emitter
      "func() interface{} { fmt.Fprintln(os.Stderr, " & emit-go-expr (list-at args 0) arities indent & "); return nil }()" },
     GoBuiltinEmitter { name = "print-line-uni", emit = \args arities indent ->
      "func() interface{} { fmt.Println(" & emit-go-expr (list-at args 0) arities indent & "); return nil }()" },
-    GoBuiltinEmitter { name = "read-file", emit = \args arities indent ->
+    GoBuiltinEmitter { name = "read-text", emit = \args arities indent ->
      "func() interface{} { _b, _ := os.ReadFile(" & emit-go-expr (list-at args 0) arities indent & ".(string)); return string(_b) }()" },
     GoBuiltinEmitter { name = "read-line", emit = \args arities indent ->
      "func() interface{} { _r := bufio.NewReader(os.Stdin); _s, _ := _r.ReadString('\\n'); return strings.TrimRight(_s, \"\\n\") }()" },
@@ -342,6 +342,7 @@ Section: Type Definitions
     is AVariantTypeDef (name) (tparams) (ctors) (s) ->
      if is-tup-type (name.value) then ""
      else emit-go-variant-ctors ctors 0
+    is AUnitTypeDef (name) (unitbase) (s) -> ""
 
   emit-go-variant-ctors : List AVariantCtorDef, Integer -> Text
   emit-go-variant-ctors (ctors) (i) =

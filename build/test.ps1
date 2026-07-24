@@ -21,7 +21,12 @@
 #
 # Sidecars (all optional, presence-driven):
 #   codex*.test\foo.expected  — compile must SUCCEED, runtime output must match
-#   codex*.test\foo.failing   — compile must FAIL with listed CDX error codes
+#   codex*.test\foo.failing   — compile must FAIL with listed CDX error codes.
+#                               A line may also be `CDX2031@33:5`, which pins
+#                               the reported line:column as well as the code.
+#                               Use it whenever the test exists BECAUSE of a
+#                               position: a bare code cannot fail on a lost
+#                               one, since a 0,0 span prints no prefix at all.
 #   codex*.test\foo.diag      — compile must SUCCEED and emit each listed CDX
 #                               code at any severity (warning/info/error). One
 #                               code per line; bare number or CDX-prefixed. Use
@@ -184,15 +189,38 @@ foreach ($proc in $compileProcs) {
 Write-Host "Phase 1 (compile) complete."
 
 # ===========================================================================
-# Phase 1a: Retry tests that got exitcode 99 (VM died before test)
-# ===========================================================================
+# Phase 1a: Retry tests whose batch result cannot be trusted, standalone.
+#
+# Exit 99 means the VM died before this test ran, so it must be retried.
+# But a VM death also poisons the results BEFORE it: the batch REPL session
+# carries state across compiles, and a heavy compile can corrupt the next
+# one -- an effect-heavy test then reports phantom diagnostics (exit 7) or
+# crashes (exit 4) that it does not produce standalone. See
+# battery-triage-2026-07-23. Those land as recorded failures and are not
+# exit 99, so they would survive as false failures.
+#
+# So: if any test in this run crashed the VM (exit 99 appeared), every
+# non-clean result (4, 7, 99) is re-run standalone, where there is no
+# session state to corrupt it. A standalone recompile is authoritative: it
+# can only overturn a false failure, never manufacture a pass, because a
+# genuine failure fails standalone too and a `.failing` test still fails
+# with the error its sidecar pins. When no VM death occurred, the session
+# was clean and 4/7 results are real, so only 99s (there are none) retry --
+# the prior behaviour exactly.
+$exitOf = {
+    param($src)
+    $out = Join-Path $OutRoot ([System.IO.Path]::GetFileNameWithoutExtension($src))
+    $ef  = Join-Path $out '.exitcode'
+    if (Test-Path $ef) { (Get-Content -TotalCount 1 $ef).Trim() } else { '99' }
+}
+$batchCrashed = $false
+foreach ($src in $toCompile) { if ((& $exitOf $src) -eq '99') { $batchCrashed = $true; break } }
+$retrySet = if ($batchCrashed) { @('4', '7', '99') } else { @('99') }
 $retryList = @()
 foreach ($src in $toCompile) {
     $name = [System.IO.Path]::GetFileNameWithoutExtension($src)
     $out  = Join-Path $OutRoot $name
-    $exitFile = Join-Path $out '.exitcode'
-    $exitCode = if (Test-Path $exitFile) { (Get-Content -TotalCount 1 $exitFile).Trim() } else { '99' }
-    if ($exitCode -eq '99') { $retryList += @{ Name = $name; Src = $src; Out = $out } }
+    if ((& $exitOf $src) -in $retrySet) { $retryList += @{ Name = $name; Src = $src; Out = $out } }
 }
 if ($retryList.Count -gt 0) {
     Write-Host "Retrying $($retryList.Count) tests individually (VM died in batch)..."
@@ -200,7 +228,18 @@ if ($retryList.Count -gt 0) {
     foreach ($r in $retryList) {
         $logPath = Join-Path $r.Out 'build.log'
         $binPath = Join-Path $r.Out "$($r.Name).cdx"
-        $proc2 = Start-Process -FilePath 'pwsh' -ArgumentList @('-NoProfile', '-File', $compileScript2, '-Src', $r.Src, '-Out', $binPath, '-Log', $logPath) -PassThru -WindowStyle Hidden
+        # The retry has to compile the test the way the batch would have. Only
+        # test-compile-batch.ps1 read the .flags sidecar, so a retried test was
+        # compiled without it: foreword-all-compile lost decks=150 and failed to
+        # compile, prose-anchor lost prose and lost its diagnostic. Both were
+        # then reported as failures of the compiler. When the batch session dies
+        # early the retry path takes hundreds of tests, so every .flags test
+        # became a false failure at once.
+        $flagsFile = Join-Path ([System.IO.Path]::GetDirectoryName($r.Src)) "$($r.Name).flags"
+        $rawFlags = if (Test-Path -PathType Leaf $flagsFile) { (Get-Content -TotalCount 1 $flagsFile).Trim() } else { '' }
+        $retryArgs = @('-NoProfile', '-File', $compileScript2, '-Src', $r.Src, '-Out', $binPath, '-Log', $logPath)
+        if ($rawFlags) { $retryArgs += @('-RawFlags', $rawFlags) }
+        $proc2 = Start-Process -FilePath 'pwsh' -ArgumentList $retryArgs -PassThru -WindowStyle Hidden
         $proc2.WaitForExit(120000) | Out-Null
         if (-not $proc2.HasExited) { try { Stop-Process -Id $proc2.Id -Force } catch {} }
         $retryExit = if ($proc2.HasExited) { $proc2.ExitCode } else { 4 }
@@ -228,6 +267,9 @@ foreach ($src in $toCompile) {
     $diskFile     = Join-Path $dir "$name.disk"
     # .smp holds a core count: the test is booted with -smp N.
     $smpFile      = Join-Path $dir "$name.smp"
+    # .vmargs holds extra codex-vm flags, for a test whose subject is the
+    # machine rather than the program -- a bus topology, an absent device.
+    $vmArgsFile   = Join-Path $dir "$name.vmargs"
     $log = Join-Path $out 'build.log'
     $bin = Join-Path $out "$name.cdx"
     $exitFile = Join-Path $out '.exitcode'
@@ -242,10 +284,21 @@ foreach ($src in $toCompile) {
         }
         $codesOk = $true
         $logText = if (Test-Path $log) { Get-Content -Raw -Path $log } else { '' }
+        # A bare `CDX2031` checks only that the code fired. `CDX2031@33:5`
+        # also pins WHERE, which a bare code cannot: a diagnostic reported at
+        # a synthetic 0,0 span prints with no line:column prefix at all, so a
+        # code-only check passes against a compiler that lost the position
+        # entirely. That is what the act-block span defect looked
+        # like, and it is why a test written for a position needs a form that
+        # can fail on one.
         foreach ($code in (Get-Content $failingFile)) {
             $code = $code.Trim()
             if (-not $code) { continue }
-            if ($logText -notmatch "error (CDX)?0*$code\b") { $codesOk = $false; break }
+            if ($code -match '^(?<c>(CDX)?\d+)@(?<l>\d+):(?<col>\d+)$') {
+                $c = $matches['c'] -replace '^CDX', ''
+                $pat = "\b$($matches['l']):$($matches['col']):\s*error (CDX)?0*$c\b"
+                if ($logText -notmatch $pat) { $codesOk = $false; break }
+            } elseif ($logText -notmatch "error (CDX)?0*$code\b") { $codesOk = $false; break }
         }
         if ($codesOk) {
             "PASS_FAILING`t$name`t" | Set-Content -Path $resultFile -Encoding UTF8
@@ -293,6 +346,7 @@ foreach ($src in $toCompile) {
     $needsRun.Add(@{
         Name = $name; Bin = $bin; Expected = $expectedFile;
         Stdin = $stdinFile; Keys = $keysFile; Disk = $diskFile; Smp = $smpCores
+        VmArgs = $vmArgsFile
     })
 }
 
@@ -314,6 +368,7 @@ if ($needsRun.Count -gt 0) {
         $keysFile     = $t.Keys
         $diskFile     = $t.Disk
         $smpCores     = $t.Smp
+        $vmArgsFile   = $t.VmArgs
         $out  = Join-Path $using:OutRoot $name
         $resultFile = Join-Path $using:ResultsDir $name
         $runScript  = Join-Path $using:PSScriptRoot 'test-run.ps1'
@@ -329,6 +384,7 @@ if ($needsRun.Count -gt 0) {
             if (Test-Path -PathType Leaf $keysFile)  { $runArgs += @('-KeysFile', $keysFile) }
             if (Test-Path -PathType Leaf $diskFile)  { $runArgs += @('-DiskFile', $diskFile) }
             if ($smpCores -gt 1)                     { $runArgs += @('-Smp', $smpCores) }
+            if (Test-Path -PathType Leaf $vmArgsFile) { $runArgs += @('-VmArgsFile', $vmArgsFile) }
             & pwsh @runArgs
             if ($LASTEXITCODE -ne 0) {
                 "FAIL_RUNTIME`t$name`trun failed" | Set-Content -Path $resultFile -Encoding UTF8

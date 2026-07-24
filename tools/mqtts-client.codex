@@ -1,0 +1,291 @@
+Chapter: MqttsClient
+  cites Encode chapter MqttEndpoint
+  cites Encode chapter Mqtt
+  cites Encode chapter TlsEndpoint
+  cites Encode chapter X509Chain
+  cites Net chapter NetIO
+  cites Net chapter TcpTransport
+  cites Net chapter NetworkStack
+  cites Foreword chapter Tls
+  cites Foreword chapter Console
+  cites Foreword chapter Maybe
+
+ MQTT over TLS 1.3 -- `mqtts` -- against mosquitto's TLS listener.
+
+ Two things are proven here and only one of them is MQTT.
+
+ THE FIRST IS THAT OUR TLS CLIENT TALKS TO A FOREIGN SERVER, which had
+ never been shown. `build/tls-interop-test.ps1` drives our SERVER with
+ openssl's client, so the client half was exercised only by our own
+ server, in a loopback -- the same one-directional shape the compression
+ post-mortem is about, pointed at TLS. Here OpenSSL is the server and the
+ handshake, the certificate chain and the record layer are all its idea of
+ the RFC rather than ours.
+
+ THE SECOND IS THAT AN IoT SESSION CAN BE SECURED. `MqttEndpoint` and
+ `TlsEndpoint` are both pure byte endpoints, so composing them is a
+ caller's job and not a protocol change: MQTT packets become TLS
+ application data, and TLS records become TCP payload. This is that
+ caller, and until it existed the CRA claim in `docs/KingsAndCourts.md`
+ about protected data in transit had no program behind it.
+
+ THERE ARE THREE FRAMINGS STACKED HERE and each one has to be unpicked
+ separately, which is the whole difficulty. TCP delivers bytes; TLS
+ records sit in those bytes with a five-byte header; MQTT packets sit in
+ the decrypted stream with a variable-length header. A layer that assumes
+ its input arrives whole is wrong at every level.
+
+Section: Configuration
+
+  mqtts-local-mac : List Integer = [82, 84, 0, 18, 52, 86]
+  mqtts-local-ip : List Integer = [10, 0, 2, 15]
+  mqtts-gateway-ip : List Integer = [10, 0, 2, 2]
+  mqtts-local-port : Integer = 5902
+  mqtts-broker-port : Integer = 8883
+
+  mqtts-topic : Text = "codex/secure"
+  mqtts-payload : List Integer = [115, 101, 99, 114, 101, 116, 45, 99, 111, 100, 101, 120]
+
+ The client's X25519 private key and handshake random, fixed so a run is
+ reproducible. A real client takes both from entropy.
+
+  mqtts-priv : List Integer =
+    [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16,
+     17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32]
+
+  mqtts-random : List Integer =
+    [101, 102, 103, 104, 105, 106, 107, 108, 109, 110, 111, 112, 113, 114, 115, 116,
+     117, 118, 119, 120, 121, 122, 123, 124, 125, 126, 127, 128, 129, 130, 131, 132]
+
+ The date the certificate's validity is checked against. Supplied rather
+ than read from a clock, which is BACKLOG 5.13's open item, and named
+ here so it is visible rather than implied.
+
+  mqtts-cal-now : List Integer = [50, 48, 50, 53, 48, 49, 48, 49, 48, 48, 48, 48, 48, 48]
+
+ The anchor: the fixture CA the broker's leaf was minted against. Read by
+ the harness out of the same fixture, so there is one source of truth for
+ these bytes.
+
+  mqtts-ca : List Integer =
+    [48, 129, 241, 48, 129, 164, 160, 3, 2, 1, 2, 2, 1, 1, 48, 5,
+     6, 3, 43, 101, 112, 48, 24, 49, 22, 48, 20, 6, 3, 85, 4, 3,
+     12, 13, 67, 111, 100, 101, 120, 32, 84, 101, 115, 116, 32, 67, 65, 48,
+     30, 23, 13, 50, 48, 48, 49, 48, 49, 48, 48, 48, 48, 48, 48, 90,
+     23, 13, 52, 48, 48, 49, 48, 49, 48, 48, 48, 48, 48, 48, 90, 48,
+     24, 49, 22, 48, 20, 6, 3, 85, 4, 3, 12, 13, 67, 111, 100, 101,
+     120, 32, 84, 101, 115, 116, 32, 67, 65, 48, 42, 48, 5, 6, 3, 43,
+     101, 112, 3, 33, 0, 121, 181, 86, 46, 143, 230, 84, 249, 64, 120, 177,
+     18, 232, 169, 139, 167, 144, 31, 133, 58, 230, 149, 190, 215, 224, 227, 145,
+     11, 173, 4, 150, 100, 163, 19, 48, 17, 48, 15, 6, 3, 85, 29, 19,
+     1, 1, 255, 4, 5, 48, 3, 1, 1, 255, 48, 5, 6, 3, 43, 101,
+     112, 3, 65, 0, 14, 21, 153, 51, 195, 232, 47, 199, 202, 50, 58, 152,
+     181, 85, 0, 215, 88, 32, 189, 25, 247, 196, 190, 179, 216, 71, 243, 101,
+     109, 245, 106, 4, 125, 180, 86, 248, 210, 19, 135, 145, 131, 100, 110, 77,
+     47, 118, 22, 180, 149, 20, 46, 148, 36, 211, 210, 198, 29, 160, 148, 194,
+     158, 48, 27, 1]
+
+Section: The Socket
+
+  mqtts-transport : Integer -> TcpTransportState
+  mqtts-transport (x) =
+    let sess = net-session-new mqtts-local-mac mqtts-local-ip mqtts-gateway-ip mqtts-local-port mqtts-broker-port mqtts-gateway-ip 1000
+    in transport-new sess
+
+Section: TLS Record Framing
+
+ A TLS record is a five-byte header -- type, two version bytes, and a
+ sixteen-bit length -- and then that many bytes.
+
+  rec-total : List Integer -> Integer
+  rec-total (buf) = 5 + (list-at buf 3 * 256 + list-at buf 4)
+
+  rec-ready : List Integer -> Boolean
+  rec-ready (buf) =
+    if list-length buf < 5 then False
+    else list-length buf >= rec-total buf
+
+  rec-drop : List Integer, Integer -> List Integer
+  rec-drop (bs) (n) = tls-slice bs n (list-length bs - n) []
+
+  MqttsRecv = record {
+    mq-ts : TcpTransportState,
+    mq-rec : List Integer,
+    mq-rest : List Integer,
+    mq-ok : Boolean
+  }
+
+  mqtts-poll-start : Integer = 49000000
+
+ How many records to take before giving up on a step. It is not one per
+ MQTT packet, because a TLS 1.3 server sends things of its own: OpenSSL
+ posts two NewSessionTicket records the moment the handshake finishes,
+ and each is a record that yields no application bytes at all. A budget
+ of two, which is generous in MQTT terms, was consumed entirely by those
+ tickets and the CONNACK behind them was never read.
+
+  mqtts-rounds : Integer = 8
+
+  mqtts-recv-record : TcpTransportState, List Integer, Integer -> [Network.Read, Network.Write] MqttsRecv
+  mqtts-recv-record (ts) (buf) (guard) =
+    if guard <= 0 then MqttsRecv { mq-ts = ts, mq-rec = [], mq-rest = buf, mq-ok = False }
+    else if rec-ready buf
+    then MqttsRecv { mq-ts = ts, mq-rec = tls-take-bytes buf (rec-total buf), mq-rest = rec-drop buf (rec-total buf), mq-ok = True }
+    else act
+      rr <- net-io-recv-raw ts mqtts-poll-start
+      if rr.has-data == False then MqttsRecv { mq-ts = rr.transport, mq-rec = [], mq-rest = buf, mq-ok = False }
+      else mqtts-recv-record (rr.transport) (buf & (rr.data)) (guard - 1)
+    end
+
+  mqtts-send-all : TcpTransportState, List (List Integer), Integer -> [Network.Write] TcpTransportState
+  mqtts-send-all (ts) (recs) (i) =
+    if i >= list-length recs then ts
+    else act
+      ts1 <- net-io-send-raw ts (list-at recs i)
+      mqtts-send-all ts1 recs (i + 1)
+    end
+
+Section: The Handshake
+
+  MqttsHs = record {
+    hs-ts : TcpTransportState,
+    hs-ep : TlsEp,
+    hs-rest : List Integer
+  }
+
+  mqtts-drive : TcpTransportState, TlsEp, List Integer, Integer -> [Network.Read, Network.Write] MqttsHs
+  mqtts-drive (ts) (ep) (buf) (guard) =
+    if tls-ep-done ep then MqttsHs { hs-ts = ts, hs-ep = ep, hs-rest = buf }
+    else if guard <= 0 then MqttsHs { hs-ts = ts, hs-ep = ep, hs-rest = buf }
+    else act
+      rr <- mqtts-recv-record ts buf 100000
+      if rr.mq-ok == False then MqttsHs { hs-ts = rr.mq-ts, hs-ep = ep, hs-rest = rr.mq-rest }
+      else let step = tls-ep-recv ep (rr.mq-rec)
+      in act
+        ts2 <- mqtts-send-all (rr.mq-ts) (step.tes-out) 0
+        mqtts-drive ts2 (step.tes-ep) (rr.mq-rest) (guard - 1)
+      end
+    end
+
+Section: MQTT Inside TLS
+
+ The MQTT endpoint is fed out of the TLS endpoint's application buffer,
+ not off the socket. `tls-ep-app-in` accumulates decrypted application
+ bytes across records, so a single MQTT packet split across two TLS
+ records reassembles here for free -- and a TLS record carrying three
+ MQTT packets is drained by `mqtt-ep-recv` reporting what it consumed.
+
+  MqttsRun = record {
+    mr-mep : MqttEp,
+    mr-tep : TlsEp,
+    mr-ts : TcpTransportState,
+    mr-buf : List Integer,
+    mr-used : Integer,
+    mr-got : Boolean
+  }
+
+  mqtts-send-mqtt : TlsEp, TcpTransportState, List (List Integer), Integer -> [Network.Write] MqttsRun
+  mqtts-send-mqtt (tep) (ts) (pkts) (i) =
+    if i >= list-length pkts then MqttsRun { mr-mep = mqtt-ep-new, mr-tep = tep, mr-ts = ts, mr-buf = [], mr-used = 0, mr-got = True }
+    else let step = tls-ep-send-app tep (list-at pkts i)
+    in act
+      ts1 <- mqtts-send-all ts (step.tes-out) 0
+      mqtts-send-mqtt (step.tes-ep) ts1 pkts (i + 1)
+    end
+
+ One round: take a TLS record, decrypt it, and hand everything the
+ application buffer now holds to the MQTT endpoint. `mr-used` tracks how
+ much of that buffer has already been consumed, because `tls-ep-app-in`
+ only ever grows.
+
+  mqtts-pump : MqttEp, TlsEp, TcpTransportState, List Integer, Integer -> [Network.Read, Network.Write] MqttsRun
+  mqtts-pump (mep) (tep) (ts) (buf) (used) =
+    act
+      rr <- mqtts-recv-record ts buf 100000
+      if rr.mq-ok == False then MqttsRun { mr-mep = mep, mr-tep = tep, mr-ts = rr.mq-ts, mr-buf = rr.mq-rest, mr-used = used, mr-got = False }
+      else let step = tls-ep-recv tep (rr.mq-rec)
+      in let app = tls-ep-app-in (step.tes-ep)
+      in let fresh = mqtt-slice app used (list-length app)
+      in let mstep = mqtt-ep-recv mep fresh 0
+      in act
+        ts2 <- mqtts-send-all (rr.mq-ts) (step.tes-out) 0
+        r <- mqtts-send-mqtt (step.tes-ep) ts2 (mstep.ms-out) 0
+        MqttsRun { mr-mep = mstep.ms-ep, mr-tep = r.mr-tep, mr-ts = r.mr-ts, mr-buf = rr.mq-rest, mr-used = used + (mstep.ms-consumed), mr-got = True }
+      end
+    end
+
+  mqtts-settle : MqttEp, TlsEp, TcpTransportState, List Integer, Integer, Integer -> [Network.Read, Network.Write] MqttsRun
+  mqtts-settle (mep) (tep) (ts) (buf) (used) (rounds) =
+    if rounds <= 0 then MqttsRun { mr-mep = mep, mr-tep = tep, mr-ts = ts, mr-buf = buf, mr-used = used, mr-got = False }
+    else act
+      r <- mqtts-pump mep tep ts buf used
+      if r.mr-got == False then r
+      else mqtts-settle (r.mr-mep) (r.mr-tep) (r.mr-ts) (r.mr-buf) (r.mr-used) (rounds - 1)
+    end
+
+Section: Reporting
+
+  mqtts-bytes-text : List Integer, Integer, Text -> Text
+  mqtts-bytes-text (bs) (i) (acc) =
+    if i >= list-length bs then acc
+    else mqtts-bytes-text bs (i + 1) (if i == 0 then show (list-at bs i) else acc & "," & show (list-at bs i))
+
+Section: The Session
+
+  mqtts-session : MqttsHs -> [Network.Read, Network.Write, Console.Write] Nothing
+  mqtts-session (hs) =
+    let c = mqtt-ep-connect mqtt-ep-new mqtts-config
+    in act
+      s0 <- mqtts-send-mqtt (hs.hs-ep) (hs.hs-ts) (c.ms-out) 0
+      r1 <- mqtts-settle (c.ms-ep) (s0.mr-tep) (s0.mr-ts) (hs.hs-rest) 0 mqtts-rounds
+      print-line-uni ("mqtts connect ready=" & show (mqtt-ep-ready (r1.mr-mep)) & " reason=" & show (mqtt-ep-connack (r1.mr-mep)))
+      let sub = mqtt-ep-subscribe (r1.mr-mep) mqtts-topic QosAtLeastOnce
+      in act
+        s1 <- mqtts-send-mqtt (r1.mr-tep) (r1.mr-ts) (sub.ms-out) 0
+        r2 <- mqtts-settle (sub.ms-ep) (s1.mr-tep) (s1.mr-ts) (r1.mr-buf) (r1.mr-used) mqtts-rounds
+        print-line-uni ("mqtts subscribe granted=" & show (mqtt-ep-suback (r2.mr-mep)))
+        let p = mqtt-ep-publish (r2.mr-mep) mqtts-topic mqtts-payload QosAtLeastOnce 0
+        in act
+          s2 <- mqtts-send-mqtt (r2.mr-tep) (r2.mr-ts) (p.ms-out) 0
+          r3 <- mqtts-settle (p.ms-ep) (s2.mr-tep) (s2.mr-ts) (r2.mr-buf) (r2.mr-used) mqtts-rounds
+          print-line-uni ("mqtts publish acked=" & show (mqtt-ep-published (r3.mr-mep)))
+          print-line-uni ("mqtts delivered count=" & show (mqtt-ep-in-count (r3.mr-mep)) & " payload=" & mqtts-bytes-text (mqtt-ep-in-payload (r3.mr-mep)) 0 "")
+          ts9 <- net-io-close (r3.mr-ts)
+          print-line-uni "mqtts closed"
+        end
+      end
+    end
+
+  mqtts-config : MqttConnectConfig
+  mqtts-config = MqttConnectConfig {
+    client-id = "codex-secure", keep-alive = 60, clean-start = True,
+    username = None, password = None }
+
+Section: Entry
+
+ The anchor is built the way the loopback fixture builds it: parse the CA
+ and take its subject and key. There is no anchor constructor that takes
+ raw certificate bytes.
+
+  mqtts-anchors : List X509Anchor =
+    when x509-parse mqtts-ca
+      is None -> []
+      is Just (c) -> [X509Anchor { xa-subject = c.xc-subject, xa-key = c.xc-key }]
+
+  opening : [Network.Read, Network.Write, Console.Write] Nothing = act
+    ts <- net-io-connect (mqtts-transport 0)
+    when (ts.session).conn.state
+      is TcpEstablished -> mqtts-open ts
+      is otherwise -> print-line-uni "mqtts: broker did not answer on 8883"
+  end
+
+  mqtts-open : TcpTransportState -> [Network.Read, Network.Write, Console.Write] Nothing
+  mqtts-open (ts) =
+    let st0 = tls-ep-hello (tls-ep-client-new mqtts-priv mqtts-random mqtts-anchors mqtts-cal-now)
+    in act
+      ts1 <- mqtts-send-all ts (st0.tes-out) 0
+      hs <- mqtts-drive ts1 (st0.tes-ep) [] 200
+      print-line-uni ("mqtts tls done=" & show (tls-ep-done (hs.hs-ep)) & " authenticated=" & show (tls-ep-authenticated (hs.hs-ep)) & " anchors=" & show (list-length mqtts-anchors))
+      if tls-ep-done (hs.hs-ep) then mqtts-session hs
+      else print-line-uni "mqtts: TLS handshake did not complete"
+    end

@@ -1,6 +1,6 @@
-# BACKLOG 6.2 closed end to end: a quotation resolves from a PEER.
+# End to end: a quotation resolves from a PEER.
 #
-# The store half (6.1) put the work on a disk this machine could reach. This
+# The store half put the work on a disk this machine could reach. This
 # puts it on a machine this one can only talk to:
 #
 #   1. codex/test/apps/store-quoted-work writes one signed, content-addressed

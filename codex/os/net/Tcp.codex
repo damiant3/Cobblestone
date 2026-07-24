@@ -173,13 +173,37 @@ Section: State Transitions
   set-remote (c) (rp) (rip) = TcpConnection { state = c.state, local-port = c.local-port, remote-port = __narrow rp, local-ip = c.local-ip, remote-ip = rip, send-next = c.send-next, recv-next = c.recv-next, send-window = c.send-window }
 
 Section: CLOSED State
+
+ A CONNECTION ENTERING LISTENING FORGETS ITS PEER, and until 2026-07-20 it
+ did not. `tcp-set-state` carries every field forward, `remote-port`
+ included, so a listener that had once been claimed still named that peer
+ after it closed and re-listened. Nothing read the field in that state, so
+ the staleness was invisible -- until `net-session-owns-segment` began
+ demultiplexing on it, and then a server that served one caller dropped
+ every caller after: the fresh SYN came from a different source port, the
+ gate read it as another connection's traffic, and the server waited
+ forever for a request that was on the wire.
+
+ A listener has no peer. Zero is the sentinel the demux already keys on
+ for an unclaimed listener, and `tcp-step-listening` learns the real port
+ from the SYN, so clearing it here is what makes that sentinel true rather
+ than merely usually true. `remote-ip` is deliberately left alone:
+ `tcp-step-listening` carries it forward too, and `net-process-ip`
+ overwrites it from the IP header when the connection reaches
+ SYN_RECEIVED.
+
+ Pinned by `codex/test/tcp-listen-reclaim.codex`, whose second control is
+ the load-bearing one -- deleting the remote-port check would also admit
+ the second caller, so the test demands that a claimed listener still
+ refuse a stranger.
+
   tcp-step-closed : TcpConnection, TcpEvent -> TcpStep
   tcp-step-closed (conn) (ev) = when ev
     is EvConnect ->
       let syn = tcp-build-segment (conn.local-port) (conn.remote-port) (conn.send-next) 0 tcp-flag-syn (conn.send-window) []
       in let c1 = tcp-set-state (set-send-next conn (conn.send-next + 1)) TcpSynSent
       in TcpStep { conn = c1, action = ActSend syn }
-    is EvListen -> TcpStep { conn = tcp-set-state conn TcpListening, action = ActNone }
+    is EvListen -> TcpStep { conn = tcp-set-state (set-remote conn 0 (conn.remote-ip)) TcpListening, action = ActNone }
     is EvSegment (seg) -> TcpStep { conn = conn, action = ActNone }
     is EvSend (data) -> TcpStep { conn = conn, action = ActError "not connected" }
     is EvClose -> TcpStep { conn = conn, action = ActNone }
@@ -218,7 +242,12 @@ Section: SYN_RECEIVED State
   tcp-step-syn-received : TcpConnection, TcpEvent -> TcpStep
   tcp-step-syn-received (conn) (ev) = when ev
     is EvSegment (seg) ->
-      if tcp-has-flag seg tcp-flag-ack then TcpStep { conn = tcp-set-state conn TcpEstablished, action = ActEstablished }
+      if tcp-has-flag seg tcp-flag-ack then
+        if list-length (seg.payload) > 0 then
+          let c1 = set-recv-next (tcp-set-state conn TcpEstablished) (seg.seq-num + list-length (seg.payload))
+          in let ack = tcp-build-segment (conn.local-port) (conn.remote-port) (conn.send-next) (c1.recv-next) tcp-flag-ack (conn.send-window) []
+          in TcpStep { conn = c1, action = ActDataAck (seg.payload) ack }
+        else TcpStep { conn = tcp-set-state conn TcpEstablished, action = ActEstablished }
       else TcpStep { conn = conn, action = ActNone }
     is EvClose -> TcpStep { conn = tcp-set-state conn TcpClosed, action = ActClosed }
     is EvConnect -> TcpStep { conn = conn, action = ActNone }

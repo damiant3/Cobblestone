@@ -53,7 +53,7 @@ Section: IR Rewrite
     is IrIntLit (v) (s) | IrNumLit (v) (s) | IrTextLit (v) (s) | IrBoolLit (v) (s) | IrCharLit (v) (s) -> e
     is IrName (n) (t) (s) -> deck-record (IrName n (resolve-ty-deep tdefs t) s)
     is IrBinary (op) (l) (r) (t) (s) -> deck-record (IrBinary op (rewrite-ir-expr tdefs l) (rewrite-ir-expr tdefs r) (resolve-ty-deep tdefs t) s)
-    is IrNegate (x) (s) -> deck-record (IrNegate (rewrite-ir-expr tdefs x) s)
+    is IrNegate (x) (t) (s) -> deck-record (IrNegate (rewrite-ir-expr tdefs x) (resolve-ty-deep tdefs t) s)
     is IrIf (c) (th) (el) (t) (s) -> deck-record (IrIf (rewrite-ir-expr tdefs c) (rewrite-ir-expr tdefs th) (rewrite-ir-expr tdefs el) (resolve-ty-deep tdefs t) s)
     is IrLet (n) (t) (v) (b) (s) -> deck-record (IrLet n (resolve-ty-deep tdefs t) (rewrite-ir-expr tdefs v) (rewrite-ir-expr tdefs b) s)
     is IrApply (f) (a) (t) (s) -> deck-record (IrApply (rewrite-ir-expr tdefs f) (rewrite-ir-expr tdefs a) (resolve-ty-deep tdefs t) s)
@@ -93,6 +93,26 @@ Section: Definition Rewrite
     span = d.span
    })
 
-  rewrite-ir-defs : List TypeBinding, List IRDef -> List IRDef
-  rewrite-ir-defs (tdefs) (defs) =
-   for d in defs -> rewrite-ir-def tdefs d
+ The ceiling is the RESOLVE deck reservation's top, checked per
+ definition because this loop is where the phase writes the deck in
+ bulk: one rewritten type tree per definition. Measured 2026-07-21 on
+ the 2.81 MB selfhost with deck-pos probes, this walk writes 20,029,096
+ bytes of the RESOLVE deck's 20,370,712, against 161,112 for
+ build-type-def-map and 180,504 for sort-bindings -- so guarding those
+ two instead would have bought 1.7 per cent of the phase, which is the
+ mistake the SCOPE guard made on its first attempt.
+
+ A definition's rewrite writes kilobytes against an 8 MB band, so a
+ per-definition check cannot be outrun. The stop returns the
+ definitions rewritten so far; compile-frontend-cdx reads deck-short-of
+ again after the walk and raises CDX9002 from there.
+
+  rewrite-ir-defs : List TypeBinding, List IRDef, Integer -> List IRDef
+  rewrite-ir-defs (tdefs) (defs) (ceiling) =
+   rewrite-ir-defs-acc tdefs defs 0 (list-length defs) [] ceiling
+
+  rewrite-ir-defs-acc : List TypeBinding, List IRDef, Integer, Integer, List IRDef, Integer -> List IRDef
+  rewrite-ir-defs-acc (tdefs) (defs) (i) (len) (acc) (ceiling) =
+   if i == len then acc
+   else if deck-bound-short-of ceiling demand-resolve-guard-band then acc
+   else rewrite-ir-defs-acc tdefs defs (i + 1) len (list-push acc (rewrite-ir-def tdefs (list-at defs i))) ceiling

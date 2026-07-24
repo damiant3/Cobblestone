@@ -10,7 +10,12 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory=$true)] [string]$IrInput,
-    [Parameter(Mandatory=$true)] [string]$Out
+    [Parameter(Mandatory=$true)] [string]$Out,
+    # Emit the PSCI CPU_ON sequence in __start. Only pass this for a program
+    # that wants a secondary core: the conduit is HVC, which is undefined on
+    # boards without PSCI (the committed Renode board), where it traps and
+    # parks the guest before `opening` runs. See CL 8221.
+    [switch]$Smp
 )
 
 Set-StrictMode -Version Latest
@@ -37,7 +42,8 @@ Write-Host "[arm64-run] Input: $($irBytes.Length) bytes from $IrInput"
 # Build input: CCE mode header + CCE IR + null terminator
 $inputFile = [System.IO.Path]::GetTempFileName()
 $hdrList = [System.Collections.Generic.List[byte]]::new()
-foreach ($ch in "IR-CCE".ToCharArray()) {
+$modeText = if ($Smp) { "IR-CCE smp" } else { "IR-CCE" }
+foreach ($ch in $modeText.ToCharArray()) {
     $u = [int]$ch
     if ($u -lt 256) { $hdrList.Add([byte]$script:UnicodeToCce[$u]) }
 }
@@ -70,11 +76,24 @@ Write-Host "[arm64-run] OK: $Out ($($outputBytes.Length) bytes)"
 # binary wire with no newline between, so match anywhere in the line.
 $serialText = ""
 try { $serialText = [System.Text.Encoding]::UTF8.GetString($outputBytes) } catch {}
+$unsupported = @()
 foreach ($sl in ($serialText -split "`n")) {
-    $m = [regex]::Match($sl.TrimEnd("`r"), '\[(WARN|WCET)\].*$')
+    $m = [regex]::Match($sl.TrimEnd("`r"), '\[(WARN|WCET|UNSUPPORTED)\].*$')
     if ($m.Success) {
         Write-Host "[arm64-run] $($m.Value)" -ForegroundColor Yellow
+        if ($m.Value.StartsWith('[UNSUPPORTED]')) { $unsupported += $m.Value }
     }
+}
+
+# An UNSUPPORTED report is a refusal, not a warning. The plug emitted a
+# placeholder for a call it cannot serve, and shipping that binary is how a
+# read of a file came back as "" and was mistaken for an empty file. Fail the
+# build here so the refusal reaches whoever ran it.
+if ($unsupported.Count -gt 0) {
+    [Console]::Error.WriteLine("FAIL: $($unsupported.Count) call(s) this target cannot serve:")
+    foreach ($u in $unsupported) { [Console]::Error.WriteLine("  $u") }
+    Remove-Item -Force $inputFile, $outFile, $errFile -ErrorAction SilentlyContinue
+    exit 6
 }
 
 Remove-Item -Force $inputFile -ErrorAction SilentlyContinue

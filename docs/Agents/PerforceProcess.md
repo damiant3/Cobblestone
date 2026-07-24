@@ -1,5 +1,37 @@
 # Perforce Process for Agents
 
+## Read this file BEFORE you touch Perforce. Then never mention it again.
+
+This file exists so the traps below do not cost you anything. It is not a
+place to discover things afterwards, and it is **not something to report on**.
+
+**The rule, and it is not negotiable: hitting a trap that is written down here
+is not a finding.** It does not go in a status message, a CL description, a
+backlog entry, or a memory file. It is not evidence of diligence, it is
+evidence you skipped the file. Every session that ends with an agent explaining
+which Perforce behaviour surprised it is a session that spent Damian's
+attention on something he already paid to have written down once. Fix it, say
+nothing, move on. (`CLAUDE.md` rule 10 already covers this: "the steps of a
+standard process that went as documented" and "a mistake you made and fixed
+yourself with nothing left behind" are both on the do-not-report list. This is
+the specific case that keeps violating it.)
+
+**You should not need to remember any of it anyway.** The two failures that
+actually destroy work are now enforced mechanically, not by memory:
+
+| Enforced by | Catches |
+|---|---|
+| `build/p4-stale-check.ps1`, run automatically as a `build/build.ps1` preflight | An open file behind depot head, an unresolved file, and an `add` silently dropped by "Can't clobber writable file" |
+
+The gate refuses to run against a workspace that does not match the depot, so a
+skipped step surfaces as a red gate with the two fixing commands printed, not
+as a wrong binary or a lost test. **You do not have to remember to run it.**
+
+**If you find a NEW trap:** add it to this file in the same shape as the
+entries below (symptom, cause, fix), and if it is mechanically checkable, add
+it to `p4-stale-check.ps1` so the next agent never meets it. That is the whole
+contribution. Do not also narrate it.
+
 ## Quick Reference: Copy-Up to Main
 
 ```powershell
@@ -75,6 +107,69 @@ rebuild or copy-up verification, `p4 clean codex/... apps/...` first.
 **Symptom:** Build fails with "Undefined name" errors for names you renamed, or "Duplicate definition" for names you added.
 **Cause:** The seed compiles on-disk source. Your unsaved rename (`list-snoc` -> `list-push`) is on disk but the seed doesn't know the new name.
 **Fix:** Shelve + revert before running gates.
+
+### 1b. `p4 submit -d "..."` with no file argument submits EVERYTHING open
+**Symptom:** A changelist whose description names one small change but whose
+`p4 describe` lists files you never meant to send. Worst case, ungated
+compiler source ships under a description that says "merge down docs".
+**Cause:** `p4 submit -d "msg"` submits the **whole default changelist**, not
+"the thing I was just working on". Every file left open from earlier work
+rides along. It happened on 2026-07-18: a BACKLOG merge-down submit carried
+three ungated compiler files with it (CL 9114), and the only reason it was
+not worse is that the copy-up to main failed for an unrelated reason.
+**Fix, in order of reliability:**
+1. **Work in a numbered CL and submit with `-c`.** `p4 change -i` up front,
+   `p4 reopen -c <CL> <files>`, then `p4 submit -c <CL>`. A numbered CL
+   cannot pick up strays. This is the habit worth building.
+2. Keep the default changelist EMPTY. If `p4 opened -c default` prints
+   anything you are not about to submit, move it into a numbered CL first.
+3. Run `p4 opened` immediately before any `p4 submit`, and read it. Naming
+   files on the submit line (`p4 submit -d "msg" path/to/file`) does limit it
+   to those files, but it is the weakest of the three because it only helps
+   when you remember.
+
+**If it happens:** the CL is the record, so fix the record. `p4 change -f
+<CL>` rewrites a submitted changelist's description -- say what it actually
+contains and that it was ungated. Then check whether it reached main
+(`p4 print //Codex/main/...` or `p4 files`), because a dev-stream mistake
+that never copied up is contained and a copy-up is not.
+
+### 1c. `p4 change -i` with a hand-built spec EMPTIES the changelist
+
+**Symptom:** you pipe a spec into `p4 change -i` to set a description, and it
+answers `Change <N> updated, removing 7 file(s)`. The very next `p4 submit -c
+<N>` says **"No files to submit"**, at the exact moment you were expecting the
+work to land.
+
+**Cause:** the spec you pipe in **replaces the whole changelist form**, not the
+part you wrote. A form with no `Files:` section means a changelist with no
+files, so every one of them is moved to the default changelist. Nothing is
+lost and nothing warns you, because as far as Perforce is concerned you asked
+for that.
+
+**Fix:** never hand-build the form. Round-trip it, so the `Files:` section
+survives untouched:
+
+```powershell
+$spec = p4 change -o <CL> | Out-String
+$spec = $spec -replace '(?s)Description:.*?\r?\n\r?\nFiles:', "Description:`r`n`t<new text>`r`n`r`nFiles:"
+$spec | p4 change -i
+```
+
+Better still, **write the description when you create the CL** and never
+round-trip at all. A description you have to go back and fix is a round-trip
+you did not need to take.
+
+**If it happens:** the files are in the default changelist, intact.
+`p4 reopen -c <CL> //Codex/<stream>/...` puts them back, then `p4 opened -c
+<CL>` to confirm the set is complete before submitting. Observed 2026-07-21
+against CL 10069 (seven files, seed included); recovered with no loss.
+
+**The general rule this belongs to:** do not run an exploratory or
+spec-rewriting command with files outstanding. An open changelist is live
+state, and a command that behaves slightly differently from your assumption
+rearranges it silently -- which you discover mid-submit, when stopping to read
+is most expensive. Shelve first, or experiment on a clean tree.
 
 ### 2. Submitting a file with unrelated changes
 **Symptom:** CL description says "fix X" but the diff also includes Y and Z.
@@ -219,6 +314,90 @@ mismatch means the gate built different bytes than you think — usually
 a lost edit. `Get-FileHash build/output/Sut.cdx` is two seconds; a lost
 edit is an hour.
 
+### A shelf `p4 verify` calls BAD is usually still recoverable
+
+**"Perforce refuses to hand it back" is not "the data is gone."** These are
+different claims and only the first one is what a failed unshelve proves.
+
+**Symptom:** `p4 unshelve` reports `corrupted during transfer (or bad on the
+server)` for one or more files and does not open them. `p4 print` fails the same
+way, with the same two digests, every attempt. `p4 verify -S //Codex/<stream>/
+<path>@=<CL>` answers **BAD!**. It looks exactly like data loss.
+
+**What it usually is:** the archive holds intact content and the *recorded*
+digest disagrees with it. Verified on shelf 9824 (2026-07-20): the archive
+gunzipped cleanly to the complete file, and its MD5 equalled the digest
+`p4 verify` prints as the **actual** value. Metadata and archive simply described
+different versions of the file, which is what a `shelve -f` replace races on.
+
+**Recovery, and it works:**
+
+```powershell
+# 1. The archive lives beside the depot path, one file per revision.
+#    Shelved revisions are named 1.<CL>.<n>.gz
+$a = 'D:\PerforceRoot\Codex\<stream>\<path>,d\1.<CL>.1.gz'
+Copy-Item $a "$scratch\f.gz"
+
+# 2. Gunzip it. The archive is plain gzip.
+$in = [System.IO.File]::OpenRead("$scratch\f.gz")
+$gz = New-Object System.IO.Compression.GZipStream($in, [System.IO.Compression.CompressionMode]::Decompress)
+$out = [System.IO.File]::Create("$scratch\recovered")
+$gz.CopyTo($out); $out.Close(); $gz.Close(); $in.Close()
+
+# 3. Confirm it is the version you wanted, by content, before trusting it.
+Select-String -Path "$scratch\recovered" -Pattern '<a symbol only your change adds>'
+```
+
+**Step 3 is not optional.** The archive may hold an earlier iteration than the
+one you remember shelving. Grep for something only the final version contains
+(here: the last feature added). A recovered file you have not identified is a
+guess.
+
+**The step that is easy to get wrong: the archive holds the SERVER's line-ending
+form, which is LF.** This workspace's form is CRLF with no BOM. Place the LF
+bytes directly and the file is byte-wrong everywhere: `p4 diff` reports the
+**entire file as a single hunk** (`@@ -1,9848 +1,9997 @@`), which is the tell.
+Convert at the byte level rather than through text APIs, so encoding is never in
+question:
+
+```powershell
+$src = [System.IO.File]::ReadAllBytes("$scratch\recovered")
+$o = New-Object System.Collections.Generic.List[byte]
+for ($i = 0; $i -lt $src.Length; $i++) {
+    $c = $src[$i]
+    if ($c -eq 10 -and ($i -eq 0 -or $src[$i-1] -ne 13)) { $o.Add(13) }
+    $o.Add($c)
+}
+p4 edit -c <CL> <path>
+[System.IO.File]::WriteAllBytes('<workspace path>', $o.ToArray())
+p4 diff -du <path>      # must show ONLY your hunks
+```
+
+**Then rebase.** The recovered file is at the revision it was shelved against,
+not head. Diff it against depot head and re-apply whatever landed in between,
+by hand, before you submit. If you skip this you silently revert another agent's
+work inside your own CL. The final `p4 diff` showing only your own hunks is what
+proves you did not.
+
+**Check the blast radius before assuming your shelf is special:**
+
+```powershell
+p4 verify -S //...@=<CL>        # which files in THIS shelf are bad
+p4 verify -q //Codex/...#head   # any live file in the depot failing (quiet: only problems)
+```
+
+Two distinct faults exist and they are not the same. **`BAD!`** with two digests
+is a mismatch against intact content, recoverable as above. **`BAD! (open
+failed)`** means the archive file itself is missing and there is nothing to
+recover; the 2026-07-20 sweep found 17 of those under `//Codex/main/samples/`,
+all historical revisions of files deleted at head when they moved to
+`codex/test/`.
+
+**And the reason this cost anything at all:** the shelf held a finished, measured
+change bundled with an unfinished one, so it sat unsubmitted for days. A finished
+change that stands on its own ships as its own CL the day it is measured. Nothing
+in a shelf is safe, and a shelf is not a backup.
+
 ## CL Lifecycle
 
 ```
@@ -304,11 +483,38 @@ catch offenders.
   files. Run `p4 resolve` first, then trust `p4 opened`.
 - **Use `p4 diff2 -q` for true content parity, not `p4 interchanges`** -- the latter
   is unreliable in streams and shows phantom entries.
+- **A file opened by `Damian@BigWhite_Codex_main` is Damian READING it, not an edit
+  in flight.** His editor checks a file out on open, so `p4 opened -a` shows it held
+  at whatever revision he last looked at, often many revisions behind head. It is
+  not a pending change, it will not clobber yours, and it needs no coordination.
+  Do not report it as a hazard (Damian, 2026-07-21). Any OTHER client holding a file
+  is a real agent and a real merge concern.
 - **`Select-String` misreads p4 `unicode`-typed files** (most `.codex` are unicode by
   typemap). Use the Grep tool (ripgrep) for content searches over depot files.
 - **A docs-only change still wants a NUMBERED CL** even though it needs no token:
   `p4 edit` with no `-c` has no CL number, and AgentGrid's build-request needs an
   integer if you later decide the change is not docs-only after all.
+- **`p4 copy --from` takes the STREAM NAME, not a depot path.**
+  `p4 -c BigWhite_Codex_<agent>_main copy --from //Codex/<agent>` is right; appending
+  `/...` yields `Wildcards not allowed in '//Codex///Codex/<agent>/...'`.
+- **Revert your open files BEFORE a merge-down, not after.** The shelf holds them, the
+  merge then takes main's contended files (`BACKLOG.md` above all) wholesale with zero
+  conflicts, and you reapply your delta on top. Doing it in the other order is what
+  makes `BACKLOG.md` conflict every time. Delete the loose copies of any reverted `add`
+  first -- revert-on-add leaves them on disk writable and the later unshelve silently
+  drops them ("Can't clobber writable file").
+- **Merge-down is not a one-time precondition; it is a precondition of the SUBMIT.**
+  Another agent can land while your gate runs (the standing gate is ~160s and main
+  moves nightly), and the copy-up is then refused with
+  `Stream //Codex/<agent> cannot 'copy' over outstanding 'merge' changes`. Merge down
+  again, submit the merge, then copy up. Budget for two merge-downs per token hold.
+- **`p4 submit` is refused while the CL still has a shelf** ("has shelved files").
+  `p4 shelve -d -c <CL>` first. This bites on every CL where a gate follows a shelve,
+  which is every CL that uses the build token.
+- **A CL can be RENUMBERED on submit.** `p4 submit -c 9517` reported
+  `Change 9517 renamed change 9520 and submitted`. Read the submit output for the final
+  number rather than reusing the one you created; a workplan row citing the pre-submit
+  number points at nothing.
 
 ## Key Principle
 
@@ -437,6 +643,66 @@ p4 diff2 //Codex/<STREAM_A>/path/to/file //Codex/<STREAM_B>/path/to/file
 
 If `diff2` reports all files identical, the streams are in sync
 regardless of what `interchanges` says.
+
+### A green gate does NOT mean the seed matches the source
+
+**Any change under `codex/compiler/` changes the compiled compiler, so the
+seed is stale the moment you submit without rebuilding it.** Do not reason
+from "behaviour is identical" or "the emitted output is unchanged": the seed
+is the compilation OF THE SOURCE, so if the source moved, the seed no longer
+corresponds to it whatever the binary does. A rename is the most convincing
+possible case for "this cannot matter" and it is still a source change.
+(Blu shipped exactly that in CL 8994 on 2026-07-18; val hit it. Repaired by
+the seed in the CL that closed BACKLOG 2.18.)
+
+**`build/build.ps1` cannot catch this, and it is worth knowing why before you
+trust it for something it does not check.** Its fixed-point phase compares
+**SUT** (source compiled by the seed) against **stage1** (source compiled by
+SUT). That proves the compiler built from the current source is a fixed point
+of itself. It never compares the seed against the SUT, and it cannot usefully:
+a correct old seed compiling new source still yields a correct new compiler, so
+`hard fixed point in one pass` is exactly what a stale seed looks like. The only
+mention of the seed in that script is the constants hash.
+
+The check that does catch it is the one below, and it runs on the **target**
+workspace, not on your dev stream.
+
+### A rename can change the seed, even when codegen does not
+
+**"Not a codegen change" is not the same as "not a seed change", and the
+difference has already shipped a seed that did not reproduce from its source.**
+CL 8994 gave the text emitter a `codex-emit-*` prefix, removing 16 cross-chapter
+name collisions. The emitted output was genuinely byte-identical -- that was
+verified -- and the CL correctly said so. But the compiler mangles a colliding
+name with its chapter (`emit--codex-emitter_foo`), so removing the collisions
+**shortened the names baked into the compiler's own binary**: 672 bytes smaller,
+and `seed/Codex.cdx` no longer reproduced from `codex/compiler/`. It sat that way
+across several CLs until a routine `Sut === seed` check caught it (val 9003).
+
+Ask not "does this change what the compiler emits" but **"does this change the
+compiler binary"**. Renames, added or removed definitions, chapter moves and
+anything touching a name the compiler bakes into itself all qualify.
+
+### Verify `Sut === seed` against the DEPOT, every session
+
+**`build/build.ps1` does not test this.** A green gate proves the SUT is a fixed
+point of *itself* (`SUT === stage1`); it proves nothing about whether the binary
+sitting in the depot is that same SUT. Only copy-up depends on it, so a seed can
+lag its source indefinitely while every gate stays green.
+
+```powershell
+p4 print -q -o build-output/depot-seed.cdx //Codex/main/seed/Codex.cdx
+(Get-FileHash -Algorithm SHA256 build-output/depot-seed.cdx).Hash
+(Get-FileHash -Algorithm SHA256 build/output/Sut.cdx).Hash    # must match
+```
+
+Compare against the **depot** print, not the workspace file: a workspace seed can
+be stale, locally overwritten, or mid-resolve, and all three read as agreement.
+If they differ and your CL does not touch the compiler's dependency set, the lag
+is someone else's -- confirm it (`p4 changes //Codex/main/codex/compiler/...`
+against `p4 changes //Codex/main/seed/Codex.cdx`, looking for a compiler CL newer
+than the newest seed CL), then **rebuild and submit the seed rather than reporting
+it**. It is a mechanical fix and the source is the authority.
 
 ### Seed Verification During Copy-Up
 

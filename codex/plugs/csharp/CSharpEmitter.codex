@@ -22,8 +22,9 @@ Section: Type Definition Emission
   type-def-name : ATypeDef -> Text
   type-def-name (td) =
    when td
-    is ARecordTypeDef (name) (tparams) (fields) (s) -> name.value
+    is ARecordTypeDef (name) (tparams) (fields) (recmut) (s) -> name.value
     is AVariantTypeDef (name) (tparams) (ctors) (s) -> name.value
+    is AUnitTypeDef (name) (unitbase) (s) -> name.value
 
   type-def-name-before : List ATypeDef, Text, Integer, Integer -> Boolean
   type-def-name-before (tds) (nm) (i) (stop) =
@@ -67,7 +68,7 @@ Section: Type Definition Emission
   emit-type-def : ATypeDef -> Text
   emit-type-def (td) =
    when td
-    is ARecordTypeDef (name) (tparams) (fields) (s) ->
+    is ARecordTypeDef (name) (tparams) (fields) (recmut) (s) ->
      let gen = emit-tparameter-suffix tparams
      in "public sealed record " & sanitize (name.value) & gen & "(" & emit-record-field-defs fields tparams 0 & ");\n"
     is AVariantTypeDef (name) (tparams) (ctors) (s) ->
@@ -81,6 +82,7 @@ Section: Type Definition Emission
           else "public sealed record " & sanitize (name.value) & gen & "(" & emit-ctor-fields (c.fields) tparams 0 & ");\n\n"
       else "public abstract record " & sanitize (name.value) & gen & ";\n" & emit-variant-ctors ctors name tparams 0 & "\n"
      else "public abstract record " & sanitize (name.value) & gen & ";\n" & emit-variant-ctors ctors name tparams 0 & "\n"
+    is AUnitTypeDef (name) (unitbase) (s) -> ""
 
   emit-tparameter-suffix : List Name -> Text
   emit-tparameter-suffix (tparams) =
@@ -129,8 +131,12 @@ Section: Type Definition Emission
         else when-type-name (name.value)
     is AFunType (p) (r) (s) -> "Func<" & emit-type-expr-tp p tparams & ", " & emit-type-expr-tp r tparams & ">"
     is AAppType (base) (args) (s) -> emit-type-expr-tp base tparams & "<" & emit-type-expr-list-tp args tparams 0 & ">"
-    is AEffectType (effs) (scopes) (r) (s) -> emit-type-expr-tp r tparams
+    is AEffectType (effs) (scopes) (efftail) (r) (s) -> emit-type-expr-tp r tparams
     is ABoundedIntType (b) (lo) (hi) (mode) (s) -> emit-type-expr-tp b tparams
+    is ALinearType (b) (s) -> emit-type-expr-tp b tparams
+    is AConstrainedType (ctcls) (ctparam) (b) (s) -> emit-type-expr-tp b tparams
+    is AForallType (fav) (favt) (b) (s) -> emit-type-expr-tp b tparams
+    is APropEqType (b) (peright) (s) -> emit-type-expr-tp b tparams
 
   find-tparam-index : List Name, Text, Integer -> Integer
   find-tparam-index (tparams) (name) (i) =
@@ -173,10 +179,14 @@ Section: Generic Helpers
    when ty
     is TypeVar (id) -> if list-contains-int acc id then acc
     else list-append-int acc id
-    is FunTy (p) (r) -> collect-type-var-ids r (collect-type-var-ids p acc)
+    is FunTy (p) (fnrow) (r) -> collect-type-var-ids r (collect-type-var-ids p acc)
     is ListTy (elem) -> collect-type-var-ids elem acc
     is ForAllTy (id) (body) -> collect-type-var-ids body acc
+    is ForAllEff (id) (body) -> collect-type-var-ids body acc
+    is LinearTy (body) -> collect-type-var-ids body acc
+    is TypeApply (body) (tyarg) -> collect-type-var-ids body acc
     is ConstructedTy (name) (args) -> collect-type-var-ids-list args acc
+    is TypeCon (name) -> acc
     is otherwise -> acc
 
   collect-type-var-ids-list : List CodexType, List Integer -> List Integer
@@ -452,13 +462,16 @@ Section: Definition Emission
   get-return-type (ty) (n) =
    if n == 0 then strip-forall ty
    else when strip-forall ty
-    is FunTy (p) (r) -> get-return-type r (n - 1)
+    is FunTy (p) (fnrow) (r) -> get-return-type r (n - 1)
     is otherwise -> ty
 
   strip-forall : CodexType -> CodexType
   strip-forall (ty) =
    when ty
     is ForAllTy (id) (body) -> strip-forall body
+    is ForAllEff (id) (body) -> strip-forall body
+    is LinearTy (body) -> strip-forall body
+    is TypeApply (body) (tyarg) -> strip-forall body
     is otherwise -> ty
 
   emit-def-params : List IRParam, Integer -> Text
@@ -568,11 +581,11 @@ Section: Chapter Emission
    "    public static long set_state(long v) { _value = v; return 0; }\n",
    "}\n\n"]
 
- _LensSql backs the lens-sql-exec seam binding (apps/lens/DESIGN.md
- 4.4, Target B). One process-wide connection, opened lazily from the
+ _LensSql backs the lens-sql-exec seam binding (Lens Target B). One
+ process-wide connection, opened lazily from the
  LENS_SQL_CONN environment variable so temp tables survive across
  calls within a run; rows stream through SqlDataReader one at a time
- into List of List of string (bounded per-row peak, DESIGN 7). The
+ into List of List of string (bounded per-row peak). The
  class references Microsoft.Data.SqlClient by full name, so the
  generated source needs no extra using lines; the package reference
  comes from the emit-app.ps1 -SqlClient switch. NULL cells render as
@@ -686,6 +699,8 @@ Section: Chapter Emission
 
     is EffectfulTy (effs) (sc) (inner) -> class-name & "." & opening-entry-point & "();\n\n"
     is NothingTy -> class-name & "." & opening-entry-point & "();\n\n"
+    is ProofTy -> class-name & "." & opening-entry-point & "();\n\n"
+    is PropEqTy (pl) (pr) -> class-name & "." & opening-entry-point & "();\n\n"
     is VoidTy -> class-name & "." & opening-entry-point & "();\n\n"
     is TextTy -> "Console.WriteLine(" & class-name & "." & opening-entry-point & "());\n\n"
     is otherwise -> "Console.WriteLine(" & class-name & "." & opening-entry-point & "());\n\n"

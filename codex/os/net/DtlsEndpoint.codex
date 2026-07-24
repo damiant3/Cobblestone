@@ -46,16 +46,27 @@ Chapter: DtlsEndpoint
  commercial CA (RSA or ECDSA) cannot be validated -- this authenticates a
  fleet whose CA you run.
 
- Also absent still, and stated rather than implied: application traffic
- keys. The endpoint completes the handshake and derives the HANDSHAKE
- traffic secrets. It does not derive the master secret or the application
- traffic secrets, so it cannot yet carry application data. Sending
- application data under handshake keys would be wrong, so it is not offered.
- So coaps:// is closer, but it is not done: authenticated key agreement is
- the hard half, and the record-protection half remains.
+ The record layer is now used at both epochs. The server flight after
+ ServerHello (Certificate, CertificateVerify, Finished) and both Finished
+ messages travel as DTLS 1.3 ciphertext at the handshake epoch (2) under the
+ handshake traffic keys, exactly as a real DTLS 1.3 peer expects -- only the
+ ClientHello, HelloRetryRequest and ServerHello, which precede the keys, are
+ DTLSPlaintext. On completion the endpoint derives the master secret and the
+ two application traffic secrets over the transcript through the server
+ Finished, and dtls-ep-send-app / dtls-ep-recv-app carry application records
+ at epoch 3 (see Section: Application Data).
+
+ One honest limit remains, and it is not hidden: no third-party DTLS peer
+ has ever been in the loop. The record layer has a known-answer oracle
+ (codex/test/dtls-record) and the key schedule has the RFC 8448 vectors, but
+ the assembled handshake is proven only between our own endpoints. Wiring an
+ openssl DTLS 1.3 peer as the oracle -- the way tls-interop-test does for
+ TLS -- is what would turn "protected as a real peer expects" into
+ "interoperates with a real peer", and it is the next step, not a done one.
 
  To dtls-ep-client gives DtlsEpStep, starting a client and emitting its first flight.
  To dtls-ep-recv gives DtlsEpStep, feeding one datagram in and getting datagrams out.
+ To dtls-ep-send-app gives DtlsEpStep, sealing one application record.
 
  We say:
 
@@ -84,7 +95,13 @@ Section: Types
     ep-cal-now : List Integer,
     ep-peer-key : X509Key,
     ep-auth-done : Boolean,
-    ep-expected-peer : List Integer
+    ep-expected-peer : List Integer,
+    ep-hs-secret : List Integer,
+    ep-c-ap : List Integer,
+    ep-s-ap : List Integer,
+    ep-app-read-seq : Integer,
+    ep-app-write-seq : Integer,
+    ep-app-in : List Integer
   }
 
   DtlsEpStep = record {
@@ -108,7 +125,8 @@ Section: Construction
              ep-addr = addr, ep-send-seq = 0, ep-msg-seq = 0, ep-c-hs = [], ep-s-hs = [], ep-done = False,
              ep-cert-chain = [], ep-sign-priv = [], ep-sign-pub = [], ep-anchors = [], ep-cal-now = [],
              ep-peer-key = X509Key { xk-alg = KeyUnknown, xk-bytes = [] }, ep-auth-done = False,
-             ep-expected-peer = [] }
+             ep-expected-peer = [], ep-hs-secret = [], ep-c-ap = [], ep-s-ap = [],
+             ep-app-read-seq = 0, ep-app-write-seq = 0, ep-app-in = [] }
 
  Authentication is opt-in and defaults OFF, exactly the way a real DTLS
  stack negotiates it. An endpoint built by dtls-ep-new alone does the
@@ -170,7 +188,7 @@ Section: Client
     let r = dtls-hs-step (ep.ep-hs) (EvStart now)
     in let body = dtls-client-hello-body (dtls-ep-random ep) [] (ep.ep-pub) []
     in let msg = dtls-msg-encode dtls-hs-client-hello 0 body
-    in let tr = dtls-msg-transcript dtls-hs-client-hello body
+    in let tr = tls13-msg-transcript dtls-hs-client-hello body
     in let ep2 = __record-set (__record-set (__record-set ep "ep-hs" (r.step-state)) "ep-transcript" tr) "ep-ch1" tr
     in DtlsEpStep { es-ep = ep2, es-out = [dtls-ep-wrap ep2 msg] }
 
@@ -190,6 +208,45 @@ Section: Receive
 
   dtls-ep-recv : DtlsEp, List Integer, Integer -> DtlsEpStep
   dtls-ep-recv (ep) (dgram) (now) =
+    if list-length dgram < 1 then dtls-ep-idle ep
+    else if ep.ep-done then dtls-ep-recv-done ep dgram
+    else if dtls-is-record (list-at dgram 0) then dtls-ep-recv-hs-enc ep dgram now
+    else dtls-ep-recv-plain ep dgram now
+
+ Once the handshake is done, a DTLS 1.3 record (unified header, top three
+ bits 001) is application data and is opened under the peer's application
+ key. Anything else after completion is dropped rather than believed.
+
+  dtls-ep-recv-done : DtlsEp, List Integer -> DtlsEpStep
+  dtls-ep-recv-done (ep) (dgram) =
+    if dtls-is-record (list-at dgram 0) then dtls-ep-recv-app ep dgram
+    else dtls-ep-idle ep
+
+ A protected record BEFORE completion is a handshake message at the
+ handshake epoch: the server flight after ServerHello, and the two
+ Finished messages, all sealed under the handshake traffic keys (RFC 9147
+ epoch 2). Open it under the PEER's handshake secret, then feed the inner
+ handshake message to the very same dispatch the plaintext path uses --
+ the decrypt is a thin layer, the machine underneath is unchanged. A record
+ that does not open (a wrong key from a substituted key_share, say) yields
+ no message and the state does not advance.
+
+  dtls-ep-recv-hs-enc : DtlsEp, List Integer, Integer -> DtlsEpStep
+  dtls-ep-recv-hs-enc (ep) (dgram) (now) =
+    let secret = if ep.ep-server then ep.ep-c-hs else ep.ep-s-hs
+    in when dtls-open (dtls-ep-keys secret) 0 dgram
+      is None -> dtls-ep-idle ep
+      is Just (p) -> dtls-ep-on-enc-hs ep p now
+
+  dtls-ep-on-enc-hs : DtlsEp, DtlsPlain, Integer -> DtlsEpStep
+  dtls-ep-on-enc-hs (ep) (p) (now) =
+    if p.dp-type /= dtls-content-handshake then dtls-ep-idle ep
+    else when dtls-msg-parse (p.dp-content)
+      is None -> dtls-ep-idle ep
+      is Just (m) -> dtls-ep-on-msg ep m now
+
+  dtls-ep-recv-plain : DtlsEp, List Integer, Integer -> DtlsEpStep
+  dtls-ep-recv-plain (ep) (dgram) (now) =
     when dtls-plain-decode dgram
       is None -> dtls-ep-idle ep
       is Just (p) -> dtls-ep-on-plain ep p now
@@ -248,12 +305,12 @@ Section: Server
   dtls-ep-cookie-verify (secret) (addr) (cookie) =
     let h = dtls-take-at cookie 0 32
     in let mac = dtls-take-at cookie 32 32
-    in if dtls-ct-equal (hkdf-words-to-bytes (hmac-sha256 secret (addr & h))) mac then Just h
+    in if tls13-ct-equal (hkdf-words-to-bytes (hmac-sha256 secret (addr & h))) mac then Just h
     else None
 
   dtls-ep-send-hrr : DtlsEp, DtlsMsg -> DtlsEpStep
   dtls-ep-send-hrr (ep) (m) =
-    let ch1-hash = dtls-transcript-hash (dtls-msg-to-transcript m)
+    let ch1-hash = tls13-transcript-hash (dtls-msg-to-transcript m)
     in let cookie = dtls-ep-cookie (ep.ep-cookie-secret) (ep.ep-addr) ch1-hash
     in let msg = dtls-msg-encode dtls-hs-server-hello 0 (dtls-hrr-body [] cookie)
     in DtlsEpStep { es-ep = ep, es-out = [dtls-ep-wrap ep msg] }
@@ -282,12 +339,12 @@ Section: Server
     let sh-body = dtls-server-hello-body (dtls-ep-random ep) [] (ep.ep-pub)
     in let tr = dtls-ep-server-transcript ep m sh-body cookie ch1-hash
     in let hs = tls13-handshake-secret (x25519-shared-secret (ep.ep-priv) peer)
-    in let th = dtls-transcript-hash tr
+    in let th = tls13-transcript-hash tr
     in let c-hs = tls13-client-hs-traffic hs th
     in let s-hs = tls13-server-hs-traffic hs th
     in if list-length (ep.ep-cert-chain) == 0
-    then dtls-ep-server-emit (dtls-ep-with-keys ep peer tr c-hs s-hs) sh-body th
-    else dtls-ep-server-emit-auth ep peer tr c-hs s-hs sh-body
+    then dtls-ep-server-emit (dtls-ep-with-keys ep peer hs tr c-hs s-hs) sh-body th
+    else dtls-ep-server-emit-auth ep peer hs tr c-hs s-hs sh-body
 
  The authenticated flight: ServerHello, Certificate, CertificateVerify,
  Finished. The handshake traffic keys are still derived at the ServerHello
@@ -302,15 +359,15 @@ Section: Server
  key_share changes the transcript, so the signature he would need is one
  over bytes the real server never signed -- and he does not hold the key.
 
-  dtls-ep-server-emit-auth : DtlsEp, List Integer, List Integer, List Integer, List Integer, List Integer -> DtlsEpStep
-  dtls-ep-server-emit-auth (ep) (peer) (tr) (c-hs) (s-hs) (sh-body) =
+  dtls-ep-server-emit-auth : DtlsEp, List Integer, List Integer, List Integer, List Integer, List Integer, List Integer -> DtlsEpStep
+  dtls-ep-server-emit-auth (ep) (peer) (hs) (tr) (c-hs) (s-hs) (sh-body) =
     let cert-body = tls-cert-encode (ep.ep-cert-chain)
-    in let tr-cert = tr & dtls-msg-transcript dtls-hs-certificate cert-body
-    in let th-cert = dtls-transcript-hash tr-cert
+    in let tr-cert = tr & tls13-msg-transcript dtls-hs-certificate cert-body
+    in let th-cert = tls13-transcript-hash tr-cert
     in let cv-body = tls-cv-encode True (ep.ep-sign-priv) (ep.ep-sign-pub) th-cert
-    in let tr-cv = tr-cert & dtls-msg-transcript dtls-hs-cert-verify cv-body
-    in let th-cv = dtls-transcript-hash tr-cv
-    in dtls-ep-server-emit-msgs (dtls-ep-with-keys ep peer tr-cv c-hs s-hs) sh-body cert-body cv-body th-cv
+    in let tr-cv = tr-cert & tls13-msg-transcript dtls-hs-cert-verify cv-body
+    in let th-cv = tls13-transcript-hash tr-cv
+    in dtls-ep-server-emit-msgs (dtls-ep-with-keys ep peer hs tr-cv c-hs s-hs) sh-body cert-body cv-body th-cv
 
  The Finished is over the transcript through CertificateVerify, so a client
  whose CertificateVerify check failed has already stopped and never reaches
@@ -319,11 +376,14 @@ Section: Server
 
   dtls-ep-server-emit-msgs : DtlsEp, List Integer, List Integer, List Integer, List Integer -> DtlsEpStep
   dtls-ep-server-emit-msgs (ep) (sh-body) (cert-body) (cv-body) (th) =
-    let sh-msg = dtls-msg-encode dtls-hs-server-hello 0 sh-body
+    let sfin = tls13-verify-data (ep.ep-s-hs) th
+    in let sh-msg = dtls-msg-encode dtls-hs-server-hello 0 sh-body
     in let cert-msg = dtls-msg-encode dtls-hs-certificate 1 cert-body
     in let cv-msg = dtls-msg-encode dtls-hs-cert-verify 2 cv-body
-    in let fin-msg = dtls-msg-encode dtls-hs-finished 3 (dtls-verify-data (ep.ep-s-hs) th)
-    in DtlsEpStep { es-ep = ep, es-out = [dtls-ep-wrap ep sh-msg, dtls-ep-wrap ep cert-msg, dtls-ep-wrap ep cv-msg, dtls-ep-wrap ep fin-msg] }
+    in let fin-msg = dtls-msg-encode dtls-hs-finished 3 sfin
+    in let hk = dtls-ep-keys (ep.ep-s-hs)
+    in let ep2 = dtls-ep-derive-app ep ((ep.ep-transcript) & tls13-msg-transcript dtls-hs-finished sfin)
+    in DtlsEpStep { es-ep = ep2, es-out = [dtls-ep-wrap ep sh-msg, dtls-ep-seal-hs hk 0 cert-msg, dtls-ep-seal-hs hk 1 cv-msg, dtls-ep-seal-hs hk 2 fin-msg] }
 
  The transcript on the cookie path: message_hash(ClientHello1),
  HelloRetryRequest, ClientHello2, ServerHello. The ClientHello1 hash comes
@@ -333,16 +393,18 @@ Section: Server
 
   dtls-ep-server-transcript : DtlsEp, DtlsMsg, List Integer, List Integer, List Integer -> List Integer
   dtls-ep-server-transcript (ep) (m) (sh-body) (cookie) (ch1-hash) =
-    let hrr = dtls-msg-transcript dtls-hs-server-hello (dtls-hrr-body [] cookie)
-    in let ch2 = dtls-msg-transcript dtls-hs-client-hello (m.dm-body)
-    in let sh = dtls-msg-transcript dtls-hs-server-hello sh-body
-    in dtls-transcript-after-hrr-hash ch1-hash & hrr & ch2 & sh
+    let hrr = tls13-msg-transcript dtls-hs-server-hello (dtls-hrr-body [] cookie)
+    in let ch2 = tls13-msg-transcript dtls-hs-client-hello (m.dm-body)
+    in let sh = tls13-msg-transcript dtls-hs-server-hello sh-body
+    in tls13-transcript-after-hrr-hash ch1-hash & hrr & ch2 & sh
 
   dtls-ep-server-emit : DtlsEp, List Integer, List Integer -> DtlsEpStep
   dtls-ep-server-emit (ep) (sh-body) (th) =
-    let sh-msg = dtls-msg-encode dtls-hs-server-hello 0 sh-body
-    in let fin = dtls-msg-encode dtls-hs-finished 1 (dtls-verify-data (ep.ep-s-hs) th)
-    in DtlsEpStep { es-ep = ep, es-out = [dtls-ep-wrap ep sh-msg, dtls-ep-wrap ep fin] }
+    let sfin = tls13-verify-data (ep.ep-s-hs) th
+    in let sh-msg = dtls-msg-encode dtls-hs-server-hello 0 sh-body
+    in let fin = dtls-msg-encode dtls-hs-finished 1 sfin
+    in let ep2 = dtls-ep-derive-app ep ((ep.ep-transcript) & tls13-msg-transcript dtls-hs-finished sfin)
+    in DtlsEpStep { es-ep = ep2, es-out = [dtls-ep-wrap ep sh-msg, dtls-ep-seal-hs (dtls-ep-keys (ep.ep-s-hs)) 0 fin] }
 
  The client's Finished. If it verifies, both sides hold the same
  handshake secret -- and nothing more than that. It does not say who the
@@ -350,8 +412,8 @@ Section: Server
 
   dtls-ep-server-fin : DtlsEp, DtlsMsg -> DtlsEpStep
   dtls-ep-server-fin (ep) (m) =
-    let th = dtls-transcript-hash (ep.ep-transcript)
-    in if dtls-finished-ok (ep.ep-c-hs) th (m.dm-body)
+    let th = tls13-transcript-hash (ep.ep-transcript)
+    in if tls13-finished-ok (ep.ep-c-hs) th (m.dm-body)
     then DtlsEpStep { es-ep = __record-set ep "ep-done" True, es-out = [] }
     else dtls-ep-idle ep
 
@@ -377,9 +439,9 @@ Section: Client Receive
     let r = dtls-hs-step (ep.ep-hs) (EvHelloRetry cookie now)
     in let body = dtls-client-hello-body (dtls-ep-random ep) [] (ep.ep-pub) cookie
     in let msg = dtls-msg-encode dtls-hs-client-hello 1 body
-    in let hrr = dtls-msg-transcript dtls-hs-server-hello (m.dm-body)
-    in let ch2 = dtls-msg-transcript dtls-hs-client-hello body
-    in let tr = dtls-transcript-after-hrr (ep.ep-ch1) & hrr & ch2
+    in let hrr = tls13-msg-transcript dtls-hs-server-hello (m.dm-body)
+    in let ch2 = tls13-msg-transcript dtls-hs-client-hello body
+    in let tr = tls13-transcript-after-hrr (ep.ep-ch1) & hrr & ch2
     in let ep2 = __record-set (__record-set ep "ep-hs" (r.step-state)) "ep-transcript" tr
     in DtlsEpStep { es-ep = ep2, es-out = [dtls-ep-wrap ep2 msg] }
 
@@ -394,11 +456,11 @@ Section: Client Receive
 
   dtls-ep-client-keys : DtlsEp, DtlsMsg, List Integer -> DtlsEpStep
   dtls-ep-client-keys (ep) (m) (peer) =
-    let tr = (ep.ep-transcript) & dtls-msg-transcript dtls-hs-server-hello (m.dm-body)
+    let tr = (ep.ep-transcript) & tls13-msg-transcript dtls-hs-server-hello (m.dm-body)
     in let shared = x25519-shared-secret (ep.ep-priv) peer
     in let hs = tls13-handshake-secret shared
-    in let th = dtls-transcript-hash tr
-    in DtlsEpStep { es-ep = dtls-ep-with-keys ep peer tr (tls13-client-hs-traffic hs th) (tls13-server-hs-traffic hs th), es-out = [] }
+    in let th = tls13-transcript-hash tr
+    in DtlsEpStep { es-ep = dtls-ep-with-keys ep peer hs tr (tls13-client-hs-traffic hs th) (tls13-server-hs-traffic hs th), es-out = [] }
 
  After the ServerHello, the authenticated server sends Certificate and
  CertificateVerify before its Finished. The anonymous server sends neither,
@@ -414,21 +476,40 @@ Section: Client Receive
  The Certificate message. The chain is parsed and walked against the
  client's trust anchors at the client's calendar time (ep-cal-now, supplied
  by the caller -- see dtls-ep-with-anchors). A chain that does not parse, or
- does not reach an anchor, stops the handshake here: ep-auth-done stays
- False, the transcript is not advanced, and the later Finished will be
- refused. The leaf's key is kept for the CertificateVerify that follows.
+ does not reach an anchor, leaves ep-auth-done False and keeps no peer key,
+ and the later Finished is refused by dtls-ep-auth-missing.
+
+ THE TRANSCRIPT RECORDS WHAT WAS RECEIVED, NOT WHAT WAS BELIEVED. This
+ message and CertificateVerify fold either way. Folding them only on
+ success is a defect the anonymous configuration hides: an anonymous
+ server sends neither message, so a client with no anchors never sees one.
+ A server that DOES present a chain to a client that does not check it is
+ the ordinary case on the open internet, and there the unfolded message
+ left the client's transcript one message short of the server's, so the
+ server Finished could not verify and the handshake died at the Finished
+ -- which reads as a key schedule fault and is nothing of the kind. Fixed
+ in TlsEndpoint at the same time and for the same reason; the two client
+ paths are the same design.
 
   dtls-ep-client-cert : DtlsEp, DtlsMsg -> DtlsEpStep
   dtls-ep-client-cert (ep) (m) =
-    when tls-cert-parse (m.dm-body)
-      is None -> dtls-ep-idle ep
-      is Just (ders) -> dtls-ep-client-cert-parse ep m ders
+    dtls-ep-fold (dtls-ep-cert-peer-key ep m) m
 
-  dtls-ep-client-cert-parse : DtlsEp, DtlsMsg, List (List Integer) -> DtlsEpStep
-  dtls-ep-client-cert-parse (ep) (m) (ders) =
+  dtls-ep-fold : DtlsEp, DtlsMsg -> DtlsEpStep
+  dtls-ep-fold (ep) (m) =
+    DtlsEpStep { es-ep = __record-set ep "ep-transcript" ((ep.ep-transcript) & dtls-msg-to-transcript m), es-out = [] }
+
+  dtls-ep-cert-peer-key : DtlsEp, DtlsMsg -> DtlsEp
+  dtls-ep-cert-peer-key (ep) (m) =
+    when tls-cert-parse (m.dm-body)
+      is None -> ep
+      is Just (ders) -> dtls-ep-cert-parse-chain ep ders
+
+  dtls-ep-cert-parse-chain : DtlsEp, List (List Integer) -> DtlsEp
+  dtls-ep-cert-parse-chain (ep) (ders) =
     when dtls-ep-parse-chain ders
-      is None -> dtls-ep-idle ep
-      is Just (certs) -> dtls-ep-client-cert-walk ep m certs
+      is None -> ep
+      is Just (certs) -> dtls-ep-cert-key-walk ep certs
 
  The chain proved the leaf is trusted; this proves it is the RIGHT leaf.
  An empty expected peer means the client pinned no identity and keeps the
@@ -442,40 +523,26 @@ Section: Client Receive
     if list-length (ep.ep-expected-peer) == 0 then True
     else x509-name-eq (ep.ep-expected-peer) (leaf.xc-subject)
 
-  dtls-ep-client-cert-walk : DtlsEp, DtlsMsg, List X509Cert -> DtlsEpStep
-  dtls-ep-client-cert-walk (ep) (m) (certs) =
+  dtls-ep-cert-key-walk : DtlsEp, List X509Cert -> DtlsEp
+  dtls-ep-cert-key-walk (ep) (certs) =
     when x509-chain-verify certs (ep.ep-anchors) (ep.ep-cal-now)
       is ChainOk -> if dtls-ep-peer-matches ep (list-at certs 0)
-                    then dtls-ep-client-cert-ok ep m certs
-                    else dtls-ep-idle ep
-      is otherwise -> dtls-ep-idle ep
-
- The chain held. Keep the leaf's public key and fold the Certificate into
- the transcript. Nothing goes out -- the client is still listening.
-
-  dtls-ep-client-cert-ok : DtlsEp, DtlsMsg, List X509Cert -> DtlsEpStep
-  dtls-ep-client-cert-ok (ep) (m) (certs) =
-    let tr = (ep.ep-transcript) & dtls-msg-to-transcript m
-    in let ep2 = __record-set (__record-set ep "ep-peer-key" ((list-at certs 0).xc-key)) "ep-transcript" tr
-    in DtlsEpStep { es-ep = ep2, es-out = [] }
+                    then __record-set ep "ep-peer-key" ((list-at certs 0).xc-key)
+                    else ep
+      is otherwise -> ep
 
  CertificateVerify. The signature is checked over the transcript hash
  THROUGH the Certificate -- the transcript as it stands right now, before
  this message is folded in. This is the line an active man in the middle
  cannot get past: his substituted key_share made the client's transcript
  differ from the one the server signed, so a signature that is valid for
- the server is invalid here. Only on success is ep-auth-done set.
+ the server is invalid here. The verdict becomes ep-auth-done; the message
+ folds either way, and dtls-ep-auth-missing is what refuses.
 
   dtls-ep-client-cv : DtlsEp, DtlsMsg -> DtlsEpStep
   dtls-ep-client-cv (ep) (m) =
-    if tls-cv-verify True (ep.ep-peer-key) (m.dm-body) (dtls-transcript-hash (ep.ep-transcript)) == False
-    then dtls-ep-idle ep
-    else dtls-ep-client-cv-ok ep m
-
-  dtls-ep-client-cv-ok : DtlsEp, DtlsMsg -> DtlsEpStep
-  dtls-ep-client-cv-ok (ep) (m) =
-    let tr = (ep.ep-transcript) & dtls-msg-to-transcript m
-    in DtlsEpStep { es-ep = __record-set (__record-set ep "ep-transcript" tr) "ep-auth-done" True, es-out = [] }
+    let ok = tls-cv-verify True (ep.ep-peer-key) (m.dm-body) (tls13-transcript-hash (ep.ep-transcript))
+    in dtls-ep-fold (__record-set ep "ep-auth-done" ok) m
 
  The server's Finished. Verify it, then send ours. A client that sends
  its Finished before checking the server's has authenticated nothing and
@@ -493,9 +560,9 @@ Section: Client Receive
 
   dtls-ep-client-fin-check : DtlsEp, DtlsMsg -> DtlsEpStep
   dtls-ep-client-fin-check (ep) (m) =
-    let th = dtls-transcript-hash (ep.ep-transcript)
-    in if dtls-finished-ok (ep.ep-s-hs) th (m.dm-body) == False then dtls-ep-idle ep
-    else dtls-ep-client-send-fin ep th
+    let th = tls13-transcript-hash (ep.ep-transcript)
+    in if tls13-finished-ok (ep.ep-s-hs) th (m.dm-body) == False then dtls-ep-idle ep
+    else dtls-ep-client-send-fin (dtls-ep-derive-app ep ((ep.ep-transcript) & tls13-msg-transcript dtls-hs-finished (m.dm-body)))
 
  A client with anchors requires authentication; a client without them does
  not. The empty-anchor case is the anonymous handshake, unchanged.
@@ -523,16 +590,125 @@ Section: Client Receive
       is None -> None
       is Just (c) -> dtls-ep-parse-loop ders (i + 1) (list-push acc c)
 
-  dtls-ep-client-send-fin : DtlsEp, List Integer -> DtlsEpStep
-  dtls-ep-client-send-fin (ep) (th) =
-    let fin = dtls-msg-encode dtls-hs-finished 2 (dtls-verify-data (ep.ep-c-hs) th)
-    in DtlsEpStep { es-ep = __record-set ep "ep-done" True, es-out = [dtls-ep-wrap ep fin] }
+  dtls-ep-client-send-fin : DtlsEp -> DtlsEpStep
+  dtls-ep-client-send-fin (ep) =
+    let th = tls13-transcript-hash (ep.ep-transcript)
+    in let fin = dtls-msg-encode dtls-hs-finished 2 (tls13-verify-data (ep.ep-c-hs) th)
+    in DtlsEpStep { es-ep = __record-set ep "ep-done" True, es-out = [dtls-ep-seal-hs (dtls-ep-keys (ep.ep-c-hs)) 0 fin] }
+
+Section: Application Data
+
+ The handshake stops at the handshake traffic secrets. This derives the
+ master secret and the two APPLICATION traffic secrets over the transcript
+ THROUGH the server Finished -- the same hash both Finished messages are
+ computed over, so client and server land on identical secrets -- and every
+ record after that travels as DTLS 1.3 ciphertext (RFC 9147 section 4):
+ sealed and opened by the Dtls chapter's dtls-seal / dtls-open, which carry
+ the unified header, the per-record AEAD nonce, and the mandatory sequence
+ number encryption. The inner content type is application_data (23) and the
+ epoch is 3.
+
+ The key schedule here is the generic TLS 1.3 one (tls13-master-secret and
+ the ap-traffic secrets), the same primitives TlsEndpoint drives and the
+ same ones the RFC 8448 vectors gate; the record protection is the DTLS
+ record layer, gated by codex/test/dtls-record against an independent
+ implementation. What has no oracle is the assembled handshake: no
+ third-party DTLS peer is in the loop, so the whole exchange -- key
+ agreement and, since the handshake epoch went protected, the flights too --
+ is proven only between our own endpoints. An openssl DTLS 1.3 peer would
+ turn that from a loopback into interop; until then, do not describe this as
+ coaps:// on the open internet.
+
+  dtls-ep-app-cap : Integer = 262144
+  dtls-ep-hs-epoch : Integer = 2
+  dtls-ep-app-epoch : Integer = 3
+  dtls-ep-content-app : Integer = 23
+
+ Derive the application secrets and open the application-data buffer. The
+ transcript passed in already runs through the server Finished. ep-transcript
+ is advanced to it so the server verifies the client Finished over the same
+ hash.
+
+  dtls-ep-derive-app : DtlsEp, List Integer -> DtlsEp
+  dtls-ep-derive-app (ep) (tr) =
+    let th = tls13-transcript-hash tr
+    in let master = tls13-master-secret (ep.ep-hs-secret)
+    in let c-ap = tls13-client-ap-traffic master th
+    in let s-ap = tls13-server-ap-traffic master th
+    in let e1 = __record-set (__record-set (__record-set ep "ep-transcript" tr) "ep-c-ap" c-ap) "ep-s-ap" s-ap
+    in __record-set e1 "ep-app-in" (__list-with-capacity dtls-ep-app-cap)
+
+ A traffic secret is not a key. The write key, IV and the sequence-number
+ encryption key are each expanded out of it -- the sn-key over the "sn"
+ label per RFC 9147 section 4.2.3. The same builder serves both the
+ handshake epoch (over c-hs / s-hs) and the application epoch (over
+ c-ap / s-ap); the epoch is keyed, so each derives its own distinct key.
+
+  dtls-ep-keys : List Integer -> DtlsKeys
+  dtls-ep-keys (secret) =
+    DtlsKeys { dk-key = tls13-traffic-key secret, dk-iv = tls13-traffic-iv secret, dk-sn-key = dtls-sn-key secret 16 }
+
+ Seal a handshake message at the handshake epoch (2), inner content type
+ handshake. The server flight after ServerHello and both Finished messages
+ go out this way.
+
+  dtls-ep-seal-hs : DtlsKeys, Integer, List Integer -> List Integer
+  dtls-ep-seal-hs (k) (seq) (msg) =
+    dtls-seal k dtls-ep-hs-epoch seq msg dtls-content-handshake
+
+ One application record out. The client seals under the client application
+ secret and the server under the server one; each direction has its own
+ sequence number, and reusing one across directions would reuse a nonce.
+
+  dtls-ep-send-app : DtlsEp, List Integer -> DtlsEpStep
+  dtls-ep-send-app (ep) (data) =
+    let secret = if ep.ep-server then ep.ep-s-ap else ep.ep-c-ap
+    in let rec = dtls-seal (dtls-ep-keys secret) dtls-ep-app-epoch (ep.ep-app-write-seq) data dtls-ep-content-app
+    in DtlsEpStep { es-ep = __record-set ep "ep-app-write-seq" (ep.ep-app-write-seq + 1), es-out = [rec] }
+
+ One application record in, opened under the PEER's application secret: a
+ server reads what the client sealed, and the reverse. A record that does
+ not authenticate yields no plaintext and leaves the buffer untouched --
+ the None is the security property, not an error to paper over.
+
+  dtls-ep-recv-app : DtlsEp, List Integer -> DtlsEpStep
+  dtls-ep-recv-app (ep) (rec) =
+    let secret = if ep.ep-server then ep.ep-c-ap else ep.ep-s-ap
+    in when dtls-open (dtls-ep-keys secret) 0 rec
+      is None -> dtls-ep-idle ep
+      is Just (p) -> DtlsEpStep { es-ep = dtls-ep-app-accept ep p, es-out = [] }
+
+ Only inner content type application_data is appended; a post-handshake
+ handshake record (a NewSessionTicket or KeyUpdate) advances the sequence
+ like any other but must never reach the application buffer.
+
+  dtls-ep-app-accept : DtlsEp, DtlsPlain -> DtlsEp
+  dtls-ep-app-accept (ep) (p) =
+    let e1 = __record-set ep "ep-app-read-seq" (ep.ep-app-read-seq + 1)
+    in if p.dp-type == dtls-ep-content-app
+    then __record-set e1 "ep-app-in" (dtls-ep-append (ep.ep-app-in) (p.dp-content) 0 (list-length (p.dp-content)))
+    else e1
+
+ Application data accumulates into ONE list, reserved to capacity at the
+ handshake's end and pushed into in place, the discipline TlsEndpoint uses:
+ the obvious per-record append copies the whole buffer every record and, on
+ a heap with no collector, leaves every intermediate copy live. A body past
+ the cap stops growing rather than reallocating.
+
+  dtls-ep-append : List Integer, List Integer, Integer, Integer -> List Integer
+  dtls-ep-append (dst) (src) (i) (n) =
+    if i >= n then dst
+    else if list-length dst >= dtls-ep-app-cap then dst
+    else dtls-ep-append (list-push dst (list-at src i)) src (i + 1) n
+
+  dtls-ep-app-in : DtlsEp -> List Integer
+  dtls-ep-app-in (ep) = ep.ep-app-in
 
 Section: Helpers
 
-  dtls-ep-with-keys : DtlsEp, List Integer, List Integer, List Integer, List Integer -> DtlsEp
-  dtls-ep-with-keys (ep) (peer) (tr) (c) (s) =
-    __record-set (__record-set (__record-set (__record-set ep "ep-peer-pub" peer) "ep-transcript" tr) "ep-c-hs" c) "ep-s-hs" s
+  dtls-ep-with-keys : DtlsEp, List Integer, List Integer, List Integer, List Integer, List Integer -> DtlsEp
+  dtls-ep-with-keys (ep) (peer) (hs) (tr) (c) (s) =
+    __record-set (__record-set (__record-set (__record-set (__record-set ep "ep-peer-pub" peer) "ep-hs-secret" hs) "ep-transcript" tr) "ep-c-hs" c) "ep-s-hs" s
 
  Every handshake message goes out in a DTLSPlaintext record. There are no
  keys yet for the flights that matter, and the Finished is carried the

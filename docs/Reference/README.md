@@ -35,4 +35,4 @@ break. Each archive carries a `PROVENANCE.md` stating where it came from and
 
 | Archive | What it is | Our reading of it |
 |---|---|---|
-| `AiComp/` | fiigii/ai-comp — an optimizing compiler (HIR→LIR→MIR→VLIW, 16 passes, 5 analyses) written for Anthropic's published performance take-home. **Unlicensed: reimplement clean-room, do not copy.** | `AiComp/OPPORTUNITIES.md` — the middle end Codex does not have, and what it would actually cost to get one. See BACKLOG 3.8. |
+| `AiComp/` | fiigii/ai-comp — an optimizing compiler (HIR→LIR→MIR→VLIW, 16 passes, 5 analyses) written for Anthropic's published performance take-home. **Unlicensed: reimplement clean-room, do not copy.** | `AiComp/OPPORTUNITIES.md` — the middle end Codex does not have, and what it would actually cost to get one. |

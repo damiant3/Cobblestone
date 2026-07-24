@@ -1,0 +1,139 @@
+Chapter: MqttLoopbackTest
+  cites Encode chapter MqttEndpoint
+  cites Encode chapter Mqtt
+  cites Foreword chapter Maybe
+
+ The MQTT client endpoint driven end to end with no network. The broker
+ side is built with the Mqtt codec, so the endpoint under test is reading
+ real MQTT v5 packets rather than talking to itself.
+
+ Six scenarios, each a rule from MQTT v5:
+   1. CONNECT is answered by CONNACK reason 0 -- the session opens.
+   2. NEGATIVE CONTROL: CONNACK reason 135 (not authorized) fails the
+      session. Without it, "the reason code is read" is unchecked and an
+      endpoint that ignored the byte would pass scenario 1.
+   3. SUBSCRIBE is confirmed by a SUBACK matching the packet identifier.
+   4. NEGATIVE CONTROL: a SUBACK with the WRONG identifier confirms
+      nothing and the subscription stays unconfirmed.
+   5. A QoS 1 PUBLISH is held until its PUBACK, retransmitted with DUP on
+      the deadline, and retired when the acknowledgement matches.
+   6. An inbound QoS 1 PUBLISH is delivered and acknowledged, and a
+      COALESCED buffer carrying two packets is fully drained -- the
+      byte-stream case a datagram endpoint never has to face.
+   7. QoS 2, publishing: PUBLISH, PUBREC, PUBREL, PUBCOMP. The PUBREL's
+      fixed header must read 0x62 -- type 6 with the reserved flags 0010
+      that section 3.6.1 makes mandatory and a broker disconnects on.
+   8. NEGATIVE CONTROL: a PUBCOMP arriving where a PUBREC belongs is
+      refused, the exchange stays open, and the timeout resends a PUBLISH
+      (type 3) rather than skipping to the release. Without this, the
+      claim that the phases are tracked is one nothing checks.
+   9. QoS 2, receiving: an inbound QoS 2 PUBLISH is answered PUBREC
+      (type 5), and the broker's PUBREL is answered PUBCOMP (type 7).
+
+Section: Broker Side
+
+ Built with the codec, not with the endpoint, so the two halves do not
+ share a code path.
+
+  connack : Integer -> List Integer
+  connack (reason) = [32, 3, 0, reason, 0]
+
+  suback : Integer, Integer -> List Integer
+  suback (pid) (granted) = [144, 4, bit-and (bit-shru pid 8) 255, bit-and pid 255, 0, granted]
+
+  puback : Integer -> List Integer
+  puback (pid) = mqtt-build-puback pid
+
+  topic-of : MqttEp -> Integer
+  topic-of (ep) = list-length (mqtt-ep-in-topic ep)
+
+Section: Entry
+
+ EACH SCENARIO GETS ITS OWN ENDPOINT, and that is a requirement rather
+ than tidiness. `MqttEp` is threaded linearly like every other endpoint in
+ this tree: `__record-set` stores into the record and returns the SAME
+ one, so a value that has been handed onward is spent. Written the
+ obvious way -- two subscriptions branching off one connected endpoint --
+ the second call mutates the state the first still refers to, and the
+ assertions read a record neither scenario owns. That is what the first
+ run of this test did, and it reported a wrong answer for two scenarios
+ at once.
+
+  opening : [Console] Nothing =
+    let c1 = mqtt-ep-connect mqtt-ep-new default-mqtt-connect
+    in let c1b = mqtt-ep-recv (c1.ms-ep) (connack 0) 0
+    in let one-ready = mqtt-ep-ready (c1b.ms-ep)
+    in let one-reason = mqtt-ep-connack (c1b.ms-ep)
+    in let one-consumed = c1b.ms-consumed
+
+    in let c2 = mqtt-ep-connect mqtt-ep-new default-mqtt-connect
+    in let c2b = mqtt-ep-recv (c2.ms-ep) (connack 135) 0
+    in let two-failed = mqtt-ep-failed (c2b.ms-ep)
+    in let two-reason = mqtt-ep-connack (c2b.ms-ep)
+
+    in let c3 = mqtt-ep-connect mqtt-ep-new default-mqtt-connect
+    in let c3b = mqtt-ep-recv (c3.ms-ep) (connack 0) 0
+    in let s3 = mqtt-ep-subscribe (c3b.ms-ep) "sensor/#" QosAtLeastOnce
+    in let s3b = mqtt-ep-recv (s3.ms-ep) (suback 1 1) 0
+    in let three-granted = mqtt-ep-suback (s3b.ms-ep)
+
+    in let c4 = mqtt-ep-connect mqtt-ep-new default-mqtt-connect
+    in let c4b = mqtt-ep-recv (c4.ms-ep) (connack 0) 0
+    in let s4 = mqtt-ep-subscribe (c4b.ms-ep) "sensor/#" QosAtLeastOnce
+    in let s4b = mqtt-ep-recv (s4.ms-ep) (suback 999 1) 0
+    in let four-unconfirmed = mqtt-ep-suback (s4b.ms-ep) == (-1)
+
+    in let c5 = mqtt-ep-connect mqtt-ep-new default-mqtt-connect
+    in let c5b = mqtt-ep-recv (c5.ms-ep) (connack 0) 0
+    in let p5 = mqtt-ep-publish (c5b.ms-ep) "sensor/temp" [50, 49] QosAtLeastOnce 0
+    in let five-held = mqtt-ep-published (p5.ms-ep) == False
+    in let p5t = mqtt-ep-tick (p5.ms-ep) 5000
+    in let five-rt-out = list-length (p5t.ms-out)
+    in let five-dup = if five-rt-out > 0 then bit-and (list-at (list-at (p5t.ms-out) 0) 0) 8 else 0
+    in let five-retries = mqtt-ep-retries (p5t.ms-ep)
+    in let p5b = mqtt-ep-recv (p5t.ms-ep) (puback 1) 5100
+    in let five-done = mqtt-ep-published (p5b.ms-ep)
+
+    in let c7 = mqtt-ep-connect mqtt-ep-new default-mqtt-connect
+    in let c7b = mqtt-ep-recv (c7.ms-ep) (connack 0) 0
+    in let p7 = mqtt-ep-publish (c7b.ms-ep) "sensor/temp" [50, 49] QosExactlyOnce 0
+    in let p7rec = mqtt-ep-recv (p7.ms-ep) (mqtt-build-pubrec 1) 0
+    in let seven-rel-out = list-length (p7rec.ms-out)
+    in let seven-rel-hdr = if seven-rel-out > 0 then list-at (list-at (p7rec.ms-out) 0) 0 else 0
+    in let seven-held = mqtt-ep-published (p7rec.ms-ep) == False
+    in let p7comp = mqtt-ep-recv (p7rec.ms-ep) (mqtt-build-pubcomp 1) 0
+    in let seven-done = mqtt-ep-published (p7comp.ms-ep)
+
+    in let c8 = mqtt-ep-connect mqtt-ep-new default-mqtt-connect
+    in let c8b = mqtt-ep-recv (c8.ms-ep) (connack 0) 0
+    in let p8 = mqtt-ep-publish (c8b.ms-ep) "sensor/temp" [50, 49] QosExactlyOnce 0
+    in let p8bad = mqtt-ep-recv (p8.ms-ep) (mqtt-build-pubcomp 1) 0
+    in let eight-refused = mqtt-ep-published (p8bad.ms-ep) == False
+    in let p8t = mqtt-ep-tick (p8bad.ms-ep) 5000
+    in let eight-resent = if list-length (p8t.ms-out) > 0 then bit-shru (list-at (list-at (p8t.ms-out) 0) 0) 4 else 0
+
+    in let in2 = mqtt-build-publish "sensor/temp" [55, 55] QosExactlyOnce False 4242
+    in let p9 = mqtt-ep-recv (c7b.ms-ep) in2 0
+    in let nine-rec = if list-length (p9.ms-out) > 0 then bit-shru (list-at (list-at (p9.ms-out) 0) 0) 4 else 0
+    in let p9rel = mqtt-ep-recv (p9.ms-ep) (mqtt-build-pubrel 4242) 0
+    in let nine-comp = if list-length (p9rel.ms-out) > 0 then bit-shru (list-at (list-at (p9rel.ms-out) 0) 0) 4 else 0
+
+    in let inbound = mqtt-build-publish "sensor/temp" [55, 55] QosAtLeastOnce False 4242
+    in let p6 = mqtt-ep-recv (p5b.ms-ep) (inbound & inbound) 0
+    in let six-count = mqtt-ep-in-count (p6.ms-ep)
+    in let six-consumed = (p6.ms-consumed) == list-length (inbound & inbound)
+    in let six-acks = list-length (p6.ms-out)
+    in let six-payload = list-length (mqtt-ep-in-payload (p6.ms-ep))
+    in let six-topic = topic-of (p6.ms-ep)
+
+    in act
+      print-line-uni ("mqtt connect ready=" & show one-ready & " reason=" & show one-reason & " consumed=" & show one-consumed)
+      print-line-uni ("mqtt refused failed=" & show two-failed & " reason=" & show two-reason)
+      print-line-uni ("mqtt suback granted=" & show three-granted)
+      print-line-uni ("mqtt suback-mismatch unconfirmed=" & show four-unconfirmed)
+      print-line-uni ("mqtt publish held=" & show five-held & " rt-out=" & show five-rt-out & " dup=" & show five-dup & " retries=" & show five-retries & " done=" & show five-done)
+      print-line-uni ("mqtt inbound count=" & show six-count & " drained=" & show six-consumed & " acks=" & show six-acks & " topic=" & show six-topic & " payload=" & show six-payload)
+      print-line-uni ("mqtt qos2-send rel-out=" & show seven-rel-out & " rel-hdr=" & show seven-rel-hdr & " held=" & show seven-held & " done=" & show seven-done)
+      print-line-uni ("mqtt qos2-outoforder refused=" & show eight-refused & " resent-type=" & show eight-resent)
+      print-line-uni ("mqtt qos2-recv rec-type=" & show nine-rec & " comp-type=" & show nine-comp)
+    end

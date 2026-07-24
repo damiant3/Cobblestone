@@ -5,39 +5,47 @@
 $script:PlugBuildRepo = (Resolve-Path (Join-Path $PSScriptRoot '..' '..' '..')).Path
 . (Join-Path $script:PlugBuildRepo 'build' 'vm-config.ps1')
 
-$script:QuireDirs = @{}
-$script:QuireOverrides = @{ 'codex\foreword\core' = 'Foreword'; 'codex\os\core' = 'OS'; 'apps\erp' = 'ERP' }
-foreach ($root in @('codex\foreword', 'codex\os', 'apps', 'apps\games')) {
-    $rootPath = Join-Path $script:PlugBuildRepo $root
-    if (-not (Test-Path $rootPath)) { continue }
-    foreach ($d in Get-ChildItem $rootPath -Directory) {
-        $rel = $d.FullName.Substring($script:PlugBuildRepo.Length + 1)
-        if (-not (Get-ChildItem $d.FullName -Filter '*.codex' -File -ErrorAction SilentlyContinue | Select-Object -First 1)) { continue }
-        if ($script:QuireOverrides[$rel]) {
-            $qname = $script:QuireOverrides[$rel]
-        } else {
-            $seg = $d.Name
-            $qname = $seg.Substring(0,1).ToUpper() + $seg.Substring(1)
-        }
-        if (-not $script:QuireDirs[$qname]) { $script:QuireDirs[$qname] = $rel }
-    }
-}
-$script:CitePat = '^\s*cites\s+(' + (($script:QuireDirs.Keys | Sort-Object) -join '|') + ')\s+chapter\s+([A-Za-z_][A-Za-z0-9_-]*)'
+# The registry and the pattern come from build/quire-map.ps1. This used to
+# DERIVE a quire table by globbing codex\foreword, codex\os, apps and
+# apps\games and capitalising each directory name, which is worse than a
+# copy: a copy can be compared, a derivation quietly answers a different
+# question. It could not see any quire outside those four roots, so
+# Wflow (codex\workflow), Boards (codex\boards) and Tracker
+# (codex\tracker) did not exist here at all, and it invented names the
+# registry does not use for anything whose directory name happened to
+# differ. A plug citing one of those got MISSING and exit 3 for a chapter
+# that is registered and present.
+. (Join-Path $script:PlugBuildRepo 'build' 'quire-map.ps1')
+$script:QuireDirs = $QuireDirs
+$script:CitePat = $StrictCitePat
 
 function Add-PlugChapter {
     param(
         [System.Collections.Generic.List[string]]$Lines,
         [string]$Path,
         [string[]]$StripCites = @(),
-        [string]$Quire = ''
+        [string]$Quire = '',
+        [string[]]$DropSections = @()
     )
+    # DropSections lets a compiler chapter be bundled for its DECLARATIONS while
+    # leaving behind a section the plug cannot compile. Only one section needs it
+    # today: AST Nodes' "Deck Copies", whose leaf copiers (copy-sx-text and
+    # friends) live in SyntaxNodes, a chapter of 66 CST declarations the plug
+    # never touches. Dropping that one section is what keeps SyntaxNodes out of
+    # the bundle. A renamed section fails the build loudly (the declarations it
+    # guarded go missing); it cannot rot silently.
     # Prefix the chapter name with the plug's quire (e.g. Riscv--RiscVPlug) so the
     # compiler's quire-based effect-exemption (TypeChecker quire-effect-exempt)
     # recognizes plug code as trusted. Without the prefix slug-quire cannot map the
     # chapter to its quire and CDX2031 (Device.Port effect) wrongly fires on the
     # plug's own port-I/O serial output. Mirrors Resolve-PlugForewords' prefixing.
     $renamed = $false
+    $dropping = $false
     foreach ($l in [System.IO.File]::ReadAllLines($Path)) {
+        if ($l -match '^Section:\s*(.+?)\s*$') {
+            $dropping = $DropSections -contains $matches[1]
+        }
+        if ($dropping) { continue }
         $skip = $false
         foreach ($sc in $StripCites) { if ($l -match "cites.*$sc") { $skip = $true } }
         if ($skip) { continue }
@@ -56,14 +64,27 @@ function Resolve-PlugForewords {
     $visiting = @{}
     $visited  = @{}
     $ordered  = [System.Collections.Generic.List[hashtable]]::new()
+    # A cite is satisfied two ways, and the second one is why the strict
+    # pattern needs this: the chapter is RESOLVED through the registry, or it
+    # is already PRESENT because Add-PlugChapter bundled it. Every plug
+    # codegen chapter says `cites Plug chapter Plug Types`, and there is no
+    # quire named Plug -- PlugTypes.codex is added directly. The old lenient
+    # pattern was built from a derived key list that had no Plug either, so
+    # that cite never matched and was skipped by accident rather than by
+    # rule. Same rule as Resolve-CiteOrder's, same helper.
+    $present = Get-PresentChapterNames -Lines $Lines
     function Resolve-PlugCite([string]$quire, [string]$name) {
         $key = "${quire}::${name}"
         if ($visited[$key]) { return }
         if ($visiting[$key]) { return }
         $visiting[$key] = $true
-        $fwPath = Join-Path $script:PlugBuildRepo (Join-Path $script:QuireDirs[$quire] "$name.codex")
-        if (-not (Test-Path -PathType Leaf $fwPath)) {
-            [Console]::Error.WriteLine("MISSING: cited $quire chapter '$name' (expected $fwPath)")
+        $dir = $script:QuireDirs[$quire]
+        $fwPath = if ($dir) { Join-Path $script:PlugBuildRepo (Join-Path $dir "$name.codex") } else { $null }
+        if ((-not $fwPath) -or (-not (Test-Path -PathType Leaf $fwPath))) {
+            [void]$visiting.Remove($key)
+            if ($present[(Get-CiteKey $name)]) { $visited[$key] = $true; return }
+            $why = if ($dir) { "expected $fwPath" } else { "quire '$quire' is not registered in build/quire-map.ps1, and no chapter '$name' is present in the unit" }
+            [Console]::Error.WriteLine("MISSING: cited $quire chapter '$name' ($why)")
             exit 3
         }
         foreach ($l in [System.IO.File]::ReadAllLines($fwPath)) {
@@ -129,7 +150,14 @@ function Build-TranspilerPlug {
         [string]$PlugDir,
         [string]$PlugName,
         [string[]]$Chapters,
-        [string]$Survey = ''
+        [string]$Survey = '',
+        # Bundle the compiler's LIR so a native backend can lower to it plug-side
+        # (the retarget's Route A). Off by default: the transpiler plugs emit
+        # high-level source and have no use for registers, so they should not
+        # carry 147 KB of allocator. Lir cites Build Settings and IR Chapter and
+        # LirTargets cites Lir; all three end up in this one unit, so those cites
+        # are stripped rather than resolved.
+        [switch]$WithLir
     )
     $outDir    = Join-Path $PlugDir 'build-output'
     $outFile   = Join-Path $outDir "$PlugName-plug.cdx"
@@ -144,7 +172,35 @@ function Build-TranspilerPlug {
     # list (riscv->Riscv, arm64->Arm64, pe->Pe, elf->Elf, img->Img).
     $plugQuire = $PlugName.Substring(0,1).ToUpper() + $PlugName.Substring(1)
 
+    # The plug reads the compiler's own declaration chapters. There is one
+    # declaration of Name, SourceSpan, CodexType, the AST nodes and the IR
+    # nodes in the tree, and this is it -- the plug used to carry a second,
+    # hand-maintained copy that nothing checked and no compile could see,
+    # because the two never meet in one unit. Four bundle whole; AST Nodes
+    # drops Deck Copies (see Add-PlugChapter).
     $lines = [System.Collections.Generic.List[string]]::new()
+    foreach ($decl in @('codex\compiler\Core\Name.codex',
+                        'codex\compiler\Core\SourceText.codex',
+                        'codex\compiler\Types\CodexType.codex',
+                        'codex\compiler\Ast\AstNodes.codex',
+                        'codex\compiler\IR\IRChapter.codex')) {
+        $drop = if ($decl -like '*AstNodes.codex') { @('Deck Copies') } else { @() }
+        Add-PlugChapter -Lines $lines -Path (Join-Path $script:PlugBuildRepo $decl) -Quire $plugQuire -DropSections $drop
+    }
+    if ($WithLir) {
+        # CodexTypeHelpers owns hw-width-bytes / -signed / bounds-to-hw-width and
+        # Token owns pat-lit-to-integer; the lowering calls all four. Both cite
+        # nothing, which is what makes Route A affordable -- they come in as
+        # leaves rather than dragging the Types or Syntax quire behind them.
+        foreach ($lir in @('codex\compiler\Core\BuildSettings.codex',
+                           'codex\compiler\Types\CodexTypeHelpers.codex',
+                           'codex\compiler\Syntax\Token.codex',
+                           'codex\compiler\IR\Lir.codex',
+                           'codex\compiler\IR\LirTargets.codex')) {
+            Add-PlugChapter -Lines $lines -Path (Join-Path $script:PlugBuildRepo $lir) -Quire $plugQuire `
+                -StripCites @('Build Settings', 'IR Chapter', 'chapter Lir')
+        }
+    }
     Add-PlugChapter -Lines $lines -Path (Join-Path $script:PlugBuildRepo 'codex\plugs\common\PlugTypes.codex') -Quire $plugQuire
     Add-PlugChapter -Lines $lines -Path (Join-Path $script:PlugBuildRepo 'codex\plugs\common\IRTextParser.codex') -Quire $plugQuire
     foreach ($ch in $Chapters) {

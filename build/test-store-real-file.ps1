@@ -1,7 +1,7 @@
 # A real source file, stored into the fact store by a tool and checked back
 # out of it -- byte for byte, with no Perforce anywhere in the chain.
 #
-# BACKLOG 6.1(d): "nothing writes the store but a test." This is the answer.
+# Nothing used to write the store but a test. This is the answer.
 # cdx-store is a real tool a person runs on a real file; here it stores an
 # actual file from the tree, and cdx-checkout reads the store back and prints
 # the source. If what comes out equals what went in, the repository held a

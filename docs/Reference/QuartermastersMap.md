@@ -1,13 +1,12 @@
 # Quartermaster's Map
 
 **Archived from `docs/` root to `docs/Reference/` 2026-07-17.** The fleet
-now delegates through `docs/PM/BACKLOG.md` and the per-agent workplans, not
+delegates through `docs/PM/CurrentPlan.md` and the per-agent workplans, not
 this map. It is kept as a record. It still holds open digs (ARM64 register
 allocator, Spark WebGPU wat2wasm, GamesDemo idle-hang, GPU Globe bundle,
-RealBitcast cross-arch parity, PatchEntry.value bound, and more): any that
-are not already in BACKLOG must be reconciled INTO it, because BACKLOG is
-where open work lives now. Do not treat a dig here as tracked just because
-it is written down.
+RealBitcast cross-arch parity, PatchEntry.value bound, and more), and
+**none of them is tracked anywhere else.** Do not treat a dig here as
+tracked just because it is written down.
 
 The successor to `docs/FabledTreasureMap.md`, drawn for a different
 purpose. The old map recorded treasure found in passing — deferred
@@ -261,9 +260,9 @@ shape. Gate on Renode/QEMU SMP boots plus the channel tests.
 
 **Crew notes:** Large — the biggest dig on the map; split by arch,
 or atomics-first (useful alone) then boot. Needs plug + OS-layer
-fluency. BACKLOG-tracked.
+fluency. Not tracked anywhere else.
 
-**Pointers:** `docs/PM/BACKLOG.md` (SMP), x86 reference in
+**Pointers:** x86 reference in
 `codex/os/sched/` + `docs/ArchitectsSketchbook.md` (SMP Memory
 Model).
 
@@ -456,9 +455,9 @@ awaiting a Damian ruling. Listed so nobody claims them by accident:
   emitter functions; inliner-exclusion perf interaction) — flagged
   HIGHER RISK in the workplan.
 - **Full effect-row subtyping** (effect variables in unification,
-  polarity threading) — BACKLOG compiler item; touches the unifier's
+  polarity threading) — a compiler item; touches the unifier's
   core.
-- **Vision-check adversarial probe DESIGN** (the BACKLOG's "fulfill
+- **Vision-check adversarial probe DESIGN** ("fulfill
   the vision check") — designing probes that try to break the
   by-construction claims is senior work; executing a designed probe
   catalog is delegatable and will be mapped when the designs exist.

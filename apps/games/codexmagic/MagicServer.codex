@@ -587,7 +587,7 @@ Section: Account Handler
     in let tier-str = extract-query-param line "tier"
     in let tier = parse-sub-tier tier-str
     in let acct = get-account (store.accounts) acct-id
-    in let updated = PlayerAccount { account-id = acct.account-id, name = acct.name, rating = acct.rating, rank = acct.rank, wins = acct.wins, losses = acct.losses, general-id = acct.general-id, subscription = tier }
+    in let updated = PlayerAccount { account-id = acct.account-id, name = acct.name, handle = acct.handle, display-name = acct.display-name, password = acct.password, pw-score = acct.pw-score, balance = acct.balance, admin = acct.admin, banned = acct.banned, clan-id = acct.clan-id, roles = acct.roles, session-token = acct.session-token, rating = acct.rating, rank = acct.rank, wins = acct.wins, losses = acct.losses, general-id = acct.general-id, subscription = tier }
     in let new-accts = set-account (store.accounts) acct-id updated
     in let ns = update-store-accounts store new-accts (store.num-accounts)
     in respond-json ns ("{\"account-id\":" & show acct-id & ",\"subscription\":" & jstr (sub-tier-name tier) & ",\"upgrade-bonus\":" & show (sub-upgrade-bonus tier) & "}")
@@ -762,7 +762,7 @@ Section: Clan Authority Handlers
     in let result = register-clan (store.platform) name tag founder instance-key (store.next-nonce)
     in if result.success == False then respond-error store "registration failed: tag already taken"
     else let ns = update-store-platform store (result.platform)
-    in let ns2 = MagicStore { game = ns.game, game-active = ns.game-active, templates = ns.templates, generals = ns.generals, accounts = ns.accounts, num-accounts = ns.num-accounts, tokens = ns.tokens, ledger = ns.ledger, current-season = ns.current-season, match-record = ns.match-record, account-keys = ns.account-keys, next-nonce = ns.next-nonce + 1, platform = ns.platform }
+    in let ns2 = MagicStore { game = ns.game, game-active = ns.game-active, templates = ns.templates, generals = ns.generals, accounts = ns.accounts, num-accounts = ns.num-accounts, tokens = ns.tokens, ledger = ns.ledger, current-season = ns.current-season, match-record = ns.match-record, account-keys = ns.account-keys, next-nonce = ns.next-nonce + 1, platform = ns.platform, next-token-id = ns.next-token-id, total-minted = ns.total-minted, total-burned = ns.total-burned, coin-for-sale = ns.coin-for-sale, coin-price = ns.coin-price }
     in respond-json ns2 ("{\"registered\":true,\"clan-id\":" & show (result.clan-id) & ",\"name\":" & jstr name & ",\"tag\":" & jstr tag & ",\"auth-token\":" & show (result.auth-token) & "}")
 
   handle-clan-authorize : MagicStore, Text -> MagicStep
@@ -927,38 +927,44 @@ Section: Server Loop
 
   MagicLoop = record { mstate : MagicStore, transport : TcpTransportState }
 
-  magic-handle-http : MagicLoop, List Integer -> MagicLoop
+  magic-handle-http : MagicLoop, List Integer -> [Network.Write] MagicLoop
   magic-handle-http (ls) (raw-bytes) =
     let req = http-parse-request raw-bytes
     in let line = req.method & " " & req.path & " HTTP/1.0"
     in if req.valid == False then
       let err-bytes = http-encode (http-error "Bad request")
-      in let ts2 = net-io-send-raw (ls.transport) err-bytes
-      in MagicLoop { mstate = ls.mstate, transport = ts2 }
+      in act
+        ts2 <- net-io-send-raw (ls.transport) err-bytes
+        MagicLoop { mstate = ls.mstate, transport = ts2 }
+      end
     else let step = dispatch-request (ls.mstate) line
     in let resp = http-json (step.resp)
     in let resp-bytes = http-encode resp
-    in let ts2 = net-io-send-raw (ls.transport) resp-bytes
-    in MagicLoop { mstate = step.store, transport = ts2 }
+    in act
+      ts2 <- net-io-send-raw (ls.transport) resp-bytes
+      MagicLoop { mstate = step.store, transport = ts2 }
+    end
 
   http-json : Text -> HttpResponse
   http-json (body) = HttpResponse { status = http-200, content-type = "application/json", body = body }
 
-  magic-loop : MagicLoop -> [Console] Nothing
+  magic-loop : MagicLoop -> [Console, Network.Read, Network.Write] Nothing
   magic-loop (ls) = act
-    let recv = net-io-recv-raw (ls.transport) 0
-    in if recv.has-data then act
-      let next = magic-handle-http ls (recv.data)
-      in magic-loop next
+    recv <- net-io-recv-raw (ls.transport) 0
+    if recv.has-data then act
+      next <- magic-handle-http ls (recv.data)
+      magic-loop next
     end
     else print-line-uni "SERVER-EXIT"
   end
 
-  opening : [Console] Nothing = act
+  opening : [Console, Network.Read, Network.Write] Nothing = act
     let sess = net-session-new local-mac local-ip gateway-ip 49152 9200 host-ip 1000
     in let ts = transport-new sess
-    in let ts1 = net-io-connect ts
-    in magic-loop (MagicLoop { mstate = magic-store-new, transport = ts1 })
+    in act
+      ts1 <- net-io-connect ts
+      magic-loop (MagicLoop { mstate = magic-store-new, transport = ts1 })
+    end
   end
 
 Page 1

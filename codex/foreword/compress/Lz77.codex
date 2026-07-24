@@ -1,48 +1,266 @@
 Chapter: Lz77
 
  LZ77 compression and decompression. Encodes repeated byte sequences
- as back-references (offset, length). Window size 255, max match 255.
+ as back-references (offset, length). Window size 32768, max match 258.
  Token format: 0 + literal byte, or 1 + offset + length for a match.
+
+ The window was 255 bytes and the longest match 255, which was not a format
+ limit anywhere -- RFC 1951 permits 32768 and 258, and Brotli permits far more.
+ It was the limit of a brute-force scan: every position compared against every
+ earlier position in the window, so widening the window multiplied the work by
+ the same factor. At 32768 that scan is a hundred and twenty-eight times slower
+ and simply cannot be run.
+
+ So the search changed shape before the window could grow. Positions are indexed
+ by a hash of the three bytes starting there, and the candidates for a position
+ are the chain of earlier positions with the same hash, walked newest first. The
+ window is now a bound on the chain rather than a range to sweep, and the cost
+ stops depending on it.
+
+ THE CHAIN IS A HINT, NOT A FACT. Every candidate it offers is verified by
+ comparing the actual bytes, so a chain that is stale, truncated or wrong costs
+ RATIO and never correctness. That is what makes the two cheap bounds below safe:
+ the walk gives up after lz77-chain-limit candidates, and it stops if a link ever
+ fails to point strictly backwards. Neither can produce a wrong match; both stop
+ a pathological input from turning the search quadratic again.
 
  We say:
 
 Section: Constants
-  lz77-window-size : Integer = 255
+
+ The window and longest match are RFC 1951's, which is the tightest limit of the
+ formats that read this matcher: Deflate allows 32768 and 258 exactly, and Brotli
+ allows more, so these serve both.
+
+  lz77-window-size : Integer = 32768
+  lz77-window-mask : Integer = 32767
   lz77-min-match : Integer = 3
-  lz77-max-match : Integer = 255
+  lz77-max-match : Integer = 258
+
+ The hash is over three bytes, which is the shortest match worth taking. Sixteen
+ thousand buckets against a window of thirty-two thousand keeps chains short
+ without spending a slot per position, and collisions cost only a wasted
+ comparison because the bytes are checked anyway.
+
+  lz77-hash-size : Integer = 16384
+  lz77-hash-mask : Integer = 16383
+
+ How many candidates a position will look at before settling for the best it has
+ found. Repetitive input can otherwise put every earlier position in one chain,
+ which is the quadratic case the old scan had by construction.
+
+  lz77-chain-limit : Integer = 128
+
+ A WIDER WINDOW IS NOT FREE, and this is what pays for it.
+
+ A match costs a length code and a distance code, and a distant one costs more
+ distance bits. A literal costs whatever the entropy coder charges for it. Those
+ two prices decide whether a match is worth taking at all, and a greedy matcher
+ that takes every match it finds is answering that question without asking it.
+
+ At a 255-byte window it could not do much harm: nothing was far enough away for
+ the distance to cost much. At 32768 it can, and it did. On input drawn from a
+ sixteen-symbol alphabet a literal is worth four bits, so a four-byte match
+ reaching two thousand bytes back replaces sixteen bits of literals with twenty
+ odd bits of codes, and a mixed test case grew by THREE PER CENT the moment the
+ window was widened. Every case with byte-valued literals improved at the same
+ time, which is what makes this a pricing question and not a bug.
+
+ So the matcher estimates both prices. The literal price is taken once per
+ tokenization from how many distinct bytes the input uses -- a crude proxy for its
+ entropy, but the right shape and nearly free. The match price is the twelve-odd
+ bits of length and distance codes plus a bit per doubling of the distance. A
+ match is taken when it plausibly saves.
+
+ It is an ESTIMATE and it is allowed to be wrong: being wrong costs ratio, the
+ same as any other thing the chain guesses at. What it cannot do is make the
+ output invalid, so it is safe to keep crude.
+
+  lz77-match-overhead : Integer = 12
 
 Section: Token Type
   Lz77Token =
     | Lz77Literal (Integer)
     | Lz77Match (Integer) (Integer)
 
+Section: The Hash Chain
+
+ Two tables. head holds, for each hash, the most recent position that started
+ there; prev holds, for each position modulo the window, the position that head
+ pointed at when this one was inserted. Following prev from head therefore walks
+ the positions sharing a hash, newest first, and a position falls out of reach on
+ its own once the window has wrapped past it.
+
+ Both tables are MUTATED IN PLACE. list-set-at writes the slot and hands back the
+ same list, so inserting threads only head through the recursion while prev is
+ updated through the reference it was given. That is deliberate and it is why a
+ position costs two stores rather than two copied tables, but it means these
+ tables must never be shared between two tokenizations: lz77-new-table builds a
+ fresh pair every time, and nothing here holds one across a call.
+
+  lz77-new-table : Integer -> List Integer
+  lz77-new-table (n) = lz77-fill n 0 []
+
+  lz77-fill : Integer, Integer, List Integer -> List Integer
+  lz77-fill (n) (i) (acc) =
+    if i >= n then acc
+    else lz77-fill n (i + 1) (list-push acc (0 - 1))
+
+ A position with fewer than three bytes left cannot start a match, and says so
+ with a negative hash rather than reading past the end.
+
+  lz77-hash-at : List Integer, Integer, Integer -> Integer
+  lz77-hash-at (input) (pos) (len) =
+    if pos + 2 >= len then 0 - 1
+    else bit-and (bit-xor (bit-xor (bit-shl (list-at input pos) 8) (bit-shl (list-at input (pos + 1)) 4)) (list-at input (pos + 2))) lz77-hash-mask
+
+  lz77-insert : List Integer, Integer, Integer, List Integer, List Integer -> List Integer
+  lz77-insert (input) (pos) (len) (head) (prev) =
+    let h = lz77-hash-at input pos len
+    in if h < 0 then head
+    else let p2 = list-set-at prev (bit-and pos lz77-window-mask) (list-at head h)
+    in list-set-at head h pos
+
+ Every position a match covers is indexed too, not just the one it starts at. A
+ match consumes several positions at once, and leaving them out of the chains
+ costs later positions the matches that would have started inside it.
+
+  lz77-insert-run : List Integer, Integer, Integer, Integer, List Integer, List Integer -> List Integer
+  lz77-insert-run (input) (pos) (count) (len) (head) (prev) =
+    if count <= 0 then head
+    else lz77-insert-run input (pos + 1) (count - 1) len (lz77-insert input pos len head prev) prev
+
 Section: Compression
+
+ THE PRICE ONLY MAKES SENSE FOR AN ENTROPY-CODED CONSUMER. Lz77's own token
+ format is not one: a literal costs a tag and a byte, two slots, while a match
+ costs three whatever its length or distance. A match of the minimum length
+ already replaces six slots with three, so every match this chapter finds is
+ worth taking and there is no decision to make. Handing the estimate a literal
+ price nothing can outbid says exactly that.
+
+ Measured the hard way: pricing this chapter's own output as if literals were
+ four bits made a nine-byte input compress to eighteen slots instead of nine,
+ because a three-symbol alphabet reads as one bit per literal and no match can
+ beat that. The prices are Deflate's and Brotli's, not this format's.
+
+  lz77-raw-lit-bits : Integer = 64
+
   lz77-compress : List Integer -> List Integer
-  lz77-compress (input) = lz77-compress-loop input 0 (list-length input) []
+  lz77-compress (input) =
+    lz77-compress-loop input 0 (list-length input) [] (lz77-new-table lz77-hash-size) (lz77-new-table lz77-window-size)
 
-  lz77-compress-loop : List Integer, Integer, Integer, List Integer -> List Integer
-  lz77-compress-loop (input) (pos) (len) (acc) =
+  lz77-compress-loop : List Integer, Integer, Integer, List Integer, List Integer, List Integer -> List Integer
+  lz77-compress-loop (input) (pos) (len) (acc) (head) (prev) =
     if pos >= len then acc
-    else let match = lz77-find-match input pos len
-    in when match
-      is Lz77Match (off) (mlen) -> lz77-compress-loop input (pos + mlen) len (acc & [1, off, mlen])
-      is Lz77Literal (b) -> lz77-compress-loop input (pos + 1) len (list-push acc 0 & [b])
+    else when lz77-find-lazy input pos len head prev lz77-raw-lit-bits
+      is Lz77Match (off) (mlen) ->
+        lz77-compress-loop input (pos + mlen) len (acc & [1, off, mlen]) (lz77-insert-run input pos mlen len head prev) prev
+      is Lz77Literal (b) ->
+        lz77-compress-loop input (pos + 1) len (list-push acc 0 & [b]) (lz77-insert input pos len head prev) prev
 
-  lz77-find-match : List Integer, Integer, Integer -> Lz77Token
-  lz77-find-match (input) (pos) (len) =
-    let window-start = if pos > lz77-window-size then pos - lz77-window-size else 0
-    in lz77-best-match input pos len window-start pos 0 0
+  lz77-find-match : List Integer, Integer, Integer, List Integer, List Integer, Integer -> Lz77Token
+  lz77-find-match (input) (pos) (len) (head) (prev) (lit-bits) =
+    let h = lz77-hash-at input pos len
+    in if h < 0 then Lz77Literal (list-at input pos)
+    else lz77-walk input pos len prev (list-at head h) 0 0 0 lit-bits
 
-  lz77-best-match : List Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Lz77Token
-  lz77-best-match (input) (pos) (len) (scan) (scan-end) (best-off) (best-len) =
-    if scan >= scan-end then
-      if best-len >= lz77-min-match then Lz77Match (pos - best-off) best-len
-      else Lz77Literal (list-at input pos)
-    else let mlen = lz77-match-length input scan pos len 0
-    in if mlen > best-len then
-      if mlen >= lz77-max-match then Lz77Match (pos - scan) lz77-max-match
-      else lz77-best-match input pos len (scan + 1) scan-end scan mlen
-    else lz77-best-match input pos len (scan + 1) scan-end best-off best-len
+ The walk stops on any of four things: the chain ends, it has looked at enough
+ candidates, the next candidate is outside the window, or a link fails to point
+ strictly backwards. The last is the one that is not about ratio: prev is indexed
+ modulo the window, so a slot can be recycled under a chain that still points at
+ it, and without this test a recycled slot could make the walk circle forever.
+ Insisting each step move strictly earlier makes the walk finite whatever the
+ tables hold.
+
+  lz77-walk : List Integer, Integer, Integer, List Integer, Integer, Integer, Integer, Integer, Integer -> Lz77Token
+  lz77-walk (input) (pos) (len) (prev) (cand) (steps) (best-off) (best-len) (lit-bits) =
+    if cand < 0 then lz77-settle input pos best-off best-len lit-bits
+    else if steps >= lz77-chain-limit then lz77-settle input pos best-off best-len lit-bits
+    else if pos - cand > lz77-window-size then lz77-settle input pos best-off best-len lit-bits
+    else let mlen = lz77-match-length input cand pos len 0
+    in if mlen >= lz77-max-match then Lz77Match (pos - cand) lz77-max-match
+    else let off2 = if mlen > best-len then cand else best-off
+    in let len2 = if mlen > best-len then mlen else best-len
+    in let nxt = list-at prev (bit-and cand lz77-window-mask)
+    in if nxt >= cand then lz77-settle input pos off2 len2 lit-bits
+    else lz77-walk input pos len prev nxt (steps + 1) off2 len2 lit-bits
+
+ How many bits a literal is worth, guessed from the size of the alphabet the
+ input uses. Two distinct bytes is one bit, sixteen is four, a full byte range is
+ eight.
+
+ It is measured LOCALLY, over the next few thousand bytes, and not once over the
+ whole input. That is not a refinement; it is the difference between the estimate
+ working and doing nothing. An input whose halves differ -- a stretch of
+ sixteen-symbol data followed by a stretch of noise, which is exactly the shape
+ that showed the problem -- has 256 distinct bytes taken as a whole, so a single
+ global reading reports eight bits everywhere and prices the cheap half wrong. It
+ was measured that way first and moved the answer by two bytes.
+
+ Recomputing every lz77-est-window bytes costs one pass over the input in total,
+ since each recompute walks its own chunk once and the chunks do not overlap.
+
+  lz77-est-window : Integer = 4096
+
+  lz77-log2 : Integer, Integer -> Integer
+  lz77-log2 (v) (acc) = if v <= 1 then acc else lz77-log2 (v / 2) (acc + 1)
+
+  lz77-count-distinct : List Integer, Integer, Integer, List Integer, Integer -> Integer
+  lz77-count-distinct (input) (i) (len) (seen) (acc) =
+    if i >= len then acc
+    else let b = list-at input i
+    in if list-at seen b == 0 then lz77-count-distinct input (i + 1) len (list-set-at seen b 1) (acc + 1)
+    else lz77-count-distinct input (i + 1) len seen acc
+
+  lz77-lit-bits-at : List Integer, Integer, Integer -> Integer
+  lz77-lit-bits-at (input) (pos) (len) =
+    let e = if pos + lz77-est-window > len then len else pos + lz77-est-window
+    in let d = lz77-count-distinct input pos e (lz77-zeros 256 0 []) 0
+    in let b = lz77-log2 d 0
+    in if b < 1 then 1 else b
+
+  lz77-zeros : Integer, Integer, List Integer -> List Integer
+  lz77-zeros (n) (i) (acc) =
+    if i >= n then acc
+    else lz77-zeros n (i + 1) (list-push acc 0)
+
+  lz77-worth : Integer, Integer, Integer -> Boolean
+  lz77-worth (mlen) (dist) (lit-bits) =
+    mlen * lit-bits > lz77-match-overhead + lz77-log2 dist 0
+
+  lz77-settle : List Integer, Integer, Integer, Integer, Integer -> Lz77Token
+  lz77-settle (input) (pos) (best-off) (best-len) (lit-bits) =
+    if best-len < lz77-min-match then Lz77Literal (list-at input pos)
+    else if lz77-worth best-len (pos - best-off) lit-bits then Lz77Match (pos - best-off) best-len
+    else Lz77Literal (list-at input pos)
+
+ Lazy matching, which is the other thing a greedy scan gets wrong. Taking a match
+ the moment one is found forecloses a longer one starting one byte later, and the
+ longer one is usually worth more than the literal it costs to wait. So a match
+ that is not already the longest possible looks at what the next position would
+ find, and yields to it.
+
+ The next position is searched WITHOUT this one having been inserted, so it sees
+ a slightly smaller candidate set than it will when its turn comes. That is the
+ chain being a hint again: the comparison is a little conservative and never
+ wrong.
+
+  lz77-find-lazy : List Integer, Integer, Integer, List Integer, List Integer, Integer -> Lz77Token
+  lz77-find-lazy (input) (pos) (len) (head) (prev) (lit-bits) =
+    when lz77-find-match input pos len head prev lit-bits
+      is Lz77Literal (b) -> Lz77Literal b
+      is Lz77Match (off) (mlen) ->
+        if mlen >= lz77-max-match then Lz77Match off mlen
+        else if pos + 1 >= len then Lz77Match off mlen
+        else lz77-lazy-pick input pos len head prev off mlen lit-bits
+
+  lz77-lazy-pick : List Integer, Integer, Integer, List Integer, List Integer, Integer, Integer, Integer -> Lz77Token
+  lz77-lazy-pick (input) (pos) (len) (head) (prev) (off) (mlen) (lit-bits) =
+    when lz77-find-match input (pos + 1) len head prev lit-bits
+      is Lz77Literal (b2) -> Lz77Match off mlen
+      is Lz77Match (off2) (mlen2) ->
+        if mlen2 > mlen then Lz77Literal (list-at input pos) else Lz77Match off mlen
 
   lz77-match-length : List Integer, Integer, Integer, Integer, Integer -> Integer
   lz77-match-length (input) (a) (b) (len) (count) =

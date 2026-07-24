@@ -4,7 +4,7 @@ Chapter: DtlsHandshake
   cites Foreword chapter Maybe
 
  The DTLS 1.3 handshake machine (RFC 9147 sections 5.1, 5.7, 5.8, 7).
- Phase D2 of the plan in docs/Designs/Active/IoT/ProtocolStack.md.
+ Phase D2 of the protocol stack plan.
 
  This is a pure function of state and event, in the tcp-step style:
  step : State, Event -> (State, List Action). It performs no I/O, sets
@@ -74,8 +74,22 @@ Section: Types
     | PhConnected
     | PhFailed
 
+ `ActSendFlight` carries a FLIGHT identifier, not bytes, which is why it
+ is named for one. It was `ActSend`, and `Net chapter Tcp` declares an
+ `ActSend (List Integer)` of its own that really does carry bytes: two
+ constructors, one name, different payload types, in a foreword chapter
+ that is globally in scope and an OS chapter that is not. Dormant only
+ while no program cites both transports -- co-cite them and it is a
+ duplicate-constructor error at best and the wrong arm at worst.
+
+ This side was renamed rather than the TCP side for two reasons: six use
+ sites against twenty, and the name is more accurate afterwards. The
+ remaining `Act*` constructors here and in `TcpAction` are unprefixed
+ too, and no other pair collides today; that a whole namespace is shared
+ by two variants is a wider problem than this rename fixes.
+
   DtlsAction =
-    | ActSend (Integer)
+    | ActSendFlight (Integer)
     | ActSetTimer (Integer)
     | ActDeliverKeys
     | ActAck
@@ -155,7 +169,7 @@ Section: The Step
   dtls-hs-finish-flight : DtlsHsState, Integer -> DtlsHsStep
   dtls-hs-finish-flight (st) (now) =
     let next = DtlsHsState { hs-phase = PhWaitAck, hs-flight = dtls-flight-fin, hs-timer = dtls-hs-initial-timer, hs-retries = 0, hs-cookie = st.hs-cookie }
-    in DtlsHsStep { step-state = next, step-actions = [ActDeliverKeys, ActSend dtls-flight-fin, ActSetTimer (now + dtls-hs-initial-timer)] }
+    in DtlsHsStep { step-state = next, step-actions = [ActDeliverKeys, ActSendFlight dtls-flight-fin, ActSetTimer (now + dtls-hs-initial-timer)] }
 
  An ACK for the last flight ends the handshake. RFC 9147 section 5.8.1:
  the WAITING state is left on an ACK as well as on a timer or a peer
@@ -198,7 +212,7 @@ Section: Retransmission
   dtls-hs-retry-now (st) (now) =
     let t = dtls-hs-backoff (st.hs-timer)
     in let next = DtlsHsState { hs-phase = st.hs-phase, hs-flight = st.hs-flight, hs-timer = t, hs-retries = st.hs-retries + 1, hs-cookie = st.hs-cookie }
-    in DtlsHsStep { step-state = next, step-actions = [ActSend (st.hs-flight), ActSetTimer (now + t)] }
+    in DtlsHsStep { step-state = next, step-actions = [ActSendFlight (st.hs-flight), ActSetTimer (now + t)] }
 
   dtls-hs-backoff : Integer -> Integer
   dtls-hs-backoff (t) =
@@ -210,7 +224,7 @@ Section: Step Helpers
   dtls-hs-send : DtlsHsState, Integer, DtlsHsPhase, Integer, List Integer -> DtlsHsStep
   dtls-hs-send (st) (flight) (phase) (now) (cookie) =
     let next = DtlsHsState { hs-phase = phase, hs-flight = flight, hs-timer = dtls-hs-initial-timer, hs-retries = 0, hs-cookie = cookie }
-    in DtlsHsStep { step-state = next, step-actions = [ActSend flight, ActSetTimer (now + dtls-hs-initial-timer)] }
+    in DtlsHsStep { step-state = next, step-actions = [ActSendFlight flight, ActSetTimer (now + dtls-hs-initial-timer)] }
 
   dtls-hs-idle : DtlsHsState -> DtlsHsStep
   dtls-hs-idle (st) = DtlsHsStep { step-state = st, step-actions = [] }
@@ -259,7 +273,7 @@ Section: The Stateless Cookie
 
   dtls-server-verdict : List Integer, List Integer, List Integer -> DtlsAction
   dtls-server-verdict (secret) (client-addr) (offered) =
-    if list-length offered == 0 then ActSend dtls-flight-hrr
+    if list-length offered == 0 then ActSendFlight dtls-flight-hrr
     else if dtls-cookie-valid secret client-addr offered then ActDeliverKeys
     else ActAbort dtls-alert-illegal-parameter
 

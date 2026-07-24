@@ -27,11 +27,22 @@ Section: Linear Solver (ax + b = 0)
   extract-coefficient : Expr, Text -> Integer
   extract-coefficient (e) (var) = when e
     is ExVar (name) -> if name == var then 1 else 0
-    is ExMul (ExInt n) (ExVar name) -> if name == var then n else 0
-    is ExMul (ExVar name) (ExInt n) -> if name == var then n else 0
+    is ExMul (x) (y) -> coeff-of-mul x y var
     is ExNeg (inner) -> negate (extract-coefficient inner var)
     is ExAdd (a) (b) -> extract-coefficient a var + extract-coefficient b var
     is ExSub (a) (b) -> extract-coefficient a var - extract-coefficient b var
+    is otherwise -> 0
+
+ A coefficient is read off either operand order, n*x or x*n.
+
+  coeff-of-mul : Expr, Expr, Text -> Integer
+  coeff-of-mul (x) (y) (var) = when x
+    is ExInt (n) -> when y
+      is ExVar (name) -> if name == var then n else 0
+      is otherwise -> 0
+    is ExVar (name) -> when y
+      is ExInt (n) -> if name == var then n else 0
+      is otherwise -> 0
     is otherwise -> 0
 
   extract-constant : Expr, Text -> Integer
@@ -39,7 +50,7 @@ Section: Linear Solver (ax + b = 0)
     is ExInt (n) -> n
     is ExRatio (n) (d) -> n / d
     is ExVar (name) -> 0
-    is ExMul (ExInt n) (ExVar name) -> 0
+    is ExMul (x) (y) -> 0
     is ExNeg (inner) -> negate (extract-constant inner var)
     is ExAdd (a) (b) -> extract-constant a var + extract-constant b var
     is ExSub (a) (b) -> extract-constant a var - extract-constant b var
@@ -163,11 +174,27 @@ Section: Expression-to-Polynomial
   ex-to-poly-inner (e) (var) = when e
     is ExInt (n) -> Just (poly-new [n] var)
     is ExVar (name) -> if name == var then Just (poly-new [0, 1] var) else Just (poly-new [0] var)
-    is ExPow (ExVar name) (ExInt n) ->
-      if name == var then Just (poly-from-term 1 n var)
-      else None
-    is ExMul (ExInt c) (ExVar name) -> if name == var then Just (poly-new [0, c] var) else None
-    is ExMul (ExInt c) (ExPow (ExVar name) (ExInt n)) -> if name == var then Just (poly-from-term c n var) else None
+    is ExPow (x) (y) -> poly-of-pow x y var 1
+    is ExMul (x) (y) -> poly-of-mul x y var
+    is otherwise -> None
+
+ A bare power contributes coefficient one; a product contributes the
+ integer on its left. Both end at the same place, so poly-of-pow takes
+ the coefficient rather than being written twice.
+
+  poly-of-pow : Expr, Expr, Text, Integer -> Maybe PolynomialCoeffs
+  poly-of-pow (x) (y) (var) (coeff) = when x
+    is ExVar (name) -> when y
+      is ExInt (n) -> if name == var then Just (poly-from-term coeff n var) else None
+      is otherwise -> None
+    is otherwise -> None
+
+  poly-of-mul : Expr, Expr, Text -> Maybe PolynomialCoeffs
+  poly-of-mul (x) (y) (var) = when x
+    is ExInt (c) -> when y
+      is ExVar (name) -> if name == var then Just (poly-new [0, c] var) else None
+      is ExPow (b) (p) -> poly-of-pow b p var c
+      is otherwise -> None
     is otherwise -> None
 
   poly-from-term : Integer, Integer, Text -> PolynomialCoeffs

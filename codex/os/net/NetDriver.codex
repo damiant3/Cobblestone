@@ -1,0 +1,52 @@
+Chapter: NetDriver
+  cites Kernel chapter Ne2k
+
+ The one place the I/O loop names a NIC.
+
+ NetIO used to call ne2k-send-frame and ne2k-recv-frame directly, at six
+ sites across four loops. That made the NE2000 not the default network
+ card but the only one the stack could express: adding a second card
+ meant editing every loop that moves a frame, and every one of those
+ loops is fuel-capped, self-tail-recursive and bracketed by
+ __heap-save/__heap-restore, so they are the last functions in the stack
+ anyone should be editing for a reason unrelated to what they do.
+
+ So the name moves here. NetIO calls net-driver-send-frame and
+ net-driver-recv-frame; those call the NE2000. The loops no longer
+ mention a card.
+
+ THERE IS ONE DRIVER BEHIND THIS SEAM AND IT IS THE NE2000. This
+ chapter is not a registry, it does not probe, and it does not choose --
+ saying otherwise would be a capability this project has not built.
+ What it is, is the single edit point: a second card becomes a branch in
+ the two functions below, and nothing above them changes.
+
+ What a second card costs, stated so nobody rediscovers it: the NE2000
+ is not really driven from Codex at all. ne2k-send-frame and
+ ne2k-recv-frame delegate to the net-send-raw / net-recv-raw builtins,
+ whose register programming is hand-emitted machine code in the
+ compiler (Emit/X86_64IPCHelpers.codex) against a fixed port base. A
+ driver for real hardware does not follow that route and should not:
+ VirtioNet is the shape that works from here, a chapter of ordinary
+ Codex over peek-32 and poke-32 against a BAR, needing no builtin and
+ no compiler change. That is why this seam sits above the builtins
+ rather than beside them.
+
+Section: Send
+
+  net-driver-send-frame : List Integer -> [Network.Write] Integer
+  net-driver-send-frame (frame) = ne2k-send-frame frame
+
+Section: Receive
+
+ The receive path allocates a list on every miss and is polled up to
+ fifty million times per accept, so this delegation must stay a plain
+ call that returns what it is given. It adds a frame to the stack and
+ allocates nothing of its own; the __heap-save/__heap-restore pair that
+ makes those polls survivable stays in NetIO, wrapped around this call
+ exactly as it was wrapped around the driver's.
+
+  net-driver-recv-frame : [Network.Read] List Integer
+  net-driver-recv-frame = ne2k-recv-frame
+
+Page 1

@@ -2,8 +2,8 @@
 #
 # The survey-era killer: growing the compiler source by a few KB pushed
 # a deck past its formula-sized reservation and silently miscompiled
-# (see docs/Designs/Done/Compiler/DemandPagingVictory.md — +3 KB was
-# enough at check-mul 40). This test appends generated ballast to the
+# (+3 KB was enough at check-mul 40, and the demand-paging work that
+# fixed it is archived). This test appends generated ballast to the
 # concatenated compiler source and asserts the CDX pingpong stays
 # byte-identical AND a diagnostic still prints clean — the exact class
 # of failure that consumed a week in 2026-07.

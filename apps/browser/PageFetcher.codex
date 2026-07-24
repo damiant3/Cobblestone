@@ -60,14 +60,13 @@ Section: Default Options
 
 Section: Fetching
 
-  fetch-page : Text, Text, FetchOptions -> [Console] FetchResult
+  fetch-page : Text, Text, FetchOptions -> [Console, Network.Read, Network.Write] FetchResult
   fetch-page (host) (path) (opts) = act
     print-line ("FETCH codex://" & host & "/" & path)
-    let result = fetch-page-tcp host path opts
-    in pure result
+    fetch-page-tcp host path opts
   end
 
-  fetch-page-default : Text, Text -> [Console] FetchResult
+  fetch-page-default : Text, Text -> [Console, Network.Read, Network.Write] FetchResult
   fetch-page-default (host) (path) =
     fetch-page host path fetch-defaults
 
@@ -82,48 +81,51 @@ Section: Network Configuration
 
 Section: TCP Fetch
 
-  fetch-page-tcp : Text, Text, FetchOptions -> FetchResult
+  fetch-page-tcp : Text, Text, FetchOptions -> [Network.Read, Network.Write] FetchResult
   fetch-page-tcp (host) (path) (opts) =
     let accept = if opts.fo-accept-cdx
           then "application/cdx, application/codex"
           else "application/codex"
-    in let req = http-add-header
-          (http-get-request host ("/" & path))
-          ("Accept: " & accept)
+    in let base-req = http-get-request host ("/" & path)
+    in let req = http-add-header base-req ("Accept: " & accept)
     in let req-bytes = http-serialize-request req
-    in let sess = net-session-new fetch-local-mac fetch-local-ip fetch-gateway-ip
-          fetch-local-port fetch-remote-port fetch-host-ip 2000
+    in let sess = net-session-new fetch-local-mac fetch-local-ip fetch-gateway-ip fetch-local-port fetch-remote-port fetch-host-ip 2000
     in let ts = transport-new sess
-    in let ts1 = net-io-connect ts
-    in fetch-after-connect ts1 req-bytes host path opts
+    in act
+      ts1 <- net-io-connect ts
+      fetch-after-connect ts1 req-bytes host path opts
+    end
 
-  fetch-after-connect : TcpTransportState, List Integer, Text, Text, FetchOptions -> FetchResult
+  fetch-after-connect : TcpTransportState, List Integer, Text, Text, FetchOptions -> [Network.Read, Network.Write] FetchResult
   fetch-after-connect (ts) (req-bytes) (host) (path) (opts) =
     when (ts.session).conn.state
-      is TcpEstablished ->
-        let ts2 = net-io-send-raw ts req-bytes
-        in let recv = fetch-recv-response ts2
-        in let ts3 = net-io-close (recv.transport)
-        in if recv.has-data
+      is TcpEstablished -> act
+        ts2 <- net-io-send-raw ts req-bytes
+        recv <- fetch-recv-response ts2
+        ts3 <- net-io-close (recv.transport)
+        if recv.has-data
           then let resp = http-parse-response (recv.data)
             in process-response resp host path opts
           else FetchNetworkError ("No response from: " & host)
+      end
       is otherwise ->
         FetchNetworkError ("TCP connect failed: " & host)
 
-  fetch-recv-response : TcpTransportState -> RawRecvResult
-  fetch-recv-response (ts) =
-    let first = net-io-recv-raw ts 0
-    in if first.has-data
+  fetch-recv-response : TcpTransportState -> [Network.Read, Network.Write] RawRecvResult
+  fetch-recv-response (ts) = act
+    first <- net-io-recv-raw ts 0
+    if first.has-data
       then fetch-recv-more (first.transport) (first.data)
       else first
+  end
 
-  fetch-recv-more : TcpTransportState, List Integer -> RawRecvResult
-  fetch-recv-more (ts) (acc) =
-    let r = net-io-recv-raw ts 49990000
-    in if r.has-data
+  fetch-recv-more : TcpTransportState, List Integer -> [Network.Read, Network.Write] RawRecvResult
+  fetch-recv-more (ts) (acc) = act
+    r <- net-io-recv-raw ts 49990000
+    if r.has-data
       then fetch-recv-more (r.transport) (acc & r.data)
       else RawRecvResult { transport = r.transport, data = acc, has-data = True }
+  end
 
 Section: Response Processing
 

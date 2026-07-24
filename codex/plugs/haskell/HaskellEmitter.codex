@@ -97,11 +97,12 @@ Section: Type Definition Emission
   emit-hs-type-def : ATypeDef -> Text
   emit-hs-type-def (td) =
    when td
-    is ARecordTypeDef (name) (tparams) (fields) (s) ->
+    is ARecordTypeDef (name) (tparams) (fields) (recmut) (s) ->
      emit-hs-record-type (name.value) fields
     is AVariantTypeDef (name) (tparams) (ctors) (s) ->
      if is-tup-type (name.value) then ""
      else emit-hs-sum-type (name.value) ctors
+    is AUnitTypeDef (name) (unitbase) (s) -> ""
 
   emit-hs-sum-type : Text, List AVariantCtorDef -> Text
   emit-hs-sum-type (name) (ctors) =
@@ -151,7 +152,7 @@ Section: Expression Emission
     is IrCharLit (n) (sp) -> integer-to-text n
     is IrName (n) (ty) (sp) -> emit-hs-name n ty arities
     is IrBinary (op) (l) (r) (ty) (sp) -> emit-hs-binary op l r arities
-    is IrNegate (operand) (sp) -> "(negate " & emit-hs-expr-at operand arities (depth + 1) & ")"
+    is IrNegate (operand) (nty) (sp) -> "(negate " & emit-hs-expr-at operand arities (depth + 1) & ")"
     is IrIf (c) (t) (el) (ty) (sp) -> "(if " & emit-hs-expr-at c arities (depth + 1) & " then " & emit-hs-expr-at t arities (depth + 1) & " else " & emit-hs-expr-at el arities (depth + 1) & ")"
     is IrLet (name) (ty) (val) (body) (sp) -> "(let " & hs-sanitize name & " = " & emit-hs-expr-at val arities (depth + 1) & " in " & emit-hs-expr-at body arities (depth + 1) & ")"
     is IrApply (f) (a) (ty) (sp) -> emit-hs-apply e arities
@@ -183,7 +184,7 @@ Section: Expression Emission
    when op
     is IrAppendText | IrAppendList -> "(" & emit-hs-expr l arities & " ++ " & emit-hs-expr r arities & ")"
     is IrConsList -> "(" & emit-hs-expr l arities & " : " & emit-hs-expr r arities & ")"
-    is IrDivInt -> "(div " & emit-hs-expr l arities & " " & emit-hs-expr r arities & ")"
+    is IrDivInt -> "(quot " & emit-hs-expr l arities & " " & emit-hs-expr r arities & ")"
     is IrRemInt -> "(rem " & emit-hs-expr l arities & " " & emit-hs-expr r arities & ")"
     is IrPowInt -> "(" & emit-hs-expr l arities & " ^ " & emit-hs-expr r arities & ")"
     is IrAnd -> "(" & emit-hs-expr l arities & " && " & emit-hs-expr r arities & ")"
@@ -301,7 +302,7 @@ Section: Builtin Emitter
     HsBuiltinEmitter { name = "char-at", emit = \args arities -> "(" & emit-hs-expr (list-at args 0) arities & " !! " & emit-hs-expr (list-at args 1) arities & ")" },
     HsBuiltinEmitter { name = "char-code-at", emit = \args arities -> "(Data.Char.ord (" & emit-hs-expr (list-at args 0) arities & " !! " & emit-hs-expr (list-at args 1) arities & "))" },
     HsBuiltinEmitter { name = "file-exists", emit = \args arities -> "(System.Directory.doesFileExist " & emit-hs-expr (list-at args 0) arities & ")" },
-    HsBuiltinEmitter { name = "int-mod", emit = \args arities -> "(mod " & emit-hs-expr (list-at args 0) arities & " " & emit-hs-expr (list-at args 1) arities & ")" },
+    HsBuiltinEmitter { name = "int-mod", emit = \args arities -> "(mod " & emit-hs-expr (list-at args 0) arities & " (abs " & emit-hs-expr (list-at args 1) arities & "))" },
     HsBuiltinEmitter { name = "integer-to-text", emit = \args arities -> "(show " & emit-hs-expr (list-at args 0) arities & ")" },
     HsBuiltinEmitter { name = "list-at", emit = \args arities -> "(" & emit-hs-expr (list-at args 0) arities & " !! " & emit-hs-expr (list-at args 1) arities & ")" },
     HsBuiltinEmitter { name = "list-length", emit = \args arities -> "(length " & emit-hs-expr (list-at args 0) arities & ")" },
@@ -311,7 +312,7 @@ Section: Builtin Emitter
     HsBuiltinEmitter { name = "negate", emit = \args arities -> "(negate " & emit-hs-expr (list-at args 0) arities & ")" },
     HsBuiltinEmitter { name = "print-error-uni", emit = \args arities -> "(System.IO.hPutStrLn System.IO.stderr " & emit-hs-expr (list-at args 0) arities & ")" },
     HsBuiltinEmitter { name = "print-line-uni", emit = \args arities -> "(putStrLn " & emit-hs-expr (list-at args 0) arities & ")" },
-    HsBuiltinEmitter { name = "read-file", emit = \args arities -> "(readFile " & emit-hs-expr (list-at args 0) arities & ")" },
+    HsBuiltinEmitter { name = "read-text", emit = \args arities -> "(readFile " & emit-hs-expr (list-at args 0) arities & ")" },
     HsBuiltinEmitter { name = "read-line", emit = \args arities -> "getLine" },
     HsBuiltinEmitter { name = "show", emit = \args arities -> "(show " & emit-hs-expr (list-at args 0) arities & ")" },
     HsBuiltinEmitter { name = "substring", emit = \args arities -> "(take " & emit-hs-expr (list-at args 2) arities & " (drop " & emit-hs-expr (list-at args 1) arities & " " & emit-hs-expr (list-at args 0) arities & "))" },

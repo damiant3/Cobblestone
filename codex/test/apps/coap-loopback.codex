@@ -1,0 +1,82 @@
+Chapter: CoapLoopbackTest
+  cites Encode chapter CoapEndpoint
+  cites Encode chapter Coap
+  cites Foreword chapter Maybe
+
+ The CoAP client endpoint driven end to end with no network: a confirmable
+ request, and every way an answer arrives or fails to. The server side is
+ built with the Coap codec (coap-build-response, coap-ack), so the endpoint
+ under test is talking to real RFC 7252 packets, not to itself.
+
+ Five scenarios, each a rule from RFC 7252 section 4-5:
+   1. Piggybacked response in an ACK -- one round trip, delivered.
+   2. A lost request retransmitted at the deadline, then answered.
+   3. A request that is never answered, given up on after MAX_RETRANSMIT.
+   4. A separate response (empty ACK, then a CON carrying the answer),
+      delivered and itself acknowledged.
+   5. NEGATIVE CONTROL: a response whose token does not match is dropped,
+      and the interaction stays open. Without this, "correlated by token"
+      is a claim the test never checks.
+
+Section: Helpers
+
+  req-mid : List Integer -> Integer
+  req-mid (d) = when coap-parse d is None -> (-1) is Just (m) -> m.cm-msg-id
+
+  req-token : List Integer -> List Integer
+  req-token (d) = when coap-parse d is None -> [] is Just (m) -> m.cm-token
+
+  payload : List Integer = [50, 51]
+
+Section: Entry
+
+  opening : [Console] Nothing =
+    let s1 = coap-ep-get coap-ep-new "temp" 0
+    in let req1 = list-at (s1.cs-out) 0
+    in let resp1 = coap-build-response CoapAcknowledgement coap-205-content (req-mid req1) (req-token req1) [] payload
+    in let s1b = coap-ep-recv (s1.cs-ep) resp1 10
+    in let one-done = coap-ep-done (s1b.cs-ep)
+    in let one-code = coap-ep-response-code (s1b.cs-ep)
+    in let one-plen = list-length (coap-ep-response-payload (s1b.cs-ep))
+
+    in let s2 = coap-ep-get coap-ep-new "temp" 0
+    in let req2 = list-at (s2.cs-out) 0
+    in let s2t = coap-ep-tick (s2.cs-ep) 2000
+    in let two-rt-out = list-length (s2t.cs-out)
+    in let two-retries = coap-ep-retries (s2t.cs-ep)
+    in let resp2 = coap-build-response CoapAcknowledgement coap-205-content (req-mid req2) (req-token req2) [] payload
+    in let s2b = coap-ep-recv (s2t.cs-ep) resp2 2010
+    in let two-done = coap-ep-done (s2b.cs-ep)
+
+    in let s3 = coap-ep-get coap-ep-new "temp" 0
+    in let s3a = coap-ep-tick (s3.cs-ep) 2000
+    in let s3b = coap-ep-tick (s3a.cs-ep) 6000
+    in let s3c = coap-ep-tick (s3b.cs-ep) 14000
+    in let s3d = coap-ep-tick (s3c.cs-ep) 30000
+    in let s3e = coap-ep-tick (s3d.cs-ep) 62000
+    in let three-retries = coap-ep-retries (s3d.cs-ep)
+    in let three-failed = coap-ep-failed (s3e.cs-ep)
+
+    in let s4 = coap-ep-get coap-ep-new "temp" 0
+    in let req4 = list-at (s4.cs-out) 0
+    in let ack4 = coap-ack (req-mid req4)
+    in let s4a = coap-ep-recv (s4.cs-ep) ack4 10
+    in let four-waiting-after-ack = coap-ep-done (s4a.cs-ep) == False
+    in let sep4 = coap-build-response CoapConfirmable coap-205-content 8888 (req-token req4) [] payload
+    in let s4b = coap-ep-recv (s4a.cs-ep) sep4 20
+    in let four-done = coap-ep-done (s4b.cs-ep)
+    in let four-ack-out = list-length (s4b.cs-out)
+
+    in let s5 = coap-ep-get coap-ep-new "temp" 0
+    in let req5 = list-at (s5.cs-out) 0
+    in let bad5 = coap-build-response CoapConfirmable coap-205-content 7777 [153, 153] [] payload
+    in let s5b = coap-ep-recv (s5.cs-ep) bad5 10
+    in let five-dropped = coap-ep-done (s5b.cs-ep) == False
+
+    in act
+      print-line-uni ("coap piggyback done=" & show one-done & " code=" & show one-code & " plen=" & show one-plen)
+      print-line-uni ("coap retransmit out=" & show two-rt-out & " retries=" & show two-retries & " done=" & show two-done)
+      print-line-uni ("coap giveup retries=" & show three-retries & " failed=" & show three-failed)
+      print-line-uni ("coap separate done=" & show four-done & " acked-wait=" & show four-waiting-after-ack & " ack-out=" & show four-ack-out)
+      print-line-uni ("coap token-mismatch dropped=" & show five-dropped)
+    end

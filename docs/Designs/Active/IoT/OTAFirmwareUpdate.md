@@ -56,11 +56,11 @@ re-check catches is the bank changing after Gate B blessed it.
 
 1. **The socket.** CoAP is UDP; codex-vm serves only port 53 and drops
    the rest, so no guest completes a live CoAP exchange. The transport is
-   injected into `fw-feed-response`. BACKLOG 5.4 plus a VM capability.
+   injected into `fw-feed-response`, plus a VM capability.
 2. **Gate B costs a List.** `evaluate-load` takes `List Integer`, so the
    caller reads the staged image back out of the bank -- the constraint 5
    memory limit this design names, unfixed. A buffer-taking verifier is
-   the fix. BACKLOG 5.2.
+   the fix.
 3. **The watchdog window is the caller's.** `boot-commit` exists and
    nothing schedules it. A device that never calls it rolls back by
    attempt count, which is the safe direction, but the timed window step
@@ -206,7 +206,7 @@ signed fact from a higher-trust authority. Two known gaps (also
 listed in the trust digest) become real requirements here:
 FactStore has no supersession/revocation primitive, and lease
 revocation has no API. The OTA design needs both; they are scoped
-to the trust layer's backlog, and until they land, the honest
+to the trust layer, and until they land, the honest
 evidence claim is "key rotation by full trust-store reprovision."
 
 ### Update Result codes (Object 5 standard values, mapped)

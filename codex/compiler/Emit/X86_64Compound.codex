@@ -222,7 +222,7 @@ Section: Function Application
  local and emit-indirect-call takes it; every other function reaches the
  SAME clause through the handler table, which is global state at runtime --
  that dynamic reach is the whole point of the table. Until the FileSystem
- layer (BACKLOG 1.5 rung 2) no program performed an op outside the
+ layer no program performed an op outside the
  handler's own body, so this path emitted a direct call by name and died
  at finalize with CDX2040. The op-table walk is gated on user-arity < 0,
  so an ordinary call never pays it; a constructor application skips it by
@@ -386,6 +386,22 @@ Section: Function Application
  no locals: next-local, spill-count, and the frame layout are
  identical whether or not it fires.
 
+ "Over locals" is a hard requirement on BOTH operands, and the reason
+ is the ordering above rather than the emission. The order is computed
+ by tco-arg-reads, which reports which parameters an argument reads,
+ and it can only see through a name -- give it a field access, a call
+ or any other shape and it answers "reads nothing", so the planner
+ believes that argument is safe to schedule after the parameters it
+ actually depends on have been overwritten.
+
+ is-direct-tail-binop used to accept ANY left operand when the right
+ was a small literal and the operator was add or sub. That is how
+ `s.v + 1` came to be written from a parameter slot that the argument
+ before it had already replaced: a wrong number, silently, with no
+ diagnostic and no fault. Widening the direct shapes therefore means
+ teaching tco-arg-reads to see the new shape FIRST; the two are one
+ change, never two. Pinned by codex/test/tco-direct-arg-reads.
+
   is-commutative-tco-op : IRBinaryOp -> Boolean
   is-commutative-tco-op (op) =
    when op
@@ -442,8 +458,8 @@ Section: Function Application
         is IrAddInt -> bound-fits-i32 v
         is IrSubInt -> bound-fits-i32 v & bound-fits-i32 (0 - v)
         is IrMulInt -> bound-fits-i32 v
-        is IrDivInt -> v > 0 & bit-and v (v - 1) == 0
-        is IrRemInt -> v > 0 & bit-and v (v - 1) == 0
+        is IrDivInt -> v > 0 & bit-and v (v - 1) == 0 & pow2-dividend-nonneg (st.range-env) left
+        is IrRemInt -> v > 0 & bit-and v (v - 1) == 0 & pow2-dividend-nonneg (st.range-env) left
         is otherwise -> False
       is IrName (rn) (rt) (rs) ->
        let rslot = lookup-local (st.locals) rn
@@ -452,14 +468,7 @@ Section: Function Application
           else if rslot == target then is-commutative-tco-op op
           else True
       is otherwise -> False
-    is otherwise ->
-     when right
-      is IrIntLit (v) (s) ->
-       when op
-        is IrAddInt -> bound-fits-i32 v
-        is IrSubInt -> bound-fits-i32 v & bound-fits-i32 (0 - v)
-        is otherwise -> False
-      is otherwise -> False
+    is otherwise -> False
 
   tco-direct-count : CodegenState, List IRExpr, List Integer, Integer, Integer -> Integer
   tco-direct-count (st) (args) (param-locals) (i) (acc) =
@@ -520,12 +529,12 @@ Section: Function Application
         is IrAddInt -> st-append-code (lload.state) (lea target (lload.reg) v)
         is IrSubInt -> st-append-code (lload.state) (lea target (lload.reg) (0 - v))
         is IrMulInt -> st-append-code (lload.state) (imul-rri target (lload.reg) v)
-        is IrDivInt -> if v > 0 & bit-and v (v - 1) == 0 then
+        is IrDivInt -> if v > 0 & bit-and v (v - 1) == 0 & pow2-dividend-nonneg (st.range-env) left then
          let shift = int-log2 v
          in if lload.reg == target then st-append-code (lload.state) (sar-ri target shift)
          else st-append-code (lload.state) (mov-rr target (lload.reg) & sar-ri target shift)
         else eval-tail-arg-standard st arg target
-        is IrRemInt -> if v > 0 & bit-and v (v - 1) == 0 then
+        is IrRemInt -> if v > 0 & bit-and v (v - 1) == 0 & pow2-dividend-nonneg (st.range-env) left then
          if lload.reg == target then st-append-code (lload.state) (and-ri target (v - 1))
          else st-append-code (lload.state) (mov-rr target (lload.reg) & and-ri target (v - 1))
         else eval-tail-arg-standard st arg target
@@ -876,10 +885,44 @@ Section: Narrow-store with overflow-mode dispatch
  emit the same trap shape (jcc + ud2) for OvError; OvClamping uses
  cmp-ri + jcc + mov-ri32 to saturate when out of range.
 
-  ir-expr-proven-range : IRExpr -> CodexType
-  ir-expr-proven-range (e) =
+ The prover takes the range environment `emit-let` maintains on the
+ codegen state (see `RangeBind`, X86_64State). Two arms use it: a name
+ answers whatever binding is in scope for it, and a let extends the
+ environment for its own body -- the case the prover used to discard.
+
+ `range-env-bind` COPIES before it pushes, and that is not ceremony.
+ `list-push` writes in place while under capacity and returns the same
+ list, and this environment is shared between siblings: an if hands the
+ same one to both arms, a binary to both operands. Binding in place would
+ leave a then-arm's let in scope while the else-arm was proved, which is a
+ range for a name not bound on that path -- a wrongly ELIDED bounds check,
+ which is a silent miscompile rather than a slow one. The copy is
+ O(depth) over a depth measured in single digits.
+
+  range-env-bind : List RangeBind, Text, CodexType -> List RangeBind
+  range-env-bind (env) (n) (ty) =
+   list-push (range-env-copy env 0 (list-length env) []) (RangeBind { rb-name = n, rb-ty = ty })
+
+  range-env-copy : List RangeBind, Integer, Integer, List RangeBind -> List RangeBind
+  range-env-copy (env) (i) (len) (acc) =
+   if i >= len then acc
+   else range-env-copy env (i + 1) len (list-push acc (list-at env i))
+
+  range-env-lookup : List RangeBind, Text -> CodexType
+  range-env-lookup (env) (n) = range-env-scan env n (list-length env - 1)
+
+  range-env-scan : List RangeBind, Text, Integer -> CodexType
+  range-env-scan (env) (n) (i) =
+   if i < 0 then int-ty-default
+   else let b = list-at env i
+   in if b.rb-name == n then b.rb-ty
+      else range-env-scan env n (i - 1)
+
+  ir-expr-proven-range : List RangeBind, IRExpr -> CodexType
+  ir-expr-proven-range (env) (e) =
    when e
     is IrIntLit (v) (s) -> IntegerTy v v OvError
+    is IrName (n) (ty) (sp) -> range-env-lookup env n
     is IrFieldAccess (rec) (fname) (vty) (sp) ->
      when vty
       is IntegerTy (lo) (hi) (mode) -> vty
@@ -887,35 +930,52 @@ Section: Narrow-store with overflow-mode dispatch
     is IrApply (func) (arg) (ty) (sp) ->
      when func
       is IrName (n) (nty) (nsp) ->
-       if n == "__narrow" then ir-expr-proven-range arg else int-ty-default
+       if n == "__narrow" then ir-expr-proven-range env arg else int-ty-default
       is IrApply (inner-func) (inner-arg) (ity) (isp) ->
        when inner-func
         is IrName (n) (nty) (nsp) ->
-         if n == "int-mod" then proven-mod-shallow inner-arg arg
-         else if n == "bit-and" then proven-bitand-shallow inner-arg arg
-         else if n == "bit-shru" then proven-shru-shallow inner-arg arg
+         if n == "int-mod" then proven-mod-shallow env inner-arg arg
+         else if n == "bit-and" then proven-bitand-shallow env inner-arg arg
+         else if n == "bit-shru" then proven-shru-shallow env inner-arg arg
          else int-ty-default
         is otherwise -> int-ty-default
       is otherwise -> int-ty-default
-    is IrBinary (op) (left) (right) (ty) (sp) -> proven-binary-range op left right
-    is IrNegate (x) (s) -> proven-negate-range x
-    is IrIf (cond) (then-e) (else-e) (ty) (sp) -> proven-if-range then-e else-e
-    is IrLet (name) (lty) (value) (body) (sp) -> ir-expr-proven-range body
+    is IrBinary (op) (left) (right) (ty) (sp) -> proven-binary-range env op left right
+    is IrNegate (x) (t) (s) -> proven-negate-range env x
+    is IrIf (cond) (then-e) (else-e) (ty) (sp) -> proven-if-range env then-e else-e
+    is IrLet (name) (lty) (value) (body) (sp) -> ir-expr-proven-range (range-env-bind env name (ir-expr-proven-range env value)) body
     is otherwise -> int-ty-default
 
-  proven-negate-range : IRExpr -> CodexType
-  proven-negate-range (x) =
-   let inner = ir-expr-proven-range x
+ Whether a dividend is proven never to be negative, which is the condition
+ on the power-of-two strength reduction for division and remainder.
+
+ `sar` rounds toward negative infinity and `and` answers the non-negative
+ residue, while `idiv` truncates toward zero and leaves a remainder with
+ the sign of the dividend. For a non-negative dividend the two agree and
+ the one-instruction form is exact; for a negative one they do not, and
+ the shift silently answered -4 where -7 / 2 is -3 until 2026-07-21.
+ Unproven means unsafe: the caller falls through to idiv, which is the
+ semantics rather than an approximation of it.
+
+  pow2-dividend-nonneg : List RangeBind, IRExpr -> Boolean
+  pow2-dividend-nonneg (env) (e) =
+   when ir-expr-proven-range env e
+    is IntegerTy (lo) (hi) (m) -> lo >= 0
+    is otherwise -> False
+
+  proven-negate-range : List RangeBind, IRExpr -> CodexType
+  proven-negate-range (env) (x) =
+   let inner = ir-expr-proven-range env x
    in when inner
     is IntegerTy (lo) (hi) (m) ->
      if lo == i64-min then int-ty-default
      else IntegerTy (negate hi) (negate lo) m
     is otherwise -> int-ty-default
 
-  proven-if-range : IRExpr, IRExpr -> CodexType
-  proven-if-range (then-e) (else-e) =
-   let tr = ir-expr-proven-range then-e
-   in let er = ir-expr-proven-range else-e
+  proven-if-range : List RangeBind, IRExpr, IRExpr -> CodexType
+  proven-if-range (env) (then-e) (else-e) =
+   let tr = ir-expr-proven-range env then-e
+   in let er = ir-expr-proven-range env else-e
    in when tr
     is IntegerTy (t-lo) (t-hi) (tm) ->
      when er
@@ -926,10 +986,10 @@ Section: Narrow-store with overflow-mode dispatch
       is otherwise -> int-ty-default
     is otherwise -> int-ty-default
 
-  proven-binary-range : IRBinaryOp, IRExpr, IRExpr -> CodexType
-  proven-binary-range (op) (left) (right) =
-   let lr = ir-expr-proven-range left
-   in let rr = ir-expr-proven-range right
+  proven-binary-range : List RangeBind, IRBinaryOp, IRExpr, IRExpr -> CodexType
+  proven-binary-range (env) (op) (left) (right) =
+   let lr = ir-expr-proven-range env left
+   in let rr = ir-expr-proven-range env right
    in when lr
     is IntegerTy (l-lo) (l-hi) (lm) ->
      when rr
@@ -976,10 +1036,10 @@ Section: Narrow-store with overflow-mode dispatch
    then IntegerTy (bit-shru x-lo n-hi) (bit-shru x-hi n-lo) OvError
    else int-ty-default
 
-  proven-shru-shallow : IRExpr, IRExpr -> CodexType
-  proven-shru-shallow (x-expr) (n-expr) =
-   let xr = ir-expr-proven-range x-expr
-   in let nr = ir-expr-proven-range n-expr
+  proven-shru-shallow : List RangeBind, IRExpr, IRExpr -> CodexType
+  proven-shru-shallow (env) (x-expr) (n-expr) =
+   let xr = ir-expr-proven-range env x-expr
+   in let nr = ir-expr-proven-range env n-expr
    in when xr
     is IntegerTy (x-lo) (x-hi) (xm) ->
      when nr
@@ -987,19 +1047,19 @@ Section: Narrow-store with overflow-mode dispatch
       is otherwise -> int-ty-default
     is otherwise -> int-ty-default
 
-  proven-mod-shallow : IRExpr, IRExpr -> CodexType
-  proven-mod-shallow (x-expr) (n-expr) =
-   let nr = ir-expr-proven-range n-expr
+  proven-mod-shallow : List RangeBind, IRExpr, IRExpr -> CodexType
+  proven-mod-shallow (env) (x-expr) (n-expr) =
+   let nr = ir-expr-proven-range env n-expr
    in when nr
     is IntegerTy (n-lo) (n-hi) (nm) ->
      if n-lo > 0 then IntegerTy 0 (n-hi - 1) OvError
      else int-ty-default
     is otherwise -> int-ty-default
 
-  proven-bitand-shallow : IRExpr, IRExpr -> CodexType
-  proven-bitand-shallow (x-expr) (y-expr) =
-   let xr = ir-expr-proven-range x-expr
-   in let yr = ir-expr-proven-range y-expr
+  proven-bitand-shallow : List RangeBind, IRExpr, IRExpr -> CodexType
+  proven-bitand-shallow (env) (x-expr) (y-expr) =
+   let xr = ir-expr-proven-range env x-expr
+   in let yr = ir-expr-proven-range env y-expr
    in when xr
     is IntegerTy (x-lo) (x-hi) (xm) ->
      when yr
@@ -1021,13 +1081,13 @@ Section: Narrow-store with overflow-mode dispatch
       is otherwise -> False
     is otherwise -> False
 
-  value-fits-field : IRExpr, CodexType -> Boolean
-  value-fits-field (val-expr) (field-ty) =
-   bounds-subset (ir-expr-proven-range val-expr) field-ty
+  value-fits-field : List RangeBind, IRExpr, CodexType -> Boolean
+  value-fits-field (env) (val-expr) (field-ty) =
+   bounds-subset (ir-expr-proven-range env val-expr) field-ty
 
   emit-narrow-store-proven : CodegenState, CodexType, Integer, Integer, Integer, IRExpr -> CodegenState
   emit-narrow-store-proven (st) (ty) (rd) (rs) (offset) (val-expr) =
-   if value-fits-field val-expr ty
+   if value-fits-field (st.range-env) val-expr ty
    then let width = field-byte-width ty
         in let st1 = st-add-info st cdx-bounds-proven "bounds proven: runtime check elided" (ir-expr-span val-expr)
         in st-append-code st1 (emit-narrow-store width rd rs offset)
@@ -1527,9 +1587,25 @@ Section: Self-Type-Table Emission
    else let seen2 = reach-names defs (list-at refs i) seen (fuel - 1)
    in reach-names-list defs refs (i + 1) n seen2 (fuel - 1)
 
+ THIS LIST IS THE ESCAPE CHECK'S REACH, AND A NAME MISSING FROM IT FAILS
+ SILENTLY. The table is filtered to what these roots reach, so a
+ `pmap-escape-count` on a type that is not reachable from one of them gets
+ `lookup-type-binding` miss, falls through `pmap-walk`'s `is otherwise ->
+ 0`, and reports ZERO ESCAPES -- indistinguishable from a clean phase.
+ CHECK and LOWER were exactly that: `precise-escape-bag` on
+ `CompileChecked` and `IRChapter` answered 0 against a range covering the
+ whole 32-bit address space, which no real traversal can do.
+
+ The failure is quiet in both directions, which is why it lasted: the
+ self-test passes (PmTestRec is a root), and a phase whose root is missing
+ looks like a phase with nothing to report. When adding a precise root at
+ a call site, add its type here in the same change and confirm the count
+ moves off zero against a deliberately-wide range before trusting a zero
+ against the real one.
+
   emit-self-type-table : Integer, Integer, Integer, List TypeBinding -> ConstEmit
   emit-self-type-table (buf) (len) (vaddr) (type-defs) =
-   let roots = ["PmTestRec", "Document", "AChapter"]
+   let roots = ["PmTestRec", "Document", "AChapter", "CompileChecked", "IRChapter"]
    in let names = reach-names-list type-defs roots 0 (list-length roots) [] 100000
    in let filtered = filter-by-names type-defs names 0 (list-length type-defs) []
    in let sorted = sort-type-bindings filtered 0 0 []
@@ -1791,11 +1867,15 @@ Section: Pattern Matching
      cg-state = st1,
      end-patches = mbs.end-patches
     }
-   in let st3 = if pat-result.next-branch-patch >= 0 then MatchBranchState {
-     cg-state = patch-jcc-at (st2.cg-state) (pat-result.next-branch-patch) (st2.cg-state.code-len),
+   in let st2b = MatchBranchState {
+     cg-state = patch-pattern-extras (st2.cg-state) (pat-result.extra-patches) 0,
      end-patches = st2.end-patches
     }
-    else st2
+   in let st3 = if pat-result.next-branch-patch >= 0 then MatchBranchState {
+     cg-state = patch-jcc-at (st2b.cg-state) (pat-result.next-branch-patch) (st2b.cg-state.code-len),
+     end-patches = st2b.end-patches
+    }
+    else st2b
    in if guard-result.guard-patch >= 0 then MatchBranchState {
      cg-state = patch-jcc-at (st3.cg-state) (guard-result.guard-patch) (st3.cg-state.code-len),
      end-patches = st3.end-patches
@@ -1824,8 +1904,71 @@ Section: Pattern Matching
 
   EmitPatternResult = record {
    state : CodegenState,
-   next-branch-patch : Integer
+   next-branch-patch : Integer,
+   extra-patches : List Integer
   }
+
+ A pattern used to report exactly one place to patch, which was enough
+ for a tag test or a bare literal and not enough for anything that has
+ to test twice. `is TkOp ("+")` needs the tag AND the field compared, so
+ the field test had nowhere to be reported -- and `bind-ctor-fields`
+ accordingly emitted none, binding variable sub-patterns and dropping
+ every other kind on its `is otherwise`. The result compiled clean,
+ raised no diagnostic, and answered the first arm whose CONSTRUCTOR
+ matched: `is ExInt (0)` matched any ExInt, and a four-way operator
+ dispatch became whichever arm was written first.
+
+ `extra-patches` is where the second test goes. Everything that reports
+ one patch reports an empty list here, and the branch emitter patches
+ the head and the tail to the same landing site.
+
+  BindFieldsResult = record {
+   state : CodegenState,
+   patches : List Integer
+  }
+
+  LitTestResult = record {
+   state : CodegenState,
+   patch : Integer
+  }
+
+ One literal comparison, for a field or for a whole scrutinee. Text is
+ the case that cannot be a `cmp` against an immediate: a Text value is a
+ pointer, so the literal is materialised and the two are handed to
+ __str_eq, exactly as `emit-eq-op` does for `==`. Comparing the pointer
+ against `pat-lit-to-integer` of the spelling is what a top-level
+ `is "sin" ->` used to do, and it never matched anything.
+
+ Both operands are stored to locals before either is loaded. That is
+ the ordering `emit-binary-standard` uses and it is not decoration:
+ `emit-text-lit` evicts RAX, so materialising the literal while the
+ field value is still live in a temp loses the field.
+
+  emit-pattern-lit-test : CodegenState, Integer, Text, CodexType -> LitTestResult
+  emit-pattern-lit-test (st) (val-reg) (value) (ty) =
+   when resolve-constructed-ty st ty
+    is TextTy ->
+     let val-loc = alloc-local st
+     in let st0 = store-local (val-loc.state) (val-loc.reg) val-reg
+     in let lit = emit-text-lit st0 value
+     in let lit-loc = alloc-local (lit.state)
+     in let st1 = store-local (lit-loc.state) (lit-loc.reg) (lit.reg)
+     in let v-load = load-local st1 (val-loc.reg)
+     in let l-load = load-local (v-load.state) (lit-loc.reg)
+     in let eq = emit-helper-call-2-regs (l-load.state) (v-load.reg) (l-load.reg) "__str_eq"
+     in let st2 = st-append-code (eq.state) (cmp-ri (eq.reg) 0)
+     in let patch-pos = st2.code-len
+     in LitTestResult {
+      state = st-append-code st2 (jcc cc-e 0),
+      patch = patch-pos
+     }
+    is otherwise ->
+     let st1 = st-append-code st (cmp-ri val-reg (pat-lit-to-integer value))
+     in let patch-pos = st1.code-len
+     in LitTestResult {
+      state = st-append-code st1 (jcc cc-ne 0),
+      patch = patch-pos
+     }
 
  The emitter never guesses a constructor tag. If the scrutinee does not
  resolve to a sum type, or the pattern names a constructor the sum does
@@ -1848,7 +1991,8 @@ Section: Pattern Matching
    when pat
     is IrWildPat (sp) -> EmitPatternResult {
      state = st,
-     next-branch-patch = -1
+     next-branch-patch = -1,
+     extra-patches = []
     }
     is IrVarPat (name) (ty) (sp) ->
      let var-loc = alloc-local st
@@ -1856,7 +2000,8 @@ Section: Pattern Matching
      in let st1 = store-local (loaded.state) (var-loc.reg) (loaded.reg)
      in EmitPatternResult {
       state = add-local st1 name (var-loc.reg),
-      next-branch-patch = -1
+      next-branch-patch = -1,
+      extra-patches = []
      }
     is IrCtorPat (name) (sub-pats) (ty) (sp) ->
      let scrut-load = load-local st scrut-loc
@@ -1873,20 +2018,19 @@ Section: Pattern Matching
      in let jcc-pos = st2.code-len
      in let st3 = st-append-code st2 (jcc cc-ne 0)
      in let field-tys = ctor-field-types resolve-ty name
-     in let st4 = bind-ctor-fields st3 scrut-loc sub-pats field-tys 0
+     in let bf = bind-ctor-fields st3 scrut-loc sub-pats field-tys 0 []
      in EmitPatternResult {
-      state = st4,
-      next-branch-patch = jcc-pos
+      state = bf.state,
+      next-branch-patch = jcc-pos,
+      extra-patches = bf.patches
      }
     is IrLitPat (value) (ty) (sp) ->
-     let int-value = lit-text-to-integer value
-     in let scrut-load = load-local st scrut-loc
-     in let st1 = st-append-code (scrut-load.state) (cmp-ri (scrut-load.reg) int-value)
-     in let jcc-pos = st1.code-len
-     in let st2 = st-append-code st1 (jcc cc-ne 0)
+     let scrut-load = load-local st scrut-loc
+     in let lt = emit-pattern-lit-test (scrut-load.state) (scrut-load.reg) value ty
      in EmitPatternResult {
-      state = st2,
-      next-branch-patch = jcc-pos
+      state = lt.state,
+      next-branch-patch = lt.patch,
+      extra-patches = []
      }
     is IrVecPat (sub-pats) (ty) (sp) ->
      let result-loc = alloc-local st
@@ -1900,7 +2044,8 @@ Section: Pattern Matching
      in let st5 = st-append-code st4 (jcc cc-e 0)
      in EmitPatternResult {
       state = st5,
-      next-branch-patch = jcc-pos
+      next-branch-patch = jcc-pos,
+      extra-patches = []
      }
 
   emit-vec-lane-checks : CodegenState, Integer, List IRPat, Integer, Integer, Integer -> CodegenState
@@ -1909,7 +2054,7 @@ Section: Pattern Matching
    else let sub = list-at pats i
    in when sub
     is IrLitPat (value) (ty) (sp) ->
-     let int-value = lit-text-to-integer value
+     let int-value = pat-lit-to-integer value
      in let scrut-load = load-local st scrut-loc
      in let lane-reg = alloc-temp (scrut-load.state)
      in let st1 = st-append-code (lane-reg.state) (mov-load (lane-reg.reg) (scrut-load.reg) (i * 8))
@@ -1931,23 +2076,40 @@ Section: Pattern Matching
     is IrWildPat (sp) -> emit-vec-lane-checks st scrut-loc pats result-loc (i + 1) n
     is otherwise -> emit-vec-lane-checks st scrut-loc pats result-loc (i + 1) n
 
-  bind-ctor-fields : CodegenState, Integer, List IRPat, List CodexType, Integer -> CodegenState
-  bind-ctor-fields (st) (scrut-loc) (sub-pats) (tys) (i) =
-   if i == list-length sub-pats then st
+  bind-ctor-fields : CodegenState, Integer, List IRPat, List CodexType, Integer, List Integer -> BindFieldsResult
+  bind-ctor-fields (st) (scrut-loc) (sub-pats) (tys) (i) (patches) =
+   if i == list-length sub-pats then BindFieldsResult { state = st, patches = patches }
    else let sub = list-at sub-pats i
+   in let packed = i < list-length tys
+   in let fty = if packed then list-at tys i else ErrorTy
+   in let fw = if packed then field-byte-width fty else 8
+   in let fsigned = if packed then field-byte-signed fty else False
+   in let foff = if packed then sum-ctor-field-offset tys i else (1 + i) * 8
    in when sub
      is IrVarPat (name) (ty) (sp) ->
       let field-loc = alloc-local st
-   in let scrut-load = load-local (field-loc.state) scrut-loc
-   in let field-val = alloc-temp (scrut-load.state)
-   in let packed = i < list-length tys
-   in let fw = if packed then field-byte-width (list-at tys i) else 8
-   in let fsigned = if packed then field-byte-signed (list-at tys i) else False
-   in let foff = if packed then sum-ctor-field-offset tys i else (1 + i) * 8
-   in let st1 = st-append-code (field-val.state) (emit-narrow-load fw fsigned (field-val.reg) (scrut-load.reg) foff)
-   in let st2 = store-local st1 (field-loc.reg) (field-val.reg)
-   in bind-ctor-fields (add-local st2 name (field-loc.reg)) scrut-loc sub-pats tys (i + 1)
-     is otherwise -> bind-ctor-fields st scrut-loc sub-pats tys (i + 1)
+      in let scrut-load = load-local (field-loc.state) scrut-loc
+      in let field-val = alloc-temp (scrut-load.state)
+      in let st1 = st-append-code (field-val.state) (emit-narrow-load fw fsigned (field-val.reg) (scrut-load.reg) foff)
+      in let st2 = store-local st1 (field-loc.reg) (field-val.reg)
+      in bind-ctor-fields (add-local st2 name (field-loc.reg)) scrut-loc sub-pats tys (i + 1) patches
+     is IrLitPat (value) (lty) (lsp) ->
+      let scrut-load = load-local st scrut-loc
+      in let field-val = alloc-temp (scrut-load.state)
+      in let st1 = st-append-code (field-val.state) (emit-narrow-load fw fsigned (field-val.reg) (scrut-load.reg) foff)
+      in let lt = emit-pattern-lit-test st1 (field-val.reg) value fty
+      in bind-ctor-fields (lt.state) scrut-loc sub-pats tys (i + 1) (list-push patches (lt.patch))
+     is otherwise -> bind-ctor-fields st scrut-loc sub-pats tys (i + 1) patches
+
+ Every field test a pattern emitted lands where its tag test lands: the
+ next branch. They are patched to the same target as next-branch-patch,
+ which is the code position reached once this branch's body and its
+ jump-to-end have been written.
+
+  patch-pattern-extras : CodegenState, List Integer, Integer -> CodegenState
+  patch-pattern-extras (st) (patches) (i) =
+   if i == list-length patches then st
+   else patch-pattern-extras (patch-jcc-at st (list-at patches i) (st.code-len)) patches (i + 1)
 
   patch-match-end-jumps : CodegenState, List Integer, Integer -> CodegenState
   patch-match-end-jumps (st) (patches) (i) =
@@ -1955,33 +2117,45 @@ Section: Pattern Matching
    else patch-match-end-jumps (patch-jmp-at st (list-at patches i) (st.code-len)) patches (i + 1)
 
 Section: List Emission
-  emit-eval-list-elems : CodegenState, List IRExpr, Integer, List Integer -> SavedArgs
-  emit-eval-list-elems (st) (elems) (i) (acc) =
-   if i == list-length elems then SavedArgs {
-   state = st,
-   locals = acc
-  }
-   else let r = emit-expr st (list-at elems i)
-   in let loc = alloc-local (r.state)
-   in let st1 = store-local (loc.state) (loc.reg) (r.reg)
-   in emit-eval-list-elems st1 elems (i + 1) (list-push acc (loc.reg))
 
-  emit-store-list-elems : CodegenState, List Integer, Integer, Integer -> CodegenState
-  emit-store-list-elems (st) (elem-locals) (ptr-loc) (i) =
-   if i == list-length elem-locals then st
-   else let val = load-local st (list-at elem-locals i)
+ A list literal costs TWO locals, whatever its length. The buffer is
+ reserved before any element runs, and each element is evaluated and
+ stored into its slot before the next one starts, so only the buffer
+ pointer and one scratch slot are ever live. Reserving first is what
+ makes this safe rather than merely shorter: the bivy is a bump
+ allocator, so an element that allocates advances R10 ABOVE a buffer
+ already reserved below it and cannot overlap it.
+
+ This replaces a walk that gave every element its own local and held
+ all of them until the buffer was filled. At one local per element a
+ literal ran the emitter off the end of four separate 16-bit counters
+ in sequence, and the first to go tripped __narrow and trapped with no
+ diagnostic, which is why max-list-literal-elems exists.
+
+ The instruction count per element is unchanged: the store-load pair
+ that used to straddle the two walks now sits inside one. What moves
+ is the ORDER, and the emitted bytes with it.
+
+  emit-store-elem-at : CodegenState, IRExpr, Integer, Integer, Integer -> CodegenState
+  emit-store-elem-at (st) (elem) (ptr-loc) (scratch-loc) (i) =
+   let r = emit-expr st elem
+   in let st1 = store-local (r.state) scratch-loc (r.reg)
+   in let val = load-local st1 scratch-loc
    in let ptr = load-local (val.state) ptr-loc
-   in let st1 = st-append-code (ptr.state) (mov-store (ptr.reg) (val.reg) (8 + i * 8))
-   in emit-store-list-elems st1 elem-locals ptr-loc (i + 1)
+   in st-append-code (ptr.state) (mov-store (ptr.reg) (val.reg) (8 + i * 8))
+
+  emit-eval-store-list-elems : CodegenState, List IRExpr, Integer, Integer, Integer -> CodegenState
+  emit-eval-store-list-elems (st) (elems) (ptr-loc) (scratch-loc) (i) =
+   if i == list-length elems then st
+   else let st1 = emit-store-elem-at st (list-at elems i) ptr-loc scratch-loc i
+   in emit-eval-store-list-elems st1 elems ptr-loc scratch-loc (i + 1)
 
   emit-list : CodegenState, List IRExpr -> EmitResult
   emit-list (st) (elems) =
-   let saved = emit-eval-list-elems (st-set-tail-pos st False) elems 0 []
-   in let count = list-length elems
-   in emit-list-bivy (saved.state) (saved.locals) count
+   emit-list-bivy (st-set-tail-pos st False) elems (list-length elems)
 
-  emit-list-bivy : CodegenState, List Integer, Integer -> EmitResult
-  emit-list-bivy (st) (locals) (count) =
+  emit-list-bivy : CodegenState, List IRExpr, Integer -> EmitResult
+  emit-list-bivy (st) (elems) (count) =
    let cap-tmp = alloc-temp st
    in let st1 = st-append-code (cap-tmp.state) (li (cap-tmp.reg) count)
    in let st2 = st-append-code st1 (mov-store reg-r10 (cap-tmp.reg) 0)
@@ -1991,31 +2165,9 @@ Section: List Emission
    in let st7 = st-append-code (len-tmp.state) (li (len-tmp.reg) count)
    in let ptr-load = load-local st7 (alloc.ptr-loc)
    in let st8 = st-append-code (ptr-load.state) (mov-store (ptr-load.reg) (len-tmp.reg) 0)
-   in let st9 = emit-store-list-elems st8 locals (alloc.ptr-loc) 0
+   in let scratch = alloc-local st8
+   in let st9 = emit-eval-store-list-elems (scratch.state) elems (alloc.ptr-loc) (scratch.reg) 0
    in load-local st9 (alloc.ptr-loc)
-
-  emit-list-deck : CodegenState, List Integer, Integer -> EmitResult
-  emit-list-deck (st) (locals) (count) =
-   let addr-tmp = alloc-temp st
-   in let st0 = st-append-code (addr-tmp.state) (li (addr-tmp.reg) deck-pos-addr)
-   in let deckp-tmp = alloc-temp st0
-   in let st1 = st-append-code (deckp-tmp.state) (mov-load (deckp-tmp.reg) (addr-tmp.reg) 0)
-   in let cap-tmp = alloc-temp st1
-   in let st2 = st-append-code (cap-tmp.state) (li (cap-tmp.reg) count)
-   in let st3 = st-append-code st2 (mov-store (deckp-tmp.reg) (cap-tmp.reg) 0)
-   in let st4 = st-append-code st3 (add-ri (deckp-tmp.reg) 8)
-   in let ptr-loc = alloc-local st4
-   in let ptr-tmp = alloc-temp (ptr-loc.state)
-   in let st5 = st-append-code (ptr-tmp.state) (mov-rr (ptr-tmp.reg) (deckp-tmp.reg))
-   in let st6 = store-local st5 (ptr-loc.reg) (ptr-tmp.reg)
-   in let st7 = st-append-code st6 (add-ri (deckp-tmp.reg) ((count + 1) * 8))
-   in let st8 = st-append-code st7 (mov-store (addr-tmp.reg) (deckp-tmp.reg) 0)
-   in let len-tmp = alloc-temp st8
-   in let st9 = st-append-code (len-tmp.state) (li (len-tmp.reg) count)
-   in let ptr-load = load-local st9 (ptr-loc.reg)
-   in let st10 = st-append-code (ptr-load.state) (mov-store (ptr-load.reg) (len-tmp.reg) 0)
-   in let st11 = emit-store-list-elems st10 locals (ptr-loc.reg) 0
-   in load-local st11 (ptr-loc.reg)
 
 
 Page 5 of 14

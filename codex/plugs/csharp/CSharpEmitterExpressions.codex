@@ -64,12 +64,17 @@ Section: Identifier Helpers
     is VoidTy -> "void"
     is UnitTy (name) (inner) -> "void"
     is NothingTy -> "object"
+    is ProofTy -> "object"
+    is PropEqTy (pl) (pr) -> "object"
     is ErrorTy -> "object"
-    is FunTy (p) (r) -> "Func<" & cs-type p & ", " & cs-type r & ">"
+    is FunTy (p) (fnrow) (r) -> "Func<" & cs-type p & ", " & cs-type r & ">"
     is ListTy (elem) -> "List<" & cs-type elem & ">"
     is LinkedListTy (elem) -> "List<" & cs-type elem & ">"
     is TypeVar (id) -> "T" & integer-to-text id
     is ForAllTy (id) (body) -> cs-type body
+    is ForAllEff (id) (body) -> cs-type body
+    is LinearTy (body) -> cs-type body
+    is TypeApply (body) (tyarg) -> cs-type body
     is SumTy (name) (ty-args) (ctors) -> if list-length ty-args == 0 then sanitize (name.value)
                                           else sanitize (name.value) & "<" & emit-cs-type-args ty-args 0 & ">"
     is RecordTy (name) (ty-args) (fields) -> if list-length ty-args > 0 then sanitize (name.value) & "<" & emit-cs-type-args ty-args 0 & ">"
@@ -78,6 +83,8 @@ Section: Identifier Helpers
                                      else if list-length args == 0 then sanitize (name.value)
                                      else sanitize (name.value) & "<" & emit-cs-type-args args 0 & ">"
     is VectorTy (vn) (vt) -> "List<" & cs-type vt & ">"
+    is VectorMaskTy (vn) -> "List<bool>"
+    is TypeCon (name) -> sanitize (name.value)
     is EffectfulTy (effects) (sc) (ret) -> cs-type ret
 
   emit-cs-type-args : List CodexType, Integer -> Text
@@ -256,7 +263,7 @@ Section: Raw Reference Builtins
 
 Section: Platform Seam Overrides
 
- The Lens platform seam (apps/lens/DESIGN.md 4.4): a Codex-declared
+ The Lens platform seam: a Codex-declared
  function with a real body for the native target is REPLACED at C#
  emission by a call into a runtime preamble class. The interception
  rides the two lookups that already fire before any user-definition
@@ -375,7 +382,7 @@ Section: Apply Chain
    BuiltinEmitter { name = "read-all", emit = \args -> \arities -> \ty -> emit-builtin-read-all args arities },
    BuiltinEmitter { name = "close-file", emit = \args -> \arities -> \ty -> emit-expr (list-at args 0) arities & ".Dispose()" },
    BuiltinEmitter { name = "read-line", emit = \args -> \arities -> \ty -> "((Maybe<string>)(Console.ReadLine() switch { null => new None<string>(), var _s => new Just<string>(_s) }))" },
-   BuiltinEmitter { name = "read-file", emit = \args -> \arities -> \ty -> emit-builtin-read-file args arities },
+   BuiltinEmitter { name = "read-text", emit = \args -> \arities -> \ty -> emit-builtin-read-file args arities },
    BuiltinEmitter { name = "write-file", emit = \args -> \arities -> \ty -> emit-builtin-write-file args arities },
    BuiltinEmitter { name = "write-binary", emit = \args -> \arities -> \ty -> "((Func<object>)(() => { List<long> _bl = (List<long>)" & emit-expr (list-at args 0) arities & "; using System.IO.Stream _s = Console.OpenStandardOutput(); foreach (long _b in _bl) _s.WriteByte((byte)_b); _s.Flush(); return null; }))()" },
    BuiltinEmitter { name = "file-exists", emit = \args -> \arities -> \ty -> emit-builtin-file-exists args arities },
@@ -741,6 +748,7 @@ Section: Apply Chain
     is SumTy (name) (args) (ctors) -> sanitize (name.value)
     is RecordTy (name) (args) (fields) -> sanitize (name.value)
     is ConstructedTy (name) (args) -> sanitize (name.value)
+    is TypeCon (name) -> sanitize (name.value)
     is otherwise -> ""
 
   emit-ctor-upcast : Text, CodexType, Text -> Text
@@ -805,7 +813,7 @@ Section: Expression Emission
     is IrCharLit (n) (sp) -> integer-to-text n
     is IrName (n) (ty) (sp) -> let raw = lookup-raw-builtin n in if text-length raw > 0 then raw else if text-length n > 0 & is-upper-letter (char-at n 0) then emit-ctor-upcast n ty "" else let ar = lookup-arity arities n in if ar == 0 then sanitize n & (if lookup-generic-count arities n > 0 then extract-fn-type-args ty else "") & "()" else if ar >= 2 then (if ty-is-concrete-value ty then sanitize n else emit-partial-wrappers 0 ar & sanitize n & "(" & emit-partial-params 0 ar & ")") else sanitize n
     is IrBinary (op) (l) (r) (ty) (sp) -> emit-binary op l r ty arities
-    is IrNegate (operand) (sp) -> "(-" & emit-expr-at operand arities (depth + 1) & ")"
+    is IrNegate (operand) (nty) (sp) -> "(-" & emit-expr-at operand arities (depth + 1) & ")"
     is IrIf (c) (t) (el) (ty) (sp) -> "(" & emit-expr-at c arities (depth + 1) & " ? " & emit-expr-at t arities (depth + 1) & " : " & emit-expr-at el arities (depth + 1) & ")"
     is IrLet (name) (ty) (val) (body) (sp) -> emit-let name ty val body arities
     is IrApply (f) (a) (ty) (sp) -> emit-apply e arities
@@ -870,7 +878,11 @@ Section: Expression Emission
     is SumTy (name) (ty-args) (ctors) -> True
     is RecordTy (name) (ty-args) (fields) -> True
     is ConstructedTy (name) (args) -> True
+    is TypeCon (name) -> True
     is ForAllTy (id) (body) -> ty-is-concrete-value body
+    is ForAllEff (id) (body) -> ty-is-concrete-value body
+    is LinearTy (body) -> ty-is-concrete-value body
+    is TypeApply (body) (tyarg) -> ty-is-concrete-value body
     is otherwise -> False
 
   emit-bin-op : IRBinaryOp -> Text
@@ -910,7 +922,7 @@ Section: Expression Emission
     is TypeVar (id) -> True
     is ListTy (e) -> has-typevar e
     is LinkedListTy (e) -> has-typevar e
-    is FunTy (p) (r) -> has-typevar p | has-typevar r
+    is FunTy (p) (fnrow) (r) -> has-typevar p | has-typevar r
     is otherwise -> False
 
   cs-type-or-dynamic : CodexType -> Text
@@ -1081,6 +1093,8 @@ Section: Expression Emission
    in when actual-ty
     is VoidTy -> "((Func<object>)(() => { " & emit-act-stmts stmts 0 len False arities & " return null; }))()"
     is NothingTy -> "((Func<object>)(() => { " & emit-act-stmts stmts 0 len False arities & " return null; }))()"
+    is ProofTy -> "((Func<object>)(() => { " & emit-act-stmts stmts 0 len False arities & " return null; }))()"
+    is PropEqTy (pl) (pr) -> "((Func<object>)(() => { " & emit-act-stmts stmts 0 len False arities & " return null; }))()"
     is ErrorTy -> "((Func<object>)(() => { " & emit-act-stmts stmts 0 len False arities & " return null; }))()"
     is otherwise -> if len == 0 then "((Func<" & ret-type & ">)(() => { return null; }))()"
     else "((Func<" & ret-type & ">)(() => { " & emit-act-stmts stmts 0 len True arities & " }))()"

@@ -680,7 +680,7 @@ address and that the compliance evidence must classify honestly:
 |---|---|---|---|
 | R1 | No DPA/fault-injection countermeasures in software crypto | SL 3+ | Hardware crypto acceleration via HAL; software blinding is future work |
 | R2 | NX bit not set on x86 data pages (current boot infra) | SL 2 | Straightforward PTE change; must be Phase B1 deliverable for IoT targets |
-| R3 | FactStore lacks supersession/revocation | SL 2+ | Required for key rotation and OTA trust management; trust-layer backlog item |
+| R3 | FactStore lacks supersession/revocation | SL 2+ | Required for key rotation and OTA trust management; trust-layer open work |
 | R4 | Forensic chain not durably persisted | SL 2+ | Audit-trail claims capped at MECHANISM(partial) until implemented |
 | R5 | Proof-of-work difficulty not dynamically adjustable | SL 2+ | DoS resilience limited under sustained attack; trust-layer enhancement |
 | R6 | No hardware ID binding by default | SL 2+ | Per-SoC; DEPLOYMENT classification; ESP32-C6 eFuse MAC available |

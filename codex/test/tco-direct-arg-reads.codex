@@ -1,0 +1,40 @@
+Chapter: TcoDirectArgReads
+
+ A self tail-recursive loop whose third argument is `s.v + 1`, a field
+ access plus a literal. The tail-call planner classes that argument as
+ DIRECT, because is-direct-tail-binop accepts any left operand at all
+ when the right is a small integer literal and the operator is add or
+ sub. But tco-arg-reads walks only names, so it reports that argument
+ as reading no parameters at all.
+
+ It reads one. `s` is parameter two, and the second argument is a
+ plain local, so the planner is free to write parameter two first --
+ and then the field access reads the value that was just overwritten.
+
+ The loop multiplies by ten each turn and adds one to the parameter it
+ accumulates into, so the fault is a wrong number rather than a hang:
+ correct is 101, and reading the clobbered parameter gives 1001. There
+ is no diagnostic and no fault, which is what makes this shape worse
+ than the tco-shuffle-spill one it sits beside.
+
+Section: Fixture
+
+  Box = record {
+   v : Integer
+  }
+
+  mk : Integer -> Box
+  mk (x) = Box { v = x }
+
+  loop4 : Integer, Box, Integer, Integer -> Integer
+  loop4 (i) (s) (acc) (n) =
+   if i >= n then acc
+   else let s2 = mk (s.v * 10)
+   in loop4 (i + 1) s2 (s.v + 1) n
+
+Section: Entry
+
+  opening : [Console] Nothing
+  opening = act
+   print-line-uni ("acc=" & show (loop4 0 (Box { v = 1 }) 0 3))
+  end

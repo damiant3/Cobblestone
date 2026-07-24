@@ -90,10 +90,11 @@ Section: Type Definition Emission
   emit-jl-type-def : ATypeDef -> Text
   emit-jl-type-def (td) =
    when td
-    is ARecordTypeDef (name) (tparams) (fields) (s) ->
+    is ARecordTypeDef (name) (tparams) (fields) (recmut) (s) ->
      "struct " & jl-sanitize (name.value) & "\n" & emit-jl-record-fields fields 0 & "end\n\n"
     is AVariantTypeDef (name) (tparams) (ctors) (s) ->
      "abstract type " & jl-sanitize (name.value) & " end\n" & emit-jl-ctors ctors 0 (name.value) & "\n"
+    is AUnitTypeDef (name) (unitbase) (s) -> ""
 
   emit-jl-record-fields : List ARecordFieldDef, Integer -> Text
   emit-jl-record-fields (fields) (i) =
@@ -128,7 +129,7 @@ Section: Expression Emission
     is IrCharLit (n) (sp) -> integer-to-text n
     is IrName (n) (ty) (sp) -> emit-jl-name n arities
     is IrBinary (op) (l) (r) (ty) (sp) -> emit-jl-binary op l r arities
-    is IrNegate (operand) (sp) -> "(-" & emit-jl-expr-at operand arities (depth + 1) & ")"
+    is IrNegate (operand) (nty) (sp) -> "(-" & emit-jl-expr-at operand arities (depth + 1) & ")"
     is IrIf (c) (t) (el) (ty) (sp) -> "(" & emit-jl-expr-at c arities (depth + 1) & " ? " & emit-jl-expr-at t arities (depth + 1) & " : " & emit-jl-expr-at el arities (depth + 1) & ")"
     is IrLet (name) (ty) (val) (body) (sp) -> "(let " & jl-sanitize name & " = " & emit-jl-expr-at val arities (depth + 1) & "; " & emit-jl-expr-at body arities (depth + 1) & " end)"
     is IrApply (f) (a) (ty) (sp) -> emit-jl-apply e arities
@@ -303,7 +304,7 @@ Section: Apply Emission
    JlBuiltinEmitter { name = "char-to-text", emit = \args arities -> "string(Char(" & emit-jl-expr (list-at args 0) arities & "))" },
    JlBuiltinEmitter { name = "code-to-char", emit = \args arities -> emit-jl-expr (list-at args 0) arities },
    JlBuiltinEmitter { name = "file-exists", emit = \args arities -> "isfile(" & emit-jl-expr (list-at args 0) arities & ")" },
-   JlBuiltinEmitter { name = "int-mod", emit = \args arities -> "mod(" & emit-jl-expr (list-at args 0) arities & ", " & emit-jl-expr (list-at args 1) arities & ")" },
+   JlBuiltinEmitter { name = "int-mod", emit = \args arities -> "mod(" & emit-jl-expr (list-at args 0) arities & ", abs(" & emit-jl-expr (list-at args 1) arities & "))" },
    JlBuiltinEmitter { name = "integer-to-text", emit = \args arities -> "string(" & emit-jl-expr (list-at args 0) arities & ")" },
    JlBuiltinEmitter { name = "list-at", emit = \args arities -> emit-jl-expr (list-at args 0) arities & "[" & emit-jl-expr (list-at args 1) arities & " + 1]" },
    JlBuiltinEmitter { name = "list-length", emit = \args arities -> "length(" & emit-jl-expr (list-at args 0) arities & ")" },
@@ -312,7 +313,7 @@ Section: Apply Emission
    JlBuiltinEmitter { name = "negate", emit = \args arities -> "(-" & emit-jl-expr (list-at args 0) arities & ")" },
    JlBuiltinEmitter { name = "print-line-uni", emit = \args arities -> "println(" & emit-jl-expr (list-at args 0) arities & ")" },
    JlBuiltinEmitter { name = "process-exit", emit = \args arities -> "exit(" & emit-jl-expr (list-at args 0) arities & ")" },
-   JlBuiltinEmitter { name = "read-file", emit = \args arities -> "read(" & emit-jl-expr (list-at args 0) arities & ", String)" },
+   JlBuiltinEmitter { name = "read-text", emit = \args arities -> "read(" & emit-jl-expr (list-at args 0) arities & ", String)" },
    JlBuiltinEmitter { name = "show", emit = \args arities -> "string(" & emit-jl-expr (list-at args 0) arities & ")" },
    JlBuiltinEmitter { name = "substring", emit = \args arities -> emit-jl-expr (list-at args 0) arities & "[" & emit-jl-expr (list-at args 1) arities & "+1:" & emit-jl-expr (list-at args 1) arities & "+" & emit-jl-expr (list-at args 2) arities & "]" },
    JlBuiltinEmitter { name = "text-compare", emit = \args arities -> "cmp(" & emit-jl-expr (list-at args 0) arities & ", " & emit-jl-expr (list-at args 1) arities & ")" },

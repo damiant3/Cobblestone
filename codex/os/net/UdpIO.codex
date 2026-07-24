@@ -1,0 +1,134 @@
+Chapter: UdpIO
+  cites Net chapter NetDriver
+  cites Net chapter Udp
+  cites Net chapter Ethernet
+
+ The datagram half of the I/O loop: the layer where a UDP payload stops
+ being a list of bytes and starts being traffic.
+
+ `Udp.codex` builds and parses datagrams and says of itself "pure logic
+ -- no I/O", which was accurate and was the whole problem: every chapter
+ in the tree that speaks a datagram protocol -- Dhcp, DnsResolver, Ntp,
+ Syslog, and the CoAP endpoint -- stopped at a `List Integer` and had no
+ way to put it on the wire. The one exception was `HttpFetch`, which
+ carried its own private DNS-shaped send and poll because there was
+ nothing to call. This chapter is that missing call, written once.
+
+ It is the sibling of `NetIO`, and it declares the same two effect rows
+ for the same reason: `NetDriver` is where a frame reaches the card, so
+ everything above it inherits `Network.Read` and `Network.Write` and must
+ say so. Nothing below this line performs I/O.
+
+ THERE IS NO CONNECTION HERE, because UDP has none. A `UdpSocket` is four
+ addresses and a local port -- a description of where datagrams go and
+ what to answer to. Opening one sends nothing, closing one is not a
+ concept, and two datagrams to the same peer are related only by the
+ caller's intent.
+
+ THE DESTINATION MAC IS THE BROADCAST ADDRESS, deliberately, and this is
+ what `HttpFetch`'s DNS query and every TCP connection in the tree
+ already do (`resolve-dst-mac`): the ARP cache starts empty and the
+ gateway answers regardless. A stack that ARPed first would be more
+ correct and would also block the first datagram behind a round trip.
+
+ To udp-io-send gives the bytes sent, putting one datagram on the wire.
+ To udp-io-recv gives a UdpRecv, polling until one arrives or fuel runs out.
+
+ We say:
+
+Section: The Socket
+
+  UdpSocket = record {
+    us-local-mac : List Integer,
+    us-local-ip : List Integer,
+    us-local-port : Integer,
+    us-peer-ip : List Integer,
+    us-peer-port : Integer
+  }
+
+  udp-io-open : List Integer, List Integer, Integer, List Integer, Integer -> UdpSocket
+  udp-io-open (local-mac) (local-ip) (local-port) (peer-ip) (peer-port) =
+    UdpSocket { us-local-mac = local-mac, us-local-ip = local-ip, us-local-port = local-port,
+                us-peer-ip = peer-ip, us-peer-port = peer-port }
+
+Section: Send
+
+  udp-io-send : UdpSocket, List Integer -> [Network.Write] Integer
+  udp-io-send (sk) (payload) =
+    let frame = udp-build-frame mac-broadcast (sk.us-local-mac) (sk.us-local-ip) (sk.us-peer-ip) (sk.us-local-port) (sk.us-peer-port) payload
+    in net-driver-send-frame frame
+
+Section: Receive
+
+ A TIMEOUT AND AN EMPTY DATAGRAM ARE DIFFERENT ANSWERS and the caller is
+ told which it got. Returning a bare `List Integer` would make a
+ zero-length datagram indistinguishable from the fuel running out, and a
+ protocol that retransmits on silence would then retransmit on an answer.
+
+ THE SOURCE PORT COMES BACK WITH THE DATAGRAM, because a server needs it.
+ A client knows who it is talking to and can ignore it; a server is told
+ who is talking to it by nothing else, and UDP carries no connection to
+ answer along. `udp-io-reply` is the send that uses it.
+
+  UdpRecv = record {
+    ur-data : List Integer,
+    ur-got : Boolean,
+    ur-src-port : Integer
+  }
+
+ The poll loop is written the way `NetIO`'s are and for the same reasons,
+ which are load-bearing rather than stylistic. `net-driver-recv-frame`
+ allocates a list on every miss and this runs to millions of misses, so
+ each miss is bracketed by `__heap-save` / `__heap-restore`; without it
+ the bump allocator walks the arena in a single receive. The recursion is
+ a SELF tail call for the same reason -- splitting it into a
+ mutually-recursive helper would leave millions of frames on a stack with
+ no guard page. The restore does NOT happen on the hit path: the payload
+ was allocated after the save, and restoring would hand back freed bytes.
+
+  udp-io-recv : UdpSocket, Integer -> [Network.Read] UdpRecv
+  udp-io-recv (sk) (fuel) =
+    if fuel <= 0 then UdpRecv { ur-data = [], ur-got = False, ur-src-port = 0 }
+    else let hp = __heap-save
+    in act
+      frame <- net-driver-recv-frame
+      if list-length frame == 0 then let restored = __heap-restore hp
+        in udp-io-recv sk (fuel - 1)
+      else if udp-io-mine sk frame then UdpRecv { ur-data = udp-io-payload frame, ur-got = True, ur-src-port = udp-io-src-port frame }
+      else let restored2 = __heap-restore hp
+      in udp-io-recv sk (fuel - 1)
+    end
+
+ A frame is this socket's when it is IPv4 carrying UDP addressed to the
+ port we sent from. The peer's source port is NOT checked: a datagram
+ server is permitted to answer from a different port, and CoAP's separate
+ responses are the case in the tree that does it.
+
+  udp-io-mine : UdpSocket, List Integer -> Boolean
+  udp-io-mine (sk) (frame) =
+    if eth-ethertype frame /= eth-type-ipv4 then False
+    else let ip = eth-payload frame
+    in if ip-proto ip /= ip-proto-udp then False
+    else let dg = udp-parse (ip-payload ip)
+    in dg.dst-port == sk.us-local-port
+
+  udp-io-payload : List Integer -> List Integer
+  udp-io-payload (frame) =
+    let dg = udp-parse (ip-payload (eth-payload frame))
+    in dg.payload
+
+  udp-io-src-port : List Integer -> Integer
+  udp-io-src-port (frame) =
+    let dg = udp-parse (ip-payload (eth-payload frame))
+    in dg.src-port
+
+Section: Answering
+
+ A server's send. The socket's configured peer port is the one a CLIENT
+ talks to; a server answers whoever asked, which is a different port per
+ peer and is not known until a datagram arrives.
+
+  udp-io-reply : UdpSocket, Integer, List Integer -> [Network.Write] Integer
+  udp-io-reply (sk) (peer-port) (payload) =
+    let frame = udp-build-frame mac-broadcast (sk.us-local-mac) (sk.us-local-ip) (sk.us-peer-ip) (sk.us-local-port) peer-port payload
+    in net-driver-send-frame frame

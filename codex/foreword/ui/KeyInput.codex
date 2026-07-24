@@ -5,26 +5,210 @@ Chapter: KeyInput
  key is waiting). `poll-key` turns that into a canonical key identity so
  every app agrees on what a key value means:
 
-   - a letter is its UPPERCASE ASCII code (A-Z = 65-90), independent of
-     shift -- a command key is an identity, not a character
-   - a digit is its ASCII code (0-9 = 48-57), a symbol its ASCII code
+   - a letter is its ASCII code, cased by shift XOR caps: lowercase
+     (a-z = 97-122) or uppercase (A-Z = 65-90)
+   - a digit is its ASCII code (0-9 = 48-57) unshifted, its shifted symbol
+     when shift is held; other punctuation likewise
    - Enter is 13, Backspace 8, Tab 9, Escape 27, Delete 127, Space 32
    - the arrow and navigation keys are their DOM-style key codes
      (Left 37, Up 38, Right 39, Down 40, Home 36, End 35, PageUp 33,
      PageDown 34), and F5 is 116
+   - the shift, ctrl and alt state at the time of the key is read with
+     `poll-mods` (shift 1, ctrl 2, alt 4), for chords like Ctrl+S
 
  `0` means no key, which is the idle value every event loop already
- tests. Not decoded yet: shift/caps state (letters come back uppercase,
- shifted symbols come back unshifted) and the 0xE0-prefixed variants of
- the navigation keys (the bare numpad codes map to the arrows instead).
- Those are the follow-on units for full text entry.
+ tests.
+
+ The modifiers are decoded through a latch, because a keyboard hands you a
+ modifier and the key as two separate events and the cell only ever holds
+ one code at a time. `uefi-read-key` returns make codes AND break codes --
+ a break code is the make code with bit 7 set, which the read preserves (it
+ masks to a full byte, not to seven bits) -- so poll-key can watch a
+ modifier go down and come back up. `kbd-mod-addr` is a bitmask: bit 0
+ shift, bit 1 ctrl, bit 2 alt, bit 3 caps. Shift (make 42/54, break
+ 170/182), ctrl (make 29, break 157) and alt (make 56, break 184) are HELD
+ -- the make sets the bit, the break clears it. Caps Lock (make 58) is a
+ TOGGLE -- its make flips bit 3 and its break (186) is ignored. Left and
+ right modifiers share a bit; the right-hand ones arrive as `0xE0` (224)
+ then the same make code, and since 224 translates to nothing the bare code
+ behind it sets the same bit, so RCtrl and RAlt work without a second case.
+
+ A letter comes back cased by **shift XOR caps** -- lowercase (97-122) when
+ exactly one of them is active, uppercase (65-90) when both or neither --
+ and the shifted number row and punctuation come back as their shifted
+ symbols. This is a change of contract from the pre-shift world: a letter
+ used to be its uppercase IDENTITY regardless of shift, so a call site that
+ reads a letter as a command shortcut (`== 81` for Q) needs `key-upper`
+ (below). Text entry is the winner: a passphrase read through poll-key is
+ case-sensitive, which is why every identity provisioned before the shift
+ change stops unlocking (BACKLOG 7.17, the migration was chosen
+ deliberately).
+
+ `poll-mods` reports the held modifiers -- shift 1, ctrl 2, alt 4, the same
+ bit values `UI chapter Event` uses (`mod-shift`, `mod-ctrl`, `mod-alt`) --
+ so an event loop can stamp them onto the `EvKeyDown` it builds and a
+ handler can tell Ctrl+S from a bare S. Caps is deliberately absent from it:
+ it is already folded into the letter's case, and it is a lock rather than a
+ chord.
+
+ The numpad and the dedicated arrow beside it share a make code, and two
+ more latch bits tell them apart. NumLock (make 69, break 197 ignored) is a
+ TOGGLE like caps: its make flips bit 4. A dedicated nav key arrives as
+ `0xE0` (224) then the make code, so 224 sets a one-shot bit 5 that the very
+ next key consumes: a `0xE0`-prefixed key is always its dedicated meaning
+ (an arrow, NumLock-independent), while a BARE numpad key is its digit when
+ NumLock is on (`0x48` -> `8`) and its arrow when off (`0x48` -> Up). The
+ numpad `-`, `+` and `*` are their symbols in either state, and numpad `/`
+ and Enter arrive `0xE0`-prefixed. NumLock and the one-shot are internal to
+ the latch: `poll-mods` still masks to the shift/ctrl/alt three.
+
+  kbd-mod-addr : Integer = 36752
 
  We say:
 
 Section: Poll
 
   poll-key : Integer
-  poll-key = scancode-to-keycode uefi-read-key
+  poll-key =
+    let sc = uefi-read-key
+    in poll-key-decode sc (atomic-load kbd-mod-addr)
+
+  poll-key-decode : Integer, Integer -> Integer
+  poll-key-decode (sc) (mods) =
+    if sc == 0 then 0
+    else if sc == 42 then mod-set mods 1
+    else if sc == 54 then mod-set mods 1
+    else if sc == 170 then mod-clear mods 1
+    else if sc == 182 then mod-clear mods 1
+    else if sc == 29 then mod-set mods 2
+    else if sc == 157 then mod-clear mods 2
+    else if sc == 56 then mod-set mods 4
+    else if sc == 184 then mod-clear mods 4
+    else if sc == 58 then let d = atomic-store kbd-mod-addr (bit-xor mods 8) in 0
+    else if sc == 186 then 0
+    else if sc == 69 then let d = atomic-store kbd-mod-addr (bit-xor mods 16) in 0
+    else if sc == 197 then 0
+    else if sc == 224 then mod-set mods 32
+    else decode-key sc mods
+
+  poll-mods : Integer
+  poll-mods = bit-and (atomic-load kbd-mod-addr) 7
+
+Section: Numpad
+
+ `decode-key` runs for every key that is not a modifier. It consumes the
+ `0xE0` one-shot (bit 5): a prefixed key is the dedicated arrow, decoded
+ straight through `scancode-to-keycode` and independent of NumLock. A bare
+ key routes through `numpad-or-default`: when NumLock (bit 4) is on and the
+ code is a numpad digit, it becomes that digit; otherwise it falls through
+ to the ordinary translation, which maps the bare numpad codes to the
+ arrows exactly as before.
+
+  decode-key : Integer, Integer -> Integer
+  decode-key (sc) (mods) =
+    let e0 = bit-and mods 32
+    in let cleared = bit-xor mods (bit-and mods 32)
+    in let d = atomic-store kbd-mod-addr cleared
+    in if e0 > 0 then apply-mods (scancode-to-keycode sc) cleared
+    else numpad-or-default sc cleared
+
+  numpad-or-default : Integer, Integer -> Integer
+  numpad-or-default (sc) (mods) =
+    if bit-and mods 16 > 0
+      then if is-numpad-digit sc then numpad-digit sc
+        else apply-mods (scancode-to-keycode sc) mods
+    else apply-mods (scancode-to-keycode sc) mods
+
+  is-numpad-digit : Integer -> Boolean
+  is-numpad-digit (sc) =
+    if sc < 71 then False
+    else if sc > 83 then False
+    else if sc == 74 then False
+    else if sc == 78 then False
+    else True
+
+  numpad-digit : Integer -> Integer
+  numpad-digit (sc) =
+    if sc == 71 then 55
+    else if sc == 72 then 56
+    else if sc == 73 then 57
+    else if sc == 75 then 52
+    else if sc == 76 then 53
+    else if sc == 77 then 54
+    else if sc == 79 then 49
+    else if sc == 80 then 50
+    else if sc == 81 then 51
+    else if sc == 82 then 48
+    else 46
+
+Section: Modifiers
+
+  mod-set : Integer, Integer -> Integer
+  mod-set (mods) (bit) =
+    let d = atomic-store kbd-mod-addr (bit-or mods bit) in 0
+
+  mod-clear : Integer, Integer -> Integer
+  mod-clear (mods) (bit) =
+    let d = atomic-store kbd-mod-addr (bit-xor mods (bit-and mods bit)) in 0
+
+ `key-upper` folds a `poll-key` letter back to its uppercase command
+ identity, for a call site that reads a letter as a keyboard SHORTCUT
+ rather than as text. Since poll-key went case-sensitive, `k == 78` (`N`)
+ no longer fires on an unshifted `n` (110); wrapping the key in `key-upper`
+ makes the shortcut case-insensitive again, which is what a command key
+ wants. It operates on poll-key's ASCII/Unicode code points, NOT on CCE:
+ 97-122 is `a`-`z` in ASCII, and this is only ever handed a poll-key
+ result. Do not point it at a `char-code` value, which is CCE.
+
+  key-upper : Integer -> Integer
+  key-upper (k) =
+    if k >= 97 then if k <= 122 then k - 32 else k
+    else k
+
+ A letter is cased by shift XOR caps; a non-letter takes its shifted symbol
+ only when shift is held (caps does not shift punctuation).
+
+  apply-mods : Integer, Integer -> Integer
+  apply-mods (k) (mods) =
+    if k >= 65 then if k <= 90 then apply-letter k mods else apply-symbol k mods
+    else apply-symbol k mods
+
+  apply-letter : Integer, Integer -> Integer
+  apply-letter (k) (mods) =
+    let shift = bit-and mods 1
+    in let caps = bit-and mods 8
+    in if shift > 0
+      then if caps > 0 then k + 32 else k
+      else if caps > 0 then k else k + 32
+
+  apply-symbol : Integer, Integer -> Integer
+  apply-symbol (k) (mods) =
+    if bit-and mods 1 > 0 then shifted-symbol k else k
+
+  shifted-symbol : Integer -> Integer
+  shifted-symbol (k) =
+    if k == 49 then 33
+    else if k == 50 then 64
+    else if k == 51 then 35
+    else if k == 52 then 36
+    else if k == 53 then 37
+    else if k == 54 then 94
+    else if k == 55 then 38
+    else if k == 56 then 42
+    else if k == 57 then 40
+    else if k == 48 then 41
+    else if k == 45 then 95
+    else if k == 61 then 43
+    else if k == 91 then 123
+    else if k == 93 then 125
+    else if k == 92 then 124
+    else if k == 59 then 58
+    else if k == 39 then 34
+    else if k == 44 then 60
+    else if k == 46 then 62
+    else if k == 47 then 63
+    else if k == 96 then 126
+    else k
 
 Section: Translation
 
@@ -119,6 +303,8 @@ Section: Translation
     else if sc == 83 then 127
     else if sc == 87 then 122
     else if sc == 88 then 123
+    else if sc == 74 then 45
+    else if sc == 78 then 43
     else if sc >= 59 then sk-fkey sc
     else 0
 

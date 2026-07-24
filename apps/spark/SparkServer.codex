@@ -50,21 +50,25 @@ Section: Static File Serving
  MIME type. Binary files (wasm, png) use http-encode-binary; text
  files use http-encode.
 
-  serve-static-file : Fat16Volume, Text -> Text
+  serve-static-file : Fat16Volume, Text -> [Device.Block] Text
   serve-static-file (vol) (path) =
     let filename = path-to-fat16-name path
-    in let content = fat16-read-text vol filename
-    in when content
-      is Just (text) -> text
-      is None -> "404 " & path & " not found on disk"
+    in act
+      content <- fat16-read-text vol filename
+      when content
+        is Just (text) -> text
+        is None -> "404 " & path & " not found on disk"
+    end
 
-  serve-static-binary : Fat16Volume, Text -> HttpBinaryResponse
+  serve-static-binary : Fat16Volume, Text -> [Device.Block] HttpBinaryResponse
   serve-static-binary (vol) (path) =
     let filename = path-to-fat16-name path
-    in let content = fat16-read-bytes vol filename
-    in when content
-      is Just (bytes) -> http-binary (mime-for-path path) bytes
-      is None -> http-binary-not-found
+    in act
+      content <- fat16-read-bytes vol filename
+      when content
+        is Just (bytes) -> http-binary (mime-for-path path) bytes
+        is None -> http-binary-not-found
+    end
 
   path-to-fat16-name : Text -> Text
   path-to-fat16-name (path) =
@@ -121,29 +125,30 @@ Section: Request Dispatch
 
   SparkLoop = record { transport : TcpTransportState, requests : Integer }
 
-  spark-handle-request : SparkLoop, TransportRecvResult -> SparkLoop
+  spark-handle-request : SparkLoop, TransportRecvResult -> [Network.Write] SparkLoop
   spark-handle-request (ls) (recv) =
     let req-text = bytes-to-text (recv.body) 0 (list-length (recv.body)) ""
     in let req = http-parse-request (recv.body)
-    in if req.valid == False then
-      let err-bytes = http-encode (http-error "Bad request")
-      in let ts2 = net-io-send-raw (ls.transport) err-bytes
-      in SparkLoop { transport = ts2, requests = ls.requests + 1 }
+    in if req.valid == False then act
+      ts2 <- net-io-send-raw (ls.transport) (http-encode (http-error "Bad request"))
+      SparkLoop { transport = ts2, requests = ls.requests + 1 }
+    end
     else let resp-body = spark-route (req.path)
     in let resp = if text-starts-with resp-body "404" then http-plain resp-body
       else http-html resp-body
-    in let resp-bytes = http-encode resp
-    in let ts2 = net-io-send-raw (ls.transport) resp-bytes
-    in SparkLoop { transport = ts2, requests = ls.requests + 1 }
+    in act
+      ts2 <- net-io-send-raw (ls.transport) (http-encode resp)
+      SparkLoop { transport = ts2, requests = ls.requests + 1 }
+    end
 
 Section: Serve Loop
 
-  spark-loop : SparkLoop -> [Console] Integer
+  spark-loop : SparkLoop -> [Console, Network.Read, Network.Write] Integer
   spark-loop (ls) = act
-    let recv = net-io-recv-loop (ls.transport) 0
-    in if recv.has-message then act
-      let next = spark-handle-request ls recv
-      in spark-loop next
+    recv <- net-io-recv-loop (ls.transport) 0
+    if recv.has-message then act
+      next <- spark-handle-request ls recv
+      spark-loop next
     end
     else act
       ls.requests
@@ -157,20 +162,21 @@ Section: Server Entry
   gateway-ip : List Integer = [10, 0, 2, 2]
   host-ip : List Integer = [127, 0, 0, 1]
 
-  spark-server : [Console] Integer
+  spark-server : [Console, Network.Read, Network.Write] Integer
   spark-server =
     let sess = net-session-new local-mac local-ip gateway-ip 49153 9100 host-ip 1000
     in let ts = transport-new sess
-    in let ts1 = net-io-connect ts
     in act
+      ts1 <- net-io-connect ts
       spark-loop (SparkLoop { transport = ts1, requests = 0 })
     end
 
-  opening : [Console] None = act
+  opening : [Console, Network.Read, Network.Write] Nothing = act
     print-line-uni "Codex Spark Studio server starting on port 9100..."
     print-line-uni "Routes: / /api/health /api/scene /api/stats"
     print-line-uni "Using net-io-send-raw for raw HTTP responses"
-    spark-server
+    served <- spark-server
+    print-line-uni ("Spark server closed after " & show served & " requests")
   end
 
 Page 1

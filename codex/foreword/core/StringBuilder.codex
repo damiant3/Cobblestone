@@ -30,7 +30,36 @@ Chapter: StringBuilder
 
 Section: Definitions
 
-  StringBuilder = record {
+ The builder is a mutable record, which is what lets an append be an append
+ rather than a copy. It was written before `mutable` existed, so `sb-append`
+ rebuilt the record and grew the parts with `sb.parts & [s]`, a list append
+ allocating a fresh list of the combined length; n appends therefore cost n
+ squared in list slots, about 1.6 GB for twenty thousand of them. `list-push`
+ writes in place under capacity, but it returns the SAME list, so on an
+ immutable record two builders would have shared one parts array and whichever
+ caller still held the older value would have watched it change underneath.
+ Declaring the record `mutable` is what makes that safe rather than merely
+ fast: the compiler enforces unique ownership and rejects a caller that hands
+ one builder to two owners (CDX2062), so the aliasing this would otherwise
+ introduce is a compile error instead of a silent corruption.
+
+ That protection is real but it is NOT total, and the gap was measured here
+ rather than assumed. A builder that arrives as a declared parameter and is
+ appended to twice on one path is rejected, as it should be. A builder bound
+ from a call is not: `let sb = sb-new` followed by two appends to `sb`
+ compiles clean and both results come back holding both appends. The checker
+ tracks declared parameters and not call-produced locals, which the
+ Developer's Guide records for `linear` and not for `mutable`. So thread a
+ builder linearly, which is the idiom every caller here already uses, and do
+ not expect the compiler to catch you if you do not.
+
+ `sb-new` is a definition and not storage, so every mention of it
+ re-materialises a fresh record with its own empty parts list. That is the
+ same property that makes a list constant expensive when it is named inside a
+ loop, and here it is the property the whole design rests on: two builders
+ started from `sb-new` are two records, not one shared one.
+
+  mutable StringBuilder = record {
 
     parts : List Text,
 
@@ -42,7 +71,9 @@ Section: Definitions
   sb-append : StringBuilder, Text -> StringBuilder
   sb-append (sb) (s) =
     if text-length s == 0 then sb
-    else StringBuilder { parts = sb.parts & [s], total-length = sb.total-length + text-length s }
+    else let __seq = sb.parts = list-push (sb.parts) s
+    in let __seq2 = sb.total-length = sb.total-length + text-length s
+    in sb
 
   sb-append-line : StringBuilder, Text -> StringBuilder
   sb-append-line (sb) (s) =
@@ -57,12 +88,24 @@ Section: Definitions
     else StringBuilder { parts = [s] & sb.parts, total-length = sb.total-length + text-length s }
 
   sb-to-text : StringBuilder -> Text
-  sb-to-text (sb) = sb-join-parts sb.parts 0 (list-length sb.parts) ""
+  sb-to-text (sb) = sb-join-parts sb.parts 0 (list-length sb.parts)
 
-  sb-join-parts : List Text, Integer, Integer, Text -> Text
-  sb-join-parts (parts) (i) (len) (acc) =
-    if i == len then acc
-    else sb-join-parts parts (i + 1) len (acc & list-at parts i)
+ The parts are joined by halving the range rather than by folding an
+ accumulator left. Text append allocates a fresh value of the combined length,
+ so a left fold over n parts allocates the whole prefix again at every step,
+ which is quadratic in the finished length. That is the cost this chapter
+ exists to avoid, and it was paying it: appending 20000 single characters and
+ joining once needed 1728 MB to produce 20 KB of text. Append is associative,
+ so the order of the joins is free and only the shape of the tree costs
+ anything; halving allocates each byte once per level, n log n in total, and
+ the parts come out in the same order.
+
+  sb-join-parts : List Text, Integer, Integer -> Text
+  sb-join-parts (parts) (lo) (hi) =
+    if hi <= lo then ""
+    else if hi - lo == 1 then list-at parts lo
+    else let mid = lo + (hi - lo) / 2
+    in sb-join-parts parts lo mid & sb-join-parts parts mid hi
 
   sb-length : StringBuilder -> Integer
   sb-length (sb) = sb.total-length

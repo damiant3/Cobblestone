@@ -1,0 +1,178 @@
+Chapter: MqttClient
+  cites Encode chapter MqttEndpoint
+  cites Encode chapter Mqtt
+  cites Net chapter NetIO
+  cites Net chapter TcpTransport
+  cites Net chapter NetworkStack
+  cites Foreword chapter Console
+  cites Foreword chapter Maybe
+
+ An MQTT v5 client on a real socket, so that something other than our own
+ loopback can be the thing that answers it.
+
+ `codex/test/apps/mqtt-loopback` drives `MqttEndpoint` against packets
+ built by our own `Mqtt` codec: two halves that share every assumption
+ and therefore agree forever. This binary exists to be answered by
+ mosquitto, which agrees with the OASIS specification instead.
+
+ It connects, subscribes, publishes to the topic it subscribed to, and
+ reports the delivery that comes back. That round trip is deliberate: it
+ crosses the broker, so the bytes reported at the end were parsed by
+ mosquitto, stored by mosquitto, re-framed by mosquitto and handed back.
+ A publish alone would prove only that the broker did not hang up.
+
+ THE CONNECTION IS OUTBOUND, which is the direction the tree had never
+ exercised against a foreign peer -- `tools/tls-serve.codex` listens and
+ is dialled by the harness. Here the guest dials 10.0.2.2, and codex-vm
+ resolves the gateway to the host's own loopback, which is where the
+ broker is.
+
+ THE RECORD BOUNDARY IS THE WHOLE OF THE TRANSPORT WORK, exactly as it is
+ for TLS. `mqtt-ep-recv` takes a buffer and answers how many bytes it
+ consumed; TCP delivers whatever happened to arrive, so a segment may hold
+ half a packet or three. The loop keeps the remainder.
+
+Section: Configuration
+
+  mqtt-local-mac : List Integer = [82, 84, 0, 18, 52, 86]
+  mqtt-local-ip : List Integer = [10, 0, 2, 15]
+  mqtt-gateway-ip : List Integer = [10, 0, 2, 2]
+  mqtt-local-port : Integer = 5901
+  mqtt-broker-port : Integer = 1883
+
+  mqtt-topic : Text = "codex/probe"
+  mqtt-payload : List Integer = [104, 101, 108, 108, 111, 45, 99, 111, 100, 101, 120]
+  mqtt-payload2 : List Integer = [104, 101, 108, 108, 111, 45, 113, 111, 115, 50]
+
+  mqtt-ms-per-tick : Integer = 55
+  mqtt-now : Integer -> Integer
+  mqtt-now (x) = get-ticks * mqtt-ms-per-tick
+
+ `net-io-recv-raw` takes a STARTING COUNT, not a budget: it increments and
+ gives up at fifty million, so the number passed in decides how many polls
+ are left. Passing what looked like a budget left forty-nine million and
+ the client appeared to hang after its subscription -- it was polling, and
+ would have finished eventually. Every other caller in the tree passes
+ zero and accepts the full fifty million; this one wants to come back and
+ try again, so it names the remainder it wants.
+
+  mqtt-poll-budget : Integer = 1000000
+  mqtt-poll-start : Integer = 50000000 - mqtt-poll-budget
+
+  mqtt-client-config : MqttConnectConfig
+  mqtt-client-config = MqttConnectConfig {
+    client-id = "codex-probe", keep-alive = 60, clean-start = True,
+    username = None, password = None }
+
+Section: The Socket
+
+  mqtt-transport : Integer -> TcpTransportState
+  mqtt-transport (x) =
+    let sess = net-session-new mqtt-local-mac mqtt-local-ip mqtt-gateway-ip mqtt-local-port mqtt-broker-port mqtt-gateway-ip 1000
+    in transport-new sess
+
+Section: Pumping
+
+  MqttRun = record {
+    mr-ep : MqttEp,
+    mr-ts : TcpTransportState,
+    mr-buf : List Integer
+  }
+
+  mqtt-send-all : TcpTransportState, List (List Integer), Integer -> [Network.Write] TcpTransportState
+  mqtt-send-all (ts) (outs) (i) =
+    if i >= list-length outs then ts
+    else act
+      ts1 <- net-io-send-raw ts (list-at outs i)
+      mqtt-send-all ts1 outs (i + 1)
+    end
+
+ Read once, feed everything complete out of the buffer, keep the rest.
+ The step reports the byte count it took, and the remainder is carried
+ forward -- this is the only place in the client that can desynchronise
+ the stream, so it is the only place that decides how much was consumed.
+
+  mqtt-pump : MqttEp, TcpTransportState, List Integer, Integer -> [Network.Read, Network.Write] MqttRun
+  mqtt-pump (ep) (ts) (buf) (fuel) =
+    if fuel <= 0 then MqttRun { mr-ep = ep, mr-ts = ts, mr-buf = buf }
+    else act
+      r <- net-io-recv-raw ts mqtt-poll-start
+      if r.has-data == False then MqttRun { mr-ep = ep, mr-ts = r.transport, mr-buf = buf }
+      else let all = buf & (r.data)
+      in let step = mqtt-ep-recv ep all (mqtt-now 0)
+      in act
+        ts1 <- mqtt-send-all (r.transport) (step.ms-out) 0
+        MqttRun { mr-ep = step.ms-ep, mr-ts = ts1, mr-buf = mqtt-slice all (step.ms-consumed) (list-length all) }
+      end
+    end
+
+Section: Reporting
+
+  mqtt-bytes-text : List Integer, Integer, Text -> Text
+  mqtt-bytes-text (bs) (i) (acc) =
+    if i >= list-length bs then acc
+    else mqtt-bytes-text bs (i + 1) (if i == 0 then show (list-at bs i) else acc & "," & show (list-at bs i))
+
+Section: One Exchange
+
+ Publish, then pump until the broker has finished with it. A QoS 1
+ exchange is one round trip and a QoS 2 exchange is two, so the pump runs
+ until the endpoint reports the publish retired rather than a fixed
+ number of times -- a count that happened to suit QoS 1 would report a
+ QoS 2 publish as unacknowledged when it was merely halfway.
+
+ The rounds are bounded. A broker that stops answering must end the run
+ with `acked=False`, which the harness fails on; looping until success
+ would turn a broken exchange into a hang.
+
+  mqtt-exchange-rounds : Integer = 8
+
+  mqtt-exchange : MqttEp, TcpTransportState, List Integer, List Integer, MqttQos, Text -> [Network.Read, Network.Write, Console.Write] MqttRun
+  mqtt-exchange (ep) (ts) (buf) (payload) (qos) (label) =
+    let p = mqtt-ep-publish ep mqtt-topic payload qos (mqtt-now 0)
+    in act
+      ts1 <- mqtt-send-all ts (p.ms-out) 0
+      r <- mqtt-settle (p.ms-ep) ts1 buf mqtt-exchange-rounds
+      print-line-uni ("mqtt publish-" & label & " acked=" & show (mqtt-ep-published (r.mr-ep)) & " retries=" & show (mqtt-ep-retries (r.mr-ep)))
+      r
+    end
+
+  mqtt-settle : MqttEp, TcpTransportState, List Integer, Integer -> [Network.Read, Network.Write] MqttRun
+  mqtt-settle (ep) (ts) (buf) (rounds) =
+    if rounds <= 0 then MqttRun { mr-ep = ep, mr-ts = ts, mr-buf = buf }
+    else if mqtt-ep-published ep then MqttRun { mr-ep = ep, mr-ts = ts, mr-buf = buf }
+    else act
+      r <- mqtt-pump ep ts buf 1
+      mqtt-settle (r.mr-ep) (r.mr-ts) (r.mr-buf) (rounds - 1)
+    end
+
+Section: The Session
+
+  mqtt-session : TcpTransportState -> [Network.Read, Network.Write, Console.Write] Nothing
+  mqtt-session (ts) =
+    let c = mqtt-ep-connect mqtt-ep-new mqtt-client-config
+    in act
+      ts1 <- mqtt-send-all ts (c.ms-out) 0
+      r1 <- mqtt-pump (c.ms-ep) ts1 [] 1
+      print-line-uni ("mqtt connect ready=" & show (mqtt-ep-ready (r1.mr-ep)) & " reason=" & show (mqtt-ep-connack (r1.mr-ep)))
+      let s = mqtt-ep-subscribe (r1.mr-ep) mqtt-topic QosExactlyOnce
+      in act
+        ts2 <- mqtt-send-all (r1.mr-ts) (s.ms-out) 0
+        r2 <- mqtt-pump (s.ms-ep) ts2 (r1.mr-buf) 1
+        print-line-uni ("mqtt subscribe granted=" & show (mqtt-ep-suback (r2.mr-ep)))
+        r5 <- mqtt-exchange (r2.mr-ep) (r2.mr-ts) (r2.mr-buf) mqtt-payload QosAtLeastOnce "qos1"
+        r9 <- mqtt-exchange (r5.mr-ep) (r5.mr-ts) (r5.mr-buf) mqtt-payload2 QosExactlyOnce "qos2"
+        print-line-uni ("mqtt delivered count=" & show (mqtt-ep-in-count (r9.mr-ep)) & " topic=" & mqtt-bytes-text (mqtt-ep-in-topic (r9.mr-ep)) 0 "" & " payload=" & mqtt-bytes-text (mqtt-ep-in-payload (r9.mr-ep)) 0 "")
+        ts4 <- net-io-close (r9.mr-ts)
+        print-line-uni "mqtt closed"
+      end
+    end
+
+Section: Entry
+
+  opening : [Network.Read, Network.Write, Console.Write] Nothing = act
+    ts <- net-io-connect (mqtt-transport 0)
+    when (ts.session).conn.state
+      is TcpEstablished -> mqtt-session ts
+      is otherwise -> print-line-uni "mqtt connect: broker did not answer"
+  end

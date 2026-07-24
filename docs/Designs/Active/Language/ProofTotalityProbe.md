@@ -8,7 +8,7 @@ immediately. §5's Option B (positive proof-term grammar) remains an
 optional later hardening.
 
 **Author:** blu, 2026-07-04. Part of the Vision Check honesty audit
-(BACKLOG 1); the sixth leg, after effects, bounded integers, linear
+the sixth leg, after effects, bounded integers, linear
 ownership, capabilities, and punctual.
 
 ---

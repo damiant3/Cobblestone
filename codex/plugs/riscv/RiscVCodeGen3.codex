@@ -8,6 +8,20 @@ Section: Match
    guard-reg : Integer
   }
 
+ A literal pattern's value arrives as its source spelling. `True` and
+ `False` are the Boolean scrutinee's 1 and 0; `parse-int-text` reads
+ neither and answers 0 for both, so every `is True` and `is False`
+ compared against 0 and the arms inverted. Characters were reduced to
+ digits by the desugarer and pass through unchanged. This mirrors the
+ compiler's `pat-lit-to-integer`; the two plugs carry their own copy
+ because the IR text wire hands them the spelling, not the value.
+
+  rv-pat-lit-to-integer : Text -> Integer
+  rv-pat-lit-to-integer (t) =
+   if t == "True" then 1
+   else if t == "False" then 0
+   else parse-int-text t
+
   rv-emit-match-guard : RvState, IRExpr -> RvGuardResult
   rv-emit-match-guard (st) (guard) =
    when guard
@@ -80,8 +94,8 @@ Section: Match
      in let st2 = rv-emit-li (exp-r.state) (exp-r.reg) expected-tag
      in let bne-index = st2.insn-count
      in let st3 = rv-emit st2 rv-nop
-     in let st4 = rv-bind-ctor-fields st3 sub-pats scrut-reg 0
-     in let guard-r = rv-emit-match-guard st4 (branch.guard)
+     in let fields = rv-bind-ctor-fields st3 sub-pats scrut-reg 0 []
+     in let guard-r = rv-emit-match-guard (fields.state) (branch.guard)
      in let br = rv-emit-expr (guard-r.state) (branch.body)
      in let st5 = rv-store-local (br.state) result-reg (br.reg)
      in let jmp-end-index = st5.insn-count
@@ -90,27 +104,24 @@ Section: Match
      in let st7 = rv-emit-match-branches st6 branches scrut-reg result-reg (i + 1)
      in let end-index = st7.insn-count
      in let st8 = rv-patch-insn st7 bne-index (rv-bne (tag-r.reg) (exp-r.reg) ((next-start - bne-index) * 4))
-     in let st9 = rv-patch-guard st8 guard-r next-start
+     in let st8b = rv-patch-pat-checks st8 (fields.checks) next-start 0
+     in let st9 = rv-patch-guard st8b guard-r next-start
      in rv-patch-insn st9 jmp-end-index (rv-j ((end-index - jmp-end-index) * 4))
     is IrLitPat (value) (ty) (s) ->
-     let lit-val = parse-int-text value
-     in let lr = rv-load-local st scrut-reg
-     in let cr = rv-alloc-temp (lr.state)
-     in let st1 = rv-emit-li (cr.state) (cr.reg) lit-val
-     in let bne-index = st1.insn-count
-     in let st2 = rv-emit st1 (rv-bne (lr.reg) (cr.reg) 0)
-     in let guard-r = rv-emit-match-guard st2 (branch.guard)
+     let lr = rv-load-local st scrut-reg
+     in let chk = rv-emit-pat-lit-test (lr.state) (lr.reg) value ty
+     in let guard-r = rv-emit-match-guard (chk.state) (branch.guard)
      in let br = rv-emit-expr (guard-r.state) (branch.body)
      in let st3 = rv-store-local (br.state) result-reg (br.reg)
      in let jmp-end-index = st3.insn-count
      in let st4 = rv-emit st3 (rv-j 0)
      in let next-start = st4.insn-count
-     in let st5 = rv-patch-insn st4 bne-index (rv-bne (lr.reg) (cr.reg) ((next-start - bne-index) * 4))
+     in let st5 = rv-patch-pat-checks st4 (chk.checks) next-start 0
      in let st5a = rv-patch-guard st5 guard-r next-start
      in let st6 = rv-emit-match-branches st5a branches scrut-reg result-reg (i + 1)
      in let end-index = st6.insn-count
      in rv-patch-insn st6 jmp-end-index (rv-j ((end-index - jmp-end-index) * 4))
-    is IrVecPat (lane-pats) (s) ->
+    is IrVecPat (lane-pats) (vecty) (s) ->
      let lr = rv-load-local st scrut-reg
      in let st0a = rv-emit (lr.state) (rv-mv rv-a2 (lr.reg))
      in let st0 = rv-emit st0a (rv-mv rv-a3 rv-zero)
@@ -134,7 +145,7 @@ Section: Match
    if i >= list-length pats then st
    else when list-at pats i
     is IrLitPat (value) (ty) (s) ->
-     let lit-val = parse-int-text value
+     let lit-val = rv-pat-lit-to-integer value
      in let lr = rv-alloc-temp st
      in let st1 = rv-emit (lr.state) (rv-ld (lr.reg) vec-reg (i * 8))
      in let cr = rv-alloc-temp st1
@@ -258,6 +269,52 @@ Section: Match
    in let st3 = rv-emit st2 (rv-addi rv-heap-reg rv-heap-reg 8)
    in RvEmitResult { state = st3, reg = r.reg }
 
+ `read-line` is typed `Maybe Text`, so a lane with no stdin pump answers
+ the honest EOF: a None cell, tag 1, the same cell x86-64's `__read_line`
+ stores at end of input. An empty TEXT here decodes through a `when` on
+ Maybe as `Just <garbage>` -- the tag word is 0, which is Just's tag.
+
+  rv-emit-maybe-none : RvState -> RvEmitResult
+  rv-emit-maybe-none (st) =
+   let r = rv-alloc-temp st
+   in let t = rv-alloc-temp (r.state)
+   in let st1 = rv-emit (t.state) (rv-mv (r.reg) rv-heap-reg)
+   in let st2 = rv-emit st1 (rv-addi (t.reg) rv-zero 1)
+   in let st3 = rv-emit st2 (rv-sd rv-heap-reg (t.reg) 0)
+   in let st4 = rv-emit st3 (rv-addi rv-heap-reg rv-heap-reg 8)
+   in RvEmitResult { state = st4, reg = r.reg }
+
+ A read of a file on a target with no filesystem. There is no block
+ driver behind these calls on riscv, so the compile is refused and the
+ call is named, rather than answering the empty string: the caller named
+ a path, got "", and could not tell that apart from an empty file.
+ `run.ps1` fails the build on the tag.
+
+ The write path is deliberately not here. `write-file` answers 0 and its
+ callers already read that as failure, so the writes are honest; only
+ the reads lie.
+
+  rv-emit-unsupported-read : RvState, Text -> RvEmitResult
+  rv-emit-unsupported-read (st) (name) =
+   let msg = "[UNSUPPORTED] " & name & ": riscv has no filesystem, and a read cannot be served"
+   in rv-emit-empty-text (__record-set st "wcet-reports" (list-push (st.wcet-reports) msg))
+
+ Port I/O is the same refusal for a different reason. The port builtins
+ are the x86 IN and OUT instructions, and gpu-in / gpu-out /
+ gpu-mem-read / gpu-mem-write are the codex-vm GPU behind them; a
+ Renode board has neither the instruction nor the device, and neither
+ is wanted here (BACKLOG 3.20, decided 2026-07-23). Before this arm
+ existed these calls fell through to the unresolved-call hole: a port
+ write silently did nothing and a port read answered whatever was in
+ the result register. The arms match on the name alone, no arity gate,
+ so a partial application refuses too. codex/test/cross-port-refused
+ pins that the refusal fires.
+
+  rv-emit-unsupported-port : RvState, Text -> RvEmitResult
+  rv-emit-unsupported-port (st) (name) =
+   let msg = "[UNSUPPORTED] " & name & ": x86 port I/O and the codex-vm gpu do not exist on this target (refused by design)"
+   in rv-emit-int-lit (__record-set st "wcet-reports" (list-push (st.wcet-reports) msg)) 0
+
   rv-emit-three-arg-call : RvState, Text, List IRExpr -> RvEmitResult
   rv-emit-three-arg-call (st) (name) (args) =
    let saved = rv-save-args st args 0 []
@@ -292,9 +349,48 @@ Section: Match
    in let st6 = rv-store-closure-captures st5 (saved.locals) (ptr-loc.reg) 0
    in rv-load-local st6 (ptr-loc.reg)
 
-  rv-bind-ctor-fields : RvState, List IRPat, Integer, Integer -> RvState
-  rv-bind-ctor-fields (st) (pats) (scrut-reg) (i) =
-   if i >= list-length pats then st
+ A literal sub-pattern inside a constructor pattern used to be DROPPED here
+ exactly as it was on ARM64: only IrVarPat was handled and the rest fell out
+ of the otherwise arm, so the tag was the only thing tested and `is BInt (0)`
+ matched any BInt. Measured 2026-07-21, this lane produced the SAME eighteen
+ wrong lines as ARM64 on codex/test/literal-subpattern. A Text literal also
+ cannot be a bne against rv-pat-lit-to-integer: the scrutinee is a pointer, so
+ `is "sin"` matched nothing.
+
+ rv-bne encodes both of its registers, so unlike ARM64 an index alone cannot
+ be patched later -- each check carries the pair it must be re-emitted with.
+
+  RvPatCheck = record { pc-idx : Integer, pc-rs1 : Integer, pc-rs2 : Integer }
+  RvPatChecks = record { state : RvState, checks : List RvPatCheck }
+
+  rv-patch-pat-checks : RvState, List RvPatCheck, Integer, Integer -> RvState
+  rv-patch-pat-checks (st) (checks) (target) (i) =
+   if i >= list-length checks then st
+   else let c = list-at checks i
+   in let st1 = rv-patch-insn st (c.pc-idx) (rv-bne (c.pc-rs1) (c.pc-rs2) ((target - (c.pc-idx)) * 4))
+   in rv-patch-pat-checks st1 checks target (i + 1)
+
+  rv-emit-pat-lit-test : RvState, Integer, Text, CodexType -> RvPatChecks
+  rv-emit-pat-lit-test (st) (val-reg) (spelling) (ty) =
+   if rv-is-text-type ty then
+    let tr = rv-emit-text-lit st spelling
+    in let st1 = rv-emit (tr.state) (rv-mv rv-a0 val-reg)
+    in let st2 = rv-emit st1 (rv-mv rv-a1 (tr.reg))
+    in let st3 = rv-emit-call-to st2 "__str_eq"
+    in let cr = rv-alloc-temp st3
+    in let st4 = rv-emit-li (cr.state) (cr.reg) 1
+    in let idx = st4.insn-count
+    in let st5 = rv-emit st4 (rv-bne rv-a0 (cr.reg) 0)
+    in RvPatChecks { state = st5, checks = [RvPatCheck { pc-idx = idx, pc-rs1 = rv-a0, pc-rs2 = cr.reg }] }
+   else let cr = rv-alloc-temp st
+   in let st1 = rv-emit-li (cr.state) (cr.reg) (rv-pat-lit-to-integer spelling)
+   in let idx = st1.insn-count
+   in let st2 = rv-emit st1 (rv-bne val-reg (cr.reg) 0)
+   in RvPatChecks { state = st2, checks = [RvPatCheck { pc-idx = idx, pc-rs1 = val-reg, pc-rs2 = cr.reg }] }
+
+  rv-bind-ctor-fields : RvState, List IRPat, Integer, Integer, List RvPatCheck -> RvPatChecks
+  rv-bind-ctor-fields (st) (pats) (scrut-reg) (i) (acc) =
+   if i >= list-length pats then RvPatChecks { state = st, checks = acc }
    else when list-at pats i
     is IrVarPat (name) (ty) (s) ->
      let loc = rv-alloc-local st
@@ -303,8 +399,17 @@ Section: Match
      in let st1 = rv-emit (tr.state) (rv-ld (tr.reg) (lr.reg) ((i + 1) * 8))
      in let st2 = rv-store-local st1 (loc.reg) (tr.reg)
      in let st3 = rv-bind-local st2 name (loc.reg)
-     in rv-bind-ctor-fields st3 pats scrut-reg (i + 1)
-    is otherwise -> rv-bind-ctor-fields st pats scrut-reg (i + 1)
+     in rv-bind-ctor-fields st3 pats scrut-reg (i + 1) acc
+    is IrLitPat (value) (ty) (s) ->
+     let loc = rv-alloc-local st
+     in let lr = rv-load-local (loc.state) scrut-reg
+     in let tr = rv-alloc-temp (lr.state)
+     in let st1 = rv-emit (tr.state) (rv-ld (tr.reg) (lr.reg) ((i + 1) * 8))
+     in let st2 = rv-store-local st1 (loc.reg) (tr.reg)
+     in let ld = rv-load-local st2 (loc.reg)
+     in let chk = rv-emit-pat-lit-test (ld.state) (ld.reg) value ty
+     in rv-bind-ctor-fields (chk.state) pats scrut-reg (i + 1) (acc & (chk.checks))
+    is otherwise -> rv-bind-ctor-fields st pats scrut-reg (i + 1) acc
 
 Section: List Emission
 
@@ -381,6 +486,49 @@ Section: Tail Call Optimization
    if list-length (def.params) > 0 then rv-has-tail-call (def.body) (def.name)
    else False
 
+ A frameless function emits no prologue, so it saves no callee-saved
+ register. `rv-alloc-local` hands out s2 upward, and in a frameless
+ function every one of those belongs to the caller. `rv-emit-let`
+ knows this and binds the value's own register instead of allocating;
+ `rv-emit-match` does not, and takes a local for the scrutinee
+ unconditionally. So a match inside a frameless function writes over
+ whatever the caller was keeping in s2.
+
+ `rv-count-ir-locals` cannot be the guard here: it scores `IrMatch` as
+ 2 and never looks at the branch bodies, so a match always came in
+ under the frameless threshold. Counting it correctly would not help
+ either, because the frameless budget for locals is not six -- it is
+ zero.
+
+ The shape this was hiding behind: a tail call under `if` allocates no
+ local and is fine, and a NON-tail call inside a `when` arm needs `ra`
+ and therefore gets a frame anyway. Only a TAIL call inside a `when`
+ arm lands in the gap, which is why two working shapes sat either side
+ of it.
+
+  rv-body-has-match : IRExpr -> Boolean
+  rv-body-has-match (expr) =
+   when expr
+    is IrMatch (s) (bs) (t) (sp) -> True
+    is IrIf (c) (th) (el) (t) (sp) ->
+     rv-body-has-match c | rv-body-has-match th | rv-body-has-match el
+    is IrLet (n) (t) (v) (b) (sp) -> rv-body-has-match v | rv-body-has-match b
+    is IrLambda (ps) (b) (t) (sp) -> rv-body-has-match b
+    is IrAct (stmts) (t) (sp) -> rv-act-has-match stmts 0
+    is IrBinary (op) (l) (r) (t) (sp) -> rv-body-has-match l | rv-body-has-match r
+    is IrNegate (x) (nty) (sp) -> rv-body-has-match x
+    is IrApply (f) (a) (t) (sp) -> rv-body-has-match f | rv-body-has-match a
+    is otherwise -> False
+
+  rv-act-has-match : List IRActStmt, Integer -> Boolean
+  rv-act-has-match (stmts) (i) =
+   if i >= list-length stmts then False
+   else let hit = when list-at stmts i
+     is IrDoExec (e) (sp) -> rv-body-has-match e
+     is IrDoBind (n) (t) (e) (sp) -> rv-body-has-match e
+     is otherwise -> False
+   in if hit then True else rv-act-has-match stmts (i + 1)
+
   rv-collect-param-locals : List RvLocal, List IRParam, Integer, List Integer -> List Integer
   rv-collect-param-locals (locals) (params) (i) (acc) =
    if i >= list-length params then acc
@@ -394,6 +542,20 @@ Section: Tail Call Optimization
    in let st1 = rv-store-local (lr.state) (list-at param-locals i) (lr.reg)
    in rv-copy-to-params st1 temp-locals param-locals (i + 1)
 
+ These two lists must agree, and a disagreement between them is a
+ silent miscompile rather than a diagnostic. `rv-is-inline-2arg` says a
+ name costs no call, which is what lets a tail argument holding it be
+ treated as frameless-safe; `rv-emit-frameless-arg` is what actually
+ has to emit it without a call. A name blessed here and unhandled there
+ reaches the general emitter, which uses a0 and a1 -- the parameters of
+ a frameless function -- and the loop loses its induction variable.
+ `bit-xor` sat in exactly that gap and hung every checksum on the lane.
+
+ All six bitwise operations are named in both places now, along with
+ the two integer remainders. `bit-not` is the odd one: it takes a
+ single argument, so it is answered by `rv-is-inline-1arg` below and
+ lowered in the one-argument branch of `rv-emit-frameless-arg`.
+
   rv-is-inline-2arg : Text -> Boolean
   rv-is-inline-2arg (n) =
    if n == "math-mod" then True
@@ -402,7 +564,32 @@ Section: Tail Call Optimization
    else if n == "bit-or" then True
    else if n == "bit-xor" then True
    else if n == "bit-shl" then True
+   else if n == "bit-shr" then True
    else if n == "bit-shru" then True
+   else False
+
+  rv-is-inline-1arg : Text -> Boolean
+  rv-is-inline-1arg (n) =
+   if n == "bit-not" then True
+   else False
+
+ A direct call to one of these builtins with the matching arity is
+ lowered inline (`rv-and`, `rv-srl`, ...) by `rv-emit-direct-call`, and
+ the frameless analysis (`rv-has-any-call`, `rv-arg-has-call`) treats it
+ as call-free on the strength of these same two lists. But every bitwise
+ op also has an 8-byte runtime helper for its first-class use, and
+ `rv-emit-direct-call` looked up that helper by name BEFORE reaching the
+ inline arm, so a direct `bit-and x 1` emitted a `jal` to the helper.
+ In a frameless function that `jal` clobbers `ra`, the argument registers
+ and the parameters, and the function looped back into itself on return --
+ every `bit-and crc 1` in an `if` condition hung. Skipping the helper for
+ an inline builtin at its own arity is what makes the emission agree with
+ the analysis. First-class references (arity zero here) still find it.
+
+  rv-is-inline-here : Text, Integer -> Boolean
+  rv-is-inline-here (name) (nargs) =
+   if nargs == 2 then rv-is-inline-2arg name
+   else if nargs == 1 then rv-is-inline-1arg name
    else False
 
   rv-arg-has-call : IRExpr -> Boolean
@@ -411,7 +598,7 @@ Section: Tail Call Optimization
     is IrApply (f) (a) (t) (s) ->
      when f
       is IrName (n) (ft) (fs) ->
-       if rv-is-inline-2arg n then rv-arg-has-call a else True
+       if rv-is-inline-1arg n | rv-is-inline-2arg n then rv-arg-has-call a else True
       is IrApply (f2) (a2) (t2) (s2) ->
        when f2
         is IrName (n2) (ft2) (fs2) ->
@@ -420,7 +607,7 @@ Section: Tail Call Optimization
         is _ -> True
       is _ -> True
     is IrBinary (op) (l) (r) (t) (s) -> rv-arg-has-call l | rv-arg-has-call r
-    is IrNegate (x) (s) -> rv-arg-has-call x
+    is IrNegate (x) (nty) (s) -> rv-arg-has-call x
     is IrIf (c) (th) (el) (t) (s) -> True
     is otherwise -> False
 
@@ -457,6 +644,28 @@ Section: Tail Call Optimization
      is otherwise -> rv-emit-frameless-binop-reg st op left right
    else rv-emit-frameless-binop-reg st op left right
 
+ A frameless `int-mod`/`math-mod` takes the same two steps the framed
+ `rv-emit-int-mod` takes: `rem`, then the branchless non-negative
+ correction. Until it did, the frameless arm answered the TRUNCATED
+ remainder for a negative dividend -- `int-mod (-7) 3` was -1 here and 2
+ on every other lane (BACKLOG 3.21, filed 2026-07-21). The power-of-two
+ shortcut needs no correction: `andi` against a positive mask is already
+ the non-negative residue. The correction's two scratch temps are the two
+ allocations after `rd`, and with `rd` they are three consecutive draws
+ from the four-register cycle, so they cannot land on `rd` or on a
+ divisor materialised immediately before it -- the same spacing the
+ framed path relies on.
+
+  rv-emit-frameless-mod : RvState, IRExpr, IRExpr -> RvEmitResult
+  rv-emit-frameless-mod (st) (left) (right) =
+   let p2 = rv-pow2-lit right
+   in if p2 > 1 then rv-emit-rem-pow2 st left p2
+   else let lr = rv-emit-frameless-arg st left
+   in let rr = rv-emit-frameless-arg (lr.state) right
+   in let rd = rv-alloc-temp (rr.state)
+   in let st1 = rv-emit (rd.state) (rv-rem (rd.reg) (lr.reg) (rr.reg))
+   in rv-emit-mod-correction st1 (rd.reg) (rr.reg)
+
   rv-emit-frameless-binop-reg : RvState, IRBinaryOp, IRExpr, IRExpr -> RvEmitResult
   rv-emit-frameless-binop-reg (st) (op) (left) (right) =
    let lr = rv-emit-frameless-arg st left
@@ -471,6 +680,19 @@ Section: Tail Call Optimization
     is IrAnd -> RvEmitResult { state = rv-emit (rd.state) (rv-and (rd.reg) (lr.reg) (rr.reg)), reg = rd.reg }
     is IrOr -> RvEmitResult { state = rv-emit (rd.state) (rv-or (rd.reg) (lr.reg) (rr.reg)), reg = rd.reg }
     is otherwise -> RvEmitResult { state = rd.state, reg = rd.reg }
+
+ The bitwise arms below take the I-type immediate form when their right
+ operand is a literal, through the same `rv-bit-imm-ok` and
+ `rv-bit-imm-apply` the framed path uses (`RiscVCodeGen.codex`, where the
+ defect and its bound are written down). Here the left operand is lowered
+ by `rv-emit-frameless-arg` rather than by `rv-emit-expr`, which is the
+ only difference and the reason the check is duplicated at each arm
+ instead of living in one wrapper.
+
+  rv-frameless-bit-imm : RvState, IRExpr, Integer, Text -> RvEmitResult
+  rv-frameless-bit-imm (st) (left) (imm) (which) =
+   let lr = rv-emit-frameless-arg st left
+   in rv-bit-imm-apply (lr.state) (lr.reg) imm which
 
   rv-emit-frameless-arg : RvState, IRExpr -> RvEmitResult
   rv-emit-frameless-arg (st) (e) =
@@ -491,32 +713,89 @@ Section: Tail Call Optimization
         is otherwise -> rv-emit-frameless-binop st op l r
       else rv-emit-frameless-binop st op l r
      else rv-emit-frameless-binop st op l r
-    is IrNegate (x) (s) ->
+    is IrNegate (x) (nty) (s) ->
      let vr = rv-emit-frameless-arg st x
      in let rd = rv-alloc-temp (vr.state)
      in RvEmitResult { state = rv-emit (rd.state) (rv-sub (rd.reg) rv-zero (vr.reg)), reg = rd.reg }
     is IrApply (f) (a) (t) (s) ->
      when f
+      is IrName (n) (ft) (fs) ->
+       if n == "bit-not" then
+        let vr = rv-emit-frameless-arg st a
+        in let rd = rv-alloc-temp (vr.state)
+        in RvEmitResult { state = rv-emit (rd.state) (rv-xori (rd.reg) (vr.reg) (0 - 1)), reg = rd.reg }
+       else rv-emit-expr st e
       is IrApply (f2) (a2) (t2) (s2) ->
        when f2
         is IrName (n2) (ft2) (fs2) ->
-         if n2 == "math-mod" | n2 == "int-mod" then rv-emit-frameless-binop st IrRemInt a2 a
-         else if n2 == "bit-and" then rv-emit-frameless-binop st IrAnd a2 a
-         else if n2 == "bit-or" then rv-emit-frameless-binop st IrOr a2 a
+         if n2 == "math-mod" | n2 == "int-mod" then rv-emit-frameless-mod st a2 a
+         else if n2 == "bit-and" then
+          let im = rv-bit-imm-ok a False
+          in if im >= 0 then rv-frameless-bit-imm st a2 im "and"
+             else rv-emit-frameless-binop st IrAnd a2 a
+         else if n2 == "bit-or" then
+          let im = rv-bit-imm-ok a False
+          in if im >= 0 then rv-frameless-bit-imm st a2 im "or"
+             else rv-emit-frameless-binop st IrOr a2 a
          else if n2 == "bit-shl" then
-          let lr = rv-emit-frameless-arg st a2
+          let im = rv-bit-imm-ok a True
+          in if im >= 0 then rv-frameless-bit-imm st a2 im "shl"
+             else let lr = rv-emit-frameless-arg st a2
           in let rr = rv-emit-frameless-arg (lr.state) a
           in let rd = rv-alloc-temp (rr.state)
           in RvEmitResult { state = rv-emit (rd.state) (rv-sll (rd.reg) (lr.reg) (rr.reg)), reg = rd.reg }
          else if n2 == "bit-shru" then
-          let lr = rv-emit-frameless-arg st a2
+          let im = rv-bit-imm-ok a True
+          in if im >= 0 then rv-frameless-bit-imm st a2 im "shru"
+             else let lr = rv-emit-frameless-arg st a2
           in let rr = rv-emit-frameless-arg (lr.state) a
           in let rd = rv-alloc-temp (rr.state)
           in RvEmitResult { state = rv-emit (rd.state) (rv-srl (rd.reg) (lr.reg) (rr.reg)), reg = rd.reg }
+         else if n2 == "bit-xor" then
+          let im = rv-bit-imm-ok a False
+          in if im >= 0 then rv-frameless-bit-imm st a2 im "xor"
+             else let lr = rv-emit-frameless-arg st a2
+          in let rr = rv-emit-frameless-arg (lr.state) a
+          in let rd = rv-alloc-temp (rr.state)
+          in RvEmitResult { state = rv-emit (rd.state) (rv-xor (rd.reg) (lr.reg) (rr.reg)), reg = rd.reg }
+         else if n2 == "bit-shr" then
+          let im = rv-bit-imm-ok a True
+          in if im >= 0 then rv-frameless-bit-imm st a2 im "shr"
+             else let lr = rv-emit-frameless-arg st a2
+          in let rr = rv-emit-frameless-arg (lr.state) a
+          in let rd = rv-alloc-temp (rr.state)
+          in RvEmitResult { state = rv-emit (rd.state) (rv-sra (rd.reg) (lr.reg) (rr.reg)), reg = rd.reg }
          else rv-emit-expr st e
         is _ -> rv-emit-expr st e
       is _ -> rv-emit-expr st e
     is otherwise -> rv-emit-expr st e
+
+ Every argument is lowered by `rv-emit-frameless-arg` and never by
+ `rv-emit-expr`. That is the correctness condition, and it used to hold
+ on only one of the three paths this function had.
+
+ The two-argument case used to ask whether each argument read the OTHER
+ parameter and choose from three emissions. The both-read path computed
+ into temporaries and placed them with `rv-parallel-assign-2`; the two
+ asymmetric paths pointed `result-dest` at a parameter register and
+ called `rv-emit-expr`. Only `rv-emit-frameless-arg` lowers `bit-and`,
+ `bit-or`, `bit-shl`, `bit-shru`, `bit-xor` and `bit-shr` inline, since
+ those arrive as an IrApply chain and not an IrBinary. The general
+ emitter lowers them the ordinary way, and the ordinary way uses a0 and
+ a1, which in a frameless function ARE the parameters.
+
+ The symptom was a hang and not a wrong answer. A two-parameter loop
+ over a bit operation lost its induction variable, never reached its
+ bound, and the cross harness recorded a test that produced no output
+ at all. Pinned by selecting each branch from source: the both-read
+ shape answered and the asymmetric shapes hung, differing in nothing
+ else.
+
+ The three paths are now one. `rv-parallel-assign-2` emits no move for
+ a value already in the register it belongs in, so the ordering
+ analysis the asymmetric paths existed to exploit costs little to give
+ up, and it is not worth a second lowering path that has to be kept
+ honest. `rv-tail-reads-reg` is still read by the framed direct path.
 
   rv-emit-frameless-tail-call : RvState, RvTcoState, List IRExpr -> RvEmitResult
   rv-emit-frameless-tail-call (st) (tco) (args) =
@@ -530,24 +809,9 @@ Section: Tail Call Optimization
    in let a1 = list-at args 1
    in let p0 = list-at (tco.param-locals) 0
    in let p1 = list-at (tco.param-locals) 1
-   in let a0rp1 = rv-tail-reads-reg a0 p1 st
-   in let a1rp0 = rv-tail-reads-reg a1 p0 st
-   in if a0rp1 & a1rp0 then
-    let er0 = rv-emit-frameless-arg st0 a0
-    in let er1 = rv-emit-frameless-arg (er0.state) a1
-    in rv-parallel-assign-2 (er1.state) p0 (er0.reg) p1 (er1.reg) (tco.loop-top)
-   else if a0rp1 then
-    let st1 = rv-set-result-dest st0 p0
-    in let er0 = rv-emit-expr st1 a0
-    in let st2 = rv-set-result-dest (er0.state) p1
-    in let er1 = rv-emit-expr st2 a1
-    in RvEmitResult { state = rv-emit (er1.state) (rv-j ((tco.loop-top - er1.state.insn-count) * 4)), reg = rv-a0 }
-   else
-    let st1 = rv-set-result-dest st0 p1
-    in let er1 = rv-emit-expr st1 a1
-    in let st2 = rv-set-result-dest (er1.state) p0
-    in let er0 = rv-emit-expr st2 a0
-    in RvEmitResult { state = rv-emit (er0.state) (rv-j ((tco.loop-top - er0.state.insn-count) * 4)), reg = rv-a0 }
+   in let er0 = rv-emit-frameless-arg st0 a0
+   in let er1 = rv-emit-frameless-arg (er0.state) a1
+   in rv-parallel-assign-2 (er1.state) p0 (er0.reg) p1 (er1.reg) (tco.loop-top)
 
   rv-parallel-assign-2 : RvState, Integer, Integer, Integer, Integer, Integer -> RvEmitResult
   rv-parallel-assign-2 (st) (p0) (r0) (p1) (r1) (loop-top) =
@@ -599,13 +863,28 @@ Section: Tail Call Optimization
     is IrBoolLit (v) (s) -> False
     is IrBinary (op) (l) (r) (t) (s) ->
      rv-tail-reads-reg l reg st | rv-tail-reads-reg r reg st
-    is IrNegate (x) (s) -> rv-tail-reads-reg x reg st
+    is IrNegate (x) (nty) (s) -> rv-tail-reads-reg x reg st
     is IrApply (f) (a) (t) (s) ->
      when f
       is IrName (n) (ft) (fs) -> rv-tail-reads-reg a reg st
       is IrApply (f2) (a2) (t2) (s2) -> rv-tail-reads-reg a reg st | rv-tail-reads-reg a2 reg st
       is _ -> True
     is otherwise -> False
+
+ `rv-set-result-dest` is a REQUEST and not a guarantee. An expression is
+ free to ignore it and hand back whatever register it happened to build in:
+ `rv-emit-nullary-ctor` does exactly that, and so does a bare name already
+ living somewhere else. This path used to set the destination, emit the
+ argument, and jump, with nothing checking that the value arrived. When it
+ did not, the parameter kept its OLD value and the loop re-entered on a
+ stale scrutinee -- a wrong answer where the body has a guard, and no
+ termination where it does not.
+
+ So each argument is placed with `rv-store-local` after it is emitted.
+ That call is free when the request was honoured, because it compares
+ `local == value-reg` and emits nothing, and it is also the only correct
+ move when the parameter's local is a spill slot rather than a register.
+ `rv-emit-arg-to-param`, twenty lines above, has always done this.
 
   rv-emit-tail-call-direct : RvState, RvTcoState, List IRExpr -> RvEmitResult
   rv-emit-tail-call-direct (st) (tco) (args) =
@@ -620,17 +899,21 @@ Section: Tail Call Optimization
    else if a0-reads-p1 then
     let st1 = rv-set-result-dest st p0
     in let er0 = rv-emit-expr st1 a0
-    in let st2 = rv-set-result-dest (er0.state) p1
+    in let st1b = rv-store-local (er0.state) p0 (er0.reg)
+    in let st2 = rv-set-result-dest st1b p1
     in let er1 = rv-emit-expr st2 a1
-    in let offset = (tco.loop-top - er1.state.insn-count) * 4
-    in RvEmitResult { state = rv-emit (er1.state) (rv-j offset), reg = rv-a0 }
+    in let st2b = rv-store-local (er1.state) p1 (er1.reg)
+    in let offset = (tco.loop-top - st2b.insn-count) * 4
+    in RvEmitResult { state = rv-emit st2b (rv-j offset), reg = rv-a0 }
    else
     let st1 = rv-set-result-dest st p1
     in let er1 = rv-emit-expr st1 a1
-    in let st2 = rv-set-result-dest (er1.state) p0
+    in let st1b = rv-store-local (er1.state) p1 (er1.reg)
+    in let st2 = rv-set-result-dest st1b p0
     in let er0 = rv-emit-expr st2 a0
-    in let offset = (tco.loop-top - er0.state.insn-count) * 4
-    in RvEmitResult { state = rv-emit (er0.state) (rv-j offset), reg = rv-a0 }
+    in let st2b = rv-store-local (er0.state) p0 (er0.reg)
+    in let offset = (tco.loop-top - st2b.insn-count) * 4
+    in RvEmitResult { state = rv-emit st2b (rv-j offset), reg = rv-a0 }
 
   rv-save-args-skip-last : RvState, List IRExpr, Integer, List Integer -> RvSavedArgs
   rv-save-args-skip-last (st) (args) (i) (acc) =
@@ -651,6 +934,21 @@ Section: Tail Call Optimization
 
 Section: Module Emission
 
+ `rv-body-is-frameless` below is the admission test this gate was
+ evidently meant to use, and NOTHING CALLS IT: the only references to
+ it are its own recursion. It asks the question that matters, demanding
+ each condition satisfy `rv-cond-is-frameless-safe` and each tail
+ argument satisfy `rv-arg-is-frameless-safe`, where the local count
+ here cannot express the real budget, which for callee-saved registers
+ in a function that emits no prologue is zero rather than six.
+
+ Do not simply wire it in. That was tried 2026-07-20 and it makes the
+ lane WORSE, because a body it refuses falls to the framed path and the
+ framed two-argument tail call is separately broken for the same
+ shapes: `v-shru`, a two-parameter loop over `bit-shru`, answers
+ correctly frameless and hangs framed. Both paths need to be right
+ before the honest gate can be turned on. Measured, not reasoned.
+
   rv-is-frameless-tco : IRDef -> Boolean
   rv-is-frameless-tco (def) =
    if list-length (def.params) < 1 then False
@@ -660,7 +958,8 @@ Section: Module Emission
     else let body = when def.body
      is IrLambda (lp) (lb) (lt) (ls) -> lb
      is otherwise -> def.body
-    in rv-count-ir-locals body (def.name) <= 6
+    in if rv-body-has-match body then False
+    else rv-count-ir-locals body (def.name) <= 6
    else False
 
   rv-expr-is-trivial : IRExpr -> Boolean
@@ -694,7 +993,7 @@ Section: Module Emission
     is IrCharLit (v) (s) -> True
     is IrNumLit (v) (s) -> True
     is IrName (n) (t) (s) -> True
-    is IrNegate (x) (s) -> rv-arg-is-frameless-safe x
+    is IrNegate (x) (nty) (s) -> rv-arg-is-frameless-safe x
     is IrBinary (op) (l) (r) (t) (s) ->
      when op
       is IrAppendText -> False
@@ -705,7 +1004,7 @@ Section: Module Emission
     is IrApply (f) (a) (t) (s) ->
      when f
       is IrName (n) (ft) (fs) ->
-       if rv-is-inline-2arg n then rv-arg-is-frameless-safe a else False
+       if rv-is-inline-1arg n | rv-is-inline-2arg n then rv-arg-is-frameless-safe a else False
       is IrApply (f2) (a2) (t2) (s2) ->
        when f2
         is IrName (n2) (ft2) (fs2) ->
@@ -777,7 +1076,7 @@ Section: Module Emission
     is IrCharLit (v) (s) -> True
     is IrNumLit (v) (s) -> True
     is IrName (n) (t) (s) -> True
-    is IrNegate (x) (s) -> rv-body-is-simple x
+    is IrNegate (x) (nty) (s) -> rv-body-is-simple x
     is IrBinary (op) (l) (r) (t) (s) -> rv-body-is-simple l & rv-body-is-simple r
     is IrIf (c) (th) (el) (t) (s) -> rv-body-is-simple c & rv-body-is-simple th & rv-body-is-simple el
     is IrLet (n) (t) (v) (b) (s) -> rv-body-is-simple v & rv-body-is-simple b
@@ -793,12 +1092,12 @@ Section: Module Emission
     is IrCharLit (v) (s) -> False
     is IrNumLit (v) (s) -> False
     is IrName (n) (t) (s) -> False
-    is IrNegate (x) (s) -> rv-has-any-call x fname
+    is IrNegate (x) (nty) (s) -> rv-has-any-call x fname
     is IrBinary (op) (l) (r) (t) (s) -> rv-has-any-call l fname | rv-has-any-call r fname
     is IrApply (f) (a) (t) (s) ->
      when f
       is IrName (n) (ft) (fs) ->
-       if rv-is-inline-2arg n then rv-has-any-call a fname else True
+       if rv-is-inline-1arg n | rv-is-inline-2arg n then rv-has-any-call a fname else True
       is IrApply (f2) (a2) (t2) (s2) ->
        when f2
         is IrName (n2) (ft2) (fs2) ->
@@ -819,7 +1118,7 @@ Section: Module Emission
      when f
       is IrName (n) (ft) (fs) ->
        if n == fname then rv-has-any-call a fname
-       else if rv-is-inline-2arg n then rv-has-any-call a fname
+       else if rv-is-inline-1arg n | rv-is-inline-2arg n then rv-has-any-call a fname
        else True
       is IrApply (f2) (a2) (t2) (s2) ->
        when f2
@@ -829,7 +1128,27 @@ Section: Module Emission
          else True
         is _ -> True
       is _ -> True
+    is IrMatch (scrut) (branches) (t) (s) ->
+     rv-has-any-call scrut fname | rv-branches-need-ra branches fname 0
     is otherwise -> False
+
+ A `when` body is a tail position for each arm and an ordinary position
+ for the scrutinee, exactly as `IrIf` is for its branches and condition.
+ Without this arm the walk fell to `otherwise` and answered False for
+ every match body, so a match-bodied TCO function that makes a NON-tail
+ call in an arm (`is Cons (h) (t) -> if pred h then Cons h (f pred t)
+ else f pred t`) had its `ra` save elided by `skip-ra` and looped back
+ into itself on return. Branch bodies are checked the tail-aware way
+ (`rv-body-needs-ra`, so a self tail call still costs nothing); the
+ scrutinee is checked the ordinary way. ARM64 answers True for any
+ match here, which is safe but saves `ra` for every match loop; this is
+ the precise version.
+
+  rv-branches-need-ra : List IRBranch, Text, Integer -> Boolean
+  rv-branches-need-ra (branches) (fname) (i) =
+   if i >= list-length branches then False
+   else if rv-body-needs-ra ((list-at branches i).body) fname then True
+   else rv-branches-need-ra branches fname (i + 1)
 
   rv-tco-needs-ra : IRDef -> Boolean
   rv-tco-needs-ra (def) =
@@ -851,7 +1170,7 @@ Section: Module Emission
     is IrCharLit (v) (s) -> True
     is IrNumLit (v) (s) -> True
     is IrName (n) (t) (s) -> True
-    is IrNegate (x) (s) -> rv-ir-is-leaf x
+    is IrNegate (x) (nty) (s) -> rv-ir-is-leaf x
     is IrBinary (op) (l) (r) (t) (s) ->
      when op
       is IrAppendText -> False
@@ -878,7 +1197,9 @@ Section: Module Emission
 
   rv-emit-function : RvState, IRDef -> RvState
   rv-emit-function (st) (def) =
-   if rv-is-frameless-tco def then rv-emit-function-frameless st def
+   let lt = rv-lir-emit-try st def
+   in if lt.handled then lt.state
+   else if rv-is-frameless-tco def then rv-emit-function-frameless st def
    else if rv-is-pure-leaf def then rv-emit-function-leaf st def
    else rv-emit-function-framed st def
 
@@ -996,6 +1317,11 @@ Section: Module Emission
      in let st5b = rv-emit st5a rv-nop
      in let st5c = rv-add-call-patch st5b "print-line-uni"
      in rv-emit st5c rv-nop
+    else if rv-opening-returns-real (def.type-val) then
+     let st5a = rv-add-call-patch st5 "__real_to_text"
+     in let st5b = rv-emit st5a rv-nop
+     in let st5c = rv-add-call-patch st5b "print-line-uni"
+     in rv-emit st5c rv-nop
     else if rv-opening-returns-text (def.type-val) then
      let st5a = rv-add-call-patch st5 "print-line-uni"
      in rv-emit st5a rv-nop
@@ -1076,7 +1402,7 @@ Section: Module Emission
   rv-pre-learn-type-defs (st) (tdefs) (i) =
    if i >= list-length tdefs then st
    else when list-at tdefs i
-    is ARecordTypeDef (dn) (tparams) (fields) (sp) ->
+    is ARecordTypeDef (dn) (tparams) (fields) (recmut) (sp) ->
      let st1 = rv-pre-learn-record-fields st (dn.value) fields 0
      in rv-pre-learn-type-defs st1 tdefs (i + 1)
     is otherwise -> rv-pre-learn-type-defs st tdefs (i + 1)
@@ -1118,7 +1444,7 @@ Section: Module Emission
    when ty
     is IntegerTy (lo) (hi) (m) -> True
     is EffectfulTy (effs) (scopes) (ret) -> rv-opening-returns-int ret
-    is FunTy (p) (r) -> rv-opening-returns-int r
+    is FunTy (p) (fnrow) (r) -> rv-opening-returns-int r
     is otherwise -> False
 
   rv-opening-returns-text : CodexType -> Boolean
@@ -1126,7 +1452,18 @@ Section: Module Emission
    when ty
     is TextTy -> True
     is EffectfulTy (effs) (scopes) (ret) -> rv-opening-returns-text ret
-    is FunTy (p) (r) -> rv-opening-returns-text r
+    is FunTy (p) (fnrow) (r) -> rv-opening-returns-text r
+    is otherwise -> False
+
+  rv-opening-returns-real : CodexType -> Boolean
+  rv-opening-returns-real (ty) =
+   when ty
+    is RealTy -> True
+    is RealApproxTy -> True
+    is RealTrappingTy -> True
+    is RealSaturatingTy -> True
+    is EffectfulTy (effs) (scopes) (ret) -> rv-opening-returns-real ret
+    is FunTy (p) (fnrow) (r) -> rv-opening-returns-real r
     is otherwise -> False
 
   rv-emit-module : RvState, IRChapter, List ATypeDef, List Text -> RvState
@@ -1138,7 +1475,8 @@ Section: Module Emission
    in let htb = if list-length eff-ops > 0 then #80100000 else 0
    in let st1b = __record-set st1a "handler-table-base" htb
    in let st2 = rv-emit-runtime st1b
-   in let st3 = rv-emit-all-defs st2 (chapter.defs) 0
+   in let st2b = __record-set st2 "runtime-funcs" (list-length (st2.func-names))
+   in let st3 = rv-emit-all-defs st2b (chapter.defs) 0
    in let st3w = rv-check-builtin-collisions st3 (st3.func-names) 0
    in let st3c = rv-compact-nops st3w
    in let st3r = rv-flush-wcet-pending st3c 0
@@ -1300,12 +1638,12 @@ Section: Effect Handler Emission
   rv-patch-calls-loop (st) (patches) (i) =
    if i >= list-length patches then st
    else let patch = list-at patches i
-   in let target-offset = rv-find-func-offset (st.func-names) (st.func-offsets) (patch.target) 0
+   in let target-offset = rv-find-func-offset (st.func-names) (st.func-offsets) (patch.target) (st.runtime-funcs)
    in if target-offset >= 0
     then let rel = (target-offset - patch.insn-index) * 4
     in let st1 = rv-patch-insn st (patch.insn-index) (rv-jal rv-ra rel)
     in rv-patch-calls-loop st1 patches (i + 1)
-    else rv-patch-calls-loop st patches (i + 1)
+    else rv-patch-calls-loop (__record-set st "wcet-reports" (list-push (st.wcet-reports) ("[WARN] unresolved call to '" & (patch.target) & "': the riscv plug emits no such function, and the branch was left unpatched -- reaching it reads a stale a0"))) patches (i + 1)
 
   rv-patch-func-addrs : RvState -> RvState
   rv-patch-func-addrs (st) =
@@ -1315,7 +1653,7 @@ Section: Effect Handler Emission
   rv-patch-func-addrs-loop (st) (fixups) (i) =
    if i >= list-length fixups then st
    else let fixup = list-at fixups i
-   in let target-offset = rv-find-func-offset (st.func-names) (st.func-offsets) (fixup.target) 0
+   in let target-offset = rv-find-func-offset (st.func-names) (st.func-offsets) (fixup.target) (st.runtime-funcs)
    in if target-offset >= 0
     then let pc-byte = fixup.insn-index * 4
     in let target-byte = target-offset * 4
@@ -1326,11 +1664,27 @@ Section: Effect Handler Emission
     in rv-patch-func-addrs-loop st2 fixups (i + 1)
     else rv-patch-func-addrs-loop st fixups (i + 1)
 
-  rv-find-func-offset : List Text, List Integer, Text, Integer -> Integer
-  rv-find-func-offset (names) (offsets) (target) (i) =
+ Name resolution: first match among the DEFINITIONS, with a leading
+ runtime registration skipped when a definition of the same name exists.
+ The fourth parameter is the runtime/definition boundary stamped into
+ `runtime-funcs` by `rv-emit-module`; the ARM64 chapter carries the full
+ account and the two measurements that forced this exact shape. A caller
+ passing 0 gets plain first-match.
+
+  rv-find-name-index : List Text, Text, Integer -> Integer
+  rv-find-name-index (names) (target) (i) =
    if i >= list-length names then 0 - 1
-   else if list-at names i == target then list-at offsets i
-   else rv-find-func-offset names offsets target (i + 1)
+   else if list-at names i == target then i
+   else rv-find-name-index names target (i + 1)
+
+  rv-find-func-offset : List Text, List Integer, Text, Integer -> Integer
+  rv-find-func-offset (names) (offsets) (target) (rtn) =
+   let i = rv-find-name-index names target 0
+   in if i < 0 then 0 - 1
+   else if i >= rtn then list-at offsets i
+   else let j = rv-find-name-index names target rtn
+   in if j >= 0 then list-at offsets j
+   else list-at offsets i
 
   RvHiLo = record { hi : Integer, lo : Integer }
 

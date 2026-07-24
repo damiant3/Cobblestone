@@ -1,0 +1,179 @@
+Chapter: C64Sid
+  cites Foreword chapter Console
+  cites C64 chapter Sid
+
+ Silent checks of the SID synthesizer, so the chip is verified in the
+ battery without a sound device. Four sub-checks, each able to fail:
+
+ 1. A steady triangle tone at 424 Hz, whose frequency is measured from
+    the PCM by counting rising zero-crossings. Voice 1 frequency 7217
+    (lo 49, hi 28), control #11 (triangle + gate), sustain 15, master 15.
+    424 Hz is 48000 / 424 = 113.25 samples per period, about 37 rising
+    crossings over the 4200-sample window past the attack. An octave
+    error reads 18 or 74; a dead renderer reads 0.
+
+ 2. The resonant filter attenuates. A bright ~2 kHz sawtooth is rendered
+    three ways -- unfiltered, through a low-pass at minimum cutoff, and
+    through a low-pass at maximum cutoff. The low cutoff must be far
+    quieter than the high cutoff (the cutoff controls the sound), and the
+    high cutoff must still pass most of the signal (the filter is not just
+    muting). A filter that passes everything fails the first; a filter
+    that outputs silence fails the second.
+
+ 3. Ring modulation changes voice 1. Voice 1 renders a triangle with and
+    without the ring bit while voice 3 runs as the modulator; the two
+    buffers must differ. If the ring bit were unread, they would be
+    identical.
+
+ 4. Hard sync changes voice 1. Voice 1 renders a sawtooth with and
+    without the sync bit while voice 3 runs as the modulator; the two
+    buffers must differ.
+
+Section: Measurement
+
+  count-crossings : Integer, Integer, Integer, Integer, Integer -> Integer
+  count-crossings (buf) (nsamples) (i) (prev) (acc) =
+    if i >= nsamples then acc
+    else
+      let lo = peek-byte buf (i * 4)
+      in let hi = peek-byte buf (i * 4 + 1)
+      in let raw = lo + hi * 256
+      in let val = if raw >= 32768 then raw - 65536 else raw
+      in let sign = if val >= 0 then 1 else 0
+      in let cross = if prev == 0 then (if sign == 1 then 1 else 0) else 0
+      in count-crossings buf nsamples (i + 1) sign (acc + cross)
+
+  buf-peak : Integer, Integer, Integer -> Integer
+  buf-peak (buf) (nsamples) (start) = buf-peak-loop buf nsamples start 0
+
+  buf-peak-loop : Integer, Integer, Integer, Integer -> Integer
+  buf-peak-loop (buf) (nsamples) (i) (mx) =
+    if i >= nsamples then mx
+    else
+      let lo = peek-byte buf (i * 4)
+      in let hi = peek-byte buf (i * 4 + 1)
+      in let raw = lo + hi * 256
+      in let val = if raw >= 32768 then raw - 65536 else raw
+      in let a = if val < 0 then 0 - val else val
+      in buf-peak-loop buf nsamples (i + 1) (if a > mx then a else mx)
+
+  buf-diff-count : Integer, Integer, Integer -> Integer
+  buf-diff-count (a) (b) (nsamples) = buf-diff-loop a b nsamples 0 0
+
+  buf-diff-loop : Integer, Integer, Integer, Integer, Integer -> Integer
+  buf-diff-loop (a) (b) (nsamples) (i) (acc) =
+    if i >= nsamples then acc
+    else
+      let va = peek-byte a (i * 4) + peek-byte a (i * 4 + 1) * 256
+      in let vb = peek-byte b (i * 4) + peek-byte b (i * 4 + 1) * 256
+      in buf-diff-loop a b nsamples (i + 1) (if va /= vb then acc + 1 else acc)
+
+Section: Sub-checks
+
+  check-tone : Integer -> Text
+  check-tone (x) =
+    let regs = alloc-bytes 32
+    in let d0 = poke-byte regs 0 49
+    in let d1 = poke-byte regs 1 28
+    in let d4 = poke-byte regs 4 #11
+    in let d6 = poke-byte regs 6 #F0
+    in let d24 = poke-byte regs 24 15
+    in let n = 4800
+    in let buf = alloc-bytes (n * 4)
+    in let r = sid-render regs buf n
+    in let cyc = count-crossings buf n 600 1 0
+    in if cyc < 35 then "FAIL: tone frequency too low"
+       else if cyc > 39 then "FAIL: tone frequency too high"
+       else ""
+
+  check-filter : Integer -> Text
+  check-filter (x) =
+    let n = 4800
+    in let sf = 2000
+    in let ru-regs = alloc-bytes 32
+    in let u0 = poke-byte ru-regs 0 208
+    in let u1 = poke-byte ru-regs 1 132
+    in let u4 = poke-byte ru-regs 4 #21
+    in let u6 = poke-byte ru-regs 6 #F0
+    in let u24 = poke-byte ru-regs 24 #0F
+    in let ub = alloc-bytes (n * 4)
+    in let ur = sid-render ru-regs ub n
+    in let pu = buf-peak ub n sf
+    in let rl-regs = alloc-bytes 32
+    in let l0 = poke-byte rl-regs 0 208
+    in let l1 = poke-byte rl-regs 1 132
+    in let l4 = poke-byte rl-regs 4 #21
+    in let l6 = poke-byte rl-regs 6 #F0
+    in let l23 = poke-byte rl-regs 23 #01
+    in let l24 = poke-byte rl-regs 24 #1F
+    in let lb = alloc-bytes (n * 4)
+    in let lr = sid-render rl-regs lb n
+    in let pl = buf-peak lb n sf
+    in let rh-regs = alloc-bytes 32
+    in let h0 = poke-byte rh-regs 0 208
+    in let h1 = poke-byte rh-regs 1 132
+    in let h4 = poke-byte rh-regs 4 #21
+    in let h6 = poke-byte rh-regs 6 #F0
+    in let h22 = poke-byte rh-regs 22 #FF
+    in let h23 = poke-byte rh-regs 23 #01
+    in let h24 = poke-byte rh-regs 24 #1F
+    in let hb = alloc-bytes (n * 4)
+    in let hr = sid-render rh-regs hb n
+    in let ph = buf-peak hb n sf
+    in if pl * 2 >= ph then "FAIL: filter cutoff does not attenuate"
+       else if ph * 3 < pu then "FAIL: filter high cutoff blocks signal"
+       else ""
+
+  mk-mod-regs : Integer -> Integer
+  mk-mod-regs (v1c) =
+    let r = alloc-bytes 32
+    in let a0 = poke-byte r 0 64
+    in let a1 = poke-byte r 1 31
+    in let a4 = poke-byte r 4 v1c
+    in let a6 = poke-byte r 6 #F0
+    in let a14 = poke-byte r 14 184
+    in let a15 = poke-byte r 15 11
+    in let a24 = poke-byte r 24 15
+    in r
+
+  check-ring : Integer -> Text
+  check-ring (x) =
+    let n = 2400
+    in let ra = mk-mod-regs #15
+    in let ba = alloc-bytes (n * 4)
+    in let da = sid-render ra ba n
+    in let rb = mk-mod-regs #11
+    in let bb = alloc-bytes (n * 4)
+    in let db = sid-render rb bb n
+    in if buf-diff-count ba bb n < 50 then "FAIL: ring modulation has no effect"
+       else ""
+
+  check-sync : Integer -> Text
+  check-sync (x) =
+    let n = 2400
+    in let ra = mk-mod-regs #23
+    in let ba = alloc-bytes (n * 4)
+    in let da = sid-render ra ba n
+    in let rb = mk-mod-regs #21
+    in let bb = alloc-bytes (n * 4)
+    in let db = sid-render rb bb n
+    in if buf-diff-count ba bb n < 50 then "FAIL: hard sync has no effect"
+       else ""
+
+Section: Body
+
+  check : Integer -> Text
+  check (x) =
+    let e1 = check-tone 0
+    in if text-length e1 /= 0 then e1
+    else let e2 = check-filter 0
+    in if text-length e2 /= 0 then e2
+    else let e3 = check-ring 0
+    in if text-length e3 /= 0 then e3
+    else let e4 = check-sync 0
+    in if text-length e4 /= 0 then e4
+    else "PASS"
+
+  opening : [Console] Nothing = act
+    print-line-uni (check 0)
+  end

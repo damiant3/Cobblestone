@@ -58,7 +58,7 @@ function that makes one declares `[Device.Mmio]`.
 QEMU virt's test is `codex/test/qemu-virt-board.codex`, not
 `qemuvirt-drivers.codex`. The first cut of `boards-test.ps1` assumed the
 naming convention, failed to find it, reported the board as untested, and
-that false gap got as far as a backlog entry before anyone checked. It has
+that false gap got as far as a recorded entry before anyone checked. It has
 a test, it is in the default battery, and it returns 6.
 
 ---
@@ -179,7 +179,7 @@ any board — swap the `cites Boards chapter` line and rebuild.
   What this buys is read-back fidelity, the same the other six already
   had. It is still not peripheral behaviour. Renode remains the real
   target — and for the Cortex-M parts it is the only option until
-  Thumb-2 codegen exists (`docs/PM/BACKLOG.md` 3.5).
+  Thumb-2 codegen exists.
 - **Power management — WFI instruction.** STM32L4 now has the full
   sleep preparation sequence (LPMS mode select, wakeup flag clear,
   SCB SLEEPDEEP, LPTIM wakeup, clock restore). The only missing

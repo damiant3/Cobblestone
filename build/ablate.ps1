@@ -10,7 +10,7 @@
 #      bench/compare.ps1 (map-guided .text extraction -> COFF wrap ->
 #      dumpbin /disasm -> Count-Instructions), so counts are comparable to
 #      the historical tables in docs/ArchitectsSketchbook.md and
-#      docs/Reference/CodegenAnalysis.md.
+#      the archived codegen analysis.
 #
 # What this does NOT measure — read before trusting a row:
 #   - NO per-config fixed-point check. Only the shipping default pipeline is

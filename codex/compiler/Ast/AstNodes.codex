@@ -193,12 +193,20 @@ Section: Chapter
    ground-effects : List Text,
    chapter-title : Text,
    prose : Text,
+   prose-blocks : List ProseBlock,
+   annotations : List AnnotationNode,
    section-titles : List Text,
    rt-names : List Text,
    rt-budgets : List Integer,
    conversions : List Text,
    span : SourceSpan
   }
+
+ prose-blocks and annotations ride through from the Document so that
+ per-definition prose (each block carries its anchor) and the raw
+ annotation nodes survive past desugaring. rt-names, rt-budgets, and
+ conversions remain the distilled views the checker and desugarer
+ consume; the raw lists exist for emission.
 
 Section: Span Accessor
   aexpr-span : AExpr -> SourceSpan
@@ -402,11 +410,123 @@ Section: Deck Copies
    ground-effects = copy-sx-texts b (ch.ground-effects),
    chapter-title = copy-sx-text b (ch.chapter-title),
    prose = copy-sx-text b (ch.prose),
+   prose-blocks = for p in (ch.prose-blocks) -> copy-sx-proseblock b p,
+   annotations = for a in (ch.annotations) -> copy-sx-annotation b a,
    section-titles = copy-sx-texts b (ch.section-titles),
    rt-names = copy-sx-texts b (ch.rt-names),
    rt-budgets = for x in (ch.rt-budgets) -> x,
    conversions = copy-sx-texts b (ch.conversions),
    span = copy-sx-span b (ch.span)
   }
+
+ The guarded form, for the frontend keep copy (BACKLOG 2.16). The keep
+ reservation sits BELOW the DESUGAR deck this copy reads, so a copy that
+ outgrows the floor writes into its own source and dereferences the
+ overwrite.
+
+ The frontier is __heap-save (R10), not __deck-pos: this copy runs inside
+ a phase-wide deck-record extent, where __deck-exit writes the deck-pos
+ cell back only when the nesting counter returns to zero, so the cell is
+ frozen at the deck's base for the whole copy. Measured 2026-07-21 with a
+ `deck-record (__heap-save)` probe on either side of the extent: R10
+ inside it reads exactly fk-base at entry and exactly the post-exit cell
+ value at exit, so it tracks the deck the cell cannot.
+
+ Every list field that scales with the source is a guarded loop, and every
+ remaining field is skipped once the frontier is past the ceiling. Guards
+ on the defs and type-def loops alone are not enough: prose-blocks carries
+ one entry per prose paragraph in the unit, which for the concatenated
+ compiler is the same order as the definitions.
+
+ On saturation an EMPTY chapter is returned, and it must be empty rather
+ than the shared original -- this is DESUGAR's contract, not the
+ PARSE-KEEP one, because the callers differ in what happens next.
+ compile-parse ends its phase at its copy, so returning the shared scratch
+ there is safe until the caller halts. compile-desugar-and-scope does NOT:
+ it compacts the DESUGAR deck three lines later and runs SCOPE inside the
+ same function, before any caller can read the bag. Measured by shipping
+ the shared original: the selfhost against an 8 MB keep floor dies
+ `!EXC=0d` in scope-adefs-ll, reading a chapter whose deck had been
+ reclaimed underneath it. The empty wind-down is O(1) -- a name and a span
+ -- so it cannot walk through the ceiling the way LEX's token conversion
+ did.
+
+  GuardedChapterCopy = record {
+   chapter : AChapter,
+   sat : Integer
+  }
+
+  copy-as-defs-guarded : Integer, Integer, List ADef, Integer, Integer, List ADef -> List ADef
+  copy-as-defs-guarded (b) (ceiling) (ds) (i) (len) (acc) =
+   if i == len then acc
+   else if __heap-save >= ceiling then acc
+   else copy-as-defs-guarded b ceiling ds (i + 1) len (list-push acc (copy-as-def b (list-at ds i)))
+
+  copy-as-typedefs-guarded : Integer, Integer, List ATypeDef, Integer, Integer, List ATypeDef -> List ATypeDef
+  copy-as-typedefs-guarded (b) (ceiling) (ts) (i) (len) (acc) =
+   if i == len then acc
+   else if __heap-save >= ceiling then acc
+   else copy-as-typedefs-guarded b ceiling ts (i + 1) len (list-push acc (copy-as-typedef b (list-at ts i)))
+
+  copy-as-proseblocks-guarded : Integer, Integer, List ProseBlock, Integer, Integer, List ProseBlock -> List ProseBlock
+  copy-as-proseblocks-guarded (b) (ceiling) (ps) (i) (len) (acc) =
+   if i == len then acc
+   else if __heap-save >= ceiling then acc
+   else copy-as-proseblocks-guarded b ceiling ps (i + 1) len (list-push acc (copy-sx-proseblock b (list-at ps i)))
+
+  copy-as-annotations-guarded : Integer, Integer, List AnnotationNode, Integer, Integer, List AnnotationNode -> List AnnotationNode
+  copy-as-annotations-guarded (b) (ceiling) (ns) (i) (len) (acc) =
+   if i == len then acc
+   else if __heap-save >= ceiling then acc
+   else copy-as-annotations-guarded b ceiling ns (i + 1) len (list-push acc (copy-sx-annotation b (list-at ns i)))
+
+  empty-as-chapter : Integer, AChapter -> AChapter
+  empty-as-chapter (b) (ch) = AChapter {
+   name = copy-as-name b (ch.name),
+   defs = [],
+   type-defs = [],
+   effect-defs = [],
+   class-defs = [],
+   instance-defs = [],
+   citations = [],
+   ground-effects = [],
+   chapter-title = "",
+   prose = "",
+   prose-blocks = [],
+   annotations = [],
+   section-titles = [],
+   rt-names = [],
+   rt-budgets = [],
+   conversions = [],
+   span = copy-sx-span b (ch.span)
+  }
+
+  copy-as-chapter-guarded : Integer, Integer, AChapter -> GuardedChapterCopy
+  copy-as-chapter-guarded (b) (ceiling) (ch) =
+   let defs2 = copy-as-defs-guarded b ceiling (ch.defs) 0 (list-length (ch.defs)) []
+   in let tds2 = copy-as-typedefs-guarded b ceiling (ch.type-defs) 0 (list-length (ch.type-defs)) []
+   in let pbs2 = copy-as-proseblocks-guarded b ceiling (ch.prose-blocks) 0 (list-length (ch.prose-blocks)) []
+   in let anns2 = copy-as-annotations-guarded b ceiling (ch.annotations) 0 (list-length (ch.annotations)) []
+   in if __heap-save >= ceiling
+      then GuardedChapterCopy { chapter = empty-as-chapter b ch, sat = 1 }
+      else GuardedChapterCopy { chapter = AChapter {
+       name = copy-as-name b (ch.name),
+       defs = defs2,
+       type-defs = tds2,
+       effect-defs = for e in (ch.effect-defs) -> copy-as-effectdef b e,
+       class-defs = for c in (ch.class-defs) -> copy-as-classdef b c,
+       instance-defs = for i in (ch.instance-defs) -> copy-as-instancedef b i,
+       citations = for c in (ch.citations) -> copy-as-citesdecl b c,
+       ground-effects = copy-sx-texts b (ch.ground-effects),
+       chapter-title = copy-sx-text b (ch.chapter-title),
+       prose = copy-sx-text b (ch.prose),
+       prose-blocks = pbs2,
+       annotations = anns2,
+       section-titles = copy-sx-texts b (ch.section-titles),
+       rt-names = copy-sx-texts b (ch.rt-names),
+       rt-budgets = for x in (ch.rt-budgets) -> x,
+       conversions = copy-sx-texts b (ch.conversions),
+       span = copy-sx-span b (ch.span)
+      }, sat = 0 }
 
 Page 1

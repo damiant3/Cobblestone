@@ -1,0 +1,74 @@
+Chapter: WebMuxIdleReap
+  cites Net chapter WebServer
+  cites Net chapter NetIO
+  cites Net chapter Tcp
+  cites Net chapter Ethernet
+  cites Works chapter Http
+  cites Foreword chapter Console
+
+ An idle connection is aged out. A client connects and sends one request, then
+ goes silent: it never sends another request and never closes. The idle sweep
+ bumps the connection's idle count each pass and reaps it once it reaches
+ web-idle-max (5) passes without traffic -- the slowloris bound.
+
+ After the first GET the connection has served 1 and is one connection. Four
+ sweeps leave it alive (idle 4). The load-bearing control comes next: a second
+ GET arrives, which resets the idle count to zero, and four more sweeps still
+ leave it alive -- eight sweeps total, so a reap driven by a fixed sweep count
+ rather than by inactivity would have removed it by now. The ninth sweep (the
+ fifth since the reset) reaps it, so the connection count drops to 0.
+
+ We say:
+
+Section: Wire Fixtures
+  srv-mac : List Integer = [82, 84, 0, 18, 52, 86]
+  cli-mac : List Integer = [82, 85, 10, 0, 2, 2]
+  srv-ip : List Integer = [10, 0, 2, 15]
+  a-ip : List Integer = [10, 0, 2, 100]
+
+  get1-bytes : List Integer = [71, 69, 84, 32, 47, 32, 72, 84, 84, 80, 47, 49, 46, 49, 13, 10, 13, 10]
+  get2-bytes : List Integer = [71, 69, 84, 32, 47, 120, 32, 72, 84, 84, 80, 47, 49, 46, 49, 13, 10, 13, 10]
+
+  psh : Integer = bit-or tcp-flag-psh tcp-flag-ack
+
+  mk : Integer, Integer, List Integer -> List Integer
+  mk (seq) (flags) (payload) =
+    let seg = tcp-build-segment 50000 80 seq 5000 flags 8192 payload
+    in let ip = ip-build-packet a-ip srv-ip ip-proto-tcp seg
+    in eth-build-frame srv-mac cli-mac eth-type-ipv4 ip
+
+  a-syn : List Integer = mk 1000 tcp-flag-syn []
+  a-get1 : List Integer = mk 1001 psh get1-bytes
+  a-get2 : List Integer = mk 1020 psh get2-bytes
+
+Section: Route
+  test-route : HttpRequest -> HttpResponse
+  test-route (req) = http-json "{\"ok\":true}"
+
+Section: Sweep Helper
+  sweep-n : WebMux, Integer -> [Network.Write] WebMux
+  sweep-n (m) (n) =
+    if n <= 0 then m
+    else act
+      m1 <- web-mux-sweep m 0
+      sweep-n m1 (n - 1)
+    end
+
+Section: Entry
+  opening : [Console, Network.Write] Nothing = act
+    let m0 = WebMux { listen = net-io-listen (fresh-listen-transport 80), conns = [], served = 0 }
+    in act
+      m1 <- web-mux-feed test-route m0 a-syn 80
+      m2 <- web-mux-feed test-route m1 a-get1 80
+      print-line-uni ("served=" & show (m2.served))
+      print-line-uni ("conns=" & show (list-length (m2.conns)))
+      m3 <- sweep-n m2 4
+      print-line-uni ("s4conns=" & show (list-length (m3.conns)))
+      m4 <- web-mux-feed test-route m3 a-get2 80
+      print-line-uni ("served2=" & show (m4.served))
+      m5 <- sweep-n m4 4
+      print-line-uni ("kept4=" & show (list-length (m5.conns)))
+      m6 <- web-mux-sweep m5 0
+      print-line-uni ("reap0=" & show (list-length (m6.conns)))
+    end
+  end

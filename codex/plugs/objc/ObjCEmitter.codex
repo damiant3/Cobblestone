@@ -93,10 +93,11 @@ Section: Type Definition Emission
   emit-oc-type-def : ATypeDef -> Text
   emit-oc-type-def (td) =
    when td
-    is ARecordTypeDef (name) (tparams) (fields) (s) ->
+    is ARecordTypeDef (name) (tparams) (fields) (recmut) (s) ->
      emit-oc-record-type (name.value) fields
     is AVariantTypeDef (name) (tparams) (ctors) (s) ->
      emit-oc-sum-type ctors
+    is AUnitTypeDef (name) (unitbase) (s) -> ""
 
   emit-oc-sum-type : List AVariantCtorDef -> Text
   emit-oc-sum-type (ctors) =
@@ -149,7 +150,7 @@ Section: Expression Emission
     is IrCharLit (n) (sp) -> "@(" & integer-to-text n & ")"
     is IrName (n) (ty) (sp) -> emit-oc-name n ty arities
     is IrBinary (op) (l) (r) (ty) (sp) -> emit-oc-binary op l r arities
-    is IrNegate (operand) (sp) -> "@(-[" & emit-oc-expr-at operand arities (depth + 1) & " integerValue])"
+    is IrNegate (operand) (nty) (sp) -> "@(-[" & emit-oc-expr-at operand arities (depth + 1) & " integerValue])"
     is IrIf (c) (t) (el) (ty) (sp) -> "([" & emit-oc-expr-at c arities (depth + 1) & " boolValue] ? " & emit-oc-expr-at t arities (depth + 1) & " : " & emit-oc-expr-at el arities (depth + 1) & ")"
     is IrLet (name) (ty) (val) (body) (sp) -> "(^{ id " & oc-sanitize name & " = " & emit-oc-expr-at val arities (depth + 1) & "; return " & emit-oc-expr-at body arities (depth + 1) & "; }())"
     is IrApply (f) (a) (ty) (sp) -> emit-oc-apply e arities
@@ -269,7 +270,7 @@ Section: Builtin Table
   oc-builtin-names = ["abs", "char-at", "char-code-at", "file-exists",
    "int-mod", "integer-to-text", "list-at", "list-length", "list-snoc",
    "max", "min", "negate", "print-error-uni", "print-line-uni",
-   "read-file", "read-line", "show", "substring", "text-compare",
+   "read-text", "read-line", "show", "substring", "text-compare",
    "text-contains", "text-length", "text-replace", "text-split",
    "text-starts-with", "text-to-integer", "write-file"]
 
@@ -288,7 +289,7 @@ Section: Builtin Table
    else if idx == 1 then "[NSString stringWithFormat:@\"%C\", [" & emit-oc-expr (list-at args 0) arities & " characterAtIndex:[" & emit-oc-expr (list-at args 1) arities & " integerValue]]]"
    else if idx == 2 then "@([" & emit-oc-expr (list-at args 0) arities & " characterAtIndex:[" & emit-oc-expr (list-at args 1) arities & " integerValue]])"
    else if idx == 3 then "@([[NSFileManager defaultManager] fileExistsAtPath:" & emit-oc-expr (list-at args 0) arities & "])"
-   else if idx == 4 then "@([" & emit-oc-expr (list-at args 0) arities & " integerValue] % [" & emit-oc-expr (list-at args 1) arities & " integerValue])"
+   else if idx == 4 then "@(^NSInteger(NSInteger _a, NSInteger _b){ NSInteger _m = _b < 0 ? -_b : _b; NSInteger _r = _a % _m; return _r < 0 ? _r + _m : _r; }([" & emit-oc-expr (list-at args 0) arities & " integerValue], [" & emit-oc-expr (list-at args 1) arities & " integerValue]))"
    else if idx == 5 then "[NSString stringWithFormat:@\"%ld\", (long)[" & emit-oc-expr (list-at args 0) arities & " integerValue]]"
    else if idx == 6 then "[" & emit-oc-expr (list-at args 0) arities & " objectAtIndex:[" & emit-oc-expr (list-at args 1) arities & " integerValue]]"
    else if idx == 7 then "@([" & emit-oc-expr (list-at args 0) arities & " count])"

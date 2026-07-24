@@ -1,5 +1,6 @@
 Chapter: Fireworks
   cites Foreword chapter Console
+  cites UI chapter KeyInput
 
  USA 250 -- fireworks bursting over a major American city skyline,
  rendered on the bare-metal host GPU triangle rasterizer. The guest
@@ -20,7 +21,6 @@ Section: Constants
   sw : Integer = 1024
   sh : Integer = 768
   horizon : Integer = 680
-  kb-addr : Integer = 28680
   max-tri : Integer = 60000
   city-seed : Integer = 777
 
@@ -623,17 +623,12 @@ Section: Scene
 
 Section: Frame Loop
 
- Port I/O carries the Device.Port capability effect, so each port call
- is an act-bind. The pure launch/update/draw run in a let-in tail; the
- flush and the returned cursor thread through flush-ret.
-
-  poll-key : Integer -> [Device.Port, Gpu.Compute] Integer
-  poll-key (kb) = act
-    d <- port-in-byte 96
-    let sc = peek-byte kb 0
-    in let ack = poke-byte kb 0 0
-    in sc
-  end
+ GPU port I/O carries the Gpu.Compute capability effect, so each
+ `gpu-out` call is an act-bind. The pure launch/update/draw run in a
+ let-in tail; the flush and the returned cursor thread through flush-ret.
+ The keyboard read is the common `poll-key` (UI KeyInput): a pure
+ `Integer` that consumes the IRQ1 key cell and returns a translated,
+ shift/caps-cased key code, so it binds with `let`, not an act-bind.
 
   flush-ret : Integer, Integer -> [Device.Port, Gpu.Compute] Integer
   flush-ret (n) (ret) = act
@@ -663,17 +658,18 @@ Section: Frame Loop
 
   edge-mode : Integer, Integer, Integer -> Integer
   edge-mode (sc) (prev) (mode) =
-    if sc == 59 then (if prev == 59 then mode else 1 - mode)
+    if sc == 112 then (if prev == 112 then mode else 1 - mode)
     else mode
 
   fw-loop : Integer, Integer, Integer, Integer, Integer -> [Device.Port, Gpu.Compute, Gpu.Memory] Text
-  fw-loop (cmd) (frame) (cursor) (mode) (prev) = act
-    sc <- poll-key kb-addr
-    nc <- render-frame cmd frame cursor (edge-mode sc prev mode)
-    when sc == 16
-      is True -> "done"
-      is otherwise -> fw-loop cmd (frame + 1) nc (edge-mode sc prev mode) sc
-  end
+  fw-loop (cmd) (frame) (cursor) (mode) (prev) =
+    let sc = poll-key
+    in act
+      nc <- render-frame cmd frame cursor (edge-mode sc prev mode)
+      when key-upper sc == 81
+        is True -> "done"
+        is otherwise -> fw-loop cmd (frame + 1) nc (edge-mode sc prev mode) sc
+    end
 
 Section: Fixed-Point Trig
 

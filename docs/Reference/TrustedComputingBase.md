@@ -76,7 +76,7 @@ starts from this list.
 | Component | Role | Trusted because | Shrinkable? |
 |---|---|---|---|
 | **`seed/Codex.cdx`** | The compiler. Root of trust. | It is a hard fixed point of itself (Section 4) | Not removable; can be *re-derived* by independent paths |
-| **`codex-vm.exe` / `codex-vm.c`** | ~6000-line C/WHP hypervisor that boots the seed and carries the build over serial | Hand-written C; not Codex; not self-verified | **Yes** — pure-Codex VMX host (Backlog #4) removes it from the self-host path |
+| **`codex-vm.exe` / `codex-vm.c`** | ~6000-line C/WHP hypervisor that boots the seed and carries the build over serial | Hand-written C; not Codex; not self-verified | **Yes** — pure-Codex VMX host (CurrentPlan gap 5) removes it from the self-host path |
 | **The build scripts** (`build/*.ps1`) | Concat, gate orchestration, signing invocation | PowerShell, hand-written | Partially — being migrated PS1→Codex |
 | **The project's Ed25519 signing key** | Authenticity of the seed and emitted CDX | Held out of band; signing is automatic | No — but its *scope* is auditable (one key, one purpose) |
 | **The plugs** (50+: ELF, PE, ARM64, RISC-V, HTML, PTX, …) | Container/format and cross-arch codegen | Each is a Codex program (so compiled by the trusted seed), but its codegen is **tested, not proven** | **Yes** — translation validation (Section 5) |
@@ -148,7 +148,7 @@ to that sentence.
 Each item removes something from the TCB or converts a "trusted" entry
 into a "checked/proven" one. Ordered by leverage.
 
-1. **Pure-Codex VMX host (Backlog #4).** Removes `codex-vm.c` (~6000 lines
+1. **Pure-Codex VMX host (CurrentPlan gap 5).** Removes `codex-vm.c` (~6000 lines
    of C) from the self-host toolchain TCB. The largest single non-Codex
    trusted component; eliminating it makes "no borrowed substrate"
    literally true for the build, not just the deployment.

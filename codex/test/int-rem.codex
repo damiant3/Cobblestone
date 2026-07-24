@@ -1,0 +1,77 @@
+Chapter: IntRem
+
+ Codex has two remainders and they answer different questions.
+
+ `int-rem` is the truncating remainder: it takes the sign of the
+ DIVIDEND, and it is what `idiv` leaves in RDX with no correction
+ applied. It is the remainder that pairs with `/`, which truncates
+ toward zero, so for every pair the identity
+
+   a == (a / b) * b + int-rem a b
+
+ holds -- including when either operand is negative. That identity is
+ the reason this builtin exists; before it, the only remainder Codex
+ exposed made the identity false for every negative dividend.
+
+ `int-mod` is Euclidean: its answer is never negative, whatever the
+ signs of the operands. It does not pair with `/` and is not meant to.
+ It is measured in the same rows here so that the two contracts are
+ legible side by side and so a change to one that disturbed the other
+ would be visible.
+
+ Both operands arrive as parameters at every call site. A literal
+ dividend folds at compile time, which would measure the constant
+ folder rather than the emitter; a literal divisor takes the
+ power-of-two strength reduction, which is a different path again.
+ `rem-computed` exists to reach the standard emit path -- the reg-locals
+ fast path fires only when both operands are plain locals -- so both
+ paths of the builtin are covered rather than only the quick one.
+
+Section: The two remainders
+
+  rem : Integer, Integer -> Integer
+  rem (a) (b) = int-rem a b
+
+  eucl : Integer, Integer -> Integer
+  eucl (a) (b) = int-mod a b
+
+  rem-computed : Integer, Integer -> Integer
+  rem-computed (a) (b) = int-rem (a + 0) (b + 0)
+
+Section: The identity that names the builtin
+
+  ident-ok : Integer, Integer -> Boolean
+  ident-ok (a) (b) = a == (a / b) * b + int-rem a b
+
+  ident-count : Integer, Integer, Integer -> Integer
+  ident-count (acc) (a) (b) = if ident-ok a b then acc + 1 else acc
+
+  yn : Boolean -> Text
+  yn (b) = if b then "yes" else "no"
+
+Section: Report
+
+  opening : [Console] Nothing
+  opening = act
+   print-line-uni ("7 rem 3 = " & show (rem 7 3))
+   print-line-uni ("-7 rem 3 = " & show (rem (0 - 7) 3))
+   print-line-uni ("7 rem -3 = " & show (rem 7 (0 - 3)))
+   print-line-uni ("-7 rem -3 = " & show (rem (0 - 7) (0 - 3)))
+   print-line-uni ("7 mod 3 = " & show (eucl 7 3))
+   print-line-uni ("-7 mod 3 = " & show (eucl (0 - 7) 3))
+   print-line-uni ("7 mod -3 = " & show (eucl 7 (0 - 3)))
+   print-line-uni ("-7 mod -3 = " & show (eucl (0 - 7) (0 - 3)))
+   print-line-uni ("-1 rem 8 = " & show (rem (0 - 1) 8))
+   print-line-uni ("-8 rem 8 = " & show (rem (0 - 8) 8))
+   print-line-uni ("-9 rem 8 = " & show (rem (0 - 9) 8))
+   print-line-uni ("-1 mod 8 = " & show (eucl (0 - 1) 8))
+   print-line-uni ("0 rem 5 = " & show (rem 0 5))
+   print-line-uni ("computed -7 rem 3 = " & show (rem-computed (0 - 7) 3))
+   print-line-uni ("computed 7 rem -3 = " & show (rem-computed 7 (0 - 3)))
+   print-line-uni ("identity -7 3 = " & yn (ident-ok (0 - 7) 3))
+   print-line-uni ("identity 7 -3 = " & yn (ident-ok 7 (0 - 3)))
+   print-line-uni ("identity -7 -3 = " & yn (ident-ok (0 - 7) (0 - 3)))
+   print-line-uni ("identity -1 8 = " & yn (ident-ok (0 - 1) 8))
+   print-line-uni ("identity 13 4 = " & yn (ident-ok 13 4))
+   print-line-uni ("identities held = " & show (ident-count (ident-count (ident-count (ident-count (ident-count 0 (0 - 7) 3) 7 (0 - 3)) (0 - 7) (0 - 3)) (0 - 1) 8) 13 4))
+  end

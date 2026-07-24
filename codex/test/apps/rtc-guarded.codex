@@ -14,11 +14,19 @@ Chapter: RtcGuarded
  must still be able to tell the time.
 
  The pass condition is the guarded reader's: zero bad reads, and a real
- second recovered. The unguarded count is printed rather than asserted --
- whether a given run lands inside the ~2ms update window is a matter of
- timing, and a test that demands a race be lost is a flaky test. What is
- NOT negotiable is that the guarded reader never once hands back a number
- that a clock cannot produce.
+ second recovered. What is NOT negotiable is that the guarded reader never
+ once hands back a number that a clock cannot produce.
+
+ The unguarded count is not printed at all, and that is a correction. It
+ used to print `unguarded-bad-seen=y` or `n`, and the .expected pinned
+ `y` -- which asserted it, whatever the paragraph above it said. The
+ harness compares the whole output against .expected and has no channel
+ for a line that is shown but not checked, so a varying line cannot be
+ printed here at all. Measured over four runs on codex-vm it came back
+ y, y, n, n: a coin flip sitting in the battery, failing half the release
+ tallies for a reason that is not a defect. The probe still RUNS, because
+ running it is what drags the clock across a tick and exercises the
+ hazard for the guarded reader to survive; only its verdict is gone.
 
  We say:
 
@@ -26,9 +34,15 @@ Section: Probes
 
  The unguarded probe runs until the clock TICKS -- until a guarded read
  reports a different second than the one it started on. That spans a whole
- second boundary, and the update window lives inside every one of them, so
- the hazard cannot be missed by getting lucky with timing. A test that
- demands a race be lost is flaky; this one waits for the race to be run.
+ second boundary, and the update window lives inside every one of them.
+
+ That was once written here as "so the hazard cannot be missed by getting
+ lucky with timing". It can be missed, and the four runs above are the
+ measurement. Spanning the window is not the same as catching a value out
+ of range: a read taken mid-update returns whatever the chip has half
+ written, and half-written is often still a number under sixty. Crossing
+ the boundary makes the hazard LIKELY, not certain, which is why its
+ verdict is no longer a pass condition.
 
  The unguarded reads must run in BURSTS. A guarded read waits the update
  out, so a guarded call between every unguarded one serialises the hazard
@@ -76,7 +90,6 @@ Section: Opening
     ug <- bad-unguarded start 20000000 0
     g <- bad-guarded 20000 0 0
     now <- rtc-seconds 0
-    print-line-uni ("unguarded-bad-seen=" & (if ug > 0 then "y" else "n"))
     print-line-uni ("guarded-bad=" & show g)
     print-line-uni ("guarded-reads-a-second=" & (if now >= 0 then "y" else "n"))
   end

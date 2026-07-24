@@ -236,7 +236,7 @@ Section: __real_to_text
    in let i = rv-rt-emit i (rv-mv rv-s2 rv-a0)
    in let bne-no-sign = list-length i / 4
    in let i = rv-rt-emit i rv-nop
-   in let i = rv-rt-emit i (rv-addi rv-t0 rv-zero 71)
+   in let i = rv-rt-emit i (rv-addi rv-t0 rv-zero 73)
    in let i = rv-rt-emit i (rv-sb rv-s3 rv-t0 8)
    in let i = rv-rt-emit i (rv-addi rv-s4 rv-zero 1)
    in let no-sign-label = list-length i / 4
@@ -691,6 +691,20 @@ Section: Address Remap Helpers
    in let i = rv-rt-emit i (rv-mv rv-a0 rv-zero)
    in rv-rt-emit i rv-ret
 
+ tag-equal reads the constructor tag word at [p+0] of both variant values
+ and answers their equality without touching a field. RV64 has no
+ set-on-equal, so the difference is tested for non-zero and inverted.
+
+  rv-rt-tag-equal : List Integer
+  rv-rt-tag-equal =
+   let i = []
+   in let i = rv-rt-emit i (rv-ld rv-t0 rv-a0 0)
+   in let i = rv-rt-emit i (rv-ld rv-t1 rv-a1 0)
+   in let i = rv-rt-emit i (rv-xor rv-t0 rv-t0 rv-t1)
+   in let i = rv-rt-emit i (rv-sltu rv-a0 rv-zero rv-t0)
+   in let i = rv-rt-emit i (rv-xori rv-a0 rv-a0 1)
+   in rv-rt-emit i rv-ret
+
 Section: CCE to Unicode Lookup Table
 
   rv-cce-table-addr : Integer = #80080000
@@ -759,9 +773,25 @@ Section: print-line-uni (NS16550A UART at 0x10000000 with CCE-to-Unicode)
 
 Section: int-mod
 
+ int-mod answers the NON-NEGATIVE residue, and rem does not: it keeps the
+ sign of the dividend. x86-64's emit-int-mod-reg-locals adds the divisor's
+ magnitude when idiv's remainder comes back negative; this helper stopped at
+ the remainder, so int-mod (-7) 3 was -1 here and 2 there. Measured against
+ codex/test/modprobe, and it is the whole of interval-exhaustive's failures on
+ both cross lanes, all of them in mod, because iv-mod's transfer function is
+ written for a non-negative result. The branch skips five instructions, so its
+ offset is twenty bytes.
+
   rv-rt-int-mod : List Integer
   rv-rt-int-mod =
-   rv-rem rv-a0 rv-a0 rv-a1 & rv-ret
+   let i = []
+   in let i = i & rv-rem rv-a0 rv-a0 rv-a1
+   in let i = i & rv-bge rv-a0 rv-zero 20
+   in let i = i & rv-srai rv-t0 rv-a1 63
+   in let i = i & rv-xor rv-t1 rv-a1 rv-t0
+   in let i = i & rv-sub rv-t1 rv-t1 rv-t0
+   in let i = i & rv-add rv-a0 rv-a0 rv-t1
+   in i & rv-ret
 
 Section: Builtin Helpers
 
@@ -1771,7 +1801,7 @@ Section: Emit All Runtime Helpers
  whose id is non-zero is a secondary and branches to the AP path, which
  stores a marker to a fixed DRAM cell (0x80090000) and parks in wfi. The
  marker is written only by a core that executed guest code, so a guest
- that reads it back non-zero has proof a secondary hart ran (BACKLOG 4.2).
+ that reads it back non-zero has proof a secondary hart ran.
 
   rv-emit-runtime : RvState -> RvState
   rv-emit-runtime (st) =
@@ -1917,7 +1947,9 @@ Section: Emit All Runtime Helpers
    in let st102 = rv-emit-block st101 rv-rt-peek-qword
    in let st103 = rv-record-func st102 "poke-qword"
    in let st104 = rv-emit-block st103 rv-rt-poke-qword
-   in let st105 = rv-record-func st104 "read-mstatus"
+   in let st104a = rv-record-func st104 "tag-equal"
+   in let st104b = rv-emit-block st104a rv-rt-tag-equal
+   in let st105 = rv-record-func st104b "read-mstatus"
    in let st106 = rv-emit (rv-emit st105 (rv-csrr rv-a0 #300)) rv-ret
    in let st107 = rv-record-func st106 "write-mstatus"
    in let st108 = rv-emit (rv-emit st107 (rv-csrw #300 rv-a0)) rv-ret

@@ -36,6 +36,7 @@ Section: Parse Result
 
   ParsedIR = record {
    chapter : IRChapter,
+   meta : IRTextMeta,
    type-defs : List ATypeDef,
    effect-op-names : List Text
   }
@@ -298,17 +299,18 @@ Section: CodexType
    if list-length xs == 0 then ErrorTy
    else let head = sexp-atom (list-at xs 0)
    in if head == "int" then parse-type-int xs
-   else if head == "fn" then FunTy (parse-type (list-at xs 1)) (parse-type (list-at xs 2))
+   else if head == "fn" then FunTy (parse-type (list-at xs 1)) empty-row (parse-type (list-at xs 2))
    else if head == "list" then ListTy (parse-type (list-at xs 1))
    else if head == "llist" then LinkedListTy (parse-type (list-at xs 1))
-   else if head == "tvar" then TypeVar (sexp-int (list-at xs 1))
-   else if head == "forall" then ForAllTy (sexp-int (list-at xs 1)) (parse-type (list-at xs 2))
+   else if head == "tvar" then TypeVar (__narrow (sexp-int (list-at xs 1)))
+   else if head == "forall" then ForAllTy (__narrow (sexp-int (list-at xs 1))) (parse-type (list-at xs 2))
    else if head == "sum" then parse-type-sum xs
    else if head == "record-ty" then parse-type-record xs
    else if head == "ctd" then parse-type-ctd xs
    else if head == "effectful" then parse-type-effectful xs
    else if head == "vector" then VectorTy (sexp-int (list-at xs 1)) (parse-type (list-at xs 2))
    else if head == "unit" then UnitTy (make-name (sexp-str (list-at xs 1))) (parse-type (list-at xs 2))
+   else if head == "vector-mask" then VectorMaskTy (sexp-int (list-at xs 1))
    else ErrorTy
 
   parse-type-int : List SExp -> CodexType
@@ -359,7 +361,7 @@ Section: CodexType
    else let inner = sexp-list (list-at xs i)
    in let name = make-name (sexp-str (list-at inner 1))
    in let fields = parse-type-args (sexp-list (list-at inner 2))
-   in parse-sum-ctors-loop xs (i + 1) len (list-push acc (SumCtor { name = name, fields = fields }))
+   in parse-sum-ctors-loop xs (i + 1) len (list-push acc (SumCtor { name = name, fields = fields, return-type = [] }))
 
   parse-record-fields : List SExp -> List RecordField
   parse-record-fields (xs) = parse-record-fields-loop xs 1 (list-length xs) []
@@ -388,6 +390,52 @@ Section: CodexType
    if i >= len then acc
    else parse-name-list-loop xs (i + 1) len (list-push acc (make-name (sexp-str (list-at xs i))))
 
+Section: Prose Blocks and Annotations
+
+ The chapter header carries one (pb anchor text) per prose block and one
+ (ann kind target body) per annotation. A block's transition and template
+ are re-derivable from its text and are not sent, so they read back as
+ PtNone and PtNoTemplate; the offset ordered the blocks against the defs
+ before they were written and is not sent either.
+
+  parse-prose-blocks : List SExp -> List ProseBlock
+  parse-prose-blocks (xs) = parse-prose-blocks-loop xs 1 (list-length xs) []
+
+  parse-prose-blocks-loop : List SExp, Integer, Integer, List ProseBlock -> List ProseBlock
+  parse-prose-blocks-loop (xs) (i) (len) (acc) =
+   if i >= len then acc
+   else parse-prose-blocks-loop xs (i + 1) len (list-push acc (parse-prose-block (list-at xs i)))
+
+  parse-prose-block : SExp -> ProseBlock
+  parse-prose-block (e) =
+   let ys = sexp-list e
+   in if list-length ys < 3 then ProseBlock { text = "", transition = PtNone, template = PtNoTemplate, anchor = "", offset = 0 }
+   else ProseBlock {
+     text = sexp-str (list-at ys 2),
+     transition = PtNone,
+     template = PtNoTemplate,
+     anchor = sexp-str (list-at ys 1),
+     offset = 0
+    }
+
+  parse-annotations : List SExp -> List AnnotationNode
+  parse-annotations (xs) = parse-annotations-loop xs 1 (list-length xs) []
+
+  parse-annotations-loop : List SExp, Integer, Integer, List AnnotationNode -> List AnnotationNode
+  parse-annotations-loop (xs) (i) (len) (acc) =
+   if i >= len then acc
+   else parse-annotations-loop xs (i + 1) len (list-push acc (parse-annotation (list-at xs i)))
+
+  parse-annotation : SExp -> AnnotationNode
+  parse-annotation (e) =
+   let ys = sexp-list e
+   in if list-length ys < 4 then AnnotationNode { kind = "", target = "", body = "" }
+   else AnnotationNode {
+     kind = sexp-str (list-at ys 1),
+     target = sexp-str (list-at ys 2),
+     body = sexp-str (list-at ys 3)
+    }
+
 Section: ATypeExpr
 
   parse-atype-expr : SExp -> ATypeExpr
@@ -400,6 +448,7 @@ Section: ATypeExpr
    else if head == "a-app" then AAppType (parse-atype-expr (list-at xs 1)) (parse-atype-args (sexp-list (list-at xs 2))) synthetic-span
    else if head == "a-eff" then parse-atype-eff xs
    else if head == "a-bounded" then ABoundedIntType (parse-atype-expr (list-at xs 1)) (sexp-int (list-at xs 2)) (sexp-int (list-at xs 3)) (parse-ov-mode (sexp-atom (list-at xs 4))) synthetic-span
+   else if head == "a-linear" then ALinearType (parse-atype-expr (list-at xs 1)) synthetic-span
    else ANamedType (make-name "Unknown") synthetic-span
 
   parse-atype-eff : List SExp -> ATypeExpr
@@ -407,7 +456,7 @@ Section: ATypeExpr
    let effs = parse-name-list (sexp-list (list-at xs 1))
    in let scopes = parse-text-list (sexp-list (list-at xs 2))
    in let r = parse-atype-expr (list-at xs 3)
-   in AEffectType effs scopes r synthetic-span
+   in AEffectType effs scopes [] r synthetic-span
 
   parse-atype-args : List SExp -> List ATypeExpr
   parse-atype-args (xs) = parse-atype-args-loop xs 1 (list-length xs) []
@@ -433,14 +482,15 @@ Section: ATypeDef
    in let head = sexp-atom (list-at xs 0)
    in if head == "rec-def" then parse-rec-def xs
    else if head == "var-def" then parse-var-def xs
-   else ARecordTypeDef (make-name "Unknown") [] [] synthetic-span
+   else if head == "unit-def" then AUnitTypeDef (make-name (sexp-str (list-at xs 1))) (parse-atype-expr (list-at xs 2)) synthetic-span
+   else ARecordTypeDef (make-name "Unknown") [] [] False synthetic-span
 
   parse-rec-def : List SExp -> ATypeDef
   parse-rec-def (xs) =
    let name = make-name (sexp-str (list-at xs 1))
    in let tparams = parse-name-list (sexp-list (list-at xs 2))
    in let fields = parse-rec-field-defs (sexp-list (list-at xs 3))
-   in ARecordTypeDef name tparams fields synthetic-span
+   in ARecordTypeDef name tparams fields False synthetic-span
 
   parse-var-def : List SExp -> ATypeDef
   parse-var-def (xs) =
@@ -469,7 +519,7 @@ Section: ATypeDef
    else let inner = sexp-list (list-at xs i)
    in let name = make-name (sexp-str (list-at inner 1))
    in let fields = parse-atype-args (sexp-list (list-at inner 2))
-   in parse-var-ctor-defs-loop xs (i + 1) len (list-push acc (AVariantCtorDef { name = name, fields = fields, span = synthetic-span }))
+   in parse-var-ctor-defs-loop xs (i + 1) len (list-push acc (AVariantCtorDef { name = name, fields = fields, return-type = [], span = synthetic-span }))
 
 Section: IRPattern
 
@@ -501,7 +551,7 @@ Section: IRPattern
   parse-vec-pat : List SExp -> IRPat
   parse-vec-pat (xs) =
    let lane-pats = parse-vec-lane-pats xs 1 (list-length xs) []
-   in IrVecPat lane-pats synthetic-span
+   in IrVecPat lane-pats ErrorTy synthetic-span
 
   parse-vec-lane-pats : List SExp, Integer, Integer, List IRPat -> List IRPat
   parse-vec-lane-pats (xs) (i) (len) (acc) =
@@ -537,7 +587,7 @@ Section: IRExpr
    else if head == "char-lit" then IrCharLit (sexp-int (list-at xs 1)) synthetic-span
    else if head == "name" then IrName (sexp-str (list-at xs 1)) (parse-type (list-at xs 2)) synthetic-span
    else if head == "binary" then parse-expr-binary xs
-   else if head == "negate" then IrNegate (parse-expr (list-at xs 1)) synthetic-span
+   else if head == "negate" then IrNegate (parse-expr (list-at xs 1)) (parse-type (list-at xs 2)) synthetic-span
    else if head == "if" then IrIf (parse-expr (list-at xs 1)) (parse-expr (list-at xs 2)) (parse-expr (list-at xs 3)) (parse-type (list-at xs 4)) synthetic-span
    else if head == "let" then IrLet (sexp-str (list-at xs 1)) (parse-type (list-at xs 2)) (parse-expr (list-at xs 3)) (parse-expr (list-at xs 4)) synthetic-span
    else if head == "apply" then IrApply (parse-expr (list-at xs 1)) (parse-expr (list-at xs 2)) (parse-type (list-at xs 3)) synthetic-span
@@ -598,7 +648,7 @@ Section: IRExpr
    in let pat = parse-pat (list-at inner 1)
    in let body = parse-expr (list-at inner 2)
    in let guard = if list-length inner > 3 then parse-expr (list-at inner 3) else IrBoolLit True synthetic-span
-   in parse-branches-loop xs (i + 1) len (list-push acc (IRBranch { pattern = pat, body = body, guard = guard, span = synthetic-span }))
+   in parse-branches-loop xs (i + 1) len (list-push acc (IRBranch { pattern = pat, body = body, guard = guard, span = synthetic-span, alt-group = 0 }))
 
   parse-expr-act : List SExp -> IRExpr
   parse-expr-act (xs) =
@@ -712,7 +762,7 @@ Section: IRDef + Chapter
    in let body = parse-expr (list-at xs 5)
    in let punct = if list-length xs > 6 then sexp-int (list-at xs 6) > 0 else False
    in let budget = if list-length xs > 7 then sexp-int (list-at xs 7) else 0
-   in IRDef { name = name, params = params, type-val = ty, body = body, chapter-slug = slug, is-punctual = punct, wcet-budget = budget, span = synthetic-span }
+   in IRDef { name = name, params = params, type-val = ty, body = body, chapter-slug = slug, is-punctual = punct, wcet-budget = budget, unique-params = [], span = synthetic-span }
 
   parse-ir-chapter : Text -> ParsedIR
   parse-ir-chapter (s) =
@@ -729,6 +779,8 @@ Section: IRDef + Chapter
    in let sections = walk-named-strs xs "sections"
    in let ctors = walk-named-strs xs "ctors"
    in let eff-ops = walk-named-strs xs "eff-ops"
+   in let pblocks = parse-prose-blocks (walk-named-list xs "pblocks")
+   in let anns = parse-annotations (walk-named-list xs "anns")
    in let type-defs = walk-named-list xs "type-defs"
    in let defs = walk-named-list xs "defs"
    in let parsed-tdefs = parse-atype-defs type-defs
@@ -736,14 +788,18 @@ Section: IRDef + Chapter
    in let chapter = IRChapter {
        name = chap-name,
        defs = parsed-defs,
+       effect-op-names = eff-ops,
+       span = synthetic-span
+      }
+   in let meta = IRTextMeta {
        chapter-title = title,
        prose = prose,
        section-titles = sections,
        ctor-names = ctors,
-       effect-op-names = eff-ops,
-       span = synthetic-span
+       prose-blocks = pblocks,
+       annotations = anns
       }
-   in ParsedIR { chapter = chapter, type-defs = parsed-tdefs, effect-op-names = eff-ops }
+   in ParsedIR { chapter = chapter, meta = meta, type-defs = parsed-tdefs, effect-op-names = eff-ops }
 
   walk-named-text : List SExp, Text -> Text
   walk-named-text (xs) (key) =

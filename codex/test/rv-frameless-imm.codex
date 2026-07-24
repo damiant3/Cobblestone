@@ -1,0 +1,87 @@
+Chapter: RvFramelessImm
+
+ A bitwise operation whose left side is a let-bound local and whose right
+ side is a literal, in a function small enough to be emitted without a
+ frame.
+
+ On RISC-V this answered `bit-shl 8 8` -- 2048 -- where every other lane
+ answers 42496, because the frameless path emitted the left operand into
+ one of four rotating temporaries and then emitted the literal into a
+ temporary the rotation handed back as the SAME register. The shift read
+ its own amount as its value. `rv-alloc-temp` knows nothing about
+ liveness, so nothing stopped it.
+
+ Reduced from `j1939-encode`, which is where it was found: `j1939-pgn`
+ recovers a PDU1 parameter group number as `bit-shl pf 8` over a let-bound
+ `pf`, and answered 2277 instead of 65253. It only became reachable when
+ the plug lanes started compiling optimised IR (BACKLOG 3.23) and
+ `inline-leaf-calls` folded `j1939-pf` into its caller, which is what
+ produced the let binding.
+
+ **These are answers and not a shape on purpose.** The fix takes the
+ I-type immediate form, so the register form is no longer emitted for
+ these operands at all -- but a lane that lowers them some third way is
+ equally welcome, provided it computes the same numbers.
+
+ `and-big` is the guard, and it guards the bound the fix added: 4095 is
+ above the 2047 an I-type immediate can hold, so the immediate path must
+ decline it and the register form must run. An implementation that took
+ it anyway would truncate the mask.
+
+ **The shift bound is guarded in the emitter and deliberately NOT pinned
+ here.** `rv-slli` masks an oversized shamt with #3F instead of refusing
+ it, so the fix declines any shift amount above 63 -- but a shift that
+ large already disagrees between the lanes for reasons that predate this
+ work: `bit-shl x 2047` answers 0 on x86-64 and `x` shifted by 63 on
+ RISC-V, because the hardware shift masks and x86's lowering does not.
+ Pinning that here would put a permanent red row in the cross battery for
+ a defect this test is not about. It is filed under BACKLOG 3.21.
+
+Section: Probe
+
+  pf-of : Integer -> Integer
+  pf-of (id) = bit-and (bit-shru id 16) 255
+
+  shl-let : Integer -> Integer
+  shl-let (id) =
+   let pf = bit-and (bit-shru id 16) 255
+   in bit-shl pf 8
+
+  shl-let-if : Integer -> Integer
+  shl-let-if (id) =
+   let pf = bit-and (bit-shru id 16) 255
+   in if pf < 240 then bit-shl pf 8
+      else bit-or (bit-shl pf 8) (bit-and (bit-shru id 8) 255)
+
+  shru-let : Integer -> Integer
+  shru-let (id) =
+   let pf = bit-and (bit-shru id 16) 65535
+   in bit-shru pf 4
+
+  and-let : Integer -> Integer
+  and-let (id) =
+   let pf = bit-shru id 16
+   in bit-and pf 255
+
+  or-let : Integer -> Integer
+  or-let (id) =
+   let pf = bit-and (bit-shru id 16) 255
+   in bit-or pf 1024
+
+  xor-let : Integer -> Integer
+  xor-let (id) =
+   let pf = bit-and (bit-shru id 16) 255
+   in bit-xor pf 15
+
+Section: Entry
+
+  opening : [Console] Nothing = act
+   print-line-uni (show (pf-of 419357952))
+   print-line-uni (show (shl-let 419357952))
+   print-line-uni (show (shl-let-if 419357952))
+   print-line-uni (show (shl-let-if 111550464))
+   print-line-uni (show (shru-let 419357952))
+   print-line-uni (show (and-let 419357952))
+   print-line-uni (show (or-let 419357952))
+   print-line-uni (show (xor-let 419357952))
+  end

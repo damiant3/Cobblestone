@@ -99,7 +99,7 @@ Section: Weight Initialization
     in [w] & init-weights size (seed * 1103515245 + 12345) (i + 1)
 
 Section: Training Loop
-  train-network : List GlyphSample, Integer -> NeuralNetwork
+  train-network : List GlyphSample, Integer -> [Console.Write] NeuralNetwork
   train-network (samples) (epochs) =
     let w1 = init-weights (train-hidden-dim * train-input-dim) 42 0
     in let b1 = init-weights train-hidden-dim 7 0
@@ -108,12 +108,14 @@ Section: Training Loop
     in let net = nn-add-layer (nn-add-layer nn-new (tensor-from train-hidden-dim train-input-dim w1) (tensor-from train-hidden-dim 1 b1) nn-act-relu) (tensor-from train-output-dim train-hidden-dim w2) (tensor-from train-output-dim 1 b2) nn-act-none
     in train-epochs net samples epochs 0
 
-  train-epochs : NeuralNetwork, List GlyphSample, Integer, Integer -> NeuralNetwork
+  train-epochs : NeuralNetwork, List GlyphSample, Integer, Integer -> [Console.Write] NeuralNetwork
   train-epochs (net) (samples) (max-epochs) (epoch) =
     if epoch >= max-epochs then net
     else let net2 = train-one-epoch net samples 0 (list-length samples)
-    in let d = print-line ("epoch " & show epoch)
-    in train-epochs net2 samples max-epochs (epoch + 1)
+    in act
+      print-line ("epoch " & show epoch)
+      train-epochs net2 samples max-epochs (epoch + 1)
+    end
 
   train-one-epoch : NeuralNetwork, List GlyphSample, Integer, Integer -> NeuralNetwork
   train-one-epoch (net) (samples) (i) (n) =
@@ -142,32 +144,37 @@ Section: Training Loop
     else tensor-dot-loop a b (i + 1) n (acc + list-at a i * list-at b i / 1000)
 
 Section: Weight Export
-  export-weights : NeuralNetwork -> Integer
-  export-weights (net) =
-    let d = print-line "WEIGHTS"
-    in let d2 = export-layers (net.layers) 0 (net.num-layers)
-    in print-line "END-WEIGHTS"
+  export-weights : NeuralNetwork -> [Console.Write] Nothing
+  export-weights (net) = act
+    print-line "WEIGHTS"
+    d2 <- export-layers (net.layers) 0 (net.num-layers)
+    print-line "END-WEIGHTS"
+  end
 
-  export-layers : List NnLayer, Integer, Integer -> Integer
+  export-layers : List NnLayer, Integer, Integer -> [Console.Write] Integer
   export-layers (layers) (i) (n) =
     if i >= n then 0
     else let layer = list-at layers i
-    in let d = print-line ("LAYER " & show i & " " & show (layer.weights).rows & " " & show (layer.weights).cols)
-    in let d2 = export-tensor (layer.weights)
-    in let d3 = export-tensor (layer.bias)
-    in export-layers layers (i + 1) n
+    in act
+      print-line ("LAYER " & show i & " " & show (layer.weights).rows & " " & show (layer.weights).cols)
+      d2 <- export-tensor (layer.weights)
+      d3 <- export-tensor (layer.bias)
+      export-layers layers (i + 1) n
+    end
 
-  export-tensor : Tensor -> Integer
+  export-tensor : Tensor -> [Console.Write] Integer
   export-tensor (t) = export-values (t.data) 0 (list-length (t.data))
 
-  export-values : List Integer, Integer, Integer -> Integer
+  export-values : List Integer, Integer, Integer -> [Console.Write] Integer
   export-values (data) (i) (n) =
     if i >= n then 0
-    else let d = print-line (show (list-at data i))
-    in export-values data (i + 1) n
+    else act
+      print-line (show (list-at data i))
+      export-values data (i + 1) n
+    end
 
 Section: Main
   opening : [Console] Nothing = act
     print-line "FontTrain: training not yet wired to data input"
-    in print-line "Use train.ps1 to extract fonts and feed training data"
+    print-line "Use train.ps1 to extract fonts and feed training data"
   end

@@ -1,0 +1,109 @@
+Chapter: LiteralSubpattern
+  cites Foreword chapter Console
+
+ Literal patterns must be tested, whether they stand alone or sit
+ inside a constructor pattern.
+
+ Two silent miscompiles are pinned here, both found 2026-07-20 and both
+ of the worst kind: they compiled clean, raised no diagnostic, and
+ returned a confident wrong answer.
+
+ The first: a literal nested in a constructor pattern was never
+ compared. `bind-ctor-fields` bound variable sub-patterns and dropped
+ everything else, and `EmitPatternResult` carried one patch slot so a
+ second test had nowhere to be reported. Every arm whose CONSTRUCTOR
+ matched won, so `is BInt (0)` matched any BInt, and a four-way
+ operator dispatch collapsed onto whichever arm came first. In the tree
+ this was apps/cvmm/Calculator treating every operator as plus and
+ apps/browser/PageCompiler taking the then-branch of every conditional.
+
+ The second: a Text literal pattern compared a pointer against
+ `pat-lit-to-integer` of its own spelling, so `is "sin" ->` matched
+ nothing at any nesting depth.
+
+ Every case below must therefore reach a DIFFERENT arm. A test where
+ the arms return the same value could not tell either bug from a
+ working compiler.
+
+Section: Types
+
+  Box =
+    | BInt (Integer)
+    | BText (Text)
+    | BFlag (Boolean)
+    | BPair (Integer) (Text)
+    | BNone
+
+Section: Literal Inside A Constructor
+
+  by-int : Box -> Integer
+  by-int (b) = when b
+    is BInt (0) -> 10
+    is BInt (1) -> 11
+    is BInt (7) -> 17
+    is BInt (n) -> 19
+    is otherwise -> 99
+
+  by-text : Box -> Integer
+  by-text (b) = when b
+    is BText ("sin") -> 20
+    is BText ("cos") -> 21
+    is BText (s) -> 29
+    is otherwise -> 99
+
+  by-flag : Box -> Integer
+  by-flag (b) = when b
+    is BFlag (True) -> 30
+    is BFlag (False) -> 31
+    is otherwise -> 99
+
+ A literal beside a binder, and two literals in one pattern. The binder
+ must still bind while the literal is tested.
+
+  by-pair : Box -> Integer
+  by-pair (b) = when b
+    is BPair (0) (s) -> 40
+    is BPair (n) ("hit") -> 41
+    is BPair (n) (s) -> 42
+    is otherwise -> 99
+
+Section: Literal Standing Alone
+
+ The same two questions without a constructor around them. Integer
+ literals here always worked; Text literals never did.
+
+  bare-int : Integer -> Integer
+  bare-int (n) = when n
+    is 0 -> 50
+    is 1 -> 51
+    is otherwise -> 59
+
+  bare-text : Text -> Integer
+  bare-text (t) = when t
+    is "sin" -> 60
+    is "cos" -> 61
+    is otherwise -> 69
+
+Section: Entry
+
+  opening : [Console] Nothing = act
+    print-line-uni ("int-0 " & show (by-int (BInt 0)))
+    print-line-uni ("int-1 " & show (by-int (BInt 1)))
+    print-line-uni ("int-7 " & show (by-int (BInt 7)))
+    print-line-uni ("int-n " & show (by-int (BInt 3)))
+    print-line-uni ("txt-sin " & show (by-text (BText "sin")))
+    print-line-uni ("txt-cos " & show (by-text (BText "cos")))
+    print-line-uni ("txt-oth " & show (by-text (BText "zzz")))
+    print-line-uni ("flag-t " & show (by-flag (BFlag True)))
+    print-line-uni ("flag-f " & show (by-flag (BFlag False)))
+    print-line-uni ("pair-0 " & show (by-pair (BPair 0 "x")))
+    print-line-uni ("pair-hit " & show (by-pair (BPair 5 "hit")))
+    print-line-uni ("pair-oth " & show (by-pair (BPair 5 "x")))
+    print-line-uni ("bare-0 " & show (bare-int 0))
+    print-line-uni ("bare-1 " & show (bare-int 1))
+    print-line-uni ("bare-n " & show (bare-int 4))
+    print-line-uni ("bare-sin " & show (bare-text "sin"))
+    print-line-uni ("bare-cos " & show (bare-text "cos"))
+    print-line-uni ("bare-oth " & show (bare-text "zzz"))
+    print-line-uni "done"
+  end

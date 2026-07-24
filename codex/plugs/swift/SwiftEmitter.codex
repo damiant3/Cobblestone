@@ -96,11 +96,12 @@ Section: Type Definition Emission
   emit-sw-type-def : ATypeDef -> Text
   emit-sw-type-def (td) =
    when td
-    is ARecordTypeDef (name) (tparams) (fields) (s) ->
+    is ARecordTypeDef (name) (tparams) (fields) (recmut) (s) ->
      emit-sw-record-type (name.value) fields
     is AVariantTypeDef (name) (tparams) (ctors) (s) ->
      if is-tup-type (name.value) then ""
      else emit-sw-sum-type (name.value) ctors
+    is AUnitTypeDef (name) (unitbase) (s) -> ""
 
   emit-sw-sum-type : Text, List AVariantCtorDef -> Text
   emit-sw-sum-type (name) (ctors) =
@@ -152,7 +153,7 @@ Section: Expression Emission
     is IrCharLit (n) (sp) -> integer-to-text n
     is IrName (n) (ty) (sp) -> emit-sw-name n ty arities
     is IrBinary (op) (l) (r) (ty) (sp) -> emit-sw-binary op l r arities
-    is IrNegate (operand) (sp) -> "(-" & emit-sw-expr-at operand arities (depth + 1) & ")"
+    is IrNegate (operand) (nty) (sp) -> "(-" & emit-sw-expr-at operand arities (depth + 1) & ")"
     is IrIf (c) (t) (el) (ty) (sp) -> "(" & emit-sw-expr-at c arities (depth + 1) & " ? " & emit-sw-expr-at t arities (depth + 1) & " : " & emit-sw-expr-at el arities (depth + 1) & ")"
     is IrLet (name) (ty) (val) (body) (sp) -> "{ let " & sw-sanitize name & " = " & emit-sw-expr-at val arities (depth + 1) & "; return " & emit-sw-expr-at body arities (depth + 1) & " }()"
     is IrApply (f) (a) (ty) (sp) -> emit-sw-apply e arities
@@ -301,7 +302,7 @@ Section: Builtin Emitters
    SwBuiltinEmitter { name = "char-at", emit = \args arities -> "Array(" & emit-sw-expr (list-at args 0) arities & ")[" & emit-sw-expr (list-at args 1) arities & "]" },
    SwBuiltinEmitter { name = "char-code-at", emit = \args arities -> "Int(Array(" & emit-sw-expr (list-at args 0) arities & ")[" & emit-sw-expr (list-at args 1) arities & "].asciiValue!)" },
    SwBuiltinEmitter { name = "file-exists", emit = \args arities -> "FileManager.default.fileExists(atPath: " & emit-sw-expr (list-at args 0) arities & " as! String)" },
-   SwBuiltinEmitter { name = "int-mod", emit = \args arities -> "(" & emit-sw-expr (list-at args 0) arities & " as! Int % " & emit-sw-expr (list-at args 1) arities & " as! Int)" },
+   SwBuiltinEmitter { name = "int-mod", emit = \args arities -> "({ (_a: Int, _b: Int) -> Int in let _m = abs(_b); let _r = _a % _m; return _r < 0 ? _r + _m : _r })(" & emit-sw-expr (list-at args 0) arities & " as! Int, " & emit-sw-expr (list-at args 1) arities & " as! Int)" },
    SwBuiltinEmitter { name = "integer-to-text", emit = \args arities -> "String(" & emit-sw-expr (list-at args 0) arities & " as! Int)" },
    SwBuiltinEmitter { name = "list-at", emit = \args arities -> "(" & emit-sw-expr (list-at args 0) arities & " as! [Any?])[" & emit-sw-expr (list-at args 1) arities & " as! Int]" },
    SwBuiltinEmitter { name = "list-length", emit = \args arities -> "(" & emit-sw-expr (list-at args 0) arities & " as! [Any?]).count" },
@@ -311,7 +312,7 @@ Section: Builtin Emitters
    SwBuiltinEmitter { name = "negate", emit = \args arities -> "(-(" & emit-sw-expr (list-at args 0) arities & " as! Int))" },
    SwBuiltinEmitter { name = "print-error-uni", emit = \args arities -> "FileHandle.standardError.write(String(describing: " & emit-sw-expr (list-at args 0) arities & ").data(using: .utf8)!)" },
    SwBuiltinEmitter { name = "print-line-uni", emit = \args arities -> "print(" & emit-sw-expr (list-at args 0) arities & ")" },
-   SwBuiltinEmitter { name = "read-file", emit = \args arities -> "try! String(contentsOfFile: " & emit-sw-expr (list-at args 0) arities & " as! String, encoding: .utf8)" },
+   SwBuiltinEmitter { name = "read-text", emit = \args arities -> "try! String(contentsOfFile: " & emit-sw-expr (list-at args 0) arities & " as! String, encoding: .utf8)" },
    SwBuiltinEmitter { name = "read-line", emit = \args arities -> "readLine()!" },
    SwBuiltinEmitter { name = "show", emit = \args arities -> "String(describing: " & emit-sw-expr (list-at args 0) arities & ")" },
    SwBuiltinEmitter { name = "substring", emit = \args arities -> "String(Array(" & emit-sw-expr (list-at args 0) arities & " as! String)[(" & emit-sw-expr (list-at args 1) arities & " as! Int)..<(" & emit-sw-expr (list-at args 1) arities & " as! Int) + (" & emit-sw-expr (list-at args 2) arities & " as! Int)])" },

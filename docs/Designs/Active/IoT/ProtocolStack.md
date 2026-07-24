@@ -10,9 +10,9 @@ is defeated. **It is still not a secure channel**, and the reasons are
 now narrow and specific: no application traffic keys (the endpoint
 derives handshake secrets only), no fragmentation reassembly, and the
 handshake flights travel as DTLSPlaintext. **So `coaps://` still does not
-exist and ETSI 5.5 / CRA 1(c) remain transport-gated** — BACKLOG §5.3.
+exist and ETSI 5.5 / CRA 1(c) remain transport-gated**.
 Also still missing across the wider stack: **TCP retransmit**, and the
-CoAP/MQTT/LwM2M binding layers in `codex/os/net` (BACKLOG §5.4).
+CoAP/MQTT/LwM2M binding layers in `codex/os/net`.
 
 **2026-07-13: Open Question 1 is now answered, the answer moved the
 plan, and phase D0 has shipped.** The foreword `Tls` audit came back
@@ -29,7 +29,7 @@ than on agreeing with themselves. The evidence table has been
 reconciled: the crypto claims are now true, and the *transport* claims
 it could not keep are disclosed instead of asserted. **D1 (the record
 layer) is unblocked and is the next CL.** See **The Crypto Floor:
-Audited** and **DTLS: The Build Plan** below. Backlog: §5.3, §5.8.
+Audited** and **DTLS: The Build Plan** below.
 
 **Upstream**: `docs/PM/IoT/AGENT-PROMPT.md` deliverable 3,
 references in `docs/PM/IoT/Protocols/`
@@ -168,12 +168,12 @@ passing a 32-byte key to AES-GCM was `apps/secrets/VaultCrypto`, which
 was therefore running a 256-bit key through the 128-bit expansion — a
 malformed, non-standard key schedule. It does not compile (and has no
 test at all), so nothing shipping depended on it, but it is now
-`BACKLOG §7.10` and it is a fair warning about what silence in the test
+a recorded gap, and it is a fair warning about what silence in the test
 battery buys you.
 
 ### Still missing, and load-bearing
 
-| Gap | Reality | Backlog |
+| Gap | Reality | Status |
 |---|---|---|
 | ~~A usable TLS key schedule~~ | **FIXED 2026-07-13.** The RFC 8446 §7.1 ladder now runs over the real foreword HKDF and is gated on the **RFC 8448 published trace** — early, derived, handshake secret, both traffic secrets, server key and IV all match the IETF's bytes. Three defects died: the fake `tls-hkdf-expand` (deleted), a one-byte zero IKM where the RFC means Hash.length zeros, and every label encoded as **CCE instead of ASCII** (which also had SNI hostnames going out as CCE). **D2 is unblocked.** | §5.8 |
 | **The transport itself** | No TLS, no DTLS, no secure channel of any kind. The AEADs can now protect a payload; nothing forces a payload through them. | §5.3 |
@@ -509,13 +509,13 @@ signed, the signature fails, and the handshake does **not** complete
 server against an anchored client — is refused the same way. A passing
 handshake proved nothing; this failing one is the proof.
 
-**Still open (tracked in BACKLOG §5.10), not bundled into A5:**
+**Still open, not bundled into A5:**
 `dtls-ep-random` still derives the ClientHello/ServerHello `Random` from the
 endpoint's own public key rather than taking caller entropy. It is not what
 RFC 8446 means by `Random` and must not reach real hardware; it was left out
 of the capstone deliberately to keep the authentication change clean.
 
-**And the standing limit on the whole X.509 stack (BACKLOG §5.11):** it is
+**And the standing limit on the whole X.509 stack:** it is
 **Ed25519-only**, because Ed25519 is the only signature primitive the tree
 owns. It authenticates a fleet whose CA *we* run. It **cannot validate a
 commercial CA's chain** — public CAs sign RSA or ECDSA, and AWS IoT and

@@ -1,7 +1,7 @@
 Chapter: X86-64 Code Generator
 
- The x86-64 instruction selector for the flat LIR (design doc
- `docs/Designs/Active/Compiler/LIR.md` section 8: the ratchet). This is the
+ The x86-64 instruction selector for the flat LIR (the ratchet step of
+ the LIR design). This is the
  first codegen-changing step of the middle-end campaign -- where the LIR the
  `IR/Lir.codex` chapter lowers and allocates finally becomes machine code
  rather than an opt-in dump. It runs behind a per-function dispatch: a
@@ -74,6 +74,31 @@ Section: LIR Register File (x86-64)
  operand staging and base pointers), as is R11.
 
   lir-phys : List Integer = [3, 12, 13, 14, reg-rax, 7, 6, 2, 1]
+
+ The pool structure that indexes the mapping above, and it sits here rather
+ than in `IR/Lir.codex` for one reason: `nregs` is the length of `lir-phys`,
+ and two files cannot be trusted to keep that true. Split apart, an added
+ register is an edit in one file and a silent out-of-range `list-at` in the
+ other. Adjacent, the two are read together or not at all.
+
+ `ncallee` is 4: `RBX, R12, R13, R14` are callee-saved and a value live across
+ a call is confined to them. `nargregs` is 5, so `[5, 9)` is `RDI, RSI, RDX,
+ RCX` in argument order and index 4 is `RAX` alone -- the register a
+ non-crosser prefers and the one a leaf skips. `diva`/`divb` are 4 and 7
+ because `idiv` takes the dividend in RDX:RAX and leaves the remainder in RDX,
+ which are `lir-phys` indices 4 and 7; a target whose division fixes nothing
+ writes -1 for both. `budget` is 12, comfortably above the 9 allocatable
+ registers, because it sizes the verifier's occupant array and slack there is
+ cheaper than an overflow.
+
+  lir-target-x86 : LirTarget = LirTarget {
+   ncallee = 4,
+   nargregs = 5,
+   nregs = 9,
+   diva = 4,
+   divb = 7,
+   budget = 12
+  }
 
   lir-phys-of : Location -> Integer
   lir-phys-of (loc) =
@@ -1274,8 +1299,8 @@ Section: LIR Dispatch
          else if lir-loop-shape-ok (r.func) == False then lir-not-handled st
          else let sviol = lir-check-func (r.func)
          in if list-length sviol > 0 then LirEmitTry { handled = True, state = lir-verifier-halt st cdx-lir-structural-violation "structural" (def.name) sviol }
-            else let a = lir-alloc-linscan (r.func)
-            in let aviol = lir-alloc-check (r.func) (a.assign)
+            else let a = lir-alloc-linscan lir-target-x86 (r.func)
+            in let aviol = lir-alloc-check lir-target-x86 (r.func) (a.assign)
             in if list-length aviol > 0 then LirEmitTry { handled = True, state = lir-verifier-halt st cdx-lir-allocation-violation "allocation" (def.name) aviol }
                else LirEmitTry { handled = True, state = lir-emit-func st (r.func) (a.assign) }
 

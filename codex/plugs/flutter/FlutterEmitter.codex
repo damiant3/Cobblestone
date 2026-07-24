@@ -64,7 +64,7 @@ Section: Expression Emission
     is IrCharLit (n) (sp) -> "String.fromCharCode(" & show n & ")"
     is IrName (n) (ty) (sp) -> dart-sanitize n
     is IrBinary (op) (l) (r) (ty) (sp) -> emit-dart-binary op l r arities indent
-    is IrNegate (x) (sp) -> "(-((" & emit-dart-expr x arities indent & ") as int))"
+    is IrNegate (x) (nty) (sp) -> "(-((" & emit-dart-expr x arities indent & ") as int))"
     is IrIf (c) (t) (el) (ty) (sp) -> "(" & emit-dart-expr c arities indent & " ? " & emit-dart-expr t arities indent & " : " & emit-dart-expr el arities indent & ")"
     is IrLet (name) (ty) (val) (body) (sp) -> "(() {\n" & dart-indent (indent + 1) & "final " & dart-sanitize name & " = " & emit-dart-expr val arities (indent + 1) & ";\n" & dart-indent (indent + 1) & "return " & emit-dart-expr body arities (indent + 1) & ";\n" & dart-indent indent & "})()"
     is IrApply (f) (a) (ty) (sp) -> emit-dart-apply e arities indent
@@ -91,7 +91,7 @@ Section: Expression Emission
     is IrSubInt -> "((" & lhs & " as int) - (" & rhs & " as int))"
     is IrMulInt -> "((" & lhs & " as int) * (" & rhs & " as int))"
     is IrDivInt -> "((" & lhs & " as int) ~/ (" & rhs & " as int))"
-    is IrRemInt -> "((" & lhs & " as int) % (" & rhs & " as int))"
+    is IrRemInt -> "((" & lhs & " as int).remainder(" & rhs & " as int))"
     is IrPowInt -> "pow((" & lhs & " as int), (" & rhs & " as int)).toInt()"
     is IrAddNum | IrAddRealApprox | IrAddRealTrapping | IrAddRealSaturating -> "((" & lhs & " as double) + (" & rhs & " as double))"
     is IrSubNum | IrSubRealApprox | IrSubRealTrapping | IrSubRealSaturating -> "((" & lhs & " as double) - (" & rhs & " as double))"
@@ -210,6 +210,7 @@ Section: Type and Definition Emission
     is AVariantTypeDef (name) (tparams) (ctors) (s) ->
      if is-tup-type (name.value) then ""
      else emit-dart-var-ctors ctors 0
+    is AUnitTypeDef (name) (unitbase) (s) -> ""
 
   emit-dart-var-ctors : List AVariantCtorDef, Integer -> Text
   emit-dart-var-ctors (ctors) (i) =
@@ -244,10 +245,10 @@ Section: Type and Definition Emission
 
 Section: Flutter Assembly
 
-  emit-flutter-chapter : IRChapter, List ATypeDef -> Text
-  emit-flutter-chapter (m) (type-defs) =
+  emit-flutter-chapter : IRChapter, IRTextMeta, List ATypeDef -> Text
+  emit-flutter-chapter (m) (meta) (type-defs) =
    let arities = build-arity-map (m.defs) 0 []
-   in let title = if m.chapter-title == "" then "Codex App" else m.chapter-title
+   in let title = if meta.chapter-title == "" then "Codex App" else meta.chapter-title
    in let header = "import 'package:flutter/material.dart';\nimport 'dart:math';\n\n"
    in let builtins = "final List<String> _output = [];\nvoid print_line_uni(dynamic s) { _output.add(s?.toString() ?? ''); }\nvoid print_line(dynamic s) { print_line_uni(s); }\nString show(dynamic n) => n?.toString() ?? '';\nint text_length(dynamic s) => (s as String).length;\nString text_replace(dynamic s, dynamic a, dynamic b) => (s as String).replaceAll(a as String, b as String);\nint text_compare(dynamic a, dynamic b) => (a as String).compareTo(b as String);\nint list_length(dynamic xs) => (xs as List).length;\ndynamic list_at(dynamic xs, dynamic i) => (xs as List)[i as int];\nList list_push(dynamic xs, dynamic x) => [...(xs as List), x];\nString integer_to_text(dynamic n) => n.toString();\nint negate(dynamic n) => -(n as int);\n\n"
    in let types-text = emit-dart-type-defs type-defs 0

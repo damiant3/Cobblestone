@@ -18,7 +18,7 @@ Section: Work Budgets
   max-parse-fuel : Integer = 16777216
 
  max-parse-fuel is a budget for the WHOLE unit, not a bound on recursion,
- and the difference is what BACKLOG 2.26 died of. A parse arm that returns
+ and the difference is what a silent crash cost. A parse arm that returns
  without consuming a token spins, and each turn costs a few stack frames
  but only one fuel: the stack runs out a gigabyte down, millions of frames
  deep, long before sixteen million fuel does, so the guard cannot fire and
@@ -35,6 +35,70 @@ Section: Work Budgets
 
   max-parse-stall : Integer = 4096
 
+ max-list-literal-elems is an EMITTER limit that the type checker enforces
+ on the checker's behalf, because the emitter cannot report it.
+
+ The O(N) cost this bound was sized against is GONE. A list literal used
+ to take one live local per element -- emit-eval-list-elems gave every
+ element its own local and held all of them until the buffer was filled
+ -- and a local is addressed by a number carried in EmitResult.reg, a
+ field bounded to 65535, with spill slots starting at spill-base (32),
+ so 65504 was the most a function could have. The emitter now reserves
+ the buffer first and stores each element as it is evaluated, which
+ costs TWO locals at any length (X86_64Compound, List Emission).
+
+ The bound is therefore no longer the binding constraint and is kept
+ unchanged for now on purpose: raising it is a separate change that has
+ to establish what the NEXT limit is and pin it with a test, rather than
+ inherit a number sized for a cost that no longer exists.
+
+ What the bound was protecting against, and why the check still lives in
+ the checker rather than the emitter: past the ceiling the emitter walked
+ off the end of four separate 16-bit counters in sequence -- the slot
+ number first, then next-local, then spill-count, then next-temp -- and
+ the first one to go tripped __narrow, which traps with an invalid opcode.
+ A list literal no longer reaches that chain, but the counters are still
+ 16 bits and a function that acquires that many locals by any other route
+ still would.
+
+ There was no diagnostic on that path and there could not be one, for a
+ reason that has nothing to do with the emitter's reporting: __narrow
+ traps. The failure is a hardware fault at the instruction, not a branch
+ the emitter reaches and could report from. Refusing the literal at check
+ time is what gets the author a source span and a sentence instead of a
+ register dump.
+
+ An earlier version of this paragraph said instead that a diagnostic
+ raised inside emit-function is dropped, because codegen-carry-forward
+ takes the bag from the state before the function. That is FALSE and it
+ was measured false: st-add-error and its siblings are __record-set on
+ the bag, __record-set mutates in place and returns the same record, and
+ reset-func-state is itself a chain of __record-set, so the state
+ emit-function works on is the record the caller is holding. The bag
+ propagates by mutation. A bounded return type makes emit-return-guard
+ raise CDX4010 from inside emit-function and it arrives with its span;
+ codex/test/range-let-carry pins exactly that through a bounded field
+ store. The claim is recorded here only because it survived two entries
+ in the register and this file before anyone compiled a probe.
+
+  max-list-literal-elems : Integer = 65504
+
+ inline-cost-ceiling caps the body cost a definition may have and still
+ be inlined at EVERY saturated call site by the opt-in cost-based pass
+ (`inline-cost-based`, IR/Lowering.codex). Unlike the leaf and
+ single-caller passes, that pass duplicates on purpose, so the ceiling
+ bounds the size it can add: each site pays at most this many IR
+ operation nodes. The value is measured, not derived. On the selfhost
+ (2026-07-20): ceiling 4 grew the binary 1.1 per cent, 6 grew it 5.0,
+ 8 grew it 5.5, 12 grew it 19 -- and none of them made the compiled
+ compiler faster (isolated with the pass switched off in the timed
+ compile: baseline 11.3-11.5 s, ceiling-4 binary 11.6-11.9 s,
+ ceiling-8 binary 12.6-14.3 s). Four is the least-bad setting, kept
+ for workloads that are not the compiler; the measurements are why the
+ pass is not in the default pipeline.
+
+  inline-cost-ceiling : Integer = 4
+
 Section: Demand Decks
 
  Every phase deck is a generous fixed floor. Address space is the only
@@ -43,15 +107,134 @@ Section: Demand Decks
  source. These replaced the survey multiplier system, which sized decks
  from source length and corrupted silently when it under-reserved.
 
- A floor that is not generous ENOUGH fails the same way the multiplier
- did: the parse keep-deck copy (copy-sx-document) writes past the floor
- into the scratch it is still reading, the copier dereferences its own
- overwrite, and the compile dies in a #GP with no diagnostic -- the
- post-copy overflow check never runs. A 444 KB single-unit source (the
- GopBoot boot bundle) was the first to push the copied CST past 64 MB.
- The keep floor now matches the scratch floor's class; the failure
- signature, should any floor under-reserve again, is a silent halt in
- copy-sx-* with a garbage pointer in the fault dump.
+ A floor that is not generous ENOUGH used to fail the same way the
+ multiplier did: the parse keep-deck copy (copy-sx-document) wrote past
+ the floor into the scratch it is still reading, the copier dereferenced
+ its own overwrite, and the compile died in a #GP with no diagnostic --
+ the post-copy overflow check never ran. A 444 KB single-unit source
+ (the GopBoot boot bundle) was the first to push the copied CST past
+ 64 MB. Since 2026-07-20 the parse keep copy SAYS SO
+ instead: a guard band the width of demand-parse-guard-band sits
+ between the keep reservation and the scratch, the def and type-def
+ copy loops stop at the floor, and the phase raises CDX9002 -- fired
+ rather than assumed, by starving this keep floor to 2 MB and watching
+ the selfhost compile refuse with the diagnostic. The CHECK-KEEP deep
+ copy carries the same discipline (its mc-ceiling).
+ The LEX deck carries the same discipline since 2026-07-21:
+ tokenize-collect reads __deck-pos every token and stops at
+ demand-lex-guard-band below the reservation ceiling. It is the phase
+ that starving demonstrably reaches FIRST -- `compile.ps1 -Decks 5`
+ used to die in a #GP inside __linked_list_to_list, and the prose here
+ said that crash was an over-full parse SCRATCH colliding with the
+ bivy. Measured 2026-07-21, it was not: at 5 per cent the parse
+ scratch fits (12.6 MB used against a 19.2 MB floor) and the LEX deck
+ does not (28.7 MB against 4.8 MB), so the deck grew into the bivy
+ holding the token linked list and the crash was the lexer reading its
+ own overwrite one call later.
+
+ That guard had a hole of its own for a day, and it is the instructive
+ kind: it fired correctly and then the WIND-DOWN overran the ceiling.
+ __linked-list-to-list runs inside deck-record, so converting the
+ collected tokens wrote eight bytes per token onto the deck that had
+ just overflowed, against a flat one-megabyte band. `-Decks 5` fires
+ early enough to fit; `-Decks 20` fired late and converted straight
+ through the ceiling into the bivy. The overflow path now discards the
+ tokens, which costs nothing because compile-lex already returns
+ `tokens = []` once the bag has errors.
+
+ DESUGAR carries the same discipline since 2026-07-21, and finding it
+ needed the phase trace: `-Decks` at 30, 40, 50 and 60 all complete LEX
+ and PARSE and then die inside DESUGAR, in three different shared
+ runtime helpers, so the crash site named nothing. This section said
+ DESUGAR had "no bulk write path to hang a check on". It has four --
+ desugar-defs-ll, desugar-type-defs-ll, rewrite-constrained-defs and
+ insert-dicts-at-call-sites, each one iteration per definition -- and
+ they now read __deck-pos per definition and stop a
+ demand-desugar-guard-band short of the ceiling. The band is sized for
+ ONE definition's desugared tree plus the wind-down, because the check
+ runs before a definition is desugared rather than after, and it is
+ deliberately generous: a band that is too big costs a spurious CDX9002
+ that says exactly what to do about it, and a band that is too small
+ costs silent corruption. The asymmetry is the whole argument.
+
+ demand-desugar-floor was raised from 64 MB to 72 MB in the same change,
+ by exactly the band width, so the guard costs no USABLE floor. Address
+ space is the only cost of a floor, which is what makes paying for the
+ band this way free.
+
+ On saturation desugar-document returns an EMPTY chapter rather than
+ the truncated one, which is the LEX lesson applied rather than learned
+ twice: a wind-down that allocates in proportion to what it collected
+ walks through the ceiling it just refused to cross.
+
+ SCOPE, CHECK and LOWER joined them on 2026-07-21, and RESOLVE and LIFT
+ on the same day, so every phase that reserves a deck now stops on the
+ write path rather than reporting damage afterwards. SCOPE is the one
+ worth remembering: its first guard went on scope-adefs-ll, which
+ writes 0.3 MB of the phase's 56.3, and the phase went on dying in a
+ divide error at a starved floor because the walk that writes the other
+ 53.3 was unguarded. The lesson is that a guard belongs where the bytes
+ are, and that where the bytes are is a measurement, not a reading of
+ the code. RESOLVE and LIFT were both measured with deck-pos probes
+ before either guard was written.
+
+ RESOLVE and LIFT joined them on 2026-07-21, and finding out how cost
+ more than writing them. A loop inside a phase-wide deck-record extent
+ reads a FROZEN __deck-pos -- the cell is only written back when the
+ nesting counter returns to zero -- so deck-short-of there compares the
+ floor against the band and never mentions the usage. Both of these
+ phases are that shape and both use deck-bound-short-of instead, which
+ reads the live frontier. The full account is in PhaseAllocator beside
+ the two predicates; the measurement is an in-loop probe that printed
+ __deck-pos unchanged through 19.1 MB of writing.
+
+ LOWER and the PARSE-KEEP copy were settled the same way on 2026-07-21,
+ and CHECK turned out to be a different case rather than a third
+ instance of the same one.
+
+ LOWER and the copy sit inside phase-wide extents and both read the
+ frozen cell, so both guards were dead from the day they shipped. Both
+ now read R10. The measurement that settles it is MEASURE against a
+ 16 MB LOWER floor: with the cell, LOWER reports `used=-5307132`,
+ negative because the phase overran far enough to destroy the record
+ measuring it; with R10, it stops at 8,487,976 bytes, one guard band
+ short of the floor and reporting CDX9002 without a crash.
+
+ CHECK is the exception and the reason is three lines of check-chapter:
+ it issues a __deck-exit immediately before the per-definition walk and
+ a __deck-enter after it, so that walk runs OUTSIDE the extent and the
+ cell is live. Swapping CHECK to deck-bound-short-of reads the BIVY
+ pointer, which is above every deck ceiling, and truncates the walk on
+ its first definition -- that is the "truncates silently on an
+ eight-kilobyte program" this paragraph used to attribute to all three.
+ It was CHECK alone, it was not silent (40-odd CDX2000 emit errors), and
+ the caller-side report was never the problem: `check-sat` and
+ `lower-sat` are both evaluated after their extents have exited, where
+ the cell is live.
+
+ The rule stands as PhaseAllocator states it: the predicate follows the
+ EXTENT the loop sits in, and neither reading is safe to assume from the
+ phase's name.
+
+ There was never an INLINE phase. demand-inline-floor sat here as a
+ dead constant, read by nothing, and its presence alone was enough to
+ put a third phase into the deck-guard work that no reservation and
+ no deck ever corresponded to. The inline passes run inside
+ run-ir-pipeline, on the LOWER deck. The constant is deleted.
+
+ That verdict was noise until 2026-07-21, and the reason is worth
+ carrying: check-deck-overflow used to read its operands out of a
+ PhaseMetrics, and phase-measure builds that record with deck-record at
+ the END of the phase -- so an overflowing phase allocated the record
+ describing its own overflow past its own reservation and then
+ overwrote it. It now takes plain Integers captured from __deck-pos.
+
+ **LOWER's headroom is 1.06x, not the 1.11x this file used to record.**
+ Measured 2026-07-21 in CDX mode: -Decks 93 refuses and 94 compiles, so
+ LOWER uses 312 to 315 MB of its 335.5 MB floor. The old figure came
+ from -Measure, which runs no IR pipeline and therefore measures a
+ smaller LOWER than the one that ships. It is by a wide margin the
+ tightest deck in the compiler and the row to watch.
 
  The PARSE floors were not generous, whatever the comment above claimed.
  On 2026-07-13 the compiler grew by about 80 KB of source - the foreword
@@ -66,17 +249,26 @@ Section: Demand Decks
  192. A floor you can reach by writing one more function is not a floor.
 
   demand-lex-floor : Integer = 100663296
+  demand-lex-guard-band : Integer = 1048576
   demand-parse-keep-floor : Integer = 402653184
-  demand-parse-scratch-floor : Integer = 402653184
-  demand-desugar-floor : Integer = 67108864
-  demand-scope-floor : Integer = 100663296
-  demand-check-floor : Integer = 671088640
+  demand-parse-guard-band : Integer = 67108864
+  demand-parse-scratch-floor : Integer = 411041792
+  demand-parse-scratch-guard-band : Integer = 8388608
+  demand-desugar-floor : Integer = 75497472
+  demand-desugar-guard-band : Integer = 8388608
+  demand-scope-floor : Integer = 109051904
+  demand-scope-guard-band : Integer = 8388608
+  demand-check-floor : Integer = 679477248
+  demand-check-guard-band : Integer = 8388608
   demand-check-keep-floor : Integer = 100663296
-  demand-frontend-keep-floor : Integer = 201326592
-  demand-lower-floor : Integer = 335544320
-  demand-resolve-floor : Integer = 201326592
-  demand-lift-floor : Integer = 100663296
-  demand-inline-floor : Integer = 100663296
+  demand-frontend-keep-floor : Integer = 209715200
+  demand-frontend-keep-guard-band : Integer = 8388608
+  demand-lower-floor : Integer = 343932928
+  demand-lower-guard-band : Integer = 8388608
+  demand-resolve-floor : Integer = 209715200
+  demand-resolve-guard-band : Integer = 8388608
+  demand-lift-floor : Integer = 109051904
+  demand-lift-guard-band : Integer = 8388608
 
  The quotation gate runs before the frontend does, and it parses the
  source to find the quotations it must gate. That parse needs decks of

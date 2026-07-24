@@ -2,6 +2,7 @@ Chapter: Fat16
   cites Foreword chapter Maybe
   cites Foreword chapter CCE
   cites Foreword chapter StringUtils
+  cites Foreword chapter Gpt
 
  A Fat16Volume is a record containing partition layout parameters parsed from the BPB.
  To fat16-init gives a Fat16Volume from a partition start sector.
@@ -576,15 +577,159 @@ Section: Creating A File
  the honest one -- the root is a fixed region and there is nowhere for it to
  go.
 
+ A name that is already taken is REPLACED, not committed a second time.
+ Until this was written, writing a file twice did exactly what
+ fat16-mkdir-if-free exists a hundred lines below to prevent for
+ directories: fat16-find-free-slot answers the first FREE slot and knows
+ nothing about names, so the second write claimed a fresh cluster chain
+ and committed a second entry under the same name. Two entries, one name,
+ and every reader takes whichever it meets first -- which is the OLD one,
+ because the old entry sits in a lower slot than the free one found after
+ it.
+
+ So the write reported True, the bytes were really written, the clusters
+ were really consumed, and the file still read back with its previous
+ contents. That is worse than a refusal and worse than a no-op: it is a
+ silent leak that also looks like success. It was found because a test
+ asserted a REFUSED write left the old bytes in place -- which it does,
+ and so does an admitted one, so the assertion could not fail.
+
+ Replacing means freeing the old chain before writing the new one and
+ committing over the SAME slot, so the entry count does not grow and the
+ clusters do not leak. fat16-create-at-slot takes a byte address and does
+ not care whether it came from a free-slot scan or a name scan, which is
+ the same property that let subdirectory writes reuse it.
+
   fat16-create-file : Fat16Volume, Text, List Integer -> [Device.Block] Boolean
   fat16-create-file (vol) (name) (bytes) =
     if fat16-scope-admits name == False then False
     else if fat16-vol-is-usable vol == False then False
     else if text-contains name "/" then fat16-create-in-subdir vol name bytes
     else act
+      existing <- fat16-find-name-slot vol name
+      fat16-create-or-replace vol name bytes existing
+    end
+
+  fat16-create-or-replace : Fat16Volume, Text, List Integer, Integer -> [Device.Block] Boolean
+  fat16-create-or-replace (vol) (name) (bytes) (existing) =
+    if existing >= 0 then act
+      old <- fat16-old-cluster-at vol existing
+      fat16-replace-at-slot vol name bytes existing old
+    end
+    else act
       slot <- fat16-find-free-slot vol
       fat16-create-at-slot vol name bytes slot
     end
+
+  fat16-replace-at-slot : Fat16Volume, Text, List Integer, Integer, Integer -> [Device.Block] Boolean
+  fat16-replace-at-slot (vol) (name) (bytes) (slot) (old) = act
+    f <- fat16-free-chain vol old
+    fat16-create-at-slot vol name bytes slot
+  end
+
+  fat16-old-cluster-at : Fat16Volume, Integer -> [Device.Block] Integer
+  fat16-old-cluster-at (vol) (slot) = act
+    buf <- block-read-sector (slot / 512)
+    fat16-cluster-of-entry buf (int-mod slot 512)
+  end
+
+  fat16-cluster-of-entry : Integer, Integer -> Integer
+  fat16-cluster-of-entry (buf) (off) = (fat16-read-dir-entry buf off).de-cluster
+
+ Returning each cluster to free by writing 0 across every FAT copy, which
+ is what fat16-write-fat-entry already guarantees. The walk reads the next
+ link BEFORE clearing the current one, because clearing first would lose
+ the pointer to the rest of the chain and leak everything behind it.
+
+ A cluster below 2 is not a chain -- 0 means "no clusters" on an empty
+ file and 1 is reserved -- so it terminates rather than trying to free a
+ reserved FAT entry. This walk is bounded by the chain it is given and
+ carries no fuel cap, exactly as every other chain walk in this chapter;
+ a FAT with a cycle in it would spin here and would equally spin in
+ fat16-read-cluster-bytes.
+
+  fat16-free-chain : Fat16Volume, Integer -> [Device.Block] Integer
+  fat16-free-chain (vol) (cluster) =
+    if cluster < 2 then 0
+    else if fat16-is-end cluster then 0
+    else fat16-free-chain-from vol cluster (fat16-next-cluster vol cluster)
+
+  fat16-free-chain-from : Fat16Volume, Integer, Integer -> [Device.Block] Integer
+  fat16-free-chain-from (vol) (cluster) (nxt) = act
+    w <- fat16-write-fat-entry vol cluster 0
+    fat16-free-chain vol nxt
+  end
+
+ The read side's root scan, answering the entry's byte address instead of
+ the entry. It is deliberately the same walk with the same skips -- free
+ slots, long-file-name fragments and the volume label -- because a name
+ scan that disagreed with the one readers use would replace an entry that
+ no reader was going to find, or miss one that they would.
+
+  fat16-find-name-slot : Fat16Volume, Text -> [Device.Block] Integer
+  fat16-find-name-slot (vol) (name) =
+    fat16-name-slot-sectors vol name (vol.vol-root-start) (fat16-root-sector-count vol) 0
+
+  fat16-name-slot-sectors : Fat16Volume, Text, Integer, Integer, Integer -> [Device.Block] Integer
+  fat16-name-slot-sectors (vol) (name) (sector) (remaining) (checked) =
+    if remaining == 0 then 0 - 1
+    else if checked >= (vol.vol-root-entry-count) then 0 - 1
+    else act
+      buf <- block-read-sector sector
+      fat16-name-slot-step vol name sector remaining checked buf
+    end
+
+  fat16-name-slot-step : Fat16Volume, Text, Integer, Integer, Integer, Integer -> [Device.Block] Integer
+  fat16-name-slot-step (vol) (name) (sector) (remaining) (checked) (buf) =
+    let eps = (vol.vol-bytes-per-sector) / 32
+    in let found = fat16-name-slot-in-sector buf name 0 eps
+    in if found >= 0 then sector * 512 + found
+       else fat16-name-slot-sectors vol name (sector + 1) (remaining - 1) (checked + eps)
+
+  fat16-name-slot-in-sector : Integer, Text, Integer, Integer -> Integer
+  fat16-name-slot-in-sector (buf) (name) (i) (count) =
+    if i >= count then 0 - 1
+    else let off = i * 32
+    in if fat16-is-free-entry buf off then fat16-name-slot-in-sector buf name (i + 1) count
+    else if fat16-is-lfn-entry buf off then fat16-name-slot-in-sector buf name (i + 1) count
+    else if fat16-is-volume-label buf off then fat16-name-slot-in-sector buf name (i + 1) count
+    else if fat16-name-matches (fat16-entry-name-at buf off) name then off
+    else fat16-name-slot-in-sector buf name (i + 1) count
+
+  fat16-entry-name-at : Integer, Integer -> Text
+  fat16-entry-name-at (buf) (off) = (fat16-read-dir-entry buf off).de-name
+
+ The same scan over a subdirectory's cluster chain. The subdirectory path
+ had the identical duplicate-entry defect and it is fixed the same way:
+ look for the name first, replace over its slot if it is there, and only
+ find-or-grow a fresh slot when it is not.
+
+  fat16-find-name-slot-in-dir : Fat16Volume, Integer, Text -> [Device.Block] Integer
+  fat16-find-name-slot-in-dir (vol) (cluster) (name) =
+    if fat16-is-end cluster then 0 - 1
+    else act
+      found <- fat16-name-slot-dir-sectors vol name (fat16-cluster-sector vol cluster) (vol.vol-sectors-per-cluster)
+      fat16-name-slot-or-next vol cluster name found
+    end
+
+  fat16-name-slot-or-next : Fat16Volume, Integer, Text, Integer -> [Device.Block] Integer
+  fat16-name-slot-or-next (vol) (cluster) (name) (found) =
+    if found >= 0 then found
+    else fat16-find-name-slot-in-dir vol (fat16-next-cluster vol cluster) name
+
+  fat16-name-slot-dir-sectors : Fat16Volume, Text, Integer, Integer -> [Device.Block] Integer
+  fat16-name-slot-dir-sectors (vol) (name) (sector) (remaining) =
+    if remaining == 0 then 0 - 1
+    else act
+      buf <- block-read-sector sector
+      fat16-name-slot-dir-step vol name sector remaining buf
+    end
+
+  fat16-name-slot-dir-step : Fat16Volume, Text, Integer, Integer, Integer -> [Device.Block] Integer
+  fat16-name-slot-dir-step (vol) (name) (sector) (remaining) (buf) =
+    let found = fat16-name-slot-in-sector buf name 0 ((vol.vol-bytes-per-sector) / 32)
+    in if found >= 0 then sector * 512 + found
+       else fat16-name-slot-dir-sectors vol name (sector + 1) (remaining - 1)
 
  The parent is parts[0..n-2] and the leaf is parts[n-1], so resolving the
  parent is fat16-walk-path over one fewer part than the path has. A single
@@ -614,9 +759,20 @@ Section: Creating A File
 
   fat16-create-in-cluster-dir : Fat16Volume, Integer, Text, List Integer -> [Device.Block] Boolean
   fat16-create-in-cluster-dir (vol) (cluster) (leaf) (bytes) = act
-    slot <- fat16-find-or-grow-slot-in-dir vol cluster
-    fat16-create-at-slot vol leaf bytes slot
+    existing <- fat16-find-name-slot-in-dir vol cluster leaf
+    fat16-create-or-replace-in-dir vol cluster leaf bytes existing
   end
+
+  fat16-create-or-replace-in-dir : Fat16Volume, Integer, Text, List Integer, Integer -> [Device.Block] Boolean
+  fat16-create-or-replace-in-dir (vol) (cluster) (leaf) (bytes) (existing) =
+    if existing >= 0 then act
+      old <- fat16-old-cluster-at vol existing
+      fat16-replace-at-slot vol leaf bytes existing old
+    end
+    else act
+      slot <- fat16-find-or-grow-slot-in-dir vol cluster
+      fat16-create-at-slot vol leaf bytes slot
+    end
 
   fat16-create-at-slot : Fat16Volume, Text, List Integer, Integer -> [Device.Block] Boolean
   fat16-create-at-slot (vol) (name) (bytes) (slot) =
@@ -939,7 +1095,7 @@ Section: Path Resolution
     else let c = char-at s i
     in fat16-upper-loop s (i + 1) len (acc & char-to-text (to-upper c))
 
- The runtime half of the scope check (BACKLOG 1.5). A capability effect
+ The runtime half of the scope check. A capability effect
  may carry a scope literal naming the resources the grant covers, and
  until now nothing read it at runtime: the compiler refused an
  out-of-scope path it could SEE, and a path computed at runtime walked
@@ -1104,18 +1260,67 @@ Section: Asking Whether A File Is There
  is why it did not need revisiting when the counter was repaired, and why it
  should not start leaning on it again.
 
-  fat16-boot-partition-start : Integer = 2048
+ WHERE THE VOLUME STARTS IS A PROPERTY OF THE DISK, NOT A CONSTANT. This was
+ 2048 everywhere, which is only ever right for an image our own GptWriter
+ laid down -- it puts its one ESP at LBA 2048 and nothing else does. A stick
+ partitioned by anyone else, a vendor ESP, or our own dual-boot install
+ (DriveManager places its Codex partition after the last existing one, at a
+ computed offset) all put the volume somewhere else, and every read then
+ lands on the wrong sectors and parses garbage as a boot record.
+
+ So ask the disk. The GPT is on it, gpt-read parses it, and each partition
+ carries its own start LBA.
+
+ WHICH PARTITION IS THE ONE WE WANT IS NOT ANSWERED BY ITS TYPE GUID. A
+ dual-boot disk carries a FAT32 vendor ESP and a FAT16 Codex partition, and
+ both are "the boot partition" by some reading. The test that actually
+ matters is the one this chapter already uses everywhere else: does the
+ volume parse. fat16-init is total and fat16-vol-is-usable is the existing
+ judgement, so walk the table and take the first partition that answers yes.
+ That is self-validating -- it cannot pick a partition it then fails to read
+ -- and it is the same reasoning the prose above gives for asking the volume
+ rather than a counter.
+
+ The constant survives as the FALLBACK, for the case with no readable GPT at
+ all: no disk, or a raw image with no partition table. gpt-read answers None
+ there (a sector of zeroes fails the MBR signature check), and 2048 is as
+ good a guess as we had before. Behaviour on our own images is unchanged,
+ because their one ESP is at 2048 and it parses.
+
+ Cost: gpt-read stops at the first zero type GUID, so a single-partition
+ image costs four sector reads rather than one. Bounded by the partition
+ count, and paid per volume-open.
+
+  fat16-fallback-partition-start : Integer = 2048
 
   fat16-vol-is-usable : Fat16Volume -> Boolean
   fat16-vol-is-usable (vol) =
     (vol.vol-bytes-per-sector) > 0 & (vol.vol-sectors-per-cluster) > 0
+
+  fat16-boot-volume : [Device.Block] Fat16Volume
+  fat16-boot-volume = act
+    disk <- gpt-read
+    when disk
+      is Just (d) -> fat16-first-usable (d.gd-partitions) 0 (list-length (d.gd-partitions))
+      is None -> fat16-init fat16-fallback-partition-start
+  end
+
+  fat16-first-usable : List GptPartition, Integer, Integer -> [Device.Block] Fat16Volume
+  fat16-first-usable (parts) (i) (n) =
+    if i >= n then fat16-init fat16-fallback-partition-start
+    else let p = list-at parts i
+    in act
+      vol <- fat16-init (p.gp-start-lba)
+      if fat16-vol-is-usable vol then vol
+      else fat16-first-usable parts (i + 1) n
+    end
 
   file-exists : Text -> [Device.Block] Boolean
   file-exists (path) = fat16-exists-on-disk path
 
   fat16-exists-on-disk : Text -> [Device.Block] Boolean
   fat16-exists-on-disk (path) = act
-    vol <- fat16-init fat16-boot-partition-start
+    vol <- fat16-boot-volume
     if fat16-vol-is-usable vol == False then False
     else fat16-file-exists vol path
   end
@@ -1160,7 +1365,7 @@ Section: Saving A File
 
   fat16-write-binary-file : Text, List Integer -> [Device.Block] Boolean
   fat16-write-binary-file (path) (bytes) = act
-    vol <- fat16-init fat16-boot-partition-start
+    vol <- fat16-boot-volume
     fat16-create-file vol path bytes
   end
 
@@ -1303,7 +1508,7 @@ Section: Listing A Directory By Name
 
   list-files : Text, Text -> [Device.Block] List Text
   list-files (dir) (ext) = act
-    vol <- fat16-init fat16-boot-partition-start
+    vol <- fat16-boot-volume
     if fat16-vol-is-usable vol == False then []
     else act
       entries <- fat16-list-dir vol dir
@@ -1326,7 +1531,7 @@ Section: Listing A Directory By Name
 
   list-directories : Text -> [Device.Block] List Text
   list-directories (dir) = act
-    vol <- fat16-init fat16-boot-partition-start
+    vol <- fat16-boot-volume
     if fat16-vol-is-usable vol == False then []
     else act
       entries <- fat16-list-dir vol dir

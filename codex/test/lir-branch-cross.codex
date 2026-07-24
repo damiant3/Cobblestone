@@ -1,0 +1,121 @@
+Chapter: LirBranchCross
+
+  cites Foreword chapter Console
+  cites Foreword chapter MathLib
+
+ The shapes the ARM64 LIR selector claims at step 4e: a comparison, a
+ conditional branch, and a return in each arm. `mn` lowers to
+ `b0: cmp v0 v1; br lt b1 b2 | b1: ret v0 | b2: ret v1`, which is the first
+ multi-block function this backend emits through the LIR and so the first with
+ a block-offset table and branch fixups behind it.
+
+ Every case here is chosen so a selector can fail it without failing the rest.
+ `mn` and `mx` differ only in the condition, so a wrong condition code answers
+ the other one's result. `mn-eq` and `mx-eq` feed equal arguments, which is the
+ boundary the strict conditions get wrong in the direction the inverse would:
+ `<` and `<=` disagree on exactly this input and nowhere else. `sgn` and
+ `sgn-neg` compare against an immediate. `far-cmp` compares against a value
+ past ARM64's twelve-bit immediate field, so the operand has to be materialised
+ into a scratch register rather than encoded.
+
+ `nest` is the shape whose block ids are not in layout order: the lowering
+ numbers the inner arms above the outer join, so it lays out b0, b1, b4, b5,
+ b6, b2, b3 and an offset table indexed by list position rather than by id
+ would send its branches to the wrong place.
+
+ `bit-even` and `bit-mod4` are here as the control that the selector declines
+ politely. Both lower to a call, which is not whitelisted, so both go to the
+ tree emitter and must still answer correctly beside the functions that do not.
+ They also carry negative arguments, because a remainder and a bit mask do not
+ agree in general and only agree against zero.
+
+ **`wide-branch` does NOT currently exercise this construct, and the row is kept
+ as an ordinary correctness check rather than as coverage.** It was written to
+ combine a frame with a branch -- eight parameters, enough live values to reach
+ the callee-saved pool, so each arm's return would have to undo the frame it was
+ entered with. Measured, it does not: perturbing the branch condition inverter
+ breaks every other selected shape in this file and leaves `wide-t` and
+ `wide-f` correct, so the ARM64 selector is declining it and the tree emitter is
+ answering. It is clean under the compiler's own ARM64-shaped probe descriptor
+ (`[alloc-check: ok]`, `[check: ok]`), so the verifiers are not what refuse it;
+ the plug lowers the IR it receives over the wire with its own
+ `lower-def-to-lir`, and that is where the two disagree.
+
+ **So frame-plus-branch is an untested combination**, and it is named here
+ rather than implied. `codex/test/lir-frame-cross` covers the frame and the
+ shapes above cover the branch; nothing yet covers a return that has to undo a
+ frame.
+
+Section: Branch Shapes
+
+  mn : Integer, Integer -> Integer
+  mn (a) (b) = if a < b then a else b
+
+  mx : Integer, Integer -> Integer
+  mx (a) (b) = if a > b then a else b
+
+  le-pick : Integer, Integer -> Integer
+  le-pick (a) (b) = if a <= b then 10 else 20
+
+  ge-pick : Integer, Integer -> Integer
+  ge-pick (a) (b) = if a >= b then 30 else 40
+
+  ne-pick : Integer, Integer -> Integer
+  ne-pick (a) (b) = if a /= b then 50 else 60
+
+  sgn : Integer -> Integer
+  sgn (n) = if n > 0 then 1 else 0
+
+  far-cmp : Integer -> Integer
+  far-cmp (n) = if n > 100000 then 7 else 8
+
+  nest : Integer -> Integer
+  nest (n) = if n > 0 then (if n > 5 then 2 else 1) else 0
+
+  bit-even : Integer -> Integer
+  bit-even (n) = if math-mod n 2 == 0 then 1 else 0
+
+  bit-mod4 : Integer -> Integer
+  bit-mod4 (n) = if math-mod n 4 == 0 then 1 else 0
+
+  wide-branch : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  wide-branch (a) (b) (c) (d) (e) (f) (g) (h) =
+   if ((a + b) + (c + d)) > ((e + f) + (g + h))
+   then (((a * b) + (c * d)) + ((e * f) + (g * h)))
+   else (((a - b) + (c - d)) + ((e - f) + (g - h)))
+
+  via-call : Integer -> Integer
+  via-call (n) = mn n 4 + mx n 4 + nest n
+
+Section: Entry
+
+  opening : [Console] Nothing = act
+    print-line-uni ("mn: " & show (mn 3 9))
+    print-line-uni ("mn-rev: " & show (mn 9 3))
+    print-line-uni ("mn-eq: " & show (mn 5 5))
+    print-line-uni ("mx: " & show (mx 3 9))
+    print-line-uni ("mx-eq: " & show (mx 5 5))
+    print-line-uni ("le-lt: " & show (le-pick 3 9))
+    print-line-uni ("le-eq: " & show (le-pick 5 5))
+    print-line-uni ("le-gt: " & show (le-pick 9 3))
+    print-line-uni ("ge-eq: " & show (ge-pick 5 5))
+    print-line-uni ("ge-lt: " & show (ge-pick 3 9))
+    print-line-uni ("ne-same: " & show (ne-pick 5 5))
+    print-line-uni ("ne-diff: " & show (ne-pick 5 6))
+    print-line-uni ("sgn-pos: " & show (sgn 4))
+    print-line-uni ("sgn-zero: " & show (sgn 0))
+    print-line-uni ("far-lo: " & show (far-cmp 5))
+    print-line-uni ("far-hi: " & show (far-cmp 200000))
+    print-line-uni ("nest-hi: " & show (nest 9))
+    print-line-uni ("nest-mid: " & show (nest 3))
+    print-line-uni ("nest-lo: " & show (nest 0))
+    print-line-uni ("even: " & show (bit-even 4))
+    print-line-uni ("odd: " & show (bit-even 5))
+    print-line-uni ("even-neg: " & show (bit-even (-4)))
+    print-line-uni ("odd-neg: " & show (bit-even (-5)))
+    print-line-uni ("mod4: " & show (bit-mod4 8))
+    print-line-uni ("mod4-no: " & show (bit-mod4 6))
+    print-line-uni ("wide-t: " & show (wide-branch 9 8 1 1 1 1 1 1))
+    print-line-uni ("wide-f: " & show (wide-branch 1 2 3 4 5 6 7 8))
+    print-line-uni ("via-call: " & show (via-call 7))
+  end

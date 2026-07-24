@@ -118,7 +118,7 @@ until 2026-07-16, and the type checker's environment was written against
 that reading: `env-bind-local` did `__record-set env "locals" ...`
 believing it produced a new env, and instead wrote each binding into its
 *caller's* environment. Locals then outlived their scope, and the
-checker rejected valid programs (BACKLOG 2.22).
+checker rejected valid programs.
 
 It is a controlled concession, and the condition on it is real: it is
 sound only while a single owner is threaded linearly through the value
@@ -226,11 +226,15 @@ Always requires `else`. No dangling if.
 ## For Expressions
 
 ```
-  for x in xs do f x
+  for x in xs -> f x
 ```
 
-Sugar for `list-map`. The body is a function applied to each element.
-Desugars to `list-map (lambda (x) -> f x) xs`.
+Sugar for `map-list`. The body is a function applied to each element.
+Desugars to `map-list (lambda (x) -> f x) xs`.
+
+The separator is an arrow, not `do`. `parse-for-expr` reads the variable
+and `in`, then `finish-for-list` requires `is-arrow` -- there is no `do`
+branch, so `for x in xs do f x` is a parse error (CDX1000 at the `do`).
 
 ## Effects and Act Blocks
 
@@ -276,6 +280,40 @@ Effect declarations:
 
 Unicode equivalents accepted by the lexer: `→` for `->`, `←` for `<-`,
 `≡` for `===`, `≠` for `/=`, `≤` for `<=`, `≥` for `>=`.
+
+## Division and the Two Remainders
+
+Integer `/` **truncates toward zero**, which is what `idiv` does and what
+C, Java, Go, Rust and Zig mean by `/`. `-7 / 2` is `-3`, not `-4`.
+
+There are two remainders and picking the wrong one is silent.
+
+| | Rounding | Sign of result | Pairs with `/` |
+|---|---|---|---|
+| `int-rem a b` | truncating | sign of the **dividend** | **yes** |
+| `int-mod a b` | Euclidean | never negative | no |
+
+```
+  int-rem (-7) 3   -- -1        int-mod (-7) 3   -- 2
+  int-rem 7 (-3)   --  1        int-mod 7 (-3)   -- 1
+  int-rem (-7) (-3) -- -1       int-mod (-7) (-3) -- 2
+```
+
+`int-rem` is the one that satisfies the division identity, for every
+pair including negatives:
+
+```
+  a == (a / b) * b + int-rem a b
+```
+
+`int-mod` does not satisfy it and is not meant to: it is the Euclidean
+remainder, always in `[0, |b|)`, which is what you want for indexing a
+ring buffer or a colour wheel, where a negative answer would be a bug.
+This is the same split Rust draws between `%` and `rem_euclid`.
+
+Reach for `int-mod` when the answer indexes something. Reach for
+`int-rem` when the answer has to agree with `/`. Pinned by
+`codex/test/int-rem` and `codex/test/div-negative-pow2`.
 
 ## Negation
 
@@ -599,10 +637,12 @@ re-reads are double-uses or plain-boundary errors). A handler
 clause or an argument-escaping closure may not capture a linear at
 all (CDX2067 — clauses may run zero or many times). All nine
 adversarial laundering probes are enforced (`codex/test/errors/
-linear-launder-*`, `linear-capture-*`). Known un-tracked edges:
-locals minted from linear-returning calls (the checker tracks
-declared parameters, not call-produced locals), and container
-literals in argument or tail position.
+linear-launder-*`, `linear-capture-*`). Locals minted by a
+linear-returning call and locals minted by a call returning a
+`mutable` record are both tracked (the minted-owner walks; the
+mutable half is fixed, pinned by
+`codex/test/errors/stringbuilder-alias-local`). Known un-tracked
+edge: container literals in argument or tail position.
 
 ## Vector Types (SIMD)
 
@@ -955,6 +995,22 @@ nested conditionals, let bindings are still clearer:
   in 64 + wv + rv
 ```
 
+**A list CONSTANT is rebuilt at every mention, and it is invisible in the
+source.** `xs : List Integer = [...]` is a definition, not storage: each
+reference re-materialises the whole list. Measured on a 121-element list, 100000
+reads of one element cost **98.4 MB of heap** through the constant and **1 KB**
+through the same list passed in as a parameter -- a 91000-fold difference, and
+both sites read `list-at xs i`.
+
+This is survivable where a table is touched once per call and fatal inside a
+search loop. A dictionary matcher reading three such tables per candidate, per
+chain slot, per input byte ran the heap into the stack and double-faulted; the
+fix was to load them once into a record and thread it. **If a table is read in a
+loop, hoist it into a parameter or a record field.** There is no collector, so
+every rebuild is permanent until the producing function returns.
+
+The same applies to a large data constant read per element: build it once and
+thread it, never re-reference it per position.
 **Long & chains.** A single expression with many `&` concatenations
 creates a deep IR tree. Break long chains into named helpers.
 
@@ -994,9 +1050,28 @@ interchangeable. Haskell uses `Nothing` for both; Codex splits them.
 Using `Nothing` as a value is rejected with CDX2086 (hint: use `None`);
 using `None`/`Some`/`Just` as a type adds a hint to the CDX2001 mismatch.
 
-**No `Cons`/`Nil` pattern matching with `List`.** The `List` type
-alias and `ConsList` raw type cause CDX2001 mismatches if you write
-`is Cons (h) (t) ->`. Use `list-length` / `list-at` index loops.
+**`Cons`/`Nil` pattern matching on the builtin `List` works, with a
+v1 shape.** `when xs is Nil -> ... is Cons (h) (t) -> ...` matches
+structurally on a `List` scrutinee: the match desugars to length
+tests over O(1) tail views, so structural recursion is linear, not
+quadratic (`codex/test/list-pattern`). The v1 restrictions, each
+rejected with CDX2088 rather than mislowered: a `Cons` field must be
+a name or `_` (bind the tail and match it in a nested `when` instead
+of nesting a pattern), and a `Nil`/`Cons` arm cannot carry a `when`
+guard (test inside the arm body). A `Cons`-only match without a
+catchall is non-exhaustive (CDX2070). `LinkedList` scrutinees are
+not matchable this way. The tail is a VIEW sharing the backing
+elements: `list-set-at` through it writes the backing, the same
+aliasing contract `list-set-at` already has; copying operations
+(`&`, `::`, `list-push`, `list-insert-at`) produce plain lists.
+Cross-arch note: the desugar targets the `__list-len`/`__list-head`/
+`__list-tail` intrinsics, which the ARM64/RISC-V plug lanes do not
+implement yet -- list matches are x86-64-only until they do.
+Proof arms were already structural: Stage 5 checks builtin-`List`
+induction against a synthesized `Nil`/`Cons` view, and the proof
+normalizer reduces `list-length`, `list-push`/`list-snoc`, and
+literal-index `list-at` over those spines
+(`codex/test/list-induction`).
 
 **`real-from-int` / `real-to-int` for type conversion.** `n * 1.0`
 is a type error (Integer * Real). `__narrow` does not convert Real
@@ -1043,7 +1118,52 @@ binary, bootable via codex-vm or QEMU multiboot.
 ### Pre-conditions
 
 - All source changes are submitted (no pending CLs touching `codex/` or any library quire directory)
-- The change justifies a seed rebuild (codegen change, new builtin, foreword change that affects compilation)
+- The change justifies a seed rebuild -- see below, and note the test is
+  reachability, not which directory you edited
+
+### When a change actually needs a new seed
+
+**The question is not "did I touch a chapter the compiler cites". It is
+"does the compiler REACH the code I changed".** Whole-program dead-code
+elimination prunes every definition the compiler never calls, so code can
+sit in a cited chapter and contribute nothing to the binary.
+
+| Change | New seed? |
+|--------|-----------|
+| Codegen, or the body of any definition the compiler calls | Yes |
+| A new builtin | Yes |
+| Adding or removing a `cites` | Yes -- it moves the transitive closure |
+| Adding or removing a module from a foreword quire | Yes |
+| A new definition in an already-cited chapter that the compiler never calls | **No** |
+| A registry arm on a live dispatch path (e.g. `run-ir-pass`) | Yes -- DCE cannot prune it |
+
+The surprising row is measured, not reasoned. **CL 9432 added 155 lines to
+`Fat16` -- a chapter the compiler does cite -- and the SUT came out
+byte-identical to the depot seed**, because nothing in the compiler reaches
+`fat16-create-file`. The prediction going in was that it would need a seed;
+it did not.
+
+The `cites` row is mechanical rather than measured here: a citation moves the
+transitive closure, so the concat feeds the compiler a chapter it was not
+being fed before. Do not go looking for a clean byte count attached to a
+changelist for it -- CL 9400 is the one usually cited and it changed
+`opening.codex` and three foreword chapters in the same breath, so its seed
+growth cannot be pinned on the citation.
+
+**So do not predict it. Measure it, every time, after the gate:**
+
+```powershell
+(Get-FileHash -Algorithm SHA256 build/output/Sut.cdx).Hash
+(Get-FileHash -Algorithm SHA256 seed/Codex.cdx).Hash
+```
+
+Equal means the depot seed still reproduces from depot source and this CL
+carries no seed. Different means it must.
+
+**`build/build.ps1` does not do this for you and cannot.** It proves the SUT
+is a fixed point of *itself*; it says nothing about whether the seed in the
+depot is that SUT. That gap is the whole reason a seed can silently stop
+reproducing.
 
 ### Steps
 

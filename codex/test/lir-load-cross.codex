@@ -1,0 +1,136 @@
+Chapter: LirLoadCross
+
+ The constructor-pattern memory read: `LiLoad`, the last per-construct arm of
+ the ARM64 LIR selector (LirRetarget step 4i). A `when s is Circle (r) -> ...`
+ lowers to a load of the variant tag from `[sv + 0]`, a compare against the
+ constructor's tag, a branch, and then one load per bound field at its packed
+ offset and width. Everything but the loads was already whitelisted by steps 4e
+ and 4g, so this file is what the last arm buys.
+
+ Pinned by ANSWERS, because the two lanes reach them by different instructions
+ and the answers are what must agree. x86-64 selects these through
+ `lir-sel-load`; the ARM64 plug selects them through `a64-lir-emit-load`; the
+ tree emitter behind both would also answer correctly, which is why the
+ sensitivity run rather than the green is what proves the LIR path claimed them.
+
+ **A constructor APPLICATION is not lowerable and a constructor PATTERN is.**
+ The lowering declines `Circle 5`, so every function here takes its variant as a
+ parameter and `opening` builds the values on the tree path. That split is not
+ an accident of the test: it is what makes these functions reachable by the
+ selector at all.
+
+Section: The eight-byte shapes
+
+ A variant whose every field is eight bytes wide, which is what the first
+ increment admits: pointers, unbounded integers and sum payloads are all width
+ eight, and `arm64-ldr` covers them with no new encoding.
+
+ `Dot` carries no fields, so its arm tests the tag and loads nothing. `Rect`
+ carries two, so the second sits at offset 16 and is the only shape here that
+ reads past the first field slot.
+
+  Shape =
+   | Circle (Integer)
+   | Rect (Integer) (Integer)
+   | Dot
+
+ Every arm reads a field, and the nullary arm reads none. A wrong tag load
+ sends every call to the wrong arm; a wrong field offset answers a neighbour.
+
+  sh-area : Shape -> Integer
+  sh-area (s) =
+   when s
+    is Circle (r) -> r * r * 3
+    is Rect (w) (h) -> w * h
+    is Dot -> 0
+
+ The first field alone, from two different constructors, so offset 8 is read
+ under two different tags.
+
+  sh-first : Shape -> Integer
+  sh-first (s) =
+   when s
+    is Circle (r) -> r
+    is Rect (w) (h) -> w
+    is Dot -> 0
+
+ The second field, at offset 16. This is the row that separates a load whose
+ offset is honoured from one that always reads the first slot: `sh-first` and
+ `sh-second` on the same `Rect` must disagree.
+
+  sh-second : Shape -> Integer
+  sh-second (s) =
+   when s
+    is Rect (w) (h) -> h
+    is otherwise -> 0
+
+ A wildcard arm rather than an exhaustive constructor list, and a bound field
+ used twice in the arm body, so the loaded vreg outlives its defining
+ instruction.
+
+  sh-twice : Shape -> Integer
+  sh-twice (s) =
+   when s
+    is Circle (r) -> r + r
+    is otherwise -> 1
+
+ Both fields of one constructor in one expression, so two loads are live at
+ once and the allocator has to keep them apart.
+
+  sh-both : Shape -> Integer
+  sh-both (s) =
+   when s
+    is Rect (w) (h) -> w * 100 + h
+    is otherwise -> 2
+
+Section: The narrow shapes, which must decline
+
+ A field narrower than eight bytes is NOT whitelisted in this increment: the
+ encoder has `arm64-ldr` (8), `arm64-ldrb` (1 unsigned) and `arm64-ldr-w` (4
+ zero-extending) and lacks every sign-extending narrow form, so admitting
+ narrow widths is a separate change with its own encodings. These two functions
+ exist to prove the gate declines rather than emitting an eight-byte load over
+ a one-byte field.
+
+ They discriminate because the two bytes are ADJACENT. Fields pack widest
+ first, so `Bytes`' two one-byte fields land at offsets 8 and 9. An eight-byte
+ load at offset 8 would answer `a + b * 256`, and one at offset 9 would answer
+ the same thing again, because `arm64-ldr`'s unsigned form scales its immediate
+ by eight and 9/8 is 1. So a gate that let these through changes both answers,
+ and `pk-lo 7 3` would read 775 instead of 7.
+
+  Packed =
+   | Bytes (Integer between 0 and 255) (Integer between 0 and 255)
+   | Big (Integer)
+
+  pk-lo : Packed -> Integer
+  pk-lo (p) =
+   when p
+    is Bytes (a) (b) -> a
+    is Big (n) -> n
+
+  pk-hi : Packed -> Integer
+  pk-hi (p) =
+   when p
+    is Bytes (a) (b) -> b
+    is Big (n) -> n
+
+Section: Entry
+
+  opening : [Console] Nothing = act
+   print-line-uni (show (sh-area (Circle 5)))
+   print-line-uni (show (sh-area (Rect 6 7)))
+   print-line-uni (show (sh-area Dot))
+   print-line-uni (show (sh-first (Circle 5)))
+   print-line-uni (show (sh-first (Rect 6 7)))
+   print-line-uni (show (sh-first Dot))
+   print-line-uni (show (sh-second (Rect 6 7)))
+   print-line-uni (show (sh-second (Circle 5)))
+   print-line-uni (show (sh-twice (Circle 5)))
+   print-line-uni (show (sh-twice (Rect 6 7)))
+   print-line-uni (show (sh-both (Rect 6 7)))
+   print-line-uni (show (sh-both (Circle 5)))
+   print-line-uni (show (pk-lo (Bytes 7 3)))
+   print-line-uni (show (pk-hi (Bytes 7 3)))
+   print-line-uni (show (pk-lo (Big 41)))
+  end

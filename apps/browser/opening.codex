@@ -18,25 +18,28 @@ Chapter: Opening
 
 Section: Entry Point
 
-  opening : [Console] Nothing
+  opening : [Console, Network.Read, Network.Write] Nothing
   opening = act
     let disk = disk-load
     in let width = 1024
     in let height = 768
     in let ds = display-init width height
     in let theme = browser-theme-default
-    in let state = browser-init width height theme ds
-    in let hist = browser-persist-load-history disk 500
-    in let trust = browser-persist-load-trust disk []
-    in let restored = __record-set (__record-set state
-          "bs-history" hist)
-          "bs-trust-store" trust
-    in let disk2 = app-log-info disk "browser" ("Browser started, " & show (history-count hist) & " history entries") 0
-    in print-line "Codex Browser v0.1"
-    in print-line ("  Disk: " & show (disk-fact-count disk2) & " facts")
-    in print-line ("  History: " & show (history-count hist) & " entries")
-    in print-line ("  Display: " & format-display ds)
-    in browser-run-persistent restored disk2
+    in act
+      state <- browser-init width height theme ds
+      let hist = browser-persist-load-history disk 500
+      in let trust = browser-persist-load-trust disk []
+      in let state1 = __record-set state "bs-history" hist
+      in let restored = __record-set state1 "bs-trust-store" trust
+      in let disk2 = app-log-info disk "browser" ("Browser started, " & show (history-count hist) & " history entries") 0
+      in act
+        print-line "Codex Browser v0.1"
+        print-line ("  Disk: " & show (disk-fact-count disk2) & " facts")
+        print-line ("  History: " & show (history-count hist) & " entries")
+        print-line ("  Display: " & format-display ds)
+        browser-run-persistent restored disk2
+      end
+    end
   end
 
 Section: Persistent Event Loop
@@ -46,7 +49,7 @@ Section: Persistent Event Loop
     bps-disk : DiskFactStore
   }
 
-  browser-run-persistent : BrowserState, DiskFactStore -> [Console] Nothing
+  browser-run-persistent : BrowserState, DiskFactStore -> [Console, Network.Read, Network.Write] Nothing
   browser-run-persistent (state) (disk) = act
     let ticked = browser-tick-media state 16
     in let presented = if ticked.bs-dirty
@@ -54,10 +57,12 @@ Section: Persistent Event Loop
             in let w = browser-present ticked fb
             in __record-set ticked "bs-dirty" False
           else ticked
-    in ev <- browser-poll-event
-    in let handled = browser-dispatch-event presented ev
-    in let persisted = browser-check-persist handled disk state
-    in browser-run-persistent (persisted.bps-browser) (persisted.bps-disk)
+    in act
+      ev <- browser-poll-event
+      handled <- browser-dispatch-event presented ev
+      let persisted = browser-check-persist handled disk state
+      in browser-run-persistent (persisted.bps-browser) (persisted.bps-disk)
+    end
   end
 
   browser-check-persist : BrowserState, DiskFactStore, BrowserState -> BrowserPersistState

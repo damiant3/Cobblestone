@@ -12,6 +12,7 @@ Chapter: FileShareApp
   cites FileShare chapter TransferProtocol
   cites FileShare chapter PeerDiscovery
   cites Foreword chapter ListUtils
+  cites Encode chapter Json
 
  The file sharing application. Lists active transfers, shows
  swarm status, and manages content sharing.
@@ -89,10 +90,9 @@ Section: Adding Content
       tf-down-bytes = 0,
       tf-started = 0
     }
-    in __record-set (__record-set (__record-set fs
-      "fs-transfers" (list-push fs.fs-transfers transfer))
-      "fs-next-id" (id + 1))
-      "fs-status" ("Added: " & manifest.cm-name)
+    in let f1 = __record-set fs "fs-transfers" (list-push fs.fs-transfers transfer)
+    in let f2 = __record-set f1 "fs-next-id" (id + 1)
+    in __record-set f2 "fs-status" ("Added: " & manifest.cm-name)
 
   fileshare-add-seed : FileShareState, List Integer, Text, Text -> FileShareState
   fileshare-add-seed (fs) (data) (name) (mime) =
@@ -111,10 +111,9 @@ Section: Adding Content
       tf-down-bytes = 0,
       tf-started = 0
     }
-    in __record-set (__record-set (__record-set fs
-      "fs-transfers" (list-push fs.fs-transfers transfer))
-      "fs-next-id" (id + 1))
-      "fs-status" ("Sharing: " & name & " (" & show manifest.cm-piece-count & " pieces)")
+    in let f1 = __record-set fs "fs-transfers" (list-push fs.fs-transfers transfer)
+    in let f2 = __record-set f1 "fs-next-id" (id + 1)
+    in __record-set f2 "fs-status" ("Sharing: " & name & " (" & show manifest.cm-piece-count & " pieces)")
 
   mark-all-verified : PieceTracker, Integer, Integer -> PieceTracker
   mark-all-verified (pt) (count) (i) =
@@ -169,9 +168,8 @@ Section: Piece Processing
       is Just (t) ->
         if verify-piece-data data piece-idx t.tf-manifest
         then let updated-tracker = tracker-mark-verified t.tf-tracker piece-idx
-          in let updated-transfer = __record-set (__record-set t
-                "tf-tracker" updated-tracker)
-                "tf-down-bytes" (t.tf-down-bytes + list-length data)
+          in let t1 = __record-set t "tf-tracker" updated-tracker
+          in let updated-transfer = __record-set t1 "tf-down-bytes" (t.tf-down-bytes + list-length data)
           in let completed = tracker-is-complete updated-tracker
           in let final-transfer = if completed
                 then __record-set updated-transfer "tf-direction" Seeding
@@ -222,14 +220,10 @@ Section: Rendering
           is Paused -> "[P]"
     in let name = widget-label ("name-" & show t.tf-id) t.tf-name
     in let icon = widget-label ("dir-" & show t.tf-id) dir-icon
-    in let progress = widget-progress ("prog-" & show t.tf-id)
-          (tracker-progress-pct t.tf-tracker) 100
-    in let pct = widget-label ("pct-" & show t.tf-id)
-          (show (tracker-progress-pct t.tf-tracker) & "%")
-    in let peers = widget-label ("peers-" & show t.tf-id)
-          (show (list-length t.tf-swarm.sw-peers) & " peers")
-    in let speed = widget-label ("speed-" & show t.tf-id)
-          (format-bytes t.tf-down-bytes & " / " & format-bytes t.tf-up-bytes)
+    in let progress = widget-progress ("prog-" & show t.tf-id) (tracker-progress-pct t.tf-tracker) 100
+    in let pct = widget-label ("pct-" & show t.tf-id) (show (tracker-progress-pct t.tf-tracker) & "%")
+    in let peers = widget-label ("peers-" & show t.tf-id) (show (list-length t.tf-swarm.sw-peers) & " peers")
+    in let speed = widget-label ("speed-" & show t.tf-id) (format-bytes t.tf-down-bytes & " / " & format-bytes t.tf-up-bytes)
     in widget-panel ("row-" & show t.tf-id) DirRow 8 [
       icon, widget-set-flex name 1, widget-set-flex progress 2, pct, peers, speed
     ]
@@ -410,20 +404,20 @@ Section: Event Handling
   fileshare-handle-event : FileShareState, Event -> FileShareState
   fileshare-handle-event (fs) (ev) =
     when ev.ev-kind
-      is EvKeyDown -> fileshare-handle-key fs ev
-      is EvTimer -> fileshare-tick fs
+      is EvKeyDown (k) (mods) -> fileshare-handle-key fs k mods
+      is EvTimer (name) -> fileshare-tick fs
       is otherwise -> fs
 
-  fileshare-handle-key : FileShareState, Event -> FileShareState
-  fileshare-handle-key (fs) (ev) =
-    let k = ev.ev-key
-    in let ctrl = int-mod (ev.ev-modifiers / 1) 2 == 1
+  fileshare-handle-key : FileShareState, Integer, Integer -> FileShareState
+  fileshare-handle-key (fs) (k) (mods) =
+    let ctrl = bit-and mods mod-ctrl > 0
     in if ctrl then fileshare-ctrl-key fs k
     else fileshare-plain-key fs k
 
   fileshare-ctrl-key : FileShareState, Integer -> FileShareState
-  fileshare-ctrl-key (fs) (k) =
-    if k == 78 then __record-set fs "fs-view" ViewAddContent
+  fileshare-ctrl-key (fs) (k0) =
+    let k = key-upper k0
+    in if k == 78 then __record-set fs "fs-view" ViewAddContent
     else if k == 80 then if fs.fs-selected > 0 then fileshare-pause fs fs.fs-selected else fs
     else if k == 82 then if fs.fs-selected > 0 then fileshare-resume fs fs.fs-selected else fs
     else fs
@@ -478,6 +472,6 @@ Section: Main Loop
   fileshare-poll-event = act
     let scan = poll-key
     in if scan == 0
-      then pure (event-timer "tick" 0)
-      else pure (event-key-down scan 0 0)
+      then event-timer "tick" 0
+      else event-key-down scan poll-mods 0
   end

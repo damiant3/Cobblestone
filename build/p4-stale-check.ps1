@@ -11,7 +11,7 @@
 # Perforce does not schedule the resolve at unshelve time. `p4 resolve -n`
 # answers "No file(s) to resolve", and `p4 fstat` carries no `unresolved` flag.
 # So the one command you would reach for to check says you are clean when you
-# are not. Measured on 2026-07-13: after a merge-down, an unshelved BACKLOG.md
+# are not. Measured on 2026-07-13: after a merge-down, an unshelved doc
 # sat at haveRev 29 against headRev 31, with resolve reporting nothing to do.
 #
 # `p4 submit` does block on this ("out of date"), so the depot is not at risk
@@ -107,7 +107,7 @@ if ($stale) {
 # in the same CL submit perfectly, and the new file is silently left out.
 #
 # Every test added during 2026-07-13 was lost this way -- smp-cores, smp-tss,
-# the SPIR-V probe and its checker -- while BACKLOG cheerfully named them as
+# the SPIR-V probe and its checker -- while the register cheerfully named them as
 # pinned. Nothing caught it, because a dropped add is not a conflict, not a
 # stale revision, and not an unresolved file. It is simply absent.
 #

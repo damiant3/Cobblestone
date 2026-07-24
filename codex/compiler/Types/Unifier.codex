@@ -49,7 +49,7 @@ Section: State
  begins and constant across every def. check-def-normal looks up the def's
  own chapter-slug in it to find which hardware effects that chapter is the
  source of, and admits exactly those in the def's body without a
- declaration (BACKLOG 1.8).
+ declaration.
 
 Section: Construction
   empty-unification-state : UnificationState
@@ -341,8 +341,8 @@ Section: Effect Row Substitution
 
 Section: Row Unification
 
- unify-row implements the ACI1 set-row algorithm (EffectRows.md
- section 5): resolve both rows, cancel shared labels with one sorted
+ unify-row implements the ACI1 set-row algorithm: resolve both
+ rows, cancel shared labels with one sorted
  merge, then case on the tails. Label equality is EXACT — the dotted
  sub-effect lattice lives only in the directed row-le check (stage
  3), never in symmetric unification. Under payload-free labels and
@@ -847,9 +847,23 @@ Section: Deep Type Copy
  rewinds R10 below the keep after the check compact, so parse- and
  scope-era Texts, Names and type boxes - the bulk of the population
  - survive in place and only check-era boxes are materialized into
- the keep. Every degraded path (probe fuel exhausted, side list at
+ the keep. A degraded path (probe fuel exhausted, side list at
  capacity, tag out of range, depth cap) returns the original box
- unchanged - never wrong, only less deduplicated. The interned
+ unchanged. That is never wrong for one box, but it is NOT merely
+ less deduplicated in aggregate: a saturated address memo makes
+ every re-visit of a shared subtree a fresh unmemoized copy, the
+ re-copies feed fresh addresses into the cons keys of every parent
+ list so the content layer stops matching too, and the copy volume
+ explodes combinatorially - measured 95 MB of keep deck for a graph
+ whose memoized copy is 0.17 MB (measured on ShellBuild). The
+ table is therefore sized from the CHECK deck's measured usage -
+ the population the memo actually keys is address-distinct boxes,
+ not post-dedup contents - and mc-ceiling is the second line: any
+ copy entry that would allocate once the keep frontier has climbed
+ past the ceiling shares the original instead and sets mc-sat, and
+ the caller raises CDX9002 for the phase. The copy must never write
+ past its reservation into the scratch it is still reading; that
+ silent breach is how ShellBuild died with no diagnostic. The interned
  empty-row is preserved so arrows keep sharing one empty row.
  Null-tolerant (calloc-zero fields pass through unchanged).
 
@@ -873,7 +887,9 @@ Section: Deep Type Copy
    mc-cap-text : Integer,
    mc-cap-name : Integer,
    mc-cap-row : Integer,
-   mc-cap-list : Integer
+   mc-cap-list : Integer,
+   mc-ceiling : Integer,
+   mc-sat : Integer
   }
 
   memo-pow2-at-least : Integer, Integer -> Integer
@@ -952,11 +968,17 @@ Section: Deep Type Copy
     is OvWrapping -> 2
     is OvClamping -> 3
 
+  mcopy-sat : MemoCtx, a -> a
+  mcopy-sat (mc) (x) =
+   let z = __record-set mc "mc-sat" 1
+   in x
+
   mcopy-text : Text, MemoCtx -> Text
   mcopy-text (t) (mc) =
    let a = address-of t
    in if a == 0 then t
    else if a < mc.mc-floor then t
+   else if __heap-save >= mc.mc-ceiling then mcopy-sat mc t
    else mcopy-text-memo t a (memo-probe a mc) mc
 
   mcopy-text-memo : Text, Integer, Integer, MemoCtx -> Text
@@ -992,6 +1014,7 @@ Section: Deep Type Copy
    let a = address-of nm
    in if a == 0 then nm
    else if a < mc.mc-floor then nm
+   else if __heap-save >= mc.mc-ceiling then mcopy-sat mc nm
    else mcopy-name-memo nm a (memo-probe a mc) mc
 
   mcopy-name-memo : Name, Integer, Integer, MemoCtx -> Name
@@ -1028,6 +1051,7 @@ Section: Deep Type Copy
    in if a == 0 then row
    else if row-is-empty row then empty-row
    else if a < mc.mc-floor then row
+   else if __heap-save >= mc.mc-ceiling then mcopy-sat mc row
    else mcopy-row-memo row a (memo-probe a mc) mc
 
   mcopy-row-memo : EffectRow, Integer, Integer, MemoCtx -> EffectRow
@@ -1076,6 +1100,7 @@ Section: Deep Type Copy
    let a = address-of ls
    in if a == 0 then ls
    else if a < mc.mc-floor then ls
+   else if __heap-save >= mc.mc-ceiling then mcopy-sat mc ls
    else let k = cons-norm (mkey-labels ls mc)
    in let v = cons-lookup k mc
    in if v /= 0 then list-at (mc.mc-labellist) (v - 1)
@@ -1126,6 +1151,7 @@ Section: Deep Type Copy
    let a = address-of ts
    in if a == 0 then ts
    else if a < mc.mc-floor then ts
+   else if __heap-save >= mc.mc-ceiling then mcopy-sat mc ts
    else let k = cons-norm (mkey-types ts depth mc)
    in let v = cons-lookup k mc
    in if v /= 0 then list-at (mc.mc-tylist) (v - 1)
@@ -1162,6 +1188,7 @@ Section: Deep Type Copy
    let a = address-of fs
    in if a == 0 then fs
    else if a < mc.mc-floor then fs
+   else if __heap-save >= mc.mc-ceiling then mcopy-sat mc fs
    else let k = cons-norm (mkey-fields fs depth mc)
    in let v = cons-lookup k mc
    in if v /= 0 then list-at (mc.mc-fieldlist) (v - 1)
@@ -1199,6 +1226,7 @@ Section: Deep Type Copy
    let a = address-of cs
    in if a == 0 then cs
    else if a < mc.mc-floor then cs
+   else if __heap-save >= mc.mc-ceiling then mcopy-sat mc cs
    else let k = cons-norm (mkey-ctors cs depth mc)
    in let v = cons-lookup k mc
    in if v /= 0 then list-at (mc.mc-ctorlist) (v - 1)
@@ -1236,6 +1264,7 @@ Section: Deep Type Copy
    let a = address-of ty
    in if a == 0 then ty
    else if a < mc.mc-floor then ty
+   else if __heap-save >= mc.mc-ceiling then mcopy-sat mc ty
    else if depth >= max-recursion-depth then ty
    else if peek-qword a 0 < 0 then ty
    else if peek-qword a 0 > 28 then ty

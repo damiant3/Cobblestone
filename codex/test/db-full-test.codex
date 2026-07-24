@@ -497,11 +497,19 @@ Section: Test 36 — Row Encode + Decode Round-Trip
 
 Section: Test 37 — Buffer Pool LRU
 
+ bp-fetch pins every frame it hands back and bp-find-victim refuses to
+ evict a pinned frame, so the two fetched pages must be unpinned before
+ the third fetch or the pool correctly declines to admit it and no
+ eviction happens at all. Without the unpins this test exercised the
+ refusal path while claiming to test LRU.
+
   test-buffer-pool : Text =
     let pool = bp-new 2
     in let r1 = bp-fetch pool (page-new 1 page-type-data)
     in let r2 = bp-fetch (r1.pool) (page-new 2 page-type-data)
-    in let r3 = bp-fetch (r2.pool) (page-new 3 page-type-data)
+    in let u1 = bp-unpin (r2.pool) (r1.frame-idx)
+    in let u2 = bp-unpin u1 (r2.frame-idx)
+    in let r3 = bp-fetch u2 (page-new 3 page-type-data)
     in "bp: evictions=" & show ((r3.pool).evict-count) & " frames=" & show ((r3.pool).frame-count)
 
 Section: Test 38 — Bulk Loader

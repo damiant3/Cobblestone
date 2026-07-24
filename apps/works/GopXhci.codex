@@ -138,6 +138,7 @@ Section: TRB Vocabulary
   trb-t-setup : Integer = 2
   trb-t-data : Integer = 3
   trb-t-status : Integer = 4
+  trb-t-isoch : Integer = 5
   trb-t-link : Integer = 6
   trb-t-enable-slot : Integer = 9
   trb-t-address-dev : Integer = 11
@@ -229,11 +230,27 @@ Section: Host State
     ud-port : Integer,
     ud-speed : Integer,
     ud-ctx : Integer,
-    ud-ep0-ring : Integer
+    ud-ep0-ring : Integer,
+    ud-route : Integer,
+    ud-tt-slot : Integer,
+    ud-tt-port : Integer
   }
 
+ The route string is what says WHERE a device is. Without it a device
+ addressed through two tiers of hub is indistinguishable from one on a
+ root port, because every other field is the same -- the root port it
+ descends from, its speed, its slot. A hub walk that cannot report
+ where it arrived cannot be checked by anything.
+
+ The transaction translator is carried on the device for the same
+ reason. A full-speed device reaches a high-speed bus only through
+ some ancestor hub's translator, and that ancestor is not always the
+ hub it is plugged into -- a full-speed hub has none of its own and
+ passes its parent's along. Recording which translator serves this
+ device is what lets its children inherit the right one.
+
   xhci-no-dev : UsbDev
-  xhci-no-dev = UsbDev { ud-ok = False, ud-slot = 0, ud-port = 0, ud-speed = 0, ud-ctx = 0, ud-ep0-ring = 0 }
+  xhci-no-dev = UsbDev { ud-ok = False, ud-slot = 0, ud-port = 0, ud-speed = 0, ud-ctx = 0, ud-ep0-ring = 0, ud-route = 0, ud-tt-slot = 0, ud-tt-port = 0 }
 
 Section: Diagnostics
 
@@ -400,7 +417,7 @@ Section: Ownership Handback
  SMM legacy handler, taking ownership by the book DISABLES that
  emulation. If the pure USB path then fails to deliver a keystroke,
  the machine has no keyboard at all -- and that is exactly what
- happened here (docs/PM/Done/Stories/TheSilentKeyboard.md): the working
+ happened here on real hardware: the working
  path was scuttled in the same change that introduced its
  replacement, and the replacement did not hold weight.
 
@@ -978,7 +995,7 @@ Section: Slot and Device
     in let av = xhci-command xh ictx 0 0 (bit-or (bit-shl trb-t-address-dev 10) (bit-shl slot 24))
     in if av.xe-ok == False then xhci-no-dev
     else if av.xe-code /= trb-cc-success then xhci-no-dev
-    else UsbDev { ud-ok = True, ud-slot = slot, ud-port = rootport, ud-speed = speed, ud-ctx = ctx, ud-ep0-ring = ep0-ring }
+    else UsbDev { ud-ok = True, ud-slot = slot, ud-port = rootport, ud-speed = speed, ud-ctx = ctx, ud-ep0-ring = ep0-ring, ud-route = route, ud-tt-slot = ttslot, ud-tt-port = ttport }
 
   xhci-open-device : XhciHost, Integer, Integer -> UsbDev
   xhci-open-device (xh) (port) (speed) = xhci-open-device-at xh 0 port speed 0 0

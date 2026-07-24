@@ -1,0 +1,144 @@
+Chapter: CoapClient
+  cites Encode chapter CoapEndpoint
+  cites Net chapter UdpIO
+  cites Foreword chapter Console
+
+ A CoAP client on a real socket, so that something other than our own
+ loopback can be the thing that answers it.
+
+ `codex/test/apps/coap-loopback` drives `CoapEndpoint` against datagrams
+ built by our own `Coap` codec. That proves the endpoint and the codec
+ agree with each other, which is the failure mode
+ `docs/PM/Active/Stories/BrotliBeatsOpus.md` exists to describe: two
+ halves that share an assumption agree forever. This binary exists to be
+ answered by aiocoap, which agrees with RFC 7252 instead.
+
+ It asks for two resources and reports what came back for each. The
+ second is asked for precisely because it is NOT there: a client that
+ cannot tell 2.05 Content from 4.04 Not Found would pass a test that only
+ ever fetched something that exists, and "the response code is parsed" is
+ otherwise a claim nothing checks.
+
+ THE CLOCK IS THE PIT TICK. `CoapEndpoint` takes `now` as a caller-supplied
+ number in the same unit as its timeouts, and `get-ticks` counts the
+ periodic timer at roughly 18.2 Hz, so a tick is about 55 ms. That is the
+ real clock this machine has; the endpoint's retransmission schedule is
+ therefore real time and not a loop counter. On hardware whose PIT limps
+ -- the ASUS in `docs/PM/Active/Stories/TheSilentKeyboard.md` runs it at
+ about 3 Hz -- the timeouts stretch, which is a property of the clock and
+ not of this code.
+
+Section: Configuration
+
+  coap-local-mac : List Integer = [82, 84, 0, 18, 52, 86]
+  coap-local-ip : List Integer = [10, 0, 2, 15]
+  coap-gateway-ip : List Integer = [10, 0, 2, 2]
+
+  coap-local-port : Integer = 5900
+  coap-server-port : Integer = 5683
+
+ Milliseconds per PIT tick, and the poll budget between clock reads. The
+ budget is what makes a retransmission possible at all: the endpoint only
+ retransmits when it is ticked past its deadline, so the receive poll has
+ to give up periodically rather than block for the whole interaction.
+
+  coap-ms-per-tick : Integer = 55
+  coap-poll-fuel : Integer = 400000
+  coap-rounds : Integer = 400
+
+  coap-now : Integer -> Integer
+  coap-now (x) = get-ticks * coap-ms-per-tick
+
+Section: The Exchange
+
+  CoapRun = record {
+    cr-ep : CoapEp,
+    cr-rounds : Integer
+  }
+
+ Put every datagram the endpoint asked for on the wire. A step can emit
+ more than one -- a separate response is acknowledged while the answer is
+ being delivered -- so this is a loop and not a send.
+
+  coap-send-all : UdpSocket, List (List Integer), Integer -> [Network.Write] Integer
+  coap-send-all (sk) (outs) (i) =
+    if i >= list-length outs then 0
+    else act
+      sent <- udp-io-send sk (list-at outs i)
+      rest <- coap-send-all sk outs (i + 1)
+      sent + rest
+    end
+
+ One round: wait for a datagram, and if none comes before the poll budget
+ is spent, advance the endpoint's clock instead. Those are the only two
+ things that can move a CoAP interaction forward, and both are here so
+ that a lost request is retransmitted by the same loop that would have
+ delivered the answer.
+
+  coap-run : UdpSocket, CoapEp, Integer -> [Network.Read, Network.Write] CoapEp
+  coap-run (sk) (ep) (rounds) =
+    if rounds <= 0 then ep
+    else if coap-ep-done ep then ep
+    else if coap-ep-failed ep then ep
+    else act
+      r <- udp-io-recv sk coap-poll-fuel
+      let step = if r.ur-got then coap-ep-recv ep (r.ur-data) (coap-now 0)
+                 else coap-ep-tick ep (coap-now 0)
+      in act
+        sent <- coap-send-all sk (step.cs-out) 0
+        coap-run sk (step.cs-ep) (rounds - 1)
+      end
+    end
+
+ ONE ENDPOINT SERVES BOTH REQUESTS, and it must. A `CoapEp` carries the
+ message-id and token counters, so building a fresh one per request
+ restarts both at 1 -- and RFC 7252 section 4.5 requires a server to treat
+ a message id it has already seen from the same source as a DUPLICATE and
+ replay the response it cached. That is what aiocoap did on the first run
+ of `build/coap-interop-test.ps1`: the second request, for a resource that
+ does not exist, came back 2.05 Content carrying the first resource's
+ payload. The server was right and the client was wrong, and the loopback
+ could never have shown it because nothing in the loopback caches.
+
+  coap-ask : UdpSocket, CoapEp, Text -> [Network.Read, Network.Write] CoapEp
+  coap-ask (sk) (ep) (path) =
+    let step = coap-ep-get ep path (coap-now 0)
+    in act
+      sent <- coap-send-all sk (step.cs-out) 0
+      coap-run sk (step.cs-ep) coap-rounds
+    end
+
+Section: Reporting
+
+ The payload is reported as its bytes rather than as text. It arrives as
+ whatever the server sent, and Codex Text is CCE internally -- rendering
+ it would put a second encoding between the wire and the assertion, which
+ is exactly where this project has lost bytes before. The harness knows
+ what it asked the server to serve and computes the same list.
+
+  coap-bytes-text : List Integer, Integer, Text -> Text
+  coap-bytes-text (bs) (i) (acc) =
+    if i >= list-length bs then acc
+    else coap-bytes-text bs (i + 1) (if i == 0 then show (list-at bs i) else acc & "," & show (list-at bs i))
+
+  coap-report : Text, CoapEp -> [Console.Write] Nothing
+  coap-report (label) (ep) = act
+    print-line-uni ("coap " & label
+      & " done=" & show (coap-ep-done ep)
+      & " failed=" & show (coap-ep-failed ep)
+      & " code=" & show (coap-ep-response-code ep)
+      & " retries=" & show (coap-ep-retries ep)
+      & " payload=" & coap-bytes-text (coap-ep-response-payload ep) 0 "")
+  end
+
+Section: Entry
+
+  opening : [Network.Read, Network.Write, Console.Write] Nothing = act
+    let sk = udp-io-open coap-local-mac coap-local-ip coap-local-port coap-gateway-ip coap-server-port
+    in act
+      hit <- coap-ask sk coap-ep-new "codex"
+      coap-report "hit" hit
+      miss <- coap-ask sk hit "nosuch"
+      coap-report "miss" miss
+    end
+  end

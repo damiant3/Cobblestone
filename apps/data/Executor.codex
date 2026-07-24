@@ -217,27 +217,34 @@ Section: Left Join
     in let schema = exec-merge-schemas (left.qr-schema) (right.qr-schema)
     in qr-ok joined schema
 
+ A left outer join emits one row per MATCHING PAIR, exactly as the inner
+ join does, and falls back to a single null-padded row only for a left row
+ that matches nothing. It does not emit one row per left row: this loop
+ used to take the FIRST match and move on, so a left join whose predicate
+ admits several right rows silently lost all but one of them (three left
+ rows against ten right rows under an always-true predicate answered 3
+ where a join answers 30). exec-join-inner already collects every match
+ for one left row, so the two joins now agree by construction.
+
+ The row count is snapshotted into `before` on purpose. exec-join-inner
+ accumulates with list-push, which writes in place and hands back the SAME
+ list, so after the call `grown` and `acc` are one object and comparing
+ their lengths to each other always says "equal" -- every left row would
+ then also collect a null-padded row. The count has to be taken before the
+ call, not derived from the two names afterwards.
+
   exec-left-join-loop : List RowData, List RowData, Predicate, Integer, Integer, List RowData, Integer, RowSchema, List RowData -> List RowData
   exec-left-join-loop (lefts) (rights) (pred) (li) (lcount) (rall) (rcount) (rschema) (acc) =
     if li >= lcount then acc
     else let lrow = list-at lefts li
-    in let matched = exec-left-find-match lrow rall pred 0 rcount
-    in when matched
-      is None ->
+    in let before = list-length acc
+    in let grown = exec-join-inner lrow rall pred 0 rcount acc
+    in if list-length grown == before
+      then
         let null-right = exec-null-row rschema
         in let combined = exec-merge-rows lrow null-right
         in exec-left-join-loop lefts rights pred (li + 1) lcount rall rcount rschema (list-push acc combined)
-      is Just (rrow) ->
-        let combined = exec-merge-rows lrow rrow
-        in exec-left-join-loop lefts rights pred (li + 1) lcount rall rcount rschema (list-push acc combined)
-
-  exec-left-find-match : RowData, List RowData, Predicate, Integer, Integer -> Maybe RowData
-  exec-left-find-match (lrow) (rights) (pred) (ri) (rcount) =
-    if ri >= rcount then None
-    else let rrow = list-at rights ri
-    in let combined = exec-merge-rows lrow rrow
-    in if pred-eval pred combined then Just rrow
-    else exec-left-find-match lrow rights pred (ri + 1) rcount
+      else exec-left-join-loop lefts rights pred (li + 1) lcount rall rcount rschema grown
 
 Section: Equi Join
 

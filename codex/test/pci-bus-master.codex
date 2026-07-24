@@ -1,0 +1,76 @@
+Chapter: PciBusMaster
+  cites Kernel chapter Pci
+
+ pci-enable-device brings a PCI device up, and until this test nothing
+ had ever called it or its predecessor.
+
+ The predecessor set the memory-space bit alone. That is enough for a
+ device whose registers you poke and nothing else, and it is not enough
+ for any device that moves data on its own initiative: a descriptor-ring
+ NIC fetches descriptors and DMAs frame bodies itself, and with bus
+ master clear it is addressable, apparently configured, and silent.
+ Nothing in the tree would have reported that, because nothing called
+ the function.
+
+ So this reads the command register back off a real device rather than
+ asserting the arithmetic. bit-or cmd 7 is not worth a test; what is
+ worth a test is that the write reaches config space and the device
+ keeps it.
+
+ THE BEFORE LEG IS THE CONTROL. codex-vm brings every PCI device up
+ with command 0x0003 -- I/O and memory set, bus master CLEAR -- so
+ "after = 7" only means something beside "before = 3". Were the device
+ already mastering, this test would pass while proving nothing, which is
+ the shape of a function that always answers the same thing.
+
+ The second control is the untouched device. A config write that landed
+ on the wrong device, or on all of them, would still show dev 0 going 3
+ to 7; dev 1 reading 3 afterwards is what says the address bits in
+ pci-address select what they claim to select.
+
+Section: Command Register
+
+  cmd-of : Integer -> Integer
+  cmd-of (dev) = bit-and (pci-read-config 0 dev 0 4) 65535
+
+  has-bus-master : Integer -> Text
+  has-bus-master (cmd) = if bit-and cmd 4 > 0 then "T" else "F"
+
+Section: Probe
+
+ The reads and the write are ordered by the let chain deliberately. They
+ are typed pure -- Pci grounds Device.Port, so its own functions perform
+ port I/O without publishing the row -- and a pure expression the
+ compiler is free to reorder is exactly the wrong shape for a
+ read-modify-read. Threading each step through a named binding is what
+ fixes the order.
+
+  PciProbe = record {
+    p-before : Integer,
+    p-after : Integer,
+    p-other : Integer
+  }
+
+  probe : Integer -> PciProbe
+  probe (other) =
+    let before = cmd-of 0
+    in let d = PciDevice { pci-bus = 0, pci-dev = 0, pci-func = 0, pci-vendor = 0, pci-device-id = 0, pci-class = 0, pci-subclass = 0, pci-header-type = 0 }
+    in let w = pci-enable-device d
+    in let after = cmd-of 0
+    in let untouched = cmd-of other
+    in PciProbe { p-before = before, p-after = after, p-other = untouched }
+
+Section: Body
+
+  opening : [Console] Nothing = act
+    let r = probe 1
+    in act
+      print-line-uni ("dev0-before=" & show (r.p-before))
+      print-line-uni ("dev0-after=" & show (r.p-after))
+      print-line-uni ("bus-master-before=" & has-bus-master (r.p-before))
+      print-line-uni ("bus-master-after=" & has-bus-master (r.p-after))
+      print-line-uni ("dev1-untouched=" & show (r.p-other))
+    end
+  end
+
+Page 1

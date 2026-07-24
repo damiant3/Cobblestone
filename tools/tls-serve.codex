@@ -1,0 +1,208 @@
+Chapter: TlsServe
+  cites Encode chapter TlsEndpoint
+  cites Net chapter NetIO
+  cites Net chapter TcpTransport
+  cites Net chapter NetworkStack
+  cites Foreword chapter Tls
+  cites Foreword chapter Console
+  cites Foreword chapter Maybe
+
+ A TLS 1.3 server on a real socket, so that something other than our own
+ client can be the thing that talks to it.
+
+ Every TLS test in this tree is a loopback: our client against our server,
+ shuttling records between two endpoints in one process. That proves the
+ two halves agree with each other and nothing else. This binary exists to
+ be driven by openssl, which agrees with the RFC instead.
+
+ It listens on guest port 9443 for one connection at a time, the pattern
+ codex-vm port forwarding expects: boot with `-portfwd <host>:9443` and
+ the VM injects a SYN toward this listener for every host client that
+ connects.
+
+ THE RECORD BOUNDARY IS THE WHOLE OF THE TRANSPORT WORK. tls-ep-recv
+ takes exactly one TLS record. TCP does not deliver records, it delivers
+ whatever bytes happened to arrive, so a segment may carry half a record
+ or three of them. The loop below accumulates into a buffer and takes
+ complete records off the front, which is the one thing the loopback
+ tests never had to do because they handed over whole records by
+ construction.
+
+ The certificate is the same Ed25519 leaf the loopback tests use, minted
+ outside Codex. The harness hands openssl the matching CA, read out of
+ the test fixture rather than copied, so there is one source of truth for
+ those bytes.
+
+Section: Fixtures
+
+  leaf-cert : List Integer =
+    [48, 129, 224, 48, 129, 147, 160, 3, 2, 1, 2, 2, 1, 2, 48, 5,
+     6, 3, 43, 101, 112, 48, 24, 49, 22, 48, 20, 6, 3, 85, 4, 3,
+     12, 13, 67, 111, 100, 101, 120, 32, 84, 101, 115, 116, 32, 67, 65, 48,
+     30, 23, 13, 50, 48, 48, 49, 48, 49, 48, 48, 48, 48, 48, 48, 90,
+     23, 13, 52, 48, 48, 49, 48, 49, 48, 48, 48, 48, 48, 48, 90, 48,
+     28, 49, 26, 48, 24, 6, 3, 85, 4, 3, 12, 17, 100, 101, 118, 105,
+     99, 101, 46, 99, 111, 100, 101, 120, 46, 116, 101, 115, 116, 48, 42, 48,
+     5, 6, 3, 43, 101, 112, 3, 33, 0, 61, 64, 23, 195, 232, 67, 137,
+     90, 146, 183, 10, 167, 77, 27, 126, 188, 156, 152, 44, 207, 46, 196, 150,
+     140, 192, 205, 85, 241, 42, 244, 102, 12, 48, 5, 6, 3, 43, 101, 112,
+     3, 65, 0, 192, 119, 224, 223, 156, 128, 13, 8, 81, 105, 237, 95, 95,
+     124, 10, 211, 52, 14, 16, 82, 152, 156, 143, 23, 34, 40, 109, 77, 125,
+     244, 86, 22, 157, 63, 50, 157, 35, 123, 57, 128, 115, 210, 119, 80, 7,
+     185, 132, 226, 65, 143, 64, 91, 62, 189, 193, 143, 118, 167, 123, 250, 204,
+     95, 252, 2]
+
+  leaf-priv : List Integer =
+    [76, 205, 8, 155, 40, 255, 150, 218, 157, 182, 195, 70, 236, 17, 78, 15,
+     91, 138, 49, 159, 53, 171, 166, 36, 218, 140, 246, 237, 79, 184, 166, 251]
+
+  leaf-pub : List Integer =
+    [61, 64, 23, 195, 232, 67, 137, 90, 146, 183, 10, 167, 77, 27, 126, 188,
+     156, 152, 44, 207, 46, 196, 150, 140, 192, 205, 85, 241, 42, 244, 102, 12]
+
+ The server's X25519 private key and handshake random. Fixed, because a
+ test that cannot be reproduced is not a test; a real server takes both
+ from entropy.
+
+  s-priv : List Integer =
+    [32, 31, 30, 29, 28, 27, 26, 25, 24, 23, 22, 21, 20, 19, 18, 17,
+     16, 15, 14, 13, 12, 11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1]
+
+  s-random : List Integer =
+    [201, 202, 203, 204, 205, 206, 207, 208, 209, 210, 211, 212, 213, 214, 215, 216,
+     217, 218, 219, 220, 221, 222, 223, 224, 225, 226, 227, 228, 229, 230, 231, 232]
+
+Section: The Socket
+
+  serve-port : Integer = 9443
+
+  local-mac : List Integer = [82, 84, 0, 18, 52, 86]
+  local-ip : List Integer = [10, 0, 2, 15]
+  gateway-ip : List Integer = [10, 0, 2, 2]
+  nat-gw-mac : List Integer = [82, 85, 10, 0, 2, 2]
+
+  fresh-transport : Integer -> TcpTransportState
+  fresh-transport (x) =
+    let sess = net-session-new local-mac local-ip gateway-ip serve-port 0 gateway-ip 1000
+    in let sess2 = set-arp sess (arp-cache-add (sess.arp) gateway-ip nat-gw-mac)
+    in transport-new sess2
+
+Section: Record Boundaries
+
+ A TLS record is a five-byte header -- type, two version bytes, and a
+ sixteen-bit length -- followed by that many bytes.
+
+  rec-total : List Integer -> Integer
+  rec-total (buf) = 5 + (list-at buf 3 * 256 + list-at buf 4)
+
+  has-record : List Integer -> Boolean
+  has-record (buf) =
+    if list-length buf < 5 then False
+    else list-length buf >= rec-total buf
+
+  drop-n : List Integer, Integer -> List Integer
+  drop-n (bs) (n) = tls-slice bs n (list-length bs - n) []
+
+Section: Sending
+
+ One step of the endpoint can emit several records -- a server's first
+ flight is ServerHello, EncryptedExtensions, Certificate,
+ CertificateVerify and Finished -- and each goes out whole.
+
+  send-all : TcpTransportState, List (List Integer), Integer -> [Network.Write, Console.Write] TcpTransportState
+  send-all (ts) (outs) (i) =
+    if i >= list-length outs then ts
+    else let r = list-at outs i
+    in act
+      print-line-uni ("  out[" & show i & "] bytes=" & show (list-length r) & " hdr=" & show (list-at r 0) & "," & show (list-at r 1) & "," & show (list-at r 2) & "," & show (list-at r 3) & "," & show (list-at r 4) & " declared=" & show (list-at r 3 * 256 + list-at r 4))
+      ts1 <- net-io-send-raw ts r
+      send-all ts1 outs (i + 1)
+    end
+
+Section: The Connection
+
+ Feed every complete record in the buffer to the endpoint before asking
+ the socket for more. A server flight can arrive coalesced into one
+ segment and a client's Finished can share a segment with its first
+ application record, so draining the buffer is not an optimisation.
+
+  drain : TlsEp, TcpTransportState, List Integer -> [Network.Read, Network.Write, Console.Write] ConnState
+  drain (ep) (ts) (buf) =
+    if has-record buf == False then ConnState { cs-ep = ep, cs-ts = ts, cs-buf = buf }
+    else let n = rec-total buf
+    in let rec = tls-take-bytes buf n
+    in let step = tls-ep-recv ep rec
+    in act
+      print-line-uni ("  rec type=" & show (list-at buf 0) & " len=" & show n & " -> outs=" & show (list-length (step.tes-out)) & " done=" & show (tls-ep-done (step.tes-ep)))
+      ts1 <- send-all ts (step.tes-out) 0
+      drain (step.tes-ep) ts1 (drop-n buf n)
+    end
+
+  ConnState = record {
+    cs-ep : TlsEp,
+    cs-ts : TcpTransportState,
+    cs-buf : List Integer
+  }
+
+ The connection loop. Read, drain, and stop when the endpoint has both
+ completed the handshake and received an application record -- at which
+ point the same bytes go back, encrypted under the server application
+ key, and the harness compares them.
+
+  serve-conn : TlsEp, TcpTransportState, List Integer, Integer -> [Network.Read, Network.Write, Console.Write] Text
+  serve-conn (ep) (ts) (buf) (fuel) =
+    if fuel <= 0 then "fuel-exhausted"
+    else act
+      st <- drain ep ts buf
+      if tls-ep-done (st.cs-ep) & list-length (tls-ep-app-in (st.cs-ep)) > 0
+      then echo-back (st.cs-ep) (st.cs-ts)
+      else act
+        r <- net-io-recv-raw (st.cs-ts) 0
+        if r.has-data == False then "peer-silent"
+        else serve-conn (st.cs-ep) (r.transport) ((st.cs-buf) & (r.data)) (fuel - 1)
+      end
+    end
+
+  echo-back : TlsEp, TcpTransportState -> [Network.Write, Console.Write] Text
+  echo-back (ep) (ts) =
+    let payload = tls-ep-app-in ep
+    in let step = tls-ep-send-app ep payload
+    in act
+      ts1 <- send-all ts (step.tes-out) 0
+      ts2 <- net-io-close ts1
+      let verdict = "echoed " & show (list-length payload)
+      in verdict
+    end
+
+Section: Entry
+
+  serve-one : Integer -> [Network.Read, Network.Write, Console.Write] Text
+  serve-one (x) = act
+    ts <- net-io-accept (net-io-listen (fresh-transport 0)) 0
+    print-line-uni "tls-serve: accept returned"
+    when (ts.session).conn.state
+      is TcpEstablished -> serve-conn (tls-ep-server-new s-priv s-random [leaf-cert] leaf-priv leaf-pub) ts [] 4000
+      is otherwise -> "no-conn"
+  end
+
+ One connection at a time, but MANY of them in succession. A server that
+ accepts exactly once is indistinguishable from a hung one the moment
+ anything else touches the port -- a readiness probe that connects and
+ closes consumes the single accept, and the client that follows waits
+ forever on a listener that has already moved on. That is not
+ hypothetical: it is what the first run of build/tls-interop-test.ps1
+ did, and the symptom was a handshake timeout with a guest sitting at
+ "listening".
+
+  serve-loop : Integer -> [Network.Read, Network.Write, Console.Write] Integer
+  serve-loop (count) = act
+    verdict <- serve-one 0
+    print-line-uni ("tls-serve " & show count & ": " & verdict)
+    serve-loop (count + 1)
+  end
+
+  opening : [Network.Read, Network.Write, Console.Write] Nothing = act
+    print-line-uni ("tls-serve: listening on guest port " & show serve-port)
+    served <- serve-loop 0
+    print-line-uni ("tls-serve: closed after " & show served)
+  end

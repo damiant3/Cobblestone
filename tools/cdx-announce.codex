@@ -1,0 +1,138 @@
+Chapter: CdxAnnounce
+  cites Foreword chapter Maybe
+  cites Foreword chapter Console
+  cites Foreword chapter Hamt
+  cites Foreword chapter TextSearch
+  cites Foreword chapter Parse
+  cites Trust chapter AgentProtocol
+  cites Trust chapter TrustTransport
+  cites Kernel chapter DiskFacts
+  cites Works chapter RepoProtocolPersist
+  cites Net chapter NetIO
+  cites Net chapter TcpTransport
+  cites Net chapter NetworkStack
+  cites Net chapter MessageFraming
+
+ Tells a registry what a store holds, so a locate can be answered without the
+ registry having to ask anyone.
+
+ It is a separate binary from `cdx-serve` on purpose, and not only for tidiness.
+ A server that announced at boot would have to read its configuration from
+ serial before listening, and `cdx-serve` is booted today with no input at all
+ -- `read-line` on an empty ring would hang it, taking the working
+ `quote-from-peer` harness with it. Announcing is also a different job from
+ serving: it happens once, it can be re-run on a schedule, and a deployment may
+ want to announce a store it does not itself serve.
+
+ IT MUST RUN WHILE NOTHING ELSE HOLDS THE DISK, and before the server boots.
+ codex-vm attaches an IDE image read-write and flushes to the host file, so two
+ guests on one image at once is not a thing to attempt.
+
+ Input is one line on serial:
+
+   <registry-host:port> <the-address-peers-should-be-told-to-use>
+
+ The second field is stated rather than inferred. The address a registry could
+ infer is the one this guest dialled FROM, which is not the address anyone else
+ reaches the store on.
+
+ WHAT IS ANNOUNCED is the CURRENT hash of every path in the index. Superseded
+ editions stay addressable by hash and are still served by `cdx-serve`; they are
+ simply not advertised. That is a real limitation and it is the honest one: a
+ quotation names a digest, and a digest nobody advertised can still be fetched
+ from a peer somebody names by hand.
+
+ We say:
+
+Section: Identity
+
+  ann-id : AgentIdentity
+  ann-id = AgentIdentity { public-key = [] }
+
+Section: The Wire
+
+  local-mac : List Integer = [82, 84, 0, 18, 52, 86]
+  local-ip : List Integer = [10, 0, 2, 15]
+  gateway-ip : List Integer = [10, 0, 2, 2]
+
+  nat-gw-mac : List Integer = [82, 85, 10, 0, 2, 2]
+
+  announce-src-port : Integer = 49153
+
+  parse-octets : List Text, Integer, List Integer -> List Integer
+  parse-octets (parts) (i) (acc) =
+    if i >= list-length parts then acc
+    else parse-octets parts (i + 1) (list-push acc (text-to-integer (list-at parts i)))
+
+  addr-ip : Text -> List Integer
+  addr-ip (a) = parse-octets (text-split (list-at (text-split a ":") 0) ".") 0 []
+
+  addr-port : Text -> Integer
+  addr-port (a) =
+    let parts = text-split a ":"
+    in if list-length parts < 2 then 0 else text-to-integer (list-at parts 1)
+
+Section: What We Hold
+
+  path-hash : WorkIndex, Text, Text -> Text
+  path-hash (ix) (path) (acc) =
+    when hamt-get (ix.wi-current) path
+      is None -> acc
+      is Just (h) -> if text-length acc == 0 then h else acc & " " & h
+
+  index-hashes : WorkIndex, Integer, Text -> Text
+  index-hashes (ix) (i) (acc) =
+    if i >= list-length (ix.wi-paths) then acc
+    else index-hashes ix (i + 1) (path-hash ix (list-at (ix.wi-paths) i) acc)
+
+Section: Announcing
+
+  send-announce : Text, Text, Text -> [Network.Read, Network.Write, Console.Write] Text
+  send-announce (registry) (advertise) (hashes) =
+    let sess = net-session-new local-mac local-ip gateway-ip announce-src-port (addr-port registry) (addr-ip registry) 1000
+    in let sess2 = set-arp sess (arp-cache-add (sess.arp) gateway-ip nat-gw-mac)
+    in act
+      ts1 <- net-io-connect (transport-new sess2)
+      when (ts1.session).conn.state
+        is TcpEstablished -> exchange ts1 advertise hashes
+        is otherwise -> "connect-failed"
+    end
+
+  exchange : TcpTransportState, Text, Text -> [Network.Read, Network.Write, Console.Write] Text
+  exchange (ts) (advertise) (hashes) = act
+    ts1 <- net-io-send ts tag-announce-request (encode-announce-request-body (AnnounceRequestMsg { from = ann-id, address = advertise, hashes = hashes }))
+    r <- net-io-recv-loop ts1 0
+    ts2 <- net-io-close (r.transport)
+    let verdict = if r.has-message == False then "no-reply"
+      else if r.tag /= tag-announce-reply then "wrong-tag"
+      else "accepted " & show ((decode-announce-reply-body (r.body)).accepted)
+    in verdict
+  end
+
+Section: Entry
+
+  run : Text -> [Device.Block, Network.Read, Network.Write, Console.Write] Nothing
+  run (line) = act
+    let parts = text-split (text-trim line) " "
+    in if list-length parts < 2
+      then print-line-uni "cdx-announce: want <registry-host:port> <advertise-host:port>"
+      else announce-store (list-at parts 0) (list-at parts 1)
+  end
+
+  announce-store : Text, Text -> [Device.Block, Network.Read, Network.Write, Console.Write] Nothing
+  announce-store (registry) (advertise) = act
+    let ix = repo-index-from-disk disk-load
+    in let hashes = index-hashes ix 0 ""
+    in act
+      print-line-uni ("cdx-announce: " & show (list-length (ix.wi-paths)) & " paths, telling " & registry & " that " & advertise & " holds them")
+      verdict <- send-announce registry advertise hashes
+      print-line-uni ("cdx-announce: " & verdict)
+    end
+  end
+
+  opening : [Device.Block, Network.Read, Network.Write, Console] Nothing = act
+    line <- read-line
+    when line
+     is None -> print-line-uni "cdx-announce: no configuration on stdin"
+     is Just (l) -> run l
+  end

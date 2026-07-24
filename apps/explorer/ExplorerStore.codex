@@ -130,14 +130,16 @@ Section: Disk Load
     else let w = poke-byte big (boff + i) (peek-byte sec i)
     in es-copy-sector big boff sec (i + 1)
 
-  es-disk-load-loop : Integer, Integer, Integer -> Integer
+  es-disk-load-loop : Integer, Integer, Integer -> [Device.Block] Integer
   es-disk-load-loop (big) (s) (n) =
     if s >= n then big
-    else let sec = block-read-sector s
-    in let c = es-copy-sector big (s * 512) sec 0
-    in es-disk-load-loop big (s + 1) n
+    else act
+      sec <- block-read-sector s
+      let c = es-copy-sector big (s * 512) sec 0
+      in es-disk-load-loop big (s + 1) n
+    end
 
-  es-disk-load : Integer -> Integer
+  es-disk-load : Integer -> [Device.Block] Integer
   es-disk-load (sectors) =
     let big = alloc-bytes (sectors * 512)
     in es-disk-load-loop big 0 sectors
@@ -155,26 +157,30 @@ Section: Disk Save
     else let w = poke-byte tmp i (peek-byte big (boff + i))
     in es-copy-out big boff tmp (i + 1)
 
-  es-disk-save-loop : Integer, Integer, Integer, Integer, Integer -> Integer
+  es-disk-save-loop : Integer, Integer, Integer, Integer, Integer -> [Device.Block] Integer
   es-disk-save-loop (big) (start) (s) (n) (tmp) =
     if s >= n then 0
     else let c = es-copy-out big (s * 512) tmp 0
-    in let w = block-write-sector (start + s) tmp
-    in es-disk-save-loop big start (s + 1) n tmp
+    in act
+      w <- block-write-sector (start + s) tmp
+      es-disk-save-loop big start (s + 1) n tmp
+    end
 
-  es-disk-save : Integer, Integer, Integer -> Integer
+  es-disk-save : Integer, Integer, Integer -> [Device.Block] Integer
   es-disk-save (big) (start) (sectors) =
     let tmp = alloc-bytes 512
     in es-disk-save-loop big start 0 sectors tmp
 
-  es-disk-load-at-loop : Integer, Integer, Integer, Integer -> Integer
+  es-disk-load-at-loop : Integer, Integer, Integer, Integer -> [Device.Block] Integer
   es-disk-load-at-loop (big) (start) (s) (n) =
     if s >= n then big
-    else let sec = block-read-sector (start + s)
-    in let c = es-copy-sector big (s * 512) sec 0
-    in es-disk-load-at-loop big start (s + 1) n
+    else act
+      sec <- block-read-sector (start + s)
+      let c = es-copy-sector big (s * 512) sec 0
+      in es-disk-load-at-loop big start (s + 1) n
+    end
 
-  es-disk-load-at : Integer, Integer -> Integer
+  es-disk-load-at : Integer, Integer -> [Device.Block] Integer
   es-disk-load-at (start) (sectors) =
     let big = alloc-bytes (sectors * 512)
     in es-disk-load-at-loop big start 0 sectors

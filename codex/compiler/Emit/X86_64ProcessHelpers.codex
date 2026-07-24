@@ -243,12 +243,16 @@ Section: Process Scheduler Helpers
    in let st7 = st-append-code st6 (xor-rr reg-rdi reg-rdi)
    in let st8 = st-append-code st7 (mov-load reg-rax reg-r11 0)
    in let st9 = st-append-code st8 [255, 208]
-   in emit-call-to st9 "process-exit"
+   in let sx0 = emit-load-current-proc st9 reg-rcx
+   in let sx1 = st-append-code sx0 (shl-ri reg-rcx 8)
+   in let sx2 = st-append-code sx1 (add-ri reg-rcx proc-table-base)
+   in let sx3 = st-append-code sx2 (mov-store reg-rcx reg-rax proc-exit-status-offset)
+   in emit-call-to sx3 "process-exit-self"
 
   emit-process-exit-helper : CodegenState -> CodegenState
   emit-process-exit-helper (st) =
    let fn-off = st.code-len
-   in let n = list-push (st.fo-names) "process-exit"
+   in let n = list-push (st.fo-names) "process-exit-self"
    in let o = list-push (st.fo-offsets) fn-off
    in let st0 = __record-set (__record-set st "fo-names" n) "fo-offsets" o
    in let st2 = emit-load-current-proc st0 reg-rax
@@ -274,7 +278,9 @@ Section: Process Scheduler Helpers
    in let ew10 = st-append-code ew9 (cmp-rr reg-r8 reg-r9)
    in let wake-skip2 = ew10.code-len
    in let ew11 = st-append-code ew10 (jcc cc-ne 0)
-   in let ew12 = st-append-code ew11 (li reg-rax proc-state-blocked)
+   in let ews1 = st-append-code ew11 (mov-load reg-r8 reg-rcx proc-exit-status-offset)
+   in let ews2 = st-append-code ews1 (mov-store reg-rdi reg-r8 proc-saved-rax-offset)
+   in let ew12 = st-append-code ews2 (li reg-rax proc-state-blocked)
    in let ew12b = st-append-code ew12 (li reg-r8 proc-state-ready)
    in let ew13 = st-append-code ew12b (lock-cmpxchg-mem reg-r8 reg-rdi 0)
    in let wake-next = ew13.code-len
@@ -286,6 +292,24 @@ Section: Process Scheduler Helpers
    in let ew18w = emit-wake-ipi ew18
    in let x0 = st-append-code ew18w (mov-load reg-r15 reg-rcx proc-core-offset)
    in emit-jmp-to x0 "__idle_dispatch"
+
+ The unary process-exit: store the status, then join the nullary exit
+ path. The cell is spawn-initialized to zero and __proc_entry overwrites
+ it with the closure's return value, so exiting through the unary form,
+ through a plain return, and through process-exit-self all leave a
+ defined status for a waiter to read.
+
+  emit-process-exit-status-helper : CodegenState -> CodegenState
+  emit-process-exit-status-helper (st) =
+   let fn-off = st.code-len
+   in let n = list-push (st.fo-names) "process-exit"
+   in let o = list-push (st.fo-offsets) fn-off
+   in let st0 = __record-set (__record-set st "fo-names" n) "fo-offsets" o
+   in let st2 = emit-load-current-proc st0 reg-rcx
+   in let st3 = st-append-code st2 (shl-ri reg-rcx 8)
+   in let st4 = st-append-code st3 (add-ri reg-rcx proc-table-base)
+   in let st5 = st-append-code st4 (mov-store reg-rcx reg-rdi proc-exit-status-offset)
+   in emit-jmp-to st5 "process-exit-self"
 
  Spawn-region carve. Child heap and stack come from the slot-indexed
  region spawn-pool-base + slot * spawn-slot-region-size, never from
@@ -392,7 +416,8 @@ Section: Process Scheduler Helpers
    in let st32 = st-append-code st31 (mov-store reg-r13 reg-rsi proc-saved-r14-offset)
    in let st33 = st-append-code st32 (mov-store reg-r13 reg-rsi proc-saved-r15-offset)
    in let st34 = st-append-code st33 (mov-store reg-r13 reg-rsi proc-saved-rax-offset)
-   in let st35 = st-append-code st34 (li reg-rsi proc-priority-normal)
+   in let st34b = st-append-code st34 (mov-store reg-r13 reg-rsi proc-exit-status-offset)
+   in let st35 = st-append-code st34b (li reg-rsi proc-priority-normal)
    in let st36 = st-append-code st35 (mov-store reg-r13 reg-rsi proc-priority-offset)
    in let st37 = st-append-code st36 (li reg-rsi proc-slice-normal)
    in let st38 = st-append-code st37 (mov-store reg-r13 reg-rsi proc-slice-offset)
@@ -499,7 +524,8 @@ Section: Process Scheduler Helpers
    in let st38 = st-append-code st37 (mov-store reg-r13 reg-rsi proc-saved-r14-offset)
    in let st39 = st-append-code st38 (mov-store reg-r13 reg-rsi proc-saved-r15-offset)
    in let st40 = st-append-code st39 (mov-store reg-r13 reg-rsi proc-saved-rax-offset)
-   in let st41 = st-append-code st40 (mov-load reg-rsi reg-r13 proc-priority-offset)
+   in let st40b = st-append-code st40 (mov-store reg-r13 reg-rsi proc-exit-status-offset)
+   in let st41 = st-append-code st40b (mov-load reg-rsi reg-r13 proc-priority-offset)
    in let st42 = st-append-code st41 (shl-ri reg-rsi 3)
    in let st43 = st-append-code st42 (add-ri reg-rsi slice-table-addr)
    in let st44 = st-append-code st43 (mov-load reg-rsi reg-rsi 0)
@@ -564,7 +590,7 @@ Section: Process Scheduler Helpers
  still being BLOCKED; exactly one transition wins. If the self-rescue loses,
  the waiter is already READY and must NOT run on -- it relinquishes the core
  to __idle_dispatch and is resumed normally, returning through its saved
- context exactly as a lost wake would have (BACKLOG 4.11 correctness).
+ context exactly as a lost wake would have.
 
   emit-process-wait-helper : CodegenState -> CodegenState
   emit-process-wait-helper (st) =
@@ -577,7 +603,8 @@ Section: Process Scheduler Helpers
    in let ck0 = st-append-code st2 (mov-rr reg-rsi reg-rdi)
    in let ck1 = st-append-code ck0 (shl-ri reg-rsi 8)
    in let ck2 = st-append-code ck1 (add-ri reg-rsi proc-table-base)
-   in let ck3 = st-append-code ck2 (mov-load reg-rsi reg-rsi 0)
+   in let ck2b = st-append-code ck2 (mov-rr reg-rdx reg-rsi)
+   in let ck3 = st-append-code ck2b (mov-load reg-rsi reg-rsi 0)
    in let ck4 = st-append-code ck3 (cmp-ri reg-rsi proc-state-free)
    in let ck-dead1 = ck4.code-len
    in let ck5 = st-append-code ck4 (jcc cc-e 0)
@@ -587,7 +614,7 @@ Section: Process Scheduler Helpers
    in let ck-alive = ck7.code-len
    in let ck8 = st-append-code ck7 (jmp 0)
    in let ck-ret = ck8.code-len
-   in let ck9 = st-append-code ck8 (xor-rr reg-rax reg-rax)
+   in let ck9 = st-append-code ck8 (mov-load reg-rax reg-rdx proc-exit-status-offset)
    in let ck10 = st-append-code ck9 (pop-r reg-rbx)
    in let ck11 = st-append-code ck10 x86-ret
    in let ck12 = patch-jcc-at ck11 ck-dead1 ck-ret
@@ -636,7 +663,10 @@ Section: Process Scheduler Helpers
    in let rr1 = st-append-code rr0b (lock-cmpxchg-mem reg-rsi reg-rcx 0)
    in let resc-lost = rr1.code-len
    in let rr1b = st-append-code rr1 (jcc cc-ne 0)
-   in let rr2 = st-append-code rr1b (xor-rr reg-rax reg-rax)
+   in let rr2a = st-append-code rr1b (mov-rr reg-rax reg-rbx)
+   in let rr2b = st-append-code rr2a (shl-ri reg-rax 8)
+   in let rr2c = st-append-code rr2b (add-ri reg-rax proc-table-base)
+   in let rr2 = st-append-code rr2c (mov-load reg-rax reg-rax proc-exit-status-offset)
    in let rr3 = st-append-code rr2 (pop-r reg-rbx)
    in let rr4 = st-append-code rr3 x86-ret
    in let rr4b = patch-jcc-at rr4 resc-lost block-pos

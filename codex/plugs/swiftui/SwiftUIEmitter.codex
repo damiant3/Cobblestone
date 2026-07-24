@@ -57,7 +57,7 @@ Section: Expression Emission
     is IrCharLit (n) (sp) -> "Character(UnicodeScalar(" & show n & ")!)"
     is IrName (n) (ty) (sp) -> swift-sanitize n
     is IrBinary (op) (l) (r) (ty) (sp) -> emit-sw-binary op l r arities indent
-    is IrNegate (x) (sp) -> "(-(" & emit-sw-expr x arities indent & "))"
+    is IrNegate (x) (nty) (sp) -> "(-(" & emit-sw-expr x arities indent & "))"
     is IrIf (c) (t) (el) (ty) (sp) -> "(" & emit-sw-expr c arities indent & " ? " & emit-sw-expr t arities indent & " : " & emit-sw-expr el arities indent & ")"
     is IrLet (name) (ty) (val) (body) (sp) -> "({ let " & swift-sanitize name & " = " & emit-sw-expr val arities indent & "; return " & emit-sw-expr body arities indent & " }() as Any)"
     is IrApply (f) (a) (ty) (sp) -> emit-sw-apply e arities indent
@@ -196,6 +196,7 @@ Section: Type and Definition Emission
      "func " & swift-sanitize (name.value) & "(_ fields: [String: Any]) -> [String: Any] {\n    var d = fields; d[\"_type\"] = \"" & name.value & "\"; return d\n}\n\n"
     is AVariantTypeDef (name) (tparams) (ctors) (s) ->
      emit-sw-var-ctors ctors 0
+    is AUnitTypeDef (name) (unitbase) (s) -> ""
 
   emit-sw-var-ctors : List AVariantCtorDef, Integer -> Text
   emit-sw-var-ctors (ctors) (i) =
@@ -232,10 +233,10 @@ Section: Type and Definition Emission
 
 Section: SwiftUI Assembly
 
-  emit-swiftui-chapter : IRChapter, List ATypeDef -> Text
-  emit-swiftui-chapter (m) (type-defs) =
+  emit-swiftui-chapter : IRChapter, IRTextMeta, List ATypeDef -> Text
+  emit-swiftui-chapter (m) (meta) (type-defs) =
    let arities = build-arity-map (m.defs) 0 []
-   in let title = if m.chapter-title == "" then "CodexApp" else swift-sanitize (m.chapter-title)
+   in let title = if meta.chapter-title == "" then "CodexApp" else swift-sanitize (meta.chapter-title)
    in let header = "import SwiftUI\nimport Foundation\n\n"
    in let builtins = "var _output: [String] = []\nfunc print_line_uni(_ s: Any) { _output.append(\"\\(s)\") }\nfunc print_line(_ s: Any) { print_line_uni(s) }\nfunc show(_ n: Any) -> String { \"\\(n)\" }\nfunc text_length(_ s: Any) -> Int { (s as! String).count }\nfunc text_replace(_ s: Any, _ a: Any, _ b: Any) -> String { (s as! String).replacingOccurrences(of: a as! String, with: b as! String) }\nfunc text_compare(_ a: Any, _ b: Any) -> Int { (a as! String) < (b as! String) ? -1 : (a as! String) > (b as! String) ? 1 : 0 }\nfunc list_length(_ xs: Any) -> Int { (xs as! [Any]).count }\nfunc list_at(_ xs: Any, _ i: Any) -> Any { (xs as! [Any])[i as! Int] }\nfunc list_push(_ xs: Any, _ x: Any) -> [Any] { (xs as! [Any]) + [x] }\nfunc integer_to_text(_ n: Any) -> String { \"\\(n)\" }\nfunc negate(_ n: Any) -> Int { -(n as! Int) }\nfunc isEqual(_ a: Any, _ b: Any) -> Bool { \"\\(a)\" == \"\\(b)\" }\nfunc isLess(_ a: Any, _ b: Any) -> Bool { \"\\(a)\" < \"\\(b)\" }\n\n"
    in let types-text = emit-sw-type-defs type-defs 0

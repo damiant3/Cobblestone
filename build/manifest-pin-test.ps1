@@ -1,4 +1,4 @@
-# BACKLOG 1.5 - the manifest-scope pin.
+# The manifest-scope pin.
 #
 # The compiler emits each program's capability manifest into the CDX header
 # (manifest-cap-bytes in X86_64Chapter.codex): per capability, le16 cap-id,
